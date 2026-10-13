@@ -105,16 +105,47 @@ test("A to B to A preserves distinct limits and resource-local validators", asyn
   assert.equal((await readProviderCatalog(alias, second, store))?.models[0]?.contextWindow, 32_000);
 });
 
+for (const [label, a, b, urls] of [
+  ["explicit base", { ...first, baseUrl: "https://gateway.example/api", protocol: "openai-compatible" },
+    { ...first, baseUrl: "https://gateway.example/api", protocol: "anthropic" },
+    ["https://gateway.example/api/models", "https://gateway.example/api/v1/models"]],
+  ["provider default base", { type: "anthropic", requiresApiKey: false },
+    { type: "anthropic", requiresApiKey: false, protocol: "openai-compatible" },
+    ["https://api.anthropic.com/v1/models", "https://api.anthropic.com/models"]]
+] satisfies Array<[string, ProviderConfig, ProviderConfig, string[]]>) {
+  test(`protocol A to B to A isolates real request URLs, bodies and validators: ${label}`, async () => {
+    const store = new InMemoryModelsStore();
+    const requests: Array<{ url: string; etag: string | null; modified: string | null }> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = String(input);
+      assert.ok(urls.includes(url));
+      const sent = new Headers(init?.headers);
+      requests.push({ url, etag: sent.get("if-none-match"), modified: sent.get("if-modified-since") });
+      const responseHeaders = { etag, "last-modified": new Date(modified).toUTCString() };
+      // Independent URLs may legitimately use the same entity tag.
+      if (sent.get("if-none-match") === etag) return new Response(null, { status: 304, headers: responseHeaders });
+      return Response.json({ data: [{ id: "custom-chat", context_window: url === urls[0] ? 200_000 : 32_000 }] }, { headers: responseHeaders });
+    };
+    assert.equal((await runtime(a, store, fetcher).refreshModels()).find(model => model.id === "custom-chat")?.contextWindow, 200_000);
+    assert.equal(await readProviderCatalog(alias, b, store), undefined);
+    assert.equal((await runtime(b, store, fetcher).refreshModels()).find(model => model.id === "custom-chat")?.contextWindow, 32_000);
+    assert.equal(requests[1]?.etag, null);
+    assert.equal(requests[1]?.modified, null);
+    assert.equal((await runtime(a, store, fetcher).refreshModels()).find(model => model.id === "custom-chat")?.contextWindow, 200_000);
+    assert.deepEqual(requests.map(request => request.url), [urls[0], urls[1], urls[0]]);
+    assert.equal(requests[2]?.etag, etag);
+    assert.equal((await readProviderCatalog(alias, b, store))?.models[0]?.contextWindow, 32_000);
+  });
+}
+
 for (const batch of [true, false]) {
-  test(`genuine legacy catalogs remain readable without unproven validators (${batch ? "batch" : "single"})`, async () => {
+  test(`unknown legacy aliases require a fresh catalog but remain readable to unscoped callers (${batch ? "batch" : "single"})`, async () => {
     const storage = new InMemoryModelsStore();
     const store = batch ? storage : withoutBatch(storage);
     await store.write(alias, legacyEntry());
     const cached = await readProviderCatalog(alias, second, store);
-    assert.equal(cached?.models[0]?.contextWindow, 200_000);
-    assert.equal(cached?.etag, undefined);
-    assert.equal(cached?.lastModified, undefined);
-    assert.equal((await restoreProviderCatalogs([alias], store, { [alias]: second }))[0]?.[1][0]?.contextWindow, 200_000);
+    assert.equal(cached, undefined);
+    assert.deepEqual(await restoreProviderCatalogs([alias], store, { [alias]: second }), []);
     assert.equal((await restoreProviderCatalogs([alias], store))[0]?.[1][0]?.contextWindow, 200_000);
     assert.equal((await store.read(alias))?.etag, etag, "reads do not rewrite legacy data");
 
@@ -141,7 +172,7 @@ test("failed or unsolicited 304 refreshes cannot rebind an unknown legacy catalo
   }
 });
 
-test("pre-provenance exact scoped caches still support conditional 304 refreshes", async () => {
+test("current exact scoped caches without redundant sourceKey support conditional 304 refreshes", async () => {
   const store = new InMemoryModelsStore();
   await store.write(modelCatalogCacheKey(alias, first), legacyEntry());
   const { requests, fetcher } = fakeCatalog();

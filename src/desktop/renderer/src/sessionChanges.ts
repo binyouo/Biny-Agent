@@ -7,6 +7,7 @@
  * 与 dock 变更视图共用同一份解析。
  */
 import type { TimelineTool, TimelineTurn } from "./sessionTimeline.js";
+import { classifyDiffLines } from "../../../utils/diffLines.js";
 
 export interface DiffHunkLine {
   kind: "add" | "del" | "ctx";
@@ -27,24 +28,26 @@ export function parseDiffHunks(diff: string): DiffHunk[] {
   let current: DiffHunk | undefined;
   let oldLine = 0;
   let newLine = 0;
-  for (const raw of diff.split("\n")) {
-    const header = /^@@(?: -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*)?$/u.exec(raw);
-    if (header) {
-      oldLine = header[1] === undefined ? 1 : Number(header[1]);
-      newLine = header[2] === undefined ? 1 : Number(header[2]);
+  for (const part of classifyDiffLines(diff)) {
+    const raw = part.line;
+    if (part.kind === "hunk") {
+      oldLine = part.oldStart;
+      newLine = part.newStart;
       current = { oldStart: oldLine, newStart: newLine, lines: [] };
       hunks.push(current);
       continue;
     }
-    if (!current) continue;
-    if (raw.startsWith("+") && !raw.startsWith("+++")) {
+    if (part.kind === "old-header" || part.kind === "new-header" || raw.startsWith("diff --git ")) {
+      current = undefined;
+      continue;
+    }
+    if (!current || part.kind === "meta") continue;
+    if (part.kind === "add") {
       current.lines.push({ kind: "add", text: raw.slice(1), lineNo: newLine });
       newLine += 1;
-    } else if (raw.startsWith("-") && !raw.startsWith("---")) {
+    } else if (part.kind === "delete") {
       current.lines.push({ kind: "del", text: raw.slice(1), lineNo: oldLine });
       oldLine += 1;
-    } else if (raw.startsWith("\\")) {
-      // 「\ No newline at end of file」不占行号。
     } else {
       current.lines.push({ kind: "ctx", text: raw.startsWith(" ") ? raw.slice(1) : raw, lineNo: newLine });
       oldLine += 1;
@@ -57,9 +60,9 @@ export function parseDiffHunks(diff: string): DiffHunk[] {
 export function countDiffStats(diff: string): { add: number; del: number } {
   let add = 0;
   let del = 0;
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("+") && !line.startsWith("+++")) add += 1;
-    else if (line.startsWith("-") && !line.startsWith("---")) del += 1;
+  for (const part of classifyDiffLines(diff)) {
+    if (part.kind === "add") add += 1;
+    else if (part.kind === "delete") del += 1;
   }
   return { add, del };
 }

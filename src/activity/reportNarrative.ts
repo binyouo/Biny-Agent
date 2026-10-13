@@ -40,13 +40,14 @@ export async function narrateActivityReport(
     const markdown = generated.text.trim();
     if (!validNarrative(markdown, report.markdown)) return fallback;
     const narrated = { ...report, markdown, narrativeModel: options.model.modelId };
-    if (options.store) persistActivityReport(options.store, narrated);
-    return narrated;
+    if (!options.store || persistActivityReport(options.store, narrated, new Date(), report)) return narrated;
+    // CAS 拒写不是模型失败；离开 catch 后显式取消，不把旧报告配上最新缓存的生成时间。
   } catch {
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
     return fallback;
   }
+  throw new DOMException("Activity 日报缓存已刷新，请重新生成。", "AbortError");
 }
 
 function validNarrative(output: string, skeleton: string): boolean {

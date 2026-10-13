@@ -97,7 +97,7 @@ export class WorkspaceContext {
     addUnique(this.recentSummaries, summarizeToolResult(tool, paths, result), 12);
     if (
       tool === "Bash"
-      || (["Write", "Edit"].includes(tool) && !isFailure(result))
+      || (["Write", "Edit", "apply_patch"].includes(tool) && !isFailure(result))
     ) {
       this.snapshotDirty = true;
       this.repoMapDirty = true;

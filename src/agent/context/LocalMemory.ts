@@ -198,7 +198,6 @@ export class LocalMemory {
     const result = await this.storage.updateEntry(id, patch, options);
     if (result.written && result.entry) {
       if (result.entry.archivedAt === undefined) {
-        this.removeDerivedEntries([id]);
         await this.syncDerivedEntry(result.entry);
       }
     }

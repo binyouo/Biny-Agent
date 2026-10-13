@@ -42,6 +42,7 @@ import { ModelTestStatusIcon } from "./ModelTestButton.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
 import { providerErrorMessage } from "./providerFeedback.js";
+import { AcpProviderPanel } from "./AcpProviderPanel.js";
 
 const CatalogErrorContext = createContext<string | undefined>(undefined);
 
@@ -979,6 +980,14 @@ export function ProviderSettings({
             <span className="skeleton-line skeleton-pulse" />
             <span className="skeleton-line skeleton-pulse" />
           </div>
+        ) : (activeEntry.catalog?.connectionMode === "acp" || connection?.providerType === "acp") && catalog ? (
+          <AcpProviderPanel key={activeEntry.key} catalog={catalog} connection={connection} currentModel={group?.models[0]?.model}
+            onTest={onTest} onSave={async (input) => {
+              if (!connection && connectionInfos.some((item) => item.providerAlias === input.providerAlias)) throw new Error("连接名称已存在，请使用其他名称。");
+              const saved = await applyModelBatch([input]);
+              if (saved) setActiveKey((current) => current === activeKey ? `provider:${input.providerAlias}` : current);
+              return saved;
+            }} onDelete={group ? () => { void deleteConnection(); } : undefined} />
         ) : activeEntry.catalog?.connectionMode === "login" || (usesOAuth && activeEntry.catalog) ? (
           <LoginProviderPanel
             catalog={activeEntry.catalog}
@@ -1620,12 +1629,13 @@ function TestConnectionButton({
       <Tooltip delay={150} content={disabledReason ?? (target ? "测试模型请求" : "先获取或添加模型，再测试模型请求")}>
         <button
           aria-label="测试连接"
-          className={`provider-test-button${testing ? " is-testing" : ""}`}
+          className={`provider-test-button provider-connection-test${testing ? " is-testing" : ""}`}
           disabled={Boolean(disabledReason) || testing || !target || !testConfiguration(target)}
           onClick={() => target && void onTest(target)}
           type="button"
         >
           <ModelTestStatusIcon lastResult={lastResult} testing={testing} />
+          <span>测试</span>
         </button>
       </Tooltip>
     );
@@ -1640,12 +1650,13 @@ function TestConnectionButton({
         <button
           aria-expanded={open}
           aria-label="测试连接"
-          className={`provider-test-button${testing ? " is-testing" : ""}`}
+          className={`provider-test-button provider-connection-test${testing ? " is-testing" : ""}`}
           disabled={testing || Boolean(disabledReason)}
           onClick={() => onOpen(!open)}
           type="button"
         >
           <ModelTestStatusIcon lastResult={lastResult} testing={testing} />
+          <span>测试</span>
           <Icon className="provider-test-caret" name="chevron" size={11} />
         </button>
       </Tooltip>

@@ -7,6 +7,8 @@ import { computerSettingsSchema } from "../computer/protocol.js";
  * capabilities. Only the canonical multi-model format is accepted.
  */
 import { z } from "zod";
+import { acpConfigSchema } from "../acp/config.js";
+export { acpConfigSchema, type AcpConfig } from "../acp/config.js";
 import { DEFAULT_PROJECT_SKILL_PATHS } from "../extensions/skillRoots.js";
 import {
   activityDataResidencySchema,
@@ -281,6 +283,7 @@ export const providerEmbeddingModelSchema = z.object({
 
 const providerConfigSchema = z.object({
   type: modelProviderSchema,
+  acp: acpConfigSchema.optional(),
   /** 缺省启用；停用保留连接、凭据和模型选择。 */
   enabled: z.boolean().optional(),
   /** 用户自定义服务商的显示名；内置目录服务商不使用，列表标签优先于端点主机名。 */
@@ -322,6 +325,7 @@ const providerConfigSchema = z.object({
   /** 仅显式声明的 provider embedding 型号会进入目录；不会从聊天模型或 ID 猜测。 */
   embeddingModels: z.array(providerEmbeddingModelSchema).max(64).optional()
 }).superRefine((provider, context) => {
+  if (provider.type === "acp" && !provider.acp) context.addIssue({ code: z.ZodIssueCode.custom, path: ["acp"], message: "ACP requires a launch command." });
   const embeddingIds = new Set<string>();
   for (const [index, model] of (provider.embeddingModels ?? []).entries()) {
     if (embeddingIds.has(model.id)) {

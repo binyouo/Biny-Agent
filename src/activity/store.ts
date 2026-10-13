@@ -26,6 +26,13 @@ import { activitySummary, redactActivityOcrText, redactActivityText } from "./re
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 import { AGENT_DATABASE_FILE } from "../config/paths.js";
 
+export interface ActivityReportCache {
+  report: string;
+  reportGeneratedAt: number;
+  reportStats: NonNullable<ActivitySummaryStats["reportStats"]>;
+  reportState: NonNullable<ActivitySummaryStats["reportState"]> & { generation: string };
+}
+
 export interface ActivityEventInput {
   sessionId: string;
   occurredAt: string;
@@ -986,6 +993,35 @@ export class ActivityStore {
       isPartial: summary.isPartial,
       createdAt: Number(row.created_at), updatedAt: Number(row.updated_at)
     };
+  }
+
+  /**
+   * 在短写事务内核对所有权并更新日报缓存，只合并日报自己的字段。
+   * expectedGeneration 缺失表示新骨架认领缓存，叙事必须持有原骨架的 generation。
+   * createSummary 仅在行不存在时同步调用，不能在事务中等待模型或其它异步工作。
+   */
+  writeDailyReportCache(
+    dateKey: string,
+    report: ActivityReportCache,
+    createSummary: () => ActivitySummaryRecord,
+    expectedGeneration: string | undefined
+  ): boolean {
+    const database = this.requireDatabase();
+    database.exec("BEGIN IMMEDIATE;");
+    try {
+      const previous = this.getSummary("daily", dateKey);
+      if (expectedGeneration !== undefined && previous?.stats.reportState?.generation !== expectedGeneration) {
+        database.exec("ROLLBACK;");
+        return false;
+      }
+      const base = previous ?? createSummary();
+      this.upsertSummary({ ...base, stats: { ...base.stats, ...report } });
+      database.exec("COMMIT;");
+      return true;
+    } catch (error) {
+      database.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   upsertSummary(summary: ActivityAnySummaryRecord): void {
