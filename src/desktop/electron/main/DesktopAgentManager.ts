@@ -3223,12 +3223,19 @@ export class DesktopAgentManager {
     const storage = new MemoryStorage(project.path);
     // entries 与 allEntries 是同一份全量结果的两个用途（分页页脚 / 统计），
     // 原来读了两次，等于把全部记忆正文反序列化两遍。
-    const [overview, allEntries, maintenance] = await Promise.all([
+    const reads = [
       storage.getOverview(),
       storage.listEntries(),
       storage.readMaintenanceStatus()
-    ]);
-    return { overview, entries: allEntries, allEntries, maintenance };
+    ] as const;
+    try {
+      const [overview, allEntries, maintenance] = await Promise.all(reads);
+      return { overview, entries: allEntries, allEntries, maintenance };
+    } finally {
+      // Promise.all rejects early; finish every owned read before closing its storage.
+      await Promise.allSettled(reads);
+      storage.close();
+    }
   }
 
   /** 记忆条目分页读取；runtime 驻留走 runtime，未驻留直连。 */
@@ -3250,8 +3257,12 @@ export class DesktopAgentManager {
     }
     const project = this.projects.requireProject(projectId);
     const storage = new MemoryStorage(project.path);
-    const result = await storage.listEntries({ offset, limit, includeArchived });
-    return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
+    try {
+      const result = await storage.listEntries({ offset, limit, includeArchived });
+      return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
+    } finally {
+      storage.close();
+    }
   }
 
   /** 冷态复用只读索引统计，不加载模型权重或创建向量投影。 */
