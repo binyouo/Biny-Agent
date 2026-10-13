@@ -1,3 +1,4 @@
+import { toVercelReasoning } from "../agent/core/vercelModelAdapter.js";
 import { streamText } from "ai";
 import { randomUUID } from "node:crypto";
 import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -71,7 +72,7 @@ export async function generateNativeText(
       signal?.throwIfAborted();
       return prepared.vercelModel === undefined
         ? await consumeInjectedText(prepared, messages, { ...options, signal, onRequestMetrics }, onProgress)
-        : await consumeVercelText(prepared, messages, { ...prepared.vercelOptions, ...options, signal, onRequestMetrics }, onProgress);
+        : await consumeVercelText(prepared, messages, { ...nativeTextRequestOptions(prepared, options), signal, onRequestMetrics }, onProgress);
     })();
     if (aborted !== undefined) return await Promise.race([result, aborted]);
     try {
@@ -91,6 +92,25 @@ export async function generateNativeText(
     if (idleTimer) clearTimeout(idleTimer);
     if (onAbort) signal?.removeEventListener("abort", onAbort);
   }
+}
+
+/** Caller-native options retain their existing whole-map precedence over per-request defaults. */
+function nativeTextRequestOptions(model: AgentModel, options: NativeTextGenerationOptions): NativeTextGenerationOptions {
+  const defaults = model.vercelOptions;
+  if (options.reasoning === undefined || !model.resolveTextReasoning) return { ...defaults, ...options };
+  const resolved = model.resolveTextReasoning(options.reasoning);
+  let providerOptions = defaults?.providerOptions;
+  if (resolved.providerOptions !== undefined) {
+    providerOptions = { ...providerOptions };
+    for (const [namespace, fields] of Object.entries(resolved.providerOptions)) {
+      const inherited = providerOptions[namespace];
+      // One namespace level only: replacing thinking also removes a stale enabled budget.
+      providerOptions[namespace] = typeof inherited === "object" && inherited !== null && !Array.isArray(inherited)
+        && typeof fields === "object" && fields !== null && !Array.isArray(fields)
+        ? { ...inherited, ...fields } : fields;
+    }
+  }
+  return { ...defaults, providerOptions, ...options, reasoning: resolved.reasoning };
 }
 
 async function consumeVercelText(
@@ -114,6 +134,7 @@ async function consumeVercelText(
       messages: toModelMessages(messages),
       abortSignal: options.signal,
       maxOutputTokens: options.maxOutputTokens,
+      ...(options.reasoning === undefined ? {} : { reasoning: toVercelReasoning(options.reasoning) }),
       providerOptions: options.providerOptions as LanguageModelV4CallOptions["providerOptions"],
       maxRetries: options.maxRetries ?? model.vercelOptions?.maxRetries ?? 0,
       // 接管 SDK 默认的 console.error；错误仍通过 fullStream 的 error 部件抛出。

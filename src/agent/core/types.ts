@@ -204,6 +204,8 @@ export interface AgentModel {
   modelId: string;
   /** 辅助文本请求在同一取消/超时边界内准备凭据，返回续期后的独立模型。 */
   prepareTextRequest?(signal?: AbortSignal): Promise<AgentModel>;
+  /** Pure, per-request capability projection; undefined reasoning means no supported override. */
+  resolveTextReasoning?(requested: NonNullable<ModelStreamOptions["reasoning"]>): Pick<ModelStreamOptions, "reasoning" | "providerOptions">;
   /** ProviderRuntime 创建的模型同时保留 Vercel 实例，辅助文本调用也复用同一条 provider 链路。 */
   vercelModel?: LanguageModelV4;
   /** 与 Vercel 实例配套的模型级默认参数；调用方显式传入的辅助参数优先。 */
