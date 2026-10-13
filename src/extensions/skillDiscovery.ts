@@ -1,5 +1,5 @@
 /**
- * SkillHub 的远程发现能力。
+ * 远程 Skill 仓库发现能力。
  *
  * 仓库扫描和 skills.sh 请求都在主进程执行；Renderer 只拿经过字段、URL 和大小限制的
  * 元数据。安装时重新解析 GitHub tree，并把技能目录原子写入 `~/.config/biny/skills`。
@@ -376,7 +376,7 @@ function encodeBranch(branch: string): string {
 
 async function fetchJson<T>(fetcher: typeof globalThis.fetch, url: string, maxBytes: number): Promise<T> {
   const response = await fetcher(url, {
-    headers: { accept: "application/vnd.github+json", "user-agent": "Biny SkillHub" },
+    headers: { accept: "application/vnd.github+json", "user-agent": "Biny" },
     signal: AbortSignal.timeout(15_000)
   });
   if (!response.ok) {
@@ -392,7 +392,7 @@ async function fetchJson<T>(fetcher: typeof globalThis.fetch, url: string, maxBy
 }
 
 async function fetchText(fetcher: typeof globalThis.fetch, url: string, maxBytes: number): Promise<string> {
-  const response = await fetcher(url, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "Biny SkillHub" } });
+  const response = await fetcher(url, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "Biny" } });
   if (!response.ok) {
     cancelErrorResponseBody(response);
     throw new Error(`远程文件返回 HTTP ${String(response.status)}。`);
@@ -401,7 +401,7 @@ async function fetchText(fetcher: typeof globalThis.fetch, url: string, maxBytes
 }
 
 async function fetchBytes(fetcher: typeof globalThis.fetch, url: string, maxBytes: number): Promise<Uint8Array> {
-  const response = await fetcher(url, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "Biny SkillHub" } });
+  const response = await fetcher(url, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "Biny" } });
   if (!response.ok) {
     cancelErrorResponseBody(response);
     throw new Error(`远程文件返回 HTTP ${String(response.status)}。`);

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
 
-test("closing the preview owner skips its destroyed renderer and restores appearance in the surviving window", { timeout: 20_000 }, async () => {
+test("appearance preview and owner close preserve transparent window backgrounds while restoring the surviving renderer", { timeout: 20_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-window-close-"));
   try {
     const entry = path.join(root, "main.mjs");
@@ -23,7 +23,7 @@ test("closing the preview owner skips its destroyed renderer and restores appear
         contents: `
           import assert from "node:assert/strict";
           import { app, BrowserWindow, ipcMain } from "electron";
-          import { sendToDesktopWindow } from "./src/desktop/electron/main/window.js";
+          import { sendToDesktopWindow, syncDesktopWindowAppearance } from "./src/desktop/electron/main/window.js";
           import { AppearancePreviewCoordinator } from "./src/desktop/appearanceCoordinator.js";
           import { DEFAULT_APPEARANCE } from "./src/appearance/preferences.js";
           process.on("uncaughtException", error => { console.error(error); app.exit(1); });
@@ -31,8 +31,14 @@ test("closing the preview owner skips its destroyed renderer and restores appear
           app.on("window-all-closed", () => {});
           app.whenReady().then(async () => {
             if (process.platform === "darwin") app.setActivationPolicy("prohibited");
-            const owner = new BrowserWindow({ show: false });
-            const survivor = new BrowserWindow({ show: false, webPreferences: { preload: ${JSON.stringify(preload)} } });
+            const owner = new BrowserWindow({ show: false, transparent: process.platform === "darwin", backgroundColor: "#00000000" });
+            const survivor = new BrowserWindow({ show: false, title: "Biny Quick Chat", transparent: process.platform === "darwin", backgroundColor: "#00000000", webPreferences: { preload: ${JSON.stringify(preload)} } });
+            // Electron 的读取接口不返回 alpha；记录边界实参，同时继续执行真实原生调用。
+            const appliedBackgrounds = new Map();
+            for (const window of [owner, survivor]) {
+              const setBackgroundColor = window.setBackgroundColor.bind(window);
+              window.setBackgroundColor = color => { appliedBackgrounds.set(window, color); setBackgroundColor(color); };
+            }
             const survivorContents = survivor.webContents;
             await owner.loadURL("about:blank");
             await survivor.loadURL("about:blank");
@@ -40,14 +46,32 @@ test("closing the preview owner skips its destroyed renderer and restores appear
             const coordinator = new AppearancePreviewCoordinator({
               read: () => saved,
               publish: snapshot => {
+                syncDesktopWindowAppearance(owner, snapshot);
                 sendToDesktopWindow(owner, "appearance", snapshot);
                 sendToDesktopWindow(survivor, "appearance", snapshot);
               }
             });
+            const checkBackgrounds = () => {
+              if (process.platform !== "darwin") return;
+              for (const window of [owner, survivor]) {
+                if (!window.isDestroyed()) {
+                  assert.equal(appliedBackgrounds.get(window), "#00000000", "appearance synchronization must preserve native transparency");
+                  assert.equal(window.getBackgroundColor(), "#000000");
+                }
+              }
+            };
+            coordinator.refresh();
+            checkBackgrounds();
             coordinator.preview(owner.webContents.id, { ...saved, themePreference: "dark" });
+            checkBackgrounds();
+            coordinator.committed();
+            checkBackgrounds();
+            coordinator.preview(owner.webContents.id, { ...saved, themePreference: "light" });
+            checkBackgrounds();
+            saved.fontPreference.size = 16;
             const received = new Promise(resolve => {
               ipcMain.on("appearance-received", (event, snapshot) => {
-                if (event.sender === survivorContents && snapshot.themePreference === "system") resolve(snapshot);
+                if (event.sender === survivorContents && snapshot.themePreference === "system" && snapshot.fontPreference.size === 16) resolve(snapshot);
               });
             });
             const ownerId = owner.webContents.id;
@@ -63,6 +87,7 @@ test("closing the preview owner skips its destroyed renderer and restores appear
             assert.deepEqual(coordinator.snapshot(), saved);
             assert.deepEqual(await received, saved);
             assert.equal(owner.isDestroyed(), true);
+            checkBackgrounds();
             sendToDesktopWindow(owner, "appearance", saved);
             sendToDesktopWindow(undefined, "appearance", saved);
             survivor.destroy();

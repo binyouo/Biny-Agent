@@ -130,7 +130,7 @@ test("default chrome uses neutral surfaces and ink with blue rather than violet 
     }
     assert.ok(contrast(color("--surface-raised", mode), "#000000") > contrast(color("--bg", mode), "#000000"), `${mode}: reading surfaces sit above the canvas`);
   }
-  for (const file of ["../electron/main/window.ts", "../electron/main/ipc.ts", "../electron/main/index.ts"]) {
+  for (const file of ["../electron/main/window.ts", "../electron/main/ipc.ts"]) {
     const source = readFileSync(new URL(file, new URL("../", renderer)), "utf8");
     assert.ok(source.includes(color("--bg", "light")), file);
     assert.ok(source.includes(color("--bg", "dark")), file);

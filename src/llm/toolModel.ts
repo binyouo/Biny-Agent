@@ -74,7 +74,7 @@ function toolModelAliases(config: AgentConfig): string[] {
   const registry = new ModelRegistry(config);
   if (config.toolModel) {
     const selected = registry.resolve(config.toolModel);
-    return selected?.source === "configured" && registry.isAvailable(selected) ? [selected.alias] : [];
+    return selected?.source === "configured" && config.providers[selected.providerAlias]?.type !== "acp" && registry.isAvailable(selected) ? [selected.alias] : [];
   }
   const providerOrder = Object.keys(toolModelPreferences);
   const priority = (provider: string, model: string): [number, number, number] => {
@@ -87,7 +87,7 @@ function toolModelAliases(config: AgentConfig): string[] {
   // 价格元数据变化不应悄悄切换后台模型。
   const candidates = Object.keys(config.models).flatMap((alias) => {
     const model = registry.resolve(alias);
-    return model && registry.isAvailable(model) ? [model] : [];
+    return model && config.providers[model.providerAlias]?.type !== "acp" && registry.isAvailable(model) ? [model] : [];
   }).sort((left, right) => {
     const a = priority(left.providerAlias, left.model.model);
     const b = priority(right.providerAlias, right.model.model);

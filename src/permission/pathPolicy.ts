@@ -33,7 +33,7 @@ export function matchingDeniedPath(target: string, rules: readonly string[], wor
 }
 
 // 新建文件也需要解析已有父目录的符号链接，不能在 ENOENT 时把整个路径当作未解析路径。
-function canonicalPath(value: string): string {
+export function canonicalPath(value: string): string {
   try {
     return realpathSync.native(value);
   } catch (error) {

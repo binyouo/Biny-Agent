@@ -83,7 +83,7 @@ interface SidebarProps {
   onRemoveProject(projectId: string): void;
   onSearch(): void;
   onTimeClues(): void;
-  onSettings(): void;
+  onSettings?(): void;
   onInsertCrystal(reference: string): void;
   onToggleSidebar(): void;
 }
@@ -636,7 +636,7 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <div className="biny-sidebar-footer">
-        <button aria-label="设置" className="biny-sidebar-settings-item" onClick={onSettings} title="设置" type="button">
+        <button aria-label="设置" className="biny-sidebar-settings-item" disabled={!onSettings} onClick={onSettings} title="设置" type="button">
           <Icon name="settings" size={16} />
           <span>设置</span>
         </button>

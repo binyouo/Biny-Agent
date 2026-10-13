@@ -1,5 +1,5 @@
 /**
- * SkillHub 与 Agent runtime 共用的 Skill 根目录约定。
+ * 技能目录与 Agent runtime 共用的 Skill 根目录约定。
  *
  * `engines` 只描述目录归属；真正的文件安全校验仍由各自的读取模块负责。
  */

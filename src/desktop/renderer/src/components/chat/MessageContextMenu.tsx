@@ -1,5 +1,5 @@
 /** 消息菜单中的工具、技能与记忆召回状态；浮层脱离菜单动画，指针穿越间隙时保留短暂关闭宽限。 */
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { autoUpdate, computePosition, flip, offset, shift } from "@floating-ui/dom";
 import { executionToolLabel } from "../../sessionTimeline.js";
@@ -11,23 +11,16 @@ const memoryRecallDetails: Record<string, string> = {
   model_mismatch: "未执行：索引与当前嵌入模型不匹配。请在记忆设置中重建索引。"
 };
 
-export function MessageContextMenu({ tools, skills, skillSelection, skillLabels, descriptions, memoryRecallDegraded }: {
+export function MessageContextMenu({ tools, skills, skillLabels, descriptions, memoryRecallDegraded }: {
   tools: readonly string[];
   skills: readonly string[];
-  skillSelection?: "auto" | "all" | "none" | readonly string[];
   skillLabels?: ReadonlyMap<string, string>;
   descriptions?: ReadonlyMap<string, string>;
   memoryRecallDegraded?: string;
 }): React.JSX.Element {
   // Skill 工具只是加载通道；用户看到的是它加载的 Skill，而不是该内部工具名。
   const toolNames = [...new Set(tools)].filter((name) => name.trim() && name !== "Skill" && name !== "skill_call");
-  // 自动选中的 SKILL.md 已注入本轮 prompt；技能列按本轮选择展示，不要求额外发出 Skill 工具调用。
-  const selectedSkills = skillSelection === "all" || skillSelection === "auto"
-    ? [...new Set(skillLabels?.values() ?? [])]
-    : Array.isArray(skillSelection)
-      ? skillSelection.map((name) => skillNameForDisplay(name, skillLabels)).filter((name): name is string => name !== undefined)
-      : [];
-  const skillNames = [...new Set([...selectedSkills, ...skills]
+  const skillNames = [...new Set(skills
     .map((name) => skillNameForDisplay(name, skillLabels))
     .filter((name): name is string => name !== undefined && name.trim().length > 0))];
   const id = useId();

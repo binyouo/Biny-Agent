@@ -13,7 +13,7 @@ function deferred<T>() {
 }
 
 function catalog(name = ""): DesktopSkillCatalogSnapshot {
-  return { skills: [], inventory: [], unmanagedSkills: [], managedSources: [], warnings: [], diagnostics: [],
+  return { skills: [], inventory: [], unmanagedSkills: [], warnings: [], diagnostics: [],
     plugins: name ? [{ id: name, name, path: `.biny/plugins/${name}`, scope: "project", status: "disabled",
       moduleCount: 1, managed: true, enabled: false }] : [] };
 }

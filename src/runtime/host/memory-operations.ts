@@ -29,6 +29,7 @@ export async function executeRuntimeHostMemoryOperation(
   const memory = commands.agent.getLocalMemory();
   const action = requiredString(payload.action, "action");
   if (action === "overview") {
+    if (payload.summaryOnly === true) return { overview: await memory.getOverview() };
     // 各读取来自独立原子快照；允许它们跨越一次写入，避免为 UI 读请求占用 Runtime。
     const [overview, entries, maintenance] = await Promise.all([
       memory.getOverview(),

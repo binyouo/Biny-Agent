@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
+import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import type { AgentSessionEvent } from "../src/agent/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -39,7 +40,10 @@ const model: AgentModel = {
   provider: "test", modelId: "test",
   stream: async (context) => {
     assert.equal(selectionReady, true, "主模型必须等待能力筛选完成");
-    assert.deepEqual(preparationStages.filter((stage) => stage !== "ready"), ["memory", "skills", "tools", "workspace", "waiting"]);
+    const slashTurn = providerCalls > 0;
+    assert.deepEqual(preparationStages.filter((stage) => stage !== "ready"), slashTurn
+      ? ["memory", "workspace", "waiting"]
+      : ["memory", "skills", "tools", "workspace", "waiting"]);
     assert.deepEqual(context.tools, []);
     assert.match(context.systemPrompt ?? "", /选中 Skill 正文首轮标记/u);
     assert.match(JSON.stringify(context.messages), /文件记忆首轮标记/u);
@@ -67,10 +71,16 @@ const agent = new AgentSession({
   toolRegistry, permissionManager: new PermissionManager(config.permission),
   skillPrompt: async (selection) => {
     if (selection === "none") return undefined;
-    assert.deepEqual(selection, ["selected-skill"]);
+    assert.ok(Array.isArray(selection) && selection.includes("selected-skill"));
     return "# Skill: selected-skill\n\n选中 Skill 正文首轮标记";
   },
-  selectCapabilities: async ({ signal, history, input }) => {
+  skillNames: (selection) => selection === "none" || !selection?.includes("selected-skill") ? [] : ["selected-skill"],
+  selectCapabilities: async ({ signal, history, input, selection }) => {
+    if (input === "/skills:selected-skill") return preselectCapabilities({
+      input, config, history, previousTools: [], models: [], tools: [],
+      skills: [{ id: "selected-skill", name: "selected-skill", description: "Explicitly load a skill" }],
+      selection, signal
+    });
     assert.ok(history.every((message) => message.content !== input), "当前消息不重复进入筛选历史");
     if (cancelSelection) {
       await new Promise<void>((_resolve, reject) => {
@@ -104,13 +114,34 @@ try {
   const events = await readSessionEvents(recorder.filePath);
   assert.equal(events.filter((event) => event.type === "user_message").length, 1);
   assert.ok(events.some((event) => event.type === "message_metadata" && event.metadata.capabilitySelection));
+  assert.deepEqual(events.find((event) => event.type === "message_metadata" && event.messageId === "first-id" && Array.isArray(event.metadata.loadedSkills))?.metadata.loadedSkills, ["selected-skill"], "only prompt-loaded skill names persist on the message");
+  assert.deepEqual(firstEvents.find((event) => event.type === "context.updated")?.type === "context.updated" ? firstEvents.find((event) => event.type === "context.updated")?.context.loadedSkills : undefined, ["selected-skill"], "the live context update publishes the same loaded list");
+
+  preparationStages.length = 0;
+  const mergedEvents: AgentSessionEvent[] = [];
+  for await (const event of agent.prompt("/skills:selected-skill", {
+    emotionAnalysis: false, messageId: "merged-id", capabilitySelection: { tools: [], skills: ["manual-skill"] }
+  })) {
+    mergedEvents.push(event);
+    if (event.type === "preparation.updated") preparationStages.push(event.stage);
+  }
+  assert.equal(providerCalls, 2, "a slash-selected skill reaches the main model through a manual capability selection");
+  const mergedContext = mergedEvents.find((event) => event.type === "context.updated");
+  assert.deepEqual(mergedContext?.type === "context.updated" ? mergedContext.context.capabilitySelection : undefined, {
+    tools: [], skills: ["manual-skill", "selected-skill"]
+  }, "the resolved skill selection combines the manually selected and explicitly named skills");
+  assert.deepEqual(mergedContext?.type === "context.updated" ? mergedContext.context.loadedSkills : undefined, ["selected-skill"]);
+  await recorder.flush();
+  const mergedSessionEvents = await readSessionEvents(recorder.filePath);
+  const mergedMetadata = mergedSessionEvents.find((event) => event.type === "message_metadata" && event.messageId === "merged-id" && Array.isArray(event.metadata.loadedSkills));
+  assert.deepEqual(mergedMetadata?.type === "message_metadata" ? mergedMetadata.metadata.loadedSkills : undefined, ["selected-skill"], "the selected skill remains the loaded-skill state persisted for the message");
 
   cancelSelection = true;
   const controller = new AbortController();
   for await (const event of agent.prompt("cancel", { emotionAnalysis: false, messageId: "cancel-id", abortSignal: controller.signal })) {
     if (event.type === "preparation.updated" && event.stage === "workspace") controller.abort();
   }
-  assert.equal(providerCalls, 1, "取消准备后不能发起主请求");
+  assert.equal(providerCalls, 2, "取消准备后不能发起主请求");
   await recorder.flush();
   const cancelledEvents = await readSessionEvents(recorder.filePath);
   assert.equal(cancelledEvents.some((event) => event.type === "message_metadata" && event.messageId === "cancel-id"), false, "取消后不追加筛选结果");
@@ -118,7 +149,7 @@ try {
   cancelSelection = false;
   const schemaEvents: AgentSessionEvent[] = [];
   for await (const event of agent.prompt("broken-schema", { emotionAnalysis: false, messageId: "broken-id" })) schemaEvents.push(event);
-  assert.equal(providerCalls, 1, "schema 本地校验失败不能发起首轮主模型请求");
+  assert.equal(providerCalls, 2, "schema 本地校验失败不能发起首轮主模型请求");
   assert.equal(schemaEvents.some((event) => event.type === "tool.started"), false);
   const schemaError = schemaEvents.find((event) => event.type === "error");
   assert.match(schemaError?.type === "error" ? schemaError.message : "", /Tool broken.*parameters\.properties\.payload\.required/u);

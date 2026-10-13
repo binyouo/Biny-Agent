@@ -38,6 +38,13 @@ assert.deepEqual(await preselectCapabilities({ ...options, input: "你好", prev
 answer = "invalid JSON";
 assert.deepEqual(await preselectCapabilities(options), { tools: ["Read", "Write", "ToolSearch"], skills: [] });
 assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skill:review" }), { tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource", "skill_lookup"], skills: ["review-id"] });
+assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skills:review" }), { tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource", "skill_lookup"], skills: ["review-id"] }, "the Composer plural slash command loads the named skill without the auxiliary selector");
+assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skills:review", selection: { tools: ["Read"], skills: ["other-id"] } }), {
+  tools: ["Read"], skills: ["other-id", "review-id"]
+}, "an explicitly named skill is added to a manual skill selection instead of silently disappearing");
+assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skills:review", selection: { tools: "auto", skills: "none" } }), {
+  tools: ["Read", "Write", "ToolSearch"], skills: "none"
+}, "explicitly disabled skills stay disabled even when the prompt names one");
 assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "$review", previousTools: [], selection: { tools: "auto", skills: "none" } }), { tools: ["Read", "Write", "ToolSearch"], skills: "none" }, "显式关闭技能不能被点名检测重新启用");
 const controller = new AbortController();
 controller.abort();
