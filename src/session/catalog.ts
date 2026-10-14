@@ -184,52 +184,60 @@ export async function updateSessionCatalogMetadata(
   workspaceRoot: string,
   sessionId: string,
   patch: SessionCatalogMetadataPatch,
-  expectedRevision?: string
+  expectedRevision?: string,
+  options: { indexRefresh?: "background" | "wait" } = {}
 ): Promise<SessionCatalogRecord> {
   assertSessionId(sessionId);
   const directory = await ensureCatalogDirectory(workspaceRoot);
   const target = catalogFilePath(directory, sessionId);
-  return await withCatalogRecordLock(directory, sessionId, async () => {
-    // expectedRevision 的校验和 patch 合并必须基于锁内重读的版本，否则两个 Desktop
-    // 进程可能同时通过校验，再用各自在锁外读到的旧对象互相覆盖。
-    const existing = await readCatalogFile(target);
-    assertExpectedRevision(sessionId, existing, expectedRevision);
-    const summary = existing === undefined
-      ? await readSessionSummary(workspaceRoot, sessionId).catch((error: unknown) => {
-          if (isNotFound(error)) return undefined;
-          throw error;
-        })
-      : undefined;
-    if (!summary && !existing) throw new Error(`Session not found: ${sessionId}`);
-    const now = new Date().toISOString();
-    const base = existing ?? {
-      version: catalogVersion,
-      sessionId,
-      rootSessionId: sessionId,
-      createdAt: summary?.createdAt ?? now,
-      updatedAt: summary?.updatedAt ?? now
-    } satisfies SessionCatalogRecord;
-    const next: SessionCatalogRecord = {
-      ...base,
-      title: patch.title === undefined ? base.title : patch.title,
-      pinned: patch.pinned === undefined ? base.pinned : patch.pinned,
-      archived: patch.archived === undefined ? base.archived : patch.archived,
-      unread: patch.unread === undefined || patch.unread === false && base.unread === undefined
-        ? base.unread
-        : patch.unread,
-      labels: patch.labels === undefined ? base.labels : [...patch.labels],
-      personalization: patch.personalization === undefined
-        ? base.personalization
-        : cloneChatPersonalizationOverride(patch.personalization),
-      isolation: patch.isolation === undefined ? base.isolation : patch.isolation,
-      updatedAt: now
-    };
-    assertCatalogRecord(next);
-    if (existing && catalogMetadataEquals(existing, next)) return existing;
-    await writeAtomically(target, `${JSON.stringify(next)}\n`);
-    void refreshSessionIndex(workspaceRoot);
-    return next;
-  });
+  const indexRefresh: { completion?: Promise<void> } = {};
+  try {
+    return await withCatalogRecordLock(directory, sessionId, async () => {
+      // expectedRevision 的校验和 patch 合并必须基于锁内重读的版本，否则两个 Desktop
+      // 进程可能同时通过校验，再用各自在锁外读到的旧对象互相覆盖。
+      const existing = await readCatalogFile(target);
+      assertExpectedRevision(sessionId, existing, expectedRevision);
+      const summary = existing === undefined
+        ? await readSessionSummary(workspaceRoot, sessionId).catch((error: unknown) => {
+            if (isNotFound(error)) return undefined;
+            throw error;
+          })
+        : undefined;
+      if (!summary && !existing) throw new Error(`Session not found: ${sessionId}`);
+      const now = new Date().toISOString();
+      const base = existing ?? {
+        version: catalogVersion,
+        sessionId,
+        rootSessionId: sessionId,
+        createdAt: summary?.createdAt ?? now,
+        updatedAt: summary?.updatedAt ?? now
+      } satisfies SessionCatalogRecord;
+      const next: SessionCatalogRecord = {
+        ...base,
+        title: patch.title === undefined ? base.title : patch.title,
+        pinned: patch.pinned === undefined ? base.pinned : patch.pinned,
+        archived: patch.archived === undefined ? base.archived : patch.archived,
+        unread: patch.unread === undefined || patch.unread === false && base.unread === undefined
+          ? base.unread
+          : patch.unread,
+        labels: patch.labels === undefined ? base.labels : [...patch.labels],
+        personalization: patch.personalization === undefined
+          ? base.personalization
+          : cloneChatPersonalizationOverride(patch.personalization),
+        isolation: patch.isolation === undefined ? base.isolation : patch.isolation,
+        updatedAt: now
+      };
+      assertCatalogRecord(next);
+      if (existing && catalogMetadataEquals(existing, next)) return existing;
+      await writeAtomically(target, `${JSON.stringify(next)}\n`);
+      indexRefresh.completion = refreshSessionIndex(workspaceRoot);
+      return next;
+    });
+  } finally {
+    // Join only after the lock unwinds, including commit/close failure. Derived
+    // index failures must never replace the primary metadata result or error.
+    if (options.indexRefresh === "wait") await indexRefresh.completion?.catch(() => undefined);
+  }
 }
 
 export async function readSessionCatalogRecord(
