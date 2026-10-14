@@ -260,7 +260,7 @@ export function planStatus(options: PlanToolOptions, graphId: string, sessionId:
   const nodes = graph.nodes.map((node) => {
     const task = node.taskRunId === undefined ? undefined : options.taskRuns.get(node.taskRunId);
     const attempt = task?.attempts.at(-1);
-    const approval = pendingTaskVerificationApproval(attempt?.verification);
+    const approval = task?.status === "cancelled" ? undefined : pendingTaskVerificationApproval(attempt?.verification);
     const approvalCheck = approval === undefined || typeof attempt?.verification !== "object" || attempt.verification === null
       ? undefined
       : (attempt.verification as { checks?: Array<{ checkId?: string; command?: string; cwd?: string; reason?: string }> }).checks

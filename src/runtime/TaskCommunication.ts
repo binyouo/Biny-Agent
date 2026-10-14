@@ -175,7 +175,7 @@ export class TaskCommunication {
     const stored = attempt?.artifacts as { output?: unknown } | undefined;
     const failure = attempt?.failure as { message?: unknown; failureClass?: unknown } | undefined;
     const state = mailbox(task, attempt?.artifacts);
-    const approval = pendingTaskVerificationApproval(attempt?.verification);
+    const approval = task.status === "cancelled" ? undefined : pendingTaskVerificationApproval(attempt?.verification);
     const check = approval ? (attempt?.verification as { checks?: Array<{ checkId: string; command?: string; cwd?: string; reason?: string }> } | undefined)?.checks?.find((item) => item.checkId === approval.checkId) : undefined;
     return {
       taskRunId, sessionId: this.sessionId, attemptId: attempt?.attemptId,

@@ -1077,6 +1077,8 @@ async function initializeCommandRuntime(
     if (!current) throw new Error(`TaskRun ${taskRunId} does not exist.`);
     if (isTaskRunTerminal(current.status)) return current;
     const cancelled = taskRuns.transition(taskRunId, "cancelled", { attemptId: current.attempts.at(-1)?.attemptId });
+    // Parked verification has no live closure left to project its cancellation.
+    if (current.status === "needs_approval") graphs.projectTaskClosure(taskRunId, { status: "cancelled", reason });
     taskCommunication.notify(taskRunId);
     return cancelled;
   };
@@ -1534,7 +1536,7 @@ function closureStatusForTurn(status: AgentTurnOutcome["status"]): TaskClosureRe
 function taskRunToolResult(task: TaskRunWithAttempts | undefined, result?: TaskClosureResult): Record<string, unknown> {
   if (!task) throw new Error("TaskRun disappeared before its result was projected.");
   const attempt = task.attempts.at(-1);
-  const approval = pendingTaskVerificationApproval(attempt?.verification);
+  const approval = task.status === "cancelled" ? undefined : pendingTaskVerificationApproval(attempt?.verification);
   const pendingCheck = approval === undefined || typeof attempt?.verification !== "object" || attempt.verification === null
     ? undefined
     : (attempt.verification as { checks?: Array<{ checkId?: string; command?: string; cwd?: string; reason?: string }> }).checks

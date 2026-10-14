@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { test, type TestContext } from "node:test";
 import { defaultConfig, type AgentConfig } from "../src/config/schema.js";
 import type { AgentConfigStore } from "../src/config/store.js";
 import { createPlanTools } from "../src/extensions/plan.js";
@@ -31,6 +32,12 @@ await testNaturalLanguagePlanStartAndInternalWakeTurn();
 await testHostPlanApprovalRestartAndDelivery();
 await testHostPlanApprovalRestartAndDelivery(true);
 await testHostPlanApprovalRestartAndDelivery(false, true);
+await test("cancelling parked verification projects and delivers the Graph outcome", async (t) => {
+  await testHostPlanApprovalRestartAndDelivery(false, false, t);
+});
+await test("cancelled approval is historical evidence, not an actionable request", async (t) => {
+  await testHostPlanApprovalRestartAndDelivery(false, false, t, true);
+});
 await testHostReadOnlyReportPlan();
 console.log("plan execute tests passed");
 
@@ -281,7 +288,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
 }
 
 /** 真实 Host/会话/工具/文件与审批链路，仅替换不稳定的模型协议边界。 */
-async function testHostPlanApprovalRestartAndDelivery(planning = false, independent = false): Promise<void> {
+async function testHostPlanApprovalRestartAndDelivery(planning = false, independent = false, cancelParked?: TestContext, pausedCancellation = false): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-plan-host-"));
   const originalFetch = globalThis.fetch;
   const originalAgentDir = process.env.BINY_AGENT_DIR;
@@ -296,6 +303,11 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
   const reports: string[] = [];
   const schedulingEvents: string[] = [];
   const evidenceTaskIds: string[] = [];
+  const taskStatusReads: Array<{ status: string; approval?: { approvalId: string } }> = [];
+  let approvalPlan = "";
+  let cancelledTaskRunId = "";
+  let finishCancellation!: () => void;
+  const finishCancellationGate = new Promise<void>((resolve) => { finishCancellation = resolve; });
   const check = (file: string) => `node -e "const fs=require('node:fs');if(fs.readFileSync('${file}','utf8')!=='good')process.exit(1);fs.appendFileSync('.verification-state/checks','${file}\\n')"`;
   const nodeContract = (file: string) => ({
     objective: `${file} contains good`,
@@ -310,7 +322,9 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     const system = textContent(body.messages[0]?.content);
     const last = body.messages.at(-1)!;
     const lastText = textContent(last.content);
-    if (system.includes("tool search assistant")) return streamText(JSON.stringify({ tools: [planning ? "PlanDraft" : "PlanStart"] }));
+    if (system.includes("tool search assistant")) {
+      return streamText(JSON.stringify({ tools: [pausedCancellation && cancelledTaskRunId ? "TaskStatus" : planning ? "PlanDraft" : "PlanStart"] }));
+    }
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
     if (system.includes("选择需要的技能")) return streamText('{"skillIds":[]}');
     if (system.includes("focused, bounded worker inside Biny")) {
@@ -333,15 +347,44 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     }
     if (last.role === "tool" && last.tool_call_id === "inspect-plan") {
       if (lastText.includes('"approvalId"')) {
+        if (cancelParked) {
+          approvalPlan = lastText;
+          const status = JSON.parse(lastText) as { pendingApprovals: Array<{ taskRunId: string }> };
+          return streamToolCall("inspect-approval-task", "TaskStatus", { taskRunId: status.pendingApprovals[0]!.taskRunId });
+        }
         reports.push(lastText);
         schedulingEvents.push("approval-report");
         return streamText(`等待审批：${lastText}`);
+      }
+      if (cancelParked) {
+        const status = JSON.parse(lastText) as { nodes: Array<{ taskStatus?: string; taskRunId?: string }> };
+        const cancelled = status.nodes.find((node) => node.taskStatus === "cancelled");
+        assert.ok(cancelled?.taskRunId, "the fresh supervision turn must inspect the cancelled predecessor");
+        return streamToolCall("inspect-cancelled-task", "TaskStatus", { taskRunId: cancelled.taskRunId });
       }
       assert.match(lastText, /settled/u);
       const status = JSON.parse(lastText) as { nodes: Array<{ taskRunId: string }> };
       evidenceTaskIds.push(...status.nodes.map((node) => node.taskRunId));
       return streamToolCall(`inspect-evidence-${evidenceTaskIds.length}`, "TaskStatus", { taskRunId: evidenceTaskIds.shift()! });
     }
+    if (pausedCancellation && cancelledTaskRunId && ((last.role === "user" && lastText.endsWith("Read the cancelled verification task."))
+      || (last.role === "tool" && last.tool_call_id === "find-cancelled-task"))) {
+      if (!body.tools?.some((tool) => tool.function?.name === "TaskStatus")) {
+        return streamToolCall("find-cancelled-task", "ToolSearch", { query: "TaskStatus" });
+      }
+      return streamToolCall("probe-cancelled-task", "TaskStatus", { taskRunId: cancelledTaskRunId });
+    }
+    if (last.role === "tool" && ["inspect-approval-task", "inspect-cancelled-task", "probe-cancelled-task"].includes(last.tool_call_id ?? "")) {
+      taskStatusReads.push(JSON.parse(lastText) as { status: string; approval?: { approvalId: string } });
+      if (last.tool_call_id === "probe-cancelled-task") return streamText("Cancelled task inspected.");
+      reports.push(last.tool_call_id === "inspect-approval-task" ? approvalPlan : lastText);
+      if (last.tool_call_id === "inspect-cancelled-task") {
+        await finishCancellationGate;
+        return streamToolCall("finish-cancelled-plan", "PlanUpdate", { graphId, action: "finish", outcome: "blocked", summary: "The predecessor was cancelled while awaiting verification approval; dependent work was not executed." });
+      }
+      return streamText("Verification needs approval.");
+    }
+    if (last.role === "tool" && last.tool_call_id === "finish-cancelled-plan") return streamText("Plan blocked after the predecessor was cancelled.");
     if (last.role === "tool" && last.tool_call_id?.startsWith("inspect-evidence-")) {
       assert.match(lastText, /passed/u);
       if (evidenceTaskIds.length) return streamToolCall(`inspect-evidence-${evidenceTaskIds.length}`, "TaskStatus", { taskRunId: evidenceTaskIds.shift()! });
@@ -442,6 +485,108 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     assert.match(reports[0]!, new RegExp(approval.approvalId));
     assert.ok(reports[0]!.includes(JSON.stringify(check("first.txt")).slice(1, -1)), reports[0]);
     await client.waitForIdle();
+    if (cancelParked) {
+      // The real Worker/verification closure has returned; no active completion can repair cancellation.
+      await waitUntil(() => !commands!.hasBackgroundWork() && commands!.graphs.listSupervisorWakes().length === 0);
+      const before = commands!.graphs.inspectGraph(graphId);
+      const predecessor = before.nodes.find((node) => node.taskRunId === first.taskRunId)!;
+      assert.equal(predecessor.status, "running");
+      assert.equal(first.status, "needs_approval");
+      const originalEvidence = structuredClone(first.attempts[0]!.verification);
+      const originalArtifacts = structuredClone(first.attempts[0]!.artifacts);
+      const beforePlan = (await client.planList(sessionId!)).find((plan) => plan.graphId === graphId)!;
+      assert.equal(beforePlan.pendingApprovals[0]?.approvalId, approval.approvalId);
+      assert.equal((await client.taskInspect(first.taskRunId, sessionId!)).approval?.approvalId, approval.approvalId);
+      assert.equal(taskStatusReads[0]?.status, "needs_approval");
+      assert.equal(taskStatusReads[0]?.approval?.approvalId, approval.approvalId);
+
+      const reason = "Cancel this approval-waiting predecessor.";
+      cancelledTaskRunId = first.taskRunId;
+      if (pausedCancellation) assert.equal((await client.graphPause(graphId)).accepted, true);
+      assert.equal((await client.taskCancel(first.taskRunId, reason)).accepted, true);
+      const cancelled = commands!.taskRuns.get(first.taskRunId)!;
+      assert.equal(cancelled.status, "cancelled");
+      if (pausedCancellation) {
+        // Independent subtests expose all three derived-approval failures on the same baseline.
+        await cancelParked.test("PlanStatus no longer offers approval for the cancelled task", async () => {
+          const plan = (await client!.planList(sessionId!)).find((item) => item.graphId === graphId)!;
+          assert.deepEqual(plan.pendingApprovals, []);
+          assert.equal(plan.nodes.find((node) => node.nodeId === predecessor.nodeId)?.approval, undefined);
+        });
+        await cancelParked.test("task.inspect no longer offers approval while preserving verification proof", async () => {
+          const inspection = await client!.taskInspect(first.taskRunId, sessionId!);
+          assert.equal(inspection.status, "cancelled");
+          assert.equal(inspection.approval, undefined);
+          assert.deepEqual(inspection.verification, originalEvidence);
+        });
+        await cancelParked.test("model-visible TaskStatus no longer offers the cancelled approval", async () => {
+          assert.equal((await client!.submitPrompt("Read the cancelled verification task.").completion).status, "completed");
+          assert.equal(taskStatusReads[1]?.status, "cancelled");
+          assert.equal(taskStatusReads[1]?.approval, undefined);
+        });
+        assert.deepEqual(commands!.taskRuns.get(first.taskRunId)?.attempts[0]?.verification, originalEvidence);
+        assert.deepEqual(commands!.taskRuns.get(first.taskRunId)?.attempts[0]?.artifacts, originalArtifacts);
+        assert.equal(pendingTaskVerificationApproval(originalEvidence)?.approvalId, approval.approvalId);
+        assert.equal(commands!.graphs.inspectGraph(graphId).status, "paused", "a cancelled task cannot unpause its graph");
+        assert.deepEqual(commands!.graphs.readyNodes(graphId), []);
+        assert.equal(commands!.graphs.listSupervisorWakes().length, 0);
+        assert.deepEqual(workerWrites, ["first.txt"]);
+        await assert.rejects(readFile(path.join(root, ".verification-state/checks"), "utf8"), { code: "ENOENT" });
+        return;
+      }
+      const projected = commands!.graphs.inspectGraph(graphId);
+      assert.equal(projected.nodes.find((node) => node.nodeId === predecessor.nodeId)?.status, "blocked",
+        "cancelling parked verification must project the terminal TaskRun outcome without a live closure");
+      assert.equal(projected.status, "running", "the supervisor retains final graph disposition");
+      assert.equal(projected.nodes.find((node) => node.nodeKey === "consume")?.status, "pending");
+      assert.deepEqual(commands!.graphs.readyNodes(graphId), [], "cancelled evidence cannot release dependencies");
+      assert.equal(commands!.graphs.claimIntent(graphId, projected.nodes.find((node) => node.nodeKey === "consume")!.nodeId), undefined);
+      assert.equal((projected.nodes.find((node) => node.nodeId === predecessor.nodeId)?.artifact as { error?: string }).error, reason);
+      assert.ok(projected.revision > before.revision);
+      assert.equal(commands!.graphs.supervisorCheckpoint(projected), "needs_attention");
+      assert.deepEqual(cancelled.attempts[0]?.verification, originalEvidence, "cancellation preserves stored approval proof");
+      assert.deepEqual(cancelled.attempts[0]?.artifacts, originalArtifacts);
+      assert.equal(cancelled.attempts.length, 1);
+      assert.equal(pendingTaskVerificationApproval(cancelled.attempts[0]?.verification)?.approvalId, approval.approvalId,
+        "the evidence helper remains unchanged; only actionable projections suppress cancelled approvals");
+      const cancelledPlan = (await client.planList(sessionId!)).find((plan) => plan.graphId === graphId)!;
+      assert.deepEqual(cancelledPlan.pendingApprovals, []);
+      assert.equal(cancelledPlan.nodes.find((node) => node.nodeId === predecessor.nodeId)?.approval, undefined);
+      const inspection = await client.taskInspect(first.taskRunId, sessionId!);
+      assert.equal(inspection.status, "cancelled");
+      assert.equal(inspection.approval, undefined);
+      assert.deepEqual(inspection.verification, originalEvidence);
+      await waitUntil(() => reports.length === 2, 15_000);
+      // The fresh model turn has inspected the cancellation, but its PlanUpdate waits for assertions below.
+      assert.equal(taskStatusReads[1]?.status, "cancelled");
+      assert.equal(taskStatusReads[1]?.approval, undefined, "TaskStatus must not advertise the cancelled approval");
+      const checkpointEvents = commands!.graphs.listGraphEvents(graphId, { limit: 1000 }).events
+        .filter((event) => event.eventType === "graph.supervisor_wake.created"
+          && (event.payload as { graphRevision?: number }).graphRevision === projected.revision);
+      assert.equal(checkpointEvents.length, 1, "cancellation queues one current checkpoint");
+      const stableGraph = commands!.graphs.inspectGraph(graphId);
+      const stableGraphEvents = commands!.graphs.listGraphEvents(graphId, { limit: 1000 }).events;
+      const stableTaskEvents = commands!.taskRuns.events(first.taskRunId);
+      assert.equal((await client.taskCancel(first.taskRunId, "Repeated cancellation.")).accepted, true);
+      assert.deepEqual(commands!.graphs.inspectGraph(graphId), stableGraph);
+      assert.deepEqual(commands!.graphs.listGraphEvents(graphId, { limit: 1000 }).events, stableGraphEvents);
+      assert.deepEqual(commands!.taskRuns.events(first.taskRunId), stableTaskEvents);
+      assert.deepEqual(commands!.taskRuns.get(first.taskRunId), cancelled);
+      assert.deepEqual(workerWrites, ["first.txt"], "no repeat Worker and no dependent Worker");
+      await assert.rejects(readFile(path.join(root, ".verification-state/checks"), "utf8"), { code: "ENOENT" });
+      finishCancellation();
+      await waitUntil(() => commands!.graphs.inspectGraph(graphId).status === "blocked"
+        && commands!.graphs.listSupervisorWakes().length === 0, 15_000);
+      await client.waitForIdle();
+      const rejectedApproval = await client.taskApprove(first.taskRunId, approval.approvalId);
+      assert.equal(rejectedApproval.accepted, false, "the retained historical approval cannot restart a cancelled task");
+      assert.match(rejectedApproval.reason ?? "", /not waiting for verification approval/u);
+      assert.deepEqual(commands!.taskRuns.get(first.taskRunId), cancelled);
+      const events = await readSessionEvents(sessionFilePath(root, sessionId!));
+      assert.ok(events.some((event) => event.type === "tool_call" && event.tool === "PlanUpdate"
+        && (event.args as { outcome?: string }).outcome === "blocked"), "the real supervision turn finishes via PlanUpdate");
+      return;
+    }
     await client.close();
     client = undefined;
     await host.close();
@@ -470,6 +615,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     assert.equal(events.filter((event) => event.type === "user_message" && !event.auditOnly).length, 1);
     assert.ok(events.some((event) => event.type === "assistant_message" && event.content.includes("计划验收通过")));
   } finally {
+    finishCancellation();
     await client?.close();
     await host?.close();
     globalThis.fetch = originalFetch;
