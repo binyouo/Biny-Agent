@@ -120,6 +120,7 @@ interface ToolCallExecutionOptions {
   taskStatusResultIsData?: boolean;
   /** Model projection may archive a failure; retain its authoritative outcome. */
   onResultStatus?: (status: ToolExecutionResultStatus) => void;
+  onActualResult?: (result: unknown) => void;
 }
 
 /**
@@ -331,6 +332,37 @@ export class ToolExecutionCoordinator {
         if (options?.script) this.codeModeToolChecks.set(tool, isCurrent);
         return tool;
       });
+  }
+
+  /** Execute an MCP capability requested by a loaded host plugin through the same policy path as model calls. */
+  async executePluginMcpTool(
+    serverName: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    toolCallId: string,
+    signal?: AbortSignal
+  ): Promise<AgentToolResult> {
+    const registration = this.context.toolRegistry.listEntries().find((entry) => entry.source === "mcp"
+      && entry.tool.mcpIdentity?.serverName === serverName
+      && entry.tool.mcpIdentity.toolName === toolName);
+    if (!registration) throw new Error(`MCP tool ${serverName}/${toolName} is not registered.`);
+    if (getToolExposure(registration.tool) === "hidden") {
+      throw new Error(`MCP tool ${serverName}/${toolName} is hidden by its configured exposure policy.`);
+    }
+    let resultStatus: ToolExecutionResultStatus | undefined;
+    let actualResult: unknown;
+    await this.trackExecution(this.execute(registration.tool, args, {
+      toolCallId,
+      abortSignal: signal,
+      onResultStatus: (status) => { resultStatus = status; },
+      onActualResult: (value) => { actualResult = value; }
+    }, registration.source), toolCallId);
+    const isError = resultStatus !== "succeeded" || Boolean(failedToolResultMessage(actualResult));
+    return {
+      content: [{ type: "text", text: serializeToolResult(actualResult, { context: "mcp-result" }) }],
+      details: actualResult,
+      isError
+    };
   }
 
   /** Outer Code Mode admission is separate from the child scheduler: a cell
@@ -709,6 +741,7 @@ export class ToolExecutionCoordinator {
             outcomeUnknownReason
           }
         );
+        options.onActualResult?.(result);
         options.onResultStatus?.(status);
         return modelResult;
       })();

@@ -136,6 +136,8 @@ export interface Tool<TArgs = unknown, TResult = unknown> {
   /** 暴露控制声明与发现入口，不替代权限或脚本准入检查；省略时为 direct。 */
   exposure?: ToolExposure;
   namespace?: ToolNamespace;
+  /** Original remote identity for MCP tools; local tool names may be normalized or hashed. */
+  mcpIdentity?: { serverName: string; toolName: string };
   source?: ToolSource;
   capability?: string;
   risk?: ToolRisk;

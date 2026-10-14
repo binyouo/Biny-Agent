@@ -738,7 +738,7 @@ export class McpToolHost {
     if (managed.local) {
       const tool = managed.local.tools.find(tool => tool.name === definition.name);
       if (!tool) throw new Error(`Unknown local MCP tool: ${definition.name}`);
-      return tool;
+      return { ...tool, mcpIdentity: { serverName: managed.name, toolName: definition.name } };
     }
     const signature = mcpMetadataSignature({ definition, config: managed.config, instructions });
     const cached = managed.toolProxies.get(definition.name);
@@ -1143,6 +1143,7 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
     schema: z.unknown(),
     source: "mcp",
     capability: `mcp:${serverName}`,
+    mcpIdentity: { serverName, toolName: definition.name },
     exposure: resolveMcpToolExposure(serverConfig, definition.name),
     namespace: { name: serverName, description: serverConfig.description, instructions: instructions ? truncateUtf8(instructions, maxInstructionBytes) : undefined },
     risk,
