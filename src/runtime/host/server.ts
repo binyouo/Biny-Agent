@@ -108,6 +108,8 @@ interface HostConnection {
   clientId: string;
   surface: HostSurface;
   subscribed: boolean;
+  /** Suppress only sequenced live events while this owner catches up; completions remain live. */
+  eventReplay?: AbortController;
   authenticated: boolean;
   keepAlive: boolean;
   decoder: RuntimeHostFrameDecoder;
@@ -1976,50 +1978,73 @@ export class RuntimeHostServer {
     }));
   }
 
-  private subscribeConnection(
+  private async subscribeConnection(
     connection: HostConnection,
     afterSequence: number | undefined,
     afterHostEpoch: string | undefined,
     sessionFilter: ReadonlySet<string> | undefined
-  ): {
+  ): Promise<{
     hostEpoch: string;
     snapshot: InteractiveRuntimeSnapshot;
     sessions: ReturnType<RuntimeHostServer["sessionSummaries"]>;
     sequence: number;
     replayed: boolean;
     capabilities: readonly string[];
-  } {
+  }> {
+    connection.eventReplay?.abort();
+    const replay = new AbortController();
+    connection.eventReplay = replay;
     connection.subscribed = true;
     connection.sessionFilter = sessionFilter;
     const sameEpoch = afterHostEpoch === undefined || afterHostEpoch === this.registration.hostEpoch;
-    const replayed = sameEpoch && (afterSequence === undefined || this.canReplay(afterSequence));
-    if (afterSequence === undefined && sameEpoch) {
-      for (const item of this.history) {
-        if (this.matchesSessionFilter(connection, item.update)) this.sendEvent(connection, item.sequence, item.update);
-      }
-    } else if (replayed && afterSequence !== undefined) {
-      for (const item of this.history) {
-        if (item.sequence > afterSequence && this.matchesSessionFilter(connection, item.update)) {
-          this.sendEvent(connection, item.sequence, item.update);
+    let replayed = sameEpoch && (afterSequence === undefined || this.canReplay(afterSequence));
+    let needsGap = !replayed;
+    // A new subscriber starts at the retained window, including after prior eviction.
+    let cursor = afterSequence ?? (this.history[0] === undefined ? this.sequence : this.history[0].sequence - 1);
+    try {
+      for (;;) {
+        // Recheck after every await: responses/completions share this writer and
+        // may have filled it before this replay continuation gets the CPU.
+        while (!connection.writer.ready) await connection.writer.waitForReady(replay.signal);
+        replay.signal.throwIfAborted();
+        if (this.closePromise) throw new Error("Runtime Host is shutting down.");
+        if (needsGap || !this.canReplay(cursor)) {
+          cursor = this.sequence;
+          this.send(connection, {
+            kind: "gap",
+            hostEpoch: this.registration.hostEpoch,
+            sequence: cursor,
+            snapshot: this.runtime.getSnapshot(),
+            sessions: this.sessionSummaries()
+          });
+          replayed = false;
+          needsGap = false;
+          continue;
         }
+        // Never retain a whole replay copy or an array index across a drain;
+        // publication may splice the shared bounded history while we yield.
+        const first = this.history[0];
+        const item = first === undefined ? undefined : this.history[Math.max(0, cursor - first.sequence + 1)];
+        if (item) {
+          cursor = item.sequence;
+          if (this.matchesSessionFilter(connection, item.update)) this.sendEvent(connection, item.sequence, item.update);
+          continue;
+        }
+        const result = {
+          hostEpoch: this.registration.hostEpoch,
+          snapshot: this.runtime.getSnapshot(),
+          sessions: this.sessionSummaries(),
+          sequence: this.sequence,
+          replayed,
+          capabilities: hostCapabilities
+        };
+        // Sampling and handing off to live events are one synchronous boundary.
+        connection.eventReplay = undefined;
+        return result;
       }
-    } else if (!replayed) {
-      this.send(connection, {
-        kind: "gap",
-        hostEpoch: this.registration.hostEpoch,
-        sequence: this.sequence,
-        snapshot: this.runtime.getSnapshot(),
-        sessions: this.sessionSummaries()
-      });
+    } finally {
+      if (connection.eventReplay === replay) connection.eventReplay = undefined;
     }
-    return {
-      hostEpoch: this.registration.hostEpoch,
-      snapshot: this.runtime.getSnapshot(),
-      sessions: this.sessionSummaries(),
-      sequence: this.sequence,
-      replayed,
-      capabilities: hostCapabilities
-    };
   }
 
   private async claimSessionWriter(connection: HostConnection, session: string): Promise<void> {
@@ -2148,7 +2173,7 @@ export class RuntimeHostServer {
     if (this.history.length > eventHistoryLimit) this.history.splice(0, this.history.length - eventHistoryLimit);
     if (this.journalReady) void this.journal.persist(sequence, () => this.history, rewriteJournal);
     for (const connection of this.connections) {
-      if (connection.authenticated && connection.subscribed && this.matchesSessionFilter(connection, update)) {
+      if (connection.authenticated && connection.subscribed && !connection.eventReplay && this.matchesSessionFilter(connection, update)) {
         this.sendEvent(connection, sequence, update);
       }
     }
