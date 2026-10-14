@@ -259,7 +259,7 @@ async function hostFixture(t: TestContext) {
     destroyed = false; writableLength = 0; suppress = false;
     connection: any;
     constructor() {
-      super(); this.connection = { socket: this, authenticated: false, clientId: "", surface: "tui", subscribed: false, negotiatedCapabilities: [], writer: { dispose: () => undefined,
+      super(); this.connection = { socket: this, authenticated: false, clientId: "", surface: "tui", subscribed: false, negotiatedCapabilities: [], writer: { ready: true, dispose: () => undefined,
         send: (frame: HostFrame) => { if (!this.suppress) queueMicrotask(() => this.emit("data", encodeHostFrame(frame))); } } };
       internal.connections.add(this.connection);
     }

@@ -21,6 +21,7 @@ export class BoundedHostSocketWriter {
   private queuedBytes = 0;
   private waitingForDrain = false;
   private disposed = false;
+  private readonly readyWaiters = new Set<(error?: Error) => void>();
 
   constructor(
     private readonly socket: HostWritableSocket,
@@ -31,6 +32,28 @@ export class BoundedHostSocketWriter {
     }
     socket.on("drain", this.onDrain);
     socket.on("close", this.dispose);
+  }
+
+  /** Accepted writes may still be backpressured; replay producers must yield. */
+  get ready(): boolean {
+    return !this.disposed && !this.socket.destroyed && !this.waitingForDrain && this.queue.length === 0;
+  }
+
+  waitForReady(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new Error("Runtime Host replay was superseded."));
+    if (this.disposed || this.socket.destroyed) return Promise.reject(new Error("Runtime Host socket is closed."));
+    if (this.ready) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error): void => {
+        this.readyWaiters.delete(finish);
+        signal?.removeEventListener("abort", onAbort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onAbort = (): void => finish(new Error("Runtime Host replay was superseded."));
+      this.readyWaiters.add(finish);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   send(frame: HostFrame): boolean {
@@ -58,6 +81,7 @@ export class BoundedHostSocketWriter {
     this.queuedBytes = 0;
     this.socket.off("drain", this.onDrain);
     this.socket.off("close", this.dispose);
+    for (const finish of this.readyWaiters) finish(new Error("Runtime Host socket is closed."));
   };
 
   private readonly onDrain = (): void => {
@@ -71,5 +95,6 @@ export class BoundedHostSocketWriter {
         return;
       }
     }
+    if (this.ready) for (const finish of this.readyWaiters) finish();
   };
 }

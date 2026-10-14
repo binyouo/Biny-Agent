@@ -58,7 +58,7 @@ async function serverFixture(root: string, rows: unknown[], commands = {} as Com
   }, { close: async () => undefined });
   const entry = server as unknown as {
     execute(connection: unknown, frame: HostRequestFrame): Promise<unknown>;
-    subscribeConnection(connection: unknown, sequence: number, epoch: string, filter: undefined): { replayed: boolean };
+    subscribeConnection(connection: unknown, sequence: number, epoch: string, filter: undefined): Promise<{ replayed: boolean }>;
   };
   return {
     server,
@@ -80,10 +80,10 @@ async function serverFixture(root: string, rows: unknown[], commands = {} as Com
         kind: "request", requestId: "journal-command", operation: "command", payload: { input, source }
       });
     },
-    replayAfter(sequence: number, epoch: string) {
+    async replayAfter(sequence: number, epoch: string) {
       const frames: HostFrame[] = [];
-      const connection = { writer: { send: (frame: HostFrame) => { frames.push(frame); return true; } } };
-      return { ...entry.subscribeConnection(connection, sequence, epoch, undefined), frames };
+      const connection = { writer: { ready: true, send: (frame: HostFrame) => { frames.push(frame); return true; } } };
+      return { ...await entry.subscribeConnection(connection, sequence, epoch, undefined), frames };
     }
   };
 }
@@ -144,15 +144,15 @@ async function serverSequenceRecovery(root: string): Promise<void> {
       await fixture.server.initialize();
       assert.equal(fixture.server.info.sequence, 15, "invalid sequence values cannot replace a known safe high-water");
       assert.equal(fixture.server.status.journal.state, "degraded");
-      const damagedReplay = fixture.replayAfter(14, fixture.server.info.hostEpoch);
+      const damagedReplay = await fixture.replayAfter(14, fixture.server.info.hostEpoch);
       assert.equal(damagedReplay.replayed, false);
       assert.deepEqual(damagedReplay.frames.map((frame) => frame.kind), ["gap"], "a damaged window must use snapshot gap recovery");
       fixture.emit();
       assert.equal(fixture.server.info.sequence, 16, "the server must allocate the next event from the recovered high-water");
-      const recoveredReplay = fixture.replayAfter(15, fixture.server.info.hostEpoch);
+      const recoveredReplay = await fixture.replayAfter(15, fixture.server.info.hostEpoch);
       assert.equal(recoveredReplay.replayed, true);
       assert.deepEqual(recoveredReplay.frames.map((frame) => frame.kind), ["event"]);
-      const oldEpochReplay = fixture.replayAfter(15, "previous-epoch");
+      const oldEpochReplay = await fixture.replayAfter(15, "previous-epoch");
       assert.equal(oldEpochReplay.replayed, false);
       assert.deepEqual(oldEpochReplay.frames.map((frame) => frame.kind), ["gap"], "a different epoch must still receive a gap");
     } finally { await fixture.server.close(); }
