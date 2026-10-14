@@ -367,8 +367,12 @@ function historicalPrefix(events: SessionEvent[], liveEvents: AgentHostEvent[]):
 }
 
 function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
+  return createHistoricalTimelineFold(events).append(events);
+}
+
+function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(events: SessionEvent[]): TimelineTurn[] } {
   const appendAssistant = createHistoricalAssistantAppender();
-  const metadataById = historicalUserMetadata(events, events);
+  const metadataById = historicalUserMetadata(initialEvents, initialEvents);
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn | undefined;
   let anonymousIndex = 0;
@@ -383,137 +387,141 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
 
   let priorEventAt: string | undefined;
 
-  for (const event of events) {
-    const reasoningStartedAt = priorEventAt;
-    priorEventAt = event.time ?? priorEventAt;
-    if (event.type === "tool_result" && event.auditOnly && event.recovered && resultString(event.result, "status") !== "skipped") continue;
-    if (event.type === "user_message") {
-      if (event.auditOnly || isSubagentNotice(event)) continue;
-      priorEventAt = undefined;
-      anonymousIndex += 1;
-      current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
-      current.user = publicUserMessage(event.content);
-      current.userMessageIndex = userMessageIndex;
-      current.userMessageId = event.messageId;
-      current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
-      current.skills = loadedSkillNames(metadataById, event.messageId);
-      userMessageIndex += 1;
-      turns.push(current);
-      continue;
-    }
-    if (event.type === "assistant_message") {
-      if (event.auditOnly) continue;
-      const turn = ensureTurn(event.time);
-      turn.assistant = event.content || turn.assistant;
-      const memoryCount = event.metadata?.memoryInjectedCount;
-      if (typeof memoryCount === "number" && Number.isInteger(memoryCount) && memoryCount >= 0) turn.memoryInjectedCount = memoryCount;
-      const memorySummaries = injectedMemorySummaries(event.metadata?.memoryInjectedSummaries);
-      if (memorySummaries) turn.memoryInjectedSummaries = memorySummaries;
-      const memoryRecallDegraded = event.metadata?.memoryRecallDegraded;
-      if (typeof memoryRecallDegraded === "string" && memoryRecallDegraded.trim()) turn.memoryRecallDegraded = memoryRecallDegraded.trim();
-      appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
-      appendAssistant(turn, event.content);
-      turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
-      turn.timestamp = event.time ?? turn.timestamp;
-      turn.status = "completed";
-      turn.usage = event.usage;
-      turn.assistantMessageId = event.messageId ?? turn.assistantMessageId;
-      turn.versionSlotId = event.slotId ?? turn.versionSlotId;
-      if (event.usage) {
-        turn.model = {
-          alias: event.usage.modelAlias,
-          provider: event.usage.provider,
-          label: modelLabel(event.usage.provider, event.usage.model),
-          reasoning: ""
-        };
+  return {
+    append(events) {
+      for (const event of events) {
+        const reasoningStartedAt = priorEventAt;
+        priorEventAt = event.time ?? priorEventAt;
+        if (event.type === "tool_result" && event.auditOnly && event.recovered && resultString(event.result, "status") !== "skipped") continue;
+        if (event.type === "user_message") {
+          if (event.auditOnly || isSubagentNotice(event)) continue;
+          priorEventAt = undefined;
+          anonymousIndex += 1;
+          current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
+          current.user = publicUserMessage(event.content);
+          current.userMessageIndex = userMessageIndex;
+          current.userMessageId = event.messageId;
+          current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
+          current.skills = loadedSkillNames(metadataById, event.messageId);
+          userMessageIndex += 1;
+          turns.push(current);
+          continue;
+        }
+        if (event.type === "assistant_message") {
+          if (event.auditOnly) continue;
+          const turn = ensureTurn(event.time);
+          turn.assistant = event.content || turn.assistant;
+          const memoryCount = event.metadata?.memoryInjectedCount;
+          if (typeof memoryCount === "number" && Number.isInteger(memoryCount) && memoryCount >= 0) turn.memoryInjectedCount = memoryCount;
+          const memorySummaries = injectedMemorySummaries(event.metadata?.memoryInjectedSummaries);
+          if (memorySummaries) turn.memoryInjectedSummaries = memorySummaries;
+          const memoryRecallDegraded = event.metadata?.memoryRecallDegraded;
+          if (typeof memoryRecallDegraded === "string" && memoryRecallDegraded.trim()) turn.memoryRecallDegraded = memoryRecallDegraded.trim();
+          appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
+          appendAssistant(turn, event.content);
+          turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
+          turn.timestamp = event.time ?? turn.timestamp;
+          turn.status = "completed";
+          turn.usage = event.usage;
+          turn.assistantMessageId = event.messageId ?? turn.assistantMessageId;
+          turn.versionSlotId = event.slotId ?? turn.versionSlotId;
+          if (event.usage) {
+            turn.model = {
+              alias: event.usage.modelAlias,
+              provider: event.usage.provider,
+              label: modelLabel(event.usage.provider, event.usage.model),
+              reasoning: ""
+            };
+          }
+          continue;
+        }
+        if (event.type === "turn_status") {
+          const turn = ensureTurn(event.time);
+          turn.status = event.status;
+          turn.timestamp = event.time ?? turn.timestamp;
+          turn.resumable = event.resumable;
+          turn.finishReason = event.finishReason ?? event.stopReason;
+          turn.error = event.status === "completed"
+            ? undefined
+            : historicalTurnStatusSummary(event);
+          for (const tool of turn.tools) {
+            if (tool.status !== "running" && tool.status !== "waiting") continue;
+            tool.status = event.status === "failed" ? "failed" : event.status === "cancelled" ? "cancelled" : "unknown";
+          }
+          continue;
+        }
+        if (event.type === "tool_call") {
+          if (event.auditOnly) continue;
+          const turn = ensureTurn(event.time);
+          const toolName = event.tool;
+          const projection = historicalToolProjection(toolName, event.args);
+          appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
+          appendAssistant(turn, event.assistantContent, true);
+          const tool: TimelineTool = {
+            id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
+            runId: event.runtime?.runId,
+            tool: toolName,
+            args: event.args,
+            status: "running",
+            display: projection.display,
+            path: projection.path,
+            updates: [],
+            timestamp: event.time
+          };
+          turn.tools.push(tool);
+          turn.steps.push({ kind: "tool", id: tool.id, tool });
+          continue;
+        }
+        if (event.type === "tool_result") {
+          const turn = ensureTurn(event.time);
+          const toolName = event.tool;
+          const tool = turn.tools.findLast((candidate) => candidate.id === event.toolCallId || (candidate.tool === toolName && candidate.result === undefined));
+          if (tool) {
+            applyToolResult(tool, event.result);
+            tool.status = timelineToolStatus(event.result, event.executionStatus);
+            tool.error = resultError(event.result);
+            tool.executionStatus = event.executionStatus;
+            tool.recovered = event.recovered;
+            tool.operationId = event.operationId;
+            tool.evidence = event.evidence;
+            if (tool.status === "success") appendLoadedSkill(turn, toolName, tool.args);
+          }
+          continue;
+        }
+        if (event.type === "agent_message") continue;
+        if (event.type === "tool_execution") {
+          const tool = ensureTurn(event.time).tools.find((candidate) => candidate.id === event.toolCallId);
+          if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
+          continue;
+        }
+        if (event.type === "context_checkpoint") {
+          if (event.reason === "manual") {
+            turns.push(manualCheckpointTurn(event));
+            current = undefined;
+          } else {
+            ensureTurn(event.time).steps.push(checkpointTimelineStep(event));
+          }
+          continue;
+        }
+        if (event.type === "model_request") { appendModelRequest(ensureTurn(event.time), event.metrics); continue; }
+        if (event.type === "message_version_selected") continue;
+        if (event.type === "message_metadata") continue;
+        if (event.type === "turn_interrupted") continue;
+        const turn = ensureTurn(event.time);
+        turn.error = event.message;
+        turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
+        turn.timestamp = event.time ?? turn.timestamp;
+        const aborted = /abort|中止|interrupted/i.test(event.message);
+        turn.status = aborted ? "aborted" : "failed";
+        if (aborted) {
+          for (const tool of turn.tools) {
+            if (tool.status === "running" || tool.status === "failed") tool.status = "unknown";
+          }
+        }
       }
-      continue;
+      return turns;
     }
-    if (event.type === "turn_status") {
-      const turn = ensureTurn(event.time);
-      turn.status = event.status;
-      turn.timestamp = event.time ?? turn.timestamp;
-      turn.resumable = event.resumable;
-      turn.finishReason = event.finishReason ?? event.stopReason;
-      turn.error = event.status === "completed"
-        ? undefined
-        : historicalTurnStatusSummary(event);
-      for (const tool of turn.tools) {
-        if (tool.status !== "running" && tool.status !== "waiting") continue;
-        tool.status = event.status === "failed" ? "failed" : event.status === "cancelled" ? "cancelled" : "unknown";
-      }
-      continue;
-    }
-    if (event.type === "tool_call") {
-      if (event.auditOnly) continue;
-      const turn = ensureTurn(event.time);
-      const toolName = event.tool;
-      const projection = historicalToolProjection(toolName, event.args);
-      appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
-      appendAssistant(turn, event.assistantContent, true);
-      const tool: TimelineTool = {
-        id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
-        runId: event.runtime?.runId,
-        tool: toolName,
-        args: event.args,
-        status: "running",
-        display: projection.display,
-        path: projection.path,
-        updates: [],
-        timestamp: event.time
-      };
-      turn.tools.push(tool);
-      turn.steps.push({ kind: "tool", id: tool.id, tool });
-      continue;
-    }
-    if (event.type === "tool_result") {
-      const turn = ensureTurn(event.time);
-      const toolName = event.tool;
-      const tool = turn.tools.findLast((candidate) => candidate.id === event.toolCallId || (candidate.tool === toolName && candidate.result === undefined));
-      if (tool) {
-        applyToolResult(tool, event.result);
-        tool.status = timelineToolStatus(event.result, event.executionStatus);
-        tool.error = resultError(event.result);
-        tool.executionStatus = event.executionStatus;
-        tool.recovered = event.recovered;
-        tool.operationId = event.operationId;
-        tool.evidence = event.evidence;
-        if (tool.status === "success") appendLoadedSkill(turn, toolName, tool.args);
-      }
-      continue;
-    }
-    if (event.type === "agent_message") continue;
-    if (event.type === "tool_execution") {
-      const tool = ensureTurn(event.time).tools.find((candidate) => candidate.id === event.toolCallId);
-      if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
-      continue;
-    }
-    if (event.type === "context_checkpoint") {
-      if (event.reason === "manual") {
-        turns.push(manualCheckpointTurn(event));
-        current = undefined;
-      } else {
-        ensureTurn(event.time).steps.push(checkpointTimelineStep(event));
-      }
-      continue;
-    }
-    if (event.type === "model_request") { appendModelRequest(ensureTurn(event.time), event.metrics); continue; }
-    if (event.type === "message_version_selected") continue;
-    if (event.type === "message_metadata") continue;
-    if (event.type === "turn_interrupted") continue;
-    const turn = ensureTurn(event.time);
-    turn.error = event.message;
-    turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
-    turn.timestamp = event.time ?? turn.timestamp;
-    const aborted = /abort|中止|interrupted/i.test(event.message);
-    turn.status = aborted ? "aborted" : "failed";
-    if (aborted) {
-      for (const tool of turn.tools) {
-        if (tool.status === "running" || tool.status === "failed") tool.status = "unknown";
-      }
-    }
-  }
-  return turns;
+  };
 }
 
 interface HistoricalVersionRecord {
@@ -1199,8 +1207,15 @@ function mergeLiveRetryTurns(history: TimelineTurn[], live: TimelineTurn[], acti
  * 输出内容与 `buildSessionTimeline` 完全一致，但未变化的轮次保持对象引用稳定，配合 React.memo
  * 让流式期间每帧只重算、只重渲染变化的轮次。
  */
+export type TimelineActivityEvent =
+  | Pick<Extract<SessionEvent, { type: "user_message" }>, "type" | "content" | "time">
+  | Pick<Extract<SessionEvent, { type: "assistant_message" }>, "type" | "content" | "reasoningContent" | "time">
+  | Pick<Extract<SessionEvent, { type: "tool_call" }>, "type" | "tool" | "toolCallId" | "args" | "time">
+  | Pick<Extract<SessionEvent, { type: "tool_result" }>, "type" | "tool" | "toolCallId" | "result" | "executionStatus" | "time">;
+
 export interface SessionTimelineProjector {
   update(input: { sessionId: string; events: SessionEvent[]; liveEvents: AgentHostEvent[] }): TimelineTurn[];
+  appendHistory(events: TimelineActivityEvent[]): TimelineTurn[];
 }
 
 export function createSessionTimelineProjector(): SessionTimelineProjector {
@@ -1214,6 +1229,17 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
   let processedTail: AgentHostEvent | undefined;
   let attachRequests = attachLiveRequestMetrics([]);
   let savedMessages: SavedQueuedMessage[] = [];
+  const activityFold = createHistoricalTimelineFold([]);
+  const publishedActivity = new WeakMap<object, object>();
+  let activityTurns: TimelineTurn[] = [];
+  const publishActivity = <Value extends object>(source: Value, value: Value): Value => {
+    const previous = publishedActivity.get(source) as Value | undefined;
+    if (previous && Object.keys(previous).length === Object.keys(value).length
+      && Object.entries(value).every(([key, entry]) => (previous as Record<string, unknown>)[key] === entry)) return previous;
+    const snapshot = { ...value };
+    publishedActivity.set(source, snapshot);
+    return snapshot;
+  };
 
   const rebuild = (events: SessionEvent[], liveEvents: AgentHostEvent[]): void => {
     events = traceOutputEvents(events);
@@ -1231,6 +1257,17 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
   };
 
   return {
+    appendHistory(events): TimelineTurn[] {
+      if (!events.length) return activityTurns;
+      activityTurns = activityFold.append(events).map(turn => {
+        const tools = turn.tools.map(tool => publishActivity(tool, tool));
+        const steps = turn.steps.map(step => publishActivity(step, step.kind === "tool"
+          ? { ...step, tool: publishedActivity.get(step.tool) as TimelineTool }
+          : step));
+        return publicTimelineTurn({ ...turn, tools, steps, skills: [...turn.skills] });
+      }).filter(isVisibleTimelineTurn);
+      return activityTurns;
+    },
     update({ sessionId: nextSessionId, events, liveEvents }): TimelineTurn[] {
       const firstUser = liveEvents.find((event) => event.type === "message.user");
       const nextTail = liveEvents[processedLive - 1];

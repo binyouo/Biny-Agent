@@ -19,6 +19,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { TaskInspectionView } from "../src/desktop/renderer/src/components/chat/TaskInspector.js";
 import { SubagentActivity } from "../src/desktop/renderer/src/components/chat/SubagentActivity.js";
 import { subagentTaskRunId } from "../src/desktop/renderer/src/subagentPresentation.js";
+import { createSubagentTimelineProjector } from "../src/desktop/renderer/src/subagentTimeline.js";
+import { ActivityToolRow } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
+import type { TaskInspection, WorkerActivity } from "../src/runtime/TaskCommunication.js";
 
 test("legacy failed tool events retain the deterministic TaskRun identity when the result contains only an error", () => {
   const timeline = buildSessionTimeline([
@@ -50,19 +53,30 @@ test("the parent transcript owns an expandable child card instead of a sidebar l
 });
 
 test("child details show real call inputs, results and message receipts independently of the parent transcript", () => {
-  const rendered = renderToStaticMarkup(React.createElement(TaskInspectionView, { inspection: {
+  const inspection: TaskInspection = {
     taskRunId: "child", sessionId: "parent", title: "inspect", status: "completed", revision: 4, createdAt: "now", updatedAt: "now", attempts: [], inputOpen: false, resumable: false,
     messages: [{ id: "reply", direction: "worker", content: "inspection reached its boundary", delivered: true, createdAt: "now" }], activity: [], cursor: 2, hasMore: false, output: "bounded handoff"
-  }, activity: [
+  };
+  const activity: WorkerActivity[] = [
     { id: "call", sequence: 1, createdAt: "now", kind: "tool_call", tool: "Read", args: { path: "src/a.ts" } },
     { id: "result", sequence: 2, createdAt: "now", kind: "tool_result", tool: "Read", toolCallId: "read", status: "succeeded", result: { content: "actual file content" } },
     { id: "answer", sequence: 3, createdAt: "now", kind: "assistant", content: "**bounded handoff**" }
-  ] }));
-  assert.match(rendered, /src\/a.ts/); assert.match(rendered, /actual file content/);
+  ];
+  const rendered = renderToStaticMarkup(React.createElement(TaskInspectionView, { inspection, activity }));
+  assert.doesNotMatch(rendered, /actual file content/);
   assert.match(rendered, /已接收/); assert.match(rendered, /bounded handoff/);
   assert.match(rendered, /subagent-transcript/);
   assert.match(rendered, /<strong>bounded handoff<\/strong>/);
   assert.doesNotMatch(rendered, /<textarea|发送消息|创建后续任务/);
+  const running = renderToStaticMarkup(React.createElement(TaskInspectionView, { inspection: { ...inspection, status: "running" }, activity }));
+  assert.match(running, /src\/a.ts/);
+  assert.doesNotMatch(running, /actual file content/);
+  const projected = createSubagentTimelineProjector().update(inspection, activity);
+  const expanded = renderToStaticMarkup(React.createElement(ActivityToolRow, {
+    projectId: "project", tool: projected[0]!.tools[0]!, open: true, onPreviewFile() {}, onOpenExternal() {}
+  }));
+  assert.match(expanded, /src\/a.ts/);
+  assert.match(expanded, /actual file content/);
 });
 
 test("hiding a child receipt preserves the canonical ancestor chain and both timeline builders", async () => {

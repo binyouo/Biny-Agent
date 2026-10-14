@@ -1,7 +1,7 @@
-import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TaskInspection, WorkerActivity } from "../../../../../runtime/TaskCommunication.js";
 import type { TimelineTool } from "../../sessionTimeline.js";
-import { buildSubagentTimeline } from "../../subagentTimeline.js";
+import { createSubagentTimelineProjector } from "../../subagentTimeline.js";
 import { subagentColor, subagentFailurePresentation, subagentStatusLabel } from "../../subagentPresentation.js";
 import { ExecutionTimeline } from "../MessageTimeline.js";
 import { MarkdownContent } from "../MarkdownContent.js";
@@ -25,14 +25,14 @@ export function TaskInspector({ selection, initialStatus = "running", onPreviewF
   const [retry, setRetry] = useState(0);
   const [state, setState] = useState<{ identity: string; inspection: TaskInspection; activity: WorkerActivity[] }>();
   const [error, setError] = useState<string>();
-  const cache = useRef<{ identity: string; selected?: string; attempt?: string; cursor: number; activity: WorkerActivity[] }>({ identity, cursor: 0, activity: [] });
+  const cache = useRef<{ identity: string; selected?: string; attempt?: string; cursor: number; activity: WorkerActivity[]; ids: Set<string>; published?: WorkerActivity[]; summary?: string }>({ identity, cursor: 0, activity: [], ids: new Set() });
   const inspection = state?.identity === identity ? state.inspection : undefined;
   const activity = useMemo(() => state?.identity === identity ? state.activity : [], [state, identity]);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     if (cache.current.identity !== identity || cache.current.selected !== attemptId) {
-      cache.current = { identity, selected: attemptId, cursor: 0, activity: [] };
+      cache.current = { identity, selected: attemptId, cursor: 0, activity: [], ids: new Set() };
       setState(undefined);
     }
     setError(undefined);
@@ -46,18 +46,27 @@ export function TaskInspector({ selection, initialStatus = "running", onPreviewF
         if (stopped) return;
         if (current.attempt !== next.attemptId && current.attempt !== undefined) {
           const hadCursor = current.cursor > 0;
-          current.cursor = 0; current.activity = []; current.attempt = next.attemptId;
+          current.cursor = 0; current.activity = []; current.ids.clear(); current.summary = undefined; current.attempt = next.attemptId;
           setState({ identity, inspection: next, activity: [] });
           if (open && hadCursor) { timer = setTimeout(() => void load(), 16); return; }
         }
         current.attempt = next.attemptId;
         if (open) {
           if (next.hasMore && next.cursor <= current.cursor) throw new Error("执行记录游标未前进，请重试读取。");
-          const existing = new Set(current.activity.map(entry => entry.id));
-          current.activity = [...current.activity, ...next.activity.filter(entry => !existing.has(entry.id))];
+          const additions = next.activity.filter(entry => {
+            if (current.ids.has(entry.id)) return false;
+            current.ids.add(entry.id);
+            return true;
+          });
+          if (additions.length) current.activity = [...current.activity, ...additions];
           current.cursor = next.cursor;
         }
-        setState({ identity, inspection: next, activity: current.activity });
+        const summary = JSON.stringify({ ...next, activity: undefined });
+        if (summary !== current.summary || current.published !== current.activity) {
+          current.summary = summary;
+          current.published = current.activity;
+          setState({ identity, inspection: next, activity: current.activity });
+        }
         setError(undefined);
         const selected = next.attempts.find(attempt => attempt.attemptId === next.attemptId);
         if (open && next.hasMore) timer = setTimeout(() => void load(), 16);
@@ -74,7 +83,7 @@ export function TaskInspector({ selection, initialStatus = "running", onPreviewF
   const stoppedLabels: Record<string, string> = { step_limit: "步数用尽", permission_denied: "权限受阻", approval_required: "待父代理处理授权", inactivity_timeout: "无响应" };
   const statusLabel = status === "completed" ? "已完成" : inspection?.stopReason && stoppedLabels[inspection.stopReason]
     ? `已停止 · ${stoppedLabels[inspection.stopReason]}` : subagentStatusLabel(status);
-  const model = activity.findLast(entry => entry.model)?.model;
+  const model = useMemo(() => activity.findLast(entry => entry.model)?.model, [activity]);
   const workerName = inspection?.name ?? name;
   const rawDescription = inspection?.description ?? (tool?.args as { description?: unknown } | undefined)?.description;
   const description = typeof rawDescription === "string" ? rawDescription.replace(/\s+/gu, " ").trim().slice(0, 120) : "";
@@ -95,6 +104,9 @@ export function TaskInspector({ selection, initialStatus = "running", onPreviewF
     const observer = new ResizeObserver(follow);
     observer.observe(body);
     return () => observer.disconnect();
+  }, [open, identity]);
+  useLayoutEffect(() => {
+    if (open && following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [open, activity, inspection]);
   const bodyId = useId();
   return <details className="subagent-card" data-agent-color={subagentColor(taskRunId ?? tool?.id ?? name)} open={open}
@@ -127,12 +139,13 @@ export function TaskInspector({ selection, initialStatus = "running", onPreviewF
   </details>;
 }
 
-export function TaskInspectionView({ inspection, activity, projectId = "", recordedOutput, onPreviewFile = () => {}, onOpenExternal = () => {} }: {
+export const TaskInspectionView = memo(function TaskInspectionView({ inspection, activity, projectId = "", recordedOutput, onPreviewFile = () => {}, onOpenExternal = () => {} }: {
   inspection: TaskInspection; activity: WorkerActivity[]; projectId?: string; recordedOutput?: string;
   onPreviewFile?(path: string): void; onOpenExternal?(url: string): void;
 }): React.JSX.Element {
-  const turns = useMemo(() => buildSubagentTimeline(inspection, activity, recordedOutput), [inspection, activity, recordedOutput]);
-  const steps = turns.flatMap(turn => turn.steps).filter(step => step.kind !== "user");
+  const projector = useMemo(() => createSubagentTimelineProjector(), []);
+  const turns = useMemo(() => projector.update(inspection, activity, recordedOutput), [projector, inspection, activity, recordedOutput]);
+  const steps = useMemo(() => turns.flatMap(turn => turn.steps).filter(step => step.kind !== "user"), [turns]);
   return <div className="subagent-transcript">
     {steps.length ? <ExecutionTimeline readOnly projectId={projectId} running={activeStatuses.has(inspection.attempts.find(attempt => attempt.attemptId === inspection.attemptId)?.status ?? inspection.status)} keepActivitiesOpen steps={steps}
       onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={async () => {}} />
@@ -141,4 +154,4 @@ export function TaskInspectionView({ inspection, activity, projectId = "", recor
       <small>{message.direction === "parent" ? "父代理 → 子代理" : "子代理 → 父代理"} · {message.delivered ? "已接收" : "已持久化"}</small><MarkdownContent content={message.content} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
     </li>)}</ol></details> : null}
   </div>;
-}
+});
