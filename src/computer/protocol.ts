@@ -30,12 +30,15 @@ export const computerMirrorSchema = z.object({
 export type ComputerMirrorRequest = z.infer<typeof computerMirrorSchema>;
 
 /** 观察选项不属于窗口身份；审批与动作目标只使用 pid/windowId。 */
+export const computerWaitSchema = z.object({ text: z.string().min(1).max(1000), timeoutMs: z.number().int().min(250).max(10_000).default(5_000) }).strict();
 export const windowObserveSchema = windowTargetSchema.extend({
+  content: z.enum(["full", "image"]).optional(),
+  waitFor: computerWaitSchema.optional(),
   maxElements: z.number().int().positive().max(1000).optional(),
   depth: z.number().int().min(1).max(20).optional(),
   screenshotMaxWidth: z.number().int().positive().optional(),
   interactiveOnly: z.boolean().optional(),
-});
+}).refine(value => !value.waitFor || value.content !== "image", "文字等待需要完整观察，不能使用仅截图模式");
 export type WindowObserve = z.infer<typeof windowObserveSchema>;
 export const computerActionSchema = windowTargetSchema.extend({
   action: z.enum(["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"]),
@@ -64,6 +67,7 @@ export const computerActionSchema = windowTargetSchema.extend({
   x2: z.number().finite().optional(), y2: z.number().finite().optional(),
   value: z.union([z.string().max(4000), z.number(), z.boolean()]).optional(),
   location: z.number().int().nonnegative().optional(), length: z.number().int().nonnegative().optional(),
+  matchText: z.string().min(1).max(4000).optional(), prefix: z.string().max(1000).optional(), suffix: z.string().max(1000).optional(),
   elementToken: z.string().min(1).max(256).optional()
 }).strict().superRefine((value, context) => {
   if (value.action === "click") {
@@ -77,9 +81,23 @@ export const computerActionSchema = windowTargetSchema.extend({
   if (value.action === "drag" && (value.x1 === undefined || value.y1 === undefined || value.x2 === undefined || value.y2 === undefined)) context.addIssue({ code: "custom", message: "drag requires x1, y1, x2 and y2" });
   if (value.action === "perform_secondary_action" && !value.elementToken && (value.x === undefined || value.y === undefined)) context.addIssue({ code: "custom", message: "perform_secondary_action requires elementToken or screenshot coordinates" });
   if (value.action === "set_value" && (!value.elementToken || value.value === undefined)) context.addIssue({ code: "custom", message: "set_value requires elementToken and value" });
-  if (value.action === "select_text" && (!value.elementToken || (value.text === undefined && value.location === undefined))) context.addIssue({ code: "custom", message: "select_text requires elementToken and either text or location" });
+  if (value.action === "select_text" && (!value.elementToken || (value.text === undefined && value.location === undefined && value.matchText === undefined))) context.addIssue({ code: "custom", message: "select_text requires elementToken and text, location or matchText" });
+  if (value.matchText !== undefined && (value.action !== "select_text" || value.text !== undefined || value.location !== undefined || value.length !== undefined)) context.addIssue({ code: "custom", message: "文字匹配选区不能与写入文本或位置选区混用" });
+  if ((value.prefix !== undefined || value.suffix !== undefined) && value.matchText === undefined) context.addIssue({ code: "custom", message: "前后文只能用于文字匹配选区" });
 });
 export type ComputerAction = z.infer<typeof computerActionSchema>;
+export const computerSequenceSchema = windowTargetSchema.extend({
+  captureId: z.string().min(1).max(256),
+  delivery: z.enum(["background", "foreground"]).default("background"),
+  actions: z.array(computerActionSchema.innerType().omit({ pid: true, windowId: true, captureId: true, delivery: true })).min(1).max(5),
+}).strict().superRefine((value, context) => {
+  for (const [index, step] of value.actions.entries()) {
+    const parsed = computerActionSchema.safeParse({ ...step, pid: value.pid, windowId: value.windowId, captureId: value.captureId, delivery: value.delivery });
+    if (!parsed.success) for (const issue of parsed.error.issues) context.addIssue({ ...issue, path: ["actions", index, ...issue.path] });
+    if (index > 0 && (!["type_text", "press_key"].includes(step.action) || step.elementToken !== undefined)) context.addIssue({ code: "custom", path: ["actions", index], message: "首步之后只允许向当前焦点输入或按键，不允许沿用控件引用" });
+  }
+});
+export type ComputerSequence = z.infer<typeof computerSequenceSchema>;
 export const computerImageSchema = z.object({ mimeType: z.enum(["image/png", "image/jpeg"]), dataBase64: z.string().max(Math.ceil(maxComputerImageBytes / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/) }).strict();
 export type ComputerImage = z.infer<typeof computerImageSchema>;
 export type ComputerState = "disabled" | "ready" | "paused" | "taken-over" | "unknown";

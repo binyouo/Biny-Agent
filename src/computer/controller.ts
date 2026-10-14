@@ -1,6 +1,8 @@
 import { ComputerAuditStore } from "./auditStore.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { computerSequenceSchema, type ComputerSequence } from "./protocol.js";
 import { ToolOutcomeUnknownError } from "../tools/types.js";
 import { computerActionSchema, computerImageSchema, computerMirrorSchema, windowObserveSchema, type ComputerMirrorRequest, type ComputerAction, type ComputerAuditEntry, type ComputerImage, type ComputerPreview, type ComputerStatus, type WindowObserve, type WindowTarget } from "./protocol.js";
 
@@ -278,7 +280,30 @@ export class ComputerUseController {
   }
   observe(session: string, target: WindowObserve, signal?: AbortSignal): Promise<DriverReply> {
     target = windowObserveSchema.parse(target);
-    return this.enqueue(session, signal, (s, generation) => this.captureWindow(session, target, s, generation), true);
+    const { waitFor, ...observation } = target;
+    return this.enqueue(session, signal, async (s, generation) => {
+      if (!waitFor) return this.captureWindow(session, observation, s, generation);
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), waitFor.timeoutMs);
+      const waiting = AbortSignal.any([s, deadline.signal]);
+      let attempts = 0;
+      try {
+        while (true) {
+          waiting.throwIfAborted();
+          const reply = await this.captureWindow(session, { ...observation, interactiveOnly: observation.interactiveOnly ?? false }, waiting, generation);
+          attempts++;
+          if (reply.errorCode) return reply;
+          const elements = reply.data.elements as Record<string, unknown>[] | undefined;
+          const matched = elements?.some(element => [element.title, element.description, element.value].some(value => typeof value === "string" && value.includes(waitFor.text))) ?? false;
+          if (matched) return { ...reply, data: { ...reply.data, wait: { matched: true, attempts } } };
+          await delay(250, undefined, { signal: waiting });
+        }
+      } catch (error) {
+        this.capture = undefined;
+        if (s.aborted || !deadline.signal.aborted) throw error;
+      } finally { clearTimeout(timer); }
+      return { data: { wait: { matched: false, attempts, reason: "timeout" }, observationRequired: true }, images: [] };
+    }, true);
   }
   private async captureWindow(session: string, observation: WindowObserve, signal: AbortSignal, generation: number): Promise<DriverReply> {
     const target = { pid: observation.pid, windowId: observation.windowId };
@@ -300,48 +325,76 @@ export class ComputerUseController {
   }
   act(session: string, input: Omit<ComputerAction, "delivery"> & { delivery?: ComputerAction["delivery"] }, signal?: AbortSignal): Promise<DriverReply> {
     const action = computerActionSchema.parse(input);
+    return this.enqueue(session, signal, (s, generation) => this.performAction(session, action, s, generation));
+  }
+  sequence(session: string, input: ComputerSequence, signal?: AbortSignal): Promise<DriverReply> {
+    const sequence = computerSequenceSchema.parse(input);
     return this.enqueue(session, signal, async (s, generation) => {
-      const capture = this.capture;
-      if (!capture || capture.id !== action.captureId || capture.target.pid !== action.pid || capture.target.windowId !== action.windowId) throw new Error("capture_target_mismatch_or_missing");
-      if (this.now() - capture.at >= 60_000) { this.capture = undefined; throw new Error("capture_expired: observe again"); }
-      if (action.coordinateSpace !== "screen" && [[action.x, action.y], [action.x1, action.y1], [action.x2, action.y2]].some(([x, y]) => x !== undefined && (x < 0 || y === undefined || y < 0 || x >= capture.width || y >= capture.height))) throw new Error("capture_coordinates_out_of_bounds");
-      if (action.elementToken && !capture.tokens.has(action.elementToken)) throw new Error("element_token_not_in_observation");
-      if (action.delivery === "foreground" && !this.snapshot.foregroundAllowed) throw new Error("foreground_permission_required: ask user to switch or enable foreground delivery");
-      const appId = await this.options.authorize?.(session, capture.target, s);
-      if (appId !== capture.appId) { this.capture = undefined; throw new Error("capture_app_identity_changed: observe again"); }
-      s.throwIfAborted();
-      if (generation !== this.generation) throw new Error("computer_authorization_invalidated");
-      this.capture = undefined; this.previewRefresh?.abort(); this.snapshot.lastOutcome = "not-dispatched";
-      let result: DriverReply;
-      const at = this.now();
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), 15_000);
+      const running = AbortSignal.any([s, deadline.signal]);
+      const steps: Record<string, unknown>[] = [];
+      let reply: DriverReply = { data: {}, images: [] };
+      let completedCount = 0;
+      const finalContent = this.capture?.observation.content ?? "full";
       try {
-        result = await this.driver.act(session, action, s);
-      } catch (error) {
-        this.record(action, at, "unknown", { bundleId: capture.appId, errorCode: error instanceof Error ? error.message : String(error) });
-        if (generation === this.generation) {
-          this.invalidate(); this.snapshot.lastOutcome = "unknown"; this.snapshot.state = "unknown";
+        for (const [index, step] of sequence.actions.entries()) {
+          running.throwIfAborted();
+          const captureId = index === 0 ? sequence.captureId : String(reply.data.capture_id);
+          reply = await this.performAction(session, computerActionSchema.parse({ ...step, pid: sequence.pid, windowId: sequence.windowId, delivery: sequence.delivery, captureId }), running, generation, index === sequence.actions.length - 1 ? finalContent : "image");
+          steps.push({ index, action: step.action, status: reply.data.status, receipt: reply.data.action });
+          if (!reply.errorCode && reply.data.status !== "refused") completedCount++;
+          if (reply.errorCode || reply.data.observationRequired || running.aborted || generation !== this.generation) return { ...reply, data: { ...reply.data, steps, completedCount, stoppedAt: index, doNotRepeat: true } };
         }
-        throw new ToolOutcomeUnknownError("interrupted", `computer action outcome unknown: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      const effect = result.data.effect;
-      const status = result.errorCode || effect === "refused" ? "refused" : effect === "confirmed" ? "completed" : "unverified";
-      // 错误码可能挂在 result 上，也可能在 data 里（驱动把拒绝原因放在 data.code）。
-      const failureCode = result.errorCode ?? (typeof result.data.code === "string" ? result.data.code : undefined);
-      this.record(action, at, status, { bundleId: capture.appId, errorCode: failureCode });
-      if (s.aborted || generation !== this.generation) return this.verificationUnavailable(result, status, "computer_verification_interrupted", generation);
-      // 只有仍有效的已派发动作续期监督窗；迟到回执仍如实记录，但不能重开已停止的预览。
-      if (status !== "refused") this.noteActivity();
-      this.snapshot.lastOutcome = status;
-      // A fresh post-action frame is evidence for the next decision, not proof of the intended postcondition.
-      if (status === "refused") return { ...result, data: { ...result.data, status } };
-      try {
-        const observation = await this.captureWindow(session, capture.observation, s, generation);
-        if (observation.errorCode) return this.verificationUnavailable(result, status, observation.errorCode, generation);
-        return { data: { ...observation.data, status, action: result.data, verificationRequired: true, observationRequired: false, observation: { available: true }, doNotRepeat: true }, images: observation.images };
+        return { ...reply, data: { ...reply.data, steps, completedCount, verificationRequired: true, doNotRepeat: true } };
       } catch (error) {
-        return this.verificationUnavailable(result, status, `computer_verification_interrupted: ${error instanceof Error ? error.message : String(error)}`, generation);
-      }
+        this.capture = undefined;
+        if (error instanceof ToolOutcomeUnknownError) throw new ToolOutcomeUnknownError(error.reason, `连续动作已收到 ${completedCount} 步回执；第 ${steps.length + 1} 步执行情况未知，禁止重放。${error.message}`);
+        return { data: { steps, completedCount, stoppedAt: steps.length, observationRequired: true, doNotRepeat: true }, images: [], errorCode: error instanceof Error ? error.message : String(error) };
+      } finally { clearTimeout(timer); }
     });
+  }
+  private async performAction(session: string, action: ComputerAction, s: AbortSignal, generation: number, content?: WindowObserve["content"]): Promise<DriverReply> {
+    const capture = this.capture;
+    if (!capture || capture.id !== action.captureId || capture.target.pid !== action.pid || capture.target.windowId !== action.windowId) throw new Error("capture_target_mismatch_or_missing");
+    if (this.now() - capture.at >= 60_000) { this.capture = undefined; throw new Error("capture_expired: observe again"); }
+    if (action.coordinateSpace !== "screen" && [[action.x, action.y], [action.x1, action.y1], [action.x2, action.y2]].some(([x, y]) => x !== undefined && (x < 0 || y === undefined || y < 0 || x >= capture.width || y >= capture.height))) throw new Error("capture_coordinates_out_of_bounds");
+    if (action.elementToken && !capture.tokens.has(action.elementToken)) throw new Error("element_token_not_in_observation");
+    if (action.delivery === "foreground" && !this.snapshot.foregroundAllowed) throw new Error("foreground_permission_required: ask user to switch or enable foreground delivery");
+    const appId = await this.options.authorize?.(session, capture.target, s);
+    if (appId !== capture.appId) { this.capture = undefined; throw new Error("capture_app_identity_changed: observe again"); }
+    s.throwIfAborted();
+    if (generation !== this.generation) throw new Error("computer_authorization_invalidated");
+    this.capture = undefined; this.previewRefresh?.abort(); this.snapshot.lastOutcome = "not-dispatched";
+    let result: DriverReply;
+    const at = this.now();
+    try {
+      result = await this.driver.act(session, action, s);
+    } catch (error) {
+      this.record(action, at, "unknown", { bundleId: capture.appId, errorCode: error instanceof Error ? error.message : String(error) });
+      if (generation === this.generation) {
+        this.invalidate(); this.snapshot.lastOutcome = "unknown"; this.snapshot.state = "unknown";
+      }
+      throw new ToolOutcomeUnknownError("interrupted", `computer action outcome unknown: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const effect = result.data.effect;
+    const status = result.errorCode || effect === "refused" ? "refused" : effect === "confirmed" ? "completed" : "unverified";
+    // 错误码可能挂在 result 上，也可能在 data 里（驱动把拒绝原因放在 data.code）。
+    const failureCode = result.errorCode ?? (typeof result.data.code === "string" ? result.data.code : undefined);
+    this.record(action, at, status, { bundleId: capture.appId, errorCode: failureCode });
+    if (s.aborted || generation !== this.generation) return this.verificationUnavailable(result, status, "computer_verification_interrupted", generation);
+    // 只有仍有效的已派发动作续期监督窗；迟到回执仍如实记录，但不能重开已停止的预览。
+    if (status !== "refused") this.noteActivity();
+    this.snapshot.lastOutcome = status;
+    // A fresh post-action frame is evidence for the next decision, not proof of the intended postcondition.
+    if (status === "refused") return { ...result, data: { ...result.data, status } };
+    try {
+      const observation = await this.captureWindow(session, content ? { ...capture.observation, content } : capture.observation, s, generation);
+      if (observation.errorCode) return this.verificationUnavailable(result, status, observation.errorCode, generation);
+      return { data: { ...observation.data, status, action: result.data, verificationRequired: true, observationRequired: false, observation: { available: true }, doNotRepeat: true }, images: observation.images };
+    } catch (error) {
+      return this.verificationUnavailable(result, status, `computer_verification_interrupted: ${error instanceof Error ? error.message : String(error)}`, generation);
+    }
   }
   private verificationUnavailable(result: DriverReply, status: ComputerStatus["lastOutcome"], reason: string, generation: number): DriverReply {
     if (generation === this.generation) { this.invalidate(); this.snapshot.state = "unknown"; this.snapshot.lastOutcome = status; this.snapshot.diagnostic = `Input ${status}; observation unavailable: ${reason}. Do not repeat the input.`; }

@@ -17,6 +17,98 @@ function fixture(enabled = false) {
   const controller = new ComputerUseController(driver, { enabled, now: () => now, preview: value => previews.push(value) });
   return { controller, calls, lifecycle, previews, setStart: (value: typeof start) => { start = value; }, setAction: (value: typeof action) => { action = value; }, setObserve: (value: typeof observe) => { observe = value; }, advance: () => { now = 60_001; } };
 }
+
+for (const stop of ["refused", "missing-frame", "pause", "unknown"] as const) test(`连续动作在${stop}后不派发后续输入，原有单动作覆盖无法检查剩余步骤`, async () => {
+  const f = fixture(true);
+  await f.controller.observe("s", target);
+  let actions = 0;
+  f.setAction(async () => {
+    actions++;
+    if (actions === 2) {
+      if (stop === "refused") return { data: { effect: "refused" }, images: [], errorCode: "denied" };
+      if (stop === "missing-frame") f.setObserve(async () => { throw new Error("capture_failed"); });
+      if (stop === "pause") f.controller.control("pause");
+      if (stop === "unknown") throw new Error("transport_lost");
+    }
+    return { data: { effect: "unverifiable" }, images: [] };
+  });
+  const pending = f.controller.sequence("s", { ...target, captureId: "c1", delivery: "background", actions: [
+    { action: "click", x: 1, y: 1 }, { action: "type_text", text: "hello" }, { action: "press_key", key: "Return" }
+  ] });
+  if (stop === "unknown") await assert.rejects(pending, /已收到 1 步回执.*第 2 步执行情况未知/);
+  else {
+    const reply = await pending;
+    assert.equal(reply.data.completedCount, stop === "refused" ? 1 : 2);
+    assert.equal(reply.data.stoppedAt, 1);
+    assert.equal(reply.data.doNotRepeat, true);
+  }
+  assert.deepEqual(f.calls, ["click", "type_text"]);
+  if (stop === "pause") assert.equal(f.controller.status().state, "paused");
+});
+
+test("连续动作先校验全部步骤且不自动升级前台，原有单动作校验未覆盖后续无效参数", async () => {
+  const f = fixture(true);
+  await f.controller.observe("s", target);
+  const request = { ...target, captureId: "c1", delivery: "background" as const, actions: [{ action: "click" as const, x: 1, y: 1 }, { action: "click" as const, x: 2, y: 2 }] };
+  assert.throws(() => f.controller.sequence("s", request), /首步之后/);
+  assert.throws(() => f.controller.sequence("s", { ...request, actions: Array.from({ length: 6 }, () => ({ action: "press_key" as const, key: "Return" })) }), /5/);
+  const reply = await f.controller.sequence("s", { ...request, delivery: "foreground", actions: [request.actions[0]!] });
+  assert.match(reply.errorCode!, /foreground_permission_required/);
+  assert.equal(reply.data.completedCount, 0);
+  assert.equal(f.calls.length, 0);
+});
+
+test("文字等待超时撤销旧凭据且不自动输入，普通观察成功用例没有等待截止边界", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture(true);
+  await f.controller.observe("s", target);
+  const read = deferred();
+  f.setObserve(async () => { read.resolve(); return frame(); });
+  const pending = f.controller.observe("s", { ...target, waitFor: { text: "未出现", timeoutMs: 250 } });
+  await read.promise;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  t.mock.timers.tick(250);
+  const result = await pending;
+  assert.deepEqual(result.data.wait, { matched: false, attempts: 1, reason: "timeout" });
+  assert.equal(result.data.observationRequired, true);
+  await assert.rejects(f.controller.act("s", { ...target, captureId: "c1", action: "press_key", key: "Return" }), /capture_target/);
+  assert.equal(f.calls.length, 0);
+});
+
+test("连续动作总时限中断在途输入并保留已完成步数，立即返回的驱动覆盖不到请求悬挂", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture(true);
+  await f.controller.observe("s", target);
+  const entered = deferred();
+  let count = 0;
+  f.setAction(async (_session, _action, signal) => {
+    if (++count === 1) return { data: { effect: "confirmed" }, images: [] };
+    entered.resolve();
+    return await new Promise<DriverReply>((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  });
+  const pending = f.controller.sequence("s", { ...target, captureId: "c1", delivery: "background", actions: [
+    { action: "click", x: 1, y: 1 }, { action: "type_text", text: "hello" }, { action: "press_key", key: "Return" }
+  ] });
+  const rejection = assert.rejects(pending, /已收到 1 步回执.*第 2 步执行情况未知/);
+  await entered.promise;
+  t.mock.timers.tick(15_000);
+  await rejection;
+  assert.deepEqual(f.calls, ["click", "type_text"]);
+  assert.equal(f.controller.status().state, "unknown");
+});
+
+test("文字等待被接管时立即退出且不恢复控制，超时用例没有用户中断", async () => {
+  const f = fixture(true);
+  const read = deferred();
+  f.setObserve(async () => { read.resolve(); return frame(); });
+  const pending = f.controller.observe("s", { ...target, waitFor: { text: "未出现", timeoutMs: 1_000 } });
+  const rejection = assert.rejects(pending, /aborted|invalidated/i);
+  await read.promise;
+  f.controller.control("takeover");
+  await rejection;
+  assert.equal(f.controller.status().state, "taken-over");
+  assert.equal(f.calls.length, 0);
+});
 test("observation options reach the driver and remain in post-action verification, not target identity", async () => {
   const f = fixture(true);
   const observations: unknown[] = [];

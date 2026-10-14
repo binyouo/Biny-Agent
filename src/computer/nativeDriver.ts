@@ -539,6 +539,7 @@ export class NativeProcessDriver implements ComputerDriver {
     const observe = target as WindowObserve;
     if (observe.maxElements !== undefined) args.max_elements = observe.maxElements;
     if (observe.depth !== undefined) args.max_depth = observe.depth;
+    if (observe.content === "image") args.max_depth = 0;
     if (observe.screenshotMaxWidth !== undefined) args.max_width = observe.screenshotMaxWidth;
     if (observe.interactiveOnly !== undefined) args.interactive_only = observe.interactiveOnly;
     const reply = await this.call("get_app_state", { ...args, client_id: this.clientId }, signal);
@@ -554,7 +555,7 @@ export class NativeProcessDriver implements ComputerDriver {
       return { ...reply, data: { ...data, effect: data.effect ?? (accepted && !data.warning && !data.verification_note ? "confirmed" : "unverifiable") } };
     } catch (error) {
       // 只将确定发生在派发前的原生拒绝降为普通失败，部分输入与传输失败保持未知。
-      if (error instanceof NativeCommandError && /^(ax_not_granted|focus_guard_unavailable|element_ref_not_observed|observation_[a-z_]+|input_method_(requires_ref|unmappable_character|layout_required|layout_unavailable)|unknown_key|unknown_input_method)(:|$)/.test(error.message)) {
+      if (error instanceof NativeCommandError && /^(ax_not_granted|focus_guard_unavailable|element_ref_not_observed|observation_[a-z_]+|text_match_(invalid|not_found|ambiguous|unavailable|changed)|input_method_(requires_ref|unmappable_character|layout_required|layout_unavailable)|unknown_key|unknown_input_method)(:|$)/.test(error.message)) {
         return { data: { effect: "refused", code: error.message }, images: [], errorCode: error.message };
       }
       throw error;
@@ -589,7 +590,9 @@ export class NativeProcessDriver implements ComputerDriver {
         return await this.input("set_value", withPid({ ref: action.elementToken, value: action.value }), signal);
       case "select_text":
         return await this.input("select_text", withPid(
-          action.text !== undefined
+          action.matchText !== undefined
+            ? { ref: action.elementToken, match_text: action.matchText, prefix: action.prefix, suffix: action.suffix }
+            : action.text !== undefined
             ? { ref: action.elementToken, text: action.text }
             : { ref: action.elementToken, location: action.location, length: action.length ?? 0 }
         ), signal);

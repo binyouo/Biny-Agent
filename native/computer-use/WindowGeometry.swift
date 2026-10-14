@@ -1,6 +1,12 @@
 import Foundation
 import CoreGraphics
 
+func validateBackgroundKeyboardWindow(windowID: Int, focusedWindowID: Int?) throws {
+    guard windowID > 0, windowID <= Int(UInt32.max), focusedWindowID == windowID else {
+        throw NSError(domain: "input", code: 65, userInfo: [NSLocalizedDescriptionKey: "background_keyboard_target_not_focused: 后台键盘焦点不在观察的窗口，已停止输入；先重新观察，不自动重试或切到前台"])
+    }
+}
+
 func validateForegroundTarget(pid: Int, windowID: Int, frontmostPID: Int?, focusedWindowID: Int?) throws {
     guard pid > 0, windowID > 0, windowID <= Int(UInt32.max), frontmostPID == pid, focusedWindowID == windowID else {
         throw NSError(domain: "input", code: 65, userInfo: [NSLocalizedDescriptionKey: "foreground_target_not_focused: input stopped; select the exact target window and observe before deciding what remains"])

@@ -5,6 +5,32 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+test("文字匹配选区按 UTF-16 返回唯一范围，拒绝缺失、重复及重叠匹配，协议替身无法验证原生范围计算", { skip: process.platform !== "darwin" }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-text-selection-"));
+  try {
+    const source = path.join(directory, "main.swift");
+    await writeFile(source, `import Foundation
+func expect(_ text: String, _ match: String, _ location: Int, _ length: Int, prefix: String? = nil, suffix: String? = nil) throws {
+    let range = try matchingTextRange(in: text, match: match, prefix: prefix, suffix: suffix)
+    precondition(range.location == location && range.length == length)
+}
+try expect("A🤖目标结束", "目标", 3, 2)
+try expect("前目标后，另一目标尾", "目标", 7, 2, prefix: "另一", suffix: "尾")
+try expect("abc", "abc", 0, 3)
+for (text, match, code) in [("abc", "", "invalid"), ("abc", "x", "not_found"), ("目标目标", "目标", "ambiguous"), ("aaa", "aa", "ambiguous")] {
+    do { _ = try matchingTextRange(in: text, match: match); fatalError("unsafe range accepted") }
+    catch { precondition(error.localizedDescription == "text_match_" + code) }
+}
+do { _ = try matchingTextRange(in: "abc", match: "b", prefix: "wrong"); fatalError("wrong context accepted") }
+catch { precondition(error.localizedDescription == "text_match_not_found") }
+print("text selection passed")
+`);
+    const executable = path.join(directory, "test");
+    execFileSync("xcrun", ["swiftc", "-swift-version", "5", "native/computer-use/TextSelection.swift", source, "-o", executable], { timeout: 30_000 });
+    assert.match(execFileSync(executable, { encoding: "utf8", timeout: 5_000 }), /text selection passed/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("mirror sessions reject window ID reuse and late frames, report frame age, and bound resources", { skip: process.platform !== "darwin" }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-mirror-core-"));
   try {
@@ -67,6 +93,11 @@ actor Gate {
     try validateCaptureTarget(pid: nil, windowID: nil, applications: [12], windows: [42: 12])
     try validateCaptureTarget(pid: 12, windowID: 42, applications: [12], windows: [42: 12])
     try validateForegroundTarget(pid: 12, windowID: 42, frontmostPID: 12, focusedWindowID: 42)
+    try validateBackgroundKeyboardWindow(windowID: 42, focusedWindowID: 42)
+    for (window, focused) in [(42, nil as Int?), (42, 43), (0, 0), (Int(UInt32.max) + 1, Int(UInt32.max) + 1)] {
+      do { try validateBackgroundKeyboardWindow(windowID: window, focusedWindowID: focused); fatalError("background keyboard escaped its observed window") }
+      catch { precondition(error.localizedDescription.hasPrefix("background_keyboard_target_not_focused")) }
+    }
     let invalidFocus: [(Int, Int, Int?, Int?)] = [(12, 42, nil, 42), (12, 42, 13, 42), (12, 42, 12, nil), (12, 42, 12, 43), (0, 42, 0, 42), (12, 0, 12, 0), (12, Int(UInt32.max) + 1, 12, Int(UInt32.max) + 1)]
     for (pid, window, frontmost, focused) in invalidFocus {
       do { try validateForegroundTarget(pid: pid, windowID: window, frontmostPID: frontmost, focusedWindowID: focused); fatalError("keyboard input escaped its exact foreground window") }

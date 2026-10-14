@@ -6,6 +6,7 @@ import { ToolAccesses } from "./access.js";
 import { ToolOutcomeUnknownError, type Tool, type ToolExecutionContext } from "./types.js";
 import { computerListSchema, computerActionSchema, computerImageSchema, computerMirrorSchema, windowObserveSchema } from "../computer/protocol.js";
 import type { DriverReply } from "../computer/controller.js";
+import { computerSequenceSchema } from "../computer/protocol.js";
 import { renderElementTree, type ElementLike } from "../computer/elementTree.js";
 
 const commonProperties = { pid: { type: "integer" as const, minimum: 1 }, windowId: { type: "string" as const, pattern: "^[1-9][0-9]{0,19}$", description: "Exact window ID from ComputerList; preserve as decimal string." } };
@@ -31,6 +32,8 @@ export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
     {
       name: "ComputerObserve", description: "Observe one exact native window, returning an image, fresh capture_id and element tokens. This screenshot is sent to the current model only after the execution service checks the target application approval; it is not saved to Activity memory.", risk: "read", capability: "computer.observe",
       parameters: { type: "object", properties: { ...commonProperties,
+        content: { type: "string", enum: ["full", "image"], description: "默认完整观察；image 仅截图并刷新凭据，不提供或沿用控件引用。" },
+        waitFor: { type: "object", properties: { text: { type: "string", minLength: 1, maxLength: 1000 }, timeoutMs: { type: "integer", minimum: 250, maximum: 10000 } }, required: ["text"], additionalProperties: false, description: "等待控件文字包含指定文本，默认最多 5 秒，每次检查至少间隔 250 毫秒；超时后不要重复等待相同条件。条件满足只证明文字出现。" },
         maxElements: { type: "integer", minimum: 1, maximum: 1000 },
         depth: { type: "integer", minimum: 1, maximum: 20, description: "AX tree depth, from 1 to 20." },
         screenshotMaxWidth: { type: "integer", minimum: 1, description: "Downsample width of the screenshot, default 1280." },
@@ -43,7 +46,7 @@ export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
       promptGuidelines: [
         "Use this MCP control plane for native desktop input, not Bash, biny cu, osascript, Quartz, clipboard paste or another daemon. A paused, denied, unavailable or unverified action never authorizes an alternate input or activation path.",
         "Use ComputerList, then ComputerObserve to choose an exact target; never guess IDs, element tokens or screenshot coordinates. Prefer a usable element token; custom-drawn controls without tokens require screenshot coordinates.",
-        "type_text with auto, physical or unicode may omit elementToken and uses the target's keyboard focus. Only inputMethod=ax requires a writable elementToken. Click the field first, inspect the returned observation for focus, then type with its fresh capture_id.",
+        "输入方式 auto、physical、unicode 可以向键盘焦点输入；ax 必须指定可写控件。需要确认焦点时先点击并检查返回画面。已经确定、无须根据中间画面决策的步骤可使用 ComputerSequence，不能合并跨窗口操作或需要找新按钮的步骤。",
         "If application approval is required, ask the user to approve the app in Settings → Computer Use. Global tool approval does not override strict application approval.",
         "默认后台投递。只有观察返回 foregroundAllowed 为 true 且任务确实需要时，才显式选择 delivery=foreground；否则须由用户在设置中开启。后台失败不能自动升级到前台；请求中断时停止输入，不重放可能已经发生的动作。",
         "已投递的动作仍须核对业务结果。已有新画面和观察凭据时直接检查并决定下一步，不要为了核对再重复观察或重放动作；只有缺少所需信息或画面尚在加载时才重新观察。请求中断导致执行情况未知时停止输入，不自动重试。",
@@ -56,11 +59,21 @@ export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
         x1: { type: "number", description: "drag: start point in screenshot pixels." }, y1: { type: "number" },
         x2: { type: "number", description: "drag: end point in screenshot pixels." }, y2: { type: "number" },
         value: { anyOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }], description: "set_value: the value to write, matching the control's own type." },
-        location: { type: "integer", minimum: 0, description: "select_text: character offset to place the cursor at when no text is given." },
-        length: { type: "integer", minimum: 0, description: "select_text: characters to select from location. Default 0 (cursor only)." } }, required: ["pid", "windowId", "action", "captureId"], additionalProperties: false }, schema: computerActionSchema,
+        location: { type: "integer", minimum: 0, description: "select_text 的 UTF-16 起始偏移；长度为零时移动光标。" },
+        matchText: { type: "string", minLength: 1, maxLength: 4000, description: "select_text 按文字匹配选区，不修改正文；不得与 text/location/length 混用。" },
+        prefix: { type: "string", maxLength: 1000, description: "匹配文字紧邻的前文，用于消除歧义。" },
+        suffix: { type: "string", maxLength: 1000, description: "匹配文字紧邻的后文，用于消除歧义。" },
+        length: { type: "integer", minimum: 0, description: "select_text 从起始位置选择的 UTF-16 长度，默认零。" } }, required: ["pid", "windowId", "action", "captureId"], additionalProperties: false }, schema: computerActionSchema,
       resolveExecution: args => execution(call, "action", computerActionSchema.parse(args), true)
     }
   ];
+  const stepProperties = Object.fromEntries(Object.entries(tools.find(tool => tool.name === "ComputerAction")!.parameters.properties ?? {}).filter(([name]) => !["pid", "windowId", "captureId", "delivery"].includes(name)));
+  tools.push({
+    name: "ComputerSequence", description: "在同一窗口连续执行已确定的 1 至 5 步，最多 15 秒。首步可定位控件，之后只能向当前焦点输入或按键；需要看画面才能决定的步骤必须拆开。每步更新观察凭据，中间仅截图，最终返回画面和逐步回执。拒绝、回图失败、暂停或中断立即停止，禁止重放整个序列。", risk: "execute", capability: "computer.action",
+    schema: computerSequenceSchema,
+    parameters: { type: "object", properties: { ...commonProperties, captureId: { type: "string" }, delivery: { type: "string", enum: ["background", "foreground"] }, actions: { type: "array", minItems: 1, maxItems: 5, items: { type: "object", properties: stepProperties, required: ["action"], additionalProperties: false } } }, required: ["pid", "windowId", "captureId", "actions"], additionalProperties: false },
+    resolveExecution: args => execution(call, "sequence", computerSequenceSchema.parse(args), true)
+  });
   return tools.map(tool => ({ ...tool, source: "mcp", exposure: "direct", namespace: { name: "computer-use", description: "Approved Desktop windows" } }));
 }
 function execution(call: ComputerToolCaller, method: string, args: Record<string, unknown>, mutation: boolean) {

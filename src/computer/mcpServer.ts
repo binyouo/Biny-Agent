@@ -7,6 +7,7 @@ import { z } from "zod";
 import { applicationPlaybook } from "./playbooks.js";
 import { NativeProcessDriver } from "./nativeDriver.js";
 import type { DriverReply } from "./controller.js";
+import { computerActionSchema, computerSequenceSchema, computerWaitSchema } from "./protocol.js";
 
 const appSchema = { pid: z.number().int().positive().optional(), bundle: z.string().min(1).optional(), window_id: z.number().int().positive().max(4294967295).optional() };
 
@@ -107,6 +108,8 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
       inputSchema: {
         ...appSchema,
         maxElements: z.number().int().positive().max(1000).optional(),
+        content: z.enum(["full", "image"]).optional().describe("image 仅截图并更新凭据，不提供旧控件引用。"),
+        waitFor: computerWaitSchema.optional().describe("通过 Desktop 等待指定文字出现，超时后停止等待。"),
         depth: z.number().int().min(1).max(20).optional().describe("AX tree depth, from 1 to 20."),
         screenshotMaxWidth: z.number().int().positive().optional()
           .describe("Downsample width for the screenshot (default 1280)."),
@@ -115,13 +118,14 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
           .describe("Auto-launch the app in the background if not running. Default true.")
       }
     },
-    async ({ pid, bundle, window_id, maxElements, depth, screenshotMaxWidth, interactiveOnly, autoLaunch }, extra) => {
+    async ({ pid, bundle, window_id, maxElements, depth, screenshotMaxWidth, interactiveOnly, autoLaunch, content: observationContent }, extra) => {
       try {
         const args: Record<string, unknown> = {};
         if (pid !== undefined) args.pid = pid;
         if (bundle !== undefined) args.bundle = bundle;
         if (maxElements !== undefined) args.max_elements = maxElements;
         if (depth !== undefined) args.max_depth = depth;
+        if (observationContent === "image") args.max_depth = 0;
         if (window_id !== undefined) args.window_id = window_id;
         if (screenshotMaxWidth !== undefined) args.max_width = screenshotMaxWidth;
         if (interactiveOnly !== undefined) args.interactive_only = interactiveOnly;
@@ -288,24 +292,32 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     "select_text",
     {
       title: "Select text",
-      description: "在可编辑控件中按位置和长度选择文本，长度为零时移动光标。传入 text 会替换当前选区，不用于查找或选择匹配文本。返回动作后截图。",
+      description: "按位置选择文本，或使用 matchText 和可选前后文唯一匹配选区。重复匹配时拒绝，不默认选第一处。text 用于替换当前选区，不能与 matchText 混用。返回动作后截图。",
       inputSchema: {
         ref: z.string().min(1).describe("Element ref from the latest snapshot"),
         text: z.string().min(1).optional(),
+        matchText: z.string().min(1).max(4000).optional(),
+        prefix: z.string().max(1000).optional(),
+        suffix: z.string().max(1000).optional(),
         location: z.number().int().nonnegative().optional(),
         length: z.number().int().nonnegative().optional(),
         ...appSchema,
         show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, text, location, length, pid, bundle, window_id, show_cursor }, extra) => {
+    async ({ ref, text, location, length, matchText, prefix, suffix, pid, bundle, window_id, show_cursor }, extra) => {
       try {
-        if (text === undefined && location === undefined) throw new Error("select_text requires text or location");
-        const reply = await driver.actRaw("select_text", { ref, text, location, length: length ?? 0, bundle, window_id, show_cursor }, pid, extra.signal);
+        computerActionSchema.parse({ action: "select_text", pid, windowId: String(window_id), captureId: "external", elementToken: ref, text, location, length, matchText, prefix, suffix });
+        const reply = await driver.actRaw("select_text", { ref, text, location, length: matchText === undefined ? length ?? 0 : undefined, match_text: matchText, prefix, suffix, bundle, window_id, show_cursor }, pid, extra.signal);
         return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );
+
+  registerTool("sequence", {
+    title: "连续动作", description: "通过 Desktop 在同一窗口连续执行最多 5 步。首步之后只允许输入或按键；发生拒绝、回图失败或中断立即停止，不自动重放。使用最近观察的 capture_id 作为 captureId。",
+    inputSchema: computerSequenceSchema.innerType().shape
+  }, async () => fail(new Error("computer_desktop_required: 连续动作需要正在运行的 Desktop 控制器")));
 
   registerTool(
     "grant",

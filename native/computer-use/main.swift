@@ -653,7 +653,7 @@ func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CG
 /// 落到**当前焦点**上 —— 有些键（系统级快捷键、必须经过窗口服务器的那类）
 /// 投给进程是表达不出来的。代价是它会被前台应用收到，所以要显式选择。
 func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags, global: Bool = false, windowID: Int? = nil) throws {
-    if global, let windowID { try validateActiveInputTarget(pid, windowID) }
+    if let windowID { try validateActiveInputTarget(pid, windowID, foreground: global) }
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
           let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { return }
     down.flags = flags; up.flags = flags
@@ -662,7 +662,7 @@ func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags, global: Bool
 }
 func postUnicode(_ pid: pid_t, _ text: String, global: Bool = false, windowID: Int? = nil) throws {
     for scalar in text.unicodeScalars {
-        if global, let windowID { try validateActiveInputTarget(pid, windowID) }
+        if let windowID { try validateActiveInputTarget(pid, windowID, foreground: global) }
         let units = Array(String(scalar).utf16)
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
               let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { continue }
@@ -855,6 +855,7 @@ func withFocusGuard<T>(_ pid: pid_t, background: Bool = true, _ body: () async t
 }
 
 func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double, interactiveOnly: Bool = true, windowId: Int? = nil) -> ([[String: Any]], [String: AXUIElement], Int, Int) {
+    if maxDepth == 0 { return ([], [:], 0, 0) }
     let box = AXCollectBox()
     let thread = Thread {
         let app = axApp(pid)
@@ -1201,14 +1202,18 @@ func keyDeliveryWarning(_ pid: pid_t) -> String? {
         + "不要自动重放或切前台。仅在用户开启前台许可且本次明确选择 foreground 后使用前台输入。"
 }
 
-func validateActiveInputTarget(_ pid: pid_t, _ windowID: Int) throws {
+func validateActiveInputTarget(_ pid: pid_t, _ windowID: Int, foreground: Bool = true) throws {
     var focusedID: CGWindowID = 0
     let focusedWindow = axCopy(axApp(pid), kAXFocusedWindowAttribute as String)
         .map { unsafeBitCast($0, to: AXUIElement.self) }
     let identified = focusedWindow.map { axWindowIdFn?($0, &focusedID) == .success } ?? false
-    try validateForegroundTarget(pid: Int(pid), windowID: windowID,
-        frontmostPID: NSWorkspace.shared.frontmostApplication.map { Int($0.processIdentifier) },
-        focusedWindowID: identified ? Int(focusedID) : nil)
+    if foreground {
+        try validateForegroundTarget(pid: Int(pid), windowID: windowID,
+            frontmostPID: NSWorkspace.shared.frontmostApplication.map { Int($0.processIdentifier) },
+            focusedWindowID: identified ? Int(focusedID) : nil)
+    } else {
+        try validateBackgroundKeyboardWindow(windowID: windowID, focusedWindowID: identified ? Int(focusedID) : nil)
+    }
 }
 
 @MainActor func prepareForegroundInput(_ args: [String: Any]) async throws {
@@ -1878,7 +1883,7 @@ DispatchQueue.global().async {
                                 }
                                 lastElementFingerprints[fingerprintKey] = fresh
                                 data["interactiveOnly"] = interactiveOnly
-                                if interactiveOnly, elements.count <= 1, data["warning"] == nil {
+                                if maxDepth > 0, interactiveOnly, elements.count <= 1, data["warning"] == nil {
                                     data["warning"] = "no_interactive_elements: 这棵树里没有可交互元素（并不代表没有树）。要看完整树就传 interactive_only=false（CLI：--all）。"
                                 }
                                 if let frame = shot["frame"] { data["windowFrame"] = frame }
@@ -2136,7 +2141,23 @@ DispatchQueue.global().async {
                                 guard let element = observedElements(pid_t(pid))[ref] else {
                                     throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
-                                if let text = args["text"] as? String {
+                                if let match = args["match_text"] as? String {
+                                    guard args["text"] == nil, args["location"] == nil, args["length"] == nil else {
+                                        throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "text_match_invalid"])
+                                    }
+                                    guard let value = axCopy(element, kAXValueAttribute as String) as? String else {
+                                        throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "text_match_unavailable"])
+                                    }
+                                    let selected = try matchingTextRange(in: value, match: match, prefix: args["prefix"] as? String, suffix: args["suffix"] as? String)
+                                    guard axCopy(element, kAXValueAttribute as String) as? String == value else {
+                                        throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "text_match_changed"])
+                                    }
+                                    var range = CFRange(location: selected.location, length: selected.length)
+                                    guard let axRange = AXValueCreate(.cfRange, &range), AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange) == .success else {
+                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "element_range_not_settable"])
+                                    }
+                                    reply(fd, ["id": id, "ok": true, "data": ["location": selected.location, "length": selected.length, "matched": true] as [String: Any]])
+                                } else if let text = args["text"] as? String {
                                     let status = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
                                     guard status == .success else {
                                         throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "element_selection_not_settable: 这个控件不接受设置选区/选中文本（可能不是文本控件）"])
@@ -2202,7 +2223,7 @@ DispatchQueue.global().async {
                                     else { strokes = try await MainActor.run { try PhysicalInput.currentLayoutPlan(text) } }
                                     try await withFocusGuard(pid, background: !foregroundInput) {
                                         for stroke in strokes {
-                                            try postKey(pid, keyCode: stroke.keyCode, flags: stroke.flags, global: foregroundInput, windowID: foregroundInput ? args["window_id"] as? Int : nil)
+                                            try postKey(pid, keyCode: stroke.keyCode, flags: stroke.flags, global: foregroundInput, windowID: args["window_id"] as? Int)
                                         }
                                     }
                                 default:
@@ -2228,7 +2249,7 @@ DispatchQueue.global().async {
                                 guard let (keyCode, flags) = parseKeyCombo(combo) else { throw NSError(domain: "key", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_key"]) }
                                 let global = foregroundInput || (args["global"] as? Bool ?? false)
                                 try await withFocusGuard(pid, background: !foregroundInput) {
-                                    try postKey(pid, keyCode: keyCode, flags: flags, global: global, windowID: foregroundInput ? args["window_id"] as? Int : nil)
+                                    try postKey(pid, keyCode: keyCode, flags: flags, global: global, windowID: args["window_id"] as? Int)
                                 }
                                 var pressed: [String: Any] = ["pressed": combo, "global": global]
                                 if let warning = keyDeliveryWarning(pid) { pressed["warning"] = warning }

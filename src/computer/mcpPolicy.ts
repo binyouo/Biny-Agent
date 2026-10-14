@@ -45,6 +45,7 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     // 一旦接入桌面控制面，连接中断也不能退回独立输入绕过暂停。
     this.desktop ??= await this.getDesktop();
     if (this.desktop && !tool.startsWith("pip_")) return await this.runDesktop(tool, args, signal);
+    if (args.waitFor !== undefined || tool === "sequence") throw new Error("computer_desktop_required: 文字等待和连续动作需要正在运行的 Desktop 控制器");
     if (tool.startsWith("pip_")) {
       const desktop = this.desktop;
       if (desktop) {
@@ -98,6 +99,12 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     let reply: DriverReply;
     if (tool === "list_apps") reply = await call("list", { days: args.days });
     else if (tool === "launch_app") reply = await call("launch", { bundleId: args.bundle }, true);
+    else if (tool === "sequence") {
+      const capture = this.desktopCapture;
+      if (!capture || args.pid !== capture.pid || args.windowId !== capture.windowId || args.captureId !== capture.captureId) throw new Error("computer_observation_required: 请先观察同一窗口");
+      this.desktopCapture = undefined;
+      reply = await call("sequence", args, true);
+    }
     else if (tool === "get_app_state") {
       this.desktopCapture = undefined;
       let pid = args.pid;
@@ -118,7 +125,7 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
         if (windows.length !== 1) throw new Error("computer_window_selection_required: 请列出并指定准确窗口");
         windowId = String(windows[0]!.window_id);
       }
-      reply = await call("observe", { pid, windowId, maxElements: args.maxElements, depth: args.depth, screenshotMaxWidth: args.screenshotMaxWidth, interactiveOnly: args.interactiveOnly });
+      reply = await call("observe", { pid, windowId, content: args.content, waitFor: args.waitFor, maxElements: args.maxElements, depth: args.depth, screenshotMaxWidth: args.screenshotMaxWidth, interactiveOnly: args.interactiveOnly });
     } else if (inputs.has(tool)) {
       const capture = this.desktopCapture;
       if (!capture || args.pid !== undefined && args.pid !== capture.pid || args.window_id !== undefined && String(args.window_id) !== capture.windowId) throw new Error("computer_observation_required: 请先观察同一窗口");
@@ -130,7 +137,7 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
       this.desktopCapture = undefined;
       reply = await call("action", { ...capture, action: tool, elementToken: args.ref, x: args.x, y: args.y,
         x1: args.x1, y1: args.y1, x2: args.x2, y2: args.y2, text: args.text, key: args.key, value: args.value,
-        location: args.location, length: args.length, direction: args.direction, pages: args.pages,
+        location: args.location, length: args.length, matchText: args.matchText, prefix: args.prefix, suffix: args.suffix, direction: args.direction, pages: args.pages,
         button: args.button, clickCount: args.click_count, strategy: args.strategy, coordinateSpace: args.coord_space,
         inputMethod: args.inputMethod, showCursor: args.show_cursor }, true);
     } else throw new Error("computer_tool_unsupported");

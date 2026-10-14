@@ -20,7 +20,7 @@ test("computer use is served over MCP with the documented verbs", async () => {
     assert.deepEqual(names, [
       "click", "drag", "get_app_state", "grant", "launch_app", "list_apps",
       "perform_secondary_action", "permissions", "pip_close", "pip_list", "pip_open", "press_key", "scroll",
-      "select_text", "set_value", "type_text"
+      "select_text", "sequence", "set_value", "type_text"
     ]);
     // 动作类工具必须声明 pid，否则调用方无法把动作定向到目标窗口。
     for (const name of ["click", "type_text", "press_key", "scroll", "drag", "set_value", "select_text", "perform_secondary_action"]) {

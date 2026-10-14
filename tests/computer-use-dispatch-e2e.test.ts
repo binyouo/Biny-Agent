@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { Command } from "commander";
+import { registerComputerCommands } from "../src/cli/commands/computer.js";
+import { computerDesktopEndpoint } from "../src/computer/desktopActivity.js";
 import { registerHooks } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -52,10 +55,117 @@ Object.assign(globalThis, { __computerDispatchElectron: electron });
 
 interface JournalEntry { cmd: string; args: Record<string, unknown> }
 const target = { pid: 42, windowId: "900" };
+
+test("受控命令行与外部 MCP 共用连续动作和等待链路，原有直接命令行测试不覆盖桌面控制器", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  const endpointPath = computerDesktopEndpoint();
+  await mkdir(path.dirname(endpointPath), { recursive: true });
+  await writeFile(endpointPath, JSON.stringify(f.endpoint), { mode: 0o600 });
+  t.after(() => rm(endpointPath, { force: true }));
+  const output: string[] = [];
+  t.mock.method(console, "log", (value: string) => output.push(value));
+  const run = async (...args: string[]) => {
+    const program = new Command().exitOverride();
+    registerComputerCommands(program);
+    await program.parseAsync(["node", "biny", "computer", ...args, "--session", "fixture"]);
+  };
+  await run("observe", JSON.stringify({ ...target, waitFor: { text: "Fixture" } }), "--json");
+  const observed = JSON.parse(output.at(-1)!).data;
+  assert.equal(observed.wait.matched, true);
+  await run("sequence", JSON.stringify({ ...target, captureId: observed.capture_id, actions: [{ action: "press_key", key: "Return" }] }), "--json");
+  assert.equal(JSON.parse(output.at(-1)!).data.completedCount, 1);
+  await run("release");
+  assert.equal(f.service.controller.status().owner, undefined);
+  const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => f.endpoint);
+  const server = createComputerUseMcpServer(f.driver, policy);
+  const client = new Client({ name: "sequence-contract", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    await client.callTool({ name: "get_app_state", arguments: { pid: 42, window_id: 900, waitFor: { text: "Fixture" } } });
+    const captureId = f.service.controller.currentCapture()!.id;
+    const result = await client.callTool({ name: "sequence", arguments: { ...target, captureId, actions: [{ action: "press_key", key: "Return" }] } });
+    assert.equal(result.isError, false);
+    assert.equal((result.content as { type: string }[]).some(part => part.type === "image"), true);
+  } finally { await client.close(); await server.close(); }
+});
+
+test("按文字匹配选区使用独立参数且不发送替换内容，原有位置选区测试无法防止误写正文", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  const observed = await f.invoke("ComputerObserve", target);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, captureId: observed.capture_id, action: "select_text", elementToken: "e1", matchText: "目标", text: "不应写入" }));
+  await f.invoke("ComputerAction", { ...target, captureId: observed.capture_id, action: "select_text", elementToken: "e1", matchText: "目标", prefix: "前文", suffix: "后文" });
+  const entry = (await f.entries()).find(entry => entry.cmd === "select_text")!;
+  assert.equal(entry.args.match_text, "目标");
+  assert.equal(entry.args.prefix, "前文");
+  assert.equal(entry.args.suffix, "后文");
+  assert.equal(entry.args.text, undefined);
+  assert.equal(entry.args.location, undefined);
+});
+
+test("连续动作在同一窗口逐步刷新凭据并仅返回最终画面，单动作覆盖不能证明后续步骤被实际派发", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { actionEffect: "unverified" });
+  assert.ok(f.mcp.createTools().some(tool => tool.name === "ComputerSequence"), "必须向模型提供连续动作入口");
+  await ensureAgentDirs(f.directory);
+  const recorder = new SessionRecorder(f.directory, "fixture-session");
+  t.after(() => recorder.close());
+  const config = structuredClone(defaultConfig);
+  config.permission.mode = "full-access";
+  config.permission.denyPaths = [];
+  const registry = new ToolRegistry();
+  for (const tool of f.mcp.createTools()) registry.registerMcpTool(tool);
+  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: f.directory, config, recorder, toolRegistry: registry }, new PermissionManager(config.permission), () => undefined, () => ({}));
+  const observed = await f.invoke("ComputerObserve", target);
+  const executed = await coordinator.createAgentTools().find(tool => tool.name === "ComputerSequence")!.execute("model-sequence", { ...target, captureId: observed.capture_id, actions: [
+    { action: "click", x: 1, y: 2 }, { action: "type_text", text: "测试", inputMethod: "unicode" }, { action: "press_key", key: "Return" }
+  ] });
+  assert.equal(executed.isError, false);
+  const result = executed.details as Record<string, unknown>;
+  assert.equal(result.completedCount, 3);
+  assert.equal(result.imageReturned, true);
+  assert.equal(executed.content.filter(part => part.type === "image").length, 1, "中间画面不占用模型图像预算");
+  const entries = await f.entries();
+  const actions = entries.filter(entry => ["click", "type_text", "press_key"].includes(entry.cmd));
+  assert.deepEqual(actions.map(entry => entry.cmd), ["click", "type_text", "press_key"]);
+  assert.equal(new Set(actions.map(entry => entry.args.capture_id)).size, 3);
+  assert.equal(entries.filter(entry => entry.cmd === "get_app_state").length, 4);
+  assert.deepEqual(entries.filter(entry => entry.cmd === "get_app_state").map(entry => entry.args.max_depth), [undefined, 0, 0, undefined]);
+  assert.equal(result.verificationRequired, true);
+  await recorder.flush();
+  const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  const event = events.find(event => event.type === "tool_result" && event.toolCallId === "model-sequence");
+  assert.equal(event.executionStatus, "succeeded");
+  assert.equal(event.result.completedCount, 3);
+  assert.equal(event.result.steps.length, 3);
+  assert.equal(JSON.stringify(events).includes("/9j/2Q=="), false);
+});
+
+test("等待文字条件通过真实工具返回当前画面，下一动作不重复等待，原有观察不会检查完成条件", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { observationTitles: ["Loading", "Fixture"] });
+  const observed = await f.invoke("ComputerObserve", { ...target, waitFor: { text: "Fixture", timeoutMs: 2_000 } });
+  assert.deepEqual(observed.wait, { matched: true, attempts: 2 });
+  assert.equal(observed.imageReturned, true);
+  const result = await f.invoke("ComputerAction", { ...target, captureId: observed.capture_id, action: "click", x: 1, y: 2 });
+  assert.equal(result.wait, undefined);
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "get_app_state").length, 3);
+});
+
+test("仅截图观察取得新凭据且不保留旧控件，原有完整观察用例未覆盖轻量路径", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  await f.invoke("ComputerObserve", target);
+  const observed = await f.invoke("ComputerObserve", { ...target, content: "image" });
+  assert.equal(observed.imageReturned, true);
+  assert.equal(observed.tree, undefined);
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "get_app_state").at(-1)!.args.max_depth, 0);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, captureId: observed.capture_id, action: "click", elementToken: "e1" }), /element_token_not_in_observation/);
+  const result = await f.invoke("ComputerAction", { ...target, captureId: observed.capture_id, action: "click", x: 1, y: 2 });
+  assert.equal(result.tree, undefined);
+  assert.equal(result.imageReturned, true);
+});
 async function fixture(t: TestContext, apps: Record<string, unknown>[] = [
   { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
   { name: "Recently Used", bundleId: "test.recent", running: false, lastUsed: "2026-10-07T00:00:00Z" }
-], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean; holdActionReply?: boolean; nativeRefusal?: boolean; failPostObservation?: boolean } = {}) {
+], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean; holdActionReply?: boolean; nativeRefusal?: boolean; failPostObservation?: boolean; observationTitles?: string[] } = {}) {
   const firstWindow = previewWindows.length;
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-dispatch-"));
   const hooks = registerHooks({ load(url, context, next) {
@@ -98,7 +208,7 @@ const server = net.createServer(socket => {
         const imagePath = path.join(directory, 'state-' + generation + '.jpg');
         fs.writeFileSync(imagePath, Buffer.from([255, 216, 255, 217]));
         data = { pid: 42, windowId: 900, screenshot: imagePath, screenshotWidth: args.max_width || 100, screenshotHeight: 80,
-          elements: args.max_elements === 0 || ${JSON.stringify(options.emptyTree ?? false)} ? [] : [{ ref, role: 'AXScrollArea', title: 'Fixture' }] };
+          elements: args.max_depth === 0 || args.max_elements === 0 || ${JSON.stringify(options.emptyTree ?? false)} ? [] : [{ ref, role: 'AXScrollArea', title: ${JSON.stringify(options.observationTitles ?? [])}[generation - 1] || 'Fixture' }] };
       } else if (cmd === 'shot_display' || cmd === 'capture_screen') {
         if (args.window_id !== undefined && args.window_id !== 900) {
           socket.write(JSON.stringify({ id, ok: false, error: { message: 'capture_window_not_found' } }) + '\\n'); continue;
@@ -230,6 +340,14 @@ for (const desktop of [true, false]) test(`外部输入已投递待核对时保�
   try {
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
     const observe = () => client.callTool({ name: "get_app_state", arguments: { pid: 42, window_id: 900 } });
+    if (!desktop) {
+      const waiting = await client.callTool({ name: "get_app_state", arguments: { pid: 42, window_id: 900, waitFor: { text: "Fixture" } } });
+      assert.equal(waiting.isError, true);
+      const sequence = await client.callTool({ name: "sequence", arguments: { ...target, captureId: "unavailable", actions: [{ action: "press_key", key: "Return" }] } });
+      assert.equal(sequence.isError, true);
+      assert.match(JSON.stringify(sequence.content), /computer_desktop_required/);
+      await assert.rejects(stat(path.join(f.directory, "requests.jsonl")), { code: "ENOENT" });
+    }
     await observe();
     const result = await client.callTool({ name: "type_text", arguments: { pid: 42, window_id: 900, text: "test", inputMethod: "unicode" } });
     assert.equal(result.isError ?? false, false);

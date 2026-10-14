@@ -1,9 +1,34 @@
 import type { Command } from "commander";
 import { ComputerAppApprovals } from "../../computer/appApprovals.js";
 import { createFileConfigStore } from "../../config/store.js";
+import { computerDesktopConnection } from "../../computer/desktopActivity.js";
+import { computerActionSchema, computerSequenceSchema, windowObserveSchema } from "../../computer/protocol.js";
+import { requestComputer } from "../../tools/computerUse.js";
 
 export function registerComputerCommands(program: Command): void {
   const computer = program.command("computer").description("Manage persistent desktop application approvals");
+  for (const [method, schema] of [["observe", windowObserveSchema], ["action", computerActionSchema], ["sequence", computerSequenceSchema]] as const) {
+    computer.command(method).description("通过正在运行的 Desktop 控制器执行请求，遵守应用授权、暂停和接管")
+      .argument("<request-json>", "与内置工具相同的 JSON 参数")
+      .requiredOption("--session <id>", "同一操作流程使用相同编号，完成后调用 release")
+      .option("--json", "输出包含画面的完整 JSON 回执")
+      .action(async (request: string, options: { session: string; json?: boolean }) => {
+        const args = schema.parse(JSON.parse(request));
+        const endpoint = await computerDesktopConnection();
+        if (!endpoint) throw new Error("computer_desktop_required: 请先启动 Desktop");
+        const reply = await requestComputer(endpoint, method, { ...args, session: `cli:${options.session}` }, undefined, method !== "observe");
+        console.log(options.json ? JSON.stringify(reply) : `桌面操作 ${method}\n${JSON.stringify(reply.data, null, 2)}\n画面：${reply.images.length} 张`);
+        if (reply.errorCode) throw new Error(reply.errorCode);
+      });
+  }
+  computer.command("release").description("释放此命令行流程持有的桌面控制权")
+    .requiredOption("--session <id>", "操作流程编号").option("--json", "输出 JSON")
+    .action(async (options: { session: string; json?: boolean }) => {
+      const endpoint = await computerDesktopConnection();
+      if (!endpoint) throw new Error("computer_desktop_required: 请先启动 Desktop");
+      const reply = await requestComputer(endpoint, "release", { session: `cli:${options.session}` });
+      console.log(options.json ? JSON.stringify(reply) : "已释放桌面控制权");
+    });
   const execute = async (operation: (policy: ComputerAppApprovals) => Promise<void>, json?: boolean): Promise<void> => {
     const policy = new ComputerAppApprovals(createFileConfigStore(process.cwd()));
     await operation(policy);

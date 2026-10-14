@@ -9,6 +9,7 @@ import { globalAgentDir } from "../../../config/paths.js";
 import { ComputerAuditStore } from "../../../computer/auditStore.js";
 import { ComputerAppApprovals } from "../../../computer/appApprovals.js";
 import { ComputerUseController } from "../../../computer/controller.js";
+import { computerSequenceSchema } from "../../../computer/protocol.js";
 import { NativeProcessDriver } from "../../../computer/nativeDriver.js";
 import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
 import { computerListSchema, computerImageSchema, computerActionSchema, computerMirrorSchema, computerIpc, windowObserveSchema, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus, type ComputerPreview } from "../../../computer/protocol.js";
@@ -334,6 +335,7 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     if (method === "computer_list") { const parsed = computerListSchema.parse(args); return await controller.list(session, parsed.pid, signal, parsed.days); }
     if (method === "computer_observe") return await controller.observe(session, windowObserveSchema.parse(args), signal);
     if (method === "computer_action") return await controller.act(session, computerActionSchema.parse(args), signal);
+    if (method === "computer_sequence") return await controller.sequence(session, computerSequenceSchema.parse(args), signal);
     if (method === "computer_mirror") return await controller.mirror(session, computerMirrorSchema.parse(args), signal);
     throw new Error("Unsupported computer method");
   });
