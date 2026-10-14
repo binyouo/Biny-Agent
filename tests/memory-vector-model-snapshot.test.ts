@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
-import { HybridMemoryRetriever } from "../src/agent/context/HybridMemoryRetriever.js";
+import { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemoryRetriever.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
 
 const modelA = "snapshot-model-a";
@@ -217,7 +217,7 @@ for (const automatic of [false, true]) {
             model: { kind: "provider", provider: "test", model: "model-a" }
           })
         };
-        const retriever = new HybridMemoryRetriever({
+        const retriever = new SemanticMemoryRetriever({
           localMemory: {
             listMemoryEntries: (options) => storage.listEntries(options),
             getEntry: (id, options) => storage.getEntry(id, options),

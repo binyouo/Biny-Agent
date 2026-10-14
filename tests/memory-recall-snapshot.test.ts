@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
-import { HybridMemoryRetriever, type AutomaticMemoryStore } from "../src/agent/context/HybridMemoryRetriever.js";
+import { SemanticMemoryRetriever, type MemorySearchStore } from "../src/agent/context/SemanticMemoryRetriever.js";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import type { MemoryEntryPatch } from "../src/agent/context/memoryTypes.js";
@@ -28,7 +28,7 @@ console.log("memory recall snapshot tests passed");
 
 async function testChangedCandidate(automatic: boolean, patch: MemoryEntryPatch, fallback = false, limit = 2, maxChars?: number): Promise<void> {
   const f = await createFixture(fallback);
-  let pending: ReturnType<HybridMemoryRetriever["retrieve"]> | undefined;
+  let pending: ReturnType<SemanticMemoryRetriever["retrieve"]> | undefined;
   try {
     const stableScore = f.index.search([1, 0], { modelFingerprint: "snapshot-fixture", limit: 3 })
       .find(({ entryId }) => entryId === f.stable.id)!.similarity;
@@ -90,7 +90,7 @@ async function testRemovedAfterSearch(outcome: "archived" | "deleted"): Promise<
 
 async function testUnrelatedAndUsageWrites(): Promise<void> {
   const f = await createFixture();
-  let pending: ReturnType<HybridMemoryRetriever["retrieve"]> | undefined;
+  let pending: ReturnType<SemanticMemoryRetriever["retrieve"]> | undefined;
   try {
     pending = f.retriever.retrieve("release date", [], { limit: 2, rewriteQuery: false });
     await bounded(f.started.promise);
@@ -135,7 +135,7 @@ async function testEmptyStore(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-recall-empty-"));
   const storage = new MemoryStorage(root, { agentDir: root });
   const unexpected = (): never => { throw new Error("Empty recall must not request models, indexes or usage writes"); };
-  const retriever = new HybridMemoryRetriever({
+  const retriever = new SemanticMemoryRetriever({
     localMemory: { listMemoryEntries: (options) => storage.listEntries(options), getEntry: unexpected, recordRecallUsage: unexpected },
     getEmbeddingRuntime: unexpected, getReadOnlyVectorIndex: unexpected, getThreshold: unexpected
   });
@@ -190,7 +190,7 @@ async function createFixture(fallback = false) {
     { entryId: lower.id, revision: lower.revision, embedding: [0.6, 0.8] }
   ]);
   const state = { listReads: 0, getReads: [] as string[], embedCalls: 0, usage: [] as string[][], searchLimits: [] as Array<number | undefined> };
-  const memory: AutomaticMemoryStore = {
+  const memory: MemorySearchStore = {
     listMemoryEntries: (options) => { state.listReads++; return reader.listEntries(options); },
     getEntry: fallback ? undefined : (id, options) => { state.getReads.push(id); return reader.getEntry(id, options); },
     recordRecallUsage: (ids, options) => { state.usage.push(ids); return reader.recordRecallUsage(ids, options); }
@@ -209,7 +209,7 @@ async function createFixture(fallback = false) {
         model: { kind: "local", model: "multilingual-e5-small" } };
     }
   };
-  const retriever = new HybridMemoryRetriever({
+  const retriever = new SemanticMemoryRetriever({
     localMemory: memory, getEmbeddingRuntime: async () => runtime,
     getReadOnlyVectorIndex: () => ({ status: () => index.status(), search: (query, options) => {
       state.searchLimits.push(options.limit);

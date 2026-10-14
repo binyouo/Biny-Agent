@@ -1,5 +1,5 @@
-/** 长期记忆的有效向量模型：显式选择优先，其次按 Provider 能力自动选择。 */
-import type { EmbeddingModelDescriptor, EmbeddingModelRef } from "./types.js";
+/** 长期记忆缺省使用本地模型；只有显式 auto 才按 Provider 能力选择。 */
+import { defaultEmbeddingModelRef, type EmbeddingModelDescriptor, type EmbeddingModelRef } from "./types.js";
 
 const providerOrder = ["openai", "openrouter", "gemini", "openai-compatible"];
 
@@ -7,6 +7,7 @@ export function selectMemoryEmbeddingModel(
   selection: EmbeddingModelRef | undefined,
   descriptors: readonly EmbeddingModelDescriptor[]
 ): EmbeddingModelRef | undefined {
+  if (selection === undefined) return defaultEmbeddingModelRef;
   if (selection?.kind === "local") return selection;
   if (selection?.kind === "provider") {
     return descriptors.some((descriptor) => descriptor.available === true

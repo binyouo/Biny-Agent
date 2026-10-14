@@ -3,7 +3,8 @@
  *
  * 记忆是扁平的事实文本：content 就是事实正文，其余全部是可展示的元数据。所有条目
  * 保存在一个全局记忆库中，不做 user/workspace 来源分桶；所有写操作共享一个单调
- * revision 仅用于标记内容变更；SQLite 写事务保证原子提交，不要求调用方预读版本。
+ * revision 标记事实写入，访问统计不推进版本。SQLite 写事务保证原子提交；模型决策
+ * 携带候选版本，在提交时拒绝过期快照。
  */
 
 /** Sleep 用 durability 区分会自然过期的短期记忆和长期记忆。 */
@@ -17,7 +18,7 @@ export interface MemoryOriginAnchor {
 }
 
 /** archive reason 使用稳定名称；旧短名称只用于读取当前开发库中的历史行。 */
-export type MemoryArchiveReason = "exact_dup" | "exact" | "expired" | "orphan" | "similarity_merge" | "llm_merge" | "similarity" | "llm" | "manual";
+export type MemoryArchiveReason = "exact_dup" | "exact" | "expired" | "orphan" | "similarity_merge" | "llm_merge" | "similarity" | "llm" | "manual" | "updated";
 
 /** 稳定 id、时间与 revision 由存储层生成。 */
 export interface MemoryEntryInput {
@@ -84,9 +85,9 @@ export interface MemoryEntry {
   /** memory_archive 对应的可恢复归档状态。 */
   archivedAt?: string;
   archivedReason?: MemoryArchiveReason;
-  /** 归档时指向保留下来的 survivor 或新 synthesis。 */
+  /** 指向保留的合并目标，或 updated 归档对应的当前事实。 */
   mergedInto?: string;
-  /** 产生该归档记录的操作（Sleep run id 或 manual）。 */
+  /** 产生该归档记录的操作（Sleep run id、auto 或 manual）。 */
   archivedBy?: string;
   threadId?: string;
   messageId?: string;
@@ -128,7 +129,7 @@ export interface MemoryMutationOptions extends MemoryReadOptions {
   archivedBy?: string;
   /** Sleep 的共享执行权；手工事实操作不受 Sleep 执行权约束。 */
   sleepOwnerToken?: string;
-  /** 跨异步步骤的 Sleep 决定必须仍基于这些活动条目的原版本。 */
+  /** 跨异步步骤的模型决定必须仍基于这些活动条目的原版本。 */
   expectedEntries?: readonly MemoryEntry[];
 }
 
@@ -156,7 +157,7 @@ export interface MemoryEntriesResult {
 
 export interface MemoryWriteResult {
   written: boolean;
-  /** 必需的语义检索暂不可用，不等同于已写入或已确认重复。 */
+  /** 语义检索或写入判断不可用、候选已变更；不等同于已写入或已确认重复。 */
   deferred?: boolean;
   entry?: MemoryEntry;
   path?: string;
@@ -351,6 +352,8 @@ export interface MemorySleepProgressEvent {
   archivedSimilarity: number;
   archivedLlm: number;
   purged: number;
+  /** 超过安全大小而未处理的相似簇累计数；缺省表示没有跳过。 */
+  skippedOversizedClusters?: number;
 }
 
 export interface MemoryMaintenanceResult {

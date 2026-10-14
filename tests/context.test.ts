@@ -12,7 +12,7 @@ import { ContextMemory } from "../src/agent/context/ContextMemory.js";
 import { LocalMemory, redactSecrets } from "../src/agent/context/LocalMemory.js";
 import { sessionMessageMetadata } from "../src/session/messageTree.js";
 import { sessionEventsToTranscript } from "../src/tui/sessionTranscript.js";
-import type { HybridMemoryRetriever } from "../src/agent/context/HybridMemoryRetriever.js";
+import type { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemoryRetriever.js";
 import { CrystalStorage } from "../src/agent/context/crystalStorage.js";
 import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
@@ -640,7 +640,7 @@ async function testRecallCountsAtSearchBeforeInjection(): Promise<void> {
           await local.recordRecallUsage(result.matches.map((match) => match.entry.id));
           return result;
         }
-      } as unknown as HybridMemoryRetriever;
+      } as unknown as SemanticMemoryRetriever;
       const context = new ContextMemory(
         () => new ContextTestModel().model, new WorkspaceContext(workspaceRoot, [], 32 * 1024),
         local, 120, 32 * 1024, undefined, undefined, {}, undefined, undefined, retriever
@@ -690,7 +690,7 @@ async function testRecallKeepsRankedEntriesThatFitPromptBudget(): Promise<void> 
       const matches = [first, second].map((entry, index) => ({
         entry, path: `memory://${entry.id}`, excerpt: entry.content, score: 0.9 - index * 0.1
       }));
-      const retriever = { retrieve: async () => ({ matches, report: { omitted: [] } }) } as unknown as HybridMemoryRetriever;
+      const retriever = { retrieve: async () => ({ matches, report: { omitted: [] } }) } as unknown as SemanticMemoryRetriever;
       const context = new ContextMemory(
         () => new ContextTestModel().model, new WorkspaceContext(workspaceRoot, [], 32 * 1024),
         local, 650, 32 * 1024, undefined, undefined, {}, undefined, undefined, retriever

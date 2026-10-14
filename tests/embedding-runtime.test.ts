@@ -15,7 +15,8 @@ import {
   listProviderEmbeddingModels,
   LocalEmbeddingManager,
   normalizeEmbedding,
-  ProviderEmbeddingRuntime
+  ProviderEmbeddingRuntime,
+  type LocalEmbeddingModelId
 } from "../src/llm/embedding/index.js";
 
 await testVectorValidation();
@@ -23,7 +24,7 @@ testExplicitProviderCapabilities();
 testConfiguredEmbeddingCatalog();
 await testOpenAiEmbeddingWire();
 await testGoogleEmbeddingWire();
-await testLocalEmbeddingLifecycle();
+for (const modelId of ["multilingual-e5-small", "all-MiniLM-L6-v2"] as const) await testLocalEmbeddingLifecycle(modelId);
 await testSqliteVectorProjection();
 
 console.log("embedding runtime tests passed");
@@ -225,16 +226,22 @@ async function testGoogleEmbeddingWire(): Promise<void> {
   assert.equal((bodies[0] as { outputDimensionality?: unknown }).outputDimensionality, 3);
 }
 
-async function testLocalEmbeddingLifecycle(): Promise<void> {
+async function testLocalEmbeddingLifecycle(modelId: LocalEmbeddingModelId): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-local-embedding-"));
   let installed = false;
   let disposed = 0;
   let cleared = 0;
   const seenTexts: string[][] = [];
-  const modelCache = path.join(root, "Xenova", "multilingual-e5-small", "761b726dd34fb83930e26aab4e9ac3899aa1fa78");
+  const revision = modelId === "multilingual-e5-small"
+    ? "761b726dd34fb83930e26aab4e9ac3899aa1fa78" : "751bff37182d3f1213fa05d7196b954e230abad9";
+  const modelCache = path.join(root, "Xenova", modelId, revision);
   const manager = new LocalEmbeddingManager(root, {
     moduleLoader: async () => ({
       pipeline: async (_task, _model, options) => {
+        assert.equal(_model, `Xenova/${modelId}`);
+        assert.equal(options.revision, revision);
+        assert.equal(options.dtype, "q8");
+        assert.equal(options.local_files_only, installed, "only the explicit download may use the network");
         options.progress_callback?.({
           status: "progress_total",
           name: "model",
@@ -265,28 +272,32 @@ async function testLocalEmbeddingLifecycle(): Promise<void> {
     })
   });
   try {
-    assert.deepEqual(manager.descriptors().map((descriptor) => descriptor.ref), [{ kind: "local", model: "multilingual-e5-small" }]);
+    assert.deepEqual(manager.descriptors().map((descriptor) => descriptor.ref), [
+      { kind: "local", model: "multilingual-e5-small" }, { kind: "local", model: "all-MiniLM-L6-v2" }
+    ]);
+    await assert.rejects(manager.createRuntime(modelId), /has not been downloaded/u);
     const progress: number[] = [];
-    await manager.download("multilingual-e5-small", { onProgress: (event) => {
+    await manager.download(modelId, { onProgress: (event) => {
       if (event.progress !== undefined) progress.push(event.progress);
     } });
     await fs.mkdir(modelCache, { recursive: true });
     await fs.writeFile(path.join(modelCache, "model.bin"), Buffer.alloc(100));
     assert.deepEqual(progress, [0, 0.5, 1]);
     assert.equal(disposed, 1);
-    const runtime = await manager.createRuntime("multilingual-e5-small");
-    assert.equal(manager.isReady(), false);
+    const runtime = await manager.createRuntime(modelId);
+    assert.equal(manager.isReady(modelId), false);
     const result = await runtime.embed({ texts: ["天气"], inputType: "query" });
-    assert.equal(manager.isReady(), true);
+    assert.equal(manager.isReady(modelId), true);
+    assert.equal(manager.isReady(), modelId === "multilingual-e5-small", "warming MiniLM must not report E5 ready");
     assert.equal(result.dimensions, 384);
     assert.deepEqual(seenTexts.at(-1), ["天气"]);
     await assert.rejects(
-      manager.remove("multilingual-e5-small", { activeModel: "multilingual-e5-small" }),
+      manager.remove(modelId, { activeModel: modelId }),
       /active embedding model/u
     );
     await manager.close();
-    assert.equal(manager.isReady(), false);
-    const removed = await manager.remove("multilingual-e5-small");
+    assert.equal(manager.isReady(modelId), false);
+    const removed = await manager.remove(modelId);
     assert.equal(cleared, 1);
     assert.equal(removed.bytesFreed, 100);
   } finally {

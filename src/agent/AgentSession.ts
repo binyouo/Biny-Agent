@@ -122,7 +122,7 @@ import { SessionSearchIndex } from "../session/searchIndex.js";
 import { LocalReferenceService, localReferenceContext, localReferenceProjectId } from "../session/localReferences.js";
 import { readFileMemoryPrompt } from "./context/fileMemory.js";
 import { MemoryVectorIndex } from "./context/MemoryVectorIndex.js";
-import { HybridMemoryRetriever } from "./context/HybridMemoryRetriever.js";
+import { SemanticMemoryRetriever } from "./context/SemanticMemoryRetriever.js";
 import {
   MemoryEmbeddingService,
   type MemoryEmbeddingRuntimeStatus
@@ -176,7 +176,6 @@ import type {
   MemoryEntry,
   MemorySearchOptions,
   MemorySearchResult,
-  MemorySimilarSearchOptions,
   MemorySimilarityScan
 } from "./context/memoryTypes.js";
 import { resolvedCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, type AgentCapabilitySelection } from "./capabilitySelection.js";
@@ -409,7 +408,7 @@ export class AgentSession {
   private pendingTitleSessionId?: string;
   private readonly titleAbort = new AbortController();
   private readonly localEmbeddingManager: LocalEmbeddingManager;
-  private readonly memoryRetriever: HybridMemoryRetriever;
+  private readonly memoryRetriever: SemanticMemoryRetriever;
   private readonly memoryEmbeddingService: MemoryEmbeddingService;
   private readonly crystalService: CrystalService;
   private usageRecords: SessionUsage[] = [];
@@ -545,7 +544,7 @@ export class AgentSession {
       getNeedsRebuild: () => this.activeConfig.needsEmbeddingRebuild,
       getRuntime: async () => await this.activeMemoryEmbeddingRuntime()
     });
-    this.memoryRetriever = new HybridMemoryRetriever({
+    this.memoryRetriever = new SemanticMemoryRetriever({
       localMemory: this.localMemory,
       getEmbeddingRuntime: async () => await this.memoryEmbeddingService.embeddingRuntime(),
       getReadOnlyVectorIndex: openReadOnlyMemoryIndex,
@@ -1484,29 +1483,6 @@ export class AgentSession {
   ): Promise<MemorySimilarityScan> {
     await this.refreshMemoryConfig().catch(() => undefined);
     return await this.memoryEmbeddingService.findSimilarPairs(entries, minimumSimilarity, signal);
-  }
-
-  async findMemorySimilarEntries(
-    query: string,
-    options: MemorySimilarSearchOptions
-  ): Promise<MemoryEntry[] | undefined> {
-    await this.refreshMemoryConfig().catch(() => undefined);
-    // Activity memory writes are pinned to the local multilingual-e5-small
-    // space. Do not let a user-selected cloud/other embedding generation mix
-    // Activity facts into that index; unavailable means the caller skips the
-    // candidate.
-    const embeddingModel = this.activeConfig.context.memory.embeddingModel;
-    if (embeddingModel?.kind !== "local" || embeddingModel.model !== "multilingual-e5-small") return undefined;
-    const snapshot = await this.localMemory.listMemoryEntries({
-      signal: options.signal
-    });
-    return await this.memoryEmbeddingService.findSimilarEntries(
-      query,
-      snapshot.entries,
-      options.limit,
-      options.minimumSimilarity,
-      options.signal
-    );
   }
 
   removeMemoryEmbeddingEntries(entryIds: readonly string[]): void {
@@ -3457,10 +3433,11 @@ export class AgentSession {
           const memoryMessageId = finalAssistantReference?.id;
           const contributeMemories = turnPersonalization.contributeMemories;
           const excludeExternalContext = turnPersonalization.excludeExternalContext;
-          const markMemoryHandled = async (changes: { created: Array<{ id: string; content: string }>; deleted: Array<{ id: string; content: string }> }): Promise<void> => {
+          const markMemoryHandled = async (changes: { created: Array<{ id: string; content: string }>; updated?: Array<{ id: string; content: string }>; deleted: Array<{ id: string; content: string }> }): Promise<void> => {
             if (!memoryMessageId) return;
             const metadata: Record<string, unknown> = { memoryExtracted: true, memoryExtractedAt: new Date().toISOString() };
             if (changes.created.length) metadata.createdMemories = changes.created.map((entry) => ({ id: entry.id, content: entry.content, type: "created" }));
+            if (changes.updated?.length) metadata.updatedMemories = changes.updated.map((entry) => ({ id: entry.id, content: entry.content, type: "updated" }));
             if (changes.deleted.length) metadata.deletedMemories = changes.deleted.map((entry) => ({ id: entry.id, content: entry.content, type: "deleted" }));
             memoryRecorder.recordWithRuntimeContext({
               type: "message_metadata",

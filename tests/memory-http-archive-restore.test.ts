@@ -97,6 +97,15 @@ try {
   }
   assert.equal((await restore("missing-archive-id")).status, 404);
 
+  const updatedSource = (await memory.writeEntry({ content: "Previous version of an updated preference." })).entry!;
+  const updatedArchive = await memory.archiveEntries([updatedSource.id], "updated", { mergedInto: survivor.entry.id });
+  const updatedResponse = await restore(updatedArchive.entries[0]!.id);
+  assert.equal(updatedResponse.status, 200);
+  const updatedBody = await updatedResponse.json() as { memory: { content: string }; mergedTarget: unknown };
+  assert.equal(updatedBody.memory.content, updatedSource.content);
+  assert.deepEqual(updatedBody.mergedTarget, { id: survivor.entry.id, content: survivor.entry.content },
+    "restoring a previous version also reports the current fact that remains active");
+
   const priorArchivedTotal = (await memory.listArchivedEntries()).total;
   for (let index = 0; index < 201; index += 1) {
     const added = await memory.writeEntry({ content: `Archive page boundary ${index}` });

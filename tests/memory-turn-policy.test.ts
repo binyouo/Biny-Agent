@@ -54,7 +54,7 @@ try {
   const observedPolicies: boolean[] = [];
   agent.getLocalMemory().summarizeAndStoreMemories = async (_messages, options) => {
     observedPolicies.push(options.excludeExternalContext);
-    return { created: [], deleted: [] };
+    return { created: [], updated: [], deleted: [] };
   };
 
   // Given: 回合 A 的自动记忆任务等待 embedding；When: 回合 B 刷新聊天策略；

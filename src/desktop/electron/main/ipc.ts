@@ -20,6 +20,7 @@ import {
   type SaveDialogOptions
 } from "electron";
 import { z } from "zod";
+import { localEmbeddingModelIds } from "../../../llm/embedding/types.js";
 import { desktopCrystalRequestSchema } from "../../crystalProtocol.js";
 import type { DesktopThreadBriefService } from "./DesktopThreadBriefService.js";
 import type { DesktopCrystalService } from "./DesktopCrystalService.js";
@@ -172,7 +173,7 @@ const temporalQuerySchema = z.object({ startDate: temporalDaySchema, endDate: te
   sessionId: z.string().min(1).max(128).optional(), currentSessionId: z.string().min(1).max(128).optional(),
   limit: z.number().int().min(1).max(50).optional(), offset: z.number().int().min(0).optional(),
   today: temporalDaySchema.optional(), timeZone: z.string().min(1).max(100).optional(), includeScheduled: z.boolean().optional() });
-const localEmbeddingModelSchema = z.literal("multilingual-e5-small");
+const localEmbeddingModelSchema = z.enum(localEmbeddingModelIds);
 const memorySettingsInputSchema = z.object({
   expectedRevision: configRevisionSchema,
   settings: memorySettingsSchema

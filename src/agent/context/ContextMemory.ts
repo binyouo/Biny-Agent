@@ -17,7 +17,7 @@ import type { AgentAttachment } from "../AgentSession.js";
 import type { PersonalizationMetadata } from "../../session/metadata.js";
 import { canonicalToolSchemaHash, type PromptEpochReason } from "../../llm/promptCache.js";
 import type { MemoryRecallReport } from "./memoryTypes.js";
-import type { HybridMemoryRetriever } from "./HybridMemoryRetriever.js";
+import type { SemanticMemoryRetriever } from "./SemanticMemoryRetriever.js";
 import type { PromptBundle } from "../prompts.js";
 import { stripTransientTurnContext } from "../prompts.js";
 import { checkpointClaims } from "../../session/checkpointClaims.js";
@@ -113,7 +113,7 @@ export class ContextMemory {
     private readonly compactionOptions: ContextCompactionOptions = {},
     private readonly onModelRequest: ModelRequestObserver = () => undefined,
     private readonly getModelRequestContext: () => ModelRequestContext | undefined = () => undefined,
-    private readonly memoryRetriever?: HybridMemoryRetriever,
+    private readonly memoryRetriever?: SemanticMemoryRetriever,
     private readonly allowActivity: () => boolean = () => true
   ) {
     this.resolveBudget = getBudgetLimits ?? (() => ({

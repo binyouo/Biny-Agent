@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { cp, mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -31,10 +32,13 @@ const fixtureRuntime = {
 };
 async function load(checkout) {
   const source = (file) => pathToFileURL(path.resolve(checkout, "src/agent/context", file)).href;
-  const [{ MemoryStorage }, { MemoryVectorIndex }, { HybridMemoryRetriever }] = await Promise.all([
-    import(source("memoryStorage.ts")), import(source("MemoryVectorIndex.ts")), import(source("HybridMemoryRetriever.ts"))
+  // 基准对比允许读取重命名前的 checkout；生产代码只使用当前名称。
+  const retrieverName = existsSync(path.resolve(checkout, "src/agent/context/SemanticMemoryRetriever.ts"))
+    ? "SemanticMemoryRetriever" : "HybridMemoryRetriever";
+  const [{ MemoryStorage }, { MemoryVectorIndex }, retriever] = await Promise.all([
+    import(source("memoryStorage.ts")), import(source("MemoryVectorIndex.ts")), import(source(`${retrieverName}.ts`))
   ]);
-  return { MemoryStorage, MemoryVectorIndex, HybridMemoryRetriever };
+  return { MemoryStorage, MemoryVectorIndex, MemoryRetriever: retriever[retrieverName] };
 }
 const modules = {
   baseline: await load(options.get("--baseline")),
@@ -85,7 +89,7 @@ try {
         const index = modules[side].MemoryVectorIndex.openReadOnly(directory);
         assert.ok(index, "The real sqlite-vec fixture must be available");
         services[side].index = index;
-        services[side].retriever = new modules[side].HybridMemoryRetriever({
+        services[side].retriever = new modules[side].MemoryRetriever({
           localMemory: { listMemoryEntries: (value) => store.listEntries(value), getEntry: (id, value) => store.getEntry(id, value),
             recordRecallUsage: (ids, value) => store.recordRecallUsage(ids, { ...value, now: fixedNow }) },
           getEmbeddingRuntime: async () => fixtureRuntime, getReadOnlyVectorIndex: () => index, getThreshold: () => 0.5,

@@ -141,7 +141,7 @@ function normalizeOriginAnchors(value: MemoryOriginAnchor[] | undefined, validat
   return [...unique.values()];
 }
 
-/** 向量 top-K 之后的事实范围过滤。 */
+/** 向量 top-K 之前的事实范围过滤；命中返回前仍复核范围。 */
 export function entryMatchesMemorySearchScope(entry: MemoryEntry, scope: MemorySearchScope): boolean {
   if (scope.threadId !== undefined && entry.threadId !== scope.threadId) return false;
   if (scope.userIds?.length && entry.userId !== undefined && !scope.userIds.includes(entry.userId)) return false;
@@ -208,7 +208,7 @@ export function normalizeMemoryContent(value: string): string {
 function isArchiveReason(value: unknown): value is NonNullable<MemoryEntry["archivedReason"]> {
   return value === "exact_dup" || value === "exact" || value === "expired"
     || value === "orphan" || value === "similarity_merge" || value === "llm_merge"
-    || value === "similarity" || value === "llm" || value === "manual";
+    || value === "similarity" || value === "llm" || value === "manual" || value === "updated";
 }
 
 function normalizeMemoryDurability(value: MemoryDurability | undefined): MemoryDurability {

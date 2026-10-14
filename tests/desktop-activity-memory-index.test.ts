@@ -35,6 +35,7 @@ try {
   assert.ok(address && typeof address !== "string");
   const config = {
     ...defaultConfig,
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, embeddingModel: { kind: "auto" as const } } },
     providers: { embed: {
       type: "openai-compatible" as const,
       baseUrl: `http://127.0.0.1:${address.port}/v1`,

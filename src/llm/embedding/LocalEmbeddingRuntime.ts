@@ -18,6 +18,7 @@ import type {
   LocalEmbeddingModelStatus
 } from "./types.js";
 import { normalizeEmbedding } from "./vector.js";
+import { defaultLocalEmbeddingModel } from "./types.js";
 
 const localEmbeddingBatchSize = 32;
 
@@ -87,6 +88,17 @@ export const localEmbeddingModels: readonly LocalModelDefinition[] = [
     dimensions: 384,
     modelSizeBytes: 145 * 1024 * 1024,
     recommendedThreshold: 0.8
+  },
+  {
+    id: "all-MiniLM-L6-v2",
+    repository: "Xenova/all-MiniLM-L6-v2",
+    revision: "751bff37182d3f1213fa05d7196b954e230abad9",
+    dtype: "q8",
+    displayName: "All MiniLM L6 v2",
+    description: "适合英文短句检索；对原文做平均池化并归一化。",
+    dimensions: 384,
+    modelSizeBytes: 23 * 1024 * 1024,
+    recommendedThreshold: 0.3
   }
 ] as const;
 
@@ -103,8 +115,8 @@ export class LocalEmbeddingManager {
     return listLocalEmbeddingModels();
   }
 
-  isReady(): boolean {
-    return this.readyModels.size > 0;
+  isReady(modelId: LocalEmbeddingModelId = defaultLocalEmbeddingModel): boolean {
+    return this.readyModels.has(modelId);
   }
 
   async list(): Promise<LocalEmbeddingModelStatus[]> {

@@ -17,7 +17,7 @@ import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { sleepMergePrompt } from "../src/agent/context/sleepMergePrompt.js";
-import { memoryExtractionPrompt, memoryTimeAnchorInstruction, temporaryMemoryCleanupPrompt, parseMemoryOperations } from "../src/agent/context/memoryExtraction.js";
+import { memoryExtractionPrompt, memoryReconciliationPrompt, memoryTimeAnchorInstruction, temporaryMemoryCleanupPrompt, parseMemoryOperations } from "../src/agent/context/memoryExtraction.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import type { LocalEmbeddingManager } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
 import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
   await testSleepWeightedSurvivor();
   await testEmbeddingStatusDoesNotCreateIndex();
   await testEmbeddingStatusReadsSelfReflectionMemory();
-  await testSemanticSearchTreatsUnbuiltIndexAsEmptyCandidates();
+  await testSemanticSearchDefersForUnbuiltIndex();
   await testFactsAndVectorsShareDatabase();
   await testInitialEmbeddingGeneration();
   await testSleepUsesCurrentStoredVectorsWhenRuntimeUnavailable();
@@ -460,7 +460,7 @@ async function testExplicitDuplicateWritesRemainDistinct(): Promise<void> {
 async function testAutomaticNonDuplicateKeepsDistinctSourceTimes(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     const candidates: MemoryEntry[] = [];
-    const model = jsonMemoryModel(() => JSON.stringify({ isDuplicate: false }));
+    const model = jsonMemoryModel(() => JSON.stringify({ operation: "ADD" }));
     const memory = new LocalMemory(workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined,
       async () => candidates);
     try {
@@ -482,8 +482,8 @@ async function testAutomaticNonDuplicateKeepsDistinctSourceTimes(): Promise<void
 
 async function testAutomaticSemanticDedup(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
-    let response: Record<string, unknown> = { isDuplicate: true, reason: "same core fact", duplicateOf: 1 };
-    const model = jsonMemoryModel((prompt) => prompt.startsWith('New memory to add: "')
+    let response: Record<string, unknown> = { operation: "ADD" };
+    const model = jsonMemoryModel((prompt) => prompt.startsWith("Reconcile proposed memory:")
       ? `Result: ${JSON.stringify(response)}`
       : "{}");
     const seed = new LocalMemory(workspaceRoot, unusedModel);
@@ -491,6 +491,7 @@ async function testAutomaticSemanticDedup(): Promise<void> {
       "The release workflow requires running the complete test suite before publishing the package."
     ));
     assert.ok(first.entry);
+    response = { operation: "NONE", id: first.entry.id };
     const memory = new LocalMemory(
       workspaceRoot,
       () => model,
@@ -507,12 +508,13 @@ async function testAutomaticSemanticDedup(): Promise<void> {
     assert.equal(result.written, false);
     assert.equal(result.entry?.id, first.entry.id);
     assert.equal((await memory.getOverview()).entryCount, 1);
-    for (const duplicateOf of [undefined, 0, -1, 1.5, 99, "1", null]) {
-      response = { isDuplicate: true, reason: { unexpected: "type" }, duplicateOf };
+    for (const id of [undefined, 0, -1, 1.5, 99, "unknown", null]) {
+      response = { operation: "NONE", id };
       const skipped = await memory.writeAutoEntry(projectEntry(
         "A paraphrased release rule repeats the existing verification requirements."
       ));
       assert.equal(skipped.written, false);
+      assert.equal(skipped.deferred, true);
       assert.equal(skipped.entry, undefined);
       assert.equal(skipped.path, undefined);
       assert.equal((await memory.getOverview()).entryCount, 1);
@@ -530,7 +532,7 @@ async function testAutomaticSemanticSearchRecordsScopedCandidateAccess(): Promis
     const ownSecond = (await seed.writeEntry({ content: "User A checks release notes before publishing.", userId: "user-a" })).entry!;
     const memory = new LocalMemory(
       workspaceRoot,
-      () => jsonMemoryModel(() => JSON.stringify({ isDuplicate: false })),
+      () => jsonMemoryModel(() => JSON.stringify({ operation: "ADD" })),
       undefined, 3, undefined, undefined, undefined,
       async () => [own, other, ownSecond]
     );
@@ -577,7 +579,7 @@ async function testAutomaticSemanticDedupRespectsUserId(): Promise<void> {
     const other = await seed.writeEntry({ content: "User A has a long-term preference for compact release summaries.", userId: "user-a" });
     assert.ok(other.entry);
     const scopes: Array<string | null | undefined> = [];
-    const model = jsonMemoryModel(() => JSON.stringify({ isDuplicate: true, duplicateOf: 1 }));
+    const model = jsonMemoryModel(() => JSON.stringify({ operation: "NONE", id: other.entry!.id }));
     const memory = new LocalMemory(workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined,
       async (_query, options) => { scopes.push(options.userId); return [other.entry!]; });
     try {
@@ -597,7 +599,7 @@ async function testAutomaticSemanticDedupRespectsUserId(): Promise<void> {
   });
 }
 
-/** 自动写入的模型故障应允许 exact-safe 新增；取消和必需语义缺失不能写入。 */
+/** 模型判断失败不能当作新增许可；取消与必需语义缺失也不能写入。 */
 async function testAutomaticDedupFailureContract(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     const seed = new LocalMemory(workspaceRoot, unusedModel);
@@ -624,28 +626,30 @@ async function testAutomaticDedupFailureContract(): Promise<void> {
       const malformed = await memory.writeAutoEntry(projectEntry(
         "The release checklist also requires reviewing the package manifest."
       ), { requireSemantic: true });
-      assert.equal(malformed.written, true);
-      assert.equal((await memory.getOverview()).entryCount, 2);
+      assert.equal(malformed.written, false);
+      assert.equal(malformed.deferred, true);
+      assert.equal((await memory.getOverview()).entryCount, 1);
 
       response = "throw";
       const disconnected = await memory.writeAutoEntry(projectEntry(
         "The release checklist additionally requires reviewing the license file."
       ), { requireSemantic: true });
-      assert.equal(disconnected.written, true);
-      assert.equal((await memory.getOverview()).entryCount, 3);
+      assert.equal(disconnected.written, false);
+      assert.equal(disconnected.deferred, true);
+      assert.equal((await memory.getOverview()).entryCount, 1);
 
       response = "abort";
       await assert.rejects(memory.writeAutoEntry(projectEntry(
         "A cancelled release note must never be saved as a memory."
       ), { requireSemantic: true, signal: controller.signal }));
-      assert.equal((await memory.getOverview()).entryCount, 3);
+      assert.equal((await memory.getOverview()).entryCount, 1);
 
       const deferred = await unavailable.writeAutoEntry(projectEntry(
         "A missing semantic runtime defers this automatic memory candidate."
       ), { requireSemantic: true });
       assert.equal(deferred.written, false);
       assert.equal(deferred.deferred, true);
-      assert.equal((await memory.getOverview()).entryCount, 3);
+      assert.equal((await memory.getOverview()).entryCount, 1);
     } finally {
       unavailable.close();
       memory.close();
@@ -874,7 +878,7 @@ async function testTemporaryCleanupFailureKeepsMemories(): Promise<void> {
     ], { sessionId: "failure-session", turnId: "failure-turn", runId: "failure-run", externalContext: false, excludeExternalContext: false, signal: controller.signal });
     for (const scenario of ["empty", "permanent", "embedding-error", "model-error"] as const) {
       mode = scenario;
-      assert.deepEqual(await runCleanup(), { created: [], deleted: [] });
+      assert.deepEqual(await runCleanup(), { created: [], updated: [], deleted: [] });
       assert.equal((await memory.getOverview()).entryCount, 2);
     }
     assert.equal(cleanupCalls, 1);
@@ -981,7 +985,7 @@ async function testSummarizationUsesToolModelAndRequiresCompleteTurn(): Promise<
         excludeExternalContext: false
       }
     );
-    assert.deepEqual(incomplete, { created: [], deleted: [] });
+    assert.deepEqual(incomplete, { created: [], updated: [], deleted: [] });
     assert.equal(toolCalls, 0);
     assert.equal(extractionCalls, 0);
 
@@ -1148,8 +1152,8 @@ async function testDirectExtractionWritesFlatEntries(): Promise<void> {
     const semanticCandidates: MemoryEntry[] = [];
     const memory = new LocalMemory(
       workspaceRoot,
-      () => jsonMemoryModel((prompt) => prompt.startsWith('New memory to add: "')
-        ? JSON.stringify({ isDuplicate: true, duplicateOf: 1 })
+      () => jsonMemoryModel((prompt) => prompt.startsWith("Reconcile proposed memory:")
+        ? JSON.stringify({ operation: "NONE", id: semanticCandidates[0]?.id })
         : JSON.stringify([
           { operation: "add", content: "Completed root turn established a durable release workflow for this workspace.", durability: "permanent" },
           { operation: "add", content: "The user prefers durable summaries to remain concise and directly actionable.", durability: "permanent" }
@@ -1213,7 +1217,7 @@ async function testDirectExtractionWritesFlatEntries(): Promise<void> {
         excludeExternalContext: true
       }
     );
-    assert.deepEqual(excluded, { created: [], deleted: [] });
+    assert.deepEqual(excluded, { created: [], updated: [], deleted: [] });
     memory.close();
   });
 }
@@ -2068,6 +2072,27 @@ async function testSleepWeightedSurvivor(): Promise<void> {
       storage.close();
     }
   });
+  await withIsolatedMemory(async (workspaceRoot) => {
+    let redundantId = "";
+    const memory = new LocalMemory(workspaceRoot, () => jsonMemoryModel(() => JSON.stringify({ delete: [redundantId], synthesize: [] })));
+    try {
+      const preferred = (await memory.writeEntry({ content: "The user prefers stable release workflows.", importance: 1 },
+        { now: new Date("2026-09-01T00:00:00Z") })).entry!;
+      const recent = (await memory.writeEntry({ content: "The user also records release notes.", importance: 0.1 },
+        { now: new Date("2026-09-03T00:00:00Z") })).entry!;
+      const redundant = (await memory.writeEntry({ content: "Stable releases matter to the user.", importance: 0.1 },
+        { now: new Date("2026-09-02T00:00:00Z") })).entry!;
+      redundantId = redundant.id;
+      const index = { findSimilarPairs: async () => ({ examined: 3, pairs: [
+        { leftId: preferred.id, rightId: recent.id, similarity: 0.8 },
+        { leftId: preferred.id, rightId: redundant.id, similarity: 0.8 }
+      ] }) };
+      const preview = await memory.previewMaintenance({}, index);
+      assert.equal(preview.archiveProposed?.[0]?.mergedInto, preferred.id, "preview uses the same survivor priority as execution");
+      await memory.runMemoryMaintenance({}, index);
+      assert.equal((await memory.listArchivedEntries()).entries[0]?.mergedInto, preferred.id);
+    } finally { memory.close(); }
+  });
 }
 
 async function testSleepBatchOrdering(): Promise<void> {
@@ -2523,7 +2548,7 @@ async function testEmbeddingStatusReadsSelfReflectionMemory(): Promise<void> {
   });
 }
 
-async function testSemanticSearchTreatsUnbuiltIndexAsEmptyCandidates(): Promise<void> {
+async function testSemanticSearchDefersForUnbuiltIndex(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
     const created = await memory.writeEntry(projectEntry(
@@ -2568,9 +2593,9 @@ async function testSemanticSearchTreatsUnbuiltIndexAsEmptyCandidates(): Promise<
       5,
       0.3
     );
-    assert.deepEqual(candidates, []);
+    assert.equal(candidates, undefined, "existing facts without an index cannot be treated as no matches");
     assert.deepEqual(await service.findSimilarPairs([created.entry], 0.75), { examined: 0, pairs: [] });
-    assert.equal(embeddingCalls, 1, "the query still needs a semantic embedding before treating the index as empty");
+    assert.equal(embeddingCalls, 0, "a missing index does not need a query embedding");
     memory.close();
   });
 }
@@ -3001,12 +3026,10 @@ function jsonMemoryModel(response: (prompt: string) => string, prompts: string[]
         assert.equal(context.messages[0]?.role, "user");
         assert.equal(options?.maxOutputTokens, undefined);
       }
-      if (prompt.startsWith('New memory to add: "')) {
-        assert.equal(context.systemPrompt, undefined);
+      if (prompt.startsWith("Reconcile proposed memory:")) {
+        assert.equal(context.systemPrompt, memoryReconciliationPrompt + "\n\n" + memoryTimeAnchorInstruction);
         assert.equal(context.messages.length, 1);
         assert.equal(options?.maxOutputTokens, undefined);
-        assert.ok(prompt.includes("Prefer keeping the store clean:"));
-        assert.ok(prompt.includes("1. [permanent]"));
       }
       prompts.push(prompt);
       const text = response(prompt);

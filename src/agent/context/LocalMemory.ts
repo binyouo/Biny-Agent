@@ -14,13 +14,14 @@ import type { ModelUsageObserver } from "../../observability/usage.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
   isExpiredTemporaryMemory,
+  maxMemoryContentChars,
   memoryEntryExactKey,
   normalizeMemoryOriginAnchors,
   sanitizeMemoryEntryInput
 } from "./memoryFormat.js";
 import { MemoryStorage, SleepOwnerLostError, StaleMemoryDecisionError } from "./memoryStorage.js";
 import { sleepMergePrompt } from "./sleepMergePrompt.js";
-import { memoryExtractionPrompt, memoryTimeAnchorInstruction, temporaryMemoryCleanupPrompt, parseMemoryOperations, type MemoryOperation, type ExtractedMemory } from "./memoryExtraction.js";
+import { memoryExtractionPrompt, memoryReconciliationPrompt, memoryTimeAnchorInstruction, temporaryMemoryCleanupPrompt, parseMemoryOperations, type MemoryOperation, type ExtractedMemory } from "./memoryExtraction.js";
 import {
   type MemoryDerivedIndexSink,
   type MemoryClearResult,
@@ -57,12 +58,25 @@ const defaultSleepSimilarityLow = 0.75;
 const sleepSimilarityMergeThreshold = 0.95;
 const maxSleepClusterSize = 50;
 
+const memoryReconciliationSchema = z.discriminatedUnion("operation", [
+  z.object({ operation: z.literal("ADD") }).strict(),
+  z.object({ operation: z.literal("NONE"), id: z.string().min(1).max(128) }).strict(),
+  z.object({
+    operation: z.literal("UPDATE"),
+    id: z.string().min(1).max(128),
+    content: z.string().trim().min(1).max(maxMemoryContentChars),
+    durability: z.enum(["temporary", "permanent"])
+  }).strict()
+]);
+
 /** Sleep 的模糊合并协议：模型只决定删除哪些旧 id，以及是否生成新事实。 */
 const sleepMergeSchema = z.object({
-  // 对模型响应采取“能读多少读多少”的策略；字段类型不对时按空操作处理，
-  // 不能因为一个坏 ID 或一条坏 synthesis 误删整个相似簇。
-  delete: z.unknown().optional(),
-  synthesize: z.unknown().optional()
+  delete: z.array(z.unknown()).default([]),
+  // 任一合成无效都放弃整批，不能截断或丢掉替代事实后仍执行配套删除。
+  synthesize: z.array(z.object({
+    content: z.string().trim().min(1).max(maxMemoryContentChars),
+    durability: z.enum(["temporary", "permanent"]).default("permanent")
+  })).default([])
 });
 
 interface SleepMergeDecision {
@@ -157,13 +171,13 @@ export class LocalMemory {
   }
 
   /**
-   * 自动贡献记忆的写入入口。它保留底层 SQLite 的确定性 exact dedup，写入前再做一次
-   * “语义候选 → LLM 判断”；手动 /memory add 不经过这层模型判断。
+   * 自动贡献记忆的写入入口，根据语义候选决定新增、更新或保持不变。
+   * 底层 writeEntry 不做精确去重；手动 /memory add 不经过这层模型判断。
    */
   async writeAutoEntry(
     input: MemoryEntryInput,
     options: MemoryMutationOptions & { requireSemantic?: boolean; checkpoint?: () => Promise<void> } = {}
-  ): Promise<MemoryWriteResult> {
+  ): Promise<MemoryWriteResult & { updated?: boolean }> {
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
     const safe = sanitizeMemoryEntryInput(input);
@@ -178,20 +192,45 @@ export class LocalMemory {
     if (options.requireSemantic && candidates === undefined) {
       return { written: false, deferred: true, revision: (await this.getOverview({ signal: options.signal })).storeRevision };
     }
-    const duplicate = candidates?.length
-      ? await this.findDuplicateMemory(safe.content, candidates, safe.originAnchors, options.signal)
-      : undefined;
+    const decision = candidates?.length
+      ? await this.reconcileMemory(safe, candidates, options.signal)
+      : { operation: "ADD" as const };
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
-    if (duplicate) {
-      return {
-        written: false,
-        entry: duplicate.entry,
-        path: duplicate.entry === undefined ? undefined : `memory://${duplicate.entry.id}`,
-        revision: (await this.getOverview({ signal: options.signal })).storeRevision
-      };
+    if (!decision) {
+      return { written: false, deferred: true, revision: (await this.getOverview({ signal: options.signal })).storeRevision };
     }
-    return await this.writeEntry(safe, options);
+    try {
+      if (decision.operation === "ADD") {
+        return await this.writeEntry(safe, { ...options, expectedEntries: [...(options.expectedEntries ?? []), ...(candidates ?? [])] });
+      }
+      const target = candidates!.find((entry) => entry.id === decision.id)!;
+      if (decision.operation === "NONE") {
+        const current = await this.getEntry(target.id, { activeOnly: true, signal: options.signal });
+        if (!current || current.revision !== target.revision) throw new StaleMemoryDecisionError();
+        return { written: false, entry: current, path: `memory://${current.id}`, revision: (await this.getOverview({ signal: options.signal })).storeRevision };
+      }
+      const result = await this.storage.updateEntry(target.id, {
+        content: redactSecrets(decision.content),
+        durability: decision.durability,
+        source: safe.source,
+        tags: [...new Set([...target.tags, ...(safe.tags ?? [])])],
+        threadId: safe.threadId,
+        messageId: safe.messageId,
+        originAnchors: normalizeMemoryOriginAnchors([...(target.originAnchors ?? []), ...(safe.originAnchors ?? [])].slice(-32))
+      }, {
+        ...options,
+        activeOnly: true,
+        archivePrevious: true,
+        expectedEntries: [...(options.expectedEntries ?? []), target]
+      });
+      if (result.written && result.entry) await this.syncDerivedEntry(result.entry);
+      return { ...result, updated: result.written };
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (!(error instanceof StaleMemoryDecisionError)) throw error;
+      return { written: false, deferred: true, revision: (await this.getOverview({ signal: options.signal })).storeRevision };
+    }
   }
 
   async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
@@ -404,7 +443,7 @@ export class LocalMemory {
                   if (ids.length === batch.length && !decision.synthesize.length) continue;
                   const mergedInto = decision.synthesize.length
                     ? `preview-${synthesisProposed.length + 1}`
-                    : batch.filter((entry) => !ids.includes(entry.id)).sort(compareSleepEntries)[0]?.id;
+                    : selectSleepSurvivor(batch.filter((entry) => !ids.includes(entry.id))).id;
                   archiveProposed.push(...ids.map((id) => ({ id, content: batch.find((entry) => entry.id === id)?.content ?? "(unknown)", reason: "llm_merge" as const, mergedInto })));
                   const sourceIds = ids.length ? ids : batch.map((entry) => entry.id);
                   synthesisProposed.push(...decision.synthesize.map((item) => ({ ...item, sourceIds: [...sourceIds] })));
@@ -521,6 +560,7 @@ export class LocalMemory {
     let llm = 0;
     let synthesisFailed = 0;
     let examined = 0;
+    let skippedOversizedClusters = 0;
     let lastError: string | undefined;
     let runStatus: MemorySleepRun["status"] = "completed";
     let progressStage: MemorySleepStage = "exact";
@@ -538,7 +578,8 @@ export class LocalMemory {
     let progressSequence = 0;
     const recordProgress = (stage: MemorySleepStage, purged = 0, namespaceUserId?: string | null): void => {
       progressEvents.push({ sequence: ++progressSequence, stage, examined, archivedExact: exact, archivedExpired: expired,
-        archivedSimilarity: similarity, archivedLlm: llm, purged, namespaceUserId });
+        archivedSimilarity: similarity, archivedLlm: llm, purged, namespaceUserId,
+        skippedOversizedClusters: skippedOversizedClusters || undefined });
       // 首两个阶段解释后续累计值；大量用户时只保留最近的相似扫描结果。
       if (progressEvents.length > 64) progressEvents.splice(2, progressEvents.length - 64);
     };
@@ -653,7 +694,10 @@ export class LocalMemory {
             const clusters = buildSimilarityClusters(namespace, scan.pairs, lowThreshold);
             for (const cluster of clusters) {
               options.signal?.throwIfAborted();
-              if (cluster.entries.length > maxSleepClusterSize) continue;
+              if (cluster.entries.length > maxSleepClusterSize) {
+                skippedOversizedClusters += 1;
+                continue;
+              }
               const activeIds = new Set(active.map((entry) => entry.id));
               const current = cluster.entries.filter((entry) => activeIds.has(entry.id));
               if (current.length < 2) continue;
@@ -866,7 +910,7 @@ export class LocalMemory {
     }));
 
     let written = 0;
-    const synthesisIds: string[] = [];
+    const indexedSyntheses: MemoryEntry[] = [];
     for (const input of syntheses) {
       let saveEmbedding: ((entry: MemoryEntry) => void) | undefined;
       try {
@@ -883,11 +927,14 @@ export class LocalMemory {
       try {
         const result = await this.writeEntry(input, { signal: options.signal, now, sleepOwnerToken: this.maintenanceOwnerToken, expectedEntries: entries });
         if (result.entry) {
-          synthesisIds.push(result.entry.id);
           if (result.written) written += 1;
           try {
             saveEmbedding(result.entry);
+            indexedSyntheses.push(result.entry);
           } catch {
+            options.signal?.throwIfAborted();
+            // 事实已落库不代表能被召回；索引失败时保留全部来源，等待重建。
+            synthesisFailed += 1;
             notifySleepIndexRebuild(derivedIndex);
           }
         } else {
@@ -898,7 +945,7 @@ export class LocalMemory {
         synthesisFailed += 1;
       }
     }
-    if (synthesisIds.some((id) => archiveIds.includes(id))) {
+    if (indexedSyntheses.some((entry) => archiveIds.includes(entry.id))) {
       throw new Error("Sleep model synthesis resolved to an entry it also requested to delete.");
     }
     const survivor = archiveIds.length < entries.length
@@ -906,7 +953,8 @@ export class LocalMemory {
       : undefined;
     const archivedResult = archiveIds.length === 0 || synthesisFailed > 0
       ? { entries: [], archived: 0, revision: (await this.storage.getOverview({ signal: options.signal })).storeRevision }
-      : await this.archiveForSleep(archiveIds, "llm_merge", options, synthesisIds[0] ?? survivor, now, archivedBy, entries);
+      : await this.archiveForSleep(archiveIds, "llm_merge", options, indexedSyntheses[0]?.id ?? survivor,
+        now, archivedBy, [...entries, ...indexedSyntheses]);
     if (archivedResult.archived > 0) notifySleepIndexRebuild(derivedIndex);
     return {
       written,
@@ -957,16 +1005,10 @@ export class LocalMemory {
     }
     const parsed = sleepMergeSchema.safeParse(raw);
     if (!parsed.success) return emptySleepMergeDecision();
-    const deleted = Array.isArray(parsed.data.delete)
-      ? parsed.data.delete.filter((value): value is string => typeof value === "string")
-      : [];
-    const synthesize = Array.isArray(parsed.data.synthesize)
-      ? parsed.data.synthesize.flatMap((value) => {
-        const synthesis = normalizeSleepSynthesis(value);
-        return synthesis === undefined ? [] : [synthesis];
-      })
-      : [];
-    return { delete: deleted, synthesize };
+    return {
+      delete: parsed.data.delete.filter((value): value is string => typeof value === "string"),
+      synthesize: parsed.data.synthesize
+    };
   }
 
   /**
@@ -988,14 +1030,14 @@ export class LocalMemory {
       now?: Date;
       onMemoryWritten?: (entry: MemoryEntry) => Promise<void>;
     }
-  ): Promise<{ created: ExtractedMemory[]; deleted: ExtractedMemory[] }> {
+  ): Promise<{ created: ExtractedMemory[]; updated: ExtractedMemory[]; deleted: ExtractedMemory[] }> {
     options.signal?.throwIfAborted();
-    if (options.excludeExternalContext && options.externalContext) return { created: [], deleted: [] };
+    if (options.excludeExternalContext && options.externalContext) return { created: [], updated: [], deleted: [] };
     const recentMessages = messages.slice(-4).filter((message) => message.role === "user" || message.role === "assistant");
     // Only summarize a completed turn when the tail contains at least two
     // messages. A single user/tool fragment is too easy to mistake for a
     // durable fact (and is not a completed conversational turn).
-    if (recentMessages.length < 2) return { created: [], deleted: [] };
+    if (recentMessages.length < 2) return { created: [], updated: [], deleted: [] };
     const originAnchors = normalizeMemoryOriginAnchors(options.originAnchors);
     let operations: MemoryOperation[];
     try {
@@ -1017,22 +1059,15 @@ export class LocalMemory {
     } catch (error) {
       options.signal?.throwIfAborted();
       if (error instanceof Error && error.name === "AbortError") throw error;
-      return { created: [], deleted: [] };
+      return { created: [], updated: [], deleted: [] };
     }
 
     const now = options.now ?? new Date();
     const deleted: ExtractedMemory[] = [];
-    for (const { content: description } of operations.filter((operation) => operation.operation === "delete")) {
-      options.signal?.throwIfAborted();
-      try {
-        deleted.push(...await this.deleteMemoryByDescription(description, options.signal, now, options.userId ?? null));
-      } catch {
-        options.signal?.throwIfAborted();
-        // 单个删除失败不应丢掉同一响应里的其它合法 add；下次成功回合仍可重新判断。
-      }
-    }
-
     const created: ExtractedMemory[] = [];
+    const updated: ExtractedMemory[] = [];
+    const retainedIds = new Set<string>();
+    let additionFailed = false;
     for (const proposal of operations.filter((operation) => operation.operation === "add")) {
       options.signal?.throwIfAborted();
       try {
@@ -1050,24 +1085,36 @@ export class LocalMemory {
         });
         // Generate an embedding before every automatic ADD. If the
         // semantic path is unavailable, skip this candidate instead of
-        // silently weakening the write-time dedup guarantee.
+        // treating unavailable reconciliation as permission to add a fact.
         const result = await this.writeAutoEntry(input, { signal: options.signal, now, requireSemantic: true });
+        if (result.deferred) additionFailed = true;
+        if (result.entry) retainedIds.add(result.entry.id);
         if (result.written) {
-          created.push({ id: result.entry!.id, content: result.entry!.content });
+          (result.updated ? updated : created).push({ id: result.entry!.id, content: result.entry!.content });
           await options.onMemoryWritten?.(result.entry!);
         }
       } catch {
         options.signal?.throwIfAborted();
+        additionFailed = true;
         // 模型返回的单条坏记忆只跳过这一条，不阻止其它条目提交。
       }
     }
-    deleted.push(...await this.cleanupTemporaryMemories(
-      formatMemoryExtractionMessages(recentMessages),
-      now,
-      options.signal,
-      options.userId ?? null
-    ));
-    return { created, deleted };
+    // 即使提取模型把更正拆成 delete + add，也不能在替代失败时先删旧事实。
+    // 本轮新增、更新或确认保留的 ID 不再交给同一批删除和临时清理。
+    if (!additionFailed) {
+      for (const { content: description } of operations.filter((operation) => operation.operation === "delete")) {
+        options.signal?.throwIfAborted();
+        try {
+          deleted.push(...await this.deleteMemoryByDescription(description, options.signal, now, options.userId ?? null, retainedIds));
+        } catch {
+          options.signal?.throwIfAborted();
+        }
+      }
+      deleted.push(...await this.cleanupTemporaryMemories(
+        formatMemoryExtractionMessages(recentMessages), now, options.signal, options.userId ?? null, retainedIds
+      ));
+    }
+    return { created, updated, deleted };
   }
 
   private async findSemanticMemoryEntries(
@@ -1083,25 +1130,30 @@ export class LocalMemory {
       candidates = await this.findSimilarEntries(query, { limit, minimumSimilarity, signal, userId });
     } catch {
       signal?.throwIfAborted();
-      // 语义判断是可选派生能力；索引/模型暂时不可用时保留确定性写入路径。
+      // 不可用交给调用方处理，不能冒充“没有相关事实”。
       return undefined;
     }
     const scoped = userId === undefined ? candidates : candidates?.filter((entry) => entry.userId === (userId ?? undefined));
-    // 判重、语义删除和 temporary 清理共用搜索；scope 过滤后的命中立即计入访问记录，
+    // 写入判断、语义删除和 temporary 清理共用搜索；scope 过滤后的命中立即计入访问记录，
     // 后续模型即使没有选中某条事实也不撤销统计。
     if (scoped?.length) await this.recordRecallUsage(scoped.map((entry) => entry.id), { signal });
     return scoped;
   }
 
-  private async findDuplicateMemory(
-    summary: string,
+  private async reconcileMemory(
+    proposed: MemoryEntryInput,
     candidates: readonly MemoryEntry[],
-    originAnchors?: MemoryOriginAnchor[],
     signal?: AbortSignal
-  ): Promise<{ entry?: MemoryEntry } | undefined> {
-    const prompt = `New memory to add: "${summary.trim()}"\n\n${memoryTimeAnchorInstruction}\nSource-message anchors: ${JSON.stringify(originAnchors ?? [])}\n\nExisting memories in the database:\n${candidates.map((entry, index) => `${index + 1}. ${entry.durability === "temporary" ? "[temporary]" : "[permanent]"} ${entry.content} [Memory saved-at: ${entry.createdAt}; source-message anchors: ${JSON.stringify(entry.originAnchors ?? [])}; saved-at is NOT event/due/completion time.]`).join("\n")}\n\nIs the new memory essentially a duplicate of any existing memory? Consider it a duplicate if ANY of these hold:\n- It carries the same core fact (even if worded differently).\n- It is a subset of an existing memory (the existing one already implies it) — adding it would be redundant.\n- It is a vaguer or noisier restatement of an existing, cleaner memory.\n\nIt is NOT a duplicate if it adds a materially new fact, constraint, or detail not present in any existing memory.\n\nRespond with ONLY a JSON object:\n- If duplicate: {"isDuplicate": true, "reason": "brief explanation", "duplicateOf": <number>}\n- If not duplicate: {"isDuplicate": false}\n\nPrefer keeping the store clean: when the new memory adds no genuinely new information, mark it a duplicate.`;
+  ): Promise<z.infer<typeof memoryReconciliationSchema> | undefined> {
+    const prompt = "Reconcile proposed memory:\n" + JSON.stringify({
+      proposed: { content: proposed.content, durability: proposed.durability, originAnchors: proposed.originAnchors },
+      candidates: candidates.map((entry) => ({
+        id: entry.id, content: entry.content, durability: entry.durability, originAnchors: entry.originAnchors
+      }))
+    });
     try {
       const response = await generateNativeText(this.getToolModel(), [{ role: "user", content: prompt }], {
+        systemPrompt: memoryReconciliationPrompt + "\n\n" + memoryTimeAnchorInstruction,
         signal,
         timeoutMs: memoryModelTimeoutMs,
         onRequestMetrics: this.onModelRequest,
@@ -1111,21 +1163,20 @@ export class LocalMemory {
       signal?.throwIfAborted();
       const object = response.text.match(/\{[\s\S]*\}/u);
       if (!object) return undefined;
-      const parsed: unknown = JSON.parse(object[0]);
-      if (parsed === null || typeof parsed !== "object") return undefined;
-      const decision = parsed as Record<string, unknown>;
-      if (decision.isDuplicate !== true) return undefined;
-      const index = typeof decision.duplicateOf === "number" ? decision.duplicateOf - 1 : -1;
-      return { entry: index >= 0 ? candidates[index] : undefined };
+      const parsed = memoryReconciliationSchema.safeParse(JSON.parse(object[0]));
+      if (!parsed.success) return undefined;
+      const decision = parsed.data;
+      if (decision.operation !== "ADD" && !candidates.some((entry) => entry.id === decision.id)) return undefined;
+      return decision;
     } catch {
       signal?.throwIfAborted();
       return undefined;
     }
   }
 
-  private async deleteMemoryByDescription(description: string, signal: AbortSignal | undefined, now: Date, userId: string | null): Promise<ExtractedMemory[]> {
+  private async deleteMemoryByDescription(description: string, signal: AbortSignal | undefined, now: Date, userId: string | null, retainedIds: ReadonlySet<string>): Promise<ExtractedMemory[]> {
     if (!description.trim()) return [];
-    const candidates = await this.findSemanticMemoryEntries(description.trim(), 10, 0, signal, userId);
+    const candidates = (await this.findSemanticMemoryEntries(description.trim(), 10, 0, signal, userId))?.filter((entry) => !retainedIds.has(entry.id));
     if (!candidates?.length) return [];
     const selectedIndexes = await this.selectMemoryDeletionCandidates(description, candidates, signal);
     const deleted: ExtractedMemory[] = [];
@@ -1170,7 +1221,7 @@ export class LocalMemory {
     }
   }
 
-  private async cleanupTemporaryMemories(conversation: string, now: Date, signal: AbortSignal | undefined, userId: string | null): Promise<ExtractedMemory[]> {
+  private async cleanupTemporaryMemories(conversation: string, now: Date, signal: AbortSignal | undefined, userId: string | null, retainedIds: ReadonlySet<string>): Promise<ExtractedMemory[]> {
     let candidates: MemoryEntry[] | undefined;
     try {
       candidates = await this.findSemanticMemoryEntries(conversation, 20, 0.3, signal, userId);
@@ -1180,7 +1231,7 @@ export class LocalMemory {
       // 清理候选读取或访问统计失败不能丢掉此前已提交的自动 add/delete 结果。
       return [];
     }
-    const temporary = candidates?.filter((entry) => entry.durability === "temporary") ?? [];
+    const temporary = candidates?.filter((entry) => entry.durability === "temporary" && !retainedIds.has(entry.id)) ?? [];
     if (!temporary.length) return [];
     const formatDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${date.toLocaleTimeString()}`;
     const memories = temporary.map((entry) => `- id: "${entry.id}", created: "${formatDate(new Date(entry.createdAt))}", content: "${entry.content}"`).join("\n");
@@ -1361,17 +1412,6 @@ function compareSleepEntries(left: MemoryEntry, right: MemoryEntry): number {
 
 function emptySleepMergeDecision(): SleepMergeDecision {
   return { delete: [], synthesize: [] };
-}
-
-function normalizeSleepSynthesis(value: unknown): SleepMergeDecision["synthesize"][number] | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  const content = typeof record.content === "string" ? record.content.trim() : "";
-  if (!content) return undefined;
-  return {
-    content,
-    durability: record.durability === "temporary" ? "temporary" : "permanent"
-  };
 }
 
 function clampSimilarity(value: number | undefined, fallback: number): number {

@@ -47,7 +47,7 @@ export async function createActivityMemoryPipeline(options: ActivityMemoryPipeli
   ): Promise<void> => {
     context.signal?.throwIfAborted();
     const workspaceRoot = await options.resolveWorkspace?.(context.project);
-    let hadDeferredCandidate = false;
+    let hadFailedCandidate = false;
     for (const candidate of candidates) {
       await context.checkpoint?.();
       context.signal?.throwIfAborted();
@@ -80,13 +80,14 @@ export async function createActivityMemoryPipeline(options: ActivityMemoryPipeli
         await context.checkpoint?.();
         context.signal?.throwIfAborted();
         if (error instanceof Error && error.name === "AbortError") throw error;
+        hadFailedCandidate = true;
         console.error("[ActivityMemoryPipeline] memory candidate write failed", context.sessionId);
       } finally {
         memory.close();
       }
-      if (deferred) hadDeferredCandidate = true;
+      if (deferred) hadFailedCandidate = true;
     }
-    if (hadDeferredCandidate) throw new Error("本地语义检索暂不可用，部分活动记忆未写入。");
+    if (hadFailedCandidate) throw new Error("语义检索暂不可用、写入判断或存储失败，部分活动记忆未写入。");
   };
 
   const onAnalyzed = async (

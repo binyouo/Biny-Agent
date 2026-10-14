@@ -23,7 +23,6 @@ export function migrateGlobalConfigDocument(value: unknown): ConfigMigrationResu
     document.configVersion = GLOBAL_CONFIG_VERSION;
     migrateMemoryPolicy(document);
     migrateLegacySubagentDefault(document);
-    migrateDefaultMemoryEmbedding(document);
   } else if (value.format === GLOBAL_CONFIG_FORMAT && value.configVersion === GLOBAL_CONFIG_VERSION) {
     migrateLegacySubagentDefault(document);
   }
@@ -40,8 +39,7 @@ export function migrateGlobalConfigDocument(value: unknown): ConfigMigrationResu
     delete search.apiKey;
     delete search.apiKeyEnv;
   }
-  // 本地 embedding 只保留默认 E5。旧配置里的其它内置模型迁到同一向量空间，避免升级后
-  // 因为收窄模型枚举而无法读取配置；provider embedding 不在这里改写。
+  // 已移除的旧本地模型迁到 E5；保留仍受支持的显式选择，不改写成远端 auto。
   migrateMemoryEmbeddingPolicy(document);
   const memory = isRecord(document.context) && isRecord(document.context.memory) ? document.context.memory : undefined;
   if (memory) delete memory.cloudEmbeddingConsents;
@@ -155,17 +153,8 @@ function migrateMemoryEmbeddingPolicy(document: Record<string, unknown>): void {
   if (!memory) return;
 
   const embeddingModel = isRecord(memory.embeddingModel) ? memory.embeddingModel : undefined;
-  if (memory.embeddingModel === undefined
-    || (embeddingModel?.kind === "local" && typeof embeddingModel.model === "string" && embeddingModel.model !== "multilingual-e5-small")) {
-    memory.embeddingModel = { kind: "auto" };
-  }
-}
-
-function migrateDefaultMemoryEmbedding(document: Record<string, unknown>): void {
-  const context = isRecord(document.context) ? document.context : undefined;
-  const memory = context && isRecord(context.memory) ? context.memory : undefined;
-  if (memory && isRecord(memory.embeddingModel) && memory.embeddingModel.kind === "local") {
-    memory.embeddingModel = { kind: "auto" };
+  if (embeddingModel?.kind === "local" && embeddingModel.model === "paraphrase-multilingual-MiniLM-L12-v2") {
+    memory.embeddingModel = { kind: "local", model: "multilingual-e5-small" };
   }
 }
 

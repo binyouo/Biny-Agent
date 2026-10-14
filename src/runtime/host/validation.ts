@@ -17,7 +17,7 @@ import type { AutomationCreateInput } from "../AutomationScheduler.js";
 import type { GraphNodeInput } from "../GoalGraphStore.js";
 import type { HostResponseFrame } from "./protocol.js";
 import type { HostOperationResult, HostSurface, RuntimeIsolation } from "./types.js";
-import type { LocalEmbeddingModelId } from "../../llm/embedding/types.js";
+import { localEmbeddingModelIds, type LocalEmbeddingModelId } from "../../llm/embedding/types.js";
 import type { ThinkingSelection } from "../../llm/ModelManager.js";
 import { SessionWriterConflictError } from "../SessionLease.js";
 
@@ -121,7 +121,7 @@ export function readMemoryDurability(value: unknown): MemoryDurability | undefin
 }
 
 export function readLocalEmbeddingModel(value: unknown): LocalEmbeddingModelId {
-  if (value === "multilingual-e5-small") return value;
+  if (typeof value === "string" && localEmbeddingModelIds.some((id) => id === value)) return value as LocalEmbeddingModelId;
   throw new Error("Runtime Host local embedding model is invalid.");
 }
 

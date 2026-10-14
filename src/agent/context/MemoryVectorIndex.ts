@@ -280,7 +280,7 @@ export class MemoryVectorIndex {
     return embeddings;
   }
 
-  status(): MemoryVectorIndexStatus {
+  status(entryIds?: ReadonlySet<string>): MemoryVectorIndexStatus {
     this.assertOpen();
     if (!this.hasSchema()) return {};
     const model = this.readMetadata("embedding_model");
@@ -288,8 +288,10 @@ export class MemoryVectorIndex {
     const createdAt = this.readMetadata("embedding_created_at");
     const completedAt = this.readMetadata("embedding_completed_at");
     if (!model || !dimensions || !createdAt || !completedAt) return {};
+    const scope = entryIds === undefined ? null : JSON.stringify([...entryIds]);
     const vectorCount = nonNegativeInteger(
-      (this.database.prepare(`SELECT COUNT(*) AS count FROM memory_embeddings WHERE memory_id IN (${currentVectorIds})`).get() as { count?: unknown } | undefined)?.count,
+      (this.database.prepare(`SELECT COUNT(*) AS count FROM memory_embeddings WHERE memory_id IN (${currentVectorIds})
+        AND (? IS NULL OR memory_id IN (SELECT value FROM json_each(?)))`).get(scope, scope) as { count?: unknown } | undefined)?.count,
       "vector count"
     );
     return { active: { modelFingerprint: model, dimensions, vectorCount, createdAt, completedAt } };

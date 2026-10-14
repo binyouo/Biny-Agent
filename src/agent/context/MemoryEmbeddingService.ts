@@ -21,7 +21,6 @@ import {
   MemoryVectorIndex,
   type MemoryVectorIndexStatus
 } from "./MemoryVectorIndex.js";
-import { memoryEntryEmbeddingText } from "./HybridMemoryRetriever.js";
 
 const rebuildBatchSize = 64;
 
@@ -278,7 +277,7 @@ export class MemoryEmbeddingService {
           combined.throwIfAborted();
           const batch = entries.slice(offset, offset + rebuildBatchSize);
           const embedded = await runtime.embed({
-            texts: batch.map(memoryEntryEmbeddingText),
+            texts: batch.map((entry) => entry.content),
             inputType: "passage",
             signal: combined
           });
@@ -351,7 +350,8 @@ export class MemoryEmbeddingService {
     const embedded = await runtime.embed({ texts: [content], inputType: "passage", signal });
     signal?.throwIfAborted();
     const vector = embedded.embeddings[0];
-    if (!vector || embedded.fingerprint !== active.modelFingerprint
+    if (!vector || embedded.embeddings.length !== 1 || embedded.dimensions !== active.dimensions
+      || embedded.fingerprint !== active.modelFingerprint
       || vector.length !== active.dimensions || !vector.every(Number.isFinite)) {
       throw new Error("Sleep synthesis embedding is invalid.");
     }
@@ -364,6 +364,9 @@ export class MemoryEmbeddingService {
       }
       if (!index.upsertActiveVectors(embedded.fingerprint, active.dimensions, [{ entryId: entry.id, revision: entry.revision, embedding: vector }])) {
         throw new Error("Sleep synthesis embedding index changed.");
+      }
+      if (index.status(new Set([entry.id])).active?.vectorCount !== 1) {
+        throw new Error("Sleep synthesis is no longer retrievable.");
       }
     };
   }
@@ -382,7 +385,7 @@ export class MemoryEmbeddingService {
         await this.rebuild();
         return;
       }
-      const embedded = await runtime.embed({ texts: [memoryEntryEmbeddingText(entry)], inputType: "passage" });
+      const embedded = await runtime.embed({ texts: [entry.content], inputType: "passage" });
       const vector = embedded.embeddings[0];
       if (!vector || embedded.fingerprint !== runtime.descriptor.fingerprint) {
         throw new Error("Embedding 模型没有返回可用的单条向量。");
@@ -465,10 +468,8 @@ export class MemoryEmbeddingService {
   }
 
   /**
-   * 用一段新文本找语义候选。自动写入的 LLM 去重、语义删除和 temporary 清理都走这条
-   * 只读路径；embedding 不可用时返回 undefined，让上层区分“没有候选”和“无法判断”。
-   * 索引尚未建立时按空候选处理；后续写入会
-   * 继续进入事实库，并由增量索引/重建补齐派生向量。
+   * 自动写入判断、语义删除和临时清理共用此路径。范围内已有事实必须全部有当前模型
+   * 的有效索引；缺失或过期时返回 undefined，不能把“无法判断”当成“没有候选”。
    */
   async findSimilarEntries(
     query: string,
@@ -495,46 +496,40 @@ export class MemoryEmbeddingService {
       return undefined;
     }
     if (!runtime) return undefined;
+    signal?.throwIfAborted();
     // Resolve runtime before the empty-store fast path. Callers such as
     // Activity need to distinguish “semantic search is available but there are
     // no candidates” from “the required embedding runtime is unavailable”.
     if (!entries.length) return [];
 
-    let embedded: Awaited<ReturnType<EmbeddingModelRuntime["embed"]>>;
-    try {
-      embedded = await runtime.embed({ texts: [text], inputType: "query", signal });
-    } catch {
-      signal?.throwIfAborted();
-      return undefined;
-    }
-    const queryEmbedding = embedded.embeddings[0];
-    if (!queryEmbedding
-      || embedded.fingerprint !== runtime.descriptor.fingerprint
-      || (runtime.descriptor.dimensions !== undefined && embedded.dimensions !== runtime.descriptor.dimensions)
-      || embedded.dimensions !== queryEmbedding.length) {
-      return undefined;
-    }
-
     const cachedIndex = this.vectorIndexInstance;
     let index: MemoryVectorIndex | undefined;
     try {
       index = cachedIndex ?? this.options.getReadOnlyVectorIndex();
-      // An empty vector table returns an empty candidate set. Do not block the first automatic
-      // memory on a rebuild; only an unavailable embedding runtime above is a
-      // hard failure for automatic deduplication.
-      if (!index) return [];
-      const active = index.status().active;
+      if (!index) return undefined;
+      const embedded = await runtime.embed({ texts: [text], inputType: "query", signal });
+      signal?.throwIfAborted();
+      const queryEmbedding = embedded.embeddings[0];
+      if (!queryEmbedding
+        || embedded.embeddings.length !== 1
+        || embedded.fingerprint !== runtime.descriptor.fingerprint
+        || (runtime.descriptor.dimensions !== undefined && embedded.dimensions !== runtime.descriptor.dimensions)
+        || embedded.dimensions !== queryEmbedding.length) return undefined;
+      const entryById = new Map(entries.map((entry) => [entry.id, entry] as const));
+      const entryIds = new Set(entryById.keys());
+      // 在模型等待后核对范围内的有效投影，其他用户的索引缺口不阻止本次判断。
+      const active = index.status(entryIds).active;
       if (!active
         || active.modelFingerprint !== runtime.descriptor.fingerprint
-        || active.dimensions !== embedded.dimensions) {
-        return [];
+        || active.dimensions !== embedded.dimensions
+        || active.vectorCount !== entryIds.size) {
+        return undefined;
       }
-      const entryById = new Map(entries.map((entry) => [entry.id, entry] as const));
       const results = index.search(queryEmbedding, {
         modelFingerprint: runtime.descriptor.fingerprint,
         limit,
         minimumSimilarity,
-        entryIds: new Set(entryById.keys())
+        entryIds
       });
       const matches = results.flatMap((result) => {
         const entry = entryById.get(result.entryId);

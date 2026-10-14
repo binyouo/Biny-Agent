@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { HybridMemoryRetriever } from "../src/agent/context/HybridMemoryRetriever.js";
+import { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemoryRetriever.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import type { MemorySearchOptions, MemorySearchResult } from "../src/agent/context/memoryTypes.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
@@ -35,7 +35,7 @@ try {
         model: { kind: "local", model: "multilingual-e5-small" } };
     }
   };
-  const retriever = new HybridMemoryRetriever({
+  const retriever = new SemanticMemoryRetriever({
     localMemory: memory,
     getEmbeddingRuntime: async () => embeddingRuntime,
     getReadOnlyVectorIndex: () => ({

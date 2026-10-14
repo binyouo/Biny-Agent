@@ -17,7 +17,7 @@
     "analyse": { "type": "lane", "period": 9, "run": 5.8, "off": 3.2, "busy": "分析会话", "done": ["已成篇"], "phase": 1.5,
       "log": { "who": "analyzer", "c": "pu", "msgs": [["归纳项目 / PR / 决策", "→ 摘要"]] } },
     "recall": { "type": "lane", "period": 7, "run": 4.2, "off": 2.8, "busy": "检索中", "done": ["已召回"], "phase": 0.8,
-      "log": { "who": "retriever", "c": "gr", "msgs": [["混合检索：关键词 + 向量", "→ 上下文"]] } },
+      "log": { "who": "retriever", "c": "gr", "msgs": [["语义检索：范围筛选 + 向量", "→ 上下文"]] } },
     "embed": { "type": "lane", "period": 8.5, "run": 5.4, "off": 3.1, "busy": "建向量", "done": ["已索引"], "phase": 2.2,
       "log": { "who": "embedding", "c": "bl", "msgs": [["增量嵌入写向量索引", "→ index"]] } },
     "fatigue": { "type": "gauge", "period": 4.4, "t0": 0.6, "seed": 3, "threshold": 55,
@@ -64,7 +64,7 @@
       "lines": [
         { "align": "left", "runs": [ { "t": "嵌入与索引", "c": "bl", "b": 1 } ] },
         { "align": "left", "runs": [ { "v": "embed" } ] },
-        { "align": "left", "t": "向量索引 + 关键词", "c": "fg" },
+        { "align": "left", "t": "向量索引 + 范围筛选", "c": "fg" },
         { "align": "left", "t": "按空闲批量跑", "c": "dim" }
       ] },
 
@@ -74,8 +74,8 @@
     { "type": "box", "x": 40, "y": 542, "w": 1120, "h": 168, "color": "gr", "pad": [12, 16, 16],
       "lines": [
         { "align": "left", "runs": [ { "t": "记忆层 · 长期 / 临时 / 项目", "c": "gr", "b": 1 }, { "t": "   src/agent/context/", "c": "dim" } ] },
-        { "align": "left", "t": "MEMORY.md 长期事实 · 每日笔记 · 项目上下文 · 会话内临时记忆", "c": "fg" },
-        { "align": "left", "runs": [ { "t": "HybridMemoryRetriever：关键词与向量一起用", "c": "fg" } ] },
+        { "align": "left", "t": "SQLite 事实 · Markdown 日记 · 项目上下文 · 会话历史", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "SemanticMemoryRetriever：范围筛选与向量语义检索", "c": "fg" } ] },
         { "align": "left", "runs": [ { "t": "当前负载 ", "c": "dim" }, { "v": "fatigue", "c": "fg" } ] }
       ] },
 

@@ -6,8 +6,8 @@
  */
 export type EmbeddingInputType = "query" | "passage";
 
-export type LocalEmbeddingModelId =
-  | "multilingual-e5-small";
+export const localEmbeddingModelIds = ["multilingual-e5-small", "all-MiniLM-L6-v2"] as const;
+export type LocalEmbeddingModelId = typeof localEmbeddingModelIds[number];
 
 export type EmbeddingModelRef =
   | { kind: "auto" }
@@ -15,9 +15,7 @@ export type EmbeddingModelRef =
   | { kind: "provider"; provider: string; model: string };
 
 export const defaultLocalEmbeddingModel: LocalEmbeddingModelId = "multilingual-e5-small";
-export const defaultEmbeddingModelRef: EmbeddingModelRef = { kind: "auto" };
-
-
+export const defaultEmbeddingModelRef: EmbeddingModelRef = { kind: "local", model: defaultLocalEmbeddingModel };
 
 export interface EmbeddingModelDescriptor {
   ref: EmbeddingModelRef;

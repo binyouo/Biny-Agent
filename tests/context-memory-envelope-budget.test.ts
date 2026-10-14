@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ContextMemory, type PreparedAgentContext } from "../src/agent/context/ContextMemory.js";
-import type { HybridMemoryRetriever } from "../src/agent/context/HybridMemoryRetriever.js";
+import type { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemoryRetriever.js";
 import { formatMemoryMatches, type LocalMemory } from "../src/agent/context/LocalMemory.js";
 import type { MemoryEntry, MemoryMatch } from "../src/agent/context/memoryTypes.js";
 import { estimateContextBreakdown, messageTokenCost } from "../src/agent/context/tokenUsage.js";
@@ -40,12 +40,12 @@ function fixture(maxTokens: number, matches: MemoryMatch[], reserveTokens?: numb
       repoMapEntries: 0, activePaths: [], recentActivity: { paths: [], summaries: [] }
     })
   };
-  const retriever: Pick<HybridMemoryRetriever, "retrieve"> = {
+  const retriever: Pick<SemanticMemoryRetriever, "retrieve"> = {
     retrieve: async () => ({ matches, storeRevision: 1, report: { omitted: [] } })
   };
   const memory = new ContextMemory(
     () => model, workspace as WorkspaceContext, { recallLimit: 3 } as LocalMemory, maxTokens, 32_768,
-    undefined, undefined, { enabled: false, reserveTokens }, undefined, undefined, retriever as HybridMemoryRetriever
+    undefined, undefined, { enabled: false, reserveTokens }, undefined, undefined, retriever as SemanticMemoryRetriever
   );
   memory.replaceHistory(history);
   return memory;

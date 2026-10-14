@@ -2,7 +2,7 @@
 import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { RuntimeHostClient } from "./client.js";
-import { readMemoryEntryInput, readMemoryEntryPatch } from "./validation.js";
+import { readLocalEmbeddingModel, readMemoryEntryInput, readMemoryEntryPatch } from "./validation.js";
 import { SessionSearchIndex, sessionSearchRefreshMaxAgeMs } from "../../session/searchIndex.js";
 import { archiveConversationMarkdown } from "../../session/markdownArchive.js";
 import { attachMemoryWebSocket } from "./memory-websocket.js";
@@ -109,8 +109,8 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
         const archivedEntry = await client.memory<MemoryEntry | null>("get", { id });
         if (!archivedEntry?.archivedAt) result = null;
         else {
-          // 恢复会消耗归档行；先读取合并指向，避免事实已恢复但响应读取失败。
-          const target = archivedEntry.archivedReason === "llm_merge" && archivedEntry.mergedInto
+          // 恢复会消耗归档行；先读取关联目标，避免事实已恢复但响应读取失败。
+          const target = (archivedEntry.archivedReason === "llm_merge" || archivedEntry.archivedReason === "updated") && archivedEntry.mergedInto
             ? await client.memory<MemoryEntry | null>("get", { id: archivedEntry.mergedInto })
             : null;
           const restored = await client.memory<MemoryArchiveResult>("archive", { id, archived: false });
@@ -174,10 +174,10 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
         await client.cancelMemoryEmbeddingRebuild();
         result = { success: true, message: "Rebuild cancelled" };
       } else if (route === "/api/local-embeddings/download" && method === "POST") {
-        if (body.model !== "multilingual-e5-small") throw new InputError("Unsupported embedding model");
-        result = await client.downloadMemoryEmbeddingModel(body.model);
-      } else if (route === "/api/local-embeddings/models/multilingual-e5-small" && method === "DELETE") {
-        result = await client.deleteMemoryEmbeddingModel("multilingual-e5-small");
+        result = await client.downloadMemoryEmbeddingModel(validate(() => readLocalEmbeddingModel(body.model)));
+      } else if (/^\/api\/local-embeddings\/models\/[^/]+$/u.test(route) && method === "DELETE") {
+        const model = validate(() => readLocalEmbeddingModel(decodeURIComponent(route.split("/")[4]!)));
+        result = await client.deleteMemoryEmbeddingModel(model);
       } else if (route === "/api/threads/archive" && method === "POST") {
         result = await archiveConversationMarkdown();
       } else if (route === "/api/history/search" && method === "POST") {
@@ -217,7 +217,7 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
       server.listen(options.port ?? 0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
     });
   } catch (error) {
-    sessionSearchIndex.close();
+    await sessionSearchIndex.close();
     await closeWebSocket().catch(() => undefined);
     throw error;
   }
@@ -232,7 +232,7 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
           await closeWebSocket();
           await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         } finally {
-          sessionSearchIndex.close();
+          await sessionSearchIndex.close();
         }
       })();
       return closing;

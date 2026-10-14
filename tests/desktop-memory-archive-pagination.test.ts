@@ -86,6 +86,20 @@ try {
   const manualRestore = await agents.archiveMemoryEntry(project.id, manualArchiveId, false);
   assert.equal(manualRestore.mergedTarget, null);
 
+  const versionMemory = new LocalMemory(workspaceRoot, () => { throw new Error("Restore must not call a model"); });
+  let previousVersionId: string;
+  try {
+    const previous = await versionMemory.writeEntry({ content: "Earlier version of active fact" });
+    assert.ok(previous.entry);
+    const archived = await versionMemory.archiveEntries([previous.entry.id], "updated", { mergedInto: targetId });
+    assert.ok(archived.entries[0]);
+    previousVersionId = archived.entries[0].id;
+  } finally {
+    versionMemory.close();
+  }
+  const versionRestore = await agents.archiveMemoryEntry(project.id, previousVersionId, false);
+  assert.deepEqual(versionRestore.mergedTarget, { id: targetId, content: "Still active merged fact" });
+
   const chainMemory = new LocalMemory(workspaceRoot, () => { throw new Error("Chain lookup must not call a model"); });
   let chainSourceArchiveId: string;
   let cycleSourceArchiveId: string;

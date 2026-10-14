@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { HybridMemoryRetriever } from "../src/agent/context/HybridMemoryRetriever.js";
+import { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemoryRetriever.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import type { MemoryEntry } from "../src/agent/context/memoryTypes.js";
@@ -26,7 +26,7 @@ const runtime: EmbeddingModelRuntime = {
     model: { kind: "local", model: "multilingual-e5-small" }
   })
 };
-const retriever = new HybridMemoryRetriever({
+const retriever = new SemanticMemoryRetriever({
   localMemory: {
     listMemoryEntries: async () => ({ entries, total: entries.length, storeRevision: 1 }),
     recordRecallUsage: async (ids) => { recalled.push(ids); }
@@ -40,24 +40,24 @@ const retriever = new HybridMemoryRetriever({
         { entryId: "highest", similarity: 0.99 },
         { entryId: "shared", similarity: 0.98 },
         { entryId: "later", similarity: 0.97 }
-      ].slice(0, options.limit);
+      ].filter((row) => options.entryIds?.has(row.entryId) ?? true).slice(0, options.limit);
     }
   }),
   getThreshold: () => 0.1
 });
 
 // Given a higher ranked memory outside the requested users, When search takes top 2,
-// Then that memory consumes a slot and only the public memory remains.
+// Then the public and requested-user memories fill the window.
 const result = await retriever.retrieve("work", [], { limit: 2, userIds: ["alice"], tags: ["Work"], maxChars: 1 });
 assert.deepEqual(result.matches, [], "the context budget may omit a searched memory");
 assert.equal(searches[0]?.limit, 2);
-assert.equal(searches[0]?.entryIds, undefined, "scope must be applied after vector top-K");
-assert.deepEqual(recalled, [["shared"]], "post-filter hits are counted before context budgeting");
+assert.deepEqual(searches[0]?.entryIds, new Set(["shared", "later"]), "scope must be applied before vector top-K");
+assert.deepEqual(recalled, [["shared", "later"]], "scoped hits are counted before context budgeting");
 
 await retriever.retrieve("work", [], { limit: 2, threshold: 0.8 });
 assert.equal(searches[1]?.minimumSimilarity, 0.8, "manual threshold must reach vector search before usage is counted");
 
-const unavailable = new HybridMemoryRetriever({
+const unavailable = new SemanticMemoryRetriever({
   localMemory: {
     listMemoryEntries: async () => ({ entries, total: entries.length, storeRevision: 1 }),
     recordRecallUsage: async () => undefined
@@ -68,7 +68,7 @@ const unavailable = new HybridMemoryRetriever({
 });
 assert.deepEqual((await unavailable.retrieve("work", [], { limit: 2 })).matches, []);
 
-const failedRuntime = new HybridMemoryRetriever({
+const failedRuntime = new SemanticMemoryRetriever({
   localMemory: {
     listMemoryEntries: async () => ({ entries, total: entries.length, storeRevision: 1 }),
     recordRecallUsage: async () => undefined
@@ -82,7 +82,7 @@ const failedRuntime = new HybridMemoryRetriever({
 });
 assert.equal((await failedRuntime.retrieve("work", [], { limit: 2 })).report.degraded, "no_embedding_runtime");
 
-const failedIndex = new HybridMemoryRetriever({
+const failedIndex = new SemanticMemoryRetriever({
   localMemory: {
     listMemoryEntries: async () => ({ entries, total: entries.length, storeRevision: 1 }),
     recordRecallUsage: async () => undefined
@@ -104,7 +104,7 @@ const local = new LocalMemory(root, () => { throw new Error("Model requests are 
 try {
   const written = await local.writeEntry({ content: "Remember the release checklist" });
   const id = written.entry!.id;
-  const persistedSearch = new HybridMemoryRetriever({
+  const persistedSearch = new SemanticMemoryRetriever({
     localMemory: local,
     getEmbeddingRuntime: async () => runtime,
     getReadOnlyVectorIndex: () => ({

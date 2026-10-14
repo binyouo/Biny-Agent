@@ -7,7 +7,7 @@ import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provide
 import { executeCodeModeCell } from "../src/agent/codeMode.js";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel, AgentTool, ModelStreamEvent } from "../src/agent/core/types.js";
-import { HybridMemoryRetriever, type HybridMemoryRetrieverOptions } from "../src/agent/context/HybridMemoryRetriever.js";
+import { SemanticMemoryRetriever, type SemanticMemoryRetrieverOptions } from "../src/agent/context/SemanticMemoryRetriever.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
@@ -551,7 +551,7 @@ async function testSdkCleanupSessionQuarantine(): Promise<void> {
   }
 }
 
-function createFixture(overrides: Partial<HybridMemoryRetrieverOptions> = {}) {
+function createFixture(overrides: Partial<SemanticMemoryRetrieverOptions> = {}) {
   const usage: string[][] = [];
   const embedCalls: Array<{ texts: readonly string[]; signal?: AbortSignal }> = [];
   const searches: ArrayLike<number>[] = [];
@@ -561,7 +561,7 @@ function createFixture(overrides: Partial<HybridMemoryRetrieverOptions> = {}) {
       source: "local", dimensions: 2, recommendedThreshold: 0.3 },
     embed: async (request) => { embedCalls.push(request); return embedding; }
   };
-  const retriever = new HybridMemoryRetriever({
+  const retriever = new SemanticMemoryRetriever({
     localMemory: {
       listMemoryEntries: async () => ({ entries: [entry], total: 1, storeRevision: 1 }),
       recordRecallUsage: async (ids) => { usage.push(ids); }

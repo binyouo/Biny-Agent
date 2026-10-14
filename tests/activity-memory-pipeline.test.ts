@@ -3,7 +3,9 @@ import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
+import { DatabaseSync } from "node:sqlite";
+import { mock } from "node:test";
+import { AGENT_DATABASE_FILE, BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import { createActivityMemoryPipeline } from "../src/activity/memoryPipeline.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { CrystalStorage } from "../src/agent/context/crystalStorage.js";
@@ -17,6 +19,7 @@ import { createCliActivityMemoryPipeline } from "../src/cli/commands/activity.js
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
 import { ProviderRegistry } from "../src/llm/ProviderRuntime.js";
+import { LocalEmbeddingManager } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-memory-pipeline-"));
 const previousAgentDir = process.env[BINY_AGENT_DIR_ENV];
@@ -26,6 +29,7 @@ const model: AgentModel = {
   provider: "test",
   modelId: "activity-test",
   stream: async () => (async function* () {
+    yield { type: "text-delta" as const, text: JSON.stringify({ operation: "ADD" }) };
     yield { type: "finish" as const, reason: "stop" as const };
   })()
 };
@@ -33,6 +37,7 @@ const model: AgentModel = {
 try {
   await testDefaultRequiresSemantic();
   await testCliSemanticGateAndIndex();
+  await testCliMiniLMEmbeddingSelection();
   await testCliProviderEmbeddingSelection();
   await testDeferredCandidatesRecover();
   const pipeline = await createActivityMemoryPipeline({
@@ -140,8 +145,9 @@ try {
   } finally {
     crystals.close();
   }
-  await testCandidateFailureDoesNotDropLaterMemories();
+  await testSkippedProjectDoesNotDropLaterUserMemories();
   await testDeferredCandidateDoesNotBlockLaterCandidate();
+  await testStorageFailureIsReportedAfterLaterCandidates();
 } finally {
   if (previousAgentDir === undefined) delete process.env[BINY_AGENT_DIR_ENV];
   else process.env[BINY_AGENT_DIR_ENV] = previousAgentDir;
@@ -188,7 +194,26 @@ async function testDeferredCandidatesRecover(): Promise<void> {
 
 console.log("activity memory pipeline tests passed");
 
-async function testCandidateFailureDoesNotDropLaterMemories(): Promise<void> {
+async function testStorageFailureIsReportedAfterLaterCandidates(): Promise<void> {
+  const sessionId = "activity-storage-failure";
+  const pipeline = await createActivityMemoryPipeline({ workspaceRoot: root, findSimilarEntries: async () => [] });
+  const database = new DatabaseSync(path.join(root, "agent", AGENT_DATABASE_FILE));
+  const memory = new MemoryStorage(root);
+  try {
+    database.exec("CREATE TRIGGER reject_failed_candidate BEFORE INSERT ON memories WHEN NEW.content = 'Storage failure candidate' BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END");
+    await assert.rejects(pipeline.writeMemories([
+      { type: "user", content: "Storage failure candidate", why: "Stable fact" },
+      { type: "user", content: "Independent fact after the failed candidate", why: "Stable fact" }
+    ], { sessionId, analyzedAt: "2026-09-07T10:00:00.000Z", model }), /部分活动记忆未写入/u);
+    const entries = (await memory.listEntries()).entries.filter((entry) => entry.activitySessionId === sessionId);
+    assert.deepEqual(entries.map((entry) => entry.content), ["Independent fact after the failed candidate"]);
+  } finally {
+    database.exec("DROP TRIGGER IF EXISTS reject_failed_candidate");
+    database.close(); memory.close(); pipeline.close();
+  }
+}
+
+async function testSkippedProjectDoesNotDropLaterUserMemories(): Promise<void> {
   const sessionId = "activity-partial-candidate-write";
   const pipeline = await createActivityMemoryPipeline({
     workspaceRoot: root,
@@ -204,7 +229,7 @@ async function testCandidateFailureDoesNotDropLaterMemories(): Promise<void> {
     try {
       const entries = (await memory.listEntries()).entries.filter((entry) => entry.activitySessionId === sessionId);
       assert.ok(entries.some((entry) => entry.content.includes("second candidate")),
-        "首条候选的派生索引失败后，后续独立候选仍写入 SQLite");
+        "项目未知而跳过首条项目候选后，后续用户候选仍写入 SQLite");
     } finally { memory.close(); }
   } finally { pipeline.close(); }
 }
@@ -250,21 +275,21 @@ async function testCliSemanticGateAndIndex(): Promise<void> {
   process.env[BINY_AGENT_DIR_ENV] = path.join(cliRoot, "agent");
   const candidate = {type:"user" as const,content:"Activity CLI semantic source fact",why:"source parity"};
   const context = {sessionId:"cli-activity-session",analyzedAt:"2026-09-07T10:00:00.000Z",model};
-  const localConfig = {...defaultConfig,context:{...defaultConfig.context,memory:{...defaultConfig.context.memory,
-    embeddingModel:{kind:"local" as const,model:"multilingual-e5-small" as const}}}};
+  const autoConfig = {...defaultConfig,context:{...defaultConfig.context,memory:{...defaultConfig.context.memory,
+    embeddingModel:{kind:"auto" as const}}}};
   const descriptor = {ref:{kind:"local" as const,model:"multilingual-e5-small" as const},fingerprint:"test-activity-cli-e5",
     displayName:"test",dimensions:2,recommendedThreshold:0.8,source:"local" as const};
   const runtime:EmbeddingModelRuntime = {descriptor,fingerprint:descriptor.fingerprint,embed:async({texts})=>({
     embeddings:texts.map(()=>new Float32Array([1,0])),dimensions:2,fingerprint:descriptor.fingerprint,model:descriptor.ref
   })};
   try {
-    for (const [config, getRuntime] of [[defaultConfig,async()=>runtime],[localConfig,async()=>undefined]] as const) {
+    for (const [config, getRuntime] of [[autoConfig,async()=>runtime],[defaultConfig,async()=>undefined]] as const) {
       const pipeline = await createCliActivityMemoryPipeline(cliRoot, config, getRuntime);
       try {
         await assert.rejects(pipeline.writeMemories([candidate],context),/语义检索暂不可用/u);
       } finally {await pipeline.close();}
     }
-    const available = await createCliActivityMemoryPipeline(cliRoot,localConfig,async()=>runtime);
+    const available = await createCliActivityMemoryPipeline(cliRoot,defaultConfig,async()=>runtime);
     try {
       await available.writeMemories([candidate],context);
       const memory = new MemoryStorage(cliRoot);
@@ -283,6 +308,44 @@ async function testCliSemanticGateAndIndex(): Promise<void> {
     if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV];
     else process.env[BINY_AGENT_DIR_ENV] = previous;
     await rm(cliRoot,{recursive:true,force:true});
+  }
+}
+
+async function testCliMiniLMEmbeddingSelection(): Promise<void> {
+  const cliRoot = await mkdtemp(path.join(os.tmpdir(), "biny-activity-cli-minilm-"));
+  const previous = process.env[BINY_AGENT_DIR_ENV];
+  process.env[BINY_AGENT_DIR_ENV] = path.join(cliRoot, "agent");
+  const ref = { kind: "local" as const, model: "all-MiniLM-L6-v2" as const };
+  const descriptor = { ref, fingerprint: "test-activity-cli-minilm", displayName: "MiniLM", dimensions: 2,
+    recommendedThreshold: 0.3, source: "local" as const };
+  const runtime: EmbeddingModelRuntime = { descriptor, fingerprint: descriptor.fingerprint, embed: async ({ texts }) => ({
+    embeddings: texts.map(() => new Float32Array([1, 0])), dimensions: 2, fingerprint: descriptor.fingerprint, model: ref
+  }) };
+  const loading = mock.method(LocalEmbeddingManager.prototype, "createRuntime", async (modelId) => {
+    assert.equal(modelId, ref.model);
+    return runtime;
+  });
+  const config = { ...defaultConfig, context: { ...defaultConfig.context, memory: {
+    ...defaultConfig.context.memory, embeddingModel: ref
+  } } };
+  let pipeline: Awaited<ReturnType<typeof createCliActivityMemoryPipeline>> | undefined;
+  try {
+    pipeline = await createCliActivityMemoryPipeline(cliRoot, config);
+    await pipeline.writeMemories([{ type: "user", content: "Activity facts use the selected MiniLM model.", why: "Stable choice" }], {
+      sessionId: "cli-minilm", analyzedAt: "2026-10-14T08:00:00.000Z", model
+    });
+    const index = MemoryVectorIndex.openReadOnly(path.join(cliRoot, "agent"));
+    assert.ok(index);
+    try {
+      assert.equal(index.status().active?.modelFingerprint, descriptor.fingerprint);
+      assert.equal(index.search([1, 0], { modelFingerprint: descriptor.fingerprint, limit: 5 }).length, 1);
+    } finally { index.close(); }
+  } finally {
+    await pipeline?.close();
+    loading.mock.restore();
+    if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV];
+    else process.env[BINY_AGENT_DIR_ENV] = previous;
+    await rm(cliRoot, { recursive: true, force: true });
   }
 }
 

@@ -104,7 +104,8 @@ const memorySleepRunSchema = z.object({
     archivedExpired: z.number().int().nonnegative(),
     archivedSimilarity: z.number().int().nonnegative(),
     archivedLlm: z.number().int().nonnegative(),
-    purged: z.number().int().nonnegative()
+    purged: z.number().int().nonnegative(),
+    skippedOversizedClusters: z.number().int().positive().optional()
   })).max(64).optional()
 });
 
@@ -226,6 +227,7 @@ export class MemoryStorage {
     if (!database) return {};
     const archive = database.prepare("SELECT merged_into FROM memory_archive WHERE id = ?");
     const next = database.prepare("SELECT merged_into FROM memory_archive WHERE original_id = ? ORDER BY archived_at DESC, id DESC LIMIT 1");
+    const active = database.prepare("SELECT id FROM memories WHERE id = ?");
     const chains: Record<string, MemoryArchiveChain> = {};
     for (const archiveId of archiveIds) {
       options.signal?.throwIfAborted();
@@ -236,6 +238,7 @@ export class MemoryStorage {
       const seen = new Set<string>();
       while (depth < 10 && !seen.has(finalId)) {
         options.signal?.throwIfAborted();
+        if (active.get(finalId)) break;
         const row = next.get(finalId) as { merged_into: string | null } | undefined;
         if (!row?.merged_into) break;
         seen.add(finalId);
@@ -324,9 +327,11 @@ export class MemoryStorage {
     });
   }
 
-  async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
+  async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions & { archivePrevious?: boolean } = {}): Promise<MemoryWriteResult> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
+      assertSleepOwner(database, options.sleepOwnerToken);
+      assertExpectedEntries(database, options.expectedEntries);
       const revision = readRevision(database);
       const existing = options.activeOnly ? findActiveMemoryEntry(database, id) : findMemoryEntry(database, id);
       if (!existing) return { written: false, revision };
@@ -337,7 +342,7 @@ export class MemoryStorage {
         rationale: patch.rationale ?? existing.rationale,
         importance: patch.importance ?? existing.importance,
         durability: patch.durability ?? existing.durability,
-        expiresAt: patch.expiresAt ?? existing.expiresAt,
+        expiresAt: patch.durability === "permanent" ? undefined : patch.expiresAt ?? existing.expiresAt,
         threadId: patch.threadId ?? existing.threadId,
         messageId: patch.messageId ?? existing.messageId,
         userId: patch.userId ?? existing.userId,
@@ -361,6 +366,19 @@ export class MemoryStorage {
       }
       entry.accessCount = existing.accessCount;
       entry.lastAccessedAt = existing.lastAccessedAt;
+      if (options.archivePrevious && existing.archivedAt === undefined) {
+        // 旧正文与新版本在同一事务提交；归档失败不能留下无法追溯的覆盖。
+        insertArchivedMemory(database, {
+          ...existing,
+          id: randomUUID(),
+          originalId: existing.id,
+          archivedAt: entry.updatedAt,
+          archivedReason: "updated",
+          archivedBy: options.archivedBy ?? "auto",
+          mergedInto: existing.id,
+          revision: entry.revision
+        });
+      }
       if (existing.archivedAt === undefined) updateActiveMemory(database, entry);
       else updateArchivedMemory(database, entry);
       setRevision(database, revision + 1);
@@ -504,8 +522,10 @@ export class MemoryStorage {
       const revision = readRevision(database);
       const existing = options.activeOnly ? findActiveMemoryEntry(database, id) : findMemoryEntry(database, id);
       if (!existing) return { deleted: false, revision };
-      if (existing.archivedAt === undefined) deleteActiveMemory(database, existing.id);
-      else deleteArchivedMemory(database, existing.id);
+      if (existing.archivedAt === undefined) {
+        database.prepare("DELETE FROM memory_archive WHERE original_id = ? AND archived_reason = 'updated'").run(existing.id);
+        deleteActiveMemory(database, existing.id);
+      } else deleteArchivedMemory(database, existing.id);
       setRevision(database, revision + 1);
       return { deleted: true, entry: existing, revision: revision + 1 };
     });
@@ -1311,7 +1331,8 @@ function sanitizeSleepRun(run: MemorySleepRun): MemorySleepRun {
       archivedExpired: safeCounter(event.archivedExpired),
       archivedSimilarity: safeCounter(event.archivedSimilarity),
       archivedLlm: safeCounter(event.archivedLlm),
-      purged: safeCounter(event.purged)
+      purged: safeCounter(event.purged),
+      skippedOversizedClusters: event.skippedOversizedClusters ? safeCounter(event.skippedOversizedClusters) : undefined
     }))
   };
 }
@@ -1424,7 +1445,7 @@ function normalizeLimit(value: number | undefined, fallback: number): number {
 function archiveReasonValue(value: unknown): MemoryArchiveReason | undefined {
   if (value === null || value === undefined) return undefined;
   if (value === "exact_dup" || value === "exact" || value === "expired" || value === "orphan"
-    || value === "similarity_merge" || value === "llm_merge"
+    || value === "similarity_merge" || value === "llm_merge" || value === "updated"
     || value === "similarity" || value === "llm" || value === "manual") return value;
   throw new Error("Invalid memory archive reason.");
 }

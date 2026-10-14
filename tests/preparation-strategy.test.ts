@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { ContextMemory } from "../src/agent/context/ContextMemory.js";
-import { HybridMemoryRetriever } from "../src/agent/context/HybridMemoryRetriever.js";
+import { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemoryRetriever.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 import type { MemoryEntry } from "../src/agent/context/memoryTypes.js";
@@ -65,21 +65,19 @@ try {
     await gate;
     await initialize(signal);
   };
-  const retriever = new HybridMemoryRetriever({
-    workspaceRoot: root,
+  const retriever = new SemanticMemoryRetriever({
     localMemory: {
       listMemoryEntries: async () => {
         assert.equal(workspaceStarted, true);
         memoryStarted = true;
         release();
-        return { entries: [], storeRevision: 0 };
+        return { entries: [], total: 0, storeRevision: 0 };
       },
-      search: async () => { throw new Error("automatic recall must not use lexical fallback"); },
       recordRecallUsage: async () => undefined
     },
     getEmbeddingRuntime: async () => undefined,
     getReadOnlyVectorIndex: () => undefined,
-    getThresholds: (_fingerprint, recommended) => recommended
+    getThreshold: (_fingerprint, recommended) => recommended
   });
   const parallel = new ContextMemory(() => model, workspace, local, 10_000, 4096, undefined, undefined, {}, undefined, undefined, retriever);
   await parallel.prepareTurn("recall", "system", AbortSignal.timeout(1_000));
@@ -99,10 +97,9 @@ try {
     durability: "permanent",
     accessCount: 0
   };
-  const semanticRetriever = new HybridMemoryRetriever({
+  const semanticRetriever = new SemanticMemoryRetriever({
     localMemory: {
-      listMemoryEntries: async () => ({ entries: [semanticEntry], storeRevision: 1 }),
-      search: async () => { throw new Error("automatic recall must stay semantic"); },
+      listMemoryEntries: async () => ({ entries: [semanticEntry], total: 1, storeRevision: 1 }),
       recordRecallUsage: async () => undefined
     },
     getEmbeddingRuntime: async () => ({

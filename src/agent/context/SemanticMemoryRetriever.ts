@@ -1,7 +1,7 @@
 /**
- * 记忆搜索：手动查询先向量 topK 再按请求范围过滤；自动召回先限制可注入事实再取 topK。
+ * 记忆搜索：先限制符合请求范围的事实，再从中取向量 topK。
  *
- * SQLite/LocalMemory 负责事实源；向量索引只提供可丢弃的语义排名。手动查询覆盖整个记忆库，
+ * SQLite/LocalMemory 负责事实源；向量索引只提供可丢弃的语义排名。手动查询默认覆盖整个记忆库，
  * 不做来源分桶或工作区过滤；向量不可用或指纹不匹配时返回空结果及原因。
  */
 import type { EmbeddingModelRuntime } from "../../llm/embedding/types.js";
@@ -17,13 +17,13 @@ import type {
   MemorySearchResult
 } from "./memoryTypes.js";
 
-/** 自动召回为空且不是"确实没有相关内容"时的降级原因。 */
+/** 语义检索不可用时的降级原因；正常空命中不表示降级。 */
 export type MemoryRecallDegraded = NonNullable<MemoryRecallReport["degraded"]>;
 
 const queryRewriteTimeoutMs = 3_000;
 const defaultRecallMaxChars = 12_000;
 
-export interface AutomaticMemoryStore {
+export interface MemorySearchStore {
   listMemoryEntries(options?: { includeArchived?: boolean; signal?: AbortSignal }): Promise<MemoryEntriesResult>;
   /** Production stores can revalidate only the selected active facts. */
   getEntry?(id: string, options?: { activeOnly?: boolean; signal?: AbortSignal }): Promise<MemoryEntry | undefined>;
@@ -44,8 +44,8 @@ export interface MemoryVectorSearchIndex {
   close?(): void;
 }
 
-export interface HybridMemoryRetrieverOptions {
-  localMemory: AutomaticMemoryStore;
+export interface SemanticMemoryRetrieverOptions {
+  localMemory: MemorySearchStore;
   getEmbeddingRuntime: () => Promise<EmbeddingModelRuntime | undefined>;
   getReadOnlyVectorIndex: () => MemoryVectorSearchIndex | undefined;
   /** 命中条目必须达到的最低相似度。 */
@@ -56,7 +56,7 @@ export interface HybridMemoryRetrieverOptions {
   closeVectorIndex?: boolean;
 }
 
-export interface HybridMemoryRankingInput {
+export interface SemanticMemoryRankingInput {
   entries: readonly MemoryEntry[];
   vectorRanking: readonly { entryId: string; similarity: number }[];
   semanticAvailable: boolean;
@@ -68,18 +68,10 @@ export interface HybridMemoryRankingInput {
   maxChars: number;
 }
 
-/**
- * AgentSession 与 Runtime Host 重建索引必须使用同一段文本和同一哈希。
- * Embedding 只接收记忆 content；它就是这段事实正文。
- */
-export function memoryEntryEmbeddingText(entry: MemoryEntry): string {
-  return entry.content;
-}
-
-export class HybridMemoryRetriever {
+export class SemanticMemoryRetriever {
   private vectorIndex: MemoryVectorSearchIndex | undefined;
 
-  constructor(private readonly options: HybridMemoryRetrieverOptions) {}
+  constructor(private readonly options: SemanticMemoryRetrieverOptions) {}
 
   async retrieve(
     query: string,
@@ -107,20 +99,17 @@ export class HybridMemoryRetriever {
     if (!snapshot.entries.length || options.limit < 1) return {
       ...emptySearchResult(snapshot), originalQuery: safeQuery
     };
-    // 自动注入没有可信 actor 身份，范围外专属事实不能占据共享事实的召回名额。
-    // 手动查询仍保留公开搜索的先 top-K、后按请求范围过滤语义。
-    const eligibleEntryIds = options.automatic
-      ? new Set(snapshot.entries.filter((entry) => entryMatchesMemorySearchScope(entry, options)
+    // 范围外事实不能占据名额；请求筛选与自动注入权限均在向量 LIMIT 前生效。
+    const eligibleEntryIds = new Set(snapshot.entries.filter((entry) => entryMatchesMemorySearchScope(entry, options)
         && (this.options.allowEntry?.(entry) ?? true)
-        && (options.allowEntry?.(entry) ?? true)).map((entry) => entry.id))
-      : undefined;
+        && (options.allowEntry?.(entry) ?? true)).map((entry) => entry.id));
     const semanticPerfStartedAt = perfNow();
     const semantic = await this.semanticSearch(safeQuery, options.limit, options.signal, options.threshold, options.rewriteQuery,
       eligibleEntryIds, options.automatic !== true);
     recordPerfPhase("memory.semantic", semanticPerfStartedAt, { available: semantic.available });
     options.signal?.throwIfAborted();
     const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
-    // 手动查询在 top-K 后过滤且不补位；自动召回在向量查询前已经限定可注入集合。
+    // 复核索引返回的 ID；模型等待期间变化的事实仍会在下方版本检查中被排除。
     let selected = semantic.results.filter(({ entryId }) => {
       const entry = byId.get(entryId);
       return entry !== undefined
@@ -148,7 +137,7 @@ export class HybridMemoryRetriever {
     options.signal?.throwIfAborted();
 
     return {
-      ...rankHybridMemory({
+      ...rankSemanticMemory({
         entries: selected.map(({ entryId }) => byId.get(entryId)!),
         vectorRanking: selected,
         semanticAvailable: semantic.available,
@@ -268,8 +257,8 @@ export class HybridMemoryRetriever {
   }
 }
 
-/** 纯排序函数不访问磁盘或模型，便于锁定权重和预算行为。 */
-export function rankHybridMemory(input: HybridMemoryRankingInput, storeRevision = 0): MemorySearchResult {
+/** 按语义分数排序，并应用条数与字符预算。 */
+export function rankSemanticMemory(input: SemanticMemoryRankingInput, storeRevision = 0): MemorySearchResult {
   const entries = new Map(input.entries.map((entry) => [entry.id, entry]));
   const scores = new Map<string, number>();
   if (!input.semanticAvailable) return emptyRankedMemoryResult(storeRevision, input.degraded);
@@ -291,7 +280,7 @@ export function rankHybridMemory(input: HybridMemoryRankingInput, storeRevision 
   let usedChars = 0;
   let budgetOmitted = 0;
   for (const { entry, score } of ranked) {
-    const excerpt = memoryEntryEmbeddingText(entry);
+    const excerpt = entry.content;
     const chars = excerpt.length + 5;
     const reason = matches.length >= input.limit
       ? "entry_limit" as const

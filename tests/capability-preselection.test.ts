@@ -93,7 +93,7 @@ assert.equal(Array.isArray(ordinarySelection.tools) && ordinarySelection.tools.s
 answer = JSON.stringify({ tools: ["recall_memory", "search_history"] });
 const recallSelection = await preselectCapabilities({ ...recallOptions, input: "上次讨论的约束是什么" });
 assert.equal(Array.isArray(recallSelection.tools) && recallSelection.tools.includes("recall_memory") && recallSelection.tools.includes("search_history"), true, "按需选择仍能启用记忆和历史检索");
-const computerTools = ["ComputerList", "ComputerObserve", "ComputerAction"].map((name) => ({ name, description: name, source: "builtin" as const }));
+const computerTools = ["ComputerList", "ComputerLaunch", "ComputerObserve", "ComputerAction", "ComputerSequence", "ComputerMirror"].map((name) => ({ name, description: name, source: "mcp" as const }));
 let unavailableCalls = 0;
 const unavailableModel: AgentModel = {
   provider: "test", modelId: "unavailable-selector",

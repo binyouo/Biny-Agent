@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { HybridMemoryRetriever, rankHybridMemory } from "../src/agent/context/HybridMemoryRetriever.js";
+import { SemanticMemoryRetriever, rankSemanticMemory } from "../src/agent/context/SemanticMemoryRetriever.js";
 import type { MemoryEntry } from "../src/agent/context/memoryTypes.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
 
@@ -35,7 +35,7 @@ const index = {
     return ranking.filter((row) => options.entryIds?.has(row.entryId) ?? true).slice(0, options.limit);
   }
 };
-const retriever = new HybridMemoryRetriever({
+const retriever = new SemanticMemoryRetriever({
   localMemory: memory,
   getEmbeddingRuntime: async () => runtime,
   getReadOnlyVectorIndex: () => index,
@@ -43,11 +43,11 @@ const retriever = new HybridMemoryRetriever({
   rewriteQuery: async () => "rewritten terms"
 });
 
-// The two highest vector scores consume the search limit before user filtering.
+// Out-of-scope facts cannot consume the scoped top-K window.
 const filtered = await retriever.retrieve("question", [], { limit: 2, userIds: ["alice"], tags: ["Work"] });
-assert.deepEqual(filtered.matches.map(({ entry }) => entry.id), ["public"]);
-assert.deepEqual(usage, [["public"]]);
-assert.equal(searched[0]?.entryIds, undefined);
+assert.deepEqual(filtered.matches.map(({ entry }) => entry.id), ["public", "alice"]);
+assert.deepEqual(usage, [["public", "alice"]]);
+assert.deepEqual(searched[0]?.entryIds, new Set(["public", "alice", "other-thread"]));
 assert.equal(searched[0]?.limit, 2);
 assert.equal(searched[0]?.minimumSimilarity, 0.1);
 assert.deepEqual(embeddedQueries, ["rewritten terms"]);
@@ -59,7 +59,7 @@ const automatic = await retriever.retrieve("question", [], {
 assert.deepEqual(automatic.matches.map(({ entry }) => entry.id), ["public"]);
 assert.deepEqual([...searched.at(-1)!.entryIds!], ["public"]);
 
-// Tags are exact and thread scope is applied after the same top-K window.
+// Tags remain exact and thread scope is applied before top-K.
 assert.deepEqual((await retriever.retrieve("question", [], { limit: 4, tags: ["work"] })).matches, []);
 assert.deepEqual((await retriever.retrieve("question", [], { limit: 4, threadId: "thread-a", userId: "alice" })).matches.map(({ entry }) => entry.id), ["public", "alice"]);
 
@@ -69,7 +69,7 @@ assert.deepEqual(budgeted.matches, []);
 assert.deepEqual(usage.at(-1), ["bob", "public"]);
 assert.deepEqual(budgeted.report.omitted.map(({ reason }) => reason), ["budget", "budget"]);
 
-const unavailable = new HybridMemoryRetriever({
+const unavailable = new SemanticMemoryRetriever({
   localMemory: memory,
   getEmbeddingRuntime: async () => undefined,
   getReadOnlyVectorIndex: () => undefined,
@@ -81,7 +81,7 @@ for (const automatic of [true, false]) {
   assert.equal(result.report.degraded, "no_vector_index");
 }
 
-const mismatched = new HybridMemoryRetriever({
+const mismatched = new SemanticMemoryRetriever({
   localMemory: memory,
   getEmbeddingRuntime: async () => runtime,
   getReadOnlyVectorIndex: () => ({
@@ -92,7 +92,7 @@ const mismatched = new HybridMemoryRetriever({
 });
 assert.equal((await mismatched.retrieve("question", [], { limit: 2 })).report.degraded, "model_mismatch");
 
-const ranked = rankHybridMemory({
+const ranked = rankSemanticMemory({
   entries: [entries[0]!], vectorRanking: [{ entryId: "bob", similarity: 0.9 }],
   semanticAvailable: true, limit: 1, maxChars: 100
 });
@@ -106,4 +106,4 @@ function entry(id: string, userId: string | undefined, threadId: string, tags: s
   };
 }
 
-console.log("hybrid memory retriever tests passed");
+console.log("semantic memory retriever tests passed");
