@@ -264,7 +264,8 @@ export const modelProfileSchema = z.object({
   showInPicker: z.boolean().optional(),
   contextWindow: z.number().int().min(4_096).max(2_000_000).optional(),
   maxInputTokens: z.number().int().min(2_048).max(2_000_000).optional(),
-  maxOutputTokens: z.number().int().min(1).max(384_000).optional(),
+  // 与 contextWindow/maxInputTokens 同一上界：目录已声明到 2,000,000 输出（openrouter/auto、grok-4.20 1,800,000）。
+  maxOutputTokens: z.number().int().min(1).max(2_000_000).optional(),
   thinkingLevelMap: thinkingLevelMapSchema.optional()
 }).strict();
 
@@ -644,7 +645,8 @@ const modelAliasSchema = z.object({
   capabilities: modelCapabilitiesSchema.optional(),
   contextWindow: z.number().int().min(4_096).max(2_000_000).optional(),
   maxInputTokens: z.number().int().min(2_048).max(2_000_000).optional(),
-  maxOutputTokens: z.number().int().min(1).max(384_000).optional(),
+  // 与 contextWindow/maxInputTokens 同一上界：目录已声明到 2,000,000 输出（openrouter/auto、grok-4.20 1,800,000）。
+  maxOutputTokens: z.number().int().min(1).max(2_000_000).optional(),
   limits: modelLimitsSchema.optional(),
   /** Model-level API and compatibility override the provider defaults. */
   apiBackend: modelApiBackendSchema.optional(),

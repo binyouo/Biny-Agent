@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ConfigRevisionConflictError, configDocumentRevision } from "../src/config/versioned.js";
-import { defaultConfig } from "../src/config/schema.js";
+import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { SessionCatalogConflictError, type SessionCatalogRecord } from "../src/session/catalog.js";
 import { defaultChatPersonalizationOverride } from "../src/personalization/index.js";
 import type {
@@ -348,6 +348,7 @@ await testCredentialOnlyCrashUsesInnerTargetMarker();
 await testCredentialOnlyPendingJournalIsAmbiguous();
 await testStartupRecoveryRunsBeforeTaskAdmission();
 testSettingsSaveInputAcceptsCompactionAndChatParams();
+testSettingsSaveInputBoundsModelBatch();
 testRuntimeMutationRecoveryClassification();
 console.log("settings transaction tests passed");
 
@@ -483,6 +484,45 @@ async function testModelProfilesCommitAndRollback(): Promise<void> {
       models: { upserts: [], removeAliases: [], modelProfiles: { deepseek: { model: invalidProfile } } }
     }));
   });
+}
+
+/**
+ * 模型批量写入的入参边界：一次「全选」能放下整个聚合目录，同时仍挡住异常大的输入；
+ * 目录声明的大输出额度（旧 384,000 上限会拒掉 1,800,000）可以落盘。
+ */
+function testSettingsSaveInputBoundsModelBatch(): void {
+  const upsert = (index: number, maxOutputTokens?: number) => ({
+    alias: `gateway-model-${String(index)}`,
+    displayName: `Model ${String(index)}`,
+    providerAlias: "gateway",
+    providerType: "openai-compatible" as const,
+    model: `model-${String(index)}`,
+    supportsTools: true,
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens })
+  });
+  const base = { expectedPreferenceRevision: 0, expectedConfigRevision: "config:0" };
+  const wholeCatalog = Array.from({ length: 500 }, (_unused, index) => upsert(index, index === 0 ? 1_800_000 : undefined));
+  assert.equal(settingsSaveInputSchema.safeParse({ ...base, models: { upserts: wholeCatalog, removeAliases: [] } }).success, true,
+    "500 个模型的目录全选必须过一次事务提交");
+  assert.equal(settingsSaveInputSchema.safeParse({
+    ...base,
+    models: { upserts: Array.from({ length: 2_001 }, (_unused, index) => upsert(index)), removeAliases: [] }
+  }).success, false, "异常大的批量仍被入参上限挡住");
+  assert.throws(() => configSchema.parse({
+    ...defaultConfig,
+    providers: { ...defaultConfig.providers, gateway: { type: "openai-compatible", baseUrl: "https://gateway.invalid/v1" } },
+    models: { ...defaultConfig.models, "gateway-model": { provider: "gateway", model: "model", maxOutputTokens: 20_000_000 } }
+  }), "超出目录声明范围的输出额度仍被拒");
+  const declared = configSchema.parse({
+    ...defaultConfig,
+    providers: { ...defaultConfig.providers, gateway: {
+      type: "openai-compatible", baseUrl: "https://gateway.invalid/v1",
+      modelProfiles: { model: { maxOutputTokens: 1_800_000 } }
+    } },
+    models: { ...defaultConfig.models, "gateway-model": { provider: "gateway", model: "model", maxOutputTokens: 943_718 } }
+  });
+  assert.equal(declared.models["gateway-model"]?.maxOutputTokens, 943_718);
+  assert.equal(declared.providers.gateway?.modelProfiles?.model?.maxOutputTokens, 1_800_000);
 }
 
 function testSettingsSaveInputAcceptsCompactionAndChatParams(): void {

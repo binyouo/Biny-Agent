@@ -24,6 +24,8 @@ import { memoryPolicySchema } from "../../../personalization/index.js";
 // 上限值都刻意给得比正常用法宽松，只用于挡住异常大的输入，不承担业务规则校验。
 export const idSchema = z.string().min(1).max(240);
 export const configRevisionSchema = z.string().min(1).max(200);
+/** 一次设置事务可携带的模型别名变更数；按单个服务商目录全选再加余量。 */
+const maxModelBatchSize = 2_000;
 export const thinkingSchema = z.union([z.literal("off"), reasoningEffortSchema]);
 export const modelConfigurationSchema = z.object({
   acp: acpConfigSchema.optional(),
@@ -47,7 +49,9 @@ export const modelConfigurationSchema = z.object({
   supportsAudio: z.boolean().optional(),
   contextWindow: z.number().int().min(4_096).max(2_000_000).optional(),
   maxInputTokens: z.number().int().min(2_048).max(2_000_000).optional(),
-  maxOutputTokens: z.number().int().min(1).max(384_000).optional(),
+  // 与 contextWindow/maxInputTokens 同一上界：目录已声明到 2,000,000 输出（openrouter/auto、
+  // grok-4.20 1,800,000），卡在更低的值会让「模型选项」无法记录真实额度。
+  maxOutputTokens: z.number().int().min(1).max(2_000_000).optional(),
   limits: modelLimitsSchema.optional(),
   apiBackend: modelApiBackendSchema.optional(),
   providerApiBackend: modelApiBackendSchema.optional(),
@@ -109,8 +113,10 @@ export const settingsSaveInputSchema = z.object({
   permission: permissionSettingsSchema.optional(),
   webSearch: webSearchSettingsSchema.optional(),
   models: z.object({
-    upserts: z.array(modelConfigurationSchema).max(200),
-    removeAliases: z.array(idSchema).max(200),
+    // 「全选」把当前可见的整份目录放在一次事务里提交；聚合服务商（OpenRouter）目录已有
+    // 367 个模型，实时 /models 更多，所以这里的批量上界必须高于单个目录规模。
+    upserts: z.array(modelConfigurationSchema).max(maxModelBatchSize),
+    removeAliases: z.array(idSchema).max(maxModelBatchSize),
     // 自定义服务商「先建连接、后补模型」：只写 providers 段，不改模型列表。
     customProviders: z.array(z.object({
       alias: idSchema,

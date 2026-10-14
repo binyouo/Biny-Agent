@@ -1247,16 +1247,21 @@ export class DesktopAgentManager {
             });
         next = this.buildConfigWithCustomProvider(next, { ...custom, apiKey, apiKeyHandle: undefined });
       }
-      for (const upsert of input.models.upserts) {
-        const apiKey = upsert.apiKeyHandle === undefined
-          ? upsert.apiKey
-          : this.requireApiKeyHandle(upsert.apiKeyHandle, credentialHandles, {
-              projectId,
-              purpose: "model",
-              providerAlias: upsert.providerAlias
-            });
-        const resolved = { ...upsert, apiKey, apiKeyHandle: undefined };
-        next = this.buildConfigWithModel(next, resolved, current.config);
+      if (input.models.upserts.length) {
+        // 批量启用按整批校验一次：逐个 upsert 走全量 configSchema 会让「全选」这种
+        // 几百个模型的批次退化为平方级校验，主进程会因此卡住几十秒。
+        const beforeUpserts = next;
+        for (const upsert of input.models.upserts) {
+          const apiKey = upsert.apiKeyHandle === undefined
+            ? upsert.apiKey
+            : this.requireApiKeyHandle(upsert.apiKeyHandle, credentialHandles, {
+                projectId,
+                purpose: "model",
+                providerAlias: upsert.providerAlias
+              });
+          next = this.applyModelUpsert(next, { ...upsert, apiKey, apiKeyHandle: undefined });
+        }
+        next = this.parseModelProfileEdit(beforeUpserts, next, current.config);
       }
       const projectSettings = await loadProjectSettings(project.path);
       const removeProviderAliases = new Set(input.models.removeProviderAliases ?? []);
@@ -2276,6 +2281,17 @@ export class DesktopAgentManager {
     input: DesktopModelConfigurationInput,
     selectedFrom: AgentConfig = current
   ): AgentConfig {
+    return this.parseModelProfileEdit(current, this.applyModelUpsert(current, input), selectedFrom);
+  }
+
+  /**
+   * 把单个模型 upsert 落到候选配置上，不做全量校验；批量启用先在内存里累加，最后统一
+   * 过一次 configSchema（见 prepareSettingsConfig）。
+   */
+  private applyModelUpsert(
+    current: AgentConfig,
+    input: DesktopModelConfigurationInput
+  ): AgentConfig {
     const existingProvider = current.providers[input.providerAlias];
     const profile = providerDefinition(input.providerType);
     const sameProvider = existingProvider?.type === input.providerType;
@@ -2350,7 +2366,7 @@ export class DesktopAgentManager {
       // reset when the default actually moves to a freshly configured model.
       thinking: defaultModel === current.defaultModel ? current.thinking : { enabled: false, effort: current.thinking.effort }
     };
-    return this.parseModelProfileEdit(current, candidate, selectedFrom);
+    return candidate;
   }
 
   /** Only profile edits may project an inherited selection that no longer parses. */

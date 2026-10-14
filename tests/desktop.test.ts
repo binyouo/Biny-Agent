@@ -2310,6 +2310,53 @@ async function testDesktopCustomProviderConnection(): Promise<void> {
     assert.equal(enabledConfig.providers["my-relay"]?.apiKey, "relay-key");
     assert.equal(enabled.models.configured.some((model) => model.alias === "my-relay-test-model"), true);
 
+    // 设置页「全选」：整份聚合目录（远超旧 200 上限）在一次事务里启用，只提交会被
+    // 持久化的字段，目录额度不随 upsert 回传。
+    const modelsBeforeBatch = (await configStore.load()).models;
+    const defaultBeforeBatch = (await configStore.load()).defaultModel;
+    const batch = Array.from({ length: 401 }, (_unused, index) => ({
+      alias: `my-relay-batch-${String(index)}`,
+      displayName: `Batch ${String(index)}`,
+      providerAlias: "my-relay",
+      providerType: "openai-compatible" as const,
+      model: `batch-model-${String(index)}`,
+      requiresApiKey: true,
+      supportsTools: true,
+      supportsThinking: false
+    }));
+    const batchSnapshot = await commitDesktopSettings(settings, project.id, {
+      models: { upserts: batch, removeAliases: [] }
+    });
+    const batchConfig = await configStore.load();
+    assert.equal(batchSnapshot.models.configured.filter((model) => model.provider === "my-relay").length, 402);
+    assert.equal(batchConfig.defaultModel, defaultBeforeBatch, "批量启用不劫持当前默认模型");
+    assert.equal(batchConfig.models["my-relay-batch-7"]?.model, "batch-model-7");
+    assert.equal(batchConfig.models["my-relay-batch-400"]?.model, "batch-model-400");
+    assert.equal(batchConfig.models["my-relay-batch-7"]?.maxOutputTokens, undefined, "目录额度仍不写进别名");
+
+    // 服务商声明的大输出额度可以作为用户覆盖落盘（旧 384,000 上限会拒掉 943,718）。
+    await commitDesktopSettings(settings, project.id, {
+      models: { upserts: [{ ...batch[7], modelProfile: { maxOutputTokens: 943_718 } }], removeAliases: [] }
+    });
+    assert.equal((await configStore.load()).providers["my-relay"]?.modelProfiles?.["batch-model-7"]?.maxOutputTokens, 943_718);
+
+    // 整批只校验一次也不能放过坏输入：跳过 IPC 入参护栏直接提交越界的 profile 输出额度，
+    // 事务必须回滚且不留下部分启用的模型。
+    const invalidBase = await settings.snapshot(project.id);
+    const modelsBeforeInvalid = (await configStore.load()).models;
+    const invalidBatch = await settings.save(project.id, {
+      expectedPreferenceRevision: invalidBase.preferenceRevision,
+      expectedConfigRevision: invalidBase.configRevision,
+      models: {
+        upserts: [...batch.slice(0, 3), { ...batch[3], modelProfile: { maxOutputTokens: 20_000_000 } }],
+        removeAliases: []
+      }
+    } as Parameters<typeof settings.save>[1]);
+    assert.equal(invalidBatch.status, "rolled_back", "message" in invalidBatch ? invalidBatch.message : undefined);
+    assert.deepEqual((await configStore.load()).models, modelsBeforeInvalid, "被拒的批量不留下部分写入");
+
+    await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: batch.map((model) => model.alias) } });
+    assert.deepEqual((await configStore.load()).models, modelsBeforeBatch, "批量删除只移除本次模型");
     await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: [], defaultModel: { alias: "my-relay-test-model", thinking: "off" },
       modelProfiles: { "my-relay": { "test-model": { showInPicker: true }, "hidden-model": { showInPicker: false } } } } });
     const selectionBeforeStop = await configStore.load();

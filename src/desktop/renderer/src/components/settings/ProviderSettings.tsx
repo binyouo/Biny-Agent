@@ -277,10 +277,6 @@ export function ProviderSettings({
       reasoningSummary: model.capabilities?.reasoningSummary,
       supportsVision: model.capabilities?.vision,
       supportsAudio: model.capabilities?.audio,
-      contextWindow: model.contextWindow,
-      maxInputTokens: model.maxInputTokens,
-      maxOutputTokens: model.maxOutputTokens,
-      limits: model.limits,
       thinkingLevelMap: model.thinkingLevelMap,
       apiBackend: model.apiBackend,
       ...extra
@@ -328,10 +324,6 @@ export function ProviderSettings({
       reasoningSummary: model.capabilities?.reasoningSummary,
       supportsVision: model.capabilities?.vision,
       supportsAudio: model.capabilities?.audio,
-      contextWindow: model.contextWindow,
-      maxInputTokens: model.maxInputTokens,
-      maxOutputTokens: model.maxOutputTokens,
-      limits: model.limits,
       thinkingLevelMap: model.thinkingLevelMap,
       apiBackend: model.apiBackend
     };
@@ -2425,7 +2417,13 @@ function parseProfileInteger(value: string): number | undefined {
 
 // ── 共享的投影与展示辅助 ──
 
-/** 把目录模型投影成一次 upsert 输入；extra 覆盖地址、密钥、默认标记等连接级字段。 */
+/**
+ * 把目录模型投影成一次 upsert 输入；extra 覆盖地址、密钥、默认标记等连接级字段。
+ *
+ * 目录额度（contextWindow / maxInputTokens / maxOutputTokens / limits）不进设置事务：主进程写别名
+ * 时只保留已有覆盖和用户填的 modelProfile，回传服务商声明值会让一个大额度（如 943,718 输出）
+ * 撞入参上限并把整批「全选」拒掉。
+ */
 function catalogModelUpsertInput(
   providerAlias: string,
   providerType: DesktopModelConfigurationInput["providerType"],
@@ -2449,10 +2447,6 @@ function catalogModelUpsertInput(
     reasoningSummary: model.reasoningSummary,
     supportsVision: model.supportsVision,
     supportsAudio: model.supportsAudio,
-    contextWindow: model.contextWindow,
-    maxInputTokens: model.maxInputTokens,
-    maxOutputTokens: model.maxOutputTokens,
-    limits: model.limits,
     thinkingLevelMap: model.thinkingLevelMap,
     apiBackend: model.apiBackend,
     ...extra
