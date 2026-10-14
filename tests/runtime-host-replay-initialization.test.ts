@@ -51,7 +51,7 @@ async function fixture(sequences: number[] | undefined) {
     journal: RuntimeHostEventJournal;
     execute(connection: unknown, frame: HostRequestFrame): Promise<unknown>;
     history: Array<{ sequence: number; update: AgentRuntimeUpdate }>;
-    subscribeConnection(connection: unknown, sequence: number | undefined, epoch: string, filter?: ReadonlySet<string>): { replayed: boolean };
+    subscribeConnection(connection: unknown, sequence: number | undefined, epoch: string, filter?: ReadonlySet<string>): Promise<{ replayed: boolean }>;
   };
   const journalPath = path.join(agentDir(root), "runs", runtimeHostJournalFile);
   await mkdir(path.dirname(journalPath), { recursive: true });
@@ -65,9 +65,9 @@ async function fixture(sequences: number[] | undefined) {
         resourceChanged();
       }
     },
-    replay(afterSequence: number | undefined, epoch = "startup-epoch", sessions?: ReadonlySet<string>) {
+    async replay(afterSequence: number | undefined, epoch = "startup-epoch", sessions?: ReadonlySet<string>) {
       const frames: HostFrame[] = [];
-      const result = internals.subscribeConnection({ writer: { send: (frame: HostFrame) => frames.push(frame) } }, afterSequence, epoch, sessions);
+      const result = await internals.subscribeConnection({ writer: { ready: true, send: (frame: HostFrame) => frames.push(frame) } }, afterSequence, epoch, sessions);
       return { ...result, frames };
     },
     async close() {
@@ -114,23 +114,23 @@ async function replayWindow(sequences: number[] | undefined, count: number, gate
     assert.equal(f.server.info.sequence, finalSequence, "startup updates must follow the recovered high-water without being lost or reusing IDs");
     const retained = [...(sequences ?? []), ...Array.from({ length: count }, (_, index) => highWater + index + 1)].slice(-runtimeHostEventHistoryLimit);
     const first = retained[0] ?? finalSequence + 1;
-    const replay = f.replay(first - 1);
+    const replay = await f.replay(first - 1);
     assert.equal(replay.replayed, true);
     assert.deepEqual(replay.frames.filter((frame) => frame.kind === "event").map((frame) => frame.sequence), retained);
     if (first > 1) {
-      const stale = f.replay(first - 2);
+      const stale = await f.replay(first - 2);
       assert.equal(stale.replayed, false, "trimmed startup rows must force the existing snapshot gap response");
       assert.deepEqual(stale.frames.map((frame) => frame.kind), ["gap"]);
     }
     if (count) {
-      const last = f.replay(finalSequence - 1).frames[0];
+      const last = (await f.replay(finalSequence - 1)).frames[0];
       assert.equal(last?.kind, "event");
       assert.ok(last?.kind === "event");
       assert.equal(last.update.snapshot.resourceReadiness?.revision, count);
     }
-    assert.deepEqual(f.replay(finalSequence).frames, [], "a current cursor does not duplicate the tail event");
-    assert.deepEqual(f.replay(first - 1, "previous-epoch").frames.map((frame) => frame.kind), ["gap"]);
-    assert.deepEqual(f.replay(first - 1, "startup-epoch", new Set(["another-session"])).frames, []);
+    assert.deepEqual((await f.replay(finalSequence)).frames, [], "a current cursor does not duplicate the tail event");
+    assert.deepEqual((await f.replay(first - 1, "previous-epoch")).frames.map((frame) => frame.kind), ["gap"]);
+    assert.deepEqual((await f.replay(first - 1, "startup-epoch", new Set(["another-session"]))).frames, []);
     const cursor = f.server.info.sequence;
     await f.server.initialize();
     assert.equal(f.server.info.sequence, cursor, "repeated initialization cannot reset or duplicate the cursor");
@@ -188,7 +188,7 @@ async function initializationFailure(mode: "read" | "close" | "exhausted" | "ove
       f.internals.journal.initialize = initialize;
       await f.server.initialize();
       assert.equal(f.server.info.sequence, 9, "a read failure can retry without losing buffered resource changes");
-      assert.deepEqual(f.replay(6).frames.filter((frame) => frame.kind === "event").map((frame) => frame.sequence), [7, 8, 9]);
+      assert.deepEqual((await f.replay(6)).frames.filter((frame) => frame.kind === "event").map((frame) => frame.sequence), [7, 8, 9]);
     }
     await f.server.close();
     if (mode !== "read") assert.equal(await readFile(f.journalPath, "utf8"), initialText, "failure/close must never overwrite the recoverable journal");

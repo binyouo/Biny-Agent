@@ -88,7 +88,7 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = []) {
       if (frame.operation === "subscribe") subscribed.emit("settled");
     });
     const connection = { authenticated: true, subscribed: false, clientId: "notification-fixture", surface: "desktop",
-      writer: { send(frame: HostFrame): boolean {
+      writer: { ready: true, send(frame: HostFrame): boolean {
         serverFrames.push(frame);
         if (drop?.(frame, index)) return true;
         socket.deliver(frame);

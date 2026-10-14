@@ -47,7 +47,7 @@ const extracted = [
 ].join("\n");
 const compiled = ts.transpileModule(extracted, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } });
 assert.doesNotMatch(compiled.outputText, /\brequire\s*\(/u, "extracted production code must have no runtime imports");
-const context = vm.createContext({ Buffer, exports: {}, hostCapabilities: [] }, { codeGeneration: { strings: false, wasm: false } });
+const context = vm.createContext({ Buffer, AbortController, exports: {}, hostCapabilities: [] }, { codeGeneration: { strings: false, wasm: false } });
 vm.runInContext(compiled.outputText, context, { timeout: 1_000 });
 
 type RecordValue = Record<string, unknown>;
@@ -56,7 +56,7 @@ interface Frame { kind: "event"; hostEpoch: string; sequence: number; update: { 
 interface Writer { send(frame: Frame): boolean; dispose(): void }
 interface BorrowedServer {
   sendEvent(connection: RecordValue, sequence: number, update: Frame["update"]): void;
-  subscribeConnection(connection: RecordValue, sequence: number | undefined, epoch: string, filter?: ReadonlySet<string>): { replayed: boolean };
+  subscribeConnection(connection: RecordValue, sequence: number | undefined, epoch: string, filter?: ReadonlySet<string>): Promise<{ replayed: boolean }>;
 }
 const actual = (context as unknown as { fixture: {
   projectBashEventFrameForTransport(frame: Frame): Frame;
@@ -233,11 +233,11 @@ for (const type of ["tool.completed", "tool.failed"]) {
   });
 }
 
-test("actual subscribe replay projects retained raw entries without modifying history", () => {
+test("actual subscribe replay projects retained raw entries without modifying history", async () => {
   const value = frame(result("x".repeat(max)));
   const next = frame(result("next")); next.sequence = 2;
   const f = transport([value, next]);
-  assert.equal(f.replay().replayed, true);
+  assert.equal((await f.replay()).replayed, true);
   assert.equal(f.socket.destroyed, false, "old oversized replay entries must not poison reconnection");
   assert.equal(f.socket.writes.length, 2);
   assert.equal(resultOf(value).transportProjection, undefined);
@@ -245,11 +245,11 @@ test("actual subscribe replay projects retained raw entries without modifying hi
   f.writer.dispose();
 });
 
-test("actual replay session filtering and small event bytes stay unchanged", () => {
+test("actual replay session filtering and small event bytes stay unchanged", async () => {
   const value = frame(result("small"));
-  const f = transport([value]); f.replay();
+  const f = transport([value]); await f.replay();
   assert.equal(f.socket.writes[0], actual.encodeHostFrame(value));
-  const filtered = transport([frame(result("x".repeat(max)))]); filtered.replay(0, new Set(["other"]));
+  const filtered = transport([frame(result("x".repeat(max)))]); await filtered.replay(0, new Set(["other"]));
   assert.equal(filtered.socket.destroyed, false); assert.equal(filtered.socket.writes.length, 0);
   f.writer.dispose(); filtered.writer.dispose();
 });
