@@ -677,6 +677,7 @@ export class AgentSession {
   /** 技能元数据、具名子代理清单与 MCP instructions 共同构成 system prompt 的扩展段。 */
   private async extensionPrompt(capabilitySelection?: AgentCapabilitySelection, runId?: string): Promise<{ prompt?: string; loadedSkills: string[] }> {
     const selectedSkillPrompt = await this.skillPrompt(capabilitySelection?.skills, runId);
+    await this.options.todoStore?.refresh();
     const sections = [
       selectedSkillPrompt?.trim(),
       this.options.subagentPrompt?.trim(),

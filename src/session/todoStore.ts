@@ -35,6 +35,11 @@ export class TodoStore {
     await this.loadCurrentSession();
   }
 
+  /** 新回合组装 prompt 前重读当前 session，接收 CLI 等其他实例已提交的清单。 */
+  async refresh(): Promise<void> {
+    await this.loadCurrentSession();
+  }
+
   /** Session resume 后切换真值源，避免继续读写创建 runtime 时的旧 session 清单。 */
   async useSession(sessionId: string): Promise<void> {
     if (this.loaded && this.sessionId === sessionId) return;
