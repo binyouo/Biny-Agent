@@ -162,7 +162,7 @@ test("a changed source using a built-in endpoint cannot restore an ambiguous ali
     const originalCache = await models.read("gateway");
     const manager = new ModelManager("/synthetic", initial, store, new AiRegistry(), models, [["gateway", catalog(200_000)]]);
     assert.equal((await manager.refreshFromDisk()).contextWindow, 200_000, "the unchanged source retains its live catalog");
-    assert.match(modelCatalogCacheKey("gateway", next.providers.gateway!), /^gateway::v3::/u);
+    assert.match(modelCatalogCacheKey("gateway", next.providers.gateway!), /^gateway::v4::/u);
     await store.save(next);
     const freshWithoutAmbiguousCache = new ModelManager("/synthetic", structuredClone(next), store);
     assert.deepEqual(await manager.refreshFromDisk(), freshWithoutAmbiguousCache.getInfo());

@@ -30,7 +30,8 @@ export interface ModelCapabilities {
   reasoning: boolean;
   reasoningStream: boolean;
   reasoningSummary: boolean;
-  vision: boolean;
+  /** undefined 表示未声明，不等同于明确不支持图片输入。 */
+  vision?: boolean;
   audio: boolean;
   streaming: boolean;
 }

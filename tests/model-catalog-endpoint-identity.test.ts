@@ -37,7 +37,7 @@ check("only HTTP scheme and host case normalize", () => {
     ["https://[BROKEN", "https://[BROKEN"]
   ];
   for (const [input, normalized] of inputs) {
-    assert.equal(modelCatalogCacheKey(alias, config(input!)), `${alias}::v3::${hash(normalized!)}`);
+    assert.equal(modelCatalogCacheKey(alias, config(input!)), `${alias}::v4::${hash(normalized!)}`);
   }
   for (const [a, b] of [
     ["https://User:Pass@host/v1", "https://user:pass@host/v1"],
@@ -54,8 +54,8 @@ check("priority, provider type, trim, terminal slash and empty alias stay stable
   assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: lower.baseUrl }), modelCatalogCacheKey(alias, lower));
   assert.notEqual(modelCatalogCacheKey(alias, { ...upper, type: "deepseek" }), modelCatalogCacheKey(alias, upper));
   assert.equal(modelCatalogCacheKey(alias, config("  https://gateway.example/Plan-A/v1///  ")), modelCatalogCacheKey(alias, upper));
-  assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: "   " }), `${alias}::v3::${hash("")}`);
-  assert.equal(modelCatalogCacheKey(alias, { type: "openai-compatible" }), `${alias}::v3::${hash("")}`);
+  assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: "   " }), `${alias}::v4::${hash("")}`);
+  assert.equal(modelCatalogCacheKey(alias, { type: "openai-compatible" }), `${alias}::v4::${hash("")}`);
 });
 for (const batch of [true, false]) {
   const mode = batch ? "batch" : "single";

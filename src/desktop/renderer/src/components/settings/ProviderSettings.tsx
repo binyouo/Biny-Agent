@@ -655,7 +655,6 @@ export function ProviderSettings({
     model: ModelChoice,
     options: {
       profile: ModelProfile | undefined;
-      vision: boolean;
       tools: boolean;
       reasoning: boolean;
       headers: Record<string, string>;
@@ -667,7 +666,6 @@ export function ProviderSettings({
     const format = options.apiFormat === undefined ? undefined : apiFormatOption(options.apiFormat);
     const input = choiceUpsertInput(model, {
       supportsTools: options.tools,
-      supportsVision: options.vision,
       supportsThinking: options.reasoning,
       // 空对象明确清空模型级 Header；undefined 在普通更新中表示保留。
       headers: options.headers,
@@ -1496,7 +1494,7 @@ function ConnectedProviderPanel({
           )}
           {catalog.connectionMode === "api" ? (
             <details className="provider-endpoint-details">
-              <summary><Icon name="sliders" size={15} /><span>API 端点</span><small>高级</small><Icon name="chevron" size={13} /></summary>
+              <summary><Icon name="sliders" size={15} /><span>API 端点</span><Icon name="chevron" size={13} /></summary>
               {connectionFields}
             </details>
           ) : null}
@@ -1999,7 +1997,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
               <div className="provider-row-hint">{apiFormatOption(format).description}</div>
             </div>
           </div>
-          <p className="provider-dialog-hint">创建后进入服务商面板，用「获取」或手动添加启用模型。</p>
+          <p className="provider-dialog-hint">创建后可获取或手动添加模型。</p>
         </div>
 
         <footer>
@@ -2067,7 +2065,6 @@ function ModelOptionsDialog({
   onClose(): void;
   onSave(options: {
     profile: ModelProfile | undefined;
-    vision: boolean;
     tools: boolean;
     reasoning: boolean;
     headers: Record<string, string>;
@@ -2083,12 +2080,13 @@ function ModelOptionsDialog({
   // 能力的「自动」基准来自目录（目录候选默认都按支持工具处理）；开关初值取当前生效值
   // （显式覆盖优先，否则沿用自动推导）。
   const autoCapabilities = {
-    vision: autoModel?.supportsVision ?? false,
     tools: true,
     reasoning: autoModel?.supportsThinking ?? false
   };
+  const [vision, setVision] = useState<"auto" | "enabled" | "disabled">(
+    savedProfile?.capabilities?.vision === undefined ? "auto" : savedProfile.capabilities.vision ? "enabled" : "disabled"
+  );
   const [capabilities, setCapabilities] = useState({
-    vision: target.model.capabilities?.vision ?? autoCapabilities.vision,
     tools: target.model.capabilities?.tools ?? target.model.supportsTools ?? true,
     reasoning: target.model.capabilities?.reasoning ?? target.model.efforts.length > 0
   });
@@ -2096,10 +2094,10 @@ function ModelOptionsDialog({
   const [headersError, setHeadersError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string>();
-  const hasAdvancedOverrides = [draft.contextWindow, draft.maxInputTokens, draft.maxOutputTokens, ...Object.values(draft.thinkingLevelMap)].some((value) => value.trim().length > 0)
+  const hasProfileOverrides = [draft.contextWindow, draft.maxInputTokens, draft.maxOutputTokens, ...Object.values(draft.thinkingLevelMap)].some((value) => value.trim().length > 0)
     || formatOverride !== "provider_default"
     || headersText.trim().length > 0;
-  const hasOverrides = hasAdvancedOverrides || capabilities.vision !== autoCapabilities.vision
+  const hasOverrides = hasProfileOverrides || vision !== "auto"
     || capabilities.tools !== autoCapabilities.tools
     || capabilities.reasoning !== autoCapabilities.reasoning;
 
@@ -2107,6 +2105,7 @@ function ModelOptionsDialog({
   const resetToDefault = (): void => {
     setDraft(modelProfileFieldDraftFrom(undefined));
     setCapabilities(autoCapabilities);
+    setVision("auto");
     setFormatOverride("provider_default");
     setHeadersText("");
     setHeadersError(undefined);
@@ -2136,12 +2135,11 @@ function ModelOptionsDialog({
           ...modelProfileFromFieldDraft(draft),
           capabilities: {
             ...savedProfile?.capabilities,
-            vision: capabilities.vision === autoCapabilities.vision ? undefined : capabilities.vision,
+            vision: vision === "auto" ? undefined : vision === "enabled",
             tools: capabilities.tools === autoCapabilities.tools ? undefined : capabilities.tools,
             reasoning: capabilities.reasoning === autoCapabilities.reasoning ? undefined : capabilities.reasoning
           }
         },
-        vision: capabilities.vision,
         tools: capabilities.tools,
         reasoning: capabilities.reasoning,
         headers,
@@ -2171,35 +2169,39 @@ function ModelOptionsDialog({
         </header>
 
         <div className="provider-dialog-body">
-          <p className="provider-dialog-hint">默认使用推荐配置，通常无需修改。</p>
           <section className="provider-dialog-section">
             <div className="provider-dialog-section-head">
               <h5>模型能力</h5>
               <p>按模型实际支持的功能设置，开启不会增加模型本身的能力。</p>
             </div>
             <div className="provider-cap-grid">
-              <CapabilityOption icon="eye" label="图片理解" onChange={(value) => setCapabilities((current) => ({ ...current, vision: value }))} value={capabilities.vision} />
+              <div className="provider-cap-card">
+                <label className="provider-cap-label" htmlFor="model-vision"><Icon name="eye" size={13} />图片输入</label>
+                <NativeSelect aria-label="图片输入" id="model-vision" onChange={(event) => setVision(event.target.value as typeof vision)} value={vision}>
+                  <option value="auto">自动</option>
+                  <option value="enabled">启用</option>
+                  <option value="disabled">禁用</option>
+                </NativeSelect>
+              </div>
               <CapabilityOption icon="wrench" label="工具调用" onChange={(value) => setCapabilities((current) => ({ ...current, tools: value }))} value={capabilities.tools} />
               <CapabilityOption icon="brain-spark" label="深度思考" onChange={(value) => setCapabilities((current) => ({ ...current, reasoning: value }))} value={capabilities.reasoning} />
             </div>
           </section>
 
+          <ModelProfileEditorFields
+            apiFormat={apiFormat}
+            formatOptions={formatOptions}
+            formatOverride={formatOverride}
+            draft={draft}
+            model={target.model}
+            onApiFormat={setFormatOverride}
+            onDraft={setDraft}
+          />
           <details className="provider-dialog-advanced">
-            <summary tabIndex={0}>高级设置{hasAdvancedOverrides ? <span>已自定义</span> : null}</summary>
+            <summary>自定义请求头{headersText.trim() ? <span>已自定义</span> : null}</summary>
             <div className="provider-dialog-advanced-body">
-              <p className="provider-dialog-hint">仅在服务商要求时修改，设置只影响当前模型。</p>
-              <ModelProfileEditorFields
-                apiFormat={apiFormat}
-                formatOptions={formatOptions}
-                formatOverride={formatOverride}
-                draft={draft}
-                model={target.model}
-                onApiFormat={setFormatOverride}
-                onDraft={setDraft}
-              />
-
               <section className="provider-dialog-section">
-                <div className="provider-dialog-section-head"><h5>自定义请求头</h5><p>用于服务商要求的额外请求信息，按其文档填写 JSON。</p></div>
+                <p className="provider-dialog-hint">按服务商要求填写 JSON，仅用于当前模型。</p>
                 <textarea
                   aria-label="自定义请求头（JSON）"
                   className="provider-json-editor"
@@ -2335,7 +2337,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, dr
       <section className="provider-dialog-section">
         <div className="provider-dialog-section-head">
           <h5>文本容量</h5>
-          <p>单位为 token（文本片段），留空自动设置。</p>
+          <p>单位：tokens。留空自动设置。</p>
         </div>
         <div className="provider-cap-fields">
           <label>
@@ -2386,7 +2388,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, dr
       <section className="provider-dialog-section">
         <div className="provider-dialog-section-head">
           <h5>思考强度参数</h5>
-          <p>将应用中的思考强度对应到服务商的参数值。仅在自动适配有误时，按服务商文档填写；留空保持自动。</p>
+          <p>留空自动适配；需要覆盖时，按服务商文档填写各档参数值。</p>
         </div>
         <div className="model-profile-thinking-fields">
           {modelProfileThinkingLevels.map(({ level, label }) => (

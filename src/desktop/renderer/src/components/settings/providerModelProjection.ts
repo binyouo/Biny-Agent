@@ -93,7 +93,7 @@ export function stagedModelChoices(
         reasoning: input.supportsThinking ?? false,
         reasoningStream: input.reasoningStream ?? false,
         reasoningSummary: input.reasoningSummary ?? false,
-        vision: input.supportsVision ?? false,
+        vision: input.supportsVision,
         audio: input.supportsAudio ?? false,
         streaming: true
       },
@@ -186,7 +186,7 @@ function applyThinkingLevelMapToChoice(choice: ModelChoice, thinkingLevelMap: Th
       reasoning,
       reasoningStream: reasoning && choice.capabilities?.reasoningStream !== false,
       reasoningSummary: reasoning && choice.capabilities?.reasoningSummary === true,
-      vision: choice.capabilities?.vision ?? false,
+      vision: choice.capabilities?.vision,
       audio: choice.capabilities?.audio ?? false,
       streaming: choice.capabilities?.streaming ?? true
     },

@@ -489,6 +489,31 @@ test("队列中的模型偏好更新读取前一笔快照，连续开关不会�
 });
 
 
+test("图片输入默认自动，显式启停保持覆盖，恢复自动会清除覆盖", async () => {
+  // 保存失败用例不检查能力语义；普通开关会把未知当禁用，或丢掉与自动值相同的显式选择。
+  const h = await harness({ save: async (input, current) => ({ status: "committed", journalId: "synthetic", appliedFields: [], snapshot: {
+    ...current,
+    models: { ...current.models, modelProfiles: { example: { "example-model": input.models?.upserts[0]?.modelProfile ?? {} } } }
+  } }) });
+  try {
+    for (const [initial, next, expected] of [
+      ["auto", "auto", undefined], ["auto", "disabled", false], ["disabled", "enabled", true],
+      ["enabled", "enabled", true], ["enabled", "auto", undefined]
+    ] as const) {
+      await h.click('.provider-model-actions .icon-button');
+      const select = dom.window.document.querySelector<HTMLSelectElement>('select[aria-label="图片输入"]');
+      assert.ok(select, "图片输入必须区分自动与手动覆盖");
+      assert.equal(select.value, initial);
+      await act(async () => {
+        select.value = next;
+        select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+      });
+      await h.click('[aria-label="模型设置"] button[type="submit"]');
+      assert.equal(h.writes.at(-1)?.models?.upserts[0]?.modelProfile?.capabilities?.vision, expected);
+    }
+  } finally { await h.close(); }
+});
+
 test("模型选项保存失败保留对话框和填写值，只有提交成功才关闭", async () => {
   let attempt = 0;
   const h = await harness({ save: async (_input, current) => ++attempt === 1
@@ -496,6 +521,9 @@ test("模型选项保存失败保留对话框和填写值，只有提交成功�
     : { status: "committed", journalId: "synthetic", appliedFields: [], snapshot: current } });
   try {
     await h.click('.provider-model-actions .icon-button');
+    const capacity = dom.window.document.querySelector('[aria-label="模型设置"] input[type="number"]');
+    assert.ok(capacity, "模型容量应直接展示；原保存用例未覆盖参数被折叠隐藏");
+    assert.ok(!capacity.closest("details"), "常用容量参数无需展开高级设置");
     await h.click('[aria-label="模型设置"] button[type="submit"]');
     assert.ok(dom.window.document.querySelector('[aria-label="模型设置"]'));
     assert.match(dom.window.document.querySelector('[aria-label="模型设置"] [role="alert"]')!.textContent!, /SYNTHETIC_CONFLICT/u);

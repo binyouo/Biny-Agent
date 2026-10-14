@@ -830,7 +830,7 @@ export class BinyTui {
       const pasted = await pasteTuiClipboard(this.workspaceRoot);
       if (pasted.kind === "image") {
         this.setPendingAttachments([...this.pendingAttachments, pasted.attachment]);
-        this.notify(`已附加 [Image #${String(this.pendingAttachments.length)}]。按 Enter 发送；当前模型需声明 vision 能力。`);
+        this.notify(`已附加 [Image #${String(this.pendingAttachments.length)}]。按 Enter 发送。`);
         return;
       }
       if (pasted.kind === "text") {

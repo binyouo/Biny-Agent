@@ -261,7 +261,7 @@ export function modelCapabilities(model: ModelAliasConfig): ModelCapabilities {
     reasoning: reasoningEnabled,
     reasoningStream: reasoningEnabled ? model.capabilities?.reasoningStream ?? true : false,
     reasoningSummary: reasoningEnabled ? model.capabilities?.reasoningSummary ?? false : false,
-    vision: model.capabilities?.vision ?? false,
+    vision: model.capabilities?.vision,
     audio: model.capabilities?.audio ?? false,
     streaming: model.capabilities?.streaming ?? true
   };
@@ -315,7 +315,7 @@ export function normalizeModelMetadata(
     reasoningSummary: (explicitCapabilities.reasoning ?? hasReasoning)
       ? explicitCapabilities.reasoningSummary ?? (hasReasoning ? defaults.capabilities.reasoningSummary ?? false : false)
       : false,
-    vision: explicitCapabilities.vision ?? defaults.capabilities.vision ?? false,
+    vision: explicitCapabilities.vision ?? defaults.capabilities.vision,
     audio: explicitCapabilities.audio ?? defaults.capabilities.audio ?? false,
     streaming: explicitCapabilities.streaming ?? defaults.capabilities.streaming ?? true
   };

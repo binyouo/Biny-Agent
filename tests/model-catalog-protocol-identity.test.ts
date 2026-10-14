@@ -110,7 +110,7 @@ test("actual URL selection changes with protocol and cache identity follows it",
   assert.equal(api.requestEndpoint({ config: a, definition }), "https://gateway.example/api/models");
   assert.equal(api.requestEndpoint({ config: b, definition }), "https://gateway.example/api/v1/models");
   assert.notEqual(key(a), key(b));
-  assert.match(key(a), /^gateway::v3::[a-f0-9]{8}$/u);
+  assert.match(key(a), /^gateway::v4::[a-f0-9]{8}$/u);
 });
 
 test("default endpoints remain scoped and undefined protocol is conservatively distinct", () => {
@@ -155,7 +155,7 @@ for (const batch of [true, false]) {
     }
   });
 
-  test(`old scoped and unproven alias caches do not cross into v3 (${batch ? "batch" : "single"})`, async () => {
+  test(`old scoped and unproven alias caches do not cross into v4 (${batch ? "batch" : "single"})`, async () => {
     for (const version of ["v1", "v2"] as const) {
       for (const provenance of [false, true]) {
         const { entries, store } = inert(batch);

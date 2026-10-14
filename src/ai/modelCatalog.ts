@@ -211,7 +211,9 @@ export function parseModelCatalog(
     const reasoningEfforts = supportsReasoning === false
       ? []
       : declaredReasoningEfforts ?? (inferReasoningFromId ? inferReasoningEfforts(id) : []);
-    const modalities = firstArray(sources, ["modalities", "input_modalities", "inputModalities"]) ?? [];
+    const modalityObjects = sources.flatMap(source => isRecord(source.modalities) ? [source.modalities] : []);
+    const modalities = firstArray(sources, ["input_modalities", "inputModalities", "modalities"])
+      ?? firstArray(modalityObjects, ["input"]) ?? [];
     const supportsThinking = firstBoolean(sources, ["thinking", "supports_thinking", "supportsThinking"]);
     const capabilities: Partial<ModelCapabilities> = {
       tools: firstBoolean(sources, ["supports_tools", "supportsTools", "tools"]),

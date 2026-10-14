@@ -2386,6 +2386,8 @@ export class AgentSession {
       );
       recordUserMessage();
       selectionMessageId = userMessageReference?.id;
+      // 拒绝附件必须早于异步能力筛选和 prompt 准备，避免失败回合遗留未等待的工作。
+      const attachments = this.supportedAttachments(runOptions.attachments);
       // 本轮共享一份持久消息快照；筛选和引用解析不再各自重读整份 JSONL。
       await this.recorder.flush();
       const events = await readSessionEvents(this.recorder.filePath);
@@ -2420,7 +2422,7 @@ export class AgentSession {
         input,
         basePrompt,
         abortSignal,
-        this.supportedAttachments(runOptions.attachments),
+        attachments,
         turnPersonalization.useMemories && !runOptions.emptyTurn,
         !runOptions.emptyTurn
       );
@@ -3880,8 +3882,8 @@ export class AgentSession {
     const capabilities = this.options.modelManager?.getCapabilities()
       ?? modelCapabilities(new ProviderRegistry(this.options.config).forModel(modelAlias).model);
     const image = attachments.find((attachment) => attachment.mimeType.startsWith("image/"));
-    if (image && !capabilities.vision) {
-      throw new Error(`当前模型 ${modelAlias} 未声明 vision 能力，无法发送图片附件。请切换到支持图片的模型，或在模型配置中明确启用 capabilities.vision。`);
+    if (image && capabilities.vision === false) {
+      throw new Error(`当前模型 ${modelAlias} 未启用图片输入。请在模型设置中将“图片输入”设为“启用”，或切换到支持图片的模型。`);
     }
     const audio = attachments.find((attachment) => attachment.mimeType.startsWith("audio/"));
     if (audio && !capabilities.audio) {

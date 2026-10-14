@@ -41,9 +41,9 @@ export function modelCatalogCacheKey(providerId: string, config: ProviderConfig)
     hash ^= character.codePointAt(0) ?? 0;
     hash = Math.imul(hash, 16777619);
   }
-  // v1 折叠了资源路径大小写，v2 未区分目录协议；旧键不能证明当前来源。
-  // 缺省端点也按 type/protocol 隔离，因为 Provider 默认地址仍受协议影响。
-  return `${providerId}::v3::${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  // v1 丢失路径大小写，v2 未区分协议，v3 仍可能把未知 vision 缓存为 false。
+  // v4 保留 type/protocol/端点隔离，旧目录及 validators 不准入，但不删除原数据。
+  return `${providerId}::v4::${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 /** Preserve resource-sensitive spelling; URL serialization would also rewrite paths and ports. */
