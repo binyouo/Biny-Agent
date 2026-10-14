@@ -2487,7 +2487,14 @@ export class AgentSession {
       recordUserMessage();
       const outcome = cancelledTurn("Current turn cancelled during context preparation.", completedStepsBeforeRun, turnCancellationReason(abortSignal));
       this.recordError(outcome.error);
-      await this.recordCancelledTurn(outcome, messages, messageReferences);
+      // Request-budget selection is temporary until a real compaction commits.
+      // Preserve unselected history, but keep the prepared user's attachments.
+      const currentInput = runOptions.emptyTurn ? [] : messages.slice(-1);
+      const currentInputReferences = runOptions.emptyTurn ? [] : messageReferences.slice(-1);
+      await this.recordCancelledTurn(outcome,
+        runOptions.continueFrom?.length ? messages : [...this.contextMemory.getHistory(), ...currentInput],
+        runOptions.continueFrom?.length ? messageReferences : [...this.contextMessageReferences, ...currentInputReferences]
+      );
       yield { type: "error", message: outcome.error ?? "Current turn interrupted." };
       yield { type: "status", status: "cancelled" };
       yield doneEvent(outcome);
