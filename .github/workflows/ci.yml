@@ -62,6 +62,9 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Check project contracts and dependency boundaries
+        run: pnpm check:project
+
       - name: Lint
         run: pnpm lint
 

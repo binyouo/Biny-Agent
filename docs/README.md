@@ -19,6 +19,7 @@
 
 ## 开发与评测
 
+- [开发与文档规范](DEVELOPMENT.md) — 功能事实的归属、修复链路与长期规则的维护。
 - [架构](ARCHITECTURE.md) — 交互入口、Runtime Host、会话持久化与扩展的职责。
 - [评测](EVALUATION.md) — 确定性检查、模型评测与历史结果的不同用途。
 - [贡献指南](../CONTRIBUTING.md) — 开发环境、验证入口和文档维护方式。

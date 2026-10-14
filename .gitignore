@@ -22,6 +22,8 @@ ARCHITECTURE.local.md
 !/CONTRIBUTING.md
 /docs/*
 !/docs/README.md
+!/plugins/nowledge-mem/README.md
+!/docs/DEVELOPMENT.md
 !/docs/ARCHITECTURE.md
 !/docs/CONFIGURATION.md
 !/docs/SESSIONS.md
