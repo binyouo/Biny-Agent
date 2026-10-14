@@ -18,6 +18,7 @@ import { Icon, type IconName } from "../Icon.js";
 import { McpServersView } from "../McpServersView.js";
 import { TopToast } from "../overlays/TopToast.js";
 import { ProviderSettings } from "./ProviderSettings.js";
+import { SettingsSubagent } from "./SettingsSubagent.js";
 import { SettingsToolModel } from "./SettingsToolModel.js";
 import { stagedModelChoices } from "./providerModelProjection.js";
 import { SettingsAbout } from "./SettingsAbout.js";
@@ -35,9 +36,7 @@ import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { SettingsDraftProvider } from "./SettingsDraftProvider.js";
 import { SettingsMemory } from "./SettingsMemory.js";
 import { SettingsQuickChat } from "./SettingsQuickChat.js";
-import { SettingsVisionModel } from "./SettingsVisionModel.js";
 import { SettingsPageFooter } from "./SettingsPageFooter.js";
-import { SettingsPermissions } from "./SettingsPermissions.js";
 import { SettingsExtensionsView } from "./SettingsExtensionsView.js";
 import { useAppearance } from "../../appearanceContext.js";
 
@@ -96,30 +95,28 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "导入" | "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "关于";
+export type SettingsTab = "导入" | "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "关于";
 
 /**
- * 侧栏导航采用单列结构：通用在最前，日常对话与能力居中，
- * 隐私、系统与关于在后；不再插分组标题。
+ * 侧栏按日常偏好、能力扩展、系统工具排序，不插分组标题。
  *
- * 「快速对话」「工具模型」「视觉模型」不是独立页面 —— 它们是通用页里的卡片。
+ * 「快速对话」「工具模型」不是独立页面 —— 它们是通用页里的卡片。
  */
 const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
   { icon: "sun", tab: "通用" },
   { icon: "network", tab: "模型" },
   { icon: "message", tab: "聊天" },
-  { icon: "brain", tab: "记忆" },
-  { icon: "computer-history", tab: "Computer History" },
-  { icon: "cpu", tab: "Computer Use" },
-  { icon: "camera", tab: "Appshots" },
-  { icon: "shield", tab: "权限" },
-  { icon: "search", tab: "网络搜索" },
-  { icon: "globe", tab: "浏览器" },
-  { icon: "server", tab: "MCP 服务器" },
-  { icon: "wand", tab: "技能" },
-  { icon: "puzzle", tab: "插件" },
   { icon: "layout-grid", tab: "用户界面" },
   { icon: "sliders", tab: "配色" },
+  { icon: "brain", tab: "记忆" },
+  { icon: "wand", tab: "技能" },
+  { icon: "server", tab: "MCP 服务器" },
+  { icon: "puzzle", tab: "插件" },
+  { icon: "search", tab: "网络搜索" },
+  { icon: "globe", tab: "浏览器" },
+  { icon: "camera", tab: "Appshots" },
+  { icon: "monitor", tab: "Computer Use" },
+  { icon: "computer-history", tab: "Computer History" },
   { icon: "download", tab: "导入" },
   { icon: "help", tab: "关于" }
 ];
@@ -128,9 +125,9 @@ const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模�
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
   导入: { description: "导入其他应用的模型设置、MCP 配置和会话。", keywords: "import 导入 同步 Claude Codex ChatGPT 会话 历史 模型 MCP" },
   配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
-  通用: { description: "工具编排、后台模型与快速对话。", keywords: "Code Mode codemode exec 脚本 工具编排 工具模型 视觉模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
+  通用: { description: "工具编排、子代理、后台模型与快速对话。", keywords: "子代理 subagent runtime Codex Claude Code ACP Code Mode codemode exec 脚本 工具编排 工具模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
   用户界面: { description: "主题、界面密度与字体。", keywords: "外观 界面 主题 浅色 深色 跟随系统 密度 紧凑 舒适 宽松 字体 字号 行高 阅读" },
-  聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline" },
+  聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline 安全 权限 工具审批 确认 自动 批准 工具权限" },
   模型: { description: "管理模型连接、登录凭据和可用模型。", keywords: "供应商 服务商 API Key 密钥 base URL 登录 默认模型" },
   技能: { description: "管理可用技能、项目启用范围与自动技能提取。", keywords: "skill 导入 安装 版本 启用 自动技能提取 工具调用 阈值" },
   "MCP 服务器": { description: "连接外部工具与数据源。", keywords: "mcp 服务器 连接 授权 OAuth 工具" },
@@ -141,7 +138,6 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   "Computer Use": { description: "管理本机桌面控制、权限与实时预览。", keywords: "computer use 桌面 操控 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
   记忆: { description: "管理长期记忆、检索与后台整理。", keywords: "记忆 memory 向量 embedding 模型 下载 索引 睡眠 清理" },
   ["Computer History"]: { description: "查看本机屏幕与输入的本地采集历史，随时可清除。", keywords: "computer history 电脑历史 屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
-  权限: { description: "设置工具操作是否需要手动批准。", keywords: "安全 审批 确认 自动 批准 工具权限" },
   关于: { description: "版本信息与项目链接。", keywords: "版本 更新 帮助" }
 };
 const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value }) => value));
@@ -353,14 +349,14 @@ function SettingsOverlayContent({
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
   const needsProject = !workspace && ["聊天", "网络搜索", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
   // 只有"从没读到过快照且这次也失败了"才拦整页；单纯在刷新不该把已经能用的界面遮起来。
-  const loadBlocked = Boolean((workspace && !["导入", "浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
+  const loadBlocked = Boolean((workspace && !["导入", "浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
   const openSearchResult = async (nextTab: SettingsTab): Promise<void> => {
     setSearch("");
     await selectTab(nextTab);
     titleRef.current?.focus();
   };
   return (
-    <ActivityRuntimeProvider active={open && (activeTab === "Computer History" || activeTab === "权限")}>
+    <ActivityRuntimeProvider active={open && (activeTab === "Computer History")}>
       <Dialog
         aria-label="Biny 设置"
         className="desktop-settings-dialog"
@@ -450,6 +446,9 @@ function SettingsOverlayContent({
             onFontChange={settingsDraft.setFontPreference}
           /> : null}
           {activeTab === "通用" ? <div className="settings-preferences">
+            <SettingsSubagent busy={runtimeBusy} onOpenModels={() => { void selectTab("模型"); }} />
+            <SettingsQuickChat />
+            <SettingsToolModel onTest={onTestModelConfiguration} />
             {settingsDraft.draft ? <div className="settings-row-group" id="tool-execution">
               <SettingsSwitch label="Code Mode"
                 detail="允许模型按需用脚本编排工具，仍可直接调用。保存后从下一回合生效。"
@@ -457,7 +456,6 @@ function SettingsOverlayContent({
                 disabled={runtimeBusy || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
                 onChange={(enabled) => settingsDraft.setToolExecutionMode(enabled ? "code_mode" : "direct")} />
             </div> : null}
-            <SettingsToolModel onTest={onTestModelConfiguration} /><SettingsVisionModel /><SettingsQuickChat />
           </div> : null}
           {activeTab === "配色" ? <SettingsThemes
             preference={settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE}
@@ -466,7 +464,6 @@ function SettingsOverlayContent({
           /> : null}
           {activeTab === "Computer History" ? <SettingsActivity onOpenToolModel={() => { void selectTab("通用"); }} /> : null}
           {activeTab === "聊天" ? <SettingsChatPage /> : null}
-          {activeTab === "权限" ? <SettingsPermissions /> : null}
           {memoryVisited ? <SettingsMemory
             models={settingsModels}
             embeddingModels={settingsDraft.snapshot?.models.embeddingModels ?? []}

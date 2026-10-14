@@ -30,16 +30,12 @@ export function SettingsWebSearch({ onOpenBrowser, onExportCookies, onImportCook
   const disabled = busy || sessionRunning;
   const open = (url: string, purpose: "google" | "xiaohongshu" | "webfetch" = "webfetch"): void => { void run(() => onOpenBrowser(url, purpose)); };
   return <div className="settings-sections web-search-settings">
-    <section>
-      <SettingsSwitch checked={search.visibleBrowsing} label="可视化 Agent 浏览" detail="在侧栏显示搜索和网页访问；侧栏关闭时使用隐藏窗口。" onChange={(visibleBrowsing) => setWebSearch({ ...search, visibleBrowsing })} />
-    </section>
     <section id="web-search-provider" tabIndex={-1}>
       <h3>搜索引擎</h3>
       <label htmlFor="web-search-engine">选择搜索引擎</label>
       <NativeSelect id="web-search-engine" value={search.provider} onChange={(event) => setWebSearch({ ...search, provider: event.target.value as "google" | "xiaohongshu" })}>
         <option value="google">Google</option><option value="xiaohongshu">小红书</option>
       </NativeSelect>
-      <p>选择用于网络搜索的搜索引擎。Google 适用于通用搜索，小红书适用于中文生活方式和购物内容。</p>
       <div className="web-search-options-grid">
         <div>
           <label htmlFor="web-search-timeout">搜索等待时间</label>
@@ -57,8 +53,10 @@ export function SettingsWebSearch({ onOpenBrowser, onExportCookies, onImportCook
       </div>
     </section>
     <section>
+      <SettingsSwitch checked={search.visibleBrowsing} label="可视化 Agent 浏览" detail="在侧栏显示搜索和网页访问；侧栏关闭时使用隐藏窗口。" onChange={(visibleBrowsing) => setWebSearch({ ...search, visibleBrowsing })} />
+    </section>
+    <section>
       <h3>Google 搜索设置</h3>
-      <p>设置搜索语言、地区和安全搜索。</p>
       <button className="web-search-action" disabled={disabled} onClick={() => open("https://www.google.com/preferences", "google")} type="button">打开 Google 设置</button>
     </section>
     <section id="web-search-cookies" tabIndex={-1}>

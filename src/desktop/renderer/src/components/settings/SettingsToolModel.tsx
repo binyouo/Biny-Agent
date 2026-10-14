@@ -40,25 +40,27 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
   };
   return (
     <div className="settings-sections">
-      <section id="tool-model" tabIndex={-1}>
+      <section className="settings-preference-section" id="tool-model" tabIndex={-1}>
         <h3>工具模型</h3>
-        <p>用于标题、记忆、工具筛选和活动分析等后台任务。</p>
-        {snapshot.hasRunningTasks ? <p>更改用于后续回合，当前回合继续使用原模型。</p> : null}
-        <div className="tool-model-row">
-          <SettingsModelPicker
-            ariaLabel="工具模型"
-            disabled={saving || testing || saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required"}
-            groups={modelPickerGroups(snapshot.models.configured.filter((model) => model.providerType !== "acp"), snapshot.models.connections)}
-            inheritLabel="自动选择"
-            onChange={selectModel}
-            placeholder="自动选择"
-            value={snapshot.models.toolModel}
-          />
-          <ModelTestButton disabled={!active || saving} label="测试模型" testing={testing} onClick={runTest} />
+        <div className="settings-form-group">
+          <p>用于标题、记忆、工具筛选和活动分析等后台任务。</p>
+          {snapshot.hasRunningTasks ? <p>更改用于后续回合，当前回合继续使用原模型。</p> : null}
+          <div className="tool-model-row">
+            <SettingsModelPicker
+              ariaLabel="工具模型"
+              disabled={saving || testing || saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required"}
+              groups={modelPickerGroups(snapshot.models.configured.filter((model) => model.providerType !== "acp"), snapshot.models.connections)}
+              inheritLabel="自动选择"
+              onChange={selectModel}
+              placeholder="自动选择"
+              value={snapshot.models.toolModel}
+            />
+            <ModelTestButton disabled={!active || saving} label="测试模型" testing={testing} onClick={runTest} />
+          </div>
+          {active ? null : <p className="tool-model-status">暂无可用工具模型，请先在「模型供应商」中配置。</p>}
+          <ModelTestResult result={testResult} />
+          {error ? <p role="alert">{error}</p> : null}
         </div>
-        {active ? null : <p className="tool-model-status">暂无可用工具模型，请先在「模型供应商」中配置。</p>}
-        <ModelTestResult result={testResult} />
-        {error ? <p role="alert">{error}</p> : null}
       </section>
     </div>
   );

@@ -38,13 +38,17 @@
 
 .settings-save-scope { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: calc(11px * var(--font-scale, 1)); }
 
-.settings-preferences, .settings-advanced-content { display: grid; align-content: start; gap: var(--st-stack-gap); }
+.settings-preferences { display: grid; align-content: start; gap: var(--st-stack-gap); }
 .settings-preferences { min-width: 0; margin: 0; padding: 0; border: 0; }
 .settings-preference-section { min-width: 0; padding: 0; border: 0; background: transparent; }
-.settings-preference-section > h3 { margin: 0 16px 8px; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); font-weight: 500; }
+.settings-preference-section > h3 { margin: 0 var(--st-content-inset) 8px; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); font-weight: 500; }
 .settings-row-group { min-width: 0; overflow: hidden; border: 0; border-radius: var(--st-radius); background: var(--surface-raised); }
+.settings-form-group { display: flex; min-width: 0; flex-direction: column; gap: var(--st-card-gap); padding: var(--st-row-padding); border-radius: var(--st-radius); background: var(--surface-raised); }
+.settings-form-group > p { margin: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5; }
+.desktop-settings-dialog .settings-modal .settings-form-group > .settings-switch-row { padding-inline: 0; }
+.settings-form-group > .compaction-threshold-field { margin-top: 0; }
 .settings-row-group > * { position: relative; }
-.settings-row-group > * + *::before { content: ""; position: absolute; top: 0; left: calc(16px * var(--font-scale, 1)); right: 0; height: 1px; background: var(--border-subtle); pointer-events: none; }
+.settings-row-group > * + *::before { content: ""; position: absolute; top: 0; left: var(--st-content-inset); right: 0; height: 1px; background: var(--border-subtle); pointer-events: none; }
 .settings-preference-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: calc(48px * var(--font-scale, 1)); padding: var(--st-row-padding); }
 .settings-row-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .settings-row-copy :is(strong, label) { display: block; color: var(--text); font-size: calc(13px * var(--font-scale, 1)); font-weight: 400; }
@@ -95,10 +99,7 @@
 .settings-advanced > summary strong { font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; }
 .settings-advanced > summary small { color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
 .settings-advanced[open] > summary { border-bottom: 1px solid var(--border-subtle); border-radius: var(--st-radius) var(--st-radius) 0 0; }
-.settings-advanced-content { padding: 18px; }
 .desktop-settings-dialog .settings-modal .settings-chat-page .settings-sections { display: grid; gap: 20px; }
-.desktop-settings-dialog .settings-modal .settings-chat-page .settings-sections > section { margin: 0; padding: 0; border: 0; background: transparent; }
-.desktop-settings-dialog .settings-modal .settings-chat-page .settings-sections > section:not(.activity-memory-group) > h3 { margin: 0 0 10px; font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; }
 .desktop-settings-dialog .settings-modal .settings-chat-page .setting-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; justify-content: stretch; gap: 8px; min-height: 0; margin: 0; padding: 0; border: 0; }
 .desktop-settings-dialog .settings-modal .settings-chat-page .setting-row > .activity-number-input { width: min(100%, 180px); }
 .desktop-settings-dialog .settings-modal .settings-chat-page .chat-params-settings .activity-number-input { width: 100%; }
@@ -158,7 +159,6 @@
 .desktop-settings-dialog .settings-modal .settings-sections > section > .settings-switch-row:only-child { padding: 0; }
 .desktop-settings-dialog .settings-modal .settings-page-footer .settings-footer-actions > button { min-width: 72px; border-radius: var(--st-button-radius); }
 
-.settings-section-note { margin: -6px 0 12px; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
 .desktop-settings-dialog .settings-modal .activity-memory-settings .activity-memory-stat-grid { gap: 12px; }
 .desktop-settings-dialog .settings-modal .activity-memory-settings #memory-add textarea { min-height: 64px; }
 .desktop-settings-dialog .settings-modal .provider-panel { padding: var(--st-card-padding); border-radius: var(--st-radius); }
@@ -228,3 +228,8 @@
   .import-card-row:not(.import-source-row) { flex-wrap: wrap; }
   .import-card-row:not(.import-source-row) > .settings-row-copy { flex-basis: 180px; }
 }
+
+.subagent-setting-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.subagent-setting-row > :is(input, select, .settings-model-picker) { width: 220px; min-width: 0; max-width: 100%; flex: 0 1 220px; }
+.subagent-setting-row > input { min-height: var(--st-control-h); padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--st-button-radius); background: var(--surface-soft); color: var(--text); font: inherit; }
+.subagent-setting-row > input:focus-visible { border-color: var(--accent); outline: none; }

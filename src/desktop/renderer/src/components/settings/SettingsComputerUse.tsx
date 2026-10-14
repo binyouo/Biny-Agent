@@ -118,7 +118,7 @@ export function SettingsComputerUse({ active = true }: { active?: boolean }): Re
           <p className="cu-description">动作可能切换前台应用。请重新授予辅助功能权限后重试。</p>
         </section>
       ) : null}
-      <details className="settings-disclosure cu-controls"><summary>高级设置</summary><div className="cu-section"><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
+      <details className="settings-disclosure cu-controls"><summary>运行控制与日志</summary><div className="cu-section"><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
         <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "ready"} onClick={() => control("pause")}><Icon name="pause" size={14} />暂停</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "ready" || status.state === "disabled"} onClick={() => control("resume")}><Icon name="play" size={14} />继续（需重新观察）</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "disabled"} onClick={() => control("takeover")}>人工接管</button>

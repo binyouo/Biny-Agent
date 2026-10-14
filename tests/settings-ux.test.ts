@@ -23,6 +23,7 @@ function snapshot(): DesktopSettingsSnapshot {
     themePreference: "system", fontPreference: { family: "system", size: 14 },
     activity: { ...config.activity, outputDirectory: "/tmp/settings-test" }, identity: config.identity,
     memory: config.context.memory, compaction: config.context.compaction, chatParams: config.chat, toolExecutionMode: config.agent.toolExecutionMode,
+    subagent: { enabled: false, runtime: "builtin" }, externalSubagentBlockers: [],
     permission: config.permission, webSearch: config.web.search,
     models: { configured: [], connections: [], embeddingModels: [], defaultModel: "default", thinking: "off", modelProfiles: {} },
     skills: { projectId: "project", projectKey: "project", globalDefaults: {}, projectOverrides: {}, activations: [] }
@@ -170,16 +171,14 @@ test("搜索按设置内容定位子页，空结果可清除，跨页草稿继�
     await h.click('[aria-label="设置搜索结果"] button');
     assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好");
     assert.ok(document.activeElement === document.querySelector('.settings-titlebar h2'), "搜索跳转后应聚焦页面标题");
-    const advanced = document.querySelector<HTMLDetailsElement>('details.settings-advanced');
-    assert.ok(advanced);
-    assert.equal(advanced.open, false);
-    assert.match(advanced.textContent ?? "", /采样|温度/u);
+    assert.deepEqual([...document.querySelectorAll('.settings-chat-page h3')].map(node => node.textContent),
+      ["新对话默认能力", "工具审批", "聊天参数", "回复显示", "自动压缩", "编辑工具"], "聊天首屏优先展示新对话配置，显示与维护设置随后");
     assert.ok(document.querySelector('[aria-label="启用流式响应"]'));
-    await h.React.act(async () => {
-      advanced.open = true;
-      advanced.dispatchEvent(new h.dom.window.Event("toggle"));
-    });
-    assert.ok(document.querySelector('[aria-label="压缩阈值"]'));
+    for (const selector of ['[aria-label="温度"]', '#chat-max-output-tokens', '[aria-label="压缩阈值"]']) {
+      const control = document.querySelector(selector);
+      assert.ok(control, "常用聊天设置无需展开即可访问");
+      assert.equal(control.closest("details"), null, "常用参数不能藏在折叠区，原覆盖要求手动展开");
+    }
     await h.input('[aria-label="搜索设置"]', "no_such_setting");
     assert.match(document.querySelector('[role="status"]')?.textContent ?? "", /没有找到/u);
     await h.click('[aria-label="清除设置搜索"]');
@@ -195,13 +194,17 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     await h.overlay({ targetTab: "用户界面" });
     await h.click('input[value="dark"]');
     const navLabels = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].map(button => button.textContent);
+    assert.deepEqual(navLabels.slice(0, 7), ["通用", "模型供应商", "聊天偏好", "用户界面", "配色", "记忆", "技能"], "日常偏好应先于扩展与系统工具，旧覆盖只检查入口存在");
     assert.ok(!navLabels.includes("快速对话"), "快速对话不再是独立页面，已并入通用");
     assert.ok(!navLabels.includes("工具模型"), "工具模型不再是独立页面，已并入通用");
     const general = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].find(button => button.textContent === "通用");
     assert.ok(general); general.focus();
     await h.React.act(() => general.click());
     assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "通用");
-    assert.ok(document.querySelector("#vision-model"), "视觉模型在通用页里预留了位置");
+    assert.ok(!document.querySelector("#vision-model"), "未实现的视觉模型占位不应占用通用设置");
+    const quickChat = document.querySelector("#quickchat-behavior")!;
+    assert.ok(quickChat.compareDocumentPosition(document.querySelector("#tool-model")!) & 4, "悬浮窗口偏好先于后台模型");
+    assert.ok(document.querySelector("#tool-model")!.compareDocumentPosition(document.querySelector("#tool-execution")!) & 4, "工具编排调优排在最后");
     assert.ok(document.querySelector("#tool-model"), "工具模型卡片在通用页里");
     assert.ok(document.querySelector("#quickchat-behavior"), "快速对话卡片在通用页里");
     assert.ok(document.querySelector("#quickchat-shortcut") === null, "移除没有配置入口的快捷键展示块");
@@ -315,7 +318,7 @@ test("聊天偏好仅开关改变草稿，点击行和说明不切换；原保�
     assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, true);
     assert.equal(streaming.getAttribute("role"), "switch");
     assert.equal(streaming.getAttribute("aria-checked"), "true");
-    const description = streaming.getAttribute("aria-describedby");
+    const description = document.querySelector('[aria-label="在内置浏览器打开链接"]')?.getAttribute("aria-describedby");
     assert.ok(description && document.getElementById(description)?.textContent, "开关保留说明的可访问关联");
     streaming.focus();
     assert.equal(document.activeElement, streaming);
@@ -854,6 +857,7 @@ test("保留扩展页状态的容器传递可收缩高度，技能页可滚动�
     await h.click('[data-settings-tab="插件"]');
     assert.equal(computed(page).display, "none", "保留状态的隐藏页面不能挤占当前页");
     const plugins = document.querySelector<HTMLElement>('#settings-extensions-plugins')!;
+    assert.equal(Number.parseFloat(computed(plugins.parentElement!).marginTop), 0, "隐藏的技能页不能给插件页添加顶部组间距");
     assert.equal(computed(plugins.parentElement!).display, "flex");
     assert.equal(computed(plugins).flexGrow, "1");
     assert.equal(computed(plugins).overflow, "hidden");
@@ -944,11 +948,6 @@ test("恢复自动输出额度清除全局覆盖并保留温度，原有手填�
   });
   try {
     await settingsView.overlay({ targetTab: "聊天" });
-    await settingsView.React.act(async () => {
-      const advanced = document.querySelector<HTMLDetailsElement>("details.settings-advanced")!;
-      advanced.open = true;
-      advanced.dispatchEvent(new settingsView.dom.window.Event("toggle"));
-    });
     assert.equal(document.querySelector<HTMLInputElement>("#chat-max-output-tokens")?.value, "8192");
     await settingsView.click('[aria-label="恢复自动输出额度"]');
     assert.equal(document.querySelector<HTMLInputElement>("#chat-max-output-tokens")?.value, "");
@@ -983,11 +982,13 @@ test("自动技能提取与技能开关进入统一草稿，保存时保留聊�
     await h.input('[aria-label="搜索设置"]', "自动技能提取");
     await h.click('[aria-label="设置搜索结果"] button');
     assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "技能");
+    const skillList = document.querySelector('[aria-label="技能列表"]')!;
+    const extraction = document.querySelector('#skill-extraction')!;
+    assert.ok(skillList.contains(extraction), "自动提取随技能内容滚动，不挤占列表首屏");
+    assert.ok(document.querySelector('.settings-skill-group')!.compareDocumentPosition(extraction) & 4, "先管理已有技能，再配置自动提取");
     assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用自动技能提取"]')?.checked, true);
     assert.equal(document.querySelector<HTMLInputElement>('[aria-label="最少工具调用次数"]')?.value, "5");
-    assert.deepEqual([...document.querySelectorAll('#skill-extraction p')].map(node => node.textContent), [
-      "从长对话中自动提取可复用的技能", "工具调用次数低于此值的对话将被跳过"
-    ]);
+    assert.equal(document.querySelectorAll('#skill-extraction p').length, 0, "标题与阈值标签已说明用途，不重复添加说明段落");
     assert.equal(document.querySelector('[aria-label="启用技能 diary"]')?.getAttribute("aria-checked"), "false");
     await h.click('[aria-label="启用技能 diary"]');
     assert.equal(document.querySelector('[aria-label="停用技能 diary"]')?.getAttribute("aria-checked"), "true");
@@ -1362,3 +1363,70 @@ for (const closeVia of ["titlebar", "escape", "html-dialog-cancel", "backdrop"] 
     }
   });
 }
+
+
+test("工具审批从聊天偏好搜索和保存，移除独立权限入口但保留全局拒绝说明", async () => {
+  const writes: DesktopSettingsSaveInput[] = [];
+  const initial = snapshot();
+  const h = await harness({ saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+    writes.push(input);
+    return { status: "committed", journalId: "permission", appliedFields: ["permission"], snapshot: { ...initial, permission: input.permission } };
+  } });
+  try {
+    await h.overlay();
+    assert.ok(!document.querySelector('[data-settings-tab="权限"]'));
+    await h.input('[aria-label="搜索设置"]', "工具审批");
+    await h.click('[aria-label="设置搜索结果"] button');
+    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好");
+    const control = document.querySelector<HTMLInputElement>('[aria-label="自动批准所有工具请求"]');
+    assert.ok(control, "旧页面隔离导致聊天设置无法直接管理审批");
+    const wasChecked = control.checked;
+    assert.match(document.querySelector('#agent-permission-mode')?.textContent ?? "", /所有项目.*明确拒绝/u);
+    await h.click('[aria-label="自动批准所有工具请求"]');
+    await h.click('.settings-save-button');
+    assert.equal(writes[0]?.permission?.mode, wasChecked ? "ask" : "full-access");
+  } finally { await h.close(); }
+});
+
+test("子代理草稿阻止空外部模型保存，失败后保留修改，重试和放弃使用同一设置事务", async () => {
+  let current = snapshot();
+  let attempts = 0;
+  let payload: DesktopSettingsSaveInput | undefined;
+  const h = await harness({ settingsSnapshot: async () => current,
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      payload = settingsSaveInputSchema.parse(input);
+      if (++attempts === 1) throw new Error("write failed");
+      current = { ...current, subagent: input.subagent!, configRevision: "config:2" };
+      return { status: "committed", journalId: "subagent", appliedFields: ["subagent"], snapshot: current };
+    }
+  });
+  try {
+    const { SettingsDraftProvider } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftProvider.js");
+    const { useSettingsDraft } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    let context: ReturnType<typeof useSettingsDraft>;
+    function Probe() { context = useSettingsDraft(); return null; }
+    await h.render(h.React.createElement(SettingsDraftProvider, { active: true, projectId: "project", sessionRunning: false,
+      onCommitted() {}, onFontPreview() {}, onNotify() {}, onThemePreview() {}, children: h.React.createElement(Probe) }));
+    await h.React.act(async () => context!.setSubagent({ enabled: true, runtime: "codex" }));
+    assert.equal(context!.invalid, true);
+    assert.equal(context!.dirtyCount, 1);
+    await h.React.act(async () => { await context!.saveAll(); });
+    assert.equal(attempts, 0);
+    await h.React.act(async () => context!.setSubagent({ enabled: true, runtime: "codex", model: "custom-model" }));
+    await h.React.act(async () => { await context!.saveAll(); });
+    assert.match(context!.saveError!, /write failed/);
+    assert.equal(context!.draft!.subagent.model, "custom-model");
+    await h.React.act(async () => { await context!.saveAll(); });
+    assert.equal(context!.dirtyCount, 0);
+    assert.deepEqual(payload!.subagent, { enabled: true, runtime: "codex", model: "custom-model" });
+    assert.equal(payload!.permission, undefined);
+    await h.React.act(async () => context!.setSubagent({ enabled: true, runtime: "builtin" }));
+    await h.React.act(async () => { await context!.discard(); });
+    assert.deepEqual(context!.draft!.subagent, current.subagent);
+    await h.React.act(async () => context!.setSubagent({ enabled: true, runtime: "auto" }));
+    assert.equal(context!.invalid, false, "Automatic routing does not require a model ID");
+    await h.React.act(async () => { await context!.saveAll(); });
+    assert.equal(payload!.subagent!.runtime, "auto");
+    assert.equal(context!.dirtyCount, 0);
+  } finally { await h.close(); }
+});

@@ -245,32 +245,6 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
         </div>
       </ActivitySection> : null}
 
-      <ActivitySection collapsible id="activity-capture" icon="activity" title="采集参数">
-        <div className="activity-field-grid">
-          <ActivityNumberField disabled={!activity.enabled} id="activity-debounce" label="截图防抖" hint="范围：3000–30000" unit="ms" max={30_000} min={3_000} step={100} value={activity.captureDebounceMs} onCommit={(value) => updateActivity({ captureDebounceMs: value })} />
-          <ActivityNumberField disabled={!activity.enabled} id="activity-heartbeat" label="心跳间隔" hint="画面不变时仍按此间隔保留时间锚点" unit="ms" max={300_000} min={60_000} step={1_000} value={activity.heartbeatMs} onCommit={(value) => updateActivity({ heartbeatMs: value })} />
-          <ActivityNumberField disabled={!activity.enabled} id="activity-idle" label="空闲阈值" hint="无事件达到该时长后关闭当前会话" unit="ms" max={600_000} min={10_000} step={5_000} value={activity.idleTimeoutMs} onCommit={(value) => updateActivity({ idleTimeoutMs: value })} />
-          <ActivityNumberField disabled={!activity.enabled} id="activity-input-pause" label="输入停顿" hint="无输入 N 毫秒后检查是否需要截图" unit="ms" max={5_000} min={800} step={100} value={activity.inputPauseMs} onCommit={(value) => updateActivity({ inputPauseMs: value })} />
-          <ActivityNumberField disabled={!activity.enabled} id="activity-visual-poll" label="截图轮询" hint="定期检查画面并触发截图；0 = 关闭" unit="ms" max={30_000} min={0} step={500} value={activity.visualPollMs} onCommit={(value) => updateActivity({ visualPollMs: value })} />
-          <ActivityNumberField disabled={!activity.enabled} id="activity-jpeg-quality" label="JPEG 质量" hint="30–95，越低文件越小" unit="" max={95} min={30} step={5} value={activity.jpegQuality} onCommit={(value) => updateActivity({ jpegQuality: value })} />
-        </div>
-      </ActivitySection>
-
-      <ActivitySection id="activity-ocr" icon="file" title="OCR 与输入">
-        <div className="activity-toggle-list">
-          <SettingsSwitch checked={activity.ocrEnabled} detail="对活动截图运行本地 Vision 识别。" disabled={!activity.enabled} label="对活动截图运行 Vision OCR" onChange={(ocrEnabled) => updateActivity({ ocrEnabled })} />
-          <SettingsSwitch checked={activity.inputMonitoringEnabled} detail="记录点击和键盘活动类型，不记录键值。" disabled={!activity.enabled} label="全局键盘与鼠标监听" onChange={(inputMonitoringEnabled) => updateActivity({ inputMonitoringEnabled })} />
-        </div>
-        <div className="activity-field-grid activity-ocr-fields">
-          <label className="activity-field activity-field-wide" htmlFor="activity-ocr-languages">
-            <span>OCR 语言（Vision 代码，逗号分隔）</span>
-            <input aria-describedby="activity-ocr-languages-hint" autoComplete="off" disabled={!activity.enabled} id="activity-ocr-languages" name="activity-ocr-languages" onBlur={commitLanguages} onChange={(event) => updateLanguages(event.target.value)} ref={languagesInputRef} spellCheck={false} value={languagesText} />
-            <small id="activity-ocr-languages-hint">例如 en-US, zh-Hans。</small>
-          </label>
-          <ActivityNumberField disabled={!activity.enabled} id="activity-ocr-every" label="每 N 张快照 OCR 一次" unit="" max={20} min={1} step={1} value={activity.ocrEveryNFrames} onCommit={(value) => updateActivity({ ocrEveryNFrames: value })} />
-        </div>
-      </ActivitySection>
-
       <ActivitySection id="activity-sensitive-apps" icon="display" title="不记录的应用">
         <SettingsActivityApplications excluded={activity.sensitiveApplications} onChange={async sensitiveApplications => { await onChange({ sensitiveApplications }); }} />
       </ActivitySection>
@@ -285,6 +259,32 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
           </label>
         </div>
         <p className="activity-storage-note">事件和脱敏摘要不受容量上限影响。</p>
+      </ActivitySection>
+
+      <ActivitySection id="activity-ocr" icon="file" title="OCR 与输入">
+        <div className="activity-toggle-list">
+          <SettingsSwitch checked={activity.ocrEnabled} disabled={!activity.enabled} label="本地截图文字识别（OCR）" onChange={(ocrEnabled) => updateActivity({ ocrEnabled })} />
+          <SettingsSwitch checked={activity.inputMonitoringEnabled} detail="记录点击和键盘活动类型，不记录键值。" disabled={!activity.enabled} label="全局键盘与鼠标监听" onChange={(inputMonitoringEnabled) => updateActivity({ inputMonitoringEnabled })} />
+        </div>
+        <div className="activity-field-grid activity-ocr-fields">
+          <label className="activity-field activity-field-wide" htmlFor="activity-ocr-languages">
+            <span>OCR 语言（Vision 代码，逗号分隔）</span>
+            <input aria-describedby="activity-ocr-languages-hint" autoComplete="off" disabled={!activity.enabled} id="activity-ocr-languages" name="activity-ocr-languages" onBlur={commitLanguages} onChange={(event) => updateLanguages(event.target.value)} ref={languagesInputRef} spellCheck={false} value={languagesText} />
+            <small id="activity-ocr-languages-hint">例如 en-US, zh-Hans。</small>
+          </label>
+          <ActivityNumberField disabled={!activity.enabled} id="activity-ocr-every" label="每 N 张快照 OCR 一次" unit="" max={20} min={1} step={1} value={activity.ocrEveryNFrames} onCommit={(value) => updateActivity({ ocrEveryNFrames: value })} />
+        </div>
+      </ActivitySection>
+
+      <ActivitySection collapsible id="activity-capture" icon="activity" title="采集参数">
+        <div className="activity-field-grid">
+          <ActivityNumberField disabled={!activity.enabled} id="activity-debounce" label="截图防抖" hint="范围：3000–30000" unit="ms" max={30_000} min={3_000} step={100} value={activity.captureDebounceMs} onCommit={(value) => updateActivity({ captureDebounceMs: value })} />
+          <ActivityNumberField disabled={!activity.enabled} id="activity-heartbeat" label="心跳间隔" hint="画面不变时仍按此间隔保留时间锚点" unit="ms" max={300_000} min={60_000} step={1_000} value={activity.heartbeatMs} onCommit={(value) => updateActivity({ heartbeatMs: value })} />
+          <ActivityNumberField disabled={!activity.enabled} id="activity-idle" label="空闲阈值" hint="无事件达到该时长后关闭当前会话" unit="ms" max={600_000} min={10_000} step={5_000} value={activity.idleTimeoutMs} onCommit={(value) => updateActivity({ idleTimeoutMs: value })} />
+          <ActivityNumberField disabled={!activity.enabled} id="activity-input-pause" label="输入停顿" hint="无输入 N 毫秒后检查是否需要截图" unit="ms" max={5_000} min={800} step={100} value={activity.inputPauseMs} onCommit={(value) => updateActivity({ inputPauseMs: value })} />
+          <ActivityNumberField disabled={!activity.enabled} id="activity-visual-poll" label="截图轮询" hint="定期检查画面并触发截图；0 = 关闭" unit="ms" max={30_000} min={0} step={500} value={activity.visualPollMs} onCommit={(value) => updateActivity({ visualPollMs: value })} />
+          <ActivityNumberField disabled={!activity.enabled} id="activity-jpeg-quality" label="JPEG 质量" hint="30–95，越低文件越小" unit="" max={95} min={30} step={5} value={activity.jpegQuality} onCommit={(value) => updateActivity({ jpegQuality: value })} />
+        </div>
       </ActivitySection>
 
       {activity.enabled && runtime !== undefined && runtime.recentSessions.length > 0 ? (

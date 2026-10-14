@@ -376,7 +376,6 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
   })).filter((group) => group.skills.length > 0), [skills]);
   return (
     <>
-      <SkillExtractionSettings />
       <div className="settings-extension-list-heading">
         <span>{query.trim() ? `${skills.length} / ${totalSkills} 个技能` : `${totalSkills} 个技能可用`}</span>
         <div>
@@ -411,6 +410,7 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
             />)}
           </section>
         ))}
+        <SkillExtractionSettings />
       </section>
     </>
   );
@@ -426,7 +426,7 @@ function SkillExtractionSettings(): React.JSX.Element | null {
   });
   return <section className="settings-skill-extraction" id="skill-extraction" tabIndex={-1} aria-label="自动技能提取">
     <div className="settings-skill-extraction-heading">
-      <div><h3>自动技能提取</h3><p>从长对话中自动提取可复用的技能</p></div>
+      <h3>自动技能提取</h3>
       <input aria-label="启用自动技能提取" checked={extraction.enabled} onChange={(event) => update({ enabled: event.target.checked })} type="checkbox" />
     </div>
     {extraction.enabled ? <>
@@ -436,7 +436,6 @@ function SkillExtractionSettings(): React.JSX.Element | null {
           onChange={(event) => update({ minToolCalls: Number(event.target.value) })}
           style={{ "--range-progress": `${((extraction.minToolCalls - 1) / 99) * 100}%` } as React.CSSProperties} />
       </label>
-      <p className="settings-skill-extraction-hint">工具调用次数低于此值的对话将被跳过</p>
     </> : null}
   </section>;
 }
@@ -512,12 +511,14 @@ const PluginsSettingsContent = memo(function PluginsSettingsContent({ busyPlugin
       <button className="settings-plugin-action" onClick={onRefresh} type="button"><Icon name="refresh" size={18} />刷新</button>
       <button className="settings-plugin-action" onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={18} />打开文件夹</button>
     </div>
-    <div className="settings-plugin-tabs settings-plugin-scope-tabs" role="tablist" aria-label="插件安装范围">
-      <button aria-selected={pluginScope === "global"} className={pluginScope === "global" ? "is-active" : ""} onClick={() => onScope("global")} role="tab" type="button">全局</button>
-      <button aria-selected={pluginScope === "project"} className={pluginScope === "project" ? "is-active" : ""} onClick={() => onScope("project")} role="tab" type="button">当前项目</button>
-    </div>
-    <div className="settings-plugin-categories" role="tablist" aria-label="插件分类">
-      {categories.map((item) => <button aria-selected={category === item} className={category === item ? "is-active" : ""} key={item} onClick={() => onCategory(item)} role="tab" type="button">{item}</button>)}
+    <div className="settings-plugin-filters">
+      <div className="settings-plugin-tabs settings-plugin-scope-tabs" role="tablist" aria-label="插件安装范围">
+        <button aria-selected={pluginScope === "global"} className={pluginScope === "global" ? "is-active" : ""} onClick={() => onScope("global")} role="tab" type="button">全局</button>
+        <button aria-selected={pluginScope === "project"} className={pluginScope === "project" ? "is-active" : ""} onClick={() => onScope("project")} role="tab" type="button">当前项目</button>
+      </div>
+      <div className="settings-plugin-categories" role="tablist" aria-label="插件分类">
+        {categories.map((item) => <button aria-selected={category === item} className={category === item ? "is-active" : ""} key={item} onClick={() => onCategory(item)} role="tab" type="button">{item}</button>)}
+      </div>
     </div>
     <label className="settings-extension-search settings-plugin-search"><Icon name="search" size={18} /><input aria-label="搜索插件" onChange={(event) => onQuery(event.target.value)} placeholder="搜索插件…" value={query} />{query ? <button aria-label="清空搜索" onClick={() => onQuery("")} type="button"><Icon name="close" size={14} /></button> : null}</label>
     {registry.loadingError ? <div className="settings-extension-notice is-warning">应用市场刷新失败：{registry.loadingError}{registry.stale ? "，当前显示上次缓存。" : "，当前没有可用缓存。"}</div> : null}

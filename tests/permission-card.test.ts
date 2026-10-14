@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { JSDOM } from "jsdom";
 import { ToolActivityDetail, ToolPermission } from "../src/desktop/renderer/src/components/ToolActivity.js";
 import type { TimelineTool } from "../src/desktop/renderer/src/sessionTimeline.js";
 
@@ -47,12 +48,24 @@ test("逐次确认的请求不展示会话授权，普通请求保留会话授�
 });
 
 test("工具详情收起时授权卡片位于折叠容器之外", async () => {
-  const { ActivityToolRow } = await import("../src/desktop/renderer/src/components/chat/ActivitySegment.js");
-  const html = renderToStaticMarkup(createElement(ActivityToolRow, {
-    projectId: "project", tool: { ...tool, tool: "skill_install", args: { name: "demo" }, command: undefined },
+  const { ActivitySegment, ActivityToolRow } = await import("../src/desktop/renderer/src/components/chat/ActivitySegment.js");
+  const pendingTool: TimelineTool = { ...tool, tool: "skill_install", args: { name: "demo" }, command: undefined };
+  const callbacks = {
+    projectId: "project",
     onPreviewFile: () => undefined, onOpenExternal: () => undefined, onResolvePermission: async () => undefined
-  }));
-  assert.match(html, /aria-hidden="true" class="biny-collapse chat-tool-row-collapse" inert=""/u);
-  // 日志详情、行详情及 Collapse 的三层容器全部关闭后才出现授权。
-  assert.match(html, /<\/div><\/div><\/div><\/div><\/div><section class="permission-card/u);
+  };
+  for (const element of [
+    createElement(ActivityToolRow, { ...callbacks, tool: pendingTool }),
+    createElement(ActivitySegment, { ...callbacks, running: false, steps: [{ kind: "tool", id: tool.id, tool: pendingTool }] })
+  ]) {
+    const dom = new JSDOM(renderToStaticMarkup(element));
+    try {
+      const document = dom.window.document;
+      assert.equal(document.querySelector(".chat-tool-row")?.getAttribute("aria-expanded"), "false");
+      const permission = document.querySelector(".permission-card");
+      assert.ok(permission);
+      assert.equal(permission.closest('[inert], [aria-hidden="true"]'), null);
+      assert.equal(document.querySelector(".tool-details"), null);
+    } finally { dom.window.close(); }
+  }
 });

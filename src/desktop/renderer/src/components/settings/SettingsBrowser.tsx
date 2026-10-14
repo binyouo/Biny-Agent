@@ -95,7 +95,7 @@ export function SettingsBrowser({ active = true }: { active?: boolean }): React.
   const disabled = busy !== undefined || (connection.kind === "error" && connection.restartRequired);
   const connected = connection.kind === "ready" && connection.status.connected;
   const installGuide = <>
-    <p>在日常使用的 Chrome（125 或更新版本）中安装扩展，连接已有网页与登录状态。</p>
+    <p>需要 Chrome 125 或更新版本，可使用已有网页与登录状态。</p>
     <div className="settings-button-row">
       <button type="button" className="settings-secondary-button" disabled={disabled} onClick={() => void perform("install")}><Icon name="folder" size={14} />{busy === "install" ? "打开中…" : "打开扩展目录"}</button>
       <button type="button" className="settings-secondary-button" disabled={disabled} onClick={() => void perform("open-chrome")}><Icon name="external" size={14} />{busy === "open-chrome" ? "启动中…" : "打开 Chrome 扩展管理"}</button>

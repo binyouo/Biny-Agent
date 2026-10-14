@@ -84,12 +84,8 @@ export function SettingsAppshots(): React.JSX.Element {
     <section className="cu-card appshot-hero">
       <span aria-hidden="true" className="appshot-hero-badge"><Icon name="camera" size={24} /></span>
       <div className="appshot-hero-copy">
-        <h3>用 Appshot 把当前窗口给 Biny 看</h3>
-        <p className="cu-description">
-          Appshot 会截取你的前台窗口——既有看得见的画面，也有无障碍文本轮廓——并把它放进聊天输入框。
-          在任何应用里<strong>同时按下两个 ⌘ 键</strong>，或快速连按两次修饰键即可；Biny 会带着这张截图回到前台，
-          文本轮廓随消息隐形同乘，模型因此看到完整窗口上下文。
-        </p>
+        <h3>窗口截图</h3>
+        <p className="cu-description">截取前台窗口及无障碍文本，放入聊天草稿；发送后才交给模型。</p>
       </div>
     </section>
 
@@ -132,8 +128,7 @@ export function SettingsAppshots(): React.JSX.Element {
 
       <div className="appshot-row">
         <div className="appshot-row-copy">
-          <strong>截图放到哪里</strong>
-          <p><strong>当前聊天</strong>（默认）把截图放进已经打开的那个对话，方便接着聊你正在看的窗口；<strong>新聊天</strong>每次为截图开一段全新对话。</p>
+          <strong>截图目标</strong>
         </div>
         <SettingsSegmentedControl
           label="截图目标"
@@ -146,8 +141,8 @@ export function SettingsAppshots(): React.JSX.Element {
 
       <div className="appshot-row">
         <div className="appshot-row-copy">
-          <strong>试一次</strong>
-          <p>忽略快捷键，直接对 Biny 认为的前台窗口触发一次截图——用来确认权限和捕获链路是否正常。</p>
+          <strong>测试截图</strong>
+          <p>截取前台窗口，检查权限是否可用。</p>
         </div>
         <button
           type="button" className="settings-secondary-button" disabled={!api || pending !== undefined || !supported}
@@ -158,8 +153,8 @@ export function SettingsAppshots(): React.JSX.Element {
 
     <section className="cu-card appshot-foot">
       <p className="cu-description">
-        截图不依赖 Computer History 记录；敏感应用排除名单仍然生效，被排除的应用既不会被截取，也不会带上窗口上下文。
-        快捷键监控由桌面控制组件分发，因此本页与 Computer Use 共用同一套权限。
+        无需开启 Computer History。排除的应用不会被截图或读取窗口文本。
+        需要辅助功能与屏幕录制权限。
       </p>
       <div className="cu-button-row">
         <button

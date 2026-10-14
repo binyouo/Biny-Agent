@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ModelChoice } from "../../../../../llm/ModelManager.js";
-import { defaultEmbeddingModelRef, embeddingModelRefKey, type EmbeddingModelRef, type LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
+import { defaultEmbeddingModelRef, embeddingModelRefKey, localEmbeddingModelIds, type EmbeddingModelRef, type LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
 import { selectMemoryEmbeddingModel } from "../../../../../llm/embedding/selectMemoryModel.js";
 import type {
   DesktopEmbeddingModelDescriptor,
@@ -88,7 +88,7 @@ function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[
     group.options.push({
       value: modelKey === automaticKey ? "auto" : modelKey,
       label: model.displayName,
-      trailing: modelKey === automaticKey ? "默认" : local
+      trailing: modelKey === automaticKey ? "自动" : local
         ? [sizeLabel, model.installed === false ? "未下载" : undefined].filter(Boolean).join(" · ")
         : model.available === false ? "未配置" : undefined,
       disabled: !local && model.available === false
@@ -343,7 +343,9 @@ export function SettingsMemory({
       setStats(next);
       await reload(0, archivePage);
       const mergedNotice = !archived && next.mergedTarget
-        ? `此条记忆曾合并到仍在使用的记忆「${next.mergedTarget.content}」。如不再需要，可手动删除该合并项。`
+        ? entry.archivedReason === "updated"
+          ? `当前版本「${next.mergedTarget.content}」仍在使用，请核对是否需要保留。`
+          : `此条记忆曾合并到仍在使用的记忆「${next.mergedTarget.content}」。如不再需要，可手动删除该合并项。`
         : null;
       setRestoreNotice(mergedNotice);
       onNotify(mergedNotice ? `记忆已恢复。${mergedNotice}` : archived ? "记忆已归档" : "记忆已恢复");
@@ -493,13 +495,12 @@ export function SettingsMemory({
   const policy = draft.memory;
   const selectedEmbeddingModel = policy.embeddingModel ?? defaultEmbeddingModelRef;
   const selectedEmbeddingKey = embeddingModelRefKey(selectedEmbeddingModel);
-  // 主进程热重载前可能仍返回历史本地模型；renderer 也按当前协议过滤一次，避免旧进程把
-  // 已移除的模型重新暴露给用户。云端 provider 模型不在这里裁剪。
+  // 热重载前的旧进程可能仍返回已移除的模型；按当前协议过滤本地选项。
   const availableEmbeddingModels = (embeddingStatus?.models.length ? embeddingStatus.models : embeddingModels)
-    .filter((model) => model.source !== "local" || (model.ref.kind === "local" && model.ref.model === "multilingual-e5-small"));
+    .filter((model) => model.source !== "local" || (model.ref.kind === "local" && localEmbeddingModelIds.includes(model.ref.model)));
   const automaticEmbeddingModel = (snapshot?.memory.embeddingModel ?? defaultEmbeddingModelRef).kind === "auto"
-    ? embeddingStatus?.activeModel ?? selectMemoryEmbeddingModel(defaultEmbeddingModelRef, availableEmbeddingModels)
-    : selectMemoryEmbeddingModel(defaultEmbeddingModelRef, availableEmbeddingModels);
+    ? embeddingStatus?.activeModel ?? selectMemoryEmbeddingModel({ kind: "auto" }, availableEmbeddingModels)
+    : selectMemoryEmbeddingModel({ kind: "auto" }, availableEmbeddingModels);
   const effectiveEmbeddingModel = selectedEmbeddingModel.kind === "auto" ? automaticEmbeddingModel : selectedEmbeddingModel;
   const selectedEmbeddingDescriptor = effectiveEmbeddingModel
     ? availableEmbeddingModels.find((model) => embeddingModelRefKey(model.ref) === embeddingModelRefKey(effectiveEmbeddingModel))
@@ -524,8 +525,8 @@ export function SettingsMemory({
   const embeddingGroups = embeddingPickerGroups(availableEmbeddingModels,
     selectedEmbeddingModel.kind === "auto" && automaticEmbeddingModel ? embeddingModelRefKey(automaticEmbeddingModel) : undefined);
   if (!embeddingGroups.some((group) => group.options.some((option) => option.value === "auto"))) {
-    embeddingGroups.push({ key: "auto", label: "默认", iconTone: "local", options: [{
-      value: "auto", label: "自动选择可用服务商", trailing: automaticEmbeddingModel ? "默认" : "暂无可用模型"
+    embeddingGroups.push({ key: "auto", label: "服务商", iconTone: "local", options: [{
+      value: "auto", label: "自动选择可用服务商", trailing: automaticEmbeddingModel ? undefined : "暂无可用模型"
     }] });
   }
   if (!embeddingGroups.some((group) => group.options.some((option) => option.value === selectedEmbeddingKey))) {
@@ -535,7 +536,7 @@ export function SettingsMemory({
       iconTone: selectedEmbeddingModel.kind === "provider" ? selectedEmbeddingModel.provider : "local",
       options: [{
         value: selectedEmbeddingKey,
-        label: selectedEmbeddingModel.kind === "auto" ? "自动选择可用服务商" : selectedEmbeddingModel.kind === "local" ? "Multilingual E5 Small" : selectedEmbeddingModel.model,
+        label: selectedEmbeddingModel.kind === "auto" ? "自动选择可用服务商" : selectedEmbeddingModel.model,
         trailing: "当前配置"
       }]
     });
@@ -571,19 +572,50 @@ export function SettingsMemory({
       </section>
 
       {policy.enabled ? <>
-        <section className="activity-memory-group" id="memory-statistics" tabIndex={-1}>
-          <h3>统计</h3>
-          <div className="activity-memory-stat-grid">
-            <div><strong>{memoryCount}</strong><span>记忆总数</span></div>
-            <div><strong>{stats?.memoryStats.autoGenerated ?? 0}</strong><span>自动生成</span></div>
-            <div><strong>{stats?.memoryStats.manualAdded ?? 0}</strong><span>手动添加</span></div>
-          </div>
+        <section className="activity-memory-group" id="memory-retrieval" tabIndex={-1}>
+            <MemoryCheckbox
+            checked={policy.useMemories}
+            detail="对话开始时召回相关记忆。"
+            label="自动检索记忆"
+            onChange={(useMemories) => setMemory({ ...policy, useMemories })}
+          />
+          {policy.useMemories ? <div className="activity-memory-nested">
+            <MemoryCheckbox
+              checked={policy.queryRewrite}
+              detail="用工具模型提炼搜索词。"
+              label="查询重写"
+              onChange={(queryRewrite) => setMemory({ ...policy, queryRewrite })}
+            />
+            <MemoryRange
+              ariaLabel="最大检索记忆数"
+              label="最大检索记忆数"
+              max={20}
+              min={1}
+              onChange={(maxRecalled) => setMemory({ ...policy, maxRecalled })}
+              value={policy.maxRecalled}
+              valueLabel={`${policy.maxRecalled}`}
+            />
+            <MemoryRange
+              ariaLabel="相似度阈值"
+              label="相似度阈值"
+              max={100}
+              maxLabel="严格 (100%)"
+              min={0}
+              minLabel="宽松 (0%)"
+              onChange={(value) => setMemory({ ...policy, similarityThreshold: value / 100 })}
+              value={Math.round(policy.similarityThreshold * 100)}
+              valueLabel={`${Math.round(policy.similarityThreshold * 100)}%`}
+            />
+          </div> : null}
         </section>
 
-        <section className="activity-memory-group" id="memory-add" tabIndex={-1}>
-          <h3>添加记忆</h3>
-          <textarea aria-label="输入您希望 AI 记住的内容..." disabled={sessionRunning || saving || editor?.id !== undefined} onChange={(event) => setEditor({ value: event.target.value })} placeholder="输入您希望 AI 记住的内容..." rows={4} value={editor?.id ? "" : editor?.value ?? ""} />
-          <button className="settings-primary-button" disabled={saving || editor?.id !== undefined || !editor?.value.trim()} onClick={() => { void saveText(); }} type="button">{saving && !editor?.id ? "添加中…" : "添加记忆"}</button>
+        <section className="activity-memory-group" id="memory-summarization" tabIndex={-1}>
+            <MemoryCheckbox
+            checked={policy.generateMemories}
+            detail="将对话中的重要信息保存为记忆。"
+            label="自动总结对话"
+            onChange={(generateMemories) => setMemory({ ...policy, generateMemories })}
+          />
         </section>
 
         <section className="activity-memory-group" id="memory-search" tabIndex={-1}>
@@ -626,52 +658,73 @@ export function SettingsMemory({
           {totalEntries > PAGE_SIZE ? <MemoryPagination currentPage={currentPage} onPageChange={(page) => { void reload(page); }} totalEntries={totalEntries} /> : null}
         </section>
 
-        <section className="activity-memory-group" id="memory-retrieval" tabIndex={-1}>
-            <MemoryCheckbox
-            checked={policy.useMemories}
-            detail="对话开始时召回相关记忆。"
-            label="自动检索记忆"
-            onChange={(useMemories) => setMemory({ ...policy, useMemories })}
-          />
-          {policy.useMemories ? <div className="activity-memory-nested">
-            <MemoryCheckbox
-              checked={policy.queryRewrite}
-              detail="用工具模型提炼搜索词，提高匹配准确度。"
-              label="查询重写"
-              onChange={(queryRewrite) => setMemory({ ...policy, queryRewrite })}
-            />
-            <MemoryRange
-              ariaLabel="最大检索记忆数"
-              description="注入对话上下文的相关记忆最大数量（1-20）。"
-              label="最大检索记忆数"
-              max={20}
-              min={1}
-              onChange={(maxRecalled) => setMemory({ ...policy, maxRecalled })}
-              value={policy.maxRecalled}
-              valueLabel={`${policy.maxRecalled}`}
-            />
-            <MemoryRange
-              ariaLabel="相似度阈值"
-              description="检索记忆所需的最低相似度分数。值越高，匹配越严格。"
-              label="相似度阈值"
-              max={100}
-              maxLabel="严格 (100%)"
-              min={0}
-              minLabel="宽松 (0%)"
-              onChange={(value) => setMemory({ ...policy, similarityThreshold: value / 100 })}
-              value={Math.round(policy.similarityThreshold * 100)}
-              valueLabel={`${Math.round(policy.similarityThreshold * 100)}%`}
-            />
-          </div> : null}
+        <section className="activity-memory-group" id="memory-add" tabIndex={-1}>
+          <h3>添加记忆</h3>
+          <textarea aria-label="输入您希望 AI 记住的内容..." disabled={sessionRunning || saving || editor?.id !== undefined} onChange={(event) => setEditor({ value: event.target.value })} placeholder="输入您希望 AI 记住的内容..." rows={4} value={editor?.id ? "" : editor?.value ?? ""} />
+          <button className="settings-primary-button" disabled={saving || editor?.id !== undefined || !editor?.value.trim()} onClick={() => { void saveText(); }} type="button">{saving && !editor?.id ? "添加中…" : "添加记忆"}</button>
         </section>
 
-        <section className="activity-memory-group" id="memory-summarization" tabIndex={-1}>
-            <MemoryCheckbox
-            checked={policy.generateMemories}
-            detail="自动从对话中提取并存储重要信息作为新记忆。"
-            label="自动总结对话"
-            onChange={(generateMemories) => setMemory({ ...policy, generateMemories })}
+        <section className="activity-memory-group" id="memory-tool-model" tabIndex={-1}>
+          <h3>记忆工具模型</h3>
+          <p>留空使用通用工具模型。</p>
+          <div className="activity-memory-model-picker-row">
+            <SettingsModelPicker
+              ariaLabel="记忆工具模型"
+              groups={modelPickerGroups(models.filter((model) => model.providerType !== "acp"))}
+              inheritLabel="使用默认工具模型"
+              onChange={(memoryModel) => setMemory({ ...policy, memoryModel })}
+              placeholder="使用默认工具模型"
+              value={policy.memoryModel}
+            />
+            <ModelTestButton disabled={!models.length} label="测试模型" testing={modelTesting} onClick={() => { void testMemoryModel(); }} />
+          </div>
+          <ModelTestResult result={modelTestResult} />
+        </section>
+
+        <section className="activity-memory-group" id="memory-embedding" tabIndex={-1}>
+          <h3>嵌入模型</h3>
+          <p>{selectedEmbeddingModel.kind === "local" ? "本地模型下载后可离线检索。" : "查询及记忆正文会发送到所选服务商。"}</p>
+          <SettingsModelPicker
+            ariaLabel="选择嵌入模型"
+            compact
+            groups={embeddingGroups}
+            selectionHint={selectedEmbeddingModel.kind === "auto" ? selectedEmbeddingDescriptor ? "自动" : "暂无可用模型" : undefined}
+            onChange={(value) => {
+              if (!value) return;
+              if (value === "auto") { selectEmbeddingModel({ kind: "auto" }); return; }
+              const selected = availableEmbeddingModels.find((model) => embeddingModelRefKey(model.ref) === value);
+              if (selected?.available === false) { onNotify("这个云端搜索模型当前不可用，请先配置对应服务商。"); return; }
+              if (selected) selectEmbeddingModel(selected.ref);
+            }}
+            placeholder="选择嵌入模型"
+            value={selectedEmbeddingKey}
           />
+          {embeddingStatus?.needsRebuild ? <div aria-live="polite" className="activity-memory-embedding-error" role="alert">
+            <span>{embeddingStatus.degradedReason ?? "嵌入索引与当前模型不匹配，自动记忆召回已暂停。"}</span>
+            <button className="text-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">立即重建</button>
+          </div> : null}
+          {embeddingStatus && !embeddingStatus.needsRebuild && embeddingStatus.pendingEntries > 0 ? <div aria-live="polite" className="activity-memory-embedding-error" role="status">
+            <span>{embeddingStatus.pendingEntries} 条记忆尚未索引，未索引条目暂不能被语义搜索或自动召回命中。{embeddingStatus.indexedEntries > 0 ? "已索引条目仍可检索。" : ""}</span>
+            <button className="text-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">立即重建</button>
+          </div> : null}
+          {embeddingOperation?.kind === "download" && embeddingOperation.progress?.progress !== undefined ? <div className="activity-memory-embedding-progress" role="status">正在下载模型… {Math.round(embeddingOperation.progress.progress * 100)}%</div> : null}
+          {embeddingError ? <div aria-live="polite" className="activity-memory-embedding-error"><span>暂时无法读取状态，请重试。</span><button className="text-button" disabled={embeddingWorking !== undefined} onClick={() => { void refreshEmbeddingStatus(); }} type="button">重试</button></div> : null}
+          {embeddingNeedsDownload && selectedEmbeddingModel.kind === "local" ? (downloadingSelected ? <button className="text-button" onClick={() => { void cancelEmbeddingDownload(selectedEmbeddingModel.model); }} type="button">取消</button> : <button className="text-button" disabled={embeddingWorking !== undefined || sessionRunning} onClick={() => { void downloadEmbedding(selectedEmbeddingModel.model); }} type="button">下载模型</button>) : null}
+          {rebuilding ? <div className="activity-memory-embedding-progress" role="status">正在重建嵌入向量... <button className="text-button" onClick={() => { void cancelEmbeddingRebuild(); }} type="button">取消</button></div> : null}
+          <div className="activity-memory-embedding-footer">
+            <span>如有需要，手动重新生成所有记忆的嵌入向量。</span>
+            <button className="ghost-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">重建嵌入向量</button>
+          </div>
+          {dirtyCount > 0 && modelDraftChanged ? <small className="activity-memory-embedding-hint">模型选择还在草稿中，请先保存设置。</small> : null}
+        </section>
+
+        <section className="activity-memory-group" id="memory-statistics" tabIndex={-1}>
+          <h3>统计</h3>
+          <div className="activity-memory-stat-grid">
+            <div><strong>{memoryCount}</strong><span>记忆总数</span></div>
+            <div><strong>{stats?.memoryStats.autoGenerated ?? 0}</strong><span>自动生成</span></div>
+            <div><strong>{stats?.memoryStats.manualAdded ?? 0}</strong><span>手动添加</span></div>
+          </div>
         </section>
 
         <section className="activity-memory-group activity-memory-sleep-card" id="memory-sleep" tabIndex={-1}>
@@ -708,7 +761,7 @@ export function SettingsMemory({
               </>}
             </div> : null}
             <label className="activity-memory-row">
-              <span><strong>触发时间</strong><small>每天本地触发时间。03:00 默认避开使用高峰，可改成你想要的任意时间。</small></span>
+              <span><strong>触发时间</strong><small>每天按本地时间执行。</small></span>
               <input aria-label="触发时间" disabled={saving || sessionRunning} type="time" value={policy.sleepTime} onChange={(event) => setMemory({ ...policy, sleepTime: event.target.value })} />
             </label>
             <div className="activity-memory-retention">
@@ -722,7 +775,7 @@ export function SettingsMemory({
                 value={policy.temporaryTtl}
               />
               <MemoryNumber
-                description="归档中的记忆超过该天数会被彻底删除，超出后无法恢复。"
+                description="到期永久删除，无法恢复。"
                 label="归档保留（天）"
                 max={3650}
                 min={1}
@@ -737,7 +790,7 @@ export function SettingsMemory({
             <div className="activity-memory-advanced-content" hidden={!sleepAdvancedOpen} id={`${disclosureId}-sleep-advanced`}>
               <MemoryRange
                 ariaLabel="相似度合并阈值"
-                description="余弦相似度高于此阈值的条目视为近似重复，直接合并，不调用 LLM。"
+                description="高于此值直接合并，不调用模型。"
                 label="相似度合并阈值"
                 max={100}
                 min={80}
@@ -754,7 +807,7 @@ export function SettingsMemory({
               {policy.useLlm ? <>
                 <MemoryRange
                   ariaLabel="LLM 合并下界"
-                  description="相似度在此值与上方阈值之间的条目会送到记忆工具模型，由它保守判断是否合并。"
+                  description="此值与上方阈值之间，由记忆工具模型判断是否合并。"
                   label="LLM 合并下界"
                   max={95}
                   min={70}
@@ -763,7 +816,7 @@ export function SettingsMemory({
                   valueLabel={`${Math.round(policy.llmMergeLow * 100)}%`}
                 />
                 <MemoryNumber
-                  description="一次合并提示送给模型的最大簇成员数。"
+                  description="每批交给模型的记忆条数上限。"
                   label="LLM 单次批量大小"
                   max={100}
                   min={1}
@@ -784,7 +837,7 @@ export function SettingsMemory({
             <div className="activity-memory-archive-list" hidden={!archiveOpen} id={`${disclosureId}-archive`}>
               {archivedEntries.length === 0 ? <p>暂无归档记忆。</p> : archivedEntries.map((entry) => (
                 <article className="activity-memory-entry" key={entry.id}>
-                  <div className="activity-memory-entry-content"><p>{entry.content}</p><small>{entry.archivedReason ?? "手动"} · {entry.archivedAt ? formatDate(entry.archivedAt) : ""}{entry.mergedInto ? (() => {
+                  <div className="activity-memory-entry-content"><p>{entry.content}</p><small>{entry.archivedReason === "updated" ? "更新前版本" : entry.archivedReason ?? "手动"} · {entry.archivedAt ? formatDate(entry.archivedAt) : ""}{entry.mergedInto ? (() => {
                     const chain = archiveChains[entry.id] ?? { finalId: entry.mergedInto, depth: 0 };
                     const label = `#${chain.finalId.slice(-6)}`;
                     return <span title={chain.depth > 1 ? `→ ${label}（链深度 ${chain.depth}）` : undefined}> · → {label}{chain.depth > 1 ? `（链深度 ${chain.depth}）` : ""}</span>;
@@ -807,60 +860,6 @@ export function SettingsMemory({
               <div>{sleepRuns.map((run) => <p key={run.id}>{formatDate(run.startedAt)} · {run.status} · {run.trigger} · {run.archived} archived{run.synthesisFailed > 0 ? ` · ⚠ ${run.synthesisFailed} 合成失败` : ""}</p>)}</div>
             </details> : null}
           </div> : null}
-        </section>
-
-        <section className="activity-memory-group" id="memory-tool-model" tabIndex={-1}>
-          <h3>记忆工具模型</h3>
-          <p>为记忆操作指定专用工具模型。留空则使用通用工具模型。</p>
-          <div className="activity-memory-model-picker-row">
-            <SettingsModelPicker
-              ariaLabel="记忆工具模型"
-              groups={modelPickerGroups(models.filter((model) => model.providerType !== "acp"))}
-              inheritLabel="使用默认工具模型"
-              onChange={(memoryModel) => setMemory({ ...policy, memoryModel })}
-              placeholder="使用默认工具模型"
-              value={policy.memoryModel}
-            />
-            <ModelTestButton disabled={!models.length} label="测试模型" testing={modelTesting} onClick={() => { void testMemoryModel(); }} />
-          </div>
-          <ModelTestResult result={modelTestResult} />
-        </section>
-
-        <section className="activity-memory-group" id="memory-embedding" tabIndex={-1}>
-          <h3>嵌入模型</h3>
-          <p>用于语义搜索的嵌入模型。默认自动选择已配置的服务商，也可手动选择本地模型；没有可用模型时语义搜索暂不可用。</p>
-          <SettingsModelPicker
-            ariaLabel="选择嵌入模型"
-            compact
-            groups={embeddingGroups}
-            selectionHint={selectedEmbeddingModel.kind === "auto" ? selectedEmbeddingDescriptor ? "默认" : "暂无可用模型" : undefined}
-            onChange={(value) => {
-              if (!value) return;
-              if (value === "auto") { selectEmbeddingModel({ kind: "auto" }); return; }
-              const selected = availableEmbeddingModels.find((model) => embeddingModelRefKey(model.ref) === value);
-              if (selected?.available === false) { onNotify("这个云端搜索模型当前不可用，请先配置对应服务商。"); return; }
-              if (selected) selectEmbeddingModel(selected.ref);
-            }}
-            placeholder="选择嵌入模型"
-            value={selectedEmbeddingKey}
-          />
-          {embeddingStatus?.needsRebuild ? <div aria-live="polite" className="activity-memory-embedding-error" role="alert">
-            <span>{embeddingStatus.degradedReason ?? "嵌入索引与当前模型不匹配，自动记忆召回已暂停。"}</span>
-            <button className="text-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">立即重建</button>
-          </div> : null}
-          {embeddingStatus && !embeddingStatus.needsRebuild && embeddingStatus.pendingEntries > 0 ? <div aria-live="polite" className="activity-memory-embedding-error" role="status">
-            <span>{embeddingStatus.pendingEntries} 条记忆尚未索引，未索引条目暂不能被语义搜索或自动召回命中。{embeddingStatus.indexedEntries > 0 ? "已索引条目仍可检索。" : ""}</span>
-            <button className="text-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">立即重建</button>
-          </div> : null}
-          {embeddingOperation?.kind === "download" && embeddingOperation.progress?.progress !== undefined ? <div className="activity-memory-embedding-progress" role="status">正在下载模型… {Math.round(embeddingOperation.progress.progress * 100)}%</div> : null}
-          {embeddingError ? <div aria-live="polite" className="activity-memory-embedding-error"><span>暂时无法读取状态，请重试。</span><button className="text-button" disabled={embeddingWorking !== undefined} onClick={() => { void refreshEmbeddingStatus(); }} type="button">重试</button></div> : null}
-          {embeddingNeedsDownload && selectedEmbeddingModel.kind === "local" ? (downloadingSelected ? <button className="text-button" onClick={() => { void cancelEmbeddingDownload(selectedEmbeddingModel.model); }} type="button">取消</button> : <button className="text-button" disabled={embeddingWorking !== undefined || sessionRunning} onClick={() => { void downloadEmbedding(selectedEmbeddingModel.model); }} type="button">下载模型</button>) : null}
-          {rebuilding ? <div className="activity-memory-embedding-progress" role="status">正在重建嵌入向量... <button className="text-button" onClick={() => { void cancelEmbeddingRebuild(); }} type="button">取消</button></div> : null}
-          <div className="activity-memory-embedding-footer">
-            <span>如有需要，手动重新生成所有记忆的嵌入向量。</span>
-            <button className="ghost-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">重建嵌入向量</button>
-          </div>
-          {dirtyCount > 0 && modelDraftChanged ? <small className="activity-memory-embedding-hint">模型选择还在草稿中，请先保存设置。</small> : null}
         </section>
 
         {pendingEmbeddingModel ? <SettingsDetailLayer onClose={() => setPendingEmbeddingModel(undefined)}>
@@ -892,7 +891,7 @@ function MemoryCheckbox({ checked, detail, label, onChange }: { checked: boolean
 
 function MemoryRange({ ariaLabel, description, label, max, maxLabel, min, minLabel, onChange, value, valueLabel }: {
   ariaLabel: string;
-  description: string;
+  description?: string;
   label: string;
   max: number;
   /** 端点说明紧跟滑块展示；不传则不渲染端点行。 */
@@ -907,7 +906,7 @@ function MemoryRange({ ariaLabel, description, label, max, maxLabel, min, minLab
     <label htmlFor={`memory-range-${ariaLabel}`}><span>{label} : {valueLabel}</span></label>
     <input aria-label={ariaLabel} id={`memory-range-${ariaLabel}`} style={rangeProgress(value, min, max)} type="range" min={min} max={max} step={max === 100 ? 1 : 1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     {minLabel !== undefined && maxLabel !== undefined ? <div className="activity-memory-range-labels"><span>{minLabel}</span><span>{maxLabel}</span></div> : null}
-    <p>{description}</p>
+    {description ? <p>{description}</p> : null}
   </div>;
 }
 

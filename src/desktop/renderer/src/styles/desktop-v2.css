@@ -1296,6 +1296,7 @@ select option:disabled {
 /* 布局基准：14px 根字号；放在 Dialog 上，让关闭确认层也继承相同的控件参数。 */
 .desktop-settings-dialog {
   --st-rem: calc(14px * var(--font-scale, 1));
+  --st-content-inset: calc(16px * var(--font-scale, 1));
   --st-card-padding: calc(20px * var(--font-scale, 1));
   --st-card-gap: calc(0.75 * var(--st-rem));
   --st-control-h: max(var(--biny-control-height), calc(32px * var(--font-scale, 1)));
@@ -1304,7 +1305,7 @@ select option:disabled {
   --st-control-py: calc(0.4 * var(--st-rem));
   --st-control-gap: calc(8px * var(--font-scale, 1));
   --st-stack-gap: calc(24px * var(--font-scale, 1));
-  --st-row-padding: var(--biny-row-padding);
+  --st-row-padding: calc(12px * var(--font-scale, 1)) var(--st-content-inset);
   --st-page-padding: clamp(16px, 3vw, 28px);
   --st-radius: var(--biny-radius-card);
   --st-button-height: var(--st-control-h);
@@ -1782,7 +1783,7 @@ select option:disabled {
 
 /* 分区统一密度；模块间距与内部间距分开，避免行自身留白再叠加大段 gap。
    相邻模块的间距由下方规则负责，卡片保留边框来区分分组。 */
-.desktop-settings-dialog .settings-modal .settings-sections > section,
+.desktop-settings-dialog .settings-modal .settings-sections > section:not(.settings-preference-section),
 .desktop-settings-dialog .settings-modal .settings-sections > details,
 .desktop-settings-dialog .settings-modal .settings-sections > .connection-section,
 .desktop-settings-dialog .settings-modal .appearance-card {
@@ -1797,7 +1798,7 @@ select option:disabled {
   box-shadow: none;
 }
 
-.desktop-settings-dialog .settings-modal .settings-scroll > * + *,
+.desktop-settings-dialog .settings-modal .settings-scroll > :not([hidden]) ~ :not([hidden]),
 .desktop-settings-dialog .settings-modal .settings-sections > * + * {
   margin-top: var(--st-stack-gap);
 }
@@ -1819,7 +1820,7 @@ select option:disabled {
 
 /* 卡片标题：text-lg font-medium。只作用于卡片的直接标题，避免压过活动页
    小节标题（activity-section-title 等）与记忆分组标题的专属字号字重。 */
-.desktop-settings-dialog .settings-modal .settings-sections > section:not(.activity-memory-group) > h3 {
+.desktop-settings-dialog .settings-modal .settings-sections > section:not(.activity-memory-group):not(.settings-preference-section) > h3 {
   margin: 0;
   color: var(--text);
   font-size: calc(1.125 * var(--st-rem));
