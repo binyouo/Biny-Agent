@@ -38,7 +38,7 @@ import { IdentityStorage } from "../../../agent/context/identityStorage.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ModelCatalogEntry } from "../../../ai/types.js";
-import { modelThinkingLevelMap, projectThinkingSelectionToModel } from "../../../ai/capabilities.js";
+import { effectiveThinkingSelection, modelThinkingLevelMap, projectThinkingSelectionToModel } from "../../../ai/capabilities.js";
 import { providerDefinition } from "../../../ai/provider.js";
 import { builtinProviderModels } from "../../../ai/builtinModels.js";
 import { loadProjectSettings } from "../../../config/projectSettings.js";
@@ -1253,7 +1253,7 @@ export class DesktopAgentManager {
               providerAlias: upsert.providerAlias
             });
         const resolved = { ...upsert, apiKey, apiKeyHandle: undefined };
-        next = this.buildConfigWithModel(next, resolved);
+        next = this.buildConfigWithModel(next, resolved, current.config);
       }
       const projectSettings = await loadProjectSettings(project.path);
       const removeProviderAliases = new Set(input.models.removeProviderAliases ?? []);
@@ -1321,7 +1321,7 @@ export class DesktopAgentManager {
         for (const [providerAlias, profiles] of Object.entries(input.models.modelProfiles)) {
           const provider = next.providers[providerAlias];
           if (!provider) throw new Error(`未知服务商：${providerAlias}`);
-          next = configSchema.parse({
+          next = this.parseModelProfileEdit(next, {
             ...next,
             providers: {
               ...next.providers,
@@ -1330,7 +1330,7 @@ export class DesktopAgentManager {
                 modelProfiles: profiles
               }
             }
-          });
+          }, current.config);
         }
       }
       if (removeProviderAliases.size > 0) {
@@ -2251,7 +2251,11 @@ export class DesktopAgentManager {
     });
   }
 
-  private buildConfigWithModel(current: AgentConfig, input: DesktopModelConfigurationInput): AgentConfig {
+  private buildConfigWithModel(
+    current: AgentConfig,
+    input: DesktopModelConfigurationInput,
+    selectedFrom: AgentConfig = current
+  ): AgentConfig {
     const existingProvider = current.providers[input.providerAlias];
     const profile = providerDefinition(input.providerType);
     const sameProvider = existingProvider?.type === input.providerType;
@@ -2297,7 +2301,7 @@ export class DesktopAgentManager {
     // the de-dup above can still strip the previous default out from under us.
     const keepsCurrentDefault = input.alias === current.defaultModel || Boolean(models[current.defaultModel]);
     const defaultModel = input.makeDefault || !keepsCurrentDefault ? input.alias : current.defaultModel;
-    const parsed = configSchema.parse({
+    const candidate: AgentConfig = {
       ...current,
       defaultModel,
       providers: { ...current.providers, [input.providerAlias]: provider },
@@ -2325,8 +2329,49 @@ export class DesktopAgentManager {
       // Thinking is validated against the *default* model, so it only has to be
       // reset when the default actually moves to a freshly configured model.
       thinking: defaultModel === current.defaultModel ? current.thinking : { enabled: false, effort: current.thinking.effort }
-    });
-    return parsed;
+    };
+    return this.parseModelProfileEdit(current, candidate, selectedFrom);
+  }
+
+  /** Only profile edits may project an inherited selection that no longer parses. */
+  private parseModelProfileEdit(before: AgentConfig, candidate: AgentConfig, selectedFrom: AgentConfig): AgentConfig {
+    const parsed = configSchema.safeParse(candidate);
+    if (parsed.success) return parsed.data;
+    const issue = parsed.error.issues[0];
+    if (parsed.error.issues.length !== 1 || issue?.code !== "custom"
+      || issue.path.length !== 2 || issue.path[0] !== "thinking" || issue.path[1] !== "effort"
+      || issue.message !== `Model ${candidate.defaultModel} does not support ${candidate.thinking.effort} effort.`) throw parsed.error;
+
+    const original = selectedFrom.models[selectedFrom.defaultModel];
+    const previous = before.models[before.defaultModel];
+    const next = candidate.models[candidate.defaultModel];
+    if (!original || !previous || !next || before.defaultModel !== selectedFrom.defaultModel
+      || candidate.defaultModel !== selectedFrom.defaultModel
+      || previous.provider !== original.provider || next.provider !== original.provider
+      || previous.model !== original.model || next.model !== original.model
+      || before.providers[previous.provider]?.type !== selectedFrom.providers[original.provider]?.type
+      || candidate.providers[next.provider]?.type !== selectedFrom.providers[original.provider]?.type
+      || candidate.thinking.enabled !== before.thinking.enabled || candidate.thinking.effort !== before.thinking.effort
+      || !configSchema.safeParse(before).success) throw parsed.error;
+
+    const previousProfile = before.providers[previous.provider]?.modelProfiles?.[previous.model];
+    const nextProfile = candidate.providers[next.provider]?.modelProfiles?.[next.model];
+    const previousMap = previousProfile?.thinkingLevelMap;
+    const nextMap = nextProfile?.thinkingLevelMap;
+    const sameMap = previousMap === undefined ? nextMap === undefined
+      : nextMap !== undefined && Object.keys(previousMap).length === Object.keys(nextMap).length
+        && Object.entries(previousMap).every(([level, native]) => nextMap[level] === native);
+    if (sameMap && previousProfile?.capabilities?.reasoning === nextProfile?.capabilities?.reasoning) throw parsed.error;
+
+    // Use the same preference projection as runtime, without validating credentials
+    // or copying resolved metadata into the alias. Explicit settings selections are
+    // applied verbatim after profile processing, never through this fallback.
+    const model = new ModelRuntime(candidate).resolve(candidate.defaultModel).model;
+    const selection = effectiveThinkingSelection(model, before.thinking);
+    return configSchema.parse({ ...candidate, thinking: {
+      enabled: selection !== "off",
+      effort: selection === "off" ? before.thinking.effort : selection
+    } });
   }
 
   async compact(projectId: string, hint?: string): Promise<string> {
