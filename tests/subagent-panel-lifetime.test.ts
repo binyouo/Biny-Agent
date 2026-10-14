@@ -9,8 +9,9 @@ import type { TaskInspection, TaskInspectionOptions } from "../src/runtime/TaskC
 
 function panelFixture(t: TestContext) {
   const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost" });
+  const observers = { attached: 0, detached: 0 };
   const values = { React, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Element: dom.window.Element,
-    ResizeObserver: class { observe() {} disconnect() {} }, IS_REACT_ACT_ENVIRONMENT: true };
+    ResizeObserver: class { observe() { observers.attached += 1; } disconnect() { observers.detached += 1; } }, IS_REACT_ACT_ENVIRONMENT: true };
   const descriptors = new Map(Object.keys(values).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const [key, value] of Object.entries(values)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   t.mock.method(dom.window.HTMLCanvasElement.prototype, "getContext", () => null);
@@ -27,8 +28,51 @@ function panelFixture(t: TestContext) {
     t.mock.timers.reset(); dom.window.close();
     for (const [key, descriptor] of descriptors) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
   });
-  return { calls, inspection, unmount, document: dom.window.document, render: async (task: string, tool?: TimelineTool) => { await act(async () => root.render(panel(task, tool))); } };
+  return { calls, inspection, unmount, observers, document: dom.window.document, render: async (task: string, tool?: TimelineTool) => { await act(async () => root.render(panel(task, tool))); } };
 }
+
+test("unchanged child polls retain the body and observer while metadata-only changes remain visible", async (t) => {
+  const fixture = panelFixture(t);
+  await fixture.render("quiet-worker");
+  let bodyReads = 0;
+  const first = { ...fixture.inspection("quiet-worker"), attemptId: "attempt", cursor: 1, activity: [
+    { id: "answer", sequence: 1, createdAt: "now", get kind() { bodyReads += 1; return "assistant" as const; }, content: "Existing report" }
+  ] };
+  await act(async () => { fixture.calls[0]!.resolve(first); });
+  bodyReads = 0;
+  const observerCount = fixture.observers.attached;
+  await act(async () => { t.mock.timers.tick(1000); });
+  await act(async () => { fixture.calls.at(-1)!.resolve({ ...first, activity: [] }); });
+  assert.equal(bodyReads, 0, "an empty poll must not project previously rendered activity again");
+  assert.equal(fixture.observers.attached, observerCount, "polling must retain the mounted scroll observer");
+  await act(async () => { t.mock.timers.tick(1000); });
+  await act(async () => { fixture.calls.at(-1)!.resolve({ ...first, activity: [], status: "completed", revision: 2,
+    messages: [{ id: "receipt", direction: "worker", content: "Fresh progress message", delivered: true, createdAt: "now" }] }); });
+  assert.equal(bodyReads, 0, "status and mailbox changes must not re-read the activity body");
+  assert.match(fixture.document.querySelector('.subagent-card-header [role="status"]')!.textContent!, /已完成/);
+  assert.match(fixture.document.body.textContent!, /Fresh progress message/);
+  assert.match(fixture.document.body.textContent!, /Existing report/);
+  assert.equal(fixture.observers.attached, observerCount);
+});
+
+test("new child pages project only their appended activities", async (t) => {
+  const fixture = panelFixture(t);
+  await fixture.render("paged-worker");
+  let priorBodyReads = 0;
+  const first = { ...fixture.inspection("paged-worker"), attemptId: "attempt", cursor: 1, hasMore: true, activity: [
+    { id: "call", sequence: 1, createdAt: "now", get kind() { priorBodyReads += 1; return "tool_call" as const; }, tool: "Read", toolCallId: "read", args: { path: "fixture.txt" } }
+  ] };
+  await act(async () => { fixture.calls[0]!.resolve(first); });
+  priorBodyReads = 0;
+  await act(async () => { t.mock.timers.tick(16); });
+  await act(async () => { fixture.calls.at(-1)!.resolve({ ...first, cursor: 2, hasMore: false, activity: [
+    first.activity[0]!,
+    { id: "answer", sequence: 2, createdAt: "now", kind: "assistant", content: "New report" }
+  ] }); });
+  assert.equal(priorBodyReads, 0, "appending a page must not re-read earlier activity bodies");
+  assert.match(fixture.document.body.textContent!, /fixture\.txt/);
+  assert.match(fixture.document.body.textContent!, /New report/);
+});
 
 // SSR cannot expose a closed panel re-arming its polling timer after a late IPC response.
 test("switching or closing the child observer discards late IPC responses and releases polling", async (t) => {

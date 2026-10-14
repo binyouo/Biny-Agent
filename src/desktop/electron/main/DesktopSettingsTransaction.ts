@@ -716,6 +716,8 @@ export class DesktopSettingsTransaction {
       compaction: structuredClone(config.compaction),
       chatParams: structuredClone(config.chatParams),
       toolExecutionMode: config.toolExecutionMode,
+      subagent: structuredClone(config.subagent),
+      externalSubagentBlockers: [...config.externalSubagentBlockers],
       permission: structuredClone(config.permission),
       webSearch: config.webSearch,
       models: config.models,
@@ -881,6 +883,7 @@ function createJournal(
     || input.compaction !== undefined
     || input.chatParams !== undefined
     || input.toolExecutionMode !== undefined
+    || input.subagent !== undefined
     || input.permission !== undefined
     || input.webSearch !== undefined
     || input.models !== undefined
@@ -1199,6 +1202,7 @@ function listAppliedFields(input: DesktopSettingsSaveInput): string[] {
   if (input.compaction !== undefined) fields.push("compaction");
   if (input.chatParams !== undefined) fields.push("chatParams");
   if (input.toolExecutionMode !== undefined) fields.push("toolExecutionMode");
+  if (input.subagent !== undefined) fields.push("subagent");
   if (input.permission !== undefined) fields.push("permission");
   if (input.webSearch !== undefined) fields.push("webSearch");
   if (input.models !== undefined) fields.push("models");

@@ -2,7 +2,7 @@
  * 具名子代理定义模块。
  *
  * 每个定义是一个带 YAML frontmatter 的 markdown 文件：frontmatter 提供
- * name/description/tools/model 元数据，正文即该子代理的附加 system prompt。
+ * name/description/tools/model/runtime 元数据，正文即该子代理的附加 system prompt。
  * 项目定义放在 extensions.subagent.agentPaths（默认 .biny/agents），全局定义放在
  * ~/.config/biny/agents，项目级同名覆盖全局。定义在每次委派时重新读取，
  * 允许会话期间编辑生效。
@@ -26,8 +26,9 @@ export interface SubagentDefinition {
   prompt: string;
   /** frontmatter tools 声明的工具子集；省略表示使用全局 allowedTools。 */
   tools?: string[];
-  /** frontmatter model 声明的模型别名覆盖；省略时沿用 subagent 默认模型。 */
+  /** 内置与 ACP 使用 Biny 模型别名；直接 CLI 使用原始模型 ID。 */
   model?: string;
+  runtime?: "auto" | "builtin" | "codex" | "claude-code" | "acp";
   scope: SubagentDefinitionScope;
   /** 展示路径：项目定义为 workspace 相对路径，全局定义以 ~ 开头。 */
   path: string;
@@ -76,10 +77,11 @@ export function findSubagentDefinition(definitions: readonly SubagentDefinition[
 export function buildSubagentDefinitionsPrompt(definitions: readonly SubagentDefinition[]): string {
   if (!definitions.length) return "";
   return [
-    "Named subagents (metadata only; each runs as an isolated, bounded Biny worker):",
+    "Named subagents (metadata only; each runs as a bounded worker in its selected runtime):",
     ...definitions.map((definition) => {
       const extras = [
         definition.scope,
+        definition.runtime ? `runtime ${definition.runtime}` : "",
         definition.model ? `model ${definition.model}` : "",
         definition.tools ? `tools ${definition.tools.join("/")}` : ""
       ].filter(Boolean).join(", ");
@@ -130,6 +132,7 @@ async function readDefinition(rootPath: string, filePath: string, scope: Subagen
   const prompt = body.trim();
   // 没有 description 或正文的定义视为无效。
   if (!name || !description || !prompt) return undefined;
+  if (frontmatter.runtime && !parseRuntime(frontmatter.runtime)) throw new Error(`Invalid subagent runtime: ${frontmatter.runtime}`);
   const relative = path.relative(rootPath, filePath);
   return {
     name,
@@ -137,13 +140,20 @@ async function readDefinition(rootPath: string, filePath: string, scope: Subagen
     prompt,
     tools: parseToolList(frontmatter.tools),
     model: frontmatter.model?.trim() || undefined,
+    runtime: parseRuntime(frontmatter.runtime),
     scope,
     path: scope === "global" ? globalDisplayPath(rootPath, relative) : relative,
     filePath
   };
 }
 
+function parseRuntime(value?: string): SubagentDefinition["runtime"] {
+  if (value === "auto" || value === "builtin" || value === "codex" || value === "claude-code" || value === "acp") return value;
+  return undefined;
+}
+
 interface AgentFrontmatter {
+  runtime?: string;
   name?: string;
   description?: string;
   tools?: string;
@@ -167,7 +177,7 @@ function splitAgentFrontmatter(content: string): { frontmatter: AgentFrontmatter
     const separator = line.indexOf(":");
     if (separator === -1) continue;
     const key = line.slice(0, separator).trim().toLowerCase();
-    if (key !== "name" && key !== "description" && key !== "tools" && key !== "model") continue;
+    if (key !== "name" && key !== "description" && key !== "tools" && key !== "model" && key !== "runtime") continue;
     const value = stripQuotes(line.slice(separator + 1).trim());
     if (value) frontmatter[key] = value;
   }

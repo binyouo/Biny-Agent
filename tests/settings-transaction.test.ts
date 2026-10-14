@@ -74,6 +74,8 @@ class FakeSettingsAgents implements DesktopSettingsTransactionAgents {
       compaction: structuredClone(this.config.context.compaction),
       chatParams: structuredClone(this.config.chat),
       toolExecutionMode: this.config.agent.toolExecutionMode,
+      subagent: { enabled: this.config.extensions.subagent.enabled, runtime: this.config.extensions.subagent.runtime ?? "builtin", model: this.config.extensions.subagent.model },
+      externalSubagentBlockers: [],
       permission: structuredClone(this.config.permission),
       webSearch: structuredClone(this.config.web.search),
       models: {

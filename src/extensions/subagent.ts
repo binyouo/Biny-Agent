@@ -1,3 +1,5 @@
+import { findClaudeSubagentCli } from "./subagentCli.js";
+import { prepareExternalSubagent } from "./externalSubagent.js";
 import { PermissionManager } from "../permission/PermissionManager.js";
 import { analyzePermissionRequest, permissionApprovalFingerprint } from "../permission/policy.js";
 import { toWorkspaceRelative } from "../workspace/resolvePath.js";
@@ -284,6 +286,13 @@ export async function prepareSubagentTask(
     permissionManager: input.permissionManager ?? new PermissionManager(input.config.permission) };
   const settings = options.config.extensions.subagent;
   const definition = await resolveSubagentDefinition(options, agentName);
+  let runtime = definition?.runtime ?? settings.runtime ?? "builtin";
+  let command: string | undefined;
+  if (runtime === "auto") {
+    command = definition?.model || settings.model ? undefined : await findClaudeSubagentCli();
+    runtime = command ? "claude-code" : "builtin";
+  }
+  if (runtime !== "builtin") return await prepareExternalSubagent(options, task, accessMode, runtime, definition, execution, command);
   const modelSettings = options.getModelSettings(definition?.model);
   const modelAlias = definition?.model ?? settings.model ?? options.config.defaultModel;
   // 具名定义的 tools 只做收窄：始终与全局 allowedTools 求交集，不能放宽安全边界。

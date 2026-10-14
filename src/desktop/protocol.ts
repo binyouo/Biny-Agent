@@ -1185,7 +1185,7 @@ export interface DesktopMemoryStats {
   maintenance: MemoryMaintenanceStatus;
 }
 
-/** 归档恢复的额外提示来自恢复前仍存活的合并目标。 */
+/** 归档恢复的额外提示来自恢复前仍存活的合并目标或更新后的当前事实。 */
 export interface DesktopMemoryArchiveMutationResult extends DesktopMemoryStats {
   mergedTarget: { id: string; content: string } | null;
 }
@@ -1266,6 +1266,13 @@ export interface DesktopMemorySettingsInput {
   settings: DesktopMemorySettings;
 }
 
+export interface DesktopSubagentSettings {
+  enabled: boolean;
+  runtime: "auto" | "builtin" | "codex" | "claude-code" | "acp";
+  providerAlias?: string;
+  model?: string;
+}
+
 export interface DesktopSettingsModelsSnapshot {
   configured: ModelChoice[];
   connections: DesktopModelConnection[];
@@ -1325,6 +1332,8 @@ export interface DesktopSettingsSnapshot {
   compaction: DesktopCompactionSettings;
   chatParams: DesktopChatParamsSettings;
   toolExecutionMode: "direct" | "code_mode";
+  subagent: DesktopSubagentSettings;
+  externalSubagentBlockers: string[];
   permission: DesktopPermissionSettings;
   webSearch: DesktopWebSearchSettings;
   models: DesktopSettingsModelsSnapshot;
@@ -1393,6 +1402,7 @@ export interface DesktopSettingsSaveInput {
   compaction?: DesktopCompactionSettings;
   chatParams?: DesktopChatParamsSettings;
   toolExecutionMode?: "direct" | "code_mode";
+  subagent?: DesktopSubagentSettings;
   permission?: DesktopPermissionSettings;
   webSearch?: DesktopWebSearchSettingsInput;
   models?: DesktopSettingsModelsInput;

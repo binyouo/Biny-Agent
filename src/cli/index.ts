@@ -239,9 +239,10 @@ task
   .argument("<task...>", "task text")
   .option("--session <id>", "session id")
   .option("--parent-run <id>", "parent AgentRun id")
+  .option("--agent <name>", "named subagent definition")
   .option("--verification <json>", "deterministic verification contract JSON")
   .option("--json", "print JSON")
-  .action((input: string[], options: { session?: string; parentRun?: string; verification?: string; json?: boolean }) => wrap(() => taskCreateCommand(workspaceRoot, input.join(" "), { json: options.json, sessionId: options.session, parentRunId: options.parentRun, verification: options.verification }))());
+  .action((input: string[], options: { session?: string; parentRun?: string; agent?: string; verification?: string; json?: boolean }) => wrap(() => taskCreateCommand(workspaceRoot, input.join(" "), { json: options.json, sessionId: options.session, parentRunId: options.parentRun, agent: options.agent, verification: options.verification }))());
 for (const [name, action] of [["start", "start"], ["cancel", "cancel"], ["approve", "approve"], ["resume", "resume"], ["retry", "retry"]] as const) {
   task
     .command(name)

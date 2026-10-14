@@ -110,10 +110,10 @@ export async function automationDeleteCommand(workspaceRoot: string, automationI
 export async function taskCreateCommand(
   workspaceRoot: string,
   task: string,
-  options: JsonOption & { sessionId?: string; parentRunId?: string; verification?: string } = {}
+  options: JsonOption & { sessionId?: string; parentRunId?: string; agent?: string; verification?: string } = {}
 ): Promise<void> {
   const verification = options.verification === undefined ? undefined : JSON.parse(options.verification) as unknown;
-  const payload = verification === undefined ? task : { prompt: task, verification };
+  const payload = { prompt: task, agent: options.agent, verification };
   await hostAction(workspaceRoot, options, async (client) => await client.taskCreate({ task: payload, sessionId: options.sessionId, parentRunId: options.parentRunId }));
 }
 

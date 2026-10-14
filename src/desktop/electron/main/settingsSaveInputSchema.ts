@@ -99,6 +99,13 @@ export const settingsSaveInputSchema = z.object({
   compaction: compactionSchema.optional(),
   chatParams: chatParamsSchema.optional(),
   toolExecutionMode: z.enum(["direct", "code_mode"]).optional(),
+  subagent: z.object({
+    enabled: z.boolean(),
+    runtime: z.enum(["auto", "builtin", "codex", "claude-code", "acp"]),
+    providerAlias: z.string().trim().min(1).optional(),
+    model: z.string().trim().min(1).optional()
+  }).strict().refine((value) => !value.enabled || value.runtime === "builtin" || value.runtime === "auto" || !!value.model,
+    { message: "请选择子代理模型。", path: ["model"] }).optional(),
   permission: permissionSettingsSchema.optional(),
   webSearch: webSearchSettingsSchema.optional(),
   models: z.object({

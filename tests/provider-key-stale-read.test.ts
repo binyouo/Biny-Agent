@@ -73,6 +73,7 @@ function snapshot(withModel: boolean): DesktopSettingsSnapshot {
     themePreference: "system", fontPreference: { family: "system", size: 14 },
     activity: { ...config.activity, outputDirectory: "/tmp/provider-key-test" }, identity: config.context.identity,
     memory: config.context.memory, compaction: config.context.compaction, chatParams: config.chat, toolExecutionMode: config.agent.toolExecutionMode,
+    subagent: { enabled: false, runtime: "builtin" }, externalSubagentBlockers: [],
     permission: config.permission, webSearch: config.web.search,
     models: {
       configured: withModel ? [{

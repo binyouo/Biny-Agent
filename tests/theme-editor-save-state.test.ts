@@ -36,7 +36,7 @@ function snapshot(): DesktopSettingsSnapshot {
     return { projectId: 'audit-project', hasRunningTasks: false, preferenceRevision: 1, configRevision: 'config:1',
         themePreference: 'dark', fontPreference: { family: 'system', size: 14 }, appearancePreference: structuredClone(DEFAULT_APPEARANCE),
         activity: { ...c.activity, outputDirectory: '/tmp/inert-theme-audit' }, identity: c.context.identity, memory: c.context.memory,
-        compaction: c.context.compaction, chatParams: c.chat, toolExecutionMode: c.agent.toolExecutionMode, permission: c.permission, webSearch: c.web.search,
+        compaction: c.context.compaction, chatParams: c.chat, toolExecutionMode: c.agent.toolExecutionMode, subagent: { enabled: false, runtime: 'builtin' }, externalSubagentBlockers: [], permission: c.permission, webSearch: c.web.search,
         models: { configured: [], connections: [], embeddingModels: [], defaultModel: 'default', thinking: 'off', modelProfiles: {} },
         skills: { projectId: 'audit-project', projectKey: 'audit-project', globalDefaults: {}, projectOverrides: {}, activations: [] } };
 }

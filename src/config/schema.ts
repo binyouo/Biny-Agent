@@ -204,7 +204,7 @@ const contextSchema = z.object({
     memoryModel: undefined,
     rewriteModel: undefined,
     extractModel: undefined,
-    embeddingModel: { kind: "auto" },
+    embeddingModel: { kind: "local", model: "multilingual-e5-small" },
     similarityThreshold: 0.1,
     excludeExternalContext: true,
     maxRecalled: 5
@@ -452,6 +452,7 @@ const extensionsSchema = z.object({
   globalPlugins: z.array(z.string().trim().min(1)).max(32).default([]),
   subagent: z.object({
     enabled: z.boolean().default(false),
+    runtime: z.enum(["auto", "builtin", "codex", "claude-code", "acp"]).optional(),
     maxSteps: z.number().int().min(1).max(100_000).optional(),
     maxOutputTokens: z.number().int().min(256).max(32_768).default(8_000),
     maxConcurrentSubagents: z.number().int().min(1).max(8).default(2),
@@ -777,7 +778,7 @@ const canonicalConfigSchema = z.object({
   }
 
   const subagentAlias = config.extensions.subagent.model;
-  if (subagentAlias) {
+  if (subagentAlias && config.extensions.subagent.runtime !== "codex" && config.extensions.subagent.runtime !== "claude-code") {
     const subagentModel = config.models[subagentAlias];
     if (!subagentModel) {
       context.addIssue({
@@ -957,7 +958,7 @@ export const defaultConfig: AgentConfig = {
       memoryModel: undefined,
       rewriteModel: undefined,
       extractModel: undefined,
-      embeddingModel: { kind: "auto" },
+      embeddingModel: { kind: "local", model: "multilingual-e5-small" },
       similarityThreshold: 0.1,
       excludeExternalContext: true,
       maxRecalled: 5,

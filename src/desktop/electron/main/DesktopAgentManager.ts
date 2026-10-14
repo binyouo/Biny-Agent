@@ -213,6 +213,8 @@ export interface DesktopSettingsConfigSnapshot {
   compaction: AgentConfig["context"]["compaction"];
   chatParams: AgentConfig["chat"];
   toolExecutionMode: AgentConfig["agent"]["toolExecutionMode"];
+  subagent: import("../../protocol.js").DesktopSubagentSettings;
+  externalSubagentBlockers: string[];
   permission: AgentConfig["permission"];
   webSearch: DesktopWebSearchSettings;
   models: DesktopSettingsModelsSnapshot;
@@ -1149,6 +1151,7 @@ export class DesktopAgentManager {
       || input.compaction !== undefined
       || input.chatParams !== undefined
       || input.toolExecutionMode !== undefined
+      || input.subagent !== undefined
       || input.permission !== undefined
       || input.webSearch !== undefined
       || input.skills !== undefined) {
@@ -1372,6 +1375,23 @@ export class DesktopAgentManager {
       if (input.models.defaultModel !== undefined || next.defaultModel !== current.config.defaultModel) {
         validateModelConfiguration(next, next.defaultModel);
       }
+    }
+
+    if (input.subagent !== undefined) {
+      const settings = input.subagent;
+      if (settings.enabled && settings.runtime !== "builtin" && settings.runtime !== "auto" && !settings.model?.trim()) {
+        throw new Error("请选择子代理模型。");
+      }
+      if (settings.model && (settings.runtime === "builtin" || settings.runtime === "auto" || settings.runtime === "acp")) {
+        const model = next.models[settings.model];
+        const provider = model ? next.providers[model.provider] : undefined;
+        if (!provider || (settings.enabled && provider.enabled === false) || (provider.type === "acp") !== (settings.runtime === "acp")
+          || (settings.providerAlias !== undefined && model?.provider !== settings.providerAlias)) {
+          throw new Error("子代理模型与所选 Agent 不匹配，或连接已停用。");
+        }
+      }
+      next = configSchema.parse({ ...next, extensions: { ...next.extensions,
+        subagent: { ...next.extensions.subagent, enabled: settings.enabled, runtime: settings.runtime, model: settings.model?.trim() } } });
     }
 
     if (input.memory !== undefined
@@ -1993,7 +2013,7 @@ export class DesktopAgentManager {
     const readAndArchive = async (get: (id: string) => Promise<MemoryEntry | null>,
       mutate: () => Promise<{ archived: boolean; entry?: MemoryEntry }>) => {
       const source = archived ? null : await get(entryId);
-      const target = source?.archivedAt && source.archivedReason === "llm_merge" && source.mergedInto
+      const target = source?.archivedAt && (source.archivedReason === "llm_merge" || source.archivedReason === "updated") && source.mergedInto
         ? await get(source.mergedInto) : null;
       const result = await mutate();
       return { result, mergedTarget: target && !target.archivedAt ? { id: target.id, content: target.content } : null };
@@ -3520,6 +3540,14 @@ function describeSettingsConfigSnapshot(
     compaction: structuredClone(config.context.compaction),
     chatParams: structuredClone(config.chat),
     toolExecutionMode: config.agent.toolExecutionMode,
+    externalSubagentBlockers: [
+      ...(config.sandbox.mode !== "off" || !config.sandbox.allowNetwork ? ["当前沙箱或网络限制不支持外部子代理。"] : []),
+      ...(config.extensions.subagent.maxSteps !== undefined || config.extensions.subagent.maxCostUsd !== undefined
+        ? ["请先在配置文件中移除子代理步数或费用上限，或使用 Biny 内置运行方式。"] : [])
+    ],
+    subagent: { enabled: config.extensions.subagent.enabled, runtime: config.extensions.subagent.runtime ?? "builtin", model: config.extensions.subagent.model,
+      providerAlias: config.extensions.subagent.runtime === "acp" && config.extensions.subagent.model
+        ? config.models[config.extensions.subagent.model]?.provider : undefined },
     permission: structuredClone(config.permission),
     webSearch: describeWebSearchSettings(config.web.search),
     models: {
