@@ -219,9 +219,16 @@ export class MemoryVectorIndex {
     if (!active || active.modelFingerprint !== options.modelFingerprint || active.dimensions !== query.length) return [];
     if (!this.vectorExtensionAvailable) return [];
     const normalizedQuery = normalizeEmbedding(query);
+    // Metadata and vector bytes must belong to one statement snapshot: another Host
+    // can replace the projection after status(). CASE also avoids evaluating distance
+    // for a different dimension. vec0 returns Float32 BLOBs, four bytes per dimension.
     // 常量构造器在语句内复用同一 Float32 转换，避免每条候选向量重新解析查询 JSON。
     const rows = this.database.prepare(
-      `SELECT memory_id, 1 - vec_distance_cosine(embedding, vec_f32(?)) AS similarity
+      `SELECT memory_id, CASE
+         WHEN (SELECT value FROM memory_metadata WHERE key = 'embedding_model') = ?
+           AND length(embedding) = ?
+         THEN 1 - vec_distance_cosine(embedding, vec_f32(?))
+       END AS similarity
        FROM memory_embeddings
        WHERE similarity >= ?
          AND memory_id IN (${currentVectorIds})
@@ -229,6 +236,8 @@ export class MemoryVectorIndex {
        ORDER BY similarity DESC, memory_id ASC
        LIMIT ?`
     ).all(
+      options.modelFingerprint,
+      active.dimensions * 4,
       JSON.stringify([...normalizedQuery]),
       minimumSimilarity,
       options.entryIds ? JSON.stringify([...options.entryIds]) : null,
@@ -250,10 +259,14 @@ export class MemoryVectorIndex {
     const active = this.status().active;
     if (!active || active.modelFingerprint !== options.modelFingerprint || !this.vectorExtensionAvailable) return [];
     const entryIds = options.entryIds ? JSON.stringify([...options.entryIds]) : null;
+    // Keep the model and decoding dimension bound to the same rows. Checking BLOB
+    // length preserves readDimensions()'s existing metadata-to-schema fallback.
     const rows = this.database.prepare(
       `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${currentVectorIds})
-       AND (? IS NULL OR memory_id IN (SELECT value FROM json_each(?))) ORDER BY memory_id ASC`
-    ).all(entryIds, entryIds) as unknown as VectorRow[];
+       AND (? IS NULL OR memory_id IN (SELECT value FROM json_each(?)))
+       AND (SELECT value FROM memory_metadata WHERE key = 'embedding_model') = ?
+       AND length(embedding) = ? ORDER BY memory_id ASC`
+    ).all(entryIds, entryIds, options.modelFingerprint, active.dimensions * 4) as unknown as VectorRow[];
     const embeddings: Array<{ entryId: string; embedding: Float32Array }> = [];
     for (const row of rows) {
       const entryId = stringValue(row.memory_id, "memory entry");
