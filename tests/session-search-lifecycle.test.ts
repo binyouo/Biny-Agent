@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { createHistoryTools } from "../src/extensions/history.js";
 import { deleteSessionArtifacts } from "../src/session/cleanup.js";
 import { SessionRecorder } from "../src/session/recorder.js";
-import { SessionSearchIndex } from "../src/session/searchIndex.js";
+import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 
 for (const checkpoint of ["initial", "zero-offset", "incremental"] as const) {
@@ -91,7 +91,7 @@ for (const checkpoint of ["initial", "zero-offset", "incremental"] as const) {
 for (const existing of [false, true]) {
   for (const mutation of ["replace", "truncate", "append"] as const) {
     test(`已读取的批次提交前文件发生 ${mutation}（已有偏移：${existing}），最终索引仍对应有效原文`, { timeout: 10_000 }, async (t) => {
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-session-search-mutation-"));
+      const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-session-search-mutation-")));
       const file = path.join(root, "sessions", "changing.jsonl");
       const row = (content: string): string => `${JSON.stringify({ type: "user_message", content })}\n`;
       const before = row("original marker") + (mutation === "truncate" ? row("discarded marker") : "");

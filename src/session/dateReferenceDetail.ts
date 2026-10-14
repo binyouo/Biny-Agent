@@ -58,7 +58,7 @@ export class DateReferenceDetailService {
       if (owner) ownedFiles.push({ file, projectId: owner.id, sessionId: sessionIdFromFile(file) });
     }
     const query = { startDate: range.startDate, endDate: range.endDate, limit: 50,
-      sessionIds: ownedFiles.map((item) => item.sessionId) };
+      sourcePaths: ownedFiles.map((item) => item.file) };
     const cluePage = this.index.queryClues(query);
     const factPage = this.index.queryFacts(query);
     const instantDay = createInstantDayFormatter(range.timeZone);

@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createHistoryTools } from "../src/extensions/history.js";
-import { SessionSearchIndex } from "../src/session/searchIndex.js";
+import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
 import { listAllSessionFiles } from "../src/session/store.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -20,7 +20,7 @@ const row = (messageId: string, content = "history cancellation marker"): string
   `${JSON.stringify({ type: "user_message", messageId, content })}\n`;
 
 test("pre-aborted history calls never acquire an index or touch transcript storage", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-preabort-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-preabort-")));
   const reason = new Error("history cancelled before admission");
   const signal = AbortSignal.abort(reason);
   const index = new SessionSearchIndex(root);
@@ -83,7 +83,7 @@ for (const stage of ["flush", "refresh", "search"] as const) {
 }
 
 test("live cancellable history searches retain global cross-project scope and current-session flush", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-scope-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-scope-")));
   const current = path.join(root, "sessions", "current-project", "current.jsonl");
   const external = path.join(root, "sessions", "other-project", "external.jsonl");
   await fs.mkdir(path.dirname(current), { recursive: true });
@@ -112,7 +112,7 @@ test("live cancellable history searches retain global cross-project scope and cu
 
 for (const cancelOwner of [true, false]) {
   test(`cancelling a shared refresh ${cancelOwner ? "owner" : "joiner"} leaves its live caller intact`, async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-shared-abort-"));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-shared-abort-")));
     const directory = path.join(root, "sessions");
     await fs.mkdir(directory, { recursive: true });
     await fs.writeFile(path.join(directory, "shared.jsonl"), row("shared"));
@@ -159,7 +159,7 @@ for (const cancelOwner of [true, false]) {
 }
 
 test("the last cancelled waiter drains traversal; a new caller retries after cleanup", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-all-abort-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-all-abort-")));
   const directory = path.join(root, "sessions");
   const project = path.join(directory, "project");
   await fs.mkdir(project, { recursive: true });
@@ -216,7 +216,7 @@ test("the last cancelled waiter drains traversal; a new caller retries after cle
 });
 
 test("cancelled transcript reads close their handle before returning and preserve index offsets", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-read-abort-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-read-abort-")));
   const file = path.join(root, "read.jsonl");
   await fs.writeFile(file, row("read"));
   const gate = deferred();
@@ -270,7 +270,7 @@ test("cancelled transcript reads close their handle before returning and preserv
 });
 
 test("cancellation rolls back the current batch and resumes from the last committed byte offset", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-batch-abort-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-batch-abort-")));
   const file = path.join(root, "batch.jsonl");
   const lines = Array.from({ length: 300 }, (_, offset) => row(`message-${offset}`, `history batch marker ${offset}`));
   await fs.writeFile(file, lines.join(""));
@@ -296,7 +296,7 @@ test("cancellation rolls back the current batch and resumes from the last commit
   try {
     await assert.rejects(index.indexSessionFile("batch", file, controller.signal), (error) => error === reason);
     assert.equal(index.status().indexedMessages, 128, "only complete batches remain committed");
-    database = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
+    database = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
     const state = database.prepare("SELECT byte_offset FROM session_index_state WHERE session_id = ?").get("batch");
     assert.equal(state?.byte_offset, Buffer.byteLength(lines.slice(0, 128).join("")));
     t.mock.restoreAll();
@@ -313,7 +313,7 @@ test("cancellation rolls back the current batch and resumes from the last commit
 });
 
 test("cancellation during truncated-file reset rolls back transcript rows and offset together", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-truncate-abort-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-truncate-abort-")));
   const file = path.join(root, "truncated.jsonl");
   const original = row("old-first", `original transcript marker ${"x".repeat(1_000)}`)
     + row("old-second", `original transcript marker ${"x".repeat(1_000)}`);
@@ -322,14 +322,14 @@ test("cancellation during truncated-file reset rolls back transcript rows and of
   let database: DatabaseSync | undefined;
   try {
     assert.equal(await index.indexSessionFile("truncated", file), 2);
-    database = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
+    database = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
     await fs.writeFile(file, row("new", "rebuilt transcript marker"));
     const controller = new AbortController();
     const reason = new Error("cancel after resetting transcript rows");
     const originalPrepare = DatabaseSync.prototype.prepare;
     t.mock.method(DatabaseSync.prototype, "prepare", function (this: DatabaseSync, sql: string) {
       const statement = originalPrepare.call(this, sql);
-      if (sql === "DELETE FROM session_transcripts WHERE session_id = ?") {
+      if (sql.startsWith("DELETE FROM session_transcripts WHERE rowid IN")) {
         const originalRun = statement.run;
         t.mock.method(statement, "run", (...args: Parameters<typeof statement.run>) => {
           const result = Reflect.apply(originalRun, statement, args);

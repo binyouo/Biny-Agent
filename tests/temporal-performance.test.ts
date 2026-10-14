@@ -9,7 +9,7 @@ import { TemporalMemoryIndex } from "../src/session/temporalMemory.js";
 
 const message = (content: string) => JSON.stringify({ type: "user_message", messageId: "m1", content, time: "2026-09-25T00:00:00Z" }) + "\n";
 test("重复和并发刷新不重读未变化的正文；编辑、删除与重开仍同步", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-temporal-perf-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-temporal-perf-")));
   const directory = path.join(root, "sessions", "project");
   await fs.mkdir(directory, { recursive: true });
   const file = path.join(directory, "thread.jsonl");

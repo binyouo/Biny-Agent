@@ -1,509 +1,55 @@
-/**
- * 会话原文的 FTS5 检索索引。
- *
- * 会话 JSONL 本身不做任何改写；本模块在全局目录维护一份可重建的派生索引，把每条
- * user_message / assistant_message 追加进 SQLite FTS5。索引按文件字节偏移增量推进，
- * 与 session recorder 的追加写天然同步；索引缺失或损坏时直接删除重建即可。
- *
- * 中文检索不依赖 FTS5 分词器：写入与查询两侧都用 memoryFormat 的 CJK bigram 分词
- * 生成 token 列，原文另存一列用于摘要展示。
- */
-import { open, stat } from "node:fs/promises";
-import { mkdirSync, statSync, type Stats } from "node:fs";
-import { performance } from "node:perf_hooks";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { globalAgentDir } from "../config/paths.js";
-import { tokenizeMemoryText } from "../agent/context/memoryFormat.js";
-import { maxSessionEventLineBytes } from "./limits.js";
-import { parseSessionEvents, type SessionEvent } from "./events.js";
-import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
-import { publicAssistantMessage } from "./publicMessage.js";
-import { deleteSessionSearchRows } from "./searchCleanup.js";
+import type { DatabaseSync } from "node:sqlite";
+import { SessionSearchStore, type SessionSearchRefreshOptions } from "./searchIndexStore.js";
+import { acquireSessionSearchWorker, type SessionSearchWorkerLease } from "./searchIndexWorkerClient.js";
 
-export interface SessionTranscriptHit {
-  sessionId: string;
-  messageId?: string;
-  role: "user" | "assistant";
-  time?: string;
-  excerpt: string;
-}
+export * from "./searchIndexStore.js";
 
-export interface SessionSearchIndexStatus {
-  indexedSessions: number;
-  indexedMessages: number;
-}
+export class SessionSearchIndex extends SessionSearchStore {
+  private workerLease: SessionSearchWorkerLease | undefined;
+  private indexingController = new AbortController();
+  private readonly pending = new Set<Promise<unknown>>();
+  private closing: Promise<void> | undefined;
 
-const sqliteBusyTimeoutMs = 5_000;
-const sessionSearchIndexVersion = 1;
-const sessionSearchReadChunkBytes = 64 * 1024;
-const sessionSearchBatchBytes = 256 * 1024;
-const sessionSearchBatchEvents = 128;
-export const sessionSearchRefreshMaxAgeMs = 1_000;
-
-export interface SessionSearchRefreshOptions {
-  /** 跳过此窗口内已成功完成的全目录刷新；省略时始终检查文件系统。 */
-  maxAgeMs?: number;
-  signal?: AbortSignal;
-}
-
-interface SessionSearchRefreshFlight {
-  controller: AbortController;
-  promise: Promise<void>;
-  waiters: number;
-  settled: boolean;
-}
-
-interface IndexStateRow {
-  session_id: unknown;
-  byte_offset: unknown;
-}
-
-interface SessionSearchBatch {
-  events: Array<{ event?: SessionEvent; endOffset: number }>;
-  source: Pick<Stats, "dev" | "ino">;
-}
-
-export class SessionSearchIndex {
-  private database: DatabaseSync | undefined;
-  private refreshFlight: SessionSearchRefreshFlight | undefined;
-  private lastFullRefreshAt: number | undefined;
-
-  constructor(private readonly agentDir: string | (() => string) = globalAgentDir) {}
-
-  close(): void {
-    this.database?.close();
-    this.database = undefined;
+  override async refreshAll(options: SessionSearchRefreshOptions = {}): Promise<void> {
+    return await this.track(super.refreshAll({ ...options, signal: this.indexingSignal(options.signal) }));
   }
 
-  status(): SessionSearchIndexStatus {
-    const database = this.open();
-    const sessions = database.prepare("SELECT COUNT(*) AS count FROM session_index_state").get() as { count?: unknown };
-    const messages = database.prepare("SELECT COUNT(*) AS count FROM session_transcripts").get() as { count?: unknown };
-    return {
-      indexedSessions: Number(sessions.count ?? 0),
-      indexedMessages: Number(messages.count ?? 0)
-    };
+  override async indexSessionFile(sessionId: string, filePath: string, signal?: AbortSignal): Promise<number> {
+    const indexingSignal = this.indexingSignal(signal);
+    indexingSignal.throwIfAborted();
+    this.workerLease ??= acquireSessionSearchWorker(this.getAgentRoot());
+    return await this.track(this.workerLease.index(sessionId, filePath, indexingSignal));
   }
 
-  /** 按需补齐旧会话；并发调用共享一次扫描，调用方可声明可接受的新鲜窗口。 */
-  async refreshAll(options: SessionSearchRefreshOptions = {}): Promise<void> {
-    const signal = options.signal;
-    signal?.throwIfAborted();
-    const pending = this.refreshFlight;
-    if (pending) {
-      if (!pending.controller.signal.aborted) return await this.joinRefresh(pending, signal);
-      // 上一次扫描已失去全部调用方；等 reader 清理后再启动，不能复用被取消的扫描。
-      try { await this.joinRefresh(pending, signal); }
-      catch { signal?.throwIfAborted(); }
-      return await this.refreshAll(options);
-    }
-    const maxAgeMs = options.maxAgeMs;
-    if (
-      this.lastFullRefreshAt !== undefined
-      && maxAgeMs !== undefined
-      && Number.isFinite(maxAgeMs)
-      && maxAgeMs > 0
-      && performance.now() - this.lastFullRefreshAt < maxAgeMs
-    ) return;
-    const controller = new AbortController();
-    const flight: SessionSearchRefreshFlight = { controller, promise: Promise.resolve(), waiters: 0, settled: false };
-    // 先登记调用方，再开始扫描，避免同步依赖触发取消时留下无人等待的后台工作。
-    flight.promise = Promise.resolve().then(() => this.scanAll(controller.signal)).then(() => {
-      controller.signal.throwIfAborted();
-      this.lastFullRefreshAt = performance.now();
-    }).finally(() => {
-      flight.settled = true;
-      if (this.refreshFlight === flight) this.refreshFlight = undefined;
-    });
-    this.refreshFlight = flight;
-    return await this.joinRefresh(flight, signal);
+  override close(): Promise<void> {
+    this.closing ??= (async () => {
+      this.indexingController.abort(new Error("Session history index closed."));
+      await Promise.allSettled([...this.pending]);
+      super.close();
+      await this.workerLease?.release();
+      this.workerLease = undefined;
+    })().finally(() => { this.closing = undefined; });
+    return this.closing;
   }
 
-  private joinRefresh(flight: SessionSearchRefreshFlight, signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    flight.waiters += 1;
-    return new Promise<void>((resolve, reject) => {
-      let waiting = true;
-      const release = (): boolean => {
-        if (!waiting) return false;
-        waiting = false;
-        signal?.removeEventListener("abort", onAbort);
-        flight.waiters -= 1;
-        return true;
-      };
-      const onAbort = (): void => {
-        if (!release()) return;
-        const reason: unknown = signal?.reason;
-        if (!flight.waiters && !flight.settled) {
-          flight.controller.abort(reason);
-          // 唯一调用方取消时等 I/O 边界与文件关闭；共享扫描仍有调用方时只退出自身等待。
-          void flight.promise.then(() => reject(reason), () => reject(reason));
-        } else reject(reason);
-      };
-      signal?.addEventListener("abort", onAbort, { once: true });
-      void flight.promise.then(() => {
-        if (release()) resolve();
-      }, (error: unknown) => {
-        if (release()) reject(error);
-      });
-    });
+  private indexingSignal(signal?: AbortSignal): AbortSignal {
+    this.ensureOpen();
+    return signal ? AbortSignal.any([signal, this.indexingController.signal]) : this.indexingController.signal;
   }
 
-  private async scanAll(signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const root = typeof this.agentDir === "function" ? this.agentDir() : this.agentDir;
-    for (const file of await listAllSessionFiles(root, signal)) {
-      signal?.throwIfAborted();
-      await this.indexSessionFile(sessionIdFromFile(file), file, signal);
-    }
-    signal?.throwIfAborted();
+  protected override open(): DatabaseSync {
+    this.ensureOpen();
+    return super.open();
   }
 
-  /** 按原文子串检索，不把正则元字符或中文单字交给 FTS 分词器。 */
-  grep(query: string, limit = 20): SessionTranscriptHit[] {
-    if (!query.trim()) return [];
-    const rows = this.open().prepare(
-      "SELECT session_id, message_id, role, time, substr(body, max(1, instr(lower(body), lower(?)) - 80), 500) AS excerpt " +
-      "FROM session_transcripts WHERE instr(lower(body), lower(?)) > 0 ORDER BY time DESC LIMIT ?"
-    ).all(query, query, Math.max(1, Math.min(200, Math.trunc(limit)))) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
-      sessionId: String(row.session_id),
-      messageId: typeof row.message_id === "string" ? row.message_id : undefined,
-      role: row.role === "assistant" ? "assistant" : "user",
-      time: typeof row.time === "string" ? row.time : undefined,
-      excerpt: String(row.excerpt)
-    }));
+  private ensureOpen(): void {
+    if (this.closing) throw new Error("Session history index is closing.");
+    if (this.indexingController.signal.aborted) this.indexingController = new AbortController();
   }
 
-  /**
-   * 增量索引一个会话 JSONL：只解析上次索引偏移之后的完整行。半行（正在写入）会留到
-   * 下次再处理；文件被截断或轮转时回退为重建该会话的索引。
-   */
-  async indexSessionFile(sessionId: string, filePath: string, signal?: AbortSignal): Promise<number> {
-    signal?.throwIfAborted();
-    const database = this.open();
-    const previous = database.prepare(
-      "SELECT byte_offset FROM session_index_state WHERE session_id = ?"
-    ).get(sessionId) as IndexStateRow | undefined;
-    const previousOffset = previous === undefined ? 0 : Number(previous.byte_offset);
-    let fileSize: number;
-    try {
-      fileSize = (await stat(filePath)).size;
-    } catch (error) {
-      signal?.throwIfAborted();
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return 0;
-      throw error;
-    }
-    signal?.throwIfAborted();
-    if (fileSize < previousOffset) {
-      // 文件被截断或重写：丢弃旧索引与偏移状态后从头重建，否则会无限递归。
-      database.exec("BEGIN IMMEDIATE");
-      try {
-        database.prepare("DELETE FROM session_transcripts WHERE session_id = ?").run(sessionId);
-        database.prepare("DELETE FROM session_index_state WHERE session_id = ?").run(sessionId);
-        signal?.throwIfAborted();
-        database.exec("COMMIT");
-      } catch (error) {
-        try { database.exec("ROLLBACK"); } catch { /* 保留原始错误。 */ }
-        throw error;
-      }
-      return await this.indexSessionFile(sessionId, filePath, signal);
-    }
-    if (fileSize === previousOffset) return 0;
-
-    let offset = previousOffset;
-    let indexed = 0;
-    let retry = false;
-    const insert = database.prepare(
-      "INSERT INTO session_transcripts (session_id, message_id, role, time, body, tokens) VALUES (?, ?, ?, ?, ?, ?)"
-    );
-    for await (const batch of readAppendedEventBatches(filePath, previousOffset, signal)) {
-      signal?.throwIfAborted();
-      database.exec("BEGIN IMMEDIATE");
-      try {
-        // 每批都核对已提交偏移；另一个连接推进后，释放当前 reader 再从新位置继续。
-        const current = database.prepare("SELECT byte_offset FROM session_index_state WHERE session_id = ?").get(sessionId) as IndexStateRow | undefined;
-        if (Number(current?.byte_offset ?? 0) !== offset) {
-          database.exec("ROLLBACK");
-          retry = true;
-          break;
-        }
-        // reader 可能已缓存被删除会话的字节；首次扫描的偏移同为 0，单靠偏移无法识别清理。
-        // 在写锁内同步核对原文件仍绑定该 reader，确保删除后的清理与批次提交有确定顺序。
-        const source = statSync(filePath, { throwIfNoEntry: false });
-        if (
-          !source
-          || source.dev !== batch.source.dev
-          || source.ino !== batch.source.ino
-          || source.size < (batch.events.at(-1)?.endOffset ?? offset)
-        ) {
-          // 原文已失效，旧批次和已提交前缀都不能沿用；一起清掉后重读现存文件。
-          database.prepare("DELETE FROM session_transcripts WHERE session_id = ?").run(sessionId);
-          database.prepare("DELETE FROM session_index_state WHERE session_id = ?").run(sessionId);
-          signal?.throwIfAborted();
-          database.exec("COMMIT");
-          retry = true;
-          break;
-        }
-        for (const { event, endOffset } of batch.events) {
-          signal?.throwIfAborted();
-          offset = endOffset;
-          if (event?.type !== "user_message" && event?.type !== "assistant_message") continue;
-          const content = event.type === "assistant_message" ? publicAssistantMessage(event.content) : event.content;
-          if (!content.trim()) continue;
-          insert.run(
-            sessionId,
-            event.messageId ?? null,
-            event.type === "user_message" ? "user" : "assistant",
-            event.time ?? null,
-            content,
-            // 完整行已受会话事件上限约束；正文词数预算不能沿用记忆的 64 词截断。
-            tokenizeMemoryText(content, maxSessionEventLineBytes).join(" ")
-          );
-          indexed += 1;
-        }
-        signal?.throwIfAborted();
-        database.prepare(
-          "INSERT INTO session_index_state (session_id, byte_offset, updated_at) VALUES (?, ?, ?) " +
-          "ON CONFLICT(session_id) DO UPDATE SET byte_offset = excluded.byte_offset, updated_at = excluded.updated_at"
-        ).run(sessionId, offset, new Date().toISOString());
-        signal?.throwIfAborted();
-        database.exec("COMMIT");
-      } catch (error) {
-        try {
-          database.exec("ROLLBACK");
-        } catch {
-          // 保留原始错误。
-        }
-        throw error;
-      }
-    }
-    signal?.throwIfAborted();
-    if (retry) return await this.indexSessionFile(sessionId, filePath, signal);
-    return indexed;
-  }
-
-  /** 全文检索会话原文；query 为空或索引为空时返回空数组。 */
-  search(query: string, options: { limit?: number; sessionIds?: readonly string[]; signal?: AbortSignal } = {}): SessionTranscriptHit[] {
-    options.signal?.throwIfAborted();
-    const tokens = tokenizeMemoryText(query).slice(0, 24);
-    if (!tokens.length) return [];
-    const limit = Math.max(1, Math.min(200, Math.trunc(options.limit ?? 8)));
-    const database = this.open();
-    const match = tokens.map((token) => `"${token.replaceAll("\"", "\"\"")}"`).join(" ");
-    const rows = (options.sessionIds === undefined
-      ? database.prepare(
-        "SELECT session_id, message_id, role, time, body, snippet(session_transcripts, 4, '', '', '…', 24) AS excerpt " +
-        "FROM session_transcripts WHERE session_transcripts MATCH ? " +
-        "ORDER BY rank LIMIT ?"
-      ).all(match, limit)
-      : database.prepare(
-        "SELECT session_id, message_id, role, time, body, snippet(session_transcripts, 4, '', '', '…', 24) AS excerpt " +
-        "FROM session_transcripts WHERE session_transcripts MATCH ? " +
-        "AND session_id IN (SELECT value FROM json_each(?)) " +
-        "ORDER BY rank LIMIT ?"
-      ).all(match, JSON.stringify(options.sessionIds), limit)) as Array<Record<string, unknown>>;
-    return rows.flatMap((row) => {
-      options.signal?.throwIfAborted();
-      // 旧索引可能带协议；先清理完整正文，不能等 snippet 把标签截断后再过滤。
-      const body = typeof row.body === "string" ? row.body : "";
-      const publicBody = row.role === "assistant" ? publicAssistantMessage(body) : body;
-      const excerpt = publicBody === body ? row.excerpt : publicBody;
-      return typeof row.session_id === "string" && typeof excerpt === "string"
-        ? [{
-            sessionId: row.session_id,
-            messageId: typeof row.message_id === "string" ? row.message_id : undefined,
-            role: row.role === "assistant" ? "assistant" as const : "user" as const,
-            time: typeof row.time === "string" ? row.time : undefined,
-            excerpt: transcriptSearchExcerpt(publicBody, excerpt, query, tokens)
-          }]
-        : [];
-    });
-  }
-
-  /** 删除一个会话的全部索引行；会话清理时调用。 */
-  async forgetSession(sessionId: string): Promise<void> {
-    const root = typeof this.agentDir === "function" ? this.agentDir() : this.agentDir;
-    await deleteSessionSearchRows(path.join(root, "search", "sessions.sqlite"), sessionId);
-  }
-
-  private open(): DatabaseSync {
-    if (this.database) return this.database;
-    const root = typeof this.agentDir === "function" ? this.agentDir() : this.agentDir;
-    const searchRoot = path.join(root, "search");
-    mkdirSync(searchRoot, { recursive: true, mode: 0o700 });
-    const databasePath = path.join(searchRoot, "sessions.sqlite");
-    let database: DatabaseSync;
-    try {
-      database = new DatabaseSync(databasePath, { timeout: sqliteBusyTimeoutMs });
-    } catch (error) {
-      // 目录缺失或路径不可写时把真实路径带出来，避免裸的 unable to open database file。
-      throw new Error(`Failed to open session search index at ${databasePath}: ${String(error)}`);
-    }
-    try {
-      if (database.prepare("PRAGMA journal_mode").get()?.journal_mode !== "wal") {
-        database.exec("PRAGMA journal_mode = WAL;");
-      }
-      const version = Number(database.prepare("PRAGMA user_version").get()?.user_version ?? 0);
-      const tables = Number(database.prepare(
-        "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table' " +
-        "AND name IN ('session_index_state', 'session_transcripts')"
-      ).get()?.count ?? 0);
-      // 已升级且结构完整的缓存只读打开，不抢占另一个 WAL 连接的写锁。
-      if (version < sessionSearchIndexVersion || tables !== 2) {
-        database.exec("BEGIN IMMEDIATE");
-        database.exec(
-          "CREATE TABLE IF NOT EXISTS session_index_state (" +
-          "session_id TEXT PRIMARY KEY NOT NULL, byte_offset INTEGER NOT NULL, updated_at TEXT NOT NULL" +
-          "); " +
-          "CREATE VIRTUAL TABLE IF NOT EXISTS session_transcripts USING fts5(" +
-          "session_id UNINDEXED, message_id UNINDEXED, role UNINDEXED, time UNINDEXED, body, tokens" +
-          ");"
-        );
-        // 等写锁时另一个连接可能已完成升级；必须在锁内重新核对版本。
-        const lockedVersion = Number(database.prepare("PRAGMA user_version").get()?.user_version ?? 0);
-        if (lockedVersion < sessionSearchIndexVersion) {
-          // 仅失效可重建的检索行与配套偏移；原始 JSONL、记忆和其它数据都保持不变。
-          // 两者必须一起提交，否则已到 EOF 的旧会话永远不会补齐被截掉的词。
-          database.exec(
-            "DELETE FROM session_transcripts; DELETE FROM session_index_state; " +
-            `PRAGMA user_version = ${String(sessionSearchIndexVersion)};`
-          );
-        }
-        database.exec("COMMIT");
-      }
-    } catch (error) {
-      try { database.exec("ROLLBACK"); } catch { /* 保留原始错误。 */ }
-      database.close();
-      throw error;
-    }
-    this.database = database;
-    return database;
-  }
-}
-
-/** FTS 的 body 列不含中文 bigram 位置，摘要缺词时从公开原文定位上下文。 */
-function transcriptSearchExcerpt(body: string, excerpt: string, query: string, tokens: readonly string[]): string {
-  const original = excerpt.replaceAll("\n", " ").trim().slice(0, 500);
-  body = body.replaceAll("\n", " ").trim();
-  const missing = tokens.find((token) => token.charCodeAt(0) > 127 && !original.includes(token) && body.includes(token));
-  if (!missing) return original;
-
-  const trimmed = query.replaceAll("\n", " ").trim();
-  const quoted = trimmed.startsWith('"') && trimmed.endsWith('"') || trimmed.startsWith("“") && trimmed.endsWith("”");
-  const phrase = quoted ? trimmed.slice(1, -1) : trimmed;
-  const exact = phrase.length <= 498
-    ? new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu").exec(body)?.index
-    : undefined;
-  const before = exact === undefined ? 80 : Math.min(80, 498 - phrase.length);
-  let start = Math.max(0, (exact ?? body.indexOf(missing)) - before);
-  const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(body);
-  const first = segments.containing(start);
-  if (first && first.index < start) start = first.index + first.segment.length;
-  // 沿用 500 个 UTF-16 code unit 上限，给两端省略号各留一个位置。
-  let end = Math.min(body.length, start + 498);
-  const last = segments.containing(end);
-  if (last && last.index < end) end = last.index;
-  return `${start > 0 ? "…" : ""}${body.slice(start, end)}${end < body.length ? "…" : ""}`;
-}
-
-/** 分块读取追加数据；每批仅保留有限事件，半行等下次追加后再读。 */
-async function* readAppendedEventBatches(
-  filePath: string,
-  startOffset: number,
-  signal?: AbortSignal
-): AsyncGenerator<SessionSearchBatch> {
-  signal?.throwIfAborted();
-  const handle = await open(filePath, "r").catch((error: unknown) => {
-    signal?.throwIfAborted();
-    // 会话可能在 stat 后被正常删除；只忽略 reader 尚未打开时的缺失。
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (!handle) return;
-  try {
-    signal?.throwIfAborted();
-    const source = await handle.stat();
-    const { size } = source;
-    signal?.throwIfAborted();
-    if (size <= startOffset) {
-      yield { events: [], source };
-      return;
-    }
-    const buffer = Buffer.allocUnsafe(sessionSearchReadChunkBytes);
-    const lineParts: Buffer[] = [];
-    let lineBytes = 0;
-    let lineTooLarge = false;
-    let offset = startOffset;
-    let batchBytes = 0;
-    let yieldedBatch = false;
-    let batch: Array<{ event?: SessionEvent; endOffset: number }> = [];
-    while (offset < size) {
-      signal?.throwIfAborted();
-      const read = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset);
-      signal?.throwIfAborted();
-      if (read.bytesRead === 0) break;
-      const chunk = buffer.subarray(0, read.bytesRead);
-      let lineStart = 0;
-      let newline = chunk.indexOf(0x0a, lineStart);
-      while (newline !== -1) {
-        signal?.throwIfAborted();
-        const segment = chunk.subarray(lineStart, newline);
-        const completeLineBytes = lineBytes + segment.length;
-        const oversized = lineTooLarge || completeLineBytes > maxSessionEventLineBytes;
-        const line = oversized
-          ? undefined
-          : lineParts.length ? Buffer.concat([...lineParts, segment], completeLineBytes) : segment;
-        const endOffset = offset + newline + 1;
-        const appended = parseAppendedEventLine(line, oversized, endOffset);
-        batch.push(appended);
-        batchBytes += completeLineBytes + 1;
-        if (batch.length >= sessionSearchBatchEvents || batchBytes >= sessionSearchBatchBytes) {
-          yield { events: batch, source };
-          signal?.throwIfAborted();
-          yieldedBatch = true;
-          batch = [];
-          batchBytes = 0;
-        }
-        lineParts.length = 0;
-        lineBytes = 0;
-        lineTooLarge = false;
-        lineStart = newline + 1;
-        newline = chunk.indexOf(0x0a, lineStart);
-      }
-      const trailing = chunk.subarray(lineStart);
-      if (trailing.length) {
-        lineBytes += trailing.length;
-        if (lineTooLarge || lineBytes > maxSessionEventLineBytes) {
-          lineTooLarge = true;
-          lineParts.length = 0;
-        } else {
-          lineParts.push(Buffer.from(trailing));
-        }
-      }
-      offset += read.bytesRead;
-    }
-    signal?.throwIfAborted();
-    if (batch.length || !yieldedBatch) yield { events: batch, source };
-  } finally {
-    await handle.close();
-  }
-}
-
-function parseAppendedEventLine(
-  line: Buffer | undefined,
-  oversized: boolean,
-  endOffset: number
-): { event?: SessionEvent; endOffset: number } {
-  if (oversized) return { event: { type: "error", message: "unparsable" } as SessionEvent, endOffset };
-  const trimmed = line?.toString("utf8").trim() ?? "";
-  if (!trimmed) return { endOffset };
-  try {
-    const [event] = parseSessionEvents(trimmed);
-    return event ? { event, endOffset } : { endOffset };
-  } catch {
-    // 单行损坏只跳过该行，不阻断索引推进；偏移仍要前移避免反复重读坏行。
-    return { event: { type: "error", message: "unparsable" } as SessionEvent, endOffset };
+  private async track<Result>(promise: Promise<Result>): Promise<Result> {
+    this.pending.add(promise);
+    try { return await promise; }
+    finally { this.pending.delete(promise); }
   }
 }

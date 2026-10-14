@@ -15,7 +15,7 @@ const searchHistorySchema = z.object({
 });
 
 export interface SearchHistoryDeps {
-  getIndex: () => SessionSearchIndex | undefined;
+  getIndex: () => Pick<SessionSearchIndex, "refreshAll" | "search"> | undefined;
   /** 检索前先增量刷新当前会话，保证本回合消息立即可搜。 */
   flushCurrentSession?: (signal?: AbortSignal) => Promise<void>;
 }

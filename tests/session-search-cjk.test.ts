@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { tokenizeMemoryText } from "../src/agent/context/memoryFormat.js";
 import { maxSessionEventLineBytes } from "../src/session/limits.js";
-import { SessionSearchIndex } from "../src/session/searchIndex.js";
+import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
 
 const lateCjkBody = "今天我们逐项核对产品发布前的技术准备，包括接口兼容性、数据库变更、日志记录、错误处理、权限检查、缓存策略、网络连接、性能指标、测试覆盖、文档说明和客户沟通。最后决定采用蓝绿部署回滚";
 const row = (content: string, messageId: string, type = "user_message"): string =>
@@ -80,7 +80,7 @@ test("complete CJK indexing retains the event-line bound and continues past over
   }
 });
 
-test("legacy EOF offsets are invalidated once and unchanged raw logs rebuild with complete tokens", async () => {
+test("legacy EOF cache stays untouched while a separate source-aware cache indexes complete tokens", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-search-cjk-upgrade-"));
   const file = path.join(root, "sessions", "legacy.jsonl");
   const original = row(lateCjkBody, "legacy-message");
@@ -99,9 +99,14 @@ test("legacy EOF offsets are invalidated once and unchanged raw logs rebuild wit
     assert.deepEqual(second.status(), index.status(), "two connections upgrade and rebuild without duplicating rows");
     assert.equal(await index.indexSessionFile("legacy", file), 0);
     database = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
-    assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 1);
+    assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 0);
     assert.equal(database.prepare("SELECT byte_offset FROM session_index_state").get()?.byte_offset, Buffer.byteLength(original));
     assert.equal(database.prepare("SELECT value FROM unrelated_data").get()?.value, "preserve me");
+    assert.equal(database.prepare("SELECT tokens FROM session_transcripts").get()?.tokens, tokenizeMemoryText(lateCjkBody).join(" "));
+    database.close();
+    database = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
+    assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 2);
+    assert.equal(database.prepare("SELECT byte_offset FROM session_index_state").get()?.byte_offset, Buffer.byteLength(original));
     assert.equal(await readFile(file, "utf8"), original);
     assert.equal(await readFile(sentinel, "utf8"), '{"authoritative":"keep"}\n');
     index.close();
@@ -118,7 +123,7 @@ test("legacy EOF offsets are invalidated once and unchanged raw logs rebuild wit
   }
 });
 
-test("failed legacy invalidation rolls back derived rows, offsets and cache version together", async () => {
+test("a locked legacy cache never blocks the new source-aware index or changes legacy data", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-search-cjk-upgrade-rollback-"));
   const file = path.join(root, "sessions", "legacy.jsonl");
   const original = row(lateCjkBody, "legacy-message");
@@ -130,13 +135,14 @@ test("failed legacy invalidation rolls back derived rows, offsets and cache vers
     await seedLegacyIndex(root, file, lateCjkBody);
     database = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
     database.exec("CREATE TRIGGER fail_cache_reset BEFORE DELETE ON session_index_state BEGIN SELECT RAISE(ABORT, 'injected cache reset failure'); END");
-    assert.throws(() => index.status(), /injected cache reset failure/u);
+    database.exec("BEGIN EXCLUSIVE");
+    assert.deepEqual(index.status(), { indexedSessions: 0, indexedMessages: 0 });
+    await index.refreshAll();
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM session_transcripts").get()?.count, 1);
     assert.equal(database.prepare("SELECT byte_offset FROM session_index_state").get()?.byte_offset, Buffer.byteLength(original));
     assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 0);
-    database.exec("DROP TRIGGER fail_cache_reset");
-    await index.refreshAll();
-    assert.equal(index.search("部署回滚").length, 1, "failed opens can retry after the cache blocker clears");
+    assert.equal(index.search("部署回滚").length, 1, "the old process can retain its transaction without blocking the new index");
+    database.exec("ROLLBACK");
     assert.equal(await readFile(file, "utf8"), original);
   } finally {
     database?.close();
@@ -156,10 +162,11 @@ for (const read of ["status", "search"] as const) {
       await writeFile(file, row(lateCjkBody, "committed"));
       await warm.indexSessionFile("thread", file);
       warm.close();
-      writer = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
+      writer = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
       writer.exec("BEGIN IMMEDIATE");
-      writer.prepare("INSERT INTO session_transcripts (session_id, message_id, role, body, tokens) VALUES (?, ?, ?, ?, ?)")
+      const inserted = writer.prepare("INSERT INTO session_transcripts (session_id, message_id, role, body, tokens) VALUES (?, ?, ?, ?, ?)")
         .run("thread", "uncommitted", "user", lateCjkBody, tokenizeMemoryText(lateCjkBody, maxSessionEventLineBytes).join(" "));
+      writer.prepare("INSERT INTO transcript_rows (rowid, source_path) VALUES (?, ?)").run(inserted.lastInsertRowid, file);
       if (read === "status") assert.deepEqual(cold.status(), { indexedSessions: 1, indexedMessages: 1 });
       else assert.deepEqual(cold.search("部署回滚").map((hit) => hit.messageId), ["committed"]);
       writer.exec("COMMIT");
@@ -174,7 +181,7 @@ for (const read of ["status", "search"] as const) {
   });
 }
 
-test("migration rechecks the cache version after another connection upgrades during cold open", async (t) => {
+test("cold initialization never discards a completed source-aware cache from another connection", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-search-cjk-upgrade-race-"));
   const file = path.join(root, "sessions", "legacy.jsonl");
   const original = row(lateCjkBody, "legacy-message");
@@ -184,9 +191,10 @@ test("migration rechecks the cache version after another connection upgrades dur
   try {
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, original);
-    await seedLegacyIndex(root, file, lateCjkBody);
-    second = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
-    second.exec("PRAGMA journal_mode = WAL");
+    await index.indexSessionFile("legacy", file);
+    index.close();
+    second = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
+    second.exec("PRAGMA user_version = 0");
     const originalPrepare = DatabaseSync.prototype.prepare;
     t.mock.method(DatabaseSync.prototype, "prepare", function (this: DatabaseSync, sql: string) {
       const statement = originalPrepare.call(this, sql);
@@ -195,13 +203,7 @@ test("migration rechecks the cache version after another connection upgrades dur
         t.mock.method(statement, "get", (...args: Parameters<typeof statement.get>) => {
           const previous = Reflect.apply(originalGet, statement, args);
           raced = true;
-          // Another connection finishes migration after preflight but before this opener takes its lock.
-          second!.exec("BEGIN IMMEDIATE; DELETE FROM session_transcripts; DELETE FROM session_index_state;");
-          second!.prepare("INSERT INTO session_transcripts (session_id, message_id, role, body, tokens) VALUES (?, ?, ?, ?, ?)")
-            .run("legacy", "legacy-message", "user", lateCjkBody, tokenizeMemoryText(lateCjkBody, maxSessionEventLineBytes).join(" "));
-          second!.prepare("INSERT INTO session_index_state VALUES (?, ?, ?)")
-            .run("legacy", Buffer.byteLength(original), "2026-10-03T00:00:00.000Z");
-          second!.exec("PRAGMA user_version = 1; COMMIT");
+          second!.exec("BEGIN IMMEDIATE; PRAGMA user_version = 2; COMMIT");
           return previous;
         });
       }
@@ -211,7 +213,6 @@ test("migration rechecks the cache version after another connection upgrades dur
     assert.ok(raced);
     assert.equal(index.search("部署回滚")[0]?.messageId, "legacy-message");
     assert.equal(await index.indexSessionFile("legacy", file), 0);
-    assert.equal(second.prepare("SELECT value FROM unrelated_data").get()?.value, "preserve me");
     assert.equal(await readFile(file, "utf8"), original);
   } finally {
     t.mock.restoreAll();

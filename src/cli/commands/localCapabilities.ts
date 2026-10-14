@@ -328,10 +328,10 @@ export async function historySearchCommand(query: string, options: LocalCapabili
     }
     for (const hit of hits) {
       const when = hit.time ?? "";
-      console.log(`[${hit.sessionId}${when ? ` · ${when}` : ""}] ${hit.role}: ${hit.excerpt}`);
+      console.log(`[${hit.sessionId}${when ? ` · ${when}` : ""}] ${hit.role}: ${hit.excerpt}\n  ${hit.sourcePath}`);
     }
   } finally {
-    index.close();
+    await index.close();
   }
 }
 

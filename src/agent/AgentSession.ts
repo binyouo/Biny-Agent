@@ -4463,6 +4463,7 @@ export class AgentSession {
 
   async close(): Promise<void> {
     await this.acpClient?.close();
+    await this.sessionSearchIndex.close();
     this.emotionAnalysisScheduler.cancel();
     this.titleAbort.abort();
     await this.titleTask;

@@ -16,6 +16,7 @@ export default defineConfig({
         // Preserve the SDK package boundary: its native library resolver is relative to the package.
         input: {
           index: path.join(root, "src/desktop/electron/main/index.ts"),
+          searchIndexWorker: path.join(root, "src/session/searchIndexWorker.ts"),
         },
         output: {
           manualChunks: (id) => id === path.join(root, "src/agent/codeMode.ts") ? "code-mode-runtime" : undefined

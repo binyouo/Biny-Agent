@@ -3,7 +3,7 @@
  * 有原文引文的工作事实，以及用户对线索的忽略/当日已读状态。
  */
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import path from "node:path";
@@ -52,6 +52,7 @@ export interface TemporalQuery {
   endDate: string;
   sessionId?: string;
   sessionIds?: string[];
+  sourcePaths?: string[];
   currentSessionId?: string;
   limit?: number;
   offset?: number;
@@ -63,6 +64,7 @@ export interface TemporalClueHit extends TemporalClue {
   sessionId: string;
   messageId: string;
   sourceUri: string;
+  sourcePath?: string;
   sentAt?: string;
   timeZone?: string;
   seen: boolean;
@@ -73,6 +75,7 @@ export interface TemporalFactHit extends DatedWorkFact {
   sessionId: string;
   messageId: string;
   sourceUri: string;
+  sourcePath?: string;
   sentAt?: string;
   timeZone?: string;
 }
@@ -85,6 +88,15 @@ const unavailableSources = new Set(["cron", "heartbeat", "system", "loop", "goal
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalSourcePath(file: string): string {
+  const resolved = path.resolve(file);
+  try { return path.join(realpathSync(path.dirname(resolved)), path.basename(resolved)); }
+  catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return resolved;
+    throw error;
+  }
 }
 
 function validDay(value: string): boolean {
@@ -305,7 +317,7 @@ export class TemporalMemoryIndex {
     const version = JSON.stringify([db.prepare("PRAGMA data_version").get(), dateReferenceKeyFingerprint(this.root)]);
     if (version !== this.scanVersion) this.scannedFiles.clear();
     this.scanVersion = version;
-    const files = await listAllSessionFiles(this.root);
+    const files = (await listAllSessionFiles(this.root)).map(canonicalSourcePath);
     const currentFiles = new Set(files);
     for (const file of this.scannedFiles.keys()) if (!currentFiles.has(file)) this.scannedFiles.delete(file);
     const present = new Set<string>();
@@ -323,7 +335,7 @@ export class TemporalMemoryIndex {
     }
     db.exec("BEGIN IMMEDIATE");
     try {
-      for (const row of db.prepare("SELECT id FROM temporal_sources").all() as Array<{ id: string }>) {
+      for (const row of db.prepare("SELECT id FROM temporal_sources WHERE source_path IS NOT NULL").all() as Array<{ id: string }>) {
         if (!present.has(row.id)) db.prepare("DELETE FROM temporal_sources WHERE id = ?").run(row.id);
       }
       db.exec("COMMIT");
@@ -332,11 +344,10 @@ export class TemporalMemoryIndex {
 
   /** 完整扫描单个文件，按原文 hash 只重算变化的消息；半行留待下一轮。 */
   async indexSessionFile(sessionId: string, filePath: string, signal?: AbortSignal): Promise<string[]> {
-    this.scannedFiles.delete(filePath);
-    this.open().prepare("INSERT INTO temporal_session_files(session_id,file_path) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET file_path=excluded.file_path")
-      .run(sessionId, filePath);
-    const beforeSignature = await sessionFileSignature(filePath);
-    const raw = await readFile(filePath, "utf8");
+    const sourcePath = canonicalSourcePath(filePath);
+    this.scannedFiles.delete(sourcePath);
+    const beforeSignature = await sessionFileSignature(sourcePath);
+    const raw = await readFile(sourcePath, "utf8");
     const present: string[] = [];
     let ordinal = 0;
     let complete = true;
@@ -366,14 +377,19 @@ export class TemporalMemoryIndex {
         sessionId, messageId, text: event.content, sentAt: event.time,
         timeZone: typeof event.metadata?.sentAtTimeZone === "string" ? event.metadata.sentAtTimeZone : undefined
       };
-      const id = hash(JSON.stringify([sessionId, messageId]));
+      const id = hash(JSON.stringify([sourcePath, sessionId, messageId]));
       present.push(id);
       const referenceKeyVersion = source.text.includes("biny://date/") ? dateReferenceKeyFingerprint(this.root) : undefined;
       const sourceHash = hash(JSON.stringify(referenceKeyVersion === undefined
         ? [source.text, source.sentAt, source.timeZone]
         : [source.text, source.sentAt, source.timeZone, referenceKeyVersion]));
       const db = this.open();
-      const state = db.prepare("SELECT source_hash, parser, facts_indexed FROM temporal_sources WHERE id = ?").get(id) as { source_hash: string; parser: string; facts_indexed: number } | undefined;
+      const stateQuery = db.prepare("SELECT source_hash, parser, facts_indexed FROM temporal_sources WHERE id = ?");
+      let state = stateQuery.get(id) as { source_hash: string; parser: string; facts_indexed: number } | undefined;
+      if (!state) {
+        this.migrateLegacySource(id, sourcePath, sessionId, messageId, sourceHash);
+        state = stateQuery.get(id) as typeof state;
+      }
       if (state?.source_hash === sourceHash && (state.parser === "model" || !this.extractor.extractClues) && (state.facts_indexed || !this.extractor.extractFacts)) continue;
       signal?.throwIfAborted();
       let clues = parseTemporalClues(source.text, source.sentAt, source.timeZone, this.root);
@@ -407,15 +423,15 @@ export class TemporalMemoryIndex {
       }
       // 提取是异步的。提交前重新核对原始文件，阻止编辑期间的旧结果落库。
       if ((this.extractor.extractClues || this.extractor.extractFacts)
-        && !this.sourceStillCurrent(filePath, messageId, eventOrdinal, sourceHash, referenceKeyVersion)) {
+        && !this.sourceStillCurrent(sourcePath, messageId, eventOrdinal, sourceHash, referenceKeyVersion)) {
         // 原文在模型请求期间变化：旧投影也不能继续当作当前来源展示。
         db.prepare("DELETE FROM temporal_sources WHERE id = ?").run(id);
         continue;
       }
       db.exec("BEGIN IMMEDIATE");
       try {
-        db.prepare("INSERT INTO temporal_sources(id,session_id,message_id,source_hash,sent_at,time_zone,parser,facts_indexed) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET source_hash=excluded.source_hash,sent_at=excluded.sent_at,time_zone=excluded.time_zone,parser=excluded.parser,facts_indexed=excluded.facts_indexed")
-          .run(id, sessionId, messageId, sourceHash, source.sentAt ?? null, source.timeZone ?? null, parser,
+        db.prepare("INSERT INTO temporal_sources(id,session_id,message_id,source_path,source_hash,sent_at,time_zone,parser,facts_indexed) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET source_hash=excluded.source_hash,sent_at=excluded.sent_at,time_zone=excluded.time_zone,parser=excluded.parser,facts_indexed=excluded.facts_indexed")
+          .run(id, sessionId, messageId, sourcePath, sourceHash, source.sentAt ?? null, source.timeZone ?? null, parser,
             facts === undefined ? state?.source_hash === sourceHash ? state.facts_indexed : 0 : 1);
         const clueIds = clues.map((clue) => hash(JSON.stringify([id, sourceHash, clue])));
         db.prepare("DELETE FROM temporal_clues WHERE source_id = ? AND id NOT IN (SELECT value FROM json_each(?))")
@@ -436,42 +452,81 @@ export class TemporalMemoryIndex {
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
     }
-    if (complete && await sessionFileSignature(filePath) === beforeSignature) {
+    if (complete && await sessionFileSignature(sourcePath) === beforeSignature) {
       const db = this.open();
-      db.prepare("DELETE FROM temporal_sources WHERE session_id = ? AND id NOT IN (SELECT value FROM json_each(?))")
-        .run(sessionId, JSON.stringify(present));
+      db.prepare("DELETE FROM temporal_sources WHERE source_path = ? AND id NOT IN (SELECT value FROM json_each(?))")
+        .run(sourcePath, JSON.stringify(present));
     }
     return present;
   }
 
-  private removeSession(sessionId: string, filePath: string): void {
+  private migrateLegacySource(id: string, filePath: string, sessionId: string, messageId: string, sourceHash: string): void {
+    const db = this.open();
+    const legacyId = hash(JSON.stringify([sessionId, messageId]));
+    const lookup = db.prepare("SELECT f.file_path FROM temporal_sources s JOIN temporal_session_files f ON f.session_id=s.session_id WHERE s.id=? AND s.source_path IS NULL AND s.source_hash=?");
+    if (!lookup.get(legacyId, sourceHash)) return;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const legacy = lookup.get(legacyId, sourceHash) as { file_path: string } | undefined;
+      if (legacy && canonicalSourcePath(legacy.file_path) === filePath && !db.prepare("SELECT 1 FROM temporal_sources WHERE id=?").get(id)) {
+        db.prepare("INSERT INTO temporal_sources(id,source_path,session_id,message_id,source_hash,sent_at,time_zone,parser,facts_indexed) SELECT ?,?,session_id,message_id,source_hash,sent_at,time_zone,parser,facts_indexed FROM temporal_sources WHERE id=?")
+          .run(id, filePath, legacyId);
+        const clues = db.prepare("SELECT * FROM temporal_clues WHERE source_id=?").all(legacyId) as Array<{
+          id: string; expression: string; date: string | null; end_date: string | null; time: string | null; offset: number; quote: string; ignored: number
+        }>;
+        for (const row of clues) {
+          const clue: TemporalClue = { expression: row.expression, date: row.date, endDate: row.end_date, time: row.time, offset: row.offset, quote: row.quote };
+          const clueId = hash(JSON.stringify([id, sourceHash, clue]));
+          db.prepare("INSERT INTO temporal_clues(id,source_id,session_id,message_id,expression,date,end_date,time,offset,quote,ignored) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+            .run(clueId, id, sessionId, messageId, clue.expression, clue.date, clue.endDate, clue.time, clue.offset, clue.quote, row.ignored);
+          db.prepare("INSERT INTO temporal_seen(day,clue_id) SELECT day,? FROM temporal_seen WHERE clue_id=?").run(clueId, row.id);
+        }
+        const facts = db.prepare("SELECT * FROM temporal_facts WHERE source_id=?").all(legacyId) as Array<{
+          title: string; quote: string; state: DatedWorkFact["state"]; event_date: string | null; due_date: string | null; completed_date: string | null
+        }>;
+        for (const row of facts) {
+          const fact: DatedWorkFact = { title: row.title, quote: row.quote, state: row.state, eventDate: row.event_date, dueDate: row.due_date, completedDate: row.completed_date };
+          db.prepare("INSERT INTO temporal_facts(id,source_id,session_id,message_id,title,quote,state,event_date,due_date,completed_date) VALUES(?,?,?,?,?,?,?,?,?,?)")
+            .run(hash(JSON.stringify([id, sourceHash, fact])), id, sessionId, messageId, fact.title, fact.quote, fact.state, fact.eventDate, fact.dueDate, fact.completedDate);
+        }
+        db.prepare("DELETE FROM temporal_sources WHERE id=?").run(legacyId);
+      }
+      db.exec("COMMIT");
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
+  }
+
+  private removeSession(filePath: string): void {
     this.scannedFiles.delete(filePath);
-    this.open().prepare("DELETE FROM temporal_sources WHERE session_id = ?").run(sessionId);
+    this.open().prepare("DELETE FROM temporal_sources WHERE source_path = ?").run(filePath);
   }
 
   queryClues(query: TemporalQuery): { clues: TemporalClueHit[]; unread: number; hasMore: boolean; nextOffset: number | null; coverage: string } {
     const { limit, offset } = queryBounds(query);
     this.evictUnavailableSources();
     const db = this.open();
+    const sourcePaths = query.sourcePaths === undefined ? null : JSON.stringify(query.sourcePaths.map(canonicalSourcePath));
     const rows = db.prepare(
-      "SELECT c.*,s.sent_at,s.time_zone,EXISTS(SELECT 1 FROM temporal_seen v WHERE v.clue_id=c.id AND v.day=?) AS seen " +
+      "SELECT c.*,s.source_path,s.sent_at,s.time_zone,EXISTS(SELECT 1 FROM temporal_seen v WHERE v.clue_id=c.id AND v.day=?) AS seen " +
       "FROM temporal_clues c JOIN temporal_sources s ON s.id=c.source_id WHERE c.ignored=0 AND ((c.date<? AND COALESCE(c.end_date,c.date)>=?) OR (? IS NOT NULL AND c.session_id=?)) " +
       "AND (? IS NULL OR c.session_id=?) AND (? IS NULL OR c.session_id IN (SELECT value FROM json_each(?))) " +
+      "AND (? IS NULL OR s.source_path IN (SELECT value FROM json_each(?))) " +
       "ORDER BY CASE WHEN c.date<? AND COALESCE(c.end_date,c.date)>=? THEN 0 ELSE 1 END,c.date IS NULL,c.date,c.session_id,c.message_id,c.offset,c.id LIMIT ? OFFSET ?"
     ).all(query.today ?? "", query.endDate, query.startDate, query.currentSessionId ?? null, query.currentSessionId ?? null,
       query.sessionId ?? null, query.sessionId ?? null, query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds),
-      query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds), query.endDate, query.startDate, limit + 1, offset) as Array<Record<string, unknown>>;
+      query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds), sourcePaths, sourcePaths, query.endDate, query.startDate, limit + 1, offset) as Array<Record<string, unknown>>;
     const unread = query.today ? Number((db.prepare(
-      "SELECT COUNT(*) AS total FROM temporal_clues c WHERE c.ignored=0 AND c.date<=? AND COALESCE(c.end_date,c.date)>=? " +
+      "SELECT COUNT(*) AS total FROM temporal_clues c JOIN temporal_sources s ON s.id=c.source_id WHERE c.ignored=0 AND c.date<=? AND COALESCE(c.end_date,c.date)>=? " +
       "AND NOT EXISTS(SELECT 1 FROM temporal_seen v WHERE v.clue_id=c.id AND v.day=?) " +
-      "AND (? IS NULL OR c.session_id=?) AND (? IS NULL OR c.session_id IN (SELECT value FROM json_each(?)))"
+      "AND (? IS NULL OR c.session_id=?) AND (? IS NULL OR c.session_id IN (SELECT value FROM json_each(?))) " +
+      "AND (? IS NULL OR s.source_path IN (SELECT value FROM json_each(?)))"
     ).get(query.today, query.today, query.today, query.sessionId ?? null, query.sessionId ?? null,
       query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds),
-      query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds)) as { total: number }).total) : 0;
+      query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds), sourcePaths, sourcePaths) as { total: number }).total) : 0;
     return {
       clues: rows.slice(0, limit).map((row) => ({
         id: String(row.id), sessionId: String(row.session_id), messageId: String(row.message_id),
         sourceUri: `session://${String(row.session_id)}/${String(row.message_id)}`,
+        sourcePath: typeof row.source_path === "string" ? row.source_path : undefined,
         expression: String(row.expression), date: row.date === null ? null : String(row.date), endDate: row.end_date === null ? null : String(row.end_date),
         time: row.time === null ? null : String(row.time), offset: Number(row.offset), quote: String(row.quote),
         sentAt: typeof row.sent_at === "string" ? row.sent_at : undefined,
@@ -485,18 +540,21 @@ export class TemporalMemoryIndex {
   queryFacts(query: TemporalQuery): { facts: TemporalFactHit[]; hasMore: boolean; nextOffset: number | null; coverage: string } {
     const { limit, offset } = queryBounds(query);
     this.evictUnavailableSources();
+    const sourcePaths = query.sourcePaths === undefined ? null : JSON.stringify(query.sourcePaths.map(canonicalSourcePath));
     const rows = this.open().prepare(
-      "SELECT f.*,s.sent_at,s.time_zone FROM temporal_facts f JOIN temporal_sources s ON s.id=f.source_id " +
+      "SELECT f.*,s.source_path,s.sent_at,s.time_zone FROM temporal_facts f JOIN temporal_sources s ON s.id=f.source_id " +
       "WHERE ((f.event_date>=? AND f.event_date<?) OR (f.due_date>=? AND f.due_date<?) OR (f.completed_date>=? AND f.completed_date<?)) " +
       "AND (? IS NULL OR f.session_id=?) AND (? IS NULL OR f.session_id IN (SELECT value FROM json_each(?))) " +
+      "AND (? IS NULL OR s.source_path IN (SELECT value FROM json_each(?))) " +
       "ORDER BY COALESCE(f.event_date,f.due_date,f.completed_date),f.session_id,f.message_id,f.id LIMIT ? OFFSET ?"
     ).all(query.startDate, query.endDate, query.startDate, query.endDate, query.startDate, query.endDate,
       query.sessionId ?? null, query.sessionId ?? null, query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds),
-      query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds), limit + 1, offset) as Array<Record<string, unknown>>;
+      query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds), sourcePaths, sourcePaths, limit + 1, offset) as Array<Record<string, unknown>>;
     return {
       facts: rows.slice(0, limit).map((row) => ({
         id: String(row.id), sessionId: String(row.session_id), messageId: String(row.message_id),
         sourceUri: `session://${String(row.session_id)}/${String(row.message_id)}`,
+        sourcePath: typeof row.source_path === "string" ? row.source_path : undefined,
         title: String(row.title), quote: String(row.quote), state: row.state as DatedWorkFact["state"],
         eventDate: row.event_date === null ? null : String(row.event_date),
         dueDate: row.due_date === null ? null : String(row.due_date),
@@ -545,7 +603,7 @@ export class TemporalMemoryIndex {
 
   private evictUnavailableSources(): void {
     const db = this.open();
-    const rows = db.prepare("SELECT DISTINCT s.session_id, f.file_path FROM temporal_sources s LEFT JOIN temporal_session_files f ON f.session_id=s.session_id")
+    const rows = db.prepare("SELECT DISTINCT session_id, source_path AS file_path FROM temporal_sources WHERE source_path IS NOT NULL")
       .all() as Array<{ session_id: string; file_path: string | null }>;
     for (const row of rows) {
       try {
@@ -553,11 +611,11 @@ export class TemporalMemoryIndex {
         const sessionFile = filePath ? lstatSync(filePath) : undefined;
         if (!filePath || path.basename(filePath) !== `${row.session_id}.jsonl`
           || !sessionFile?.isFile() || sessionFile.isSymbolicLink() || sessionFile.nlink !== 1) {
-          this.removeSession(row.session_id, row.file_path ?? "");
+          this.removeSession(row.file_path ?? "");
         }
       } catch {
         // 路径损坏时只撤销对应派生索引；其他会话仍可读取。
-        this.removeSession(row.session_id, row.file_path ?? "");
+        this.removeSession(row.file_path ?? "");
       }
     }
   }
@@ -606,7 +664,7 @@ export class TemporalMemoryIndex {
     try {
       db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
       db.exec(`
-        CREATE TABLE IF NOT EXISTS temporal_sources(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,message_id TEXT NOT NULL,source_hash TEXT NOT NULL,sent_at TEXT,time_zone TEXT,parser TEXT NOT NULL,facts_indexed INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS temporal_sources(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,message_id TEXT NOT NULL,source_path TEXT,source_hash TEXT NOT NULL,sent_at TEXT,time_zone TEXT,parser TEXT NOT NULL,facts_indexed INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS temporal_session_files(session_id TEXT PRIMARY KEY,file_path TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS temporal_clues(id TEXT PRIMARY KEY,source_id TEXT NOT NULL REFERENCES temporal_sources(id) ON DELETE CASCADE,session_id TEXT NOT NULL,message_id TEXT NOT NULL,expression TEXT NOT NULL,date TEXT,end_date TEXT,time TEXT,offset INTEGER NOT NULL,quote TEXT NOT NULL,ignored INTEGER NOT NULL DEFAULT 0);
         CREATE INDEX IF NOT EXISTS temporal_clues_date ON temporal_clues(date,session_id);
@@ -616,6 +674,16 @@ export class TemporalMemoryIndex {
         CREATE INDEX IF NOT EXISTS temporal_facts_due ON temporal_facts(due_date);
         CREATE INDEX IF NOT EXISTS temporal_facts_completed ON temporal_facts(completed_date);
       `);
+      const sourceColumns = db.prepare("PRAGMA table_info(temporal_sources)");
+      if (!(sourceColumns.all() as Array<{ name: string }>).some((column) => column.name === "source_path")) {
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          if (!(sourceColumns.all() as Array<{ name: string }>).some((column) => column.name === "source_path")) {
+            db.exec("ALTER TABLE temporal_sources ADD COLUMN source_path TEXT");
+          }
+          db.exec("COMMIT");
+        } catch (error) { db.exec("ROLLBACK"); throw error; }
+      }
     } catch (error) {
       try { db.close(); } catch { /* Preserve the initialization failure. */ }
       throw error;

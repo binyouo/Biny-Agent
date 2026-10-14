@@ -9,7 +9,7 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { createHistoryTools } from "../src/extensions/history.js";
 import { deleteSessionArtifacts } from "../src/session/cleanup.js";
-import { SessionSearchIndex } from "../src/session/searchIndex.js";
+import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
 
 const row = (messageId: string, content: string): string =>
@@ -85,7 +85,7 @@ for (const checkpoint of ["initial", "zero-offset", "incremental"] as const) {
       assert.deepEqual(await search, {
         query: "open race marker",
         hits: [{
-          sessionId: "z-retained", messageId: "retained-message", role: "user",
+          sessionId: "z-retained", sourcePath: retainedFile, messageId: "retained-message", role: "user",
           time: undefined, excerpt: "open race marker retained"
         }]
       }, "the public tool continues its scan and returns the unrelated live session");
@@ -239,10 +239,20 @@ for (const json of [false, true]) {
     await fs.writeFile(preload, `
       import { promises as fs } from "node:fs";
       import { syncBuiltinESMExports } from "node:module";
+      import workerThreads from "node:worker_threads";
+      if (workerThreads.isMainThread) {
+        const NativeWorker = workerThreads.Worker;
+        workerThreads.Worker = class extends NativeWorker {
+          constructor(filename, options) {
+            super(filename, { ...options, execArgv: [...(options?.execArgv ?? process.execArgv), "--import", import.meta.url] });
+          }
+        };
+      }
       const originalStat = fs.stat;
       fs.stat = async (...args) => {
         if (String(args[0]) === ${JSON.stringify(file)}) {
-          throw Object.assign(new Error("EIO: failed to stat conversation transcript"), { code: "EIO" });
+          const location = workerThreads.isMainThread ? "main thread" : "worker";
+          throw Object.assign(new Error("EIO: failed to stat conversation transcript in " + location), { code: "EIO" });
         }
         return await Reflect.apply(originalStat, fs, args);
       };
@@ -257,7 +267,7 @@ for (const json of [false, true]) {
     assert.ifError(failed.error);
     assert.equal(failed.status, 1, failed.stderr);
     assert.equal(failed.stdout, "", "failed search must not emit success-shaped empty results");
-    assert.match(failed.stderr, /EIO: failed to stat conversation transcript/u);
+    assert.match(failed.stderr, /EIO: failed to stat conversation transcript in worker/u);
     const retry = run(false);
     assert.ifError(retry.error);
     assert.equal(retry.status, 0, retry.stderr);

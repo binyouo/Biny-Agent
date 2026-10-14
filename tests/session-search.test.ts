@@ -6,11 +6,11 @@
  * Then：只有新增完整消息被索引，检索命中可按会话/角色/摘要读回，索引可整会话丢弃。
  */
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionSearchIndex } from "../src/session/searchIndex.js";
+import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
 import { archiveConversationMarkdown } from "../src/session/markdownArchive.js";
 
 const persistenceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-session-search-"));
@@ -74,7 +74,7 @@ try {
   assert.equal(status.indexedMessages, 1, "stale rows from before the truncation are dropped");
 
   // forgetSession 清空该会话的全部索引行。
-  await index.forgetSession("s-1");
+  await index.forgetSession("s-1", { sourcePath: await realpath(sessionFile) });
   assert.equal(index.search("deploy").length, 0);
   assert.equal(index.status().indexedMessages, 0);
   // 未在当前进程打开过的旧会话也能发现；文字与 Markdown 导出均来自原文。
