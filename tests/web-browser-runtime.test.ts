@@ -16,6 +16,7 @@ class Contents extends EventEmitter {
   static nextId = 1;
   static onLoad: (() => void) | undefined;
   static hang = false;
+  static webReadOverride: { googleChallenge?: unknown; html?: string | null } | undefined;
   id = Contents.nextId++;
   url = "";
   destroyed = false;
@@ -29,7 +30,7 @@ class Contents extends EventEmitter {
   isDestroyed(): boolean { return this.destroyed; }
   stop(): void {}
   debugger = Object.assign(new EventEmitter(), { isAttached: () => true, attach() {}, sendCommand: async () => ({ result: { value: { url: this.url, title: "Page", text: "Page", interactive: [] } } }) });
-  async executeJavaScript(): Promise<unknown> { return { html: '<a href="https://example.org/doc"><h3>Document</h3></a><p>Summary</p>', body: "Document Summary", finalUrl: this.url, title: "Search", contentType: "text/html", ready: true }; }
+  async executeJavaScript(): Promise<unknown> { return { html: '<a href="https://example.org/doc"><h3>Document</h3></a><p>Summary</p>', body: "Document Summary", finalUrl: this.url, title: "Search", contentType: "text/html", ready: true, ...Contents.webReadOverride }; }
 }
 class View {
   webContents = new Contents();
@@ -66,17 +67,59 @@ test("WebSearch 经浏览器控制 socket 返回结果，关闭侧栏时使用�
     assert.equal(registry.get("WebFetch").name, "WebFetch", "Desktop 浏览器连接直接提供搜索和抓取");
     const execution = await tool.resolveExecution({ query: "test" });
     if ("isError" in execution) assert.fail("search plan failed");
-    const result = await execution.execute({ toolCallId: "search", signal: undefined });
+    const result = await execution.execute({ toolCallId: "search", operationId: "search-operation", signal: undefined });
     assert.equal(result.results[0]?.url, "https://example.org/doc");
     assert.equal(Window.instances[0]?.options.show, false);
     assert.equal(Window.instances[0]?.destroyed, true);
     const fetchTool = createWebFetchTool({ ...defaultConfig.web.fetch }, { enabled: false }, { browser: endpoint });
     const fetchExecution = await fetchTool.resolveExecution({ url: "https://example.org/doc", length: 8 });
     if ("isError" in fetchExecution) assert.fail("fetch plan failed");
-    const fetched = await fetchExecution.execute({ toolCallId: "fetch", signal: undefined });
+    const fetched = await fetchExecution.execute({ toolCallId: "fetch", operationId: "fetch-operation", signal: undefined });
     assert.equal(fetched.content, "Document");
     assert.equal(fetched.hasMore, true);
     assert.equal(fetched.truncatedAtByteLimit, false);
+
+    // 保留旧替身默认不返回标记；以下覆盖经过真实 service、socket 和客户端脱敏路径。
+    const search = async (query: string): Promise<WebSearchResponse> => {
+      const planned = await tool.resolveExecution({ query });
+      if ("isError" in planned) assert.fail("search plan failed");
+      return planned.execute({ toolCallId: "search-challenge", operationId: "search-challenge-operation", signal: undefined });
+    };
+    const resultHtml = '<a href="https://example.org/doc"><h3>Document</h3></a><p>Summary</p>';
+    const sensitiveWordsHtml = `${resultHtml}<p>captcha-form consent.google.com /sorry/ unusual traffic from your computer</p>`;
+    try {
+      for (const googleChallenge of [true, false]) {
+        Contents.webReadOverride = { googleChallenge };
+        const page = await requestBrowser(endpoint, "web_read", { url: "https://www.google.com/search?q=test", engine: "google" }) as { googleChallenge?: unknown; html: string };
+        assert.equal(page.googleChallenge, googleChallenge, "布尔标记必须经过 socket 和脱敏原样返回");
+        assert.equal(page.html, resultHtml, "标记不能替代或丢失有效搜索结果 HTML");
+      }
+
+      Contents.webReadOverride = { googleChallenge: true };
+      await assert.rejects(search("test"), /Google 需要验证/, "明确验证标记优先于有效结果");
+      Contents.webReadOverride = { googleChallenge: false, html: sensitiveWordsHtml };
+      const ordinary = await search("captcha-form");
+      assert.equal(ordinary.query, "captcha-form");
+      assert.equal(ordinary.results[0]?.url, "https://example.org/doc", "普通查询及正文中的敏感词不能覆盖 false 标记");
+
+      for (const query of ["captcha-form", "consent.google.com", "/sorry/", "unusual traffic from your computer"]) {
+        Contents.webReadOverride = { googleChallenge: false, html: `<input value="${query}"><p>${query} did not match any documents</p>` };
+        assert.deepEqual((await search(query)).results, [], "无结果页面回显查询词不构成验证证据");
+      }
+
+      Contents.webReadOverride = { googleChallenge: false, html: null };
+      await assert.rejects(search("test"), /无效的搜索页面/, "无效浏览器载荷不能被当作空结果成功返回");
+
+      for (const legacy of [{}, { googleChallenge: "false" }, { googleChallenge: 0 }, { googleChallenge: null }]) {
+        Contents.webReadOverride = legacy;
+        assert.equal((await search("test")).results[0]?.url, "https://example.org/doc", "缺失或非布尔标记仍允许普通旧版结果");
+        await assert.rejects(search("captcha-form"), /Google 需要验证/, "缺失或非布尔标记保留旧版 URL 保守检测");
+        Contents.webReadOverride = { ...legacy, html: sensitiveWordsHtml };
+        await assert.rejects(search("test"), /Google 需要验证/, "缺失或非布尔标记保留旧版 HTML 保守检测");
+      }
+    } finally {
+      Contents.webReadOverride = undefined;
+    }
 
     const host = Object.assign(new EventEmitter(), { isDestroyed: () => false, getContentBounds: () => ({ width: 1200, height: 800 }), contentView: { addChildView() {}, removeChildView() {} }, webContents: { send() {}, getZoomFactor: () => 1 } });
     browser.attachDesktopWindow(host as unknown as Electron.BrowserWindow);
