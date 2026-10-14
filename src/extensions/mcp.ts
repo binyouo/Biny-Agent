@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport, type StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -39,6 +39,7 @@ const maxInstructionBytes = 4 * 1024;
 const maxInstructionsTotalBytes = 16 * 1024;
 const maxPromptNames = 32;
 const maxToolSummaryChars = 320;
+const expiredSessionMessage = "MCP Streamable HTTP session expired; reconnect on the next request.";
 
 export interface McpServerStatus {
   name: string;
@@ -617,6 +618,18 @@ export class McpToolHost {
         markDisconnected(managed, new Error("connection closed"));
         this.emitChange();
       };
+      const transport = client.transport;
+      let sessionExpired = false;
+      client.onerror = (error) => {
+        // Inspect the SDK error before request credential scrubbing removes its HTTP code.
+        // Only this established connection can invalidate itself; never replay a request.
+        if (this.closing || this.servers.get(managed.name) !== managed || managed.client !== client) return;
+        if (!(transport instanceof StreamableHTTPClientTransport) || !transport.sessionId
+          || !(error instanceof StreamableHTTPError) || error.code !== 404) return;
+        sessionExpired = true;
+        markDisconnected(managed, new Error(expiredSessionMessage));
+        this.emitChange();
+      };
       managed.client = client;
       this.registerServerTools(managed, tools, client.getInstructions());
       activateToolNotifications();
@@ -625,6 +638,8 @@ export class McpToolHost {
       managed.status.instructions = client.getInstructions();
       const promptNames = capabilities?.prompts ? await this.listPromptNames(managed, client, controller.signal) : [];
       controller.signal.throwIfAborted();
+      // Optional prompt discovery must not republish a session invalidated while awaiting it.
+      if (sessionExpired) throw new Error(expiredSessionMessage);
       // 可选提示列表失败可忽略，但等待期间关闭的连接不能重新发布为已连接。
       if (this.closing || managed.client !== client || !client.transport) {
         throw new Error(`MCP server ${managed.name} connection closed during startup.`);
