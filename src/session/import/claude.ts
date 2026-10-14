@@ -67,7 +67,7 @@ export function claudeLinesToBinyEvents(lines: readonly unknown[]): SessionEvent
             events.push({ type: "agent_message", ...identity(), importSource, time, message: {
               role: "toolResult", toolCallId: event.toolCallId, toolName: event.tool,
               content: [{ type: "text", text: toolResultText(event.result) }], details: event.result,
-              isError: event.executionStatus === "failed" ? true : undefined
+              isError: event.executionStatus === "failed"
             } });
           }
           events.push({ ...event, importSource });

@@ -25,6 +25,10 @@ export class CapabilityOutcomeResolver {
         && registration.capabilityName.startsWith("host:mcp:")
         && typeof invocation.result === "object" && invocation.result !== null) {
         this.recoveredMcpResults.add(invocation.result);
+        const result = invocation.result as Record<string, unknown>;
+        if (typeof result.error === "string" || result.error === true || result.isError === true) {
+          return { executionStatus: "failed", result: invocation.result, evidence };
+        }
       }
       return { executionStatus: "succeeded", result: invocation.result, evidence };
     }
