@@ -7,6 +7,7 @@ import { setImmediate } from "node:timers/promises";
 import {
   AutomationScheduler,
   AutomationStore,
+  AutomationTargetBusyError,
   type AutomationCreateInput,
   type AutomationSchedulerOptions
 } from "../src/runtime/AutomationScheduler.js";
@@ -787,6 +788,180 @@ for (const trigger of ["manual", "scheduled"] as const) {
       assert.equal(pendingEvents.count, 0, "rejected fire cannot leave a pending event");
     } finally {
       await f.close();
+    }
+  });
+}
+
+for (const explicitAt of [true, false]) {
+  for (const phase of ["deferred", "completed", "failed"] as const) {
+    await test(`once resume after a ${phase} deferred fire cannot duplicate ${explicitAt ? "an explicit" : "an immediate"} schedule`, async (t) => {
+      const start = Date.parse("2030-01-01T00:00:00.000Z");
+      t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+      const target = controlledRuntime("target");
+      target.release();
+      if (phase === "failed") {
+        const submit = target.runtime.submitPrompt;
+        target.runtime.submitPrompt = (...args) => {
+          const submitted = submit(...args);
+          return {
+            ...submitted,
+            completion: submitted.completion.then((outcome) => ({
+              ...outcome, status: "failed" as const, error: "Synthetic failure after deferral"
+            }))
+          };
+        };
+      }
+      let busy = true;
+      const f = await fixture({
+        createFreshRuntime: async (sessionId) => {
+          assert.equal(sessionId, "target");
+          // Same boundary/error as Host resolution of an existing busy session.
+          if (busy) throw new AutomationTargetBusyError("target");
+          return target.runtime;
+        }
+      });
+      try {
+        const automation = f.create("resume-once", "target", {
+          schedule: explicitAt ? { at: "2030-01-01T08:00:00+08:00" } : {}
+        });
+        assert.equal(automation.nextFireAt, "2030-01-01T00:00:00.000Z");
+        await f.tick();
+        const original = f.store.listPending("resume-once")[0];
+        assert.ok(original);
+        assert.equal(f.store.listPending("resume-once").length, 1);
+        assert.equal(original.status, "deferred");
+        assert.equal(original.scheduledAt, "2030-01-01T00:00:05.000Z");
+        assert.equal(original.runId, undefined);
+        assert.equal(f.store.get("resume-once")?.nextFireAt, undefined);
+        assert.deepEqual(target.submissions, []);
+
+        if (phase !== "deferred") {
+          t.mock.timers.setTime(start + 5_000);
+          busy = false;
+          await f.tick();
+          assert.deepEqual(target.submissions, ["resume-once"]);
+          assert.equal(f.store.getFire(original.fireId)?.status, phase);
+          assert.equal(f.store.get("resume-once")?.fireCount, phase === "failed" ? 0 : 1);
+          assert.equal(f.store.get("resume-once")?.consecutiveFailures, phase === "failed" ? 1 : 0);
+        }
+
+        t.mock.timers.setTime(start + (phase === "deferred" ? 1_000 : 6_000));
+        f.store.pause("resume-once");
+        busy = false;
+        const resumed = f.store.resume("resume-once");
+        const repeated = f.store.resume("resume-once");
+        await f.tick();
+        await f.tick();
+        t.mock.timers.setTime(start + (phase === "deferred" ? 5_000 : 7_000));
+        await f.tick();
+        await f.tick();
+
+        // Assert observable execution first: the old implementation submits twice.
+        const fires = f.store.listPending("resume-once");
+        assert.deepEqual(target.submissions, ["resume-once"], JSON.stringify({ resumed, fires }));
+        assert.equal(resumed.nextFireAt, undefined);
+        assert.deepEqual(repeated, resumed, "an already-active resume is idempotent");
+        assert.equal(fires.length, 1, "resume must retain the original durable fire only");
+        assert.equal(fires[0]?.fireId, original.fireId);
+        assert.equal(fires[0]?.scheduledAt, original.scheduledAt);
+        assert.equal(fires[0]?.status, phase === "failed" ? "failed" : "completed");
+        assert.ok(fires[0]?.runId);
+        assert.equal(f.store.get("resume-once")?.fireCount, phase === "failed" ? 0 : 1);
+        assert.equal(f.store.get("resume-once")?.consecutiveFailures, 0, "resume resets failures without creating a retry");
+        assert.equal(f.store.get("resume-once")?.nextFireAt, undefined);
+      } finally {
+        target.release();
+        await f.close();
+      }
+    });
+  }
+}
+
+await test("manual runs remain independent before and after consuming a once schedule", async (t) => {
+  const start = Date.parse("2030-01-01T00:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+  const f = await fixture();
+  try {
+    const target = f.runtimeFor("target");
+    target.release();
+    f.create("manual-once", "target", { schedule: { at: "2030-01-01T00:00:10.000Z" } });
+    t.mock.timers.setTime(start + 1_000);
+    const before = await f.scheduler.runNow("manual-once");
+    assert.equal(before.status, "completed");
+    assert.equal(before.scheduledAt, "2030-01-01T00:00:01.000Z");
+    assert.equal(f.store.get("manual-once")?.nextFireAt, "2030-01-01T00:00:10.000Z");
+
+    t.mock.timers.setTime(start + 2_000);
+    f.store.pause("manual-once");
+    assert.equal(f.store.resume("manual-once").nextFireAt, "2030-01-01T00:00:10.000Z");
+    await f.tick();
+    assert.deepEqual(target.submissions, ["manual-once"]);
+    t.mock.timers.setTime(start + 10_000);
+    await f.tick();
+    await f.tick();
+    assert.deepEqual(target.submissions, ["manual-once", "manual-once"]);
+
+    t.mock.timers.setTime(start + 11_000);
+    f.store.pause("manual-once");
+    assert.equal(f.store.resume("manual-once").nextFireAt, undefined);
+    await f.tick();
+    t.mock.timers.setTime(start + 12_000);
+    const after = await f.scheduler.runNow("manual-once");
+    assert.equal(after.status, "completed");
+    assert.equal(after.scheduledAt, "2030-01-01T00:00:12.000Z");
+    await f.tick();
+    const fires = f.store.listPending("manual-once");
+    assert.deepEqual(target.submissions, ["manual-once", "manual-once", "manual-once"]);
+    assert.equal(fires.length, 3);
+    assert.equal(new Set(fires.map((fire) => fire.fireId)).size, 3);
+    assert.equal(new Set(fires.map((fire) => fire.runId)).size, 3);
+    assert.equal(fires.every((fire) => fire.status === "completed" && fire.runId !== undefined), true);
+    assert.equal(f.store.get("manual-once")?.fireCount, 3);
+    assert.equal(f.store.get("manual-once")?.nextFireAt, undefined);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const triggerType of ["interval", "heartbeat", "cron"] as const) {
+  await test(`${triggerType} resume retains an existing cursor and recomputes a missing one`, async (t) => {
+    const start = Date.parse("2030-01-01T00:00:00.000Z");
+    t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+    const previousZone = process.env.TZ;
+    process.env.TZ = "UTC";
+    let f: Awaited<ReturnType<typeof fixture>> | undefined;
+    try {
+      f = await fixture();
+      const target = f.runtimeFor("target");
+      target.release();
+      const automation = f.create("recurring", "target", {
+        triggerType,
+        schedule: triggerType === "cron" ? { cron: "* * * * *" } : { intervalMs: 1_000 }
+      });
+      const firstAt = triggerType === "cron" ? start + 60_000 : start + 1_000;
+      assert.equal(automation.nextFireAt, new Date(firstAt).toISOString());
+      f.store.pause("recurring");
+      t.mock.timers.setTime(start + 100);
+      assert.equal(f.store.resume("recurring").nextFireAt, automation.nextFireAt);
+      f.store.pause("recurring");
+      // Explicit legacy-state control for the unchanged recurring fallback.
+      f.authority.databaseHandle().prepare("UPDATE automations SET next_fire_at = NULL WHERE automation_id = ?").run("recurring");
+      t.mock.timers.setTime(start + 500);
+      const nextAt = triggerType === "cron" ? start + 60_000 : start + 1_500;
+      assert.equal(f.store.resume("recurring").nextFireAt, new Date(nextAt).toISOString());
+      t.mock.timers.setTime(nextAt - 1);
+      await f.tick();
+      assert.deepEqual(target.submissions, []);
+      t.mock.timers.setTime(nextAt);
+      await f.tick();
+      assert.deepEqual(target.submissions, ["recurring"]);
+      assert.equal(f.store.get("recurring")?.fireCount, 1);
+      const followingAt = nextAt + (triggerType === "cron" ? 60_000 : 1_000);
+      assert.equal(f.store.get("recurring")?.nextFireAt, new Date(followingAt).toISOString());
+    } finally {
+      await f?.close();
+      if (previousZone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousZone;
     }
   });
 }

@@ -88,6 +88,10 @@ biny automation run <automation-id> --json
 biny automation delete <automation-id> --json
 ```
 
+一次性计划在首次到期转换为 Fire 后即消耗其定时时间，暂停和恢复不会重新安排它。已产生的 Fire 保留自己的身份与状态：待执行或延期的 Fire 仍按原有准入规则处理，完成、失败及待审批的 Fire 不会因恢复而重建，失败也不会自动重试。尚未产生 Fire 的一次性计划则保留原来的触发时间。
+
+要额外执行一次，请显式使用 `automation run`。它不会消耗尚未到期的原计划，仍受过期时间和次数上限约束。
+
 没有目标会话的普通定时任务使用独立会话；Heartbeat 复用所选或当前主会话。定义、一次到期触发和真实 Agent run 有独立状态，列表存在不表示已经执行。
 
 ## 本机驻留与失败

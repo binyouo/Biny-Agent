@@ -64,7 +64,7 @@ for (const [label, at, expectedAt] of timestampCases) {
     });
   });
 
-  await test(`once resume recomputes a canonical next fire for ${label}`, async () => {
+  await test(`once resume preserves the canonical cursor until discovery and never rearms it for ${label}`, async () => {
     await withStore((store) => {
       const automation = store.create({
         name: label,
@@ -72,16 +72,26 @@ for (const [label, at, expectedAt] of timestampCases) {
         schedule: { at },
         executionTemplate: { prompt: "Synthetic reminder; do not execute" }
       });
-      // Let discovery clear nextFireAt before exercising resume's recomputation.
+      assert.equal(automation.nextFireAt, expectedAt, "creation still canonicalizes the original timestamp");
+      store.pause(automation.automationId);
+      const beforeDiscovery = store.resume(automation.automationId);
+      assert.equal(beforeDiscovery.nextFireAt, expectedAt, "resume must preserve the unconsumed canonical cursor");
+      assert.equal(beforeDiscovery.schedule.at, at, "resume must preserve the user's timestamp representation");
+      assert.equal(beforeDiscovery.fireCount, 0);
+      assert.deepEqual(store.resume(automation.automationId), beforeDiscovery, "repeated active resume is unchanged");
+      // Discovery consumes the one-shot cursor; completion and resume must not recreate it.
       const fire = store.claimDue(new Date("2037-01-01T00:00:00.000Z"))[0];
       assert.ok(fire);
       assert.ok(store.claimFire(fire.fireId));
       store.completeFire(fire.fireId, "synthetic-completion");
       store.pause(automation.automationId);
       const resumed = store.resume(automation.automationId);
-      assert.equal(resumed.nextFireAt, expectedAt);
+      assert.equal(resumed.nextFireAt, undefined, "resume cannot rearm a consumed one-shot cursor");
       assert.equal(resumed.schedule.at, at);
       assert.equal(resumed.fireCount, 1);
+      assert.deepEqual(store.resume(automation.automationId), resumed);
+      assert.deepEqual(store.claimDue(new Date("2037-01-01T00:00:00.000Z")), []);
+      assert.equal(store.listPending(automation.automationId).length, 1);
     });
   });
 }

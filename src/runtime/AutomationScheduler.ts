@@ -190,7 +190,10 @@ export class AutomationStore {
   resume(automationId: string): AutomationRecord {
     const automation = this.require(automationId);
     const now = new Date().toISOString();
-    const next = automation.nextFireAt ?? initialFireAt(automation.triggerType, automation.schedule, now);
+    // Discovery consumes a once schedule's cursor; resume must not create another fire.
+    const next = automation.triggerType === "once"
+      ? automation.nextFireAt
+      : automation.nextFireAt ?? initialFireAt(automation.triggerType, automation.schedule, now);
     if (automation.status === "active") return automation;
     return this.withAutomationEvent(automation, "automation.status", { status: "active" }, now, () => {
       this.database.prepare("UPDATE automations SET status = 'active', next_fire_at = ?, consecutive_failures = 0, revision = revision + 1, updated_at = ? WHERE automation_id = ?").run(next ?? null, now, automationId);
