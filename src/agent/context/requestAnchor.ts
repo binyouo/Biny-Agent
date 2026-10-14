@@ -4,18 +4,26 @@ import type { AgentModel, ModelStreamContext } from "../core/types.js";
 import type { SessionUsageAnchor } from "../../session/metadata.js";
 import { estimateMessageTokens } from "./tokenUsage.js";
 
+function requestFingerprintHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function fixedRequestFingerprint(model: AgentModel, context: ModelStreamContext, configurationIdentity?: string): string {
+  return requestFingerprintHash([configurationIdentity, model.provider, model.providerAlias, model.modelId, model.vercelOptions, context.systemPrompt ?? "", context.tools.map(({ name, description, parameters }) => ({ name, description, parameters }))]);
+}
+
 export function requestFingerprints(model: AgentModel, context: ModelStreamContext, configurationIdentity?: string) {
-  const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
   return {
-    fixedFingerprint: hash([configurationIdentity, model.provider, model.providerAlias, model.modelId, model.vercelOptions, context.systemPrompt ?? "", context.tools.map(({ name, description, parameters }) => ({ name, description, parameters }))]),
-    messageFingerprints: context.messages.map((message) => hash(message))
+    fixedFingerprint: fixedRequestFingerprint(model, context, configurationIdentity),
+    messageFingerprints: context.messages.map((message) => requestFingerprintHash(message))
   };
 }
 
 export function anchoredRequestTokens(anchor: SessionUsageAnchor | undefined, model: AgentModel, context: ModelStreamContext, configurationIdentity?: string): number | undefined {
   if (!anchor) return undefined;
-  const candidate = requestFingerprints(model, context, configurationIdentity);
-  if (candidate.fixedFingerprint !== anchor.fixedFingerprint || candidate.messageFingerprints.length < anchor.messageFingerprints.length) return undefined;
-  if (anchor.messageFingerprints.some((hash, index) => hash !== candidate.messageFingerprints[index])) return undefined;
+  if (fixedRequestFingerprint(model, context, configurationIdentity) !== anchor.fixedFingerprint) return undefined;
+  const messageFingerprints = context.messages.map((message) => requestFingerprintHash(message));
+  if (messageFingerprints.length < anchor.messageFingerprints.length) return undefined;
+  if (anchor.messageFingerprints.some((hash, index) => hash !== messageFingerprints[index])) return undefined;
   return anchor.inputTokens + estimateMessageTokens(context.messages.slice(anchor.messageFingerprints.length));
 }

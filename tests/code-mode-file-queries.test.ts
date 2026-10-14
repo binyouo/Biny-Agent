@@ -59,7 +59,7 @@ class AskFiles extends PermissionManager {
   }
 }
 function coordinator(registry: ToolRegistry, options?: { tools?: Set<string>; denyPaths?: string[];
-  budget?: { maxToolCalls: number; maxRepeatedActions: number }; ask?: () => Promise<{ approved: boolean; scope: "once" }> }): ToolExecutionCoordinator {
+  budget?: { maxToolCalls: number; maxRepeatedActions: number }; quarantined?: Promise<unknown>[]; ask?: () => Promise<{ approved: boolean; scope: "once" }> }): ToolExecutionCoordinator {
   const config = structuredClone(defaultConfig);
   config.agent.toolExecutionMode = "code_mode";
   config.agent.maxConcurrentTools = 1;
@@ -68,7 +68,8 @@ function coordinator(registry: ToolRegistry, options?: { tools?: Set<string>; de
   config.context.memory.enabled = false;
   const recorder = new SessionRecorder(root, `file-query-${String(recorders.length)}`);
   recorders.push(recorder);
-  return new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: options?.ask },
+  return new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: options?.ask,
+    quarantineExternalTool: options?.quarantined === undefined ? undefined : (_tool, _id, settlement) => { options.quarantined?.push(settlement); } },
     options?.ask ? new AskFiles(config.permission) : new PermissionManager(config.permission), () => undefined, () => ({}), options?.tools ?? selected, options?.budget);
 }
 function details(result: AgentToolResult): { value?: unknown; childCalls?: unknown[]; error?: string } { return result.details as ReturnType<typeof details>; }
@@ -173,17 +174,34 @@ try {
 
   const stalledRegistry = makeRegistry(); const entered = deferred(); const release = deferred();
   const oldList = service.list; let stalledCalls = 0;
+  const quarantined: Promise<unknown>[] = [];
+  const stalled = coordinator(stalledRegistry, { quarantined });
+  let pending: Promise<AgentToolResult> | undefined;
+  let cleanupSettlements: PromiseSettledResult<unknown>[] = [];
   service.list = async () => { stalledCalls++; entered.resolve(); await release.promise; return []; };
   try {
-    const stalled = coordinator(stalledRegistry);
     const exec = stalled.createCodeModeTool(undefined, { ...codeModePolicy, hostCallTimeoutMs: 100, maxCellDurationMs: 2_000 });
-    const pending = exec.execute("stalled-file-query", { code: "return await tools.BashOutput({});" });
-    await entered.promise;
+    pending = exec.execute("stalled-file-query", { code: "return await tools.BashOutput({});" });
+    const first = await Promise.race([
+      entered.promise.then(() => ({ entered: true as const })),
+      pending.then((result) => ({ entered: false as const, result }))
+    ]);
+    if (!first.entered) assert.fail("stalled-file-query completed before BashOutput service entry: " + JSON.stringify(first.result));
     assert.equal((await pending).isError, true);
     assert.equal((await exec.execute("stalled-file-replay", { code: "return await tools.BashOutput({});" })).isError, true);
     assert.equal(stalledCalls, 1);
-    release.resolve(); await stalled.waitForIdle();
-  } finally { service.list = oldList; release.resolve(); }
+  } finally {
+    release.resolve();
+    // Observe this cell before its coordinator; cleanup must preserve a primary failure.
+    const cellSettlement = await Promise.allSettled([pending]);
+    await Promise.allSettled(quarantined);
+    const idleSettlement = await Promise.allSettled([stalled.waitForIdle()]);
+    service.list = oldList;
+    cleanupSettlements = [...cellSettlement, ...idleSettlement];
+  }
+  for (const settlement of cleanupSettlements) {
+    if (settlement.status === "rejected") throw settlement.reason;
+  }
   assert.equal(await readFile(resource, "utf8"), "temporary query resource");
 } finally {
   for (const recorder of recorders) await recorder.close();
