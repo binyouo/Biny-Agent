@@ -90,6 +90,8 @@ function checkDocument(filename, queue) {
   walk(document.tree, node => {
     if (node.type !== "inlineCode" || !/^(?:src|tests|scripts|config|docs)\/[^\s]+$/.test(node.value)) return;
     const target = node.value.replace(/:\d+(?::\d+)?$/, "");
+    // 本地规格被 Git 忽略，公开检查不要求私有文件存在。
+    if (!local && target.startsWith("docs/specs/")) return;
     if (!globSync(target, { cwd: root }).length) errors.push(`${filename}:${node.position.start.line}: missing path: ${target}`);
   });
 }
