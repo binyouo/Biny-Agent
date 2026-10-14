@@ -757,6 +757,7 @@ export class McpToolHost {
       cursor = listed.nextCursor;
       if (!cursor) break;
     }
+    if (cursor) throw new Error(`MCP tool catalog is incomplete after ${maxToolListPages} pages.`);
     return tools;
   }
 
