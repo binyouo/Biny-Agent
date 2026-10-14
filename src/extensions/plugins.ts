@@ -7,6 +7,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import type { ModelCatalogEntry, ProviderDefinition } from "../ai/types.js";
 import { AiRegistry } from "../llm/AiRegistry.js";
 import type { CredentialRefreshHandler } from "../llm/AiRegistry.js";
+import { PluginLifecycleRegistry, type PluginTurnLifecycle } from "./pluginLifecycle.js";
 
 export interface BinyPluginContext {
   workspaceRoot: string;
@@ -15,6 +16,7 @@ export interface BinyPluginContext {
   registerProvider(definition: ProviderDefinition, models?: readonly ModelCatalogEntry[]): void;
   registerModels(providerType: string, models: readonly ModelCatalogEntry[]): void;
   registerCredentialHandler(id: string, handler: CredentialRefreshHandler): void;
+  registerTurnLifecycle(lifecycle: PluginTurnLifecycle): void;
 }
 
 interface BinyPluginModule {
@@ -28,9 +30,10 @@ export async function loadPlugins(
   configuredPaths: string[],
   config: AgentConfig,
   registry: ToolRegistry,
-  ai: AiRegistry = new AiRegistry()
+  ai: AiRegistry = new AiRegistry(),
+  lifecycle: PluginLifecycleRegistry = new PluginLifecycleRegistry()
 ): Promise<string[]> {
-  return await loadPluginsFromRoot(workspaceRoot, workspaceRoot, configuredPaths, config, registry, ai);
+  return await loadPluginsFromRoot(workspaceRoot, workspaceRoot, configuredPaths, config, registry, ai, lifecycle);
 }
 
 /** 从指定受管根目录加载插件；全局插件只能通过全局配置根目录进入这里。 */
@@ -40,7 +43,8 @@ export async function loadPluginsFromRoot(
   configuredPaths: string[],
   config: AgentConfig,
   registry: ToolRegistry,
-  ai: AiRegistry = new AiRegistry()
+  ai: AiRegistry = new AiRegistry(),
+  lifecycle: PluginLifecycleRegistry = new PluginLifecycleRegistry()
 ): Promise<string[]> {
   const canonicalWorkspace = await fs.realpath(path.resolve(workspaceRoot));
   let canonicalPluginRoot: string;
@@ -68,7 +72,8 @@ export async function loadPluginsFromRoot(
       registerTool: (tool) => registry.registerPluginTool(tool),
       registerProvider: (definition, models) => ai.registerProvider(definition, models),
       registerModels: (providerType, models) => ai.registerModels(providerType, models),
-      registerCredentialHandler: (id, handler) => ai.registerCredentialHandler(id, handler)
+      registerCredentialHandler: (id, handler) => ai.registerCredentialHandler(id, handler),
+      registerTurnLifecycle: (turnLifecycle) => lifecycle.register(turnLifecycle, path.relative(canonicalPluginRoot, filePath))
     };
     // ESM export bindings can change while the default callback runs.
     const defaultExport = imported.default;

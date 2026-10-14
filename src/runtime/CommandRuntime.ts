@@ -33,6 +33,8 @@ import { skillNamesForSelection, skillPathsForSelection, skillPromptForSelection
 import type { ToolRisk, ToolSource } from "../tools/types.js";
 import { perfNow, recordPerfPhase } from "../observability/perfTiming.js";
 import { loadPlugins, loadPluginsFromRoot } from "../extensions/plugins.js";
+import { PluginLifecycleRegistry } from "../extensions/pluginLifecycle.js";
+import { redactSecrets } from "../utils/redaction.js";
 import type { McpToolHost } from "../extensions/mcp.js";
 import { createSubagentTool, createTaskStatusTool, createTaskControlTools, prepareSubagentTask, runSubagentTask as executeSubagentTask, type PreparedSubagentTask, type SubagentOptions } from "../extensions/subagent.js";
 import { TaskCommunication } from "./TaskCommunication.js";
@@ -550,6 +552,10 @@ async function initializeCommandRuntime(
     : undefined;
   if (subagentTaskManager) cleanup.subagents = () => subagentTaskManager.close();
   const loadedPlugins: string[] = [];
+  const pluginLifecycle = new PluginLifecycleRegistry((pluginPath, phase, error) => {
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.warn(`[biny] Plugin ${pluginPath} ${phase} failed: ${redactSecrets(detail).slice(0, 500)}`);
+  });
   // Desktop Host 的 MCP/Skill 启动在后台进行；私有 CLI/TUI runtime 仍在这里等待首个稳定快照。
   if (resourceBoot === "blocking") await resourceStart;
   skills = resourceScope.skills;
@@ -577,7 +583,9 @@ async function initializeCommandRuntime(
   });
   for (const pluginPath of [...config.extensions.plugins, ...managedPluginPaths]) {
     try {
-      loadedPlugins.push(...await loadPlugins(workspaceRoot, [pluginPath], config, toolRegistry, ai));
+      loadedPlugins.push(...await loadPlugins(
+        workspaceRoot, [pluginPath], config, toolRegistry, ai, pluginLifecycle
+      ));
     } catch (error) {
       // 单个 Plugin 失败只影响它自己；主 Runtime、其它 Plugin 和内置工具仍可用。
       loadedPlugins.push(`${pluginPath} (failed: ${error instanceof Error ? error.message : String(error)})`);
@@ -590,7 +598,9 @@ async function initializeCommandRuntime(
   const globalPluginPaths = [...config.extensions.globalPlugins, ...managedGlobalPluginPaths];
   if (globalPluginPaths.length) {
     try {
-      loadedPlugins.push(...await loadPluginsFromRoot(workspaceRoot, globalPluginRoot(), globalPluginPaths, config, toolRegistry, ai));
+      loadedPlugins.push(...await loadPluginsFromRoot(
+        workspaceRoot, globalPluginRoot(), globalPluginPaths, config, toolRegistry, ai, pluginLifecycle
+      ));
     } catch (error) {
       loadedPlugins.push(`global plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
     }
@@ -705,6 +715,7 @@ async function initializeCommandRuntime(
     attachmentRoot: projectAttachmentRoot,
     runtimeEventSink: runtimeAuthority.asSink(),
     capabilities,
+    pluginLifecycle,
     createSelfReflectionTask: async (candidate) => {
       taskRuns.create({
         taskRunId: candidate.taskRunId,

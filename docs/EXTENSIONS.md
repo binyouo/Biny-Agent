@@ -118,17 +118,55 @@ Desktop 的技能设置可管理启用状态与自动提取。自动提取会调
 
 ## Plugins
 
-Plugin 可注册工具、Provider、模型目录或凭据处理能力。项目与全局插件通过受管目录和启用配置加载。
+Plugin 可注册工具、Provider、模型目录或凭据处理能力，也可注册回合前的临时上下文与回合后的同步回调。回调失败不会改变 Agent 回合结果。项目与全局插件通过受管目录和启用配置加载。
 
 `extensions.plugins` 声明项目插件路径，`extensions.globalPlugins` 声明全局插件路径。项目路径与全局 `~/.config/biny/plugins/` 的解析边界不同，不能把任意外部绝对路径当作受管插件。
 
 Plugin 的 JavaScript 在 Biny 进程中运行。受管安装、路径校验和工具审批各自提供约束，不构成 Plugin 代码沙箱。启用前检查实际来源和代码。
 
+## Nowledge Mem
+
+`plugins/nowledge-mem` 使用已配置的 Nowledge Mem MCP 服务。新消息到来时读取 context bundle 并搜索相关记忆，将结果作为本轮临时外部上下文；成功回合结束前，把当前活动消息分支中的用户与助手可见文本同步到该服务。原始用户消息不包含检索结果，工具调用、工具结果和思考内容不会同步。自动 MCP 调用仍经过 Biny 的 schema 校验、权限、回合工具额度、session 事件和结果归档。Biny 的记忆召回开关关闭时跳过检索，记忆贡献开关关闭时跳过同步。服务不可用时跳过对应操作，不阻断聊天。
+
+要启用它，配置本地 MCP 服务，并把 `plugins/nowledge-mem` 加入项目的 `extensions.plugins`。默认识别名含 `nowledge-mem` 的 MCP 配置；其他别名可通过 Biny 进程环境变量 `BINY_NOWLEDGE_MEM_SERVER` 指定。同步会把用户和助手消息发送给该 MCP 服务；如需本机留存，请使用本地服务地址。
+
 ## 子代理
 
-`extensions.subagent.enabled` 控制子代理能力，当前默认关闭。启用后可设置模型、步数、期限、并发与允许工具。
+`extensions.subagent.enabled` 控制子代理能力，当前默认关闭。Desktop 在「设置 → 通用 → 子代理」启用并选择默认子代理与模型，使用页面底部的保存按钮提交；运行任务时不可修改。Biny 内置可跟随主模型，Codex CLI / Claude Code CLI 使用本机已安装并登录的 CLI 并填写模型 ID，外部 Agent 直接列出已配置连接的名称，例如「Claude Code（ACP）」「Codex（ACP）」，模型列表只显示所选连接的模型；没有连接时可通过「添加外部 Agent」进入模型供应商配置。切换 Agent 会清空旧模型，避免连接与模型混用。具名定义仍可覆盖默认运行方式和模型。
+
+步数、期限、并发与允许工具继续在配置文件中管理；Desktop 修改默认运行方式和模型不会覆盖这些限制。外部运行方式有不兼容的权限、沙箱或额度配置时，设置页显示限制原因，保存不会自动放宽它们；启动前仍执行完整校验。
 
 子代理的工具范围与全局允许集合求交集，不能扩大父任务权限。任务结果以持久 TaskRun、Attempt 和可选验证记录为准；子代理的文字报告不代替文件或测试证据。管理与恢复见 [目标与自动化](AUTOMATION.md)。
+
+具名定义放在 `.biny/agents/<name>.md`（项目级）或 `~/.config/biny/agents/`（全局）；项目级同名优先。`runtime` 可选 `auto`、`builtin`、`codex`、`claude-code`、`acp`，省略时使用 `extensions.subagent.runtime`，默认 `builtin`。`model` 优先使用定义值，其次使用 `extensions.subagent.model`；内置运行时最终可沿用主模型。显式选择外部运行时必须指定模型，不自动安装或在执行失败后切换后端。
+
+选择「自动」（`runtime: auto`）时，未指定模型的子代理在委派时查找本机可执行的 Claude Code CLI：找到则使用 Claude Code 自身的默认模型，未找到则使用 Biny 内置和主模型。不会自动选择 Codex 或 ACP 连接；显式模型别名使用内置运行方式，具名定义的 runtime 优先于全局默认。检测只确认可执行文件存在，不检查登录或服务可用性。选中 Claude Code 后仍执行外部子代理的权限与额度检查；校验、启动、登录或执行失败均直接报错，不再转用内置重跑。
+
+```markdown
+---
+name: coder
+description: Complete a focused coding task.
+runtime: codex
+model: your-codex-model-id
+---
+Keep changes within the assigned task. Report the changes and verification results.
+```
+
+`builtin` 的 `model` 是 Biny 模型别名；`acp` 也使用 Biny 模型别名，该模型必须属于已启用的 ACP Provider，实际启动命令、环境变量引用及 MCP 选择复用该连接配置。`codex` 和 `claude-code` 的 `model` 是对应 CLI 接受的原始模型 ID，分别从 PATH 启动 `codex exec` 和 `claude -p`。CLI 使用自己的本地登录与配置；Biny 不转发 Provider 密钥、主会话历史、记忆或工具。ACP 只转交连接中明确选择的 MCP 服务，子任务不自动检索或发送 Biny 记忆。
+
+外部进程拥有自己的工具与授权机制，Biny 的 `allowedTools` 仅约束内置 Worker。外部任务要求父会话为 `full-access`、任务为 `workspace`，且不能附带 Biny 的拒绝路径、沙箱/禁网限制或具名 `tools` 限制；不满足时在启动前拒绝，不自动降低策略。CLI 启动不使用跳过权限的参数：Codex 使用 `workspace-write`，Claude Code 使用 `dontAsk`，外部工具可能被其自身权限拒绝。独立子 Session 不等于操作系统隔离，外部工具也不经过 Biny 的逐次批准。
+
+外部 Worker 暂不支持 Biny 的 `maxSteps`、`maxCostUsd` 或绑定 session goal 的任务，存在这些要求时拒绝启动；内置 `maxOutputTokens` 不控制外部生成额度。总时限 `timeoutMs`、空闲时限 `inactivityTimeoutMs`、父取消和 Runtime 关闭仍有效。CLI 输出限制为 16 MiB、单条消息 1 MiB；ACP 沿用连接限制。完成必须同时有协议终态，CLI 还须正常退出，不能仅凭输出文本报成功。
+
+外部任务启动前接收已排队消息并关闭消息入口，运行中不支持 `TaskMessage` 或子端 `TaskReport`。任务、模型身份、工具事件和最终回答记录在子 Session，可通过既有任务详情查询。中断后不重放外部请求，显式恢复也会拒绝；核实副作用后可创建新任务。CLI 错误输出不原样展示，避免泄露进程诊断中的凭据。真实 CLI 的登录、版本和模型可用性需要用户环境验证。
+
+通过 `Task` 的 `agent` 字段或 CLI 选择具名定义：
+
+```bash
+biny task create "检查并修复指定问题" --agent coder --json
+biny task run <taskRunId> --json
+biny task get <taskRunId>
+```
 
 Worker 已输出部分文字不代表任务完成。输出额度耗尽、内容过滤或缺少正常结束原因时，任务记为未完成；Provider 报错则记为失败。`TaskStatus` 保留部分回答与结束诊断，冷恢复移交不自动追加模型请求。
 

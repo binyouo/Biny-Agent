@@ -1,4 +1,21 @@
 {
   "format": 1,
-  "plugins": []
+  "plugins": [
+    {
+      "id": "nowledge-mem",
+      "name": "Nowledge Mem",
+      "version": "0.1.0",
+      "category": "Memory",
+      "description": "Automatically recalls and syncs Biny conversations through a Nowledge Mem MCP service.",
+      "details": "Reads a context bundle and relevant memories before a prompt, then syncs visible user and assistant messages after completed turns. Requires a configured Nowledge Mem MCP server.",
+      "tags": ["memory", "MCP", "Nowledge Mem"],
+      "repository": "https://github.com/binyouo/Biny-Agent",
+      "path": "plugins/nowledge-mem",
+      "files": ["index.mjs", "README.md"],
+      "branch": "main",
+      "entry": "index.mjs",
+      "homepage": "https://mem.nowledge.co/docs/integrations/alma",
+      "featured": false
+    }
+  ]
 }
