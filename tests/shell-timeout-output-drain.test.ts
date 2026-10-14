@@ -40,6 +40,7 @@ const allowedCalls = new Set([
   "Math.min", "Math.max", "Math.floor", "Number.isFinite", "Number.isSafeInteger", "Number", "String",
   "[timeoutMs,terminationGraceMs,killSettleMs].every", "spawn", "Buffer.byteLength", "Buffer.from", "Buffer.allocUnsafeSlow",
   "stderrBuffer.append", "stdoutBuffer.append", "stdoutDecoder.write", "stderrDecoder.write", "options.onUpdate",
+  "pendingUpdates.at", "pendingUpdates.push", "flushUpdates", "queueOutput",
   "stdoutDecoder.end", "stderrDecoder.end", "clearTimeout", "setTimeout", "options.signal.removeEventListener",
   "options.signal.addEventListener", "child.stdout.removeListener", "child.stderr.removeListener", "child.removeListener",
   "windowsTreeKill.removeAllListeners", "windowsTreeKill.unref", "settle", "settleStopped", "settleStoppedAfterOutput",

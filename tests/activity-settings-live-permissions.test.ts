@@ -67,6 +67,8 @@ test("权限刷新读取实时系统权限，不沿用采集器的上次状态�
   };
   try {
     await render();
+    assert.ok(document.querySelector('#activity-sensitive-apps')!.compareDocumentPosition(document.querySelector('#activity-capture')!) & 4,
+      "先配置不记录的应用，再调整采集参数；权限覆盖原先未保护此顺序");
     // 持久失败位于最近会话窗口之外时仍须可恢复；既有权限测试不覆盖分析失败。
     const analysis = document.getElementById("activity-analysis");
     assert.match(analysis?.textContent ?? "", /失败 2/u);

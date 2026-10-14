@@ -6,6 +6,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { JSDOM } from "jsdom";
 import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
 import { GenerationErrorBanner } from "../src/desktop/renderer/src/components/chat/GenerationErrorBanner.js";
+import { ActivitySegment } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
+import { ChatResponseContext } from "../src/desktop/renderer/src/chatResponseSettings.js";
 import { MessageTimeline } from "../src/desktop/renderer/src/components/MessageTimeline.js";
 import { buildSessionTimeline, type TimelineTurn } from "../src/desktop/renderer/src/sessionTimeline.js";
 import type { SessionEvent } from "../src/session/events.js";
@@ -240,8 +242,18 @@ test("只有思考、没有正文的可恢复终态保留失败原因", () => {
     }
   ]);
   const markup = renderTurns(turns);
-  assert.match(markup, /先检查一下。/u);
+  assert.doesNotMatch(markup, /先检查一下。/u);
   assert.match(markup, new RegExp(reason, "u"));
+  const expanded = renderToStaticMarkup(createElement(ChatResponseContext, { value: { collapseThinking: false } },
+    createElement(ActivitySegment, {
+      steps: turns[0]!.steps.filter(step => step.kind === "reasoning"),
+      running: false,
+      projectId: "project",
+      onPreviewFile: noop,
+      onOpenExternal: noop,
+    })
+  ));
+  assert.match(expanded, /先检查一下。/u);
 });
 
 test("成功回复没有思考内容：展示正文但不凭总耗时补出思考", () => {

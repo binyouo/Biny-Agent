@@ -265,6 +265,27 @@ async function runShellCommandWithCompletionEvidence(
     let windowsTreeKillPending = false;
     const trackedUnixPids = new Set<number>();
     let unixStopInitialized = false;
+    let pendingUpdates: ToolUpdate[] = [];
+    let pendingUpdateBytes = 0;
+    let outputTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const flushUpdates = (): void => {
+      if (outputTimer !== undefined) clearTimeout(outputTimer);
+      outputTimer = undefined;
+      const updates = pendingUpdates;
+      pendingUpdates = [];
+      pendingUpdateBytes = 0;
+      for (const update of updates) options.onUpdate?.(update);
+    };
+    const queueOutput = (kind: "stdout" | "stderr", text: string): void => {
+      if (!text || !options.onUpdate) return;
+      const previous = pendingUpdates.at(-1);
+      if (previous?.kind === kind) previous.text += text;
+      else pendingUpdates.push({ kind, text });
+      pendingUpdateBytes += Buffer.byteLength(text, "utf8");
+      if (pendingUpdateBytes >= 64 * 1024 || pendingUpdates.length >= 128) flushUpdates();
+      else outputTimer ??= setTimeout(flushUpdates, 50);
+    };
 
     const child = spawn(command, {
       cwd,
@@ -279,6 +300,7 @@ async function runShellCommandWithCompletionEvidence(
       stderrBytes += Buffer.byteLength(text, "utf8");
       stderrDecodedBytes += Buffer.byteLength(text, "utf8");
       stderrBuffer.append(text);
+      flushUpdates();
       options.onUpdate?.({ kind: "stderr", text });
     };
     const onStdout = (chunk: Buffer) => {
@@ -286,14 +308,14 @@ async function runShellCommandWithCompletionEvidence(
       const text = stdoutDecoder.write(chunk);
       stdoutDecodedBytes += Buffer.byteLength(text, "utf8");
       stdoutBuffer.append(text);
-      if (text) options.onUpdate?.({ kind: "stdout", text });
+      queueOutput("stdout", text);
     };
     const onStderr = (chunk: Buffer) => {
       stderrBytes += chunk.byteLength;
       const text = stderrDecoder.write(chunk);
       stderrDecodedBytes += Buffer.byteLength(text, "utf8");
       stderrBuffer.append(text);
-      if (text) options.onUpdate?.({ kind: "stderr", text });
+      queueOutput("stderr", text);
     };
     const finalizeOutput = (): void => {
       if (outputFinalized) return;
@@ -304,8 +326,9 @@ async function runShellCommandWithCompletionEvidence(
       stderrDecodedBytes += Buffer.byteLength(stderrRemainder, "utf8");
       stdoutBuffer.append(stdoutRemainder);
       stderrBuffer.append(stderrRemainder);
-      if (stdoutRemainder) options.onUpdate?.({ kind: "stdout", text: stdoutRemainder });
-      if (stderrRemainder) options.onUpdate?.({ kind: "stderr", text: stderrRemainder });
+      queueOutput("stdout", stdoutRemainder);
+      queueOutput("stderr", stderrRemainder);
+      flushUpdates();
     };
     const cleanup = () => {
       clearTimeout(commandTimer);
@@ -393,6 +416,7 @@ async function runShellCommandWithCompletionEvidence(
     };
     const forceKill = async () => {
       if (settled || drainingOutput) return;
+      flushUpdates();
       options.onUpdate?.({ kind: "status", text: "Command did not stop after SIGTERM; sending SIGKILL." });
       if (child.pid !== undefined) {
         for (const pid of await descendantProcessIds([child.pid, ...trackedUnixPids])) trackedUnixPids.add(pid);

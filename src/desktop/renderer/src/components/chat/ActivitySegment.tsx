@@ -223,7 +223,7 @@ export const ActivitySegment = memo(function ActivitySegment({
         )}
       </div>
       <Collapse className="chat-activity-collapse" open={railOpen}>
-        <div className="chat-activity-rail">
+        {railOpen ? <div className="chat-activity-rail">
           {timelineMode || !openPhaseOrNull
             ? phases.map((phase, index) => {
               const label = labelFor(phase, secondsForThinkingPhase(phase));
@@ -256,7 +256,7 @@ export const ActivitySegment = memo(function ActivitySegment({
                 segmentKey={segmentKey}
               />
             )}
-        </div>
+        </div> : null}
       </Collapse>
       {toolSteps.map(({ tool }) => <ToolResultImages key={tool.id} result={tool.result} />)}
       {toolSteps.filter(({ tool }) => tool.tool === "WidgetRenderer").map(({ tool }) => <WidgetRenderer key={`widget-${tool.id}`} tool={tool} running={running} onOpenExternal={onOpenExternal} />)}
@@ -439,12 +439,12 @@ export const ActivityToolRow = memo(function ActivityToolRow({
       </button>
       <Collapse className="chat-tool-row-collapse" open={open}>
         <div className="chat-tool-row-detail" id={detailId}>
-          <ToolActivityDetail
+          {open ? <ToolActivityDetail
             onOpenExternal={onOpenExternal}
             onPreviewFile={onPreviewFile}
             projectId={projectId}
             tool={tool}
-          />
+          /> : null}
         </div>
       </Collapse>
       {onResolvePermission ? <ToolPermission tool={tool} onResolvePermission={onResolvePermission} /> : null}

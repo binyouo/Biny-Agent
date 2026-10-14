@@ -16,6 +16,7 @@ import { Icon } from "./Icon.js";
 import { CodeView } from "./chat/CodeView.js";
 import { IoCard } from "./chat/IoCard.js";
 import { toolResultImages } from "../toolImagePresentation.js";
+import { commandOutputPreview, commandOutputText } from "../commandOutput.js";
 
 interface ToolActivityDetailProps {
   projectId: string;
@@ -213,7 +214,8 @@ function resolvedPermissionLabel(action: PermissionAction | undefined, approved:
 function CommandLog({ command, error, status, running }: { command: TimelineCommand; error?: string; status: TimelineTool["status"]; running: boolean }): React.JSX.Element {
   const scrollRef = useRef<HTMLPreElement>(null);
   const followOutput = useRef(true);
-  const output = [command.stdout, command.stderr].filter(Boolean).join(command.stdout.endsWith("\n") ? "" : "\n");
+  const { stdout, stderr } = command;
+  const { text: output, truncated } = useMemo(() => commandOutputPreview({ stdout, stderr }), [stdout, stderr]);
   const failed = status === "failed" || status === "denied" || (command.exitCode !== undefined && command.exitCode !== 0);
   const statusText = status === "waiting" ? "等待确认" : status === "cancelled" || status === "aborted" ? "已停止" : status === "skipped" ? "已跳过" : status === "unknown" ? "执行状态未知" : failed ? command.exitCode !== undefined ? `退出码 ${String(command.exitCode)}` : "执行失败" : output ? "已完成" : "已完成，无输出";
   useEffect(() => {
@@ -232,8 +234,9 @@ function CommandLog({ command, error, status, running }: { command: TimelineComm
           const element = event.currentTarget;
           followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
         }}>{output}</pre>
-        <CopyButton label="复制输出" value={output} />
+        <CopyButton label={truncated ? "复制完整输出" : "复制输出"} value={output} resolveValue={() => commandOutputText(command)} />
       </div> : null}
+      {truncated ? <div className="chat-command-status">仅显示末尾输出，可复制全文</div> : null}
       <div className={`chat-command-status${failed || error ? " is-error" : ""}`}>
         {running ? <><span aria-hidden="true" className="chat-tool-run-dot" />{output ? "运行中" : "等待输出…"}</>
           : error ? error : statusText}
