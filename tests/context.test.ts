@@ -2490,15 +2490,17 @@ async function testCrystalCurrentRunAnchors(): Promise<void> {
       await agent.close();
     }
     const newInputs = ["Newest backlog topic", "One more backlog topic"];
-    assert.deepEqual(seen.map((entry) => entry.text), newInputs);
+    assert.equal(seen.length, 2);
     const newUserEvents = (await readSessionEvents(saved.filePath)).filter(
       (event): event is Extract<SessionEvent, { type: "user_message" }> => event.type === "user_message" && newInputs.includes(event.content)
     );
     assert.equal(newUserEvents.length, 2);
-    assert.deepEqual(seen, newUserEvents.map((event) => {
+    assert.deepEqual(newUserEvents.map((event) => event.content), newInputs);
+    // Independent background runs may finish out of order; preserve each anchor's provenance.
+    assert.deepEqual(new Map(seen.map((entry) => [entry.anchorId, entry])), new Map(newUserEvents.map((event) => {
       assert.ok(event.messageId && event.time);
-      return { text: event.content, day: event.time.slice(0, 10), anchorId: event.messageId };
-    }));
+      return [event.messageId, { text: event.content, day: event.time.slice(0, 10), anchorId: event.messageId }];
+    })));
     assert.equal(count, 2);
     assert.equal(new Set(seen.map((entry) => entry.anchorId)).size, 2);
     const reopened = new CrystalStorage();

@@ -57,6 +57,10 @@ interface Host {
   socket: net.Socket;
   socketPath: string;
   buffer: Buffer;
+  bufferStart: number;
+  bufferEnd: number;
+  bufferScan: number;
+  bufferOverflowed: boolean;
   closed: boolean;
   connected: boolean;
   stdout: string;
@@ -165,7 +169,7 @@ export class NativeProcessDriver implements ComputerDriver {
     });
     child.stderr?.resume();
     const socket = new net.Socket();
-    const host: Host = { child, socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8") };
+    const host: Host = { child, socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), bufferStart: 0, bufferEnd: 0, bufferScan: 0, bufferOverflowed: false, closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8") };
     // 立刻开始收集 stdout：daemon 可能在监听器挂上之前就打出 "ready"。
     child.stdout?.on("data", (chunk: Buffer) => { host.stdout += chunk.toString(); });
     socket.on("data", chunk => this.onData(host, chunk));
@@ -192,7 +196,7 @@ export class NativeProcessDriver implements ComputerDriver {
   private adoptExisting(): Promise<Host | undefined> {
     return new Promise(resolve => {
       const socket = new net.Socket();
-      const host: Host = { socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8") };
+      const host: Host = { socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), bufferStart: 0, bufferEnd: 0, bufferScan: 0, bufferOverflowed: false, closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8") };
       // 放弃时才能清监听器。成功路径绝不能再调这个 —— 它会把下面刚装上的
       // data 监听一起摘掉，于是连接是通的、回包永远收不到，只剩请求超时。
       const giveUp = (): void => {
@@ -233,16 +237,49 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   private onData(host: Host, chunk: Buffer): void {
-    // 必须按字节累积：一次 recv 可能切在多字节 UTF-8 字符中间，
-    // 直接 toString 会插入 U+FFFD 并破坏 JSON（响应里都是中文标签）。
-    host.buffer = Buffer.concat([host.buffer, chunk]);
-    if (host.buffer.length > maxIpcBytes) { this.failAndRetire(host, "driver_ipc_budget_exceeded"); return; }
-    let index = host.buffer.indexOf(10);
+    const pendingBytes = host.bufferEnd - host.bufferStart;
+    const requiredBytes = pendingBytes + chunk.length;
+    // Preserve the aggregate chunk budget: do not dispatch even an early frame
+    // when the pending suffix plus this entire chunk exceeds the limit.
+    if (host.bufferOverflowed || requiredBytes > maxIpcBytes) {
+      // The old oversized prefix rejected every later chunk on this connection.
+      // Keep that sticky failure without retaining the rejected payload.
+      host.bufferOverflowed = true;
+      host.buffer = Buffer.alloc(0);
+      host.bufferStart = host.bufferEnd = host.bufferScan = 0;
+      this.failAndRetire(host, "driver_ipc_budget_exceeded");
+      return;
+    }
+    if (host.bufferEnd + chunk.length > host.buffer.length) {
+      if (requiredBytes > host.buffer.length) {
+        const capacity = Math.min(maxIpcBytes, Math.max(requiredBytes, 1024, host.buffer.length * 2));
+        const grown = Buffer.allocUnsafeSlow(capacity);
+        host.buffer.copy(grown, 0, host.bufferStart, host.bufferEnd);
+        host.buffer = grown;
+      } else {
+        host.buffer.copy(host.buffer, 0, host.bufferStart, host.bufferEnd);
+      }
+      host.bufferScan -= host.bufferStart;
+      host.bufferStart = 0;
+      host.bufferEnd = pendingBytes;
+    }
+    chunk.copy(host.buffer, host.bufferEnd);
+    host.bufferEnd += chunk.length;
+    // Scan only new bytes, but keep the unconsumed range if a reply callback
+    // throws. Decode complete frames with the existing per-host decoder.
+    let index = host.buffer.subarray(0, host.bufferEnd).indexOf(10, host.bufferScan);
     while (index >= 0) {
-      const line = host.decoder.write(host.buffer.subarray(0, index));
-      host.buffer = host.buffer.subarray(index + 1);
+      const line = host.decoder.write(host.buffer.subarray(host.bufferStart, index));
+      host.bufferStart = index + 1;
+      host.bufferScan = host.bufferStart;
       if (line) this.onReply(line);
-      index = host.buffer.indexOf(10);
+      index = host.buffer.subarray(0, host.bufferEnd).indexOf(10, host.bufferScan);
+    }
+    host.bufferScan = host.bufferEnd;
+    if (host.bufferStart === host.bufferEnd) {
+      // A drained connection should not retain its largest historical frame.
+      host.buffer = Buffer.alloc(0);
+      host.bufferStart = host.bufferEnd = host.bufferScan = 0;
     }
   }
 
