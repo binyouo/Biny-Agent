@@ -219,7 +219,7 @@ try {
     }
     assert.equal(replaySessionEvents(memoryEvents as Parameters<typeof replaySessionEvents>[0], { sessionId: memoryRecorder.sessionId })
       .messages.some((message) => message.role === "toolResult" && message.toolCallId.includes(":nested:")), false);
-  } finally { await memoryRecorder.close(); historyIndex.close(); }
+  } finally { await memoryRecorder.close(); await historyIndex.close(); }
 
   const askConfig = structuredClone(config);
   askConfig.permission.mode = "ask";
@@ -266,7 +266,7 @@ try {
     const directHits = await directHistory.execute("direct-history", { query: "zebrastone" });
     assert.equal(directHits.isError, false);
     assert.equal((directHits.details as { hits: unknown[] }).hits.length, 1);
-  } finally { await directRecorder.close(); historyIndex.close(); }
+  } finally { await directRecorder.close(); await historyIndex.close(); }
 
   const loop = await executeCodeModeCell({
     code: "while(true){}", parentToolCallId: "loop", tools: [], isCurrent: () => false,
@@ -529,7 +529,7 @@ try {
     const outcome = await searchAgent.runTask("Find how to read hello.txt", { emotionAnalysis: false });
     assert.equal(outcome.status, "completed", outcome.error);
     assert.equal(searchSteps, 3);
-  } finally { await searchAgent.close(); historyIndex.close(); }
+  } finally { await searchAgent.close(); await historyIndex.close(); }
 
   const noToolsRecorder = new SessionRecorder(root, "code-mode-no-tools");
   const noToolsModel: AgentModel = { provider: "fixture", modelId: "code-mode-no-tools", supportsTools: true,

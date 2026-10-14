@@ -51,16 +51,16 @@ test("旧记录在 TUI、会话摘要和 Markdown 导出中也隐藏通知，不
       await index.indexSessionFile("chat", path.join(dir, "chat.jsonl"));
       assert.equal(index.search("内部通知").length, 0);
       assert.doesNotMatch(JSON.stringify(index.search("结束")), /biny_notification|内部通知/);
-    } finally { index.close(); }
+    } finally { await index.close(); }
     // 模拟此前已生成的污染索引：即使不重建，搜索展示也不能漏出被 snippet 截断的协议。
-    const database = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
+    const database = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
     try {
       database.prepare("UPDATE session_transcripts SET body = ? WHERE role = 'assistant'").run(`结束${block.repeat(30)}后文`);
     } finally { database.close(); }
     try {
       const hits = index.search("结束");
       assert.equal(hits[0]?.excerpt, "结束后文");
-    } finally { index.close(); }
+    } finally { await index.close(); }
     await ensureAgentDirs(root);
     const recorder = new SessionRecorder(root);
     await recorder.close();

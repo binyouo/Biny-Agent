@@ -210,7 +210,7 @@ function testMemoryEmbeddingDefaultsToE5(): void {
       memory: { ...defaultConfig.context.memory, embeddingModel: undefined }
     }
   });
-  assert.deepEqual(parsed.context.memory.embeddingModel, { kind: "auto" });
+  assert.deepEqual(parsed.context.memory.embeddingModel, { kind: "local", model: "multilingual-e5-small" });
 }
 
 function testRemovedModelFormatsRequireManualUpdate(): void {
@@ -834,7 +834,7 @@ async function testVersionedActivityEmbeddingFieldsMigrateToMemory(): Promise<vo
     const loaded = await loadConfigFile(root);
     assert.equal("embeddingConsents" in (loaded.activity as Record<string, unknown>), false, "activity 段的嵌入字段必须被清除");
     assert.equal("cloudEmbeddingConsents" in loaded.context.memory, false);
-    assert.deepEqual(loaded.context.memory.embeddingModel, { kind: "auto" });
+    assert.deepEqual(loaded.context.memory.embeddingModel, { kind: "local", model: "multilingual-e5-small" });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

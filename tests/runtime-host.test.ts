@@ -771,6 +771,18 @@ async function main(): Promise<void> {
     assert.equal(fetched.content, "用户喜欢简洁中文");
     assert.equal((await fetch(`${base}/${id}`, { method: "DELETE", headers })).status, 204);
     assert.equal((await fetch(`${base}/${id}`, { headers })).status, 404);
+    const embeddingsBase = base.replace("/api/memories", "/api/local-embeddings");
+    const localDownload = await fetch(`${embeddingsBase}/download`, {
+      method: "POST", headers, body: JSON.stringify({ model: "all-MiniLM-L6-v2" })
+    });
+    assert.equal(localDownload.status, 200);
+    assert.equal(downloadedEmbeddingModel, "all-MiniLM-L6-v2");
+    assert.equal((await fetch(`${embeddingsBase}/models/all-MiniLM-L6-v2`, { method: "DELETE", headers })).status, 200);
+    assert.equal(removedEmbeddingModel, "all-MiniLM-L6-v2");
+    assert.equal((await fetch(`${embeddingsBase}/download`, {
+      method: "POST", headers, body: JSON.stringify({ model: "unsupported" })
+    })).status, 400);
+    assert.equal(downloadedEmbeddingModel, "all-MiniLM-L6-v2", "invalid models must not reach download");
   } finally { memorySocket.terminate(); await api.close(); localMemory.close(); }
 
   assert.equal((await client.memoryEmbeddingStatus()).activeModel?.kind, "local");

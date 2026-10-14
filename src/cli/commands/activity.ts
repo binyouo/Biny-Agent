@@ -383,7 +383,6 @@ export async function createCliActivityMemoryPipeline(
       if (!selected) return undefined;
       if (getEmbeddingRuntime) return await getEmbeddingRuntime().catch(() => undefined);
       if (selected.kind === "local") {
-        if (selected.model !== defaultLocalEmbeddingModel) return undefined;
         return await manager.createRuntime(selected.model).catch(() => undefined);
       }
       if (selected.kind !== "provider") return undefined;

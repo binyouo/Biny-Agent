@@ -409,7 +409,7 @@ function describeBuiltinComputerServer(live: McpServerStatus[] | undefined): Des
     name: desktopComputerMcpName, builtin: true, description: "内置桌面控制服务，由工作区 Runtime 自动连接；启用和应用授权在 Computer Use 设置中管理。",
     transport: "in-process", commandOrUrl: "Desktop control plane · in-process MCP", args: [], enabled: true,
     state: !runtime ? "not-started" : runtime.connecting ? "connecting" : runtime.connected ? "connected" : "disconnected",
-    toolNames: runtime?.toolNames ?? ["ComputerList", "ComputerObserve", "ComputerAction", "ComputerMirror"], promptNames: [], hasResources: false, environmentKeys: [], headerNames: [], lastError: runtime?.lastError
+    toolNames: runtime?.toolNames ?? ["ComputerList", "ComputerLaunch", "ComputerObserve", "ComputerAction", "ComputerSequence", "ComputerMirror"], promptNames: [], hasResources: false, environmentKeys: [], headerNames: [], lastError: runtime?.lastError
   };
 }
 
