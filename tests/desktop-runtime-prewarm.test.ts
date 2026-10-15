@@ -337,7 +337,7 @@ test("disposing a pending attachment preserves an existing Host and its retainin
     configStore, persistenceRoot: dataRoot
   }), { configDir });
   let retaining: RuntimeHostClient | undefined;
-  let acquired: RuntimeHostClient | undefined;
+  const acquired: { client?: RuntimeHostClient } = {};
   let initialization: Promise<unknown> | undefined;
   let disposal: Promise<void> | undefined;
   let release!: () => void;
@@ -355,7 +355,7 @@ test("disposing a pending attachment preserves an existing Host and its retainin
     context.mock.method(RuntimeHostClient.prototype, "setBrowserAutomation", async function (
       this: RuntimeHostClient, ...args: Parameters<typeof setBrowserAutomation>
     ) {
-      acquired = this;
+      acquired.client = this;
       entered();
       await gate;
       return await setBrowserAutomation.apply(this, args);
@@ -369,8 +369,8 @@ test("disposing a pending attachment preserves an existing Host and its retainin
     await prepared;
     initialization = manager["runtimeInitializations"].get(project.id);
     assert.ok(initialization);
-    assert.ok(acquired);
-    assert.notEqual(acquired, retaining);
+    assert.ok(acquired.client);
+    assert.notEqual(acquired.client, retaining);
     const settledInitialization = Promise.allSettled([initialization]);
     disposal = manager.disposeProject(project.id);
     release();
@@ -378,7 +378,7 @@ test("disposing a pending attachment preserves an existing Host and its retainin
     await nextTurn();
     assert.equal(manager["runtimes"].has(project.id), false);
     assert.equal(manager["runtimeErrors"].has(project.id), false);
-    assert.ok(closed.includes(acquired), "disposal must close the late acquired Desktop client");
+    assert.ok(closed.includes(acquired.client), "disposal must close the late acquired Desktop client");
     assert.equal(closed.includes(retaining), false, "the other surface's client is not Desktop-owned");
     await access(runtimeHostPaths(dataRoot).registrationPath);
     assert.deepEqual((await retaining.listRuntimeSessions()).map(({ sessionId }) => sessionId), sessions);
