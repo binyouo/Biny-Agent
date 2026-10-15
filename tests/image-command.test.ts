@@ -326,7 +326,7 @@ await test("损坏 JSON 不泄露原始响应或凭据", async t => {
   });
 });
 
-await test("构建后的 CLI 注册图片命令，配置默认值和 JSON 输出可从公开入口使用", async () => {
+await test("CLI 注册图片命令，配置默认值和 JSON 输出可从公开入口使用", async () => {
   await fixture(async (root, server, configStore) => {
     const config = await configStore.load();
     config.providers.gem!.apiKey = undefined;
@@ -334,9 +334,9 @@ await test("构建后的 CLI 注册图片命令，配置默认值和 JSON 输出
     config.imageGen.model = "gem:gemini-2.5-flash-image";
     await configStore.save(config);
     const { execFile } = await import("node:child_process");
-    const cli = path.resolve("dist/cli/index.js");
+    const cli = path.resolve("src/cli/index.ts");
     const invoke = async (args: string[]): Promise<{ stdout: string; stderr: string }> => await new Promise((resolve, reject) => {
-      execFile(process.execPath, [cli, "image", ...args], { cwd: root, timeout: 20_000,
+      execFile(process.execPath, [...process.execArgv, cli, "image", ...args], { cwd: root, timeout: 20_000,
         env: { ...process.env, BINY_AGENT_DIR: path.join(root, "agent-state"), BINY_IMAGE_TEST_KEY: "stub-cli-key" }
       }, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }));
     });
