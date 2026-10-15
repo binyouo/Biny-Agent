@@ -640,8 +640,14 @@ export class DesktopProjectService {
     return await updateSessionCatalogMetadata(dataRoot, sessionId, patch, expectedRevision);
   }
 
-  async markSessionRead(project: DesktopProject, sessionId: string, expectedRevision?: string): Promise<SessionCatalogRecord> {
-    return await this.updateSessionMetadata(project, sessionId, { unread: false }, expectedRevision);
+  async markSessionRead(
+    project: DesktopProject,
+    sessionId: string,
+    expectedRevision?: string,
+    onIndexRefresh?: (completion: Promise<void>) => void
+  ): Promise<SessionCatalogRecord> {
+    const dataRoot = await this.storage.ensureProjectData(project);
+    return await updateSessionCatalogMetadata(dataRoot, sessionId, { unread: false }, expectedRevision, { onIndexRefresh });
   }
 
   async duplicateSession(project: DesktopProject, sessionId: string): Promise<string> {

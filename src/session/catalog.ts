@@ -185,7 +185,7 @@ export async function updateSessionCatalogMetadata(
   sessionId: string,
   patch: SessionCatalogMetadataPatch,
   expectedRevision?: string,
-  options: { indexRefresh?: "background" | "wait" } = {}
+  options: { indexRefresh?: "background" | "wait"; onIndexRefresh?: (completion: Promise<void>) => void } = {}
 ): Promise<SessionCatalogRecord> {
   assertSessionId(sessionId);
   const directory = await ensureCatalogDirectory(workspaceRoot);
@@ -231,6 +231,7 @@ export async function updateSessionCatalogMetadata(
       if (existing && catalogMetadataEquals(existing, next)) return existing;
       await writeAtomically(target, `${JSON.stringify(next)}\n`);
       indexRefresh.completion = refreshSessionIndex(workspaceRoot);
+      options.onIndexRefresh?.(indexRefresh.completion);
       return next;
     });
   } finally {

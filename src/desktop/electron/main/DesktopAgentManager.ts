@@ -259,6 +259,8 @@ export class DesktopAgentManager {
     initialRevision: string | undefined;
     promise: Promise<SessionCatalogRecord>;
   }>();
+  /** 置顶等操作可提前消费 revision 映射，退出仍需独立排空派生索引发布。 */
+  private readonly pendingSessionReadPublications = new Set<Promise<void>>();
   private readonly modelLoginOperations = new Map<string, AbortController>();
   private readonly stagedSettingsCredentials = new Map<string, StagedSettingsCredential>();
   private readonly modelLogin: DesktopModelLoginService;
@@ -2948,6 +2950,7 @@ export class DesktopAgentManager {
     this.stagedSettingsCredentials.clear();
     await Promise.allSettled([...this.pendingSessionReads.values()].map(({ promise }) => promise));
     this.pendingSessionReads.clear();
+    await Promise.allSettled(this.pendingSessionReadPublications);
     await Promise.allSettled(this.runtimeInitializations.values());
     await this.idleRuntimeRebuildTail.catch(() => undefined);
     await this.activityMemoryIndex?.then(async (index) => await index.close()).catch(() => undefined);
@@ -3489,26 +3492,33 @@ export class DesktopAgentManager {
   }
 
   private scheduleSessionRead(project: DesktopProject, sessionId: string, initialRevision: string | undefined): void {
+    if (this.closing) return;
     const key = sessionReadKey(project.id, sessionId);
     const pending = this.pendingSessionReads.get(key);
     if (pending && pending.initialRevision === initialRevision) return;
+    const onIndexRefresh = (completion: Promise<void>): void => {
+      this.pendingSessionReadPublications.add(completion);
+      void completion.then(() => this.pendingSessionReadPublications.delete(completion), () => this.pendingSessionReadPublications.delete(completion));
+    };
     let promise: Promise<SessionCatalogRecord>;
     try {
       // 新 revision 的已读写入接在旧请求后，保证替换映射后关闭仍能等完全部写入。
       promise = pending === undefined
-        ? this.projects.markSessionRead(project, sessionId)
-        : pending.promise.catch(() => undefined).then(() => this.projects.markSessionRead(project, sessionId));
+        ? this.projects.markSessionRead(project, sessionId, undefined, onIndexRefresh)
+        : pending.promise.catch(() => undefined).then(() => this.projects.markSessionRead(project, sessionId, undefined, onIndexRefresh));
     } catch {
       return;
     }
     this.pendingSessionReads.set(key, { initialRevision, promise });
     // 保留已完成的 promise 一小段时间，让紧接着发生的置顶/改名仍能拿到后台写入后的
     // revision；否则清理微任务和用户点击之间会出现一个很窄的 CAS 冲突窗口。
-    const cleanup = setTimeout(() => {
-      if (this.pendingSessionReads.get(key)?.promise === promise) this.pendingSessionReads.delete(key);
-    }, 30_000);
-    cleanup.unref?.();
-    void promise.catch(() => {
+    void promise.then(() => {
+      if (this.pendingSessionReads.get(key)?.promise !== promise) return;
+      const cleanup = setTimeout(() => {
+        if (this.pendingSessionReads.get(key)?.promise === promise) this.pendingSessionReads.delete(key);
+      }, 30_000);
+      cleanup.unref?.();
+    }, () => {
       if (this.pendingSessionReads.get(key)?.promise === promise) this.pendingSessionReads.delete(key);
     });
   }
