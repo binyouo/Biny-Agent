@@ -277,3 +277,117 @@ test("disposing a pending project leaves another project's real Host usable", { 
     await Promise.allSettled([initialization, removal]);
   }
 });
+
+test("same-ID replacement cannot inherit disposed initialization or its old waiters", { timeout: 30_000 }, async (context) => {
+  const { project, state, manager, configStore, dataRoot } = await fixture(context);
+  const gated = gateRuntimeInitialization(configStore);
+  let initialization: Promise<unknown> | undefined;
+  let waiter: ReturnType<typeof manager["getRuntime"]> | undefined;
+  let blockedAdmission: ReturnType<typeof manager["getRuntime"]> | undefined;
+  let disposal: Promise<void> | undefined;
+  try {
+    const prepared = manager.prepareWorkspace(project.id);
+    await gated.enteredPromise;
+    await prepared;
+    initialization = manager["runtimeInitializations"].get(project.id);
+    assert.ok(initialization);
+    const settledInitialization = Promise.allSettled([initialization]);
+    waiter = manager["getRuntime"](project.id, true);
+    const settledWaiter = Promise.allSettled([waiter]);
+    disposal = manager.disposeProject(project.id);
+    // Deliberately restore the exact persisted fields while old startup is held.
+    // Membership or addedAt alone cannot distinguish this replacement lifetime.
+    await state.removeProject(project.id);
+    await state.upsertProject({ ...project });
+    let admissionSettled = false;
+    blockedAdmission = manager["getRuntime"](project.id, true);
+    void blockedAdmission.then(() => { admissionSettled = true; }, () => { admissionSettled = true; });
+    await nextTurn();
+    assert.equal(admissionSettled, true, "fresh admission must not wait on or escape an in-progress disposal");
+    assert.equal(await blockedAdmission, undefined);
+    assert.equal(gated.calls, 1);
+    gated.release();
+    await Promise.all([settledInitialization, settledWaiter, disposal]);
+    assert.equal(await waiter, undefined, "an old waiter must not recursively start the replacement");
+    await nextTurn();
+    assert.equal(manager["runtimes"].has(project.id), false);
+    assert.equal(manager["runtimeErrors"].has(project.id), false);
+    await assert.rejects(access(runtimeHostPaths(dataRoot).registrationPath), { code: "ENOENT" },
+      "the retired initializer must close its own Host even when the ID exists again");
+    await manager.prepareWorkspace(project.id);
+    await manager.retryRuntime(project.id);
+    const replacement = manager["runtimes"].get(project.id);
+    assert.ok(replacement);
+    assert.ok(replacement.runtime instanceof RuntimeHostClient);
+    assert.equal(gated.calls, 2, "a later explicit prepare must start one fresh lifetime");
+    assert.ok((await replacement.runtime.listRuntimeSessions()).length > 0);
+  } finally {
+    gated.release();
+    gated.restore();
+    await Promise.allSettled([initialization, waiter, blockedAdmission, disposal]);
+  }
+});
+
+test("disposing a pending attachment preserves an existing Host and its retaining client", { timeout: 30_000 }, async (context) => {
+  const { root, project, manager, configStore, dataRoot } = await fixture(context);
+  const { createInteractiveAgentHost } = await import("../src/runtime/InteractiveAgentRuntime.js");
+  const { connectRuntimeHost, startRuntimeHost } = await import("../src/runtime/RuntimeHost.js");
+  const configDir = path.join(root, "config");
+  const host = await startRuntimeHost(dataRoot, async () => await createInteractiveAgentHost(project.path, {
+    configStore, persistenceRoot: dataRoot
+  }), { configDir });
+  let retaining: RuntimeHostClient | undefined;
+  let acquired: RuntimeHostClient | undefined;
+  let initialization: Promise<unknown> | undefined;
+  let disposal: Promise<void> | undefined;
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const setBrowserAutomation = RuntimeHostClient.prototype.setBrowserAutomation;
+  const close = RuntimeHostClient.prototype.close;
+  const closed: RuntimeHostClient[] = [];
+  try {
+    retaining = await connectRuntimeHost(dataRoot, { configDir, clientId: "retaining-control", surface: "tui", keepAlive: true });
+    assert.ok(retaining);
+    const sessions = (await retaining.listRuntimeSessions()).map(({ sessionId }) => sessionId);
+    assert.ok(sessions.length > 0);
+    context.mock.method(RuntimeHostClient.prototype, "setBrowserAutomation", async function (
+      this: RuntimeHostClient, ...args: Parameters<typeof setBrowserAutomation>
+    ) {
+      acquired = this;
+      entered();
+      await gate;
+      return await setBrowserAutomation.apply(this, args);
+    });
+    context.mock.method(RuntimeHostClient.prototype, "close", async function (this: RuntimeHostClient) {
+      closed.push(this);
+      await close.call(this);
+    });
+    const prepared = manager.prepareWorkspace(project.id);
+    await enteredPromise;
+    await prepared;
+    initialization = manager["runtimeInitializations"].get(project.id);
+    assert.ok(initialization);
+    assert.ok(acquired);
+    assert.notEqual(acquired, retaining);
+    const settledInitialization = Promise.allSettled([initialization]);
+    disposal = manager.disposeProject(project.id);
+    release();
+    await Promise.all([settledInitialization, disposal]);
+    await nextTurn();
+    assert.equal(manager["runtimes"].has(project.id), false);
+    assert.equal(manager["runtimeErrors"].has(project.id), false);
+    assert.ok(closed.includes(acquired), "disposal must close the late acquired Desktop client");
+    assert.equal(closed.includes(retaining), false, "the other surface's client is not Desktop-owned");
+    await access(runtimeHostPaths(dataRoot).registrationPath);
+    assert.deepEqual((await retaining.listRuntimeSessions()).map(({ sessionId }) => sessionId), sessions);
+    assert.equal(await host.retireIfIdle(0), false, "the second retaining client must still retain its Host");
+  } finally {
+    release();
+    await Promise.allSettled([initialization, disposal]);
+    await manager.closeAll();
+    await retaining?.close();
+    await host.close();
+  }
+});
