@@ -29,6 +29,8 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
   const [importingProfileId, setImportingProfileId] = useState<string>();
   const [profileError, setProfileError] = useState<string>();
   const [previewAvailability, setPreviewAvailability] = useState<{ available: true; command: string } | { available: true; kind: "static"; entry: string; entries: string[] } | { available: false; reason: string }>();
+  const [availabilityChecking, setAvailabilityChecking] = useState(false);
+  const availabilityRequest = useRef({ projectId, checked: false, pending: false });
   const [htmlPickerOpen, setHtmlPickerOpen] = useState(false);
   const [selectedHtmlFile, setSelectedHtmlFile] = useState<string>();
   const serverPending = useRef(false);
@@ -38,6 +40,7 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
   const slot = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLElement>(null);
   const addressInput = useRef<HTMLInputElement>(null);
+  const addressEditRef = useRef({ tab: "", edited: false });
   const focusAfterAction = useRef<string | undefined>(undefined);
   const profileAnchor = useRef<HTMLDivElement>(null);
   const alive = useRef(true);
@@ -48,6 +51,8 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
   }, [projectId]);
   useEffect(() => {
     setSnapshot(undefined); setServerId(undefined); setStaticUrl(undefined); setServerStarting(false); setPreviewAvailability(undefined);
+    availabilityRequest.current = { projectId, checked: false, pending: false };
+    setAvailabilityChecking(false);
     openedPreviewUrls.current.clear();
     setPreviewFailure(undefined); setProfilePickerOpen(false); setProfiles([]); setHtmlPickerOpen(false); setSelectedHtmlFile(undefined);
   }, [projectId]);
@@ -65,7 +70,11 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
     void window.biny.browserSnapshot(projectId).then(adopt).catch((reason: unknown) => { if (alive.current) setError(String(reason)); });
     return () => { alive.current = false; unsubscribe(); };
   }, [adopt, projectId]);
-  useEffect(() => setAddress(selected?.url ?? ""), [selected?.id, selected?.url]);
+  useEffect(() => {
+    const tab = `${projectId}:${selected?.id ?? ""}`;
+    if (addressEditRef.current.tab !== tab) addressEditRef.current = { tab, edited: false };
+    if (!addressEditRef.current.edited) setAddress(selected?.url ?? "");
+  }, [projectId, selected?.id, selected?.url]);
   const perform = async (action: DesktopBrowserAction): Promise<void> => {
     if (pending.current) return;
     pending.current = true; setBusy(true); setError(undefined);
@@ -103,6 +112,29 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
     if (target === "address") addressInput.current?.focus();
     else if (target) tab?.focus();
   }, [snapshot, busy, active]);
+  const refreshAvailability = useCallback(async (): Promise<void> => {
+    const request = availabilityRequest.current;
+    if (request.projectId !== projectId || request.pending) return;
+    request.pending = true;
+    request.checked = true;
+    setAvailabilityChecking(true);
+    setError(undefined);
+    try {
+      const availability = await window.biny.projectPreviewAvailability(projectId);
+      if (!alive.current || availabilityRequest.current !== request) return;
+      setPreviewAvailability(availability);
+      setSelectedHtmlFile(current => current && availability.available && "kind" in availability && availability.entries.includes(current) ? current : undefined);
+      setHtmlPickerOpen(false);
+    } catch (reason) {
+      if (alive.current && availabilityRequest.current === request) setError(String(reason));
+    } finally {
+      request.pending = false;
+      if (alive.current && availabilityRequest.current === request) setAvailabilityChecking(false);
+    }
+  }, [projectId]);
+  useEffect(() => {
+    if (active && !availabilityRequest.current.checked) void refreshAvailability();
+  }, [active, refreshAvailability]);
   useEffect(() => {
     if (!active) return;
     let disposed = false;
@@ -126,16 +158,6 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
         }
       } catch (reason) { if (!disposed) setError(String(reason)); }
     };
-    const refreshAvailability = (): void => {
-      void window.biny.projectPreviewAvailability(projectId).then((availability) => {
-        if (!disposed) {
-          setPreviewAvailability(availability);
-          setSelectedHtmlFile((current) => current && availability.available && "kind" in availability && availability.entries.includes(current) ? current : undefined);
-        }
-      }).catch((reason: unknown) => { if (!disposed) setError(String(reason)); });
-    };
-    refreshAvailability();
-    window.addEventListener("focus", refreshAvailability);
     void refreshStatus();
     const statusTimer = window.setInterval(() => { void refreshStatus(); }, 500);
     const unsubscribe = window.biny.onTerminalEvent((event) => {
@@ -146,7 +168,7 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
         void refreshStatus();
       }
     });
-    return () => { disposed = true; window.clearInterval(statusTimer); unsubscribe(); window.removeEventListener("focus", refreshAvailability); };
+    return () => { disposed = true; window.clearInterval(statusTimer); unsubscribe(); };
   }, [active, adopt, projectId]);
   const toggleServer = async (entry?: string): Promise<void> => {
     if (serverPending.current || (!serverId && !staticUrl && previewAvailability?.available === false)) return;
@@ -188,6 +210,7 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
     finally { serverPending.current = false; if (alive.current) setServerBusy(false); }
   };
   const navigate = (): void => {
+    if (pending.current) return;
     const raw = address.trim();
     if (!raw) return;
     try {
@@ -199,6 +222,7 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
         : `https://www.google.com/search?${new URLSearchParams({ q: raw })}`;
       const url = new URL(value);
       if (!["http:", "https:"].includes(url.protocol)) throw new Error("请输入 HTTP 或 HTTPS 地址。");
+      addressEditRef.current.edited = false;
       void perform(selected ? { type: "navigate", tabId: selected.id, url: url.href } : { type: "new", url: url.href });
     } catch (reason) { setError(String(reason)); }
   };
@@ -302,6 +326,7 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
     </div><button className="inspector-browser-new-tab" type="button" aria-label="新建网页标签" title="新建标签页" disabled={busy} onClick={() => void perform({ type: "new" })}><Icon name="add" size={18} /></button></div>
     <form className="inspector-subtoolbar inspector-browser-navigation" onSubmit={(event) => { event.preventDefault(); navigate(); }}>
       <button className="inspector-browser-preview-action" type="button" title={previewUnavailable && previewAvailability?.available === false ? previewAvailability.reason : "运行或停止项目预览"} disabled={serverBusy || previewUnavailable} onClick={() => void toggleServer()}><Icon name={serverId || staticUrl ? "stop" : "play"} size={16} />{serverBusy ? "处理中…" : serverStarting ? "停止启动" : previewRunning ? "停止预览" : "运行预览"}</button>
+      <button type="button" aria-label="重新检查预览入口" title="重新检查预览入口" disabled={availabilityChecking || serverBusy} onClick={() => void refreshAvailability()}><Icon name="refresh" size={16} /></button>
       <div className="inspector-browser-history" role="group" aria-label="网页导航">
         <button type="button" aria-label="后退" title="后退" disabled={busy || !selected?.canGoBack} onClick={() => selected && void perform({ type: "back", tabId: selected.id })}><Icon name="arrow-left" size={16} /></button>
         <button type="button" aria-label="前进" title="前进" disabled={busy || !selected?.canGoForward} onClick={() => selected && void perform({ type: "forward", tabId: selected.id })}><Icon name="arrow-right" size={16} /></button>
@@ -322,8 +347,8 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
       </div>
       <div className="inspector-browser-address">
         <Icon name="globe" size={15} />
-        <input ref={addressInput} aria-label="网页地址" placeholder="搜索或输入网址" autoComplete="off" spellCheck={false} value={address} onChange={(event) => setAddress(event.target.value)} onKeyDown={(event) => {
-          if (event.key === "Escape") { event.preventDefault(); setAddress(selected?.url ?? ""); setError(undefined); }
+        <input ref={addressInput} aria-label="网页地址" placeholder="搜索或输入网址" autoComplete="off" spellCheck={false} value={address} onChange={(event) => { addressEditRef.current.edited = true; setAddress(event.target.value); }} onKeyDown={(event) => {
+          if (event.key === "Escape") { event.preventDefault(); addressEditRef.current.edited = false; setAddress(selected?.url ?? ""); setError(undefined); }
         }} />
         <button type="submit" aria-label="前往" title="前往（Enter）" disabled={busy || !address.trim()}><Icon name="arrow-right" size={16} /></button>
       </div>

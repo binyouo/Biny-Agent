@@ -1,7 +1,7 @@
 /** 组件契约测试使用 DOM 与 IPC 替身，不执行网页或桌面自动化验收。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { DesktopBrowserAction, DesktopBrowserSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopApi, DesktopBrowserAction, DesktopBrowserSnapshot } from "../src/desktop/protocol.js";
 import type { LocalReferenceResult } from "../src/session/localReferences.js";
 
 test("浏览器导航参数、引用搜索乱序与解析失败重试", async () => {
@@ -24,6 +24,8 @@ test("浏览器导航参数、引用搜索乱序与解析失败重试", async ()
   let previewAvailable = true;
   let previewError: string | undefined;
   let chooseHtml = false;
+  let availabilityReads = 0;
+  let availabilityReply: ReturnType<DesktopApi["projectPreviewAvailability"]> | undefined;
   const snapshot: DesktopBrowserSnapshot = { projectId: "p", revision: 0, tabs: [] };
   const searches: Array<(results: LocalReferenceResult[]) => void> = [];
   let resolveFails = true;
@@ -31,7 +33,7 @@ test("浏览器导航参数、引用搜索乱序与解析失败重试", async ()
   Object.assign(dom.window, { biny: {
     browserSnapshot: async () => snapshot, onBrowserState: () => () => {}, browserBounds: async () => {},
     listTerminals: async () => [], onTerminalEvent: () => () => {},
-    projectPreviewAvailability: async () => previewAvailable ? (chooseHtml ? { available: true, kind: "static", entry: "a.html", entries: ["a.html", "pages/b.html"] } : { available: true, kind: "static", entry: "index.html", entries: ["index.html"] }) : ({ available: false, reason: "没有预览入口" }),
+    projectPreviewAvailability: async () => { availabilityReads += 1; if (availabilityReply) return await availabilityReply; return previewAvailable ? (chooseHtml ? { available: true, kind: "static", entry: "a.html", entries: ["a.html", "pages/b.html"] } : { available: true, kind: "static", entry: "index.html", entries: ["index.html"] }) : ({ available: false, reason: "没有预览入口" }); },
     projectPreviewStatus: async () => previewError ? ({ kind: "failed", error: previewError }) : ({ kind: "stopped" }),
     startProjectPreview: async (_projectId: string, entry?: string) => { if (!previewAvailable) throw new Error("没有预览入口"); if (entry) previewEntries.push(entry); return { kind: "static", url: "http://127.0.0.1:3000/" }; },
     stopProjectPreview: async () => {},
@@ -56,6 +58,15 @@ test("浏览器导航参数、引用搜索乱序与解析失败重试", async ()
   try {
     await React.act(async () => root.render(React.createElement(WorkspaceBrowserPanel, { projectId: "p", active: true, onWarning() {}, onOpenTerminal() {}, onFixPreview(error: string) { fixes.push(error); } })));
     assert.doesNotMatch(document.body.textContent!, /连接日常浏览器|复制配对地址/);
+    assert.equal(availabilityReads, 1);
+    await React.act(async () => {
+      dom.window.dispatchEvent(new dom.window.Event("focus"));
+      dom.window.dispatchEvent(new dom.window.Event("focus"));
+    });
+    assert.equal(availabilityReads, 1, "切回窗口不重新扫描项目预览入口");
+    await React.act(async () => root.render(React.createElement(WorkspaceBrowserPanel, { projectId: "p", active: false, onWarning() {}, onOpenTerminal() {} })));
+    await React.act(async () => root.render(React.createElement(WorkspaceBrowserPanel, { projectId: "p", active: true, onWarning() {}, onOpenTerminal() {}, onFixPreview(error: string) { fixes.push(error); } })));
+    assert.equal(availabilityReads, 1, "切换面板不重复扫描同一项目");
     await input("网页地址", "javascript:alert(1)"); await submit();
     assert.equal(actions.length, 0); assert.match(document.querySelector('[role="alert"]')!.textContent!, /HTTP/);
     await input("网页地址", "localhost:5173"); await submit();
@@ -64,7 +75,12 @@ test("浏览器导航参数、引用搜索乱序与解析失败重试", async ()
     assert.deepEqual(actions[1], { type: "new", url: "http://127.0.0.1:3000/" });
     await React.act(async () => ([...document.querySelectorAll("button")].find((button) => button.textContent?.includes("停止预览")) as HTMLButtonElement).click());
     chooseHtml = true;
-    await React.act(async () => dom.window.dispatchEvent(new dom.window.Event("focus")));
+    const beforeRecheck = availabilityReads;
+    await React.act(async () => {
+      document.querySelector<HTMLButtonElement>('[aria-label="重新检查预览入口"]')!.click();
+      document.querySelector<HTMLButtonElement>('[aria-label="重新检查预览入口"]')!.click();
+    });
+    assert.equal(availabilityReads, beforeRecheck + 1, "显式重查读取新入口并合并连点");
     await React.act(async () => ([...document.querySelectorAll("button")].find((button) => button.textContent?.includes("运行预览")) as HTMLButtonElement).click());
     assert.match(document.body.textContent!, /pages\/b.html/);
     await React.act(async () => ([...document.querySelectorAll("button")].find((button) => button.textContent === "pages/b.html") as HTMLButtonElement).click());
@@ -76,14 +92,34 @@ test("浏览器导航参数、引用搜索乱序与解析失败重试", async ()
     assert.deepEqual(imports, ["chrome:Default"]);
     assert.match(document.body.textContent!, /导入 3 个 Cookie/);
     previewAvailable = false;
-    await React.act(async () => dom.window.dispatchEvent(new dom.window.Event("focus")));
+    await React.act(async () => document.querySelector<HTMLButtonElement>('[aria-label="重新检查预览入口"]')!.click());
     assert.match(document.body.textContent!, /没有预览入口/);
     assert.equal(document.querySelector(".inspector-preview-failure"), null);
     assert.ok([...document.querySelectorAll("button")].filter((button) => button.textContent?.includes("运行预览")).every((button) => button.disabled), "没有预览入口时禁用启动，保持普通空状态");
     assert.deepEqual(fixes, []);
-    previewAvailable = true; previewError = "构建失败，请检查项目日志";
+    previewAvailable = true;
+    await React.act(async () => document.querySelector<HTMLButtonElement>('[aria-label="重新检查预览入口"]')!.click());
+    assert.ok([...document.querySelectorAll("button")].some(button => button.textContent?.includes("运行预览") && !button.disabled), "外部新增入口后可显式重查恢复启动");
+    previewError = "构建失败，请检查项目日志";
     await React.act(async () => root.render(React.createElement(WorkspaceBrowserPanel, { key: "failed", projectId: "p", active: true, onWarning() {}, onOpenTerminal() {} })));
     assert.equal((document.body.textContent!.match(/构建失败，请检查项目日志/g) ?? []).length, 1, "失败原因只显示一次");
+    const late = Promise.withResolvers<Awaited<ReturnType<DesktopApi["projectPreviewAvailability"]>>>();
+    availabilityReply = late.promise;
+    await React.act(async () => root.render(React.createElement(WorkspaceBrowserPanel, { key: "failed", projectId: "other", active: true, onWarning() {}, onOpenTerminal() {} })));
+    availabilityReply = undefined;
+    previewError = undefined;
+    await React.act(async () => root.render(React.createElement(WorkspaceBrowserPanel, { key: "failed", projectId: "p", active: true, onWarning() {}, onOpenTerminal() {} })));
+    await React.act(async () => late.resolve({ available: false, reason: "过期项目扫描" }));
+    assert.doesNotMatch(document.body.textContent!, /过期项目扫描/u, "旧项目的迟到扫描不能覆盖当前项目");
+    assert.ok([...document.querySelectorAll("button")].some(button => button.textContent?.includes("运行预览") && !button.disabled));
+    const failedCheck = Promise.withResolvers<Awaited<ReturnType<DesktopApi["projectPreviewAvailability"]>>>();
+    availabilityReply = failedCheck.promise;
+    await React.act(async () => document.querySelector<HTMLButtonElement>('[aria-label="重新检查预览入口"]')!.click());
+    await React.act(async () => failedCheck.reject(new Error("入口检查暂时失败")));
+    assert.match(document.body.textContent!, /入口检查暂时失败/u);
+    availabilityReply = undefined;
+    await React.act(async () => document.querySelector<HTMLButtonElement>('[aria-label="重新检查预览入口"]')!.click());
+    assert.doesNotMatch(document.body.textContent!, /入口检查暂时失败/u);
     function References(): React.ReactNode {
       const [reference, setReference] = React.useState<LocalReferenceResult>();
       return React.createElement(WorkspaceReferencesPanel, { projectId: "p", reference, onSelect: setReference });
