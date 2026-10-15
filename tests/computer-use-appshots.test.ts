@@ -141,5 +141,6 @@ const server=createServer(socket=>createInterface({input:socket}).on('line',line
       }
     }
   }
+  if (errors.length === 1) throw errors[0];
   if (errors.length) throw new AggregateError(errors, "Appshots fixture failed");
 });
