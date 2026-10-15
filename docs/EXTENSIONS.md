@@ -94,6 +94,7 @@ frontmatter 的 `always-inject: true` 让该 Skill 的正文在每个回合进�
 | `notebook` | 编辑 `.ipynb` 单元格并保留元数据，修改代码时清除该单元格的旧输出；保存不等于执行，运行需要单独的任务授权。 |
 | `web-search` | 用 `WebSearch` 查找公开资料并读取原始来源核实；搜索需要 Desktop 浏览器执行端，结果片段不代替来源证据。 |
 | `web-fetch` | 用 `WebFetch` 读取已知 URL，分页查看提取文本并报告抓取截断；登录页面和交互操作交给浏览器入口。 |
+| `image-gen` | 用 `biny image` 生图与改图；默认模型由 `imageGen.model` 决定，只有用户点名或要求对比时才传 `--model`。正文常驻系统提示。 |
 
 这些 Skill 提供可按需加载的操作说明，复用现有工具与 CLI，不增加独立执行器或新的文件、网络权限。
 
