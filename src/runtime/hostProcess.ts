@@ -39,6 +39,11 @@ export async function runRuntimeHostProcess(
   dependencies: RuntimeHostProcessDependencies = {}
 ): Promise<void> {
   const options = parseOptions(argv);
+  // The launching surface can exit while this independent Host still serves clients.
+  // Worker stderr is piped directly here, outside console.error's error handling.
+  process.stderr.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EPIPE") throw error;
+  });
   let server: RuntimeHostServer | undefined = undefined;
   let browserAutomation: BrowserAutomationEndpoint | undefined = undefined;
   let shuttingDown = false;
