@@ -186,13 +186,15 @@ export function ProviderSettings({
 
   // ── 即时提交：models 段整体计算（草稿待提交项 + 本次变更），交给 provider 串行落盘 ──
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   /** 一次提交一批模型变更；失败保留表单输入，不把候选投影为已保存配置。 */
   const applyModelBatch = useCallback(async (
     inputs: DesktopModelConfigurationInput[],
     removeAliases: string[] = []
   ): Promise<boolean> => {
-    if (!settingsDraft.draft) return false;
+    if (!settingsDraft.draft || savingRef.current) return false;
     const handles: string[] = [];
+    savingRef.current = true;
     setSaving(true);
     try {
       const upserts: DesktopModelConfigurationInput[] = [];
@@ -211,8 +213,8 @@ export function ProviderSettings({
       onNotify(providerErrorMessage(error));
       return false;
     } finally {
-      await Promise.all(handles.map((handle) => settingsDraft.releaseCredential(handle)));
-      setSaving(false);
+      try { await Promise.all(handles.map((handle) => settingsDraft.releaseCredential(handle))); }
+      finally { savingRef.current = false; setSaving(false); }
     }
   }, [onNotify, projectId, settingsDraft]);
 
@@ -557,7 +559,7 @@ export function ProviderSettings({
 
   // ── 模型开关（单个 toggle 与全选/批量启停共用；一批变更只发一次事务） ──
   const toggleModels = useCallback(async (catalogModels: CatalogModel[], enabled: boolean): Promise<void> => {
-    if (!group || !catalog || !catalogModels.length) return;
+    if (!group || !catalog || !catalogModels.length || savingRef.current) return;
     const draft = settingsDraft.draft;
     if (!draft) return;
     const configuredModelIds = new Set(group.models.map((model) => model.model));
@@ -569,6 +571,8 @@ export function ProviderSettings({
         modelsRequiresApiKey: catalog.modelsRequiresApiKey
       })) : [];
     // 开关直接提交，不先写入手动保存草稿，避免底栏短暂变成「未保存」。
+    // React 尚未刷新 disabled 时也要拒绝重复输入，不能把它排成另一笔配置事务。
+    savingRef.current = true;
     setSaving(true);
     try {
       await settingsDraft.saveModels((snapshot) => {
@@ -579,6 +583,7 @@ export function ProviderSettings({
     } catch (error) {
       onNotify(providerErrorMessage(error));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }, [catalog, connection, group, onNotify, settingsDraft]);
@@ -676,20 +681,21 @@ export function ProviderSettings({
   }, [catalog, choiceUpsertInput, connection, settingsDraft]);
 
   const deleteConnection = useCallback(async (): Promise<void> => {
-    if (!group || saving || !settingsDraft.draft) return;
+    if (!group || savingRef.current || !settingsDraft.draft) return;
     if (!window.confirm(`确定要删除服务商「${catalog?.label ?? group.provider}」吗？\n\n将删除此连接的模型与本地凭据引用，此操作无法撤销。`)) return;
     if (group.models.length > 0 && models.length <= group.models.length) {
       onNotify("至少需要保留一个模型连接");
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     try {
       if (!await flushEditorRef.current()) return;
       const result = await settingsDraft.saveModels({ upserts: [], removeAliases: [], removeProviderAliases: [group.provider] });
       if (result?.status !== "committed") onNotify(result?.message ?? "删除服务商失败，请重试");
     } catch (error) { onNotify(providerErrorMessage(error)); }
-    finally { setSaving(false); }
-  }, [catalog?.label, group, models.length, onNotify, saving, settingsDraft]);
+    finally { savingRef.current = false; setSaving(false); }
+  }, [catalog?.label, group, models.length, onNotify, settingsDraft]);
 
   // ── 启用服务商（未连接的 API 条目）：用种子模型建连接，密钥随后在表单里补 ──
   const enableProvider = useCallback(async (entryCatalog: ProviderCatalogItem): Promise<void> => {
@@ -989,6 +995,7 @@ export function ProviderSettings({
             authorizationCode={authorizationCode}
             availableModels={availableModels}
             fetchingCatalog={Boolean(group && fetchingProviders[group.provider])}
+            saving={saving}
             onAuthorizationCode={setAuthorizationCode}
             onStart={() => activeEntry.catalog && void startLogin(activeEntry.catalog)}
             onSubmit={() => activeEntry.catalog && void submitLogin(activeEntry.catalog)}
@@ -1115,6 +1122,7 @@ function LoginProviderPanel({
   authorizationCode,
   availableModels,
   fetchingCatalog,
+  saving,
   onAuthorizationCode,
   onStart,
   onSubmit,
@@ -1143,6 +1151,7 @@ function LoginProviderPanel({
   authorizationCode: string;
   availableModels: CatalogModel[];
   fetchingCatalog: boolean;
+  saving: boolean;
   onAuthorizationCode(value: string): void;
   onStart(): void;
   onSubmit(): void;
@@ -1251,6 +1260,7 @@ function LoginProviderPanel({
           query={modelQuery}
           onQuery={setModelQuery}
           fetchingCatalog={fetchingCatalog}
+          saving={saving}
           onRefreshCatalog={onRefreshCatalog}
           onToggleModel={onToggleModel}
           onToggleMany={onToggleMany}
@@ -1545,6 +1555,7 @@ function ConnectedProviderPanel({
         query={modelQuery}
         onQuery={setModelQuery}
         fetchingCatalog={fetchingCatalog}
+        saving={saving}
         onRefreshCatalog={onRefreshCatalog}
         onToggleModel={onToggleModel}
         onToggleMany={onToggleMany}
@@ -1696,6 +1707,7 @@ function ModelsSection({
   query,
   onQuery,
   fetchingCatalog,
+  saving,
   onRefreshCatalog,
   onToggleModel,
   onToggleMany,
@@ -1711,6 +1723,7 @@ function ModelsSection({
   query: string;
   onQuery(value: string): void;
   fetchingCatalog: boolean;
+  saving: boolean;
   onRefreshCatalog(): void;
   onToggleModel(model: CatalogModel, enabled: boolean): Promise<void>;
   onToggleMany(models: CatalogModel[], enabled: boolean): Promise<void>;
@@ -1734,14 +1747,13 @@ function ModelsSection({
   }, [manualOpen]);
   const choiceByModel = new Map(enabledModels.map((model) => [model.model, model] as const));
   const enabledChoiceByModel = new Map(enabledModels.filter((model) => model.showInPicker !== false).map((model) => [model.model, model] as const));
-  // 已启用模型置顶，同组保持目录顺序；每次切换后重新排序，不重复展示。
-  const orderedModels = [...models].sort((left, right) =>
-    Number(enabledChoiceByModel.has(right.id)) - Number(enabledChoiceByModel.has(left.id))
-  );
+  // 行序固定为目录顺序，不按启用状态重排：开关一个模型就把它从当前位置挪到列表另一头，
+  // 会让正在点的行从光标下跳走、滚动位置一起丢失，连续启用多个模型时每次都要重新找位置。
+  // mergeAvailableModels 已按同一规则产出顺序，这里直接沿用。
   // 全选只作用于当前可见（搜索过滤后）的模型，大批量启用也在一次事务里完成。
   const allVisibleEnabled = models.length > 0 && models.every((model) => enabledChoiceByModel.has(model.id));
   const submitManual = async (): Promise<void> => {
-    if (!manualModelId.trim() || adding) return;
+    if (!manualModelId.trim() || adding || saving) return;
     setAdding(true);
     try {
       if (await onSubmitManualModel(manualDisplayName)) setManualDisplayName("");
@@ -1763,7 +1775,7 @@ function ModelsSection({
         </label>
       ) : null}
       <div className="provider-model-list">
-        {orderedModels.map((model) => {
+        {models.map((model) => {
           const choice = choiceByModel.get(model.id);
           const enabled = enabledChoiceByModel.has(model.id);
           // 行结构：左侧两段分层（名称行 / 徽标+ID 行），右侧操作区固定
@@ -1785,7 +1797,7 @@ function ModelsSection({
                   <button
                     aria-label={choice ? `${model.displayName} 模型选项` : "启用模型后可调整模型选项"}
                     className="icon-button"
-                    disabled={!choice}
+                    disabled={!choice || saving}
                     onClick={() => { if (choice) onOpenModelOptions(choice); }}
                     type="button"
                   >
@@ -1797,6 +1809,7 @@ function ModelsSection({
                     <button
                       aria-label={`删除手动模型 ${model.displayName}`}
                       className="icon-button"
+                      disabled={saving}
                       onClick={() => void onRemoveModel(choice)}
                       type="button"
                     >
@@ -1809,6 +1822,7 @@ function ModelsSection({
                   aria-label={`${enabled ? "停用" : "启用"} ${model.displayName}`}
                   aria-describedby={`${model.id.replace(/[^a-z0-9_-]/gi, "-")}-meta`}
                   className={`model-toggle${enabled ? " is-on" : ""}`}
+                  disabled={saving}
                   onClick={() => { void onToggleModel(model, !enabled); }}
                   role="switch"
                   type="button"
@@ -1827,17 +1841,17 @@ function ModelsSection({
         ) : null}
       </div>
       <div className="provider-model-tools">
-        <button className="settings-link" type="button" disabled={adding} aria-label={manualOpen ? "收起手动添加" : "手动添加模型"} aria-expanded={manualOpen} onClick={() => {
+        <button className="settings-link" type="button" disabled={adding || saving} aria-label={manualOpen ? "收起手动添加" : "手动添加模型"} aria-expanded={manualOpen} onClick={() => {
           focusManualRef.current = !manualOpen;
           setManualOpen(!manualOpen);
         }}><Icon name="add" size={12} />{manualOpen ? "收起手动添加" : "手动添加"}</button>
-        {models.length > 0 ? <button className="settings-link" type="button" disabled={fetchingCatalog} onClick={() => void onToggleMany(models, !allVisibleEnabled)}>{allVisibleEnabled ? "取消全选" : "全选"}{query.trim() ? "搜索结果" : ""}</button> : null}
+        {models.length > 0 ? <button className="settings-link" type="button" disabled={fetchingCatalog || saving} aria-busy={saving} onClick={() => void onToggleMany(models, !allVisibleEnabled)}>{saving ? "正在保存…" : `${allVisibleEnabled ? "取消全选" : "全选"}${query.trim() ? "搜索结果" : ""}`}</button> : null}
       </div>
       {manualOpen ? <div className="provider-manual-row">
         <input
           id={manualInputId}
           ref={manualInputRef}
-          disabled={adding}
+          disabled={adding || saving}
           aria-label="手动添加模型 ID"
           onChange={(event) => onManualModelId(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submitManual(); } }}
@@ -1845,14 +1859,14 @@ function ModelsSection({
           value={manualModelId}
         />
         <input
-          disabled={adding}
+          disabled={adding || saving}
           aria-label="手动添加模型显示名称"
           onChange={(event) => setManualDisplayName(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submitManual(); } }}
           placeholder="显示名称（可选）"
           value={manualDisplayName}
         />
-        <button className="ghost-button" disabled={adding || !manualModelId.trim()} onClick={() => void submitManual()} type="button">
+        <button className="ghost-button" disabled={adding || saving || !manualModelId.trim()} onClick={() => void submitManual()} type="button">
           <Icon name="add" size={13} />
           {adding ? "添加中…" : "添加"}
         </button>

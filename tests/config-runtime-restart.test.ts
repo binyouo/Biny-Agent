@@ -3,6 +3,21 @@ import test from "node:test";
 import { defaultConfig, type AgentConfig } from "../src/config/schema.js";
 import { configChangeRequiresRuntimeRestart, configDocumentRevision, restartRelevantConfig } from "../src/config/versioned.js";
 
+test("服务商图标更换、移除不重启 Runtime，真实连接变更仍重启", () => {
+  const before = structuredClone(defaultConfig) as AgentConfig;
+  const alias = Object.keys(before.providers)[0]!;
+  before.providers[alias]!.icon = "openai";
+  const after = structuredClone(before);
+  after.providers[alias]!.icon = "anthropic";
+  assert.notEqual(configDocumentRevision(before), configDocumentRevision(after), "展示变更仍受版本冲突保护");
+  assert.equal(configChangeRequiresRuntimeRestart(before, after), false, "图标变化不能重建所有驻留会话");
+  delete after.providers[alias]!.icon;
+  assert.equal(configChangeRequiresRuntimeRestart(before, after), false, "移除图标同样只改变展示");
+  assert.equal(before.providers[alias]!.icon, "openai", "比较不修改原始配置");
+  after.providers[alias]!.baseUrl = "https://example.invalid/other";
+  assert.equal(configChangeRequiresRuntimeRestart(before, after), true, "同一供应商的真实请求端点变化仍须生效");
+});
+
 function withChange(mutate: (config: AgentConfig) => void): [AgentConfig, AgentConfig] {
   const before = structuredClone(defaultConfig) as AgentConfig;
   const after = structuredClone(defaultConfig) as AgentConfig;

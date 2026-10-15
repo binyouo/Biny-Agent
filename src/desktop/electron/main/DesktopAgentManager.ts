@@ -1248,9 +1248,9 @@ export class DesktopAgentManager {
         next = this.buildConfigWithCustomProvider(next, { ...custom, apiKey, apiKeyHandle: undefined });
       }
       if (input.models.upserts.length) {
-        // 批量启用按整批校验一次：逐个 upsert 走全量 configSchema 会让「全选」这种
-        // 几百个模型的批次退化为平方级校验，主进程会因此卡住几十秒。
+        // 整批合并后只校验一次，避免每个模型都扫描、复制和校验整份配置。
         const beforeUpserts = next;
+        const resolved: DesktopModelConfigurationInput[] = [];
         for (const upsert of input.models.upserts) {
           const apiKey = upsert.apiKeyHandle === undefined
             ? upsert.apiKey
@@ -1259,9 +1259,9 @@ export class DesktopAgentManager {
                 purpose: "model",
                 providerAlias: upsert.providerAlias
               });
-          next = this.applyModelUpsert(next, { ...upsert, apiKey, apiKeyHandle: undefined });
+          resolved.push({ ...upsert, apiKey, apiKeyHandle: undefined });
         }
-        next = this.parseModelProfileEdit(beforeUpserts, next, current.config);
+        next = this.parseModelProfileEdit(beforeUpserts, this.applyModelUpserts(next, resolved), current.config);
       }
       const projectSettings = await loadProjectSettings(project.path);
       const removeProviderAliases = new Set(input.models.removeProviderAliases ?? []);
@@ -2292,81 +2292,115 @@ export class DesktopAgentManager {
     current: AgentConfig,
     input: DesktopModelConfigurationInput
   ): AgentConfig {
-    const existingProvider = current.providers[input.providerAlias];
-    const profile = providerDefinition(input.providerType);
-    const sameProvider = existingProvider?.type === input.providerType;
-    const modelProfiles = input.modelProfile === undefined
-      ? (sameProvider ? existingProvider?.modelProfiles : undefined)
-      : Object.assign({}, sameProvider ? existingProvider?.modelProfiles : undefined, { [input.model]: input.modelProfile });
-    const provider = {
-      type: input.providerType,
-      acp: input.acp ?? (sameProvider ? existingProvider.acp : undefined),
-      enabled: existingProvider?.enabled,
-      icon: sameProvider ? existingProvider.icon : undefined,
-      dataResidency: sameProvider ? existingProvider.dataResidency : undefined,
-      // 自定义服务商的显示名保存在 provider 上；模型级 upsert 不携带它，不能清掉。
-      displayName: sameProvider ? existingProvider?.displayName : undefined,
-      protocol: input.protocol,
-      baseUrl: input.baseUrl ?? existingProvider?.baseUrl ?? profile.baseUrl,
-      apiKey: input.apiKey ?? existingProvider?.apiKey,
-      apiKeyEnv: input.apiKeyEnv ?? existingProvider?.apiKeyEnv ?? profile.apiKeyEnv,
-      requiresApiKey: input.requiresApiKey,
-      modelsRequiresApiKey: input.modelsRequiresApiKey ?? (sameProvider ? existingProvider?.modelsRequiresApiKey : undefined),
-      authMode: existingProvider?.authMode,
-      oauth: existingProvider?.oauth,
-      timeoutMs: sameProvider ? existingProvider.timeoutMs : undefined,
-      retry: sameProvider ? existingProvider.retry : undefined,
-      modelsEndpoint: sameProvider ? existingProvider.modelsEndpoint : undefined,
-      headers: sameProvider ? existingProvider.headers : undefined,
-      // 「API 格式」分成连接默认与模型覆盖：连接级让目录拉取/回显不用翻模型列表，
-      // 模型级保留逐模型覆盖的逃生门。providerApiBackend 只在显式切换连接默认时写入。
-      apiBackend: input.providerApiBackend
-        ?? (sameProvider ? existingProvider.apiBackend : input.apiBackend),
-      compatibility: sameProvider ? existingProvider.compatibility : undefined,
-      applyPatchProtocol: sameProvider ? existingProvider.applyPatchProtocol : undefined,
-      embeddingModels: sameProvider ? existingProvider.embeddingModels : undefined,
-      modelProfiles
-    };
-    const existingModel = current.models[input.alias];
-    const sameModel = existingModel?.provider === input.providerAlias && existingModel.model === input.model;
-    const models = Object.fromEntries(Object.entries(current.models).filter(([alias, model]) => (
-      alias === input.alias || model.provider !== input.providerAlias || model.model !== input.model
-    )));
-    // Enabling an extra model, rotating a key or editing a base URL must not
-    // silently hijack the active default — only an explicit connect does, and
-    // the de-dup above can still strip the previous default out from under us.
-    const keepsCurrentDefault = input.alias === current.defaultModel || Boolean(models[current.defaultModel]);
-    const defaultModel = input.makeDefault || !keepsCurrentDefault ? input.alias : current.defaultModel;
-    const candidate: AgentConfig = {
+    return this.applyModelUpserts(current, [input]);
+  }
+
+  /** 一次复制并建立去重索引，按输入顺序合并；默认模型与推理选择仍逐项推进。 */
+  private applyModelUpserts(
+    current: AgentConfig,
+    inputs: DesktopModelConfigurationInput[]
+  ): AgentConfig {
+    if (!inputs.length) return current;
+    const models: Record<string, AgentConfig["models"][string]> = { ...current.models };
+    const providers: Record<string, AgentConfig["providers"][string]> = { ...current.providers };
+    const aliasesByModelKey = new Map<string, Set<string>>();
+    const modelKeyByAlias = new Map<string, string>();
+    for (const [alias, model] of Object.entries(models)) {
+      const key = `${model.provider}\u0000${model.model}`;
+      modelKeyByAlias.set(alias, key);
+      const existing = aliasesByModelKey.get(key);
+      if (existing) existing.add(alias);
+      else aliasesByModelKey.set(key, new Set([alias]));
+    }
+    let defaultModel = current.defaultModel;
+    let thinking = current.thinking;
+    for (const input of inputs) {
+      const existingProvider = providers[input.providerAlias];
+      const profile = providerDefinition(input.providerType);
+      const sameProvider = existingProvider?.type === input.providerType;
+      const modelProfiles = input.modelProfile === undefined
+        ? (sameProvider ? existingProvider?.modelProfiles : undefined)
+        : Object.assign({}, sameProvider ? existingProvider?.modelProfiles : undefined, { [input.model]: input.modelProfile });
+      providers[input.providerAlias] = {
+        type: input.providerType,
+        acp: input.acp ?? (sameProvider ? existingProvider.acp : undefined),
+        enabled: existingProvider?.enabled,
+        icon: sameProvider ? existingProvider.icon : undefined,
+        dataResidency: sameProvider ? existingProvider.dataResidency : undefined,
+        // 自定义服务商的显示名保存在 provider 上；模型级 upsert 不携带它，不能清掉。
+        displayName: sameProvider ? existingProvider.displayName : undefined,
+        protocol: input.protocol,
+        baseUrl: input.baseUrl ?? existingProvider?.baseUrl ?? profile.baseUrl,
+        apiKey: input.apiKey ?? existingProvider?.apiKey,
+        apiKeyEnv: input.apiKeyEnv ?? existingProvider?.apiKeyEnv ?? profile.apiKeyEnv,
+        requiresApiKey: input.requiresApiKey,
+        modelsRequiresApiKey: input.modelsRequiresApiKey ?? (sameProvider ? existingProvider.modelsRequiresApiKey : undefined),
+        authMode: existingProvider?.authMode,
+        oauth: existingProvider?.oauth,
+        timeoutMs: sameProvider ? existingProvider.timeoutMs : undefined,
+        retry: sameProvider ? existingProvider.retry : undefined,
+        modelsEndpoint: sameProvider ? existingProvider.modelsEndpoint : undefined,
+        headers: sameProvider ? existingProvider.headers : undefined,
+        // 连接默认与模型覆盖分别保存，只有显式 providerApiBackend 才更新连接默认。
+        apiBackend: input.providerApiBackend
+          ?? (sameProvider ? existingProvider.apiBackend : input.apiBackend),
+        compatibility: sameProvider ? existingProvider.compatibility : undefined,
+        applyPatchProtocol: sameProvider ? existingProvider.applyPatchProtocol : undefined,
+        embeddingModels: sameProvider ? existingProvider.embeddingModels : undefined,
+        modelProfiles
+      };
+      const existingModel = models[input.alias];
+      const sameModel = existingModel?.provider === input.providerAlias && existingModel.model === input.model;
+      const modelKey = `${input.providerAlias}\u0000${input.model}`;
+      // 别名改指时同步旧索引，避免后续去重误删已指向别处的模型。
+      const previousKey = modelKeyByAlias.get(input.alias);
+      if (previousKey !== undefined && previousKey !== modelKey) aliasesByModelKey.get(previousKey)?.delete(input.alias);
+      // 同 provider+model 的其它别名让位给本次 upsert；本条自己的别名随后覆盖。
+      const occupying = aliasesByModelKey.get(modelKey);
+      if (occupying) {
+        for (const alias of occupying) {
+          if (alias === input.alias) continue;
+          delete models[alias];
+          modelKeyByAlias.delete(alias);
+        }
+        occupying.clear();
+        occupying.add(input.alias);
+      } else {
+        aliasesByModelKey.set(modelKey, new Set([input.alias]));
+      }
+      modelKeyByAlias.set(input.alias, modelKey);
+      // 保留仍存在的默认模型；去重移除了它或明确指定默认时才切换。
+      const keepsCurrentDefault = input.alias === defaultModel || Boolean(models[defaultModel]);
+      const nextDefaultModel = input.makeDefault || !keepsCurrentDefault ? input.alias : defaultModel;
+      // 批内切走再切回也不能恢复已重置的推理开关。
+      if (nextDefaultModel !== defaultModel) thinking = { enabled: false, effort: thinking.effort };
+      defaultModel = nextDefaultModel;
+      models[input.alias] = {
+        provider: input.providerAlias,
+        model: input.model,
+        displayName: input.displayName,
+        supportsTools: undefined,
+        // 自动识别能力只参与运行时解析；用户覆盖统一保存在 modelProfiles。
+        capabilities: undefined,
+        contextWindow: sameModel ? existingModel.contextWindow : undefined,
+        maxInputTokens: sameModel ? existingModel.maxInputTokens : undefined,
+        maxOutputTokens: sameModel ? existingModel.maxOutputTokens : undefined,
+        limits: sameModel ? existingModel.limits : undefined,
+        apiBackend: input.apiBackend,
+        baseUrl: sameModel ? existingModel.baseUrl : undefined,
+        headers: input.headers ?? (sameModel ? existingModel.headers : undefined),
+        thinkingLevelMap: sameModel ? existingModel.thinkingLevelMap : undefined,
+        compatibility: input.compatibility ?? (sameModel ? existingModel.compatibility : undefined),
+        pricing: sameModel ? existingModel.pricing : undefined
+      };
+    }
+    return {
       ...current,
       defaultModel,
-      providers: { ...current.providers, [input.providerAlias]: provider },
-      models: {
-        ...models,
-        [input.alias]: {
-          provider: input.providerAlias,
-          model: input.model,
-          displayName: input.displayName,
-          supportsTools: undefined,
-          // 自动识别能力只参与运行时解析；用户覆盖统一保存在 modelProfiles。
-          capabilities: undefined,
-          contextWindow: sameModel ? existingModel.contextWindow : undefined,
-          maxInputTokens: sameModel ? existingModel.maxInputTokens : undefined,
-          maxOutputTokens: sameModel ? existingModel.maxOutputTokens : undefined,
-          limits: sameModel ? existingModel.limits : undefined,
-          apiBackend: input.apiBackend,
-          baseUrl: sameModel ? existingModel.baseUrl : undefined,
-          headers: input.headers ?? (sameModel ? existingModel.headers : undefined),
-          thinkingLevelMap: sameModel ? existingModel.thinkingLevelMap : undefined,
-          compatibility: input.compatibility ?? (sameModel ? existingModel.compatibility : undefined),
-          pricing: sameModel ? existingModel.pricing : undefined
-        }
-      },
-      // Thinking is validated against the *default* model, so it only has to be
-      // reset when the default actually moves to a freshly configured model.
-      thinking: defaultModel === current.defaultModel ? current.thinking : { enabled: false, effort: current.thinking.effort }
+      providers,
+      models,
+      thinking
     };
-    return candidate;
   }
 
   /** Only profile edits may project an inherited selection that no longer parses. */

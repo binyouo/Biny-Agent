@@ -1665,6 +1665,26 @@ async function testDesktopToolModelSelection(): Promise<void> {
     assert.equal(persisted.thinking.enabled, true);
     assert.equal(persisted.thinking.effort, "high");
 
+    const unchanged = await commitDesktopSettings(settings, project.id, {
+      models: { upserts: [{ alias: "alt-model", displayName: "Alt model", providerAlias: "active", providerType: "openai", model: "alt-model", supportsTools: true, makeDefault: true }], removeAliases: [] }
+    });
+    assert.equal(unchanged.models.thinking, "high", "重复指定当前默认模型保留推理选择");
+
+    const roundTripUpserts = ["test-model", "alt-model"].map((alias) => ({
+      alias, displayName: alias, providerAlias: "active", providerType: "openai" as const, model: alias, supportsTools: true, makeDefault: true
+    }));
+    const roundTrip = await commitDesktopSettings(settings, project.id, {
+      models: { upserts: roundTripUpserts, removeAliases: [] }
+    });
+    assert.equal(roundTrip.models.defaultModel, "alt-model");
+    assert.equal(roundTrip.models.thinking, "off", "同批切走再切回默认模型不能恢复已重置的推理开关");
+    assert.deepEqual((await configStore.load(workspaceRoot)).thinking, { enabled: false, effort: "high" });
+
+    const explicitSelection = await commitDesktopSettings(settings, project.id, {
+      models: { upserts: roundTripUpserts, removeAliases: [], defaultModel: { alias: "alt-model", thinking: "high" } }
+    });
+    assert.equal(explicitSelection.models.thinking, "high", "同批显式推理选择覆盖 upsert 的默认重置");
+
     const withToolModel = await commitDesktopSettings(settings, project.id, {
       models: { upserts: [], removeAliases: [], toolModel: { alias: "test-model" } }
     });
@@ -2357,6 +2377,41 @@ async function testDesktopCustomProviderConnection(): Promise<void> {
 
     await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: batch.map((model) => model.alias) } });
     assert.deepEqual((await configStore.load()).models, modelsBeforeBatch, "批量删除只移除本次模型");
+
+    // 批量 upsert 的合并必须与逐个应用等价：同别名后写覆盖前写、同 provider+model 只留一个
+    // 别名、默认模型只被显式 makeDefault 接管、同批 modelProfile 落盘、provider 显示名保留。
+    // 逐个应用是平方级重建，整批合并若语义不同，「全选」省下的时间会以配置正确性为代价。
+    const mergeBase = await configStore.load();
+    const mergeInputs = [
+      { alias: "my-relay-merge-a", displayName: "Merge A", providerAlias: "my-relay", providerType: "openai-compatible" as const, model: "merge-a", requiresApiKey: true, supportsTools: true },
+      { alias: "my-relay-merge-a", displayName: "Merge A2", providerAlias: "my-relay", providerType: "openai-compatible" as const, model: "merge-a", requiresApiKey: true, supportsTools: true },
+      { alias: "my-relay-merge-b", displayName: "Merge B", providerAlias: "my-relay", providerType: "openai-compatible" as const, model: "merge-b", requiresApiKey: true, supportsTools: true,
+        modelProfile: { showInPicker: false } }
+    ];
+    await commitDesktopSettings(settings, project.id, { models: { upserts: mergeInputs, removeAliases: [] } });
+    const mergedConfig = await configStore.load();
+    assert.equal(mergedConfig.models["my-relay-merge-a"]?.displayName, "Merge A2", "同别名后写覆盖前写");
+    assert.equal(Object.keys(mergedConfig.models).filter((alias) => mergedConfig.models[alias]?.model === "merge-a").length, 1, "同 provider+model 只留一个别名");
+    assert.equal(mergedConfig.defaultModel, mergeBase.defaultModel, "批量合并不劫持默认模型");
+    assert.equal(mergedConfig.providers["my-relay"]?.modelProfiles?.["merge-b"]?.showInPicker, false, "同批 modelProfile 落盘");
+    assert.equal(mergedConfig.providers["my-relay"]?.displayName, "我的中转", "批量合并保留 provider 显示名");
+    await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: mergeInputs.map((model) => model.alias) } });
+
+    // 别名先改指别的模型，再让旧模型换新别名：改指过的别名必须留下。去重索引若不同步
+    // 摘掉旧条目，后一项会拿着过期映射把这个别名删掉，批量合并就会丢模型。
+    const reassignBase = await configStore.load();
+    const reassignInputs = [
+      { alias: "my-relay-reassign", displayName: "R1", providerAlias: "my-relay", providerType: "openai-compatible" as const, model: "reassign-1", requiresApiKey: true, supportsTools: true },
+      { alias: "my-relay-reassign", displayName: "R2", providerAlias: "my-relay", providerType: "openai-compatible" as const, model: "reassign-2", requiresApiKey: true, supportsTools: true },
+      { alias: "my-relay-reassign-old", displayName: "R3", providerAlias: "my-relay", providerType: "openai-compatible" as const, model: "reassign-1", requiresApiKey: true, supportsTools: true }
+    ];
+    await commitDesktopSettings(settings, project.id, { models: { upserts: reassignInputs, removeAliases: [] } });
+    const reassignedConfig = await configStore.load();
+    assert.equal(reassignedConfig.models["my-relay-reassign"]?.model, "reassign-2", "改指后的别名保留并指向新模型");
+    assert.equal(reassignedConfig.models["my-relay-reassign-old"]?.model, "reassign-1", "旧模型由新别名接管");
+    assert.equal(reassignedConfig.defaultModel, reassignBase.defaultModel, "改指不劫持默认模型");
+    await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: reassignInputs.map((model) => model.alias) } });
+
     await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: [], defaultModel: { alias: "my-relay-test-model", thinking: "off" },
       modelProfiles: { "my-relay": { "test-model": { showInPicker: true }, "hidden-model": { showInPicker: false } } } } });
     const selectionBeforeStop = await configStore.load();

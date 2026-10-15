@@ -110,6 +110,8 @@ export function restartRelevantConfig(config: AgentConfig): AgentConfig {
   for (const key of Object.keys(projection)) {
     if (!RESTART_RELEVANT_CONFIG_FIELDS.includes(key)) delete projection[key];
   }
+  // 图标由 Desktop 展示快照读取，不改变 Provider 请求或 Agent 执行。
+  for (const provider of Object.values(projection.providers as AgentConfig["providers"])) delete provider.icon;
   return projection as unknown as AgentConfig;
 }
 
