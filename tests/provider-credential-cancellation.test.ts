@@ -11,7 +11,7 @@ for (const cancelledCaller of [0, 1]) {
   for (const survivorHasSignal of [false, true]) {
     test(`shared refresh preserves caller ${1 - cancelledCaller} (signal: ${survivorHasSignal})`, { timeout: 10_000 }, async () => {
       const release = deferred<void>();
-      const f = fixture({ refresh: async () => { await release.promise; } });
+      const f = fixture({ refresh: async (signal) => { await release.promise; signal.throwIfAborted(); } });
       const controllers = [new AbortController(), new AbortController()];
       const reason = new Error("cancel one auxiliary request");
       const signals = controllers.map((controller, index) => index === cancelledCaller || survivorHasSignal ? controller.signal : undefined);
@@ -25,10 +25,11 @@ for (const cancelledCaller of [0, 1]) {
         assert.equal(f.admissions, 2, "both public calls entered credential preparation");
         controllers[cancelledCaller]!.abort(reason);
         await cancelled;
-        assert.equal(f.refreshSignals[0]?.aborted, false, "one caller cannot abort another caller's refresh");
+        const refreshWasAborted = f.refreshSignals[0]?.aborted;
         assert.equal(controllers[1 - cancelledCaller]!.signal.aborted, false);
         release.resolve();
         assert.equal((await survivor).text, "ready");
+        assert.equal(refreshWasAborted, false, "one caller cannot abort another caller's refresh");
         assert.equal(f.refreshSignals.length, 1);
         assert.equal(f.textRequests, 1);
         assert.equal(f.saves, 1);
