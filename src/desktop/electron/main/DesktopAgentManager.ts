@@ -342,6 +342,8 @@ export class DesktopAgentManager {
     await this.runtimeInitializations.get(projectId)?.catch(() => undefined);
     runtimeHostSpawnCircuitFor(runtimeHostPaths(persistenceRoot).endpoint).reset();
     try {
+      const resident = this.residentRuntime(projectId);
+      if (resident?.runtime instanceof RuntimeHostClient) await resident.runtime.retryConnection();
       if (sessionId === undefined) await this.ensureRuntime(projectId);
       else await this.resolveSessionRuntime(projectId, sessionId, false);
       this.runtimeErrors.delete(projectId);

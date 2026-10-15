@@ -131,7 +131,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private readonly completions = new Map<string, PendingCompletion>();
   private readonly listeners = new Set<(update: AgentRuntimeUpdate) => void>();
   private readonly allListeners = new Set<(update: AgentRuntimeUpdate) => void>();
-  private readonly idleWaiters = new Set<() => void>();
+  private readonly idleWaiters = new Set<(error?: Error) => void>();
   private readonly capabilityOfferListeners = new Set<(offer: { invocation: CapabilityInvocation; registration: CapabilityRegistration }) => void>();
   private readonly pendingUpdates: AgentRuntimeUpdate[] = [];
   private readonly snapshots = new Map<string, InteractiveRuntimeSnapshot>();
@@ -150,6 +150,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private closed = false;
   private retired = false;
   private lastError: Error | undefined;
+  private connectionRecoveryError: RuntimeHostSpawnCircuitOpenError | undefined;
+  private connectionRetryPromise: Promise<void> | undefined;
+  private connectionRecoveryAttempt: object | undefined;
+  private synchronizedSocket: net.Socket | undefined;
   private reconnectInProgress = false;
   private ownerRestartPromise: Promise<void> | undefined;
   private browserAutomationConfigured = false;
@@ -710,6 +714,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   async waitForIdle(sessionId?: string): Promise<void> {
     if (this.closed) return;
+    if (this.connectionRecoveryError) throw this.connectionRecoveryError;
     if (sessionId !== undefined) {
       const target = this.snapshots.get(sessionId) ?? (this.focusedSessionId === sessionId ? this.snapshot : undefined);
       if (!target || target.state.kind === "idle") return;
@@ -718,15 +723,16 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     } else if (this.snapshots.size === 0 && (!this.snapshot || this.snapshot.state.kind === "idle")) {
       return;
     }
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
       // subscribe 会同步回放 pendingUpdates，settle 可能在 unsubscribe 返回前就触发。
       const waiter: { settled: boolean; unsubscribe?: () => void } = { settled: false };
-      const settle = (): void => {
+      const settle = (error?: Error): void => {
         if (waiter.settled) return;
         waiter.settled = true;
         this.idleWaiters.delete(settle);
         waiter.unsubscribe?.();
-        resolve();
+        if (error) reject(error);
+        else resolve();
       };
       waiter.unsubscribe = this.subscribeAllRuntimeEvents((update) => {
         if (sessionId !== undefined) {
@@ -925,6 +931,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.connectionRecoveryAttempt = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     if (this.stableResetTimer) clearTimeout(this.stableResetTimer);
@@ -1139,6 +1146,31 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     }
   }
 
+  /** Explicitly retry this client's stopped recovery without replaying business requests. */
+  async retryConnection(): Promise<void> {
+    if (this.closed) throw new Error("Runtime Host client is closed.");
+    if (this.retired) throw new Error("Runtime Host retired after becoming idle. Connect again before starting new work.");
+    if (this.connectionRetryPromise) return await this.connectionRetryPromise;
+    if (!this.connectionRecoveryError) return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    const retry = (async () => {
+      await this.reconnect();
+      if (this.closed) throw new Error("Runtime Host client is closed.");
+      if (this.retired) throw new Error("Runtime Host retired after becoming idle. Connect again before starting new work.");
+      if (this.connectionRecoveryError) throw this.connectionRecoveryError;
+      if (!this.socket || this.socket.destroyed || this.synchronizedSocket !== this.socket) {
+        throw new Error("Runtime Host connection was lost before recovery finished.");
+      }
+    })();
+    this.connectionRetryPromise = retry;
+    try {
+      await retry;
+    } finally {
+      if (this.connectionRetryPromise === retry) this.connectionRetryPromise = undefined;
+    }
+  }
+
   private async open(): Promise<void> {
     // hello 之后仍可能有界失败（owner 半死：应答了握手却不再处理请求）；
     // 初始请求失败要关闭 client，避免留下半开的 socket 让调用方误以为连接可用。
@@ -1164,6 +1196,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         this.applySnapshot(snapshot.snapshot, snapshot.sequence, undefined, true);
         this.applySessionSummaries(snapshot.sessions, snapshot.sequence);
       }
+      if (this.socket === socket && !socket?.destroyed && !this.closed && !this.retired) this.synchronizedSocket = socket;
     } catch (error) {
       await this.close().catch(() => undefined);
       throw error;
@@ -1233,6 +1266,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         this.rejectPendingRequests(error);
         this.decoder = new RuntimeHostFrameDecoder();
         this.socket = undefined;
+        if (this.synchronizedSocket === socket) this.synchronizedSocket = undefined;
         if (this.socketWriter === writer) this.socketWriter = undefined;
         this.readyPromise = undefined;
         this.noteConnectionDropped();
@@ -1284,7 +1318,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     // spawn 熔断已断开：host 连续即死，停止 respawn 风暴并把终结错误透出给调用方。
     const circuitError = runtimeHostSpawnCircuitFor(this.options.registration.endpoint).failureError();
     if (circuitError) {
-      this.reportError(circuitError);
+      this.stopConnectionRecovery(circuitError);
       return;
     }
     this.reconnectAttempts += 1;
@@ -1296,8 +1330,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.reconnect().catch((error) => {
-        this.reportError(error);
         if (error instanceof RuntimeHostSpawnCircuitOpenError) return;
+        this.reportError(error);
         this.scheduleReconnect();
       });
     }, delayMs);
@@ -1306,49 +1340,87 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   private async reconnect(): Promise<void> {
     if (this.closed || this.retired) return;
-    let registration = await readRegistration(runtimeHostPaths(this.persistenceRoot));
-    if (this.closed || this.retired) return;
-    if (registration && !isProcessAlive(registration.pid)) {
-      await removeStaleRegistration(registration);
-      registration = undefined;
-    }
-    if (registration && !registrationMatchesCurrentEnvironment(registration, this.options.spawnOptions)) {
-      throw new Error("Runtime Host belongs to a different Biny configuration environment.");
-    }
-    if (this.closed || this.retired) return;
-    if (!registration && this.options.spawnOptions) {
-      const child = spawnRuntimeHostProcess(this.persistenceRoot, this.options.spawnOptions);
-      registration = await waitForHostRegistration(this.persistenceRoot, child);
-    }
-    if (!registration) throw new Error("Runtime Host registration is not available.");
-    if (this.closed || this.retired) return;
-    this.options.registration = registration;
-    await this.openSocket();
-    const socket = this.socket;
-    let result: { hostEpoch: string; snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number; replayed: boolean; capabilities: string[] };
+    const attempt = {};
+    this.connectionRecoveryAttempt = attempt;
     try {
-      result = await this.request("subscribe", {
-        afterSequence: this.consumedSequence,
-        afterHostEpoch: this.consumedHostEpoch,
-        sessions: undefined
-      }, this.handshakeTimeoutMs);
+      let registration = await readRegistration(runtimeHostPaths(this.persistenceRoot));
+      if (this.closed || this.retired || this.connectionRecoveryAttempt !== attempt) return;
+      if (registration && !isProcessAlive(registration.pid)) {
+        await removeStaleRegistration(registration);
+        registration = undefined;
+      }
+      if (registration && !registrationMatchesCurrentEnvironment(registration, this.options.spawnOptions)) {
+        throw new Error("Runtime Host belongs to a different Biny configuration environment.");
+      }
+      if (this.closed || this.retired || this.connectionRecoveryAttempt !== attempt) return;
+      if (!registration && this.options.spawnOptions) {
+        const child = spawnRuntimeHostProcess(this.persistenceRoot, this.options.spawnOptions);
+        registration = await waitForHostRegistration(this.persistenceRoot, child);
+      }
+      if (!registration) throw new Error("Runtime Host registration is not available.");
+      if (this.closed || this.retired || this.connectionRecoveryAttempt !== attempt) return;
+      this.options.registration = registration;
+      await this.openSocket();
+      const socket = this.socket;
+      const hostEpoch = this.hostEpoch;
+      const currentConnection = (): boolean => !this.closed && !this.retired
+        && this.connectionRecoveryAttempt === attempt && socket !== undefined && !socket.destroyed
+        && this.socket === socket && this.hostEpoch === hostEpoch;
+      if (!currentConnection()) return;
+      let result: { hostEpoch: string; snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number; replayed: boolean; capabilities: string[] };
+      try {
+        result = await this.request("subscribe", {
+          afterSequence: this.consumedSequence,
+          afterHostEpoch: this.consumedHostEpoch,
+          sessions: undefined
+        }, this.handshakeTimeoutMs, (dispatchedSocket) => {
+          if (dispatchedSocket !== socket || !currentConnection()) throw new Error("Runtime Host connection changed before recovery subscription.");
+        });
+      } catch (error) {
+        // Only destroy the transport owned by this attempt, never a newer connection.
+        if (currentConnection()) socket?.destroy();
+        throw error;
+      }
+      if (!currentConnection()) return;
+      this.capabilities = result.capabilities;
+      if (this.browserAutomationConfigured) await this.applyBrowserAutomationLease((dispatchedSocket) => {
+        if (dispatchedSocket !== socket || !currentConnection()) throw new Error("Runtime Host connection changed before browser lease recovery.");
+      });
+      if (!currentConnection()) return;
+      if (this.focusedSessionId === undefined) this.focusedSessionId = result.snapshot.info.sessionId;
+      this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, this.focusedSessionId === result.snapshot.info.sessionId);
+      this.applySessionSummaries(result.sessions, result.sequence);
+      if (!currentConnection()) return;
+      this.acknowledgeEvents(result.sequence, result.hostEpoch);
+      // A hello is not recovery: only a current subscribed, synchronized connection
+      // admits new local observations. Already rejected observations stay settled.
+      this.synchronizedSocket = socket;
+      this.connectionRecoveryError = undefined;
+      this.connectionRecoveryAttempt = undefined;
+      await this.recoverCompletions();
     } catch (error) {
-      // 重连的 socket 可能已经半死（握手能过、请求无人应答）；销毁后下一次尝试才会重建连接。
-      this.socket?.destroy();
+      if (this.connectionRecoveryAttempt !== attempt) return;
+      if (error instanceof RuntimeHostSpawnCircuitOpenError) {
+        this.stopConnectionRecovery(error);
+      }
       throw error;
     }
-    this.capabilities = result.capabilities;
-    if (this.browserAutomationConfigured) await this.applyBrowserAutomationLease();
-    if (this.focusedSessionId === undefined) this.focusedSessionId = result.snapshot.info.sessionId;
-    this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, this.focusedSessionId === result.snapshot.info.sessionId);
-    this.applySessionSummaries(result.sessions, result.sequence);
-    if (this.socket === socket && !socket?.destroyed) this.acknowledgeEvents(result.sequence, result.hostEpoch);
-    await this.recoverCompletions();
   }
 
-  private async applyBrowserAutomationLease(): Promise<boolean> {
+  private stopConnectionRecovery(error: RuntimeHostSpawnCircuitOpenError): void {
+    if (this.closed || this.retired || (this.socket !== undefined && !this.socket.destroyed && this.synchronizedSocket === this.socket)) return;
+    this.connectionRecoveryAttempt = undefined;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.connectionRecoveryError = error;
+    this.reportError(error);
+    this.rejectCompletions(error);
+    for (const settle of [...this.idleWaiters]) settle(error);
+  }
+
+  private async applyBrowserAutomationLease(assertCurrent?: (socket: net.Socket) => void): Promise<boolean> {
     if (!this.capabilities.includes("browser.automation.lease")) return false;
-    await this.request("browser.automation.set", { browserAutomation: this.browserAutomationEndpoint ?? null }, this.handshakeTimeoutMs);
+    await this.request("browser.automation.set", { browserAutomation: this.browserAutomationEndpoint ?? null }, this.handshakeTimeoutMs, assertCurrent);
     return true;
   }
 
@@ -1752,6 +1824,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private createCompletion(runId: string): Promise<AgentRunOutcome> {
+    if (this.connectionRecoveryError) throw this.connectionRecoveryError;
     return new Promise<AgentRunOutcome>((resolve, reject) => this.completions.set(runId, { resolve, reject }));
   }
 
