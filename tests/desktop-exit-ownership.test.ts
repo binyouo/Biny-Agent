@@ -26,7 +26,10 @@ const provider = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
   const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { messages?: Array<{ content: unknown }> };
-  requestPrompts.push(JSON.stringify(payload.messages?.at(-1)?.content));
+  const content = payload.messages?.at(-1)?.content;
+  requestPrompts.push(typeof content === "string" ? content : Array.isArray(content)
+    ? content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+    : JSON.stringify(content));
   providerRequests += 1;
   await new Promise<void>((resolve) => {
     const finish = (): void => {
@@ -60,6 +63,7 @@ try {
   await configStore.save(configSchema.parse({
     ...defaultConfig,
     activity: { ...defaultConfig.activity, enabled: false },
+    chat: { ...defaultConfig.chat, defaultToolSelection: "none", defaultSkillSelection: "none" },
     defaultModel: "local-test",
     providers: { local: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
     models: { "local-test": { provider: "local", model: "local-test", contextWindow: 128_000, capabilities: { tools: true, reasoning: false, streaming: true } } },
@@ -98,6 +102,10 @@ try {
   const peerRun = await peer.submitRunForSession(peerSession.sessionId, "TUI task that must keep running", []);
   assert.equal(peerRun.accepted, true);
   await waitFor(() => providerRequests === 2);
+  for (const input of ["Desktop task to pause", "TUI task that must keep running"]) {
+    assert.equal(requestPrompts.filter((prompt) => prompt.endsWith(input)).length, 1,
+      "both held requests must execute the main turns before closing Desktop");
+  }
   // Opening a shared Session makes its snapshot visible to Desktop without transferring writer ownership.
   await manager.openSession(project.id, peerSession.sessionId);
 
