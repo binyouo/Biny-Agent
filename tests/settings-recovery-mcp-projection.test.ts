@@ -106,6 +106,7 @@ async function setup(root: string) {
     new InMemoryModelsStore(), globalThis.fetch);
   const bridge: DesktopSettingsTransactionAgents = {
     hasRunningTasks: manager.hasRunningTasks.bind(manager),
+    settingsConfigRevision: manager.settingsConfigRevision.bind(manager),
     settingsConfigSnapshot: manager.settingsConfigSnapshot.bind(manager),
     settingsChatSnapshot: manager.settingsChatSnapshot.bind(manager),
     prepareSettingsConfig: manager.prepareSettingsConfig.bind(manager),

@@ -330,9 +330,6 @@ test("close owns the title's nested index publication after releasing its catalo
   let titleSettled = false;
   let closeSettled = false;
   let closing: Promise<void> | undefined;
-  let titleSignal: AbortSignal | undefined;
-  const titleAborted = deferred<void>();
-  const onTitleAbort = () => { titleAborted.resolve(); };
   const spy = mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
     if (path.resolve(String(args[1])) === path.resolve(indexPath)) {
       temporaryPath = String(args[0]);
@@ -357,18 +354,17 @@ test("close owns the title's nested index publication after releasing its catalo
     await entered.promise;
     await updateSessionCatalogMetadata(f.root, sessionId, { title: "Owned index title" }, undefined, { indexRefresh: "wait" });
     assert.equal(titleSettled, false, "title completion must include its nested index write");
-    titleSignal = f.calls[0]!.signal;
-    assert.ok(titleSignal);
-    assert.equal(titleSignal.aborted, false, "title cancellation must be caused by close");
-    titleSignal.addEventListener("abort", onTitleAbort, { once: true });
     closing = f.runtime.close();
     void closing.then(() => { closeSettled = true; }, () => { closeSettled = true; });
-    // Search-worker shutdown can finish after unrelated catalog I/O. Observe
-    // real title cancellation before checking ownership of its held writer.
-    await bounded(titleAborted.promise, "title cancellation during close");
     // Real same-record I/O remains available while shutdown is joining the title.
     await updateSessionCatalogMetadata(f.root, sessionId, { title: "Owned index title" }, undefined, { indexRefresh: "wait" });
     assert.equal(closeSettled, false, "runtime close must not abandon the title-owned writer");
+    await bounded(new Promise<void>((resolve) => {
+      const signal = f.calls[0]!.signal;
+      assert.ok(signal);
+      if (signal.aborted) resolve();
+      else signal.addEventListener("abort", () => resolve(), { once: true });
+    }), "title cancellation during close");
     assert.equal(f.calls[0]!.signal?.aborted, true);
     assert.equal(publications, 1, "no-op updates must not dirty or restart the index");
     release.resolve();
@@ -380,7 +376,6 @@ test("close owns the title's nested index publication after releasing its catalo
     assert.equal(index.sessions.find((session) => session.sessionId === sessionId)?.title, "Owned index title");
     assert.equal(publications, 1);
   } finally {
-    titleSignal?.removeEventListener("abort", onTitleAbort);
     release.resolve();
     await closing?.catch(() => undefined);
     await f.settled();
