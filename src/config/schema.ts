@@ -500,6 +500,13 @@ const extensionsSchema = z.object({
   }
 });
 
+const imageGenSchema = z.object({
+  /** 生图默认模型：`providerAlias:modelId` 或纯 Gemini 模型 id；留空自动选择。 */
+  model: z.string().trim().max(240).optional(),
+  /** 默认宽高比，如 `16:9`；`auto` 或留空由模型自行决定。 */
+  aspectRatio: z.string().trim().max(32).optional()
+}).default({ model: undefined, aspectRatio: undefined });
+
 const webSearchSchema = z.object({
   provider: z.enum(["google", "xiaohongshu"]).default("google"),
   visibleBrowsing: z.boolean().default(false),
@@ -688,6 +695,7 @@ const canonicalConfigSchema = z.object({
   sandbox: sandboxSchema,
   hooks: hooksSchema,
   web: webSchema,
+  imageGen: imageGenSchema,
   telemetry: z.object({
     enabled: z.boolean().default(false),
     recordInputs: z.boolean().default(false),
@@ -990,6 +998,7 @@ export const defaultConfig: AgentConfig = {
     },
     cookies: { enabled: false, path: undefined }
   },
+  imageGen: { model: undefined, aspectRatio: undefined },
   telemetry: { enabled: false, recordInputs: false, recordOutputs: false },
   extensions: {
     mcp: {},

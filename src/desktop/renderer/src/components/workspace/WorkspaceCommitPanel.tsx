@@ -13,6 +13,7 @@ export function WorkspaceCommitPanel({ projectId, active, onCount, onSwitchBranc
   const [snapshot, setSnapshot] = useState<DesktopGitStatus>();
   const [branches, setBranches] = useState<DesktopGitBranch[]>([]);
   const [message, setMessage] = useState("");
+  const messageRevisionRef = useRef(0);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -49,6 +50,7 @@ export function WorkspaceCommitPanel({ projectId, active, onCount, onSwitchBranc
   }, [active, refresh]);
   const run = async (action: "commit" | "pull" | "push" | "branch", branch?: string): Promise<void> => {
     if (inFlight.current || !snapshot) return;
+    const submittedMessageRevision = messageRevisionRef.current;
     inFlight.current = true; setBusy(true); setError(undefined); setNotice(undefined);
     try {
       if (action === "branch" && branch) await onSwitchBranch(projectId, branch);
@@ -56,7 +58,10 @@ export function WorkspaceCommitPanel({ projectId, active, onCount, onSwitchBranc
         : action === "branch" ? await window.biny.projectGitStatus(projectId) : await window.biny.projectGitRemote(projectId, action);
       if (!alive.current) return;
       adopt(next);
-      if (action === "commit") { setSelected(new Set()); setMessage(""); }
+      if (action === "commit") {
+        setSelected(new Set());
+        if (messageRevisionRef.current === submittedMessageRevision) setMessage("");
+      }
       setNotice(action === "commit" ? "所选文件已提交" : action === "pull" ? "已完成快进拉取" : action === "push" ? "已推送" : "分支已刷新");
     } catch (reason) { if (alive.current) setError(String(reason)); }
     finally { inFlight.current = false; if (alive.current) setBusy(false); }
@@ -93,7 +98,7 @@ export function WorkspaceCommitPanel({ projectId, active, onCount, onSwitchBranc
       <button type="button" aria-label="推送" title="推送" disabled={busy || !snapshot} onClick={() => void run("push")}><Icon name="arrow-up" size={15} /></button>
     </div>
     <form className="inspector-commit-form" onSubmit={(event) => { event.preventDefault(); void run("commit"); }}>
-      <textarea aria-label="提交说明" placeholder="提交说明…" value={message} disabled={busy} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && message.trim() && selected.size) { event.preventDefault(); void run("commit"); } }} />
+      <textarea aria-label="提交说明" placeholder="提交说明…" value={message} onChange={(event) => { messageRevisionRef.current += 1; setMessage(event.target.value); }} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && message.trim() && selected.size) { event.preventDefault(); void run("commit"); } }} />
       <button type="submit" disabled={busy || !message.trim() || selected.size === 0}>{busy ? "处理中…" : `提交${selected.size ? ` ${selected.size} 个文件` : ""}`}</button>
       <small>提交勾选文件的当前完整内容，其他暂存文件保留。</small>
     </form>

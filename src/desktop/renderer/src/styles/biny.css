@@ -606,6 +606,12 @@
   border-top: 1px solid color-mix(in srgb, var(--biny-border) 45%, transparent);
 }
 
+/* 屏外已展开详情跳过布局与绘制；详情节点仍由分批展示限制。 */
+.biny-session-change.is-open .biny-session-change-body {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
 .biny-session-change-row {
   display: flex;
   width: 100%;
@@ -707,6 +713,25 @@
 .biny-session-change-diff {
   border-top: 1px solid color-mix(in srgb, var(--biny-border) 35%, transparent);
   color: var(--biny-text-secondary);
+}
+
+/* 继续读取差异与切换上下文共用详情操作样式。 */
+.biny-session-change-body > .expand-output {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 6px 12px;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--biny-border) 35%, transparent);
+  background: none;
+  color: var(--biny-text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.biny-session-change-body > .expand-output:hover {
+  text-decoration: underline;
 }
 
 .biny-session-change-diff .merged-diff-line[data-line="add"] {

@@ -26,9 +26,10 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
   const [analysisFeedback, setAnalysisFeedback] = useState<{ text: string; error: boolean }>();
   const [requestingPermission, setRequestingPermission] = useState<"screen-recording" | "accessibility">();
   const [activityUpdateCount, setActivityUpdateCount] = useState(0);
-  const languagesInputRef = useRef<HTMLInputElement>(null);
+  const languagesEditRef = useRef({ dirty: false, revision: 0 });
+  const pendingLanguagesRef = useRef<{ value: string; revision: number } | undefined>(undefined);
   const activityFocusRestoreRef = useRef<{ id?: string; ariaLabel?: string } | undefined>(undefined);
-  const updateActivity = (patch: Partial<DesktopActivitySettingsInput>): void => {
+  const updateActivity = (patch: Partial<DesktopActivitySettingsInput>): Promise<boolean> => {
     const activeElement = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
       ? document.activeElement
       : undefined;
@@ -40,8 +41,12 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
     }
     setActivityUpdateCount((count) => count + 1);
     setFeedback(undefined);
-    void onChange(patch).catch((error: unknown) => {
+    return onChange(patch).then(() => {
+      setFeedback(undefined);
+      return true;
+    }).catch((error: unknown) => {
       setFeedback(activityErrorMessage(error));
+      return false;
     }).finally(() => {
       setActivityUpdateCount((count) => Math.max(0, count - 1));
     });
@@ -64,7 +69,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
   }, [activityUpdateCount]);
 
   useEffect(() => {
-    if (document.activeElement !== languagesInputRef.current) setLanguagesText(activity.ocrLanguages.join(", "));
+    if (!languagesEditRef.current.dirty) setLanguagesText(activity.ocrLanguages.join(", "));
   }, [activity.ocrLanguages]);
 
   const refreshRuntime = (): void => {
@@ -92,17 +97,24 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
   const commitLanguages = (): void => {
     const languages = languagesText.split(",").map((value) => value.trim()).filter(Boolean);
     if (languages.length === 0 || languages.some((value) => value.length < 2 || value.length > 32)) {
+      languagesEditRef.current.dirty = false;
       setLanguagesText(activity.ocrLanguages.join(", "));
       return;
     }
     setLanguagesText(languages.join(", "));
-  };
-  const updateLanguages = (value: string): void => {
-    setLanguagesText(value);
-    const languages = value.split(",").map((item) => item.trim()).filter(Boolean);
-    if (languages.length > 0 && languages.every((item) => item.length >= 2 && item.length <= 32)) {
-      updateActivity({ ocrLanguages: languages });
+    const key = languages.join("\u0000");
+    if (key === (pendingLanguagesRef.current?.value ?? activity.ocrLanguages.join("\u0000"))) {
+      if (pendingLanguagesRef.current) pendingLanguagesRef.current.revision = languagesEditRef.current.revision;
+      else languagesEditRef.current.dirty = false;
+      return;
     }
+    const pending = { value: key, revision: languagesEditRef.current.revision };
+    pendingLanguagesRef.current = pending;
+    void updateActivity({ ocrLanguages: languages }).then((saved) => {
+      if (pendingLanguagesRef.current !== pending) return;
+      pendingLanguagesRef.current = undefined;
+      if (saved && languagesEditRef.current.revision === pending.revision) languagesEditRef.current.dirty = false;
+    });
   };
   const openPermissionSettings = async (pane: "screen-recording" | "accessibility"): Promise<void> => {
     if (requestingPermission !== undefined) return;
@@ -269,7 +281,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
         <div className="activity-field-grid activity-ocr-fields">
           <label className="activity-field activity-field-wide" htmlFor="activity-ocr-languages">
             <span>OCR 语言（Vision 代码，逗号分隔）</span>
-            <input aria-describedby="activity-ocr-languages-hint" autoComplete="off" disabled={!activity.enabled} id="activity-ocr-languages" name="activity-ocr-languages" onBlur={commitLanguages} onChange={(event) => updateLanguages(event.target.value)} ref={languagesInputRef} spellCheck={false} value={languagesText} />
+            <input aria-describedby="activity-ocr-languages-hint" autoComplete="off" disabled={!activity.enabled} id="activity-ocr-languages" name="activity-ocr-languages" onBlur={commitLanguages} onChange={(event) => { languagesEditRef.current = { dirty: true, revision: languagesEditRef.current.revision + 1 }; setLanguagesText(event.target.value); }} onKeyDown={(event) => { if (event.key === "Enter") commitLanguages(); }} spellCheck={false} value={languagesText} />
             <small id="activity-ocr-languages-hint">例如 en-US, zh-Hans。</small>
           </label>
           <ActivityNumberField disabled={!activity.enabled} id="activity-ocr-every" label="每 N 张快照 OCR 一次" unit="" max={20} min={1} step={1} value={activity.ocrEveryNFrames} onCommit={(value) => updateActivity({ ocrEveryNFrames: value })} />
@@ -410,13 +422,12 @@ function ActivitySwitch({ busy = false, checked, disabled = false, label, onChan
   );
 }
 
-function ActivityNumberField({ disabled = false, hint, id, label, max, min, onCommit, step = 1, unit, value }: { disabled?: boolean; hint?: string; id: string; label: string; max: number; min: number; onCommit(value: number): void; step?: number; unit: string; value: number }): React.JSX.Element {
+function ActivityNumberField({ disabled = false, hint, id, label, max, min, onCommit, step = 1, unit, value }: { disabled?: boolean; hint?: string; id: string; label: string; max: number; min: number; onCommit(value: number): Promise<boolean>; step?: number; unit: string; value: number }): React.JSX.Element {
   const [text, setText] = useState(String(value));
-  const inputRef = useRef<HTMLInputElement>(null);
-  const lastSentValueRef = useRef<number | undefined>(undefined);
+  const editRef = useRef({ dirty: false, revision: 0 });
+  const pendingValueRef = useRef<{ value: number; revision: number } | undefined>(undefined);
   useEffect(() => {
-    if (value === lastSentValueRef.current) lastSentValueRef.current = undefined;
-    if (document.activeElement !== inputRef.current) setText(String(value));
+    if (!editRef.current.dirty) setText(String(value));
   }, [value]);
   const clamp = (raw: string): number | undefined => {
     if (raw.trim() === "") return undefined;
@@ -425,18 +436,24 @@ function ActivityNumberField({ disabled = false, hint, id, label, max, min, onCo
     return Math.min(max, Math.max(min, Math.trunc(parsed)));
   };
   const send = (next: number): void => {
-    if (next === value || next === lastSentValueRef.current) return;
-    lastSentValueRef.current = next;
-    onCommit(next);
-  };
-  const handleChange = (raw: string): void => {
-    setText(raw);
-    const next = clamp(raw);
-    if (next !== undefined) send(next);
+    if (next === (pendingValueRef.current?.value ?? value)) {
+      if (pendingValueRef.current) pendingValueRef.current.revision = editRef.current.revision;
+      else editRef.current.dirty = false;
+      return;
+    }
+    const pending = { value: next, revision: editRef.current.revision };
+    pendingValueRef.current = pending;
+    // 只合并最新在途值；旧响应不能清掉后来编辑的草稿，失败后允许同值重试。
+    void onCommit(next).then((saved) => {
+      if (pendingValueRef.current !== pending) return;
+      pendingValueRef.current = undefined;
+      if (saved && editRef.current.revision === pending.revision) editRef.current.dirty = false;
+    });
   };
   const commit = (): void => {
     const next = clamp(text);
     if (next === undefined) {
+      editRef.current.dirty = false;
       setText(String(value));
       return;
     }
@@ -446,7 +463,7 @@ function ActivityNumberField({ disabled = false, hint, id, label, max, min, onCo
   return (
     <label className="activity-field" htmlFor={id}>
       <span>{label}</span>
-      <div className="activity-number-input"><input aria-describedby={hint ? `${id}-hint` : undefined} autoComplete="off" disabled={disabled} id={id} inputMode="numeric" max={max} min={min} name={id} onBlur={commit} onChange={(event) => handleChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") commit(); }} ref={inputRef} step={step} type="number" value={text} />{unit ? <em>{unit}</em> : null}</div>
+      <div className="activity-number-input"><input aria-describedby={hint ? `${id}-hint` : undefined} autoComplete="off" disabled={disabled} id={id} inputMode="numeric" max={max} min={min} name={id} onBlur={commit} onChange={(event) => { editRef.current = { dirty: true, revision: editRef.current.revision + 1 }; setText(event.target.value); }} onKeyDown={(event) => { if (event.key === "Enter") commit(); }} step={step} type="number" value={text} />{unit ? <em>{unit}</em> : null}</div>
       {hint ? <small id={`${id}-hint`}>{hint}</small> : null}
     </label>
   );

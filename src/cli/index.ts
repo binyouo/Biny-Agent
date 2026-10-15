@@ -34,6 +34,7 @@ import { tuiCommand } from "./commands/tui.js";
 import { registerSkillCommands } from "./commands/skills.js";
 import { runtimeHostCommand } from "./commands/runtimeHost.js";
 import { emotionGetCommand, emotionSetBaseCommand, emotionSetContextCommand, emotionStatusCommand } from "./commands/emotion.js";
+import { imageEditCommand, imageGenerateCommand, imageModelsCommand } from "./commands/image.js";
 import {
   activityConfigCommand,
   activityConfigSetCommand,
@@ -148,6 +149,13 @@ registerThemeCommands(program);
 program.command("acp").description("Inspect external ACP Agents").command("check")
   .argument("<provider>", "configured ACP provider alias").option("--json", "print JSON")
   .action((provider: string, options: { json?: boolean }) => wrap(() => acpCheckCommand(workspaceRoot, provider, options))());
+
+const image = program.command("image").description("Generate and edit images with configured providers");
+image.command("models").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => imageModelsCommand(workspaceRoot, options))());
+image.command("generate").argument("<prompt...>", "image description").option("--model <model>", "providerAlias:modelId or Gemini model id").option("--aspect <ratio>", "aspect ratio like 16:9, 9:16, 1:1, or auto").option("--size <size>", "alias of --aspect").option("--reference <path>", "reference image (repeatable)", collectStringOption, []).option("--json", "print JSON")
+  .action((prompt: string[], options: { model?: string; aspect?: string; size?: string; reference?: string[]; json?: boolean }) => wrap(() => imageGenerateCommand(workspaceRoot, prompt.join(" "), options))());
+image.command("edit").argument("<image-path>", "source image to edit").argument("<prompt...>", "edit description").option("--model <model>", "providerAlias:modelId or Gemini model id").option("--aspect <ratio>", "aspect ratio like 16:9, 9:16, 1:1, or auto").option("--size <size>", "alias of --aspect").option("--json", "print JSON")
+  .action((editPath: string, prompt: string[], options: { model?: string; aspect?: string; size?: string; json?: boolean }) => wrap(() => imageEditCommand(workspaceRoot, editPath, prompt.join(" "), options))());
 
 const ref = program.command("ref").description("Search and resolve local @ references");
 ref.command("kinds").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => referenceKindsCommand(workspaceRoot, options))());

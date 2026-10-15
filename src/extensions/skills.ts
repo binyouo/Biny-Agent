@@ -45,6 +45,8 @@ export interface SkillDefinition extends SkillMetadata {
   rootPath: string;
   scope: SkillScope;
   source: SkillRootSource;
+  /** `always-inject: true` 的 skill 不依赖能力分析，正文每轮进入系统提示。 */
+  alwaysInject: boolean;
 }
 
 export interface SkillBundle {
@@ -277,12 +279,14 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
   const guidance = [
     "Skills use progressive disclosure: the list above holds metadata only, and the Skill tool loads a skill's full instructions on demand.",
     "When a task matches a listed skill, invoke the Skill tool as your first action instead of improvising a separate workflow.",
-    "A /skill:name or $skill-name mention in the user's message is an explicit request: load that skill before replying about the task."
+    "A /skill:name or $skill-name mention in the user's message is an explicit request: load that skill before replying about the task.",
+    "A skill marked [always injected] has its instructions in the system prompt already; do not call the Skill tool for it."
   ].join(" ");
   const render = (descriptionLimit: number, limit = skills.length): string => {
     const lines = skills.slice(0, limit).map((skill) => {
       const description = truncateChars(skill.description, descriptionLimit);
-      return `- "${skill.name}": ${description}`;
+      const marker = skill.alwaysInject ? " [always injected]" : "";
+      return `- "${skill.name}"${marker}: ${description}`;
     });
     const omitted = skills.length - limit;
     if (omitted > 0) lines.push(`(${String(omitted)} additional skills were omitted from this list. Use /skills to inspect all skills.)`);
@@ -297,7 +301,7 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
   return render(80, visible);
 }
 
-/** 能力分析完成后只读取选中 Skill 的正文；自动装配不等同于一次 Skill 工具调用。 */
+/** 读取本轮选中与常驻 Skill；显式全关仍优先，装配不等同于工具调用。 */
 export async function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): Promise<string> {
   const selected = selectSkills(bundle, selection);
   if (!selected.length) return "";
@@ -341,7 +345,7 @@ function selectSkills(bundle: SkillBundle, selection?: CapabilitySelectionValue)
   if (selection === undefined || selection === "auto" || selection === "all") return bundle.skills;
   if (selection === "none") return [];
   const selected = new Set(selection);
-  return bundle.skills.filter((skill) => selected.has(skill.ref) || selected.has(skill.id) || selected.has(skill.name));
+  return bundle.skills.filter((skill) => skill.alwaysInject || selected.has(skill.ref) || selected.has(skill.id) || selected.has(skill.name));
 }
 
 const invokeSkillArgsSchema = z.object({
@@ -661,7 +665,8 @@ async function readSkillMetadata(projectRoot: string, candidate: SkillFileCandid
     filePath: candidate.path,
     rootPath,
     scope,
-    source
+    source,
+    alwaysInject: frontmatter.alwaysInject === true
   };
 }
 
