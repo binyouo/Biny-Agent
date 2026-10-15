@@ -125,6 +125,7 @@ const server=createServer(socket=>createInterface({input:socket}).on('line',line
     try {
       await appshots.close();
       await driver.dispose();
+      await finishOwnedFixture();
       assert.equal(owned.length, 1, "the real driver must spawn exactly one private fixture");
       const exited = await waitForExit(owned[0]!);
       assert.ok(exited, "private Appshots fixture remains alive after teardown");
