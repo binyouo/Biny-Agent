@@ -172,7 +172,7 @@ export function tuiReducer(state: TuiState, event: TuiAction): TuiState {
       return replaceTranscript(state, event.items, event.viewingSessionId);
     case "permission.details.toggled":
       return { ...state, permissionDetailsExpanded: !state.permissionDetailsExpanded };
-    case "message.user":
+    case "message.user": {
       const userMessage = projectTuiUserMessage(event.content, event.attachments);
       return {
         ...state,
@@ -185,6 +185,7 @@ export function tuiReducer(state: TuiState, event: TuiAction): TuiState {
           ...userMessage
         })
       };
+    }
     case "context.retrying":
       return {
         ...state,
