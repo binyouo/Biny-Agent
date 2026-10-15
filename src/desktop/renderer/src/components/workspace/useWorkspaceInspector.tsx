@@ -102,6 +102,7 @@ export function useWorkspaceInspector({
   toggleTerminal(): void;
 } {
   const previewRequestRef = useRef(0);
+  const previewSelectionRef = useRef<{ source: string; projectId?: string; path: string; failed: boolean; pending: boolean; change?: SessionFileChange } | undefined>(undefined);
   const directoryRequestIdRef = useRef(0);
   const directoryRequestRef = useRef(new Map<string, number>());
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -165,6 +166,7 @@ export function useWorkspaceInspector({
     const projectChanged = previous.projectId !== projectId;
     if (projectChanged) { setPinned(false); setGitChangeCount(undefined); }
     previewRequestRef.current += 1;
+    previewSelectionRef.current = undefined;
     directoryRequestIdRef.current += 1;
     directoryRequestRef.current.clear();
     if (projectChanged || !pinned || renderingView) setInspectorOpen(false);
@@ -186,6 +188,7 @@ export function useWorkspaceInspector({
 
   const loadDirectory = useCallback((relativePath: string): void => {
     const normalizedPath = normalizeWorkspacePath(relativePath);
+    if (directoryRequestRef.current.has(normalizedPath)) return;
     const requestId = directoryRequestIdRef.current + 1;
     directoryRequestIdRef.current = requestId;
     directoryRequestRef.current.set(normalizedPath, requestId);
@@ -208,6 +211,8 @@ export function useWorkspaceInspector({
         next.set(normalizedPath, { status: "error", error: errorMessage(error) });
         return next;
       });
+    }).finally(() => {
+      if (directoryRequestRef.current.get(normalizedPath) === requestId) directoryRequestRef.current.delete(normalizedPath);
     });
   }, [onListDirectory]);
 
@@ -260,25 +265,34 @@ export function useWorkspaceInspector({
     openInspector("terminal");
   }, [inspectorOpen, inspectorView, openInspector]);
 
-  const previewFile = useCallback((path: string): void => {
-    const request = previewRequestRef.current + 1;
-    previewRequestRef.current = request;
+  const previewFile = useCallback((path: string, refresh = false): void => {
     setInspectorView("files");
     setVisitedViews((current) => new Set(current).add("files"));
     setInspectorOpen(true);
+    const previous = previewSelectionRef.current;
+    const change = changes.find(entry => entry.path === path);
+    const sameChange = previous?.change?.changeCount === change?.changeCount && previous?.change?.diff === change?.diff && previous?.change?.status === change?.status;
+    if (previous?.source === source && previous.projectId === projectId && previous.path === path && !previous.failed && sameChange && (previous.pending || !refresh)) return;
+    const selection = { source, projectId, path, failed: false, pending: true, change };
+    previewSelectionRef.current = selection;
+    const request = ++previewRequestRef.current;
     setPreview({ source, path, status: "loading", file: undefined, error: undefined, revision: request });
     void onReadFile(path).then((file) => {
       if (previewRequestRef.current !== request) return;
+      selection.pending = false;
       setPreview({ source, path: file.path, status: "ready", file, error: undefined, revision: request });
     }).catch((error: unknown) => {
       if (previewRequestRef.current !== request) return;
+      selection.pending = false;
+      selection.failed = true;
       setPreview({ source, path, status: "error", file: undefined, error: errorMessage(error) });
     });
     if (!directoryStates.has(".")) loadDirectory(".");
-  }, [directoryStates, loadDirectory, onReadFile, source]);
+  }, [changes, directoryStates, loadDirectory, onReadFile, projectId, source]);
 
   const showFileBrowser = useCallback((): void => {
     previewRequestRef.current += 1;
+    previewSelectionRef.current = undefined;
     setPreview(undefined);
     if (!directoryStates.has(".")) loadDirectory(".");
   }, [directoryStates, loadDirectory]);
@@ -293,6 +307,25 @@ export function useWorkspaceInspector({
       openInspector("browser");
     })().catch((error: unknown) => onWarning(errorMessage(error)));
   }, [onWarning, openInspector, projectId]);
+
+  const visibleExpandedDirectories = useCallback((): string[] => {
+    const visible: string[] = [];
+    const visit = (path: string): void => {
+      for (const entry of directoryStates.get(path)?.entries ?? []) {
+        if (entry.kind !== "directory" || !expandedDirectories.has(entry.path)) continue;
+        visible.push(entry.path);
+        visit(entry.path);
+      }
+    };
+    visit(".");
+    return visible;
+  }, [directoryStates, expandedDirectories]);
+
+  useEffect(() => {
+    for (const path of visibleExpandedDirectories()) {
+      if (!directoryStates.has(path)) loadDirectory(path);
+    }
+  }, [directoryStates, loadDirectory, visibleExpandedDirectories]);
 
   const toggleDirectory = useCallback((relativePath: string): void => {
     const normalizedPath = normalizeWorkspacePath(relativePath);
@@ -355,9 +388,15 @@ export function useWorkspaceInspector({
 
   const refreshFiles = useCallback((): void => {
     loadDirectory(".");
-    for (const path of expandedDirectories) loadDirectory(path);
-    if (activePreview) previewFile(activePreview.path);
-  }, [activePreview, expandedDirectories, loadDirectory, previewFile]);
+    const visible = new Set(visibleExpandedDirectories());
+    // 隐藏分支保留展开意图，但丢弃旧内容与在途结果，重新可见后再读取。
+    for (const path of directoryRequestRef.current.keys()) {
+      if (path !== "." && !visible.has(path)) directoryRequestRef.current.delete(path);
+    }
+    setDirectoryStates(current => new Map([...current].filter(([path]) => path === "." || visible.has(path))));
+    for (const path of visible) loadDirectory(path);
+    if (activePreview) previewFile(activePreview.path, true);
+  }, [activePreview, visibleExpandedDirectories, loadDirectory, previewFile]);
   const collapseDirectories = useCallback((): void => setExpandedDirectories(new Set()), []);
   const toolContent = (view: InspectorView): React.JSX.Element | null => !projectId ? null : view === "rendering" ? activeRendering ? <RenderingPreviewPanel previews={activeRendering.previews} activeId={activeRendering.activeId} expanded={renderingExpanded} active={effectiveOpen && renderingView} onSelect={activeId => setRendering(previous => previous ? { ...previous, activeId } : previous)} onClosePreview={closeRendering} onToggleExpanded={() => setRenderingExpanded(value => !value)} onClose={() => { setRenderingExpanded(false); setInspectorOpen(false); }} /> : null
     : view === "terminal" ? <TerminalView projectId={projectId} active={inspectorOpen && inspectorView === "terminal"} />
