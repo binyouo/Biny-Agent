@@ -64,6 +64,10 @@ class FakeSettingsAgents implements DesktopSettingsTransactionAgents {
     return false;
   }
 
+  async settingsConfigRevision(_projectId: string): Promise<string> {
+    return this.configRevision;
+  }
+
   async settingsConfigSnapshot(_projectId: string): Promise<DesktopSettingsConfigSnapshot> {
     const revision = this.badConfigReadbacks > 0 ? "config:stale-readback" : this.configRevision;
     if (this.badConfigReadbacks > 0) this.badConfigReadbacks -= 1;

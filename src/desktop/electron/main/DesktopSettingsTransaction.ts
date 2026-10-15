@@ -116,6 +116,7 @@ export interface DesktopSettingsJournal {
  */
 export interface DesktopSettingsTransactionAgents {
   hasRunningTasks(): boolean;
+  settingsConfigRevision(projectId: string): Promise<string>;
   settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot>;
   settingsChatSnapshot(projectId: string, sessionId: string): Promise<DesktopSettingsChatSnapshot>;
   prepareSettingsConfig(projectId: string, input: DesktopSettingsSaveInput): Promise<PreparedDesktopSettingsConfig>;
@@ -190,13 +191,13 @@ export class DesktopSettingsTransaction {
       }
 
       const preferences = this.state.settingsPreferences();
-      const [configSnapshot, chatSnapshot] = await Promise.all([
-        this.agents.settingsConfigSnapshot(projectId),
+      const [configRevision, chatSnapshot] = await Promise.all([
+        this.agents.settingsConfigRevision(projectId),
         input.chat === undefined
           ? undefined
           : this.agents.settingsChatSnapshot(projectId, input.chat.sessionId)
       ]);
-      const preflightConflicts = inputConflicts(preferences, configSnapshot, chatSnapshot, input);
+      const preflightConflicts = inputConflicts(preferences, configRevision, chatSnapshot, input);
       if (preflightConflicts.length) {
         return {
           status: "rolled_back",
@@ -1162,7 +1163,7 @@ function settingsConflicts(
 
 function inputConflicts(
   preferences: DesktopPreferenceSnapshot,
-  config: DesktopSettingsConfigSnapshot,
+  configRevision: string,
   chat: DesktopSettingsChatSnapshot | undefined,
   input: DesktopSettingsSaveInput
 ): DesktopSettingsConflict[] {
@@ -1174,11 +1175,11 @@ function inputConflicts(
       actualRevision: String(preferences.revision)
     });
   }
-  if (config.revision !== input.expectedConfigRevision) {
+  if (configRevision !== input.expectedConfigRevision) {
     conflicts.push({
       segment: "config",
       expectedRevision: input.expectedConfigRevision,
-      actualRevision: config.revision
+      actualRevision: configRevision
     });
   }
   if (input.chat !== undefined && chat?.metadataRevision !== input.chat.expectedMetadataRevision) {
