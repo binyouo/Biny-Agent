@@ -26,13 +26,12 @@ async function fixture(context: TestContext, title: string | undefined) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-branch-title-"));
   const previousAgentRoot = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = path.join(root, "agent");
-  let manager: DesktopAgentManager | undefined;
-  let dataRoot: string | undefined;
+  const resources: { manager?: DesktopAgentManager; dataRoot?: string } = {};
   context.after(async () => {
     try {
-      await manager?.closeAll();
+      await resources.manager?.closeAll();
       // Join this fixture's catalog publications before removing its isolated data.
-      if (dataRoot) await refreshSessionIndex(dataRoot);
+      if (resources.dataRoot) await refreshSessionIndex(resources.dataRoot);
       await rm(root, { recursive: true, force: true });
     } finally {
       if (previousAgentRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV];
@@ -53,13 +52,15 @@ async function fixture(context: TestContext, title: string | undefined) {
   await storage.initialize();
   const projects = new DesktopProjectService(state, storage, configStore);
   const project = await projects.createEmptyProject(path.join(root, "workspace"));
-  dataRoot = await projects.dataRoot(project);
+  const dataRoot = await projects.dataRoot(project);
+  resources.dataRoot = dataRoot;
   await createSessionFile(dataRoot, sourceId, Buffer.from(sourceEvents.map(event => JSON.stringify(event)).join("\n") + "\n"));
   await projects.updateSessionMetadata(project, sourceId, {
     title, pinned: true, archived: true, unread: true, labels: ["keep-label"]
   });
   await state.setSelectedSession(project.id, sourceId);
-  manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
+  const manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
+  resources.manager = manager;
   const sourceBytes = await readFile(sessionFilePath(dataRoot, sourceId));
   const sourceRecord = await readSessionCatalogRecord(dataRoot, sourceId);
   return { projects, project, dataRoot, manager, sourceBytes, sourceRecord };
