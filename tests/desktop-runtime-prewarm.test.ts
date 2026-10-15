@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -10,6 +11,7 @@ import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProje
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import { RuntimeHostClient } from "../src/runtime/host/client.js";
+import { runtimeHostPaths } from "../src/runtime/RuntimeHost.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 
 async function fixture(context: TestContext) {
@@ -37,13 +39,13 @@ async function fixture(context: TestContext) {
     await manager.closeAll();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
-  return { root, projects, project, dataRoot, manager, configStore, sessionId: recorder.sessionId };
+  return { root, state, projects, project, dataRoot, manager, configStore, sessionId: recorder.sessionId };
 }
 
 type LoadFn = ReturnType<typeof createFileConfigStore>["load"];
 
 /** 只卡住 Host 初始化读配置的那次调用（来自 CommandRuntime 装配），界面自己的读取不受阻。 */
-function gateRuntimeInitialization(configStore: ReturnType<typeof createFileConfigStore>) {
+function gateRuntimeInitialization(configStore: ReturnType<typeof createFileConfigStore>, failure?: Error) {
   const load = configStore.load.bind(configStore) as LoadFn;
   let release!: () => void;
   let entered!: () => void;
@@ -56,6 +58,7 @@ function gateRuntimeInitialization(configStore: ReturnType<typeof createFileConf
       calls += 1;
       entered();
       await gate;
+      if (failure) throw failure;
     }
     return await load(...args);
   }) as LoadFn;
@@ -171,5 +174,106 @@ test("切换项目的准备不等待旧项目释放保活", { timeout: 10_000 },
     assert.equal(result.project.id, other.id);
   } finally {
     clearTimeout(timeout); release(); await pending;
+  }
+});
+
+test("removing the last project owns its pending Host initialization", { timeout: 30_000 }, async (context) => {
+  const { project, state, manager, configStore, dataRoot } = await fixture(context);
+  const gated = gateRuntimeInitialization(configStore);
+  let initialization: Promise<unknown> | undefined;
+  let removal: Promise<void> | undefined;
+  try {
+    const prepared = manager.prepareWorkspace(project.id);
+    await gated.enteredPromise;
+    await prepared;
+    initialization = manager["runtimeInitializations"].get(project.id);
+    assert.ok(initialization, "the real Host assembly must still be pending");
+    const settledInitialization = Promise.allSettled([initialization]);
+    assert.equal(manager.isProjectRunning(project.id), false);
+    // Match removeProject IPC ordering. Let a nonblocking disposal settle while
+    // startup is held, but also permit a correct disposal to join that startup.
+    removal = manager.disposeProject(project.id).then(() => state.removeProject(project.id));
+    await nextTurn();
+    gated.release();
+    await Promise.all([settledInitialization, removal]);
+    assert.equal(state.project(project.id), undefined);
+    assert.equal(state.activeProjectId(), undefined);
+    // Check the real owned fallback Host, not just a display/cache entry.
+    await assert.rejects(access(runtimeHostPaths(dataRoot).registrationPath), { code: "ENOENT" },
+      "removing a project must close the Host owned by its late initializer");
+    assert.equal(manager["runtimes"].has(project.id), false,
+      "a removed project must not acquire a resident Desktop client after disposal");
+  } finally {
+    gated.release();
+    gated.restore();
+    await Promise.allSettled([initialization, removal]);
+  }
+});
+
+test("a removed project's late startup failure cannot restore its error cache", { timeout: 30_000 }, async (context) => {
+  const { project, state, manager, configStore } = await fixture(context);
+  const gated = gateRuntimeInitialization(configStore, new Error("removed project startup failure"));
+  let initialization: Promise<unknown> | undefined;
+  let removal: Promise<void> | undefined;
+  try {
+    const prepared = manager.prepareWorkspace(project.id);
+    await gated.enteredPromise;
+    await prepared;
+    initialization = manager["runtimeInitializations"].get(project.id);
+    assert.ok(initialization, "the failing real Host assembly must still be pending");
+    // Observe rejection before releasing the gate, including on assertion failure.
+    const settledInitialization = Promise.allSettled([initialization]);
+    removal = manager.disposeProject(project.id).then(() => state.removeProject(project.id));
+    await nextTurn();
+    gated.release();
+    await Promise.all([settledInitialization, removal]);
+    // prewarmRuntime has its own rejection continuation in addition to getRuntime.
+    await nextTurn();
+    assert.equal(state.project(project.id), undefined);
+    assert.equal(manager["runtimeErrors"].has(project.id), false,
+      "late prewarm failure must not repopulate a disposed project's error cache");
+    assert.equal(manager["runtimes"].has(project.id), false);
+  } finally {
+    gated.release();
+    gated.restore();
+    await Promise.allSettled([initialization, removal]);
+  }
+});
+
+test("disposing a pending project leaves another project's real Host usable", { timeout: 30_000 }, async (context) => {
+  const { root, project, state, projects, manager, configStore } = await fixture(context);
+  const gated = gateRuntimeInitialization(configStore);
+  let initialization: Promise<unknown> | undefined;
+  let removal: Promise<void> | undefined;
+  try {
+    const prepared = manager.prepareWorkspace(project.id);
+    await gated.enteredPromise;
+    await prepared;
+    initialization = manager["runtimeInitializations"].get(project.id);
+    assert.ok(initialization);
+    const settledInitialization = Promise.allSettled([initialization]);
+    // Only the first assembly remains held; a separate project uses real startup.
+    gated.restore();
+    const other = await projects.createEmptyProject(path.join(root, "unrelated"));
+    await manager.prepareWorkspace(other.id);
+    await manager.retryRuntime(other.id);
+    const healthy = manager["runtimes"].get(other.id);
+    assert.ok(healthy);
+    assert.ok(healthy.runtime instanceof RuntimeHostClient);
+    const originalSessions = (await healthy.runtime.listRuntimeSessions()).map(({ sessionId }) => sessionId);
+    assert.ok(originalSessions.length > 0);
+    removal = manager.disposeProject(project.id).then(() => state.removeProject(project.id));
+    await nextTurn();
+    gated.release();
+    await Promise.all([settledInitialization, removal]);
+    assert.equal(manager["runtimes"].get(other.id), healthy,
+      "project disposal must preserve the other project's client identity");
+    assert.deepEqual((await healthy.runtime.listRuntimeSessions()).map(({ sessionId }) => sessionId), originalSessions,
+      "the other project's real Host connection must remain usable");
+    assert.equal(state.project(other.id)?.id, other.id);
+  } finally {
+    gated.release();
+    gated.restore();
+    await Promise.allSettled([initialization, removal]);
   }
 });
