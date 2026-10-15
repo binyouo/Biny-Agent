@@ -10,7 +10,6 @@ import { PendingAttachmentsComponent, pendingAttachmentLabel } from "../src/tui/
 import { PermissionDialog, SelectDialog, TextViewerDialog } from "../src/tui/components/dialogs.js";
 import {
   FooterComponent,
-  ShortcutsBarComponent,
   StatusIndicatorComponent,
   WelcomeComponent,
   footerLayout,
@@ -1379,7 +1378,7 @@ function testStatusAndShortcutHints(): void {
 
   const busy = shortcutHints("running").map((hint) => hint.key);
   assert.equal(busy.includes("esc"), true);
-  assert.equal(busy.includes("ctrl+o"), false);
+  assert.equal(busy.includes("ctrl+o"), true);
   assert.equal(shortcutHints("idle").some((hint) => hint.key === "shift+tab"), false);
   assert.equal(shortcutHints("idle").some((hint) => hint.key === "ctrl+e"), false);
 
@@ -1387,10 +1386,6 @@ function testStatusAndShortcutHints(): void {
   const visible = visibleShortcutHints(shortcutHints("idle"), 14);
   const rendered = visible.map((hint) => `${hint.key} ${hint.description}`).join(" · ");
   assert.equal(visibleWidth(rendered) <= 14, true);
-
-  const bar = new ShortcutsBarComponent();
-  bar.setState("idle");
-  for (const line of plainLines(bar.render(50))) assert.equal(visibleWidth(line) <= 50, true, line);
 }
 
 function testWelcomeRendersOnboarding(): void {

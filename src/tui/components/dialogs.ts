@@ -13,6 +13,7 @@ import {
   SelectList,
   Text,
   truncateToWidth,
+  wrapTextWithAnsi,
   type Component,
   type SelectItem
 } from "@earendil-works/pi-tui";
@@ -170,6 +171,7 @@ export class PermissionDialog extends Container {
   private denialReasonAttempted = false;
   private detailsExpanded = false;
   private readonly body: Text;
+  private renderWidth = 80;
 
   constructor(
     private request: TuiPermissionRequest,
@@ -187,6 +189,12 @@ export class PermissionDialog extends Container {
       "bottom"
     ));
     this.refresh();
+  }
+
+  override render(width: number): string[] {
+    this.renderWidth = width;
+    this.refresh();
+    return super.render(width);
   }
 
   setRequest(request: TuiPermissionRequest): void {
@@ -256,10 +264,18 @@ export class PermissionDialog extends Container {
   private refresh(): void {
     const details: string[] = [];
     const view = permissionPresentation(this.request);
-    if (this.request.command) details.push(this.request.command);
-    if (this.request.targetPath && !this.request.secondaryTargetPath) details.push(this.request.targetPath);
+    if (this.request.command) details.push(theme.fg("accent", this.request.command));
+    if (this.request.targetPath && !this.request.secondaryTargetPath) details.push(theme.fg("accent", this.request.targetPath));
     if (view.details) details.push(...view.details.split(/\r?\n/u));
     if (view.reason) details.push(view.reason);
+    if (this.request.diff) {
+      const diffLines = this.request.diff.split(/\r?\n/u);
+      const visibleDiff = this.detailsExpanded ? diffLines : diffLines.slice(0, 6);
+      details.push(...visibleDiff.map((line) => theme.fg(
+        line.startsWith("+") ? "toolDiffAdded" : line.startsWith("-") ? "toolDiffRemoved" : "dim", line
+      )));
+      if (visibleDiff.length < diffLines.length) details.push("… diff 已收起，按 Ctrl+O 展开");
+    }
     if (this.detailsExpanded && this.request.preview) details.push(...this.request.preview.split(/\r?\n/u));
 
     const actionLines: string[] = [];
@@ -294,8 +310,12 @@ export class PermissionDialog extends Container {
       }
     }
 
-    const detailBudget = Math.max(0, this.maxBodyLines - 1 - actionLines.length);
-    const visibleDetails = truncatePermissionDetails(details, detailBudget);
+    const contentWidth = Math.max(1, this.renderWidth - 2);
+    const detailBudget = Math.max(0, this.maxBodyLines
+      - wrapTextWithAnsi(view.title, contentWidth).length
+      - wrapTextWithAnsi(actionLines.join("\n"), contentWidth).length);
+    const detailRows = details.flatMap((line) => wrapTextWithAnsi(line, contentWidth));
+    const visibleDetails = truncatePermissionDetails(detailRows, detailBudget, contentWidth);
     this.body.setText([
       theme.fg("warning", theme.bold(view.title)),
       ...visibleDetails.map((line) => theme.fg("muted", line)),
@@ -305,10 +325,10 @@ export class PermissionDialog extends Container {
 }
 
 /** 保留权限动作区，避免长预览把 Enter/yes 提示裁掉。 */
-function truncatePermissionDetails(details: string[], maxLines: number): string[] {
+function truncatePermissionDetails(details: string[], maxLines: number, width: number): string[] {
   if (details.length <= maxLines) return details;
   if (maxLines <= 0) return [];
-  const marker = theme.fg("dim", "… 部分详情已收起，按 Ctrl+O 展开");
+  const marker = theme.fg("dim", truncateToWidth("… 部分详情已收起，按 Ctrl+O 展开", width, "…"));
   if (maxLines === 1) return [marker];
   return [...details.slice(0, maxLines - 1), marker];
 }

@@ -8,7 +8,7 @@
 import {
   CombinedAutocompleteProvider,
   Container,
-  Editor,
+  type Editor,
   matchesKey,
   Spacer,
   TUI,
@@ -49,7 +49,9 @@ import {
 } from "../runtime/agentEvents.js";
 import type { SessionSummary } from "../session/events.js";
 import { readReportedCacheRates, type UsageSummary } from "../session/metadata.js";
-import { FooterComponent, ShortcutsBarComponent, StatusIndicatorComponent, WelcomeComponent, footerUsageFromBudget, type FooterData } from "./components/chrome.js";
+import { BinyEditor } from "./components/editor.js";
+import { ToolExecutionComponent } from "./components/messages.js";
+import { FooterComponent, StatusIndicatorComponent, WelcomeComponent, footerUsageFromBudget, type FooterData } from "./components/chrome.js";
 import { CardComponent } from "./components/cards.js";
 import { PermissionDialog, SelectDialog, TextViewerDialog } from "./components/dialogs.js";
 import { PendingAttachmentsComponent } from "./components/pendingAttachments.js";
@@ -73,6 +75,7 @@ import type { PermissionChoice, TuiLaunchMode, TuiState, TuiStatus } from "./typ
 import type { AgentAttachment } from "../agent/AgentSession.js";
 import type { SkillDefinition } from "../extensions/skills.js";
 import type { WorktreeStatusView } from "../runtime/host/worktree.js";
+import { McpStatusTracker } from "./runtime/mcpStatus.js";
 import type {
   AgentPersonalizationState,
   ChatPersonalizationOverridePatch
@@ -157,11 +160,8 @@ export class BinyTui {
   private sessionWriterConflictView: SessionWriterConflictComponent | undefined;
   private readonly status: StatusIndicatorComponent;
   private readonly footer: FooterComponent;
-  private readonly shortcuts = new ShortcutsBarComponent();
   private readonly editor: Editor;
 
-  /** 最近一张命令卡片的 transcript id，供 ctrl+o 展开/折叠细节。 */
-  private lastCardId: string | undefined;
   /** 当前输入尚未发送的图片；实际读写剪贴板和存储都在 TUI runtime。 */
   private pendingAttachments: AgentAttachment[] = [];
   private permissionMode: PermissionMode = "ask";
@@ -187,6 +187,10 @@ export class BinyTui {
   private exiting = false;
   private exitSummary: TuiExitSummary | undefined;
   private unsubscribe: (() => void) | undefined;
+  private readonly mcpStatusTracker = new McpStatusTracker();
+  private mcpStatusRuntime: InteractiveRuntimeHandle | undefined;
+  private mcpStatusRevision: number | undefined;
+  private mcpStatusRefresh: Promise<void> | undefined;
   private resolveExit: (() => void) | undefined;
 
   constructor(ui: TUI, workspaceRoot: string, version?: string, initialSession?: string, launchMode: TuiLaunchMode = "new") {
@@ -198,7 +202,7 @@ export class BinyTui {
     this.state = createInitialTuiState(workspaceRoot);
     this.status = new StatusIndicatorComponent(ui);
     this.footer = new FooterComponent(this.footerData());
-    this.editor = new Editor(ui, editorTheme(), { paddingX: 1 });
+    this.editor = new BinyEditor(ui, editorTheme());
     this.editorContainer.addChild(this.pendingAttachmentsView);
     this.editorContainer.addChild(this.editor);
   }
@@ -212,10 +216,12 @@ export class BinyTui {
   async run(): Promise<TuiExitSummary | undefined> {
     this.ui.addChild(this.headerContainer);
     this.ui.addChild(this.chatContainer);
+    this.ui.addChild(new Spacer(1));
     this.ui.addChild(this.status);
+    this.ui.addChild(new Spacer(1));
     this.ui.addChild(this.editorContainer);
+    this.ui.addChild(new Spacer(1));
     this.ui.addChild(this.footer);
-    this.ui.addChild(this.shortcuts);
 
     this.headerContainer.addChild(new Spacer(1));
     this.headerContainer.addChild(new WelcomeComponent(this.workspaceRoot, this.version));
@@ -437,9 +443,11 @@ export class BinyTui {
       this.unsubscribe = undefined;
       return;
     }
+    this.syncMcpStatus(runtime);
     this.unsubscribe = runtime.subscribe((update) => {
       if (this.exiting || this.runtime !== runtime) return;
       this.runtimeSnapshot = update.snapshot;
+      this.syncMcpStatus(runtime);
       if (update.event?.type === "permission.resolved") {
         const attempt = this.permissionAnswers.get(update.event.requestId);
         if (attempt?.request.sessionId === update.event.sessionId && attempt.request.runId === update.event.runId) {
@@ -460,6 +468,39 @@ export class BinyTui {
         void this.refreshUsage();
       }
     });
+  }
+
+  private syncMcpStatus(runtime: InteractiveRuntimeHandle): void {
+    const revision = this.runtimeSnapshot?.resourceReadiness?.revision;
+    if (this.mcpStatusRuntime === runtime && this.mcpStatusRevision === revision) return;
+    this.mcpStatusRuntime = runtime;
+    this.mcpStatusRevision = revision;
+    if (this.mcpStatusRefresh || !this.commands?.mcp && !(runtime instanceof RuntimeHostClient)) return;
+    if (this.runtimeSnapshot?.resourceReadiness?.state === "loading") {
+      this.status.setMcpStatus({ message: "MCP loading…", loading: true, tone: "accent" });
+    }
+    this.mcpStatusRefresh = (async () => {
+      while (!this.exiting && this.runtime) {
+        const target = this.runtime;
+        const targetRevision = this.mcpStatusRevision;
+        try {
+          const servers = this.commands?.mcp
+            ? this.commands.mcp.listServers()
+            : await requireRemoteRuntime(target).mcpStatus();
+          if (this.exiting) return;
+          if (this.runtime !== target || this.mcpStatusRevision !== targetRevision) continue;
+          const presentation = this.mcpStatusTracker.update(servers);
+          this.status.setMcpStatus(presentation.indicator);
+          for (const message of presentation.notifications) this.notify(message);
+        } catch (error) {
+          if (this.exiting) return;
+          if (this.runtime !== target || this.mcpStatusRevision !== targetRevision) continue;
+          this.status.setMcpStatus({ message: "MCP status unavailable · /mcp", loading: false, tone: "warning" });
+          this.notify(`读取 MCP 状态失败：${describeError(error)}`);
+        }
+        return;
+      }
+    })().finally(() => { this.mcpStatusRefresh = undefined; });
   }
 
   /** 创建一个新聊天；只有显式 `/new` 或普通入口才会调用，绝不等同于续跑。 */
@@ -569,7 +610,7 @@ export class BinyTui {
     if (this.exiting) return;
     const status = runtimeStatus(this.runtimeSnapshot);
     this.status.setState(status, this.state.turnStartedAt, this.state.lastWorkedMs);
-    this.shortcuts.setState(status);
+    this.status.setQueuedCount(this.runtimeSnapshot?.queuedMessages?.length ?? 0);
     this.footer.setData(this.footerData());
     this.ui.requestRender();
   }
@@ -585,7 +626,8 @@ export class BinyTui {
       permissionMode: this.permissionMode,
       ...this.contextUsage,
       cacheHitRate: this.cacheHitRate,
-      sessionCacheHitRate: this.sessionCacheHitRate
+      sessionCacheHitRate: this.sessionCacheHitRate,
+      status: runtimeStatus(this.runtimeSnapshot)
     };
   }
 
@@ -728,6 +770,7 @@ export class BinyTui {
         void this.exit();
       } else {
         this.lastCtrlCAt = now;
+        this.status.showExitHint(ctrlCExitWindowMs);
         if (this.overlay) return undefined;
         if (busy) {
           this.dismissAutocomplete();
@@ -761,10 +804,12 @@ export class BinyTui {
       return undefined;
     }
     if (this.overlay) return undefined;
-    // ctrl+o 展开/折叠最近一张命令卡片的细节；权限弹层内由 PermissionDialog 自己处理。
-    if (matchesKey(data, "ctrl+o") && this.lastCardId) {
-      const component = this.chatContainer.componentFor(this.lastCardId);
-      if (component instanceof CardComponent) {
+    // 权限弹层仍自行处理 Ctrl+O；主界面按历史顺序查看最近的工具或命令卡片。
+    if (matchesKey(data, "ctrl+o")) {
+      const item = [...this.state.transcript.committed, ...this.state.transcript.active]
+        .reverse().find((entry) => entry.kind === "tool" || entry.kind === "card");
+      const component = item ? this.chatContainer.componentFor(item.id) : undefined;
+      if (component instanceof CardComponent || component instanceof ToolExecutionComponent) {
         this.dismissAutocomplete();
         component.toggleDetails();
         this.ui.requestRender();
@@ -883,7 +928,7 @@ export class BinyTui {
           Math.max(1, Math.floor(this.ui.terminal.rows * Number.parseFloat(maxHeight) / 100))
         ),
         this.ui.terminal.rows,
-        this.footer.render(this.ui.terminal.columns).length + this.shortcuts.render(this.ui.terminal.columns).length
+        this.footer.render(this.ui.terminal.columns).length + 1
       )
       : undefined;
     this.overlay = this.ui.showOverlay(component, {
@@ -1208,9 +1253,6 @@ export class BinyTui {
       : await requireRemoteRuntime(runtime).executeCommand(value, "tui");
     if (sharedResult) {
       if (sharedResult.card) {
-        // 卡片 id 由 reducer 按同一公式生成；这里先算出来，供 ctrl+o 定位组件。
-        const cardId = `card-${String(this.state.transcript.committed.length + this.state.transcript.active.length + 1)}`;
-        this.lastCardId = cardId;
         this.dispatch({
           type: "command.card",
           command: sharedResult.command,
@@ -1854,9 +1896,11 @@ function editorSubmissionUndo(editor: Editor): { clear(): void } {
   return undo as { clear(): void };
 }
 
-/** 判断两次 Ctrl+C 是否处于 pi 的 500ms 退出窗口内。 */
+const ctrlCExitWindowMs = 500;
+
+/** 判断两次 Ctrl+C 是否处于 500ms 退出窗口内。 */
 export function isDoubleCtrlC(lastCtrlCAt: number, now: number): boolean {
-  return lastCtrlCAt > 0 && now >= lastCtrlCAt && now - lastCtrlCAt < 500;
+  return lastCtrlCAt > 0 && now >= lastCtrlCAt && now - lastCtrlCAt < ctrlCExitWindowMs;
 }
 
 export function ctrlCAction(lastCtrlCAt: number, now: number): "cancel" | "exit" {

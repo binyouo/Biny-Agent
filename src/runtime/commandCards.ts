@@ -156,7 +156,7 @@ export function buildMcpCard(servers: readonly McpServerStatus[]): CommandCardDa
         server.promptNames.length ? `${String(server.promptNames.length)} prompts` : "",
         server.instructions ? "instructions" : ""
       ].filter(Boolean);
-      const connection = server.connected ? "connected" : server.connecting ? "connecting" : "disconnected";
+      const connection = server.connected ? "connected" : server.connecting ? "connecting" : server.authRequired ? "authorization required" : server.lastError ? "failed" : "disconnected";
       const value: CommandCardValue[] = [{
         text: `${server.transport} · ${connection} · ${String(server.toolNames.length)} tools`
       }];
@@ -168,7 +168,7 @@ export function buildMcpCard(servers: readonly McpServerStatus[]): CommandCardDa
   const details: CommandCardRow[] = [];
   for (const server of servers) {
     if (!server.enabled) continue;
-    if (server.lastError) details.push({ label: "", value: { text: server.lastError, style: "error" }, detail: true });
+    if (server.lastError) details.push({ label: server.name, value: { text: `${server.lastError} · /mcp reconnect ${server.name}`, style: "error" } });
     if (server.toolNames.length) {
       details.push({ label: "", value: { text: `tools: ${server.toolNames.join(", ")}`, style: "dim" }, detail: true });
     }
