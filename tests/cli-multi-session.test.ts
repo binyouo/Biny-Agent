@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn as spawnPty, type IPty } from "node-pty";
@@ -35,6 +35,7 @@ const cli = process.env.BINY_TEST_GLOBAL_CLI === "1"
 const terminals: Array<{ pty: IPty; output: string; exited: boolean }> = [];
 let client: RuntimeHostClient | undefined;
 let hostPid: number | undefined;
+let phase = "configure fixture";
 try {
   await saveConfigFile(globalConfigDir(), configSchema.parse({
     ...defaultConfig,
@@ -46,68 +47,96 @@ try {
     crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   }));
+  phase = "start first TUI";
   const first = openTui();
   await waitFor(() => first.output.includes("openai-compatible/local-test"));
+  phase = "connect observer";
   client = await connectRuntimeHost(root, { clientId: "parallel-observer", surface: "cli" });
   assert.ok(client);
+  phase = "read initial Host PID";
   hostPid = (JSON.parse(await readFile(runtimeHostPaths(root).registrationPath, "utf8")) as { pid: number }).pid;
+  phase = "submit A";
   await enter(first.pty, "terminal-probe-A");
   await waitFor(() => responses.has("terminal-probe-A"));
+  phase = "observe A";
   const a = await activeSession("terminal-probe-A");
 
+  phase = "start second TUI";
   const second = openTui();
   await waitFor(() => second.output.includes("openai-compatible/local-test"));
+  phase = "submit B";
   await enter(second.pty, "terminal-probe-B");
   await waitFor(() => responses.has("terminal-probe-B"));
+  phase = "observe B";
   const b = await activeSession("terminal-probe-B");
   assert.notEqual(a, b, "新窗口不能附着并写入正在运行的 A");
+  phase = "new session C";
   await enter(first.pty, "/new");
   await waitFor(() => first.output.includes("New chat started."));
   await enter(first.pty, "terminal-probe-C");
   await waitFor(() => responses.has("terminal-probe-C"));
+  phase = "observe C";
   const c = await activeSession("terminal-probe-C");
   assert.notEqual(a, c);
+  phase = "resume A";
   await enter(first.pty, `/resume ${a}`);
   await waitFor(() => first.output.includes(`session ${a.slice(0, 8)}`));
   assert.equal(client.getSnapshot(c).state.kind, "runs", "忙碌时恢复 A 不得中断 C");
+  phase = "interrupt A";
   first.pty.write("\u0003");
   await waitFor(() => client!.getSnapshot(a).state.kind === "idle");
   assert.equal(client.getSnapshot(b).state.kind, "runs");
   assert.equal(client.getSnapshot(c).state.kind, "runs");
+  phase = "exit first TUI";
   await enter(first.pty, "/exit");
   await waitFor(() => first.exited);
+  phase = "observe C idle after first exit";
   await waitFor(() => client!.getSnapshot(c).state.kind === "idle");
   assert.equal(client.getSnapshot(b).state.kind, "runs", "关闭一个窗口不能取消另一窗口的 B");
+  phase = "complete B";
   sendText(responses.get("terminal-probe-B")!, "terminal-probe-B-done");
   await waitFor(() => client!.getSnapshot(b).state.kind === "idle");
+  phase = "exit second TUI";
   await enter(second.pty, "/exit");
   await waitFor(() => second.exited);
 
+  phase = "reject removed plan command";
   const removedCommand = await command(["plan", "must not execute"]);
   assert.notEqual(removedCommand.code, 0);
   assert.match(removedCommand.output, /unknown command.*plan/u);
 
   // 主 Session 此刻空闲；两个独立命令仍必须各自新建会话，不竞抢 primary。
+  phase = "launch D and E";
   const firstRun = command(["run", "--json", "terminal-probe-D"]);
   const run = command(["run", "--json", "terminal-probe-E"]);
+  phase = "wait for D and E provider requests";
   await waitFor(() => responses.has("terminal-probe-D") && responses.has("terminal-probe-E"));
+  phase = "observe D";
   const d = await activeSession("terminal-probe-D");
+  phase = "observe E";
   const e = await activeSession("terminal-probe-E");
+  phase = "assert D and E isolation";
   assert.notEqual(d, e);
   sendText(responses.get("terminal-probe-D")!, "terminal-probe-D-done");
   sendText(responses.get("terminal-probe-E")!, "terminal-probe-E-done");
+  phase = "await D exit";
   assert.equal((await firstRun).code, 0);
+  phase = "await E exit";
   const result = await run;
   assert.equal(result.code, 0, result.output);
   assert.equal((JSON.parse(result.stdout) as { sessionId: string }).sessionId, e);
+  phase = "read D events";
   const dEvents = await readSessionEvents(sessionFilePath(root, d));
+  phase = "read E events";
   const eEvents = await readSessionEvents(sessionFilePath(root, e));
   assert.ok(!JSON.stringify(dEvents).includes("terminal-probe-E"));
   assert.ok(!JSON.stringify(eEvents).includes("terminal-probe-D"));
 
+  phase = "launch F";
   const incompleteRun = command(["run", "--json", "--", "- terminal-probe-F"]);
   await waitFor(() => responses.has("terminal-probe-F"));
   sendText(responses.get("terminal-probe-F")!, "partial result", "other");
+  phase = "await F exit";
   const incomplete = await incompleteRun;
   assert.equal(incomplete.code, 0, incomplete.output);
   const incompleteResult = JSON.parse(incomplete.stdout) as { status: string; stopReason: string };
@@ -115,7 +144,22 @@ try {
   assert.equal(incompleteResult.stopReason, "budget_exhausted");
   console.log("CLI/TUI multi-session tests passed (two PTYs, new/resume, cancellation, exit, concurrent runs)");
 } catch (error) {
-  for (const terminal of terminals) console.error(terminal.output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").slice(-3500));
+  try {
+    console.error("CLI/TUI multi-session failure diagnostics:", {
+      phase,
+      hostPid,
+      hostAlive: processLiveness(hostPid),
+      terminals: terminals.map((terminal) => ({
+        pid: terminal.pty.pid,
+        exited: terminal.exited,
+        alive: processLiveness(terminal.pty.pid)
+      })),
+      host: await hostDiagnostics()
+    });
+    for (const terminal of terminals) console.error(terminal.output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, ""));
+  } catch {
+    // Diagnostic failures must not replace the original test failure.
+  }
   throw error;
 } finally {
   for (const terminal of terminals) if (!terminal.exited) terminal.pty.kill();
@@ -172,4 +216,45 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     assert.ok(Date.now() < deadline, "Timed out waiting for CLI/TUI parallel state");
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
   }
+}
+
+/** Failure-only observations; never print the registration credential. */
+async function hostDiagnostics(): Promise<unknown> {
+  const paths = runtimeHostPaths(root);
+  let registration: unknown;
+  try {
+    const record = JSON.parse(await readFile(paths.registrationPath, "utf8")) as { pid?: unknown; hostEpoch?: unknown };
+    registration = {
+      pid: typeof record.pid === "number" ? record.pid : undefined,
+      hostEpoch: typeof record.hostEpoch === "string" ? record.hostEpoch : undefined,
+      alive: processLiveness(typeof record.pid === "number" ? record.pid : undefined)
+    };
+  } catch (error) {
+    registration = { readError: diagnosticErrorCode(error) };
+  }
+  let endpoint: unknown;
+  try {
+    const stat = await lstat(paths.endpoint);
+    endpoint = { exists: true, isSocket: stat.isSocket(), isSymbolicLink: stat.isSymbolicLink() };
+  } catch (error) {
+    endpoint = { statError: diagnosticErrorCode(error) };
+  }
+  return { registration, endpoint };
+}
+
+function processLiveness(pid: number | undefined): string {
+  if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) return "unknown";
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (error) {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH"
+      ? "not running"
+      : "unknown";
+  }
+}
+
+function diagnosticErrorCode(error: unknown): string {
+  if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") return error.code;
+  return error instanceof Error ? error.name : "unknown";
 }
