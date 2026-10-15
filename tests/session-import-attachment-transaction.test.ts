@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { splitAttachmentReferences, withAttachmentReferences } from "../src/attachments/references.js";
-import { attachmentRoot, readAttachment, readAttachmentContext } from "../src/attachments/store.js";
+import { attachmentRoot, readAttachment, readAttachmentBytes, readAttachmentContext } from "../src/attachments/store.js";
 import { refreshSessionIndex } from "../src/session/catalog.js";
 import { createSessionFile, ensureAgentDirs, listSessionFiles } from "../src/session/store.js";
 import { refreshSessionIndex } from "../src/session/catalog.js";
@@ -119,7 +119,8 @@ test("committed batch references are readable and re-exportable; parallel import
     assert.equal(parsed.text, "file quotes @attachments/original.pdf", "user prose is not rewritten");
     assert.equal(parsed.attachments[0].path, ref.path);
     assert.equal(parsed.attachments[0].name, "report.pdf");
-    assert.equal((await readAttachment(f.workspace, ref))?.data, f.bytes.toString("base64"));
+    assert.equal((await readAttachment(f.workspace, ref))?.data, "", "non-media bytes stay on disk for Read instead of becoming model payload");
+    assert.deepEqual(await readAttachmentBytes(f.workspace, ref.path), f.bytes, "committed attachment bytes remain exactly readable from disk");
     assert.equal((await fs.stat(path.join(f.directory, ref.path.split("/")[1]))).mode & 0o777, 0o700);
     return ref.path;
   }));
