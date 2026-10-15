@@ -10,6 +10,8 @@ export interface SkillMetadata {
   compatibility?: string;
   allowedTools?: string[];
   metadata?: Record<string, unknown>;
+  /** true 时正文在每轮系统提示中注入，不依赖能力分析选中。 */
+  alwaysInject?: boolean;
 }
 
 export function parseSkillDocument(content: string): { frontmatter: Record<string, unknown>; body: string; frontmatterEndByte?: number } {
@@ -48,8 +50,13 @@ export function readSkillMetadataFields(record: Record<string, unknown>): SkillM
   if (record.metadata !== undefined && (!record.metadata || typeof record.metadata !== "object" || Array.isArray(record.metadata))) {
     throw new Error("SKILL.md metadata 必须是对象。");
   }
+  const rawAlwaysInject = record["always-inject"];
+  if (rawAlwaysInject !== undefined && typeof rawAlwaysInject !== "boolean") {
+    throw new Error("SKILL.md always-inject 必须是布尔值。");
+  }
   return {
     name: text("name"), description: text("description"), license: text("license"), compatibility,
-    allowedTools, metadata: record.metadata as Record<string, unknown> | undefined
+    allowedTools, metadata: record.metadata as Record<string, unknown> | undefined,
+    alwaysInject: rawAlwaysInject as boolean | undefined
   };
 }

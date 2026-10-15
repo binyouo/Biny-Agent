@@ -18,7 +18,9 @@ const invalidMetadata = [
   ["allowed-tools: [Read, 42]", "SKILL.md allowed-tools 必须是字符串或字符串数组。"],
   ["metadata: 42", "SKILL.md metadata 必须是对象。"],
   ["metadata: []", "SKILL.md metadata 必须是对象。"],
-  ["metadata: null", "SKILL.md metadata 必须是对象。"]
+  ["metadata: null", "SKILL.md metadata 必须是对象。"],
+  ["always-inject: 42", "SKILL.md always-inject 必须是布尔值。"],
+  ["always-inject: yes", "SKILL.md always-inject 必须是布尔值。"]
 ] as const;
 
 function document(name: string, metadata: string, body = "Fixture instructions.\n"): string {
