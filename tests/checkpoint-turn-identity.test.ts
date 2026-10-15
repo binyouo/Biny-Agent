@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { z } from "zod";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
+import type { AgentTurnOutcome } from "../src/agent/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { readSessionEvents } from "../src/session/events.js";
@@ -131,6 +132,11 @@ for (const background of ["none", "previous-turn", "unscoped"] as const) {
         expectedRuntimeHighWater: { ...turn.runtimeHighWater!, eventId: "missing-witness" }
       }), /high-water is not present/u, "separating turn identity must not relax witness validation");
 
+      const currentUser = events.find((event) => event.type === "user_message" && event.runtime?.turnId === "new-turn");
+      assert.ok(currentUser?.type === "user_message" && currentUser.time);
+      assert.equal(currentUser.content, "current task");
+      assert.ok(typeof currentUser.metadata?.sentAtTimeZone === "string" && currentUser.metadata.sentAtTimeZone.length > 0);
+      const expectedCurrentTask = `[Message sent-at: ${new Date(currentUser.time).toISOString()}; original timezone: ${currentUser.metadata.sentAtTimeZone}; message time is not event/due/completion time.]\n\ncurrent task`;
       let resumedRequests = 0;
       const resumedProvider = provider(() => [{ type: "text-delta", text: "recovered" }, { type: "finish", reason: "stop" }]);
       resumed = agent(root, new SessionRecorder(root), {
@@ -138,18 +144,18 @@ for (const background of ["none", "previous-turn", "unscoped"] as const) {
         stream: async (context, options) => {
           resumedRequests += 1;
           assert.ok(context.messages.some((message) => message.role === "toolResult" && message.toolCallId === "fast-call"));
-          assert.ok(context.messages.some((message) => message.role === "user" && message.content === "current task"));
+          assert.ok(context.messages.some((message) => message.role === "user" && message.content === expectedCurrentTask));
           return await resumedProvider.stream(context, options);
         }
       }, registry);
       await resumed.initialize();
       await resumed.resume(sessionId);
       assert.equal((await resumed.interruptedTurn())?.turnId, "new-turn");
-      let result;
+      let result: AgentTurnOutcome | undefined;
       for await (const event of resumed.continueInterruptedTurn({ emotionAnalysis: false })) {
         if (event.type === "done") result = event.outcome;
       }
-      assert.equal(result?.status, "completed");
+      assert.equal(result?.status, "completed", result?.error);
       assert.equal(resumedRequests, 1);
       assert.equal(toolExecutions, 2, "continuation must not rerun either already dispatched tool");
       assert.equal(await resumed.interruptedTurn(), undefined);
