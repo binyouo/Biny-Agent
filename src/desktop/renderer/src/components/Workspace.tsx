@@ -315,7 +315,11 @@ export function Workspace({
             {skillExtraction ? <SkillExtractionCard state={skillExtraction} onDismiss={() => onDismissSkillExtraction?.()} /> : null}
             {compactionState && compactionState.status !== "pending" ? <CompactionStatus state={compactionState} onDismiss={onDismissCompaction} onRetry={onRetryCompaction} /> : null}
             {generationError && !writerConflict && !runtimeError ? (
-              <GenerationErrorBanner error={generationError} model={generationError === lastTurn?.error ? lastTurn?.model?.label : undefined} onDismiss={onDismissGenerationError} />
+              <GenerationErrorBanner
+                error={generationError}
+                model={lastTurn?.error && lastTurn.status !== "completed" && lastTurn.error.trim() === generationError.trim() ? lastTurn.model?.label : undefined}
+                onDismiss={onDismissGenerationError}
+              />
             ) : null}
             {writerConflict || runtimeError ? <RuntimeRecoveryBanner
               key={`${projectId}:${sessionId}:${writerConflict ? "conflict" : runtimeError?.kind}`}

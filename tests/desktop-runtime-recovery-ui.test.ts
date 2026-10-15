@@ -131,3 +131,19 @@ test("启动失败保留手动重试并明确不自动发送消息", () => {
   assert.match(html, />重试</u);
   assert.match(html, /不会自动发送消息/u);
 });
+
+
+for (const [error, status, expectedModel] of [
+  [" quota exceeded ", "failed", true],
+  ["Attachment could not be read", "failed", false],
+  ["quota exceeded", "completed", false]
+] as const) test(`生成错误 ${error} 只关联同一失败回合的模型 (${status})`, () => {
+  const html = renderToStaticMarkup(React.createElement(Workspace, { ...props, generationError: error,
+    turns: [{ id: "failed-turn", user: "Question", assistant: "", reasoning: "", skills: [], status,
+      tools: [], steps: [], error: "quota exceeded", model: { alias: "test", provider: "test", label: "specific-model", reasoning: "" } }]
+  }));
+  const banner = html.match(/<div class="biny-generation-error"[\s\S]*?<button/u)?.[0] ?? "";
+  assert.match(banner, /生成错误/u);
+  if (expectedModel) assert.match(banner, /Model specific-model/u);
+  else assert.doesNotMatch(banner, /Model specific-model/u);
+});
