@@ -9,6 +9,7 @@ import type { SessionUsage } from "../session/metadata.js";
 import type { ContextStatus } from "./context/types.js";
 import type { ContextMemory } from "./context/ContextMemory.js";
 import type { CapabilityStore } from "../runtime/CapabilityStore.js";
+import type { AttachmentReference } from "../attachments/store.js";
 
 // Preserve Agent-facing event names while the shared permission contract lives in permission/.
 export type AgentPermissionRequest = PermissionPrompt;
@@ -87,7 +88,7 @@ export interface AgentTurnOutcome {
 export type AgentSessionUpdate =
   | { type: "preparation.updated"; stage: import("./context/types.js").PreparationStage }
   | { type: "context.updated"; context: ContextStatus }
-  | { type: "message.user"; messageId: string; content: string; delivery: "steer" | "queue" }
+  | { type: "message.user"; messageId: string; content: string; attachments?: AttachmentReference[]; delivery: "steer" | "queue" }
   | { type: "context.retrying"; reason: "context_overflow"; attempt: number; compactedMessages: number }
   | { type: "assistant.delta"; content: string }
   | { type: "assistant.completed"; content: string; notification?: string }

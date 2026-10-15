@@ -149,7 +149,7 @@ import { ProviderRegistry } from "../llm/ProviderRuntime.js";
 import { LocalEmbeddingManager } from "../llm/embedding/LocalEmbeddingRuntime.js";
 import { selectMemoryEmbeddingModel } from "../llm/embedding/selectMemoryModel.js";
 import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
-import { attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
+import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import { messageText, withMessageSentAt } from "./modelMessages.js";
 import { PluginLifecycleRegistry, type PluginMcpToolCaller } from "../extensions/pluginLifecycle.js";
@@ -3330,6 +3330,7 @@ export class AgentSession {
                   type: "message.user",
                   messageId: queued.messageId,
                   content: queued.input,
+                  attachments: sessionAttachments(queued.attachments),
                   delivery: queued.delivery
                 };
               }
@@ -3887,7 +3888,8 @@ export class AgentSession {
   /** 当前激活模型不支持媒体时返回明确错误；输入本身已先写入会话，方便恢复和切换模型后重试。 */
   assertAttachmentsSupported(attachments: AgentAttachment[]): void {
     if (!attachments.length) return;
-    const unsupported = attachments.find((attachment) => !attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("audio/"));
+    const unsupported = attachments.find((attachment) => !attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("audio/")
+      && (this.options.attachmentRoot === undefined || !attachment.path || attachmentFilePath(this.options.attachmentRoot, attachment.path) === undefined));
     if (unsupported) throw new Error(`不支持的附件类型：${unsupported.mimeType}。当前只接受图片和 MP3/WAV 音频。`);
     const modelAlias = this.options.modelManager?.getInfo().modelAlias ?? this.options.config.defaultModel;
     const model = this.options.config.models[modelAlias];
@@ -4692,9 +4694,11 @@ export class AgentSession {
   }
 
   private supportedAttachments(attachments: AgentAttachment[] | undefined): AgentAttachment[] {
-    const native = attachments?.filter((attachment) => Boolean(attachment.data)) ?? [];
-    this.assertAttachmentsSupported(native);
-    return native;
+    const available = attachments?.filter((attachment) => Boolean(attachment.data)
+      || (Boolean(attachment.path) && this.options.attachmentRoot !== undefined
+        && attachmentFilePath(this.options.attachmentRoot, attachment.path!) !== undefined)) ?? [];
+    this.assertAttachmentsSupported(available);
+    return available;
   }
 
   private async rehydrateSessionMessages(

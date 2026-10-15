@@ -8,7 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { createFileConfigStore, type AgentConfigStore } from "../config/store.js";
 import type { AgentConfig } from "../config/schema.js";
-import { AgentSession } from "../agent/AgentSession.js";
+import { AgentSession, type AgentAttachment } from "../agent/AgentSession.js";
 import type { AgentTurnOutcome, AgentPermissionRequest, AgentPermissionResult } from "../agent/types.js";
 import { ModelManager } from "../llm/ModelManager.js";
 import type { ToolModelSelectionState } from "../llm/toolModelRequest.js";
@@ -154,6 +154,7 @@ export interface CommandRuntime {
   /** 一次性主任务通过同一份 TaskRun 验收闭环执行，不把回合完成当作产物已验证。 */
   runTaskWithVerification(input: {
     prompt: string;
+    attachments?: AgentAttachment[];
     verification: TaskVerificationContract;
     signal?: AbortSignal;
     /** Stops model work before the full run deadline so verification can use the reserve. */
@@ -1218,6 +1219,7 @@ async function initializeCommandRuntime(
         executeAttempt: async (prompt, attempt) => {
           turnOutcome = await agent.runTask(prompt, {
             abortSignal: attemptSignal,
+            attachments: input.attachments,
             confirmPermission: input.confirmPermission,
             runId: attempt.runId,
             turnId: attempt.turnId
