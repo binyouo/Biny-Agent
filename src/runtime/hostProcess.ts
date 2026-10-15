@@ -39,6 +39,10 @@ export async function runRuntimeHostProcess(
   dependencies: RuntimeHostProcessDependencies = {}
 ): Promise<void> {
   const options = parseOptions(argv);
+  // 启动者退出后诊断管道会断开；Worker 的 stderr 转发不能因此终止仍服务其他客户端的 Host。
+  process.stderr.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EPIPE") throw error;
+  });
   let server: RuntimeHostServer | undefined = undefined;
   let browserAutomation: BrowserAutomationEndpoint | undefined = undefined;
   let shuttingDown = false;
