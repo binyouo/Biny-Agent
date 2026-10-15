@@ -62,6 +62,7 @@ const address = server.address();
 assert.ok(address && typeof address !== "string");
 const mcpConfig = (names: string[]) => configSchema.parse({
   ...defaultConfig,
+  computer: { ...defaultConfig.computer, enabled: false },
   extensions: { ...defaultConfig.extensions, mcp: Object.fromEntries(names.map((name) => [name, {
     enabled: true, type: "http", url: `http://127.0.0.1:${address.port}/${name}`, transportProtocol: "streamable-http", timeoutMs: 5_000
   }])) }

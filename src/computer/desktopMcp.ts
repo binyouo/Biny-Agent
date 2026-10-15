@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { McpToolHost } from "../extensions/mcp.js";
@@ -13,6 +14,72 @@ import { computerImageSchema } from "./protocol.js";
 export const desktopComputerMcpName = "computer-use";
 const toolMethods: Record<string, string> = { ComputerLaunch: "launch", ComputerList: "list", ComputerObserve: "observe", ComputerAction: "action", ComputerSequence: "sequence", ComputerMirror: "mirror" };
 const replySchema = z.object({ data: z.record(z.unknown()), errorCode: z.string().optional(), images: z.array(computerImageSchema) });
+
+export function attachNativeComputerMcp(host: McpToolHost): Promise<void> {
+  return host.attachLocalServer(desktopComputerMcpName, "native", undefined, async () => {
+    const { NativeProcessDriver } = await import("./nativeDriver.js");
+    const { createComputerUseMcpServer } = await import("./mcpServer.js");
+    const closed = new AbortController();
+    const openSession = async () => {
+      closed.signal.throwIfAborted();
+      const driver = new NativeProcessDriver(() => undefined);
+      const server = createComputerUseMcpServer(driver);
+      const client = new Client({ name: "biny-computer", version: "1.0.0" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      let closePromise: Promise<void> | undefined;
+      const close = (): Promise<void> => closePromise ??= (async () => {
+        try { await client.close(); }
+        finally { try { await server.close(); } finally { await driver.dispose(); } }
+      })();
+      try {
+        await server.connect(serverTransport);
+        await client.connect(clientTransport);
+        closed.signal.throwIfAborted();
+        return { client, close };
+      } catch (error) { await close(); throw error; }
+    };
+    const catalog = openSession();
+    const sessions = new Map<string, ReturnType<typeof openSession>>();
+    const catalogClient = (await catalog).client;
+    const server = new Server({ name: desktopComputerMcpName, version: "1.0.0" }, {
+      capabilities: { tools: {} }, instructions: catalogClient.getInstructions()
+    });
+    server.setRequestHandler(ListToolsRequestSchema, async () => await catalogClient.listTools());
+    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      closed.signal.throwIfAborted();
+      const sessionId = z.string().min(1).max(240).parse(request.params._meta?.["biny/session-id"]);
+      let session = sessions.get(sessionId);
+      if (!session) {
+        session = openSession();
+        sessions.set(sessionId, session);
+        void session.catch(() => { if (sessions.get(sessionId) === session) sessions.delete(sessionId); });
+      }
+      const { client } = await session;
+      const signal = AbortSignal.any([closed.signal, extra.signal]);
+      signal.throwIfAborted();
+      return await client.callTool({ name: request.params.name, arguments: request.params.arguments }, CallToolResultSchema, { signal });
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    let closePromise: Promise<void> | undefined;
+    const close = (): Promise<void> => closePromise ??= (async () => {
+      closed.abort();
+      const results = await Promise.allSettled([
+        server.close(),
+        ...[catalog, ...sessions.values()].map(async pending => await (await pending).close())
+      ]);
+      sessions.clear();
+      const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+      if (failures.length) throw new AggregateError(failures, "Computer Use MCP shutdown failed.");
+    })();
+    try {
+      await server.connect(serverTransport);
+    } catch (error) {
+      await close();
+      throw error;
+    }
+    return { transport: clientTransport, close };
+  });
+}
 
 export function attachDesktopComputerMcp(host: McpToolHost, endpoint: BrowserAutomationEndpoint): Promise<void> {
   const identity = createHash("sha256").update(JSON.stringify(endpoint)).digest("hex");

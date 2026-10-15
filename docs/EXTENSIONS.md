@@ -14,6 +14,8 @@ Biny 的扩展入口承担不同职责：MCP 连接外部服务，Skill 提供�
 
 在 Desktop 的 MCP 设置中配置服务器，或把服务器定义合入全局配置的 `extensions.mcp`。每个键是服务器别名。
 
+全局 MCP 配置对各工作区的 Desktop、TUI 和 CLI Agent 生效，不需要逐项目添加同一个服务。项目设置只支持模型选择、思考、Agent 限额等运行参数，不支持覆盖 MCP 或 Computer Use 配置。连接按工作区 Runtime 管理并复用。macOS 的内置 `computer-use` 也默认自动连接，遵守全局 Computer Use 开关，见 [Computer Use](COMPUTER_USE.md)。
+
 下面展示本地 stdio 和远程 HTTP 的配置片段。将路径与地址换成实际服务：
 
 ```json

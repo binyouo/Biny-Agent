@@ -120,7 +120,7 @@ interface ManagedMcpServer {
   /** 刷新期间又收到 tools/list_changed 时，完成当前轮后补刷一次。 */
   refreshDirty?: boolean;
   toolProxies: Map<string, { signature: string; tool: Tool }>;
-  local?: { identity: string; tools: Tool[]; open: () => Promise<{ transport: Transport; close: () => Promise<void> }> };
+  local?: { identity: string; tools?: Tool[]; open: () => Promise<{ transport: Transport; close: () => Promise<void> }> };
   closeTransport?: () => Promise<void>;
   catalogKey?: string;
 }
@@ -142,16 +142,16 @@ export class McpToolHost {
 
   constructor(private readonly catalogCache = new McpToolCatalogCache()) {}
 
-  attachLocalServer(name: string, identity: string, tools: Tool[], open: () => Promise<{ transport: Transport; close: () => Promise<void> }>): Promise<void> {
+  attachLocalServer(name: string, identity: string, tools: Tool[] | undefined, open: () => Promise<{ transport: Transport; close: () => Promise<void> }>): Promise<void> {
     if (this.closing) throw new Error("MCP host is closing.");
     const previous = this.servers.get(name);
     if (previous && !previous.local) throw new Error(`MCP server name is reserved by a configured server: ${name}`);
     if (previous?.local?.identity === identity && previous.status.enabled) return previous.connecting ?? Promise.resolve();
     const closed = this.detachLocalServer(name);
-    const config: McpServerConfig = { enabled: true, args: [], stderr: "ignore", exposure: "direct", description: "Desktop Computer Use" };
+    const config: McpServerConfig = { enabled: true, args: [], stderr: "ignore", exposure: "direct", description: "Built-in Computer Use" };
     const managed: ManagedMcpServer = {
       name, rawConfig: config, config, transport: "in-process", tools: [], toolProxies: new Map(),
-      status: { name, command: "Desktop control plane", transport: "in-process", enabled: true, connected: false, connecting: true, toolNames: tools.map(tool => tool.name), promptNames: [], hasResources: false },
+      status: { name, command: tools ? "Desktop control plane" : "Local control plane", transport: "in-process", enabled: true, connected: false, connecting: true, toolNames: tools?.map(tool => tool.name) ?? [], promptNames: [], hasResources: false },
       local: { identity, tools, open }
     };
     this.servers.set(name, managed);
@@ -221,7 +221,7 @@ export class McpToolHost {
   createTools(): Tool[] {
     return [...this.servers.values()]
       .filter((server) => !this.closing && (server.status.connected || server.status.catalogCached || server.local))
-      .flatMap((server) => server.local ? server.local.tools : server.tools.map((tool) => this.serverToolProxy(server, tool, server.status.instructions)));
+      .flatMap((server) => server.local?.tools ?? server.tools.map((tool) => this.serverToolProxy(server, tool, server.status.instructions)));
   }
 
   cachedGenericTools(kind: "resources" | "prompts", create: () => Tool[]): Tool[] {
@@ -602,7 +602,7 @@ export class McpToolHost {
         managed.status.instructions = cached.instructions;
         this.registerServerTools(managed, cached.tools, cached.instructions);
       }
-      managed.status.command = managed.local ? "Desktop control plane" : managed.transport === "http" ? managed.config.url ?? "" : managed.config.command ?? "";
+      managed.status.command = managed.local ? managed.status.command : managed.transport === "http" ? managed.config.url ?? "" : managed.config.command ?? "";
       const { client, tools, activateToolNotifications } = await this.openClient(managed, controller.signal);
       openedClient = client;
       controller.signal.throwIfAborted();
@@ -735,15 +735,15 @@ export class McpToolHost {
   }
 
   private serverToolProxy(managed: ManagedMcpServer, definition: ListedMcpTool, instructions?: string): Tool {
-    if (managed.local) {
+    if (managed.local?.tools) {
       const tool = managed.local.tools.find(tool => tool.name === definition.name);
       if (!tool) throw new Error(`Unknown local MCP tool: ${definition.name}`);
       return { ...tool, mcpIdentity: { serverName: managed.name, toolName: definition.name } };
     }
-    const signature = mcpMetadataSignature({ definition, config: managed.config, instructions });
+    const signature = mcpMetadataSignature({ definition, config: managed.config, instructions, identity: managed.local?.identity });
     const cached = managed.toolProxies.get(definition.name);
     if (cached?.signature === signature) return cached.tool;
-    const tool = freezeMcpToolMetadata(createMcpTool(this, managed.name, definition, managed.config, instructions));
+    const tool = freezeMcpToolMetadata(createMcpTool(this, managed.name, definition, managed.config, instructions, managed.local?.identity));
     managed.toolProxies.set(definition.name, { signature, tool });
     return tool;
   }
@@ -1093,7 +1093,7 @@ function expandServerConfig(serverConfig: McpServerConfig): McpServerConfig {
   };
 }
 
-function createMcpTool(host: McpToolHost, serverName: string, definition: ListedMcpTool, serverConfig: McpServerConfig, instructions?: string): Tool {
+function createMcpTool(host: McpToolHost, serverName: string, definition: ListedMcpTool, serverConfig: McpServerConfig, instructions?: string, localIdentity?: string): Tool {
   const expectedDefinition = mcpMetadataSignature({ definition, config: serverConfig, instructions });
   const contract = serverConfig.toolContracts?.[definition.name];
   const serverPart = normalizeName(serverName);
@@ -1160,7 +1160,8 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
         async execute(context): Promise<unknown> {
           if (!fileChange) {
             const envelope = context.mcpResultMode === "envelope";
-            const result = await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, envelope, context.onDispatched, undefined, undefined, expectedDefinition);
+            const metadata = localIdentity === undefined ? undefined : { "biny/session-id": context.sessionId };
+            const result = await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, envelope, context.onDispatched, metadata, localIdentity, expectedDefinition);
             return envelope ? normalizeMcpEnvelope(result) : result;
           }
           try {
@@ -1172,7 +1173,7 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
               true,
               context.onDispatched,
               undefined,
-              undefined,
+              localIdentity,
               expectedDefinition
             );
             const change = readMcpFileChange(result, context.operationId, fileChange);

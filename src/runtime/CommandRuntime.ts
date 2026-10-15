@@ -326,7 +326,10 @@ async function initializeCommandRuntime(
   );
   const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerLaunch", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction", "ComputerSequence"];
   let registeredMcpTools: string[] = [];
+  let browserAutomationAttached = false;
   const setBrowserAutomation = (endpoint?: BrowserAutomationEndpoint): void => {
+    const detachComputer = browserAutomationAttached && endpoint === undefined;
+    browserAutomationAttached = endpoint !== undefined;
     for (const name of [...browserToolNames, "WebSearch", "WebFetch"]) toolRegistry.unregister(name);
     registeredMcpTools = registeredMcpTools.filter(name => !browserToolNames.includes(name));
     if (endpoint) {
@@ -337,7 +340,7 @@ async function initializeCommandRuntime(
       }
       for (const tool of createBrowserTools(endpoint)) toolRegistry.registerBuiltinTool(tool);
       toolRegistry.registerBuiltinTool(createWebSearchTool(config.web.search, config.web.cookies, endpoint));
-    } else void resourceScope.mcp.detachLocalServer(desktopComputerMcpName).catch(() => undefined);
+    } else if (detachComputer) void resourceScope.mcp.detachLocalServer(desktopComputerMcpName).catch(() => undefined);
     if (endpoint || config.web.fetch.enabled !== false) {
       toolRegistry.registerBuiltinTool(createWebFetchTool(config.web.fetch, config.web.cookies, {
         browser: endpoint,
