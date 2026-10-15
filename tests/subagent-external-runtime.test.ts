@@ -13,6 +13,7 @@ test("named ACP worker uses its own model, persists a child result and never res
   const config = structuredClone(defaultConfig);
   config.providers.external = { type: "acp", acp: acpConfigSchema.parse({ command: process.execPath, args: [path.resolve("tests/fixtures/acp-agent.mjs")] }) };
   config.models.external = { provider: "external", model: "test" };
+  config.defaultModel = "external";
   config.extensions.subagent.enabled = true;
   config.permission.mode = "full-access";
   config.permission.denyPaths = [];
