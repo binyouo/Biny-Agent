@@ -39,8 +39,7 @@ export async function runRuntimeHostProcess(
   dependencies: RuntimeHostProcessDependencies = {}
 ): Promise<void> {
   const options = parseOptions(argv);
-  // The launching surface can exit while this independent Host still serves clients.
-  // Worker stderr is piped directly here, outside console.error's error handling.
+  // 启动者退出后诊断管道会断开；Worker 的 stderr 转发不能因此终止仍服务其他客户端的 Host。
   process.stderr.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code !== "EPIPE") throw error;
   });

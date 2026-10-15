@@ -372,10 +372,15 @@ async function testAgentSessionAutoAnalysis(): Promise<void> {
   await agent.initialize();
   try {
     assert.equal((await agent.runTask("请分析这轮对话的情绪")).status, "completed");
-    await new Promise((resolve) => setTimeout(resolve, 5_250));
+    const deadline = Date.now() + 10_000;
+    let events = await fs.readFile(agent.getInfo().sessionFile, "utf8");
+    while (!events.includes('"emotionUpdated":true')) {
+      assert.ok(Date.now() < deadline, "auto emotion analysis did not persist its completion metadata");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      events = await fs.readFile(agent.getInfo().sessionFile, "utf8");
+    }
     const storage = new EmotionStorage({ configDir: path.join(workspaceRoot, "agent") });
     assert.equal((await storage.readContext(agent.getInfo().sessionId))?.mood, "专注");
-    const events = await fs.readFile(agent.getInfo().sessionFile, "utf8");
     assert.match(events, /"type":"message_metadata"/u);
     assert.match(events, /"emotionUpdated":true/u);
     assert.equal(await fs.stat(path.join(workspaceRoot, "agent", "emotions", "base.md")).then(() => true, () => false), false);

@@ -66,15 +66,16 @@ await fixture('CPU remains bounded with a pending bridge', async () => {
 });
 
 await fixture('multiple individually small slices accumulate', async () => {
-  const slice = 'let sum = 0; for (let i = 0; i < 200000; i++) sum += i;';
-  assert.equal((await run({ source: `${slice} return sum;`, limits })).status, 'completed');
+  // 单段留足调度余量；更多短段累积同一预算，异步让出不引入固定墙钟等待。
+  const slice = 'let sum = 0; for (let i = 0; i < 5000; i++) sum += i;';
+  assert.deepEqual(await run({ source: `${slice} return sum;`, limits }), { status: 'completed', value: 12_497_500 });
   let calls = 0;
   await expectCode(() => run({
-    source: `for (let j = 0; j < 100; j++) { ${slice} await tools.tick(sum); } return 1;`,
-    hostFunctions: { tools: { tick: async () => { calls += 1; await delay(10); } } },
-    limits,
+    source: `for (let j = 0; j < 1000; j++) { ${slice} await tools.tick(sum); } return 1;`,
+    hostFunctions: { tools: { tick: async () => { calls += 1; await new Promise(resolveTick => setImmediate(resolveTick)); } } },
+    limits: { ...limits, maxBridgeRequests: 1000 },
   }), 'RUN_TIMEOUT', limits.executionTimeoutMs);
-  assert.ok(calls >= 2 && calls < 100, `Expected cumulative expiration across slices; observed ${calls}`);
+  assert.ok(calls >= 2 && calls < 1000, `Expected cumulative expiration across slices; observed ${calls}`);
 });
 
 await fixture('parallel awaits retain normal Promise ordering', async () => {
