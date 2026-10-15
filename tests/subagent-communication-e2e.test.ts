@@ -55,6 +55,7 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
       let result: { text: string } | { name: string; args: Record<string, unknown> };
       if (system.includes("tool search assistant")) result = { text: '{"tools":["Task","TaskMessage","TaskStatus","TaskCancel"]}' };
       else if (system.includes("选择需要的工具") || system.includes("选择需要的技能")) result = { text: '{"tools":[],"skillIds":[]}' };
+      else if (system.includes("为这段对话生成简短、具体的标题")) result = { text: "Independent inspection" };
       else if (system.includes("focused, bounded worker inside Biny")) {
         const messages = JSON.stringify(body.messages);
         if (messages.includes("Additional bounded task:")) {
