@@ -158,6 +158,8 @@ export function SettingsMemory({
   const disclosureId = useId();
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
   const [archivePage, setArchivePage] = useState(0);
+  const searchRequestRef = useRef(0);
+  const pendingSearchRef = useRef<string | undefined>(undefined);
   const [pendingEmbeddingModel, setPendingEmbeddingModel] = useState<EmbeddingModelRef>();
 
   const refreshEmbeddingStatus = useCallback(async (): Promise<void> => {
@@ -170,26 +172,49 @@ export function SettingsMemory({
     }
   }, [onLoadEmbeddingStatus, workspaceAvailable]);
 
-  const reload = useCallback(async (pageIndex = 0, archivePageIndex = 0): Promise<void> => {
+  /**
+   * 重新读取当前页。省略页码时沿用当前所在页：增删改一条记忆后把用户丢回第一页会丢掉
+   * 阅读位置，在第 5 页删一条尤其明显。
+   *
+   * 页码走 ref 而不是 state：reload 被挂载与轮询 effect 依赖，把页码放进依赖数组会让
+   * 每次翻页都重建 reload 并重新触发一次加载。
+   */
+  const currentPageRef = useRef(currentPage);
+  const archivePageRef = useRef(archivePage);
+  const loadRequestRef = useRef(0);
+  const reload = useCallback(async (pageIndex?: number, archivePageIndex?: number): Promise<void> => {
     if (!workspaceAvailable) return;
+    const request = ++loadRequestRef.current;
+    const requestedPage = pageIndex ?? currentPageRef.current;
+    const requestedArchivePage = archivePageIndex ?? archivePageRef.current;
     setLoading(true);
     try {
       const [nextStats, page, status, runs, initialArchive] = await Promise.all([
         onLoadStats(),
-        onLoadEntries(pageIndex * PAGE_SIZE, PAGE_SIZE),
+        onLoadEntries(requestedPage * PAGE_SIZE, PAGE_SIZE),
         onSleepStatus(),
         onSleepRuns(),
-        onLoadArchived(archivePageIndex * ARCHIVE_PAGE_SIZE, ARCHIVE_PAGE_SIZE, true)
+        onLoadArchived(requestedArchivePage * ARCHIVE_PAGE_SIZE, ARCHIVE_PAGE_SIZE, true)
       ]);
+      if (request !== loadRequestRef.current) return;
       const lastArchivePage = Math.max(0, Math.ceil(initialArchive.total / ARCHIVE_PAGE_SIZE) - 1);
-      const nextArchivePage = Math.min(archivePageIndex, lastArchivePage);
-      const archived = nextArchivePage === archivePageIndex
+      const nextArchivePage = Math.min(requestedArchivePage, lastArchivePage);
+      const archived = nextArchivePage === requestedArchivePage
         ? initialArchive
         : await onLoadArchived(nextArchivePage * ARCHIVE_PAGE_SIZE, ARCHIVE_PAGE_SIZE, true);
+      if (request !== loadRequestRef.current) return;
+      // 删掉末页最后一条后该页会空掉：回退到仍存在的最后一页，而不是显示空列表。
+      const lastEntryPage = Math.max(0, Math.ceil(page.total / PAGE_SIZE) - 1);
+      const entries = page.entries.length === 0 && requestedPage > lastEntryPage
+        ? await onLoadEntries(lastEntryPage * PAGE_SIZE, PAGE_SIZE)
+        : page;
+      if (request !== loadRequestRef.current) return;
+      currentPageRef.current = Math.floor(entries.offset / PAGE_SIZE);
+      archivePageRef.current = nextArchivePage;
       setStats(nextStats);
-      setEntries(page.entries);
-      setTotalEntries(page.total);
-      setCurrentPage(Math.floor(page.offset / PAGE_SIZE));
+      setEntries(entries.entries);
+      setTotalEntries(entries.total);
+      setCurrentPage(Math.floor(entries.offset / PAGE_SIZE));
       setSleepStatus(status);
       lastSleepState.current = status.state;
       lastSleepRun.current = status.lastRun ? `${status.lastRun.id}:${status.lastRun.status}:${status.lastRun.finishedAt ?? ""}` : undefined;
@@ -201,14 +226,56 @@ export function SettingsMemory({
       setArchivePage(nextArchivePage);
       setError(undefined);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      setError(message);
+      if (request === loadRequestRef.current) setError(errorMessage(cause));
     } finally {
-      setLoading(false);
+      if (request === loadRequestRef.current) setLoading(false);
     }
   }, [onLoadArchived, onLoadEntries, onLoadStats, onSleepRuns, onSleepStatus, workspaceAvailable]);
 
-  useEffect(() => { if (!hidden) void reload(); }, [hidden, reload]);
+  const loadPage = async (pageIndex: number, kind: "entries" | "archive" = "entries"): Promise<void> => {
+    if (!workspaceAvailable) return;
+    const request = ++loadRequestRef.current;
+    const archived = kind === "archive";
+    const pageRef = archived ? archivePageRef : currentPageRef;
+    const previousPage = archived ? archivePage : currentPage;
+    // 完整刷新可能由维护完成触发；沿用正在前往的页，避免抢回旧位置。
+    pageRef.current = pageIndex;
+    const pageSize = archived ? ARCHIVE_PAGE_SIZE : PAGE_SIZE;
+    const readPage = async (index: number): Promise<DesktopMemoryArchivePage> => archived
+      ? onLoadArchived(index * pageSize, pageSize, true)
+      : onLoadEntries(index * pageSize, pageSize);
+    setLoading(true);
+    try {
+      let page = await readPage(pageIndex);
+      if (request !== loadRequestRef.current) return;
+      const nextPage = Math.min(pageIndex, Math.max(0, Math.ceil(page.total / pageSize) - 1));
+      if (nextPage !== pageIndex) page = await readPage(nextPage);
+      if (request !== loadRequestRef.current) return;
+      pageRef.current = nextPage;
+      if (archived) {
+        setArchivedEntries(page.entries);
+        setArchiveChains(page.chains ?? {});
+        setArchivedTotal(page.total);
+        setArchivePage(nextPage);
+      } else {
+        setEntries(page.entries);
+        setTotalEntries(page.total);
+        setCurrentPage(nextPage);
+      }
+      setError(undefined);
+    } catch (cause) {
+      if (request !== loadRequestRef.current) return;
+      pageRef.current = previousPage;
+      setError(errorMessage(cause));
+    } finally {
+      if (request === loadRequestRef.current) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!hidden) void reload();
+    return () => { loadRequestRef.current += 1; };
+  }, [hidden, reload]);
   useEffect(() => { if (!hidden) void refreshEmbeddingStatus(); }, [hidden, refreshEmbeddingStatus]);
   useEffect(() => {
     if (hidden || !workspaceAvailable) return;
@@ -296,21 +363,40 @@ export function SettingsMemory({
     }
   };
 
+  useEffect(() => {
+    setSearching(false);
+    return () => {
+      searchRequestRef.current += 1;
+      pendingSearchRef.current = undefined;
+    };
+  }, [hidden, onSearch, workspaceAvailable]);
+
   const search = async (): Promise<void> => {
+    if (hidden || !workspaceAvailable) return;
     const value = query.trim();
     if (!value) {
+      searchRequestRef.current += 1;
+      pendingSearchRef.current = undefined;
       setSearchResults([]);
-      await reload();
+      setSearching(false);
       return;
     }
+    if (pendingSearchRef.current === value) return;
+    const request = ++searchRequestRef.current;
+    pendingSearchRef.current = value;
     setSearching(true);
     try {
-      setSearchResults(await onSearch(value));
+      const matches = await onSearch(value);
+      if (request === searchRequestRef.current) setSearchResults(matches);
     } catch (cause) {
+      if (request !== searchRequestRef.current) return;
       setSearchResults([]);
       onNotify(errorMessage(cause));
     } finally {
-      setSearching(false);
+      if (request === searchRequestRef.current) {
+        pendingSearchRef.current = undefined;
+        setSearching(false);
+      }
     }
   };
 
@@ -324,7 +410,7 @@ export function SettingsMemory({
         ? await onUpdate(editId, { content: value })
         : await onAdd({ content: value, importance: 0.5 });
       setStats(next);
-      setEditor(undefined);
+      setEditor((current) => current === editor ? undefined : current);
       await reload();
       onNotify(editId ? "记忆已更新" : "记忆已添加");
     } catch (cause) {
@@ -341,7 +427,8 @@ export function SettingsMemory({
     try {
       const next = await onArchiveEntry(entry.id, archived);
       setStats(next);
-      await reload(0, archivePage);
+      // 归档同样只影响一条记录，保留当前页；该页被清空时由 reload 回退到最后一页。
+      await reload(undefined, archivePage);
       const mergedNotice = !archived && next.mergedTarget
         ? entry.archivedReason === "updated"
           ? `当前版本「${next.mergedTarget.content}」仍在使用，请核对是否需要保留。`
@@ -620,7 +707,13 @@ export function SettingsMemory({
 
         <section className="activity-memory-group" id="memory-search" tabIndex={-1}>
           <h3>搜索记忆</h3>
-          <input aria-label="搜索记忆" onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void search(); }} placeholder="按语义相似度搜索..." type="search" value={query} />
+          <input aria-label="搜索记忆" onChange={(event) => {
+            searchRequestRef.current += 1;
+            pendingSearchRef.current = undefined;
+            setQuery(event.target.value);
+            setSearchResults([]);
+            setSearching(false);
+          }} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing && event.keyCode !== 229) void search(); }} placeholder="按语义相似度搜索..." type="search" value={query} />
           {searching ? <p className="activity-memory-empty-hint">搜索中…</p> : null}
           {searchResults.length > 0 ? <div className="activity-memory-search-results">
             <h4>搜索结果 ({searchResults.length})</h4>
@@ -655,7 +748,7 @@ export function SettingsMemory({
               </article>
             ))}
           </div>
-          {totalEntries > PAGE_SIZE ? <MemoryPagination currentPage={currentPage} onPageChange={(page) => { void reload(page); }} totalEntries={totalEntries} /> : null}
+          {totalEntries > PAGE_SIZE ? <MemoryPagination currentPage={currentPage} disabled={loading} onPageChange={(page) => { void loadPage(page); }} totalEntries={totalEntries} /> : null}
         </section>
 
         <section className="activity-memory-group" id="memory-add" tabIndex={-1}>
@@ -846,9 +939,9 @@ export function SettingsMemory({
                 </article>
               ))}
               {archivePages > 1 ? <div className="activity-memory-archive-pagination">
-                <button aria-label="上一页归档记忆" className="ghost-button" disabled={loading || visibleArchivePage === 0} onClick={() => { void reload(currentPage, visibleArchivePage - 1); }} type="button">←</button>
+                <button aria-label="上一页归档记忆" className="ghost-button" disabled={loading || visibleArchivePage === 0} onClick={() => { void loadPage(visibleArchivePage - 1, "archive"); }} type="button">←</button>
                 <span>{visibleArchivePage + 1} / {archivePages}</span>
-                <button aria-label="下一页归档记忆" className="ghost-button" disabled={loading || visibleArchivePage + 1 >= archivePages} onClick={() => { void reload(currentPage, visibleArchivePage + 1); }} type="button">→</button>
+                <button aria-label="下一页归档记忆" className="ghost-button" disabled={loading || visibleArchivePage + 1 >= archivePages} onClick={() => { void loadPage(visibleArchivePage + 1, "archive"); }} type="button">→</button>
               </div> : null}
             </div>
             {sleepRuns.length > 0 ? <details className="activity-memory-run-details">
@@ -924,13 +1017,13 @@ function MemoryNumber({ description, label, max, min, onChange, value }: {
   </label>;
 }
 
-function MemoryPagination({ currentPage, onPageChange, totalEntries }: { currentPage: number; onPageChange(page: number): void; totalEntries: number }): React.JSX.Element {
+function MemoryPagination({ currentPage, disabled, onPageChange, totalEntries }: { currentPage: number; disabled: boolean; onPageChange(page: number): void; totalEntries: number }): React.JSX.Element {
   const totalPages = Math.ceil(totalEntries / PAGE_SIZE);
   const rangeStart = currentPage * PAGE_SIZE + 1;
   const rangeEnd = Math.min((currentPage + 1) * PAGE_SIZE, totalEntries);
   return <div className="activity-memory-pagination">
     <span>{rangeStart}-{rangeEnd} of {totalEntries}</span>
-    <div><button className="ghost-button" disabled={currentPage === 0} onClick={() => onPageChange(currentPage - 1)} type="button">←</button><span>{currentPage + 1} / {totalPages}</span><button className="ghost-button" disabled={currentPage + 1 >= totalPages} onClick={() => onPageChange(currentPage + 1)} type="button">→</button></div>
+    <div><button className="ghost-button" disabled={disabled || currentPage === 0} onClick={() => onPageChange(currentPage - 1)} type="button">←</button><span>{currentPage + 1} / {totalPages}</span><button className="ghost-button" disabled={disabled || currentPage + 1 >= totalPages} onClick={() => onPageChange(currentPage + 1)} type="button">→</button></div>
   </div>;
 }
 
