@@ -4,6 +4,16 @@
  * 与渲染框架无关的纯函数：耗时格式化和 thinking 标题。
  */
 import type { ReasoningTranscriptItem } from "./types.js";
+import type { AttachmentReference } from "../attachments/store.js";
+import { splitAttachmentReferences } from "../attachments/references.js";
+import { publicUserMessage } from "../session/publicMessage.js";
+
+/** 分开恢复用户正文与旧消息内嵌的附件传输清单。 */
+export function projectTuiUserMessage(content: string, attachments?: AttachmentReference[]): { content: string; attachments?: AttachmentReference[] } {
+  const message = splitAttachmentReferences(publicUserMessage(content));
+  const references = attachments?.length ? attachments : message.attachments;
+  return { content: message.text, attachments: references.length ? references : undefined };
+}
 
 /** 将 session 最后更新时间转换成紧凑的相对时间，供恢复列表展示。 */
 export function formatSessionAge(timestamp: string, nowMs = Date.now()): string {

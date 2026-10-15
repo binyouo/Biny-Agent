@@ -8,8 +8,9 @@
 import type { SessionEvent } from "../session/recorder.js";
 import { replaySessionEvents } from "../session/replay.js";
 import { activitySummaryText } from "../runtime/activitySummary.js";
-import { publicAssistantMessage, publicUserMessage } from "../session/publicMessage.js";
+import { publicAssistantMessage } from "../session/publicMessage.js";
 import { completeToolItem, createRunningToolItem } from "./toolPresentation.js";
+import { projectTuiUserMessage } from "./transcriptText.js";
 import type { ToolTranscriptItem, TranscriptItem } from "./types.js";
 
 export function sessionEventsToTranscript(events: SessionEvent[]): TranscriptItem[] {
@@ -22,7 +23,7 @@ export function sessionEventsToTranscript(events: SessionEvent[]): TranscriptIte
     if (event.type === "tool_result" && event.auditOnly && event.recovered && resultStatus(event.result) !== "skipped") continue;
     if (event.type === "user_message") {
       if (event.auditOnly && (event.metadata?.queuedDelivery === "steer" || event.metadata?.queuedDelivery === "queue")) continue;
-      items.push({ id: replayId("user", index), kind: "user", content: publicUserMessage(event.content) });
+      items.push({ id: replayId("user", index), kind: "user", ...projectTuiUserMessage(event.content, event.attachments) });
       continue;
     }
 

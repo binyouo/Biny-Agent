@@ -111,57 +111,6 @@ export class SelectDialog extends Container {
   }
 }
 
-/** 长文本查看弹层：命令输出、报告、审阅结果。 */
-export class TextViewerDialog extends Container {
-  private scroll = 0;
-  private lines: string[] = [];
-  private readonly body: Text;
-
-  constructor(
-    private readonly title: string,
-    content: string,
-    private readonly maxRows: number,
-    private readonly onClose: () => void
-  ) {
-    super();
-    this.body = new Text("", 1, 0);
-    this.lines = content.split("\n");
-    this.addChild(new DialogFrame(title, "", "top"));
-    this.addChild(this.body);
-    this.addChild(new DialogFrame("", "↑↓/pgup/pgdn scroll · esc close", "bottom"));
-    this.refresh();
-  }
-
-  handleInput(data: string): void {
-    // Ctrl+C 也关闭查看器：全局双 Ctrl+C 退出依赖弹层先消费掉第一次按键。
-    if (matchesKey(data, "escape") || matchesKey(data, "q") || matchesKey(data, "ctrl+c")) {
-      this.onClose();
-      return;
-    }
-    const page = Math.max(1, this.maxRows - 1);
-    if (matchesKey(data, "up")) this.scroll -= 1;
-    else if (matchesKey(data, "down")) this.scroll += 1;
-    else if (matchesKey(data, "pageUp")) this.scroll -= page;
-    else if (matchesKey(data, "pageDown")) this.scroll += page;
-    else return;
-    this.refresh();
-  }
-
-  private refresh(): void {
-    const maxScroll = Math.max(0, this.lines.length - this.maxRows);
-    this.scroll = Math.min(maxScroll, Math.max(0, this.scroll));
-    const visible = this.lines.slice(this.scroll, this.scroll + this.maxRows);
-    const suffix = maxScroll > 0
-      ? `\n${theme.fg("dim", `${String(this.scroll + visible.length)}/${String(this.lines.length)} lines`)}`
-      : "";
-    this.body.setText(`${visible.join("\n")}${suffix}`);
-  }
-
-  titleText(): string {
-    return this.title;
-  }
-}
-
 /** 权限确认：选项列表 + 强确认输入行。 */
 export class PermissionDialog extends Container {
   private selectedIndex = DEFAULT_PERMISSION_SELECTION;

@@ -16,8 +16,15 @@ import {
   buildStatusCard,
   buildSubagentAgentsCard,
   buildSubagentTasksCard,
-  buildUsageCard
+  buildUsageCard,
+  buildAutomationsCard,
+  buildCapabilitiesCard,
+  buildGoalCard,
+  buildGraphCard,
+  buildGraphEventsCard,
+  buildTasksCard
 } from "./commandCards.js";
+import type { GraphRecord } from "./GoalGraphStore.js";
 import type { CommandCardData } from "./commandCard.js";
 import type { CommandRuntime } from "./CommandRuntime.js";
 import type { InteractiveRuntimeHandle } from "./InteractiveAgentRuntime.js";
@@ -126,15 +133,20 @@ export async function executeRuntimeCommand(
   }
   if (command === "/tasks") {
     const page = services.taskRuns.list({ status: args[0] === undefined ? undefined : readTaskStatus(args[0]) });
-    return result(command, "Tasks", JSON.stringify(page, null, 2));
+    return { ...result(command, "Tasks", JSON.stringify(page, null, 2)), card: buildTasksCard(page) };
   }
   if (command === "/automation") {
     const action = args[0]?.toLowerCase();
-    if (!action || action === "list") return result(command, "Automation", JSON.stringify(services.automationStore.list(), null, 2));
+    if (!action || action === "list") {
+      const automations = services.automationStore.list();
+      return { ...result(command, "Automation", JSON.stringify(automations, null, 2)), card: buildAutomationsCard(automations) };
+    }
     const automationId = args[1]?.trim();
     if (!automationId) throw new Error("Usage: /automation list | pause <id> | resume <id> | run <id> | delete <id>");
-    if (action === "pause") return result(command, "Automation", JSON.stringify(services.automationStore.pause(automationId), null, 2));
-    if (action === "resume") return result(command, "Automation", JSON.stringify(services.automationStore.resume(automationId), null, 2));
+    if (action === "pause" || action === "resume") {
+      const automation = action === "pause" ? services.automationStore.pause(automationId) : services.automationStore.resume(automationId);
+      return { ...result(command, "Automation", JSON.stringify(automation, null, 2)), card: buildAutomationsCard([automation]) };
+    }
     if (action === "delete") {
       services.automationStore.delete(automationId);
       return result(command, "Automation", `Deleted ${automationId}.`);
@@ -160,6 +172,7 @@ export async function executeRuntimeCommand(
     if (goal.action === "pause" && current?.status === "active") runtime.cancelCurrentRun("paused");
     return {
       ...result(command, "当前目标", record === undefined ? "当前会话没有目标。使用 /goal <目标> 开始。" : JSON.stringify(record, null, 2)),
+      card: buildGoalCard(record),
       sessionGoal: { action: goal.action, status: record?.status }
     };
   }
@@ -167,27 +180,29 @@ export async function executeRuntimeCommand(
     const action = args[0]?.toLowerCase() ?? "inspect";
     const graphId = action === "inspect" || action === "events" ? args[1] ?? args[0] : args[1];
     if (!graphId) throw new Error("Usage: /graph inspect <id> | start <id> | pause <id> | resume <id> | cancel <id> | events <id> [--cursor <cursor>] [--limit <count>]");
-    if (action === "inspect") return result(command, "Graph", JSON.stringify(services.graphs.inspectGraph(graphId), null, 2));
     if (action === "events") {
       if (!args[1]) throw new Error("Usage: /graph events <id> [--cursor <cursor>] [--limit <count>]");
-      return result(command, "Graph events", JSON.stringify(services.graphs.listGraphEvents(graphId, parseGraphEventOptions(args.slice(2))), null, 2));
+      const events = services.graphs.listGraphEvents(graphId, parseGraphEventOptions(args.slice(2)));
+      return { ...result(command, "Graph events", JSON.stringify(events, null, 2)), card: buildGraphEventsCard(events) };
     }
-    if (action === "start") {
-      const graph = services.graphs.startGraph(graphId);
+    let graph;
+    if (action === "inspect") graph = services.graphs.inspectGraph(graphId);
+    else if (action === "start") {
+      graph = services.graphs.startGraph(graphId);
       services.graphs.createWake(graph.graphId, "graph_started");
-      return result(command, "Graph", JSON.stringify(graph, null, 2));
     }
-    if (action === "pause") return result(command, "Graph", JSON.stringify(services.graphs.pauseGraph(graphId), null, 2));
-    if (action === "resume") {
-      const graph = services.graphs.resumeGraph(graphId);
+    else if (action === "pause") graph = services.graphs.pauseGraph(graphId);
+    else if (action === "resume") {
+      graph = services.graphs.resumeGraph(graphId);
       services.graphs.createWake(graph.graphId, "graph_resumed");
-      return result(command, "Graph", JSON.stringify(graph, null, 2));
     }
-    if (action === "cancel") return result(command, "Graph", JSON.stringify(await cancelRuntimeGraph(runtime, services, graphId), null, 2));
-    throw new Error("Usage: /graph inspect <id> | start <id> | pause <id> | resume <id> | cancel <id> | events <id> [--cursor <cursor>] [--limit <count>]");
+    else if (action === "cancel") graph = await cancelRuntimeGraph(runtime, services, graphId);
+    else throw new Error("Usage: /graph inspect <id> | start <id> | pause <id> | resume <id> | cancel <id> | events <id> [--cursor <cursor>] [--limit <count>]");
+    return { ...result(command, "Graph", JSON.stringify(graph, null, 2)), card: buildGraphCard(graph) };
   }
   if (command === "/capabilities") {
-    return result(command, "Capabilities", JSON.stringify(services.capabilities.list(), null, 2));
+    const capabilities = services.capabilities.list();
+    return { ...result(command, "Capabilities", JSON.stringify(capabilities, null, 2)), card: buildCapabilitiesCard(capabilities) };
   }
   if (command === "/mcp") {
     if (args[0]?.toLowerCase() !== "reconnect") {
@@ -347,9 +362,11 @@ async function executeSubagentCommand(
     const taskId = args[1]?.trim();
     if (!taskId) throw new Error("Usage: /subagent cancel <task-id>");
     const cancelled = services.subagents?.cancelTask(taskId, `Cancelled from the ${source}.`) ?? false;
-    return result(command, "Subagent", cancelled
-      ? `Cancelled subagent task ${taskId}.`
-      : `No active subagent task found for ${taskId}.`);
+    const snapshot = services.subagents?.getSnapshot(taskId);
+    return {
+      ...result(command, "Subagent", cancelled ? `Cancelled subagent task ${taskId}.` : `No active subagent task found for ${taskId}.`),
+      card: cancelled && snapshot ? buildSubagentTasksCard([snapshot]) : undefined
+    };
   }
   if (action === "start") {
     const task = args.slice(1).join(" ").trim();
@@ -359,7 +376,11 @@ async function executeSubagentCommand(
       (signal) => services.startSubagentTask(task, { signal })
     );
     void submitted.completion.catch(() => undefined);
-    return result(command, "Subagent", `Started subagent task ${submitted.taskId}. Use /subagent status or /subagent cancel ${submitted.taskId}.`);
+    const snapshot = services.subagents?.getSnapshot(submitted.taskId);
+    return {
+      ...result(command, "Subagent", `Started subagent task ${submitted.taskId}. Use /subagent status or /subagent cancel ${submitted.taskId}.`),
+      card: snapshot ? buildSubagentTasksCard([snapshot]) : undefined
+    };
   }
   const task = args.join(" ").trim();
   if (!task) {
@@ -376,7 +397,7 @@ export async function cancelRuntimeGraph(
   runtime: InteractiveRuntimeHandle,
   services: CommandRuntime,
   graphId: string
-): Promise<unknown> {
+): Promise<GraphRecord> {
   const graph = services.graphs.inspectGraph(graphId);
   const activeRuns = graph.nodes
     .filter((node) => node.status === "running" && node.taskRunId !== undefined)

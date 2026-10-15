@@ -8,7 +8,7 @@
 import type { AgentHostEvent } from "../runtime/agentEvents.js";
 import type { CommandCardData } from "../runtime/commandCard.js";
 import { activitySummaryText } from "../runtime/activitySummary.js";
-import { publicUserMessage } from "../session/publicMessage.js";
+import { projectTuiUserMessage } from "./transcriptText.js";
 import {
   completeToolItem,
   createRunningToolItem,
@@ -173,6 +173,7 @@ export function tuiReducer(state: TuiState, event: TuiAction): TuiState {
     case "permission.details.toggled":
       return { ...state, permissionDetailsExpanded: !state.permissionDetailsExpanded };
     case "message.user":
+      const userMessage = projectTuiUserMessage(event.content, event.attachments);
       return {
         ...state,
         viewingSessionId: state.sessionId,
@@ -181,7 +182,7 @@ export function tuiReducer(state: TuiState, event: TuiAction): TuiState {
         transcript: commitItem(state.transcript, {
           id: nextTranscriptId(state.transcript, "user"),
           kind: "user",
-          content: publicUserMessage(event.content)
+          ...userMessage
         })
       };
     case "context.retrying":
