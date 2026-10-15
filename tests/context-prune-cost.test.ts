@@ -4,9 +4,10 @@ import path from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { projectMessageSentAt } from "../src/agent/modelMessages.js";
 
 // Evaluate only the actual synchronous pruning method and its pure helpers.
-// No ContextMemory instance, product import, SDK, storage or service is started.
+// The shared send-time formatter is pure; no ContextMemory, SDK, storage or service is started.
 const root = process.env.BINY_PRUNE_SOURCE_ROOT ?? process.cwd();
 const contextPath = process.env.BINY_PRUNE_BASELINE ?? path.join(root, "src/agent/context/ContextMemory.ts");
 function parse(file: string): ts.SourceFile {
@@ -52,7 +53,7 @@ const pure = [
 const allowedCalls = new Set([
   "Math.floor", "this.inputBudget", "estimateMessageTokens", "messages.reduce", "isPrunedToolResult", "indexes.push",
   "prunableIndexes.slice", "Math.max", "prunedToolResultMessage", "messageTokenCost", "Math.ceil", "Buffer.byteLength",
-  "estimateTokens", "JSON.stringify", "message.content.map", "stringify", "String", "message.content[0].text.startsWith",
+  "projectMessageSentAt", "estimateTokens", "JSON.stringify", "message.content.map", "stringify", "String", "message.content[0].text.startsWith",
   "messageText", "original.match", "messageToolName", "truncateTextToTokens", "value.slice", "suffix.slice"
 ]);
 for (const [node, source] of selected) {
@@ -101,7 +102,7 @@ interface Pure {
   reset(): void;
   counts(): { costCalls: number; budgetReads: number };
 }
-const api = runInNewContext(compiled.outputText, { Buffer: { byteLength: Buffer.byteLength } },
+const api = runInNewContext(compiled.outputText, { projectMessageSentAt, Buffer: { byteLength: Buffer.byteLength } },
   { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }) as Pure;
 const marker = "[earlier tool result compacted for this model step]";
 const archivedPath = `.biny/tool-results/tool-result-${"a".repeat(64)}.json`;

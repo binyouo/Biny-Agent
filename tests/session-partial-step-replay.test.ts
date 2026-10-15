@@ -245,7 +245,7 @@ test("audit-only, discarded, imports and flat assistant compatibility remain unc
   assertPairs(sessionEventsToConversation(imported), ["primer", "imported"]);
 });
 
-test("old replay caches are rejected and version-3 rebuild retains flat failure without rewriting JSONL", async () => {
+test("old replay caches are rejected and rebuild retains flat failure without rewriting JSONL", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-replay-version-"));
   try {
     const file = path.join(root, "session.jsonl");
@@ -265,7 +265,7 @@ test("old replay caches are rejected and version-3 rebuild retains flat failure 
       const { isError: _isError, ...oldMessage } = message;
       return oldMessage;
     });
-    for (const replayVersion of [1, 2]) {
+    for (const replayVersion of [1, 2, 3]) {
       await writeFile(snapshotFile, JSON.stringify({ ...current, replayVersion, messages: legacyMessages }));
       assert.equal(await tryReadSessionSnapshot(file, fingerprint), undefined);
       const rebuilt = replaySessionEvents(await readSessionEvents(file));
@@ -277,7 +277,7 @@ test("old replay caches are rejected and version-3 rebuild retains flat failure 
     }
     await writeSessionSnapshot(file, fingerprint, replay);
     const saved = await tryReadSessionSnapshot(file, fingerprint);
-    assert.equal(saved?.replayVersion, 3);
+    assert.equal(saved?.replayVersion, 4);
     assert.deepEqual(saved?.messages, replay.messages);
     assert.equal(await readFile(file, "utf8"), bytes);
   } finally { await rm(root, { recursive: true, force: true }); }

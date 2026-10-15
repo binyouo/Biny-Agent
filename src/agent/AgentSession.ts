@@ -73,6 +73,7 @@ import {
   buildPromptBundle,
   type PromptBundle,
   refreshRuntimeTurnContext,
+  refreshRuntimeDateContext,
   refreshRuntimeSystemPrompt,
   refreshSessionGoalPrompt,
   messagesForTelemetry,
@@ -150,7 +151,7 @@ import { selectMemoryEmbeddingModel } from "../llm/embedding/selectMemoryModel.j
 import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
 import { attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
-import { messageText } from "./modelMessages.js";
+import { messageText, withMessageSentAt } from "./modelMessages.js";
 import { PluginLifecycleRegistry, type PluginMcpToolCaller } from "../extensions/pluginLifecycle.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
 import { archiveToolResult } from "../session/toolResultArchive.js";
@@ -1115,7 +1116,7 @@ export class AgentSession {
         await this.turnStore.clear().catch(() => undefined);
         throw new Error(recoveryPlan.message);
       }
-      const replayMessages = await this.rehydrateSessionAttachments(
+      const replayMessages = await this.rehydrateSessionMessages(
         replay.messages,
         replay.events,
         replay.contextStartUserMessageIndex,
@@ -1237,7 +1238,7 @@ export class AgentSession {
         if (!isDeepStrictEqual(await this.turnStore.load(), turn)) throw new Error("Retry checkpoint changed before terminal cleanup.");
         await this.turnStore.clear();
       }
-      const messages = await this.rehydrateSessionAttachments(replay.messages, replay.events, replay.contextStartUserMessageIndex, replay.messageReferences);
+      const messages = await this.rehydrateSessionMessages(replay.messages, replay.events, replay.contextStartUserMessageIndex, replay.messageReferences);
       this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
       this.contextMessageReferences = replay.messageReferences;
@@ -1265,7 +1266,7 @@ export class AgentSession {
         recordSessionUserMessage: false, emptyTurn: true, rebindPausedFollowup: true });
       return;
     }
-    const messages = await this.rehydrateSessionAttachments(
+    const messages = await this.rehydrateSessionMessages(
       replay.messages,
       replay.events,
       replay.contextStartUserMessageIndex,
@@ -1635,7 +1636,7 @@ export class AgentSession {
     const prefixEnd = targetIsAssistant ? targetReferenceIndex : userReferenceIndex;
     if (prefixEnd < 0) throw new Error("Retry target is not replayable.");
     const activeEvents = activeSessionEventsForPath(replay.events);
-    const replayMessages = await this.rehydrateSessionAttachments(
+    const replayMessages = await this.rehydrateSessionMessages(
       replay.messages,
       activeEvents,
       replay.contextStartUserMessageIndex,
@@ -1698,7 +1699,11 @@ export class AgentSession {
     const preparedHistoryReferences = preparedHistoryCount ? this.contextMessageReferences.slice(-preparedHistoryCount) : [];
     const continuationMessages = [...prepared.messages];
     const continuationReferences = [...preparedHistoryReferences, replay.messageReferences[userReferenceIndex]];
-    const preparedUser = continuationMessages.at(-1);
+    let preparedUser = continuationMessages.at(-1);
+    if (!replacingUser && preparedUser?.role === "user" && userEvent?.type === "user_message") {
+      preparedUser = withMessageSentAt(preparedUser, userEvent);
+      continuationMessages[continuationMessages.length - 1] = preparedUser;
+    }
     const sourceUserIndex = targetIsAssistant
       ? preparedHistoryReferences.findIndex((reference) => reference?.id === userNode.id)
       : -1;
@@ -1786,7 +1791,7 @@ export class AgentSession {
       await this.recorder.recordAndFlush({ type: "message_version_selected", messageId: next.id, slotId });
       const replay = replaySessionEvents(await readSessionEvents(this.recorder.filePath), { sessionId: this.recorder.sessionId });
       const activeEvents = activeSessionEventsForPath(replay.events);
-      const messages = await this.rehydrateSessionAttachments(
+      const messages = await this.rehydrateSessionMessages(
         replay.messages,
         activeEvents,
         replay.contextStartUserMessageIndex,
@@ -1893,7 +1898,7 @@ export class AgentSession {
     create: (selected: SessionReplay) => Extract<SessionEvent, { type: "user_message" }> | undefined
   ): Promise<SessionEvent | undefined> {
     const recorded = await this.recorder.admitTurnAfterRetryView(kind, async (selected, pausedMarker) => {
-      const messages = await this.rehydrateSessionAttachments(selected.messages, selected.events,
+      const messages = await this.rehydrateSessionMessages(selected.messages, selected.events,
         selected.contextStartUserMessageIndex, selected.messageReferences);
       const references: Array<SessionMessageReference | undefined> = [...selected.messageReferences];
       if (pausedMarker !== undefined && !(messages.at(-1)?.role === "user" && messages.at(-1)?.content === pausedMarker
@@ -2019,7 +2024,7 @@ export class AgentSession {
         attachments: sessionAttachments(clonedAttachments),
         messageId,
         auditOnly: true,
-        metadata: { queuedDelivery: delivery }
+        metadata: { queuedDelivery: delivery, sentAtTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }
       })
     };
     (delivery === "steer" ? queues.steering : queues.queued).push(item);
@@ -2257,7 +2262,7 @@ export class AgentSession {
         sourcePrefix: { byteLength: source.byteLength, sha256: source.contentHash }
       });
       if (canonical.messages.length) {
-        const restored = await this.rehydrateSessionAttachments(canonical.messages, canonical.events, canonical.contextStartUserMessageIndex,
+        const restored = await this.rehydrateSessionMessages(canonical.messages, canonical.events, canonical.contextStartUserMessageIndex,
           canonical.retrySourceEvents ? canonical.messageReferences : undefined);
         const indexes = restored.map((_, index) => index).filter(index => !(canonical.messageReferences[index]?.id === undefined
           && restored[index]?.role === "user" && restored[index].content === pausedTurnMarker));
@@ -2349,6 +2354,7 @@ export class AgentSession {
       let userIndex = messages.length - 1;
       while (userIndex >= 0 && (messages[userIndex]?.role !== "user" || messageReferences[userIndex]?.id === undefined)) userIndex -= 1;
       const selectionEvents = await readSessionEvents(this.recorder.filePath);
+      messages = await this.rehydrateSessionMessages(messages, selectionEvents, 0, messageReferences);
       const origin = selectionEvents.find((event) => event.type === "user_message" && !event.auditOnly && event.runtime?.turnId === runtimeTurnId);
       if (origin?.type === "user_message" && origin.messageId) {
         userIndex = messageReferences.findIndex((reference) => reference?.id === origin.messageId);
@@ -2442,6 +2448,11 @@ export class AgentSession {
       yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection, loadedSkills: prepared.loadedSkills ?? [] } };
       systemPrompt = prepared.systemPrompt;
       messages = prepared.messages;
+      const currentUser = messages.at(-1);
+      const currentUserEvent = events.find(event => event.type === "user_message" && event.messageId === userMessageReference?.id);
+      if (!runOptions.emptyTurn && currentUser?.role === "user" && currentUserEvent?.type === "user_message") {
+        messages[messages.length - 1] = withMessageSentAt(currentUser, currentUserEvent);
+      }
       const selectedHistoryCount = runOptions.emptyTurn ? messages.length : Math.max(0, messages.length - 1);
       messageReferences = [
         ...(selectedHistoryCount ? this.contextMessageReferences.slice(-selectedHistoryCount) : []),
@@ -2481,6 +2492,9 @@ export class AgentSession {
       yield { type: "status", status: "cancelled" };
       yield doneEvent(outcome);
       return;
+    }
+    if (runOptions.continueFrom?.length || runOptions.emptyTurn) {
+      systemPrompt = refreshRuntimeDateContext(systemPrompt, messages, new Date());
     }
     if (!continuing) {
       try {
@@ -3707,7 +3721,7 @@ export class AgentSession {
           }
       }));
       this.unpersistedRelatedUsage = [];
-      const messages = await this.rehydrateSessionAttachments(
+      const messages = await this.rehydrateSessionMessages(
         replay.messages,
         // Snapshots omit events; attachment references remain in the validated JSONL.
         replay === snapshotReplay ? activeSessionEventsForPath(resumeEvents) : replay.events,
@@ -4408,8 +4422,12 @@ export class AgentSession {
     this.recordIntermediateAssistant(queues, previousAssistant);
     pending.splice(0, items.length);
     for (const item of items) {
+      const receipt = await item.persisted;
+      item.message = withMessageSentAt(item.message, receipt);
       const reference = this.recordCanonicalMessage({
         type: "user_message",
+        time: receipt.time,
+        metadata: { sentAtTimeZone: item.message.sentAtTimeZone },
         content: item.input,
         attachments: sessionAttachments(item.attachments),
         skills: this.skillPaths(),
@@ -4679,30 +4697,39 @@ export class AgentSession {
     return native;
   }
 
-  private async rehydrateSessionAttachments(
+  private async rehydrateSessionMessages(
     messages: AgentMessage[],
     events: SessionReplay["events"],
     firstUserEventIndex = 0,
-    references?: readonly SessionMessageReference[]
+    references?: readonly (SessionMessageReference | undefined)[]
   ): Promise<AgentMessage[]> {
-    if (!this.options.attachmentRoot) return messages;
     const userEvents = events.filter((event): event is Extract<typeof event, { type: "user_message" }> => event.type === "user_message" && !event.auditOnly);
+    const userEventById = new Map<string, typeof userEvents[number]>();
+    for (const event of userEvents) {
+      if (event.messageId !== undefined && !userEventById.has(event.messageId)) userEventById.set(event.messageId, event);
+    }
     // 普通回放按模型 user 槽计数：中断标记占位但没有附件，压缩偏移也包含这些槽。
     // retry 的 reference 身份属于其自有投影，不能先按公开活动分支筛掉来源。
     const userSlots = references ? [] : activeSessionEventsForPath(events).filter((event) =>
       event.type === "turn_interrupted" || (event.type === "user_message" && !event.auditOnly));
     let userIndex = firstUserEventIndex;
     const hydrated: AgentMessage[] = [];
-    for (const [index, message] of messages.entries()) {
+    for (const [index, original] of messages.entries()) {
+      let message = original;
       if (message.role !== "user") {
         hydrated.push(message);
         continue;
       }
       const reference = references?.[index];
       const slot = userSlots[userIndex];
-      const event = references ? reference?.id === undefined ? undefined : userEvents.find(item => item.messageId === reference.id)
+      const event = references ? reference?.id === undefined ? undefined : userEventById.get(reference.id)
         : slot?.type === "user_message" ? slot : undefined;
       userIndex += 1;
+      if (event) message = withMessageSentAt(message, event);
+      if (!this.options.attachmentRoot) {
+        hydrated.push(message);
+        continue;
+      }
       const attachments = await Promise.all((event?.attachments ?? []).map(async (attachment) => await readAttachmentFromRoot(this.options.attachmentRoot!, attachment)));
       const files = attachments.filter((attachment): attachment is AgentAttachment => attachment !== undefined);
       this.assertAttachmentsSupported(files);
@@ -4711,7 +4738,7 @@ export class AgentSession {
         continue;
       }
       hydrated.push({
-        role: "user",
+        ...message,
         content: [
           { type: "text", text: message.content },
           ...attachmentMessageParts(files)

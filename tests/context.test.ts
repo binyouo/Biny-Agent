@@ -558,7 +558,7 @@ async function testIncrementalSplitTurnCompaction(): Promise<void> {
     const initialHistory: AgentMessage[] = [];
     for (let index = 0; index < 6; index += 1) {
       initialHistory.push(
-        { role: "user", content: `initial request ${String(index)} ${"detail ".repeat(700)}` },
+        { role: "user", content: `initial request ${String(index)} ${"detail ".repeat(700)}`, sentAt: "2026-10-07T15:30:00.000Z", sentAtTimeZone: "Asia/Shanghai" },
         {
           role: "assistant",
           content: [{
@@ -579,6 +579,8 @@ async function testIncrementalSplitTurnCompaction(): Promise<void> {
     memory.replaceHistory(initialHistory);
     assert.equal((await memory.compact()).compacted, true);
     const initialSummaryRequest = provider.requests.at(-1) ?? [];
+    assert.match(initialSummaryRequest.map(messageText).join("\n"), /\[Message sent-at: 2026-10-07T15:30:00\.000Z; original timezone: Asia\/Shanghai; message time is not event\/due\/completion time\.\]/u,
+      "compaction must receive original send-time anchors before interpreting relative dates");
     const initialStatus = await memory.status();
     assert.equal(
       estimateMessageTokens(initialSummaryRequest) <= initialStatus.budget.maxTokens - (initialStatus.budget.reserveTokens ?? 0),

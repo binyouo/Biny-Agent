@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { withMessageSentAt } from "../src/agent/modelMessages.js";
 
 // Static extraction only: never import AgentSession, replay, Recorder, Runtime,
 // attachment IO, SDKs, or a model. The executed functions are fixed pure projections.
@@ -11,7 +12,7 @@ const tree = parse("src/session/messageTree.ts");
 const replaySource = parse("src/session/replay.ts");
 const agent = source.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "AgentSession");
 assert.ok(agent);
-const hydrateMethod = agent.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && node.name.getText(source) === "rehydrateSessionAttachments");
+const hydrateMethod = agent.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && node.name.getText(source) === "rehydrateSessionMessages");
 assert.ok(hydrateMethod?.body);
 const extract = (file: ts.SourceFile, names: string[]) => names.map(name => {
   const found = file.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name);
@@ -39,10 +40,11 @@ type Event = { type: string; content?: string; messageId?: string; parentMessage
   attachments?: Array<{ path: string }>; auditOnly?: boolean; message?: Message; reason?: string; runtime?: { runId: string } };
 type Prepared = { messages: Message[]; references: Reference[]; offset: number };
 type Host = { options: { attachmentRoot?: string }; assertAttachmentsSupported: (files: unknown[]) => void;
-  rehydrateSessionAttachments: (messages: Message[], events: Event[], offset: number, references?: Reference[]) => Promise<Message[]> };
+  rehydrateSessionMessages: (messages: Message[], events: Event[], offset: number, references?: Reference[]) => Promise<Message[]> };
 const reads: string[] = [];
 let supportChecks = 0;
 const api = runInNewContext(compiled.outputText, {
+  withMessageSentAt,
   readAttachmentFromRoot: async (root: string, reference: { path: string }) => {
     assert.equal(root, "inert-attachment-root");
     reads.push(reference.path);
@@ -70,7 +72,7 @@ async function hydrate(prepared: Prepared, events: Event[], byId = false): Promi
   const before = JSON.stringify([prepared, events]);
   reads.length = 0;
   supportChecks = 0;
-  const result = await host.rehydrateSessionAttachments(prepared.messages, events, prepared.offset, byId ? prepared.references : undefined);
+  const result = await host.rehydrateSessionMessages(prepared.messages, events, prepared.offset, byId ? prepared.references : undefined);
   assert.equal(JSON.stringify([prepared, events]), before, "hydration must not mutate shared messages, references, or facts");
   return normalize(result);
 }
