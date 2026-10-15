@@ -39,6 +39,7 @@ for (const closeReader of [false, true]) {
     let stderr = "";
     let stopped = false;
     let testFailed = false;
+    const cleanupErrors: unknown[] = [];
     let phase = "setup";
     try {
       await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
@@ -146,7 +147,6 @@ for (const closeReader of [false, true]) {
       throw error;
     } finally {
       stopped = true;
-      const cleanupErrors: unknown[] = [];
       const cleanup = async (action: () => Promise<unknown>): Promise<void> => {
         try { await action(); } catch (error) { cleanupErrors.push(error); }
       };
@@ -160,10 +160,10 @@ for (const closeReader of [false, true]) {
       if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
       else process.env.BINY_AGENT_DIR = previousAgentDir;
       await cleanup(async () => rm(root, { recursive: true, force: true }));
-      if (cleanupErrors.length) {
-        if (!testFailed) throw new AggregateError(cleanupErrors, "Host stderr regression cleanup failed");
+      if (testFailed && cleanupErrors.length) {
         try { console.error("Host stderr regression cleanup errors:", cleanupErrors); } catch { /* Keep original failure. */ }
       }
     }
+    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Host stderr regression cleanup failed");
   });
 }
