@@ -79,6 +79,7 @@ async function fixture(context: TestContext) {
   context.after(async () => {
     context.mock.restoreAll();
     await manager.closeAll();
+    await refreshSessionIndex(dataRoot);
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
     await rm(root, { recursive: true, force: true });
