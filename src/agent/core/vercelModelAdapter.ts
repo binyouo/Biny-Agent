@@ -354,7 +354,7 @@ async function collectGenerateResult(
 }
 
 export function toModelMessages(messages: AgentMessage[], nativePatch = false): ModelMessage[] {
-  return boundComputerFrames(messages).map(projectMessageSentAt).map((message) => {
+  return orderHistoricalPatchResults(boundComputerFrames(messages), nativePatch).map(projectMessageSentAt).map((message) => {
     if (message.role === "user") {
       if (typeof message.content === "string") return { role: "user", content: message.content };
       return {
@@ -397,6 +397,23 @@ export function toModelMessages(messages: AgentMessage[], nativePatch = false): 
       }]
     };
   });
+}
+
+/** Historical patch notes become assistant text, so emit them after the whole result batch. */
+function orderHistoricalPatchResults(messages: AgentMessage[], nativePatch: boolean): AgentMessage[] {
+  if (nativePatch) return messages;
+  const ordered: AgentMessage[] = [];
+  const patchResults: AgentMessage[] = [];
+  for (const message of messages) {
+    if (message.role !== "toolResult") {
+      ordered.push(...patchResults);
+      patchResults.length = 0;
+    }
+    if (message.role === "toolResult" && message.toolName === "apply_patch") patchResults.push(message);
+    else ordered.push(message);
+  }
+  ordered.push(...patchResults);
+  return ordered;
 }
 
 function toReadableStream(source: AsyncIterable<LanguageModelV4StreamPart>): ReadableStream<LanguageModelV4StreamPart> {
