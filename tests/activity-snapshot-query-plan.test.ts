@@ -15,6 +15,7 @@ const oldIds: string[] = [];
 const recentIds: string[] = [];
 
 try {
+  await checkPageContracts();
   await store.open(root, root);
   fixture = new DatabaseSync(path.join(root, "agent.sqlite"));
   fixture.exec("PRAGMA foreign_keys = ON");
@@ -52,6 +53,9 @@ try {
   fixture.prepare("UPDATE activity_snapshots SET file_path = NULL WHERE id = ?").run(captures[1]!.snapshotId!);
 
   const baseline = captureSnapshot("no-old-snapshots", 0);
+  assert.deepEqual(store.snapshot(), baseline, "omitted limit still returns the default ten rows");
+  assert.deepEqual(store.snapshot(0), { ...baseline, recentSessions: [] });
+  assert.deepEqual(store.snapshot(1), { ...baseline, recentSessions: baseline.recentSessions.slice(0, 1) });
   const insert = fixture.prepare("INSERT INTO activity_snapshots (id, session_id, captured_at, file_path, bytes) VALUES (?, ?, ?, NULL, 0)");
   let historicalRows = 0;
   for (const perSession of [4, 64]) {
@@ -122,4 +126,67 @@ function captureSnapshot(stage: string, historicalRows: number): ReturnType<Acti
     console.log("activity-snapshot-vdbe", JSON.stringify({ stage, ...row }));
   }
   return snapshot;
+}
+
+async function checkPageContracts(): Promise<void> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-activity-snapshot-page-"));
+  const pageStore = new ActivityStore();
+  try {
+    await pageStore.open(directory, directory);
+    const empty = {
+      sessions: 0, events: 0, fallbackCaptures: 0, storageBytes: 0, recentSessions: [],
+      analysis: { pending: 0, failed: 0, latestFailure: undefined }
+    };
+    assert.deepEqual(pageStore.snapshot(), empty);
+    for (const limit of [0, 1, 10, 50, -1]) assert.deepEqual(pageStore.snapshot(limit), empty);
+
+    const first = pageStore.startSession("2026-10-11T10:00:00.000Z");
+    pageStore.recordEvent({ sessionId: first, occurredAt: "2026-10-11T10:00:01.000Z", eventType: "app_focus", application: "Editor" });
+    pageStore.endSession(first, "2026-10-11T10:01:00.000Z");
+    pageStore.recordAnalysisStatus(first, "skipped", { title: "Reviewed document", description: "Finished the first session" });
+    const active = pageStore.startSession("2026-10-11T11:00:00.000Z");
+    const newest = pageStore.startSession("2026-10-11T12:00:00.000Z");
+    pageStore.endSession(newest, "2026-10-11T12:01:00.000Z");
+    const all = pageStore.snapshot();
+    assert.deepEqual(all, {
+      sessions: 3, events: 1, fallbackCaptures: 0, storageBytes: 0,
+      analysis: { pending: 1, failed: 0, latestFailure: undefined },
+      recentSessions: [
+        { id: newest, startedAt: "2026-10-11T12:00:00.000Z", endedAt: "2026-10-11T12:01:00.000Z", snapshotCount: 0,
+          eventCount: 0, applications: [], analysisTitle: undefined, analysisDescription: undefined },
+        { id: active, startedAt: "2026-10-11T11:00:00.000Z", endedAt: undefined, snapshotCount: 0,
+          eventCount: 0, applications: [], analysisTitle: undefined, analysisDescription: undefined },
+        { id: first, startedAt: "2026-10-11T10:00:00.000Z", endedAt: "2026-10-11T10:01:00.000Z", snapshotCount: 0,
+          eventCount: 1, applications: ["Editor"], analysisTitle: "Reviewed document", analysisDescription: "Finished the first session" }
+      ]
+    });
+    for (const limit of [0, 1, 2, 3, 10, 50, -1]) {
+      assert.deepEqual(pageStore.snapshot(limit), {
+        ...all, recentSessions: limit < 0 ? all.recentSessions : all.recentSessions.slice(0, limit)
+      }, `limit ${limit} changes only the recent page`);
+    }
+
+    // Equal start times have no ID tie-break contract; only membership, order by time and projection are asserted.
+    const tied = pageStore.startSession("2026-10-11T12:00:00.000Z");
+    const complete = pageStore.snapshot(-1);
+    const byId = new Map(complete.recentSessions.map((session) => [session.id, session]));
+    assert.equal(byId.size, 4);
+    assert.deepEqual(new Set(byId.keys()), new Set([first, active, newest, tied]));
+    for (const limit of [1, 2, 3, 10, -1]) {
+      const page = pageStore.snapshot(limit);
+      const rows = page.recentSessions;
+      assert.equal(rows.length, limit < 0 ? 4 : Math.min(limit, 4));
+      assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
+      for (const [index, row] of rows.entries()) {
+        assert.deepEqual(row, byId.get(row.id));
+        if (index > 0) assert.ok(Date.parse(rows[index - 1]!.startedAt) >= Date.parse(row.startedAt));
+      }
+      assert.ok(rows[0]!.id === newest || rows[0]!.id === tied);
+      if (rows.length >= 2) assert.deepEqual(new Set(rows.slice(0, 2).map((row) => row.id)), new Set([newest, tied]));
+      assert.deepEqual({ ...page, recentSessions: [] }, { ...complete, recentSessions: [] });
+    }
+  } finally {
+    await pageStore.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 }
