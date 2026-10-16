@@ -9,6 +9,7 @@ import type { PermissionResult } from "../../../../permission/PermissionManager.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import type { DesktopProject, DesktopRuntimeError, DesktopRuntimeMutation, DesktopRuntimeProjection, DesktopPlanProjection, DesktopSessionLimits, DesktopSessionWriterConflict } from "../../../protocol.js";
+import type { AttachmentReference } from "../../../../attachments/store.js";
 import type { RecipeNotice, SkillExtractionCardState } from "../app/useDesktopEventBridge.js";
 import { hasSubmittedUserMessage } from "../chatModel.js";
 import type { TimelineTurn } from "../sessionTimeline.js";
@@ -36,6 +37,7 @@ export interface PendingPrompt {
   id: string;
   projectId: string;
   text: string;
+  attachments?: AttachmentReference[];
   sessionId?: string;
   messageId: string;
 }
@@ -77,7 +79,7 @@ interface WorkspaceProps {
   onShowMessageReferences(messageId: string): void;
   onAddQuoteToConversation(messageId: string, quote: string): Promise<void>;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
-  onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
+  onRetry(targetMessageId: string, input: string, attachments: AttachmentReference[], idempotencyKey: string): Promise<void>;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
   onRetryRuntime(): Promise<void>;
   writerConflict?: DesktopSessionWriterConflict;
@@ -277,7 +279,7 @@ export function Workspace({
                 onRetry={onRetry}
                 onSwitchVersion={onSwitchVersion}
                 pendingUserMessage={visiblePendingPrompt
-                  ? { id: visiblePendingPrompt.id, messageId: visiblePendingPrompt.messageId, content: visiblePendingPrompt.text }
+                  ? { id: visiblePendingPrompt.id, messageId: visiblePendingPrompt.messageId, content: visiblePendingPrompt.text, attachments: visiblePendingPrompt.attachments }
                   : undefined}
                 runtimeActiveRunId={runtimeActiveRunId}
                 skillDescriptions={skillDescriptions}

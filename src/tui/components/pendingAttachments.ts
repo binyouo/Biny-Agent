@@ -20,7 +20,11 @@ export class PendingAttachmentsComponent implements Component {
   }
 
   render(width: number): string[] {
-    return this.attachments.map((attachment, index) => renderPendingAttachment(attachment, index, width));
+    if (!this.attachments.length) return [];
+    return [
+      ...this.attachments.map((attachment, index) => renderPendingAttachment(attachment, index, width)),
+      theme.fg("muted", truncateToWidth("  空输入时按 Backspace 移除末个附件", width, "…"))
+    ];
   }
 }
 
@@ -33,9 +37,9 @@ export function pendingAttachmentLabel(attachment: Pick<AgentAttachment, "mimeTy
 function renderPendingAttachment(attachment: AgentAttachment, index: number, width: number): string {
   const label = pendingAttachmentLabel(attachment, index);
   const detail = attachment.size === undefined ? "" : ` · ${formatAttachmentSize(attachment.size)}`;
-  const plain = `  ${label}${detail}`;
+  const plain = `  ${label} ${attachment.name}${detail}`;
   if (visibleWidth(plain) > width) return theme.fg("accent", truncateToWidth(plain, width, "…"));
-  return theme.fg("accent", `  ${label}`) + theme.fg("muted", detail);
+  return theme.fg("accent", `  ${label}`) + theme.fg("text", ` ${attachment.name}`) + theme.fg("muted", detail);
 }
 
 function formatAttachmentSize(size: number): string {

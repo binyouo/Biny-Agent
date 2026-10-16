@@ -7,6 +7,7 @@
 import type { ToolInputDisplay } from "../tools/types.js";
 import type { CommandCardData } from "../runtime/commandCard.js";
 import type { PermissionAction } from "../permission/PermissionManager.js";
+import type { AttachmentReference } from "../attachments/store.js";
 
 export type TuiLaunchMode = "new" | "resume-picker" | "resume-session";
 
@@ -19,6 +20,7 @@ interface TranscriptItemBase {
 export interface UserTranscriptItem extends TranscriptItemBase {
   kind: "user";
   content: string;
+  attachments?: AttachmentReference[];
 }
 
 export interface AssistantTranscriptItem extends TranscriptItemBase {

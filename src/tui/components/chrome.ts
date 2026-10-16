@@ -192,6 +192,7 @@ export class StatusIndicatorComponent implements Component {
   private tickTimer: ReturnType<typeof setInterval> | undefined;
   private exitHintTimer: ReturnType<typeof setTimeout> | undefined;
   private queuedCount = 0;
+  private goal: { objective: string; status: string } | undefined;
   private mcpStartup: McpStartupIndicator | undefined;
 
   constructor(ui: TUI) {
@@ -218,6 +219,10 @@ export class StatusIndicatorComponent implements Component {
 
   setQueuedCount(count: number): void {
     this.queuedCount = count;
+  }
+
+  setGoal(goal: { objective: string; status: string } | undefined): void {
+    this.goal = goal;
   }
 
   setMcpStatus(indicator?: McpStartupIndicator): void {
@@ -262,11 +267,17 @@ export class StatusIndicatorComponent implements Component {
         ? message.replace(" · esc to interrupt", ` · ${queue} · esc to interrupt`)
         : [message, queue].filter(Boolean).join(" · ");
     }
+    if (this.goal) {
+      const tone = this.goal.status === "completed" ? "success" : this.goal.status === "active" ? "accent" : "warning";
+      const goal = theme.fg(tone, `Goal ${this.goal.status}`);
+      message = [goal, message].filter(Boolean).join(" · ");
+    }
     if (this.mcpStartup) {
       const indicator = this.mcpStartup.loading ? this.frames[this.frameIndex] ?? "•" : "!";
       const mcp = theme.fg(this.mcpStartup.tone, `${indicator} ${this.mcpStartup.message}`);
-      return [truncateToWidth([message, mcp].filter(Boolean).join(" · "), width, "…")];
+      message = [message, mcp].filter(Boolean).join(" · ");
     }
+    if (this.goal) message = [message, this.goal.objective.replace(/\s+/gu, " ").trim()].filter(Boolean).join(" · ");
     if (!message) return [""];
     const rendered = this.status === "idle" && durationMs !== undefined
       ? statusDivider(message, width)

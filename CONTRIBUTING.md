@@ -50,6 +50,15 @@ pnpm build
 
 单文件检查也可以通过 `node scripts/run-tests.mjs config-test-isolation` 运行；入口为每个测试进程创建并清理独立的 `BINY_AGENT_DIR`。直接运行测试时，配置、会话和凭据目录必须显式指向临时目录。测试及其派生进程会拒绝访问日常 Biny 数据目录，包括指向这些目录的符号链接；系统 Keychain 调用也被拒绝，持久凭据测试须注入独立的存储或命令替身。
 
+标准测试在 CI 中分为 4 个并行任务：测试文件按名称排序后轮流分配，每个任务内仍逐文件执行。`pnpm test` 默认运行完整测试集。可以列出或执行一个标准测试分片：
+
+```bash
+node scripts/run-tests.mjs --standard --shard=1/4 --list
+pnpm test:standard --shard=1/4 --report=test-timings.json
+```
+
+`--shard` 使用从 1 开始的编号；四个分片覆盖完整标准测试集且没有重复。`--report` 记录所选文件、已执行文件的耗时与退出码；测试失败时保留已执行结果并停止该分片。CI 会上传各分片的耗时报告，其他分片继续执行，最终检查要求所有分片通过。`pnpm test:runner` 验证分片覆盖、失败传播和进程目录隔离。
+
 项目依赖和文档检查的范围与限制见[开发规范](docs/DEVELOPMENT.md#可执行检查)。纯文档修改运行 `pnpm check:docs`；维护本地规格时再运行 `pnpm check:docs:local`，不需要运行无关模型任务或构建。Desktop、Web 与 TUI 的视觉和交互由人工验收，交付时提供操作步骤、预期表现与关键边界。
 
 ## 文档维护

@@ -108,7 +108,7 @@ import {
 import { activeRun, isTerminalRunEvent, pendingPermission, runtimeIsBusy, type AgentHostEvent, type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../../../runtime/agentEvents.js";
 import { evaluateTaskRetry } from "../../../runtime/TaskRetryPolicy.js";
 import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "../../../runtime/TaskRunStore.js";
-import { splitAttachmentReferences, withAttachmentReferences } from "../../attachmentReferences.js";
+import { splitAttachmentReferences } from "../../attachmentReferences.js";
 import type {
   DesktopAttachment,
   DesktopChatPersonalizationOverride,
@@ -768,19 +768,19 @@ export class DesktopAgentManager {
     const targetSessionId = snapshot.info.sessionId;
     const project = this.projects.requireProject(projectId);
     recordPerfPhase("desktop.runtimeForPrompt", runtimeForPromptPerfStartedAt, { projectId }, project.path);
-    const prompt = withAttachmentReferences(input, attachments);
+    const prompt = input;
     const attachmentsPerfStartedAt = perfNow();
-    const nativeAttachments = await loadNativeAttachments(project.path, attachments);
+    const agentAttachments = await loadAgentAttachments(project.path, attachments);
     recordPerfPhase("desktop.loadAttachments", attachmentsPerfStartedAt, { count: attachments.length }, project.path);
     // 前端发送占位与持久用户消息共用身份，重复文本、事件先于回执到达也不会误合并。
     const requestIds = { messageId };
     if (runtimeIsBusy(snapshot)) {
       const queued: HostOperationResult<import("../../../runtime/InteractiveAgentRuntime.js").QueuedAgentMessage> = runtime instanceof RuntimeHostClient
-        ? await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", nativeAttachments, requestIds)
+        ? await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", agentAttachments, requestIds)
         : {
             accepted: true,
             revision: snapshot.revision,
-            result: delivery === "steer" ? await runtime.steer(prompt, nativeAttachments, requestIds) : await runtime.enqueue(prompt, nativeAttachments, requestIds)
+            result: delivery === "steer" ? await runtime.steer(prompt, agentAttachments, requestIds) : await runtime.enqueue(prompt, agentAttachments, requestIds)
           };
       if (!queued.accepted || queued.result === undefined) {
         throw errorFromHostOperation(queued);
@@ -799,7 +799,7 @@ export class DesktopAgentManager {
       const accepted = await runtime.submitRunForSession(
         targetSessionId,
         prompt,
-        nativeAttachments,
+        agentAttachments,
         requestIds,
         promptContext,
         capabilitySelection
@@ -814,7 +814,7 @@ export class DesktopAgentManager {
         messageId: accepted.result.messageId
       };
     }
-    const submitted = runtime.submitPrompt(prompt, nativeAttachments, { ...requestIds, allowUserInput: true }, promptContext, capabilitySelection);
+    const submitted = runtime.submitPrompt(prompt, agentAttachments, { ...requestIds, allowUserInput: true }, promptContext, capabilitySelection);
     if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
     if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
     this.observeRunCompletion(projectId, submitted.completion);
@@ -983,16 +983,16 @@ export class DesktopAgentManager {
           mimeType: attachment.mimeType,
           size: attachment.size ?? 0
         }));
-      const prompt = attachments.length ? withAttachmentReferences(input, attachments) : input;
-      const nativeAttachments = await loadNativeAttachments(project.path, retryAttachments);
+      const prompt = splitAttachmentReferences(input).text;
+      const agentAttachments = await loadAgentAttachments(project.path, retryAttachments);
       const requestIds = { retryOfMessageId: targetMessageId };
       if (runtime instanceof RuntimeHostClient) {
-        const accepted = await runtime.submitRunForSession(sessionId, prompt, nativeAttachments, requestIds);
+        const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
         if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
         await this.state.setSelectedSession(projectId, sessionId);
         return { sessionId, runId: accepted.result.runId, messageId: accepted.result.messageId };
       }
-      const submitted = runtime.submitPrompt(prompt, nativeAttachments, { ...requestIds, allowUserInput: true });
+      const submitted = runtime.submitPrompt(prompt, agentAttachments, { ...requestIds, allowUserInput: true });
       await this.state.setSelectedSession(projectId, sessionId);
       this.observeRunCompletion(projectId, submitted.completion);
       return { sessionId, runId: submitted.runId, messageId: submitted.messageId };
@@ -1032,14 +1032,14 @@ export class DesktopAgentManager {
     const project = this.projects.requireProject(projectId);
     const targetMessageId = await this.projects.sessionUserMessageIdAtIndex(project, sessionId, userMessageIndex);
     this.runtimeErrors.delete(projectId);
-    const prompt = withAttachmentReferences(input, attachments);
-    const nativeAttachments = await loadNativeAttachments(project.path, attachments);
+    const prompt = input;
+    const agentAttachments = await loadAgentAttachments(project.path, attachments);
     const requestIds = {
       retryOfMessageId: targetMessageId,
       replaceUserMessageId: targetMessageId
     };
     if (runtime instanceof RuntimeHostClient) {
-      const accepted = await runtime.submitRunForSession(sessionId, prompt, nativeAttachments, requestIds);
+      const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
       if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
       await this.state.setSelectedSession(projectId, sessionId);
       return {
@@ -1048,7 +1048,7 @@ export class DesktopAgentManager {
         messageId: accepted.result.messageId
       };
     }
-    const submitted = runtime.submitPrompt(prompt, nativeAttachments, { ...requestIds, allowUserInput: true });
+    const submitted = runtime.submitPrompt(prompt, agentAttachments, { ...requestIds, allowUserInput: true });
     await this.state.setSelectedSession(projectId, sessionId);
     this.observeRunCompletion(projectId, submitted.completion);
     return {
@@ -4008,19 +4008,18 @@ function compactJsonError(body: string): string | undefined {
   return trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed || undefined;
 }
 
-async function loadNativeAttachments(persistenceRoot: string, attachments: DesktopAttachment[]): Promise<AgentAttachment[]> {
-  const native: AgentAttachment[] = [];
+async function loadAgentAttachments(persistenceRoot: string, attachments: DesktopAttachment[]): Promise<AgentAttachment[]> {
+  const loadedAttachments: AgentAttachment[] = [];
   for (const attachment of attachments) {
-    if (!attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("audio/")) continue;
     try {
       const loaded = await readAttachment(persistenceRoot, attachment);
       if (!loaded) throw new Error("attachment_file_missing_or_invalid");
-      native.push(loaded);
+      loadedAttachments.push(loaded);
     } catch (cause) {
       throw new Error(`附件文件不可读取：${attachment.name}。请重新添加附件后重试。`, { cause });
     }
   }
-  return native;
+  return loadedAttachments;
 }
 
 /** 选择只在回合入口读取；连接、凭据和其它共享资源仍要求空闲。 */

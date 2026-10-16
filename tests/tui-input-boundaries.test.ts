@@ -98,6 +98,20 @@ async function fixture(t: TestContext, mode: "local" | "remote" = "local", delay
 }
 
 for (const mode of ["local", "remote"] as const) {
+  test(`${mode}: Backspace removes the latest pending attachment when the input is empty`, async (t) => {
+    const { app, editor } = await fixture(t, mode);
+    app["setPendingAttachments"]([image("first.png"), image("last.png")]);
+    editor.setText("");
+
+    assert.deepEqual(app["handleGlobalKey"]("\x7f"), { consume: true });
+    assert.deepEqual(app["pendingAttachments"], [image("first.png")]);
+    assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "notification" && item.content === "已移除附件：last.png"));
+
+    editor.setText("keep draft");
+    assert.equal(app["handleGlobalKey"]("\x7f"), undefined, "Backspace with draft text stays with the Editor");
+    assert.deepEqual(app["pendingAttachments"], [image("first.png")]);
+  });
+
   test(`${mode}: steer expands a long bracketed paste before queueing and recording history`, { timeout: 5_000 }, async (t) => {
     const { app, editor, admission, started, calls, history } = await fixture(t, mode);
     const pasted = Array.from({ length: 11 }, (_, index) => `第${index + 1}行 👩🏽‍💻 cafe\u0301`).join("\n");
@@ -175,13 +189,13 @@ for (const mode of ["local", "remote"] as const) {
     await started.promise;
     admission.reject(new Error("not accepted"));
     await steering;
-    assert.equal(calls[0]?.input, original.trim());
+    assert.equal(calls[0]?.input, original);
     assert.equal(editor.getExpandedText(), original);
     assert.deepEqual(app["pendingAttachments"], attachments);
     assert.deepEqual(history, []);
   });
 
-  test(`${mode}: empty steer is inert and image-only steer retains its default prompt`, { timeout: 5_000 }, async (t) => {
+  test(`${mode}: empty steer is inert and image-only steer preserves an empty user message`, { timeout: 5_000 }, async (t) => {
     const { app, editor, admission, started, calls } = await fixture(t, mode);
     editor.setText("  ");
     await app["steerCurrentInput"]();
@@ -192,9 +206,22 @@ for (const mode of ["local", "remote"] as const) {
     await started.promise;
     admission.resolve(accepted);
     await steering;
-    assert.deepEqual(calls, [{ input: "请分析这个附件。", attachments: [image("image-only.png")] }]);
+    assert.deepEqual(calls, [{ input: "  ", attachments: [image("image-only.png")] }]);
     assert.equal(editor.getText(), "");
     assert.deepEqual(app["pendingAttachments"], []);
+  });
+
+  test(`${mode}: text and image are submitted separately without generated attachment instructions`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started, calls } = await fixture(t, mode);
+    const original = "看一下这张图。";
+    editor.setText(original);
+    app["setPendingAttachments"]([image("screen.png")]);
+    const steering = app["steerCurrentInput"]();
+    await started.promise;
+    admission.resolve(accepted);
+    await steering;
+
+    assert.deepEqual(calls, [{ input: original, attachments: [image("screen.png")] }]);
   });
 
   test(`${mode}: undo cannot resurrect a submitted paste during admission or after success`, { timeout: 5_000 }, async (t) => {

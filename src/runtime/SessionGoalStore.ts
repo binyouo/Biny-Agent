@@ -55,20 +55,34 @@ export class SessionGoalConflictError extends Error {
 
 /** 会话目标与 Graph Goal 分开定义状态；两者共用同一 authority 的事务与事实事件。 */
 export class SessionGoalStore {
+  private static readonly subscriptions = new Map<string, Set<(sessionId: string) => void>>();
   private closed = false;
-  private readonly listeners = new Set<() => void>();
+  private readonly listeners = new Set<(sessionId: string) => void>();
+  private readonly subscriptionKey: string;
 
-  private constructor(private readonly database: DatabaseSync, private readonly authority: RuntimeEventAuthority) {}
+  private constructor(private readonly database: DatabaseSync, private readonly authority: RuntimeEventAuthority) {
+    this.subscriptionKey = `${authority.databasePath}\0${authority.workspaceId}`;
+  }
 
   static async open(persistenceRoot: string, authority: RuntimeEventAuthority): Promise<SessionGoalStore> {
     void persistenceRoot;
     return new SessionGoalStore(authority.databaseHandle(), authority);
   }
 
-  subscribe(listener: () => void): () => void {
+  subscribe(listener: (sessionId: string) => void): () => void {
     this.assertOpen();
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    const callback = (sessionId: string): void => listener(sessionId);
+    const shared = SessionGoalStore.subscriptions.get(this.subscriptionKey) ?? new Set<(sessionId: string) => void>();
+    SessionGoalStore.subscriptions.set(this.subscriptionKey, shared);
+    shared.add(callback);
+    this.listeners.add(callback);
+    return () => {
+      this.listeners.delete(callback);
+      shared.delete(callback);
+      if (!shared.size && SessionGoalStore.subscriptions.get(this.subscriptionKey) === shared) {
+        SessionGoalStore.subscriptions.delete(this.subscriptionKey);
+      }
+    };
   }
 
   get(sessionId: string): SessionGoalRecord | undefined {
@@ -193,6 +207,9 @@ export class SessionGoalStore {
 
   close(): void {
     this.closed = true;
+    const shared = SessionGoalStore.subscriptions.get(this.subscriptionKey);
+    for (const listener of this.listeners) shared?.delete(listener);
+    if (!shared?.size) SessionGoalStore.subscriptions.delete(this.subscriptionKey);
     this.listeners.clear();
   }
 
@@ -246,7 +263,10 @@ export class SessionGoalStore {
             goal.evidence === undefined ? null : JSON.stringify(goal.evidence), goal.createdAt, goal.updatedAt);
       }
     });
-    for (const listener of this.listeners) queueMicrotask(listener);
+    const listeners = SessionGoalStore.subscriptions.get(this.subscriptionKey);
+    for (const listener of listeners ?? []) queueMicrotask(() => {
+      if (listeners?.has(listener)) listener(identity.sessionId);
+    });
     return goal;
   }
 

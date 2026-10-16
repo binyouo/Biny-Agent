@@ -52,7 +52,7 @@ import {
 } from "./navigationHistory.js";
 import { collectSessionChanges } from "./sessionChanges.js";
 import { listChangedFiles, type TimelineTurn } from "./sessionTimeline.js";
-import { splitAttachmentReferences, withAttachmentReferences } from "../../attachmentReferences.js";
+import { splitAttachmentReferences } from "../../attachmentReferences.js";
 import { desktopApiVersionMismatchMessage, errorMessage, readDesktopSession } from "./app/desktopApi.js";
 import {
   applyProjectOrder,
@@ -1131,7 +1131,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         projectId: pendingProjectId,
         sessionId: selectedRef.current,
         messageId: pendingId,
-        text: withAttachmentReferences(input, attachments)
+        text: input,
+        attachments
       });
     }
     try {
@@ -1238,18 +1239,20 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setDocument({ session: summary, events: prefixEvents, liveEvents: [] });
   }, [commitNavigation, refreshRuntimeFailure, workspace?.sessions]);
 
+  const [editingMessage, setEditingMessage] = useState<{ turnId: string; userMessageIndex: number; value: string; nonce: number; attachments: NonNullable<TimelineTurn["userAttachments"]> }>();
   const editUserMessage = useCallback(async (input: string, userMessageIndex: number, idempotencyKey?: string): Promise<void> => {
     const sessionId = selectedRef.current;
     if (!sessionId) {
       throw new Error("当前消息还没有可编辑的会话。");
     }
-    await editPrompt(input, [], sessionId, userMessageIndex, idempotencyKey);
-  }, [editPrompt]);
+    const current = editingMessage;
+    const attachments = current?.userMessageIndex === userMessageIndex ? current.attachments : [];
+    await editPrompt(input, attachments.map((attachment) => ({ ...attachment, size: attachment.size ?? 0 })), sessionId, userMessageIndex, idempotencyKey);
+  }, [editPrompt, editingMessage]);
 
   // 编辑历史消息：点「编辑」把文本回填到底部输入框，提交后原位替换并重新生成。
   // editingMessage 是编辑态的唯一事实源；editInFlight 只驱动时间线的乐观投影，
   // 在替换回合真正出现在时间线里之前保持置位，避免旧消息闪回。
-  const [editingMessage, setEditingMessage] = useState<{ turnId: string; userMessageIndex: number; value: string; nonce: number }>();
   const [editInFlight, setEditInFlight] = useState<{ turnId: string; user: string; userMessageIndex?: number }>();
   const requestEditMessage = useCallback((turn: TimelineTurn): void => {
     if (turn.userMessageIndex === undefined) return;
@@ -1258,7 +1261,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       turnId: turn.id,
       userMessageIndex: turn.userMessageIndex,
       value: splitAttachmentReferences(turn.user).text,
-      nonce: Date.now()
+      nonce: Date.now(),
+      attachments: turn.userAttachments ?? []
     });
     setFocusToken((value) => value + 1);
   }, []);
@@ -1518,7 +1522,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [pendingPrompt, selectedSessionId, turns, workspace]);
   // 以下三个回调会一路传到 MessageTimeline 的 Turn（React.memo）；内联箭头会让引用每帧变化、
   // memo 失效，所以这里用 useCallback 固定下来，配合轮次引用稳定让流式期间只重渲染变化的轮次。
-  const retryTimelinePrompt = useCallback(async (targetMessageId: string, input: string, idempotencyKey: string): Promise<void> => {
+  const retryTimelinePrompt = useCallback(async (targetMessageId: string, input: string, attachments: import("../../attachmentReferences.js").AttachmentReference[], idempotencyKey: string): Promise<void> => {
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (!projectId || !sessionId) {
@@ -1529,7 +1533,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const retry = window.biny.retryPrompt;
     if (typeof retry !== "function") throw new Error(desktopApiVersionMismatchMessage);
     try {
-      const receipt = await retry(projectId, sessionId, targetMessageId, input, [], idempotencyKey);
+      const receipt = await retry(projectId, sessionId, targetMessageId, input,
+        attachments.map((attachment) => ({ ...attachment, size: attachment.size ?? 0 })), idempotencyKey);
       setSelectedSessionId(receipt.sessionId);
     } catch (error) {
       if (projectRef.current === projectId && selectedRef.current === sessionId) {

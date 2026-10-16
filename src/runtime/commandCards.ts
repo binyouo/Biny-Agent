@@ -12,6 +12,12 @@ import type { ExtensionStatus } from "../extensions/report.js";
 import type { McpServerStatus } from "../extensions/mcp.js";
 import type { SubagentDefinition } from "../extensions/agents.js";
 import type { SubagentTaskSnapshot } from "./SubagentTaskManager.js";
+import type { SessionGoalRecord } from "./SessionGoalStore.js";
+import type { TaskRunWithAttempts } from "./TaskRunStore.js";
+import type { AutomationRecord } from "./AutomationScheduler.js";
+import type { GraphRecord } from "./GoalGraphStore.js";
+import type { RuntimeEventPage } from "./RuntimeAuthority.js";
+import type { CapabilityRegistration } from "./CapabilityStore.js";
 import { contextComponentLabel, formatCount } from "./statusReport.js";
 import type {
   CardValueStyle,
@@ -49,10 +55,10 @@ export function buildStatusCard(
       {
         rows: [
           row("Model", info.reasoningLabel ? `${info.modelLabel} (${info.reasoningLabel})` : info.modelLabel),
-          row("Provider", info.provider),
-          row("Directory", info.workspaceRoot),
+          detailRow("Provider", info.provider),
+          detailRow("Directory", info.workspaceRoot),
           row("Permissions", permissionMode),
-          row("Session", info.sessionId, "dim")
+          { label: "Session", value: info.sessionId, tone: "dim", detail: true }
         ]
       },
       {
@@ -76,6 +82,7 @@ export function buildStatusCard(
           },
           {
             label: "Input budget",
+            detail: true,
             value: [
               { tokens: contextUsed },
               { text: " / " },
@@ -84,9 +91,9 @@ export function buildStatusCard(
             ]
           },
           ...(budget.maxOutputTokens !== undefined
-            ? [row("Output limit", `${formatCount(budget.maxOutputTokens)} tokens`)]
+            ? [detailRow("Output limit", `${formatCount(budget.maxOutputTokens)} tokens`)]
             : []),
-          row("Auto compacted", budget.autoCompacted ? "yes" : "no"),
+          detailRow("Auto compacted", budget.autoCompacted ? "yes" : "no"),
           ...contextDetailRows(context)
         ]
       },
@@ -165,15 +172,16 @@ export function buildMcpCard(servers: readonly McpServerStatus[]): CommandCardDa
     })
     : [row("MCP", "no servers configured", "dim")];
 
+  const errors: CommandCardRow[] = [];
   const details: CommandCardRow[] = [];
   for (const server of servers) {
     if (!server.enabled) continue;
-    if (server.lastError) details.push({ label: server.name, value: { text: `${server.lastError} · /mcp reconnect ${server.name}`, style: "error" } });
+    if (server.lastError) errors.push({ label: server.name, value: { text: `${server.lastError} · /mcp reconnect ${server.name}`, style: "error" } });
     if (server.toolNames.length) {
       details.push({ label: "", value: { text: `tools: ${server.toolNames.join(", ")}`, style: "dim" }, detail: true });
     }
   }
-  return { title: "MCP", sections: [{ rows: [...rows, ...details] }] };
+  return { title: "MCP", sections: [{ rows: [...errors, ...rows, ...details] }] };
 }
 
 export function buildSkillsCard(
@@ -214,17 +222,18 @@ export function buildSubagentTasksCard(tasks: readonly SubagentTaskSnapshot[]): 
   const rows: CommandCardRow[] = [];
   for (const task of [...tasks].reverse()) {
     rows.push({
-      label: task.taskId,
+      label: "Task",
       value: `${task.status}${task.agent ? ` · agent ${task.agent}` : ""}`,
       tone: subagentStatusTone(task.status)
     });
-    rows.push({ label: "", value: { text: singleLine(task.task, 240), style: "dim" }, detail: true });
+    rows.push(row("Objective", task.task));
+    rows.push(detailRow("ID", task.taskId));
     rows.push({
       label: "",
       value: { text: `parent ${task.parentRunId} · deadline ${task.deadline}`, style: "dim" },
       detail: true
     });
-    if (task.error) rows.push({ label: "", value: { text: task.error, style: "error" }, detail: true });
+    if (task.error) rows.push(row("Error", task.error, "error"));
   }
   return { title: "Subagent", sections: [{ rows }] };
 }
@@ -238,20 +247,85 @@ export function buildSubagentAgentsCard(definitions: readonly SubagentDefinition
   }
   const rows: CommandCardRow[] = [];
   for (const definition of definitions) {
-    const extras = [
-      definition.scope,
-      definition.model ? `model ${definition.model}` : "",
-      definition.tools ? `tools ${definition.tools.join("/")}` : ""
-    ].filter(Boolean).join(" · ");
     rows.push({
       label: definition.name,
-      value: extras ? `${extras} · ${definition.path}` : definition.path
+      value: definition.description || "No description"
     });
-    if (definition.description) {
-      rows.push({ label: "", value: { text: definition.description, style: "muted" }, detail: true });
-    }
+    rows.push(detailRow("Source", `${definition.scope} · ${definition.path}`));
+    if (definition.model) rows.push(detailRow("Model", definition.model));
+    if (definition.tools) rows.push(detailRow("Tools", definition.tools.join(", ")));
   }
   return { title: "Subagent agents", sections: [{ rows }] };
+}
+
+export function buildTextCard(title: string, content: string): CommandCardData {
+  return {
+    title,
+    sections: [{ rows: content.split(/\r?\n/u).map((value, index) => ({ label: "", value, detail: index >= 4 })) }]
+  };
+}
+
+export function buildGoalCard(goal: SessionGoalRecord | undefined): CommandCardData {
+  return {
+    title: "Goal",
+    sections: [{ rows: goal ? [
+      row("Status", goal.status, goal.status === "completed" ? "success" : goal.status === "active" ? "accent" : "warning"),
+      row("Objective", goal.objective),
+      detailRow("Usage", goal.usageKnown ? `${goal.tokensUsed} tokens` : "Token usage incomplete"),
+      ...(goal.tokenBudget === undefined ? [] : [detailRow("Budget", `${goal.tokenBudget} tokens`)])
+    ] : [row("Goal", "No goal set. Use /goal <objective> to start.", "muted")] }]
+  };
+}
+
+export function buildTasksCard(page: { tasks: TaskRunWithAttempts[]; hasMore: boolean }): CommandCardData {
+  const rows = page.tasks.flatMap((task): CommandCardRow[] => {
+    const definition = typeof task.task === "object" && task.task !== null ? task.task as Record<string, unknown> : undefined;
+    const objective = typeof task.task === "string" ? task.task
+      : typeof definition?.prompt === "string" ? definition.prompt
+        : typeof definition?.title === "string" ? definition.title : "Task";
+    const failure = task.attempts.at(-1)?.failure;
+    const message = typeof failure === "object" && failure !== null && "message" in failure ? String(failure.message) : undefined;
+    return [row("Status", task.status), row("Objective", objective),
+      ...(message ? [row("Error", message, "error")] : []),
+      detailRow("ID", task.taskRunId), detailRow("Attempts", String(task.attempts.length))];
+  });
+  if (!rows.length) rows.push(row("Tasks", "No tasks found.", "muted"));
+  if (page.hasMore) rows.push(row("More", "More tasks available; filter with /tasks <status>.", "muted"));
+  return { title: "Tasks", sections: [{ rows }] };
+}
+
+export function buildAutomationsCard(automations: readonly AutomationRecord[]): CommandCardData {
+  const rows = automations.flatMap((automation): CommandCardRow[] => [
+    row(automation.name, `${automation.status} · ${automation.triggerType}`),
+    ...(automation.nextFireAt ? [row("Next run", automation.nextFireAt)] : []),
+    detailRow("ID", automation.automationId), detailRow("Prompt", automation.executionTemplate.prompt),
+    detailRow("Runs", `${automation.fireCount} · ${automation.consecutiveFailures} consecutive failures`)
+  ]);
+  return { title: "Automation", sections: [{ rows: rows.length ? rows : [row("Automation", "No automations configured.", "muted")] }] };
+}
+
+export function buildGraphCard(graph: GraphRecord): CommandCardData {
+  return { title: "Graph", sections: [{ rows: [
+    row("Status", graph.status), row("Progress", `${graph.nodes.filter((node) => node.status === "completed").length}/${graph.nodes.length} nodes completed`),
+    ...graph.nodes.map((node) => row(node.nodeKey, node.status)),
+    detailRow("ID", graph.graphId), detailRow("Mode", graph.mode)
+  ] }] };
+}
+
+export function buildGraphEventsCard(page: RuntimeEventPage): CommandCardData {
+  return { title: "Graph events", sections: [{ rows: [
+    ...page.events.map((event) => row(event.eventType, event.createdAt)),
+    ...(page.events.length ? [] : [row("Events", "No events found.", "muted")]),
+    ...(page.hasMore ? [row("More", `Continue with --cursor ${page.nextCursor}`)] : [])
+  ] }] };
+}
+
+export function buildCapabilitiesCard(capabilities: readonly CapabilityRegistration[]): CommandCardData {
+  const rows = capabilities.flatMap((capability): CommandCardRow[] => [
+    row(capability.capabilityName, `${capability.status} · ${capability.ownerType}`),
+    detailRow("ID", capability.registrationId), detailRow("Owner", capability.ownerId)
+  ]);
+  return { title: "Capabilities", sections: [{ rows: rows.length ? rows : [row("Capabilities", "No capabilities registered.", "muted")] }] };
 }
 
 // ---------------------------------------------------------------- 行构建
@@ -402,10 +476,4 @@ function subagentStatusTone(status: string): CommandCardRow["tone"] {
   if (status === "running" || status === "verifying" || status === "queued" || status === "created" || status === "blocked" || status === "needs_approval") return "accent";
   if (status === "incomplete" || status === "cancelled") return "warning";
   return undefined;
-}
-
-/** 压成单行并截断：任务描述可能很长且带换行，直接输出会打乱卡片结构。 */
-function singleLine(value: string, maxLength: number): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1)}…`;
 }

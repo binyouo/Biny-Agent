@@ -29,6 +29,8 @@ export interface TranscriptItemComponent extends Container {
 export class UserMessageComponent extends Container implements TranscriptItemComponent {
   readonly itemId: string;
   private readonly body: Markdown;
+  private readonly box: Box;
+  private attachmentDisplay: Text | undefined;
 
   constructor(item: Extract<TranscriptItem, { kind: "user" }>) {
     super();
@@ -36,15 +38,35 @@ export class UserMessageComponent extends Container implements TranscriptItemCom
     this.body = new Markdown(item.content, 0, 0, markdownTheme(), {
       color: (text) => theme.fg("userMessageText", text)
     }, { preserveOrderedListMarkers: true, preserveBackslashEscapes: true });
-    const box = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
-    box.addChild(this.body);
+    this.box = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
+    this.box.addChild(this.body);
+    this.updateAttachments(item.attachments);
     this.addChild(new Spacer(1));
-    this.addChild(box);
+    this.addChild(this.box);
   }
 
   update(item: TranscriptItem): void {
     if (item.kind !== "user") return;
     this.body.setText(item.content);
+    this.updateAttachments(item.attachments);
+  }
+
+  private updateAttachments(attachments: Extract<TranscriptItem, { kind: "user" }>["attachments"]): void {
+    if (!attachments?.length) {
+      if (this.attachmentDisplay) this.box.removeChild(this.attachmentDisplay);
+      this.attachmentDisplay = undefined;
+      return;
+    }
+    const labels = attachments.map((attachment, index) =>
+      `${attachment.mimeType.startsWith("image/") ? "[Image" : "[Attachment"} #${String(index + 1)}] ${attachment.name}`
+    );
+    const text = labels.map((label) => theme.fg("accent", label)).join("  ");
+    if (!this.attachmentDisplay) {
+      this.attachmentDisplay = new Text(text, 1, 0);
+      this.box.addChild(this.attachmentDisplay);
+    } else {
+      this.attachmentDisplay.setText(text);
+    }
   }
 }
 

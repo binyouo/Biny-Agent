@@ -7,7 +7,6 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { withCliAbortSignal } from "../src/cli/sigint.js";
-import { withAttachmentReferences } from "../src/attachments/references.js";
 
 interface Turn { status: string; stopReason: string; steps: number; output: string }
 interface Runtime {
@@ -33,7 +32,7 @@ const compiled = ts.transpileModule(`${source}\nexport { runAttachedCommand as r
 });
 assert.equal(compiled.diagnostics?.filter(item => item.category === ts.DiagnosticCategory.Error).length ?? 0, 0);
 const allowedImports = new Set([
-  "node:fs", "node:path", "../../runtime/taskVerification.js", "../../attachments/references.js",
+  "node:fs", "node:path", "../../runtime/taskVerification.js",
   "../../attachments/store.js", "../../config/store.js", "../../runtime/CommandRuntime.js",
   "../../runtime/ExecutionService.js", "../../runtime/SessionLease.js", "../../runtime/RuntimeHost.js",
   "../../workspace/resolvePath.js", "../sigint.js", "../runDeadline.js"
@@ -64,7 +63,6 @@ for (const rpcMode of ["accepted", "not-active", "rejected", "no-sigint"] as con
         require: (specifier: string) => {
           assert.ok(allowedImports.has(specifier), `unreviewed dependency: ${specifier}`);
           if (specifier === "node:path") return path;
-          if (specifier === "../../attachments/references.js") return { withAttachmentReferences };
           if (specifier === "../sigint.js") return { withCliAbortSignal: <T>(execute: (signal: AbortSignal) => Promise<T>) =>
             withCliAbortSignal(async signal => {
               const remove = signal.removeEventListener.bind(signal);
@@ -77,10 +75,12 @@ for (const rpcMode of ["accepted", "not-active", "rejected", "no-sigint"] as con
       }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as Loaded;
       let closes = 0; let usageReads = 0;
       const cancellations: unknown[][] = [];
+      const attachment = { name: "screen.png", mimeType: "image/png", path: "@attachments/screen.png", size: 3, data: "cG5n" };
       const runtime: Runtime = {
         ensureSession: async input => { assert.deepEqual(JSON.parse(JSON.stringify(input)), { isolation: "shared", writeIntent: true }); return { sessionId: "submitted-session" }; },
         submitPromptForSession: (sessionId, input, attachments) => {
-          assert.equal(sessionId, "submitted-session"); assert.equal(input, "do work"); assert.deepEqual(attachments, []);
+          assert.equal(sessionId, "submitted-session"); assert.equal(input, "do work");
+          assert.equal(attachments.length, 1); assert.equal((attachments[0] as typeof attachment).path, attachment.path);
           return { runId: "submitted-run", completion: completion.promise };
         },
         cancelRunRequest: (...args) => { cancellations.push(args); return rpc.promise; },
@@ -88,7 +88,7 @@ for (const rpcMode of ["accepted", "not-active", "rejected", "no-sigint"] as con
         usage: async () => { usageReads++; return { summary: {} }; },
         close: async () => { closes++; }
       };
-      const run = loaded.runAttachedForTest(runtime, "do work", { json: true }, []);
+      const run = loaded.runAttachedForTest(runtime, "do work", { json: true }, [attachment]);
       let settlement: { result?: unknown; error?: unknown } | undefined;
       const currentSettlement = () => settlement;
       const observedRun = run.then(result => { settlement = { result }; }, error => { settlement = { error }; });

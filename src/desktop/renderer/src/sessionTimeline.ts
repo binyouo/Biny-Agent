@@ -20,6 +20,7 @@ import { activeSessionMessageIds, activeSessionEventsForPath, sessionMessageMeta
 import type { SessionEvent } from "../../../session/recorder.js";
 import type { ModelRequestMetrics } from "../../../agent/core/types.js";
 import type { SessionUsage } from "../../../session/metadata.js";
+import type { AttachmentReference } from "../../../attachments/store.js";
 import { publicAssistantMessage, publicUserMessage } from "../../../session/publicMessage.js";
 import { isUndeliveredMessageNotice, savedQueuedMessages, type SavedQueuedMessage } from "../../../session/queuedMessages.js";
 
@@ -109,6 +110,7 @@ export interface TimelineUserStep {
   kind: "user";
   id: string;
   content: string;
+  attachments?: AttachmentReference[];
   delivery: "steer" | "queue";
 }
 
@@ -130,6 +132,7 @@ export interface TimelineModelRequest extends ModelRequestMetrics {
 
 export interface TimelineTurn {
   savedMessages?: SavedQueuedMessage[];
+  userAttachments?: AttachmentReference[];
   recoveryOnly?: boolean;
   /** 已落盘的主回合模型请求；旧记录缺失时不推算。 */
   modelRequests?: TimelineModelRequest[];
@@ -399,6 +402,7 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
           anonymousIndex += 1;
           current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
           current.user = publicUserMessage(event.content);
+          current.userAttachments = event.type === "user_message" ? event.attachments : undefined;
           current.userMessageIndex = userMessageIndex;
           current.userMessageId = event.messageId;
           current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
@@ -603,6 +607,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       anonymousIndex += 1;
       current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
       current.user = publicUserMessage(event.content);
+      current.userAttachments = event.type === "user_message" ? event.attachments : undefined;
       current.userMessageIndex = event.messageId === undefined ? activeUserIndex : userIndexes.get(event.messageId) ?? activeUserIndex;
       current.userMessageId = event.messageId;
       current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
@@ -899,10 +904,12 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
           kind: "user",
           id: `${event.runId}:user:${event.messageId}`,
           content,
+          attachments: event.attachments,
           delivery: event.delivery
         });
       } else {
         turn.user = content;
+        turn.userAttachments = event.attachments;
         turn.userMessageIndex = userMessageIndex;
         turn.userMessageId = event.messageId;
       }
