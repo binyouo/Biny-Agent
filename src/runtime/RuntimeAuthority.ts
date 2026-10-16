@@ -14,7 +14,7 @@ import { readSessionEvents, readSessionEventsForBackfill } from "../session/even
 import type { SessionEvent } from "../session/recorder.js";
 import { assertRuntimeEventSequence, validateRuntimeEventStream, type RuntimeEventIdentity, type RuntimeEventSink } from "../session/runtimeEvent.js";
 
-const schemaVersion = 13;
+const schemaVersion = 14;
 const busyTimeoutMs = 5_000;
 const taskAttemptIndexName = "task_attempts_task_run_idx";
 const defaultPageSize = 100;
@@ -898,6 +898,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             fire_id TEXT PRIMARY KEY,
             automation_id TEXT NOT NULL REFERENCES automations(automation_id) ON DELETE CASCADE,
             scheduled_at TEXT NOT NULL,
+            retry_at TEXT,
             claim_token TEXT,
             claimed_at TEXT,
             status TEXT NOT NULL,
@@ -1185,6 +1186,15 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
           this.database.exec("DROP TABLE IF EXISTS goals");
           if (this.hasColumn("graphs", "goal_id")) this.database.exec("ALTER TABLE graphs DROP COLUMN goal_id");
           this.database.exec("PRAGMA user_version = 13");
+        });
+      }
+      if (currentRevision < 14) {
+        this.transaction(() => {
+          // Legacy deferred rows keep their stored deadline; original identity is unrecoverable.
+          if (!this.hasColumn("automation_pending_fires", "retry_at")) {
+            this.database.exec("ALTER TABLE automation_pending_fires ADD COLUMN retry_at TEXT");
+          }
+          this.database.exec("PRAGMA user_version = 14");
         });
       }
     }

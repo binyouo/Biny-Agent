@@ -111,7 +111,7 @@ test("schema 12 upgrade removes workspace goal data and linkage while preserving
     authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
     const migratedGraphs = await GoalGraphStore.open(root, authority);
     const migratedGoals = await SessionGoalStore.open(root, authority);
-    assert.equal(authority.schemaRevision(), 13);
+    assert.equal(authority.schemaRevision(), 14);
     assert.equal(authority.databaseHandle().prepare("SELECT name FROM sqlite_master WHERE name = 'goals'").get(), undefined);
     const columns = authority.databaseHandle().prepare("PRAGMA table_info(graphs)").all() as Array<{ name: string }>;
     assert.equal(columns.some(column => column.name === "goal_id"), false);
