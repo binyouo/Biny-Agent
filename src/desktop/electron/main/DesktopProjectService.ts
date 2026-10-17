@@ -748,7 +748,7 @@ export class DesktopProjectService {
     targetSessionId: string
   ): Promise<void> {
     await updateSessionCatalogMetadata(dataRoot, targetSessionId, {
-      title: source?.title === undefined ? undefined : `${source.title} 分支`,
+      title: branchSessionTitle(source?.title),
       pinned: false,
       archived: false,
       unread: false,
@@ -898,6 +898,17 @@ export class DesktopProjectService {
   attachmentsRoot(project: DesktopProject): string {
     return this.storage.attachmentsRoot(project);
   }
+}
+
+function branchSessionTitle(title: string | undefined): string | undefined {
+  if (title === undefined) return undefined;
+  const suffix = " 分支";
+  let end = Math.min(title.length, 120 - suffix.length);
+  // Catalog limits use UTF-16 units; keep a valid surrogate pair intact at the cut.
+  const before = title.charCodeAt(end - 1);
+  const after = title.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end -= 1;
+  return `${title.slice(0, end)}${suffix}`;
 }
 
 function isAlreadyExists(error: unknown): boolean {
