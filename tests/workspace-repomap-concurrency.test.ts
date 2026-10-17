@@ -7,7 +7,7 @@ import { mock, test } from "node:test";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 
 async function fixture(count = 96): Promise<{ root: string; context: WorkspaceContext; cleanup: () => Promise<void> }> {
-  const state = await fs.mkdtemp(path.join(os.tmpdir(), "biny-repomap-pool-"));
+  const state = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-repomap-pool-")));
   const root = path.join(state, "workspace");
   await fs.mkdir(root);
   for (let index = 0; index < count; index++) {

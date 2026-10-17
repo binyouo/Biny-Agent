@@ -1,26 +1,10 @@
 import type { DesktopSkillCatalogEntry, DesktopToolCatalogEntry } from "../../../../protocol.js";
 
-/** 由 Runtime 自动协调的内部工具，不作为当前消息的用户能力单独展示。 */
-const HIDDEN_TOOL_NAMES = new Set([
-  "read_tool_result",
-  "read_checkpoint_evidence",
-  "ToolSearch",
-  "search_history",
-  "skill_lookup",
-  "read_skill_resource",
-  "skill_search",
-  "skill_install",
-  "TaskStatus",
-  "PlanStart",
-  "PlanStatus",
-  "PlanUpdate",
-  "PlanDraft",
-  "save_memory",
-  "recall_memory"
-]);
+import { isToolUserSelectable } from "../../../../../tools/presentation.js";
 
-export function shouldShowToolInCapabilityMenu(tool: Pick<DesktopToolCatalogEntry, "name" | "source">): boolean {
-  return tool.source !== "mcp" && !HIDDEN_TOOL_NAMES.has(tool.name);
+/** MCP capabilities are selected by server; model exposure alone does not make a user menu item. */
+export function shouldShowToolInCapabilityMenu(tool: Pick<DesktopToolCatalogEntry, "name" | "source" | "exposure">): boolean {
+  return tool.source !== "mcp" && isToolUserSelectable(tool);
 }
 
 /** 工具菜单固定顺序；目录返回顺序不能成为用户界面的排序依据。 */
@@ -30,7 +14,7 @@ const TOOL_ORDER = [
   "BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress",
   "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead", "ChromeRelayNavigate", "ChromeRelayClick", "ChromeRelayType", "ChromeRelayPress",
   "WebFetch", "WebSearch",
-  "Task", "TodoWrite", "Skill"
+  "Task", "Skill"
 ];
 const TOOL_ORDER_INDEX = new Map(TOOL_ORDER.map((name, index) => [name, index]));
 

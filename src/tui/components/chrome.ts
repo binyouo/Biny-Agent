@@ -1,5 +1,5 @@
 /**
- * 底部信息区、状态行、快捷键行和启动头部。
+ * 底部信息区、状态行和启动头部。
  *
  * 这些组件都直接实现终端 `Component`：按当前宽度算好一行文本再着色，
  * 宽度不够时整条丢弃或截断，不会撑破终端。
@@ -12,6 +12,7 @@ import type { ContextBudgetStatus } from "../../agent/context/types.js";
 import type { TuiStatus } from "../types.js";
 import { theme } from "../theme/index.js";
 import { formatToolDuration } from "../transcriptText.js";
+import type { McpStartupIndicator } from "../runtime/mcpStatus.js";
 
 export interface FooterData {
   cwd: string;
@@ -26,6 +27,7 @@ export interface FooterData {
   contextSource?: "estimated" | "provider";
   cacheHitRate?: number;
   sessionCacheHitRate?: number;
+  status?: TuiStatus;
 }
 
 /** 预算 → footer 水位字段；百分比按模型自身上下文窗口算，没有窗口信息时才退回输入预算。 */
@@ -58,7 +60,10 @@ export class FooterComponent implements Component {
     return [
       theme.fg("dim", layout.workspace),
       contextColorize(layout.contextPercent, layout.context)
-        + theme.fg("dim", `${layout.meta}${layout.gap}${layout.model}`)
+        + theme.fg("dim", layout.meta.replace(this.data.permissionMode,
+          this.data.permissionMode === "auto" || this.data.permissionMode === "full-access"
+            ? theme.fg("warning", theme.bold(this.data.permissionMode)) : this.data.permissionMode))
+        + theme.fg("dim", `${layout.gap}${layout.model}`)
     ];
   }
 }
@@ -78,7 +83,12 @@ export function footerLayout(data: FooterData, width: number): {
   const session = shortSessionId(data.viewingSessionId ?? data.sessionId);
   const viewing = data.viewingSessionId !== undefined && data.viewingSessionId !== data.sessionId;
   if (session) workspaceParts.push(`• ${viewing ? "viewing " : ""}${session}`);
-  const workspace = truncateToWidth(workspaceParts.join(" "), safeWidth, "…");
+  const workspaceLabel = truncateToWidth(workspaceParts.join(" "), safeWidth, "…");
+  const hints = visibleShortcutHints(shortcutHints(data.status ?? "idle"), Math.max(0, safeWidth - visibleWidth(workspaceLabel) - 3))
+    .map((hint) => `${hint.key} ${hint.description}`).join(" · ");
+  const workspace = hints
+    ? `${workspaceLabel}${" ".repeat(safeWidth - visibleWidth(workspaceLabel) - visibleWidth(hints))}${hints}`
+    : workspaceLabel;
 
   const percent = contextPercent(data.contextUsedTokens, data.contextMaxTokens);
   const context = truncateToWidth(formatContextUsage(data.contextUsedTokens, data.contextMaxTokens, data.contextSource), safeWidth, "…");
@@ -180,6 +190,10 @@ export class StatusIndicatorComponent implements Component {
   private startedAtMs: number | undefined;
   private finishedDurationMs: number | undefined;
   private tickTimer: ReturnType<typeof setInterval> | undefined;
+  private exitHintTimer: ReturnType<typeof setTimeout> | undefined;
+  private queuedCount = 0;
+  private goal: { objective: string; status: string } | undefined;
+  private mcpStartup: McpStartupIndicator | undefined;
 
   constructor(ui: TUI) {
     this.ui = ui;
@@ -197,12 +211,39 @@ export class StatusIndicatorComponent implements Component {
       // 返回空闲时没有完成耗时，不能由组件自行结算出 `Worked for`。
       this.finishedDurationMs = finishedDurationMs;
       this.startedAtMs = undefined;
-      this.stopTicker();
+      if (this.mcpStartup?.loading) this.startTicker();
+      else this.stopTicker();
     }
     this.ui.requestRender();
   }
 
+  setQueuedCount(count: number): void {
+    this.queuedCount = count;
+  }
+
+  setGoal(goal: { objective: string; status: string } | undefined): void {
+    this.goal = goal;
+  }
+
+  setMcpStatus(indicator?: McpStartupIndicator): void {
+    this.mcpStartup = indicator;
+    if (indicator?.loading || this.status !== "idle") this.startTicker();
+    else this.stopTicker();
+    this.ui.requestRender();
+  }
+
+  showExitHint(durationMs: number): void {
+    if (this.exitHintTimer !== undefined) clearTimeout(this.exitHintTimer);
+    this.exitHintTimer = setTimeout(() => {
+      this.exitHintTimer = undefined;
+      this.ui.requestRender();
+    }, durationMs);
+    this.ui.requestRender();
+  }
+
   dispose(): void {
+    if (this.exitHintTimer !== undefined) clearTimeout(this.exitHintTimer);
+    this.exitHintTimer = undefined;
     this.stopTicker();
   }
 
@@ -211,14 +252,32 @@ export class StatusIndicatorComponent implements Component {
   }
 
   render(width: number): string[] {
+    if (this.exitHintTimer !== undefined) return [theme.fg("warning", truncateToWidth("Ctrl+C 再按一次退出", width, "…"))];
     const durationMs = this.startedAtMs === undefined
       ? this.finishedDurationMs
       : Math.max(0, Date.now() - this.startedAtMs);
-    const message = statusMessage(
+    let message = statusMessage(
       this.status,
       durationMs,
       this.startedAtMs === undefined ? "✓" : this.frames[this.frameIndex] ?? "•"
     );
+    if (this.queuedCount > 0) {
+      const queue = `${this.queuedCount} queued`;
+      message = message.includes(" · esc to interrupt")
+        ? message.replace(" · esc to interrupt", ` · ${queue} · esc to interrupt`)
+        : [message, queue].filter(Boolean).join(" · ");
+    }
+    if (this.goal) {
+      const tone = this.goal.status === "completed" ? "success" : this.goal.status === "active" ? "accent" : "warning";
+      const goal = theme.fg(tone, `Goal ${this.goal.status}`);
+      message = [goal, message].filter(Boolean).join(" · ");
+    }
+    if (this.mcpStartup) {
+      const indicator = this.mcpStartup.loading ? this.frames[this.frameIndex] ?? "•" : "!";
+      const mcp = theme.fg(this.mcpStartup.tone, `${indicator} ${this.mcpStartup.message}`);
+      message = [message, mcp].filter(Boolean).join(" · ");
+    }
+    if (this.goal) message = [message, this.goal.objective.replace(/\s+/gu, " ").trim()].filter(Boolean).join(" · ");
     if (!message) return [""];
     const rendered = this.status === "idle" && durationMs !== undefined
       ? statusDivider(message, width)
@@ -266,32 +325,12 @@ function statusColorize(status: TuiStatus, text: string): string {
   if (status === "waiting_permission") {
     return theme.fg("warning", text);
   }
-  return theme.fg("muted", text);
+  return theme.fg(status === "idle" ? "muted" : "thinkingText", text);
 }
 
 export interface ShortcutHint {
   key: string;
   description: string;
-}
-
-/** 快捷键提示行：键位 dim，说明 muted，放不下的整条丢弃。 */
-export class ShortcutsBarComponent implements Component {
-  private status: TuiStatus = "idle";
-
-  setState(status: TuiStatus): void {
-    this.status = status;
-  }
-
-  invalidate(): void {
-    // 无缓存。
-  }
-
-  render(width: number): string[] {
-    const hints = visibleShortcutHints(shortcutHints(this.status), width);
-    return [hints
-      .map((hint) => `${theme.fg("dim", hint.key)}${theme.fg("muted", ` ${hint.description}`)}`)
-      .join(theme.fg("muted", " · "))];
-  }
 }
 
 export function shortcutHints(status: TuiStatus): ShortcutHint[] {
@@ -305,6 +344,7 @@ export function shortcutHints(status: TuiStatus): ShortcutHint[] {
     hints.push({ key: "enter", description: "send" }, { key: "/", description: "commands" });
   }
   // 越靠前越重要：窄终端从末尾开始丢弃提示。
+  if (status !== "waiting_permission") hints.push({ key: "ctrl+o", description: "details" });
   hints.push(
     { key: "↑/↓", description: "history" },
     { key: "ctrl+c twice", description: "exit" }
@@ -334,20 +374,23 @@ export class WelcomeComponent implements Component {
   }
 
   render(width: number): string[] {
-    const inner = Math.max(8, width - 2);
+    const safeWidth = Math.max(1, Math.floor(width));
+    const inner = Math.max(1, safeWidth - 4);
     const hints = visibleShortcutHints(welcomeHints, inner);
+    const content = [
+      `${theme.fg("accent", theme.bold("Biny"))}${this.version ? theme.fg("dim", ` v${this.version}`) : ""}`,
+      theme.fg("dim", `Workspace · ${formatDisplayPath(this.cwd)}`),
+      theme.fg("muted", "A local agent is ready. Describe a task, or ask how to use and extend Biny."),
+      hints.map((hint) => `${theme.fg("dim", hint.key)}${theme.fg("muted", ` ${hint.description}`)}`).join(theme.fg("muted", " · "))
+    ];
+    if (safeWidth < 6) return content.map((line) => truncateToWidth(line, safeWidth, "…"));
     return [
-      ` ${theme.fg("accent", theme.bold("Biny"))}${this.version ? theme.fg("dim", ` v${this.version}`) : ""}`,
-      ` ${hints
-        .map((hint) => `${theme.fg("dim", hint.key)}${theme.fg("muted", ` ${hint.description}`)}`)
-        .join(theme.fg("muted", " · "))}`,
-      "",
-      ` ${theme.fg("dim", truncateToWidth(`Workspace · ${this.cwd}`, inner, "…"))}`,
-      ` ${theme.fg("dim", truncateToWidth(
-        "A local agent is ready. Describe a task, or ask how to use and extend Biny.",
-        inner,
-        "…"
-      ))}`
+      theme.fg("borderMuted", `╭${"─".repeat(safeWidth - 2)}╮`),
+      ...content.map((line) => {
+        const text = truncateToWidth(line, inner, "…");
+        return theme.fg("borderMuted", "│ ") + text + " ".repeat(inner - visibleWidth(text)) + theme.fg("borderMuted", " │");
+      }),
+      theme.fg("borderMuted", `╰${"─".repeat(safeWidth - 2)}╯`)
     ];
   }
 }

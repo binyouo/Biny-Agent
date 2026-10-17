@@ -171,7 +171,7 @@ export async function handleActivityHttpRequest(
         const query = searchParams.get("q")?.trim() ?? "";
         if (!query) return {status:200,body:{results:[]}};
         const result = await searchActivitySemantic({store,getEmbeddingRuntime:deps.getEmbeddingRuntime ?? (async()=>undefined),query,limit:boundedLimit(searchParams.get("limit"),20,100),...operation});
-        if (!result.ok) return result.reason === "no_vectors" ? {status:200,body:{results:[]}} : {status:500,body:{error:result.message}};
+        if (!result.ok) return result.reason === "no_vectors" ? {status:200,body:{results:[],reason:result.reason,notice:result.message}} : {status:500,body:{error:result.message}};
         return {status:200,body:{results:result.hits.map(row=>({id:row.id,sessionId:row.sessionId,snapshotId:row.snapshotId,text:row.text,score:row.score,createdAt:row.createdAt}))}};
       }
       if (pathname === "/api/activity-recorder/sessions" && method === "GET") {

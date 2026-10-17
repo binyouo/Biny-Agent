@@ -19,7 +19,7 @@ import { RuntimeHostServer } from "../src/runtime/host/server.js";
 import { encodeHostFrame, runtimeHostProtocolVersion, type HostFrame, type HostRequestFrame } from "../src/runtime/host/protocol.js";
 import type { HostOperationResult } from "../src/runtime/host/types.js";
 import { BinyTui } from "../src/tui/app.js";
-import { PermissionDialog } from "../src/tui/components/dialogs.js";
+import { PermissionDialog, SelectDialog } from "../src/tui/components/dialogs.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
 
 function deferred<T>() {
@@ -193,7 +193,10 @@ test("a still-displayed stale callback cannot answer a newly cached request", as
 test("a suppressed request leaves non-permission overlays untouched", async t => {
   const f = appFixture(t); dialog(f.app).handleInput("\r");
   f.answer.reject(new Error("connection closed")); await flush();
-  f.app["showTextViewer"]("Synthetic viewer", "Keep this unrelated overlay open");
+  f.app["showOverlay"](new SelectDialog({
+    title: "Synthetic picker", items: [{ value: "keep", label: "Keep this unrelated overlay open" }],
+    onSelect: () => undefined, onCancel: () => undefined
+  }));
   const overlay = f.app["overlay"]; f.app["syncPermissionDialog"]();
   assert.equal(f.app["overlay"], overlay); assert.equal(f.app["permissionDialog"], undefined); assert.equal(f.calls.length, 1);
 });

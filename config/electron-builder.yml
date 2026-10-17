@@ -22,17 +22,18 @@ extraResources:
     filter:
       - '*.txt'
       - node-runtime-NOTICE.md
-  - from: out/native/activity-input-monitor
-    to: native/activity-input-monitor
-  - from: out/native/activity-ocr
-    to: native/activity-ocr
-  - from: out/native/computer-use.app
-    to: native/computer-use.app
-  - from: out/native/calendar-reader
-    to: native/calendar-reader
   - from: build/icon-master.png
     to: native/tray-icon.png
 mac:
+  extraResources:
+    - from: out/native/activity-input-monitor
+      to: native/activity-input-monitor
+    - from: out/native/activity-ocr
+      to: native/activity-ocr
+    - from: out/native/computer-use.app
+      to: native/computer-use.app
+    - from: out/native/calendar-reader
+      to: native/calendar-reader
   extendInfo:
     LSUIElement: true
   category: public.app-category.developer-tools
@@ -42,6 +43,14 @@ mac:
   target:
     - dmg
     - zip
+win:
+  target:
+    - nsis
+    - zip
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
 dmg:
   title: Biny ${version}
 artifactName: Biny-${version}-${arch}.${ext}

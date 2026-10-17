@@ -72,9 +72,14 @@ jobs:
         run: node --test scripts/release-desktop.test.mjs
 
   test:
-    name: Tests
+    name: Tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
@@ -91,7 +96,15 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test
-        run: pnpm test:standard
+        run: pnpm test:standard --shard=${{ matrix.shard }}/4 --report=test-timings.json
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: test-timings-${{ matrix.shard }}
+          path: test-timings.json
+          if-no-files-found: warn
+          retention-days: 7
 
   e2e:
     name: Runtime E2E
@@ -186,10 +199,55 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  windows:
+    name: Windows compatibility
+    needs: static
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.6.5
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test Windows platform and real shared Host
+        run: node scripts/run-tests.mjs windows
+      - name: Test owner election
+        run: node scripts/run-tests.mjs runtime-host-lock
+      - name: Test discovery and launch plans
+        run: |
+          node scripts/run-tests.mjs runtime-host-connection-options
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests.mjs runtime-host-lifecycle
+      - name: Prepare Electron native dependencies
+        run: pnpm desktop:prepare
+      - name: Build Desktop and CLI
+        run: pnpm build:desktop
+      - name: Validate built Electron Host
+        run: node scripts/run-tests.mjs desktop-host-startup-e2e
+      - name: Package Windows application
+        run: pnpm exec electron-builder --config config/electron-builder.yml --win nsis zip --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: |
+            release/*.exe
+            release/*.zip
+          if-no-files-found: error
+
   validate:
     name: Validate
     if: ${{ always() }}
-    needs: [static, test, e2e, build, renderer]
+    needs: [static, test, e2e, build, renderer, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -200,13 +258,15 @@ jobs:
           E2E_RESULT: ${{ needs.e2e.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           RENDERER_RESULT: ${{ needs.renderer.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
         run: |
-          if [[ "$STATIC_RESULT" != "success" || "$TEST_RESULT" != "success" || "$E2E_RESULT" != "success" || "$BUILD_RESULT" != "success" || "$RENDERER_RESULT" != "success" ]]; then
+          if [[ "$STATIC_RESULT" != "success" || "$TEST_RESULT" != "success" || "$E2E_RESULT" != "success" || "$BUILD_RESULT" != "success" || "$RENDERER_RESULT" != "success" || "$WINDOWS_RESULT" != "success" ]]; then
             echo "Static checks: $STATIC_RESULT"
             echo "Tests: $TEST_RESULT"
             echo "Runtime E2E: $E2E_RESULT"
             echo "Build: $BUILD_RESULT"
             echo "Renderer UI: $RENDERER_RESULT"
+            echo "Windows compatibility: $WINDOWS_RESULT"
             exit 1
           fi
           echo "Static checks, tests, runtime E2E, builds, and renderer UI all passed."

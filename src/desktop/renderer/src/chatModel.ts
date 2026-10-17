@@ -1,3 +1,4 @@
+import { toolDisplayName } from "../../../tools/presentation.js";
 /**
  * 聊天行的纯函数模型。
  *
@@ -203,7 +204,7 @@ export interface ActivityPhase {
 /** 只读类工具：归入「探索」相位。 */
 const EXPLORING_TOOLS = new Set([
   "Read", "Glob", "Grep", "WebSearch", "WebFetch",
-  "read_tool_result", "read_skill_resource",
+  "read_skill_resource",
   "mcp_list_resources", "mcp_read_resource",
   "activity_search", "activity_search_semantic", "activity_sessions", "activity_session_show",
   "activity_report", "activity_digest",
@@ -291,7 +292,7 @@ export function phaseLabel(phase: ActivityPhase, live: boolean, thinkingSeconds?
     default: {
       const names = new Set(phase.items.flatMap(({ step }) => step.kind === "tool" ? [step.tool.tool] : []));
       if (names.size === 1) {
-        const name = [...names][0]?.replace(/[_-]+/g, " ") ?? "tool";
+        const name = toolDisplayName([...names][0] ?? "tool");
         return { verb: live ? "使用中" : "已使用", rest: n === 1 ? name : `${name} ×${String(n)}` };
       }
       return { verb: live ? "进行中" : "已完成", rest: `${String(n)} 步` };
@@ -339,7 +340,6 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
   const row: ActivityToolRowModel = { verb: "", object: "", running, error };
   switch (tool.tool) {
     case "Read":
-    case "read_tool_result":
     case "read_skill_resource":
     case "mcp_read_resource":
       row.verb = "读取";
@@ -446,7 +446,7 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       row.object = stringArg(tool, "task") ?? "…";
       return row;
     default: {
-      row.verb = tool.tool.replace(/[_-]+/g, " ");
+      row.verb = toolDisplayName(tool.tool);
       row.object = tool.description ?? "";
       if (!row.object && args) {
         const first = Object.values(args).find((value) => typeof value === "string" && value.length > 0 && value.length < 200);

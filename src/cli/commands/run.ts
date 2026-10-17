@@ -14,7 +14,6 @@ import {
   type TaskVerificationContract,
   type TaskVerificationEvidence
 } from "../../runtime/taskVerification.js";
-import { withAttachmentReferences } from "../../attachments/references.js";
 import { saveAttachment, type AgentAttachment } from "../../attachments/store.js";
 import { createFileConfigStore, type AgentConfigStore } from "../../config/store.js";
 import type { AgentConfig } from "../../config/schema.js";
@@ -161,7 +160,8 @@ export async function runCommand(workspaceRoot: string, input: string, options: 
         const runSignal = combineRunSignals(cliSignal, deadlineControl?.signal);
         const attemptSignal = combineRunSignals(runSignal, workDeadlineControl?.signal);
         return await runtime!.runTaskWithVerification({
-          prompt: withAttachmentReferences(runPrompt, attachments),
+          prompt: runPrompt,
+          attachments,
           verification,
           signal: runSignal,
           attemptSignal,
@@ -205,7 +205,7 @@ export async function runCommand(workspaceRoot: string, input: string, options: 
     } else {
       const execution = await ExecutionService.create(runtime);
       const result = await withCliAbortSignal(async (cliSignal) => await execution.execute({
-        input: withAttachmentReferences(runPrompt, attachments),
+        input: runPrompt,
         signal: combineRunSignals(
           combineRunSignals(cliSignal, deadlineControl?.signal),
           workDeadlineControl?.signal
@@ -268,7 +268,7 @@ async function runAttachedCommand(
     });
     const submitted = runtime.submitPromptForSession(
       sessionId,
-      withAttachmentReferences(input, attachments),
+      input,
       attachments
     );
     const turn = await withCliAbortSignal(async (signal) => {

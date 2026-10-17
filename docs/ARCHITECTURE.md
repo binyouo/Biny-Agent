@@ -19,7 +19,7 @@ flowchart LR
     Tools --> Policy[权限与执行边界]
 ```
 
-交互式客户端通过本机 Unix socket 连接 Host。一次性 `run` 可附着已有 Host，或在独立命令运行环境中复用执行核心；它不要求创建第二套 Agent 行为。
+交互式客户端通过本机 IPC 连接 Host：macOS/Linux 使用 Unix socket，Windows 使用 Named Pipe。Windows 运行目录和管道限制为当前账号及 SYSTEM，权限设置成功后才接纳连接；各平台仍校验相同的连接令牌、工作区身份与会话写入权。一次性 `run` 可附着已有 Host，或在独立命令运行环境中复用执行核心；它不要求创建第二套 Agent 行为。
 
 Host 启动者退出后，诊断用 stderr 管道断开不会结束仍服务其他客户端的 Host；其他输出错误仍作为故障处理。
 
@@ -74,6 +74,10 @@ Desktop 进入项目或打开历史会话时，在后台准备该项目的 Host�
 MCP 是外部协议边界，Plugin 是进程内代码边界，Skill 是指令与资源边界。它们共用工具注册和执行约束，但不能互相代替隔离保证。
 
 浏览器和 Computer Use 各有实际执行端、目标引用与监督画面。预览属于临时展示，不作为模型观察、会话恢复或工具完成证据。
+
+## 平台边界
+
+Windows 的前台命令、后台进程与 Desktop 终端共用 shell 选择，依次检测 PowerShell 7、Windows PowerShell 5.1 和 cmd。原生电脑控制、系统 Activity 采集、原生日历和系统常驻服务安装仍有 macOS 限制；Windows 请求无法强制执行的命令沙箱时会被拒绝。源码构建入口与平台验证边界见贡献指南。
 
 ## 继续阅读
 

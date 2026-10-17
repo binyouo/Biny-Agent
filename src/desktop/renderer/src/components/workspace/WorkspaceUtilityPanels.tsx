@@ -8,9 +8,10 @@ export function WorkspaceToolsPanel({ tools }: { tools: TimelineTool[] }): React
     <header className="inspector-utility-heading"><h2>工具运行</h2><p>本次对话中的工具调用、状态和耗时。</p></header>
     <div className="inspector-result-scroll">{tools.length === 0 ? <div className="inspector-empty"><Icon name="wrench" size={28} /><p>还没有工具调用</p><small>本次对话的工具运行记录会显示在这里。</small></div> : [...tools].reverse().map((tool, index) => <article className="inspector-tool-row" key={`${tool.id}:${index}`}>
       <header><strong>{executionToolLabel(tool.tool)}</strong><span className="inspector-tool-status" data-status={tool.status}>{labels[tool.status] ?? tool.status}</span></header>
-      <div className="inspector-tool-meta"><code>{tool.id}</code>{tool.durationMs !== undefined ? <small>{(tool.durationMs / 1000).toFixed(1)}s</small> : null}</div>
+      <div className="inspector-tool-meta">{tool.durationMs !== undefined ? <small>{(tool.durationMs / 1000).toFixed(1)}s</small> : null}</div>
       {tool.description ? <p>{tool.description}</p> : null}
       {tool.error ? <p className="inspector-error" role="alert">{tool.error}</p> : null}
+      <details><summary>技术详情</summary><dl><dt>工具标识</dt><dd><code>{tool.tool}</code></dd><dt>调用标识</dt><dd><code>{tool.id}</code></dd></dl></details>
       <details><summary>输入参数</summary><pre>{JSON.stringify(tool.args, null, 2)}</pre></details>
       {tool.result !== undefined ? <details><summary>运行结果</summary><pre>{typeof tool.result === "string" ? tool.result : JSON.stringify(tool.result, null, 2)}</pre></details> : null}
     </article>)}</div>

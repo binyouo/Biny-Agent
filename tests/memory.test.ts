@@ -1066,7 +1066,7 @@ async function testRecallFormatsSourceTimeWithoutConflatingSaveTime(): Promise<v
       assert.match(prompt, /saved-at is NOT event\/due\/completion time/u);
       assert.match(prompt, /original message sent-at/u);
       assert.match(prompt, /only a subset of relevant memories/iu);
-      assert.match(prompt, /recall_memory/u);
+      assert.match(prompt, /biny memory search/u);
       const temporary = (await memory.writeEntry({
         content: "The user may visit Paris next month.", durability: "temporary",
         expiresAt: "2026-10-25T00:00:00.000Z"

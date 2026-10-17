@@ -5,7 +5,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { constants, existsSync, promises as fs, type Stats } from "node:fs";
+import { constants, existsSync, readFileSync, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
@@ -14,6 +14,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { globalAgentDir, globalConfigDir } from "../../config/paths.js";
 import { redactSecrets } from "../../utils/redaction.js";
+import { localIpcEndpoint, secureLocalIpcEndpoint } from "../../utils/localIpc.js";
+import { restrictWindowsPathAccess } from "../../utils/windowsSecurity.js";
 import { asRecord } from "./protocol.js";
 import {
   runtimeHostDirectoryName,
@@ -57,11 +59,24 @@ function startupError(child: ChildProcess, reason: "timeout" | "process_exit", d
   });
 }
 
-export function runtimeHostPaths(persistenceRoot: string): RuntimeHostPaths {
-  const resolvedRoot = path.resolve(persistenceRoot);
+export function runtimeHostPaths(
+  persistenceRoot: string,
+  environment = { platform: process.platform, temporaryDirectory: os.tmpdir(), agentRoot: globalAgentDir() }
+): RuntimeHostPaths {
+  const paths = environment.platform === "win32" ? path.win32 : path;
+  const resolvedRoot = paths.resolve(persistenceRoot);
   const rootHash = createHash("sha256").update(resolvedRoot).digest("hex").slice(0, 24);
   const baseName = `biny-${rootHash}`;
-  const temporaryRoot = os.tmpdir();
+  if (environment.platform === "win32") {
+    const fileBase = paths.join(environment.agentRoot, "runtime-host", baseName);
+    return {
+      endpoint: localIpcEndpoint(fileBase, "win32"),
+      registrationPath: `${fileBase}.json`,
+      lockPath: `${fileBase}.lock`,
+      rootHash
+    };
+  }
+  const temporaryRoot = environment.temporaryDirectory;
   const preferredDirectory = path.join(temporaryRoot, runtimeHostDirectoryName);
   const fallbackDirectory = path.join("/tmp", runtimeHostDirectoryName);
   const preferred = path.join(preferredDirectory, `${baseName}.sock`);
@@ -89,6 +104,7 @@ export function spawnRuntimeHostProcess(
   const child = spawn(plan.executable, plan.args, {
     cwd: moduleRoot,
     detached: true,
+    windowsHide: true,
     // 控制 socket 可以重连；这条 IPC 仅代表启动者寿命，不能与业务连接混为一谈。
     stdio: ["ignore", "ignore", "pipe", "ipc"],
     env: plan.env
@@ -144,9 +160,9 @@ export function runtimeHostLaunchPlan(
       env
     };
   }
-  if (environment.platform === "darwin" && process.versions.electron === undefined
+  if (process.versions.electron === undefined
     && existsSync(path.join(options.configDir ?? globalConfigDir(), "credentials.enc"))) {
-    const desktop = desktopCredentialHostLaunch();
+    const desktop = desktopApplicationLaunch(options.configDir ?? globalConfigDir(), environment.platform);
     delete env.ELECTRON_RUN_AS_NODE;
     return { executable: desktop.executable, args: [desktop.appPath, "--biny-runtime-host", ...hostArgs], env };
   }
@@ -155,7 +171,17 @@ export function runtimeHostLaunchPlan(
 }
 
 /** 加密凭据留在 Electron owner 内，Node 客户端只通过现有 Host 协议提交消息。 */
-function desktopCredentialHostLaunch(): { executable: string; appPath: string } {
+export function desktopApplicationLaunch(configDir = globalConfigDir(), platform: NodeJS.Platform = process.platform): { executable: string; appPath: string } {
+  const remembered = path.join(configDir, "desktop-host.json");
+  if (existsSync(remembered)) {
+    const launch = asRecord(JSON.parse(readFileSync(remembered, "utf8")));
+    if (typeof launch.executable !== "string" || typeof launch.appPath !== "string"
+      || !path.isAbsolute(launch.executable) || !path.isAbsolute(launch.appPath)
+      || !existsSync(launch.executable) || !existsSync(launch.appPath)) {
+      throw new Error("保存的 Biny Desktop 启动位置已失效，请重新打开已安装的 Biny Desktop。");
+    }
+    return { executable: launch.executable, appPath: launch.appPath };
+  }
   const moduleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   if (existsSync(path.join(moduleRoot, "out/main/index.js"))) {
     try {
@@ -165,12 +191,25 @@ function desktopCredentialHostLaunch(): { executable: string; appPath: string } 
       if (asRecord(error).code !== "MODULE_NOT_FOUND") throw error;
     }
   }
-  for (const app of [path.join("/Applications", "Biny.app"), path.join(os.homedir(), "Applications", "Biny.app")]) {
+  for (const app of platform === "darwin" ? [path.join("/Applications", "Biny.app"), path.join(os.homedir(), "Applications", "Biny.app")] : []) {
     const executable = path.join(app, "Contents/MacOS/Biny");
     const appPath = path.join(app, "Contents/Resources/app.asar");
     if (existsSync(executable) && existsSync(appPath)) return { executable, appPath };
   }
-  throw new Error("模型凭据保存在 Desktop 加密存储中，需要可启动的 Biny Desktop。开发工作区请先运行 pnpm build；命令行安装请安装 Biny Desktop 到 Applications。");
+  throw new Error("模型凭据保存在 Desktop 加密存储中，需要可启动的 Biny Desktop。开发工作区请先运行 pnpm build；安装后请打开一次 Biny Desktop 以登记启动位置。");
+}
+
+/** CLI 冷启动复用同一安装的 Electron，避免把加密凭据交给无法解密的 Node owner。 */
+export async function registerDesktopRuntimeHost(launch: { executable: string; appPath: string; configDir: string }): Promise<void> {
+  await fs.mkdir(launch.configDir, { recursive: true });
+  const target = path.join(launch.configDir, "desktop-host.json");
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, JSON.stringify({ executable: launch.executable, appPath: launch.appPath }), { mode: 0o600 });
+    await fs.rename(temporary, target);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
 }
 
 export function runtimeHostEntryPath(): string {
@@ -181,7 +220,7 @@ export function runtimeHostEntryPath(): string {
 export async function waitForHostRegistration(
   persistenceRoot: string,
   child: ChildProcess,
-  timeoutMs = hostStartupTimeoutMs
+  timeoutMs = process.platform === "win32" ? 150_000 : hostStartupTimeoutMs
 ): Promise<HostRegistration> {
   const circuit = runtimeHostSpawnCircuitFor(runtimeHostPaths(persistenceRoot).endpoint);
   const startedAt = Date.now();
@@ -333,8 +372,10 @@ export async function writeRegistration(registration: HostRegistration): Promise
   try {
     handle = await fs.open(temporary, hostWriteNewFlags(), 0o600);
     await handle.writeFile(`${JSON.stringify(registration)}\n`, "utf8");
-    await handle.chmod(0o600);
+    if (process.platform !== "win32") await handle.chmod(0o600);
     await handle.sync();
+    await handle.close();
+    handle = undefined;
     await fs.rename(temporary, registration.registrationPath);
   } finally {
     await handle?.close().catch(() => undefined);
@@ -421,7 +462,7 @@ async function ensurePrivateHostLockDatabase(databasePath: string): Promise<void
   }
   const stat = await fs.lstat(databasePath);
   if (!isPrivateHostFile(stat)) throw new Error("Runtime Host lock authority must be a private, owned file.");
-  await fs.chmod(databasePath, 0o600);
+  if (process.platform !== "win32") await fs.chmod(databasePath, 0o600);
 }
 
 function isSqliteBusy(error: unknown): boolean {
@@ -434,7 +475,7 @@ async function publishHostLock(lockPath: string, pid: number): Promise<void> {
   try {
     handle = await fs.open(temporaryPath, hostWriteNewFlags(), 0o600);
     await handle.writeFile(`${String(pid)}\n`, "utf8");
-    await handle.chmod(0o600);
+    if (process.platform !== "win32") await handle.chmod(0o600);
     await handle.sync();
     // link() publishes a fully written file and fails atomically if another
     // implementation wins the legacy lock path while this owner is starting.
@@ -452,7 +493,7 @@ async function removeAbandonedHostLockTemps(paths: RuntimeHostPaths): Promise<vo
     if (!entry.startsWith(prefix) || !/^[0-9a-f-]{36}\.tmp$/u.test(entry.slice(prefix.length))) continue;
     const temporaryPath = path.join(path.dirname(paths.lockPath), entry);
     const stat = await statIfPresent(temporaryPath);
-    if (stat?.isFile() && stat.nlink <= 2 && (stat.mode & 0o077) === 0 && isOwnedByCurrentUser(stat)) {
+    if (stat?.isFile() && stat.nlink <= 2 && hasPrivateHostMode(stat) && isOwnedByCurrentUser(stat)) {
       await fs.rm(temporaryPath, { force: true });
     }
   }
@@ -462,12 +503,15 @@ async function removeAbandonedHostLockTemps(paths: RuntimeHostPaths): Promise<vo
 export async function readLockPid(lockPath: string): Promise<number | undefined> {
   let handle: FileHandle | undefined;
   try {
+    const before = await fs.lstat(lockPath);
+    if (!before.isFile()) return undefined;
     handle = await fs.open(lockPath, constants.O_RDONLY | hostNoFollowFlag());
     const stat = await handle.stat();
     if (
       !stat.isFile()
+      || stat.ino !== before.ino || stat.dev !== before.dev
       || (stat.nlink !== 1 && stat.nlink !== 2)
-      || (stat.mode & 0o077) !== 0
+      || !hasPrivateHostMode(stat)
       || !isOwnedByCurrentUser(stat)
     ) return undefined;
     const pid = Number((await handle.readFile("utf8")).trim());
@@ -560,6 +604,7 @@ export async function removeRegistration(registration: HostRegistration): Promis
 }
 
 export async function removeSocketIfStale(endpoint: string): Promise<void> {
+  if (process.platform === "win32") return;
   try {
     const stat = await fs.lstat(endpoint);
     if (stat.isSymbolicLink()) {
@@ -590,15 +635,31 @@ export async function ensureRuntimeHostDirectory(directory: string): Promise<voi
     throw new Error("Runtime Host directory must be a real directory.");
   }
   if (!isOwnedByCurrentUser(stat)) throw new Error("Runtime Host directory is not owned by the current user.");
-  await fs.chmod(directory, 0o700);
+  if (process.platform === "win32") await secureWindowsHostDirectory(directory);
+  else await fs.chmod(directory, 0o700);
+}
+
+const windowsHostDirectories = new Map<string, Promise<void>>();
+async function secureWindowsHostDirectory(directory: string): Promise<void> {
+  let securing = windowsHostDirectories.get(directory);
+  if (!securing) {
+    securing = restrictWindowsPathAccess(directory, "directory").catch((error: unknown) => {
+      windowsHostDirectories.delete(directory);
+      throw error;
+    });
+    windowsHostDirectories.set(directory, securing);
+  }
+  await securing;
 }
 
 export async function readPrivateHostFile(filePath: string): Promise<string | undefined> {
   let handle: FileHandle | undefined;
   try {
+    const before = await fs.lstat(filePath);
+    if (!isPrivateHostFile(before)) return undefined;
     handle = await fs.open(filePath, constants.O_RDONLY | hostNoFollowFlag());
     const stat = await handle.stat();
-    if (!isPrivateHostFile(stat)) return undefined;
+    if (!isPrivateHostFile(stat) || stat.ino !== before.ino || stat.dev !== before.dev) return undefined;
     return await handle.readFile("utf8");
   } catch (error) {
     if (isNotFound(error)) return undefined;
@@ -609,6 +670,10 @@ export async function readPrivateHostFile(filePath: string): Promise<string | un
 }
 
 export async function secureRuntimeSocket(endpoint: string): Promise<void> {
+  if (process.platform === "win32") {
+    await secureLocalIpcEndpoint(endpoint);
+    return;
+  }
   const stat = await fs.lstat(endpoint);
   if (!stat.isSocket() || !isOwnedByCurrentUser(stat)) {
     throw new Error("Runtime Host endpoint must be an owned Unix socket.");
@@ -621,14 +686,19 @@ export function hostWriteNewFlags(): number {
 }
 
 export function hostNoFollowFlag(): number {
+  if (process.platform === "win32") return 0;
   return typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 }
 
 export function isPrivateHostFile(stat: Stats): boolean {
   return stat.isFile()
     && stat.nlink === 1
-    && (stat.mode & 0o077) === 0
+    && hasPrivateHostMode(stat)
     && isOwnedByCurrentUser(stat);
+}
+
+function hasPrivateHostMode(stat: Stats): boolean {
+  return process.platform === "win32" || (stat.mode & 0o077) === 0;
 }
 
 export function isOwnedByCurrentUser(stat: Stats): boolean {

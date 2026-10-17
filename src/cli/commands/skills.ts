@@ -11,7 +11,7 @@ import { defaultManagedSkillRoot, parseManagedSkillMetadata } from "../../extens
 import { discoverSkillRepositories, installDiscoveredSkill, searchSkillsSh, updateDiscoveredSkill } from "../../extensions/skillDiscovery.js";
 import { readManagedSkillVersion, rollbackSkillVersion } from "../../extensions/skillVersions.js";
 import { withGlobalConfigWriteLock } from "../../config/versioned.js";
-import { loadSkills, type SkillBundle } from "../../extensions/skills.js";
+import { loadSkills, rankSkillsByQuery, type SkillBundle } from "../../extensions/skills.js";
 import { createProjectSkillKey } from "../../extensions/skillRef.js";
 import { loadConfig } from "../../config/loader.js";
 import { scanSkillCatalog } from "../../extensions/skillCatalog.js";
@@ -36,8 +36,9 @@ export function registerSkillCommands(program: Command, workspaceRoot: string): 
   command.action(() => execute(async () => await skillListCommand(workspaceRoot)));
   command.command("list")
     .description("List loaded Skills")
+    .option("--query <keywords>", "filter installed Skills by name or description")
     .option("--json", "print JSON")
-    .action((options: SkillOutputOptions) => execute(async () => await skillListCommand(workspaceRoot, options)));
+    .action((options: SkillOutputOptions & { query?: string }) => execute(async () => await skillListCommand(workspaceRoot, options)));
   command.command("search")
     .alias("find")
     .description("Search the Skill catalog")
@@ -49,7 +50,8 @@ export function registerSkillCommands(program: Command, workspaceRoot: string): 
   command.command("install")
     .description("Install a Skill from skills.sh or GitHub")
     .argument("<source>", "owner/repository, owner/repository@skill, or GitHub tree URL")
-    .action((source: string) => execute(async () => await skillInstallCommand(source)));
+    .option("--json", "print JSON")
+    .action((source: string, options: SkillOutputOptions) => execute(async () => await skillInstallCommand(source, options)));
   command.command("check")
     .description("Check declared Skill requirements without running scripts")
     .argument("[name]", "check one Skill, or all discovered Skills")
@@ -108,11 +110,11 @@ async function loadWorkspaceSkills(workspaceRoot: string): Promise<SkillBundle> 
   });
 }
 
-async function skillListCommand(workspaceRoot: string, options: SkillOutputOptions = {}): Promise<void> {
+async function skillListCommand(workspaceRoot: string, options: SkillOutputOptions & { query?: string } = {}): Promise<void> {
   const bundle = await loadWorkspaceSkills(workspaceRoot);
   const installations = (await Promise.all((await managedSkillNames()).map((name) => readManagedSkillVersion(defaultManagedSkillRoot(), name)))).filter(Boolean);
   const result = {
-    skills: bundle.skills.map((skill) => ({
+    skills: (options.query === undefined ? bundle.skills : rankSkillsByQuery(bundle.skills, options.query, bundle.skills.length)).map((skill) => ({
       name: skill.name,
       description: skill.description,
       scope: skill.scope,
@@ -164,7 +166,7 @@ async function skillSearchCommand(workspaceRoot: string, query: string, options:
   }
 }
 
-async function skillInstallCommand(source: string): Promise<void> {
+async function skillInstallCommand(source: string, options: SkillOutputOptions = {}): Promise<void> {
   const url = source.startsWith("https://") ? new URL(source) : new URL(`https://github.com/${source}`);
   if (url.origin !== "https://github.com" || url.username || url.password || url.search || url.hash) throw new Error("Use a GitHub repository or tree URL.");
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
@@ -177,6 +179,7 @@ async function skillInstallCommand(source: string): Promise<void> {
   const candidates = result.skills.filter((skill) => (!selectedName || skill.name === selectedName) && (!directory || skill.directory === directory));
   if (candidates.length !== 1) throw new Error(candidates.length ? `Choose a Skill with @name: ${candidates.map((skill) => skill.name).join(", ")}` : `Skill not found. ${result.warnings.join(" ")}`);
   const installed = await installDiscoveredSkill({ skill: candidates[0]! });
+  if (options.json) { console.log(JSON.stringify(installed)); return; }
   console.log(`Installed ${installed.name}: ${installed.version.revision} at ${installed.installedPath}`);
   console.log(`Environment check: ${installed.diagnostic.status}. Run biny skill check ${installed.name} for details.`);
 }

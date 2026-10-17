@@ -23,7 +23,7 @@ interface Snapshot {
 }
 interface FakeChild { pid: number; kill(): void; unref(): void }
 interface RecordEntry { snapshot: Snapshot; child: FakeChild; stopRequested: boolean }
-interface StartOptions { command: string; signal?: AbortSignal }
+interface StartOptions { command: string; signal?: AbortSignal; shell?: { kind: "posix"; executable: string } }
 interface FakeService {
   closing: boolean;
   workspaceRoot: string;
@@ -91,7 +91,7 @@ function harness(gateAt?: "initialize" | "binding", cancelOnSpawn?: () => void) 
     timeout: 1_000,
     contextCodeGeneration: { strings: false, wasm: false }
   }) as ExtractedStart;
-  return { service, events, entered, released, start: (options: StartOptions) => start.call(service, options) };
+  return { service, events, entered, released, start: (options: StartOptions) => start.call(service, { shell: { kind: "posix", executable: "/bin/sh" }, ...options }) };
 }
 
 for (const phase of ["initialize", "binding"] as const) {

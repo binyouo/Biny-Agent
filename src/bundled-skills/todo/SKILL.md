@@ -2,7 +2,7 @@
 name: todo
 description: "Manage a lightweight todo list for a small set of immediate, mostly linear steps in the current session. Use to create a checklist, show remaining work, add or complete items, reorder, or clear the list. Keep at most one item in progress; use tasks for independent execution and plan-weave for dependencies or review gates."
 allowed-tools:
-  - TodoWrite
+  - Bash
   - Bash
 ---
 
@@ -25,15 +25,8 @@ Manage the structured todo list for the current session. Biny stores the list in
 
 ## Update the list
 
-Prefer the `TodoWrite` capability when working inside an agent turn. It replaces the complete list, validates item content and status, and returns the remaining count. The list is session-scoped; a subagent must not silently mutate the parent session's list.
+Use the `biny todo` CLI. Foreground commands default to the current agent session; manual commands default to the latest session unless `--session` is supplied. Updates go through the owning Host and replace its live list. A subagent must not silently change the parent session's list.
 
-For example, call `TodoWrite` with the complete desired list:
-
-```json
-{"todos":[{"content":"Reproduce the reported failure","status":"in_progress"},{"content":"Fix and verify the failure","status":"pending"}]}
-```
-
-For explicit CLI management:
 
 ```bash
 # Show the current session's list

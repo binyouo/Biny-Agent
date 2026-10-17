@@ -4,6 +4,7 @@ import { closeSync, constants, lstatSync, openSync, promises as fs, realpathSync
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { restrictWindowsPathAccess } from "./windowsSecurity.js";
 
 const lockTimeoutMs = 5_000;
 const lockPollMs = 25;
@@ -41,7 +42,7 @@ export async function withLocalFileWriteLock<T>(root: string, lockFileName: stri
   const deadline = Date.now() + lockTimeoutMs;
   let authority: LockAuthority | undefined;
   while (!authority) {
-    authority = tryAcquireAuthority(lockPath, directoryIdentity);
+    authority = await tryAcquireAuthority(lockPath, directoryIdentity);
     if (!authority) await waitForLock(deadline);
   }
 
@@ -90,7 +91,7 @@ async function waitForLock(deadline: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, lockPollMs));
 }
 
-function tryAcquireAuthority(lockPath: string, directoryIdentity: FileIdentity): LockAuthority | undefined {
+async function tryAcquireAuthority(lockPath: string, directoryIdentity: FileIdentity): Promise<LockAuthority | undefined> {
   const directory = path.dirname(lockPath);
   const databasePath = `${lockPath}.authority.sqlite`;
   const assertDirectory = (): void => {
@@ -112,7 +113,7 @@ function tryAcquireAuthority(lockPath: string, directoryIdentity: FileIdentity):
     const stat = lstatSync(databasePath);
     const uid = process.getuid?.();
     if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.size !== 0
-      || (stat.mode & 0o077) !== 0 || (uid !== undefined && stat.uid !== uid)) {
+      || (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || (uid !== undefined && stat.uid !== uid)))) {
       throw new Error("Local file lock authority must be an empty, private, owned single-link file.");
     }
     for (const suffix of ["-journal", "-wal", "-shm"]) {
@@ -128,6 +129,10 @@ function tryAcquireAuthority(lockPath: string, directoryIdentity: FileIdentity):
   const assertBinding = (): void => {
     if (!sameIdentity(identity, identityAtPath())) throw new Error("Local file lock authority changed during access.");
   };
+  if (process.platform === "win32") {
+    await restrictWindowsPathAccess(databasePath, "file");
+    assertBinding();
+  }
   const database = new DatabaseSync(databasePath, { timeout: 0 });
   try {
     assertBinding();
@@ -165,7 +170,8 @@ async function ensureRealDirectory(root: string): Promise<void> {
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new Error("Local storage root must be a real directory.");
   }
-  await fs.chmod(root, 0o700);
+  if (process.platform === "win32") await restrictWindowsPathAccess(root, "directory");
+  else await fs.chmod(root, 0o700);
 }
 
 async function removeDeadOwnerLock(lockPath: string, authority: LockAuthority): Promise<boolean> {

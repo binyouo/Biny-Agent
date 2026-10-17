@@ -9,6 +9,7 @@
  * 服务端会拒绝的消息序列。
  */
 import path from "node:path";
+import { withMessageSentAt } from "../agent/modelMessages.js";
 import { resolveRetryScope, retryProjectionEvents, type RetryOrigin } from "./retryOrigin.js";
 import { parseFileChange, type CommittedFileChange } from "../tools/file/fileChange.js";
 import type { AgentMessage, AgentReasoningContent, ModelRequestMetrics } from "../agent/core/types.js";
@@ -1061,7 +1062,7 @@ function projectSessionConversation(
       flushPendingCalls();
       appendRecoveredResultsForOpenCalls();
       resetPendingCalls();
-      appendMessage({ role: "user", content: event.content }, event.messageId, event.parentMessageId, event.slotId);
+      appendMessage(withMessageSentAt({ role: "user", content: event.content }, event), event.messageId, event.parentMessageId, event.slotId);
       canonicalTurn = false;
       projectedTailCallIds.clear();
       continue;

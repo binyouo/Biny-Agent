@@ -58,10 +58,10 @@ class AskFiles extends PermissionManager {
     return result.decision === "deny" ? result : { decision: "ask" as const, reason: "Approve this exact local fixture read." };
   }
 }
-function coordinator(registry: ToolRegistry, options?: { tools?: Set<string>; denyPaths?: string[];
+function coordinator(registry: ToolRegistry, options?: { tools?: Set<string>; executionMode?: "direct" | "code_mode"; denyPaths?: string[];
   budget?: { maxToolCalls: number; maxRepeatedActions: number }; quarantined?: Promise<unknown>[]; ask?: () => Promise<{ approved: boolean; scope: "once" }> }): ToolExecutionCoordinator {
   const config = structuredClone(defaultConfig);
-  config.agent.toolExecutionMode = "code_mode";
+  config.agent.toolExecutionMode = options?.executionMode ?? "code_mode";
   config.agent.maxConcurrentTools = 1;
   config.permission = { mode: "full-access", allowTools: [], allowPaths: [], denyPaths: options?.denyPaths ?? [], criticalAlwaysAsk: true };
   config.checkpoints.enabled = false;
@@ -70,7 +70,7 @@ function coordinator(registry: ToolRegistry, options?: { tools?: Set<string>; de
   recorders.push(recorder);
   return new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: options?.ask,
     quarantineExternalTool: options?.quarantined === undefined ? undefined : (_tool, _id, settlement) => { options.quarantined?.push(settlement); } },
-    options?.ask ? new AskFiles(config.permission) : new PermissionManager(config.permission), () => undefined, () => ({}), options?.tools ?? selected, options?.budget);
+    options?.ask ? new AskFiles(config.permission) : new PermissionManager(config.permission), () => undefined, () => ({}), options?.tools ?? selected, options?.budget, undefined, options?.tools);
 }
 function details(result: AgentToolResult): { value?: unknown; childCalls?: unknown[]; error?: string } { return result.details as ReturnType<typeof details>; }
 function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
@@ -161,7 +161,7 @@ try {
       yield { type: "text-delta", text: JSON.stringify({ tools: [...selected, "Bash", "Skill", "WebFetch", "KillShell"] }) }; yield { type: "finish", reason: "stop" };
     })(); }
   }, failureDomain: "file-query-fixture" }]));
-  const discovered = coordinator(discovery, { tools: new Set(["ToolSearch"]) });
+  const discovered = coordinator(discovery, { tools: new Set(["ToolSearch"]), executionMode: "direct" });
   const search = discovered.createAgentTools(undefined, { toolDiscoveryNames: new Set(discovery.list().map((tool) => tool.name)) }).find((tool) => tool.name === "ToolSearch")!;
   const first = await search.execute("file-search", { query: "read file resources and process output" });
   assert.deepEqual(toolSearchResultNames(first.details), [...selected]);

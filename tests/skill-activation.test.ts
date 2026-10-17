@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createSkillTool, loadSkills, skillPromptForSelection, skillNamesForSelection, skillPathsForSelection } from "../src/extensions/skills.js";
+import { createSkillTool, loadSkills, skillPromptForSelection, loadedSkillNamesForSelection, skillPathsForSelection } from "../src/extensions/skills.js";
 import { resolveSkillActivation, setSkillActivation } from "../src/extensions/skillActivation.js";
 import { createSkillRef } from "../src/extensions/skillRef.js";
 
@@ -51,12 +51,12 @@ async function main(): Promise<void> {
     assert.equal(builtins.skills.filter((skill) => skill.scope === "builtin").every((skill) => skill.source === "builtin"), true);
     const report = builtins.skills.find((skill) => skill.name === "daily-report")!;
     assert.equal(report.scope, "builtin");
-    const reportExecution = createSkillTool(builtins).resolveExecution({ skill: "daily-report" });
+    const reportExecution = await createSkillTool(builtins).resolveExecution({ skill: "daily-report" });
     assert.ok(!("isError" in reportExecution), "日报技能必须能经运行时 Skill 工具加载，不只是源码目录里存在");
     for (const skill of builtins.skills.filter((candidate) => candidate.scope === "builtin")) {
       assert.doesNotMatch(skill.description, /\p{Script=Han}/u, `${skill.name}: built-in catalog descriptions must be English, including routing examples`);
       // 所有新增内置技能必须可经真实 Skill 入口加载；目录枚举无法发现正文读取失败。
-      const execution = createSkillTool(builtins).resolveExecution({ skill: skill.name });
+      const execution = await createSkillTool(builtins).resolveExecution({ skill: skill.name });
       assert.ok(!("isError" in execution), `${skill.name} must resolve through Skill`);
       if (!("isError" in execution)) {
         const instructions = await execution.execute({ toolCallId: `builtin-${skill.name}` });
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     const projectOverride = overridden.skills.find((skill) => skill.name === "memory-management");
     assert.equal(projectOverride?.scope, "project");
     assert.equal(projectOverride?.source, "biny");
-    const overrideExecution = createSkillTool(overridden).resolveExecution({ skill: "memory-management" });
+    const overrideExecution = await createSkillTool(overridden).resolveExecution({ skill: "memory-management" });
     assert.ok(!("isError" in overrideExecution));
     if (!("isError" in overrideExecution)) {
       assert.match(await overrideExecution.execute({ toolCallId: "override" }) as string, /Project instructions/);
@@ -118,7 +118,7 @@ async function alwaysInjectedSkillScope(): Promise<void> {
     assert.match(bundle.prompt, /do not call the Skill tool for it/u);
 
     assert.equal(await skillPromptForSelection(bundle, "none"), "", "明确关闭本回合技能时不能由常驻声明重新启用");
-    assert.deepEqual(skillNamesForSelection(bundle, "none"), []);
+    assert.deepEqual(loadedSkillNamesForSelection(bundle, "none"), []);
     assert.deepEqual(skillPathsForSelection(bundle, "none"), []);
 
     // 关闭后不再常驻。

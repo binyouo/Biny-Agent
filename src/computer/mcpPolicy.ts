@@ -28,17 +28,23 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
   private desktopCapture?: { pid: number; windowId: string; captureId: string };
   private readonly transportId = `mcp:${randomUUID()}`;
   private tail: Promise<unknown> = Promise.resolve();
+  private readonly lifetime = new AbortController();
+  private closePromise?: Promise<void>;
   constructor(private readonly driver: NativeProcessDriver, private readonly store: AgentConfigStore = createFileConfigStore(globalAgentDir()),
     private readonly audit = new ComputerAuditStore(path.join(globalConfigDir(), "computer-actions.sqlite")),
     private readonly notify: (target: WindowTarget) => Promise<void> = notifyDesktopComputerActivity,
     private readonly getDesktop: () => Promise<BrowserAutomationEndpoint | undefined> = computerDesktopConnection) { this.approvals = new ComputerAppApprovals(store); }
   run(tool: string, args: Record<string, unknown>, operation: () => Promise<CallToolResult>, signal?: AbortSignal): Promise<CallToolResult> {
-    const result = this.tail.then(() => { signal?.throwIfAborted(); return this.execute(tool, args, operation, signal); }); this.tail = result.catch(() => undefined); return result;
+    const active = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
+    const result = this.tail.then(() => { active.throwIfAborted(); return this.execute(tool, args, operation, active); }); this.tail = result.catch(() => undefined); return result;
   }
-  async close(): Promise<void> {
-    await this.tail;
-    try { const desktop = this.desktop; if (desktop) await requestComputer(desktop, "release", { session: this.transportId }); }
-    finally { this.audit.close(); }
+  close(): Promise<void> {
+    this.lifetime.abort();
+    return this.closePromise ??= (async () => {
+      await this.tail;
+      try { const desktop = this.desktop; if (desktop) await requestComputer(desktop, "release", { session: this.transportId }, AbortSignal.timeout(2_000)); }
+      finally { this.audit.close(); }
+    })();
   }
   private async execute(tool: string, args: Record<string, unknown>, operation: () => Promise<CallToolResult>, signal?: AbortSignal): Promise<CallToolResult> {
     if (["permissions", "grant"].includes(tool)) return await operation();

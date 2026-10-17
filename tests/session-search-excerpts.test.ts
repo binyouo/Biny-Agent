@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test, type TestContext } from "node:test";
-import { createHistoryTools } from "../src/extensions/history.js";
+import { createHistoryQueryFixture } from "./fixtures/queryTools.js";
 import { SessionSearchStore as SessionSearchIndex, type SessionTranscriptHit } from "../src/session/searchIndexStore.js";
 
 const chinese = '今天讨论了下周发布前的准备事项。首先检查接口兼容性，确认老客户端仍能正常登录。然后核对数据库变更，确保每次迁移都有备份。日志需要保留请求标识，错误消息也要方便排查。权限检查覆盖管理员和普通用户，缓存更新要避免读取过期内容。网络超时应该给出清晰反馈，重试次数不能无限增加。性能指标包括页面加载时间，后台任务耗时，以及内存使用情况。测试要覆盖正常流程，取消操作，失败恢复，并发请求，以及重复提交。文档应该说明安装步骤，配置方法，常见问题，以及联系方式。客服同事需要提前知道本次变更，准备好回复模板。发布时安排两个人值守，分别负责观察监控和处理反馈。遇到异常先保存日志，再确认影响范围，避免直接重启导致线索丢失。最后确认部署回滚使用蓝绿发布，负责人是小林，周五下午演练。';
@@ -29,7 +29,7 @@ async function fixture(t: TestContext, content: string): Promise<{ root: string;
 }
 
 async function search(index: SessionSearchIndex, query: string): Promise<SessionTranscriptHit[]> {
-  const [tool] = createHistoryTools({ getIndex: () => index });
+  const tool = createHistoryQueryFixture({ getIndex: () => index });
   assert.ok(tool);
   const execution = await tool.resolveExecution({ query });
   assert.ok(!("isError" in execution));

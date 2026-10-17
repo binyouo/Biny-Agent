@@ -1,6 +1,10 @@
+import { promisify } from "node:util";
+import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
+import { startRuntimeHost } from "../src/runtime/RuntimeHost.js";
+import { defaultConfig } from "../src/config/schema.js";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, realpath, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -8,6 +12,7 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { agentDir, ensureAgentDirs } from "../src/session/store.js";
 import { TodoStore, type TodoItem } from "../src/session/todoStore.js";
 
+const exec = promisify(execFile);
 const cli = path.resolve("src/cli/index.ts");
 const initial: TodoItem[] = [{ content: "Keep the existing task", status: "in_progress" }];
 
@@ -16,7 +21,7 @@ test("todo replace rejects a non-list JSON payload without clearing the saved pl
   try {
     const before = await readFile(fixture.todoPath);
     for (const payload of [null, {}, { todo: [] }, { todos: null }, "not a plan", 3, false]) {
-      const result = fixture.run("replace", "--todos", JSON.stringify(payload));
+      const result = await fixture.run("replace", "--todos", JSON.stringify(payload));
       assert.equal(result.status, 1, `unsupported payload must fail: ${JSON.stringify(payload)}; ${result.stdout}`);
       assert.equal(result.stdout, "", "rejected replacements must not print a success result");
       assert.match(result.stderr, /todo|plan|list|array/i);
@@ -49,7 +54,7 @@ test("todo replace rejects invalid item status without reporting a plan that dis
       Array.from({ length: 51 }, () => ({ content: "Too many tasks", status: "pending" }))
     ];
     for (const todos of invalidLists) {
-      const result = fixture.run("replace", "--todos", JSON.stringify({ todos }));
+      const result = await fixture.run("replace", "--todos", JSON.stringify({ todos }));
       assert.equal(result.status, 1, `invalid item list must fail; ${result.stdout}`);
       assert.equal(result.stdout, "");
       assert.match(result.stderr, /plan|item|content|status/i);
@@ -83,24 +88,24 @@ test("todo replace accepts complete arrays and envelopes, persists their exact r
       { input: { todos: [] }, expected: [] }
     ];
     for (const { input, expected } of plans) {
-      const result = fixture.run("replace", "--todos", JSON.stringify(input));
+      const result = await fixture.run("replace", "--todos", JSON.stringify(input));
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(JSON.parse(result.stdout), { todos: expected });
       assert.deepEqual(await fixture.reopen(), expected, "a fresh store must agree with replacement feedback");
       await fixture.store.refresh();
       assert.deepEqual(fixture.store.list(), expected, "the resident store must observe committed CLI replacements");
-      const shown = fixture.run("show");
+      const shown = await fixture.run("show");
       assert.equal(shown.status, 0, shown.stderr);
       assert.deepEqual(JSON.parse(shown.stdout).todos, expected);
     }
     const boundary = Array.from({ length: 50 }, () => ({ content: "x".repeat(500), status: "pending" as const }));
-    const result = fixture.run("replace", "--todos", JSON.stringify(boundary));
+    const result = await fixture.run("replace", "--todos", JSON.stringify(boundary));
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), { todos: boundary });
     assert.deepEqual(await fixture.reopen(), boundary);
     await fixture.store.refresh();
     assert.deepEqual(fixture.store.list(), boundary);
-    const cleared = fixture.run("clear", "--yes");
+    const cleared = await fixture.run("clear", "--yes");
     assert.equal(cleared.status, 0, cleared.stderr);
     await fixture.store.refresh();
     assert.deepEqual(fixture.store.list(), []);
@@ -131,7 +136,7 @@ test("TodoStore rejects sparse array holes before changing the live or persisted
 });
 
 async function createFixture() {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-todo-cli-validation-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-todo-cli-validation-")));
   const workspaceRoot = path.join(root, "workspace");
   const globalRoot = path.join(root, "agent");
   const previousAgentDir = process.env.BINY_AGENT_DIR;
@@ -145,11 +150,19 @@ async function createFixture() {
   const store = new TodoStore(workspaceRoot, sessionId);
   await store.initialize();
   await store.replace(initial);
+  const config = structuredClone(defaultConfig);
+  config.context.memory.useMemories = false;
+  config.context.memory.generateMemories = false;
+  config.heartbeat.enabled = false;
+  const host = await startRuntimeHost(workspaceRoot, async () => await createInteractiveAgentHost(workspaceRoot, {
+    sessionId, configStore: { load: async () => config, save: async () => undefined }
+  }));
   return {
     store,
     todoPath: path.join(agentDir(workspaceRoot), "todos", `${sessionId}.json`),
-    run(command: string, ...args: string[]) {
-      const result = spawnSync(process.execPath, [
+    async run(command: string, ...args: string[]) {
+      try {
+      const result = await exec(process.execPath, [
         "--import", import.meta.resolve("tsx"), cli,
         "todo", command, "--session", sessionId, "--json", ...args
       ], {
@@ -158,9 +171,12 @@ async function createFixture() {
         encoding: "utf8",
         timeout: 20_000
       });
-      assert.equal(result.error, undefined);
-      assert.equal(result.signal, null);
-      return result;
+      return { ...result, status: 0 };
+      } catch (error) {
+        const result = error as { code?: number | string; stdout: string; stderr: string };
+        assert.equal(typeof result.code, "number", String(error));
+        return { ...result, status: result.code };
+      }
     },
     async reopen() {
       const reloaded = new TodoStore(workspaceRoot, sessionId);
@@ -168,6 +184,7 @@ async function createFixture() {
       return reloaded.list();
     },
     async close() {
+      await host.close();
       if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
       else process.env.BINY_AGENT_DIR = previousAgentDir;
       await rm(root, { recursive: true, force: true });

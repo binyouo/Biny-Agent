@@ -15,7 +15,7 @@ import { ensureAgentDirs } from "../src/session/store.js";
 import { archiveToolResult, readToolResultArchive, resolveToolResultArchivePath, type ArchiveToolResultOptions } from "../src/session/toolResultArchive.js";
 import { maxSessionEventLineBytes } from "../src/session/limits.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
 
 for (const outputSize of [40_000, maxSessionEventLineBytes + 1024]) {
 test(`partial archive retry preserves evidence or explicitly fails oversized persistence (${String(outputSize)} bytes)`, async (t) => {
@@ -37,7 +37,7 @@ test(`partial archive retry preserves evidence or explicitly fails oversized per
       name: "large_fixture", description: "Return synthetic large text", parameters: { type: "object", properties: {} }, schema: z.object({}), risk: "read",
       resolveExecution: () => ({ accesses: [], approvalRule: "large_fixture", execute: async () => ({ output: completeOutput }) })
     });
-    registry.registerBuiltinTool(createReadToolResultTool({ workspaceRoot: root, ignore: [] }));
+    registry.registerBuiltinTool(createReadFileTool({ workspaceRoot: root, ignore: [] }));
     recorder = new SessionRecorder(root, "partial-archive");
     await recorder.recordAndFlush({ type: "user_message", content: "read synthetic result" });
     const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry }, new PermissionManager(config.permission), () => undefined);
@@ -83,7 +83,7 @@ test(`partial archive retry preserves evidence or explicitly fails oversized per
     const replay = replaySessionEvents(events, { sessionId: recorder.sessionId });
     const replayed = replay.messages.find((message) => message.role === "toolResult" && message.toolCallId === "large-call");
     assert.ok(replayed?.role === "toolResult");
-    const reread = typeof stored.archivePath === "string" ? await tools.find((tool) => tool.name === "read_tool_result")!.execute("reread", { archivePath: stored.archivePath }) : undefined;
+    const reread = typeof stored.archivePath === "string" ? await tools.find((tool) => tool.name === "Read")!.execute("reread", { path: stored.archivePath }) : undefined;
     assert.equal((await fs.stat(partialPath)).size, 40, "existing partial bytes are retained untouched");
     assert.equal(JSON.stringify(replayed.details).includes(completeOutput), true, "fallback must preserve full output across replay");
     assert.equal(reread, undefined, "a known-invalid archive must not be returned as available");

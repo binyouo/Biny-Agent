@@ -25,7 +25,10 @@ const bundle = buildPromptBundle({
 
 assert.match(bundle.systemPrompt, /Available Skill metadata/u);
 // 技能优先级链与自进化是无条件常驻指引，不依赖本回合工具筛选。
-assert.match(bundle.systemPrompt, /look for a skill: check <available_skills> first, then skill_lookup/u);
+for (const command of ["biny memory search", "biny memory add", "biny history search", "biny skill list --query", "biny skill search", "biny skill install"]) {
+  assert.ok(bundle.systemPrompt.includes(command), `CLI guidance must include ${command}`);
+}
+assert.doesNotMatch(bundle.systemPrompt, /recall_memory|save_memory|search_history|skill_lookup|skill_search|skill_install/u);
 assert.match(bundle.systemPrompt, /save it as a reusable Skill/u);
 assert.doesNotMatch(bundle.systemPrompt, /private daily note|private activity|private crystal|Current emotion/u);
 assert.ok(bundle.turnContext.includes("<biny_reminder>Authoritative Local DateTime:"));

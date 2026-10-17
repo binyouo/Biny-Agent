@@ -70,7 +70,7 @@ test("当天手动 Sleep 已完成时设置页显示明天为下次运行日期"
     onCancelEmbeddingRebuild: async () => { throw new Error("unused"); },
     onNotify: () => undefined
   } as unknown as Parameters<typeof SettingsMemory>[0];
-  const context = { draft: { memory: policy }, snapshot: { memory: policy }, dirtyCount: 0,
+  const context = { draft: { memory: policy }, snapshot: { memory: policy, models: { connections: [] } }, dirtyCount: 0,
     setMemory: () => undefined } as unknown as SettingsDraftContextValue;
   try {
     await act(async () => { root.render(createElement(SettingsDraftContext.Provider, { value: context }, createElement(SettingsMemory, props))); });

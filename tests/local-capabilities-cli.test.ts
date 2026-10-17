@@ -37,7 +37,7 @@ try {
   const skillHelp = await runCli(["skill", "--help"]);
   assert.equal(skillHelp.code, 0);
   assert.match(skillHelp.stdout, /search\|find \[options\]/u);
-  assert.match(skillHelp.stdout, /install <source>/u);
+  assert.match(skillHelp.stdout, /install \[options\] <source>/u);
   assert.match(skillHelp.stdout, /update/u);
   assert.match(skillHelp.stdout, /uninstall <name>/u);
 

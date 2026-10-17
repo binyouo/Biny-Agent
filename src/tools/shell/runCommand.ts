@@ -18,9 +18,10 @@ import type {
   ManagedProcessService,
   ManagedProcessSnapshot
 } from "../../runtime/ManagedProcessService.js";
-import type { Tool, ToolContext, ToolUpdate } from "../types.js";
+import type { Tool, ToolContext, ToolUpdate, ToolExecutionContext } from "../types.js";
 import { resolveWorkspaceDirectory } from "../../workspace/resolvePath.js";
 import { managedProcessReadinessParameters, managedProcessReadinessSchema } from "../process/managedProcesses.js";
+import { defaultShell, shellCommandInvocation, shellGuidance, type ShellPlan } from "./shell.js";
 
 const maxOutputBytes = 1024 * 1024;
 /** 普通调用仍只保留 1MiB；Bash 工具会在这个更大的边界内尽量保留全文，交给上层归档。 */
@@ -68,6 +69,7 @@ export interface RunCommandResult {
 }
 
 export interface RunShellCommandOptions {
+  shell?: ShellPlan;
   signal?: AbortSignal;
   /** Internal observation only; this evidence never changes the public result. */
   onCompletionEvidence?: (evidence: ShellCompletionEvidence) => void;
@@ -87,9 +89,15 @@ export interface RunShellCommandOptions {
 export type ShellCompletionEvidence = "normal_exit" | "unconfirmed";
 
 export interface RunCommandToolOptions {
+  shell?: ShellPlan;
   /** 内部调用方可收紧单次命令超时；普通模型工具继续使用 runShellCommand 的默认值。 */
   timeoutMs?: number;
   controlledComputerUse?: boolean;
+  executionScope?: (context: ToolExecutionContext, args: RunCommandArgs) => {
+    env: Record<string, string>;
+    resultMetadata(): Record<string, unknown>;
+    dispose(): void;
+  } | undefined;
 }
 
 export function createRunCommandTool(
@@ -98,6 +106,7 @@ export function createRunCommandTool(
   options: RunCommandToolOptions = {},
   managedProcesses?: ManagedProcessService
 ): Tool<RunCommandArgs, RunCommandToolResult> {
+  const shell = options.shell ?? defaultShell();
   const sandboxOptions: SandboxOptions = { mode: sandbox?.mode ?? "off", allowNetwork: sandbox?.allowNetwork ?? true, allowDesktopControl: options.controlledComputerUse && process.platform === "darwin" ? false : undefined };
   const schema = z.object({
     command: z.string().min(1),
@@ -126,7 +135,7 @@ export function createRunCommandTool(
   }) satisfies z.ZodType<RunCommandArgs>;
   return {
     name: "Bash",
-    description: "Run a shell command in the workspace. Foreground commands have a bounded timeout; set background for servers and other long-running commands, then use BashOutput or KillShell with the returned process ID.",
+    description: "Run a shell command in the workspace. Foreground commands have a bounded timeout; set background for servers and other long-running commands, then use BashOutput or KillShell with the returned process ID." + shellGuidance(shell),
     promptSnippet: "Run a finite command or start a managed background process",
     promptGuidelines: ["Provide a brief description of the command purpose in the user's language", "Use background instead of &, nohup, or disown for long-running commands; pass a workspace-relative cwd for commands in a subdirectory", "Native desktop actions must use the Computer Use MCP tools. Never substitute biny cu, another native daemon, AppleScript, Quartz, clipboard paste, or app activation when an action is unavailable, paused, denied or unverified. Ask for the missing permission or inspect a fresh observation."],
     parameters: {
@@ -162,10 +171,11 @@ export function createRunCommandTool(
       const commandCwd = resolveWorkspaceDirectory(context.workspaceRoot, args.cwd ?? inferredCwd ?? ".", context.ignore);
       return {
         accesses: ToolAccesses.readWriteTree(commandCwd),
-        display: { kind: "command", command: args.command, cwd: commandCwd, language: "bash" },
+        display: { kind: "command", command: args.command, cwd: commandCwd, language: shell.kind === "powershell" || shell.kind === "pwsh" ? "powershell" : shell.kind === "cmd" ? "batch" : "bash" },
         description: args.description?.trim() || `${args.background === true ? "Start background" : "Run"} ${preview}`,
         approvalRule: `Bash(${args.command})`,
-        async execute({ signal, onUpdate, deniedPaths }) {
+        async execute(executionContext) {
+          const { signal, onUpdate, deniedPaths } = executionContext;
           const currentCwd = resolveWorkspaceDirectory(context.workspaceRoot, args.cwd ?? inferredCwd ?? ".", context.ignore);
           if (currentCwd !== commandCwd) throw new Error("The command working directory changed after the tool call was prepared.");
           const cwd = args.cwd || !inferredCwd ? commandCwd : context.workspaceRoot;
@@ -178,25 +188,26 @@ export function createRunCommandTool(
           const sandboxDescription = sandboxed.applied
             ? describeSandbox(executionSandbox, process.platform)
             : `not applied (${sandboxed.reason ?? "unknown"})`;
-          if (args.background === true) {
-            const process = await managedProcesses!.start({
-              command: sandboxed.command,
-              displayCommand: args.command,
-              cwd,
-              url: args.url,
-              readiness: args.readiness,
-              signal
+          const scope = options.executionScope?.(executionContext, args);
+          try {
+            if (args.background === true) {
+              const process = await managedProcesses!.start({
+                command: sandboxed.command,
+                displayCommand: args.command,
+                cwd,
+                url: args.url,
+                readiness: args.readiness,
+                shell,
+                signal
+              });
+              return { background: true, sandbox: sandboxDescription, process };
+            }
+            const result = await runShellCommand(cwd, sandboxed.command, {
+              signal, onUpdate, timeoutMs: args.timeoutMs ?? options.timeoutMs,
+              captureFullOutput: true, shell, env: scope?.env
             });
-            return { background: true, sandbox: sandboxDescription, process };
-          }
-          const result = await runShellCommand(cwd, sandboxed.command, {
-            signal,
-            onUpdate,
-            timeoutMs: args.timeoutMs ?? options.timeoutMs,
-            captureFullOutput: true
-          });
-          // 如实回报这次到底有没有边界，避免"沙箱模式"这个名字暗示一个不存在的保护。
-          return { ...result, background: false, sandbox: sandboxDescription };
+            return { ...result, background: false, sandbox: sandboxDescription, ...scope?.resultMetadata() };
+          } finally { scope?.dispose(); }
         }
       };
     }
@@ -287,13 +298,18 @@ async function runShellCommandWithCompletionEvidence(
       else outputTimer ??= setTimeout(flushUpdates, 50);
     };
 
-    const child = spawn(command, {
+    const shell = options.shell ?? defaultShell();
+    const env = options.env ? { ...process.env, ...options.env } : process.env;
+    const invocation = shell.kind === "posix" ? undefined : shellCommandInvocation(shell, command, env);
+    const spawnOptions = {
       cwd,
-      shell: true,
+      shell: invocation?.shell ?? invocation === undefined,
       detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-      ...(options.env ? { env: { ...process.env, ...options.env } } : {})
-    });
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+      env: invocation?.env ?? env
+    };
+    const child = invocation ? spawn(invocation.executable, invocation.args, spawnOptions) : spawn(command, spawnOptions);
 
     const appendDiagnostic = (message: string) => {
       const text = `${stderrBuffer.retainedBytes > 0 ? "\n" : ""}${message}`;

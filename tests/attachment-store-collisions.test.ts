@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
-import { attachmentFilePath, attachmentPathPrefix, ensureAttachmentRoot, readAttachment, saveAttachment } from "../src/attachments/store.js";
+import { attachmentFilePath, attachmentMessageParts, attachmentPathPrefix, ensureAttachmentRoot, readAttachment, readAttachmentBytes, saveAttachment } from "../src/attachments/store.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 
 const timestamp = 1_800_000_000_000;
@@ -46,6 +46,20 @@ function gate() {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
+
+test("Read-only document references become separate model content without loading file bytes", async (t) => {
+  const f = await fixture(t);
+  const bytes = Buffer.from("private document body");
+  const reference = await saveAttachment(f.workspace, "report.pdf", "application/pdf", bytes);
+  const attachment = await readAttachment(f.workspace, reference);
+  assert.ok(attachment);
+  assert.equal(attachment.data, "", "document bytes stay available to Read without being copied into the model attachment object");
+  assert.deepEqual(attachmentMessageParts([attachment]), [{
+    type: "text",
+    text: `Attached file (application/pdf): ${reference.path}. Use Read to inspect it when relevant.`
+  }]);
+  assert.doesNotMatch(JSON.stringify(attachmentMessageParts([attachment])), /private document body/u);
+});
 
 test("saveAttachment retains metadata, name sanitization, bytes and private file mode", async (t) => {
   const f = await fixture(t);
@@ -219,7 +233,8 @@ test("new internal filenames fold consecutive dots while metadata retains its di
     assert.equal(reference.name, name);
     assert.equal(reference.path.includes(".."), false);
     assert.ok(attachmentFilePath(f.directory, reference.path));
-    assert.equal((await readAttachment(f.workspace, reference))?.data, bytes.toString("base64"));
+    assert.equal((await readAttachment(f.workspace, reference))?.data, "", "non-media bytes stay on disk for Read instead of becoming model payload");
+    assert.deepEqual(await readAttachmentBytes(f.workspace, reference.path), bytes);
   }
   assert.equal(attachmentFilePath(f.directory, "@attachments/report..pdf"), undefined);
   assert.equal(attachmentFilePath(f.directory, "@attachments/../secret"), undefined);

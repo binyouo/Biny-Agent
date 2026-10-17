@@ -1,6 +1,7 @@
+import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, realpath, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -9,15 +10,20 @@ import { connectRuntimeHost, startRuntimeHost } from "../src/runtime/RuntimeHost
 import { readSessionEvents } from "../src/session/events.js";
 import type { InteractiveRuntimeSnapshot } from "../src/runtime/agentEvents.js";
 
-const root = await mkdtemp(path.join(os.tmpdir(), "biny-session-goal-host-"));
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const biny = [process.execPath, "--import", createRequire(import.meta.url).resolve("tsx"), path.resolve("src/cli/index.ts")].map(shellQuote).join(" ");
+for (const executionMode of ["direct", "code_mode"] as const) {
+const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-session-goal-host-")));
 const oldAgentDir = process.env.BINY_AGENT_DIR;
 process.env.BINY_AGENT_DIR = path.join(root, "state");
 let requests = 0;
 let hold = false;
 let noWork = false;
+let goalReadsOnly = false;
 let held: ServerResponse | undefined;
 const prompts: string[] = [];
 const userInputs: string[] = [];
+const permissionRequests = new Set<string>();
 function send(response: ServerResponse, delta: unknown, finish = "stop"): void {
   response.writeHead(200, { "content-type": "text/event-stream" });
   response.end([
@@ -30,19 +36,27 @@ const provider = createServer((request, response) => { void (async () => {
   let source = "";
   for await (const chunk of request) source += String(chunk);
   const body = JSON.parse(source) as { messages: unknown[]; tools?: Array<{ function?: { name?: string } }> };
-  if (!body.tools?.some(tool => tool.function?.name === "GoalUpdate")) {
+  if (!body.tools?.some(tool => tool.function?.name === (executionMode === "direct" ? "Bash" : "exec"))) {
     send(response, { content: JSON.stringify({ skillIds: [], tools: [] }) });
     return;
   }
   prompts.push(JSON.stringify(body.messages));
   requests += 1;
+  const call = (name: string, args: unknown) => ({ tool_calls: [{ index: 0, id: `goal-tool-${requests}`, type: "function", function: executionMode === "direct"
+    ? { name, arguments: JSON.stringify(args) }
+    : { name: "exec", arguments: JSON.stringify({ code: `return await tools.${name}(${JSON.stringify(args)});` }) } }] });
   if (hold) { held = response; return; }
+  if (goalReadsOnly) {
+    if ((body.messages.at(-1) as { role?: string })?.role === "tool") send(response, { content: "目标状态已核对，仍未产生工作证据。" });
+    else send(response, call("Bash", { command: `${biny} goal show --json` }), "tool_calls");
+    return;
+  }
   if (noWork) { send(response, { content: "目标尚未完成，下一步继续检查。" }); return; }
   if (requests === 1) { send(response, { content: "阶段工作结束，仍需产出并验证文件。" }); return; }
-  const call = (name: string, args: unknown) => ({ tool_calls: [{ index: 0, id: `goal-tool-${requests}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+
   if (requests === 2) { send(response, call("Write", { path: "result.txt", content: "goal-result\n" }), "tool_calls"); return; }
   if (requests === 3) {
-    send(response, call("GoalUpdate", { status: "completed", evidence: { summary: "目标逐项完成。", requirements: [{ requirement: "创建 result.txt", evidence: "Write 工具已成功写入 goal-result。" }] } }), "tool_calls");
+    send(response, call("Bash", { command: `${biny} goal update --input ${shellQuote(JSON.stringify({ status: "completed", evidence: { summary: "目标逐项完成。", requirements: [{ requirement: "创建 result.txt", evidence: "Write 工具已成功写入 goal-result。" }] } }))} --json` }), "tool_calls");
     return;
   }
   send(response, { content: "已产出并验证 result.txt。" });
@@ -52,6 +66,7 @@ const address = provider.address();
 assert.ok(address && typeof address !== "string");
 const config = configSchema.parse({ ...defaultConfig,
   defaultModel: "local", toolModel: "local",
+  agent: { ...defaultConfig.agent, toolExecutionMode: executionMode },
   providers: { test: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
   models: { local: { provider: "test", model: "local", capabilities: { tools: true, reasoning: false, streaming: true } } },
   permission: { ...defaultConfig.permission, mode: "auto" },
@@ -84,8 +99,9 @@ try {
   client = await connectRuntimeHost(root);
   client.subscribe(update => {
     if (update.event?.type === "message.user") userInputs.push(update.event.content);
-    if (update.event?.type === "permission.requested") {
-      void client!.request("permission", { sessionId: update.event.sessionId, requestId: update.event.requestId, result: { approved: true, action: "allow_once", scope: "once" } });
+    if (update.event?.type === "permission.requested" && !permissionRequests.has(update.event.requestId)) {
+      permissionRequests.add(update.event.requestId);
+      void client!.request("permission", { sessionId: update.event.sessionId, requestId: update.event.requestId, result: { approved: true, action: "allow_once", scope: "once", confirmation: "yes" } });
     }
   });
   assert.equal(await client.request("session.goal.get", { sessionId: "missing-session" }), undefined, "A cold Goal query must not create a runtime.");
@@ -173,6 +189,23 @@ try {
   await eventually(() => goalOwnerClient!.request<{ status: string }>("session.goal.get", { sessionId: "goal-session" }), value => value.status === "paused");
   await goalOwnerClient.waitForIdle("goal-session");
   assert.equal(requests - noWorkBeforeResume, 1, "Explicit resume permits one fresh internal audit and still prevents textual spinning.");
+  noWork = false; goalReadsOnly = true;
+  goalOwnerClient.subscribe(update => {
+    if (update.event?.type !== "permission.requested" || permissionRequests.has(update.event.requestId)) return;
+    permissionRequests.add(update.event.requestId);
+    void goalOwnerClient!.request("permission", {
+      sessionId: update.event.sessionId, requestId: update.event.requestId,
+      result: { approved: true, action: "allow_once", scope: "once", confirmation: "yes" }
+    });
+  });
+  const beforeGoalReads = requests;
+  await goalOwnerClient.request("session.goal.set", { sessionId: "goal-session", objective: "目标查询本身不能算工作进展。" });
+  await goalOwnerClient.request("session.goal.resume", { sessionId: "goal-session" });
+  const queryOnly = await eventually(() => goalOwnerClient!.request<{ status: string }>("session.goal.get", { sessionId: "goal-session" }), value => value.status === "paused" || requests - beforeGoalReads > 4);
+  assert.equal(queryOnly.status, "paused", "Goal CLI reads must not keep an automatic goal spinning.");
+  await goalOwnerClient.waitForIdle("goal-session");
+  assert.equal(requests - beforeGoalReads, 4);
+
 } finally {
   await goalOwnerClient?.close();
   await client?.close();
@@ -182,5 +215,6 @@ try {
   await new Promise<void>(resolve => provider.close(() => resolve()));
   if (oldAgentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = oldAgentDir;
   await rm(root, { recursive: true, force: true });
+}
 }
 console.log("session goal host tests passed");

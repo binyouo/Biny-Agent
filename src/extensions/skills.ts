@@ -1,8 +1,9 @@
 /**
  * Agent Skills 扩展模块（渐进式披露，对齐 Agent Skills 范式）。
  *
- * 启动时只读取 YAML frontmatter；根回合能力分析完成后，选中 Skill 的正文和声明
- * 才进入首轮 system prompt。未选中的 Skill 仍可由 Skill/skill_lookup 动态发现，
+ * 启动时只读取 YAML frontmatter；根回合能力分析完成后，选中 Skill 的名称和描述
+ * 进入首轮 system prompt。普通正文由 Skill 按需读取，常驻声明允许提前加载；
+ * 未选中的 Skill 仍可由 Skill 或 biny skill list 动态发现，
  * references/scripts/assets 继续由 read_skill_resource 按需读取。
  * 默认发现 Biny 受管目录和各 Agent 的标准全局 Skill 根；全局入口中的已有软链会被保留，
  * 项目 Skill 根仍禁止越界软链，避免工作区配置意外扩大运行时读取范围。
@@ -278,7 +279,7 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
   if (!skills.length) return "";
   const guidance = [
     "Skills use progressive disclosure: the list above holds metadata only, and the Skill tool loads a skill's full instructions on demand.",
-    "When a task matches a listed skill, invoke the Skill tool as your first action instead of improvising a separate workflow.",
+    "When a task matches a listed skill, invoke Skill before following its workflow unless its always-inject instructions are already loaded.",
     "A /skill:name or $skill-name mention in the user's message is an explicit request: load that skill before replying about the task.",
     "A skill marked [always injected] has its instructions in the system prompt already; do not call the Skill tool for it."
   ].join(" ");
@@ -289,7 +290,7 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
       return `- "${skill.name}"${marker}: ${description}`;
     });
     const omitted = skills.length - limit;
-    if (omitted > 0) lines.push(`(${String(omitted)} additional skills were omitted from this list. Use /skills to inspect all skills.)`);
+    if (omitted > 0) lines.push(`(${String(omitted)} additional skills were omitted from this list. Use biny skill list --query <keywords> --json to discover them.)`);
     return ["<available_skills>", ...lines, "</available_skills>", guidance].join("\n");
   };
   for (const descriptionLimit of [maxSkillDescriptionChars, 300, 160, 80]) {
@@ -301,11 +302,12 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
   return render(80, visible);
 }
 
-/** 读取本轮选中与常驻 Skill；显式全关仍优先，装配不等同于工具调用。 */
+/** 选中项只披露元数据；仅显式常驻项预读正文，装配不等同于工具调用。 */
 export async function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): Promise<string> {
   const selected = selectSkills(bundle, selection);
   if (!selected.length) return "";
-  const sections = await Promise.all(selected.map(async (definition) => {
+  const metadataPrompt = buildSkillPrompt(selected);
+  const sections = await Promise.all(selected.filter((skill) => skill.alwaysInject).map(async (definition) => {
     const content = await readSkillFileFresh(definition.rootPath, definition.filePath, maxSkillInstructionBytes);
     let body = content;
     let metadata: SkillMetadata | undefined;
@@ -325,9 +327,11 @@ export async function skillPromptForSelection(bundle: SkillBundle, selection?: C
       await listSkillResources(definition.filePath, metadata)
     );
   }));
+  if (!sections.length) return metadataPrompt;
   return [
+    metadataPrompt,
     "<selected_skills>",
-    "The following Skill instructions were selected during turn preparation. They are context, not evidence that a Skill tool was invoked.",
+    "The following always-inject Skill instructions are already loaded. Do not invoke Skill to load them again. This preparation is not a Skill tool invocation.",
     ...sections,
     "</selected_skills>"
   ].join("\n\n");
@@ -337,8 +341,8 @@ export function skillPathsForSelection(bundle: SkillBundle, selection?: Capabili
   return selectSkills(bundle, selection).map((skill) => skill.path);
 }
 
-export function skillNamesForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
-  return selectSkills(bundle, selection).map((skill) => skill.name);
+export function loadedSkillNamesForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
+  return selectSkills(bundle, selection).filter((skill) => skill.alwaysInject).map((skill) => skill.name);
 }
 
 function selectSkills(bundle: SkillBundle, selection?: CapabilitySelectionValue): SkillDefinition[] {
@@ -354,10 +358,10 @@ const invokeSkillArgsSchema = z.object({
 
 type SkillBundleSource = SkillBundle | (() => SkillBundle);
 
-export function createSkillTool(source: SkillBundleSource): Tool {
+export function createSkillTool(source: SkillBundleSource, refresh?: () => Promise<void>): Tool {
   return {
     name: "Skill",
-    description: "Load the full instructions of an installed skill by name through progressive disclosure. Turn preparation may already include selected Skill instructions; use this tool when instructions are not present or when explicitly invoking another discovered skill. A real invocation is recorded as Skill usage and remains subject to normal permissions.",
+    description: "Load the full instructions of an installed skill by name through progressive disclosure. The available skill list contains names and descriptions only. Invoke before following a skill's workflow, unless its always-inject instructions are already in the system prompt. A real invocation is recorded as Skill usage and remains subject to normal permissions.",
     promptSnippet: "Load the full instructions for an available skill",
     parameters: {
       type: "object",
@@ -371,12 +375,13 @@ export function createSkillTool(source: SkillBundleSource): Tool {
     source: "skill",
     capability: "skills",
     risk: "read",
-    resolveExecution(args: unknown) {
+    async resolveExecution(args: unknown) {
       const parsed = invokeSkillArgsSchema.safeParse(args);
       if (!parsed.success) {
         return { isError: true as const, result: "Skill requires a skill name.", errorMessage: "Skill requires a skill name." };
       }
       const requested = parsed.data.skill;
+      await refresh?.();
       const bundle = currentBundle(source);
       const resolved = resolveSkill(bundle, requested);
       if (typeof resolved === "string") {
@@ -525,68 +530,11 @@ function currentBundle(source: SkillBundleSource): SkillBundle {
   return typeof source === "function" ? source() : source;
 }
 
-const skillLookupArgsSchema = z.object({
-  query: z.string().trim().min(1).max(200),
-  limit: z.number().int().min(1).max(20).optional()
-});
-
-/**
- * 本地技能搜索（介于元数据清单与 Skill 工具之间的发现层）。
- *
- * 清单只含本回合激活的技能；模型怀疑还有其他已装技能时用关键词在这里检索，
- * 纯本地打分、不联网也不调辅助模型，命中后仍经 Skill 工具加载全文。
- */
-export function createSkillLookupTool(source: SkillBundleSource): Tool {
-  return {
-    name: "skill_lookup",
-    description: "Search installed skills by name or description, including skills beyond the current <available_skills> list. Pure local keyword scoring; invoke the Skill tool with a returned name to load its full instructions.",
-    promptSnippet: "Search installed skills beyond the active list",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Capability or task keywords to match against skill names and descriptions." },
-        limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum matches to return. Defaults to 8." }
-      },
-      required: ["query"],
-      additionalProperties: false
-    },
-    schema: skillLookupArgsSchema,
-    source: "skill",
-    capability: "skills",
-    risk: "read",
-    resolveExecution(args: unknown) {
-      const parsed = skillLookupArgsSchema.safeParse(args);
-      if (!parsed.success) {
-        const message = "skill_lookup requires a query.";
-        return { isError: true as const, result: message, errorMessage: message };
-      }
-      const matches = rankSkillsByQuery(currentBundle(source).skills, parsed.data.query, parsed.data.limit ?? 8);
-      return {
-        accesses: ToolAccesses.none(),
-        display: { kind: "generic" as const, summary: "Search installed skills", detail: parsed.data.query },
-        description: `Search installed skills for ${parsed.data.query}`,
-        approvalRule: `skill_lookup(${parsed.data.query})`,
-        async execute(): Promise<unknown> {
-          return {
-            query: parsed.data.query,
-            found: matches.length,
-            skills: matches,
-            hint: matches.length
-              ? "Invoke the Skill tool with a returned name to load its full instructions."
-              : "No installed skill matched. Use skill_search to look for an installable one."
-          };
-        }
-      };
-    }
-  };
-}
-
-/** token 覆盖数优先、命中权重次之（name 权重高于 description），同分按名字稳定排序。 */
-function rankSkillsByQuery(
+export function rankSkillsByQuery(
   skills: SkillDefinition[],
   query: string,
   limit: number
-): Array<{ name: string; description: string; scope: SkillScope; path: string }> {
+): SkillDefinition[] {
   const tokens = [...new Set(query.normalize("NFKC").toLowerCase().split(/\s+/u).filter((token) => token.length > 0))];
   if (!tokens.length) return [];
   const ranked = skills
@@ -608,7 +556,7 @@ function rankSkillsByQuery(
     })
     .filter((entry) => entry.covered > 0);
   ranked.sort((left, right) => right.covered - left.covered || right.score - left.score || left.skill.name.localeCompare(right.skill.name));
-  return ranked.slice(0, limit).map(({ skill }) => ({ name: skill.name, description: skill.description, scope: skill.scope, path: skill.path }));
+  return ranked.slice(0, limit).map(({ skill }) => skill);
 }
 
 /** 同名冲突已在加载时按优先级去重，技能名全局唯一，按名解析即可。 */

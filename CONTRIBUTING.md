@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-CI 使用 Node.js 22，项目使用 pnpm `10.6.5`。Desktop 与原生 Computer Use 的完整构建需要 macOS。
+CI 使用 Node.js 22，项目使用 pnpm `10.6.5`。Desktop 可在 macOS 或 Windows 构建；原生 Computer Use、Activity 和日历 sidecar 仅在 macOS 构建。Windows 的 node-pty 原生重建需要 Visual Studio C++ Build Tools 与 Windows SDK。
 
 ```bash
 corepack enable
@@ -25,6 +25,10 @@ pnpm build
 ```
 
 `build:cli` 只构建 CLI；`build` 包含 CLI、Desktop 及原生依赖构建。在其他项目使用当前 CLI 时，先执行 `pnpm link --global`，再切到目标项目运行 `biny`。
+
+Windows 使用相同的 `pnpm desktop:dev` 开发入口，`pnpm desktop:pack` 生成应用目录，`pnpm desktop:dist` 生成 NSIS 安装程序与 ZIP；安装包尚未配置 Windows 代码签名。这些命令先准备 Electron 与 PTY 原生依赖。macOS 继续生成对应的应用目录、DMG 和 ZIP。
+
+`node scripts/run-tests.mjs windows` 验证平台选择、真实 Host 多客户端连接、认证、退出重启与进程树清理；真实 DACL 用例仅在 Windows 运行。CI 的 Windows lane 另检查构建后的 Electron headless Host 并生成安装包，不执行模型 API 或替代人工界面验收。Windows 上还需人工检查中文输入法、粘贴、快捷键、窗口与终端缩放、会话交接、终端关闭和安装卸载。
 
 代码入口与数据职责见 [架构](docs/ARCHITECTURE.md)。终端展示使用 `@earendil-works/pi-tui`，Desktop 使用 Electron；界面层负责适配，运行与持久化逻辑在核心模块中维护。
 
@@ -49,6 +53,15 @@ pnpm build
 先运行覆盖目标行为的最小检查，再按影响范围运行上述入口。完整 CI 还包括产物检查和其他工作流要求，以 [ci.yml](.github/workflows/ci.yml) 为准。
 
 单文件检查也可以通过 `node scripts/run-tests.mjs config-test-isolation` 运行；入口为每个测试进程创建并清理独立的 `BINY_AGENT_DIR`。直接运行测试时，配置、会话和凭据目录必须显式指向临时目录。测试及其派生进程会拒绝访问日常 Biny 数据目录，包括指向这些目录的符号链接；系统 Keychain 调用也被拒绝，持久凭据测试须注入独立的存储或命令替身。
+
+标准测试在 CI 中分为 4 个并行任务：测试文件按名称排序后轮流分配，每个任务内仍逐文件执行。`pnpm test` 默认运行完整测试集。可以列出或执行一个标准测试分片：
+
+```bash
+node scripts/run-tests.mjs --standard --shard=1/4 --list
+pnpm test:standard --shard=1/4 --report=test-timings.json
+```
+
+`--shard` 使用从 1 开始的编号；四个分片覆盖完整标准测试集且没有重复。`--report` 记录所选文件、已执行文件的耗时与退出码；测试失败时保留已执行结果并停止该分片。CI 会上传各分片的耗时报告，其他分片继续执行，最终检查要求所有分片通过。`pnpm test:runner` 验证分片覆盖、失败传播和进程目录隔离。
 
 项目依赖和文档检查的范围与限制见[开发规范](docs/DEVELOPMENT.md#可执行检查)。纯文档修改运行 `pnpm check:docs`；维护本地规格时再运行 `pnpm check:docs:local`，不需要运行无关模型任务或构建。Desktop、Web 与 TUI 的视觉和交互由人工验收，交付时提供操作步骤、预期表现与关键边界。
 

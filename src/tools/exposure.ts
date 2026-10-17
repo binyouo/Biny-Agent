@@ -10,6 +10,11 @@ export function isToolModelVisible(tool: Pick<Tool, "exposure">): boolean {
   return exposure !== "hidden" && exposure !== "codemode";
 }
 
+/** Code Mode uses script discovery instead of a second model-facing search entrypoint. */
+export function isToolModelVisibleInMode(tool: Pick<Tool, "name" | "exposure">, mode: "direct" | "code_mode"): boolean {
+  return isToolModelVisible(tool) && (mode !== "code_mode" || tool.name !== "ToolSearch");
+}
+
 /** 暴露资格与执行准入独立，返回 true 后仍须校验工具来源、风险、权限与预算。 */
 export function isToolScriptCallable(tool: Pick<Tool, "exposure">, selected: boolean): boolean {
   switch (getToolExposure(tool)) {

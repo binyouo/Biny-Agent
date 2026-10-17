@@ -8,6 +8,7 @@ import { z } from "zod";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
+import { stripTransientTurnContext } from "../src/agent/prompts.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
@@ -138,7 +139,7 @@ for (const background of ["none", "previous-turn", "unscoped"] as const) {
         stream: async (context, options) => {
           resumedRequests += 1;
           assert.ok(context.messages.some((message) => message.role === "toolResult" && message.toolCallId === "fast-call"));
-          assert.ok(context.messages.some((message) => message.role === "user" && message.content === "current task"));
+          assert.ok(stripTransientTurnContext(context.messages).some((message) => message.role === "user" && message.content === "current task"));
           return await resumedProvider.stream(context, options);
         }
       }, registry);

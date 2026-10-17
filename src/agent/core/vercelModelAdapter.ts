@@ -18,6 +18,7 @@ import type {
 } from "@ai-sdk/provider";
 import { boundComputerFrames } from "../../computer/modelFrames.js";
 import { stableSystemPromptForCache } from "../prompts.js";
+import { projectMessageSentAt } from "../modelMessages.js";
 import { classifyModelRequestError } from "../../llm/modelErrors.js";
 import {
   computePromptShapeDiagnostic,
@@ -58,9 +59,9 @@ export function createLanguageModel(state: VercelLoopState): LanguageModelV4 {
 }
 
 export async function modelMessages(state: VercelLoopState): Promise<ModelMessage[]> {
-  const messages = state.config.transformContext
+  const messages = (state.config.transformContext
     ? await state.config.transformContext(state.context.messages, state.signal)
-    : state.context.messages;
+    : state.context.messages).map(projectMessageSentAt);
   if (state.vercelModel !== undefined) {
     await state.config.onRequestContext?.({ systemPrompt: state.context.systemPrompt, messages, tools: state.context.tools });
   }
@@ -203,7 +204,7 @@ async function* streamModel(
     try {
       const messages = boundComputerFrames(state.config.transformContext
         ? await state.config.transformContext(state.context.messages, signal)
-        : state.context.messages);
+        : state.context.messages).map(projectMessageSentAt);
       if (!state.model.stream) throw new Error("Vercel model is unavailable for the injected AgentModel.");
       const streamModel = state.model.stream.bind(state.model);
       const streamOptions: ModelStreamOptions = {
@@ -353,7 +354,7 @@ async function collectGenerateResult(
 }
 
 export function toModelMessages(messages: AgentMessage[], nativePatch = false): ModelMessage[] {
-  return boundComputerFrames(messages).map((message) => {
+  return orderHistoricalPatchResults(boundComputerFrames(messages), nativePatch).map(projectMessageSentAt).map((message) => {
     if (message.role === "user") {
       if (typeof message.content === "string") return { role: "user", content: message.content };
       return {
@@ -396,6 +397,23 @@ export function toModelMessages(messages: AgentMessage[], nativePatch = false): 
       }]
     };
   });
+}
+
+/** Historical patch notes become assistant text, so emit them after the whole result batch. */
+function orderHistoricalPatchResults(messages: AgentMessage[], nativePatch: boolean): AgentMessage[] {
+  if (nativePatch) return messages;
+  const ordered: AgentMessage[] = [];
+  const patchResults: AgentMessage[] = [];
+  for (const message of messages) {
+    if (message.role !== "toolResult") {
+      ordered.push(...patchResults);
+      patchResults.length = 0;
+    }
+    if (message.role === "toolResult" && message.toolName === "apply_patch") patchResults.push(message);
+    else ordered.push(message);
+  }
+  ordered.push(...patchResults);
+  return ordered;
 }
 
 function toReadableStream(source: AsyncIterable<LanguageModelV4StreamPart>): ReadableStream<LanguageModelV4StreamPart> {

@@ -7,11 +7,18 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { desktopApplicationLaunch } from "../../runtime/host/lifecycle.js";
+import { launchDetached } from "../../utils/launchDetached.js";
 
 const execFileAsync = promisify(execFile);
 
 export async function openDesktopSession(workspaceRoot: string, sessionId: string): Promise<void> {
-  if (process.platform !== "darwin") throw new Error("`/app` currently requires macOS Biny Desktop.");
+  if (process.platform === "win32") {
+    const desktop = desktopApplicationLaunch();
+    await launchDetached(desktop.executable, [desktop.appPath, "--biny-workspace", path.resolve(workspaceRoot), "--biny-session", sessionId]);
+    return;
+  }
+  if (process.platform !== "darwin") throw new Error("`/app` requires an installed Biny Desktop on macOS or Windows.");
   const applicationName = process.env.BINY_DESKTOP_APP?.trim() || "Biny";
   await execFileAsync("/usr/bin/open", [
     "-a",

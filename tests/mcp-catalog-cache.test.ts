@@ -39,7 +39,7 @@ await test("recreated scopes discover a cached catalog while connecting but reva
   await once(server, "listening");
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  const config = configSchema.parse({ ...defaultConfig, extensions: { ...defaultConfig.extensions, skills: [],
+  const config = configSchema.parse({ ...defaultConfig, computer: { ...defaultConfig.computer, enabled: false }, extensions: { ...defaultConfig.extensions, skills: [],
     mcp: { fixture: { url: `http://127.0.0.1:${address.port}/mcp`, transportProtocol: "streamable-http", startupTimeoutMs: 5_000 } } } });
   try {
     const first = registry.acquire(root, config);

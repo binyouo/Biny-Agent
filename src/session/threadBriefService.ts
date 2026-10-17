@@ -149,8 +149,14 @@ export class ThreadBriefService {
     if (previous && !manual && fullMaterial.length - previous.materialLength < config.minNewChars) return;
     const model = await this.options.getModel();
     if (!model) { if (manual) throw new Error("请先在通用设置中配置可用的工具模型。"); return; }
-    const parsed = briefSchema.safeParse(await this.ask(model, threadBriefPrompt, { previous: previous?.brief, conversation: material }, signal));
-    if (!parsed.success) throw new Error("摘要模型返回的字段无效。");
+    const input = { previous: previous?.brief, conversation: material };
+    let parsed = briefSchema.safeParse(await this.ask(model, threadBriefPrompt, input, signal));
+    if (!parsed.success) {
+      // 只传字段路径与校验码，不将无效输出或其中的用户资料回传、写入错误日志。
+      const correction = `${threadBriefPrompt}\nThe previous response failed validation: ${briefFieldErrors(parsed.error)}. Return a complete corrected JSON object from the original conversation, respecting every field and limit.`;
+      parsed = briefSchema.safeParse(await this.ask(model, correction, input, signal));
+    }
+    if (!parsed.success) throw new Error(`摘要模型返回的字段无效（${briefFieldErrors(parsed.error)}）。`);
     const brief = parsed.data;
     // 引用必须来自确实发给模型的用户文本；仅凭模型声称“用户说过”不能增加待办。
     if (brief.followUp && !messages.some((message) => message.role === "user" && message.text.includes(brief.followUp!.quote) && material.includes(`USER: ${message.text}`))) brief.followUp = null;
@@ -218,6 +224,10 @@ export class ThreadBriefService {
   private async mayPersist(threads: readonly BriefThreadReference[]): Promise<boolean> {
     return this.options.canPersist === undefined || await this.options.canPersist(threads);
   }
+}
+
+function briefFieldErrors(error: z.ZodError): string {
+  return error.issues.slice(0, 8).map((issue) => `${issue.path.join(".") || "$"}: ${issue.code}`).join("; ");
 }
 
 function reference(record: ThreadBriefRecord): BriefThreadReference { return { sessionId: record.sessionId, projectId: record.projectId, title: record.title, createdAt: record.createdAt }; }

@@ -82,10 +82,14 @@ export interface ApprovedFileSnapshot {
 export interface ToolExecutionContext {
   /** Host-selected discovery surface; tool arguments cannot widen Code Mode's catalog. */
   toolDiscoveryNames?: ReadonlySet<string>;
+  /** Host-admitted ordinary tools may be discovered for a later model step, never invoked by the VM. */
+  toolDiscoveryModelNames?: ReadonlySet<string>;
   toolDiscoveryNamespace?: string;
   prepareToolDiscovery?: (query?: string, signal?: AbortSignal) => Promise<{ pending: string[]; timedOut: boolean }>;
   /** 脚本子调用保留 MCP 内容块与结构化结果，由执行边界选择，模型参数不能设置。 */
   mcpResultMode?: "envelope";
+  /** 仅由运行时绑定的本地电脑桥接租约，不从工具参数接收。 */
+  computerMcpLeaseId?: string;
   /** 当前审批权威的显式路径禁令；命令子进程必须通过系统沙箱执行这些限制。 */
   deniedPaths?: readonly string[];
   toolCallId: string;

@@ -36,7 +36,7 @@ nodes.push({ source: metadataSource, node: one(metadataSource.statements.filter(
   ts.isFunctionDeclaration(node) && node.name?.text === "captureMetadata"), "actual metadata") });
 
 const allowedCalls = new Set([
-  "runShellCommandWithCompletionEvidence", "options.onCompletionEvidence", "options.signal.throwIfAborted",
+  "runShellCommandWithCompletionEvidence", "options.onCompletionEvidence", "options.signal.throwIfAborted", "defaultShell", "shellCommandInvocation",
   "Math.min", "Math.max", "Math.floor", "Number.isFinite", "Number.isSafeInteger", "Number", "String",
   "[timeoutMs,terminationGraceMs,killSettleMs].every", "spawn", "Buffer.byteLength", "Buffer.from", "Buffer.allocUnsafeSlow",
   "stderrBuffer.append", "stdoutBuffer.append", "stdoutDecoder.write", "stderrDecoder.write", "options.onUpdate",
@@ -95,6 +95,7 @@ interface Result {
   stderrBytes: number; stderrRetainedBytes: number; stderrCaptureOmittedBytes: number; stderrTruncated: boolean;
 }
 interface Options {
+  shell?: { kind: "posix"; executable: string };
   signal?: AbortSignal; timeoutMs?: number; terminationGraceMs?: number; killSettleMs?: number;
   captureFullOutput?: boolean; maxCapturedOutputBytes?: number;
   onUpdate?: (update: Update) => void; onCompletionEvidence?: (value: string) => void;
@@ -173,9 +174,10 @@ function fixture(platform: "linux" | "win32" = "linux", options: Options = {}) {
       assert.equal(++primarySpawns, 1);
       assert.equal(options, undefined);
       const actual = argsOrOptions as { cwd: string; shell: boolean; detached: boolean; stdio: string[] };
-      assert.deepEqual(Object.keys(actual).sort(), ["cwd", "detached", "shell", "stdio"]);
+      assert.deepEqual(Object.keys(actual).sort(), ["cwd", "detached", "env", "shell", "stdio", "windowsHide"]);
       assert.equal(actual.cwd, "/inert"); assert.equal(actual.shell, true); assert.equal(actual.detached, platform !== "win32");
       assert.deepEqual(Array.from(actual.stdio), ["ignore", "pipe", "pipe"]);
+      assert.equal((actual as unknown as { windowsHide: boolean }).windowsHide, true);
       return child;
     }
     assert.ok(Array.isArray(argsOrOptions), "helper argv must be explicit");
@@ -197,6 +199,7 @@ function fixture(platform: "linux" | "win32" = "linux", options: Options = {}) {
     process: fakeProcess, spawn, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout
   }, { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }) as Api;
   const pending = api.run("/inert", "fixture-command", { timeoutMs: 50, terminationGraceMs: 10, killSettleMs: 20,
+    shell: { kind: "posix", executable: "/bin/sh" },
     ...options, onUpdate: value => updates.push(value), onCompletionEvidence: value => evidence.push(value) });
   void pending.then(value => { settlements++; outcome = { kind: "resolved", value }; },
     error => { settlements++; outcome = { kind: "rejected", error }; });

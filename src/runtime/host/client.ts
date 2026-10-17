@@ -524,6 +524,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("automation.pending", { automationId });
   }
 
+  async sessionCommand(command: string, input: unknown, sessionId: string, scope?: string, revision?: number): Promise<unknown> {
+    return await this.request("session.command", { command, input, sessionId, scope, revision });
+  }
+
   async sessionGoalGet(sessionId?: string): Promise<SessionGoalRecord | undefined> {
     return await this.request("session.goal.get", { sessionId });
   }

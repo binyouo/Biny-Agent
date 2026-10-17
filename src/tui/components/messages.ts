@@ -1,11 +1,12 @@
 /**
  * Transcript 条目组件。
  *
- * 每种条目对应一个终端组件：用户消息和工具调用是带背景色的整宽卡片，
+ * 每种条目对应一个终端组件：用户消息保留背景卡片，工具使用紧凑状态行，
  * assistant 正文和 thinking 走 Markdown 渲染，通知和错误是单行文本。
  * 组件只负责展示，内容由 `TranscriptView` 从 reducer 状态同步进来。
  */
 import { Box, Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { classifyDiffLines } from "../../utils/diffLines.js";
 import { markdownTheme, theme } from "../theme/index.js";
 import { formatToolDuration, thinkingHeaderLabel } from "../transcriptText.js";
 import type {
@@ -28,6 +29,8 @@ export interface TranscriptItemComponent extends Container {
 export class UserMessageComponent extends Container implements TranscriptItemComponent {
   readonly itemId: string;
   private readonly body: Markdown;
+  private readonly box: Box;
+  private attachmentDisplay: Text | undefined;
 
   constructor(item: Extract<TranscriptItem, { kind: "user" }>) {
     super();
@@ -35,15 +38,35 @@ export class UserMessageComponent extends Container implements TranscriptItemCom
     this.body = new Markdown(item.content, 0, 0, markdownTheme(), {
       color: (text) => theme.fg("userMessageText", text)
     }, { preserveOrderedListMarkers: true, preserveBackslashEscapes: true });
-    const box = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
-    box.addChild(this.body);
+    this.box = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
+    this.box.addChild(this.body);
+    this.updateAttachments(item.attachments);
     this.addChild(new Spacer(1));
-    this.addChild(box);
+    this.addChild(this.box);
   }
 
   update(item: TranscriptItem): void {
     if (item.kind !== "user") return;
     this.body.setText(item.content);
+    this.updateAttachments(item.attachments);
+  }
+
+  private updateAttachments(attachments: Extract<TranscriptItem, { kind: "user" }>["attachments"]): void {
+    if (!attachments?.length) {
+      if (this.attachmentDisplay) this.box.removeChild(this.attachmentDisplay);
+      this.attachmentDisplay = undefined;
+      return;
+    }
+    const labels = attachments.map((attachment, index) =>
+      `${attachment.mimeType.startsWith("image/") ? "[Image" : "[Attachment"} #${String(index + 1)}] ${attachment.name}`
+    );
+    const text = labels.map((label) => theme.fg("accent", label)).join("  ");
+    if (!this.attachmentDisplay) {
+      this.attachmentDisplay = new Text(text, 1, 0);
+      this.box.addChild(this.attachmentDisplay);
+    } else {
+      this.attachmentDisplay.setText(text);
+    }
   }
 }
 
@@ -130,76 +153,91 @@ export class ActivitySummaryComponent extends Container implements TranscriptIte
   }
 }
 
-/** 工具调用：整宽卡片，背景色表达状态；标题是动词加粗 + 目标强调色 + 右对齐耗时。 */
+/** 工具调用默认只显示摘要，详情由用户主动展开。 */
 export class ToolExecutionComponent extends Container implements TranscriptItemComponent {
   readonly itemId: string;
-  private readonly box: Box;
-  private readonly title: Text;
-  private readonly output: Text;
   private item: ToolTranscriptItem;
+  private detailsExpanded = false;
+  private leadingSpace = true;
 
   constructor(item: ToolTranscriptItem) {
     super();
     this.itemId = item.id;
     this.item = item;
-    this.title = new ToolTitleText(item);
-    this.output = new Text("", 1, 0);
-    // 工具列表只保留一行标题，避免多个并行工具把对话区撑高。
-    this.box = new Box(1, 0, (text) => theme.bg(toolBackgroundToken(item.status), text));
-    this.box.addChild(this.title);
-    this.box.addChild(this.output);
-    this.addChild(new Spacer(1));
-    this.addChild(this.box);
-    this.refresh();
   }
 
   update(item: TranscriptItem): void {
-    if (item.kind !== "tool") return;
-    this.item = item;
-    this.refresh();
+    if (item.kind === "tool") this.item = item;
   }
 
-  private refresh(): void {
-    (this.title as ToolTitleText).setItem(this.item);
-    this.box.setBgFn((text) => theme.bg(toolBackgroundToken(this.item.status), text));
-    const source = this.item.output ?? this.item.progress ?? emptyToolOutput(this.item);
-    this.output.setText(toolOutputText(source, this.item.status));
-  }
-}
-
-/** 标题行需要按渲染宽度右对齐耗时，所以自己实现 render。 */
-class ToolTitleText extends Text {
-  private item: ToolTranscriptItem;
-
-  constructor(item: ToolTranscriptItem) {
-    super("", 0, 0);
-    this.item = item;
+  setLeadingSpace(value: boolean): void {
+    this.leadingSpace = value;
   }
 
-  setItem(item: ToolTranscriptItem): void {
-    this.item = item;
-    this.invalidate();
+  toggleDetails(): void {
+    this.detailsExpanded = !this.detailsExpanded;
   }
 
   override render(width: number): string[] {
-    const marker = toolStatusMarker(this.item.status);
-    const { verb, rest } = splitToolTitle(this.item.title);
-    const running = this.item.status === "running" && this.item.startedAtMs !== undefined
-      ? Math.max(0, Date.now() - this.item.startedAtMs)
-      : undefined;
-    const duration = formatToolDuration(this.item.durationMs ?? running);
-
-    const left = `${marker}${verb}${rest}`;
-    const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(duration));
-    const styledLeft = theme.fg(toolStatusToken(this.item.status), marker)
-      + theme.fg("toolTitle", theme.bold(verb))
-      + theme.fg("accent", rest);
-
-    if (!duration || visibleWidth(left) + 1 + visibleWidth(duration) > width) {
-      return [truncateToWidth(styledLeft, width, "…")];
+    const safeWidth = Math.max(1, Math.floor(width));
+    const item = this.item;
+    const marker = toolStatusMarker(item.status);
+    const { verb, rest } = splitToolTitle(item.title);
+    const elapsed = item.status === "running" && item.startedAtMs !== undefined
+      ? Math.max(0, Date.now() - item.startedAtMs) : undefined;
+    const duration = formatToolDuration(item.durationMs ?? elapsed);
+    const stats = toolResultStats(item);
+    const suffix = [stats, duration].filter(Boolean).join(" · ");
+    const title = theme.fg(toolStatusToken(item.status), marker)
+      + theme.fg("toolTitle", theme.bold(verb)) + theme.fg("accent", rest);
+    // 窄终端先保留动作标题，再按空间容纳完整统计，不能让长目标挤掉全部结果。
+    const titleWidth = suffix && visibleWidth(suffix) + 8 <= safeWidth
+      ? safeWidth - visibleWidth(suffix) - 2 : safeWidth;
+    const left = truncateToWidth(title, titleWidth, "…");
+    const row = titleWidth < safeWidth
+      ? `${left}${" ".repeat(safeWidth - visibleWidth(left) - visibleWidth(suffix))}${theme.fg("dim", suffix)}`
+      : left;
+    const lines = this.leadingSpace ? ["", row] : [row];
+    const source = item.output ?? item.progress ?? emptyToolOutput(item);
+    const failed = ["failed", "denied", "unknown", "cancelled"].includes(item.status);
+    if (this.detailsExpanded) {
+      const details = item.details || item.output || item.progress || emptyToolOutput(item);
+      lines.push(...toolDetailLines(details, safeWidth, 12, "toolOutput"));
+    } else if (failed) {
+      lines.push(...toolDetailLines(source, safeWidth, 3, toolStatusToken(item.status)));
     }
-    return [`${styledLeft}${" ".repeat(gap)}${theme.fg("dim", duration)}`];
+    return lines;
   }
+}
+
+function toolResultStats(item: ToolTranscriptItem): string {
+  if (item.status === "running" || item.status === "pending") return "";
+  if (item.fileChange?.diff) {
+    let additions = 0;
+    let deletions = 0;
+    for (const line of classifyDiffLines(item.fileChange.diff)) {
+      if (line.kind === "add") additions += 1;
+      if (line.kind === "delete") deletions += 1;
+    }
+    return `+${additions} −${deletions}`;
+  }
+  const stats: string[] = [];
+  if (item.exitCode !== undefined && item.exitCode !== 0) stats.push(`exit ${item.exitCode}`);
+  if (item.outputLines !== undefined) stats.push(`${item.outputLines} lines${item.truncated ? "…" : ""}`);
+  return stats.join(" · ");
+}
+
+/** 按终端实际行数限额；外部控制字符不能移动光标或注入框架光标标记。 */
+function toolDetailLines(source: string, width: number, limit: number, token: Parameters<typeof theme.fg>[0]): string[] {
+  const text = source.slice(0, 16_000).replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "").replaceAll("\t", "    ").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu, "").trimEnd();
+  if (!text) return [];
+  const body = new Text(text, 0, 0).render(Math.max(1, width - 3));
+  const truncated = body.length > limit || source.length > 16_000;
+  const visible = body.slice(0, truncated ? limit - 1 : limit);
+  if (truncated) visible.push("… details truncated");
+  return visible.map((line, index) => truncateToWidth(
+    theme.fg("dim", index === 0 ? " └ " : "   ") + theme.fg(token, line), width, "…"
+  ));
 }
 
 /** 标题首词是动作，加粗展示；其余部分是操作目标。 */
@@ -207,21 +245,6 @@ export function splitToolTitle(title: string): { verb: string; rest: string } {
   const boundary = title.indexOf(" ");
   if (boundary <= 0) return { verb: title, rest: "" };
   return { verb: title.slice(0, boundary), rest: title.slice(boundary) };
-}
-
-function toolOutputText(source: string, status: ToolTranscriptStatus): string {
-  const normalized = source.replaceAll("\t", "    ").trimEnd();
-  if (!normalized) return "";
-  const colorize = (text: string): string => (status === "failed" || status === "denied"
-    ? theme.fg("error", text)
-    : status === "unknown" || status === "cancelled"
-      ? theme.fg("warning", text)
-    : theme.fg("toolOutput", text));
-  // 工具主列表只保留标题和状态。失败时补一行真实错误，正常 stdout、文件正文
-  // 和 diff 都不进入主对话区，避免一个工具占满整个 transcript。
-  if (status !== "failed" && status !== "denied" && status !== "unknown" && status !== "cancelled") return "";
-  const firstLine = normalized.split("\n").find((line) => line.trim())?.trim() ?? "";
-  return firstLine ? colorize(truncateToWidth(firstLine, 96, "…")) : "";
 }
 
 function emptyToolOutput(item: ToolTranscriptItem): string {
@@ -252,12 +275,6 @@ function toolStatusToken(status: ToolTranscriptStatus): "success" | "error" | "a
   if (status === "running") return "accent";
   if (status === "pending") return "warning";
   return "muted";
-}
-
-function toolBackgroundToken(status: ToolTranscriptStatus): "toolSuccessBg" | "toolErrorBg" | "toolPendingBg" {
-  if (status === "success") return "toolSuccessBg";
-  if (status === "failed" || status === "denied") return "toolErrorBg";
-  return "toolPendingBg";
 }
 
 /** 系统通知和错误：单行文本，按语气着色。 */

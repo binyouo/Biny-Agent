@@ -4,6 +4,7 @@
  * 只返回数字，不持久化提示词、工具参数、附件或凭据。
  */
 import type { AgentMessage, ModelStreamContext } from "../core/types.js";
+import { projectMessageSentAt } from "../modelMessages.js";
 import type { ContextTokenBreakdown } from "../../session/metadata.js";
 import type { ToolSource } from "../../tools/types.js";
 
@@ -12,6 +13,7 @@ export function estimateTokens(value: string): number {
 }
 
 export function messageTokenCost(message: AgentMessage): number {
+  message = projectMessageSentAt(message);
   let tokens = 4;
   if (typeof message.content === "string") return tokens + estimateTokens(message.content);
   for (const part of message.content) {

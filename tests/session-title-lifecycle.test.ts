@@ -1,7 +1,7 @@
 /** Same-runtime session changes use real Runtime/AgentSession methods and only synthetic model streams. */
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mock, test } from "node:test";
@@ -34,7 +34,7 @@ async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
 }
 
 async function fixture() {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-title-lifecycle-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-title-lifecycle-")));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "global");
   await ensureAgentDirs(root);

@@ -95,7 +95,7 @@ async function releaseAndWait(child: ChildProcess): Promise<void> {
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-host-lock-race-"));
 const paths = runtimeHostPaths(root);
-await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
+await ensureRuntimeHostDirectory(path.dirname(paths.registrationPath));
 
 try {
   // Given the owner has created the exclusive lock file but has not yet written its PID,

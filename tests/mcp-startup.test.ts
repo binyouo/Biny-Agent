@@ -69,6 +69,7 @@ const address = server.address();
 assert.ok(address && typeof address !== "string");
 const config = configSchema.parse({
   ...defaultConfig,
+  computer: { ...defaultConfig.computer, enabled: false },
   extensions: { ...defaultConfig.extensions, mcp: {
     slow: { enabled: true, type: "http", url: `http://127.0.0.1:${address.port}/mcp`, transportProtocol: "streamable-http", timeoutMs: 2_000 },
     broken: { enabled: true, command: path.join(workspaceRoot, "missing-command"), args: [], cwd: ".", stderr: "ignore" }

@@ -12,7 +12,8 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
+    HTMLElement: dom.window.HTMLElement, Element: dom.window.Element, Node: dom.window.Node,
+    getComputedStyle: dom.window.getComputedStyle,
     requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
     cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
     MutationObserver: dom.window.MutationObserver,
@@ -23,7 +24,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
   }
   const { createRoot } = await import("react-dom/client");
   const { createServer } = await import("vite");
-  const vite = await createServer({ configFile: false, server: { middlewareMode: true }, appType: "custom",
+  const vite = await createServer({ configFile: false, server: { middlewareMode: true, hmr: false }, appType: "custom",
     optimizeDeps: { noDiscovery: true, entries: [] } });
   const { SettingsMemory } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsMemory.tsx") as typeof import("../src/desktop/renderer/src/components/settings/SettingsMemory.js");
   const { SettingsDraftContext } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsDraftContext.ts") as typeof import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
@@ -68,7 +69,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
       onCancelEmbeddingRebuild: async () => { throw new Error("unused"); },
       onNotify: (message: string) => { notices.push(message); }
     } as unknown as Parameters<typeof SettingsMemory>[0];
-    const context = { draft: { memory: policy }, snapshot: { memory: policy }, dirtyCount: 0,
+    const context = { draft: { memory: policy }, snapshot: { memory: policy, models: { connections: [] } }, dirtyCount: 0,
       setMemory: () => undefined } as unknown as SettingsDraftContextValue;
     const dialogHost = document.createElement("div");
     document.body.append(dialogHost);
@@ -178,7 +179,8 @@ for (const providerAvailable of [true, false]) test(`嵌入选择展示${provide
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
+    HTMLElement: dom.window.HTMLElement, Element: dom.window.Element, Node: dom.window.Node,
+    getComputedStyle: dom.window.getComputedStyle,
     requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
     cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
     MutationObserver: dom.window.MutationObserver,
@@ -191,7 +193,7 @@ for (const providerAvailable of [true, false]) test(`嵌入选择展示${provide
   const { act, createElement } = React;
   const { createRoot } = await import("react-dom/client");
   const { createServer } = await import("vite");
-  const vite = await createServer({ configFile: false, server: { middlewareMode: true }, appType: "custom",
+  const vite = await createServer({ configFile: false, server: { middlewareMode: true, hmr: false }, appType: "custom",
     optimizeDeps: { noDiscovery: true, entries: [] } });
   const { SettingsMemory } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsMemory.tsx") as typeof import("../src/desktop/renderer/src/components/settings/SettingsMemory.js");
   const { SettingsDraftContext } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsDraftContext.ts") as typeof import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
@@ -229,7 +231,7 @@ for (const providerAvailable of [true, false]) test(`嵌入选择展示${provide
       onCancelEmbeddingRebuild: async () => { throw new Error("unused"); },
       onNotify: () => undefined
     } as unknown as Parameters<typeof SettingsMemory>[0];
-    const context = { draft: { memory: policy }, snapshot: { memory: policy }, dirtyCount: 0,
+    const context = { draft: { memory: policy }, snapshot: { memory: policy, models: { connections: [] } }, dirtyCount: 0,
       setMemory: (next: unknown) => { selected.push(next); } } as unknown as SettingsDraftContextValue;
     const { SettingsDetailHostContext } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsDetailHostContext.ts") as typeof import("../src/desktop/renderer/src/components/settings/SettingsDetailHostContext.js");
     const dialogHost = document.createElement("div");
@@ -240,8 +242,13 @@ for (const providerAvailable of [true, false]) test(`嵌入选择展示${provide
     assert.ok(picker);
     assert.match(picker.textContent ?? "", providerAvailable ? /text-embedding-3-small.*自动/u : /自动选择.*暂无可用模型/u,
       "自动选择须显示有效嵌入模型；云端不可用时不能假称已回退到本地模型");
+    const options = (): HTMLElement => {
+      const list = document.getElementById(picker.getAttribute("aria-controls") ?? "");
+      assert.ok(list, "选择器应关联当前展开的列表");
+      return list;
+    };
     await act(async () => { picker.click(); });
-    assert.equal(document.querySelectorAll('#memory-embedding [role="option"][aria-selected="true"]').length, 1,
+    assert.equal(options().querySelectorAll('[role="option"][aria-selected="true"]').length, 1,
       "自动选择不是模型描述符，不能同时出现在当前配置与自动分组中");
     const localOption = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((item) => item.textContent?.includes("Multilingual E5 Small"));
     assert.ok(localOption);
@@ -250,10 +257,10 @@ for (const providerAvailable of [true, false]) test(`嵌入选择展示${provide
     const minilmOption = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((item) => item.textContent?.includes("All MiniLM L6 v2"));
     assert.ok(minilmOption);
     assert.match(minilmOption.textContent ?? "", /~23 MB.*未下载/u);
-    assert.equal(document.querySelectorAll('#memory-embedding [role="option"]').length, providerAvailable ? 3 : 4,
+    assert.equal(options().querySelectorAll('[role="option"]').length, providerAvailable ? 3 : 4,
       "自动选中的模型应在所属服务商中展示一次，不再复制一个策略选项");
     if (!providerAvailable) {
-      const unavailable = [...document.querySelectorAll<HTMLButtonElement>('#memory-embedding [role="option"]')]
+      const unavailable = [...options().querySelectorAll<HTMLButtonElement>('[role="option"]')]
         .find((button) => button.textContent?.includes("text-embedding-3-small"));
       assert.ok(unavailable?.disabled, "未配置的云端模型不可选择");
       assert.match(unavailable.textContent ?? "", /未配置/u);
@@ -268,7 +275,10 @@ for (const providerAvailable of [true, false]) test(`嵌入选择展示${provide
     await act(async () => { cancel.click(); });
     assert.equal(selected.length, 0, "取消后不应写入草稿");
     await act(async () => { picker.click(); });
-    await act(async () => { minilmOption.click(); });
+    const reopenedMinilm = [...options().querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find(item => item.textContent?.includes("All MiniLM L6 v2"));
+    assert.ok(reopenedMinilm);
+    await act(async () => { reopenedMinilm.click(); });
     const confirm = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].find((button) => button.textContent?.includes("确认"));
     assert.ok(confirm);
     await act(async () => { confirm.click(); });
@@ -284,7 +294,7 @@ for (const providerAvailable of [true, false]) test(`嵌入选择展示${provide
       .find((button) => button.textContent === "重建嵌入向量");
     assert.ok(rebuild?.disabled, "未保存的新模型不能触发旧运行时重建");
     await act(async () => { picker.click(); });
-    const automaticOption = [...document.querySelectorAll<HTMLButtonElement>('#memory-embedding [role="option"]')]
+    const automaticOption = [...options().querySelectorAll<HTMLButtonElement>('[role="option"]')]
       .find((button) => button.textContent?.includes("自动选择可用服务商"));
     assert.ok(automaticOption, "显式选择后仍可回到自动策略");
     await act(async () => { automaticOption.click(); });
@@ -310,7 +320,8 @@ test("Sleep 预览展示跳过原因与合成建议，失败运行展示错误�
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
+    HTMLElement: dom.window.HTMLElement, Element: dom.window.Element, Node: dom.window.Node,
+    getComputedStyle: dom.window.getComputedStyle,
     requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
     cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
     MutationObserver: dom.window.MutationObserver,
@@ -323,7 +334,7 @@ test("Sleep 预览展示跳过原因与合成建议，失败运行展示错误�
   const { act, createElement } = React;
   const { createRoot } = await import("react-dom/client");
   const { createServer } = await import("vite");
-  const vite = await createServer({ configFile: false, server: { middlewareMode: true }, appType: "custom",
+  const vite = await createServer({ configFile: false, server: { middlewareMode: true, hmr: false }, appType: "custom",
     optimizeDeps: { noDiscovery: true, entries: [] } });
   const { SettingsMemory } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsMemory.tsx") as typeof import("../src/desktop/renderer/src/components/settings/SettingsMemory.js");
   const { SettingsDraftContext } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsDraftContext.ts") as typeof import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
@@ -363,7 +374,7 @@ test("Sleep 预览展示跳过原因与合成建议，失败运行展示错误�
     onCancelEmbeddingRebuild: async () => { throw new Error("unused"); },
     onNotify: (message: string) => { notices.push(message); }
   } as unknown as Parameters<typeof SettingsMemory>[0];
-  const context = { draft: { memory: policy }, snapshot: { memory: policy }, dirtyCount: 0,
+  const context = { draft: { memory: policy }, snapshot: { memory: policy, models: { connections: [] } }, dirtyCount: 0,
     setMemory: () => undefined } as unknown as SettingsDraftContextValue;
   try {
     await act(async () => { root.render(createElement(SettingsDetailHostContext.Provider, { value: document.body },

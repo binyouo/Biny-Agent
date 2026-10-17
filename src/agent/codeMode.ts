@@ -3,10 +3,10 @@ import { jsonSchema, tool } from "ai";
 import type { AgentTool, AgentToolResult } from "./core/types.js";
 
 /** Names are a VM surface bound; host registration provenance is checked separately. */
-export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history",
-  "TaskStatus", "skill_lookup", "BashOutput", "read_skill_resource", "Write", "Edit", "apply_patch", "Bash", "KillShell",
+export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep",
+  "TaskStatus", "BashOutput", "read_skill_resource", "Write", "Edit", "apply_patch", "Bash", "KillShell",
   "WebSearch", "WebFetch", "BrowserReadDom", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
-  "WidgetReadme", "skill_search", "GoalGet", "read_checkpoint_evidence", "PlanStatus"]);
+  "WidgetReadme", "read_checkpoint_evidence"]);
 
 export const codeModePolicy = Object.freeze({
   /** Cumulative synchronous VM execution, excluding host/approval waits. */
@@ -73,6 +73,8 @@ export async function executeCodeModeCell(input: {
   admittedTools?: readonly AgentTool[];
   /** Refreshes the complete caller-approved inventory only when discovery needs it. */
   prepareTools?: (query?: string, signal?: AbortSignal) => Promise<readonly AgentTool[]>;
+  /** Ordinary tools may be described and activated for the next model step, never invoked in this cell. */
+  getModelTools?: () => readonly AgentTool[];
   /** Semantic matching reuses the caller's tool discovery implementation. */
   searchTools?: CodeModeSearch;
   signal?: AbortSignal;
@@ -112,6 +114,10 @@ export async function executeCodeModeCell(input: {
   const toolSet: Parameters<typeof experimental_runCodeMode>[0]["tools"] = Object.create(null);
   const cellSignal = (signal?: AbortSignal): AbortSignal => signal ? AbortSignal.any([cellAbortSignal, signal]) : cellAbortSignal;
   const availableTools = () => [...active.values()].filter((entry) => input.isCurrent(entry.name, entry));
+  const discoveryTools = () => [...new Map([...(input.getModelTools?.() ?? []), ...availableTools()].map((entry) => [entry.name, entry])).values()]
+    .filter((entry) => input.isCurrent(entry.name, entry));
+  const describeDiscovered = (entry: AgentTool) => active.has(entry.name)
+    ? toolDescription(entry) : { ...toolDescription(entry), invocation: "direct" };
   const assertOpen = (name: string, signal: AbortSignal): void => {
     signal.throwIfAborted();
     if (closed) throw new CodeModeToolError("Code Mode cell has already ended.", { toolName: name });
@@ -194,7 +200,7 @@ export async function executeCodeModeCell(input: {
     }
     if (!input.searchTools) throw new Error("Code Mode tool discovery is not configured.");
     await refreshTools(namespace ?? query, signal);
-    const candidates = availableTools().filter((entry) => namespace === undefined || entry.namespace?.name === namespace);
+    const candidates = discoveryTools().filter((entry) => namespace === undefined || entry.namespace?.name === namespace);
     const matches = await input.searchTools(query, { limit, namespace, signal, toolCallId: id, tools: candidates });
     signal.throwIfAborted();
     const unique = new Set<string>();
@@ -203,21 +209,21 @@ export async function executeCodeModeCell(input: {
       const entry = byName.get(name);
       if (!entry || unique.has(name) || !input.isCurrent(name, entry) || unique.size >= limit) return [];
       unique.add(name);
-      return [toolSummary(entry)];
+      return [{ ...toolSummary(entry), invocation: active.has(name) ? undefined : "direct" }];
     });
   });
   addBridge(discoveryBridgeNames.tool, async (args, signal) => {
     const name = discoveryString(args.name, "tool name", 500);
     await refreshTools(name, signal);
-    const entry = active.get(name);
-    return entry && input.isCurrent(name, entry) ? toolDescription(entry) : null;
+    const entry = discoveryTools().find((tool) => tool.name === name);
+    return entry ? describeDiscovered(entry) : null;
   });
   addBridge(discoveryBridgeNames.namespace, async (args, signal) => {
     const name = discoveryString(args.name, "namespace", 500);
     await refreshTools(name, signal);
-    const entries = availableTools().filter((entry) => entry.namespace?.name === name);
+    const entries = discoveryTools().filter((entry) => entry.namespace?.name === name);
     const namespace = entries[0]?.namespace;
-    return namespace ? { ...namespace, tools: entries.map(toolDescription) } : null;
+    return namespace ? { ...namespace, tools: entries.map(describeDiscovered) } : null;
   });
   const cellTimer = setTimeout(() => {
     failDeadline(`Code Mode exceeded its ${String(policy.maxCellDurationMs)}ms whole-cell deadline.`);

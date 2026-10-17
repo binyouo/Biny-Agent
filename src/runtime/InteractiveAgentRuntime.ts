@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../agent/AgentSession.js";
+import type { AttachmentReference } from "../attachments/store.js";
 import type { AgentCapabilitySelection } from "../agent/capabilitySelection.js";
 import {
   AgentTurnCancellationError,
@@ -105,6 +106,7 @@ export interface InteractiveRuntimeHandle {
   cancelCurrentRun(reason: AgentTurnCancellationReason): void;
   cancelRun(runId: string, reason: AgentTurnCancellationReason): boolean;
   answerPermission(requestId: string, result: PermissionResult): void;
+  requestUserInput?(input: unknown, scope?: string): Promise<unknown>;
   /** 以当前 surface 的 writer 身份打开一个 session，并在切换/关闭前保持占用。 */
   claimSession(session: string): Promise<void>;
   /** 释放当前 surface 的 session writer；不传 session 时释放当前 claim。 */
@@ -142,6 +144,7 @@ interface AgentRun extends ActiveRunSnapshot {
   replaceUserMessageId?: string;
   replacementUserMessageId?: string;
   supervision: boolean;
+  planSupervision: boolean;
   source?: "auto";
 }
 
@@ -198,6 +201,9 @@ export class InteractiveAgentRuntime {
   private closed = false;
   private readonly shutdownDrainMs: number;
   private resourceChangeUnsubscribe: (() => void) | undefined;
+  private goalChangeUnsubscribe: (() => void) | undefined;
+  private goalSessionId: string | undefined;
+  private goalSnapshot: InteractiveRuntimeSnapshot["sessionGoal"];
 
   constructor(
     private readonly commandRuntime: CommandRuntime,
@@ -214,6 +220,11 @@ export class InteractiveAgentRuntime {
         : undefined);
     this.runtimeAuthority = options.runtimeAuthority ?? commandRuntime.runtimeAuthority;
     this.resourceChangeUnsubscribe = commandRuntime.subscribeResourceChanges?.(() => this.publishSnapshot());
+    this.goalChangeUnsubscribe = commandRuntime.sessionGoals?.subscribe?.((sessionId) => {
+      if (this.closed || this.snapshotInfo().sessionId !== sessionId) return;
+      this.goalSessionId = undefined;
+      this.publishSnapshot();
+    });
     // Recipe 检测在回合终态之后 fire-and-forget；宿主在这里把通知转成 host event，
     // 经 wireRuntimeEvents 广播到各个界面。sessionId 回调时现取，避免沿用装配期快照。
     commandRuntime.agent.setOnRecipeReady?.((notice) => {
@@ -271,7 +282,9 @@ export class InteractiveAgentRuntime {
       requestIds,
       undefined,
       promptContext,
-      { tools: ["PlanStatus", "PlanUpdate", "TaskStatus"], skills: "none" },
+      { tools: ["Bash", "TaskStatus"], skills: "none" },
+      true,
+      false,
       true
     );
   }
@@ -462,7 +475,8 @@ export class InteractiveAgentRuntime {
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
     supervision = false,
-    emptyTurn = false
+    emptyTurn = false,
+    planSupervision = false
   ): SubmittedAgentRun {
     if (this.closed) throw new Error("Agent runtime is closed.");
     if (this.state.kind === "maintenance") {
@@ -507,6 +521,7 @@ export class InteractiveAgentRuntime {
       replaceUserMessageId: requestIds?.replaceUserMessageId,
       replacementUserMessageId: requestIds?.replaceUserMessageId === undefined ? undefined : randomUUID(),
       supervision,
+      planSupervision,
       source: /^(?:automation:|graph:|plan-wake:|goal:)/u.test(requestIds?.continuationSource ?? "") ? "auto" : undefined
     };
     const controller = new AbortController();
@@ -800,13 +815,20 @@ export class InteractiveAgentRuntime {
   }
 
   getSnapshot(): InteractiveRuntimeSnapshot {
+    const info = this.snapshotInfo();
+    if (this.goalSessionId !== info.sessionId && !this.closed) {
+      const goal = this.commandRuntime.sessionGoals?.get(info.sessionId);
+      this.goalSnapshot = goal ? { objective: goal.objective, status: goal.status } : undefined;
+      this.goalSessionId = info.sessionId;
+    }
     return {
       revision: this.revision,
-      info: this.snapshotInfo(),
+      info,
       permissionMode: this.commandRuntime.agent.getPermissionMode(),
       state: cloneRunState(this.state),
       queuedMessages: this.queuedMessageSnapshots(),
-      resourceReadiness: this.commandRuntime.resourceSnapshot?.()
+      resourceReadiness: this.commandRuntime.resourceSnapshot?.(),
+      sessionGoal: this.goalSnapshot ? { ...this.goalSnapshot } : undefined
     };
   }
 
@@ -822,6 +844,15 @@ export class InteractiveAgentRuntime {
 
   subscribe(listener: (update: AgentRuntimeUpdate) => void): () => void {
     return this.updates.subscribe(listener);
+  }
+
+  async requestUserInput(input: unknown, scope?: string): Promise<unknown> {
+    const run = this.activeRun;
+    if (!scope) throw new Error("Asking requires the current foreground model command context.");
+    if (!run) throw new Error("Session command context expired or belongs to another run.");
+    return await this.commandRuntime.sessionCommand("AskUserQuestion", input, scope, undefined, this.activeRunController?.signal, event => {
+      if (this.activeRun === run) this.handleAgentEvent(run, event);
+    });
   }
 
   close(): Promise<void> {
@@ -856,6 +887,8 @@ export class InteractiveAgentRuntime {
 
   private closeCommandRuntime(): Promise<void> {
     this.commandRuntimeClosePromise ??= Promise.resolve().then(async () => {
+      this.goalChangeUnsubscribe?.();
+      this.goalChangeUnsubscribe = undefined;
       try {
         await this.commandRuntime.close();
       } finally {
@@ -1165,7 +1198,7 @@ export class InteractiveAgentRuntime {
     run.sessionId = info.sessionId;
     run.status = "thinking";
     run.startedAt = new Date(startedAtMs).toISOString();
-    this.commandRuntime.setSubagentParentRunId(run.runId);
+    this.commandRuntime.setSubagentParentRunId(run.runId, run.planSupervision);
     this.tools.clear();
     // Durable user admission 必须先于前台 generating 状态；这样取消、准备失败或 provider
     // 错误都不会留下只有 UI 占位而没有 canonical user_message 的回合。
@@ -1187,14 +1220,16 @@ export class InteractiveAgentRuntime {
         ...this.eventBase(run),
         type: "message.user",
         messageId: run.messageId,
-        content: run.input
+        content: run.input,
+        attachments: sessionAttachmentReferences(run.attachments)
       });
     } else if (replacingUserMessage) {
       this.emit({
         ...this.eventBase(run),
         type: "message.user",
         messageId: run.replacementUserMessageId!,
-        content: run.input
+        content: run.input,
+        attachments: sessionAttachmentReferences(run.attachments)
       });
     }
     this.emit({
@@ -1547,6 +1582,7 @@ export class InteractiveAgentRuntime {
         type: event.type,
         messageId: event.messageId,
         content: redactSecrets(event.content),
+        attachments: event.attachments,
         delivery: event.delivery
       });
       return undefined;
@@ -1961,4 +1997,11 @@ function permissionActionForResult(result: PermissionResult): PermissionAction {
   if (result.action !== undefined) return result.action;
   if (!result.approved) return "deny";
   return result.scope === "once" ? "allow_once" : "allow_always";
+}
+
+function sessionAttachmentReferences(attachments: AgentAttachment[] | undefined): AttachmentReference[] | undefined {
+  const references = attachments
+    ?.filter((attachment): attachment is AgentAttachment & { path: string } => Boolean(attachment.path))
+    .map(({ name, mimeType, path, size }) => ({ name, mimeType, path, size }));
+  return references?.length ? references : undefined;
 }

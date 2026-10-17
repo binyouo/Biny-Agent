@@ -70,7 +70,7 @@ test("设置页轮询显示定时 Sleep 的阶段和累计归档数，完成后�
       onCancelEmbeddingRebuild: async () => { throw new Error("unused"); },
       onNotify: () => undefined
     } as unknown as Parameters<typeof SettingsMemory>[0];
-    const context = { draft: { memory: policy }, snapshot: { memory: policy }, dirtyCount: 0,
+    const context = { draft: { memory: policy }, snapshot: { memory: policy, models: { connections: [] } }, dirtyCount: 0,
       setMemory: () => undefined } as unknown as SettingsDraftContextValue;
     await act(async () => { root.render(createElement(SettingsDraftContext.Provider, { value: context }, createElement(SettingsMemory, props))); });
     assert.match(document.body.textContent ?? "", /当前阶段：精确去重/u);

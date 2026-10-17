@@ -14,7 +14,6 @@ import { getToolExposure, isToolModelVisible } from "./exposure.js";
 import { createReadFileTool } from "./file/readFile.js";
 import { createWriteFileTool } from "./file/writeFile.js";
 import { createEditFileTool } from "./file/editFile.js";
-import { createReadToolResultTool } from "./file/readToolResult.js";
 import { createListFilesTool } from "./file/listFiles.js";
 import { createSearchFilesTool } from "./search/searchFiles.js";
 import { createRunCommandTool } from "./shell/runCommand.js";
@@ -29,11 +28,10 @@ import type { ToolModelCandidate } from "../llm/toolModel.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
 
 /** Explicit host-owned read contracts, never inferred from extension metadata. */
-export type HostReadQuery = "TaskStatus" | "PlanStatus" | "skill_lookup" | "BashOutput" | "read_skill_resource";
+export type HostReadQuery = "TaskStatus" | "PlanStatus" | "BashOutput" | "read_skill_resource";
 const hostReadQueryContracts: Record<HostReadQuery, { source: ToolSource; capability: string }> = {
   TaskStatus: { source: "subagent", capability: "subagent.workspace" },
   PlanStatus: { source: "subagent", capability: "subagent.workspace" },
-  skill_lookup: { source: "skill", capability: "skills" },
   BashOutput: { source: "builtin", capability: "shell.output" },
   read_skill_resource: { source: "skill", capability: "skills" }
 };
@@ -43,9 +41,9 @@ const hostReadQueryRegistrations = new WeakMap<RegisteredTool, {
   parameters: Tool["parameters"];
   schema: Tool["schema"];
 }>();
-const reviewedBuiltinReads = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history",
+const reviewedBuiltinReads = new Set(["Read", "Glob", "Grep",
   "WebSearch", "WebFetch", "BrowserReadDom", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
-  "WidgetReadme", "skill_search", "GoalGet", "read_checkpoint_evidence"]);
+  "WidgetReadme", "read_checkpoint_evidence"]);
 
 /** Shared by discovery and execution. Serialized/tool-supplied hints grant no authority. */
 export function isCodeModeReadTool(entry: RegisteredTool): boolean {
@@ -173,7 +171,8 @@ export function createToolRegistry(
   webCookiesConfig?: WebCookiesConfig,
   getToolSearchModels?: () => readonly ToolModelCandidate[],
   browser?: BrowserAutomationEndpoint,
-  getToolModelSelectionState?: () => ToolModelSelectionState
+  getToolModelSelectionState?: () => ToolModelSelectionState,
+  executionScope?: import("./shell/runCommand.js").RunCommandToolOptions["executionScope"]
 ): ToolRegistry {
   // 这里集中注册内置工具；外部扩展在 CommandRuntime 装配完成后追加到同一 registry。
   const registry = new ToolRegistry();
@@ -182,12 +181,11 @@ export function createToolRegistry(
   registry.register(createWidgetReadmeTool());
   registry.register(createWidgetRendererTool());
   registry.register(createReadFileTool(context));
-  registry.register(createReadToolResultTool(context));
   registry.register(createListFilesTool(context));
   registry.register(createSearchFilesTool(context));
   registry.register(createWriteFileTool(context));
   registry.register(createEditFileTool(context));
-  registry.register(createRunCommandTool(context, sandboxConfig, { controlledComputerUse: true }, managedProcessService));
+  registry.register(createRunCommandTool(context, sandboxConfig, { controlledComputerUse: true, executionScope }, managedProcessService));
   if (managedProcessService) {
     registry.registerHostReadQuery(createBashOutputTool(managedProcessService), "BashOutput");
     registry.register(createKillShellTool(managedProcessService));

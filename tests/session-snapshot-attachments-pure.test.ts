@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { withMessageSentAt } from "../src/agent/modelMessages.js";
 
 // Parse source as text. Never import AgentSession, recorder, runtime, or attachment IO.
 const source = ts.createSourceFile("AgentSession.ts", readFileSync("src/agent/AgentSession.ts", "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -9,11 +10,11 @@ const tree = ts.createSourceFile("messageTree.ts", readFileSync("src/session/mes
 const agent = source.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "AgentSession");
 assert.ok(agent);
 const resume = agent.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && node.name.getText(source) === "resume");
-const hydrate = agent.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && node.name.getText(source) === "rehydrateSessionAttachments");
+const hydrate = agent.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && node.name.getText(source) === "rehydrateSessionMessages");
 assert.ok(resume && hydrate && hydrate.body);
 const calls: ts.CallExpression[] = [];
 function visit(node: ts.Node): void {
-  if (ts.isCallExpression(node) && node.expression.getText(source) === "this.rehydrateSessionAttachments") calls.push(node);
+  if (ts.isCallExpression(node) && node.expression.getText(source) === "this.rehydrateSessionMessages") calls.push(node);
   ts.forEachChild(node, visit);
 }
 visit(resume);
@@ -50,6 +51,7 @@ type Replay = { messages: Message[]; events: Event[]; contextStartUserMessageInd
 const reads: string[] = [];
 let supportChecks = 0;
 const api = runInNewContext(compiled.outputText, {
+  withMessageSentAt,
   readAttachmentFromRoot: async (root: string, reference: { path: string }) => {
     assert.equal(root, "inert-attachment-root");
     reads.push(reference.path);

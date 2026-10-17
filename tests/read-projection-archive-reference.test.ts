@@ -15,8 +15,7 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import { agentDir, ensureAgentDirs } from "../src/session/store.js";
 import { archiveToolResult, readToolResultArchive, serializeToolResult } from "../src/session/toolResultArchive.js";
-import { createReadFileTool, type ReadFileResult } from "../src/tools/file/readFile.js";
-import { createReadToolResultTool, type ReadToolResultResult } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool, type ReadFileResult, type ReadArchivedResult } from "../src/tools/file/readFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
 const suiteRoot = await mkdtemp(path.join(os.tmpdir(), "biny-read-projection-reference-"));
@@ -34,7 +33,6 @@ async function fixture(name: string, budget = 4 * 1024 * 1024) {
   config.context.maxTurnToolResultBytes = budget;
   const registry = new ToolRegistry();
   registry.registerBuiltinTool(createReadFileTool({ workspaceRoot, ignore: config.workspace.ignore }));
-  registry.registerBuiltinTool(createReadToolResultTool({ workspaceRoot, ignore: config.workspace.ignore }));
   const recorder = new SessionRecorder(workspaceRoot, name);
   recorders.push(recorder);
   const events: AgentSessionEvent[] = [];
@@ -96,9 +94,9 @@ try {
     let restored = "";
     let offset = 0;
     for (let pageNumber = 0; ; pageNumber += 1) {
-      const result = await f.tool("read_tool_result").execute(`recover-${pageNumber}`, { archivePath: projected.archivePath, offset, length: 1_007 });
+      const result = await f.tool("Read").execute(`recover-${pageNumber}`, { path: projected.archivePath, offset, length: 1_007 });
       assert.equal(result.isError, false);
-      const page = result.details as ReadToolResultResult;
+      const page = result.details as ReadArchivedResult;
       assert.equal(page.offset, offset);
       assert.ok(page.content.isWellFormed());
       restored += page.content;
@@ -178,9 +176,9 @@ try {
     assert.equal(record(covered[2].details).archivePath, envelope.archivePath,
       "replacement of a real archived Read must reuse its owned reference without rearchiving");
     assert.equal(record(covered[2].details).archiveError, undefined);
-    const recovered = await f.tool("read_tool_result").execute("budgeted-recover", { archivePath: envelope.archivePath });
+    const recovered = await f.tool("Read").execute("budgeted-recover", { path: envelope.archivePath });
     assert.equal(recovered.isError, false);
-    const original = JSON.parse((recovered.details as ReadToolResultResult).content) as ReadFileResult;
+    const original = JSON.parse((recovered.details as ReadArchivedResult).content) as ReadFileResult;
     assert.equal(original.content, "retained evidence\n".repeat(19) + "retained evidence");
     assert.equal(original.endLine, 20);
   });
@@ -200,7 +198,7 @@ try {
     assert.equal(projected.archivePath, undefined);
     assert.equal(typeof projected.archiveError, "string");
     assert.equal(record(projected.result).content, content);
-    assert.match(String(projected.summary), /read_tool_result is unavailable/u);
+    assert.match(String(projected.summary), /archived output is unavailable through Read/u);
     await f.recorder.flush();
     const events = await readSessionEvents(f.recorder.filePath);
     const persisted = events.find((event) => event.type === "tool_result" && event.toolCallId === "failed-archive-read");

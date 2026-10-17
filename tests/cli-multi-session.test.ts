@@ -17,7 +17,9 @@ const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-cli-paral
 const previousAgentDir = process.env.BINY_AGENT_DIR;
 process.env.BINY_AGENT_DIR = path.join(root, "agent");
 const responses = new Map<string, ServerResponse>();
+let providerRequests = 0;
 const provider = createServer(async (request, response) => {
+  providerRequests++;
   let text = "";
   for await (const chunk of request) text += String(chunk);
   const body = JSON.parse(text) as { messages: Array<{ role: string; content: unknown }> };
@@ -100,10 +102,15 @@ try {
   await enter(second.pty, "/exit");
   await waitFor(() => second.exited);
 
-  phase = "reject removed plan command";
-  const removedCommand = await command(["plan", "must not execute"]);
-  assert.notEqual(removedCommand.code, 0);
-  assert.match(removedCommand.output, /unknown command.*plan/u);
+  phase = "reject invalid plan subcommand";
+  const sessionsBeforeInvalidCommand = (await client.listRuntimeSessions()).map((session) => session.sessionId).sort();
+  const requestsBeforeInvalidCommand = providerRequests;
+  const invalidCommand = await command(["plan", "must-not-execute"]);
+  assert.notEqual(invalidCommand.code, 0);
+  assert.match(invalidCommand.output, /unknown command 'must-not-execute'/u);
+  assert.equal(providerRequests, requestsBeforeInvalidCommand, "非法子命令不得发起模型请求");
+  assert.deepEqual((await client.listRuntimeSessions()).map((session) => session.sessionId).sort(), sessionsBeforeInvalidCommand,
+    "非法子命令不得创建执行会话");
 
   // 主 Session 此刻空闲；两个独立命令仍必须各自新建会话，不竞抢 primary。
   phase = "launch D and E";

@@ -206,6 +206,22 @@ test("移除无实际删除能力的入口和重复文件入口", async () => {
   assert.doesNotMatch(messages, /删除消息|onDeleteUserMessage/u);
 });
 
+test("侧栏设置只请求打开，不把鼠标事件作为目标分页", async () => {
+  const h = await harness();
+  try {
+    const { Sidebar } = await import("../src/desktop/renderer/src/components/Sidebar.js");
+    let opened = 0;
+    let target: unknown = "not-opened";
+    await h.render(h.React.createElement(Sidebar, { projects: [], sessions: [], layout: { mode: "expanded", contentWidth: 260 },
+      peekDrawerHandlers: {}, peekTriggerHandlers: {}, resizeHandlers: {},
+      onSettings: (tab?: import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js").SettingsTab) => { opened++; target = tab; }
+    } as unknown as React.ComponentProps<typeof Sidebar>));
+    await h.click('[aria-label="设置"]');
+    assert.equal(opened, 1);
+    assert.equal(typeof target, "undefined", "侧栏设置入口不能把 DOM 事件存入目标分页状态");
+  } finally { await h.close(); }
+});
+
 test("项目排序只提供有区别的手动排序与最近打开", async () => {
   const h = await harness();
   try {

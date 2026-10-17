@@ -13,7 +13,6 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { archiveToolResult, resolveToolResultArchivePath } from "../src/session/toolResultArchive.js";
 import { createEditFileTool } from "../src/tools/file/editFile.js";
 import { createReadFileTool } from "../src/tools/file/readFile.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
 import { readBoundedBinaryFile, snapshotRegularFile } from "../src/tools/file/safeFileIo.js";
 import { createWriteFileTool } from "../src/tools/file/writeFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
@@ -81,7 +80,7 @@ for (const kind of ["workspace", "archive"] as const) {
         const archive = await archiveToolResult({ workspaceRoot: root, sessionId: "fifo", toolCallId: "archive", sequence: 1, tool: "fixture", result: "original" });
         target = resolveToolResultArchivePath(root, archive.archivePath);
         await fs.rm(target);
-        run = () => execute(createReadToolResultTool({ workspaceRoot: root, ignore: [] }), { archivePath: archive.archivePath });
+        run = () => execute(createReadFileTool({ workspaceRoot: root, ignore: [] }), { path: archive.archivePath });
       }
       await makePipe(target);
       const inode = (await fs.lstat(target)).ino;
@@ -135,7 +134,6 @@ for (const cancel of [false, true]) {
         const context = { workspaceRoot: root, ignore: [] };
         const registry = new ToolRegistry();
         registry.registerBuiltinTool(createReadFileTool(context));
-        registry.registerBuiltinTool(createReadToolResultTool(context));
         const archive = await archiveToolResult({ workspaceRoot: root, sessionId: "setup", toolCallId: "setup", sequence: 1, tool: "fixture", result: "original" });
         const target = kind === "workspace" ? path.join(root, "input.pipe") : resolveToolResultArchivePath(root, archive.archivePath);
         if (kind === "archive") await fs.rm(target);
@@ -150,8 +148,8 @@ for (const cancel of [false, true]) {
           await recorder.recordAndFlush({ type: "user_message", content: "read synthetic file" });
           const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry }, new PermissionManager(config.permission), () => undefined);
           const tools = coordinator.createAgentTools();
-          const name = kind === "workspace" ? "Read" : "read_tool_result";
-          const result = await tools.find((tool) => tool.name === name)!.execute("fifo-call", kind === "workspace" ? { path: "input.pipe" } : { archivePath: archive.archivePath }, controller.signal);
+          const name = kind === "workspace" ? "Read" : "Read";
+          const result = await tools.find((tool) => tool.name === name)!.execute("fifo-call", kind === "workspace" ? { path: "input.pipe" } : { path: archive.archivePath }, controller.signal);
           await coordinator.waitForIdle();
           await recorder.flush();
           const events = await readSessionEvents(recorder.filePath);

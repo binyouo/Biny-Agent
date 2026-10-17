@@ -13,7 +13,6 @@ import {
   findSubagentDefinition,
   loadSubagentDefinitions
 } from "../src/extensions/agents.js";
-import { createMemoryTools } from "../src/extensions/memory.js";
 import { runSubagentTask, type SubagentOptions } from "../src/extensions/subagent.js";
 import { createModelSettings } from "../src/llm/modelFactory.js";
 import { ensureAgentDirs } from "../src/session/store.js";
@@ -34,8 +33,7 @@ async function main(): Promise<void> {
     await testSubagentTaskManagerAgentThreading();
     await testSubagentBudgetExhaustionRejectsWithPartialFindings();
     await testMemoryTopicLifecycle();
-    await testMemoryTools();
-    await testMaintenanceScansDurableEntries();
+      await testMaintenanceScansDurableEntries();
     await testGlobalInstructionFile();
   } finally {
     if (previousGlobalRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV];
@@ -329,50 +327,6 @@ async function testMemoryTopicLifecycle(): Promise<void> {
   }
 }
 
-async function testMemoryTools(): Promise<void> {
-  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-tools-"));
-  try {
-    const memory = new LocalMemory(workspaceRoot, unusedModel);
-    const [saveTool, recallTool] = createMemoryTools(
-      () => memory,
-      async () => await fakeMemorySearch(memory)
-    );
-    assert.equal(saveTool?.name, "save_memory");
-    assert.equal(recallTool?.name, "recall_memory");
-    assert.equal(saveTool.risk, "write");
-    assert.equal(recallTool.risk, "read");
-
-    const saveExecution = await saveTool.resolveExecution({
-      content: "Releases are cut from main after pnpm test and pnpm typecheck pass.",
-      tags: ["release", "main"],
-      importance: 3
-    });
-    assert.ok(!("isError" in saveExecution));
-    const saved = await saveExecution.execute({ toolCallId: "save-1" }) as { saved: boolean; id?: string; path?: string };
-    assert.equal(saved.saved, true);
-    assert.match(saved.path ?? "", /^memory:\/\/[a-z0-9-]+$/u);
-
-    // 无效参数走 isError 分支而不是抛异常。
-    const invalid = await saveTool.resolveExecution({ content: "   " });
-    assert.ok("isError" in invalid);
-
-    const recallExecution = await recallTool.resolveExecution({ query: "release main" });
-    assert.ok(!("isError" in recallExecution));
-    const recalled = await recallExecution.execute({ toolCallId: "recall-1" }) as { matches: Array<{ entry: { content: string } }> };
-    assert.match(recalled.matches[0]?.entry.content ?? "", /Releases are cut from main/);
-
-    const limitedExecution = await recallTool.resolveExecution({ query: "typecheck", limit: 5 });
-    assert.ok(!("isError" in limitedExecution));
-    const limited = await limitedExecution.execute({ toolCallId: "recall-2" }) as { matches: unknown[] };
-    assert.equal(limited.matches.length, 1);
-    const unavailableTool = createMemoryTools(() => memory)[1]!;
-    const unavailableExecution = await unavailableTool.resolveExecution({ query: "release main" });
-    assert.ok(!("isError" in unavailableExecution));
-    await assert.rejects(unavailableExecution.execute({ toolCallId: "recall-unavailable" }), /Semantic memory search is unavailable/u);
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
-  }
-}
 
 async function testMaintenanceScansDurableEntries(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-maintenance-"));

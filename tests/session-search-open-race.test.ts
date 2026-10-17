@@ -7,7 +7,7 @@ import { performance } from "node:perf_hooks";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
-import { createHistoryTools } from "../src/extensions/history.js";
+import { createHistoryQueryFixture } from "./fixtures/queryTools.js";
 import { deleteSessionArtifacts } from "../src/session/cleanup.js";
 import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
@@ -71,7 +71,7 @@ for (const checkpoint of ["initial", "zero-offset", "incremental"] as const) {
       return await Reflect.apply(originalOpen, fs, args);
     });
     syncBuiltinESMExports();
-    const [tool] = createHistoryTools({ getIndex: () => f.index });
+    const tool = createHistoryQueryFixture({ getIndex: () => f.index });
     assert.ok(tool);
     const execution = await tool.resolveExecution({ query: "open race marker" });
     assert.ok(!("isError" in execution));
@@ -188,7 +188,7 @@ for (const [code, cached] of [["EIO", false], ["EACCES", false], ["ENOTDIR", fal
       return await Reflect.apply(originalStat, fs, args);
     });
     syncBuiltinESMExports();
-    const [tool] = createHistoryTools({ getIndex: () => f.index });
+    const tool = createHistoryQueryFixture({ getIndex: () => f.index });
     assert.ok(tool);
     const execution = await tool.resolveExecution({ query: "recoverable stat marker" });
     assert.ok(!("isError" in execution));
@@ -216,7 +216,7 @@ for (const cancelled of [false, true]) {
       return await Reflect.apply(originalStat, fs, args);
     });
     syncBuiltinESMExports();
-    const [tool] = createHistoryTools({ getIndex: () => f.index });
+    const tool = createHistoryQueryFixture({ getIndex: () => f.index });
     assert.ok(tool);
     const execution = await tool.resolveExecution({ query: "stat deletion marker" });
     assert.ok(!("isError" in execution));

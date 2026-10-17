@@ -13,6 +13,7 @@ import { createMcpResourceTools, McpToolCatalogCache, McpToolHost, type McpServe
 import { createMcpPromptTools } from "../../extensions/mcpPrompts.js";
 import { loadSkills, type SkillBundle, type SkillDefinition } from "../../extensions/skills.js";
 import type { Tool } from "../../tools/types.js";
+import { attachNativeComputerMcp, desktopComputerMcpName } from "../../computer/desktopMcp.js";
 
 export type RuntimeResourceState = "loading" | "ready" | "degraded";
 
@@ -230,9 +231,12 @@ export class RuntimeHostResourceScope {
   }
 
   private async startMcp(): Promise<void> {
-    this.mcpPending = Object.values(this.config.extensions.mcp).some((server) => server.enabled);
+    const nativeComputer = process.platform === "darwin" && this.config.computer.enabled
+      && this.config.extensions.mcp[desktopComputerMcpName] === undefined;
+    this.mcpPending = nativeComputer || Object.values(this.config.extensions.mcp).some((server) => server.enabled);
     this.publish();
-    const connecting = this.mcpHost.connectConfiguredServers(this.workspaceRoot, this.config);
+    const configured = this.mcpHost.connectConfiguredServers(this.workspaceRoot, this.config);
+    const connecting = Promise.all([configured, nativeComputer ? attachNativeComputerMcp(this.mcpHost) : undefined]);
     if (!this.mcpPending) {
       await connecting;
       return;
@@ -321,6 +325,7 @@ function resourceScopeKey(workspaceRoot: string, config: AgentConfig): string {
   const digest = createHash("sha256")
     .update(JSON.stringify({
       mcp: config.extensions.mcp,
+      computerEnabled: config.computer.enabled,
       skills: config.extensions.skills,
       skillDefaults: config.extensions.skillDefaults,
       skillProjectOverrides: config.extensions.skillProjectOverrides,

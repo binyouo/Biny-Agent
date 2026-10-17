@@ -2,15 +2,14 @@ import assert from "node:assert/strict";
 import { CombinedAutocompleteProvider, TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { createInitialTuiState, tuiReducer, type TuiAction } from "../src/tui/reducer.js";
 import { sessionEventsToTranscript } from "../src/tui/sessionTranscript.js";
-import { formatSessionAge, formatToolDuration } from "../src/tui/transcriptText.js";
+import { formatSessionAge, formatToolDuration, projectTuiUserMessage } from "../src/tui/transcriptText.js";
 import { TranscriptView } from "../src/tui/components/transcriptView.js";
-import { ActivitySummaryComponent, ThinkingComponent, ToolExecutionComponent, splitToolTitle } from "../src/tui/components/messages.js";
+import { ActivitySummaryComponent, ThinkingComponent, ToolExecutionComponent, UserMessageComponent, splitToolTitle } from "../src/tui/components/messages.js";
 import { CardComponent, renderCardLines } from "../src/tui/components/cards.js";
 import { PendingAttachmentsComponent, pendingAttachmentLabel } from "../src/tui/components/pendingAttachments.js";
-import { PermissionDialog, SelectDialog, TextViewerDialog } from "../src/tui/components/dialogs.js";
+import { PermissionDialog, SelectDialog } from "../src/tui/components/dialogs.js";
 import {
   FooterComponent,
-  ShortcutsBarComponent,
   StatusIndicatorComponent,
   WelcomeComponent,
   footerLayout,
@@ -144,6 +143,7 @@ async function main(): Promise<void> {
   testExtensionCardBuilders();
   testSkillSlashCommandItems();
   testSkillUserMessageHidesInstructions();
+  testTuiUserMessageSeparatesAttachmentMetadata();
   testDoubleCtrlCGuard();
   await testSlashAutocompleteInsertsSingleSlash();
   testThemeTokensResolveToAnsi();
@@ -196,6 +196,33 @@ function testSkillUserMessageHidesInstructions(): void {
   assert.equal(rendered.includes("A long skill instruction"), false);
   const replayedWithTask = sessionEventsToTranscript([{ type: "user_message", content: withTask }]);
   assert.equal(replayedWithTask[0]?.content, "Skill: ai-slop-taste\n\naudit the settings page");
+}
+
+function testTuiUserMessageSeparatesAttachmentMetadata(): void {
+  const content = [
+    "请分析这个附件。",
+    "",
+    "Attached files (read them with Read using these @attachments/ paths):",
+    "- @attachments/1792093294802-a40023-picture.png (image/png, 11719 bytes)"
+  ].join("\n");
+  const displayed = projectTuiUserMessage(content);
+  assert.equal(displayed.content, "请分析这个附件。");
+  assert.deepEqual(displayed.attachments, [{ path: "@attachments/1792093294802-a40023-picture.png", name: "picture.png", mimeType: "image/png", size: 11719 }]);
+  assert.doesNotMatch(displayed.content, /Attached files|@attachments|Read using/u);
+
+  const structured = [{ path: "@attachments/1792093294802-a40023-picture.png", name: "picture.png", mimeType: "image/png", size: 11719 }];
+  const state = reduce(createInitialTuiState("/workspace"), { type: "message.user", content: "请分析这个附件。", attachments: structured });
+  assert.equal(state.transcript.committed[0]?.content, "请分析这个附件。");
+  assert.deepEqual(state.transcript.committed[0]?.kind === "user" ? state.transcript.committed[0].attachments : undefined, structured);
+  const replayed = sessionEventsToTranscript([{ type: "user_message", content }]);
+  assert.equal(replayed[0]?.kind === "user" ? replayed[0].content : undefined, "请分析这个附件。");
+  assert.deepEqual(replayed[0]?.kind === "user" ? replayed[0].attachments : undefined, displayed.attachments);
+
+  const item = { id: "user", kind: "user" as const, content: "请分析这个附件。", attachments: structured };
+  const rendered = plainLines(new UserMessageComponent(item).render(80)).join(" ");
+  assert.match(rendered, /请分析这个附件。/u);
+  assert.match(rendered, /\[Image #1\] picture\.png/u);
+  assert.doesNotMatch(rendered, /Attached files|@attachments|Read using/u);
 }
 
 function testDoubleCtrlCGuard(): void {
@@ -432,9 +459,9 @@ function testCommandCardRendersBoxedAlignedCard(): void {
   assert.match(folded, /^╰─+╯$/mu);
   assert.match(folded, /Model:\s+gpt-5 \(high\)/u);
   assert.match(folded, /23% left/u);
-  // 折叠细节不显示，提示行报告剩余字段数
+  // 折叠细节不显示；统一入口展开完整结果。
   assert.doesNotMatch(folded, /5 messages compacted/u);
-  assert.match(folded, /1 more field · ctrl\+o to expand/u);
+  assert.match(folded, /more details · ctrl\+o to expand/u);
 
   const expanded = plainLines(renderCardLines(item, true, 60)).join("\n");
   assert.match(expanded, /5 messages compacted/u);
@@ -555,7 +582,7 @@ function testStatusAndUsageCardBuilders(): void {
   });
   const rows = card.sections.flatMap((section) => section.rows);
   assert.ok(rows.some((row) => row.label === "Model" && row.value === "deepseek-v4-pro (Max)" && !row.detail));
-  assert.ok(rows.some((row) => row.label === "Session" && row.tone === "dim"));
+  assert.ok(rows.some((row) => row.label === "Session" && row.tone === "dim" && row.detail));
   const tokenRow = rows.find((row) => row.label === "Token usage");
   assert.ok(tokenRow && !tokenRow.detail);
   const windowRow = rows.find((row) => row.label === "Context window");
@@ -610,9 +637,9 @@ function testExtensionCardBuilders(): void {
     { name: "legacy", command: "bin", transport: "stdio", enabled: true, connected: false, toolNames: [], promptNames: [], hasResources: false, lastError: "timeout" }
   ]);
   const mcpRows = mcpCard.sections[0]?.rows ?? [];
-  assert.equal(mcpRows[0]?.label, "fs");
-  assert.equal(mcpRows[0]?.tone, "success");
-  assert.equal(mcpRows[1]?.tone, "warning");
+  assert.equal(mcpRows[0]?.label, "legacy");
+  assert.equal(mcpRows.find((row) => row.label === "fs")?.tone, "success");
+  assert.equal(mcpRows.find((row) => row.label === "legacy" && row.tone)?.tone, "warning");
   assert.ok(mcpRows.some((row) => row.detail && row.label === ""));
 
   const skillsCard = buildSkillsCard([{ name: "zeta" }, { name: "ai-slop" }], ["duplicate skill: alpha"]);
@@ -633,9 +660,10 @@ function testExtensionCardBuilders(): void {
     }
   ]);
   const subagentRows = subagentCard.sections[0]?.rows ?? [];
-  assert.equal(subagentRows[0]?.label, "task-1");
+  assert.equal(subagentRows[0]?.label, "Task");
   assert.equal(subagentRows[0]?.tone, "success");
-  assert.ok(subagentRows.slice(1).every((row) => row.detail));
+  assert.equal(subagentRows[1]?.value, "inspect the build output");
+  assert.ok(subagentRows.slice(2).every((row) => row.detail));
 
   const empty = buildMcpCard([]);
   assert.match(String(empty.sections[0]?.rows[0]?.value), /no servers configured/u);
@@ -1316,8 +1344,9 @@ function testPendingAttachmentDisplay(): void {
     { name: "recording.mp3", mimeType: "audio/mpeg", size: 3, data: "audio" }
   ]);
   const lines = plainLines(component.render(40));
-  assert.match(lines[0] ?? "", /\[Image #1\] · 1\.5 KB/u);
-  assert.match(lines[1] ?? "", /\[Attachment #2\] · 3 B/u);
+  assert.match(lines[0] ?? "", /\[Image #1\] screenshot\.png · 1\.5 KB/u);
+  assert.match(lines[1] ?? "", /\[Attachment #2\] recording\.mp3 · 3 B/u);
+  assert.match(lines[2] ?? "", /Backspace 移除末个附件/u);
   assert.equal(pendingAttachmentLabel({ mimeType: "image/webp" }, 2), "[Image #3]");
 
   for (const line of plainLines(component.render(12))) {
@@ -1379,7 +1408,7 @@ function testStatusAndShortcutHints(): void {
 
   const busy = shortcutHints("running").map((hint) => hint.key);
   assert.equal(busy.includes("esc"), true);
-  assert.equal(busy.includes("ctrl+o"), false);
+  assert.equal(busy.includes("ctrl+o"), true);
   assert.equal(shortcutHints("idle").some((hint) => hint.key === "shift+tab"), false);
   assert.equal(shortcutHints("idle").some((hint) => hint.key === "ctrl+e"), false);
 
@@ -1387,10 +1416,6 @@ function testStatusAndShortcutHints(): void {
   const visible = visibleShortcutHints(shortcutHints("idle"), 14);
   const rendered = visible.map((hint) => `${hint.key} ${hint.description}`).join(" · ");
   assert.equal(visibleWidth(rendered) <= 14, true);
-
-  const bar = new ShortcutsBarComponent();
-  bar.setState("idle");
-  for (const line of plainLines(bar.render(50))) assert.equal(visibleWidth(line) <= 50, true, line);
 }
 
 function testWelcomeRendersOnboarding(): void {
@@ -1435,22 +1460,6 @@ function testDialogsRenderAndHandleKeys(): void {
   ctrlCSelect.handleInput("\u0003");
   assert.equal(ctrlCCancelled, true);
 
-  let closed = false;
-  const content = Array.from({ length: 30 }, (_, index) => `line ${String(index)}`).join("\n");
-  const viewer = new TextViewerDialog("Details", content, 5, () => { closed = true; });
-  const firstPage = plainLines(viewer.render(40)).join("\n");
-  assert.match(firstPage, /line 0/u);
-  assert.equal(firstPage.includes("line 20"), false);
-  viewer.handleInput("\u001B[6~");
-  assert.match(plainLines(viewer.render(40)).join("\n"), /line 4/u);
-  viewer.handleInput("\u001B");
-  assert.equal(closed, true);
-
-  // Ctrl+C 也关闭查看器：全局双 Ctrl+C 退出依赖弹层先消费掉第一次按键。
-  let closedByCtrlC = false;
-  const ctrlCViewer = new TextViewerDialog("Details", "body", 5, () => { closedByCtrlC = true; });
-  ctrlCViewer.handleInput("\u0003");
-  assert.equal(closedByCtrlC, true);
 }
 
 function testPermissionDialogRequiresFullYes(): void {

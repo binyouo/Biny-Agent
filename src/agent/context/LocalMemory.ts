@@ -1438,7 +1438,7 @@ export function formatMemoryMatches(matches: Array<Pick<MemoryMatch, "entry" | "
   return [
     "## Relevant Memories",
     memoryTimeAnchorInstruction,
-    "Only a subset of relevant memories is shown. Search with recall_memory for missing facts.",
+    "Only a subset of relevant memories is shown. Search with biny memory search for missing facts.",
     ...matches.map((match) => {
       const tags = match.entry.tags.filter((tag) => tag && tag !== "conversation-summary");
       const source = match.entry.originAnchors?.length

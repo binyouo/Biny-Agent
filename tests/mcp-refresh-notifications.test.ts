@@ -290,7 +290,7 @@ await test("a new root turn discovers disconnected tools and reconnects only bef
     const registry = new ToolRegistry();
     for (const tool of commands.mcp.createTools()) registry.registerMcpTool(tool);
     registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries()));
-    const agent = new AgentSession({ workspaceRoot: commands.workspaceRoot, config: commands.config, recorder: new SessionRecorder(commands.workspaceRoot),
+    const agent = new AgentSession({ workspaceRoot: commands.workspaceRoot, config: { ...commands.config, agent: { ...commands.config.agent, toolExecutionMode: "direct" } }, recorder: new SessionRecorder(commands.workspaceRoot),
       toolRegistry: registry, permissionManager: new PermissionManager(commands.config.permission),
       model: { provider: "test", modelId: "offline-discovery", supportsTools: true, async stream(context) {
         steps++;

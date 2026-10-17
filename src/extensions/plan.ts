@@ -61,6 +61,27 @@ const planUpdateSchema = z.discriminatedUnion("action", [
   }).strict()
 ]);
 
+export const planCommandSchemas: Record<"draft" | "start" | "update", JsonObjectSchema> = {
+  start: {
+    type: "object",
+    properties: {
+      graphId: { type: "string" },
+      revision: { type: "integer" },
+      objective: { type: "string" },
+      constraints: { type: "array", items: { type: "string" } },
+      nodes: {
+        type: "array",
+        minItems: 2,
+        maxItems: 20,
+        items: planNodeParameters()
+      }
+    },
+    additionalProperties: false
+  },
+  draft: { type: "object", properties: { objective: { type: "string" }, constraints: { type: "array", items: { type: "string" } }, nodes: { type: "array", minItems: 2, maxItems: 20, items: planNodeParameters() }, graphId: { type: "string" }, revision: { type: "integer" } }, required: ["objective", "nodes"], additionalProperties: false },
+  update: planUpdateParameters()
+};
+
 type PlanNodeInput = z.infer<typeof planNodeSchema>;
 type PlanUpdateInput = z.infer<typeof planUpdateSchema>;
 
@@ -91,22 +112,7 @@ function createPlanStartTool(options: PlanToolOptions): Tool<z.infer<typeof plan
       "Preserve explicit constraints. Writable nodes require deterministic verification. Omit verification only for read-only analysis with explicit acceptance criteria; never invent a command just to create a plan. PlanStart begins execution after the normal permission gate.",
       "Keep ordinary multi-step work in the current turn. Do not split implementation and its own validation into separate nodes; verification already performs the checks. Add an independent review only when it has a concrete purpose."
     ],
-    parameters: {
-      type: "object",
-      properties: {
-        graphId: { type: "string" },
-        revision: { type: "integer" },
-        objective: { type: "string" },
-        constraints: { type: "array", items: { type: "string" } },
-        nodes: {
-          type: "array",
-          minItems: 2,
-          maxItems: 20,
-          items: planNodeParameters()
-        }
-      },
-      additionalProperties: false
-    },
+    parameters: planCommandSchemas.start,
     schema: planStartSchema,
     source: "subagent",
     capability: "subagent.workspace",
@@ -146,7 +152,7 @@ function createPlanDraftTool(options: PlanToolOptions): Tool<z.infer<typeof plan
       "When the user asks to plan first, save the plan with PlanDraft and keep it unstarted; PlanStart runs only after the user authorizes execution."
     ],
     source: "subagent", capability: "subagent.workspace", risk: "write", schema: planDraftSchema,
-    parameters: { type: "object", properties: { objective: { type: "string" }, constraints: { type: "array", items: { type: "string" } }, nodes: { type: "array", minItems: 2, maxItems: 20, items: planNodeParameters() }, graphId: { type: "string" }, revision: { type: "integer" } }, required: ["objective", "nodes"], additionalProperties: false },
+    parameters: planCommandSchemas.draft,
     resolveExecution(args) {
       return { accesses: ToolAccesses.none(), display: { kind: "generic", summary: "Save plan draft", detail: args.objective }, description: "Save internal plan metadata only; no Worker or workspace changes.", approvalRule: "PlanDraft", async execute(context) {
         const sessionId = requireSessionId(context);
@@ -208,7 +214,7 @@ function createPlanUpdateTool(options: PlanToolOptions, inspectedRuns: Set<strin
       "Use replace only for failed, blocked, or cancelled work. At most two add or replace updates are admitted.",
       "A settled checkpoint does not prove success. Before finish completed, inspect verified-node evidence and read-only reports against their acceptance criteria. Report completion is not deterministic verification."
     ],
-    parameters: planUpdateParameters(),
+    parameters: planCommandSchemas.update,
     schema: planUpdateSchema,
     source: "subagent",
     capability: "subagent.workspace",

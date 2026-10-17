@@ -11,10 +11,10 @@ import { SemanticMemoryRetriever, type SemanticMemoryRetrieverOptions } from "..
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
-import type { MemoryEntry, MemorySearchOptions, MemorySearchResult } from "../src/agent/context/memoryTypes.js";
+import type { MemoryEntry, MemorySearchResult } from "../src/agent/context/memoryTypes.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
-import { createMemoryTools } from "../src/extensions/memory.js";
+import { createMemoryQueryFixture } from "./fixtures/queryTools.js";
 import { generateNativeText } from "../src/llm/nativeJson.js";
 import { ProviderEmbeddingRuntime } from "../src/llm/embedding/ProviderEmbeddingRuntime.js";
 import type { EmbeddingModelRuntime, EmbeddingResult } from "../src/llm/embedding/types.js";
@@ -28,13 +28,11 @@ const entry: MemoryEntry = {
   source: "manual", importance: 0.5, durability: "permanent", revision: 1, accessCount: 0,
   createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z"
 };
-const result: MemorySearchResult = { matches: [], storeRevision: 1, report: { omitted: [] } };
 const embedding: EmbeddingResult = {
   embeddings: [new Float32Array([1, 0])], dimensions: 2, fingerprint: "fixture-model",
   model: { kind: "local", model: "multilingual-e5-small" }
 };
 
-await testToolBoundary();
 await testRetrieverBoundaries();
 await testRewriteCancellation();
 await testRewriteTimeoutFallback();
@@ -43,45 +41,6 @@ await testSessionModelPropagation();
 await testSdkCleanupQuarantine();
 await testSdkCleanupSessionQuarantine();
 console.log("memory cancellation tests passed");
-
-async function testToolBoundary(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-tool-cancellation-"));
-  const memory = new LocalMemory(root, () => { throw new Error("No model calls expected"); });
-  let lookups = 0;
-  const calls: Array<{ query: string; paths: string[]; options: MemorySearchOptions }> = [];
-  let search: () => Promise<MemorySearchResult> = async () => result;
-  try {
-    const tool = createMemoryTools(() => { lookups++; return memory; }, async (query, paths, options) => {
-      calls.push({ query, paths, options });
-      return await search();
-    })[1]!;
-    const execution = await tool.resolveExecution({ query: " release ", tags: ["release"], threadId: "thread-a" });
-    assert.ok(!("isError" in execution));
-    const controller = new AbortController();
-    assert.equal(await execution.execute({ toolCallId: "direct", operationId: "direct", signal: controller.signal }), result);
-    assert.deepEqual(calls[0], { query: "release", paths: [], options: {
-      tags: ["release"], threadId: "thread-a", limit: 5, threshold: 0.3, signal: controller.signal
-    } });
-    assert.equal(await execution.execute({ toolCallId: "direct-unsignalled", operationId: "direct-unsignalled" }), result);
-    assert.equal(calls[1]?.options.signal, undefined, "direct calls without a signal remain supported");
-    const reason = new Error("cancelled before recall");
-    controller.abort(reason);
-    const previousLookups = lookups;
-    await assert.rejects(execution.execute({ toolCallId: "pre-cancelled", operationId: "pre-cancelled", signal: controller.signal }),
-      (error: unknown) => error === reason);
-    assert.equal(lookups, previousLookups);
-    assert.equal(calls.length, 2);
-
-    const lateController = new AbortController();
-    const lateReason = new Error("cancelled during recall");
-    const held = deferred<MemorySearchResult>();
-    search = () => held.promise;
-    const late = execution.execute({ toolCallId: "late", operationId: "late", signal: lateController.signal });
-    lateController.abort(lateReason);
-    held.resolve(result);
-    await assert.rejects(late, (error: unknown) => error === lateReason);
-  } finally { memory.close(); await rm(root, { recursive: true, force: true }); }
-}
 
 async function testRetrieverBoundaries(): Promise<void> {
   // Cancellation during a non-cancellable snapshot read must win even on empty/limit-zero fast paths.
@@ -290,7 +249,7 @@ async function testSessionModelPropagation(): Promise<void> {
     // Substitute only runtime selection, retaining Session's rewrite, retriever and real SQLite path.
     const service = (agent as unknown as { memoryEmbeddingService: { embeddingRuntime: () => Promise<EmbeddingModelRuntime | undefined> } }).memoryEmbeddingService;
     service.embeddingRuntime = async () => runtime;
-    const recall = createMemoryTools(() => agent.getLocalMemory(), agent.searchMemory.bind(agent))[1]!;
+    const recall = createMemoryQueryFixture(() => agent.getLocalMemory(), agent.searchMemory.bind(agent));
     const execution = await recall.resolveExecution({ query: "release", tags: ["release"], threadId: "thread-a" });
     assert.ok(!("isError" in execution));
     for (const cancelledStage of ["rewrite", "embed"] as const) {
@@ -325,7 +284,7 @@ async function testSessionModelPropagation(): Promise<void> {
     };
     let unsettled: readonly { toolCallId: string; settlement: Promise<unknown> }[] = [];
     const cell = executeCodeModeCell({
-      code: "return await tools.recall_memory({query: 'release'});", parentToolCallId: "memory-cell",
+      code: "return await tools.WebSearch({query: 'release'});", parentToolCallId: "memory-cell",
       tools: [recallAgentTool], signal: controller.signal, isCurrent: () => true,
       onUnsettled: (operations) => { unsettled = operations; }
     });
@@ -407,7 +366,7 @@ async function testSdkCleanupQuarantine(): Promise<void> {
   } });
   let wrapperSettled = false;
   const recall: AgentTool = {
-    name: "recall_memory", description: "Fixture memory recall",
+    name: "WebSearch", description: "Fixture memory recall",
     parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
     execute: async (_id, _args, signal) => {
       try { return { content: [], details: await fixture.retriever.retrieve("release", [], { limit: 1, signal }) }; }
@@ -418,7 +377,7 @@ async function testSdkCleanupQuarantine(): Promise<void> {
   const reason = new Error("stop SDK memory recall");
   let unsettled: readonly { toolCallId: string; settlement: Promise<unknown> }[] = [];
   const cell = executeCodeModeCell({
-    code: "return await tools.recall_memory({query: 'release'});", parentToolCallId: "sdk-memory-cell",
+    code: "return await tools.WebSearch({query: 'release'});", parentToolCallId: "sdk-memory-cell",
     tools: [recall], signal: controller.signal, isCurrent: () => true,
     onUnsettled: (operations) => { unsettled = operations; }
   });
@@ -485,10 +444,10 @@ async function testSdkCleanupSessionQuarantine(): Promise<void> {
   } });
   const localMemory = new LocalMemory(workspace, () => { throw new Error("No real model calls allowed"); });
   const registry = new ToolRegistry();
-  const recall = createMemoryTools(() => localMemory, async (query, paths, options) => {
+  const recall = createMemoryQueryFixture(() => localMemory, async (query, paths, options) => {
     try { return await fixture.retriever.retrieve(query, paths, { ...options, limit: options.limit ?? 5 }); }
     finally { wrapperDone.resolve(); }
-  })[1]!;
+  });
   registry.registerBuiltinTool(recall);
   const config = structuredClone(defaultConfig);
   config.agent.toolExecutionMode = "code_mode";
@@ -504,7 +463,7 @@ async function testSdkCleanupSessionQuarantine(): Promise<void> {
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         if (hasExec && execSteps === 1) {
           yield { type: "tool-call", id: "sdk-session-exec", name: "exec", arguments: {
-            code: "return await tools.recall_memory({query: 'release'});"
+            code: "return await tools.WebSearch({query: 'release'});"
           } };
           yield { type: "finish", reason: "tool-calls" };
         } else { yield { type: "text-delta", text: "ready" }; yield { type: "finish", reason: "stop" }; }

@@ -1087,10 +1087,10 @@ export class GraphSupervisor {
     }
     const prompt = [
       `Supervise durable plan ${wake.graphId} at ${wake.checkpoint} revision ${String(wake.graphRevision)}.`,
-      "First call PlanStatus with this graphId. Inspect persisted reports against their acceptance criteria and verification evidence where present; report completion is not deterministic verification.",
+      "First run `biny plan status <graphId> --json` for this graph. Inspect persisted reports against their acceptance criteria and verification evidence where present; report completion is not deterministic verification.",
       "If approval is pending, report the exact approvalId, command, cwd, and reason without approving it.",
-      "If attention is needed, make at most one bounded PlanUpdate or finish blocked/failed.",
-      "For a review with needs_changes, use PlanUpdate action rework: it appends a scoped implementation repair and replacement read-only review. Never lower acceptance criteria. If the shared replan budget is exhausted, finish blocked with the evidence and request user direction.",
+      "If attention is needed, make at most one bounded `biny plan update --input <json> --json` or finish blocked/failed.",
+      "For a review with needs_changes, use `biny plan update` action rework: it appends a scoped implementation repair and replacement read-only review. Never lower acceptance criteria. If the shared replan budget is exhausted, finish blocked with the evidence and request user direction.",
       "If settled, finish completed only when every current node is completed and its acceptance criteria are satisfied. Distinguish read-only findings from verified changes, state remaining uncertainty, and summarize in this original session."
     ].join("\n");
     const submitted = runtime.submitSupervisionTurn(prompt, {

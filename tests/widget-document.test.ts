@@ -39,11 +39,14 @@ test("流式 HTML 增量保留已有节点，完成后脚本只运行一次", ()
   } finally { win.close(); }
 });
 test("历史产物初始化脚本、主题更新保持交互状态，消息只接受有界协议", () => {
-  const dom = new JSDOM(createWidgetDocument({ token, morphdomSource, widget: { title: "history", html: '<output id="result">1</output><script>window.runs=(window.runs||0)+1</script>' } }), { runScripts: "dangerously" });
+  const dom = new JSDOM(createWidgetDocument({ token, morphdomSource, theme: { dark: true }, widget: { title: "history", html: '<output id="result">1</output><script>window.runs=(window.runs||0)+1</script>' } }), { runScripts: "dangerously" });
   try {
     assert.equal(dom.window.runs, 1);
-    dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window.parent, data: { type: "set-theme", token, css: ":root{--primary:#123456}", dark: true } }));
-    assert.equal(dom.window.document.documentElement.dataset.theme, "dark");
+    assert.equal(dom.window.getComputedStyle(dom.window.document.documentElement).colorScheme, "dark");
+    assert.equal(dom.window.getComputedStyle(dom.window.document.documentElement).backgroundColor, "rgba(0, 0, 0, 0)");
+    dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window.parent, data: { type: "set-theme", token, css: ":root{--primary:#123456}", dark: false } }));
+    assert.equal(dom.window.document.documentElement.dataset.theme, "light");
+    assert.equal(dom.window.getComputedStyle(dom.window.document.documentElement).colorScheme, "light");
     assert.equal(dom.window.runs, 1);
   } finally { dom.window.close(); }
   assert.equal(readWidgetMessage({ type: "widget-resize", token, height: Infinity }, token), undefined);

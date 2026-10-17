@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { projectMessageSentAt } from "../src/agent/modelMessages.js";
 
 // Execute only the actual final assembly statements and three pure cost helpers.
 // Already-assembled inputs avoid importing ContextMemory or its service graph.
@@ -34,7 +35,7 @@ for (const node of tail.slice(0, -1)) {
 }
 const helpers = ["estimateTokens", "messageTokenCost", "estimateMessageTokens"].map(name => one(
   tokens.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name), name));
-const allowedCalls = new Set(["systemParts.join", "estimateTokens", "estimateMessageTokens", "messageTokenCost", "Math.ceil", "Buffer.byteLength", "JSON.stringify", "messages.reduce"]);
+const allowedCalls = new Set(["projectMessageSentAt", "systemParts.join", "estimateTokens", "estimateMessageTokens", "messageTokenCost", "Math.ceil", "Buffer.byteLength", "JSON.stringify", "messages.reduce"]);
 for (const [nodes, source] of [[tail, context], [helpers, tokens]] as const) {
   for (const node of nodes) {
     const visit = (child: ts.Node): void => {
@@ -81,7 +82,7 @@ interface Pure {
   assemble(input: Inputs): Output; estimate(messages: Message[]): number; tokens(value: string): number;
   reset(): void; counts(): { costCalls: number; systemCalls: number; stringifyCalls: number };
 }
-const api = runInNewContext(compiled.outputText, { Buffer: { byteLength: Buffer.byteLength } },
+const api = runInNewContext(compiled.outputText, { projectMessageSentAt, Buffer: { byteLength: Buffer.byteLength } },
   { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }) as Pure;
 function inputs(messages: Message[] = []): Inputs {
   return { messages, systemParts: ["system rules", "project instructions"], includedMemoryMatches: [{ excerpt: "remember" }],

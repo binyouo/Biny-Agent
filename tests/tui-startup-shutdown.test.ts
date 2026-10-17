@@ -47,7 +47,7 @@ class MemorySocket extends EventEmitter {
     if (frame.operation === "subscribe" || frame.operation === "snapshot") {
       result = { hostEpoch: "synthetic-epoch", sequence: 1, capabilities: [], snapshot: this.snapshot,
         sessions: [{ sessionId: this.snapshot.info.sessionId, primary: true, snapshot: this.snapshot, lastActiveAt: 1 }] };
-    } else if (frame.operation === "skills.list") result = [];
+    } else if (frame.operation === "skills.list" || frame.operation === "mcp.status") result = [];
     else if (frame.operation === "runtime.start-draft") result = this.snapshot.info;
     else if (frame.operation === "agent.context") result = { budget: { usedTokens: 0, maxTokens: 1000, source: "estimated" } };
     else if (frame.operation === "agent.usage") result = { summary: {} };

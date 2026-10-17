@@ -115,9 +115,10 @@ export function createToolSearchTool(
           const registrations = getTools()
             .filter((entry) => entry.tool.name !== toolSearchToolName
               && (type === "all" || entry.source === type)
-              && (!codeMode || isCodeModeTool(entry))
+              && (!codeMode || isCodeModeTool(entry) || context.toolDiscoveryModelNames?.has(entry.tool.name))
               && (context.toolDiscoveryNames
-                ? context.toolDiscoveryNames.has(entry.tool.name) && getToolExposure(entry.tool) !== "hidden" && getToolExposure(entry.tool) !== "model-only"
+                ? context.toolDiscoveryNames.has(entry.tool.name) && getToolExposure(entry.tool) !== "hidden"
+                  && (getToolExposure(entry.tool) !== "model-only" || context.toolDiscoveryModelNames?.has(entry.tool.name))
                 : isToolModelVisible(entry.tool))
               && (!context.toolDiscoveryNamespace || entry.tool.namespace?.name === context.toolDiscoveryNamespace));
           const explicitNames = explicitToolNames(args.query, registrations.map(({ tool }) => tool)).slice(0, limit);
@@ -148,7 +149,7 @@ export function createToolSearchTool(
             if (cloned.status !== "completed") return cloned;
             const current = getTools();
             cloned.tools = cloned.tools.filter((match) => registrations.some((entry) => entry.tool.name === match.name
-              && current.includes(entry) && (!codeMode || isCodeModeTool(entry))));
+              && current.includes(entry) && (!codeMode || isCodeModeTool(entry) || context.toolDiscoveryModelNames?.has(entry.tool.name))));
             cloned.found = cloned.tools.length;
             return cloned;
           };

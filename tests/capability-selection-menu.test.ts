@@ -24,3 +24,15 @@ test("显式点击不使用仍保留关闭语义，重新选择后可恢复逐�
   assert.deepEqual(applyCapabilityNames("none", ["Read"], tools, true), ["Read"]);
   assert.deepEqual(applyCapabilityNames(["Read", "Write"], ["Read"], tools, false), ["Write"]);
 });
+
+for (const exposure of ["hidden", "model-only"] as const) {
+  test(`${exposure} tools cannot become user-selectable through a third-party name`, () => {
+    assert.equal(shouldShowToolInCapabilityMenu({ name: "extension_helper", source: "plugin", exposure }), false);
+  });
+}
+
+test("session controls stay outside the per-message capability selector", () => {
+  for (const name of ["exec", "GoalGet", "GoalUpdate", "PlanDraft", "TaskStatus"]) {
+    assert.equal(shouldShowToolInCapabilityMenu({ name, source: "builtin" }), false, name);
+  }
+});

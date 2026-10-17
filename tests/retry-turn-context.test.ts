@@ -7,7 +7,7 @@ import { test, type TestContext } from "node:test";
 import { z } from "zod";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentMessage, AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
-import type { AgentSessionEvent } from "../src/agent/types.js";
+import { AgentTurnCancellationError, type AgentSessionEvent } from "../src/agent/types.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
@@ -117,6 +117,107 @@ function assertFreshContext(text: string): void {
   assert.equal(text.split("FILE-BASED MEMORY").length - 1, 1);
 }
 
+for (const action of ["continueInterruptedTurn", "startInterruptedFollowup"] as const) {
+  test(`${action} refreshes the local clock after reopening without repeating completed tools`, { timeout: 20_000 }, async (t) => {
+    const f = await fixture(t, 1);
+    const controller = new AbortController();
+    let paused = false;
+    for await (const event of f.session.prompt("记录后继续处理", { abortSignal: controller.signal, emotionAnalysis: false })) {
+      if (event.type === "tool.completed") controller.abort(new AgentTurnCancellationError("paused"));
+      if (event.type === "done") paused = event.outcome.status === "cancelled" && event.outcome.stopReason === "paused";
+    }
+    assert.equal(paused, true);
+    assert.equal(await readFile(f.effects, "utf8"), "effect-1\n");
+    t.mock.timers.setTime(Date.parse("2026-10-08T18:15:00Z"));
+    process.env.TZ = "Asia/Kathmandu";
+    await f.session.resume(f.recorder.sessionId);
+    await drain(f.session[action]({ emotionAnalysis: false }));
+    const request = f.requests.at(-1)!;
+    assert.match(request.systemPrompt, /Authoritative local date: 2026-10-09/u);
+    assert.match(request.systemPrompt, /Weekday: Friday/u);
+    assert.match(request.systemPrompt, /Timezone: UTC\+5:45/u);
+    assert.equal(request.systemPrompt.split("DATE AWARENESS (CRITICAL)").length - 1, 1);
+    assert.match(f.text(), /Authoritative Local DateTime: 2026-10-09/u);
+    assert.doesNotMatch(f.text(), /Authoritative Local DateTime: 2026-10-07/u);
+    assert.match(f.text(), /Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
+    assert.equal(request.messages.filter(message => message.role === "toolResult").length, 1);
+    const result = request.messages.find(message => message.role === "toolResult");
+    assert.ok(result?.role === "toolResult");
+    assert.equal(result.toolCallId, "fixture-call-1");
+    assert.equal(result.toolName, "record_fixture");
+    assert.match(JSON.stringify(result.content), /effect-1/u);
+    assert.equal(await readFile(f.effects, "utf8"), "effect-1\n");
+    const events = await readSessionEvents(f.recorder.filePath);
+    assert.equal(events.filter(event => event.type === "user_message" && !event.auditOnly).length, 1);
+    assert.doesNotMatch(JSON.stringify(events), /Authoritative Local DateTime|DATE AWARENESS/u);
+  });
+}
+
+test("live and reopened chat preserve original send time across local midnight and timezone changes", { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  await drain(f.session.prompt("明天处理", { emotionAnalysis: false }));
+  t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
+  await drain(f.session.prompt("今天呢？", { emotionAnalysis: false }));
+  const users = f.requests.at(-1)!.messages.filter(message => message.role === "user");
+  assert.match(userText(users[0]!), /^\[Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai; message time is not event\/due\/completion time\.\]/u);
+  assert.match(userText(users[1]!), /^\[Message sent-at: 2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai;/u);
+  assert.match(userText(users[1]!), /Authoritative Local DateTime: 2026-10-08/u);
+  assert.match(f.requests.at(-1)!.systemPrompt, /Resolve "today\/tomorrow\/next Monday" against the original message's date\/timezone/u);
+  const events = await f.events();
+  assert.deepEqual(events.filter(e => e.type === "user_message").map(e => e.content), ["明天处理", "今天呢？"]);
+  assert.doesNotMatch(JSON.stringify(events), /\[Message sent-at:/u);
+  process.env.TZ = "America/Los_Angeles";
+  await f.session.resume(f.recorder.sessionId);
+  await drain(f.session.prompt("回顾一下", { emotionAnalysis: false }));
+  const restored = f.requests.at(-1)!.messages.filter(message => message.role === "user");
+  assert.match(userText(restored[0]!), /2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
+  assert.match(userText(restored[1]!), /2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai/u);
+  assert.match(userText(restored[2]!), /original timezone: America\/Los_Angeles/u);
+});
+
+test("admitted input keeps receipt time when execution starts on the next local day", { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  const identity = { runId: "receipt-run", turnId: "receipt-turn", messageId: "receipt-message" };
+  await f.session.admitUserMessage("明天处理", identity);
+  t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
+  await drain(f.session.prompt("明天处理", { ...identity, emotionAnalysis: false }));
+  assert.match(f.text(), /Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
+  assert.match(f.text(), /Authoritative Local DateTime: 2026-10-08/u);
+});
+
+test("editing a user message uses the new version's send time", { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  await drain(f.session.prompt("明天处理", { emotionAnalysis: false }));
+  const source = (await f.events()).find(e => e.type === "user_message" && !e.auditOnly);
+  assert.ok(source?.type === "user_message" && source.messageId);
+  t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
+  await drain(f.session.retry(source.messageId, { replaceUserMessageId: source.messageId, replacementInput: "后天处理", emotionAnalysis: false }));
+  assert.match(f.text(), /Message sent-at: 2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai/u);
+  assert.doesNotMatch(f.text(), /2026-10-07T15:59:59\.000Z/u);
+  const versions = (await f.events()).filter(e => e.type === "user_message" && !e.auditOnly);
+  assert.deepEqual(versions.map(e => e.content), ["明天处理", "后天处理"]);
+});
+
+test("steering delivered after midnight retains the time and timezone of its receipt", { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t, 1);
+  let queued = false;
+  for await (const event of f.session.prompt("开始处理", { emotionAnalysis: false })) {
+    assert.notEqual(event.type, "error");
+    if (!queued && event.type === "assistant.delta") {
+      queued = true;
+      await f.session.queueSteering("time-steering", "明天再处理");
+      t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
+      process.env.TZ = "America/Los_Angeles";
+    }
+  }
+  assert.equal(queued, true);
+  const steering = f.requests.at(-1)!.messages.find(message => userText(message).endsWith("明天再处理"));
+  assert.ok(steering);
+  assert.equal(userText(steering), "[Message sent-at: 2026-10-07T15:59:59.000Z; original timezone: Asia/Shanghai; message time is not event/due/completion time.]\n\n明天再处理");
+  const source = (await f.events()).find(e => e.type === "user_message" && !e.auditOnly && e.messageId === "time-steering");
+  assert.equal(source?.time, "2026-10-07T15:59:59.000Z");
+});
+
 for (const targetRole of ["assistant", "user"] as const) {
   test(`${targetRole}-target retry includes current file memory and local date without duplicating or persisting user context`, { timeout: 20_000 }, async (t) => {
     const f = await fixture(t);
@@ -136,10 +237,12 @@ for (const targetRole of ["assistant", "user"] as const) {
     t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
     await drain(f.session.retry(target.messageId, { emotionAnalysis: false }));
     assert.equal(f.requests.length, 3);
+    assert.match(f.requests.at(-1)!.systemPrompt, /Authoritative local date: 2026-10-08/u);
     assertFreshContext(f.text());
     const users = f.requests.at(-1)!.messages.filter(message => message.role === "user");
     assert.equal(users.length, 2);
-    assert.equal(userText(users[0]!), input, "earlier identical input remains canonical history");
+    assert.equal(userText(users[0]!), `[Message sent-at: 2026-10-07T15:59:59.000Z; original timezone: Asia/Shanghai; message time is not event/due/completion time.]\n\n${input}`, "earlier input gains only its original send-time anchor");
+    assert.match(userText(users[1]!), /^\[Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai;/u, "retry keeps the source message's send time");
     assert.ok(userText(users[1]!).endsWith(input));
     assert.deepEqual(users[1]?.originalContent, input);
     const persisted = await f.events();

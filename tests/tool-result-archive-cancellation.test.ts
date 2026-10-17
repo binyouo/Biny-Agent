@@ -10,7 +10,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { archiveToolResult, readToolResultArchive, resolveToolResultArchivePath } from "../src/session/toolResultArchive.js";
-import { createReadToolResultTool, type ReadToolResultArgs } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool, type ReadFileArgs } from "../src/tools/file/readFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-archive-cancellation-"));
@@ -20,8 +20,8 @@ const content = "A😀中\r\nB𐐷".repeat(200);
 const archived = await archiveToolResult({ workspaceRoot: root, sessionId: "cancellation", toolCallId: "original",
   sequence: 1, tool: "fixture_result", result: content });
 const target = resolveToolResultArchivePath(root, archived.archivePath);
-const reader = createReadToolResultTool({ workspaceRoot: root, ignore: [] });
-async function readPage(args: ReadToolResultArgs, signal?: AbortSignal) {
+const reader = createReadFileTool({ workspaceRoot: root, ignore: [] });
+async function readPage(args: ReadFileArgs, signal?: AbortSignal) {
   const execution = await reader.resolveExecution(args);
   assert.ok("execute" in execution);
   return await execution.execute({ signal, toolCallId: "page", operationId: "page-read" });
@@ -62,7 +62,7 @@ try {
     const controller = new AbortController();
     controller.abort(new Error("cancel before read"));
     const state = abortDuring(t, controller, "read-start");
-    await assert.rejects(readPage({ archivePath: archived.archivePath }, controller.signal), /cancel before read/u);
+    await assert.rejects(readPage({ path: archived.archivePath }, controller.signal), /cancel before read/u);
     assert.equal(state.opened, 0);
   });
 
@@ -70,7 +70,7 @@ try {
     await test(`public archive read rejects cancellation at ${stage} and closes its handle`, async (t) => {
       const controller = new AbortController();
       const state = abortDuring(t, controller, stage);
-      await assert.rejects(readPage({ archivePath: archived.archivePath, length: 10 }, controller.signal),
+      await assert.rejects(readPage({ path: archived.archivePath, length: 10 }, controller.signal),
         (error: unknown) => error === controller.signal.reason || (error instanceof Error && error.name === "AbortError" && error.cause === controller.signal.reason));
       assert.equal(state.opened, 1);
       assert.equal(state.closed, 1, "cancellation must close the real archive handle");
@@ -91,11 +91,11 @@ try {
     try {
       const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry },
         new PermissionManager(config.permission), (event) => events.push(event));
-      const tool = coordinator.createAgentTools().find((entry) => entry.name === "read_tool_result");
+      const tool = coordinator.createAgentTools().find((entry) => entry.name === "Read");
       assert.ok(tool);
       const controller = new AbortController();
       const state = abortDuring(t, controller, "read-end");
-      const result = await tool.execute("interrupted-page", { archivePath: archived.archivePath, length: 10 }, controller.signal);
+      const result = await tool.execute("interrupted-page", { path: archived.archivePath, length: 10 }, controller.signal);
       const details = result.details as Record<string, unknown>;
       assert.equal(details.status, "cancelled");
       assert.equal(details.content, undefined);
@@ -121,8 +121,8 @@ try {
     let offset = 0;
     let restored = "";
     do {
-      const page = await readPage({ archivePath: archived.archivePath, offset, length: 7 }, new AbortController().signal);
-      assert.equal(page.archivePath, archived.archivePath);
+      const page = await readPage({ path: archived.archivePath, offset, length: 7 }, new AbortController().signal);
+      assert.equal(page.path, archived.archivePath);
       assert.equal(page.tool, envelope.tool);
       assert.equal(page.archivedAt, envelope.archivedAt);
       assert.equal(page.totalCharacters, content.length);

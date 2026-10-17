@@ -4,6 +4,7 @@
  * Runtime tool events stay unchanged. This module converts their structured
  * input/result into a semantic transcript title and compact output metadata.
  */
+import { toolDisplayName, toolPresentation } from "../tools/presentation.js";
 import type { ToolInputDisplay, ToolUpdate } from "../tools/types.js";
 import type { ToolTranscriptItem, ToolTranscriptStatus } from "./types.js";
 import { formatToolResultSummary } from "./toolDiffSummary.js";
@@ -150,6 +151,7 @@ export function semanticToolTitle(
   }
   if (tool === "BashOutput") return `${running ? "Reading" : "Read"} background process${argsSummary ? ` ${argsSummary}` : "es"}`;
   if (tool === "KillShell") return `${running ? "Stopping" : "Stopped"} background process${argsSummary ? ` ${argsSummary}` : ""}`;
+  if (toolPresentation(tool)) return `${running ? "正在" : "已"}${toolDisplayName(tool)}`;
   const safeDescription = description?.trim();
   if (safeDescription && safeDescription.length <= 120) return safeDescription;
   return `${running ? "Running" : "Ran"} ${humanizeToolName(tool)}`;
@@ -400,7 +402,7 @@ function elapsedDuration(startedAtMs: number | undefined, completedAtMs: number)
 }
 
 function humanizeToolName(tool: string): string {
-  return tool.replaceAll("_", " ");
+  return toolDisplayName(tool);
 }
 
 function resultField(result: unknown, key: string): string | undefined {

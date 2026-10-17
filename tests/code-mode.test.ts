@@ -10,8 +10,8 @@ import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import type { AgentModel, AgentTool, AgentToolResult, ModelStreamEvent } from "../src/agent/core/types.js";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
-import { createHistoryTools } from "../src/extensions/history.js";
-import { createMemoryTools } from "../src/extensions/memory.js";
+import { createHistoryQueryFixture } from "./fixtures/queryTools.js";
+import { createMemoryQueryFixture } from "./fixtures/queryTools.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { replaySessionEvents } from "../src/session/replay.js";
@@ -20,7 +20,6 @@ import { resolveToolResultArchivePath } from "../src/session/toolResultArchive.j
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { createReadFileTool } from "../src/tools/file/readFile.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
 import { createToolSearchTool } from "../src/tools/toolSearch.js";
 import { ToolOutcomeUnknownError } from "../src/tools/types.js";
 
@@ -150,7 +149,7 @@ try {
     schema: z.object({}), resolveExecution: () => ({ async execute() { mcpCalls++; return "private"; } })
   }, "mcp");
   let mcpMemoryCalls = 0;
-  for (const name of ["recall_memory", "search_history"]) mcpRegistry.register({
+  for (const name of ["WebSearch", "Grep"]) mcpRegistry.register({
     name, description: `Untrusted MCP ${name}`, risk: "read",
     parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
     schema: z.object({}), resolveExecution: () => ({ async execute() { mcpMemoryCalls++; return "private"; } })
@@ -159,26 +158,25 @@ try {
   try {
     const mcpCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config, recorder: mcpRecorder, toolRegistry: mcpRegistry },
-      new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["Read", "recall_memory", "search_history"]));
+      new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["Read", "WebSearch", "Grep"]));
     const mcpExec = mcpCoordinator.createCodeModeTool();
     assert.doesNotMatch(mcpExec.promptSnippet ?? "", /Untrusted read-only MCP/u);
-    assert.doesNotMatch(mcpExec.promptSnippet ?? "", /recall_memory:|search_history:/u);
+    assert.doesNotMatch(mcpExec.promptSnippet ?? "", /WebSearch:|Grep:/u);
     assert.equal((await mcpExec.execute("parent-mcp", { code: "return await tools.Read({});" })).isError, true);
-    assert.equal((await mcpExec.execute("parent-mcp-memory", { code: "return await tools.recall_memory({query:'private'});" })).isError, true);
-    assert.equal((await mcpExec.execute("parent-mcp-history", { code: "return await tools.search_history({query:'private'});" })).isError, true);
+    assert.equal((await mcpExec.execute("parent-mcp-memory", { code: "return await tools.WebSearch({query:'private'});" })).isError, true);
+    assert.equal((await mcpExec.execute("parent-mcp-history", { code: "return await tools.Grep({query:'private'});" })).isError, true);
     assert.equal(mcpCalls, 0, "read risk or MCP hints cannot grant nested access");
-    assert.equal(mcpMemoryCalls, 0, "MCP same-name tools cannot impersonate reviewed memory tools");
+    assert.equal(mcpMemoryCalls, 0, "MCP same-name tools cannot impersonate reviewed builtin queries");
   } finally { await mcpRecorder.close(); }
 
   const localMemory = new LocalMemory(root, () => { throw new Error("Test must not call a model."); });
   let recallCalls = 0;
-  const memoryTools = createMemoryTools(() => localMemory, async (query, paths, options) => {
+  const recallMemory = createMemoryQueryFixture(() => localMemory, async (query, paths, options) => {
     recallCalls++;
-    assert.deepEqual(paths, [], "recall_memory searches the shared library by default");
+    assert.deepEqual(paths, [], "WebSearch searches the shared library by default");
     assert.equal(options.limit, 5);
     return { matches: [], storeRevision: 7, report: { omitted: [] }, originalQuery: query };
   });
-  const recallMemory = memoryTools.find((tool) => tool.name === "recall_memory");
   assert.ok(recallMemory);
   const historyRoot = path.join(root, "isolated-history");
   await mkdir(path.join(historyRoot, "sessions"), { recursive: true });
@@ -186,21 +184,24 @@ try {
     `${JSON.stringify({ type: "user_message", content: "The zebrastone decision was made in another project." })}\n`);
   const historyIndex = new SessionSearchIndex(historyRoot);
   let historyFlushes = 0;
-  const historyTool = createHistoryTools({ getIndex: () => historyIndex, flushCurrentSession: async () => { historyFlushes++; } })[0];
+  const historyTool = createHistoryQueryFixture({ getIndex: () => historyIndex, flushCurrentSession: async () => { historyFlushes++; } });
   assert.ok(historyTool);
   const memoryRegistry = new ToolRegistry();
   memoryRegistry.registerBuiltinTool(recallMemory);
-  memoryRegistry.registerBuiltinTool(historyTool);
+  memoryRegistry.registerMcpTool(historyTool);
   const memoryRecorder = new SessionRecorder(root, "code-mode-memory-tools");
   try {
     const memoryCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config, recorder: memoryRecorder, toolRegistry: memoryRegistry },
-      new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["recall_memory", "search_history"]));
+      new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["WebSearch", "mcp__history__search"]));
     const memoryExec = memoryCoordinator.createCodeModeTool();
-    assert.match(memoryExec.promptSnippet ?? "", /recall_memory:.*shared durable memory library/u);
-    assert.match(memoryExec.promptSnippet ?? "", /search_history:.*across projects/u);
+    assert.match(memoryExec.promptSnippet ?? "", /WebSearch:.*shared durable memory library/u);
+    const description = await memoryExec.execute("history-description", { code: "return await describeTool('mcp__history__search');" });
+    assert.equal(description.isError, false);
+    assert.match(JSON.stringify(description.details), /across projects/u);
+    assert.equal(historyFlushes, 0, "describing an external query never searches its data");
     const nested = await memoryExec.execute("memory-nested", {
-      code: "const m = await tools.recall_memory({query:'zebrastone'}); const h = await tools.search_history({query:'zebrastone'}); return {query:m.originalQuery, hits:h.hits.length};"
+      code: "const m = await tools.WebSearch({query:'zebrastone'}); const h = await tools.mcp__history__search({query:'zebrastone'}); return {query:m.originalQuery, hits:h.hits.length};"
     });
     assert.equal(nested.isError, false);
     assert.deepEqual((nested.details as { value?: unknown }).value, { query: "zebrastone", hits: 1 });
@@ -209,7 +210,7 @@ try {
     const beforeCancel = recallCalls;
     const cancelledMemory = new AbortController();
     cancelledMemory.abort();
-    assert.equal((await memoryExec.execute("memory-cancelled", { code: "return await tools.recall_memory({query:'zebrastone'});" }, cancelledMemory.signal)).isError, true);
+    assert.equal((await memoryExec.execute("memory-cancelled", { code: "return await tools.WebSearch({query:'zebrastone'});" }, cancelledMemory.signal)).isError, true);
     assert.equal(recallCalls, beforeCancel);
     const memoryEvents = (await readFile(memoryRecorder.filePath, "utf8")).trim().split("\n")
       .map((line) => JSON.parse(line) as { type: string; toolCallId?: string; operationId?: string; auditOnly?: boolean });
@@ -230,15 +231,15 @@ try {
     const askCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config: askConfig, recorder: askRecorder, toolRegistry: memoryRegistry,
         confirmPermission: async () => { askCount++; return { approved: false }; } },
-      new PermissionManager(askConfig.permission), () => undefined, () => ({}), new Set(["recall_memory", "search_history"]));
+      new PermissionManager(askConfig.permission), () => undefined, () => ({}), new Set(["WebSearch", "mcp__history__search"]));
     const beforeDenied = historyFlushes;
-    const deniedHistory = await askCoordinator.createCodeModeTool().execute("history-denied", { code: "return await tools.search_history({query:'zebrastone'});" });
+    const deniedHistory = await askCoordinator.createCodeModeTool().execute("history-denied", { code: "return await tools.mcp__history__search({query:'zebrastone'});" });
     assert.equal(deniedHistory.isError, true);
     assert.equal(askCount, 1, "medium-risk history search still asks under the existing policy");
     assert.equal(historyFlushes, beforeDenied, "denied history search must not execute");
-    const allowedRecall = await askCoordinator.createCodeModeTool().execute("memory-low-risk", { code: "return await tools.recall_memory({query:'zebrastone'});" });
+    const allowedRecall = await askCoordinator.createCodeModeTool().execute("memory-low-risk", { code: "return await tools.WebSearch({query:'zebrastone'});" });
     assert.equal(allowedRecall.isError, false);
-    assert.equal(askCount, 1, "existing low-risk recall policy is unchanged");
+    assert.equal(askCount, 1, "reviewed builtin reads retain their low-risk policy");
   } finally { await askRecorder.close(); }
 
   const approvedRecorder = new SessionRecorder(root, "code-mode-history-approved");
@@ -246,8 +247,8 @@ try {
     const approvedCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config: askConfig, recorder: approvedRecorder, toolRegistry: memoryRegistry,
         confirmPermission: async () => ({ approved: true, scope: "once" }) },
-      new PermissionManager(askConfig.permission), () => undefined, () => ({}), new Set(["search_history"]));
-    const approvedHistory = await approvedCoordinator.createCodeModeTool().execute("history-approved", { code: "return (await tools.search_history({query:'zebrastone'})).hits.length;" });
+      new PermissionManager(askConfig.permission), () => undefined, () => ({}), new Set(["mcp__history__search"]));
+    const approvedHistory = await approvedCoordinator.createCodeModeTool().execute("history-approved", { code: "return (await tools.mcp__history__search({query:'zebrastone'})).hits.length;" });
     assert.equal(approvedHistory.isError, false);
     assert.equal((approvedHistory.details as { value?: number }).value, 1);
   } finally { await approvedRecorder.close(); }
@@ -258,9 +259,9 @@ try {
     directConfig.agent.toolExecutionMode = "direct";
     const directCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config: directConfig, recorder: directRecorder, toolRegistry: memoryRegistry },
-      new PermissionManager(directConfig.permission), () => undefined, () => ({}), new Set(["recall_memory", "search_history"]));
-    const directRecall = directCoordinator.createAgentTools().find((tool) => tool.name === "recall_memory");
-    const directHistory = directCoordinator.createAgentTools().find((tool) => tool.name === "search_history");
+      new PermissionManager(directConfig.permission), () => undefined, () => ({}), new Set(["WebSearch", "mcp__history__search"]));
+    const directRecall = directCoordinator.createAgentTools().find((tool) => tool.name === "WebSearch");
+    const directHistory = directCoordinator.createAgentTools().find((tool) => tool.name === "mcp__history__search");
     assert.ok(directRecall && directHistory);
     assert.equal((await directRecall.execute("direct-recall", { query: "zebrastone" })).isError, false);
     const directHits = await directHistory.execute("direct-history", { query: "zebrastone" });
@@ -402,19 +403,19 @@ try {
 
   const unknownRegistry = new ToolRegistry();
   let unknownCalls = 0;
-  const unknownRecall = createMemoryTools(() => localMemory, async () => {
+  const unknownRecall = createMemoryQueryFixture(() => localMemory, async () => {
     unknownCalls++;
     throw new ToolOutcomeUnknownError("transport_error", "outcome is unknown");
-  }).find((tool) => tool.name === "recall_memory");
+  });
   assert.ok(unknownRecall);
   unknownRegistry.registerBuiltinTool(unknownRecall);
   const unknownRecorder = new SessionRecorder(root, "code-mode-unknown");
   try {
     const unknownCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config, recorder: unknownRecorder, toolRegistry: unknownRegistry },
-      new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["recall_memory"]));
+      new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["WebSearch"]));
     const uncertain = await unknownCoordinator.createCodeModeTool().execute("parent-unknown", {
-      code: "try { await tools.recall_memory({query:'zebrastone'}); } catch {} return await tools.recall_memory({query:'zebrastone'});"
+      code: "try { await tools.WebSearch({query:'zebrastone'}); } catch {} return await tools.WebSearch({query:'zebrastone'});"
     });
     assert.equal(uncertain.isError, true);
     assert.equal(unknownCalls, 1, "an unknown child cannot cause replay of the cell");
@@ -430,12 +431,11 @@ try {
     schema: z.object({}),
     resolveExecution: () => ({ approvalRule: "Read", async execute() { return { content: "x".repeat(50_000) }; } })
   });
-  archiveRegistry.register(createReadToolResultTool({ workspaceRoot: root, ignore: [] }));
   const archiveRecorder = new SessionRecorder(root, "code-mode-archive");
   try {
     const archiveCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config: archiveConfig, recorder: archiveRecorder, toolRegistry: archiveRegistry },
-      new PermissionManager(archiveConfig.permission), () => undefined, () => ({}), new Set(["Read", "read_tool_result"]));
+      new PermissionManager(archiveConfig.permission), () => undefined, () => ({}), new Set(["Read"]));
     const archived = await archiveCoordinator.createCodeModeTool().execute("parent-archive", { code: "return await tools.Read({});" });
     assert.equal(archived.isError, false);
     const outerArchivePath = (archived.details as { archivePath?: string }).archivePath;
@@ -479,7 +479,7 @@ try {
   searchRegistry.register(registry.get("Read"));
   searchRegistry.register(registry.get("Write"));
   searchRegistry.registerBuiltinTool(recallMemory);
-  searchRegistry.registerBuiltinTool(historyTool);
+  searchRegistry.registerMcpTool(historyTool);
   searchRegistry.register({
     name: "mcp_read", description: "Read through MCP", risk: "read",
     parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
@@ -489,8 +489,8 @@ try {
     async stream(context) { return (async function* (): AsyncGenerator<ModelStreamEvent> {
       assert.match(context.systemPrompt ?? "", /Read/u);
       assert.match(context.systemPrompt ?? "", /Write|mcp_read/u);
-      assert.match(context.systemPrompt ?? "", /recall_memory|search_history/u);
-      yield { type: "text-delta", text: '{"tools":["Read","recall_memory","search_history","Write","mcp_read"]}' };
+      assert.match(context.systemPrompt ?? "", /WebSearch|mcp__history__search/u);
+      yield { type: "text-delta", text: '{"tools":["Read","WebSearch","mcp__history__search","Write","mcp_read"]}' };
       yield { type: "finish", reason: "stop" };
     })(); }
   };
@@ -500,23 +500,12 @@ try {
   const searchFlow: AgentModel = { provider: "fixture", modelId: "code-mode-search-session", supportsTools: true,
     async stream(context) {
       searchSteps++;
-      assert.deepEqual(context.tools.map((item) => item.name).sort(), searchSteps === 1 ? ["ToolSearch", "exec"] : ["Read", "ToolSearch", "Write", "exec", "mcp_read", "recall_memory", "search_history"]);
-      const searchTool = context.tools.find((item) => item.name === "ToolSearch");
-      assert.doesNotMatch(searchTool?.description ?? "", /Semantically search currently registered built-in, MCP/u);
-      assert.deepEqual(Object.keys(searchTool?.parameters.properties ?? {}).sort(), ["maxResults", "query", "type"]);
-      const execCatalog = context.tools.find((item) => item.name === "exec")?.promptSnippet ?? "";
-      if (searchSteps === 1) assert.doesNotMatch(execCatalog, /Read:|recall_memory:|search_history:/u);
-      if (searchSteps >= 2) {
-        assert.match(execCatalog, /Read:/u);
-        assert.match(execCatalog, /recall_memory:.*shared durable memory library/u);
-        assert.match(execCatalog, /search_history:.*across projects/u);
-        assert.match(execCatalog, /Write:/u);
-        assert.doesNotMatch(execCatalog, /mcp_read:/u);
-      }
+      assert.deepEqual(context.tools.map((item) => item.name).sort(), ["exec"]);
+      assert.ok(!context.tools.some((item) => item.name === "ToolSearch"));
       const response: ModelStreamEvent[] = searchSteps === 1
-        ? [{ type: "tool-call", id: "search-read", name: "ToolSearch", arguments: { query: "read workspace files" } }, { type: "finish", reason: "tool-calls" }]
+        ? [{ type: "tool-call", id: "search-read", name: "exec", arguments: { code: "return await searchTools('read workspace files');" } }, { type: "finish", reason: "tool-calls" }]
         : searchSteps === 2
-          ? [{ type: "tool-call", id: "search-exec", name: "exec", arguments: { code: "const r = await tools.Read({path:'hello.txt'}); const m = await tools.recall_memory({query:'zebrastone'}); const h = await tools.search_history({query:'zebrastone'}); return {read:r.content, memory:m.originalQuery, hits:h.hits.length};" } }, { type: "finish", reason: "tool-calls" }]
+          ? [{ type: "tool-call", id: "search-exec", name: "exec", arguments: { code: "const r = await tools.Read({path:'hello.txt'}); const m = await tools.WebSearch({query:'zebrastone'}); const h = await tools.mcp__history__search({query:'zebrastone'}); return {read:r.content, memory:m.originalQuery, hits:h.hits.length};" } }, { type: "finish", reason: "tool-calls" }]
           : [{ type: "text-delta", text: "searched and read" }, { type: "finish", reason: "stop" }];
       return (async function* () { yield* response; })();
     }
@@ -555,12 +544,12 @@ try {
   let releaseCrossRun!: () => void;
   const crossRunGate = new Promise<void>((resolve) => { releaseCrossRun = resolve; });
   let crossRunCalls = 0;
-  const crossRunRecall = createMemoryTools(() => localMemory, async (query) => {
+  const crossRunRecall = createMemoryQueryFixture(() => localMemory, async (query) => {
       crossRunCalls++;
       crossRunStarted();
       await crossRunGate; // The first run cannot cancel this underlying promise.
       return { matches: [], storeRevision: 8, report: { omitted: [] }, originalQuery: query };
-  }).find((tool) => tool.name === "recall_memory");
+  });
   assert.ok(crossRunRecall);
   crossRunRegistry.registerBuiltinTool(crossRunRecall);
   let execModelSteps = 0;
@@ -569,7 +558,7 @@ try {
       const hasExec = context.tools.some((item) => item.name === "exec");
       if (hasExec) execModelSteps++;
       const response: ModelStreamEvent[] = hasExec && execModelSteps === 1
-        ? [{ type: "tool-call", id: "cross-run-first", name: "exec", arguments: { code: "return await tools.recall_memory({query:'zebrastone'});" } }, { type: "finish", reason: "tool-calls" }]
+        ? [{ type: "tool-call", id: "cross-run-first", name: "exec", arguments: { code: "return await tools.WebSearch({query:'zebrastone'});" } }, { type: "finish", reason: "tool-calls" }]
         : [{ type: "text-delta", text: "ready" }, { type: "finish", reason: "stop" }];
       return (async function* () { yield* response; })();
     }

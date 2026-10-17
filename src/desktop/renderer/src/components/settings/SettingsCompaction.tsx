@@ -77,7 +77,7 @@ export function SettingsCompaction(): React.JSX.Element {
             <SettingsModelPicker
               ariaLabel="压缩模型"
               disabled={!compaction.enabled}
-              groups={modelPickerGroups(modelChoices)}
+              groups={modelPickerGroups(modelChoices, snapshot.models.connections)}
               inheritLabel="跟随当前模型"
               onChange={(summaryModel) => update({ summaryModel })}
               placeholder="跟随当前模型"

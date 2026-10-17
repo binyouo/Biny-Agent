@@ -35,6 +35,7 @@ import {
 } from "../../../tools/web/cookieJar.js";
 import { listBrowserProfiles, readBrowserProfileCookies } from "./browserProfileCookies.js";
 import { ToolOutcomeUnknownError } from "../../../tools/types.js";
+import { localIpcEndpoint, removeLocalIpcEndpoint, secureLocalIpcEndpoint } from "../../../utils/localIpc.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -337,33 +338,41 @@ export class DesktopBrowserService {
     if (this.desktopWindow && !this.desktopWindow.isDestroyed()) this.desktopWindow.webContents.send(desktopIpc.browserState, this.browserSnapshot(projectId));
   }
 
-  /** 启动给 Runtime Host 使用的本地控制面；Unix socket 权限和随机令牌双重限制访问。 */
+  /** 本地控制面在完成系统权限设置后才接纳连接，令牌仍由每次请求验证。 */
   async startAutomationServer(endpoint: string): Promise<BrowserAutomationEndpoint> {
     if (this.automationCredentials) return this.automationCredentials;
-    try {
-      await fs.unlink(endpoint);
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
+    endpoint = localIpcEndpoint(endpoint);
+    await removeLocalIpcEndpoint(endpoint);
     const credentials = { endpoint, token: randomBytes(32).toString("hex") };
-    const server = net.createServer((socket) => this.handleAutomationConnection(socket, credentials.token));
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error): void => {
-        server.off("listening", onListening);
-        reject(error);
-      };
-      const onListening = (): void => {
-        server.off("error", onError);
-        resolve();
-      };
-      server.once("error", onError);
-      server.once("listening", onListening);
-      server.listen(endpoint);
+    let ready = false;
+    const server = net.createServer((socket) => {
+      if (!ready) { socket.destroy(); return; }
+      this.handleAutomationConnection(socket, credentials.token);
     });
-    await fs.chmod(endpoint, 0o600);
-    this.automationServer = server;
-    this.automationCredentials = credentials;
-    return credentials;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error): void => {
+          server.off("listening", onListening);
+          reject(error);
+        };
+        const onListening = (): void => {
+          server.off("error", onError);
+          resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(endpoint);
+      });
+      await secureLocalIpcEndpoint(endpoint);
+      ready = true;
+      this.automationServer = server;
+      this.automationCredentials = credentials;
+      return credentials;
+    } catch (error) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await removeLocalIpcEndpoint(endpoint);
+      throw error;
+    }
   }
 
   /**
@@ -946,10 +955,6 @@ function readNumber(value: unknown, fallback: number, maximum: number): number {
     throw new Error(`Browser automation ${String(value)} is outside the supported range.`);
   }
   return value;
-}
-
-function isNotFound(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT";
 }
 
 function isXiaohongshuDomain(domain: string | undefined): boolean {

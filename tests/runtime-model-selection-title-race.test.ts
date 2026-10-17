@@ -98,7 +98,7 @@ async function fixture() {
   const configStore = store();
   configStore.supportsDetachedRuntimeHost = false;
   await configStore.save(configSchema.parse({
-    ...defaultConfig,
+    ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     defaultModel: "old", toolModel: "oldAux",
     providers: { local: { type: "openai-compatible", baseUrl: "http://fixture.local/v1", requiresApiKey: false, retry: { maxAttempts: 1 } } },
     models: Object.fromEntries([["old", "chat-old"], ["new", "chat-new"], ["oldAux", "aux-old"], ["newAux", "aux-new"]].map(([alias, model]) => [alias, {

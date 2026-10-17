@@ -14,7 +14,7 @@ import {
 } from "../src/extensions/skillDiscovery.js";
 import { readManagedSkillVersion, rollbackSkillVersion } from "../src/extensions/skillVersions.js";
 import { scanSkillCatalog } from "../src/extensions/skillCatalog.js";
-import { loadSkills, skillPromptForSelection } from "../src/extensions/skills.js";
+import { createSkillTool, loadSkills, skillPromptForSelection } from "../src/extensions/skills.js";
 import { writeFile } from "node:fs/promises";
 
 async function main(): Promise<void> {
@@ -67,9 +67,14 @@ async function main(): Promise<void> {
     const runtime = await loadSkills({ workspaceRoot: root, projectPaths: [], globalRoot: managedRoot });
     assert.equal(runtime.skills.some((skill) => skill.name === "demo-skill"), true, "受管版本必须被实际 runtime 发现");
     const selectedPrompt = await skillPromptForSelection(runtime, ["demo-skill"]);
-    assert.match(selectedPrompt, /# Skill: demo-skill/u, "能力分析完成后首轮提示词必须装配选中 Skill");
-    assert.match(selectedPrompt, /# Demo/u, "选中 Skill 的正文必须在首轮主模型请求前读取");
-    assert.match(selectedPrompt, /Declared tools \(normal permissions still apply\)/u, "声明信息与正文一起进入首轮提示词");
+    assert.match(selectedPrompt, /"demo-skill": Demo discovery skill/u, "已安装 Skill 的名称和简介进入首轮提示词");
+    assert.doesNotMatch(selectedPrompt, /# Demo/u, "普通正文留待 Skill 调用读取");
+    assert.doesNotMatch(selectedPrompt.match(/<available_skills>[\s\S]*?<\/available_skills>/u)?.[0] ?? "", /Declared tools/u);
+    const activation = await createSkillTool(runtime).resolveExecution({ skill: "demo-skill" });
+    assert.ok(!("isError" in activation));
+    const instructions = await activation.execute({ toolCallId: "installed-demo" });
+    assert.match(String(instructions), /# Demo/u);
+    assert.match(String(instructions), /Declared tools \(normal permissions still apply\)/u);
     assert.doesNotMatch(selectedPrompt, /demo-owner/u, "未选中的 Skill 不得混入首轮提示词");
     const unchanged = await updateDiscoveredSkill({ name: "demo-skill", expectedVersion: installed.version.id, homeDir, fetcher });
     assert.equal(unchanged.version.id, installed.version.id, "未改变的版本不增加历史");

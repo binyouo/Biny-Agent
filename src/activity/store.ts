@@ -567,11 +567,15 @@ export class ActivityStore {
         s.analysis_title, s.analysis_description,
         COUNT(DISTINCT snap.id) AS snapshot_count,
         s.app_names AS applications
-      FROM activity_sessions s
+      FROM (
+        SELECT id, started_at, ended_at, event_count, analysis_title, analysis_description, app_names
+        FROM activity_sessions
+        ORDER BY started_at DESC
+        LIMIT ?
+      ) s
       LEFT JOIN activity_snapshots snap ON snap.session_id = s.id
       GROUP BY s.id
       ORDER BY s.started_at DESC
-      LIMIT ?
     `).all(limit) as Array<Record<string, unknown>>;
     const analysisCounts = database.prepare(`
       SELECT SUM(analysis_status = 'pending') AS pending, SUM(analysis_status = 'failed') AS failed

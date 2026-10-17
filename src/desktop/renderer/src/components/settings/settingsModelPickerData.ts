@@ -52,8 +52,8 @@ export function modelPickerGroups(
     };
     group.options.push({
       value: model.alias,
-      label: model.displayName,
-      secondary: model.model !== model.displayName ? model.model : model.alias
+      label: model.model,
+      secondary: `${model.displayName} ${model.alias}`
     });
     groups.set(key, group);
   }

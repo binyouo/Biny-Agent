@@ -8,7 +8,7 @@ import { defaultConfig, type AgentConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { agentDir, ensureAgentDirs } from "../src/session/store.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import type { AgentSessionEvent } from "../src/agent/types.js";
 import { resolveWorkspacePath } from "../src/workspace/resolvePath.js";
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
     config.permission.mode = "full-access";
     const registry = new ToolRegistry();
     registry.register(largeResultTool());
-    registry.register(createReadToolResultTool({ workspaceRoot, ignore: config.workspace.ignore }));
+    registry.register(createReadFileTool({ workspaceRoot, ignore: config.workspace.ignore }));
     const recorder = new SessionRecorder(workspaceRoot, "archive-test");
     const coordinator = new ToolExecutionCoordinator({
       workspaceRoot,
@@ -88,19 +88,19 @@ async function main(): Promise<void> {
     const originalResult = JSON.parse(archive.output ?? "{}") as { result?: string };
     assert.equal(originalResult.result, "x".repeat(768));
 
-    // 归档目录被 workspace ignore 挡在 Read 之外，模型只能靠 read_tool_result 取回。
+    // 普通工作区解析仍拒绝运行目录；Read 只为受校验的归档引用提供受限入口。
     assert.throws(() => resolveWorkspacePath(workspaceRoot, String(second.archivePath), config.workspace.ignore));
-    const reader = nativeTool(coordinator, "read_tool_result");
-    const reread = await reader.execute("reread", { archivePath: second.archivePath }) as Record<string, unknown>;
+    const reader = nativeTool(coordinator, "Read");
+    const reread = await reader.execute("reread", { path: second.archivePath }) as Record<string, unknown>;
     assert.equal(reread.tool, "large_result");
     assert.equal(String(reread.content).includes("x".repeat(768)), true);
     assert.equal(reread.hasMore, false);
 
     // 归档引用之外的路径一律拒绝，工具参数不能借它读到任意文件。
     for (const escape of ["../../etc/passwd", ".biny/sessions/archive-test.jsonl", ".biny/tool-results/../sessions/x.jsonl"]) {
-      const denied = await reader.execute(`escape-${escape}`, { archivePath: escape }) as Record<string, unknown>;
-      assert.equal(typeof denied.error, "string", `${escape} should be refused`);
-      assert.equal(denied.content, undefined);
+      const denied = await coordinator.createAgentTools().find((tool) => tool.name === "Read")!.execute(`escape-${escape}`, { path: escape });
+      assert.equal(denied.isError, true, `${escape} should be refused`);
+      assert.equal((denied.details as Record<string, unknown>).content, undefined);
     }
 
     // 预算是模型侧的上限：超额后每条结果都塌缩成引用，preview 不会每步再塞一份。
@@ -155,7 +155,7 @@ async function testPersistLevelOutlining(): Promise<void> {
     const fileBytes = Buffer.byteLength(await readFile(recorder.filePath, "utf8"), "utf8");
     assert.equal(fileBytes < 32 * 1024, true, `session file must stay lean, got ${String(fileBytes)} bytes`);
 
-    // 归档文件保留全文，read_tool_result 可取回。
+    // 归档文件保留全文，Read 可取回。
     const archive = JSON.parse(await readFile(path.join(agentDir(workspaceRoot), "tool-results", path.basename(String(persisted.result!.archivePath))), "utf8")) as { output?: string };
     assert.equal(JSON.parse(archive.output ?? "{}").result, "y".repeat(64 * 1024));
     await recorder.close();

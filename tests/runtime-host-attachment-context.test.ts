@@ -123,7 +123,9 @@ for (const scenario of [
     const parts = users[0]!.content;
     assert.ok(Array.isArray(parts));
     assert.equal(parts[0]?.type, "text");
-    const promptText = parts[0]?.text;
+    assert.match(parts[0]?.text ?? "", /^\[Message sent-at: \d{4}-\d{2}-\d{2}T[^;]+Z; original timezone: [^;]+; message time is not event\/due\/completion time\.\]$/u);
+    assert.equal(parts[1]?.type, "text");
+    const promptText = parts[1]?.text;
     assert.equal(typeof promptText, "string");
     // ContextMemory may prepend its normal per-turn context to the prompt part.
     assert.ok(promptText === prompt || promptText?.endsWith(`\n\n${prompt}`));
@@ -132,7 +134,7 @@ for (const scenario of [
       if (attachment.hiddenContext) expected.push({ type: "text", text: prefix + attachment.hiddenContext });
       expected.push({ type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${attachment.data}` } });
     }
-    assert.deepEqual(parts.slice(1), expected, "context must occur exactly once immediately before its own unchanged image");
+    assert.deepEqual(parts.slice(2), expected, "context must occur exactly once immediately before its own unchanged image");
     for (const context of contexts) {
       if (!context) continue;
       assert.ok(!promptText?.includes(context), "screenshot context must remain a separately labeled attachment part");
@@ -142,6 +144,7 @@ for (const scenario of [
     const events = await readSessionEvents(info.sessionFile);
     const user = events.find(event => event.type === "user_message" && event.messageId === submitted.result!.messageId);
     assert.ok(user?.type === "user_message");
+    assert.ok(parts[0]?.text?.includes(user.time), "the first text part must anchor this canonical user message's send time");
     assert.equal(user.content, prompt);
     assert.deepEqual(user.attachments, references, "canonical user_message must retain reference metadata only");
     const persisted = await readFile(info.sessionFile, "utf8");

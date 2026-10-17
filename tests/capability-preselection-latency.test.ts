@@ -45,7 +45,7 @@ test("automatic selection allows responses beyond two seconds but cancels both r
   assert.equal(settled, true, "Selection remains bounded when the model never responds");
   assert.equal(aborted, 2);
   const selected = await result;
-  assert.ok(Array.isArray(selected.tools) && selected.tools.includes("WebSearch") && selected.tools.includes("ToolSearch"));
+  assert.ok(Array.isArray(selected.tools) && selected.tools.includes("WebSearch") && !selected.tools.includes("ToolSearch"));
   assert.deepEqual(selected.skills, ["review"], "Explicit capabilities survive selection timeout");
 });
 

@@ -7,7 +7,7 @@ import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import { Worker } from "node:worker_threads";
 import { SessionSearchIndex } from "../src/session/searchIndex.js";
-import { createHistoryTools } from "../src/extensions/history.js";
+import { createHistoryQueryFixture } from "./fixtures/queryTools.js";
 
 test("history indexing keeps the caller responsive while another connection holds the writer lock", { timeout: 10_000 }, async context => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-search-worker-"));
@@ -64,7 +64,7 @@ test("the real history tool keeps same-named sources independent through shared 
       await writeFile(file, `${JSON.stringify({ type: "user_message", messageId: `message-${position}`, content: `independent worker marker ${"long ".repeat(position * 20)}` })}\n`);
     }
     assert.deepEqual(await Promise.all(files.map((file, position) => (position ? second : first).indexSessionFile("shared", file))), [1, 1]);
-    const tool = createHistoryTools({ getIndex: () => first })[0]!;
+    const tool = createHistoryQueryFixture({ getIndex: () => first });
     const execution = await tool.resolveExecution({ query: "independent worker marker" });
     assert.ok(!("isError" in execution));
     const result = await execution.execute({}) as { hits: Array<{ sessionId: string; messageId: string; sourcePath: string }> };

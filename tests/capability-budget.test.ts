@@ -8,7 +8,7 @@ const catalog = Array.from({ length: 200 }, (_, index) => ({
   name: `mcp_docs_${index}`, description: `Read document ${index}`, source: "mcp" as const,
   capability: "mcp:docs", parameters: { type: "object" as const, properties: { query: { type: "string" as const } } }
 }));
-const foundation = ["Read", "ToolSearch", "read_tool_result"].map((name) => ({ name, description: name }));
+const foundation = ["Read", "ToolSearch"].map((name) => ({ name, description: name }));
 let selection = [catalog[199]!.name];
 const model: AgentModel = {
   provider: "test", modelId: "bounded-selector",
@@ -19,7 +19,7 @@ const model: AgentModel = {
 };
 const input = {
   input: "Read the latest document", history: [], previousTools: catalog.slice(0, 10).map((tool) => tool.name),
-  config: defaultConfig, tools: [...foundation, ...catalog], skills: [], models: [{ model, failureDomain: "test-selector" }],
+  config: { ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" as const } }, tools: [...foundation, ...catalog], skills: [], models: [{ model, failureDomain: "test-selector" }],
   automaticToolBudget: { maxTools: 2, maxSchemaCharacters: 1000 }
 };
 const result = await preselectCapabilities(input);

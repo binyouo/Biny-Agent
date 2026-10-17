@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { memoryAddCommand, memoryClearCommand, memoryListCommand } from "../src/cli/commands/localCapabilities.js";
+import { memoryAddCommand, memoryClearCommand, memoryListCommand, memorySearchCommand } from "../src/cli/commands/localCapabilities.js";
 import { connectRuntimeHost, startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
@@ -12,11 +12,14 @@ const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-cli-entry-"));
 const originalAgentDir = process.env.BINY_AGENT_DIR;
 process.env.BINY_AGENT_DIR = path.join(root, "agent");
 const received: MemoryEntryInput[] = [];
+const searches: unknown[] = [];
 const clearedThreads: string[] = [];
 const listLimits: number[] = [];
 let clearedAll = 0;
+let busy = false;
 const commands = {
   agent: {
+    searchMemory: async (query: string, paths: string[], options: unknown) => { searches.push({ query, paths, options }); return { matches: [], storeRevision: 0, report: { omitted: [] } }; },
     getLocalMemory: () => ({
       writeEntry: async (entry: MemoryEntryInput) => { received.push(entry); return { written: true }; },
       listMemoryEntries: async (options: { limit?: number } = {}) => {
@@ -36,7 +39,10 @@ const runtime = {
     info: { sessionId: "memory-cli-entry", sessionFile: path.join(root, "session.jsonl"), workspaceRoot: root }
   }),
   subscribe: () => () => undefined,
-  runExclusiveOperation: async (_name: string, execute: (signal: AbortSignal) => Promise<unknown>) => await execute(new AbortController().signal),
+  runExclusiveOperation: async (_name: string, execute: (signal: AbortSignal) => Promise<unknown>) => {
+    if (busy) throw new Error("Session is busy");
+    return await execute(new AbortController().signal);
+  },
   close: async () => undefined
 } as unknown as InteractiveRuntimeHandle;
 let host: Awaited<ReturnType<typeof startRuntimeHost>> | undefined;
@@ -46,6 +52,15 @@ try {
   console.log = () => undefined;
   await memoryListCommand(root, { noSpawn: true, json: true });
   assert.deepEqual(listLimits, [100], "CLI list forwards the public default page size");
+  await memorySearchCommand(root, "release checklist", { noSpawn: true, json: true });
+  await memorySearchCommand(root, "release checklist", { noSpawn: true, json: true, limit: 3, threshold: 0.8, tag: ["release"], threadId: "thread-1" });
+  assert.deepEqual(searches.map((search) => JSON.parse(JSON.stringify(search))), [
+    { query: "release checklist", paths: [], options: { limit: 20 } },
+    { query: "release checklist", paths: [], options: { limit: 3, threshold: 0.8, tags: ["release"], threadId: "thread-1" } }
+  ]);
+  for (const threshold of [-0.1, 1.1, NaN]) await assert.rejects(memorySearchCommand(root, "release", { noSpawn: true, threshold }), /threshold/u);
+  assert.equal(searches.length, 2, "invalid search options never reach the retriever");
+  busy = true;
   await memoryAddCommand(root, undefined, {
     entry: JSON.stringify({ content: "下周五前完成", durability: "temporary", expiresAt: "2026-10-02T00:00:00.000Z", threadId: "thread-1", messageId: "message-1" }),
     json: true,
@@ -61,10 +76,15 @@ try {
     /durability/u
   );
   assert.equal(received.length, 1, "Host 校验失败后不能进入写入层");
+  await assert.rejects(memoryAddCommand(root, undefined, { entry: JSON.stringify({ content: "   " }), noSpawn: true }), /entry.content/u);
+  assert.equal(received.length, 1, "blank memory content never reaches storage");
   await assert.rejects(
     memoryAddCommand(root, undefined, { entry: '[]', noSpawn: true }),
     /JSON 对象/u
   );
+  await assert.rejects(memoryClearCommand(root, { threadId: "thread-1", yes: true, noSpawn: true }), /Session is busy/u);
+  assert.deepEqual(clearedThreads, [], "maintenance remains exclusive while the model is running");
+  busy = false;
   await memoryClearCommand(root, { threadId: "thread-1", yes: true, noSpawn: true });
   assert.deepEqual(clearedThreads, ["thread-1"]);
   assert.equal(clearedAll, 0, "按 thread 清理不能落到全库清理");
