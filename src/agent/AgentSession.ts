@@ -3652,6 +3652,20 @@ export class AgentSession {
     return outcome ?? failedTurn("Agent stream ended without a terminal result.", 0);
   }
 
+  /** Finish the old session's memory work and usage before replacing its recorder. */
+  private async settleSessionMemory(recorder: SessionRecorder): Promise<void> {
+    await Promise.allSettled([...this.pendingMemoryTasks]);
+    const relatedUsage = this.takeRelatedUsage();
+    if (relatedUsage) {
+      recorder.record({
+        type: "assistant_message",
+        content: "",
+        relatedUsage,
+        contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState()
+      });
+    }
+  }
+
   private async closeReplacedSession(recorder: SessionRecorder): Promise<void> {
     const results = await Promise.allSettled([recorder.close(), this.options.releaseSessionResources?.()]);
     const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
@@ -3670,6 +3684,7 @@ export class AgentSession {
     let replacementRecorder: SessionRecorder | undefined;
     try {
       if (resumingCurrent) {
+        await this.settleSessionMemory(previousRecorder);
         previousClosed = true;
         await this.closeReplacedSession(previousRecorder);
       }
@@ -3716,6 +3731,7 @@ export class AgentSession {
 
       if (!resumingCurrent) {
         this.emotionAnalysisScheduler.cancel();
+        await this.settleSessionMemory(previousRecorder);
         previousClosed = true;
         await this.closeReplacedSession(previousRecorder);
       }
@@ -3791,17 +3807,8 @@ export class AgentSession {
       await ensureAgentDirs(this.persistenceRoot());
       // 先打开新会话的 recorder，再收尾旧会话；若这里失败，当前会话保持原样。
       nextRecorder = new SessionRecorder(this.persistenceRoot(), undefined, undefined, this.options.runtimeEventSink);
-      // 旧会话可能还有旁路用量（记忆/子代理）没落盘，先补写进旧会话再收尾，不丢账单。
-      // 这与 close() 的收尾一致；此刻 recorder 仍是旧会话，contextMemory 仍是旧上下文。
-      const pendingRelated = this.takeRelatedUsage();
-      if (pendingRelated) {
-        previousRecorder.record({
-          type: "assistant_message",
-          content: "",
-          relatedUsage: pendingRelated,
-          contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState()
-        });
-      }
+      // 旧会话的后台记忆任务仍会追加 metadata 和用量；先结算，再关闭旧 recorder。
+      await this.settleSessionMemory(previousRecorder);
       // 旧 recorder 只是被丢弃；关闭失败不阻断切换到新会话（空草稿关闭时会顺带删除草稿文件）。
       await previousRecorder.close().catch(() => undefined);
       await this.options.releaseSessionResources?.();
