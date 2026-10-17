@@ -369,7 +369,7 @@ for (const action of ["retry", "edit"] as const) {
       ? /Message sent-at: 2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai/u
       : /Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
     if (action === "retry") {
-      assert.deepEqual(request.messages.slice(1), before.slice(1), "the two completed tool steps remain unchanged");
+      assert.equal(JSON.stringify(request.messages.slice(1)), JSON.stringify(before.slice(1)), "the two completed tool steps remain unchanged");
       assert.equal(await readFile(f.effects, "utf8"), "effect-1\neffect-2\n");
     }
     const persisted = await f.events();
