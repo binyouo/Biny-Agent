@@ -356,6 +356,7 @@ await test("CommandRuntime scripts inspect plans through CLI without exposing na
   try {
     const config = isolatedConfig();
     config.permission.mode = "full-access";
+    config.permission.denyPaths = [];
     config.extensions.skills.enabled = false;
     commands = await createCommandRuntime(root, { sessionId: "plan-query-session", resourceBoot: "blocking",
       configStore: { load: async () => config, save: async () => { throw new Error("No configuration writes"); } } });

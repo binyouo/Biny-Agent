@@ -121,7 +121,8 @@ for (const example of examples) {
       }
       const modelText = result.content.find((part) => part.type === "text");
       assert.ok(modelText?.type === "text");
-      assert.deepEqual(JSON.parse(modelText.text), value);
+      const serializedValue = JSON.parse(JSON.stringify(value));
+      assert.deepEqual(JSON.parse(modelText.text), serializedValue);
       assert.equal(JSON.stringify(result).includes(syntheticCredential), false, "connection credentials must already be scrubbed before failure extraction");
       assert.deepEqual(value.childCalls, [{ tool: "mcp_fixture_lookup", toolCallId: "lookup:nested:1" }]);
       assert.equal(fake.calls(), 1, "feedback must not replay a dispatched tool");
@@ -137,7 +138,7 @@ for (const example of examples) {
       const saved = events.find((event) => event.type === "tool_result" && event.toolCallId === "lookup");
       assert.ok(saved?.type === "tool_result");
       assert.equal(saved.executionStatus, failed ? "failed" : "succeeded");
-      assert.deepEqual(saved.result, value);
+      assert.deepEqual(saved.result, serializedValue);
       const child = events.find((event) => event.type === "tool_result" && event.toolCallId === "lookup:nested:1");
       assert.ok(child?.type === "tool_result" && child.auditOnly);
       const expectedContent = example.response.content.map((part) => part.type === "text"
@@ -150,10 +151,10 @@ for (const example of examples) {
       assert.equal(JSON.stringify(events).includes(syntheticCredential), false);
       const restored = replaySessionEvents(events, { sessionId: recorder.sessionId }).messages.filter((message) => message.role === "toolResult");
       assert.equal(restored.length, 1, "the parent exposes the explanation because audit-only child results are not model messages");
-      assert.deepEqual(restored[0]?.details, value);
+      assert.deepEqual(restored[0]?.details, serializedValue);
       const restoredText = restored[0]?.content.find((part) => part.type === "text");
       assert.ok(restoredText?.type === "text");
-      assert.deepEqual(JSON.parse(restoredText.text), value);
+      assert.deepEqual(JSON.parse(restoredText.text), serializedValue);
       assert.doesNotThrow(() => coordinator!.assertCanContinue(), "a settled remote failure has no unknown side effect");
       if (!failed) {
         const caught = await coordinator.createCodeModeTool().execute("caught-script", {
