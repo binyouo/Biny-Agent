@@ -378,6 +378,28 @@ async function setupFixture(t: TestContext, gate: Gate) {
     });
     return { text, node: textNode!, start: 0, end: text.length };
   };
+  const diagnoseSelection = (expected: Awaited<ReturnType<typeof select>>, phase: string): void => {
+    try {
+      const selection = window.getSelection();
+      const currentMarkdown = document.querySelector<HTMLElement>(`article[data-message-id="${MESSAGE}"] .markdown-body`);
+      let matchingNodes = 0;
+      let sameNode = false;
+      if (currentMarkdown) {
+        const walker = document.createTreeWalker(currentMarkdown, window.NodeFilter.SHOW_TEXT);
+        for (let visited = 0; visited < 128 && walker.nextNode(); visited += 1) {
+          if (walker.currentNode.textContent !== expected.text) continue;
+          matchingNodes += 1;
+          sameNode ||= walker.currentNode === expected.node;
+        }
+      }
+      t.diagnostic(`${phase}: oldNodeConnected=${expected.node.isConnected}; markdownSame=${currentMarkdown === markdown}; matchingNodes=${matchingNodes}; sameNode=${sameNode}; `
+        + `rangeCount=${selection?.rangeCount ?? 0}; collapsed=${selection?.isCollapsed ?? true}; `
+        + `anchorConnected=${selection?.anchorNode?.isConnected ?? false}; anchorIsOld=${selection?.anchorNode === expected.node}; `
+        + `focusConnected=${selection?.focusNode?.isConnected ?? false}; text=${JSON.stringify((selection?.toString() ?? "").slice(0, 80))}; `
+        + `activeSentinel=${document.activeElement === sentinel}; activeInput=${document.activeElement === input}; `
+        + `activeTag=${document.activeElement?.tagName ?? "none"}; inputFocusCalls=${inputCalls.focus}; inputSelectionRangeCalls=${inputCalls.selectionRange}`);
+    } catch { /* Optional diagnostics must not replace the original assertion. */ }
+  };
   const assertSelection = (expected: Awaited<ReturnType<typeof select>>): void => {
     const selection = window.getSelection();
     assert.equal(selection?.toString(), expected.text);
@@ -411,7 +433,7 @@ async function setupFixture(t: TestContext, gate: Gate) {
       else pending.resolve(gate === "referenceForMessage" ? source : captured);
     });
   };
-  return { document, input, inputCalls, sentinel, calls, select, assertSelection, button, click, settle, frame,
+  return { document, input, inputCalls, sentinel, calls, select, assertSelection, diagnoseSelection, button, click, settle, frame,
     tokenCount: () => document.querySelectorAll(".biny-prompt-reference-token").length,
     warning: () => document.querySelector(".desktop-toast-message")?.textContent ?? "" };
 }
@@ -431,7 +453,9 @@ for (const gate of ["referenceForMessage", "referenceCaptureSelectionQuote"] as 
     assert.equal(h.button().disabled, true, "New B keeps the original global single-flight gate");
     const message = `${gate} deliberately rejected A`;
     await h.settle(new Error(message));
+    h.diagnoseSelection(selectedB, "after settle, before RAF");
     await h.frame();
+    h.diagnoseSelection(selectedB, "after RAF");
     assert.equal(h.warning(), message, "The visible warning must come from App's actual catch");
     assert.equal(h.button().disabled, false, "A settlement releases B's add button");
     assert.equal(h.button().getAttribute("aria-busy"), "false");
