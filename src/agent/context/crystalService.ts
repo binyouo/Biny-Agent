@@ -9,6 +9,8 @@ import type { AgentModel } from "../core/types.js";
 import { generateNativeText } from "../../llm/nativeJson.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import { CrystalStorage } from "./crystalStorage.js";
+import { validateCrystal, type CrystalValidation } from "./crystalValidation.js";
+export { validateCrystal, type CrystalValidation } from "./crystalValidation.js";
 import {
   crystalTypeFields,
   defaultCrystalConfig,
@@ -77,12 +79,6 @@ export interface CrystalDetail {
   term?: CrystalTerm;
   validation: CrystalValidation;
   related: Array<{ id: string; name: string; stage: Crystal["stage"]; origin: Crystal["origin"]; shared: number }>;
-}
-
-export interface CrystalValidation {
-  ready: boolean;
-  missing: string[];
-  conflicted: string[];
 }
 
 export class CrystalService {
@@ -737,18 +733,6 @@ export function termId(term: string): string {
   let hash = 5_381;
   for (let index = 0; index < term.length; index += 1) hash = (33 * hash) ^ term.charCodeAt(index);
   return `t${(hash >>> 0).toString(36)}`;
-}
-
-export function validateCrystal(crystal: Crystal): CrystalValidation {
-  if (!crystal.type) return { ready: false, missing: ["type"], conflicted: [] };
-  const missing: string[] = [];
-  const conflicted: string[] = [];
-  for (const field of crystalTypeFields[crystal.type]) {
-    const item = crystal.checklist[field];
-    if (!item?.value.trim() || !item.sources.length) missing.push(field);
-    else if (item.conflict) conflicted.push(field);
-  }
-  return { ready: missing.length === 0 && conflicted.length === 0, missing, conflicted };
 }
 
 function createNucleusCrystal(term: CrystalTerm, timestamp: string): Crystal {
