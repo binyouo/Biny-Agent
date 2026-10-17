@@ -78,7 +78,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
     await saveConfig(root, configSchema.parse({
       ...defaultConfig, defaultModel: "fixture", thinking: { ...defaultConfig.thinking, enabled: false },
       agent: { ...defaultConfig.agent, toolExecutionMode: executionMode },
-      permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false },
+      permission: { ...defaultConfig.permission, mode: "full-access", denyPaths: [], criticalAlwaysAsk: false },
       providers: { local: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
       models: { fixture: { provider: "local", model: "fixture", contextWindow: 128000, capabilities: { tools: true, reasoning: false, streaming: true } } },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
