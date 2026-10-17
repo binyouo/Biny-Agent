@@ -29,6 +29,7 @@ test("appearance preview and owner close preserve transparent window backgrounds
           process.on("uncaughtException", error => { console.error(error); app.exit(1); });
           app.setPath("userData", ${JSON.stringify(path.join(root, "user-data"))});
           app.on("window-all-closed", () => {});
+          console.error("window-close-await: app-ready");
           app.whenReady().then(async () => {
             if (process.platform === "darwin") app.setActivationPolicy("prohibited");
             const owner = new BrowserWindow({ show: false, transparent: process.platform === "darwin", backgroundColor: "#00000000" });
@@ -40,7 +41,9 @@ test("appearance preview and owner close preserve transparent window backgrounds
               window.setBackgroundColor = color => { appliedBackgrounds.set(window, color); setBackgroundColor(color); };
             }
             const survivorContents = survivor.webContents;
+            console.error("window-close-await: owner-load");
             await owner.loadURL("about:blank");
+            console.error("window-close-await: survivor-load");
             await survivor.loadURL("about:blank");
             const saved = { themePreference: "system", appearancePreference: DEFAULT_APPEARANCE, fontPreference: { family: "system", size: 14 } };
             const coordinator = new AppearancePreviewCoordinator({
@@ -81,6 +84,7 @@ test("appearance preview and owner close preserve transparent window backgrounds
               });
             });
             const ownerId = owner.webContents.id;
+            console.error("window-close-await: owner-renderer-destroyed");
             await new Promise(resolve => {
               owner.webContents.once("destroyed", () => {
                 assert.equal(owner.isDestroyed(), false, "renderer destruction precedes window destruction");
@@ -92,6 +96,7 @@ test("appearance preview and owner close preserve transparent window backgrounds
               owner.close();
             });
             assert.deepEqual(coordinator.snapshot(), saved);
+            console.error("window-close-await: survivor-restored");
             assert.deepEqual(await received, saved);
             assert.equal(owner.isDestroyed(), true);
             checkBackgrounds();
@@ -115,7 +120,21 @@ test("appearance preview and owner close preserve transparent window backgrounds
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
     const args = process.platform === "linux" && process.env.CI ? ["--no-sandbox", entry] : [entry];
-    const result = await promisify(execFile)(createRequire(import.meta.url)("electron") as string, args, { env, timeout: 15_000, killSignal: "SIGKILL" });
+    const result = await promisify(execFile)(createRequire(import.meta.url)("electron") as string, args, { env, timeout: 15_000, killSignal: "SIGKILL" }).catch((error: unknown) => {
+      try {
+        const failure = error as { code?: unknown; signal?: unknown; killed?: unknown; stdout?: unknown; stderr?: unknown };
+        console.error("window-close-child-failure", JSON.stringify({
+          code: failure.code,
+          signal: failure.signal,
+          killed: failure.killed,
+          stdout: failure.stdout,
+          stderr: failure.stderr
+        }));
+      } catch {
+        // Failure diagnostics must not replace the original child-process error.
+      }
+      throw error;
+    });
     assert.match(result.stdout, /window-close-restored/u);
   } finally {
     await rm(root, { recursive: true, force: true });
