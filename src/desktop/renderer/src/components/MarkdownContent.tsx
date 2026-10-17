@@ -63,6 +63,14 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, components, remarkP
     rehypePlugins={rehypePlugins}>{content}</Markdown>;
 });
 
+// 回调更新不能替换段落类型，否则原生文字选区会随节点重建丢失。
+function MarkdownParagraph({ node: _node, children, ...props }: React.ComponentProps<"p"> & ExtraProps): React.JSX.Element {
+  const reveal = useContext(WordRevealContext);
+  const visible = React.Children.toArray(children).filter(child => child !== "");
+  if (visible.length === 1 && isValidElement<{ node?: { tagName?: string } }>(visible[0]) && visible[0].props.node?.tagName === "img") return <>{children}</>;
+  return <p {...props}>{reveal ? revealWords(children) : children}</p>;
+}
+
 interface MarkdownContentProps {
   content: string;
   projectId: string;
@@ -102,12 +110,7 @@ export const MarkdownContent = memo(function MarkdownContent({
   // 配合入场动画表现为持续闪烁（.markdown-table 横向滚动位置也会被不断重置），
   // 因此必须用 useMemo 稳定组件身份，让 React 原地更新 DOM。
   const components = useMemo<Components>(() => ({
-    p: function Paragraph({ node: _node, children, ...props }) {
-      const reveal = useContext(WordRevealContext);
-      const visible = React.Children.toArray(children).filter(child => child !== "");
-      if (visible.length === 1 && isValidElement<{ node?: { tagName?: string } }>(visible[0]) && visible[0].props.node?.tagName === "img") return <>{children}</>;
-      return <p {...props}>{reveal ? revealWords(children) : children}</p>;
-    },
+    p: MarkdownParagraph,
     a({ node: _node, children, ...props }) {
       const href = props.href;
       const path = localPathFromHref(href);
