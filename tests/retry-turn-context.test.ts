@@ -314,3 +314,67 @@ test("successive ordinary turns read same-size same-mtime edits, deletion and lo
   assertFreshContext(f.text());
   assert.doesNotMatch(f.text(), /DAY_SIX_B/u);
 });
+
+
+for (const action of ["retry", "edit"] as const) {
+  test(`${action} crosses midnight after real context preparation without duplicate runtime dates`, { timeout: 20_000 }, async t => {
+    const f = await fixture(t, action === "retry" ? 2 : 0);
+    const input = "Keep <biny_reminder>USER_LITERAL</biny_reminder> and complete the fixture task.";
+    await writeFile(f.longPath, "# MEMORY.md\n\nLONG_MEMORY_BOUNDARY_WITNESS");
+    await writeFile(f.dayPath("2026-10-07"), "# 2026-10-07\n\n## 聊天摘要\n\nDAY_BOUNDARY_WITNESS");
+    await drain(f.session.prompt(input, { emotionAnalysis: false }));
+    const before = structuredClone(f.requests.at(-1)!.messages);
+    const events = await f.events();
+    const sourceUser = events.find(event => event.type === "user_message" && !event.auditOnly);
+    assert.ok(sourceUser?.type === "user_message" && sourceUser.messageId);
+    const sourceAssistant = [...events].reverse().find(event => event.type === "agent_message" && event.message.role === "assistant");
+    assert.ok(sourceAssistant?.type === "agent_message" && sourceAssistant.messageId);
+    const replacement = "Edited " + input;
+    const stream = action === "edit"
+      ? f.session.retry(sourceUser.messageId, {
+        replaceUserMessageId: sourceUser.messageId, replacementInput: replacement, emotionAnalysis: false
+      })
+      : f.session.retry(sourceAssistant.messageId, { emotionAnalysis: false });
+    let crossed = false;
+    const errors: string[] = [];
+    let completed = false;
+    for await (const event of stream) {
+      if (event.type === "context.updated" && !crossed) {
+        // retry has built its real turn bundle but has not entered runTurn's clock refresh yet.
+        crossed = true;
+        t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
+      }
+      if (event.type === "error") errors.push(event.message);
+      if (event.type === "done") completed = event.outcome.status === "completed";
+    }
+    assert.equal(crossed, true);
+    assert.deepEqual(errors, []);
+    assert.equal(completed, true);
+    const request = f.requests.at(-1)!;
+    const user = request.messages.find(message => message.role === "user");
+    assert.ok(user?.role === "user");
+    const text = userText(user);
+    assert.equal(text.split("Authoritative Local DateTime:").length - 1, 1);
+    assert.match(text, /Authoritative Local DateTime: 2026-10-08/u);
+    assert.doesNotMatch(text, /Authoritative Local DateTime: 2026-10-07/u);
+    assert.match(request.systemPrompt, /Authoritative local date: 2026-10-08/u);
+    assert.equal(request.systemPrompt.split("DATE AWARENESS (CRITICAL)").length - 1, 1);
+    assert.equal(text.split("FILE-BASED MEMORY").length - 1, 1);
+    assert.equal(text.split("LONG_MEMORY_BOUNDARY_WITNESS").length - 1, 1);
+    assert.equal(text.split("DAY_BOUNDARY_WITNESS").length - 1, 1);
+    assert.match(text, /<biny_reminder>USER_LITERAL<\/biny_reminder>/u);
+    assert.ok(text.endsWith(action === "edit" ? replacement : input));
+    assert.equal(user.originalContent, action === "edit" ? replacement : input);
+    assert.match(text, action === "edit"
+      ? /Message sent-at: 2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai/u
+      : /Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
+    if (action === "retry") {
+      assert.deepEqual(request.messages.slice(1), before.slice(1), "the two completed tool steps remain unchanged");
+      assert.equal(await readFile(f.effects, "utf8"), "effect-1\neffect-2\n");
+    }
+    const persisted = await f.events();
+    assert.deepEqual(persisted.filter(event => event.type === "user_message" && !event.auditOnly).map(event => event.content),
+      action === "edit" ? [input, replacement] : [input]);
+    assert.doesNotMatch(JSON.stringify(persisted), /LONG_MEMORY_BOUNDARY_WITNESS|DAY_BOUNDARY_WITNESS|Authoritative Local DateTime/u);
+  });
+}
