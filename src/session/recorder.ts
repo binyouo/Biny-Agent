@@ -866,20 +866,20 @@ function redactAgentMessage(message: Exclude<AgentMessage, { role: "user" }>): E
 function canonicalSessionFilePath(workspaceRoot: string, sessionId: string, requestedFilePath: string): string {
   const expectedName = path.basename(sessionFilePath(workspaceRoot, sessionId));
   const workspacePath = path.resolve(workspaceRoot);
-  const canonicalWorkspace = realpathSync(workspacePath);
+  const canonicalWorkspace = realpathSync.native(workspacePath);
   const sessionsPath = projectSessionsDir(canonicalWorkspace);
   const sessionsStat = lstatSync(sessionsPath);
   if (sessionsStat.isSymbolicLink() || !sessionsStat.isDirectory()) {
     throw new Error("Project session storage must be a real directory, not a symbolic link.");
   }
 
-  const canonicalSessions = realpathSync(sessionsPath);
+  const canonicalSessions = realpathSync.native(sessionsPath);
   if (canonicalSessions !== sessionsPath) {
     throw new Error("Session storage resolves outside the current project's global session directory.");
   }
   const requestedParent = path.resolve(path.dirname(requestedFilePath));
   ensureSessionParentDirectorySync(canonicalSessions, requestedParent);
-  const canonicalParent = realpathSync(requestedParent);
+  const canonicalParent = realpathSync.native(requestedParent);
   const relativeParent = path.relative(canonicalSessions, canonicalParent);
   if (relativeParent.startsWith("..") || path.isAbsolute(relativeParent) || path.basename(requestedFilePath) !== expectedName) {
     throw new Error(`Session file resolves outside the current project's global session directory: ${expectedName}`);
