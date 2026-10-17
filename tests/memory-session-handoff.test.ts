@@ -43,8 +43,7 @@ async function fixture(t: TestContext) {
   const handledWaiters = new Map<string, ReturnType<typeof deferred>>();
   const transitions: Promise<unknown>[] = [];
   const recorders: SessionRecorder[] = [];
-  let agent: AgentSession | undefined;
-  let runtime: InteractiveAgentRuntime | undefined;
+  const owned: { agent?: AgentSession; runtime?: InteractiveAgentRuntime } = {};
   let memoryCalls = 0;
   let foregroundCalls = 0;
   let memoryReleased = false;
@@ -57,8 +56,8 @@ async function fixture(t: TestContext) {
     await Promise.allSettled(transitions);
     const errors: unknown[] = [];
     try {
-      if (runtime) await runtime.close();
-      else await agent?.close();
+      if (owned.runtime) await owned.runtime.close();
+      else await owned.agent?.close();
     } catch (error) { errors.push(error); }
     for (const recorder of recorders) {
       try { await recorder.close(); } catch (error) { errors.push(error); }
@@ -115,10 +114,11 @@ async function fixture(t: TestContext) {
     }
     return recorded;
   };
-  agent = new AgentSession({
+  const agent = new AgentSession({
     workspaceRoot: root, config, model, recorder,
     toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission)
   });
+  owned.agent = agent;
   await agent.initialize();
   // Only availability is synthetic. NO_MEMORY avoids vector writes; the real LocalMemory
   // extraction, native metrics callback, usage callback and metadata append still execute.
@@ -127,7 +127,8 @@ async function fixture(t: TestContext) {
   const commands = { agent: currentAgent, persistenceRoot: root, refreshSkills: async () => undefined,
     setSubagentParentRunId: () => undefined, close: async () => await currentAgent.close()
   } as unknown as CommandRuntime;
-  runtime = new InteractiveAgentRuntime(commands);
+  const runtime = new InteractiveAgentRuntime(commands);
+  owned.runtime = runtime;
   const currentRuntime = runtime;
 
   return {
