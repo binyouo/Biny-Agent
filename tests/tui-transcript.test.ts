@@ -130,7 +130,7 @@ async function main(): Promise<void> {
   testActivitySummaryIsBoundedAndRedacted();
   testActivitySummaryUsesNormalTextColor();
   testSessionReplayUsesToolItems();
-  testSessionReplayKeepsRemovedToolNames();
+  testSessionReplayKeepsHistoricalToolNames();
   testSessionReplayFinalizesPendingTools();
   testSessionReplayRestoresTurnStatuses();
   testSlashCommandParity();
@@ -1147,13 +1147,18 @@ function testSessionReplayUsesToolItems(): void {
   assert.equal(tool.durationMs, 2_500);
 }
 
-function testSessionReplayKeepsRemovedToolNames(): void {
-  const items = sessionEventsToTranscript([
-    { type: "tool_call", toolCallId: "legacy", tool: "apply_patch", args: { path: "README.md", patch: "@@ -1 +1 @@" } },
-    { type: "tool_result", toolCallId: "legacy", tool: "apply_patch", result: { path: "README.md", status: "completed" } }
-  ] as SessionEvent[]);
-  const tool = items[0] as ToolTranscriptItem;
-  assert.equal(tool.title, "Ran apply patch");
+function testSessionReplayKeepsHistoricalToolNames(): void {
+  for (const [name, title] of [["apply_patch", "已应用文件补丁"], ["legacy_patch", "Ran legacy_patch"]] as const) {
+    const items = sessionEventsToTranscript([
+      { type: "tool_call", toolCallId: "legacy", tool: name, args: { path: "README.md", patch: "@@ -1 +1 @@" } },
+      { type: "tool_result", toolCallId: "legacy", tool: name, result: { path: "README.md", status: "completed" } }
+    ] as SessionEvent[]);
+    assert.equal(items.length, 1);
+    const tool = items[0] as ToolTranscriptItem;
+    assert.equal(tool.tool, name);
+    assert.equal(tool.title, title);
+    assert.equal(tool.status, "success");
+  }
 }
 
 function testSessionReplayFinalizesPendingTools(): void {
