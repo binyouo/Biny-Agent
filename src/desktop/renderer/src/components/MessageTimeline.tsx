@@ -90,12 +90,39 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
   const [quoteSelection, setQuoteSelection] = useState<{ messageId: string; quote: string; top: number; left: number }>();
   const [addingQuote, setAddingQuote] = useState(false);
   const timelineRef = useRef<HTMLDivElement>(null);
+  // 关闭浮层不取消原生选区；只有新选择才重新唤起，滚动和延迟事件只更新几何。
+  const dismissedQuoteSelection = useRef<{
+    startContainer: Node; startOffset: number; endContainer: Node; endOffset: number; quote: string;
+  } | undefined>(undefined);
+  const dismissQuoteSelection = useCallback((): void => {
+    const selection = window.getSelection();
+    const range = selection && !selection.isCollapsed && selection.rangeCount ? selection.getRangeAt(0) : undefined;
+    dismissedQuoteSelection.current = range ? {
+      startContainer: range.startContainer, startOffset: range.startOffset,
+      endContainer: range.endContainer, endOffset: range.endOffset, quote: selection!.toString().trim()
+    } : undefined;
+    setQuoteSelection(undefined);
+  }, []);
+  const isDismissedQuoteSelection = useCallback((selection: Selection | null): boolean => {
+    const dismissed = dismissedQuoteSelection.current;
+    if (!dismissed || !selection || selection.isCollapsed || !selection.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    return dismissed.startContainer === range.startContainer && dismissed.startOffset === range.startOffset
+      && dismissed.endContainer === range.endContainer && dismissed.endOffset === range.endOffset
+      && dismissed.quote === selection.toString().trim();
+  }, []);
   const updateQuoteSelection = useCallback((): void => {
     if (readOnly) { setQuoteSelection(undefined); return; }
     const selection = window.getSelection();
     const timeline = timelineRef.current;
-    if (!selection || selection.isCollapsed || !selection.rangeCount || !timeline) { setQuoteSelection(undefined); return; }
+    if (!selection || selection.isCollapsed || !selection.rangeCount || !timeline) {
+      dismissedQuoteSelection.current = undefined;
+      setQuoteSelection(undefined);
+      return;
+    }
     const range = selection.getRangeAt(0);
+    if (isDismissedQuoteSelection(selection)) { setQuoteSelection(undefined); return; }
+    dismissedQuoteSelection.current = undefined;
     const element = (node: Node): Element | null => node instanceof Element ? node : node.parentElement;
     const start = element(range.startContainer)?.closest(".markdown-body");
     const end = element(range.endContainer)?.closest(".markdown-body");
@@ -114,19 +141,28 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
     };
     setQuoteSelection((current) => current?.messageId === next.messageId && current.quote === next.quote
       && Math.abs(current.top - next.top) < 1 && Math.abs(current.left - next.left) < 1 ? current : next);
-  }, [readOnly]);
+  }, [isDismissedQuoteSelection, readOnly]);
   useEffect(() => {
+    dismissQuoteSelection();
     let selectionTimer: number | undefined;
     const scheduleSelectionUpdate = (): void => {
+      // 原生选区变化立即解除旧关闭状态；显示仍防抖，避免快速取消重选被合并成旧选区。
+      if (!isDismissedQuoteSelection(window.getSelection())) dismissedQuoteSelection.current = undefined;
       if (selectionTimer !== undefined) window.clearTimeout(selectionTimer);
       selectionTimer = window.setTimeout(updateQuoteSelection, 120);
     };
     const closeOutside = (event: PointerEvent): void => {
       const target = event.target;
-      if (target instanceof Node && !timelineRef.current?.contains(target)
-        && !(target instanceof Element && target.closest(".message-selection-reference"))) setQuoteSelection(undefined);
+      if (!(target instanceof Node) || target instanceof Element && target.closest(".message-selection-reference")) return;
+      if (!timelineRef.current?.contains(target)) {
+        dismissQuoteSelection();
+      } else if (event.button === 0 && target instanceof Element && target.closest(".markdown-body")
+        && !target.closest("a, button, input, textarea, select, [contenteditable='true']")) {
+        // 主动重新拖选同一段文字，也是一轮新选择。
+        dismissedQuoteSelection.current = undefined;
+      }
     };
-    const escape = (event: KeyboardEvent): void => { if (event.key === "Escape") setQuoteSelection(undefined); };
+    const escape = (event: KeyboardEvent): void => { if (event.key === "Escape") dismissQuoteSelection(); };
     document.addEventListener("selectionchange", scheduleSelectionUpdate);
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", escape);
@@ -140,7 +176,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
       window.removeEventListener("scroll", updateQuoteSelection, true);
       window.removeEventListener("resize", updateQuoteSelection);
     };
-  }, [updateQuoteSelection]);
+  }, [dismissQuoteSelection, isDismissedQuoteSelection, projectId, sessionId, updateQuoteSelection]);
 
   const startOptimisticRewrite = useCallback((turn: TimelineTurn, mode: OptimisticRewrite["mode"], user = turn.user): void => {
     setOptimisticRewrite({
