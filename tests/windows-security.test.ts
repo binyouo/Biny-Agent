@@ -127,4 +127,3 @@ test("native Windows directories, inherited files and named pipes only grant the
     await rm(root, { recursive: true, force: true });
   }
 });
-
