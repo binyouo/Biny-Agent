@@ -46,8 +46,9 @@ export function shellCommandInvocation(shell: ShellPlan, command: string, env: N
     "$OutputEncoding = $__binyUtf8",
     "$__binyCommand = [Environment]::GetEnvironmentVariable('BINY_SHELL_COMMAND')",
     "[Environment]::SetEnvironmentVariable('BINY_SHELL_COMMAND', $null)",
-    ". ([ScriptBlock]::Create($__binyCommand))",
-    "$__binyOk = $?",
+    "$__binyOk = $true",
+    ". ([ScriptBlock]::Create($__binyCommand + \"`n\" + '$__binyOk = $?'))",
+    "$__binyOk = $__binyOk -and $?",
     "if (-not $__binyOk) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }"
   ].join("\n");
   return {
