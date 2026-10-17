@@ -17,6 +17,7 @@ async function fixture() {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-task-status-schema-"));
   await ensureAgentDirs(workspaceRoot);
   const config = structuredClone(defaultConfig);
+  config.agent.toolExecutionMode = "direct";
   config.permission.mode = "full-access";
   const registry = new ToolRegistry();
   const calls: Array<{ taskRunId: string; waitMs?: number; afterRevision?: number }> = [];

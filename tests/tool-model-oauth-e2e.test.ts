@@ -99,7 +99,7 @@ test("真实 Runtime 辅助 OAuth 续期持久化到凭据存储，后续回合�
   const timer = setTimeout(() => controller.abort(new Error("OAuth Runtime fixture exceeded its deadline.")), 15_000);
   try {
     await configStore.save(configSchema.parse({
-      ...defaultConfig,
+      ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
       defaultModel: "chat", toolModel: "subscription",
       providers: {
         local: { type: "openai-compatible", baseUrl: `${origin}/chat/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } },

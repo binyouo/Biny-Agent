@@ -6,7 +6,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { AgentMessage, AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
-import { defaultConfig } from "../src/config/schema.js";
+import { defaultConfig as baseConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
@@ -20,6 +20,8 @@ import {
   type ToolSearchResult
 } from "../src/tools/toolSearch.js";
 import type { Tool, ToolSource } from "../src/tools/types.js";
+
+const defaultConfig = { ...baseConfig, agent: { ...baseConfig.agent, toolExecutionMode: "direct" as const } };
 
 const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-search-"));
 await ensureAgentDirs(workspaceRoot);
@@ -687,19 +689,26 @@ async function testCodeModeDiscoveryScope(): Promise<void> {
       { workspaceRoot: testRoot, config, recorder, toolRegistry: registry },
       new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["ToolSearch"])
     );
-    const search = requiredAgentTool(coordinator, "ToolSearch");
-    const all = await search.execute("code-mode-all", { query: "read or write files" });
-    assert.deepEqual(toolSearchResultNames(all.details), ["Read", "Write", "mcp_read", "unrelated"]);
+    assert.ok(!coordinator.createAgentTools().some((tool) => tool.name === "ToolSearch"));
+    const exec = coordinator.createCodeModeTool();
+    const search = async (id: string, query: string) => {
+      const result = await exec.execute(id, { code: `return await searchTools(${JSON.stringify(query)});` });
+      assert.equal(result.isError, false, JSON.stringify(result.details));
+      return (result.details as { value: Array<{ name: string; invocation?: string }> }).value;
+    };
+    const all = await search("code-mode-all", "read or write files");
+    assert.deepEqual(all.map((tool) => tool.name), ["Read", "Write", "mcp_read", "unrelated"]);
+    assert.equal(all.find((tool) => tool.name === "unrelated")?.invocation, "direct");
+    assert.equal(all.find((tool) => tool.name === "Read")?.invocation, undefined);
     assert.match(prompts[0] ?? "", /Read/u);
     assert.match(prompts[0] ?? "", /Write|mcp_read|unrelated/u);
-    assert.deepEqual(coordinator.allowTools(toolSearchResultNames(all.details)), ["Read", "Write", "mcp_read", "unrelated"]);
-    assert.match(coordinator.createCodeModeTool().promptSnippet ?? "", /Read:/u);
-    const explicit = await search.execute("code-mode-explicit", { query: "Read Write mcp_read" });
-    assert.deepEqual(toolSearchResultNames(explicit.details), ["Read", "Write", "mcp_read"], "Standard discovery remains available alongside scripts.");
-    assert.equal(prompts.length, 1, "Exact-name discovery must not request an auxiliary model.");
-    const mcp = await search.execute("code-mode-mcp", { query: "read through MCP", type: "mcp" });
-    assert.deepEqual(toolSearchResultNames(mcp.details), ["mcp_read"]);
-    assert.match(prompts[1] ?? "", /mcp_read/u);
+    assert.deepEqual(coordinator.createAgentTools().map((tool) => tool.name), ["unrelated"], "ordinary-only matches activate without publishing the search schema");
+    const explicit = await search("code-mode-explicit", "Read Write mcp_read");
+    assert.deepEqual(explicit.map((tool) => tool.name), ["Read", "Write", "mcp_read"]);
+    assert.equal(prompts.length, 1, "Exact-name script discovery must not request an auxiliary model.");
+    const denied = await exec.execute("code-mode-unreviewed", { code: "return await tools.unrelated({});" });
+    assert.equal(denied.isError, true, "ordinary metadata discovery does not grant VM invocation");
+    assert.match(JSON.stringify(denied.details), /not available in this cell/u);
 
   } finally {
     await recorder.close();

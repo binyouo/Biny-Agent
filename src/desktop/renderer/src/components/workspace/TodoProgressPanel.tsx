@@ -2,7 +2,7 @@ import React from "react";
 import type { DesktopPlanProjection } from "../../../../protocol.js";
 import { Icon } from "../Icon.js";
 
-/** 普通任务的 TodoWrite 清单投影；条目只反映 Agent 当前报告的状态。 */
+/** 普通任务的会话待办投影；条目只反映 Agent 当前报告的状态。 */
 export function TodoProgressPanel({ sessionId, projection, running = false }: {
   sessionId: string;
   projection?: DesktopPlanProjection;

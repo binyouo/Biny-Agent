@@ -38,7 +38,8 @@ export function formatTokenCount(tokens: number): string {
 export function formatContextUsage(usage?: ContextUsage) {
   if (!usage || !Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0 || !Number.isFinite(usage.usedTokens)) return undefined;
   const usedTokens = Math.max(0, usage.usedTokens);
-  const percent = Math.round((usedTokens / usage.contextWindow) * 1_000) / 10;
+  const usedTenths = Math.round((usedTokens / usage.contextWindow) * 1_000);
+  const percent = usedTenths / 10;
   const categories = [
     ["messages", "消息"], ["mcpTools", "MCP 工具"], ["systemTools", "系统工具"],
     ["skills", "技能"], ["systemPrompt", "系统提示词"], ["other", "其他"]
@@ -48,12 +49,12 @@ export function formatContextUsage(usage?: ContextUsage) {
     return Number.isFinite(value) ? Math.max(0, value) : 0;
   });
   const estimatedTotal = counts.reduce((total, count) => total + count, 0);
-  // 最大余数法分配到 0.1%，避免各行四舍五入后不等于 100%。容量条只填已用部分。
-  const shares = counts.map((count) => estimatedTotal ? count / estimatedTotal * 1_000 : 0);
+  // 分类与总用量共用完整窗口分母；最大余数法使显示值合计等于总用量百分比。
+  const shares = counts.map((count) => estimatedTotal ? count / estimatedTotal * usedTokens / usage.contextWindow * 1_000 : 0);
   const tenths = shares.map(Math.floor);
   const remainders = shares.map((share, index) => ({ index, remainder: share - (tenths[index] ?? 0) }))
     .sort((left, right) => right.remainder - left.remainder);
-  const missing = estimatedTotal ? 1_000 - tenths.reduce((total, value) => total + value, 0) : 0;
+  const missing = estimatedTotal ? usedTenths - tenths.reduce((total, value) => total + value, 0) : 0;
   for (const { index } of remainders.slice(0, missing)) tenths[index] = (tenths[index] ?? 0) + 1;
   const compact = new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 });
   return {
@@ -68,7 +69,7 @@ export function formatContextUsage(usage?: ContextUsage) {
     categories: estimatedTotal && usedTokens ? categories.map(([id, label], index) => ({
       id, label,
       percent: ((tenths[index] ?? 0) / 10).toFixed(1),
-      width: (shares[index] ?? 0) / 1_000 * Math.min(100, usedTokens / usage.contextWindow * 100)
+      width: (counts[index] ?? 0) / estimatedTotal * Math.min(100, usedTokens / usage.contextWindow * 100)
     })) : [],
     cacheHitRate: usage.cacheHitRate === undefined || !Number.isFinite(usage.cacheHitRate)
       ? "未提供"

@@ -55,7 +55,7 @@ test("恢复的事实尚未索引时显示部分不可搜索并允许重建", as
       onCancelEmbeddingRebuild: async () => ({ cancelled: false, status: pending }),
       onNotify: () => undefined
     } as unknown as Parameters<typeof SettingsMemory>[0];
-    const context = { draft: { memory: policy }, snapshot: { memory: policy }, dirtyCount: 0,
+    const context = { draft: { memory: policy }, snapshot: { memory: policy, models: { connections: [] } }, dirtyCount: 0,
       setMemory: () => undefined } as unknown as SettingsDraftContextValue;
     await act(async () => { root.render(createElement(SettingsDraftContext.Provider, { value: context }, createElement(SettingsMemory, props))); });
     assert.match(document.body.textContent ?? "", /1 条记忆.*未索引.*不能.*搜索/u);

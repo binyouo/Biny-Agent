@@ -63,7 +63,7 @@ function coordinator(name: string, options?: { denyPaths?: string[]; ask?: () =>
   recorders.push(recorder);
   const instance = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: options?.ask },
     options?.ask ? new AskReads(config.permission) : new PermissionManager(config.permission), () => undefined, () => ({}),
-    new Set(["Bash", "BashOutput", "read_tool_result"]));
+    new Set(["Bash", "BashOutput", "Read"]));
   return { instance, registry, recorder };
 }
 let archivePath: string;
@@ -106,9 +106,9 @@ try {
     assert.equal(childArchive.output, serializeToolResult(details(nested).value));
   });
 
-  await test("read_tool_result nested pages preserve exact requested content and pagination metadata", async () => {
+  await test("Read nested pages preserve exact requested content and pagination metadata", async () => {
     const { instance } = coordinator("full-archive-page");
-    const code = `return await tools.read_tool_result({archivePath:${JSON.stringify(archivePath)},offset:0,length:200000});`;
+    const code = `return await tools.Read({path:${JSON.stringify(archivePath)},offset:0,length:200000});`;
     const result = await instance.createCodeModeTool().execute("nested-archive-page", { code });
     assert.equal(result.isError, false, JSON.stringify(result.details));
     const page = details(result).value;
@@ -118,13 +118,13 @@ try {
     assert.equal(page.nextOffset, archivedOutput.length);
     assert.equal(page.hasMore, false);
     assert.equal(page.modelProjection, undefined);
-    assert.deepEqual(details(result).childCalls, [{ tool: "read_tool_result", toolCallId: "nested-archive-page:nested:1" }]);
+    assert.deepEqual(details(result).childCalls, [{ tool: "Read", toolCallId: "nested-archive-page:nested:1" }]);
   });
 
   await test("Code Mode host output and final-result byte limits remain independent from shell excerpts", async () => {
     for (const [name, code] of [
       ["shell", logCode],
-      ["archive", `return await tools.read_tool_result({archivePath:${JSON.stringify(archivePath)},length:200000});`]
+      ["archive", `return await tools.Read({path:${JSON.stringify(archivePath)},length:200000});`]
     ] as const) {
       const { instance } = coordinator(`host-byte-limit-${name}`);
       const limited = await instance.createCodeModeTool(undefined, { ...codeModePolicy, maxToolOutputBytes: 16 * 1024 })
@@ -159,22 +159,25 @@ try {
     assert.equal(outputReads, before);
     const unapprovedArchive = coordinator("unapproved-archive-page", { ask: async () => { asks++; return { approved: false, scope: "once" }; } });
     const archiveRefused = await unapprovedArchive.instance.createCodeModeTool().execute("unapproved-archive-page", {
-      code: `return await tools.read_tool_result({archivePath:${JSON.stringify(archivePath)}});`
+      code: `return await tools.Read({path:${JSON.stringify(archivePath)}});`
     });
     assert.equal(archiveRefused.isError, true);
     assert.equal(asks, 2, "archive reads must still pass the existing approval gate");
     const { instance } = coordinator("restricted-archive-paths");
     const exec = instance.createCodeModeTool();
-    for (const [index, escape] of ["../../outside.txt", ".biny/tool-results/../sessions/private.jsonl", logPath].entries()) {
-      const result = await exec.execute(`archive-escape-${index}`, { code: `return await tools.read_tool_result({archivePath:${JSON.stringify(escape)}});` });
+    for (const [index, escape] of ["../../outside.txt", ".biny/tool-results/../sessions/private.jsonl"].entries()) {
+      const result = await exec.execute(`archive-escape-${index}`, { code: `return await tools.Read({path:${JSON.stringify(escape)}});` });
       assert.equal(result.isError, true);
-      assert.match(details(result).error, /Not an archived tool result reference/u);
+      assert.match(details(result).error, /outside|ignored|protected|relative/iu);
     }
+    const workspaceRead = await exec.execute("ordinary-workspace-read", { code: 'return await tools.Read({path:"managed-output.log",lineCount:1});' });
+    assert.equal(workspaceRead.isError, false);
+    assert.equal(details(workspaceRead).value.content, "LOG_HEAD");
     const external = path.join(root, "unrelated.txt");
     await writeFile(external, "not an archived tool result");
     const symlinkReference = `.biny/tool-results/tool-result-${"f".repeat(64)}.json`;
     await symlink(external, resolveToolResultArchivePath(root, symlinkReference));
-    const symlinkRead = await exec.execute("archive-symlink", { code: `return await tools.read_tool_result({archivePath:${JSON.stringify(symlinkReference)}});` });
+    const symlinkRead = await exec.execute("archive-symlink", { code: `return await tools.Read({path:${JSON.stringify(symlinkReference)}});` });
     assert.equal(symlinkRead.isError, true);
     assert.equal(details(symlinkRead).value, undefined);
     assert.equal(await readFile(external, "utf8"), "not an archived tool result");

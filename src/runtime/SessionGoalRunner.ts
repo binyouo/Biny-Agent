@@ -169,16 +169,21 @@ export class SessionGoalRunner {
           SELECT run_id FROM agent_runs WHERE workspace_id = ? AND session_id = ? ORDER BY rowid DESC LIMIT 1
         `).get(commands.runtimeAuthority.workspaceId, goal.sessionId) as { run_id: string } | undefined;
         const workTool = commands.runtimeAuthority.databaseHandle().prepare(`
-          SELECT 1 FROM runtime_events WHERE workspace_id = ? AND session_id = ? AND run_id = ?
+          SELECT 1 FROM runtime_events AS call WHERE workspace_id = ? AND session_id = ? AND run_id = ?
             AND event_type = 'session.tool_call' AND json_extract(payload_json, '$.tool') NOT IN ('GoalGet', 'GoalUpdate')
-            AND json_extract(payload_json, '$.auditOnly') IS NOT 1 LIMIT 1
+            AND json_extract(payload_json, '$.auditOnly') IS NOT 1
+            AND NOT EXISTS (SELECT 1 FROM runtime_events AS result
+              WHERE result.workspace_id = call.workspace_id AND result.session_id = call.session_id AND result.run_id = call.run_id
+              AND result.event_type = 'session.tool_result'
+              AND json_extract(result.payload_json, '$.toolCallId') = json_extract(call.payload_json, '$.toolCallId')
+              AND json_extract(result.payload_json, '$.result.goalControlOnly') = 1) LIMIT 1
         `).get(commands.runtimeAuthority.workspaceId, goal.sessionId, previous.runId);
         if (latestRun?.run_id === previous.runId && !workTool) {
           const current = this.current(goal);
           if (current) {
             commands.sessionGoals.pause(goal.sessionId, current, {
               summary: "自动续跑仅产生文字或目标状态操作，已暂停以避免空转。检查原因或补充要求后可恢复目标。",
-              requirements: [{ requirement: "自动续跑需要工作工具活动", evidence: `回合 ${previous.runId} 已结束，未记录 GoalGet/GoalUpdate 之外的新工具调用。` }]
+              requirements: [{ requirement: "自动续跑需要工作工具活动", evidence: `回合 ${previous.runId} 已结束，未记录目标状态操作之外的新工作工具调用。` }]
             });
             this.options.onChange?.();
           }

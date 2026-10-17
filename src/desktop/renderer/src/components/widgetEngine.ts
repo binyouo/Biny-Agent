@@ -1,6 +1,6 @@
 import morphdomSource from "morphdom/dist/morphdom-umd.min.js?raw";
-import { createWidgetDocument } from "../../../../widgets/document.js";
+import { createWidgetDocument, type WidgetTheme } from "../../../../widgets/document.js";
 
-export function loadWidgetDocument(token: string): string {
-  return createWidgetDocument({ token, morphdomSource });
+export function loadWidgetDocument(token: string, theme: WidgetTheme): string {
+  return createWidgetDocument({ token, morphdomSource, theme });
 }

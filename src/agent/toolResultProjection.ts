@@ -13,7 +13,7 @@ import type {
   AgentToolCallContent,
   AgentToolResultMessage
 } from "./core/types.js";
-import { serializeToolResult } from "../session/toolResultArchive.js";
+import { isToolResultArchiveReference, serializeToolResult } from "../session/toolResultArchive.js";
 import { redactSecrets } from "../utils/secrets.js";
 import { projectShellStreams, shellOutputExcerpt } from "./shellOutputProjection.js";
 
@@ -299,7 +299,7 @@ async function replacementMessage(
   if (archived.archivePath) {
     lines.push(
       `Archived result: ${archived.archivePath}`,
-      "Use read_tool_result with this archivePath if the earlier value is needed."
+      "Use Read with this archivePath as path if the earlier value is needed."
     );
   } else {
     lines.push("The complete earlier result remains in durable session history.");
@@ -369,6 +369,7 @@ function projectValue(
 ): ValueProjection | undefined {
   const tool = normalizedToolName(entry.message.toolName);
   const large = Buffer.byteLength(entry.serialized, "utf8") > thresholdBytes;
+  if (tool === "read" && isToolResultArchiveReference(asRecord(entry.call?.args).path)) return undefined;
   if (isArchivedValue(entry.value)) return { value: entry.value, archive: false };
 
   if ((tool === "bash" || tool === "bashoutput") && asRecord(entry.value).modelProjection === "shell_excerpt") {
@@ -464,7 +465,7 @@ function projectReadFile(entry: ToolResultEntry): Record<string, unknown> {
     contentOriginalBytes: truncated ? Buffer.byteLength(content, "utf8") : undefined,
     contentRetainedBytes: truncated ? Buffer.byteLength(displayed, "utf8") : undefined,
     contentTruncationDirection: truncated ? "head_and_tail" : undefined,
-    summary: truncated ? "Only the necessary head and tail of this file are shown; the full result is available via read_tool_result." : undefined,
+    summary: truncated ? "Only the necessary head and tail of this file are shown; the full result is available via Read." : undefined,
     startLine: numberField(record, "startLine")
       ?? numberField(record, "lineStart")
       ?? numberField(resultRange, "startLine")
@@ -555,7 +556,7 @@ function projectSearchResult(entry: ToolResultEntry): Record<string, unknown> {
     ]),
     matchesTruncated: truncated ? true : undefined,
     matchesRetainedBytes: truncated ? retainedBytes : undefined,
-    summary: truncated ? "Only bounded match locations and snippets are shown; the full search result is available via read_tool_result." : undefined
+    summary: truncated ? "Only bounded match locations and snippets are shown; the full search result is available via Read." : undefined
   });
 }
 
@@ -611,9 +612,9 @@ function attachProjectionMetadata(
   const compactSummary = stringField(record, "summary");
   const shell = ["bash", "bashoutput"].includes(normalizedToolName(metadata.tool));
   const availability = metadata.archivePath
-    ? `${shell ? "Complete captured result" : "Full result"}: read_tool_result ${metadata.archivePath}.`
+    ? `${shell ? "Complete captured result" : "Full result"}: Read ${metadata.archivePath}.`
     : metadata.archiveError
-      ? `Archiving failed (${metadata.archiveError}); read_tool_result is unavailable for this result. The complete result remains in session history.`
+      ? `Archiving failed (${metadata.archiveError}); archived output is unavailable through Read for this result. The complete result remains in session history.`
       : "The complete result remains in session history; no archive reference is available.";
   const summary = compactSummary ? `${compactSummary} ${availability}` : `Only a compact ${metadata.tool} result is shown. ${availability}`;
   return removeUndefined({

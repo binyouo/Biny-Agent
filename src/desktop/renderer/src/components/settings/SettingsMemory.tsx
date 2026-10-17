@@ -763,7 +763,7 @@ export function SettingsMemory({
           <div className="activity-memory-model-picker-row">
             <SettingsModelPicker
               ariaLabel="记忆工具模型"
-              groups={modelPickerGroups(models.filter((model) => model.providerType !== "acp"))}
+              groups={modelPickerGroups(models.filter((model) => model.providerType !== "acp"), snapshot?.models.connections)}
               inheritLabel="使用默认工具模型"
               onChange={(memoryModel) => setMemory({ ...policy, memoryModel })}
               placeholder="使用默认工具模型"
@@ -779,7 +779,6 @@ export function SettingsMemory({
           <p>{selectedEmbeddingModel.kind === "local" ? "本地模型下载后可离线检索。" : "查询及记忆正文会发送到所选服务商。"}</p>
           <SettingsModelPicker
             ariaLabel="选择嵌入模型"
-            compact
             groups={embeddingGroups}
             selectionHint={selectedEmbeddingModel.kind === "auto" ? selectedEmbeddingDescriptor ? "自动" : "暂无可用模型" : undefined}
             onChange={(value) => {

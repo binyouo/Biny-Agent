@@ -15,12 +15,12 @@ export async function exerciseCodeModeApprovalGate({ workspace, policy, idPrefix
   let approvals = 0;
   let resolutions = 0;
   let preparation;
-  registry.register({ name: "search_history", description: "Fixture history", risk: "read", capability: "memory.read",
+  registry.registerMcpTool({ name: "mcp__fixture__query", description: "Fixture query", risk: "read",
     parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
     schema: z.object({ query: z.string() }), async resolveExecution() {
       resolutions++;
       if (preparation) { preparation.entered.resolve(); await preparation.release.promise; }
-      return { approvalRule: "search_history", execute: async () => { calls++; return { hits: [] }; } };
+      return { approvalRule: "mcp__fixture__query", execute: async () => { calls++; return { hits: [] }; } };
     } });
   const config = structuredClone(defaultConfig);
   config.agent.toolExecutionMode = "code_mode";
@@ -28,7 +28,7 @@ export async function exerciseCodeModeApprovalGate({ workspace, policy, idPrefix
   config.permission.allowTools = [];
   const coordinator = confirm => new ToolExecutionCoordinator({ workspaceRoot: workspace, config, recorder, toolRegistry: registry,
     confirmPermission: async () => { approvals++; return await confirm(); } },
-  new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["search_history"]));
+  new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["mcp__fixture__query"]));
   const assertAuditOnce = async id => {
     await recorder.flush();
     const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
@@ -46,7 +46,7 @@ export async function exerciseCodeModeApprovalGate({ workspace, policy, idPrefix
     const approved = coordinator(async () => { await delay(250); return { approved: true, scope: "once" }; });
     const approvedId = `${idPrefix}-approved`;
     const result = await approved.createCodeModeTool(undefined, policy).execute(approvedId, {
-      code: "return (await tools.search_history({query:'fixture'})).hits.length;" });
+      code: "return (await tools.mcp__fixture__query({query:'fixture'})).hits.length;" });
     assert.equal(result.isError, false, JSON.stringify(result.details));
     assert.equal(result.details.value, 0);
     assert.equal(approvals, 1);
@@ -68,7 +68,7 @@ export async function exerciseCodeModeApprovalGate({ workspace, policy, idPrefix
       preparation = beforePermission ? { entered, release } : undefined;
       mock.timers.enable({ apis: ["setTimeout"] });
       const pending = late.createCodeModeTool(undefined, { ...policy, hostCallTimeoutMs: 150 }).execute(id, {
-        code: "try { await tools.search_history({query:'late'}); } catch {} return await tools.search_history({query:'replay'});" });
+        code: "try { await tools.mcp__fixture__query({query:'late'}); } catch {} return await tools.mcp__fixture__query({query:'replay'});" });
       try {
         await bounded(Promise.race([entered.promise, pending.then(value => {
           assert.fail(`Cell ended before the expected ${beforePermission ? "preparation" : "permission"} entry: ${JSON.stringify(value.details)}`);

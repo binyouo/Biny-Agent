@@ -88,7 +88,7 @@ Do not modify files unless the user asks for a change.
  */
 const WORK_DISCIPLINE_PROMPT = `
 First separate casual conversation from a real task: casual chat gets a short direct reply and no workspace work.
-For a real task, choose the smallest sequence that reaches the outcome. Inspect before changing, and prefer the available tools and activated Skills over improvised approaches. Keep ordinary multi-step inspection, research, and small edits in the current turn; use Task only for one bounded delegation that benefits from isolation. Use TodoWrite, when available, as a working checklist.
+For a real task, choose the smallest sequence that reaches the outcome. Inspect before changing, and prefer the available tools and activated Skills over improvised approaches. Keep ordinary multi-step inspection, research, and small edits in the current turn; use Task only for one bounded delegation that benefits from isolation. Use \`biny todo replace --todos '[{"content":"...","status":"in_progress"}]' --json\`, when available, as a working checklist.
 Work quietly: give brief progress on long runs, and never narrate retries, tool choices, or intermediate failures unless you are giving up and need the user's input to continue.
 Commitment enforcement: if you say you will do something, start the matching tool call in the same response — a text-only promise is not action.
 Report proactively: when delegated work finishes or you hit a blocker, tell the user without being asked.
@@ -97,11 +97,13 @@ Before claiming completion, compare the request with the files, artifacts, and t
 
 /**
  * 「别猜，去检索」：turn context 里的 Relevant Memories 只是语义切片，答不准就主动
- * 再检索，而不是猜或说记不得。记忆工具始终注册，所以这是常驻条款。
+ * 再检索，而不是猜或说记不得。主动检索复用本地 CLI。
  */
 const REACHABLE_CONTEXT_PROMPT = `
 YOUR REACHABLE CONTEXT — reach for it, don't guess. The "Relevant Memories" handed to you are a small semantic slice, not the whole picture. Before you guess, say you don't remember, or claim something is unavailable, search instead:
-- recall_memory — semantic search over durable memory; re-search with fresh queries as the task evolves.
+- With shell access, run \`biny memory search "<query>" --json\` for durable memory or \`biny history search "<keywords>" --json\` for original conversation text. Re-search as the task evolves.
+- Save a durable, self-contained fact with \`biny memory add "<fact>" --json\`, or use \`--entry\` with a JSON object for tags, importance, durability and source references. Never store secrets.
+- Without shell access, use the supplied context and state any retrieval limitation.
 - Today's and yesterday's daily notes — recent working context.
 A two-second search beats an assumption when past context is needed. This is not a mandatory preflight: self-contained greetings, acknowledgements and casual chat need no memory lookup or ToolSearch. Never search for a tool merely to satisfy diary or notification bookkeeping.
 `;
@@ -231,8 +233,8 @@ export function refreshSessionGoalPrompt(systemPrompt: string | undefined, goal:
     "An active goal authorizes continued work toward the entire objective across turns. Preserve every explicit requirement, deliverable, constraint, and acceptance check; never replace the objective with a smaller task or weaken its finish line.",
     "At every checkpoint, compare current workspace facts and persisted tool evidence with each requirement, including the referenced specifications and files. A plan, status update, summary, or narrow passing check cannot prove broader completion. Recheck stale evidence after edits or context compaction.",
     "Classify the previous turn as concrete progress, a verified wait on a live operation handle, or no progress. Progress means changed state or new evidence, not plans or repeated status text. Only wait when a current live handle proves work is running; a timeout does not prove termination or authorize restarting the operation.",
-    "Use GoalGet to inspect current state. Use GoalUpdate completed only after auditing every requirement against current evidence, and include the requirement-to-evidence mapping. GoalUpdate cannot change the objective, budget, or resume state; those belong to the user.",
-    "Use GoalUpdate blocked only when the same blocking condition repeats for at least three consecutive goal turns and no independent safe progress is possible without user input or an external state change. Explicit resume starts a fresh blocking audit. Explain the missing evidence or unavailable dependency. This semantic audit is your responsibility; do not treat uncertainty, a difficult task, or a near-exhausted budget as completion or a blocker.",
+    "Use `biny goal show --json` to inspect current state. Use `biny goal update --input '{\"status\":\"completed\",\"evidence\":{\"summary\":\"...\",\"requirements\":[{\"requirement\":\"...\",\"evidence\":\"...\"}]}}' --json` only after auditing every requirement against current evidence, and include the requirement-to-evidence mapping. Goal completion cannot change the objective, budget, or resume state; those belong to the user.",
+    "Use `biny goal update` with status blocked only when the same blocking condition repeats for at least three consecutive goal turns and no independent safe progress is possible without user input or an external state change. Explicit resume starts a fresh blocking audit. Explain the missing evidence or unavailable dependency. This semantic audit is your responsibility; do not treat uncertainty, a difficult task, or a near-exhausted budget as completion or a blocker.",
     "When a goal is paused, blocked, budget_limited, or completed, do not continue it automatically. Budget figures are reported usage; usageKnown=false means totals are incomplete. An explicit budget stops further work when reached, allowing only a brief truthful handoff.",
     sessionGoalEnd
   ].filter(Boolean).join("\n\n");
@@ -414,15 +416,11 @@ function stableRuntimePrompt(tools: readonly PromptTool[]): string {
   const toolList = visibleTools.length ? visibleTools.map((tool) => `- ${tool.name}: ${tool.promptSnippet!.trim()}`).join("\n") : "(none)";
   const guidelines = uniqueGuidelines([
     ...sortedTools.flatMap((tool) => tool.promptGuidelines ?? []),
-    // 技能优先级链与自进化是无条件常驻原则，
-    // 不依赖本回合工具筛选结果；工具暂不可见时模型经 ToolSearch 自助发现。
-    "Before improvising a separate workflow for a recurring task, look for a skill: check <available_skills> first, then skill_lookup to search other installed skills, then skill_search to find and skill_install an installable one; use ToolSearch when these tools are not currently visible",
+    "For dependent or restart-durable work, use `biny plan draft|start|status|update`. Read `biny plan schema <draft|start|update> --json` for exact input fields. Draft only when execution has not been authorized; start only authorized work. Inspect status in the same run before every bounded update. A completed report is not deterministic verification.",
+    "Before improvising a workflow, check <available_skills>. With shell access, use `biny skill list --query <keywords> --json` to find installed skills, `biny skill search <query> --json` to find installable skills, and `biny skill install <GitHub-tree-URL> --json` to install an exact matching result through normal shell permissions. Invoke Skill with its name before following the installed instructions.",
     "When you repeatedly perform the same multi-step workflow, save it as a reusable Skill: write a SKILL.md (YAML frontmatter with a lowercase-hyphen name matching its directory and a one-sentence description) to ~/.config/biny/skills/<name>/SKILL.md for cross-project workflows, or the project's .agents/skills/<name>/SKILL.md for project-specific ones; it becomes available in the next turn",
     ...(sortedTools.some((tool) => tool.name === "Skill")
-      ? ["When a task matches a skill in <available_skills>, invoke the Skill tool as your first action instead of improvising a separate workflow."]
-      : []),
-    ...(sortedTools.some((tool) => tool.name === "skill_search") && sortedTools.some((tool) => tool.name === "skill_install")
-      ? ["When no activated Skill covers a capability required by the current task, use skill_search; if a matching result is needed, install it with skill_install through the normal permission gate, then Skill before using it."]
+      ? ["When a task matches a skill in <available_skills>, invoke Skill before following its workflow unless the instructions are already loaded by an always-inject declaration."]
       : []),
     ...(sortedTools.some((tool) => tool.name === "Task")
       ? ["Delegate only work that benefits from a separate specialist or independent execution; keep simple requests in the current run."]

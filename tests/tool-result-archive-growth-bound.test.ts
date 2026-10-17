@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { archiveToolResult, readToolResultArchive, resolveToolResultArchivePath } from "../src/session/toolResultArchive.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
 
 test("public archive reader must enforce its byte cap when the regular file grows after initial stat", async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-archive-growth-")));
@@ -49,8 +49,8 @@ test("public archive reader must enforce its byte cap when the regular file grow
       t.mock.method(handle, "close", async () => { await originalClose(); closed += 1; });
       return handle;
     });
-    const tool = createReadToolResultTool({ workspaceRoot: root, ignore: [] });
-    const execution = await tool.resolveExecution({ archivePath: archived.archivePath, length: 20 });
+    const tool = createReadFileTool({ workspaceRoot: root, ignore: [] });
+    const execution = await tool.resolveExecution({ path: archived.archivePath, length: 20 });
     assert.ok("execute" in execution);
     let result: unknown;
     let failure: unknown;
@@ -287,7 +287,7 @@ test("mid-read abort drains one pending native read but starts no later chunks a
       t.mock.method(handle, "close", async () => { await close(); closed += 1; });
       return handle;
     });
-    const execution = await createReadToolResultTool({ workspaceRoot: root, ignore: [] }).resolveExecution({ archivePath: reference });
+    const execution = await createReadFileTool({ workspaceRoot: root, ignore: [] }).resolveExecution({ path: reference });
     assert.ok("execute" in execution);
     await assert.rejects(execution.execute({ signal: controller.signal, toolCallId: "mid-read-abort", operationId: "mid-read-abort" }), (error: unknown) => error === reason);
     assert.equal(reads, 2);

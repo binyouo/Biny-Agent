@@ -45,13 +45,13 @@ const agentSchema = z.object({
 
 const permissionSchema = z.object({
   mode: z.enum(["ask", "read-only", "auto", "full-access"]).default("full-access"),
-  allowTools: z.array(z.string()).default(["Read", "Glob", "Grep", "WebSearch", "save_memory"]),
+  allowTools: z.array(z.string()).default(["Read", "Glob", "Grep", "WebSearch"]),
   allowPaths: z.array(z.string()).default([]),
   denyPaths: z.array(z.string()).default([".env", ".ssh/"]),
   criticalAlwaysAsk: z.boolean().default(true)
 }).default({
   mode: "full-access",
-  allowTools: ["Read", "Glob", "Grep", "WebSearch", "save_memory"],
+  allowTools: ["Read", "Glob", "Grep", "WebSearch"],
   allowPaths: [],
   denyPaths: [".env", ".ssh/"],
   criticalAlwaysAsk: true
@@ -928,7 +928,7 @@ export const defaultConfig: AgentConfig = {
   heartbeat: { enabled: false, intervalMinutes: 30, activeHoursStart: 8, activeHoursEnd: 23 },
   permission: {
     mode: "full-access",
-    allowTools: ["Read", "Glob", "Grep", "WebSearch", "save_memory"],
+    allowTools: ["Read", "Glob", "Grep", "WebSearch"],
     allowPaths: [],
     denyPaths: [".env", ".ssh/"],
     criticalAlwaysAsk: true

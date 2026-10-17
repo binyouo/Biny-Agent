@@ -4,11 +4,61 @@ Biny 的扩展入口承担不同职责：MCP 连接外部服务，Skill 提供�
 
 ## Code Mode 工具编排
 
-`agent.toolExecutionMode` 默认是 `code_mode`：普通工具调用与 JavaScript `exec` 共存。可在 Desktop「设置 → 通用 → Code Mode」切换，保存后用于后续回合；关闭对应 `direct`，仅移除脚本入口。模型自行选择是否编排，不保证每次使用；开启不会强制所有工具通过脚本调用。脚本通过 `tools.<name>(args)` 调用当前准入的工具，使用 `searchTools` 搜索、`describeTool` 查询参数和调用要求，最后用 `return` 返回需要的结果。
+`agent.toolExecutionMode` 默认是 `code_mode`：普通工具调用与 JavaScript `exec` 共存。可在 Desktop「设置 → 通用 → Code Mode」切换，保存后用于后续回合；关闭对应 `direct`，使用普通调用与独立的 `ToolSearch` 发现入口。模型自行选择是否编排，不保证每次使用；开启不会强制所有工具通过脚本调用。脚本通过 `tools.<name>(args)` 调用当前准入的工具，使用 `searchTools` 搜索、`describeTool` 查询参数和调用要求，最后用 `return` 返回需要的结果。
 
-可编排的普通工具包括文件读取与搜索、记忆与历史查询、网页搜索与读取、浏览器状态与页面读取、技能查询与资源读取、任务与计划状态、目标与断点证据查询。文件修改可使用 `Write`、`Edit`，或当前模型编辑协议提供的 `apply_patch`；Shell 支持 `Bash`、`BashOutput` 和 `KillShell`。Patch 沿用同一回合的 Write/Edit 选择范围，调用 ID 由宿主绑定，脚本只提交 `operation`。并非所有标记为只读的工具都会自动进入脚本目录。
+Code Mode 不向主模型声明独立的 `ToolSearch`：模型从 `exec` 的说明获知 `searchTools(query)`、`describeTool(name)`、`describeNamespace(name)`，进入脚本后再按需查询目录。完整注册名在本地精确匹配，自然语言查询继续使用配置的工具模型；使用辅助模型并不要求另行声明一个搜索工具。
 
-询问用户、激活技能、启动或修改任务与计划、更新会话目标等控制入口仍直接调用；`exec` 不能递归调用自身。工具选择、隐藏策略、权限确认、文件冲突检查、进程取消与输出限制对脚本子调用同样生效。允许编排不表示默认并发；同一文件的冲突编辑会被拒绝。脚本失败不会撤销已完成的修改，也不会自动重跑整段；子调用结果未知时停止后续派发。
+自动模式的脚本可以发现和调用尚未预选、但已经通过执行策略准入的工具。仅能普通调用的控制工具可以被发现或描述，结果以 `invocation: "direct"` 标记，并在下一次主模型请求中提供定义；脚本无法执行它们。手选工具仍限制脚本的发现和调用范围，`none` 关闭两个入口。
+
+可编排的普通工具包括文件读取与搜索、网页搜索与读取、浏览器状态与页面读取、技能资源读取、任务状态与断点证据查询。文件修改可使用 `Write`、`Edit`，或当前模型编辑协议提供的 `apply_patch`；Shell 支持 `Bash`、`BashOutput` 和 `KillShell`。Patch 沿用同一回合的 Write/Edit 选择范围，调用 ID 由宿主绑定，脚本只提交 `operation`。并非所有标记为只读的工具都会自动进入脚本目录。
+
+询问用户、激活技能和创建子任务仍通过专用入口调用；目标、计划、待办与已有任务的管理通过 `Bash` 运行 CLI；`exec` 不能递归调用自身。工具选择、隐藏策略、权限确认、文件冲突检查、进程取消与输出限制对脚本子调用同样生效。允许编排不表示默认并发；同一文件的冲突编辑会被拒绝。脚本失败不会撤销已完成的修改，也不会自动重跑整段；子调用结果未知时停止后续派发。
+
+## 本地管理命令
+
+记忆、会话历史、技能发现与安装、目标状态、计划、待办及已有任务管理复用 CLI，不再注册独立的模型辅助工具。模型通过 `Bash` 运行命令；Code Mode 中可以调用 `tools.Bash({command: "…"})`。命令经过 Shell 权限与执行审计，返回值沿用 Shell 的输出限制；需要完整输出时按工具结果中的归档引用读取。
+
+| 用途 | 命令 |
+| --- | --- |
+| 搜索持久记忆 | `biny memory search "查询" --json`，支持 `--limit`、`--threshold`、标签及会话筛选 |
+| 保存事实 | `biny memory add "事实" --json`；结构化字段使用 `--entry` |
+| 搜索原始对话 | `biny history search "关键词" --json` |
+| 查找已安装技能 | `biny skill list --query "关键词" --json` |
+| 搜索和安装技能 | `biny skill search "能力" --json`、`biny skill install <GitHub-tree-URL> --json` |
+| 查看或提交目标结果 | `biny goal show --json`、`biny goal update --input '<JSON>' --json` |
+| 按需读取计划参数 | `biny plan schema draft --json`、`biny plan schema start --json`、`biny plan schema update --json` |
+| 创建草稿或启动计划 | `biny plan draft --input '<JSON>' --json`、`biny plan start --input '<JSON>' --json` |
+| 检查和修改计划 | `biny plan status <graph-id> --json`、`biny plan update --input '<JSON>' --json` |
+| 查看、替换或清空待办 | `biny todo show --json`、`biny todo replace --todos '<JSON数组>' --json`、`biny todo clear --yes --json` |
+| 向当前会话提问并等待回答 | `biny input ask "项目名称是什么？" --json`；选择题或多个问题使用 `--input '<JSON>'` |
+| 查看等待回答的问题 | `biny input list --session <session-id> --json` |
+| 回答或跳过问题 | `biny input answer <tool-call-id> --session <session-id> --run <run-id> --question answer --text "我的项目" --json`；跳过使用 `--skip` |
+| 取消已有子任务 | `biny task cancel <taskRunId> --json` |
+| 给子任务补充上下文 | `biny task message <taskRunId> "消息" --session <当前会话ID> --json` |
+| 从已完成子任务创建后续工作 | `biny task continue <taskRunId> "新增任务" --session <当前会话ID> --json`，需要已有用户授权 |
+
+普通记忆追加由 Host 写入队列与存储事务串行化，可在模型回合中执行；清理、归档和整理仍需要会话独占。自动召回、提取和 Sleep 继续由记忆运行时管理。技能激活前重新扫描当前技能目录，让本回合新安装的技能可以通过 `Skill` 加载；加载失败会返回错误。
+
+前台 `Bash` 为 CLI 传入当前会话与短期执行上下文，命令默认作用于所属会话；命令结束、取消或切换回合后上下文失效，后台命令不获得这项授权。目标完成与阻塞提交必须使用这个上下文，按模型请求开始时观察到的目标身份校验，不能提交旧目标的判断。目标正文、预算、暂停与恢复仍由用户控制。计划更新要求同回合先检查计划；人工 CLI 更新则必须传入 `plan status` 返回的 `--revision`，过期版本拒绝写入。待办写入经所属 Host 更新实时状态，下一次模型采样及进度展示可以读取新列表。
+
+`biny input ask` 只在当前交互回合的前台命令中发起提问，复用既有回答校验和执行记录。用户可以在 Desktop 的提问卡片中回答，也可以在同一工作区的终端使用 `input list` / `input answer`。三条命令均支持 `--json` 和 `--session`；省略会话时读取前台命令传入的当前会话，人工终端需要明确指定。命令超时或回合取消会清理等待，旧问题不能再回答；等待时长受外层 Shell 命令超时限制。普通终端、后台命令和非交互任务不能通过 `input ask` 新建提问。
+
+简单提问的 question ID 固定为 `answer`；结构化问题使用各自的 `id`，可通过 `--answers` 提交选择与补充文字。具体参数与示例见 `biny input ask --help` 和 `biny input answer --help`：
+
+```sh
+biny input ask --input '{"questions":[{"id":"place","question":"文件放在哪里？","options":[{"label":"桌面"},{"label":"下载目录"}]}]}' --json
+biny input answer <tool-call-id> --session <session-id> --run <run-id> --answers '[{"id":"place","selected":["下载目录"]}]' --json
+```
+
+计划监督回合只允许单个字面量 `biny plan status` 或 `biny plan update` 命令，以及有界的 `TaskStatus` 查询；Shell 拼接、展开与后台执行会被拒绝。普通模型回合仍按 Shell 权限执行命令。内部领域操作保留稳定的审计事件，移除模型声明不影响历史记录读取。
+
+`TaskStatus` 继续提供只读权限下的有界查询和等待，CLI `biny task inspect` 可供人工检查。`Task`、`Skill`、技能资源读取与检查点证据读取保留专用入口；用户提问同时支持专用工具和 `input` CLI，子任务端的 `TaskReport` 继续绑定自身报告上下文。
+
+## 工具名称与用户展示
+
+注册名是稳定的调用与审计标识，中文展示名不改写工具参数、权限规则或历史事件。能力菜单、执行记录与工具详情共用展示定义；已知工具显示“读取文件”“执行命令”“运行脚本”等中文名称。未提供展示名称的第三方工具保留原名称，编码后的 MCP 调用名只在技术详情中显示。
+
+消息能力菜单只展示可由用户选择的业务能力。工具发现、内部资源说明和目标/计划状态等运行时辅助入口不作为逐项选项；`hidden`、`model-only` 工具也不出现在选择器中。MCP 按服务器选择，隐藏工具不计入可选名单。菜单隐藏与模型是否收到定义、脚本是否能调用、权限是否批准分别校验；内部调用仍保留执行审计。
 
 ## MCP
 
@@ -49,7 +99,7 @@ TUI 的状态行显示 MCP 已连接数量、工具数和正在加载的服务�
 
 `exposure` 与 `toolExposure` 控制能力暴露方式。可选值为 `direct`、`codemode`、`deferred` 和 `hidden`；隐藏能力不表示卸载或撤销远端凭据。
 
-自动模式下，ToolSearch 成功发现的具体工具会在同一聊天的后续回合继续可用，只要发现结果仍在当前活动上下文中，且工具仍已注册并可向模型展示。不会因此展开整个 MCP 服务器，也不会绕过执行权限；新聊天、手动指定工具或关闭工具不继承这份历史。完整、大小写一致的注册工具名可直接精确匹配，其他查询由工具模型选择。
+普通调用模式下，ToolSearch 成功发现的具体工具会在同一聊天的后续回合继续可用，只要发现结果仍在当前活动上下文中，且工具仍已注册并可向模型展示。不会因此展开整个 MCP 服务器，也不会绕过执行权限；新聊天、手动指定工具或关闭工具不继承这份历史。完整、大小写一致的注册工具名可直接精确匹配，其他查询由工具模型选择。
 
 工具模型返回缺字段或类型错误的选择结果时，ToolSearch 报错，不把它缓存为“没有匹配工具”。连续搜索没有发现新工具、也没有实际工具执行的新成功结果时，达到 `agent.maxRepeatedActions`（默认 3）会停止本轮，避免改写查询后继续空转；普通中断续跑保留计数。
 
@@ -57,7 +107,7 @@ TUI 的状态行显示 MCP 已连接数量、工具数和正在加载的服务�
 
 自动工具与技能预选并行执行，每一路的候选模型共用 10 秒预算。超时取消预选，保留基础、显式点名及会话内累计的预选能力，再继续主模型请求；该预算不包含 MCP 发现或主模型生成。
 
-自动预选固定保留文件读取、写入、编辑、Shell、工具发现和归档结果回读入口。文件搜索、后台进程查询与停止、任务清单、提问和断点证据读取按需选择；未选中的工具仍可通过 ToolSearch 发现，完整注册名的精确查找不需要辅助模型。常驻集合不等于整轮工具上限，已选择的技能、活动目标和历史工具仍会补充所需能力。
+自动预选固定保留文件读取、写入、编辑与 Shell；归档结果由 Read 回查。Code Mode 通过 exec 中的 searchTools 发现其他能力，direct 模式保留独立 ToolSearch。文件搜索、后台进程查询与停止、任务清单、提问和断点证据读取按需选择或发现；完整注册名的精确查找不需要辅助模型。常驻集合不等于整轮工具上限，已选择的技能、活动目标和历史工具仍会补充所需能力。
 
 自动预选在同一聊天的当前分支内累计保留已选工具，不按轮次过期；恢复聊天后继续沿用。每轮新增预选仍受数量和定义大小预算限制，已累计的工具不因该预算被淘汰。当前未注册或不可向模型展示的工具不会恢复；新聊天、手选列表和关闭工具不继承自动名单。长期聊天的工具定义可能随累计增加。
 
@@ -89,7 +139,9 @@ always-inject: true
 
 在 TUI 中使用 `/skills` 按名称和描述搜索技能，或输入 `/skill:` 选择补全候选。确认只将 `/skill:<name>` 放入可编辑草稿并保留已有正文；补充任务后再次按 Enter 才提交。Esc 退出选择器不会清除草稿。
 
-frontmatter 的 `always-inject: true` 让该 Skill 的正文在每个回合进入系统提示，不依赖能力分析选中；未设置时正文按渐进式披露在选中后加载。本回合明确关闭 Skill，或在设置中禁用该 Skill 时，正文不注入；常驻声明不会扩大工具权限。声明该字段的 Skill 会在可用列表里标注常驻状态，模型无需再调用 Skill 工具重复加载。
+运行时先根据当前请求选择相关 Skill，主模型收到的是名称和简介。普通 Skill 的正文由模型调用 `Skill` 时读取；手动选择、`/skill:<name>` 点名和全选也只展示简介，不会提前加载全部正文。正文中的 references、scripts 和 assets 继续按需读取。只有正文成功读入上下文才显示为已加载，预选名单不算加载结果。
+
+frontmatter 的 `always-inject: true` 让该 Skill 的正文在每个回合进入系统提示，不依赖能力分析选中，是普通按需加载的显式例外。本回合明确关闭 Skill，或在设置中禁用该 Skill 时，正文不注入；常驻声明不会扩大工具权限。声明该字段的 Skill 会在可用列表里标注常驻状态，模型无需再调用 Skill 工具重复加载。
 
 内置 Skill 的名称、描述和主说明使用英文，随版本发布为只读资源；这不要求用户用英文提问。设置中的技能页再次进入或重新打开时会读取最新目录，刷新也会重新读取展开的正文，保留搜索和展开位置。`allowed-tools` 声明工作流需要的工具，不授予执行权限。除浏览器、本机应用、记忆、日报、反思、待办、任务、计划、定时与工作区搜索外，还提供以下任务说明：
 
@@ -118,7 +170,7 @@ biny skill uninstall <skill-name>
 
 `check` 校验声明的需求，不运行技能脚本。搜索结果不表示已经安装，安装成功也不表示当前回合已经选用。
 
-运行时先读取文件的前 64 KiB 解析元数据，frontmatter 的结束分隔线 `---` 必须完整位于该字节范围内。本地导入来源库或通过 `skill create` 创建时会在写入前检查这一要求；正文不受此元数据读取范围限制，选中后才加载正文与需要的资源。资源路径受目录与文件身份检查；Skill 不能自行授予脚本执行权限。
+运行时先读取文件的前 64 KiB 解析元数据，frontmatter 的结束分隔线 `---` 必须完整位于该字节范围内。本地导入来源库或通过 `skill create` 创建时会在写入前检查这一要求；正文不受此元数据读取范围限制，在按需调用或常驻装配时受独立大小限制。资源路径受目录与文件身份检查；Skill 不能自行授予脚本执行权限。
 
 仓库根目录的 Skill 以 `.` 标识，与同名真实子目录分别展示和选择。安装只接受真实完整目录；旧的仓库名根别名、短目录名和大小写猜测不再自动解析，找不到所选目录时刷新后重选。已保存的 `.` 来源仍可更新。
 
@@ -168,7 +220,7 @@ Keep changes within the assigned task. Report the changes and verification resul
 
 外部 Worker 暂不支持 Biny 的 `maxSteps`、`maxCostUsd` 或绑定 session goal 的任务，存在这些要求时拒绝启动；内置 `maxOutputTokens` 不控制外部生成额度。总时限 `timeoutMs`、空闲时限 `inactivityTimeoutMs`、父取消和 Runtime 关闭仍有效。CLI 输出限制为 16 MiB、单条消息 1 MiB；ACP 沿用连接限制。完成必须同时有协议终态，CLI 还须正常退出，不能仅凭输出文本报成功。
 
-外部任务启动前接收已排队消息并关闭消息入口，运行中不支持 `TaskMessage` 或子端 `TaskReport`。任务、模型身份、工具事件和最终回答记录在子 Session，可通过既有任务详情查询。中断后不重放外部请求，显式恢复也会拒绝；核实副作用后可创建新任务。CLI 错误输出不原样展示，避免泄露进程诊断中的凭据。真实 CLI 的登录、版本和模型可用性需要用户环境验证。
+外部任务启动前接收已排队消息并关闭消息入口，运行中不支持追加任务消息或子端 `TaskReport`。任务、模型身份、工具事件和最终回答记录在子 Session，可通过既有任务详情查询。中断后不重放外部请求，显式恢复也会拒绝；核实副作用后可创建新任务。CLI 错误输出不原样展示，避免泄露进程诊断中的凭据。真实 CLI 的登录、版本和模型可用性需要用户环境验证。
 
 通过 `Task` 的 `agent` 字段或 CLI 选择具名定义：
 

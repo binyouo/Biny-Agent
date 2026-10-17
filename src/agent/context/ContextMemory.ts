@@ -1227,7 +1227,7 @@ function summaryFileList(summary: string, tag: "read-files" | "modified-files"):
   return match[1].split("\n").map((line) => line.replace(/^\s*-\s*/u, "").trim()).filter(Boolean);
 }
 
-const readToolNames = new Set(["Read", "Glob", "Grep", "read_tool_result"]);
+const readToolNames = new Set(["Read", "Glob", "Grep"]);
 const modifiedToolNames = new Set(["Write", "Edit"]);
 
 function extractSummaryPaths(value: unknown): string[] {
@@ -2144,7 +2144,7 @@ function prunedToolResultMessage(message: ToolMessage): ToolMessage {
       prunedToolResultMarker,
       `Tool: ${messageToolName(message)}`,
       `Archived result: ${archivePath}`,
-      "Use read_tool_result with this archivePath if the full value is needed."
+      "Use Read with this archivePath as path if the full value is needed."
     ].join("\n")
     : [
       prunedToolResultMarker,

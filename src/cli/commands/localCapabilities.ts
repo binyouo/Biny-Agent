@@ -2,8 +2,10 @@
  * 记忆、日报、Heartbeat 和当前 session Todo 的 CLI 入口。
  *
  * 这里不复制领域存储：SQLite 记忆与 Heartbeat/反思通过 Runtime Host，日报直接复用
- * daily-notes，Todo 直接复用当前 session 的 TodoStore。
+ * daily-notes，Todo 写入复用所属 Runtime 的 TodoStore，空闲读取可直接加载持久文件。
  */
+import { executeSessionCommand } from "./sessionManagement.js";
+import { searchConversationHistory } from "../../session/searchHistory.js";
 import { connectOrSpawnRuntimeHost, connectRuntimeHost, type RuntimeHostClient } from "../../runtime/RuntimeHost.js";
 import { archiveConversationMarkdown } from "../../session/markdownArchive.js";
 import { startMemoryHttpServer } from "../../runtime/host/memory-http.js";
@@ -19,7 +21,7 @@ import path from "node:path";
 import { globalConfigDir } from "../../config/paths.js";
 import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
 import { HeartbeatFileStore } from "../../agent/context/heartbeat.js";
-import { TodoStore } from "../../session/todoStore.js";
+import { TodoStore, validateTodoItems } from "../../session/todoStore.js";
 import { resolveSessionFile, sessionIdFromFile } from "../../session/store.js";
 
 import { resolveDateKey } from "../dateKey.js";
@@ -68,7 +70,7 @@ export async function memoryListCommand(workspaceRoot: string, options: LocalCap
 export async function memorySearchCommand(
   workspaceRoot: string,
   query: string,
-  options: LocalCapabilityOutputOptions & { tag?: string[]; threadId?: string; userId?: string; userIds?: string[] } = {}
+  options: LocalCapabilityOutputOptions & { limit?: number; threshold?: number; tag?: string[]; threadId?: string; userId?: string; userIds?: string[] } = {}
 ): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
     const result = await client.memory("search", {
@@ -77,7 +79,8 @@ export async function memorySearchCommand(
       threadId: options.threadId,
       userId: options.userId,
       userIds: options.userIds,
-      limit: 20
+      limit: options.limit ?? 20,
+      threshold: options.threshold
     });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
@@ -243,8 +246,9 @@ export async function heartbeatShowCommand(_workspaceRoot: string, options: Loca
 }
 
 export async function todoShowCommand(workspaceRoot: string, sessionInput: string | undefined, options: LocalCapabilityOutputOptions = {}): Promise<void> {
-  const store = await openTodoStore(workspaceRoot, sessionInput);
-  const result = { sessionId: sessionInput ?? "latest", todos: store.list() };
+  const result = process.env.BINY_AGENT_CONTEXT
+    ? await executeSessionCommand(workspaceRoot, "TodoShow", {}, sessionInput)
+    : { sessionId: sessionInput ?? "latest", todos: (await openTodoStore(workspaceRoot, sessionInput)).list() };
   printResult(result, options.json, (value) => {
     const todos = asRecord(value).todos;
     return Array.isArray(todos) && todos.length ? JSON.stringify(todos, null, 2) : "当前 session 没有 Todo。";
@@ -252,19 +256,17 @@ export async function todoShowCommand(workspaceRoot: string, sessionInput: strin
 }
 
 export async function todoReplaceCommand(workspaceRoot: string, sessionInput: string | undefined, todosJson: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
-  const store = await openTodoStore(workspaceRoot, sessionInput);
   const parsed = JSON.parse(todosJson) as unknown;
   const todos = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null && Array.isArray((parsed as { todos?: unknown }).todos) ? (parsed as { todos: unknown[] }).todos : undefined;
   if (!todos) throw new Error("Todo replacement must be an array or an object with a todos array.");
-  const result = await store.replace(todos);
-  printResult({ todos: result }, options.json, (value) => JSON.stringify(asRecord(value).todos, null, 2));
+  const result = await executeSessionCommand(workspaceRoot, "TodoWrite", { todos: validateTodoItems(todos) }, sessionInput);
+  printResult({ todos: asRecord(result).todos }, options.json, (value) => JSON.stringify(asRecord(value).todos, null, 2));
 }
 
 export async function todoClearCommand(workspaceRoot: string, sessionInput: string | undefined, options: LocalCapabilityOutputOptions & { yes?: boolean } = {}): Promise<void> {
   requireConfirmation(options.yes, "清空当前 session Todo");
-  const store = await openTodoStore(workspaceRoot, sessionInput);
-  const result = await store.replace([]);
-  printResult({ todos: result }, options.json, () => "当前 session Todo 已清空。");
+  const result = await executeSessionCommand(workspaceRoot, "TodoWrite", { todos: [] }, sessionInput);
+  printResult({ todos: asRecord(result).todos }, options.json, () => "当前 session Todo 已清空。");
 }
 
 async function openTodoStore(workspaceRoot: string, sessionInput: string | undefined): Promise<TodoStore> {
@@ -316,8 +318,7 @@ function requireConfirmation(yes: boolean | undefined, action: string): void {
 export async function historySearchCommand(query: string, options: LocalCapabilityOutputOptions & { limit?: number; literal?: boolean } = {}): Promise<void> {
   const index = new SessionSearchIndex();
   try {
-    await index.refreshAll();
-    const hits = options.literal ? index.grep(query, options.limit) : index.search(query, { limit: options.limit ?? 8 });
+    const { hits } = await searchConversationHistory(index, query, options);
     if (options.json) {
       printResult({ query, hits }, true, (value) => JSON.stringify(value, null, 2));
       return;

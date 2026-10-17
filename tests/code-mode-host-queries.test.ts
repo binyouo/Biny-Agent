@@ -8,7 +8,7 @@ import { codeModePolicy } from "../src/agent/codeMode.js";
 import type { AgentModel, AgentToolResult, ModelStreamEvent } from "../src/agent/core/types.js";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import { defaultConfig } from "../src/config/schema.js";
-import { createSkillLookupTool, createSkillResourceTool, createSkillTool, loadSkills } from "../src/extensions/skills.js";
+import { createSkillResourceTool, createSkillTool, loadSkills } from "../src/extensions/skills.js";
 import { createTaskStatusTool, type SubagentOptions } from "../src/extensions/subagent.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
@@ -40,7 +40,7 @@ config.context.identity.enabled = false;
 config.context.identity.userEnabled = false;
 config.heartbeat.enabled = false;
 config.activity.enabled = false;
-const selected = new Set(["TaskStatus", "skill_lookup"]);
+const selected = new Set(["TaskStatus", "BashOutput"]);
 const recorders: SessionRecorder[] = [];
 let statusCalls = 0;
 const statusOptions: SubagentOptions = {
@@ -56,24 +56,25 @@ const statusOptions: SubagentOptions = {
 const makeRegistry = (): ToolRegistry => {
   const registry = new ToolRegistry();
   registry.registerHostReadQuery(createTaskStatusTool(statusOptions), "TaskStatus");
-  registry.registerHostReadQuery(createSkillLookupTool(bundle), "skill_lookup");
+  registry.registerHostReadQuery(createBashOutputTool(new ManagedProcessService({ workspaceRoot: root })), "BashOutput");
   registry.registerUserTool(createSkillTool(bundle));
   registry.registerUserTool(createSkillResourceTool(bundle));
-  registry.registerBuiltinTool(createBashOutputTool(new ManagedProcessService({ workspaceRoot: root })));
   return registry;
 };
 function coordinator(registry: ToolRegistry, id: string, options?: {
   tools?: Set<string>;
   ask?: (request: { tool: string; riskLevel?: string }) => Promise<{ approved: boolean; scope?: "once" }>;
+  executionMode?: "direct" | "code_mode";
   budget?: { maxToolCalls: number; maxRepeatedActions: number };
 }): ToolExecutionCoordinator {
   const recorder = new SessionRecorder(root, id);
   recorders.push(recorder);
   const settings = structuredClone(config);
+  settings.agent.toolExecutionMode = options?.executionMode ?? "code_mode";
   if (options?.ask) { settings.permission.mode = "ask"; settings.permission.allowTools = []; }
   return new ToolExecutionCoordinator({ workspaceRoot: root, config: settings, recorder, toolRegistry: registry,
     confirmPermission: options?.ask }, new PermissionManager(settings.permission), () => undefined, () => ({}),
-  options?.tools ?? selected, options?.budget);
+  options?.tools ?? selected, options?.budget, undefined, options?.tools);
 }
 const details = (result: AgentToolResult): { value?: unknown; childCalls?: unknown[]; error?: string; outcomeUnknown?: boolean } =>
   result.details as ReturnType<typeof details>;
@@ -82,7 +83,7 @@ function deferred<T = void>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
-const model = (callback: (prompt: string) => Promise<void> | void, names = ["TaskStatus", "skill_lookup", "Skill", "read_skill_resource", "BashOutput", "Task"]): AgentModel => ({
+const model = (callback: (prompt: string) => Promise<void> | void, names = ["TaskStatus", "BashOutput", "Skill", "read_skill_resource", "BashOutput", "Task"]): AgentModel => ({
   provider: "fixture", modelId: "host-query-selector", supportsTools: false,
   async stream(context) {
     await callback(context.systemPrompt ?? "");
@@ -98,21 +99,21 @@ try {
   for (const source of ["builtin", "skill", "subagent", "mcp", "plugin"] as ToolSource[]) {
     const registry = new ToolRegistry();
     for (const name of selected) {
-      const impostor = Object.assign(name === "TaskStatus" ? createTaskStatusTool(statusOptions) : createSkillLookupTool(bundle), {
+      const impostor = Object.assign(name === "TaskStatus" ? createTaskStatusTool(statusOptions) : createBashOutputTool(new ManagedProcessService({ workspaceRoot: root })), {
         source, hostReadQuery: name, readOnlyHint: true, codeModeReadOnly: true
       });
       registry.register(impostor, source);
     }
     assert.equal(registry.listEntries().some(isCodeModeReadTool), false, source);
     const exec = coordinator(registry, `untrusted-${source}`).createCodeModeTool();
-    assert.doesNotMatch(exec.promptSnippet ?? "", /TaskStatus:|skill_lookup:/u);
+    assert.doesNotMatch(exec.promptSnippet ?? "", /TaskStatus:|BashOutput:/u);
     const before = statusCalls;
     assert.equal((await exec.execute(`untrusted-call-${source}`, { code: "return await tools.TaskStatus({taskRunId:'fixture'});" })).isError, true);
     assert.equal(statusCalls, before);
   }
   const registry = makeRegistry();
   const entries = registry.listEntries().filter(isCodeModeReadTool);
-  assert.deepEqual(entries.map((entry) => [entry.tool.name, entry.source]), [["TaskStatus", "subagent"], ["skill_lookup", "skill"]]);
+  assert.deepEqual(entries.map((entry) => [entry.tool.name, entry.source]), [["TaskStatus", "subagent"], ["BashOutput", "builtin"]]);
   for (const entry of entries) {
     assert.equal(isCodeModeReadTool({ ...entry }), false, "cloning or serializing an entry cannot copy authority");
     assert.throws(() => Object.assign(entry, { source: "builtin", hostReadQuery: entry.tool.name }), TypeError);
@@ -128,16 +129,16 @@ try {
 
   const main = coordinator(registry, "host-query-happy", { budget: { maxToolCalls: 8, maxRepeatedActions: 8 } });
   const exec = main.createCodeModeTool({ mode: "replace" });
-  assert.match(exec.promptSnippet ?? "", /TaskStatus:|skill_lookup:/u);
-  assert.doesNotMatch(exec.promptSnippet ?? "", /Skill:|read_skill_resource:|BashOutput:|Task:/u);
+  assert.match(exec.promptSnippet ?? "", /TaskStatus:|BashOutput:/u);
+  assert.doesNotMatch(exec.promptSnippet ?? "", /Skill:|read_skill_resource:|Task:/u);
   const result = await exec.execute("host-query-cell", { code:
-    "const status = await tools.TaskStatus({taskRunId:'fixture'}); const skills = await tools.skill_lookup({query:'query-fixture',limit:1}); return {status:status.status, skill:skills.skills[0].name};" });
+    "const status = await tools.TaskStatus({taskRunId:'fixture'}); const skills = await tools.BashOutput({}); return {status:status.status, processes:skills.processes.length};" });
   assert.equal(result.isError, false, JSON.stringify(result.details));
-  assert.deepEqual(details(result).value, { status: "needs_approval", skill: "query-fixture" });
+  assert.deepEqual(details(result).value, { status: "needs_approval", processes: 0 });
   assert.equal(main.getExecutionBudgetSnapshot().accountedToolCalls, 2);
   const held = coordinator(registry, "held-read-queries", { tools: new Set([...selected, "BashOutput", "read_skill_resource", "Skill"]) });
-  assert.doesNotMatch(held.createCodeModeTool().promptSnippet ?? "", /BashOutput:|read_skill_resource:|Skill:/u);
-  for (const [name, args] of [["BashOutput", {}], ["read_skill_resource", { skill: "query-fixture", path: "SKILL.md" }]] as const) {
+  assert.doesNotMatch(held.createCodeModeTool().promptSnippet ?? "", /read_skill_resource:|Skill:/u);
+  for (const [name, args] of [["read_skill_resource", { skill: "query-fixture", path: "SKILL.md" }]] as const) {
     const unavailable = await held.createCodeModeTool().execute(`held-${name}`, { code: `return await tools.${name}(${JSON.stringify(args)});` });
     assert.equal(unavailable.isError, true);
     assert.deepEqual(details(unavailable).childCalls, [], "held reads must never enter the host coordinator");
@@ -153,15 +154,20 @@ try {
     .some((message) => message.role === "toolResult" && message.toolCallId.includes(":nested:")), false);
 
   const none = coordinator(registry, "host-query-selection-none", { tools: new Set() }).createCodeModeTool();
-  assert.doesNotMatch(none.promptSnippet ?? "", /TaskStatus:|skill_lookup:/u);
-  assert.equal((await none.execute("selection-none", { code: "return await tools.skill_lookup({query:'fixture'});" })).isError, true);
+  assert.doesNotMatch(none.promptSnippet ?? "", /TaskStatus:|BashOutput:/u);
+  assert.equal((await none.execute("selection-none", { code: "return await tools.BashOutput({});" })).isError, true);
   for (const name of selected) {
+    if (name === "BashOutput") {
+      const lowRisk = coordinator(registry, "low-risk-process-read", { ask: async () => { throw new Error("A low-risk process read must not ask"); } });
+      assert.equal((await lowRisk.createCodeModeTool().execute("low-risk-process-read", { code: "return await tools.BashOutput({});" })).isError, false);
+      continue;
+    }
     let approvals = 0;
     const before = statusCalls;
     const denied = coordinator(registry, `deny-${name}`, { ask: async (request) => {
       approvals++; assert.equal(request.tool, name); assert.equal(request.riskLevel, "medium"); return { approved: false };
     } });
-    const code = name === "TaskStatus" ? "return await tools.TaskStatus({taskRunId:'fixture'});" : "return await tools.skill_lookup({query:'fixture'});";
+    const code = name === "TaskStatus" ? "return await tools.TaskStatus({taskRunId:'fixture'});" : "return await tools.BashOutput({});";
     assert.equal((await denied.createCodeModeTool().execute(`deny-call-${name}`, { code })).isError, true);
     assert.equal(approvals, 1);
     assert.equal(statusCalls, before, "a denied status query cannot invoke its read callback");
@@ -209,28 +215,28 @@ try {
   let searches = 0; const prompts: string[] = [];
   const searchTool = createToolSearchTool(() => discovery.listEntries(), () => [{ model: model((prompt) => { searches++; prompts.push(prompt); }), failureDomain: "host-query-fixture" }]);
   discovery.registerBuiltinTool(searchTool);
-  const searchCoordinator = coordinator(discovery, "query-discovery", { tools: new Set(["ToolSearch"]) });
+  const searchCoordinator = coordinator(discovery, "query-discovery", { tools: new Set(["ToolSearch"]), executionMode: "direct" });
   const search = searchCoordinator.createAgentTools(undefined, { toolDiscoveryNames: new Set(discovery.list().map((tool) => tool.name)) }).find((tool) => tool.name === "ToolSearch")!;
-  assert.doesNotMatch(searchCoordinator.createCodeModeTool().promptSnippet ?? "", /TaskStatus:|skill_lookup:/u);
+  assert.doesNotMatch(searchCoordinator.createCodeModeTool().promptSnippet ?? "", /TaskStatus:|BashOutput:/u);
   const first = await search.execute("query-search-1", { query: "read local metadata or task status" });
   assert.deepEqual(toolSearchResultNames(first.details), [...selected]);
-  assert.match(prompts[0] ?? "", /TaskStatus|skill_lookup/u);
-  assert.doesNotMatch(prompts[0] ?? "", /"name":"(?:Skill|read_skill_resource|BashOutput|Task)"/u);
+  assert.match(prompts[0] ?? "", /TaskStatus|BashOutput/u);
+  assert.doesNotMatch(prompts[0] ?? "", /"name":"(?:Skill|read_skill_resource|Task)"/u);
   await search.execute("query-search-cached", { query: "read local metadata or task status" });
   assert.equal(searches, 1);
   assert.deepEqual(searchCoordinator.allowTools(toolSearchResultNames(first.details)), [...selected]);
-  assert.match(searchCoordinator.createCodeModeTool().promptSnippet ?? "", /TaskStatus:|skill_lookup:/u);
-  const lookup = discovery.get("skill_lookup");
-  discovery.unregister("skill_lookup"); discovery.registerUserTool(lookup);
+  assert.match(searchCoordinator.createCodeModeTool().promptSnippet ?? "", /TaskStatus:|BashOutput:/u);
+  const lookup = discovery.get("BashOutput");
+  discovery.unregister("BashOutput"); discovery.registerUserTool(lookup);
   assert.deepEqual(toolSearchResultNames((await search.execute("query-search-revoked", { query: "read local metadata or task status" })).details), ["TaskStatus"]);
   assert.equal(searches, 2, "same serialized metadata cannot reuse the previous authority catalog");
-  discovery.unregister("skill_lookup"); discovery.registerHostReadQuery(lookup, "skill_lookup");
+  discovery.unregister("BashOutput"); discovery.registerHostReadQuery(lookup, "BashOutput");
   assert.deepEqual(toolSearchResultNames((await search.execute("query-search-reowned", { query: "read local metadata or task status" })).details), [...selected]);
   assert.equal(searches, 3);
   const resumed = coordinator(discovery, "query-discovery-resume", { tools: new Set(["ToolSearch"]) });
   const restored = toolSearchResultNamesFromMessages([{ role: "toolResult", toolCallId: "query-search-1", toolName: "ToolSearch", content: [], details: first.details }]);
   resumed.allowTools(restored);
-  assert.match(resumed.createCodeModeTool().promptSnippet ?? "", /TaskStatus:|skill_lookup:/u);
+  assert.match(resumed.createCodeModeTool().promptSnippet ?? "", /TaskStatus:|BashOutput:/u);
   discovery.unregister("TaskStatus"); discovery.registerMcpTool(createTaskStatusTool(statusOptions));
   assert.doesNotMatch(resumed.createCodeModeTool().promptSnippet ?? "", /TaskStatus:/u);
 
@@ -244,7 +250,7 @@ try {
   await searchEntered.promise;
   for (const name of selected) {
     const tool = inFlightRegistry.get(name); inFlightRegistry.unregister(name);
-    inFlightRegistry.registerHostReadQuery(tool, name as "TaskStatus" | "skill_lookup");
+    inFlightRegistry.registerHostReadQuery(tool, name as "TaskStatus" | "BashOutput");
   }
   releaseSearch.resolve();
   assert.deepEqual(toolSearchResultNames(await stale), [], "late discovery cannot revive removed registration identities");
@@ -258,22 +264,22 @@ try {
     selectCapabilities: async () => ({ tools: ["ToolSearch"], skills: "none" }),
     model: { provider: "fixture", modelId: "host-query-main-flow", supportsTools: true, async stream(context) {
       steps++;
-      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), steps === 1 ? ["ToolSearch", "exec"] : ["TaskStatus", "ToolSearch", "exec", "skill_lookup"]);
+      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["exec"]);
       const catalog = context.tools.find((tool) => tool.name === "exec")?.promptSnippet ?? "";
-      if (steps === 1) assert.doesNotMatch(catalog, /TaskStatus:|skill_lookup:/u);
-      else assert.match(catalog, /TaskStatus:|skill_lookup:/u);
-      assert.doesNotMatch(catalog, /Skill:|read_skill_resource:|BashOutput:|Task:/u);
+      if (steps === 1) assert.doesNotMatch(catalog, /TaskStatus:|BashOutput:/u);
+      else assert.doesNotMatch(catalog, /TaskStatus:|BashOutput:/u);
+      assert.doesNotMatch(catalog, /Skill:|read_skill_resource:|Task:/u);
       const events: ModelStreamEvent[] = steps === 1
-        ? [{ type: "tool-call", id: "flow-query-search", name: "ToolSearch", arguments: { query: "task status and installed skill metadata" } }, { type: "finish", reason: "tool-calls" }]
+        ? [{ type: "tool-call", id: "flow-query-search", name: "exec", arguments: { code: "return await searchTools('task status and installed skill metadata');" } }, { type: "finish", reason: "tool-calls" }]
         : steps === 2 ? [{ type: "tool-call", id: "flow-query-exec", name: "exec", arguments: { code:
-          "const s = await tools.TaskStatus({taskRunId:'fixture'}); const k = await tools.skill_lookup({query:'query-fixture'}); return {status:s.status,found:k.found};" } }, { type: "finish", reason: "tool-calls" }]
+          "const s = await tools.TaskStatus({taskRunId:'fixture'}); const k = await tools.BashOutput({query:'query-fixture'}); return {status:s.status,found:k.found};" } }, { type: "finish", reason: "tool-calls" }]
           : [{ type: "text-delta", text: "queries complete" }, { type: "finish", reason: "stop" }];
       return (async function* (): AsyncGenerator<ModelStreamEvent> { yield* events; })();
     } }
   });
   try {
     await flow.initialize();
-    const outcome = await flow.runTask("Find read-only status and skill queries", { emotionAnalysis: false, selection: { tools: ["ToolSearch"], skills: "none" } });
+    const outcome = await flow.runTask("Find read-only status and skill queries", { emotionAnalysis: false, selection: { tools: "auto", skills: "none" } });
     assert.equal(outcome.status, "completed", JSON.stringify(outcome));
     assert.equal(steps, 3);
   } finally { await flow.close(); }

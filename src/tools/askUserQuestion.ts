@@ -12,6 +12,7 @@ export function createAskUserQuestionTool(requests: UserInputRequests): Tool<Use
       "Before making a consequential assumption about an unclear goal, scope, destination, or irreversible choice, inspect available context and use AskUserQuestion for facts or preferences only the user can supply.",
       "Ask only questions that materially change the result. Prefer a small set of concrete choices with short tradeoffs; always allow a custom answer. Do not ask about facts you can inspect yourself, obvious defaults, or routine implementation details.",
       "Do not request confirmation again for work the user already authorized. A clarification answer is not a tool permission grant.",
+      'With foreground shell access in an interactive run, `biny input ask "<question>" --json` asks one free-text question; use `--input` with this tool\'s questions object for choices or multiple questions. It uses the same chat card and waits within the shell timeout. Run `biny input ask --help` for command examples.',
       "If the user skips, do not invent an answer or interpret silence as approval. Continue independent authorized work; state a safe assumption only for optional details, and report a blocker when a necessary decision remains missing."
     ],
     parameters: {

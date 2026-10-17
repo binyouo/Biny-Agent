@@ -308,7 +308,7 @@ function approveVisiblePermissions(runtime: InteractiveAgentRuntime): void {
 
 function config(): AgentConfig {
   return {
-    ...defaultConfig,
+    ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     defaultModel: "main-agent-verification-test",
     providers: { test: { type: "openai", baseUrl: "https://example.test/v1", apiKey: "test-key" } },
     models: {

@@ -1160,7 +1160,9 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
         async execute(context): Promise<unknown> {
           if (!fileChange) {
             const envelope = context.mcpResultMode === "envelope";
-            const metadata = localIdentity === undefined ? undefined : { "biny/session-id": context.sessionId };
+            const metadata = localIdentity === undefined ? undefined : {
+              "biny/session-id": context.sessionId, "biny/computer-lease-id": context.computerMcpLeaseId
+            };
             const result = await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, envelope, context.onDispatched, metadata, localIdentity, expectedDefinition);
             return envelope ? normalizeMcpEnvelope(result) : result;
           }

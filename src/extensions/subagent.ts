@@ -144,7 +144,6 @@ export interface SubagentOptions {
   runTask?: (input: SubagentToolInput, context: ToolExecutionContext) => Promise<unknown>;
   readTaskResult?: (input: { taskRunId: string; waitMs?: number; afterRevision?: number }, context: ToolExecutionContext) => Promise<unknown>;
   communication?: TaskCommunication;
-  continueTask?: (taskRunId: string, message: string, requestId: string, signal?: AbortSignal) => Promise<unknown>;
   cancelTask?: (taskRunId: string, reason?: string) => unknown;
 }
 
@@ -157,7 +156,7 @@ export function createSubagentTool(options: SubagentOptions): Tool<SubagentToolI
       "Keep simple one-step requests in the current run; delegate when isolation, specialist focus, or independent execution will help.",
       "Give the worker a concrete goal, relevant constraints, and a finite deliverable; summarize its result to the user when it returns.",
       "Include a short description of the task in the user's language for the card title. Keep the full instructions in task; name is an optional worker nickname, not the task description.",
-      "Use background for independent tasks. Retain each taskRunId; progress and completion notices arrive at safe parent boundaries without starting idle parent turns. Use TaskMessage for corrections, TaskStatus for a necessary bounded wait, TaskCancel for work no longer needed, and TaskContinue only for explicitly authorized additional work from a completed report.",
+      "Use background for independent tasks. Retain each taskRunId; progress and completion notices arrive at safe parent boundaries without starting idle parent turns. Use `biny task message <taskRunId> <message> --session <current-session-id> --json` for corrections, TaskStatus for a necessary bounded wait, and `biny task cancel <taskRunId> --json` for work no longer needed. Use `biny task continue <taskRunId> <message> --session <current-session-id> --json` only for explicitly authorized additional work from a completed report.",
       "Preserve user-specified acceptance conditions exactly. Put them in verification.checks; do not replace them with easier inferred checks.",
       "If a verified task returns needs_approval, report the exact approvalId, command, cwd, and reason. Do not claim completion or approve it yourself."
     ],
@@ -223,38 +222,25 @@ export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId
   };
 }
 
-export function createTaskControlTools(options: SubagentOptions): Tool[] {
-  return ["TaskMessage", "TaskCancel", "TaskContinue"].map((name) => {
-    const isMessage = name === "TaskMessage";
-    const needsMessage = isMessage || name === "TaskContinue";
-    return {
-      name,
-      description: name === "TaskContinue" ? "Start explicit additional bounded work from a completed child report. Creates a new TaskRun with a short evidence reference; preserves the completed execution. Requires existing user authorization for the added work." : isMessage
-        ? "Persist a correction or context for an active child task created by this session. Delivery occurs between child model steps and does not interrupt a dispatched tool. Terminal, verifying, or finishing tasks reject new messages."
-        : "Cancel a child task created by this session. Dispatched tool side effects are not undone.",
-      parameters: { type: "object", properties: {
-        taskRunId: { type: "string" }, message: { type: "string", description: needsMessage ? "Context or a bounded additional task, at most 8000 characters." : "Optional cancellation reason." }
-      }, required: needsMessage ? ["taskRunId", "message"] : ["taskRunId"], additionalProperties: false },
-      schema: z.object({ taskRunId: z.string().trim().min(1), message: needsMessage ? z.string().trim().min(1).max(8_000) : z.string().trim().min(1).max(8_000).optional() }).strict(),
-      source: "subagent", capability: "subagent.workspace", risk: "execute",
-      resolveExecution(args: { taskRunId: string; message?: string }) {
-        return { accesses: name === "TaskContinue" ? ToolAccesses.all() : ToolAccesses.none(), display: { kind: "generic", summary: name, detail: args.taskRunId },
-          description: name, approvalRule: name,
-          async execute(context: ToolExecutionContext): Promise<unknown> {
-            if (!options.communication) throw new Error("Task communication is unavailable.");
-            options.communication.read(args.taskRunId);
-            if (name === "TaskContinue") {
-              if (!options.continueTask) throw new Error("Task continuation is unavailable.");
-              return await options.continueTask(args.taskRunId, args.message!, context.toolCallId, context.signal);
-            }
-            if (isMessage) return options.communication.send(args.taskRunId, args.message!, context.toolCallId);
-            if (!options.cancelTask) throw new Error("Task cancellation is unavailable.");
-            return options.cancelTask(args.taskRunId, args.message);
-          }
-        };
-      }
-    };
-  });
+export function createTaskCancelTool(options: SubagentOptions): Tool {
+  return {
+    name: "TaskCancel",
+    description: "Cancel a child task created by this session. Dispatched tool side effects are not undone.",
+    parameters: { type: "object", properties: { taskRunId: { type: "string" }, message: { type: "string", description: "Optional cancellation reason." } }, required: ["taskRunId"], additionalProperties: false },
+    schema: z.object({ taskRunId: z.string().trim().min(1), message: z.string().trim().min(1).max(8_000).optional() }).strict(),
+    source: "subagent", capability: "subagent.workspace", risk: "execute",
+    resolveExecution(args: { taskRunId: string; message?: string }) {
+      return { accesses: ToolAccesses.none(), display: { kind: "generic", summary: "TaskCancel", detail: args.taskRunId },
+        description: "TaskCancel", approvalRule: "TaskCancel",
+        async execute(): Promise<unknown> {
+          if (!options.communication) throw new Error("Task communication is unavailable.");
+          options.communication.read(args.taskRunId);
+          if (!options.cancelTask) throw new Error("Task cancellation is unavailable.");
+          return options.cancelTask(args.taskRunId, args.message);
+        }
+      };
+    }
+  };
 }
 
 /** Executes one already-admitted child task. Concurrency and deadlines belong to SubagentTaskManager. */
@@ -756,7 +742,7 @@ export function subagentMaxOutputTokens(config: AgentConfig, modelMaxOutputToken
 }
 
 export function isSensitiveSubagentPath(value: string): boolean {
-  const normalized = value.replaceAll("\\", "/").replace(/^\.\//, "");
+  const normalized = value.trim().replaceAll("\\", "/").replace(/^\.\//, "");
   if (isProtectedCredentialPath(normalized)) return true;
   return normalized.split("/").some((segment) => {
     const lower = segment.toLowerCase().replace(/^"|"$/g, "");

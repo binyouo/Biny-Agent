@@ -114,7 +114,7 @@ async function withMemoryPanel(check: (fixture: MemoryPanelFixture) => Promise<v
     onCancelEmbeddingRebuild: async () => { throw new Error("unused"); },
     onNotify: (message: string) => { notifications.push(message); }
   } as unknown as Parameters<typeof SettingsMemory>[0];
-  const context = { draft: { memory: policy }, snapshot: { memory: policy }, dirtyCount: 0,
+  const context = { draft: { memory: policy }, snapshot: { memory: policy, models: { connections: [] } }, dirtyCount: 0,
     setMemory: () => undefined } as unknown as SettingsDraftContextValue;
   const pageLabel = (): string => {
     const label = document.querySelector(".activity-memory-pagination > div > span")?.textContent?.trim();

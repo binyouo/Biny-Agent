@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel } from "../src/agent/core/types.js";
 import { defaultConfig } from "../src/config/schema.js";
-import { loadSkills, skillPromptForSelection, skillNamesForSelection } from "../src/extensions/skills.js";
+import { loadSkills, skillPromptForSelection, loadedSkillNamesForSelection } from "../src/extensions/skills.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { SessionRecorder } from "../src/session/recorder.js";
@@ -36,7 +36,7 @@ await test("常驻技能进入真实回合提示和已加载清单，明确全�
     await ensureAgentDirs(root);
     agent = new AgentSession({ workspaceRoot: root, config, model, recorder: new SessionRecorder(root, "always-skill"),
       permissionManager: new PermissionManager(config.permission), toolRegistry: new ToolRegistry(),
-      skillPrompt: selection => skillPromptForSelection(bundle, selection), skillNames: selection => skillNamesForSelection(bundle, selection)
+      skillPrompt: selection => skillPromptForSelection(bundle, selection), skillNames: selection => loadedSkillNamesForSelection(bundle, selection)
     });
     await agent.initialize();
     const loaded: string[][] = [];

@@ -12,7 +12,7 @@ import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { readToolResultArchive } from "../src/session/toolResultArchive.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { createSearchFilesTool } from "../src/tools/search/searchFiles.js";
 
@@ -51,7 +51,7 @@ function setup(root: string, ignore: string[] = []) {
   const registry = new ToolRegistry();
   const context = { workspaceRoot: root, ignore };
   registry.registerBuiltinTool(createSearchFilesTool(context));
-  registry.registerBuiltinTool(createReadToolResultTool(context));
+  registry.registerBuiltinTool(createReadFileTool(context));
   const recorder = new SessionRecorder(root);
   const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry },
     new PermissionManager(config.permission), () => undefined);
@@ -108,12 +108,12 @@ test("Grep file and directory warnings both survive oversized persistence, repla
       const replay = replaySessionEvents(events, { sessionId: recorder.sessionId });
       const replayModel = modelValue(replay.messages);
       assert.equal(replayModel.archivePath, persisted.archivePath);
-      const args = { archivePath: persisted.archivePath, length: 200_000 };
-      const reread = await tools.find((tool) => tool.name === "read_tool_result")!.execute("reread", args);
+      const args = { path: persisted.archivePath, length: 200_000 };
+      const reread = await tools.find((tool) => tool.name === "Read")!.execute("reread", args);
       assert.equal(reread.isError, false);
       const page = modelValue([
-        { role: "assistant", content: [{ type: "toolCall", id: "reread", name: "read_tool_result", arguments: args }] },
-        { ...reread, role: "toolResult", toolCallId: "reread", toolName: "read_tool_result" }
+        { role: "assistant", content: [{ type: "toolCall", id: "reread", name: "Read", arguments: args }] },
+        { ...reread, role: "toolResult", toolCallId: "reread", toolName: "Read" }
       ]);
       assert.equal(page.hasMore, false);
       const recovered = JSON.parse(String(page.content)) as Record<string, unknown>;
@@ -212,12 +212,12 @@ for (const large of [false, true]) {
           { ...result, role: "toolResult", toolCallId: "readable", toolName: "Grep" }
         ]), modelValue(replaySessionEvents(events, { sessionId: recorder.sessionId }).messages)];
         if (large) {
-          const readArgs = { archivePath: String(stored.archivePath), length: 200_000 };
-          const read = await tools.find((tool) => tool.name === "read_tool_result")!.execute("readable-reread", readArgs);
+          const readArgs = { path: String(stored.archivePath), length: 200_000 };
+          const read = await tools.find((tool) => tool.name === "Read")!.execute("readable-reread", readArgs);
           assert.equal(read.isError, false);
           const page = modelValue([
-            { role: "assistant", content: [{ type: "toolCall", id: "readable-reread", name: "read_tool_result", arguments: readArgs }] },
-            { ...read, role: "toolResult", toolCallId: "readable-reread", toolName: "read_tool_result" }
+            { role: "assistant", content: [{ type: "toolCall", id: "readable-reread", name: "Read", arguments: readArgs }] },
+            { ...read, role: "toolResult", toolCallId: "readable-reread", toolName: "Read" }
           ]);
           assert.equal(page.hasMore, false);
           const raw = JSON.parse(String(page.content)) as Record<string, unknown>;

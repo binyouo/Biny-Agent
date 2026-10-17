@@ -171,6 +171,7 @@ export class RuntimeHostServer {
   /** 重建只锁定目标 session，不能让一个 session 的配置刷新挡住其它 session。 */
   private readonly runtimeRestartPromises = new Map<string, Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }>>();
   private listening = false;
+  private endpointReady = false;
   private initialized = false;
   private initializationPromise: Promise<void> | undefined;
   private journalReady = false;
@@ -501,8 +502,9 @@ export class RuntimeHostServer {
       };
       const onListening = (): void => {
         this.server.off("error", onError);
+        this.listening = true;
         void secureRuntimeSocket(this.registration.endpoint).then(() => {
-          this.listening = true;
+          this.endpointReady = true;
           resolve();
         }, reject);
       };
@@ -563,7 +565,7 @@ export class RuntimeHostServer {
   }
 
   private accept(socket: net.Socket): void {
-    if (this.closePromise) { socket.destroy(); return; }
+    if (!this.endpointReady || this.closePromise) { socket.destroy(); return; }
     this.idleSince = undefined;
     this.activityRevision += 1;
     // 未完成握手的连接也算占用，但不能无限保活一个无人使用的 Host。
@@ -1006,6 +1008,22 @@ export class RuntimeHostServer {
     const runtime = managed.runtime;
     const commands = managed.commands;
     switch (frame.operation) {
+      case "session.command": {
+        const command = requiredString(payload.command, "command");
+        const scope = optionalString(payload.scope);
+        if (command === "AskUserQuestion") {
+          if (!runtime.requestUserInput) throw new Error("Interactive questions are unavailable in this runtime.");
+          return new OperationCompletion(runtime.requestUserInput(payload.input, scope));
+        }
+        const execute = async (signal?: AbortSignal) => {
+          const result = await commands.sessionCommand(command, payload.input, scope, optionalSafeInteger(payload.revision), signal);
+          this.publishSnapshot(runtime);
+          return result;
+        };
+        if (scope !== undefined || command === "TodoShow" || command === "GoalGet" || command === "PlanStatus") return await execute();
+        await this.ensureSessionWriter(connection, runtime);
+        return new OperationCompletion(runtime.runExclusiveOperation("plan", execute));
+      }
       case "plan.list": {
         const sessionId = runtime.getSnapshot().info.sessionId;
         return commands.graphs.listSupervisedGraphIds(sessionId)
@@ -1612,8 +1630,8 @@ export class RuntimeHostServer {
           async () => await commands.mcp.reconnectServer(requiredString(payload.server, "server"))
         );
       case "memory": {
-        // 普通读取允许看到短暂不一致的快照，不占用交互会话；写入与整理仍需独占。
-        if (memoryQueryActions.has(String(payload.action))) {
+        // 追加条目由 Host mutation 队列和存储事务串行化，允许回合中的 CLI 保存；整理仍需会话独占。
+        if (memoryQueryActions.has(String(payload.action)) || payload.action === "write") {
           return await executeRuntimeHostMemoryOperation({
             getCommands: () => commands,
             scheduleEmbeddingRebuild: () => this.businessComposition.scheduleMemoryEmbeddingRebuild()
@@ -1879,6 +1897,11 @@ export class RuntimeHostServer {
 
   private async runtimeEntry(operation: string, payload: Record<string, unknown>): Promise<ManagedSessionRuntime> {
     const explicitSessionId = optionalString(payload.sessionId);
+    if (operation === "session.command" && optionalString(payload.scope) !== undefined) {
+      const owner = explicitSessionId === undefined ? undefined : this.registry.get(explicitSessionId);
+      if (!owner) throw new Error("Session command context expired or belongs to another run.");
+      return owner;
+    }
     const sessionFromFile = typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined;
     const taskRunId = operation.startsWith("task.") ? optionalString(payload.taskRunId) : undefined;
     const graphId = operation.startsWith("graph.") || operation.startsWith("plan.") ? optionalString(payload.graphId) : undefined;

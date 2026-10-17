@@ -592,6 +592,7 @@ export interface DesktopToolCatalogEntry {
   source: "builtin" | "mcp" | "skill" | "plugin" | "subagent";
   risk?: "read" | "write" | "execute";
   namespace?: { name: string };
+  exposure?: import("../tools/types.js").ToolExposure;
 }
 
 /** Agent 权限策略的脱敏设置视图；工具选择器不读写这里的 allowTools。 */
@@ -1489,7 +1490,7 @@ export interface DesktopRuntimeProjection {
 export interface DesktopPlanProjection {
   sessionId: string;
   plans: Array<ReturnType<typeof planStatus>>;
-  /** 普通多步任务的当前会话清单；由 TodoWrite 更新并在工具完成后刷新。 */
+  /** 普通多步任务的当前会话清单；由待办 CLI 更新并在工具完成后刷新。 */
   todos?: TodoItem[];
   goal?: SessionGoalRecord;
 }

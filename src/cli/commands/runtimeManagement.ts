@@ -4,6 +4,7 @@
  * 写操作统一 attach 到 workspace 的 Runtime Host；会话目标查询读取同一持久投影，
  * 不因查看目标启动 owner 或继续后台执行。
  */
+import { executeSessionCommand, unwrapHostOperationResult } from "./sessionManagement.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -118,6 +119,11 @@ export async function taskCreateCommand(
 }
 
 export async function taskActionCommand(workspaceRoot: string, action: "start" | "run" | "cancel" | "approve" | "resume" | "retry", taskRunId: string, options: JsonOption & { reason?: string; retrySafety?: string; approvalId?: string } = {}): Promise<void> {
+  if (action === "cancel" && process.env.BINY_AGENT_CONTEXT) {
+    const result = await executeSessionCommand(workspaceRoot, "TaskCancel", { taskRunId, message: options.reason });
+    console.log(options.json ? JSON.stringify(result) : formatPlain(result));
+    return;
+  }
   await hostAction(workspaceRoot, options, async (client) => {
     if (action === "start") return await client.taskStart(taskRunId, { retrySafety: options.retrySafety });
     if (action === "run") return await client.taskRun(taskRunId, { retrySafety: options.retrySafety });
@@ -170,6 +176,12 @@ export async function sessionGoalSetCommand(workspaceRoot: string, objective: st
 }
 
 export async function sessionGoalActionCommand(workspaceRoot: string, action: "show" | "pause" | "resume" | "clear", options: JsonOption & { session?: string } = {}): Promise<void> {
+  if (action === "show" && process.env.BINY_AGENT_CONTEXT) {
+    const result = await executeSessionCommand(workspaceRoot, "GoalGet", {}, options.session);
+    const goal = (result as { goal?: unknown }).goal ?? null;
+    console.log(options.json ? JSON.stringify(goal) : goal === null ? "No goal for this session." : formatPlain(goal));
+    return;
+  }
   const sessionId = requireGoalSession(options.session);
   if (action === "show") {
     let record;
@@ -255,18 +267,6 @@ async function hostAction<T>(workspaceRoot: string, options: HostActionOptions, 
   } finally {
     await client.close();
   }
-}
-
-function unwrapHostOperationResult(value: unknown): unknown {
-  if (!isHostOperationResult(value)) return value;
-  if (!value.accepted) throw new Error(value.reason ?? "Runtime operation was rejected.");
-  return value.result;
-}
-
-function isHostOperationResult(value: unknown): value is { accepted: boolean; result?: unknown; reason?: string } {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return typeof record.accepted === "boolean";
 }
 
 function parseJsonOption(value: string | undefined): unknown {

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { archiveToolResult, readToolResultArchive, resolveToolResultArchivePath, serializeToolResult } from "../src/session/toolResultArchive.js";
 import { agentDir } from "../src/session/store.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-archive-boundaries-"));
 const previousAgentDir = process.env.BINY_AGENT_DIR;
@@ -13,12 +13,12 @@ try {
   const base = { workspaceRoot: root, sessionId: "archive-boundaries", toolCallId: "unicode", sequence: 1, tool: "Bash", result: null };
   const text = "a😀中\r\nb𐐷z".repeat(7);
   const archive = await archiveToolResult({ ...base, result: text });
-  const reader = createReadToolResultTool({ workspaceRoot: root, ignore: [] });
+  const reader = createReadFileTool({ workspaceRoot: root, ignore: [] });
   for (const length of [1, 2, 3, 4, 5, 6, 7, 16_000, 200_000]) {
     let offset = 0;
     let restored = "";
     do {
-      const page = await reader.resolveExecution({ archivePath: archive.archivePath, offset, length }).execute({});
+      const page = await reader.resolveExecution({ path: archive.archivePath, offset, length }).execute({});
       assert.equal(page.offset, offset);
       assert.equal(page.nextOffset, page.offset + page.content.length);
       assert.ok(page.content.isWellFormed());
@@ -29,29 +29,29 @@ try {
       if (!page.hasMore) break;
     } while (offset < text.length);
     assert.equal(restored, text, `no omissions or duplicates with page length ${length}`);
-    const end = await reader.resolveExecution({ archivePath: archive.archivePath, offset: text.length + 100, length }).execute({});
+    const end = await reader.resolveExecution({ path: archive.archivePath, offset: text.length + 100, length }).execute({});
     assert.equal(end.offset, text.length);
     assert.equal(end.nextOffset, text.length);
     assert.equal(end.content, "");
     assert.equal(end.hasMore, false);
   }
-  const middle = await reader.resolveExecution({ archivePath: archive.archivePath, offset: 2, length: 1 }).execute({});
+  const middle = await reader.resolveExecution({ path: archive.archivePath, offset: 2, length: 1 }).execute({});
   assert.equal(middle.offset, 1);
   assert.equal(middle.content, "😀");
   assert.equal(middle.nextOffset, 3);
   const empty = await archiveToolResult({ ...base, toolCallId: "empty", result: "" });
-  const emptyPage = await reader.resolveExecution({ archivePath: empty.archivePath }).execute({});
+  const emptyPage = await reader.resolveExecution({ path: empty.archivePath }).execute({});
   assert.equal(emptyPage.nextOffset, 0);
   assert.equal(emptyPage.hasMore, false);
   assert.equal(emptyPage.content, "");
-  assert.throws(() => reader.resolveExecution({ archivePath: "../../etc/passwd" }));
+  assert.throws(() => reader.resolveExecution({ path: "../../etc/passwd" }));
   const target = path.join(root, "outside.txt");
   await writeFile(target, "private");
   const linkPath = `.biny/tool-results/tool-result-${"f".repeat(64)}.json`;
   await symlink(target, resolveToolResultArchivePath(root, linkPath));
-  await assert.rejects(reader.resolveExecution({ archivePath: linkPath }).execute({}));
+  await assert.rejects(reader.resolveExecution({ path: linkPath }).execute({}));
   const cancelled = AbortSignal.abort(new Error("cancelled read"));
-  await assert.rejects(reader.resolveExecution({ archivePath: archive.archivePath }).execute({ signal: cancelled }), /cancelled read/u);
+  await assert.rejects(reader.resolveExecution({ path: archive.archivePath }).execute({ signal: cancelled }), /cancelled read/u);
 
   // A pointer must be readable at the existing 64 MiB boundary, including JSON
   // escaping and the terminating newline. These are real files, not fs mocks.

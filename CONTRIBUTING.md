@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-CI 使用 Node.js 22，项目使用 pnpm `10.6.5`。Desktop 与原生 Computer Use 的完整构建需要 macOS。
+CI 使用 Node.js 22，项目使用 pnpm `10.6.5`。Desktop 可在 macOS 或 Windows 构建；原生 Computer Use、Activity 和日历 sidecar 仅在 macOS 构建。Windows 的 node-pty 原生重建需要 Visual Studio C++ Build Tools 与 Windows SDK。
 
 ```bash
 corepack enable
@@ -25,6 +25,10 @@ pnpm build
 ```
 
 `build:cli` 只构建 CLI；`build` 包含 CLI、Desktop 及原生依赖构建。在其他项目使用当前 CLI 时，先执行 `pnpm link --global`，再切到目标项目运行 `biny`。
+
+Windows 使用相同的 `pnpm desktop:dev` 开发入口，`pnpm desktop:pack` 生成应用目录，`pnpm desktop:dist` 生成 NSIS 安装程序与 ZIP；安装包尚未配置 Windows 代码签名。这些命令先准备 Electron 与 PTY 原生依赖。macOS 继续生成对应的应用目录、DMG 和 ZIP。
+
+`node scripts/run-tests.mjs windows` 验证平台选择、真实 Host 多客户端连接、认证、退出重启与进程树清理；真实 DACL 用例仅在 Windows 运行。CI 的 Windows lane 另检查构建后的 Electron headless Host 并生成安装包，不执行模型 API 或替代人工界面验收。Windows 上还需人工检查中文输入法、粘贴、快捷键、窗口与终端缩放、会话交接、终端关闭和安装卸载。
 
 代码入口与数据职责见 [架构](docs/ARCHITECTURE.md)。终端展示使用 `@earendil-works/pi-tui`，Desktop 使用 Electron；界面层负责适配，运行与持久化逻辑在核心模块中维护。
 

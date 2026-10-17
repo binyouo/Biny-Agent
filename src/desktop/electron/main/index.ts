@@ -37,6 +37,7 @@ import { handleDesktopActivation, waitForDesktopQuitCleanup } from "./DesktopQui
 import { DesktopTerminalManager } from "./DesktopTerminalManager.js";
 import { DesktopUserDataStore } from "./DesktopUserDataStore.js";
 import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
+import { registerDesktopRuntimeHost } from "../../../runtime/host/lifecycle.js";
 import { LocalEmbeddingManager } from "../../../llm/embedding/LocalEmbeddingRuntime.js";
 import { createActivityMemoryPipeline } from "../../../activity/memoryPipeline.js";
 import { startActivityHttpEndpoint } from "../../../activity/httpEndpoint.js";
@@ -112,6 +113,7 @@ async function startDesktopApplication(): Promise<void> {
   // 模型配置与 CLI/TUI 共用全局目录；桌面端凭据由 DesktopSafeStorageCredentialStore 接管
   // （safeStorage 加密落自管文件），不走 `security` CLI，避免保存时授权卡死。
   const configStore = new DesktopConfigStore(globalConfigDir());
+  await registerDesktopRuntimeHost({ executable: process.execPath, appPath: app.getAppPath(), configDir: globalConfigDir() });
   const projects = new DesktopProjectService(state, storage, configStore);
   const crystals = new DesktopCrystalService(configStore, async () => await Promise.all(
     state.projects().map(async (project) => await projects.dataRoot(project))

@@ -699,6 +699,97 @@ test("关闭的模型选择菜单不抢占设置页焦点", async () => {
   } finally { await h.close(); }
 });
 
+test("设置模型菜单以单行模型 ID 展示，仍可按显示名搜索并选择正确连接", async () => {
+  const h = await harness();
+  const chosen: Array<string | undefined> = [];
+  try {
+    const { SettingsModelPicker } = await import("../src/desktop/renderer/src/components/settings/SettingsModelPicker.js");
+    const { modelPickerGroups } = await import("../src/desktop/renderer/src/components/settings/settingsModelPickerData.js");
+    const models = [
+      { alias: "first", displayName: "快速模型", model: "deepseek-v4-flash", provider: "直连" },
+      { alias: "second", displayName: "备用模型", model: "deepseek-v4-flash", provider: "中转" }
+    ].map(model => ({ ...model, providerType: "openai-compatible", efforts: [], thinkingLevelMap: {}, defaultThinking: "off" as const }));
+    await h.render(h.React.createElement(SettingsModelPicker, {
+      ariaLabel: "模型", groups: modelPickerGroups(models), inheritLabel: "使用默认工具模型",
+      placeholder: "选择模型", value: "first", onChange: value => chosen.push(value)
+    }));
+    assert.equal(document.querySelector('.settings-model-picker-trigger-copy')?.textContent, "deepseek-v4-flash");
+    await h.click('[aria-label="模型"]');
+    assert.deepEqual([...document.querySelectorAll('.settings-model-picker-option-copy')].map(node => node.textContent),
+      ["使用默认工具模型", "deepseek-v4-flash", "deepseek-v4-flash"]);
+    assert.equal(document.querySelector('.settings-model-picker-option-copy small'), null);
+    await h.input('[aria-label="搜索模型或服务商"]', "不存在的模型");
+    await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    assert.deepEqual(chosen, [], "没有匹配时 Enter 不应清除当前模型");
+    await h.input('[aria-label="搜索模型或服务商"]', "备用模型");
+    assert.equal(document.querySelectorAll('.settings-model-picker-option:not(.is-inherit)').length, 1);
+    const press = async (key: string): Promise<void> => { await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))); };
+    await press("Enter");
+    assert.deepEqual(chosen, ["second"], "搜索框 Enter 选择匹配模型，不选择默认项");
+    assert.equal(document.querySelector('[aria-label="模型"]')?.getAttribute("aria-expanded"), "false");
+    await h.click('[aria-label="模型"]');
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索模型或服务商"]')?.value, "");
+    await h.click('.is-inherit');
+    assert.deepEqual(chosen, ["second", undefined]);
+  } finally { await h.close(); }
+});
+
+test("自动工具模型显示实际模型，打开菜单不保存也不发起模型测试", async () => {
+  const base = snapshot();
+  let saves = 0;
+  let tests = 0;
+  const h = await harness({ settingsSnapshot: async () => ({ ...base, models: { ...base.models,
+    configured: [{ alias: "auto-flash", displayName: "快速模型", provider: "relay", providerType: "openai-compatible",
+      model: "deepseek-v4-flash", efforts: [], thinkingLevelMap: {}, defaultThinking: "off" }], resolvedToolModel: "auto-flash"
+  } }), saveSettings: async () => { saves++; } });
+  try {
+    await h.overlay({ targetTab: "通用", onTestModelConfiguration: async () => { tests++; return { ok: true }; } });
+    assert.match(document.querySelector('#tool-model .settings-model-picker-trigger')?.textContent ?? "", /deepseek-v4-flash.*自动/u);
+    await h.click('#tool-model [aria-label="工具模型"]');
+    assert.equal(saves, 0);
+    assert.equal(tests, 0);
+    assert.equal(document.querySelector('.is-inherit')?.getAttribute("aria-selected"), "true");
+    assert.equal(document.querySelectorAll('[role="option"][aria-selected="true"]').length, 1);
+    const panel = document.querySelector('.settings-model-picker-panel');
+    assert.ok(panel?.closest('.settings-modal'), "浮层保留设置主题作用域");
+    assert.equal(panel.closest('.settings-scroll'), null, "浮层脱离页面滚动区");
+    await h.React.act(() => document.querySelector('[aria-label="搜索模型或服务商"]')!.dispatchEvent(new h.dom.window.Event("pointerdown", { bubbles: true })));
+    assert.ok(document.querySelector('.settings-model-picker-panel'), "点击浮层内部不应被当作外部点击");
+    await h.React.act(() => document.body.dispatchEvent(new h.dom.window.Event("pointerdown", { bubbles: true })));
+    assert.equal(document.querySelector('.settings-model-picker-panel'), null);
+    assert.equal(saves, 0);
+    assert.equal(tests, 0);
+  } finally { await h.close(); }
+});
+
+test("子代理模型浮层仅提供当前运行时和连接的模型，选择保留模型别名", async () => {
+  const h = await harness();
+  try {
+    const { SettingsSubagent } = await import("../src/desktop/renderer/src/components/settings/SettingsSubagent.js");
+    const { SettingsDraftContext } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    const models = [
+      { alias: "native", provider: "api", providerType: "openai", displayName: "Native model", model: "native-id", supportsTools: true },
+      { alias: "external", provider: "worker", providerType: "acp", displayName: "ACP model", model: "acp-id", supportsTools: true },
+      { alias: "other", provider: "other-worker", providerType: "acp", displayName: "Other model", model: "other-id", supportsTools: true }
+    ];
+    for (const [runtime, providerAlias, expectedId, expectedAlias] of [
+      ["builtin", "api", "native-id", "native"], ["acp", "worker", "acp-id", "external"], ["acp", "other-worker", "other-id", "other"]
+    ]) {
+      let selected: string | undefined;
+      const context = { draft: { subagent: { enabled: true, runtime, providerAlias }, permission: { mode: "full-access", denyPaths: [] } },
+        snapshot: { ...snapshot(), models: { configured: models, connections: [
+          { providerAlias: "api", providerType: "openai" }, { providerAlias: "worker", providerType: "acp" }, { providerAlias: "other-worker", providerType: "acp" }
+        ] } }, saveState: "idle", setSubagent: (next: { model?: string }) => { selected = next.model; } };
+      await h.render(h.React.createElement(SettingsDraftContext.Provider, { value: context as never },
+        h.React.createElement(SettingsSubagent, { key: `${runtime}:${providerAlias}`, onOpenModels() {} })));
+      await h.click('[aria-label="子代理模型"]');
+      assert.deepEqual([...document.querySelectorAll('.settings-model-picker-option:not(.is-inherit)')].map(node => node.textContent), [expectedId]);
+      await h.click('.settings-model-picker-option:not(.is-inherit)');
+      assert.equal(selected, expectedAlias);
+    }
+  } finally { await h.close(); }
+});
+
 test("设置模型选择跳过不可用项，Escape 先收起选择再退出详情；关闭态用例未覆盖嵌套返回", async () => {
   const h = await harness();
   const host = document.createElement("div");
@@ -717,15 +808,15 @@ test("设置模型选择跳过不可用项，Escape 先收起选择再退出详�
         }))
       })
     ));
-    const details = document.querySelector<HTMLDetailsElement>("details")!;
-    await h.React.act(() => { details.open = true; details.dispatchEvent(new h.dom.window.Event("toggle")); });
+    const trigger = document.querySelector<HTMLButtonElement>('[role="combobox"]')!;
+    await h.click('[role="combobox"]');
     const press = async (key: string): Promise<void> => { await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))); };
     await press("ArrowDown");
     assert.equal(document.activeElement?.textContent, "可用模型");
     await press("Escape");
-    assert.equal(details.open, false);
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
     assert.equal(closed, 0);
-    assert.ok(document.activeElement === details.querySelector("summary"));
+    assert.ok(document.activeElement === trigger);
     await press("Escape");
     assert.equal(closed, 1);
   } finally { host.remove(); await h.close(); }
@@ -1050,7 +1141,7 @@ test("图标入口只给没有自带品牌图标的服务商：内置服务商�
   } finally { await h.close(); }
 });
 
-test("工具模型选择器只显示模型名一行，并画服务商自己的图标", async () => {
+test("工具模型选择器只显示模型 ID 一行，并画服务商自己的图标", async () => {
   await loadProviderIconData();
   const base = snapshot();
   const freeRelay = {
@@ -1077,7 +1168,7 @@ test("工具模型选择器只显示模型名一行，并画服务商自己的�
     assert.ok(trigger, "工具模型卡片里应当有选择器");
     const copy = trigger.querySelector(".settings-model-picker-trigger-copy");
     assert.equal(copy?.children.length, 1, "选择器只显示一行（实际：" + (copy?.textContent ?? "") + "）");
-    assert.match(trigger.textContent ?? "", /Deepseek-V4\.1-Flash/u, "显示模型名");
+    assert.equal(copy?.textContent, "workbuddy-ai/deepseek-v4.1-flash", "显示实际模型 ID，显示名用于搜索和悬停详情");
     assert.doesNotMatch(trigger.textContent ?? "", /free/u, "不该再把服务商名当第二行显示");
     assert.doesNotMatch(document.querySelector("#tool-model")?.textContent ?? "", /当前使用/u, "不再回显「当前使用」");
     // 比 innerHTML 而不是 viewBox：Apple 和兜底字形的 viewBox 都是 "0 0 24 24"，只比那个等于没比。

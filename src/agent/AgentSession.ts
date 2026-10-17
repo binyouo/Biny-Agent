@@ -210,6 +210,8 @@ export interface AgentSessionOptions {
   toolRegistry: ToolRegistry;
   permissionManager: PermissionManager;
   recorder: SessionRecorder;
+  /** 旧 recorder 被放弃时，由装配层收回该会话的外部资源。 */
+  releaseSessionResources?: () => Promise<void>;
   modelManager?: ModelManager;
   skillPrompt?: string | ((selection?: AgentCapabilitySelection["skills"], runId?: string) => string | undefined | Promise<string | undefined>);
   skillNames?: (selection?: AgentCapabilitySelection["skills"], runId?: string) => string[];
@@ -872,13 +874,13 @@ export class AgentSession {
     );
     const mode = capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection;
     const goalTools = this.options.sessionGoals?.get(this.recorder.sessionId)?.status === "active"
-      ? ["GoalGet", "GoalUpdate"] : [];
+      ? ["Bash"] : [];
     if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) {
       return resolved && mode !== "none" ? new Set([...resolved, ...goalTools]) : resolved ?? (mode === "auto"
         ? new Set(this.options.toolRegistry.list().filter((tool) => getToolExposure(tool) === "direct" || getToolExposure(tool) === "model-only").map((tool) => tool.name)) : undefined);
     }
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
-    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "read_tool_result", ...goalTools]);
+    const fallback = new Set([...stableCodingToolNames, ...(this.activeConfig.agent.toolExecutionMode === "direct" ? [toolSearchToolName] : []), ...goalTools]);
     return new Set(this.options.toolRegistry.list().map((tool) => tool.name).filter((name) => fallback.has(name)));
   }
 
@@ -2734,7 +2736,7 @@ export class AgentSession {
     let relatedToolCallIds: string[] = [];
     const modelRequestContext = (step: number): ModelRequestContext => {
       const goal = this.options.sessionGoals?.get(this.recorder.sessionId);
-      if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect GoalGet before resuming.");
+      if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect `biny goal show --json` before resuming.");
       if (goal?.status === "active") this.runSessionGoalId = goal.goalId;
       this.sessionGoalRequest = goal?.status === "active" && runOptions.runId !== undefined
         ? { goalId: goal.goalId, revision: goal.revision, generation: goal.generation, runId: runOptions.runId } : undefined;
@@ -2882,6 +2884,10 @@ export class AgentSession {
           "\n</biny_plugin_reference_context>"
         ].filter(Boolean).join("\n\n");
       }
+    }
+    if (this.activeConfig.agent.toolExecutionMode === "code_mode" && runOptions.capabilitySelection?.tools !== "none" && runOptions.toolAccessSelection !== "none"
+      && !(Array.isArray(runOptions.toolAccessSelection) && runOptions.toolAccessSelection.length === 0)) {
+      coordinator.allowTools(runOptions.initialToolBudget?.toolDiscovery?.tools ?? []);
     }
     if (runOptions.toolAccessSelection === "auto" && runOptions.capabilitySelection?.tools !== "none") {
       // 仅复用当前活动上下文中的成功发现；用户手选范围不继承旧发现，权限仍逐次检查。
@@ -3183,6 +3189,10 @@ export class AgentSession {
             context.systemPrompt,
             tools
           );
+          if (this.options.todoStore) {
+            const prompt = context.systemPrompt?.replace(/<!-- biny-todos:start -->[\s\S]*?<!-- biny-todos:end -->/gu, "").trim();
+            context.systemPrompt = [prompt, this.options.todoStore.promptSection()].filter(Boolean).join("\n\n") || undefined;
+          }
           refreshRuntimeTurnContext(context.messages, await this.currentEmotionPrompt());
           this.contextMemory.recordToolSchema(tools);
           context.tools = [...tools];
@@ -3250,7 +3260,7 @@ export class AgentSession {
             prunedMessages = await projectForModelRequest(activeRequestContext.messages);
             requestMessages = this.contextMemory.projectCompactionCheckpoint(prunedMessages);
           }
-          if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect GoalGet before resuming.");
+          if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect `biny goal show --json` before resuming.");
           const absoluteStep = completedStepsBeforeRun + observedSteps;
           if (!softLimitWarningInjected && absoluteStep >= runBudget.softStepLimit) {
             softLimitWarningInjected = true;
@@ -3642,6 +3652,12 @@ export class AgentSession {
     return outcome ?? failedTurn("Agent stream ended without a terminal result.", 0);
   }
 
+  private async closeReplacedSession(recorder: SessionRecorder): Promise<void> {
+    const results = await Promise.allSettled([recorder.close(), this.options.releaseSessionResources?.()]);
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "Session resource cleanup failed.");
+  }
+
   async resume(session: string | undefined): Promise<ResumedAgentSession> {
     const release = this.beginOperation("session resume");
     try {
@@ -3655,7 +3671,7 @@ export class AgentSession {
     try {
       if (resumingCurrent) {
         previousClosed = true;
-        await previousRecorder.close();
+        await this.closeReplacedSession(previousRecorder);
       }
       replacementRecorder = new SessionRecorder(this.persistenceRoot(), sessionIdFromFile(filePath), filePath, this.options.runtimeEventSink);
       replacementRecorder.repairTailForAppend();
@@ -3701,7 +3717,7 @@ export class AgentSession {
       if (!resumingCurrent) {
         this.emotionAnalysisScheduler.cancel();
         previousClosed = true;
-        await previousRecorder.close();
+        await this.closeReplacedSession(previousRecorder);
       }
       for (const event of replay.recoveredToolResults) {
         await replacementRecorder.recordAndFlush(event, undefined, this.capabilityOutcomeResolver.redactionOptionsFor(event.result));
@@ -3788,6 +3804,7 @@ export class AgentSession {
       }
       // 旧 recorder 只是被丢弃；关闭失败不阻断切换到新会话（空草稿关闭时会顺带删除草稿文件）。
       await previousRecorder.close().catch(() => undefined);
+      await this.options.releaseSessionResources?.();
       // 会话级状态全部回到「刚构造」：历史、用量、权限授予、计划清单都不带入新会话。
       this.options.permissionManager.resetSession();
       this.usageRecords = [];
@@ -3867,9 +3884,9 @@ export class AgentSession {
   sessionGoalUnavailableReason(): string | undefined {
     const model = this.options.modelManager?.getModel() ?? this.options.model;
     if (!model) return "No model is configured for this session.";
-    if (model.supportsTools === false) return "The selected model cannot call GoalUpdate.";
-    if (this.activeConfig.chat.defaultToolSelection === "none") return "Session tools are disabled; GoalUpdate cannot record completion.";
-    if (!this.options.toolRegistry.list().some((tool) => tool.name === "GoalUpdate")) return "GoalUpdate is unavailable in this session.";
+    if (model.supportsTools === false) return "The selected model cannot execute goal commands.";
+    if (this.activeConfig.chat.defaultToolSelection === "none") return "Session tools are disabled; goal commands cannot record completion.";
+    if (!this.options.toolRegistry.list().some((tool) => tool.name === "Bash")) return "Bash is unavailable for session goal commands.";
     return undefined;
   }
 
@@ -5059,7 +5076,8 @@ function restartToolBudget(
   return {
     accountedToolCalls: 0,
     maxRepeatedActionCount: 0,
-    repeatedActions: []
+    repeatedActions: [],
+    toolDiscovery: budget.toolDiscovery === undefined ? undefined : { tools: budget.toolDiscovery.tools, noProgressCount: 0 }
   };
 }
 

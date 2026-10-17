@@ -213,7 +213,7 @@ function testConversationBoundaryPrompt(): void {
   assert.match(prompt, /smallest sequence that reaches the outcome/u);
   assert.match(prompt, /never narrate retries, tool choices, or intermediate failures/u);
   assert.match(prompt, /reach for it, don't guess/u);
-  assert.match(prompt, /recall_memory/u);
+  assert.match(prompt, /biny memory search/u);
   assert.match(prompt, /text-only promise is not action/u);
   assert.match(prompt, /Current working directory: \/workspace/u);
   const parentPrompt = buildSystemPrompt({

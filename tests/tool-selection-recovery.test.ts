@@ -64,7 +64,7 @@ async function testSelectionRecovery(mode: "none" | "manual" | "discovered", ste
       } else {
         if (phase === "resumed") {
           resumedSteps++;
-          const expected = mode === "none" ? [] : mode === "manual" ? ["Read", "exec"] : ["ToolSearch", "current_task_tool", "exec"];
+          const expected = mode === "none" ? [] : mode === "manual" ? ["Read"] : ["ToolSearch", "current_task_tool"];
           assert.deepEqual(context.tools.map((tool) => tool.name).sort(), expected.sort(), "terminal continuation must preserve original selection and only current-task discovery");
           assert.ok(context.messages.at(-1)?.role === "user", "terminal continuation retains its synthetic user instruction without treating it as new selection authority");
         }
@@ -76,7 +76,7 @@ async function testSelectionRecovery(mode: "none" | "manual" | "discovered", ste
   const config = configSchema.parse({
     ...defaultConfig,
     chat: { ...defaultConfig.chat, defaultToolSelection: "none" },
-    agent: { ...defaultConfig.agent, toolExecutionMode: "code_mode" },
+    agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     permission: { ...defaultConfig.permission, mode: "full-access" },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });

@@ -448,13 +448,13 @@ export class DesktopAgentManager {
           for (const tool of catalog.createTools()) registry.registerMcpTool(tool);
         } finally { await catalog.close(); }
       }
-      return registry.listEntries().map(({ source, tool }) => ({ name: tool.name, description: tool.description, source, risk: tool.risk,
+      return registry.listEntries().map(({ source, tool }) => ({ name: tool.name, description: tool.description, source, risk: tool.risk, exposure: tool.exposure,
         namespace: tool.namespace ? { name: tool.namespace.name } : undefined }));
     }
     const entries = managed.commands
       ? managed.commands.listTools()
       : await requireRemoteRuntime(managed.runtime).listTools();
-    return entries.map(({ name, description, source, risk, namespace }) => ({ name, description, source, risk,
+    return entries.map(({ name, description, source, risk, exposure, namespace }) => ({ name, description, source, risk, exposure,
       namespace: namespace ? { name: namespace.name } : undefined }));
   }
 

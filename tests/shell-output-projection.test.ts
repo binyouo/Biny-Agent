@@ -82,7 +82,7 @@ assert.equal(failed.archiveAvailable, false);
 assert.equal(failed.archivePath, undefined);
 assert.equal(failed.result, undefined);
 assert.ok(Buffer.byteLength(JSON.stringify(failed)) < budget + 2_048);
-assert.match(String(failed.summary), /read_tool_result is unavailable/u);
+assert.match(String(failed.summary), /archived output is unavailable through Read/u);
 assert.strictEqual(await projectSingleToolResultForModel("Bash", {}, failed), failed,
   "retrying model projection must not relabel projection loss as capture loss");
 assert.equal(failed.stdoutCaptureTruncated, false);

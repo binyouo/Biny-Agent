@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
-import { createHistoryTools } from "../src/extensions/history.js";
+import { createHistoryQueryFixture } from "./fixtures/queryTools.js";
 import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
 
 test("并发全量刷新合并；新鲜窗口跳过目录枚举，显式刷新可见新增会话内容", async (t) => {
@@ -69,7 +69,7 @@ test("历史工具先索引当前会话，再按新鲜窗口刷新其它会话",
     await fs.writeFile(externalFile, `${JSON.stringify({
       type: "user_message", messageId: "m-external", content: "external refresh marker"
     })}\n`);
-    const [tool] = createHistoryTools({
+    const tool = createHistoryQueryFixture({
       getIndex: () => index,
       flushCurrentSession: async () => { await index.indexSessionFile("current", currentFile); }
     });

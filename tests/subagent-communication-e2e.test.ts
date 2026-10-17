@@ -53,7 +53,7 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
       const system = JSON.stringify(body.messages[0]?.content);
       const names = new Set((body.tools ?? []).map((tool) => tool.function?.name ?? tool.name));
       let result: { text: string } | { name: string; args: Record<string, unknown> };
-      if (system.includes("tool search assistant")) result = { text: '{"tools":["Task","TaskMessage","TaskStatus","TaskCancel"]}' };
+      if (system.includes("tool search assistant")) result = { text: '{"tools":["Task","Bash","TaskStatus","TaskCancel"]}' };
       else if (system.includes("选择需要的工具") || system.includes("选择需要的技能")) result = { text: '{"tools":[],"skillIds":[]}' };
       else if (system.includes("为这段对话生成简短、具体的标题")) result = { text: "Independent inspection" };
       else if (system.includes("focused, bounded worker inside Biny")) {
@@ -81,13 +81,18 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
           assert.equal(notices.length, 2, "the explicit report and completion arrive without TaskStatus polling");
           assert.match(JSON.stringify(notices), /corrected result/);
         }
-        const name = phase === "message" ? "TaskMessage" : phase === "result" ? "TaskStatus" : phase === "cancel" ? "TaskCancel" : "Task";
-        if (!acted && !names.has(name)) result = { name: "ToolSearch", args: { query: name } };
+        const name = phase === "message" ? "Bash" : phase === "result" ? "TaskStatus" : phase === "cancel" ? "TaskCancel" : "Task";
+        if (!acted && name === "TaskStatus" && !names.has(name) && names.has("exec")) {
+          acted = true;
+          result = { name: "exec", args: { code: `return await tools.TaskStatus(${JSON.stringify({ taskRunId })});` } };
+        } else if (!acted && !names.has(name)) result = names.has("exec")
+          ? { name: "exec", args: { code: `return await searchTools(${JSON.stringify(name)});` } }
+          : { name: "ToolSearch", args: { query: name } };
         else if (!acted) {
           acted = true;
           result = { name, args: name === "Task"
             ? { task: phase === "launch" ? "inspect the assigned files" : "cancel target", background: true, constraints: ["preserve original checks"] }
-            : name === "TaskMessage" ? { taskRunId, message: "also inspect src/b.ts" }
+            : name === "Bash" ? { command: [process.execPath, "--import", import.meta.resolve("tsx"), path.resolve("src/cli/index.ts"), "task", "message", taskRunId, "also inspect src/b.ts", "--session", sessionId, "--json"].map((part) => `'${part.replaceAll("'", "'\\''")}'`).join(" ") }
             : { taskRunId } };
         } else {
           if (phase === "result") assert.match(JSON.stringify(body.messages), /corrected result/);

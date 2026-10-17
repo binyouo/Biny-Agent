@@ -1,3 +1,4 @@
+import { toolDisplayName } from "../../../tools/presentation.js";
 /**
  * 会话时间线构建。
  *
@@ -116,15 +117,7 @@ export interface TimelineUserStep {
 
 export type TimelineStep = TimelineReasoningStep | TimelineAssistantStep | TimelineToolStep | TimelineUserStep;
 
-export function executionToolLabel(tool: string): string {
-  // MCP 执行标识仅用于协议；展示去掉前缀，但不猜测下划线两侧的服务归属。
-  if (tool.startsWith("mcp_") && tool.length > 4) return tool.slice(4).replaceAll("_", " / ");
-  if (tool === "Bash") return "Bash";
-  if (tool === "BashOutput") return "后台输出";
-  if (tool === "KillShell") return "停止命令";
-  if (tool === "Skill" || tool === "skill_call") return "技能调用";
-  return tool;
-}
+export const executionToolLabel = toolDisplayName;
 
 export interface TimelineModelRequest extends ModelRequestMetrics {
   output?: { messageId?: string; toolCalls: Array<{ id: string; name: string }>; textPreview: string };

@@ -15,8 +15,7 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import { agentDir, ensureAgentDirs } from "../src/session/store.js";
 import { serializeToolResult } from "../src/session/toolResultArchive.js";
-import { createReadFileTool, type ReadFileArgs } from "../src/tools/file/readFile.js";
-import { createReadToolResultTool, type ReadToolResultResult } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool, type ReadFileArgs, type ReadArchivedResult } from "../src/tools/file/readFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
 // Same isolated agent-directory/recorder lifecycle as read-projection-archive-reference.test.ts.
@@ -35,7 +34,6 @@ async function fixture(name: string, budget = 4 * 1024 * 1024) {
   config.context.maxTurnToolResultBytes = budget;
   const registry = new ToolRegistry();
   registry.registerBuiltinTool(createReadFileTool({ workspaceRoot, ignore: config.workspace.ignore }));
-  registry.registerBuiltinTool(createReadToolResultTool({ workspaceRoot, ignore: config.workspace.ignore }));
   const recorder = new SessionRecorder(workspaceRoot, name);
   recorders.push(recorder);
   const events: AgentSessionEvent[] = [];
@@ -128,11 +126,11 @@ try {
     assert.equal(replacement.archivePath, envelope.archivePath);
     assert.equal(replacement.archiveError, undefined);
     assert.deepEqual(await readdir(path.join(agentDir(f.workspaceRoot), "tool-results")), filesBefore);
-    const restored = await f.tool("read_tool_result").execute("recover-first", { archivePath: envelope.archivePath });
+    const restored = await f.tool("Read").execute("recover-first", { path: envelope.archivePath });
     assert.equal(restored.isError, false);
-    assert.equal((restored.details as ReadToolResultResult).hasMore, false);
-    assert.equal((restored.details as ReadToolResultResult).content, serializeToolResult(f.original("first")));
-    assert.equal(record(JSON.parse((restored.details as ReadToolResultResult).content)).content, "a".repeat(600));
+    assert.equal((restored.details as ReadArchivedResult).hasMore, false);
+    assert.equal((restored.details as ReadArchivedResult).content, serializeToolResult(f.original("first")));
+    assert.equal(record(JSON.parse((restored.details as ReadArchivedResult).content)).content, "a".repeat(600));
     assert.deepEqual(await readFile(file), Buffer.from(lines.join("\n")));
   });
 
@@ -168,10 +166,10 @@ try {
     const before = structuredClone(messages);
     assert.deepEqual(await projectToolResultsForModel(messages, noArchiveRewrite), before);
     assert.deepEqual(messages, before);
-    const restored = await f.tool("read_tool_result").execute("recover-large", { archivePath: envelope.archivePath, length: 200_000 });
+    const restored = await f.tool("Read").execute("recover-large", { path: envelope.archivePath, length: 200_000 });
     assert.equal(restored.isError, false);
-    assert.equal((restored.details as ReadToolResultResult).hasMore, false);
-    assert.equal((restored.details as ReadToolResultResult).content, serializeToolResult(original));
+    assert.equal((restored.details as ReadArchivedResult).hasMore, false);
+    assert.equal((restored.details as ReadArchivedResult).content, serializeToolResult(original));
     assert.deepEqual(await readFile(file), Buffer.from(content));
   });
 } finally {

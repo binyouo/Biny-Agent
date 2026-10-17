@@ -132,7 +132,7 @@ const provider = createServer((request, response) => {
 });
 const providerOrigin = await listen(provider);
 const config = configSchema.parse({
-  ...defaultConfig, defaultModel: "fixture", toolModel: undefined,
+  ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" }, defaultModel: "fixture", toolModel: undefined,
   computer: { ...defaultConfig.computer, enabled: false },
   providers: { fixture: { type: "openai-compatible", baseUrl: `${providerOrigin}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
   models: { fixture: { provider: "fixture", model: "fixture-model", capabilities: { tools: true, reasoning: false, streaming: true } } },

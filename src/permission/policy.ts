@@ -13,7 +13,6 @@ import path from "node:path";
 
 export type ToolName =
   | "Read"
-  | "read_tool_result"
   | "Write"
   | "Edit"
   | "Glob"
@@ -153,24 +152,6 @@ export function analyzePermissionRequest(input: AnalyzePermissionInput): Permiss
     };
   }
 
-  if (input.toolName === "skill_search") {
-    return {
-      ...base(input),
-      actionType: "read",
-      riskLevel: "low",
-      reason: "searches the public Skill catalog without changing local state"
-    };
-  }
-
-  if (input.toolName === "skill_install") {
-    return {
-      ...base(input),
-      actionType: "install",
-      riskLevel: "medium",
-      reason: "downloads and installs a validated Skill into Biny's managed global Skill directory"
-    };
-  }
-
   if (input.toolName === "Skill" || input.toolName === "read_skill_resource") {
     // Skill 正文与资源都会在实际读取前重新校验路径、软链和硬链，按内置只读工具放行。
     return {
@@ -179,36 +160,6 @@ export function analyzePermissionRequest(input: AnalyzePermissionInput): Permiss
       riskLevel: "low",
       targetPath: input.toolName === "read_skill_resource" ? targetPath || undefined : undefined,
       reason: "loads validated local skill instructions"
-    };
-  }
-
-  if (input.toolName === "recall_memory") {
-    // 记忆检索只读取经过校验的单一来源感知 SQLite 事实库。
-    return {
-      ...base(input),
-      actionType: "read",
-      riskLevel: "low",
-      reason: "searches the source-aware durable memory library"
-    };
-  }
-
-  if (input.toolName === "save_memory") {
-    // audience 明确区分 workspace 与 universal；两者共享同一受校验的 SQLite 事实库。
-    return {
-      ...base(input),
-      actionType: "write",
-      riskLevel: "low",
-      reason: "saves a redacted note to the source-aware durable memory library"
-    };
-  }
-
-  if (input.toolName === "read_tool_result") {
-    // 归档引用只指向本会话自己产出的工具结果，取回不比原始调用多暴露任何东西。
-    return {
-      ...base(input),
-      actionType: "read",
-      riskLevel: "low",
-      reason: "reads a tool result this session archived out of context"
     };
   }
 

@@ -17,9 +17,15 @@ const second = runtimeHostPaths("/workspace/two");
 
 assert.deepEqual(first, equivalent);
 assert.notEqual(first.rootHash, second.rootHash);
-assert.match(first.endpoint, /\.sock$/u);
-assert.equal(first.registrationPath, `${first.endpoint}.json`);
-assert.equal(first.lockPath, `${first.endpoint}.lock`);
+if (process.platform === "win32") {
+  assert.match(first.endpoint, /^\\\\\.\\pipe\\biny-/u);
+  assert.ok(!first.registrationPath.startsWith("\\\\.\\pipe\\"));
+  assert.equal(first.lockPath, first.registrationPath.replace(/\.json$/u, ".lock"));
+} else {
+  assert.match(first.endpoint, /\.sock$/u);
+  assert.equal(first.registrationPath, `${first.endpoint}.json`);
+  assert.equal(first.lockPath, `${first.endpoint}.lock`);
+}
 assert.match(path.basename(runtimeHostEntryPath()), /^hostProcess\.(ts|js)$/u);
 
 const detachedDesktopPlan = runtimeHostLaunchPlan("/workspace/data", {

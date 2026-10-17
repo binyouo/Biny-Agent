@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import type { IPty } from "node-pty";
 import type { DesktopTerminalEvent } from "../../protocol.js";
+import { defaultShell, interactiveShellInvocation, type ShellPlan } from "../../../tools/shell/shell.js";
 
 // 回放缓冲上限。够恢复可视区域和一段回滚历史，又不会让长跑任务无限占内存。
 const maxReplayBytes = 256 * 1024;
@@ -19,6 +20,7 @@ interface TerminalSession {
   replay: string;
   sequence: number;
   stopping?: boolean;
+  shell: ShellPlan;
 }
 
 type PreviewStatus = { kind: "starting"; terminalId: string } | { kind: "running"; terminalId: string; url: string } | { kind: "failed"; error: string } | { kind: "stopped" };
@@ -56,7 +58,10 @@ export class DesktopTerminalManager {
         this.schedulePreviewProbe(projectId, launch);
       }
       // shell 随服务退出，避免下次启动误把已结束的 shell 当作仍运行的开发服务器。
-      if (!existing) this.write(handle.terminalId, `${command}; exit\r`);
+      if (!existing) {
+        const shell = this.sessions.get(handle.terminalId)!.shell;
+        this.write(handle.terminalId, `${command}${shell.kind === "cmd" ? " & exit" : "; exit"}\r`);
+      }
       return handle;
     };
     const operation = start(); this.pendingPreviews.set(projectId, operation);
@@ -125,8 +130,9 @@ export class DesktopTerminalManager {
     const generation = this.generation;
     const { spawn } = await import("node-pty");
     if (generation !== this.generation) throw new Error("终端创建已取消：窗口正在关闭。");
-    const shell = process.env.SHELL && process.env.SHELL.trim() ? process.env.SHELL : "/bin/zsh";
-    const pty = spawn(shell, ["-l"], {
+    const shell = defaultShell();
+    const invocation = interactiveShellInvocation(shell);
+    const pty = spawn(invocation.executable, invocation.args, {
       name: "xterm-256color",
       cwd,
       cols: sanitizeSize(cols, 80),
@@ -135,7 +141,7 @@ export class DesktopTerminalManager {
     });
     if (generation !== this.generation) { pty.kill(); throw new Error("终端创建已取消：窗口正在关闭。"); }
     const key = JSON.stringify([projectId, slotId]);
-    const session: TerminalSession = { id: randomUUID(), projectId, slotId, pty, replay: "", sequence: 0 };
+    const session: TerminalSession = { id: randomUUID(), projectId, slotId, pty, replay: "", sequence: 0, shell };
     this.sessions.set(session.id, session);
     this.byProject.set(key, session.id);
     pty.onData((data) => {

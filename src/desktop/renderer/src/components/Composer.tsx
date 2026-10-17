@@ -814,7 +814,7 @@ export const Composer = memo(function Composer({
                       ))}
                     </span>
                     <span className="context-usage-note">
-                      {usage.categories.length ? "分类占已用上下文，按发送内容估算" : "发送消息后更新上下文组成"}
+                      {usage.categories.length ? "分类占总容量，按发送内容估算" : "发送消息后更新上下文组成"}
                       {usage.contextWindowIsFallback ? " · 容量为估算值" : ""}
                     </span>
                     <span className="context-usage-row context-usage-cache"><span>平均缓存命中率</span><strong>{usage.cacheHitRate}</strong></span>

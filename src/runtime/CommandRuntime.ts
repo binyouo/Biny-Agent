@@ -4,8 +4,8 @@
  * 每个 CLI/TUI 入口最终都会通过这里创建一个 AgentSession。这里是 composition
  * root，只装配配置、provider、工具和权限，不向宿主泄露可变 conversation 或 recorder。
  */
+import { assertSupervisionCommand, isGoalControlCommand } from "./supervisionCommand.js";
 import { createHash, randomUUID } from "node:crypto";
-import path from "node:path";
 import { createFileConfigStore, type AgentConfigStore } from "../config/store.js";
 import type { AgentConfig } from "../config/schema.js";
 import { AgentSession, type AgentAttachment } from "../agent/AgentSession.js";
@@ -18,7 +18,7 @@ import { preselectCapabilities } from "../agent/capabilityPreselection.js";
 import { SessionRecorder, type SessionEvent } from "../session/recorder.js";
 import { readSessionEvents } from "../session/events.js";
 import { ensureAgentDirs } from "../session/store.js";
-import { createToolRegistry, type ToolCatalogDefinition } from "../tools/registry.js";
+import { createToolRegistry, ToolRegistry, type ToolCatalogDefinition } from "../tools/registry.js";
 import { getToolExposure, isToolModelVisible } from "../tools/exposure.js";
 import { createTodoTool } from "../tools/todo.js";
 import { createAskUserQuestionTool } from "../tools/askUserQuestion.js";
@@ -27,23 +27,20 @@ import { UserInputRequests } from "./userInput.js";
 import { TodoStore } from "../session/todoStore.js";
 import { CheckpointStore } from "../session/checkpointStore.js";
 import { PermissionManager } from "../permission/PermissionManager.js";
-import { createSkillLookupTool, createSkillResourceTool, createSkillTool, type SkillBundle, type SkillDefinition } from "../extensions/skills.js";
-import { createSkillInstallTool, createSkillSearchTool } from "../tools/skillDiscovery.js";
-import { skillNamesForSelection, skillPathsForSelection, skillPromptForSelection } from "../extensions/skills.js";
-import type { ToolRisk, ToolSource } from "../tools/types.js";
+import { createSkillResourceTool, createSkillTool, type SkillBundle, type SkillDefinition } from "../extensions/skills.js";
+import { loadedSkillNamesForSelection, skillPathsForSelection, skillPromptForSelection } from "../extensions/skills.js";
+import type { Tool, ToolRisk, ToolSource } from "../tools/types.js";
 import { perfNow, recordPerfPhase } from "../observability/perfTiming.js";
 import { loadPlugins, loadPluginsFromRoot } from "../extensions/plugins.js";
 import { PluginLifecycleRegistry } from "../extensions/pluginLifecycle.js";
 import { redactSecrets } from "../utils/redaction.js";
 import type { McpToolHost } from "../extensions/mcp.js";
-import { createSubagentTool, createTaskStatusTool, createTaskControlTools, prepareSubagentTask, runSubagentTask as executeSubagentTask, type PreparedSubagentTask, type SubagentOptions } from "../extensions/subagent.js";
+import { createSubagentTool, createTaskStatusTool, createTaskCancelTool, prepareSubagentTask, runSubagentTask as executeSubagentTask, type PreparedSubagentTask, type SubagentOptions } from "../extensions/subagent.js";
 import { TaskCommunication } from "./TaskCommunication.js";
 import { createPlanTools } from "../extensions/plan.js";
 import { createSessionGoalTools } from "../extensions/sessionGoal.js";
 import { buildSubagentDefinitionsPrompt, loadSubagentDefinitions, type SubagentDefinition } from "../extensions/agents.js";
-import { createHistoryTools } from "../extensions/history.js";
 import { createCheckpointEvidenceTool } from "../extensions/checkpointEvidence.js";
-import { createMemoryTools } from "../extensions/memory.js";
 import { createToolCounts, formatExtensionReport, type ExtensionSection, type ExtensionStatus } from "../extensions/report.js";
 import { createModelSettings, createProviderCredentialPersistence, type ModelSettings } from "../llm/modelFactory.js";
 import {
@@ -75,6 +72,7 @@ import { globalPluginRoot } from "../config/paths.js";
 import { HeartbeatScheduler } from "../agent/context/heartbeat.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../tools/browser.js";
 import { attachDesktopComputerMcp, desktopComputerMcpName } from "../computer/desktopMcp.js";
+import { createComputerMcpLease } from "../computer/mcpLease.js";
 import { createWebFetchTool } from "../tools/web/fetch.js";
 import { createWebSearchTool } from "../tools/web/search.js";
 import { ToolExecutionCoordinator } from "../agent/toolExecutionCoordinator.js";
@@ -167,6 +165,7 @@ export interface CommandRuntime {
   }>;
   cancelTaskRun(taskRunId: string, reason?: string): TaskRunWithAttempts;
   startPlanDraft(graphId: string, revision: number, signal?: AbortSignal): Promise<unknown>;
+  sessionCommand(command: string, input: unknown, scope?: string, revision?: number, signal?: AbortSignal, onEvent?: (event: AgentSessionEvent) => void): Promise<unknown>;
   /** Task 验收只允许通过与 Agent 相同的 Bash 权限、调度、审计和取消链执行。 */
   executeTaskCheck(input: {
     command: string;
@@ -182,7 +181,7 @@ export interface CommandRuntime {
   refreshDailyDiary(dateKey: string, options?: { force?: boolean }): Promise<unknown>;
   /** 不依赖前台 session 状态的进程内工作，防止空闲回收打断日报或子代理。 */
   hasBackgroundWork(): boolean;
-  setSubagentParentRunId(parentRunId?: string): void;
+  setSubagentParentRunId(parentRunId?: string, supervision?: boolean): void;
   close(): Promise<void>;
 }
 
@@ -257,15 +256,44 @@ async function initializeCommandRuntime(
     ?? options.resourceRegistry?.acquire(workspaceRoot, config)
     ?? new RuntimeHostResourceScope(workspaceRoot, config);
   const ownsResourceScope = options.resourceScope === undefined && options.resourceRegistry === undefined;
+  let computerLease = createComputerMcpLease(resourceScope.mcp);
+  const boundComputerTools = new WeakMap<Tool, Tool>();
+  const bindComputerTool = (tool: Tool): Tool => {
+    if (tool.namespace?.name !== desktopComputerMcpName) return tool;
+    let bound = boundComputerTools.get(tool);
+    if (!bound) {
+      bound = { ...tool, resolveExecution: async args => {
+        const lease = computerLease;
+        lease.signal.throwIfAborted();
+        const execution = await tool.resolveExecution(args);
+        if ("isError" in execution) return execution;
+        return { ...execution, execute: async context => {
+          lease.signal.throwIfAborted();
+          return await execution.execute({ ...context, computerMcpLeaseId: lease.id,
+            signal: context.signal ? AbortSignal.any([context.signal, lease.signal]) : lease.signal });
+        } };
+      } };
+      boundComputerTools.set(tool, bound);
+    }
+    return bound;
+  };
+  const releaseSessionResources = async (): Promise<void> => {
+    await computerLease.close();
+    computerLease = createComputerMcpLease(resourceScope.mcp);
+  };
   let unsubscribeResources: (() => void) | undefined = undefined;
-  const releaseResourceScope = async (): Promise<void> => {
-    try { unsubscribeResources?.(); }
-    finally {
+  let resourceRelease: Promise<void> | undefined;
+  const releaseResourceScope = (): Promise<void> => resourceRelease ??= (async () => {
+    const failures: unknown[] = [];
+    try { await computerLease.close(); } catch (error) { failures.push(error); }
+    try {
+      unsubscribeResources?.();
       if (ownsResourceScope) await resourceScope.close();
       else if (options.resourceRegistry) await options.resourceRegistry.release(resourceScope);
       else resourceScope.release();
-    }
-  };
+    } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Runtime extension cleanup failed.");
+  })();
   cleanup.resources = releaseResourceScope;
   let skills: SkillBundle = resourceScope.skills;
   const runSkillSnapshots = new Map<string, SkillBundle>();
@@ -314,6 +342,8 @@ async function initializeCommandRuntime(
     toolModelConfig = current;
     return toolModelSelectionState;
   };
+  const commandScopes = new Map<string, { context: import("../tools/types.js").ToolExecutionContext; goal: ReturnType<AgentSession["currentSessionGoalRequest"]>; controller: AbortController; supervision: boolean; actions: Set<string> }>();
+  const managementTools = new ToolRegistry();
   const toolRegistry = createToolRegistry(
     { workspaceRoot, ignore: config.workspace.ignore, attachmentRoot: projectAttachmentRoot },
     config.web.search,
@@ -323,7 +353,20 @@ async function initializeCommandRuntime(
     config.web.cookies,
     () => resolveToolModelCandidates(toolModelConfig, providerCredentials),
     options.browserAutomation,
-    () => selectionStateForConfig(toolModelConfig)
+    () => selectionStateForConfig(toolModelConfig),
+    (context, args) => {
+      if (supervisionRun) assertSupervisionCommand(args.command, args.background);
+      if (args.background) return undefined;
+      const token = randomUUID();
+      const controller = new AbortController();
+      const lease = { context, controller, goal: agent?.currentSessionGoalRequest(), supervision: supervisionRun, actions: new Set<string>() };
+      commandScopes.set(token, lease);
+      return {
+        env: { BINY_AGENT_SESSION_ID: agent?.getInfo().sessionId ?? recorder.sessionId, BINY_AGENT_CONTEXT: token },
+        resultMetadata: () => ({ goalControlOnly: isGoalControlCommand(args.command) && lease.actions.size > 0 && [...lease.actions].every(action => action === "GoalGet" || action === "GoalUpdate") ? true : undefined }),
+        dispose: () => { commandScopes.delete(token); controller.abort(new Error("Foreground command has ended.")); }
+      };
+    }
   );
   const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerLaunch", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction", "ComputerSequence"];
   let registeredMcpTools: string[] = [];
@@ -336,7 +379,7 @@ async function initializeCommandRuntime(
     if (endpoint) {
       void attachDesktopComputerMcp(resourceScope.mcp, endpoint).catch(() => undefined);
       for (const tool of resourceScope.mcp.createTools().filter(tool => tool.namespace?.name === desktopComputerMcpName)) {
-        toolRegistry.registerMcpTool(tool);
+        toolRegistry.registerMcpTool(bindComputerTool(tool));
         registeredMcpTools.push(tool.name);
       }
       for (const tool of createBrowserTools(endpoint)) toolRegistry.registerBuiltinTool(tool);
@@ -354,13 +397,14 @@ async function initializeCommandRuntime(
   const checkpoints = config.checkpoints.enabled ? await CheckpointStore.open(workspaceRoot) : undefined;
   const todos = new TodoStore(persistenceRoot, recorder.sessionId);
   await todos.initialize();
-  toolRegistry.registerBuiltinTool(createTodoTool(todos));
+  managementTools.registerBuiltinTool(createTodoTool(todos));
   const userInput = new UserInputRequests();
   const permissionManager = new PermissionManager({ ...config.permission, source: "global config.json + project .biny/settings.json" });
   const mcpHost = resourceScope.mcp;
   let agent: AgentSession | undefined = undefined;
   let modelManager: ModelManager | undefined = undefined;
   let subagentParentRunId: string | undefined;
+  let supervisionRun = false;
   const currentSkillBundle = (): SkillBundle => subagentParentRunId === undefined
     ? requireSkillBundle(skills)
     : skillsForRun(subagentParentRunId);
@@ -396,7 +440,7 @@ async function initializeCommandRuntime(
     const previous = new Set(registeredMcpTools);
     const registered = new Map(toolRegistry.listEntries().map((entry) => [entry.tool.name, entry]));
     registeredMcpTools = [];
-    for (const tool of [...resourceScope.createTools(), ...resourceScope.createResourceTools()]) {
+    for (const tool of [...resourceScope.createTools().map(bindComputerTool), ...resourceScope.createResourceTools()]) {
       const existing = registered.get(tool.name);
       if (previous.has(tool.name) && existing?.source === "mcp") {
         previous.delete(tool.name);
@@ -449,7 +493,6 @@ async function initializeCommandRuntime(
     },
     communication: taskCommunication,
     cancelTask: (taskRunId, reason) => cancelTaskRun(taskRunId, reason),
-    continueTask: (taskRunId, message, requestId, signal) => continueTaskRun(taskRunId, message, requestId, signal),
     runTask: async (input, context) => {
       const sessionId = context.sessionId ?? recorder.sessionId;
       const taskRunId = `agent-task:${sessionId}:${context.toolCallId}`;
@@ -484,7 +527,7 @@ async function initializeCommandRuntime(
         context.signal?.throwIfAborted();
         const started = await startTaskRun(taskRunId);
         if (input.background) {
-          // 父回合正常结束不撤销已准入任务；显式取消仍通过 TaskCancel / Host 传递。
+          // 父回合正常结束不撤销已准入任务；显式取消仍通过 CLI / Host 传递。
           void started.completion.finally(() => context.signal?.removeEventListener("abort", abort)).catch(() => undefined);
           detached = true;
           return taskRunToolResult(taskRuns.get(taskRunId));
@@ -563,22 +606,12 @@ async function initializeCommandRuntime(
   // Desktop Host 的 MCP/Skill 启动在后台进行；私有 CLI/TUI runtime 仍在这里等待首个稳定快照。
   if (resourceBoot === "blocking") await resourceStart;
   skills = resourceScope.skills;
-  toolRegistry.registerUserTool(createSkillTool(currentSkillBundle));
+  toolRegistry.registerUserTool(createSkillTool(currentSkillBundle, async () => {
+    await refreshSkills(true);
+    // 显式激活更新本回合的技能元数据，后续资源读取也能定位刚安装的技能。
+    if (subagentParentRunId !== undefined) runSkillSnapshots.set(subagentParentRunId, structuredClone(requireSkillBundle(skills)));
+  }));
   toolRegistry.registerHostReadQuery(createSkillResourceTool(currentSkillBundle), "read_skill_resource");
-  toolRegistry.registerHostReadQuery(createSkillLookupTool(currentSkillBundle), "skill_lookup");
-  toolRegistry.registerBuiltinTool(createSkillSearchTool({
-    getInstalledNames: () => {
-      const installed = new Set<string>();
-      for (const skill of currentSkillBundle().skills) {
-        installed.add(skill.name.toLocaleLowerCase());
-        installed.add(path.basename(path.dirname(skill.filePath)).toLocaleLowerCase());
-      }
-      return installed;
-    }
-  }));
-  toolRegistry.registerBuiltinTool(createSkillInstallTool({
-    refreshSkills: async () => await refreshSkills(true)
-  }));
   refreshExtensionTools();
   const pluginsPerfStartedAt = perfNow();
   const managedPluginPaths = await listEnabledProjectPluginPaths(workspaceRoot).catch((error: unknown) => {
@@ -614,13 +647,10 @@ async function initializeCommandRuntime(
   const modelManagerPerfStartedAt = perfNow();
   modelManager = await ModelManager.create(workspaceRoot, config, configStore, ai);
   recordPerfPhase("host.modelManagerCreate", modelManagerPerfStartedAt, undefined, workspaceRoot);
-  for (const tool of createSessionGoalTools(sessionGoals, () => agent?.getInfo().sessionId ?? recorder.sessionId, () => agent?.currentSessionGoalRequest())) {
-    toolRegistry.registerBuiltinTool(tool);
-  }
   if (config.extensions.subagent.enabled) {
     toolRegistry.registerSubagentTool(createSubagentTool(subagentOptions));
     toolRegistry.registerHostReadQuery(createTaskStatusTool(subagentOptions), "TaskStatus");
-    for (const tool of createTaskControlTools(subagentOptions)) toolRegistry.registerSubagentTool(tool);
+    managementTools.registerSubagentTool(createTaskCancelTool(subagentOptions));
     for (const tool of createPlanTools({
       graphs,
       taskRuns,
@@ -636,33 +666,10 @@ async function initializeCommandRuntime(
         return cancelled;
       }
     })) {
-      if (tool.name === "PlanStatus") toolRegistry.registerHostReadQuery(tool, "PlanStatus");
-      else toolRegistry.registerSubagentTool(tool);
+      if (tool.name === "PlanStatus") managementTools.registerHostReadQuery(tool, "PlanStatus");
+      else managementTools.registerSubagentTool(tool);
     }
     subagentDefinitions = await loadAgentDefinitions();
-  }
-  // 读取/写入 durable memory 与“当前聊天是否自动召回/贡献”是两组独立开关。
-  // 工具始终注册；显式 save_memory 不会因聊天策略关闭而丢失。
-  for (const tool of createMemoryTools(
-    () => agent?.getLocalMemory(),
-    async (query, paths, options) => {
-      const currentAgent = agent;
-      if (!currentAgent) throw new Error("Local memory is unavailable.");
-      return await currentAgent.searchMemory(query, paths, options);
-    }
-  )) {
-    toolRegistry.registerBuiltinTool(tool);
-  }
-  for (const tool of createHistoryTools({
-    getIndex: () => (agent ? agent.getSessionSearchIndex() : undefined),
-    flushCurrentSession: async (signal) => {
-      signal?.throwIfAborted();
-      const currentAgent = agent;
-      if (!currentAgent) return;
-      await currentAgent.flushSessionSearchIndex(signal);
-    }
-  })) {
-    toolRegistry.registerBuiltinTool(tool);
   }
   toolRegistry.registerBuiltinTool(createCheckpointEvidenceTool(async (args, signal) => {
     if (!agent) throw new Error("Session is unavailable.");
@@ -678,6 +685,7 @@ async function initializeCommandRuntime(
     }
   }
   agent = new AgentSession({
+    releaseSessionResources,
     workspaceRoot,
     persistenceRoot,
     configStore,
@@ -688,7 +696,7 @@ async function initializeCommandRuntime(
     permissionManager,
     recorder,
     skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
-    skillNames: (selection, runId) => skillNamesForSelection(skillsForRun(runId), selection),
+    skillNames: (selection, runId) => loadedSkillNamesForSelection(skillsForRun(runId), selection),
     extractSkill: async ({ messageId, events, minToolCalls, onNotice }) => await runSkillExtraction({
       messageId,
       events,
@@ -1376,6 +1384,53 @@ async function initializeCommandRuntime(
     },
     runTaskWithVerification,
     cancelTaskRun,
+    async sessionCommand(command, input, scope, revision, signal, onEvent) {
+      const currentRecorder = agent.getSessionRecorder();
+      const sessionId = currentRecorder.sessionId;
+      const lease = scope === undefined ? undefined : commandScopes.get(scope);
+      if (scope !== undefined && (!lease || lease.context.sessionId !== sessionId || lease.context.runId !== currentRecorder.runtimeContextSnapshot()?.runId)) {
+        throw new Error("Session command context expired or belongs to another run.");
+      }
+      if (typeof input !== "object" || input === null || Array.isArray(input)) throw new Error("Session command input must be an object.");
+      const args = input as Record<string, unknown>;
+      if (lease?.supervision && command !== "PlanStatus" && command !== "PlanUpdate") throw new Error("Plan supervision allows only plan status and plan update.");
+      const context = lease?.context;
+      const combinedSignal = AbortSignal.any([signal, context?.signal, lease?.controller.signal].filter((value): value is AbortSignal => value !== undefined));
+      combinedSignal.throwIfAborted();
+      if (command === "TodoShow") return { sessionId, todos: todos.list() };
+      if (command === "GoalUpdate" && !lease) throw new Error("Goal completion requires the current foreground model command context.");
+      if (command === "AskUserQuestion" && !lease) throw new Error("Asking requires the current foreground model command context.");
+      const registry = new ToolRegistry();
+      const tool = command === "GoalGet" || command === "GoalUpdate"
+        ? createSessionGoalTools(sessionGoals, () => sessionId, () => lease?.goal).find(entry => entry.name === command)
+        : (command === "AskUserQuestion" ? toolRegistry : managementTools).list().find(entry => entry.name === command);
+      if (!tool) throw new Error(`Unknown session command: ${command}`);
+      registry.register(tool, tool.source ?? "builtin");
+      const runId = context?.runId ?? `cli:${randomUUID()}`;
+      if (command === "PlanUpdate" && !lease) {
+        const graphId = (input as { graphId?: unknown })?.graphId;
+        if (typeof graphId !== "string" || revision === undefined || graphs.inspectGraph(graphId).revision !== revision) {
+          throw new Error("Manual plan updates require the revision observed with plan status.");
+        }
+        const status = managementTools.list().find(entry => entry.name === "PlanStatus")!;
+        const execution = await status.resolveExecution({ graphId });
+        if (!("execute" in execution)) throw new Error("Plan status is unavailable.");
+        await execution.execute({ toolCallId: randomUUID(), operationId: randomUUID(), sessionId, runId, signal: combinedSignal });
+      }
+      lease?.actions.add(command);
+      const coordinator = new ToolExecutionCoordinator({
+        workspaceRoot, config: { ...config, agent: { ...config.agent, toolExecutionMode: "direct" } },
+        recorder: currentRecorder, toolRegistry: registry, permissionManager, runId,
+        confirmPermission: async request => ({ approved: !request.requireFullYes, action: "allow_once", scope: "once" })
+      }, permissionManager, onEvent ?? (() => undefined), () => ({}), new Set([command]), { maxToolCalls: 1, maxRepeatedActions: 1 });
+      const executable = coordinator.createAgentTools().find(entry => entry.name === command);
+      if (!executable) throw new Error(`Session command is unavailable: ${command}`);
+      const result = await executable.execute(randomUUID(), args, combinedSignal);
+      await coordinator.waitForIdle();
+      await currentRecorder.flush();
+      if (result.isError) throw new Error(JSON.stringify(result.details));
+      return result.details;
+    },
     async startPlanDraft(graphId, revision, signal) {
       const graph = graphs.inspectGraph(graphId);
       if (graph.mode !== "supervised" || graph.supervisorSessionId !== agent.getInfo().sessionId || graph.status !== "draft" || graph.revision !== revision) {
@@ -1383,7 +1438,7 @@ async function initializeCommandRuntime(
       }
       // 仍通过同一个 PlanStart 工具入口，保留权限、审计和调度检查。
       const coordinator = new ToolExecutionCoordinator({
-        workspaceRoot, config, recorder: agent.getSessionRecorder(), toolRegistry, permissionManager,
+        workspaceRoot, config: { ...config, agent: { ...config.agent, toolExecutionMode: "direct" } }, recorder: agent.getSessionRecorder(), toolRegistry: managementTools, permissionManager,
         confirmPermission: async (request) => ({ approved: !request.requireFullYes, action: "allow_once", scope: "once" }),
         runId: `plan-start:${graphId}:${String(revision)}`
       }, permissionManager, () => undefined, () => ({}), new Set(["PlanStart"]), { maxToolCalls: 1, maxRepeatedActions: 1 });
@@ -1397,11 +1452,14 @@ async function initializeCommandRuntime(
     },
     executeTaskCheck,
     refreshDailyDiary: async (dateKey: string, refreshOptions: { force?: boolean } = {}): Promise<unknown> => await agent.refreshDailyDiary(dateKey, refreshOptions),
-    setSubagentParentRunId: (parentRunId?: string): void => {
+    setSubagentParentRunId: (parentRunId?: string, supervision = false): void => {
       subagentParentRunId = parentRunId;
+      supervisionRun = supervision;
     },
     close: async () => {
       closing = true;
+      for (const lease of commandScopes.values()) lease.controller.abort(new Error("Runtime is closing."));
+      commandScopes.clear();
       for (const pending of workerResumeAdmissions.values()) pending.controller.abort(new Error("Task runtime is closing."));
       userInput.setRun();
       try {

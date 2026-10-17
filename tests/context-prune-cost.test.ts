@@ -145,7 +145,7 @@ test("fixed eleven-message pruning preserves output, pairing and source identity
       assert.equal(pruned[index]!.toolCallId, messages[index]!.toolCallId);
     } else assert.equal(pruned[index], messages[index]);
   }
-  assert.equal(body(pruned[2]!), [marker, "Tool: Read", `Archived result: ${archivedPath}`, "Use read_tool_result with this archivePath if the full value is needed."].join("\n"));
+  assert.equal(body(pruned[2]!), [marker, "Tool: Read", `Archived result: ${archivedPath}`, "Use Read with this archivePath as path if the full value is needed."].join("\n"));
   assert.ok(body(pruned[4]!).includes("Preview: body "));
   assert.equal(JSON.stringify(messages), before);
 });

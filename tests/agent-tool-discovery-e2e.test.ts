@@ -67,6 +67,7 @@ async function testDiscoveryFailure(permanent: boolean): Promise<void> {
   };
   const config = configSchema.parse({
     ...defaultConfig,
+    agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
