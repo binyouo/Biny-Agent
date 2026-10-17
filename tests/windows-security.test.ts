@@ -59,7 +59,7 @@ test("CLI cold launch reuses the registered Desktop installation for encrypted c
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("native Windows directories, inherited files and named pipes only grant the current account and SYSTEM", { skip: process.platform !== "win32", timeout: 150_000 }, async () => {
+test("native Windows directories, inherited files and named pipes only grant the current account and SYSTEM", { skip: process.platform !== "win32", timeout: 150_000 }, async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), "biny-native-acl-"));
   const endpoint = localIpcEndpoint(path.join(root, "private.sock"));
   const server = net.createServer((socket) => socket.destroy());
@@ -78,21 +78,50 @@ test("native Windows directories, inherited files and named pipes only grant the
     assert.deepEqual(result.accounts.sort(), [...new Set([result.sid, "S-1-5-18"])].sort());
     assert.equal(result.protected, protectedAcl);
   };
+  let stage = "directory.restrict";
+  const safeError = (value: unknown): Record<string, unknown> => {
+    if (!(value instanceof Error)) return { name: "NonError", message: "[redacted]" };
+    const code = (value as Error & { code?: unknown }).code;
+    const safeCode = typeof code === "number" && Number.isFinite(code) ? code
+      : typeof code === "string" && ["EACCES", "EPERM", "ENOENT", "ETIMEDOUT", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "ERR_ASSERTION"].includes(code) ? code : undefined;
+    const safeName = ["Error", "AssertionError", "TypeError", "RangeError"].includes(value.name) ? value.name : "Error";
+    const knownMessage = "Cannot restrict local IPC access to the current Windows user; endpoint was refused.";
+    return { name: safeName, code: safeCode,
+      message: value.message === knownMessage ? knownMessage : "[message redacted; may contain command, account or ACL data]" };
+  };
   try {
     await restrictWindowsPathAccess(root, "directory");
+    stage = "directory.check";
     await check(root, true);
     const file = path.join(root, "registration.json");
+    stage = "inherited-file.create";
     await writeFile(file, "synthetic registration");
+    stage = "inherited-file.check";
     await check(file, false);
     const lockRoot = path.join(root, "write-lock");
+    stage = "lock.acquire";
     await withLocalFileWriteLock(lockRoot, "state.lock", async () => {
+      stage = "lock.directory-check";
       await check(lockRoot, true);
+      stage = "lock.authority-check";
       await check(path.join(lockRoot, "state.lock.authority.sqlite"), true);
+      stage = "lock.marker-check";
       await check(path.join(lockRoot, "state.lock"), false);
+      stage = "lock.release";
     });
+    stage = "pipe.listen";
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(endpoint, resolve); });
+    stage = "pipe.restrict";
     await secureLocalIpcEndpoint(endpoint);
+    stage = "pipe.check";
     await check(endpoint, true);
+  } catch (error) {
+    try {
+      context.diagnostic(JSON.stringify({ lastEnteredStage: stage, error: safeError(error), cause: safeError(error instanceof Error ? error.cause : undefined) }));
+    } catch {
+      // Diagnostic failures must never replace the original test failure.
+    }
+    throw error;
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
