@@ -12,6 +12,7 @@ import type { AgentConfigStore } from "../src/config/store.js";
 import { projectSessionsDir } from "../src/config/paths.js";
 import { ApplicationImportService } from "../src/imports/service.js";
 import { readSessionEvents } from "../src/session/events.js";
+import { refreshSessionIndex } from "../src/session/catalog.js";
 import { applicationImportsCommand, registerApplicationImportCommands } from "../src/cli/commands/applicationImports.js";
 
 const claude = (content: string) => `${JSON.stringify({ uuid: "source-user", type: "user", message: { role: "user", content } })}\n`;
@@ -45,6 +46,8 @@ async function fixture() {
       return file;
     },
     async close() {
+      // Join the workspace index refresh before changing its storage root.
+      await refreshSessionIndex(workspaceRoot);
       if (previous === undefined) delete process.env.BINY_AGENT_DIR;
       else process.env.BINY_AGENT_DIR = previous;
       await rm(root, { recursive: true, force: true });
