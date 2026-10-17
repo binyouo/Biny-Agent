@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import type { Crystal, CrystalType } from "../../../../agent/context/crystalTypes.js";
+import { validateCrystal } from "../../../../agent/context/crystalValidation.js";
 import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "../../../crystalProtocol.js";
 import { Icon } from "./Icon.js";
 import "../styles/crystal.css";
@@ -60,7 +61,7 @@ export function CrystalDock({ sessionId, onInsert }: { sessionId?: string; onIns
     <button className={`crystal-list-row${snapshot?.detail?.crystal.id === crystal.id ? " is-selected" : ""}`} disabled={busy}
       key={crystal.id} onClick={() => { void request({ action: "detail", id: crystal.id }); }} type="button">
       <Icon name="cube" size={15} /><span>{crystal.name}</span>
-      {crystal.dormant ? <small>休眠</small> : crystal.notified && crystal.stage === "candidate" ? <small>可确认</small> : null}
+      {crystal.dormant ? <small>休眠</small> : crystal.stage === "candidate" && validateCrystal(crystal).ready ? <small>可确认</small> : null}
     </button>
   );
   return <>
