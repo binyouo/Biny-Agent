@@ -27,19 +27,18 @@ async function cleanupAll(steps: Cleanup[]): Promise<void> {
 }
 
 async function fixture(t: TestContext) {
-  let directory: string | undefined;
+  const directory: { path?: string } = {};
   let closing: Promise<void> | undefined;
   const beforeClose: Cleanup[] = [];
   const storages = new Set<CrystalStorage>();
   const close = () => closing ??= cleanupAll([
     () => cleanupAll([...beforeClose].reverse()),
     () => cleanupAll([...storages].map(storage => () => storage.close())),
-    async () => { if (directory) await rm(directory, { recursive: true, force: true }); }
+    async () => { if (directory.path) await rm(directory.path, { recursive: true, force: true }); }
   ]);
   // Register before acquisition: ready()/mount()/initialize() may fail before normal cleanup.
   t.after(close);
-  directory = await mkdtemp(path.join(os.tmpdir(), "biny-crystal-ready-"));
-  const agentDir = directory;
+  const agentDir = directory.path = await mkdtemp(path.join(os.tmpdir(), "biny-crystal-ready-"));
   const service = new DesktopCrystalService(
     { load: async () => defaultConfig, save: async () => undefined },
     async () => [agentDir],
