@@ -72,7 +72,7 @@ maintenance.start();
 await new Promise<void>((resolve) => setTimeout(resolve, 25));
 assert.deepEqual(calls, ["load"]);
 await new Promise<void>((resolve) => setTimeout(resolve, 5_050));
-assert.deepEqual(calls, ["load", "process", "rebuild"]);
+assert.deepEqual(calls, ["load", "load", "process", "rebuild"]);
 
 maintenance.stop();
 const preview = await maintenance.preview();
@@ -80,7 +80,7 @@ assert.deepEqual(preview, { available: true, entries: 1, temporaryToArchive: 0, 
 assert.equal(maintenance.cancel(), false);
 maintenance.scheduleEmbeddingRebuild();
 await new Promise<void>((resolve) => setTimeout(resolve, 10));
-assert.deepEqual(calls, ["load", "process", "rebuild"]);
+assert.deepEqual(calls, ["load", "load", "process", "rebuild"]);
 
 let activeFingerprint = "model-a";
 let backgroundRebuilds = 0;
