@@ -109,10 +109,15 @@ test("CLI cold launch reuses the registered Desktop installation for encrypted c
 test("native Windows directories, inherited files and named pipes only grant the current account and SYSTEM", { skip: process.platform !== "win32", timeout: 150_000 }, async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), "biny-native-acl-"));
   const endpoint = localIpcEndpoint(path.join(root, "private.sock"));
-  let acceptedConnections = 0;
+  let applicationRequests = 0;
+  const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
-    acceptedConnections += 1;
-    socket.end("native-acl-ready");
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    socket.once("data", () => {
+      applicationRequests += 1;
+      socket.end("native-acl-ready");
+    });
   });
   let phase: "root-directory-hardening" | "root-directory-inspection" | "inherited-file-inspection" | "lock-acquisition" | "lock-directory-inspection" | "lock-authority-inspection" | "lock-marker-inspection" | "pipe-listen" | "pipe-hardening" | "pipe-inspection" | "pipe-connect" = "root-directory-hardening";
   let commandFailure: ReturnType<typeof aclCommandFailure> | undefined;
@@ -190,25 +195,29 @@ public static class NativePipeAclInspection {
     await secureLocalIpcEndpoint(endpoint);
     phase = "pipe-inspection";
     await check(endpoint, true, "pipe");
-    assert.equal(acceptedConnections, 0, "ACL access must not consume a client connection");
+    assert.equal(applicationRequests, 0, "ACL access must not send an application request");
     phase = "pipe-connect";
     const response = await new Promise<string>((resolve, reject) => {
       const client = net.createConnection(endpoint);
       let output = "";
       client.setEncoding("utf8");
       client.setTimeout(5_000, () => client.destroy(new Error("Hardened pipe connection timed out")));
+      client.once("connect", () => client.write("native-acl-request"));
       client.on("data", (data: string) => { output += data; });
       client.once("error", reject);
       client.once("end", () => { client.destroy(); resolve(output); });
     });
     assert.equal(response, "native-acl-ready");
-    assert.equal(acceptedConnections, 1);
+    phase = "pipe-inspection";
+    await check(endpoint, true, "pipe");
+    assert.equal(applicationRequests, 1);
   } catch (error) {
     context.diagnostic(JSON.stringify({ nativeAclFailure: { phase, commandFailure } }));
     throw error;
   } finally {
     exec.mock.restore();
     syncBuiltinESMExports();
+    for (const socket of sockets) socket.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
