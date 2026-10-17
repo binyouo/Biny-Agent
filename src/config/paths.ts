@@ -120,7 +120,8 @@ function projectStateDir(kind: "sessions" | "workspaces", workspaceRoot: string,
 
 function projectStateParentDir(kind: "sessions" | "workspaces", options: PathEnvironment): string {
   const configuredRoot = globalAgentDir(options);
-  const canonicalRoot = existsSync(configuredRoot) ? realpathSync(configuredRoot) : configuredRoot;
+  // Match promises.realpath in storage guards, including Windows directory aliases.
+  const canonicalRoot = existsSync(configuredRoot) ? realpathSync.native(configuredRoot) : configuredRoot;
   return path.join(canonicalRoot, kind);
 }
 
