@@ -151,6 +151,10 @@ async function createFixture() {
   await store.initialize();
   await store.replace(initial);
   const config = structuredClone(defaultConfig);
+  config.defaultModel = "todo-fixture";
+  config.toolModel = "todo-fixture";
+  config.providers = { local: { type: "ollama", baseUrl: "http://127.0.0.1:1/v1", requiresApiKey: false } };
+  config.models = { "todo-fixture": { ...defaultConfig.models["deepseek-v4-flash"]!, provider: "local", model: "todo-fixture" } };
   config.context.memory.useMemories = false;
   config.context.memory.generateMemories = false;
   config.heartbeat.enabled = false;
