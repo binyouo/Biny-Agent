@@ -1693,6 +1693,11 @@ export class AgentSession {
       sourceAttachments,
       personalization.useMemories
     );
+    if (prepared.compaction) {
+      // The compacted input is the persisted source prefix shared by both versions.
+      // Save its retained boundary before a replacement user or reply starts a branch.
+      await this.persistContextCheckpoint(prepared.compaction, "threshold", prefixReferences);
+    }
     await this.recordLoadedSkills(userNode.id, prepared.loadedSkills ?? [], true);
     options.capabilitySelection = await selection;
     yield { type: "preparation.updated", stage: "waiting" };
