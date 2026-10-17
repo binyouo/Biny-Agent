@@ -5,12 +5,39 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { promisify } from "node:util";
 import { test } from "node:test";
 import { restrictWindowsPathAccess } from "../src/utils/windowsSecurity.js";
 import { registerDesktopRuntimeHost, runtimeHostLaunchPlan } from "../src/runtime/host/lifecycle.js";
 import { localIpcEndpoint, secureLocalIpcEndpoint } from "../src/utils/localIpc.js";
 import { withLocalFileWriteLock } from "../src/utils/localFileLock.js";
+
+function aclCommandFailure(kind: unknown, error: { code?: unknown }, stderr: string) {
+  const rawCode = error.code;
+  const code = (typeof rawCode === "number" && Number.isInteger(rawCode) && rawCode >= -2_147_483_648 && rawCode <= 2_147_483_647)
+    || (typeof rawCode === "string" && ["ENOENT", "EACCES", "EPERM", "ETIMEDOUT", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"].includes(rawCode)) ? rawCode : null;
+  const diagnostic = stderr.slice(0, 16 * 1024);
+  return {
+    kind: kind === "directory" || kind === "file" || kind === "pipe" ? kind : "inspection",
+    code,
+    categories: ["ObjectNotFound", "PermissionDenied", "InvalidOperation", "InvalidArgument", "NotImplemented", "SecurityError", "ReadError", "WriteError", "OpenError", "NotSpecified"].filter((value) => new RegExp(`CategoryInfo\\s*:\\s*${value}\\s*:`).test(diagnostic)),
+    exceptions: ["ItemNotFoundException", "UnauthorizedAccessException", "IOException", "NotSupportedException", "MethodInvocationException", "RuntimeException", "ArgumentException"].filter((value) => diagnostic.includes(value)),
+    operations: ["Get-Item", "GetAccessControl", "GetOwner", "SetAccessControl", "AddAccessRule", "SetAccessRuleProtection"].filter((value) => diagnostic.includes(value))
+  };
+}
+
+test("native ACL failure diagnostics report bounded facts without command, path or credential text", () => {
+  const failure = Object.assign(new Error("Command failed: powershell.exe -EncodedCommand private-command"), { code: 1 });
+  const stderr = "Get-Item : Cannot find path C:\\private-account\\secret-token\n    + CategoryInfo : ObjectNotFound: (private-path:String) [Get-Item], ItemNotFoundException\n    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetItemCommand";
+  assert.deepEqual(aclCommandFailure("pipe", failure, stderr), {
+    kind: "pipe", code: 1, categories: ["ObjectNotFound"], exceptions: ["ItemNotFoundException"], operations: ["Get-Item"]
+  });
+  assert.deepEqual(aclCommandFailure("private-kind", Object.assign(new Error("private-message"), { code: "private-code" }), `${"x".repeat(16 * 1024)}GetAccessControl`), {
+    kind: "inspection", code: null, categories: [], exceptions: [], operations: []
+  });
+  for (const code of [undefined, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2_147_483_648]) {
+    assert.equal(aclCommandFailure("file", { code }, "").code, null);
+  }
+});
 
 for (const fails of [false, true]) {
   test(`Windows private IPC ACL helper ${fails ? "refuses failures" : "uses an explicit system PowerShell and private path input"}`, async (context) => {
@@ -59,10 +86,22 @@ test("CLI cold launch reuses the registered Desktop installation for encrypted c
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("native Windows directories, inherited files and named pipes only grant the current account and SYSTEM", { skip: process.platform !== "win32", timeout: 150_000 }, async () => {
+test("native Windows directories, inherited files and named pipes only grant the current account and SYSTEM", { skip: process.platform !== "win32", timeout: 150_000 }, async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), "biny-native-acl-"));
   const endpoint = localIpcEndpoint(path.join(root, "private.sock"));
   const server = net.createServer((socket) => socket.destroy());
+  let phase: "root-directory-hardening" | "root-directory-inspection" | "inherited-file-inspection" | "lock-acquisition" | "lock-directory-inspection" | "lock-authority-inspection" | "lock-marker-inspection" | "pipe-listen" | "pipe-hardening" | "pipe-inspection" = "root-directory-hardening";
+  let commandFailure: ReturnType<typeof aclCommandFailure> | undefined;
+  const nativeExecFile = childProcess.execFile;
+  const exec = context.mock.method(childProcess, "execFile", (...args: unknown[]) => {
+    const options = args[2] as { env?: NodeJS.ProcessEnv };
+    const callback = args[3] as (error: childProcess.ExecFileException | null, stdout: string, stderr: string) => void;
+    return Reflect.apply(nativeExecFile, childProcess, [...args.slice(0, 3), (error: childProcess.ExecFileException | null, stdout: string, stderr: string) => {
+      if (error) commandFailure = aclCommandFailure(options.env?.BINY_IPC_PATH_KIND, error, stderr);
+      callback(error, stdout, stderr);
+    }]);
+  });
+  syncBuiltinESMExports();
   const script = `
     $ErrorActionPreference = 'Stop'
     $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -71,8 +110,10 @@ test("native Windows directories, inherited files and named pipes only grant the
     @{ accounts = $accounts; sid = $sid; protected = $acl.AreAccessRulesProtected } | ConvertTo-Json -Compress
   `;
   const check = async (target: string, protectedAcl: boolean): Promise<void> => {
-    const { stdout } = await promisify(childProcess.execFile)(path.win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
-      env: { ...process.env, BINY_TEST_ACL_PATH: target }, windowsHide: true, timeout: 30_000
+    const stdout = await new Promise<string>((resolve, reject) => {
+      childProcess.execFile(path.win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+        env: { ...process.env, BINY_TEST_ACL_PATH: target }, windowsHide: true, timeout: 30_000
+      }, (error, output) => { if (error) reject(error); else resolve(output); });
     });
     const result = JSON.parse(stdout) as { accounts: string[]; sid: string; protected: boolean };
     assert.deepEqual(result.accounts.sort(), [...new Set([result.sid, "S-1-5-18"])].sort());
@@ -80,20 +121,34 @@ test("native Windows directories, inherited files and named pipes only grant the
   };
   try {
     await restrictWindowsPathAccess(root, "directory");
+    phase = "root-directory-inspection";
     await check(root, true);
     const file = path.join(root, "registration.json");
     await writeFile(file, "synthetic registration");
+    phase = "inherited-file-inspection";
     await check(file, false);
     const lockRoot = path.join(root, "write-lock");
+    phase = "lock-acquisition";
     await withLocalFileWriteLock(lockRoot, "state.lock", async () => {
+      phase = "lock-directory-inspection";
       await check(lockRoot, true);
+      phase = "lock-authority-inspection";
       await check(path.join(lockRoot, "state.lock.authority.sqlite"), true);
+      phase = "lock-marker-inspection";
       await check(path.join(lockRoot, "state.lock"), false);
     });
+    phase = "pipe-listen";
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(endpoint, resolve); });
+    phase = "pipe-hardening";
     await secureLocalIpcEndpoint(endpoint);
+    phase = "pipe-inspection";
     await check(endpoint, true);
+  } catch (error) {
+    context.diagnostic(JSON.stringify({ nativeAclFailure: { phase, commandFailure } }));
+    throw error;
   } finally {
+    exec.mock.restore();
+    syncBuiltinESMExports();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
