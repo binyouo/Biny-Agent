@@ -847,7 +847,7 @@ async function testTemporaryCleanupRequiresExactCandidateIds(): Promise<void> {
     assert.equal((await memory.getOverview()).entryCount, 0);
     const created = new Date(candidate.createdAt);
     const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${date.toLocaleTimeString()}`;
-    assert.equal(prompts.at(-1), `Current date and time: ${localDate(now)}\n\nCurrent conversation context:\nuser: The project has finished.\n\nassistant: The deadline is no longer relevant.\n\nTemporary memories related to this conversation:\n- id: "${candidate.id}", created: "${localDate(created)}", content: "${candidate.content}"`);
+    assert.equal(prompts.at(-1), `Current date and time: ${localDate(now)}\n\nCurrent conversation context:\nuser: The project has finished.\n\nassistant: The deadline is no longer relevant.\n\nCurrent conversation source: original message time/timezone unknown\n\nTemporary memories related to this conversation:\n- id: "${candidate.id}", created: "${localDate(created)}", content: "${candidate.content}" [Memory saved-at: ${candidate.createdAt}; original message time/timezone unknown; saved-at is NOT event/due/completion time.]`);
     memory.close();
   });
 }
@@ -3015,7 +3015,7 @@ function jsonMemoryModel(response: (prompt: string) => string, prompts: string[]
         assert.equal(prompt.includes("Existing memories:"), false);
       }
       if (prompt.startsWith("Current date and time:")) {
-        assert.equal(context.systemPrompt, temporaryMemoryCleanupPrompt);
+        assert.equal(context.systemPrompt, temporaryMemoryCleanupPrompt + "\n\n" + memoryTimeAnchorInstruction);
         assert.equal(context.messages.length, 1);
         assert.equal(context.messages[0]?.role, "user");
         assert.equal(options?.maxOutputTokens, undefined);
