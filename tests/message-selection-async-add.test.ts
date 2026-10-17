@@ -49,6 +49,30 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function aggregateErrorDetails(error: AggregateError): string {
+  const details: string[] = [];
+  const seen = new Set<Error>();
+  let limited = false;
+  const visit = (value: unknown, depth: number): void => {
+    if (details.length >= 12) { limited = true; return; }
+    if (!(value instanceof Error)) { details.push(`non-Error thrown value (${typeof value})`); return; }
+    if (seen.has(value)) { details.push("repeated Error reference"); return; }
+    seen.add(value);
+    const header = `${value.name.slice(0, 80)}: ${value.message.slice(0, 500)}`;
+    const stack = (value.stack ?? "").slice(0, 1_000).split("\n").slice(1, 5).join("\n");
+    details.push(`${"  ".repeat(depth)}${header}${stack ? `\n${stack}` : ""}`);
+    if (!(value instanceof AggregateError)) return;
+    if (depth >= 3) { limited = true; return; }
+    for (const nested of value.errors) {
+      if (details.length >= 12) { limited = true; break; }
+      visit(nested, depth + 1);
+    }
+  };
+  visit(error, 0);
+  const output = details.join("\n");
+  return (output.slice(0, 11_970) + (limited || output.length > 11_970 ? "\n[diagnostic limit reached]" : "")).slice(0, 12_000);
+}
+
 function snapshots(): { bootstrap: DesktopBootstrap; document: DesktopSessionDocument } {
   const project = { id: PROJECT, name: "Quote fixture", path: "/synthetic/quote-project",
     dirty: false, missing: false, pinned: false, addedAt: TIME, lastOpenedAt: TIME };
@@ -82,6 +106,18 @@ function snapshots(): { bootstrap: DesktopBootstrap; document: DesktopSessionDoc
 }
 
 async function fixture(t: TestContext, gate: Gate) {
+  try {
+    return await setupFixture(t, gate);
+  } catch (error) {
+    if (error instanceof AggregateError) {
+      try { t.diagnostic(`Quote fixture setup nested errors:\n${aggregateErrorDetails(error)}`); }
+      catch { /* Diagnostics must never replace the original failure. */ }
+    }
+    throw error;
+  }
+}
+
+async function setupFixture(t: TestContext, gate: Gate) {
   const resources: {
     dom?: JSDOM;
     root?: Root;
@@ -174,7 +210,7 @@ async function fixture(t: TestContext, gate: Gate) {
     disconnect(): void {}
   }
   for (const [key, value] of Object.entries({
-    window, document, self: window, navigator: window.navigator,
+    window, document, self: window, navigator: window.navigator, CSS: window.CSS,
     Node: window.Node, Element: window.Element, HTMLElement: window.HTMLElement,
     Document: window.Document, Range: window.Range, Selection: window.Selection, NodeFilter: window.NodeFilter,
     DOMParser: window.DOMParser, HTMLDialogElement: window.HTMLDialogElement,
