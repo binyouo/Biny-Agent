@@ -78,9 +78,12 @@ async function capture(name) {
     const first = window.__disclosureQa.elements()[0].getBoundingClientRect();
     const card = document.getElementById("memory-sleep").getBoundingClientRect();
     const host = document.querySelector("dialog.memory-fixture");
+    const left = Math.max(0, Math.floor(card.x));
+    const top = Math.max(0, Math.floor(first.y - 8));
+    const right = Math.min(window.innerWidth, Math.ceil(card.right));
+    const bottom = Math.min(window.innerHeight, Math.ceil(card.bottom));
     return {
-      clip: { x: Math.floor(card.x), y: Math.max(0, Math.floor(first.y - 8)),
-        width: Math.ceil(card.width), height: Math.ceil(card.bottom - first.y + 8) },
+      clip: { x: left, y: top, width: right - left, height: bottom - top },
       viewport: { innerWidth: window.innerWidth, innerHeight: window.innerHeight,
         clientWidth: document.documentElement.clientWidth, clientHeight: document.documentElement.clientHeight,
         scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,

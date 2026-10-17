@@ -40,7 +40,7 @@ const props: Parameters<typeof SettingsMemory>[0] = {
 function Fixture(): React.JSX.Element {
   const [memory, setMemory] = useState(policy);
   const context = {
-    draft: { memory }, snapshot: { memory: policy }, dirtyCount: 0, setMemory
+    draft: { memory }, snapshot: { memory: policy, models: { connections: [] } }, dirtyCount: 0, setMemory
   } as unknown as SettingsDraftContextValue;
   return <dialog open className="memory-fixture desktop-settings-dialog">
     <div className="settings-modal"><div className="settings-scroll">
