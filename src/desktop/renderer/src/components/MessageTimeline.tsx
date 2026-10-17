@@ -83,6 +83,18 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
     || turn.tools.some((tool) => tool.runId === runtimeActiveRunId && (tool.status === "running" || tool.status === "waiting")));
 }
 
+/** A delivered user step owns its quote source even inside an assistant article. */
+function messageQuoteSource(markdown: Element | null | undefined): { element: HTMLElement; messageId: string } | undefined {
+  const userSource = markdown?.closest<HTMLElement>('.execution-user-step[data-quote-source="user"]');
+  if (userSource) {
+    const messageId = userSource.dataset.quoteMessageId;
+    return messageId ? { element: userSource, messageId } : undefined;
+  }
+  const article = markdown?.closest<HTMLElement>("article[data-message-id]");
+  const messageId = article?.dataset.messageId;
+  return article && messageId ? { element: article, messageId } : undefined;
+}
+
 export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, externalAgent = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, compacting = false, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
@@ -99,15 +111,15 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
     const element = (node: Node): Element | null => node instanceof Element ? node : node.parentElement;
     const start = element(range.startContainer)?.closest(".markdown-body");
     const end = element(range.endContainer)?.closest(".markdown-body");
-    const message = start?.closest<HTMLElement>("article[data-message-id]");
-    if (!start || start.closest(".subagent-card") || start !== end || !message?.dataset.messageId || !timeline.contains(message)) { setQuoteSelection(undefined); return; }
+    const source = messageQuoteSource(start);
+    if (!start || start.closest(".subagent-card") || start !== end || !source || !timeline.contains(source.element)) { setQuoteSelection(undefined); return; }
     const quote = selection.toString().trim();
     if (!quote || quote.length > 4_000) { setQuoteSelection(undefined); return; }
     const bounds = range.getBoundingClientRect();
     if ((bounds.width === 0 && bounds.height === 0) || bounds.bottom < 0 || bounds.top > window.innerHeight
       || bounds.right < 0 || bounds.left > window.innerWidth) { setQuoteSelection(undefined); return; }
     const next = {
-      messageId: message.dataset.messageId,
+      messageId: source.messageId,
       quote,
       top: Math.max(8, Math.min(bounds.top - 38, window.innerHeight - 42)),
       left: Math.max(8, Math.min(bounds.left, window.innerWidth - 124))
@@ -598,7 +610,7 @@ export function ExecutionTimeline({ readOnly, keepActivitiesOpen = false,
         }
         if (step.kind === "user") {
           return (
-            <div className="execution-step execution-user-step user-message" key={step.id}>
+            <div className="execution-step execution-user-step user-message" data-quote-source="user" data-quote-message-id={step.messageId} key={step.id}>
               <div className="user-bubble">
                 <MarkdownContent breaks content={step.content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} />
                 {step.attachments?.length ? <MessageAttachments attachments={step.attachments} projectId={projectId} /> : null}
