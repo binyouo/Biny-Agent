@@ -163,8 +163,15 @@ export class CrystalService {
     };
     this.storage.transaction(() => {
       for (const term of normalizedTerms) {
-        const id = termId(term);
-        const current = this.storage.getTerm(id) ?? {
+        const baseId = termId(term);
+        let id = baseId;
+        let existing = this.storage.getTerm(id);
+        // 短 hash 只用于定位；不同称呼发生碰撞时保留旧身份并寻找独立槽位。
+        for (let suffix = 1; existing && existing.term !== term; suffix += 1) {
+          id = `${baseId}_${suffix}`;
+          existing = this.storage.getTerm(id);
+        }
+        const current = existing ?? {
           id,
           term,
           status: "latent" as const,
