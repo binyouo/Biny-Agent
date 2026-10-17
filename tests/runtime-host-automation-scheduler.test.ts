@@ -830,7 +830,8 @@ for (const explicitAt of [true, false]) {
         assert.ok(original);
         assert.equal(f.store.listPending("resume-once").length, 1);
         assert.equal(original.status, "deferred");
-        assert.equal(original.scheduledAt, "2030-01-01T00:00:05.000Z");
+        assert.equal(original.scheduledAt, "2030-01-01T00:00:00.000Z");
+        assert.equal(original.retryAt, "2030-01-01T00:00:05.000Z");
         assert.equal(original.runId, undefined);
         assert.equal(f.store.get("resume-once")?.nextFireAt, undefined);
         assert.deepEqual(target.submissions, []);

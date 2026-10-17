@@ -49,6 +49,8 @@ export interface AutomationPendingFire {
   fireId: string;
   automationId: string;
   scheduledAt: string;
+  /** Deferred discovery deadline; scheduledAt remains the durable fire identity. */
+  retryAt?: string;
   claimToken?: string;
   claimedAt?: string;
   status: "pending" | "running" | "completed" | "failed" | "deferred" | "needs_approval";
@@ -103,6 +105,7 @@ interface PendingRow {
   fire_id: unknown;
   automation_id: unknown;
   scheduled_at: unknown;
+  retry_at: unknown;
   claim_token: unknown;
   claimed_at: unknown;
   status: unknown;
@@ -246,7 +249,14 @@ export class AutomationStore {
         WHERE automation_id = automations.automation_id AND status IN ('pending', 'deferred')
           AND automation_time_ms(scheduled_at) IS NULL
       )
-    `).all(this.authority.workspaceId, this.authority.workspaceId) as Array<{ automation_id: string; field: string }>;
+      UNION ALL
+      SELECT automation_id, 'fire retryAt' AS field FROM automations
+      WHERE workspace_id = ? AND status IN ('active', 'expired') AND EXISTS (
+        SELECT 1 FROM automation_pending_fires
+        WHERE automation_id = automations.automation_id AND status = 'deferred'
+          AND retry_at IS NOT NULL AND automation_time_ms(retry_at) IS NULL
+      )
+    `).all(this.authority.workspaceId, this.authority.workspaceId, this.authority.workspaceId) as Array<{ automation_id: string; field: string }>;
     for (const automation of invalid) {
       this.updateStatus(automation.automation_id, "paused", `Invalid automation ${automation.field} timestamp.`);
     }
@@ -263,9 +273,10 @@ export class AutomationStore {
     // 暂停或已耗尽预算的定义保留自己的 pending fire，但不能占满其他任务的恢复窗口。
     // 这里只筛选候选；领取时仍由 canClaimFire 和事务内条件重新验证执行权。
     const recoverable = this.database.prepare(
-      `SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at
+      `SELECT fire_id, automation_id, scheduled_at, retry_at, claim_token, claimed_at, status, run_id, error, created_at
        FROM automation_pending_fires
-       WHERE status IN ('pending', 'deferred') AND automation_time_ms(scheduled_at) <= ?
+       WHERE status IN ('pending', 'deferred')
+         AND automation_time_ms(CASE WHEN status = 'deferred' THEN COALESCE(retry_at, scheduled_at) ELSE scheduled_at END) <= ?
          AND EXISTS (
            SELECT 1 FROM automations
            WHERE automation_id = automation_pending_fires.automation_id
@@ -273,7 +284,7 @@ export class AutomationStore {
              AND status IN ('active', 'expired')
              AND (max_fires IS NULL OR fire_count < max_fires)
          )
-       ORDER BY automation_time_ms(scheduled_at) ASC, fire_id ASC LIMIT ?`
+       ORDER BY automation_time_ms(CASE WHEN status = 'deferred' THEN COALESCE(retry_at, scheduled_at) ELSE scheduled_at END) ASC, fire_id ASC LIMIT ?`
     ).all(nowMs, this.authority.workspaceId, limit) as unknown as PendingRow[];
     for (const row of recoverable) {
       const fireId = stringValue(row.fire_id);
@@ -283,10 +294,10 @@ export class AutomationStore {
       if (status === "deferred") {
         const createdAt = new Date().toISOString();
         this.withAutomationEvent(automation, "automation.fire.requeued", { fireId, scheduledAt: row.scheduled_at }, createdAt, () => {
-          this.database.prepare("UPDATE automation_pending_fires SET status = 'pending', claim_token = NULL, claimed_at = NULL, error = NULL WHERE fire_id = ? AND status = 'deferred'").run(fireId);
+          this.database.prepare("UPDATE automation_pending_fires SET status = 'pending', retry_at = NULL, claim_token = NULL, claimed_at = NULL, error = NULL WHERE fire_id = ? AND status = 'deferred'").run(fireId);
         });
       }
-      const recovered = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE fire_id = ? AND status = 'pending'").get(fireId) as unknown as PendingRow | undefined;
+      const recovered = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, retry_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE fire_id = ? AND status = 'pending'").get(fireId) as unknown as PendingRow | undefined;
       if (recovered) fires.push(toFire(recovered));
     }
     if (fires.length >= limit) return fires;
@@ -327,7 +338,7 @@ export class AutomationStore {
         this.updateStatus(automationId, "paused", error instanceof Error ? error.message : String(error));
         continue;
       }
-      const fire = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE automation_id = ? AND scheduled_at = ?").get(automationId, scheduledAt) as unknown as PendingRow | undefined;
+      const fire = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, retry_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE automation_id = ? AND scheduled_at = ?").get(automationId, scheduledAt) as unknown as PendingRow | undefined;
       if (fire) fires.push(toFire(fire));
     }
     return fires;
@@ -401,7 +412,7 @@ export class AutomationStore {
     const automation = this.require(fire.automationId);
     const now = new Date().toISOString();
     return this.withAutomationEvent(automation, "automation.fire.deferred", { fireId, at: at.toISOString(), error }, now, () => {
-      this.database.prepare("UPDATE automation_pending_fires SET status = 'deferred', scheduled_at = ?, claim_token = NULL, claimed_at = NULL, error = ? WHERE fire_id = ?").run(at.toISOString(), error ?? null, fireId);
+      this.database.prepare("UPDATE automation_pending_fires SET status = 'deferred', retry_at = ?, claim_token = NULL, claimed_at = NULL, error = ? WHERE fire_id = ?").run(at.toISOString(), error ?? null, fireId);
       return this.requireFire(fireId);
     });
   }
@@ -420,7 +431,7 @@ export class AutomationStore {
 
   /** Host 新 owner 启动时回收上一个 owner 的在途 fire；无法证明结果时停在 needs_approval。 */
   recoverInFlight(): void {
-    const rows = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE status = 'running'").all() as unknown as PendingRow[];
+    const rows = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, retry_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE status = 'running'").all() as unknown as PendingRow[];
     for (const row of rows) {
       const fireId = stringValue(row.fire_id);
       const runId = optionalString(row.run_id);
@@ -443,8 +454,8 @@ export class AutomationStore {
 
   listPending(automationId?: string): AutomationPendingFire[] {
     const query = automationId === undefined
-      ? "SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires ORDER BY scheduled_at ASC"
-      : "SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE automation_id = ? ORDER BY scheduled_at ASC";
+      ? "SELECT fire_id, automation_id, scheduled_at, retry_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires ORDER BY scheduled_at ASC"
+      : "SELECT fire_id, automation_id, scheduled_at, retry_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE automation_id = ? ORDER BY scheduled_at ASC";
     const rows = this.database.prepare(query).all(...(automationId === undefined ? [] : [automationId])) as unknown as PendingRow[];
     return rows.map(toFire);
   }
@@ -487,7 +498,7 @@ export class AutomationStore {
 
   getFire(fireId: string): AutomationPendingFire | undefined {
     this.assertOpen();
-    const row = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE fire_id = ?").get(fireId) as unknown as PendingRow | undefined;
+    const row = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, retry_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE fire_id = ?").get(fireId) as unknown as PendingRow | undefined;
     return row ? toFire(row) : undefined;
   }
 
@@ -868,6 +879,7 @@ function toFire(row: PendingRow): AutomationPendingFire {
     fireId: stringValue(row.fire_id),
     automationId: stringValue(row.automation_id),
     scheduledAt: stringValue(row.scheduled_at),
+    retryAt: optionalString(row.retry_at),
     claimToken: optionalString(row.claim_token),
     claimedAt: optionalString(row.claimed_at),
     status: fireStatus(row.status),

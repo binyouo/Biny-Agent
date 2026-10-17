@@ -168,7 +168,7 @@ test("fresh writable open installs the optional index in its sole schema transac
       }
     }, false);
     const authority = await f.open();
-    assert.equal(authority.schemaRevision(), 13);
+    assert.equal(authority.schemaRevision(), 14);
     assertIndex(authority.databaseHandle());
     assert.deepEqual(authority.readEvents().events, []);
     assert.deepEqual(prepare(authority.databaseHandle(), "PRAGMA foreign_key_check").all(), []);
@@ -260,14 +260,14 @@ test("partial revision 0 rejects an inherited NOCASE index before committing any
   }, false);
 });
 
-test("current schema 13 installs once, preserves every row and rowid, and restores the actual timeout", async t => {
+test("current schema 14 installs once, preserves every row and rowid, and restores the actual timeout", async t => {
   await fixture(async f => {
     const observer = f.connect();
     const before = snapshot(observer);
     const observed = instrument(t);
     const authority = await f.open();
     assertIndex(authority.databaseHandle());
-    assert.equal(authority.schemaRevision(), 13);
+    assert.equal(authority.schemaRevision(), 14);
     assert.equal(timeout(authority.databaseHandle()), currentTimeout);
     assert.deepEqual(snapshot(observer), before);
     assert.deepEqual(begins(observed.statements), ["BEGIN IMMEDIATE"]);
@@ -298,8 +298,8 @@ for (const revision of [1, 9, 11, 12]) test(`required migration from revision ${
       }
     });
     const authority = await f.open();
-    assert.equal(createdAtRevision, 13);
-    assert.equal(authority.schemaRevision(), 13);
+    assert.equal(createdAtRevision, 14);
+    assert.equal(authority.schemaRevision(), 14);
     assertIndex(observer);
     assert.equal(prepare(observer, "SELECT name FROM sqlite_schema WHERE name = 'goals'").get(), undefined);
     assert.deepEqual(prepare(observer, "SELECT rowid, * FROM task_attempts ORDER BY rowid").all(), beforeAttempts);
@@ -316,7 +316,7 @@ test("read-only absence creates no store or directory", async () => {
   }, false);
 });
 
-for (const indexed of [false, true]) test(`read-only current schema 13 ${indexed ? "with" : "without"} optional index preserves file bytes`, async t => {
+for (const indexed of [false, true]) test(`read-only current schema 14 ${indexed ? "with" : "without"} optional index preserves file bytes`, async t => {
   await fixture(async f => {
     const setup = f.connect();
     if (indexed) exec(setup, createIndex);
@@ -325,7 +325,7 @@ for (const indexed of [false, true]) test(`read-only current schema 13 ${indexed
     const observed = instrument(t);
     const authority = await RuntimeEventAuthority.openReadOnly(f.root);
     assert.ok(authority);
-    assert.equal(authority.schemaRevision(), 13);
+    assert.equal(authority.schemaRevision(), 14);
     assert.equal(Boolean(schemaObject(authority.databaseHandle())), indexed);
     assert.equal(timeout(authority.databaseHandle()), 5_000);
     assert.equal(authority.readEvents({ limit: 1000 }).events.length, 12);
@@ -338,7 +338,7 @@ for (const indexed of [false, true]) test(`read-only current schema 13 ${indexed
   });
 });
 
-for (const revision of [0, 1, 12, 14]) test(`read-only revision ${revision} preserves the existing version guard and bytes`, async () => {
+for (const revision of [0, 1, 12, 13, 15]) test(`read-only revision ${revision} preserves the existing version guard and bytes`, async () => {
   await fixture(async f => {
     const setup = f.connect();
     exec(setup, `PRAGMA user_version = ${revision}`);
@@ -435,7 +435,7 @@ test("a second writer installing between missing pre-read and BEGIN converges wi
   });
 });
 
-for (const revision of [12, 14]) test(`schema revision changing to ${revision} before optional BEGIN is rejected without optional DDL`, async t => {
+for (const revision of [12, 13, 15]) test(`schema revision changing to ${revision} before optional BEGIN is rejected without optional DDL`, async t => {
   await fixture(async f => {
     const changer = f.connect();
     const before = snapshot(changer);
@@ -700,10 +700,10 @@ test("native optional busy deferral continues backfill after restoring the timeo
 test("future writable schema stays rejected before optional work", async t => {
   await fixture(async f => {
     const observer = f.connect();
-    exec(observer, "PRAGMA user_version = 14");
+    exec(observer, "PRAGMA user_version = 15");
     const before = snapshot(observer);
     const observed = instrument(t);
-    await assert.rejects(f.open(), /Unsupported runtime schema revision 14/u);
+    await assert.rejects(f.open(), /Unsupported runtime schema revision 15/u);
     assert.deepEqual(begins(observed.statements), []);
     assert.deepEqual(creates(observed.statements), []);
     assert.equal(schemaObject(observer), undefined);
@@ -756,7 +756,7 @@ test("equivalent case-insensitive index identifier is recognized without creatin
     exec(observer, 'CREATE INDEX "TASK_ATTEMPTS_TASK_RUN_IDX" ON "TASK_ATTEMPTS" ("TASK_RUN_ID" ASC)');
     const observed = instrument(t);
     const authority = await f.open();
-    assert.equal(authority.schemaRevision(), 13);
+    assert.equal(authority.schemaRevision(), 14);
     assert.deepEqual(begins(observed.statements), []);
     assert.deepEqual(creates(observed.statements), []);
     assert.equal(prepare(observer, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = ? COLLATE NOCASE").get(indexName)?.count, 1);
