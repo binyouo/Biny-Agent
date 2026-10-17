@@ -76,6 +76,15 @@ interface OptimisticRewrite {
   settled: boolean;
 }
 
+interface QuoteSelectionOwner {
+  messageId: string;
+  quote: string;
+  startContainer: Node;
+  startOffset: number;
+  endContainer: Node;
+  endOffset: number;
+}
+
 /** live 回合的 id 是 runId；状态停在 idle 说明 run.started 被丢过，由 runtime 的活动 run 兜底。 */
 function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefined): boolean {
   if (turn.status === "running" || turn.status === "waiting_permission") return true;
@@ -87,37 +96,59 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
-  const [quoteSelection, setQuoteSelection] = useState<{ messageId: string; quote: string; top: number; left: number }>();
+  const [quoteSelection, setQuoteSelection] = useState<{ owner: QuoteSelectionOwner; top: number; left: number }>();
   const [addingQuote, setAddingQuote] = useState(false);
+  const addingQuoteRef = useRef(false);
   const timelineRef = useRef<HTMLDivElement>(null);
-  const updateQuoteSelection = useCallback((): void => {
-    if (readOnly) { setQuoteSelection(undefined); return; }
+  const quoteSelectionOwnerRef = useRef<QuoteSelectionOwner | undefined>(undefined);
+  const captureQuoteSelection = useCallback((): { owner: QuoteSelectionOwner; range: Range } | undefined => {
     const selection = window.getSelection();
     const timeline = timelineRef.current;
-    if (!selection || selection.isCollapsed || !selection.rangeCount || !timeline) { setQuoteSelection(undefined); return; }
+    if (readOnly || !selection || selection.isCollapsed || !selection.rangeCount || !timeline) {
+      quoteSelectionOwnerRef.current = undefined;
+      return;
+    }
     const range = selection.getRangeAt(0);
     const element = (node: Node): Element | null => node instanceof Element ? node : node.parentElement;
     const start = element(range.startContainer)?.closest(".markdown-body");
     const end = element(range.endContainer)?.closest(".markdown-body");
     const message = start?.closest<HTMLElement>("article[data-message-id]");
-    if (!start || start.closest(".subagent-card") || start !== end || !message?.dataset.messageId || !timeline.contains(message)) { setQuoteSelection(undefined); return; }
     const quote = selection.toString().trim();
-    if (!quote || quote.length > 4_000) { setQuoteSelection(undefined); return; }
-    const bounds = range.getBoundingClientRect();
+    if (!start || start.closest(".subagent-card") || start !== end || !message?.dataset.messageId || !timeline.contains(message)
+      || !quote || quote.length > 4_000) {
+      quoteSelectionOwnerRef.current = undefined;
+      return;
+    }
+    const current = quoteSelectionOwnerRef.current;
+    const owner = current?.messageId === message.dataset.messageId && current.quote === quote
+      && current.startContainer === range.startContainer && current.startOffset === range.startOffset
+      && current.endContainer === range.endContainer && current.endOffset === range.endOffset ? current : {
+        messageId: message.dataset.messageId, quote,
+        startContainer: range.startContainer, startOffset: range.startOffset,
+        endContainer: range.endContainer, endOffset: range.endOffset
+      };
+    quoteSelectionOwnerRef.current = owner;
+    return { owner, range };
+  }, [readOnly]);
+  const updateQuoteSelection = useCallback((): void => {
+    const selection = captureQuoteSelection();
+    if (!selection) { setQuoteSelection(undefined); return; }
+    const bounds = selection.range.getBoundingClientRect();
     if ((bounds.width === 0 && bounds.height === 0) || bounds.bottom < 0 || bounds.top > window.innerHeight
       || bounds.right < 0 || bounds.left > window.innerWidth) { setQuoteSelection(undefined); return; }
     const next = {
-      messageId: message.dataset.messageId,
-      quote,
+      owner: selection.owner,
       top: Math.max(8, Math.min(bounds.top - 38, window.innerHeight - 42)),
       left: Math.max(8, Math.min(bounds.left, window.innerWidth - 124))
     };
-    setQuoteSelection((current) => current?.messageId === next.messageId && current.quote === next.quote
+    setQuoteSelection((current) => current?.owner === next.owner
       && Math.abs(current.top - next.top) < 1 && Math.abs(current.left - next.left) < 1 ? current : next);
-  }, [readOnly]);
+  }, [captureQuoteSelection]);
   useEffect(() => {
     let selectionTimer: number | undefined;
     const scheduleSelectionUpdate = (): void => {
+      // 同步观察取消和重选；120 ms 防抖只延迟显示，不能合并两轮选区的归属。
+      captureQuoteSelection();
       if (selectionTimer !== undefined) window.clearTimeout(selectionTimer);
       selectionTimer = window.setTimeout(updateQuoteSelection, 120);
     };
@@ -140,7 +171,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
       window.removeEventListener("scroll", updateQuoteSelection, true);
       window.removeEventListener("resize", updateQuoteSelection);
     };
-  }, [updateQuoteSelection]);
+  }, [captureQuoteSelection, updateQuoteSelection]);
 
   const startOptimisticRewrite = useCallback((turn: TimelineTurn, mode: OptimisticRewrite["mode"], user = turn.user): void => {
     setOptimisticRewrite({
@@ -283,11 +314,14 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
         : thinking && !visibleTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
       {!readOnly && quoteSelection ? createPortal(<button aria-label="将选中文字添加到对话" aria-busy={addingQuote} className="message-selection-reference" disabled={addingQuote} style={{ top: quoteSelection.top, left: quoteSelection.left }}
         onMouseDown={(event) => event.preventDefault()} onClick={() => {
-          if (addingQuote) return;
+          if (addingQuoteRef.current) return;
+          addingQuoteRef.current = true;
           setAddingQuote(true);
-          void onAddQuoteToConversation(quoteSelection.messageId, quoteSelection.quote).finally(() => {
+          const owner = quoteSelection.owner;
+          void onAddQuoteToConversation(owner.messageId, owner.quote).finally(() => {
+            addingQuoteRef.current = false;
             setAddingQuote(false);
-            setQuoteSelection(undefined);
+            setQuoteSelection((current) => current?.owner === owner ? undefined : current);
           });
         }} type="button"><Icon name="quote" size={14} />{addingQuote ? "正在添加…" : "添加到对话"}</button>, document.body) : null}
     </div>
