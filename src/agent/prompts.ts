@@ -342,7 +342,11 @@ export function refreshRuntimeDateContext(systemPrompt: string | undefined, mess
     // 只在由 originalContent 确认的前缀内替换；用户正文里的同名标签保持原样。
     const prefixLength = original !== undefined && text.endsWith(originalText) ? text.length - originalText.length : 0;
     const injected = text.slice(0, prefixLength);
-    const start = injected.startsWith(`${turnContextStart}\n<biny_reminder>`) ? turnContextStart.length + 1 : -1;
+    // Fresh turn bundles use a blank line; date-only refresh prefixes use one newline.
+    // Match only the runtime-owned prefix, never reminder tags inside quoted material.
+    const start = injected.startsWith(`${turnContextStart}\n\n<biny_reminder>`)
+      ? turnContextStart.length + 2
+      : injected.startsWith(`${turnContextStart}\n<biny_reminder>`) ? turnContextStart.length + 1 : -1;
     const end = injected.indexOf("</biny_reminder>", start);
     const contextEnd = injected.indexOf(turnContextEnd);
     let retained = injected;

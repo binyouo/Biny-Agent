@@ -98,3 +98,67 @@ test("date refresh preserves quoted runtime markers in project instructions", ()
   assert.equal(stableSystemPromptForCache(second), rules);
   assert.equal(second.split("DATE AWARENESS (CRITICAL)").length - 1, 1);
 });
+
+
+for (const multimedia of [false, true]) {
+  for (const truncated of [false, true]) {
+    test(`real builder clock refresh replaces ${truncated ? "truncated" : "complete"} runtime reminders for ${multimedia ? "multimedia" : "text"}`, t => {
+      const previousZone = process.env.TZ;
+      process.env.TZ = "UTC";
+      t.after(() => {
+        if (previousZone === undefined) delete process.env.TZ; else process.env.TZ = previousZone;
+      });
+      const raw = "Keep literal <biny_reminder>USER_LITERAL</biny_reminder> unchanged.";
+      const original = multimedia
+        ? [{ type: "text" as const, text: raw }, { type: "image" as const, mimeType: "image/png", data: "fixture" }]
+        : raw;
+      const bundle = buildPromptBundle({
+        cwd: "/fixture",
+        now: new Date("2026-10-07T23:59:59Z"),
+        dailyNotesPrompt: "FILE_MEMORY_WITNESS",
+        crystalPrompt: "REFERENCE_LITERAL <biny_reminder>QUOTED_LITERAL</biny_reminder>"
+      });
+      const endMarker = "<!-- biny-turn-context:end -->";
+      const reminderEnd = bundle.turnContext.indexOf("</biny_reminder>");
+      assert.ok(reminderEnd > 0);
+      const runtime = truncated
+        ? bundle.turnContext.slice(0, reminderEnd) + " [truncated]\n\n" + endMarker
+        : bundle.turnContext;
+      const retained = "\n\n<!-- biny-recalled-memory:start -->\nRETAINED_REFERENCE\n<!-- biny-recalled-memory:end -->\n\n";
+      const prefix = runtime + retained;
+      const content = multimedia
+        ? [{ type: "text" as const, text: prefix + raw }, { type: "image" as const, mimeType: "image/png", data: "fixture" }]
+        : prefix + raw;
+      const messages: AgentMessage[] = [{
+        role: "user", content, originalContent: original,
+        sentAt: "2026-10-07T20:00:00Z", sentAtTimeZone: "UTC"
+      }];
+      let system = bundle.systemPrompt;
+      for (const now of ["2026-10-08T00:00:00Z", "2026-10-09T00:00:01Z"]) {
+        system = refreshRuntimeDateContext(system, messages, new Date(now));
+        const message = messages[0]!;
+        assert.ok(message.role === "user");
+        const text = typeof message.content === "string" ? message.content : message.content[0]?.type === "text" ? message.content[0].text : "";
+        assert.equal(text.split("Authoritative Local DateTime:").length - 1, 1);
+        assert.doesNotMatch(text, /Authoritative Local DateTime: 2026-10-07/u);
+        assert.ok(text.includes("Authoritative Local DateTime: " + now.slice(0, 10)));
+        assert.ok(text.endsWith(retained + raw), "non-date trailing reference and original text remain byte-identical");
+        if (!truncated) {
+          assert.ok(text.includes("FILE_MEMORY_WITNESS"));
+          assert.ok(text.includes("REFERENCE_LITERAL <biny_reminder>QUOTED_LITERAL</biny_reminder>"));
+          const referenceStart = bundle.turnContext.indexOf("<biny_turn_context>");
+          const referenceEnd = bundle.turnContext.lastIndexOf(endMarker);
+          assert.ok(text.includes(bundle.turnContext.slice(referenceStart, referenceEnd)), "the full reference region remains byte-identical");
+        }
+        assert.deepEqual(message.originalContent, original);
+        assert.equal(message.sentAt, "2026-10-07T20:00:00Z");
+        assert.equal(message.sentAtTimeZone, "UTC");
+        if (Array.isArray(message.content)) assert.deepEqual(message.content.slice(1), typeof original === "string" ? [] : original.slice(1));
+        assert.deepEqual(stripTransientTurnContext(messages), [{
+          role: "user", content: original, sentAt: "2026-10-07T20:00:00Z", sentAtTimeZone: "UTC"
+        }]);
+        assert.equal(system.split("DATE AWARENESS (CRITICAL)").length - 1, 1);
+      }
+    });
+  }
+}
