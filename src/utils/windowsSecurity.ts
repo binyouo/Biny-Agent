@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 
 /** Windows 没有 POSIX mode；本地控制端点和凭据目录必须用 DACL 限制到当前账号。 */
-export async function restrictWindowsPathAccess(target: string, kind: "directory" | "pipe"): Promise<void> {
+export async function restrictWindowsPathAccess(target: string, kind: "directory" | "file" | "pipe"): Promise<void> {
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !path.win32.isAbsolute(systemRoot)) throw new Error("Cannot locate Windows PowerShell to protect local IPC.");
   const executable = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");

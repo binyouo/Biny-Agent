@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { restrictWindowsPathAccess } from "../src/utils/windowsSecurity.js";
 import { registerDesktopRuntimeHost, runtimeHostLaunchPlan } from "../src/runtime/host/lifecycle.js";
 import { localIpcEndpoint, secureLocalIpcEndpoint } from "../src/utils/localIpc.js";
+import { withLocalFileWriteLock } from "../src/utils/localFileLock.js";
 
 for (const fails of [false, true]) {
   test(`Windows private IPC ACL helper ${fails ? "refuses failures" : "uses an explicit system PowerShell and private path input"}`, async (context) => {
@@ -83,6 +84,12 @@ test("native Windows directories, inherited files and named pipes only grant the
     const file = path.join(root, "registration.json");
     await writeFile(file, "synthetic registration");
     await check(file, false);
+    const lockRoot = path.join(root, "write-lock");
+    await withLocalFileWriteLock(lockRoot, "state.lock", async () => {
+      await check(lockRoot, true);
+      await check(path.join(lockRoot, "state.lock.authority.sqlite"), true);
+      await check(path.join(lockRoot, "state.lock"), false);
+    });
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(endpoint, resolve); });
     await secureLocalIpcEndpoint(endpoint);
     await check(endpoint, true);
