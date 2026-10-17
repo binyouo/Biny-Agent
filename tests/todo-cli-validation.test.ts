@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, realpath, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { agentDir, ensureAgentDirs } from "../src/session/store.js";
 import { TodoStore, type TodoItem } from "../src/session/todoStore.js";
@@ -16,8 +16,8 @@ const exec = promisify(execFile);
 const cli = path.resolve("src/cli/index.ts");
 const initial: TodoItem[] = [{ content: "Keep the existing task", status: "in_progress" }];
 
-test("todo replace rejects a non-list JSON payload without clearing the saved plan", { timeout: 90_000 }, async () => {
-  const fixture = await createFixture();
+test("todo replace rejects a non-list JSON payload without clearing the saved plan", { timeout: 90_000 }, async (context) => {
+  const fixture = await createFixture(context);
   try {
     const before = await readFile(fixture.todoPath);
     for (const payload of [null, {}, { todo: [] }, { todos: null }, "not a plan", 3, false]) {
@@ -33,8 +33,8 @@ test("todo replace rejects a non-list JSON payload without clearing the saved pl
   }
 });
 
-test("todo replace rejects invalid item status without reporting a plan that disappears on reopen", { timeout: 90_000 }, async () => {
-  const fixture = await createFixture();
+test("todo replace rejects invalid item status without reporting a plan that disappears on reopen", { timeout: 90_000 }, async (context) => {
+  const fixture = await createFixture(context);
   try {
     const before = await readFile(fixture.todoPath);
     const invalidItems: unknown[] = [
@@ -66,8 +66,8 @@ test("todo replace rejects invalid item status without reporting a plan that dis
   }
 });
 
-test("todo replace accepts complete arrays and envelopes, persists their exact replacement, and allows explicit empty lists", { timeout: 90_000 }, async () => {
-  const fixture = await createFixture();
+test("todo replace accepts complete arrays and envelopes, persists their exact replacement, and allows explicit empty lists", { timeout: 90_000 }, async (context) => {
+  const fixture = await createFixture(context);
   try {
     const plans: Array<{ input: unknown; expected: TodoItem[] }> = [
       {
@@ -115,8 +115,8 @@ test("todo replace accepts complete arrays and envelopes, persists their exact r
   }
 });
 
-test("TodoStore rejects sparse array holes before changing the live or persisted plan", async () => {
-  const fixture = await createFixture();
+test("TodoStore rejects sparse array holes before changing the live or persisted plan", async (context) => {
+  const fixture = await createFixture(context);
   try {
     const before = await readFile(fixture.todoPath);
     const promptBefore = fixture.store.promptSection();
@@ -135,59 +135,90 @@ test("TodoStore rejects sparse array holes before changing the live or persisted
   }
 });
 
-async function createFixture() {
+async function createFixture(context: TestContext) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-todo-cli-validation-")));
   const workspaceRoot = path.join(root, "workspace");
   const globalRoot = path.join(root, "agent");
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = globalRoot;
-  await mkdir(workspaceRoot);
-  await ensureAgentDirs(workspaceRoot);
-  const sessionId = "todo-cli-validation";
-  const recorder = new SessionRecorder(workspaceRoot, sessionId);
-  await recorder.recordAndFlush({ type: "user_message", content: "Synthetic todo audit" });
-  await recorder.close();
-  const store = new TodoStore(workspaceRoot, sessionId);
-  await store.initialize();
-  await store.replace(initial);
-  const config = structuredClone(defaultConfig);
-  config.context.memory.useMemories = false;
-  config.context.memory.generateMemories = false;
-  config.heartbeat.enabled = false;
-  const host = await startRuntimeHost(workspaceRoot, async () => await createInteractiveAgentHost(workspaceRoot, {
-    sessionId, configStore: { load: async () => config, save: async () => undefined }
-  }));
-  return {
-    store,
-    todoPath: path.join(agentDir(workspaceRoot), "todos", `${sessionId}.json`),
-    async run(command: string, ...args: string[]) {
+  // Todo control commands need valid model configuration, but must never call a model.
+  const fetchMock = context.mock.method(globalThis, "fetch", async () => {
+    throw new Error("Todo validation must not make network or model requests.");
+  });
+  let host: Awaited<ReturnType<typeof startRuntimeHost>> | undefined;
+  const close = async () => {
+    try {
+      await host?.close();
+    } finally {
       try {
-      const result = await exec(process.execPath, [
-        "--import", import.meta.resolve("tsx"), cli,
-        "todo", command, "--session", sessionId, "--json", ...args
-      ], {
-        cwd: workspaceRoot,
-        env: { ...process.env, BINY_AGENT_DIR: globalRoot, NODE_NO_WARNINGS: "1" },
-        encoding: "utf8",
-        timeout: 20_000
-      });
-      return { ...result, status: 0 };
-      } catch (error) {
-        const result = error as { code?: number | string; stdout: string; stderr: string };
-        assert.equal(typeof result.code, "number", String(error));
-        return { ...result, status: result.code };
+        if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+        else process.env.BINY_AGENT_DIR = previousAgentDir;
+        await rm(root, { recursive: true, force: true });
+      } finally {
+        const requests = fetchMock.mock.callCount();
+        fetchMock.mock.restore();
+        assert.equal(requests, 0, "Todo control and persistence must not invoke a provider.");
       }
-    },
-    async reopen() {
-      const reloaded = new TodoStore(workspaceRoot, sessionId);
-      await reloaded.initialize();
-      return reloaded.list();
-    },
-    async close() {
-      await host.close();
-      if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
-      else process.env.BINY_AGENT_DIR = previousAgentDir;
-      await rm(root, { recursive: true, force: true });
     }
   };
+  try {
+    await mkdir(workspaceRoot);
+    await ensureAgentDirs(workspaceRoot);
+    const sessionId = "todo-cli-validation";
+    const recorder = new SessionRecorder(workspaceRoot, sessionId);
+    try {
+      await recorder.recordAndFlush({ type: "user_message", content: "Synthetic todo audit" });
+    } finally {
+      await recorder.close();
+    }
+    const store = new TodoStore(workspaceRoot, sessionId);
+    await store.initialize();
+    await store.replace(initial);
+    const config = structuredClone(defaultConfig);
+    config.defaultModel = "todo-fixture";
+    config.toolModel = "todo-fixture";
+    config.providers = {
+      fixture: { type: "openai-compatible", baseUrl: "http://todo-fixture.invalid/v1", requiresApiKey: false }
+    };
+    config.models = {
+      "todo-fixture": { provider: "fixture", model: "todo-fixture", capabilities: { tools: true, reasoning: false, streaming: true } }
+    };
+    config.context.memory.useMemories = false;
+    config.context.memory.generateMemories = false;
+    config.heartbeat.enabled = false;
+    host = await startRuntimeHost(workspaceRoot, async () => await createInteractiveAgentHost(workspaceRoot, {
+      sessionId, configStore: { load: async () => config, save: async () => undefined }
+    }));
+    return {
+      store,
+      todoPath: path.join(agentDir(workspaceRoot), "todos", `${sessionId}.json`),
+      async run(command: string, ...args: string[]) {
+        try {
+          const result = await exec(process.execPath, [
+            "--import", import.meta.resolve("tsx"), cli,
+            "todo", command, "--session", sessionId, "--json", ...args
+          ], {
+            cwd: workspaceRoot,
+            env: { ...process.env, BINY_AGENT_DIR: globalRoot, NODE_NO_WARNINGS: "1" },
+            encoding: "utf8",
+            timeout: 20_000
+          });
+          return { ...result, status: 0 };
+        } catch (error) {
+          const result = error as { code?: number | string; stdout: string; stderr: string };
+          assert.equal(typeof result.code, "number", String(error));
+          return { ...result, status: result.code };
+        }
+      },
+      async reopen() {
+        const reloaded = new TodoStore(workspaceRoot, sessionId);
+        await reloaded.initialize();
+        return reloaded.list();
+      },
+      close
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
