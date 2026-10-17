@@ -244,6 +244,9 @@ export interface PreparedDesktopSettingsChat {
 export class DesktopAgentManager {
   private readonly runtimes = new Map<string, ManagedRuntime>();
   private readonly runtimeInitializations = new Map<string, Promise<ManagedRuntime | undefined>>();
+  /** Disposal retires an admission identity; pending promises remain owned until cleanup settles. */
+  private readonly runtimeLifetimes = new Map<string, symbol>();
+  private readonly projectDisposals = new Map<string, Promise<void>>();
   private activeProjectId?: string;
   private readonly liveEvents = new Map<string, Map<string, AgentHostEvent[]>>();
   private readonly runtimeErrors = new Map<string, DesktopRuntimeError>();
@@ -313,10 +316,14 @@ export class DesktopAgentManager {
     this.activeProjectId = projectId;
     try {
       if (previous?.runtime instanceof RuntimeHostClient) {
-        void previous.runtime.setKeepAlive(false).catch((error) => this.recordRuntimeFailure(previousProjectId!, error));
+        const previousLifetime = this.runtimeLifetimes.get(previousProjectId!);
+        void previous.runtime.setKeepAlive(false).catch((error) => {
+          if (previousLifetime !== undefined && this.isRuntimeLifetimeCurrent(previousProjectId!, previousLifetime)
+            && this.runtimes.get(previousProjectId!) === previous) this.recordRuntimeFailure(previousProjectId!, error);
+        });
       }
       // 后台预热不阻塞首屏；发送等消费操作复用 getRuntime 的同一次初始化。
-      this.prewarmRuntime(projectId, this.getRuntime(projectId, true));
+      this.prewarmRuntime(projectId);
     } catch (error) {
       this.recordRuntimeFailure(projectId, error);
     }
@@ -324,30 +331,36 @@ export class DesktopAgentManager {
   }
 
   /** 后台预热：就绪后为当前项目建立保活，失败只记录，透出与显式入口共用 runtimeErrors 通道。 */
-  private prewarmRuntime(projectId: string, pending: Promise<ManagedRuntime | undefined>): void {
-    void pending.then(async (managed) => {
-      if (this.closing || !managed) return;
+  private prewarmRuntime(projectId: string, lifetime = this.runtimeLifetime(projectId)): void {
+    let warmed: ManagedRuntime | undefined;
+    void this.getRuntime(projectId, true, lifetime).then(async (managed) => {
+      warmed = managed;
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime) || !managed
+        || this.runtimes.get(projectId) !== managed) return;
       if (managed.runtime instanceof RuntimeHostClient) await managed.runtime.setKeepAlive(this.activeProjectId === projectId);
     }).catch((error: unknown) => {
-      if (this.closing) return;
-      this.recordRuntimeFailure(projectId, error);
+      if (this.isRuntimeLifetimeCurrent(projectId, lifetime)
+        && (warmed === undefined || this.runtimes.get(projectId) === warmed)) this.recordRuntimeFailure(projectId, error);
     });
   }
 
   async retryRuntime(projectId: string, sessionId?: string): Promise<DesktopRuntimeRetryResult> {
+    const lifetime = this.runtimeLifetime(projectId);
     const project = this.projects.requireProject(projectId);
     if (sessionId !== undefined) await this.projects.openSession(project, sessionId, [], new Map());
     const persistenceRoot = await this.projects.dataRoot(project);
     // 旧预热可能已捕获熔断错误，先等它结算，避免重试复用复位前的失败初始化。
     await this.runtimeInitializations.get(projectId)?.catch(() => undefined);
+    if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) throw new Error("Project runtime was disposed.");
     runtimeHostSpawnCircuitFor(runtimeHostPaths(persistenceRoot).endpoint).reset();
     try {
       if (sessionId === undefined) await this.ensureRuntime(projectId);
       else await this.resolveSessionRuntime(projectId, sessionId, false);
-      this.runtimeErrors.delete(projectId);
+      if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.runtimeErrors.delete(projectId);
     } catch (error) {
-      this.recordRuntimeFailure(projectId, error);
+      if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.recordRuntimeFailure(projectId, error);
     }
+    if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) throw new Error("Project runtime was disposed.");
     const document = sessionId === undefined ? undefined : await this.openSession(projectId, sessionId);
     return { workspace: await this.workspaceSnapshot(projectId, false), document };
   }
@@ -629,6 +642,7 @@ export class DesktopAgentManager {
   }
 
   async openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument> {
+    const lifetime = this.runtimeLifetime(projectId);
     const project = this.projects.requireProject(projectId);
     if (this.draftSessionIds.get(projectId) !== sessionId) this.draftSessionIds.delete(projectId);
     // 浏览只消费磁盘历史和本地事件投影；聚焦 RPC 会让读取排在 Host 操作后面。
@@ -639,10 +653,12 @@ export class DesktopAgentManager {
     const writerConflict = this.writerConflicts.get(`${projectId}\0${sessionId}`);
     // 已读标记只影响侧栏状态，不应阻塞会话正文首屏。后续元数据写入会先等待这次
     // 后台更新，并把同一份 revision 传给 catalog CAS，避免用户紧接着置顶/改名时误冲突。
-    this.scheduleSessionRead(project, sessionId, document.session.metadataRevision);
-    // 打开历史会话时预热项目 Host；同项目已有实例或正在初始化时复用，不阻塞正文。
-    if (this.residentRuntime(projectId) === undefined && !this.runtimeInitializations.has(projectId)) {
-      this.prewarmRuntime(projectId, this.getRuntime(projectId, true));
+    if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) {
+      this.scheduleSessionRead(project, sessionId, document.session.metadataRevision);
+      // 打开历史会话时预热项目 Host；同项目已有实例或正在初始化时复用，不阻塞正文。
+      if (this.residentRuntime(projectId) === undefined && !this.runtimeInitializations.has(projectId)) {
+        this.prewarmRuntime(projectId, lifetime);
+      }
     }
     return {
       ...document,
@@ -857,6 +873,7 @@ export class DesktopAgentManager {
     sessionId: string | undefined,
     personalization?: DesktopChatPersonalizationOverride
   ): Promise<{ managed: ManagedRuntime; snapshot: InteractiveRuntimeSnapshot }> {
+    const lifetime = this.runtimeLifetime(projectId);
     try {
       const primary = await this.ensureRuntime(projectId);
       if (primary.runtime instanceof RuntimeHostClient) {
@@ -879,13 +896,14 @@ export class DesktopAgentManager {
       if (personalization !== undefined) await this.updateManagedChatPersonalization(primary, personalization);
       return { managed: primary, snapshot: primary.runtime.getSnapshot() };
     } catch (error) {
-      this.recordRuntimeFailure(projectId, error);
+      if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.recordRuntimeFailure(projectId, error);
       throw error;
     }
   }
 
   /** 找到或准备 Host 注册表中的目标 session runtime。 */
   private async resolveSessionRuntime(projectId: string, sessionId: string, focus = true): Promise<ManagedRuntime> {
+    const lifetime = this.runtimeLifetime(projectId);
     try {
       const primary = await this.ensureRuntime(projectId);
       if (primary.runtime instanceof RuntimeHostClient) {
@@ -899,7 +917,7 @@ export class DesktopAgentManager {
       this.writerConflicts.delete(`${projectId}\0${sessionId}`);
       return primary;
     } catch (error) {
-      this.recordRuntimeFailure(projectId, error);
+      if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.recordRuntimeFailure(projectId, error);
       throw error;
     }
   }
@@ -2853,6 +2871,11 @@ export class DesktopAgentManager {
   }
 
   async disposeProject(projectId: string): Promise<void> {
+    const disposing = this.projectDisposals.get(projectId);
+    if (disposing) return await disposing;
+    // Retire admitted work synchronously, before any resource cleanup yields.
+    this.runtimeLifetimes.delete(projectId);
+    if (this.activeProjectId === projectId) this.activeProjectId = undefined;
     // 移除项目同时清理展示缓存；后台任务是否需要驻留由 Host 判断。
     this.liveEvents.delete(projectId);
     this.draftSessionIds.delete(projectId);
@@ -2861,9 +2884,20 @@ export class DesktopAgentManager {
       if (key.startsWith(`${projectId}\0`)) this.writerConflicts.delete(key);
     }
     const managed = this.runtimes.get(projectId);
-    if (!managed) return;
-    await this.closeManagedRuntime(managed);
     this.runtimes.delete(projectId);
+    const pending = this.runtimeInitializations.get(projectId);
+    const disposal = Promise.resolve().then(async () => {
+      // A stale initializer closes what it acquired before its promise settles.
+      // Do not drop it from runtimeInitializations: closeAll must also drain it.
+      await Promise.allSettled([pending]);
+      if (managed) await this.closeManagedRuntime(managed);
+    });
+    this.projectDisposals.set(projectId, disposal);
+    try {
+      await disposal;
+    } finally {
+      if (this.projectDisposals.get(projectId) === disposal) this.projectDisposals.delete(projectId);
+    }
   }
 
   /** 关窗前用它决定要不要提示用户：等待权限也算「在跑」，直接关掉会丢掉这次询问。 */
@@ -2952,6 +2986,8 @@ export class DesktopAgentManager {
     this.pendingSessionReads.clear();
     await Promise.allSettled(this.pendingSessionReadPublications);
     await Promise.allSettled(this.runtimeInitializations.values());
+    await Promise.allSettled(this.projectDisposals.values());
+    this.runtimeLifetimes.clear();
     await this.idleRuntimeRebuildTail.catch(() => undefined);
     await this.activityMemoryIndex?.then(async (index) => await index.close()).catch(() => undefined);
     const managedRuntimes = [...this.runtimes.values()];
@@ -3050,16 +3086,35 @@ export class DesktopAgentManager {
     return managed;
   }
 
-  private async getRuntime(projectId: string, allowSpawn: boolean): Promise<ManagedRuntime | undefined> {
+  private runtimeLifetime(projectId: string): symbol {
+    let lifetime = this.runtimeLifetimes.get(projectId);
+    if (lifetime === undefined) {
+      lifetime = Symbol(projectId);
+      // Admissions attempted during disposal must stay stale after its barrier clears.
+      if (!this.closing && !this.projectDisposals.has(projectId) && this.state.project(projectId) !== undefined) {
+        this.runtimeLifetimes.set(projectId, lifetime);
+      }
+    }
+    return lifetime;
+  }
+
+  private isRuntimeLifetimeCurrent(projectId: string, lifetime: symbol): boolean {
+    return !this.closing && !this.projectDisposals.has(projectId)
+      && this.runtimeLifetimes.get(projectId) === lifetime && this.state.project(projectId) !== undefined;
+  }
+
+  private async getRuntime(projectId: string, allowSpawn: boolean, lifetime = this.runtimeLifetime(projectId)): Promise<ManagedRuntime | undefined> {
     if (this.closing) throw new Error("Desktop runtime is shutting down.");
+    if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
     const current = this.runtimes.get(projectId);
     if (current && !(current.runtime instanceof RuntimeHostClient && current.runtime.isRetired)) return current;
     const pending = this.runtimeInitializations.get(projectId);
     if (pending && !allowSpawn) return undefined;
     if (pending) {
       const managed = await pending;
-      if (managed) return managed;
-      return await this.getRuntime(projectId, true);
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
+      if (managed && this.runtimes.get(projectId) === managed) return managed;
+      return await this.getRuntime(projectId, true, lifetime);
     }
     const initialization = (async () => {
       if (current) {
@@ -3067,14 +3122,15 @@ export class DesktopAgentManager {
         await this.closeManagedRuntime(current);
         if (this.runtimes.get(projectId) === current) this.runtimes.delete(projectId);
       }
-      if (this.closing) throw new Error("Desktop runtime is shutting down.");
-      return await this.initializeRuntime(projectId, allowSpawn);
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
+      return await this.initializeRuntime(projectId, allowSpawn, lifetime);
     })();
     this.runtimeInitializations.set(projectId, initialization);
     try {
-      return await initialization;
+      const managed = await initialization;
+      return this.isRuntimeLifetimeCurrent(projectId, lifetime) ? managed : undefined;
     } catch (error) {
-      this.recordRuntimeFailure(projectId, error);
+      if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.recordRuntimeFailure(projectId, error);
       throw error;
     } finally {
       if (this.runtimeInitializations.get(projectId) === initialization) this.runtimeInitializations.delete(projectId);
@@ -3096,12 +3152,13 @@ export class DesktopAgentManager {
     );
   }
 
-  private async initializeRuntime(projectId: string, allowSpawn: boolean): Promise<ManagedRuntime | undefined> {
+  private async initializeRuntime(projectId: string, allowSpawn: boolean, lifetime: symbol): Promise<ManagedRuntime | undefined> {
     const project = this.projects.requireProject(projectId);
     if (project.missing) throw new Error(`Project path is unavailable: ${project.path}`);
     // session 和附件都走全局按项目隔离的目录；三端通过同一个 workspace 定位同一份历史。
     const persistenceRoot = await this.projects.dataRoot(project);
-    let runtime: InteractiveRuntimeHandle;
+    if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
+    let runtime: InteractiveRuntimeHandle | undefined;
     const commands = undefined;
     let host: RuntimeHostServer | undefined;
     let attached: RuntimeHostClient | undefined;
@@ -3109,70 +3166,73 @@ export class DesktopAgentManager {
       && this.runtimeHostAppPath !== undefined;
     const configPath = this.configStore.configPath?.();
     const configDir = configPath === undefined ? globalConfigDir() : path.dirname(configPath);
-    if (allowSpawn && supportsDetachedRuntimeHost) {
-      const connected = await connectOrSpawnRuntimeHostWithOwnership(persistenceRoot, {
-        lifecycleMode: "ephemeral",
-        idleGraceMs: DESKTOP_HOST_IDLE_GRACE_MS,
-        workspaceRoot: project.path,
-        configDir,
-        attachmentRoot: this.projects.attachmentsRoot(project),
-        electronAppPath: this.runtimeHostAppPath,
-        // Desktop 启动本身不是恢复动作；只有用户打开会话或发送新消息时才选择 session。
-        sessionId: undefined,
-        resumeInterrupted: false,
-        clientId: `desktop-${process.pid}`,
-        surface: "desktop",
-        keepAlive: this.activeProjectId === projectId,
-        browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined
-      });
-      attached = connected?.client;
-    } else {
-      // 凭据限制的是独立启动能力；同环境已有 owner 时仍复用它，且不授予自动接管能力。
-      attached = await connectRuntimeHost(persistenceRoot, {
-        configDir,
-        clientId: `desktop-${process.pid}`,
-        surface: "desktop",
-        keepAlive: this.activeProjectId === projectId
-      });
-    }
-    if (!attached && !allowSpawn) return undefined;
-    if (attached) {
-      runtime = attached;
-      await attached.setBrowserAutomation(this.browserAutomation
-        ? { ...this.browserAutomation, projectId }
-        : undefined);
-    } else {
-      const createLocalRuntime: RuntimeHostFactory = async (sessionId, factoryOptions) => {
-        const fresh = factoryOptions?.fresh === true;
-        const local = await createInteractiveAgentHost(factoryOptions?.workspaceRoot ?? project.path, {
-          persistenceRoot,
-          configStore: this.configStore,
+    let published = false;
+    try {
+      if (allowSpawn && supportsDetachedRuntimeHost) {
+        const connected = await connectOrSpawnRuntimeHostWithOwnership(persistenceRoot, {
+          lifecycleMode: "ephemeral",
+          idleGraceMs: DESKTOP_HOST_IDLE_GRACE_MS,
+          workspaceRoot: project.path,
+          configDir,
           attachmentRoot: this.projects.attachmentsRoot(project),
-          sessionId: fresh ? sessionId : undefined,
-          browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined,
-          resourceRegistry: factoryOptions?.resourceRegistry,
-          resourceBoot: factoryOptions?.resourceBoot ?? (factoryOptions?.resourceRegistry === undefined ? "blocking" : "background")
+          electronAppPath: this.runtimeHostAppPath,
+          // Desktop 启动本身不是恢复动作；只有用户打开会话或发送新消息时才选择 session。
+          sessionId: undefined,
+          resumeInterrupted: false,
+          clientId: `desktop-${process.pid}`,
+          surface: "desktop",
+          keepAlive: this.activeProjectId === projectId,
+          browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined
         });
-        try {
-          if (sessionId !== undefined && !fresh) await local.runtime.resumeSession(sessionId);
-          return local;
-        } catch (error) {
-          await local.runtime.close();
-          throw error;
-        }
-      };
-      // safeStorage 留在 Electron；仍通过统一 Host 注册表承载每个 Session。
-      // 先取得 owner lock，再打开 Runtime 的 store，避免失败候选提前执行恢复。
-      host = await startRuntimeHost(persistenceRoot, (resourceRegistry) => createLocalRuntime(undefined, {
-        resourceRegistry,
-        resourceBoot: "background"
-      }), {
-        workspaceRoot: project.path,
-        createRuntime: createLocalRuntime,
-        resumeInterrupted: false,
-        configDir
-      });
-      try {
+        attached = connected?.client;
+      } else {
+        // 凭据限制的是独立启动能力；同环境已有 owner 时仍复用它，且不授予自动接管能力。
+        attached = await connectRuntimeHost(persistenceRoot, {
+          configDir,
+          clientId: `desktop-${process.pid}`,
+          surface: "desktop",
+          keepAlive: this.activeProjectId === projectId
+        });
+      }
+      runtime = attached;
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime) || (!attached && !allowSpawn)) return undefined;
+      if (attached) {
+        runtime = attached;
+        await attached.setBrowserAutomation(this.browserAutomation
+          ? { ...this.browserAutomation, projectId }
+          : undefined);
+      } else {
+        const createLocalRuntime: RuntimeHostFactory = async (sessionId, factoryOptions) => {
+          const fresh = factoryOptions?.fresh === true;
+          const local = await createInteractiveAgentHost(factoryOptions?.workspaceRoot ?? project.path, {
+            persistenceRoot,
+            configStore: this.configStore,
+            attachmentRoot: this.projects.attachmentsRoot(project),
+            sessionId: fresh ? sessionId : undefined,
+            browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined,
+            resourceRegistry: factoryOptions?.resourceRegistry,
+            resourceBoot: factoryOptions?.resourceBoot ?? (factoryOptions?.resourceRegistry === undefined ? "blocking" : "background")
+          });
+          try {
+            if (sessionId !== undefined && !fresh) await local.runtime.resumeSession(sessionId);
+            return local;
+          } catch (error) {
+            await local.runtime.close();
+            throw error;
+          }
+        };
+        // safeStorage 留在 Electron；仍通过统一 Host 注册表承载每个 Session。
+        // 先取得 owner lock，再打开 Runtime 的 store，避免失败候选提前执行恢复。
+        host = await startRuntimeHost(persistenceRoot, (resourceRegistry) => createLocalRuntime(undefined, {
+          resourceRegistry,
+          resourceBoot: "background"
+        }), {
+          workspaceRoot: project.path,
+          createRuntime: createLocalRuntime,
+          resumeInterrupted: false,
+          configDir
+        });
+        if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
         const client = await connectRuntimeHost(persistenceRoot, {
           configDir,
           clientId: `desktop-${process.pid}`,
@@ -3181,33 +3241,37 @@ export class DesktopAgentManager {
         });
         if (!client) throw new Error("无法连接当前 Desktop 的 Runtime Host。");
         runtime = client;
-      } catch (error) {
-        await host.close();
-        throw error;
       }
-    }
-    try {
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
       // Desktop 可能 attach 到上一次启动后仍存活的 Runtime Host。先把 owner 的内存策略
       // 对齐到磁盘，再订阅历史事件，避免旧快照在首轮回放时覆盖刚恢复的权限模式。
       await this.synchronizePersistedPermissionMode(project.path, runtime, commands);
-    } catch (error) {
-      await runtime.close().catch(() => undefined);
-      await host?.close().catch(() => undefined);
-      throw error;
-    }
-    const unsubscribe = this.wireRuntimeEvents(projectId, runtime, true);
-    const managed: ManagedRuntime = { runtime, commands, host, unsubscribe };
-    this.runtimes.set(projectId, managed);
-    if (runtime instanceof RuntimeHostClient) {
-      for (const entry of runtime.runtimeSnapshots()) {
-        this.emit(projectId, { snapshot: entry.snapshot }, { sessionId: entry.sessionId, primary: entry.primary });
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
+      const unsubscribe = this.wireRuntimeEvents(projectId, runtime, true);
+      const managed: ManagedRuntime = { runtime, commands, host, unsubscribe };
+      this.runtimes.set(projectId, managed);
+      published = true;
+      if (runtime instanceof RuntimeHostClient) {
+        for (const entry of runtime.runtimeSnapshots()) {
+          this.emit(projectId, { snapshot: entry.snapshot }, { sessionId: entry.sessionId, primary: entry.primary });
+        }
+      } else {
+        const snapshot = runtime.getSnapshot();
+        this.emit(projectId, { snapshot }, { sessionId: snapshot.info.sessionId, primary: true });
       }
-    } else {
-      const snapshot = runtime.getSnapshot();
-      this.emit(projectId, { snapshot }, { sessionId: snapshot.info.sessionId, primary: true });
+      this.runtimeErrors.delete(projectId);
+      return managed;
+    } finally {
+      if (!published) {
+        // Only this Desktop client and its own in-process fallback are owned here.
+        // An attached/detached Host and its other clients/jobs remain Host-owned.
+        try {
+          await runtime?.close();
+        } finally {
+          await host?.close();
+        }
+      }
     }
-    this.runtimeErrors.delete(projectId);
-    return managed;
   }
 
   private async synchronizePersistedPermissionMode(
