@@ -1769,10 +1769,14 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setWarning("请在已打开的对话中选择文字，再添加到对话。");
       return;
     }
+    const navigationRequest = loadRequestRef.current;
+    const isCurrentScope = (): boolean => loadRequestRef.current === navigationRequest
+      && projectRef.current === projectId && selectedRef.current === sessionId;
     try {
       const source = await window.biny.referenceForMessage(projectId, sessionId, messageId);
+      if (!isCurrentScope()) return;
       const result = await window.biny.referenceCaptureSelectionQuote(projectId, source.uri, quote);
-      if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+      if (!isCurrentScope()) return;
       const labelCharacters = Array.from(result.label.replace(/[\]\n\r]/gu, " ").replace(/\s+/gu, " ").trim());
       const label = `${labelCharacters.slice(0, 48).join("")}${labelCharacters.length > 48 ? "…" : ""}` || "引用内容";
       const composer = composerRef.current;
@@ -1782,7 +1786,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       }
       composer.appendReference({ kind: result.kind, label, uri: result.uri });
     } catch (error) {
-      if (projectRef.current === projectId && selectedRef.current === sessionId) setWarning(errorMessage(error));
+      if (isCurrentScope()) setWarning(errorMessage(error));
     }
   }, []);
   // 深链路由：MarkdownContent 叶子渲染直接调用 hub，这里统一解析并导航。
