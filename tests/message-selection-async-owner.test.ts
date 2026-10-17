@@ -27,34 +27,39 @@ async function harness(context: TestContext) {
   const calls: Array<{ messageId: string; quote: string; result: ReturnType<typeof deferred> }> = [];
   // Register before installing globals or imports so partial fixture setup is also restored.
   context.after(async () => {
+    const errors: unknown[] = [];
     try {
       try {
         await act(async () => {
           for (const call of calls) call.result.resolve();
           await Promise.all(calls.map(call => call.result.promise));
         });
-      } finally {
-        if (resources.root) await act(() => resources.root!.unmount());
+      } catch (error) { errors.push(error); }
+      finally {
+        try { if (resources.root) await act(() => resources.root!.unmount()); }
+        catch (error) { errors.push(error); }
       }
     } finally {
       try { resources.assets?.deregister(); }
+      catch (error) { errors.push(error); }
       finally {
         try { resources.dom?.window.close(); }
+        catch (error) { errors.push(error); }
         finally {
           try { if (timersEnabled) context.mock.timers.reset(); }
+          catch (error) { errors.push(error); }
           finally {
-            const errors: unknown[] = [];
             for (const [key, descriptor] of saved) {
               try {
                 if (descriptor) Object.defineProperty(globalThis, key, descriptor);
                 else Reflect.deleteProperty(globalThis, key);
               } catch (error) { errors.push(error); }
             }
-            if (errors.length) throw new AggregateError(errors, "Failed to restore quote owner fixture");
           }
         }
       }
     }
+    if (errors.length) throw new AggregateError(errors, "Failed to restore quote owner fixture");
   });
   context.mock.timers.enable({ apis: ["setTimeout"] });
   timersEnabled = true;

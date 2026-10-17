@@ -82,10 +82,12 @@ function snapshots(): { bootstrap: DesktopBootstrap; document: DesktopSessionDoc
 }
 
 async function fixture(t: TestContext, gate: Gate) {
-  let dom: JSDOM | undefined;
-  let root: Root | undefined;
-  let React: typeof import("react") | undefined;
-  let assets: ReturnType<typeof registerHooks> | undefined;
+  const resources: {
+    dom?: JSDOM;
+    root?: Root;
+    React?: typeof import("react");
+    assets?: ReturnType<typeof registerHooks>;
+  } = {};
   let timersEnabled = false;
   const restore: Array<() => void> = [];
   const frames = new Map<number, FrameRequestCallback>();
@@ -103,6 +105,8 @@ async function fixture(t: TestContext, gate: Gate) {
   // Register before imports, globals, loader hooks or createRoot: a partial setup
   // failure must receive exactly the same cleanup as a failed assertion.
   t.after(async () => {
+    const { dom, root, React, assets } = resources;
+    const errors: unknown[] = [];
     try {
       const release = async (): Promise<void> => {
         if (!pendingSettled) { pendingSettled = true; pending.resolve(gate === "referenceForMessage" ? source : captured); }
@@ -112,27 +116,34 @@ async function fixture(t: TestContext, gate: Gate) {
       // globals, even when an earlier assertion left the external gate pending.
       if (React) await React.act(release);
       else await release();
+    } catch (error) {
+      errors.push(error);
     } finally {
       try {
         if (root && React) await React.act(() => root!.unmount());
+      } catch (error) {
+        errors.push(error);
       } finally {
         try { assets?.deregister(); }
+        catch (error) { errors.push(error); }
         finally {
           try { dom?.window.close(); }
+          catch (error) { errors.push(error); }
           finally {
             try { if (timersEnabled) t.mock.timers.reset(); }
+            catch (error) { errors.push(error); }
             finally {
-              frames.clear();
-              const errors: unknown[] = [];
+              try { frames.clear(); }
+              catch (error) { errors.push(error); }
               for (const undo of restore.reverse()) {
                 try { undo(); } catch (error) { errors.push(error); }
               }
-              if (errors.length) throw new AggregateError(errors, "Failed to restore quote integration fixture");
             }
           }
         }
       }
     }
+    if (errors.length) throw new AggregateError(errors, "Failed to restore quote integration fixture");
   });
 
   const replace = (target: object, key: PropertyKey, value: unknown): void => {
@@ -144,8 +155,9 @@ async function fixture(t: TestContext, gate: Gate) {
     Object.defineProperty(target, key, { configurable: true, writable: true, value });
   };
   const { JSDOM: DOM } = await import("jsdom");
-  dom = new DOM('<!doctype html><button id="focus-sentinel">Outside input</button><div id="root"></div>',
+  const dom = new DOM('<!doctype html><button id="focus-sentinel">Outside input</button><div id="root"></div>',
     { url: "https://biny.test", pretendToBeVisual: true });
+  resources.dom = dom;
   const window = dom.window;
   const document = window.document;
   let frameTime = 0;
@@ -234,12 +246,21 @@ async function fixture(t: TestContext, gate: Gate) {
     return Reflect.get(target, key, receiver);
   } }));
 
-  assets = registerHooks({ load(url, context, next) {
+  const assets = registerHooks({ resolve(specifier, context, next) {
+    // Node selects these packages' UMD main instead of the renderer bundler's
+    // module entry. Resolve only to their real published ESM builds; no terminal
+    // implementation or product component is replaced by the fixture.
+    if (specifier === "@xterm/xterm") return next("@xterm/xterm/lib/xterm.mjs", context);
+    if (specifier === "@xterm/addon-fit") return next("@xterm/addon-fit/lib/addon-fit.mjs", context);
+    return next(specifier, context);
+  }, load(url, context, next) {
     if (/\.(?:svg|png|jpg|webp)(?:\?.*)?$/u.test(url)) return { format: "module", shortCircuit: true, source: `export default ${JSON.stringify(url)};` };
     if (/\.css(?:\?.*)?$/u.test(url)) return { format: "module", shortCircuit: true, source: "export {};" };
     return next(url, context);
   } });
-  React = await import("react");
+  resources.assets = assets;
+  const React = await import("react");
+  resources.React = React;
   replace(globalThis, "React", React);
   const { createRoot } = await import("react-dom/client");
   const { App } = await import("../src/desktop/renderer/src/App.js");
@@ -248,7 +269,8 @@ async function fixture(t: TestContext, gate: Gate) {
   // actual mouseup; a later timer must not resurrect the toolbar and mask Red.
   t.mock.timers.enable({ apis: ["setTimeout"] });
   timersEnabled = true;
-  root = createRoot(document.getElementById("root")!);
+  const root = createRoot(document.getElementById("root")!);
+  resources.root = root;
   await act(async () => { root!.render(createElement(App, { settingsEnabled: false })); });
 
   const one = <T extends Element>(selector: string): T => {
