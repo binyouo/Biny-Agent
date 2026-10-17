@@ -58,7 +58,7 @@ function canonicalFuturePath(root: string): string {
     if (parent === ancestor) break;
     ancestor = parent;
   }
-  return path.join(realpathSync(ancestor), ...suffix);
+  return path.join(realpathSync.native(ancestor), ...suffix);
 }
 
 export interface PathEnvironment {
@@ -101,7 +101,7 @@ export function projectSessionsDir(workspaceRoot: string, options: PathEnvironme
 /** 项目运行状态的全局分区；名称规则与项目 session 一致，避免同名工作区互相覆盖。 */
 export function workspaceAgentDir(workspaceRoot: string, options: PathEnvironment = {}): string {
   const resolvedWorkspace = path.resolve(workspaceRoot);
-  const canonicalWorkspace = existsSync(resolvedWorkspace) ? realpathSync(resolvedWorkspace) : resolvedWorkspace;
+  const canonicalWorkspace = existsSync(resolvedWorkspace) ? realpathSync.native(resolvedWorkspace) : resolvedWorkspace;
   return projectStateDir("workspaces", canonicalWorkspace, options);
 }
 
@@ -120,7 +120,6 @@ function projectStateDir(kind: "sessions" | "workspaces", workspaceRoot: string,
 
 function projectStateParentDir(kind: "sessions" | "workspaces", options: PathEnvironment): string {
   const configuredRoot = globalAgentDir(options);
-  // Match promises.realpath in storage guards, including Windows directory aliases.
   const canonicalRoot = existsSync(configuredRoot) ? realpathSync.native(configuredRoot) : configuredRoot;
   return path.join(canonicalRoot, kind);
 }
