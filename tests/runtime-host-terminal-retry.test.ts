@@ -14,12 +14,11 @@ function browserLeaseTransport(t: TestContext) {
   t.mock.method(MemorySocket.prototype, "write", function (this: MemorySocket, data: string): boolean {
     const frame = JSON.parse(data) as HostFrame;
     if (frame.kind !== "request" || frame.operation !== "browser.automation.set") return originalWrite.call(this, data);
-    const socket = this;
     const request = {
-      socket,
+      socket: this,
       frame,
-      resolve: () => socket.deliver({ kind: "response", requestId: frame.requestId, ok: true, result: undefined }),
-      reject: () => socket.deliver({ kind: "response", requestId: frame.requestId, ok: false, error: "fixture browser lease rejected" })
+      resolve: () => this.deliver({ kind: "response", requestId: frame.requestId, ok: true, result: undefined }),
+      reject: () => this.deliver({ kind: "response", requestId: frame.requestId, ok: false, error: "fixture browser lease rejected" })
     };
     requests.push(request);
     if (!state.hold) queueMicrotask(request.resolve);
@@ -235,6 +234,8 @@ test("disconnect after a browser lease reply cannot commit stale recovery or com
 for (const explicitlyRetry of [false, true]) {
 test(`stale automatic discovery stays superseded after ${explicitlyRetry ? "explicit retry" : "another client resets shared circuit"}`, async t => {
   const f = await terminalFixture(t);
+  // Secure discovery checks the real file with lstat before reaching open.
+  await f.ownerAvailable();
   const registrationPath = runtimeHostPaths(f.root).registrationPath;
   const originalOpen = fs.open.bind(fs);
   let enter = false;
