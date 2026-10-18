@@ -1749,11 +1749,15 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (!projectId || !sessionId) return;
+    const navigationRequest = loadRequestRef.current;
+    const isCurrentScope = (): boolean => loadRequestRef.current === navigationRequest
+      && projectRef.current === projectId && selectedRef.current === sessionId;
     try {
       const result = await window.biny.referenceForMessage(projectId, sessionId, messageId);
+      if (!isCurrentScope()) return;
       const label = result.label.replace(/[\]\n\r]/gu, " ").slice(0, 80) || "消息";
       composerRef.current?.appendText(`@[${label}](${result.uri})`);
-    } catch (error) { setWarning(errorMessage(error)); }
+    } catch (error) { if (isCurrentScope()) setWarning(errorMessage(error)); }
   }, []);
   const showMessageReferences = useCallback(async (messageId: string): Promise<void> => {
     const projectId = projectRef.current;
