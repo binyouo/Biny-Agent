@@ -80,7 +80,7 @@ async function appModule() {
             if (args.path === "production-sidebar") return { path: sidebarEntry };
             const key = `${args.importer}:${args.path}`;
             if ((args.importer === entry && actual.has(args.path))
-              || (args.importer === sidebarEntry && args.path === "./SessionDeleteButton.js") || !imports.has(key)) return undefined;
+              || (args.importer === sidebarEntry && ["./SessionDeleteButton.js", "../../../sidebarSizing.js"].includes(args.path)) || !imports.has(key)) return undefined;
             return { path: key, namespace: "fixture" };
           });
           builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({
@@ -178,7 +178,12 @@ async function fixture(context: TestContext) {
     credentialStore: { persistent: false, get: async () => undefined, set: async () => {}, delete: async () => {} }
   });
   configStore.supportsDetachedRuntimeHost = false;
-  await configStore.save(configSchema.parse({ ...defaultConfig, providers: {}, models: {}, defaultModel: "unused" }));
+  await configStore.save(configSchema.parse({
+    ...defaultConfig,
+    providers: { "title-fixture": { type: "openai-compatible", baseUrl: "https://title-fixture.invalid/v1", requiresApiKey: false } },
+    models: { unused: { provider: "title-fixture", model: "synthetic-title-model", contextWindow: 128_000 } },
+    defaultModel: "unused"
+  }));
   const state = new DesktopStateStore(path.join(rootPath, "state.json"));
   await state.load();
   const storage = new DesktopUserDataStore(path.join(rootPath, "desktop"));
@@ -319,7 +324,14 @@ async function fixture(context: TestContext) {
     await React.act(async () => { await refresh.result.catch(noop); await Promise.allSettled(opens); });
   };
   const openRename = async (targetId = sessionId) => {
-    const title = summary(targetId).title;
+    const target = summary(targetId);
+    const title = target.title;
+    const folder = [...dom.window.document.querySelectorAll<HTMLElement>(".biny-project-row")]
+      .find(item => item.title === projectFor(target.projectId).path);
+    assert.ok(folder);
+    if (folder.getAttribute("aria-expanded") === "false") {
+      await React.act(async () => { folder.click(); });
+    }
     const button = [...dom.window.document.querySelectorAll<HTMLButtonElement>(".biny-sidebar-session-item")]
       .find(item => item.title === title);
     assert.ok(button, `Missing sidebar row: ${title}`);
@@ -450,6 +462,7 @@ test("a rename in another project cannot invalidate this project's in-flight ref
   await view.event();
   await gate.entered.promise;
   await (await view.rename("Other manual title", view.otherId)).result;
+  assert.equal(view.probe().activeProjectId, view.project.id, "expanding another project's folder must not navigate away");
   gate.release.resolve();
   await view.settleRefresh(0);
   await view.tick(1_000);
