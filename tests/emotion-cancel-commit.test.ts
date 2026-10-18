@@ -21,7 +21,7 @@ function functions(file: ts.SourceFile, names: readonly string[]): ts.FunctionDe
     return found[0]!;
   });
 }
-const analysisFunctions = functions(analysisSource, ["analyzeContextEmotion", "normalizeMessages", "normalizeText", "clamp"]);
+const analysisFunctions = functions(analysisSource, ["analyzeContextEmotion", "normalizeMessages"]);
 const storageFunctions = functions(storageSource, ["renderEmotionDocument", "safeFileName"]);
 const owners = storageSource.statements.filter((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "EmotionStorage");
 assert.equal(owners.length, 1);
@@ -47,12 +47,14 @@ const storageNames = ["baseFileName", "contextDirectoryName"].map((name) => {
 });
 const calls = new Set([
   "options.getModel", "normalizeMessages", "options.getMessages", "generateNativeText",
-  "nativeJsonMessages", "messages.map", "options.onUsage", "options.signal?.throwIfAborted",
-  "autoEmotionSchema.parse", "parseNativeJson", "normalizeText", "clamp", "options.storage.readBase",
+  "messages.map", "options.onUsage", "options.signal?.throwIfAborted",
+  "options.storage.readBase",
+  "result.text.trim", "result.text.trim().split", 'result.text.trim().split("\\n")[0]!.split',
+  "parts[0]!.trim", "parseInt", "parts.slice", "parts.slice(2).join", 'parts.slice(2).join("|").trim',
   "now().toISOString", "now", "options.storage.readContext", "options.storage.writeContext", "options.onUpdated",
   "Array.from", "Array.from(message.text).slice", "Array.from(message.text).slice(0, recentMessageMaxChars).join",
-  "message.text.trim", "value.replace", 'value.replace(/\\s+/gu, " ").trim',
-  "Number.isFinite", "Math.min", "Math.max",
+  "message.text.trim", "value.replace",
+  "Math.min", "Math.max",
   "this.writeState", "path.join", "safeFileName", "path.dirname", "fs.mkdir", "fs.chmod",
   "randomUUID", "fs.open", "handle.writeFile", "renderEmotionDocument", "handle.sync", "handle.close",
   "signal?.throwIfAborted", "fs.rename", "handle?.close", "handle?.close().catch", "fs.unlink",
@@ -170,15 +172,9 @@ function fixture(gateName?: GateName) {
     withGlobalConfigWriteLock: async (_root: string, effect: () => Promise<void>) => { locks += 1; await effect(); },
     DEFAULT_EMOTION_STATE: { ...state },
     autoEmotionSystemPrompt: "inert fixture prompt",
-    autoEmotionSchema: { parse: (value: unknown) => {
-      assert.deepEqual(value, { mood: "专注", valence: 8, reason: "fixture" });
-      return value;
-    } },
     generateNativeText: async (_model: unknown, _messages: unknown, _options: unknown) => ({
-      text: JSON.stringify({ mood: "专注", valence: 8, reason: "fixture" })
-    }),
-    nativeJsonMessages: (_system: string, _text: string) => [],
-    parseNativeJson: (text: string): unknown => JSON.parse(text)
+      text: "专注|8|fixture"
+    })
   }, { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }) as Extracted;
   const storage = Object.assign(Object.create(extracted.storage) as Storage, {
     root: "root",

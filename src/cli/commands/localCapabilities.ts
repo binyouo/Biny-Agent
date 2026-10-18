@@ -5,7 +5,7 @@
  * daily-notes，Todo 写入复用所属 Runtime 的 TodoStore，空闲读取可直接加载持久文件。
  */
 import { executeSessionCommand } from "./sessionManagement.js";
-import { searchConversationHistory } from "../../session/searchHistory.js";
+import { readConversationDay, searchConversationHistory } from "../../session/searchHistory.js";
 import { connectOrSpawnRuntimeHost, connectRuntimeHost, type RuntimeHostClient } from "../../runtime/RuntimeHost.js";
 import { archiveConversationMarkdown } from "../../session/markdownArchive.js";
 import { startMemoryHttpServer } from "../../runtime/host/memory-http.js";
@@ -333,6 +333,15 @@ export async function historySearchCommand(query: string, options: LocalCapabili
     }
   } finally {
     await index.close();
+  }
+}
+
+export async function historyDayCommand(dateInput: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
+  const result = await readConversationDay(resolveDateKey(dateInput));
+  if (options.json) console.log(JSON.stringify(result, null, 2));
+  else for (const conversation of result.conversations) {
+    console.log(`# Conversation ${conversation.sessionId}\nSource: ${conversation.sourcePath}\n` +
+      conversation.messages.map(message => `\n## ${message.time} ${message.role}\n\n${message.content}`).join("\n"));
   }
 }
 
