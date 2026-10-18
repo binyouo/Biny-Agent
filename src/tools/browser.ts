@@ -2,7 +2,7 @@
  * 桌面浏览器自动化工具。
  *
  * Agent 运行在 Runtime Host 进程，Electron BrowserWindow 在主进程；两者通过
- * 受令牌保护的 Unix socket 传递少量 JSONL 请求。这里仅维护 Agent 侧协议和工具
+ * 受令牌保护的本地 IPC 传递少量 JSONL 请求。这里仅维护 Agent 侧协议和工具
  * 定义，浏览器生命周期与 CDP 调用留在 Electron 主进程，避免把 Electron 依赖带入
  * CLI/TUI。
  */

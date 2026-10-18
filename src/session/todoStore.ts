@@ -70,28 +70,7 @@ export class TodoStore {
    * 情况，也省掉一套 id 分配和对账逻辑。
    */
   async replace(items: readonly unknown[]): Promise<TodoItem[]> {
-    if (!Array.isArray(items)) throw new TypeError("A plan must be an array of items.");
-    if (items.length > maxTodoItems) {
-      throw new RangeError(`A plan may hold at most ${String(maxTodoItems)} items; received ${String(items.length)}.`);
-    }
-    const nextItems = Array.from(items, (item: unknown): TodoItem => {
-      if (typeof item !== "object" || item === null || Array.isArray(item)) {
-        throw new TypeError("Plan items must be objects with content and status.");
-      }
-      const { content, status } = item as { content?: unknown; status?: unknown };
-      if (typeof content !== "string" || !content.trim()) throw new RangeError("Plan items must have non-empty content.");
-      if (content.length > maxTodoContentLength) {
-        throw new RangeError(`Plan item content must be at most ${String(maxTodoContentLength)} characters.`);
-      }
-      if (status !== "pending" && status !== "in_progress" && status !== "completed") {
-        throw new RangeError("Plan item status must be pending, in_progress, or completed.");
-      }
-      return { content: content.trim(), status };
-    });
-    const inProgress = nextItems.filter((item) => item.status === "in_progress");
-    if (inProgress.length > 1) {
-      throw new RangeError("At most one plan item may be in_progress at a time; finish or re-queue the others.");
-    }
+    const nextItems = validateTodoItems(items);
     await this.persist(nextItems);
     return nextItems.map((item) => ({ ...item }));
   }
@@ -101,11 +80,13 @@ export class TodoStore {
     if (!this.items.length) return undefined;
     const lines = this.items.map((item, index) => `${String(index + 1)}. [${statusMark(item.status)}] ${item.content}`);
     return [
+      "<!-- biny-todos:start -->",
       "## Current plan",
       "",
-      "You maintain this list with `TodoWrite`. Keep it current: mark an item in_progress when you start it and completed when it is actually done, and add items you discover along the way. Never report work as finished while items remain pending.",
+      "You maintain this list with `biny todo replace --todos <json> --json`. Keep it current: mark an item in_progress when you start it and completed when it is actually done, and add items you discover along the way. Never report work as finished while items remain pending.",
       "",
-      ...lines
+      ...lines,
+      "<!-- biny-todos:end -->"
     ].join("\n");
   }
 
@@ -152,4 +133,30 @@ function normalizeItems(value: unknown): TodoItem[] {
     const item: TodoItem = { content: candidate.content.slice(0, maxTodoContentLength), status };
     return [item];
   }).slice(0, maxTodoItems);
+}
+
+export function validateTodoItems(items: readonly unknown[]): TodoItem[] {
+  if (!Array.isArray(items)) throw new TypeError("A plan must be an array of items.");
+  if (items.length > maxTodoItems) {
+    throw new RangeError(`A plan may hold at most ${String(maxTodoItems)} items; received ${String(items.length)}.`);
+  }
+  const nextItems = Array.from(items, (item: unknown): TodoItem => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new TypeError("Plan items must be objects with content and status.");
+    }
+    const { content, status } = item as { content?: unknown; status?: unknown };
+    if (typeof content !== "string" || !content.trim()) throw new RangeError("Plan items must have non-empty content.");
+    if (content.length > maxTodoContentLength) {
+      throw new RangeError(`Plan item content must be at most ${String(maxTodoContentLength)} characters.`);
+    }
+    if (status !== "pending" && status !== "in_progress" && status !== "completed") {
+      throw new RangeError("Plan item status must be pending, in_progress, or completed.");
+    }
+    return { content: content.trim(), status };
+  });
+  const inProgress = nextItems.filter((item) => item.status === "in_progress");
+  if (inProgress.length > 1) {
+    throw new RangeError("At most one plan item may be in_progress at a time; finish or re-queue the others.");
+  }
+  return nextItems;
 }

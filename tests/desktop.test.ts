@@ -4077,11 +4077,14 @@ function testVerifierPromptIsNotRenderedAsUserMessage(): void {
     "Do not claim completion until the workspace and the required checks are actually in a passing state."
   ].join("\n");
   const base = { sessionId: "session", runId: "verifier-run", timestamp: "2026-01-01T00:00:00.000Z" };
-  const historical = buildSessionTimeline([{ type: "user_message", content: internalPrompt }], []);
+  const attachment = { name: "report.pdf", path: "@attachments/report.pdf", mimeType: "application/pdf", size: 42 };
+  const historical = buildSessionTimeline([{ type: "user_message", content: internalPrompt, attachments: [attachment] }], []);
   assert.equal(historical[0]?.user, "关掉它吧");
+  assert.deepEqual(historical[0]?.userAttachments, [attachment]);
 
-  const live = buildSessionTimeline([], [{ ...base, type: "message.user", messageId: "message", content: internalPrompt }]);
+  const live = buildSessionTimeline([], [{ ...base, type: "message.user", messageId: "message", content: internalPrompt, attachments: [attachment] }]);
   assert.equal(live[0]?.user, "关掉它吧");
+  assert.deepEqual(live[0]?.userAttachments, [attachment]);
 }
 
 function testHistoricalPrefixKeepsUnpersistedDuplicatePrompt(): void {

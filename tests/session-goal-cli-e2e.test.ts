@@ -21,7 +21,7 @@ const provider = createServer((request, response) => { void (async () => {
   for await (const chunk of request) source += String(chunk);
   const body = JSON.parse(source) as { tools?: Array<{ function?: { name?: string } }> };
   // 主请求保持在途，使控制命令与真实运行的取消边界可以稳定验证。
-  const main = body.tools?.some(tool => tool.function?.name === "GoalUpdate");
+  const main = body.tools?.some(tool => tool.function?.name === "Bash");
   if (main) {
     mainRequests += 1;
     if (!noWork) return;

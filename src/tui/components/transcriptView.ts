@@ -41,6 +41,7 @@ export class TranscriptView extends Container {
       seen.add(item.id);
       const existing = this.components.get(item.id);
       if (existing) {
+        if (existing instanceof ToolExecutionComponent) existing.setLeadingSpace(!(ordered.at(-1) instanceof ToolExecutionComponent));
         // 条目对象不可变，身份没变就说明内容没变。
         if (this.lastItems.get(item.id) !== item) {
           existing.update(item);
@@ -52,6 +53,7 @@ export class TranscriptView extends Container {
       }
       const created = createItemComponent(item);
       if (!created) continue;
+      if (created instanceof ToolExecutionComponent) created.setLeadingSpace(!(ordered.at(-1) instanceof ToolExecutionComponent));
       this.components.set(item.id, created);
       this.lastItems.set(item.id, item);
       ordered.push(created);
@@ -65,7 +67,7 @@ export class TranscriptView extends Container {
       changed = true;
     }
 
-    if (changed || ordered.length !== this.children.length) {
+    if (changed || ordered.some((component, index) => component !== this.children[index]) || ordered.length !== this.children.length) {
       this.children = ordered;
       changed = true;
     }

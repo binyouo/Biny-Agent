@@ -20,7 +20,7 @@ function deferred() {
 }
 
 async function fixture() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-catalog-index-lifecycle-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-catalog-index-lifecycle-")));
   const previousAgentRoot = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = path.join(root, "agent");
   await ensureAgentDirs(root);

@@ -602,8 +602,8 @@ async function main(): Promise<void> {
   assert.equal((await localMemory.listMemoryEntries()).entries.some((entry) => entry.content === "记忆写入不需要预读版本。"), true);
   assert.deepEqual(
     exclusiveOperations.slice(exclusiveOperationsBeforeMemory),
-    ["memory"],
-    "attached memory requests must use the runtime maintenance boundary"
+    [],
+    "ordinary memory append must remain available during an active model turn"
   );
   const exclusiveOperationsBeforeRead = exclusiveOperations.length;
   const remoteOverview = await client.memory<{
@@ -621,6 +621,14 @@ async function main(): Promise<void> {
     written: 0,
     failed: 0
   });
+
+  const maintenanceProbe = await localMemory.writeEntry({ content: "Temporary maintenance boundary probe.", source: "manual" });
+  assert.ok(maintenanceProbe.entry);
+  const exclusiveOperationsBeforeDelete = exclusiveOperations.length;
+  await client.memory("delete", { id: maintenanceProbe.entry.id });
+  assert.deepEqual(exclusiveOperations.slice(exclusiveOperationsBeforeDelete), ["memory"],
+    "destructive memory management must retain the runtime maintenance boundary");
+  assert.equal(await localMemory.getEntry(maintenanceProbe.entry.id), undefined);
 
   const aliceScopedEntry = await localMemory.writeEntry({
     content: "Runtime Host scope query marker for Alice in thread A.",

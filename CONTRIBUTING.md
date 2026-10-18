@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-CI 使用 Node.js 22，项目使用 pnpm `10.6.5`。Desktop 与原生 Computer Use 的完整构建需要 macOS。
+CI 使用 Node.js 22，项目使用 pnpm `10.6.5`。Desktop 可在 macOS 或 Windows 构建；原生 Computer Use、Activity 和日历 sidecar 仅在 macOS 构建。Windows 的 node-pty 原生重建需要 Visual Studio C++ Build Tools 与 Windows SDK。
 
 ```bash
 corepack enable
@@ -25,6 +25,10 @@ pnpm build
 ```
 
 `build:cli` 只构建 CLI；`build` 包含 CLI、Desktop 及原生依赖构建。在其他项目使用当前 CLI 时，先执行 `pnpm link --global`，再切到目标项目运行 `biny`。
+
+Windows 使用相同的 `pnpm desktop:dev` 开发入口，`pnpm desktop:pack` 生成应用目录，`pnpm desktop:dist` 生成 NSIS 安装程序与 ZIP；安装包尚未配置 Windows 代码签名。这些命令先准备 Electron 与 PTY 原生依赖。macOS 的 `desktop:pack` 生成应用目录，`desktop:dist` 生成 DMG 安装包。
+
+`node scripts/run-tests.mjs windows` 验证平台选择、真实 Host 多客户端连接、认证、退出重启与进程树清理；真实 DACL 用例仅在 Windows 运行。CI 的 Windows lane 另检查构建后的 Electron headless Host 并生成安装包，不执行模型 API 或替代人工界面验收。Windows 上还需人工检查中文输入法、粘贴、快捷键、窗口与终端缩放、会话交接、终端关闭和安装卸载。
 
 代码入口与数据职责见 [架构](docs/ARCHITECTURE.md)。终端展示使用 `@earendil-works/pi-tui`，Desktop 使用 Electron；界面层负责适配，运行与持久化逻辑在核心模块中维护。
 
@@ -50,6 +54,15 @@ pnpm build
 
 单文件检查也可以通过 `node scripts/run-tests.mjs config-test-isolation` 运行；入口为每个测试进程创建并清理独立的 `BINY_AGENT_DIR`。直接运行测试时，配置、会话和凭据目录必须显式指向临时目录。测试及其派生进程会拒绝访问日常 Biny 数据目录，包括指向这些目录的符号链接；系统 Keychain 调用也被拒绝，持久凭据测试须注入独立的存储或命令替身。
 
+标准测试在 CI 中分为 4 个并行任务：测试文件按名称排序后轮流分配，每个任务内仍逐文件执行。`pnpm test` 默认运行完整测试集。可以列出或执行一个标准测试分片：
+
+```bash
+node scripts/run-tests.mjs --standard --shard=1/4 --list
+pnpm test:standard --shard=1/4 --report=test-timings.json
+```
+
+`--shard` 使用从 1 开始的编号；四个分片覆盖完整标准测试集且没有重复。`--report` 记录所选文件、已执行文件的耗时与退出码；测试失败时保留已执行结果并停止该分片。CI 会上传各分片的耗时报告，其他分片继续执行，最终检查要求所有分片通过。`pnpm test:runner` 验证分片覆盖、失败传播和进程目录隔离。
+
 项目依赖和文档检查的范围与限制见[开发规范](docs/DEVELOPMENT.md#可执行检查)。纯文档修改运行 `pnpm check:docs`；维护本地规格时再运行 `pnpm check:docs:local`，不需要运行无关模型任务或构建。Desktop、Web 与 TUI 的视觉和交互由人工验收，交付时提供操作步骤、预期表现与关键边界。
 
 ## 文档维护
@@ -57,6 +70,36 @@ pnpm build
 功能事实的归属、修复链路检查和经验沉淀遵循[开发与文档规范](docs/DEVELOPMENT.md)。公开专题说明放在 `docs/`，由[文档索引](docs/README.md) 引用；README 保持介绍与上手入口。
 
 根据主题选择章节，不要求每页套用相同模板。Skill 的触发条件、Agent 操作步骤和输出要求属于运行指令；公开文档应帮助读者理解功能如何工作、结果从哪里来以及限制是什么。
+
+## 发布约定
+
+采用按里程碑手动发布，不固定每日或每次提交发版。完成一个可用功能或重要修复后，由维护者明确发起发布；零散小修与文档更新合并到下一版。普通提交、push 与 CI 成功不自动修改版本、创建 tag 或发布安装包。
+
+当前 Beta 沿用 `0.0.1-beta.N`，每次新发布递增 `N`；已有 tag 不覆盖。工作流或验证环境故障可修复后按原 tag 重试；标签内的应用源码需要修改时创建新版本。进入稳定版或调整主版本时另行确定版本。发布前收齐本次范围内的并行改动，确认对应源码的 CI、构建和产物检查结果；安装、首次启动及界面交互的人工验收结果单独说明。
+
+公开下载只提供 macOS Apple Silicon、Intel 各一份 DMG。`pnpm build:desktop` 先从应用原稿生成平台图标，打包使用同一批资源。发布工作流只构建、上传 DMG，不额外提供 ZIP 或校验和文件。
+
+版本来源为 `package.json`。通过 [Prepare release](.github/workflows/prepare-release.yml) 手动输入新版本，工作流提交版本、创建 `v<version>` tag，再启动 [Release macOS app](.github/workflows/release-desktop.yml)。后者验证标签对应源码，构建两种架构并创建 GitHub Release；已有标签的失败构建可通过其 `tag` 输入重试。只有 Actions 成功且 Release 安装包实际上传完成，才算发布完成。
+
+### macOS 签名与公证
+
+站外分发使用 **Developer ID Application** 证书签署 App，并提交 Apple 公证、附加公证票据。Developer ID Installer 用于 PKG；当前 DMG 分发不需要该证书。需要有效的 [Apple Developer Program](https://developer.apple.com/programs/enroll/) 会员，证书创建步骤见 [Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)，公证要求见 [Apple 官方说明](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)。
+
+在 Mac 的钥匙串生成证书签名请求，申请并安装 Developer ID Application 证书，将证书连同私钥导出为带密码的 `.p12`。在仓库 Settings → Secrets and variables → Actions 配置以下 Repository secrets：
+
+| Secret | 内容 |
+| --- | --- |
+| `MACOS_CERTIFICATE_BASE64` | `.p12` 文件的 Base64 内容，工作流映射到 `CSC_LINK` |
+| `MACOS_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码，映射到 `CSC_KEY_PASSWORD` |
+| `APPLE_ID` | Apple 账号邮箱 |
+| `APPLE_APP_SPECIFIC_PASSWORD` | Apple 账号生成的 App 专用密码 |
+| `APPLE_TEAM_ID` | 开发者账号的 Team ID |
+
+例如通过 `base64 < DeveloperID.p12 | gh secret set MACOS_CERTIFICATE_BASE64` 写入证书，其余值可用 `gh secret set <名称>` 交互录入。私钥和密码保留在钥匙串或 GitHub Secrets，不加入仓库或发布说明。
+
+凭据配置后，发版时保持 `unsigned=false`；electron-builder 导入证书、签署 App 及嵌套组件，启用 Hardened Runtime 并执行公证。签名、公证失败会阻止发布。下载产物后用 `codesign --verify --deep --strict --verbose=2 Biny.app`、`spctl --assess --verbose --type exec Biny.app` 和 `xcrun stapler validate Biny.app` 核验，安装与系统权限仍需人工验收。
+
+当前无 Apple 凭据时可显式选择 `unsigned=true`，仅允许 Beta；该模式使用 ad-hoc 签名并关闭 Hardened Runtime、公证与 Gatekeeper 构建评估，发布说明保留安装限制。稳定版不允许此模式。
 
 ## 交付与问题反馈
 

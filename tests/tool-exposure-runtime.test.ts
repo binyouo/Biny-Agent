@@ -131,7 +131,7 @@ async function runFixture(
 try {
   const coexist = await runFixture("exposure-coexist", registryWithTools(), [
     (context) => {
-      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["Read", "ToolSearch", "Write", "exec"]);
+      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["Read", "Write", "exec"]);
       assert.doesNotMatch(context.systemPrompt ?? "", new RegExp(schemaMarker, "u"));
       return call("coexist-read", "Read", { path: "hello.txt" });
     },
@@ -204,10 +204,10 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
       const direct = context.tools.find((tool) => tool.name === reportName);
       assert.ok(direct, "ToolSearch discloses deferred MCP as an ordinary tool");
       assert.match(JSON.stringify(direct.parameters), /project-key-schema-marker/u);
-      assert.ok(context.tools.some((tool) => tool.name === "exec"));
+      assert.ok(!context.tools.some((tool) => tool.name === "exec"));
       return call("report-direct", reportName, { project: "demo" });
     }, finish
-  ]);
+  ], { executionMode: "direct" });
   assert.deepEqual((resultFor(directDiscovered, "report-direct") as typeof envelope.structuredContent).reports, envelope.structuredContent.reports);
   assert.equal(reports, 2);
 
@@ -220,7 +220,10 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
     () => call("private-call", "exec", { code: `try { await tools['${privateNames[0]}']({project:'demo'}); } catch {} return await tools['${privateNames[1]}']({project:'demo'});` }),
     finish
   ], { automatic: false, run: { capabilitySelection: { tools: "all", skills: "none" } } });
-  assert.deepEqual((resultFor(privateEvents, "private-description") as { value: unknown }).value, { hidden: null, modelOnly: null });
+  const descriptions = (resultFor(privateEvents, "private-description") as { value: { hidden: unknown; modelOnly: { name: string; invocation: string } } }).value;
+  assert.equal(descriptions.hidden, null);
+  assert.equal(descriptions.modelOnly.name, privateNames[1]);
+  assert.equal(descriptions.modelOnly.invocation, "direct", "model-only metadata is available without granting script invocation");
   assert.equal((resultFor(privateEvents, "private-call") as { ok: boolean }).ok, false);
   assert.equal(privateCalls, 0);
 
@@ -270,6 +273,21 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
     assert.deepEqual(context.tools, []);
     return finish();
   }], { automatic: false, run: { capabilitySelection: { tools: "none", skills: "none" } } });
+  const scriptDirect = registryWithTools(false);
+  scriptDirect.registerMcpTool(reportTool(reportName, "direct"));
+  const directScriptEvents = await runFixture("exposure-script-unselected-direct", scriptDirect, [
+    (context) => {
+      assert.ok(!context.tools.some((tool) => tool.name === reportName));
+      return call("unselected-direct-exec", "exec", { code: `const hits=await searchTools('${reportName}'); return {invocation:hits[0].invocation, data:await tools[hits[0].name]({project:'demo'})};` });
+    },
+    (context) => {
+      assert.ok(!context.tools.some((tool) => tool.name === reportName), "script discovery need not publish callable MCP schemas");
+      return finish();
+    }
+  ]);
+  const directScriptValue = (resultFor(directScriptEvents, "unselected-direct-exec") as { value: { invocation?: string; data: typeof envelope } }).value;
+  assert.equal(directScriptValue.invocation, undefined);
+  assert.deepEqual(directScriptValue.data.structuredContent, envelope.structuredContent);
   await runFixture("exposure-direct-mode", registryWithTools(), [(context) => {
     assert.ok(context.tools.some((tool) => tool.name === "Read"));
     assert.ok(context.tools.some((tool) => tool.name === "Write"));

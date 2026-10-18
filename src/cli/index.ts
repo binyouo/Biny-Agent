@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { registerSessionManagementCommands } from "./commands/sessionManagement.js";
 /**
  * Biny 的命令行入口模块。
  *
@@ -21,6 +22,7 @@ import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand,
 import { registerFatigueCommands } from "./commands/fatigue.js";
 import { registerThemeCommands } from "./commands/theme.js";
 import { registerUserInputCommands } from "./commands/userInput.js";
+import { registerPersonaCommands } from "./commands/persona.js";
 import { registerSoulCommands } from "./commands/soul.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { runCommand, type RunCommandOptions } from "./commands/run.js";
@@ -98,6 +100,7 @@ import {
   temporalClueActionCommand,
   temporalIndexFactsCommand,
   historySearchCommand,
+  historyDayCommand,
   reflectionRunCommand,
   reflectionStatusCommand,
   todoClearCommand,
@@ -138,8 +141,9 @@ program.name("biny").description("Biny — local-first agent for your terminal a
   ].join("\n"));
 registerCrystalCommands(program);
 registerSoulCommands(program);
+registerPersonaCommands(program, workspaceRoot);
 registerFatigueCommands(program);
-registerUserInputCommands(program);
+registerUserInputCommands(program, wrap);
 registerSkillCommands(program, workspaceRoot);
 registerComputerCommands(program);
 registerCuCommands(program);
@@ -284,7 +288,7 @@ task.command("events").argument("<taskRunId>", "TaskRun id").option("--limit <co
 const memory = program.command("memory").description("Manage local memory");
 memory.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryListCommand(workspaceRoot, options))());
 memory.command("stats").description("Show memory store counts and maintenance status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryStatsCommand(workspaceRoot, options))());
-memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying any given tag").option("--thread-id <id>", "filter by one thread ID").option("--user-id <id>", "filter by one user ID and shared entries").option("--user-ids <ids...>", "filter by any user ID and shared entries").option("--json", "print JSON").action((query: string[], options: { tag?: string[]; threadId?: string; userId?: string; userIds?: string[]; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
+memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying any given tag").option("--thread-id <id>", "filter by one thread ID").option("--user-id <id>", "filter by one user ID and shared entries").option("--user-ids <ids...>", "filter by any user ID and shared entries").option("--limit <count>", "maximum matches", parsePositiveInteger).option("--threshold <score>", "minimum similarity between 0 and 1", Number).option("--json", "print JSON").action((query: string[], options: { limit?: number; threshold?: number; tag?: string[]; threadId?: string; userId?: string; userIds?: string[]; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
 memory.command("add").argument("[content]", "memory text").option("--entry <json>", "structured memory JSON instead of text").option("--json", "print JSON").action((content: string | undefined, options: { entry?: string; json?: boolean }) => wrap(() => memoryAddCommand(workspaceRoot, content, options))());
 memory.command("archive").description("Export conversation transcripts to local Markdown; does not archive facts").action(wrap(memoryExportCommand));
 memory.command("archive-entry").argument("<id>", "memory id").requiredOption("--yes", "confirm archive").option("--json", "print JSON").action((id: string, options: { yes?: boolean; json?: boolean }) => wrap(() => memoryArchiveCommand(workspaceRoot, id, options))());
@@ -313,6 +317,8 @@ memory.command("index-facts").argument("<session-id>").option("--json", "print J
 memory.command("serve").description("Serve authenticated loopback memory REST API").option("--port <number>", "listen port", parsePositiveInteger, 23001).action((options: { port: number }) => wrap(() => memoryServeCommand(workspaceRoot, options.port))());
 memory.command("clear").requiredOption("--yes", "confirm clear").option("--thread-id <id>", "clear active memories for one thread only").option("--json", "print JSON").action((options: { yes?: boolean; threadId?: string; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
 const history = program.command("history").description("Search past conversation transcripts");
+history.command("day").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--json", "print JSON")
+  .action((date: string, options: { json?: boolean }) => wrap(() => historyDayCommand(date, options))());
 history.command("search").argument("<query...>", "full-text query over past user and assistant messages").option("--limit <n>", "maximum hits", "8").option("--json", "print JSON").action((query: string[], options: { limit: string; json?: boolean }) => wrap(() => historySearchCommand(query.join(" "), { limit: Number(options.limit), json: options.json }))());
 
 memory.command("sleep").option("--run", "run maintenance now").option("--preview", "preview without mutation").option("--runs", "recent maintenance runs").option("--cancel", "cancel active maintenance").option("--yes", "confirm maintenance").option("--json", "print JSON").action((options: Parameters<typeof memorySleepCommand>[1]) => wrap(() => memorySleepCommand(workspaceRoot, options))());
@@ -323,7 +329,7 @@ diary.command("refresh").argument("[date]", "today, yesterday, or YYYY-MM-DD", "
 
 const reflection = program.command("reflection").description("Run or inspect daily self-reflection");
 reflection.command("status").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--json", "print JSON").action((date: string, options: { json?: boolean }) => wrap(() => reflectionStatusCommand(workspaceRoot, date, options))());
-reflection.command("run").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--force", "refresh even when markers exist").option("--json", "print JSON").action((date: string, options: { force?: boolean; json?: boolean }) => wrap(() => reflectionRunCommand(workspaceRoot, date, options))());
+reflection.command("run").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--force", "rewrite an existing diary").option("--json", "print JSON").action((date: string, options: { force?: boolean; json?: boolean }) => wrap(() => reflectionRunCommand(workspaceRoot, date, options))());
 
 const heartbeat = program.command("heartbeat").description("Inspect or trigger Heartbeat");
 heartbeat.command("status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => heartbeatStatusCommand(workspaceRoot, options))());
@@ -343,7 +349,8 @@ todo.command("replace").requiredOption("--todos <json>", "complete Todo list JSO
 todo.command("clear").requiredOption("--yes", "confirm clear").option("--session <id>", "session id; defaults to latest").option("--json", "print JSON").action((options: { yes?: boolean; session?: string; json?: boolean }) => wrap(() => todoClearCommand(workspaceRoot, options.session, options))());
 
 const goal = program.command("goal").description("Manage session goals");
-goal.command("show").requiredOption("--session <id>", "session id").option("--json", "print JSON").action((options: { session: string; json?: boolean }) => wrap(() => sessionGoalActionCommand(workspaceRoot, "show", options))());
+registerSessionManagementCommands(program, goal, workspaceRoot, wrap);
+goal.command("show").option("--session <id>", "session id").option("--json", "print JSON").action((options: { session: string; json?: boolean }) => wrap(() => sessionGoalActionCommand(workspaceRoot, "show", options))());
 goal.command("set").argument("<objective>", "complete goal objective").requiredOption("--session <id>", "session id").option("--token-budget <tokens>", "optional token budget", parsePositiveInteger).option("--json", "print JSON").action((objective: string, options: { session: string; tokenBudget?: number; json?: boolean }) => wrap(() => sessionGoalSetCommand(workspaceRoot, objective, options))());
 goal.command("clear").requiredOption("--session <id>", "session id").option("--json", "print JSON").action((options: { session: string; json?: boolean }) => wrap(() => sessionGoalActionCommand(workspaceRoot, "clear", options))());
 for (const action of ["pause", "resume"] as const) {

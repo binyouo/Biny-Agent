@@ -17,9 +17,9 @@ const model: AgentModel = {
     })();
   }
 };
-const tools = ["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "Skill", "read_skill_resource", "skill_lookup"].map((name) => ({ name, description: name, source: "builtin" as const }));
+const tools = ["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "Skill", "read_skill_resource"].map((name) => ({ name, description: name, source: "builtin" as const }));
 const options = {
-  input: "查看文档并评审", config: defaultConfig, history: [], previousTools: ["Read", "removed"], models: candidates(model),
+  input: "查看文档并评审", config: { ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" as const } }, history: [], previousTools: ["Read", "removed"], models: candidates(model),
   tools: [...tools, { name: "mcp_docs_read", description: "Read docs", source: "mcp" as const, capability: "mcp:docs" },
     { name: "mcp_docs_search", description: "Search docs", source: "mcp" as const, capability: "mcp:docs" },
     { name: "mcp_other_read", description: "Unrelated server", source: "mcp" as const, capability: "mcp:other" }],
@@ -27,7 +27,7 @@ const options = {
 };
 const result = await preselectCapabilities(options);
 assert.equal(calls, 2, "工具与技能分别调用同一辅助模型");
-assert.deepEqual(new Set(result.tools), new Set(["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "mcp_docs_read", "Skill", "read_skill_resource", "skill_lookup"]));
+assert.deepEqual(new Set(result.tools), new Set(["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "mcp_docs_read", "Skill", "read_skill_resource"]));
 assert.deepEqual(result.skills, ["review-id"]);
 const before = calls;
 assert.deepEqual(await preselectCapabilities({ ...options, selection: { tools: ["Write"], skills: "none" } }), { tools: ["Write"], skills: "none" });
@@ -37,8 +37,8 @@ answer = JSON.stringify({ tools: [], skillIds: [] });
 assert.deepEqual(await preselectCapabilities({ ...options, input: "你好", previousTools: [] }), { tools: ["Read", "Write", "ToolSearch"], skills: [] });
 answer = "invalid JSON";
 assert.deepEqual(await preselectCapabilities(options), { tools: ["Read", "Write", "ToolSearch"], skills: [] });
-assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skill:review" }), { tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource", "skill_lookup"], skills: ["review-id"] });
-assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skills:review" }), { tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource", "skill_lookup"], skills: ["review-id"] }, "the Composer plural slash command loads the named skill without the auxiliary selector");
+assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skill:review" }), { tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource"], skills: ["review-id"] });
+assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skills:review" }), { tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource"], skills: ["review-id"] }, "the Composer plural slash command loads the named skill without the auxiliary selector");
 assert.deepEqual(await preselectCapabilities({ ...options, models: [], input: "/skills:review", selection: { tools: ["Read"], skills: ["other-id"] } }), {
   tools: ["Read"], skills: ["other-id", "review-id"]
 }, "an explicitly named skill is added to a manual skill selection instead of silently disappearing");
@@ -73,7 +73,7 @@ const parallelModel: AgentModel = {
   }
 };
 assert.deepEqual(await preselectCapabilities({ ...options, models: candidates(parallelModel), signal: AbortSignal.timeout(1_000) }), {
-  tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource", "skill_lookup"], skills: ["review-id"]
+  tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource"], skills: ["review-id"]
 }, "工具解析失败不影响并发成功的技能选择");
 let isolatedCalls = 0;
 const isolatedModel: AgentModel = { ...parallelModel, stream: async () => {
@@ -86,13 +86,13 @@ await preselectCapabilities({ ...options, models: candidates(isolatedModel), sel
 assert.equal(isolatedCalls, 1, "显式关闭技能时只分析工具");
 await preselectCapabilities({ ...options, models: candidates(isolatedModel), tools: tools.filter((tool) => ["Read", "Write"].includes(tool.name)), skills: [] });
 assert.equal(isolatedCalls, 1, "只有基础工具时不调用模型");
-const recallTools = ["save_memory", "recall_memory", "search_history"].map((name) => ({ name, description: name, source: "builtin" as const }));
-const recallOptions = { ...options, tools: [...tools, ...recallTools], skills: [], previousTools: [] };
-const ordinarySelection = await preselectCapabilities({ ...recallOptions, models: [], input: "修复解析器" });
-assert.equal(Array.isArray(ordinarySelection.tools) && ordinarySelection.tools.some((name) => recallTools.some((tool) => tool.name === name)), false, "注册记忆和历史工具不等于每回合注入定义");
-answer = JSON.stringify({ tools: ["recall_memory", "search_history"] });
-const recallSelection = await preselectCapabilities({ ...recallOptions, input: "上次讨论的约束是什么" });
-assert.equal(Array.isArray(recallSelection.tools) && recallSelection.tools.includes("recall_memory") && recallSelection.tools.includes("search_history"), true, "按需选择仍能启用记忆和历史检索");
+const queryTools = ["WebSearch", "WebFetch"].map((name) => ({ name, description: name, source: "builtin" as const }));
+const queryOptions = { ...options, tools: [...tools, ...queryTools], skills: [], previousTools: [] };
+const ordinarySelection = await preselectCapabilities({ ...queryOptions, models: [], input: "修复解析器" });
+assert.equal(Array.isArray(ordinarySelection.tools) && ordinarySelection.tools.some((name) => queryTools.some((tool) => tool.name === name)), false, "注册查询工具不等于每回合注入定义");
+answer = JSON.stringify({ tools: ["WebSearch", "WebFetch"] });
+const querySelection = await preselectCapabilities({ ...queryOptions, input: "搜索并阅读官网说明" });
+assert.equal(Array.isArray(querySelection.tools) && querySelection.tools.includes("WebSearch") && querySelection.tools.includes("WebFetch"), true, "按需选择仍能启用查询工具");
 const computerTools = ["ComputerList", "ComputerLaunch", "ComputerObserve", "ComputerAction", "ComputerSequence", "ComputerMirror"].map((name) => ({ name, description: name, source: "mcp" as const }));
 let unavailableCalls = 0;
 const unavailableModel: AgentModel = {
@@ -143,8 +143,8 @@ assert.ok(Array.isArray(fallbackSelection.tools) && fallbackSelection.tools.incl
 assert.deepEqual(fallbackSelection.skills, ["review-id"], "Skill selection must use the same bounded fallback policy.");
 
 // 既有目录省略了常驻辅助工具，无法发现普通请求仍携带这些无关定义。
-const coreNames = ["Read", "Write", "Edit", "Bash", "ToolSearch", "read_tool_result"];
-const optionalNames = ["Glob", "Grep", "BashOutput", "KillShell", "TodoWrite", "AskUserQuestion", "read_checkpoint_evidence"];
+const coreNames = ["Read", "Write", "Edit", "Bash", "ToolSearch"];
+const optionalNames = ["Glob", "Grep", "BashOutput", "KillShell", "AskUserQuestion", "read_checkpoint_evidence"];
 const completeCatalog = [...coreNames, ...optionalNames].map((name) => ({ name, description: name }));
 const minimalOptions = { ...options, tools: completeCatalog, skills: [], previousTools: [], input: "你好", models: [] };
 assert.deepEqual(new Set((await preselectCapabilities(minimalOptions)).tools), new Set(coreNames),
@@ -163,3 +163,7 @@ console.log("capability preselection tests passed");
 function candidates(model: AgentModel) {
   return [{ model, failureDomain: `${model.provider}/${model.modelId}` }];
 }
+
+const scriptSelection = await preselectCapabilities({ ...minimalOptions,
+  config: { ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "code_mode" } }, input: "ToolSearch", previousTools: ["ToolSearch"] });
+assert.deepEqual(new Set(scriptSelection.tools), new Set(["Read", "Write", "Edit", "Bash"]), "script discovery removes the standalone search schema even when named or retained");

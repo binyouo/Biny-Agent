@@ -29,9 +29,8 @@ export async function connectRuntimeHost(
   persistenceRoot: string,
   options: HostClientOptions = {}
 ): Promise<RuntimeHostClient | undefined> {
-  if (process.platform === "win32") return undefined;
   const paths = runtimeHostPaths(persistenceRoot);
-  await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
+  await ensureRuntimeHostDirectory(path.dirname(paths.registrationPath));
   const registration = await readRegistration(paths);
   if (!registration) return undefined;
   if (registration.protocolVersion !== protocolVersion) {
@@ -114,7 +113,6 @@ export async function spawnRuntimeHost(
   persistenceRoot: string,
   options: SpawnRuntimeHostOptions
 ): Promise<SpawnedRuntimeHost> {
-  if (process.platform === "win32") throw new Error("Runtime Host currently requires Unix domain sockets.");
   const child = spawnRuntimeHostProcess(persistenceRoot, options);
   try {
     const client = await waitForSpawnedRuntimeHost(persistenceRoot, options, child);

@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from "react";
-import { readWidgetMessage } from "../../../../widgets/document.js";
+import { readWidgetMessage, type WidgetTheme } from "../../../../widgets/document.js";
 import { WIDGET_MAX_HTML_LENGTH, widgetSchema, type WidgetInput } from "../../../../widgets/widget.js";
 import type { TimelineTool } from "../sessionTimeline.js";
 import { WidgetContext } from "./WidgetContext.js";
@@ -20,7 +20,7 @@ function WidgetFrame({ title, html, executable, streaming, onOpenExternal }: { t
   const [token] = useState(() => globalThis.crypto.randomUUID());
   const [document, setDocument] = useState<string>();
   const [ready, setReady] = useState(false);
-  const [height, setHeight] = useState(80);
+  const [height, setHeight] = useState(0);
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   const [action, setAction] = useState<{ type: "send-prompt"; text: string } | { type: "open-link"; url: string }>();
@@ -52,7 +52,7 @@ function WidgetFrame({ title, html, executable, streaming, onOpenExternal }: { t
     };
     window.addEventListener("message", receive);
     setReady(false); setError(undefined); sent.current = ""; setAction(undefined);
-    void import("./widgetEngine.js").then(module => { if (active) setDocument(module.loadWidgetDocument(token)); })
+    void import("./widgetEngine.js").then(module => { if (active) setDocument(module.loadWidgetDocument(token, readWidgetTheme())); })
       .catch(() => { if (active) setError("可视化加载失败，请重试。"); });
     return () => { active = false; window.clearTimeout(timer); window.clearTimeout(pending.current); pending.current = undefined; window.removeEventListener("message", receive); };
   }, [token, attempt, sendContent]);
@@ -64,14 +64,7 @@ function WidgetFrame({ title, html, executable, streaming, onOpenExternal }: { t
   useEffect(() => {
     if (!ready) return;
     const update = () => {
-      const colors = readThemeColors(window.document.body, {
-        background: "--surface", foreground: "--biny-text", primary: "--accent", muted: "--biny-surface-soft",
-        secondary: "--biny-text-secondary", border: "--biny-border", card: "--surface-raised", green: "--green", purple: "--file-purple", red: "--red", yellow: "--amber"
-      });
-      const font = window.getComputedStyle(window.document.body).fontFamily;
-      const css = `:root{--background:${colors.background};--foreground:${colors.foreground};--primary:${colors.primary};--muted:${colors.muted};--muted-foreground:${colors.secondary};--border:${colors.border};--card:${colors.card};--chart-1:${colors.primary};--chart-2:${colors.green};--chart-3:${colors.purple};--chart-4:${colors.red};--chart-5:${colors.yellow}}body{font-family:${font}}`;
-      const selection = window.document.documentElement.dataset.theme;
-      frame.current?.contentWindow?.postMessage({ type: "set-theme", token, css, dark: selection === "dark" || (selection !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches) }, "*");
+      frame.current?.contentWindow?.postMessage({ type: "set-theme", token, ...readWidgetTheme() }, "*");
     };
     update();
     const observer = new MutationObserver(update);
@@ -82,7 +75,7 @@ function WidgetFrame({ title, html, executable, streaming, onOpenExternal }: { t
   }, [ready, token]);
   return <section className="chat-widget" data-executable={String(executable)} aria-label={title}>
     {!ready ? <p role="status">正在生成可视化…</p> : null}
-    <iframe key={attempt} ref={frame} srcDoc={document} sandbox="allow-scripts" title={title} style={{ height }} />
+    <iframe key={attempt} ref={frame} srcDoc={document} sandbox="allow-scripts" title={title} style={{ height: ready ? height : 0 }} />
     {error ? <p role="alert">{error}<button type="button" onClick={() => setAttempt(value => value + 1)}>重试</button></p> : null}
     <div className="chat-widget-actions"><CopyButton value={html} label="复制可视化源码" size={14} />
       {streaming ? <span role="status">生成中</span> : !executable ? <span>预览未完成，交互尚未启用</span> : null}
@@ -90,4 +83,16 @@ function WidgetFrame({ title, html, executable, streaming, onOpenExternal }: { t
       {action?.type === "open-link" ? <button type="button" title={action.url} onClick={() => { onOpenExternal(action.url); setAction(undefined); }}>打开链接</button> : null}
     </div>
   </section>;
+}
+
+function readWidgetTheme(): WidgetTheme {
+  const colors = readThemeColors(window.document.body, {
+    background: "--surface", foreground: "--biny-text", primary: "--accent", primaryForeground: "--accent-foreground", muted: "--biny-surface-soft",
+    secondary: "--biny-text-secondary", border: "--biny-border", card: "--surface-raised", green: "--green", purple: "--file-purple", red: "--red", yellow: "--amber"
+  });
+  const bodyStyle = window.getComputedStyle(window.document.body);
+  const radius = bodyStyle.getPropertyValue("--biny-radius-control").trim() || "8px";
+  const css = `:root{--background:${colors.background};--foreground:${colors.foreground};--primary:${colors.primary};--primary-foreground:${colors.primaryForeground};--muted:${colors.muted};--muted-foreground:${colors.secondary};--border:${colors.border};--card:${colors.card};--radius:${radius};--chart-1:${colors.primary};--chart-2:${colors.green};--chart-3:${colors.purple};--chart-4:${colors.red};--chart-5:${colors.yellow}}body{font-family:${bodyStyle.fontFamily}}`;
+  const selection = window.document.documentElement.dataset.theme;
+  return { css, dark: selection === "dark" || (selection !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches) };
 }

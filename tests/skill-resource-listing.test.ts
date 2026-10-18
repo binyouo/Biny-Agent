@@ -18,7 +18,8 @@ try {
       const name = `${scope}-${filename === "SKILL.md" ? "upper" : "lower"}`;
       const directory = path.join(scope === "project" ? path.join(workspaceRoot, ".biny", "skills") : globalRoot, name);
       await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, filename), `---\nname: ${name}\ndescription: Test resource discovery\n---\nFollow the bundled resources.\n`);
+      // Both instruction entrypoints apply to explicitly always-inject skills.
+      await writeFile(path.join(directory, filename), `---\nname: ${name}\ndescription: Test resource discovery\nalways-inject: true\n---\nFollow the bundled resources.\n`);
       for (const [relative, , content] of resources) {
         const target = path.join(directory, relative);
         await mkdir(path.dirname(target), { recursive: true });
@@ -61,10 +62,10 @@ try {
     assert.ok(!("isError" in legacy));
     const invoked = await legacy.execute({ toolCallId: name }) as string;
     const selected = await skillPromptForSelection(bundle, [name]);
-    for (const output of [invoked, selected]) {
-      assert.match(output, /Legacy/u);
-      assert.doesNotMatch(output, /Resources in this skill directory/u, "Plain legacy Markdown files do not list their surrounding workspace");
-    }
+    assert.match(invoked, /Legacy/u);
+    assert.doesNotMatch(invoked, /Resources in this skill directory/u, "Plain legacy Markdown files do not list their surrounding workspace");
+    assert.ok(selected.includes(`"${name}":`));
+    assert.ok(!selected.includes(`# Skill: ${name}\n`), "Ordinary legacy instructions remain on demand even with always-inject resources present");
   }
 } finally {
   await rm(workspaceRoot, { recursive: true, force: true });

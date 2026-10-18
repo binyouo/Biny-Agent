@@ -14,7 +14,7 @@ import { runtimeHostLaunchPlan, runtimeHostPaths, waitForHostRegistration } from
 
 // The small Electron probe cannot detect failures in the built Desktop entry and real Host assembly.
 test("构建后的 Desktop 后台入口提供真实 Host socket，并在空闲后正常退出", {
-  skip: process.platform !== "darwin", timeout: 30_000
+  skip: process.platform !== "darwin" && process.platform !== "win32", timeout: 180_000
 }, async () => {
   await access("out/main/index.js");
   await promisify(execFile)(process.execPath, ["scripts/prepare-electron-background.mjs"]);
@@ -29,7 +29,7 @@ test("构建后的 Desktop 后台入口提供真实 Host socket，并在空闲�
   });
   const plan = runtimeHostLaunchPlan(root, { workspaceRoot: root, configDir,
     electronAppPath: process.cwd(), idleGraceMs: 1_000 }, {
-    platform: "darwin", execPath: createRequire(import.meta.url)("electron") as string
+    platform: process.platform, execPath: createRequire(import.meta.url)("electron") as string
   });
   plan.args.splice(1, 0, `--user-data-dir=${path.join(root, "electron-profile")}`);
   const child = spawn(plan.executable, plan.args, { env: plan.env, stdio: ["ignore", "ignore", "pipe"] });

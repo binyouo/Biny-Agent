@@ -9,7 +9,7 @@ import { createUnifiedDiff } from "../src/utils/diff.js";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
 
 const quoted = `.biny/tool-results/tool-result-${"f".repeat(64)}.json`;
 const longText = `ordinary documentation ${quoted}\n${"normal text ".repeat(820)}TAIL_EVIDENCE 中文 😀`;
@@ -72,7 +72,7 @@ test("projected Grep, Write and Edit references recover complete output through 
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(workspace, "agent");
   try {
-    const reader = createReadToolResultTool({ workspaceRoot: workspace, ignore: [] });
+    const reader = createReadFileTool({ workspaceRoot: workspace, ignore: [] });
     for (const fixture of [fixtures[0]!, fixtures[3]!, fixtures[4]!]) {
       const result = record(await projectSingleToolResultForModel(fixture.tool, {}, fixture.raw, {
         toolCallId: fixture.tool,
@@ -82,7 +82,7 @@ test("projected Grep, Write and Edit references recover complete output through 
       }));
       assert.equal(result.archived, true);
       assert.notEqual(result.archivePath, quoted);
-      const restored = await reader.resolveExecution({ archivePath: String(result.archivePath) }).execute({});
+      const restored = await reader.resolveExecution({ path: String(result.archivePath) }).execute({});
       assert.deepEqual(JSON.parse(restored.content), fixture.raw);
       assert.match(restored.content, /TAIL_EVIDENCE/u, "the omitted model preview tail remains recoverable");
     }
@@ -131,7 +131,7 @@ for (const fixture of fixtures) {
     assert.equal(result.archivePath, undefined);
     assert.equal(result.archiveError, "inert archive unavailable");
     assert.strictEqual(result.result, fixture.raw, "preserve the existing archive-failure contract");
-    assert.match(String(result.summary), /read_tool_result is unavailable/u);
+    assert.match(String(result.summary), /archived output is unavailable through Read/u);
   });
 }
 

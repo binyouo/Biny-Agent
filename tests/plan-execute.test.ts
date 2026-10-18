@@ -1,6 +1,7 @@
 /** supervised GoalGraph、模型工具入口与 Host 监督唤醒的最小闭环。 */
+import { createRequire } from "node:module";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -16,6 +17,9 @@ import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import { pendingTaskVerificationApproval, readTaskDefinition, type TaskVerificationContract } from "../src/runtime/taskVerification.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
+
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const biny = [process.execPath, "--import", createRequire(import.meta.url).resolve("tsx"), path.resolve("src/cli/index.ts")].map(shellQuote).join(" ");
 
 const contract: TaskVerificationContract = {
   version: 1,
@@ -42,7 +46,7 @@ await testHostReadOnlyReportPlan();
 console.log("plan execute tests passed");
 
 async function testSupervisedGraphStateMachine(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-plan-store-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-plan-store-")));
   const authority = await RuntimeEventAuthority.open(root);
   const tasks = await DurableTaskRunStore.open(root, authority);
   let graphs = await GoalGraphStore.open(root, authority);
@@ -165,7 +169,7 @@ async function testSupervisedGraphStateMachine(): Promise<void> {
 }
 
 async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-plan-busy-checkpoint-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-plan-busy-checkpoint-")));
   const authority = await RuntimeEventAuthority.open(root);
   const tasks = await DurableTaskRunStore.open(root, authority);
   const graphs = await GoalGraphStore.open(root, authority);
@@ -212,7 +216,7 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
 }
 
 async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-plan-model-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-plan-model-")));
   const originalFetch = globalThis.fetch;
   let phase: "plan" | "supervision" | "simple" = "plan";
   let planCalls = 0;
@@ -228,7 +232,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     if (system.includes("tool search assistant")) return streamText('{"tools":["PlanStart"]}');
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
     if (system.includes("选择需要的技能")) return streamText('{"skillIds":[]}');
-    if (phase === "plan" && !names.has("PlanStart")) return streamToolCall("find-plan", "ToolSearch", { query: "PlanStart" });
+    if (phase === "plan" && !names.has("Bash")) return streamToolCall("find-plan", "ToolSearch", { query: "PlanStart" });
     if (phase === "plan" && planCalls === 0) {
       planCalls += 1;
       return streamToolCall("start-plan", "PlanStart", {
@@ -241,8 +245,8 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
       });
     }
     if (phase === "supervision") {
-      assert.equal(names.has("PlanStatus"), true);
-      assert.equal(names.has("PlanUpdate"), true);
+      assert.equal(names.has("Bash"), true);
+      assert.equal(names.has("PlanUpdate"), false);
       assert.match(lastText, /Supervise durable plan/u);
       return streamText("supervision delivered");
     }
@@ -250,21 +254,25 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     return streamText("plan started");
   }) as typeof fetch;
 
+  let host: Awaited<ReturnType<typeof startRuntimeHost>> | undefined;
   try {
     const configStore: AgentConfigStore = { load: async () => config(), save: async () => undefined };
     const commands = await createCommandRuntime(root, { configStore });
     const runtime = new InteractiveAgentRuntime(commands);
+    host = await startRuntimeHost(root, async () => ({ commands, runtime }));
     const sessionId = commands.agent.getInfo().sessionId;
     const outcome = await runtime.submitPrompt("请执行一个需要先准备再验收、并且重启后还能继续的长程任务。").completion;
     assert.equal(outcome.status, "completed");
     assert.equal(planCalls, 1);
     const graphs = commands.graphs.listGraphs();
-    assert.equal(graphs.length, 1);
+    assert.equal(graphs.length, 1, JSON.stringify((await readSessionEvents(sessionFilePath(root, sessionId))).filter(event => event.type === "tool_result")));
     assert.equal(graphs[0]?.mode, "supervised");
     assert.equal(graphs[0]?.supervisorSessionId, sessionId);
     assert.equal(graphs[0]?.nodes.length, 2);
     assert.equal("goalId" in graphs[0]!, false, "a plan must not create a second objective ledger");
 
+    commands.graphs.pauseGraph(graphs[0]!.graphId);
+    await runtime.waitForIdle();
     const before = await readSessionEvents(sessionFilePath(root, sessionId));
     const beforeUsers = before.filter((event) => event.type === "user_message").length;
     phase = "supervision";
@@ -280,8 +288,10 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     phase = "simple";
     await runtime.submitPrompt("你好").completion;
     assert.equal(commands.graphs.listGraphs().length, 1, "ordinary chat must not create another graph");
-    await runtime.close();
+    await host.close();
+    host = undefined;
   } finally {
+    await host?.close();
     globalThis.fetch = originalFetch;
     await rm(root, { recursive: true, force: true });
   }
@@ -289,7 +299,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
 
 /** 真实 Host/会话/工具/文件与审批链路，仅替换不稳定的模型协议边界。 */
 async function testHostPlanApprovalRestartAndDelivery(planning = false, independent = false, cancelParked?: TestContext, pausedCancellation = false): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-plan-host-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-plan-host-")));
   const originalFetch = globalThis.fetch;
   const originalAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, ".agent-test");
@@ -342,7 +352,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
       schedulingEvents.push(`worker:${file}`);
       return streamToolCall(`write-${file}`, "Write", { path: file, content: "good" });
     }
-    if (last.role === "user" && lastText.includes("Supervise durable plan ") && body.tools?.some((tool) => tool.function?.name === "PlanStatus")) {
+    if (last.role === "user" && lastText.includes("Supervise durable plan ") && body.tools?.some((tool) => tool.function?.name === "Bash")) {
       return streamToolCall("inspect-plan", "PlanStatus", { graphId });
     }
     if (last.role === "tool" && last.tool_call_id === "inspect-plan") {
@@ -396,7 +406,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     }
     if (!planStarted) {
       const planTool = planning ? "PlanDraft" : "PlanStart";
-      if (!body.tools?.some((tool) => tool.function?.name === planTool)) {
+      if (!body.tools?.some((tool) => tool.function?.name === "Bash")) {
         return streamToolCall("discover-plan", "ToolSearch", { query: planTool });
       }
       planStarted = true;
@@ -627,7 +637,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
 
 /** 从自然语言建草稿、重启、确认执行到报告交付；只有模型 HTTP 协议边界使用 fake。 */
 async function testHostReadOnlyReportPlan(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-plan-reports-host-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-plan-reports-host-")));
   const originalFetch = globalThis.fetch;
   const originalAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, ".agent-test");
@@ -676,7 +686,7 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
     }
     if (last.role === "tool" && last.tool_call_id === "finish-reports") return streamText("分析交付：source.txt 包含 source fact；这是只读分析结论，不是测试通过证明。");
     if (!drafted) {
-      if (!names.includes("PlanDraft")) return streamToolCall("find-report-plan", "ToolSearch", { query: "PlanDraft" });
+      if (!names.includes("Bash")) return streamToolCall("find-report-plan", "ToolSearch", { query: "PlanDraft" });
       drafted = true;
       return streamToolCall("draft-reports", "PlanDraft", {
         objective: "在后台分析本地来源并综合结论，允许重启后继续",
@@ -754,7 +764,7 @@ function publicContract(): Record<string, unknown> {
 
 function config(): AgentConfig {
   return {
-    ...defaultConfig,
+    ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     defaultModel: "plan-execute-test",
     providers: { test: { type: "openai", baseUrl: "https://example.test/v1", apiKey: "test-key" } },
     models: {
@@ -774,6 +784,14 @@ function config(): AgentConfig {
 }
 
 function streamToolCall(id: string, name: string, args: Record<string, unknown>): Response {
+  const action = { PlanDraft: "draft", PlanStart: "start", PlanStatus: "status", PlanUpdate: "update" }[name];
+  if (action) {
+    const command = action === "status"
+      ? `${biny} plan status ${shellQuote(String(args.graphId))} --json`
+      : `${biny} plan ${action} --input ${shellQuote(JSON.stringify(args))} --json`;
+    name = "Bash";
+    args = { command };
+  }
   return stream([
     { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: null }] },
     { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }
@@ -795,7 +813,16 @@ function stream(parts: unknown[]): Response {
 }
 
 function textContent(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    try {
+      const result = JSON.parse(value) as { stdout?: string; exitCode?: number };
+      if (typeof result.stdout === "string") {
+        assert.equal(result.exitCode, 0, value);
+        return result.stdout.trim();
+      }
+    } catch (error) { if (error instanceof assert.AssertionError) throw error; }
+    return value;
+  }
   if (!Array.isArray(value)) return "";
   return value.map((part) => typeof part === "object" && part !== null && "text" in part ? String(part.text) : "").join("");
 }

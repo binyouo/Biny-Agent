@@ -5,8 +5,9 @@ import path from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { projectMessageSentAt } from "../src/agent/modelMessages.js";
 
-// Source-only extraction. No product module, SDK, storage, or model is imported.
+// Request logic is extracted; the shared send-time formatter is pure. No SDK, storage, or model is imported.
 const root = process.env.BINY_ANCHOR_SOURCE_ROOT ?? process.cwd();
 const sourcePath = process.env.BINY_ANCHOR_SOURCE ?? path.join(root, "src/agent/context/requestAnchor.ts");
 const baselinePath = process.env.BINY_ANCHOR_BASELINE;
@@ -24,7 +25,7 @@ function guard(nodes: readonly ts.Node[], source: ts.SourceFile): void {
     "createHash", "createHash(\"sha256\").update", "createHash(\"sha256\").update(JSON.stringify(value)).digest",
     "JSON.stringify", "hash", "requestFingerprintHash", "fixedRequestFingerprint", "requestFingerprints",
     "context.tools.map", "context.messages.map", "anchor.messageFingerprints.some", "context.messages.slice",
-    "estimateMessageTokens", "messages.reduce", "messageTokenCost", "estimateTokens", "Math.ceil", "Buffer.byteLength"
+    "projectMessageSentAt", "estimateMessageTokens", "messages.reduce", "messageTokenCost", "estimateTokens", "Math.ceil", "Buffer.byteLength"
   ]);
   const visit = (node: ts.Node): void => {
     assert.ok(!ts.isImportDeclaration(node) && !ts.isImportEqualsDeclaration(node) && !ts.isNewExpression(node)
@@ -71,6 +72,7 @@ interface Api {
 function fixture(code = selectedProgram) {
   const counts = { hashes: 0, json: 0 };
   const api = runInNewContext(code, {
+    projectMessageSentAt,
     createHash: (algorithm: string) => { assert.equal(algorithm, "sha256"); counts.hashes++; return createHash(algorithm); },
     JSON: Object.freeze({ stringify: (value: unknown) => { counts.json++; return JSON.stringify(value); } }),
     Buffer: Object.freeze({ byteLength: (value: string, encoding: BufferEncoding) => Buffer.byteLength(value, encoding) })

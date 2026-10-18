@@ -464,7 +464,7 @@ function SettingsOverlayContent({
           /> : null}
           {activeTab === "Computer History" ? <SettingsActivity onOpenToolModel={() => { void selectTab("通用"); }} /> : null}
           {activeTab === "聊天" ? <SettingsChatPage /> : null}
-          {memoryVisited ? <SettingsMemory
+          {memoryVisited ? <SettingsMemory key={workspace?.project.id}
             models={settingsModels}
             embeddingModels={settingsDraft.snapshot?.models.embeddingModels ?? []}
             hidden={!open || activeTab !== "记忆"}

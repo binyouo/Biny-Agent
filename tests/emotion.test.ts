@@ -249,12 +249,14 @@ async function testEmotionAnalysis(): Promise<void> {
   const current = new Date("2026-08-30T10:00:00.000Z");
   const storage = new EmotionStorage({ configDir: root, now: () => current });
   let promptText = "";
-  let output = JSON.stringify({ mood: "专注", valence: 8, reason: "用户目标明确" });
+  let output = "专注|8|用户目标明确";
+  let outputLimit: number | undefined;
   const model: AgentModel = {
     provider: "test",
     modelId: "emotion-analysis-test",
-    stream: async ({ messages }) => {
-      promptText = JSON.stringify(messages);
+    stream: async ({ messages, systemPrompt }, options) => {
+      promptText = JSON.stringify({ messages, systemPrompt });
+      outputLimit = options?.maxOutputTokens;
       return (async function* () {
         yield { type: "text-delta" as const, text: output };
         yield { type: "finish" as const, reason: "stop" as const };
@@ -289,6 +291,9 @@ async function testEmotionAnalysis(): Promise<void> {
     assert.equal(updated?.mood, "专注");
     assert.equal(updated?.valence, 8);
     assert.equal(updated?.energy, 7);
+    assert.equal(updated?.trigger, "用户目标明确");
+    assert.equal(outputLimit, 50);
+    assert.match(promptText, /Output EXACTLY one line in this format: mood\|valence\|reason/u);
     assert.match(promptText, /message-10/u);
     assert.doesNotMatch(promptText, /message-0/u, "only the most recent ten messages are analyzed");
     assert.match(promptText, /L{150}/u);
@@ -313,14 +318,39 @@ async function testEmotionAnalysis(): Promise<void> {
     await Promise.resolve();
     assert.deepEqual(scheduledCalls, ["session-one:message-two"], "cancel aborts pending analysis");
 
-    output = "not json";
-    await assert.rejects(analyzeContextEmotion({
-      sessionId: "session-one",
-      storage,
-      getModel: () => model,
-      getMessages: async () => messages,
-      now: () => current
-    }));
+    for (const [response, mood, valence, reason] of [
+      ["  happy | 8 | 聊得开心 | 有共鸣  \nangry|1|忽略第二行", "happy", 8, "聊得开心 | 有共鸣"],
+      ["sad|0|低落", "sad", 5, "低落"],
+      ["neutral|invalid|普通闲聊", "neutral", 5, "普通闲聊"],
+      ["excited|12|完成任务", "excited", 10, "完成任务"],
+      ["angry|-2|不愉快", "angry", 0, "不愉快"],
+      ["amused|7.8|有趣", "amused", 7, "有趣"]
+    ] as const) {
+      output = response;
+      const next = await analyzeContextEmotion({
+        sessionId: "session-one", storage, getModel: () => model,
+        getMessages: async () => messages, now: () => current
+      });
+      assert.equal(next?.mood, mood, response);
+      assert.equal(next?.valence, valence, response);
+      assert.equal(next?.trigger, reason, response);
+      const persisted = await storage.readContext("session-one");
+      assert.equal(persisted?.mood, mood);
+      assert.equal(persisted?.valence, valence);
+      assert.equal(persisted?.trigger, reason);
+    }
+    const previous = await storage.readContext("session-one");
+    for (const response of ["", "not structured", "happy|8", '{"mood":"happy","valence":8,"reason":"旧格式"}', "说明文字\nhappy|8|第二行不生效"]) {
+      output = response;
+      let notified = false;
+      assert.equal(await analyzeContextEmotion({
+        sessionId: "session-one", storage, getModel: () => model,
+        getMessages: async () => messages, now: () => current,
+        onUpdated: () => { notified = true; }
+      }), undefined, "incomplete first-line output must not update the context");
+      assert.deepEqual(await storage.readContext("session-one"), previous);
+      assert.equal(notified, false);
+    }
   } finally {
     scheduler.cancel();
     await rm(root, { recursive: true, force: true });
@@ -334,10 +364,10 @@ async function testAgentSessionAutoAnalysis(): Promise<void> {
   const model: AgentModel = {
     provider: "test",
     modelId: "emotion-auto-test",
-    stream: async ({ messages }) => {
-      const requestText = JSON.stringify(messages);
-      const output = requestText.includes("Analyze the recent conversation")
-        ? JSON.stringify({ mood: "专注", valence: 8, reason: "用户目标明确" })
+    stream: async ({ messages, systemPrompt }) => {
+      const requestText = JSON.stringify({ messages, systemPrompt });
+      const output = requestText.includes("Output EXACTLY one line in this format: mood|valence|reason")
+        ? "专注|8|用户目标明确"
         : "ok";
       return (async function* () {
         yield { type: "text-delta" as const, text: output };

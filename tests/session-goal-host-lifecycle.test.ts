@@ -32,7 +32,7 @@ const provider = createServer((request, response) => { void (async () => {
   let source = "";
   for await (const chunk of request) source += String(chunk);
   const body = JSON.parse(source) as { tools?: Array<{ function?: { name?: string } }> };
-  if (body.tools?.some(tool => tool.function?.name === "GoalUpdate")) {
+  if (body.tools?.some(tool => tool.function?.name === "Bash")) {
     goalRequests += 1;
     responses.add(response);
     response.once("close", () => responses.delete(response));

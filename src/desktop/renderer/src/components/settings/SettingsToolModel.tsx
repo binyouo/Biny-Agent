@@ -51,6 +51,8 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
               disabled={saving || testing || saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required"}
               groups={modelPickerGroups(snapshot.models.configured.filter((model) => model.providerType !== "acp"), snapshot.models.connections)}
               inheritLabel="自动选择"
+              resolvedValue={snapshot.models.resolvedToolModel}
+              selectionHint={snapshot.models.toolModel === undefined && active ? "自动" : undefined}
               onChange={selectModel}
               placeholder="自动选择"
               value={snapshot.models.toolModel}

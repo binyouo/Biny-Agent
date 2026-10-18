@@ -143,7 +143,21 @@ export class AcpClient {
     child.on("error", (error: NodeJS.ErrnoException) => connection.close(new Error(error.code === "ENOENT"
       ? "找不到 ACP 程序或运行环境。请先安装适配器和 Node.js；已安装时，请在高级设置中填写程序的绝对路径，并确认 Node.js 在 Biny 的 PATH 中。"
       : "ACP 启动失败，请检查命令和执行权限。")));
-    child.on("exit", (code, exitSignal) => connection.close(new Error(`ACP 进程已退出 (${String(code ?? exitSignal)})。`)));
+    child.on("exit", (code, exitSignal) => {
+      let failure = new Error(`ACP 进程已退出 (${String(code ?? exitSignal)})。`);
+      // close() owns its own exit cleanup after clearing this.child. A spontaneous
+      // exit still owns this group: finish it now, never from a later close().
+      if (this.child === child && process.platform !== "win32" && child.pid) {
+        try { process.kill(-child.pid, "SIGKILL"); }
+        catch (error) {
+          const errorCode = (error as NodeJS.ErrnoException).code;
+          if (errorCode !== "ESRCH") {
+            failure = new Error(`${failure.message} ACP 进程组清理失败 (${errorCode ?? "unknown"})。`, { cause: error });
+          }
+        }
+      }
+      connection.close(failure);
+    });
     const startupSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(this.options.timeoutMs ?? 30_000)]);
     const stop = (): void => connection.close(startupSignal.reason);
     startupSignal.addEventListener("abort", stop, { once: true });

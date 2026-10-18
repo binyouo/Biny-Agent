@@ -81,12 +81,19 @@ export interface ProviderRuntime {
   createEmbeddingRuntime(modelId: string): EmbeddingModelRuntime;
 }
 
+interface CredentialPreparation {
+  controller: AbortController;
+  promise: Promise<ProviderConfig>;
+  waiters: number;
+  saving: boolean;
+}
+
 export class ConfiguredProviderRuntime implements ProviderRuntime {
   readonly definition: ProviderDefinition;
   private readonly baselineModels: ModelCatalogEntry[];
   private liveModels: ModelCatalogEntry[] = [];
   private preparedCredentials?: ProviderConfig;
-  private credentialPreparation?: Promise<ProviderConfig>;
+  private credentialPreparation?: CredentialPreparation;
 
   constructor(
     readonly id: string,
@@ -405,27 +412,70 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
 
   private async prepareTextModel(agentConfig: AgentConfig, model: ModelAliasConfig, executable: AgentModel, signal?: AbortSignal): Promise<AgentModel> {
     signal?.throwIfAborted();
-    // 同一 Provider 的多个型号共享续期结果；不修改调用方持有的回合配置。
-    const pending = this.credentialPreparation ??= (async () => {
-      let previous = this.preparedCredentials ?? this.config;
-      previous = await this.credentialPersistence?.read?.(this.id, previous, signal) ?? previous;
-      signal?.throwIfAborted();
-      const provider = previous === this.config ? this : this.withCredentials(previous);
-      const renewed = await provider.refreshCredential(signal);
-      if (!renewed) {
-        signal?.throwIfAborted();
-        provider.validate(model);
-        this.preparedCredentials = previous;
-        return previous;
+    let flight = this.credentialPreparation;
+    while (flight?.controller.signal.aborted) {
+      // 无人等待的旧续期仍可能正在保存已确认的轮换；排空前不能用旧令牌再发请求。
+      try { await flight.promise; }
+      catch (error) {
+        // 只跳过本 flight 的预期取消；迟到网络、连接变化和保存失败必须保留。
+        if (flight.saving || error !== flight.controller.signal.reason) throw error;
       }
-      // 服务端已确认令牌轮换时必须保存新凭据；取消只阻止后续模型请求。
-      const saved = this.credentialPersistence ? await this.credentialPersistence.write(this.id, previous, renewed) : renewed;
-      this.preparedCredentials = saved;
-      return saved;
-    })();
+      signal?.throwIfAborted();
+      flight = this.credentialPreparation;
+    }
+    if (!flight) {
+      const created: CredentialPreparation = {
+        controller: new AbortController(), promise: Promise.resolve(this.config), waiters: 0, saving: false
+      };
+      this.credentialPreparation = created;
+      // 下一微任务才开始准备，先登记首个等待者及其取消监听。
+      created.promise = Promise.resolve().then(async () => {
+        const preparationSignal = created.controller.signal;
+        preparationSignal.throwIfAborted();
+        let previous = this.preparedCredentials ?? this.config;
+        previous = await this.credentialPersistence?.read?.(this.id, previous, preparationSignal) ?? previous;
+        preparationSignal.throwIfAborted();
+        const provider = previous === this.config ? this : this.withCredentials(previous);
+        const renewed = await provider.refreshCredential(preparationSignal);
+        if (!renewed) {
+          preparationSignal.throwIfAborted();
+          provider.validate(model);
+          this.preparedCredentials = previous;
+          return previous;
+        }
+        // 服务端已确认令牌轮换时必须保存新凭据；取消只阻止后续模型请求。
+        created.saving = true;
+        const saved = this.credentialPersistence ? await this.credentialPersistence.write(this.id, previous, renewed) : renewed;
+        this.preparedCredentials = saved;
+        return saved;
+      }).finally(() => {
+        if (this.credentialPreparation === created) this.credentialPreparation = undefined;
+      });
+      flight = created;
+    }
+    const joined = flight;
+    joined.waiters++;
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      signal?.removeEventListener("abort", onAbort);
+      joined.waiters--;
+      if (joined.waiters === 0 && this.credentialPreparation === joined) {
+        joined.controller.abort(new DOMException("Credential preparation has no active callers.", "AbortError"));
+      }
+    };
+    const onAbort = (): void => release();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) release();
     let prepared: ProviderConfig;
-    try { prepared = await pending; }
-    finally { if (this.credentialPreparation === pending) this.credentialPreparation = undefined; }
+    try {
+      // 普通调用的快速取消由 nativeJson 负责；这里保留严格调用等待续期/保存结算的语义。
+      prepared = await joined.promise;
+    } catch (error) {
+      if (joined.controller.signal.aborted && !joined.saving && error === joined.controller.signal.reason) signal?.throwIfAborted();
+      throw error;
+    } finally { release(); }
     signal?.throwIfAborted();
     return prepared === this.config ? executable : this.withCredentials(prepared).createModelSettings(agentConfig, model).model;
   }

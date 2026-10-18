@@ -4,7 +4,29 @@
  * 模型消息内容既可能是字符串也可能是分片数组，各处都要判一遍很啰嗦，这里统一提供
  * 取文本、取思考内容、取工具名和深拷贝的读法。
  */
-import type { AgentMessage } from "./core/types.js";
+import type { AgentMessage, AgentUserMessage } from "./core/types.js";
+
+export function withMessageSentAt(message: AgentUserMessage, source: { time?: string; metadata?: Record<string, unknown> }): AgentUserMessage {
+  if (!source.time || !Number.isFinite(Date.parse(source.time))) return message;
+  return {
+    ...message,
+    sentAt: new Date(source.time).toISOString(),
+    sentAtTimeZone: typeof source.metadata?.sentAtTimeZone === "string" ? source.metadata.sentAtTimeZone : undefined
+  };
+}
+
+/** 时间锚点只进入模型投影，不能改写用户正文或沿用当前机器时区解释旧消息。 */
+export function projectMessageSentAt(message: AgentMessage): AgentMessage {
+  if (message.role !== "user" || !message.sentAt || !Number.isFinite(Date.parse(message.sentAt))) return message;
+  const { sentAt, sentAtTimeZone, ...canonical } = message;
+  const prefix = `[Message sent-at: ${new Date(sentAt).toISOString()}${typeof sentAtTimeZone === "string" && sentAtTimeZone ? `; original timezone: ${sentAtTimeZone}` : "; original local timezone unknown"}; message time is not event/due/completion time.]`;
+  return {
+    ...canonical,
+    content: typeof message.content === "string"
+      ? `${prefix}\n\n${message.content}`
+      : [{ type: "text", text: prefix }, ...message.content]
+  };
+}
 
 /** 拼出消息的纯文本形态；工具调用/结果按 JSON 展开，图片等无文本分片忽略。 */
 export function messageText(message: AgentMessage): string {

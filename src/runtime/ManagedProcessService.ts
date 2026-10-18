@@ -9,6 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import { defaultShell, shellCommandInvocation, type ShellPlan } from "../tools/shell/shell.js";
 import { constants } from "node:fs";
 import { appendFile, open, realpath, stat } from "node:fs/promises";
 import net from "node:net";
@@ -89,6 +90,7 @@ export interface ManagedProcessSnapshot {
 }
 
 export interface StartManagedProcessOptions {
+  shell?: ShellPlan;
   command: string;
   /** 实际命令经过沙箱包装时，快照仍展示用户批准的原始命令。 */
   displayCommand?: string;
@@ -200,13 +202,17 @@ export class ManagedProcessService {
       // Shutdown may have completed while the filesystem preparation was pending.
       if (this.closing) throw new Error("Managed process service is closing.");
       options.signal?.throwIfAborted();
-      const child = spawn(options.command, {
+      const shell = options.shell ?? defaultShell();
+      const invocation = shell.kind === "posix" ? undefined : shellCommandInvocation(shell, options.command);
+      const spawnOptions = {
         cwd,
-        shell: true,
+        shell: invocation?.shell ?? invocation === undefined,
         detached: process.platform !== "win32",
-        stdio: ["ignore", logFile.fd, logFile.fd],
-        windowsHide: true
-      });
+        stdio: ["ignore", logFile.fd, logFile.fd] as ["ignore", number, number],
+        windowsHide: true,
+        env: invocation?.env
+      };
+      const child = invocation ? spawn(invocation.executable, invocation.args, spawnOptions) : spawn(options.command, spawnOptions);
       // Closing a FileHandle yields to the event loop; install spawn/error listeners first.
       spawned = waitForSpawn(child, options.signal);
       void spawned.catch(() => undefined);
@@ -337,8 +343,7 @@ export class ManagedProcessService {
           signalProcessGroup(record.snapshot.pid, "SIGKILL");
         }
       }
-      if (process.platform === "win32") stopped = !pidExists(record.snapshot.pid);
-      else if (!stopped) stopped = await waitUntilStopped(record.snapshot.pid, trackedPids, this.killSettleMs);
+      if (!stopped) stopped = await waitUntilStopped(record.snapshot.pid, trackedPids, this.killSettleMs);
       else stopped = true;
     } catch (error) {
       stopMessage = errorMessage(error);
@@ -869,19 +874,20 @@ async function waitUntilStopped(groupPid: number, trackedPids: ReadonlySet<numbe
 }
 
 async function killWindowsProcessTree(pid: number, timeoutMs: number): Promise<void> {
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
     const timer = setTimeout(() => {
-      killer.kill();
-      resolve();
+      try { killer.kill(); } catch (error) { reject(error); return; }
+      reject(new Error("Windows taskkill exceeded its cleanup deadline."));
     }, timeoutMs);
-    killer.once("error", () => {
+    killer.once("error", (error) => {
       clearTimeout(timer);
-      resolve();
+      reject(error);
     });
-    killer.once("close", () => {
+    killer.once("close", (code) => {
       clearTimeout(timer);
-      resolve();
+      if (code === 0) resolve();
+      else reject(new Error(`Windows taskkill exited with code ${String(code)}; descendant cleanup is unconfirmed.`));
     });
   });
 }

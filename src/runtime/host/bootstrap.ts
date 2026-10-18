@@ -28,9 +28,8 @@ export async function startRuntimeHost(
   createInitialRuntime: (resourceRegistry: RuntimeHostResourceRegistry) => Promise<InteractiveAgentHost>,
   options: RuntimeHostStartOptions = {}
 ): Promise<RuntimeHostServer> {
-  if (process.platform === "win32") throw new Error("Runtime Host currently requires Unix domain sockets.");
   const paths = runtimeHostPaths(persistenceRoot);
-  await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
+  await ensureRuntimeHostDirectory(path.dirname(paths.registrationPath));
   const lock = await acquireHostLock(paths, persistenceRoot);
   const hostEpoch = randomUUID();
   const token = issueRuntimeHostAccessCredential().secret;

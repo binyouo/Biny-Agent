@@ -15,7 +15,7 @@ import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import { agentDir, ensureAgentDirs } from "../src/session/store.js";
 import { archiveToolResult, readToolResultArchive, serializeToolResult } from "../src/session/toolResultArchive.js";
-import { createReadToolResultTool, type ReadToolResultResult } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool, type ReadArchivedResult } from "../src/tools/file/readFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { createRunCommandTool, runShellCommand, type RunCommandToolResult } from "../src/tools/shell/runCommand.js";
 
@@ -46,7 +46,7 @@ async function fixture(name: string, turnBudget = 4 * 1024 * 1024, restrictive =
   config.context.maxTurnToolResultBytes = turnBudget;
   const registry = new ToolRegistry();
   registry.registerBuiltinTool(createRunCommandTool({ workspaceRoot, ignore: config.workspace.ignore }, config.sandbox));
-  registry.registerBuiltinTool(createReadToolResultTool({ workspaceRoot, ignore: config.workspace.ignore }));
+  registry.registerBuiltinTool(createReadFileTool({ workspaceRoot, ignore: config.workspace.ignore }));
   const recorder = new SessionRecorder(workspaceRoot, name);
   recorders.push(recorder);
   const events: AgentSessionEvent[] = [];
@@ -71,6 +71,34 @@ async function storedEvents(recorder: SessionRecorder): Promise<SessionEvent[]> 
 }
 
 try {
+  await test("an exhausted turn budget still delivers small command feedback and file pages directly", async () => {
+    const f = await fixture("small-feedback-after-archive", 8_192);
+    const large = await f.tool("Bash").execute("large-first", { command: f.command });
+    assert.equal(record(large.details).archived, true);
+
+    await writeFile(path.join(f.workspaceRoot, "feedback.cjs"),
+      'process.stdout.write("checked target\\n"); process.stderr.write("target is missing\\n"); process.exitCode = 7;');
+    const feedback = await f.tool("Bash").execute("small-failure", {
+      command: `${shellQuote(process.execPath)} feedback.cjs`
+    });
+    assert.equal(feedback.isError, true);
+    assert.equal(record(feedback.details).exitCode, 7);
+    assert.equal(record(feedback.details).stdout, "checked target\n");
+    assert.equal(record(feedback.details).stderr, "target is missing\n");
+    assert.equal(record(feedback.details).archived, undefined,
+      "short failure feedback must not require an extra Read after earlier large output");
+
+    await writeFile(path.join(f.workspaceRoot, "small.txt"), "the requested evidence");
+    const page = await f.tool("Read").execute("small-page", { path: "small.txt" });
+    assert.equal(record(page.details).content, "the requested evidence");
+    assert.equal(record(page.details).archived, undefined);
+    const missing = await f.tool("Read").execute("missing-page", { path: "missing.txt" });
+    assert.equal(missing.isError, true);
+    assert.match(String(record(missing.details).error), /ENOENT|not exist|not found/iu);
+    assert.equal(record(missing.details).archived, undefined);
+    assert.ok((await readToolResultArchive(f.workspaceRoot, record(large.details).archivePath)).output.includes("STDOUT_TAIL"));
+  });
+
   await test("production Bash still refuses unsupported Linux sandbox restrictions before shell capture", {
     skip: process.platform !== "linux"
   }, async () => {
@@ -122,14 +150,14 @@ try {
     assert.equal((await readdir(path.join(agentDir(f.workspaceRoot), "tool-results"))).length, 1,
       "projection and inline-persistence archiving must deduplicate the same execution");
 
-    const reader = f.tool("read_tool_result");
+    const reader = f.tool("Read");
     let rebuilt = "";
     let offset = 0;
     let pages = 0;
     for (;;) {
-      const pageResult = await reader.execute(`page-${pages++}`, { archivePath: model.archivePath, offset, length: 1_007 });
+      const pageResult = await reader.execute(`page-${pages++}`, { path: model.archivePath, offset, length: 1_007 });
       assert.equal(pageResult.isError, false);
-      const page = pageResult.details as ReadToolResultResult;
+      const page = pageResult.details as ReadArchivedResult;
       assert.equal(page.offset, offset);
       assert.equal(page.nextOffset, offset + page.content.length);
       assert.doesNotMatch(page.content, /[\uD800-\uDBFF]$|^[\uDC00-\uDFFF]/u);
@@ -166,7 +194,7 @@ try {
     assert.ok(persisted?.type === "tool_result");
     assert.equal(record(persisted.result).archivePath, model.archivePath);
     assert.equal((await readdir(path.join(agentDir(f.workspaceRoot), "tool-results"))).length, 1);
-    const reread = await f.tool("read_tool_result").execute("low-budget-reread", { archivePath: model.archivePath, length: 16_000 });
+    const reread = await f.tool("Read").execute("low-budget-reread", { path: model.archivePath, length: 16_000 });
     assert.equal(reread.isError, false);
     assert.equal(record(reread.details).content, archived.output.slice(0, record(reread.details).nextOffset));
     assert.ok(record(reread.details).content.length > 256, "explicit pages bypass the exhausted turn budget");
@@ -256,7 +284,7 @@ try {
     assert.equal(model.result.archivePath, undefined);
     boundedStreams(model.result);
     assert.ok(Buffer.byteLength(serializeToolResult(model)) < 20 * 1024, "failure must not reinsert unbounded raw output");
-    assert.match(model.summary, /read_tool_result is unavailable/u);
+    assert.match(model.summary, /archived output is unavailable through Read/u);
     assert.doesNotMatch(serializeToolResult(model), /full result archived/u);
     const completed = f.events.find((event) => event.type === "tool.completed" && event.toolCallId === "archive-failure-call");
     assert.ok(completed?.type === "tool.completed");

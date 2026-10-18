@@ -10,7 +10,8 @@ test("工具页可核对调用 ID、可读名称、结果和未知执行状态",
     { id: "call-proof", tool: "mcp_context7_query_docs", args: { query: "api" }, result: "result-proof", status: "unknown", updates: [], durationMs: 1200 }
   ] }));
   assert.match(html, /call-proof/);
-  assert.match(html, /context7 \/ query \/ docs/);
+  assert.match(html, /MCP 工具/);
+  assert.match(html, /<details><summary>技术详情<\/summary>.*mcp_context7_query_docs.*call-proof.*<\/details>/u);
   assert.match(html, /result-proof/);
   assert.match(html, /状态未知/);
   assert.match(html, /1.2s/);

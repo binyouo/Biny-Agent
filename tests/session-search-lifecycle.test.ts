@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { createHistoryTools } from "../src/extensions/history.js";
+import { createHistoryQueryFixture } from "./fixtures/queryTools.js";
 import { deleteSessionArtifacts } from "../src/session/cleanup.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
@@ -41,7 +41,7 @@ for (const checkpoint of ["initial", "zero-offset", "incremental"] as const) {
     retained.record({ type: "user_message", content: "retained history marker", messageId: "retained-message" });
     await retained.close();
     await index.indexSessionFile(retained.sessionId, retained.filePath);
-    const [tool] = createHistoryTools({ getIndex: () => index });
+    const tool = createHistoryQueryFixture({ getIndex: () => index });
     assert.ok(tool);
     const execution = await tool.resolveExecution({ query: "deleted history marker" });
     assert.ok(!("isError" in execution));

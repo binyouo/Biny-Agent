@@ -39,8 +39,14 @@ function fixture(t: TestContext, path: "fresh" | "resume", rejectPreparation: bo
     getFire(id: string) { const fire = fires.get(id); return fire && structuredClone(fire); },
     claimDue(now: Date) {
       return [...fires.values()].filter((fire) => (fire.status === "pending" || fire.status === "deferred")
-        && definitions.get(fire.automationId)?.status === "active" && Date.parse(fire.scheduledAt) <= now.getTime())
-        .map((fire) => structuredClone(fire));
+        && definitions.get(fire.automationId)?.status === "active" && Date.parse(fire.status === "deferred" ? fire.retryAt ?? fire.scheduledAt : fire.scheduledAt) <= now.getTime())
+        .map((fire) => {
+          if (fire.status === "deferred") {
+            fire.status = "pending";
+            delete fire.retryAt;
+          }
+          return structuredClone(fire);
+        });
     },
     claimFire(id: string) {
       const fire = fires.get(id);
@@ -52,7 +58,7 @@ function fixture(t: TestContext, path: "fresh" | "resume", rejectPreparation: bo
     deferFire(id: string, at: Date) {
       const fire = running(id);
       fire.status = "deferred";
-      fire.scheduledAt = at.toISOString();
+      fire.retryAt = at.toISOString();
       delete fire.claimToken;
       return structuredClone(fire);
     },

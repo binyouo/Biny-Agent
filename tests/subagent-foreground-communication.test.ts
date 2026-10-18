@@ -68,7 +68,12 @@ test("foreground Task admits an Attempt and records scoped Worker reports and ex
         }
       } else {
         const name = phase === "message" ? "TaskMessage" : phase === "result" ? "TaskStatus" : phase === "cancel" ? "TaskCancel" : "Task";
-        if (!acted && !names.has(name)) result = { name: "ToolSearch", args: { query: name } };
+        if (!acted && name === "TaskStatus" && !names.has(name) && names.has("exec")) {
+          acted = true;
+          result = { name: "exec", args: { code: `return await tools.TaskStatus(${JSON.stringify({ taskRunId })});` } };
+        } else if (!acted && !names.has(name)) result = names.has("exec")
+          ? { name: "exec", args: { code: `return await searchTools(${JSON.stringify(name)});` } }
+          : { name: "ToolSearch", args: { query: name } };
         else if (!acted) {
           acted = true;
           result = { name, args: name === "Task"

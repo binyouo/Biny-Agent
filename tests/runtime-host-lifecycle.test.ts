@@ -17,20 +17,27 @@ const second = runtimeHostPaths("/workspace/two");
 
 assert.deepEqual(first, equivalent);
 assert.notEqual(first.rootHash, second.rootHash);
-assert.match(first.endpoint, /\.sock$/u);
-assert.equal(first.registrationPath, `${first.endpoint}.json`);
-assert.equal(first.lockPath, `${first.endpoint}.lock`);
+if (process.platform === "win32") {
+  assert.match(first.endpoint, /^\\\\\.\\pipe\\biny-/u);
+  assert.ok(!first.registrationPath.startsWith("\\\\.\\pipe\\"));
+  assert.equal(first.lockPath, first.registrationPath.replace(/\.json$/u, ".lock"));
+} else {
+  assert.match(first.endpoint, /\.sock$/u);
+  assert.equal(first.registrationPath, `${first.endpoint}.json`);
+  assert.equal(first.lockPath, `${first.endpoint}.lock`);
+}
 assert.match(path.basename(runtimeHostEntryPath()), /^hostProcess\.(ts|js)$/u);
 
+const desktopAppPath = path.join(os.tmpdir(), "Biny.app");
 const detachedDesktopPlan = runtimeHostLaunchPlan("/workspace/data", {
   workspaceRoot: "/workspace/project",
   configDir: "/user/config",
-  electronAppPath: "/Applications/Biny.app",
+  electronAppPath: desktopAppPath,
   lifecycleMode: "ephemeral",
   browserAutomation: { endpoint: "/tmp/browser.sock", token: "private-browser-token", projectId: "project-1" }
 }, { platform: "linux", execPath: process.execPath });
 assert.equal(detachedDesktopPlan.executable, process.execPath);
-assert.deepEqual(detachedDesktopPlan.args.slice(0, 2), ["/Applications/Biny.app", "--biny-runtime-host"]);
+assert.deepEqual(detachedDesktopPlan.args.slice(0, 2), [desktopAppPath, "--biny-runtime-host"]);
 assert.ok(detachedDesktopPlan.args.includes("ephemeral"), "Desktop Host must allow idle retirement");
 assert.ok(detachedDesktopPlan.args.includes("--browser-automation-bootstrap"));
 assert.ok(!detachedDesktopPlan.args.includes("private-browser-token"), "capability tokens must not appear in process arguments");

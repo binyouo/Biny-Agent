@@ -67,11 +67,27 @@ function testCacheAndDisplay(): void {
   const display = formatContextUsage({ usedTokens: 109_000, contextWindow: 1_000_000, breakdown: estimateContextBreakdown(input), source: "provider", cacheHitRate: 0.896 });
   assert.equal(display?.percent, 10.9);
   assert.equal(display?.cacheHitRate, "89.6%");
-  assert.equal(display?.categories.reduce((sum, category) => sum + Math.round(Number(category.percent) * 10), 0), 1000);
+  assert.equal(display?.categories.reduce((sum, category) => sum + Math.round(Number(category.percent) * 10), 0), 109);
   assert.ok(Math.abs((display?.categories.reduce((sum, category) => sum + category.width, 0) ?? 0) - 10.9) < 1e-9);
   assert.equal(formatContextUsage({ usedTokens: 0, contextWindow: 1_000_000 })?.percent, 0, "the indicator remains visible before usage arrives");
   assert.equal(formatContextUsage({ usedTokens: 2_000, contextWindow: 1_000 })?.percent, 200, "do not hide overflow by clamping the reported percentage");
   assert.equal(formatContextUsage({ usedTokens: NaN, contextWindow: 1_000 }), undefined);
+}
+
+function testCategoryCapacityShares(): void {
+  const breakdown = { messages: 0, mcpTools: 0, systemTools: 1_596, skills: 0, systemPrompt: 11_186, other: 1_218 };
+  const display = formatContextUsage({ usedTokens: 14_000, contextWindow: 1_048_576, breakdown, source: "provider" });
+  assert.equal(display?.percent, 1.3);
+  assert.deepEqual(display?.categories.map(({ percent }) => percent), ["0.0", "0.0", "0.1", "0.0", "1.1", "0.1"], "分类以完整窗口为分母，并将舍入差分配到分类中");
+  assert.ok(Math.abs((display?.categories.reduce((sum, category) => sum + category.width, 0) ?? 0) - 14_000 / 1_048_576 * 100) < 1e-9);
+
+  const equalParts = { messages: 1, mcpTools: 1, systemTools: 1, skills: 0, systemPrompt: 0, other: 0 };
+  const measured = formatContextUsage({ usedTokens: 100, contextWindow: 1_000, breakdown: equalParts });
+  assert.deepEqual(measured?.categories.map(({ percent }) => percent), ["3.4", "3.3", "3.3", "0.0", "0.0", "0.0"], "估算组成按实际输入总量校准，不能直接用估算 token 除以窗口");
+  const overflow = formatContextUsage({ usedTokens: 2_000, contextWindow: 1_000, breakdown: equalParts });
+  assert.deepEqual(overflow?.categories.map(({ percent }) => percent), ["66.7", "66.7", "66.6", "0.0", "0.0", "0.0"]);
+  assert.ok(Math.abs((overflow?.categories.reduce((sum, category) => sum + category.width, 0) ?? 0) - 100) < 1e-9, "溢出比例保留，容量条仍限制在窗口宽度");
+  assert.deepEqual(formatContextUsage({ usedTokens: 0, contextWindow: 1_000, breakdown })?.categories, []);
 }
 
 async function testRequestLifecycle(): Promise<void> {
@@ -220,6 +236,7 @@ async function testSessionPersistence(): Promise<void> {
 
 testClassification();
 testCacheAndDisplay();
+testCategoryCapacityShares();
 await testRequestLifecycle();
 await testDirectProviderSampling();
 await testSessionPersistence();

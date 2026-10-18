@@ -16,7 +16,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-const config = configSchema.parse({ ...defaultConfig, extensions: { ...defaultConfig.extensions, mcp: {
+const config = configSchema.parse({ ...defaultConfig, computer: { ...defaultConfig.computer, enabled: false }, extensions: { ...defaultConfig.extensions, mcp: {
   fixture: { enabled: true, type: "http", url: "https://mcp-lifecycle.invalid/mcp", transportProtocol: "streamable-http", timeoutMs: 2_000 }
 } } });
 

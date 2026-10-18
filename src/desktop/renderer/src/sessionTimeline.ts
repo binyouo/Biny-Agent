@@ -1,3 +1,4 @@
+import { toolDisplayName } from "../../../tools/presentation.js";
 /**
  * 会话时间线构建。
  *
@@ -14,12 +15,13 @@ import type { CommittedFileChange } from "../../../tools/file/fileChange.js";
 import { parseFileChange } from "../../../tools/file/fileChange.js";
 import type { AgentPermissionEventRequest, AgentRunModel, AgentHostEvent } from "../../../runtime/agentEvents.js";
 import type { PermissionAction } from "../../../permission/PermissionManager.js";
-import { activitySummaryText } from "../../../runtime/activitySummary.js";
+import { redactSecrets } from "../../../utils/redaction.js";
 import { resolvedCapabilitySelectionSchema, type AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import { activeSessionMessageIds, activeSessionEventsForPath, sessionMessageMetadataForIds } from "../../../session/messageTree.js";
 import type { SessionEvent } from "../../../session/recorder.js";
 import type { ModelRequestMetrics } from "../../../agent/core/types.js";
 import type { SessionUsage } from "../../../session/metadata.js";
+import type { AttachmentReference } from "../../../attachments/store.js";
 import { publicAssistantMessage, publicUserMessage } from "../../../session/publicMessage.js";
 import { isUndeliveredMessageNotice, savedQueuedMessages, type SavedQueuedMessage } from "../../../session/queuedMessages.js";
 
@@ -95,7 +97,7 @@ export interface TimelineAssistantStep {
   content: string;
   /** 正文流已结束；用于区分流式回复与等待下一步的空档。 */
   completed?: boolean;
-  /** 工具前的公开说明，作为时间线正文摘要展示，但不计入最终 assistant 正文。 */
+  /** 工具前的完整公开正文，保留原位置与格式，不计入最终 assistant 正文。 */
   summary?: boolean;
 }
 
@@ -109,20 +111,13 @@ export interface TimelineUserStep {
   kind: "user";
   id: string;
   content: string;
+  attachments?: AttachmentReference[];
   delivery: "steer" | "queue";
 }
 
 export type TimelineStep = TimelineReasoningStep | TimelineAssistantStep | TimelineToolStep | TimelineUserStep;
 
-export function executionToolLabel(tool: string): string {
-  // MCP 执行标识仅用于协议；展示去掉前缀，但不猜测下划线两侧的服务归属。
-  if (tool.startsWith("mcp_") && tool.length > 4) return tool.slice(4).replaceAll("_", " / ");
-  if (tool === "Bash") return "Bash";
-  if (tool === "BashOutput") return "后台输出";
-  if (tool === "KillShell") return "停止命令";
-  if (tool === "Skill" || tool === "skill_call") return "技能调用";
-  return tool;
-}
+export const executionToolLabel = toolDisplayName;
 
 export interface TimelineModelRequest extends ModelRequestMetrics {
   output?: { messageId?: string; toolCalls: Array<{ id: string; name: string }>; textPreview: string };
@@ -130,6 +125,7 @@ export interface TimelineModelRequest extends ModelRequestMetrics {
 
 export interface TimelineTurn {
   savedMessages?: SavedQueuedMessage[];
+  userAttachments?: AttachmentReference[];
   recoveryOnly?: boolean;
   /** 已落盘的主回合模型请求；旧记录缺失时不推算。 */
   modelRequests?: TimelineModelRequest[];
@@ -399,6 +395,7 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
           anonymousIndex += 1;
           current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
           current.user = publicUserMessage(event.content);
+          current.userAttachments = event.type === "user_message" ? event.attachments : undefined;
           current.userMessageIndex = userMessageIndex;
           current.userMessageId = event.messageId;
           current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
@@ -603,6 +600,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       anonymousIndex += 1;
       current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
       current.user = publicUserMessage(event.content);
+      current.userAttachments = event.type === "user_message" ? event.attachments : undefined;
       current.userMessageIndex = event.messageId === undefined ? activeUserIndex : userIndexes.get(event.messageId) ?? activeUserIndex;
       current.userMessageId = event.messageId;
       current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
@@ -778,7 +776,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const turn = turnFor(event);
     const tools = toolMaps.get(event.runId);
     if (!tools) throw new Error("Timeline tool map is missing.");
-    markActiveAssistantSummary(turn, event.runId);
+    finishAssistantBeforeTool(turn, event.runId);
     const current = tools.get(event.toolCallId);
     if (current) {
       dirtyTools.add(current.id);
@@ -869,10 +867,10 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     activeAssistant.set(turn.id, step);
   };
 
-  const markActiveAssistantSummary = (turn: TimelineTurn, runId: string): void => {
+  const finishAssistantBeforeTool = (turn: TimelineTurn, runId: string): void => {
     const step = activeAssistant.get(runId);
     if (!step) return;
-    const content = activitySummaryText(step.content);
+    const content = redactSecrets(publicAssistantMessage(step.content)).trimEnd();
     const index = turn.steps.indexOf(step);
     if (!content) {
       if (index >= 0) turn.steps.splice(index, 1);
@@ -899,10 +897,12 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
           kind: "user",
           id: `${event.runId}:user:${event.messageId}`,
           content,
+          attachments: event.attachments,
           delivery: event.delivery
         });
       } else {
         turn.user = content;
+        turn.userAttachments = event.attachments;
         turn.userMessageIndex = userMessageIndex;
         turn.userMessageId = event.messageId;
       }
@@ -1351,8 +1351,8 @@ function appendHistoricalReasoning(turn: TimelineTurn, content: string | undefin
 function createHistoricalAssistantAppender(): (turn: TimelineTurn, content: string | undefined, summary?: boolean) => void {
   const byTurn = new Map<TimelineTurn, { summaries: Set<string>; messages: Set<string> }>();
   return (turn, content, summary = false) => {
-    const visibleContent = summary ? activitySummaryText(content ?? "") : content;
-    if (!visibleContent) return;
+    const visibleContent = summary ? redactSecrets(publicAssistantMessage(content ?? "")).trimEnd() : content;
+    if (!visibleContent?.trim()) return;
     let seen = byTurn.get(turn);
     if (!seen) {
       seen = { summaries: new Set(), messages: new Set() };

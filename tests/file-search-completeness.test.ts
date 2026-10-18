@@ -11,7 +11,7 @@ import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import { readToolResultArchive } from "../src/session/toolResultArchive.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { createListFilesTool } from "../src/tools/file/listFiles.js";
 import { ToolRegistry } from "../src/tools/registry.js";
@@ -235,7 +235,7 @@ for (const name of ["Glob", "Grep"] as const) {
       const registry = new ToolRegistry();
       registry.registerBuiltinTool(createSearchFilesTool({ workspaceRoot: root, ignore: [] }));
       registry.registerBuiltinTool(createListFilesTool({ workspaceRoot: root, ignore: [] }));
-      registry.registerBuiltinTool(createReadToolResultTool({ workspaceRoot: root, ignore: [] }));
+      registry.registerBuiltinTool(createReadFileTool({ workspaceRoot: root, ignore: [] }));
       const recorder = new SessionRecorder(root);
       try {
         const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry },
@@ -258,12 +258,12 @@ for (const name of ["Glob", "Grep"] as const) {
         const replayed = replaySessionEvents(events, { sessionId: recorder.sessionId }).messages.find((message) => message.role === "toolResult");
         assert.ok(replayed?.role === "toolResult");
         assert.equal((replayed.details as Record<string, unknown>).archivePath, persisted.archivePath);
-        const args = { archivePath: persisted.archivePath, length: 200_000 };
-        const reread = await tools.find((tool) => tool.name === "read_tool_result")!.execute("archive-reread", args);
+        const args = { path: persisted.archivePath, length: 200_000 };
+        const reread = await tools.find((tool) => tool.name === "Read")!.execute("archive-reread", args);
         assert.equal(reread.isError, false);
         const model = toModelMessages([
-          { role: "assistant", content: [{ type: "toolCall", id: "archive-reread", name: "read_tool_result", arguments: args }] },
-          { ...reread, role: "toolResult", toolCallId: "archive-reread", toolName: "read_tool_result" }
+          { role: "assistant", content: [{ type: "toolCall", id: "archive-reread", name: "Read", arguments: args }] },
+          { ...reread, role: "toolResult", toolCallId: "archive-reread", toolName: "Read" }
         ]).find((message) => message.role === "tool");
         assert.ok(model?.role === "tool");
         const part = model.content[0];

@@ -297,6 +297,7 @@ async function createFixture(budget: ToolExecutionBudget, result?: () => unknown
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-budget-"));
   await ensureAgentDirs(workspaceRoot);
   const config = structuredClone(defaultConfig) as AgentConfig;
+  config.agent.toolExecutionMode = "direct";
   config.permission.mode = "full-access";
   config.agent.maxConcurrentTools = 4;
   const registry = new ToolRegistry();

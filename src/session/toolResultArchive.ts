@@ -3,7 +3,7 @@
  *
  * 归档引用保持 `.biny/tool-results` 这一稳定格式，但物理文件落在全局按项目隔离的运行目录。
  * 文件名完全由运行期标识派生。模型拿到的是归档引用而不是原文，需要完整内容时通过
- * `read_tool_result` 工具按需取回。
+ * `Read` 工具按需取回。
  */
 import { constants as fsConstants } from "node:fs";
 import { createHash } from "node:crypto";
@@ -123,6 +123,12 @@ export function toolResultPreview(value: string, maxCharacters = previewCharacte
  * constrained, so a tool argument can never address anything outside the
  * archive directory.
  */
+export function isToolResultArchiveReference(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  return normalized.startsWith(`${archiveDirectory}/`) && archiveNamePattern.test(normalized.slice(archiveDirectory.length + 1));
+}
+
 export function resolveToolResultArchivePath(workspaceRoot: string, archivePath: string): string {
   const normalized = archivePath.trim().replace(/\\/g, "/").replace(/^\.\//, "");
   const relative = normalized.startsWith(`${archiveDirectory}/`) ? normalized : path.posix.join(archiveDirectory, normalized);

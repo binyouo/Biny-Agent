@@ -27,7 +27,7 @@ import { parseSessionEvents, readStoredSessionEvents } from "./events.js";
 import type { SessionEvent } from "./recorder.js";
 import { createSessionId } from "./recorder.js";
 import { rebaseForkedSessionEvents } from "./fork.js";
-import { createSessionFile, resolveSessionFile, sessionIdFromFile } from "./store.js";
+import { createSessionFile, sessionIdFromFile } from "./store.js";
 import { refreshSessionIndex } from "./catalog.js";
 import { publicAssistantMessage } from "./publicMessage.js";
 import { activeSessionEventsForPath } from "./messageTree.js";
@@ -117,8 +117,7 @@ export class SessionImportCleanupError extends AttachmentImportCleanupError {
 
 /** 无损导出：把整条会话事件打包成 `manifest + events + attachments` 的自描述 JSON。 */
 export async function exportSessionBundle(workspaceRoot: string, session: string): Promise<ExportedSessionFile> {
-  const { events } = await readStoredSessionEvents(workspaceRoot, session);
-  const filePath = await resolveSessionFile(workspaceRoot, session);
+  const { events, filePath } = await readStoredSessionEvents(workspaceRoot, session);
   const sessionId = sessionIdFromFile(filePath);
   const { attachments, skipped } = await collectBundleAttachments(workspaceRoot, events);
   const manifest: BinySessionBundleManifest = {
@@ -144,8 +143,7 @@ export async function exportSessionBundle(workspaceRoot: string, session: string
 
 /** 导出成外部兼容的 JSONL，供其他客户端直接 resume。只保留对话事实，丢弃运行遥测。 */
 export async function exportSessionClaudeCode(workspaceRoot: string, session: string): Promise<ExportedSessionFile> {
-  const { events } = await readStoredSessionEvents(workspaceRoot, session);
-  const filePath = await resolveSessionFile(workspaceRoot, session);
+  const { events, filePath } = await readStoredSessionEvents(workspaceRoot, session);
   const lines = binyEventsToClaudeLines(events);
   if (!lines.length) throw new Error("会话里没有可导出的对话内容。");
   return {

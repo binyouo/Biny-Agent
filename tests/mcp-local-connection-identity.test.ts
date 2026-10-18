@@ -5,7 +5,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCRequest } from "@modelcontextprotocol/sdk/types.js";
 import { McpToolHost } from "../src/extensions/mcp.js";
 
-function localEndpoint(holdInitialize = false) {
+function localEndpoint(holdInitialize = false, discoverTools = false) {
   let entered!: () => void;
   const initializing = new Promise<void>((resolve) => { entered = resolve; });
   let initialize: JSONRPCRequest | undefined;
@@ -28,7 +28,7 @@ function localEndpoint(holdInitialize = false) {
         initialize = message;
         entered();
         if (!holdInitialize) finishInitialize();
-      } else if (message.method === "tools/list") reply(message, { tools: [] });
+      } else if (message.method === "tools/list") reply(message, { tools: discoverTools ? [{ name: "echo", inputSchema: { type: "object" } }] : [] });
       else if (message.method === "tools/call") {
         state.calls += 1;
         reply(message, { content: [{ type: "text", text: "local-result" }] });
@@ -82,6 +82,27 @@ await test("a replaced local MCP identity rejects a stale call before dispatch",
     assert.equal(replacement.state.calls, 0);
     assert.equal(await host.callServerTool("local", "echo", {}, undefined, false,
       undefined, undefined, "session-two"), "local-result");
+    assert.equal(replacement.state.calls, 1);
+  } finally { await host.close(); }
+});
+
+await test("discovered local tool proxies reject replacement endpoints with the same schema", async () => {
+  const host = new McpToolHost();
+  const original = localEndpoint(false, true);
+  const replacement = localEndpoint(false, true);
+  try {
+    await host.attachLocalServer("local", "session-one", undefined, original.open);
+    const stale = await host.createTools()[0]!.resolveExecution({});
+    assert.ok(!("isError" in stale));
+    await host.attachLocalServer("local", "session-two", undefined, replacement.open);
+    let dispatches = 0;
+    await assert.rejects(stale.execute({ sessionId: "agent", operationId: "old", toolCallId: "old",
+      onDispatched: () => { dispatches += 1; } }), /Local MCP endpoint was replaced/);
+    assert.equal(dispatches, 0);
+    assert.equal(replacement.state.calls, 0);
+    const fresh = await host.createTools()[0]!.resolveExecution({});
+    assert.ok(!("isError" in fresh));
+    assert.equal(await fresh.execute({ sessionId: "agent", operationId: "new", toolCallId: "new" }), "local-result");
     assert.equal(replacement.state.calls, 1);
   } finally { await host.close(); }
 });

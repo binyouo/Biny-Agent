@@ -60,7 +60,7 @@ async function testAutomaticToolModelFallback(hasHealthyCandidate: boolean): Pro
     await mkdir(workspace);
     await writeFile(path.join(workspace, "note.txt"), "fixture-note-content\n");
     const config = configSchema.parse({
-      ...defaultConfig,
+      ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
       defaultModel: "chat",
       toolModel: undefined,
       providers: {
@@ -139,7 +139,7 @@ async function testSelectionCooldown(): Promise<void> {
   const timer = setTimeout(() => controller.abort(new Error("Selection cooldown test timed out.")), 15_000);
   try {
     let config = configSchema.parse({
-      ...defaultConfig, defaultModel: "chat", toolModel: "selector",
+      ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" }, defaultModel: "chat", toolModel: "selector",
       providers: { local: { type: "openai-compatible", baseUrl: provider.endpoint, requiresApiKey: false, retry: { maxAttempts: 1 } } },
       models: {
         selector: { provider: "local", model: "selector", capabilities: { tools: false, reasoning: false, streaming: true } },

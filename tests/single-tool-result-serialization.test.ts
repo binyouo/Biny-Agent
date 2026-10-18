@@ -4,9 +4,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { isToolResultArchiveReference } from "../src/session/toolResultArchive.js";
 
-// Product files are source text only. No product import, tool, archive I/O,
-// Recorder, SDK, Host, process, worker, socket or database is initialized.
 // Every selected production declaration runs unchanged. Only serialize calls
 // are observed (then delegated), and the archive callback is inert memory.
 const root = new URL("../", import.meta.url);
@@ -32,7 +31,7 @@ const selections: Record<string, Selection> = {
 };
 const directCalls = new Set([
   ...Object.values(selections).flatMap(selection => selection.functions),
-  "String", "createHash", "projectShellStreams", "shellOutputExcerpt", "commandStreamFields"
+  "String", "createHash", "projectShellStreams", "shellOutputExcerpt", "commandStreamFields", "isToolResultArchiveReference"
 ]);
 const methodCalls = new Set([
   "replace", "map", "has", "add", "delete", "entries", "fromEntries", "toLowerCase", "endsWith",
@@ -121,7 +120,7 @@ const archivePath = ".biny/tool-results/tool-result-" + "a".repeat(64) + ".json"
 function harness(original: unknown) {
   const calls: unknown[] = [];
   const api = evaluate<Api>(projectionSource, {
-    ...redaction, ...shell, ...fields, Buffer, createHash, Error,
+    ...redaction, ...shell, ...fields, Buffer, createHash, Error, isToolResultArchiveReference,
     serializeToolResult: (value: unknown, options?: { context?: "mcp-result" }): string => {
       calls.push(value);
       return serializer.serializeToolResult(value, options);

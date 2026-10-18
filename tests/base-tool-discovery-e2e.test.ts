@@ -1,4 +1,4 @@
-/** 精简常驻定义后，真实 Session 仍能无辅助模型地发现工具、搜索文件、管理进程并持久化清单。 */
+/** 精简常驻定义后，真实 Session 仍能无辅助模型地发现工具、搜索文件、管理进程。 */
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -13,25 +13,20 @@ import { UserInputRequests } from "../src/runtime/userInput.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
-import { TodoStore } from "../src/session/todoStore.js";
 import { createAskUserQuestionTool } from "../src/tools/askUserQuestion.js";
 import { createToolRegistry } from "../src/tools/registry.js";
-import { createTodoTool } from "../src/tools/todo.js";
 
 for (const withPreselection of [true, false]) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-base-tools-"));
   await ensureAgentDirs(root);
   const recorder = new SessionRecorder(root);
   const processes = new ManagedProcessService({ workspaceRoot: root });
-  const todos = new TodoStore(root, recorder.sessionId);
-  await todos.initialize();
   const registry = createToolRegistry({ workspaceRoot: root, ignore: [] }, undefined, processes);
-  registry.registerBuiltinTool(createTodoTool(todos));
   registry.registerBuiltinTool(createAskUserQuestionTool(new UserInputRequests()));
   // 直接嵌入 AgentSession 且缺少选择器时也必须走大目录的保守回退。
   for (let index = 0; index < 45; index++) registry.registerBuiltinTool({ ...registry.get("Read"), name: `optional_read_${index}` });
-  const core = ["Read", "Write", "Edit", "Bash", "ToolSearch", "read_tool_result"];
-  const helpers = ["Glob", "Grep", "BashOutput", "KillShell", "TodoWrite", "AskUserQuestion"];
+  const core = ["Read", "Write", "Edit", "Bash", "ToolSearch"];
+  const helpers = ["Glob", "Grep", "BashOutput", "KillShell", "AskUserQuestion"];
   let step = 0;
   let processId: string | undefined;
   const resultFor = async (tool: string) => {
@@ -76,10 +71,6 @@ for (const withPreselection of [true, false]) {
           break;
         case 6:
           assert.match(JSON.stringify(await resultFor("Grep")), /fixture-note/u);
-          call = { name: "TodoWrite", arguments: { todos: [{ content: "Inspect note", status: "completed" }] } };
-          break;
-        case 7:
-          assert.deepEqual(todos.list(), [{ content: "Inspect note", status: "completed" }]);
           break;
         default: assert.fail("unexpected model continuation");
       }
@@ -113,14 +104,11 @@ for (const withPreselection of [true, false]) {
       emotionAnalysis: false, capabilitySelection: { tools: "auto", skills: "none" }, abortSignal: AbortSignal.timeout(20_000)
     });
     assert.equal(outcome.status, "completed", JSON.stringify(outcome));
-    assert.equal(step, 8);
+    assert.equal(step, 7);
     const events = await readSessionEvents(recorder.filePath);
     assert.deepEqual(events.filter((event) => event.type === "tool_call").map((event) => event.tool),
-      ["Bash", "ToolSearch", "BashOutput", "KillShell", "Glob", "Grep", "TodoWrite"]);
-    assert.equal(events.filter((event) => event.type === "tool_result").length, 7);
-    const restored = new TodoStore(root, recorder.sessionId);
-    await restored.initialize();
-    assert.deepEqual(restored.list(), [{ content: "Inspect note", status: "completed" }], "discovered tools retain real persistence");
+      ["Bash", "ToolSearch", "BashOutput", "KillShell", "Glob", "Grep"]);
+    assert.equal(events.filter((event) => event.type === "tool_result").length, 6);
   } finally {
     await agent.close();
     await processes.close();

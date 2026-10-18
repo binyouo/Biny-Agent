@@ -58,7 +58,7 @@ const calls = new Set([
   "this.store.enabledAt", "signal.throwIfAborted", "thread.messages.map",
   "messages.filter", "messages.map", "messages.some", "message.role.toUpperCase", "message.text.includes", "material.includes",
   "fullMaterial.slice", 'createHash("sha256").update(material).digest',
-  "this.store.brief", "this.options.getModel", "briefSchema.safeParse", "this.ask", "this.mayPersist",
+  "this.store.brief", "this.options.getModel", "briefSchema.safeParse", "briefFieldErrors", "this.ask", "this.mayPersist",
   "this.store.putBrief", "this.suggest", "this.options.canPersist", "events.flatMap",
   "selectedSlots.delete", "selectedSlots.set", "nodes.map", "path.has", "path.add", "byId.get",
   "pathFor", "[...selectedSlots].every", "compatibleSessionSelections", "selectedSlots.values",

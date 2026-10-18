@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { createHistoryTools } from "../src/extensions/history.js";
+import { createHistoryQueryFixture } from "./fixtures/queryTools.js";
 import { SessionSearchStore as SessionSearchIndex } from "../src/session/searchIndexStore.js";
 import { listAllSessionFiles } from "../src/session/store.js";
 
@@ -26,7 +26,7 @@ test("pre-aborted history calls never acquire an index or touch transcript stora
   const index = new SessionSearchIndex(root);
   let gets = 0;
   let flushes = 0;
-  const [tool] = createHistoryTools({
+  const tool = createHistoryQueryFixture({
     getIndex: () => { gets++; return index; },
     flushCurrentSession: async () => { flushes++; }
   });
@@ -66,7 +66,7 @@ for (const stage of ["flush", "refresh", "search"] as const) {
       if (stage === "search") controller.abort(reason);
       return [];
     });
-    const [tool] = createHistoryTools({
+    const tool = createHistoryQueryFixture({
       getIndex: () => index,
       flushCurrentSession: async (signal) => {
         calls.push("flush");
@@ -92,7 +92,7 @@ test("live cancellable history searches retain global cross-project scope and cu
   await fs.writeFile(external, row("external"));
   const index = new SessionSearchIndex(root);
   const controller = new AbortController();
-  const [tool] = createHistoryTools({
+  const tool = createHistoryQueryFixture({
     getIndex: () => index,
     flushCurrentSession: async (signal) => { await index.indexSessionFile("current", current, signal); }
   });

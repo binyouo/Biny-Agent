@@ -80,7 +80,7 @@ async function fixture(t: TestContext) {
     attachment: { ...attachment, size: attachment.size ?? png.length }, sessionId: local.runtime.getSnapshot().info.sessionId };
 }
 
-test("Desktop 发送和编辑导入图片时保留原生模型输入和持久引用", { timeout: 20_000 }, async (t) => {
+test("Desktop keeps user text exact and sends media and Read-only file refs as separate parts", { timeout: 20_000 }, async (t) => {
   const f = await fixture(t);
   const attachments = [f.original, f.attachment, f.document];
   let requestStart = 0;
@@ -90,16 +90,20 @@ test("Desktop 发送和编辑导入图片时保留原生模型输入和持久引
     const user = events.filter(event => event.type === "user_message" && event.content.includes(input)).at(-1);
     assert.ok(user?.type === "user_message", "submission must reach the real session recorder");
     assert.ok(events.filter(event => event.type === "turn_status").at(-1)?.status === "completed", "the synthetic provider completes the submitted turn");
-    assert.deepEqual(user.attachments, [f.original, f.attachment], "Desktop must retain both normal and imported media references");
-    assert.ok(user.content.includes(f.document.path), "non-media attachments remain available as file references");
-    const imageParts = f.requests.slice(requestStart).flatMap(request => request.messages)
+    assert.equal(user.content, input, "internal attachment references must not be appended to the persisted user text");
+    assert.deepEqual(user.attachments, [f.original, f.attachment, f.document], "all attachment refs must survive in session metadata");
+    const userParts = f.requests.slice(requestStart).flatMap(request => request.messages)
       .filter(message => message.role === "user")
-      .flatMap(message => Array.isArray(message.content) ? message.content as Array<{ type: string }> : [])
-      .filter(part => part.type === "image_url");
+      .flatMap(message => Array.isArray(message.content) ? message.content as Array<{ type: string; text?: string; image_url?: { url: string } }> : []);
+    const imageParts = userParts.filter(part => part.type === "image_url");
     assert.deepEqual(imageParts, [
       { type: "image_url", image_url: { url: `data:image/png;base64,${localPng.toString("base64")}` } },
       { type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } }
     ]);
+    assert.ok(userParts.some(part => part.type === "text" && part.text?.includes(`@attachments/${path.basename(f.document.path)}`)),
+      "the model must receive the document path in a separate attachment content part");
+    assert.ok(userParts.some(part => part.type === "text" && (part.text === input || part.text?.endsWith(`\n\n${input}`))),
+      "the model must also receive the original user text");
     assert.doesNotMatch(await readFile(sessionFilePath(f.project.path, f.sessionId), "utf8"), /iVBORw0KGgoAAAANS/u);
     requestStart = f.requests.length;
     return user;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { projectMessageSentAt } from "../src/agent/modelMessages.js";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
@@ -172,7 +173,8 @@ function fixture(scenario: Scenario, operation = "agent turn", firstFinish = "le
     compactionCheckpointMessage: () => "checkpoint",
     cloneCheckpointState: (value: unknown) => value,
     cloneDraftClaimEvidence: (value: unknown) => value,
-    compactionPromptVersion: 3,
+    compactionPromptVersion: 4,
+    projectMessageSentAt,
     toModelMessages: (messages: unknown[]) => messages
   }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as Extracted;
   const memory = Object.assign(Object.create(extracted.memory) as Memory, {

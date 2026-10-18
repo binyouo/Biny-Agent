@@ -1,3 +1,5 @@
+import { SelfieAlbum, selfiePrompt } from "./context/selfie.js";
+import { TravelStorage, travelPrompt } from "./context/travel.js";
 import type { TaskCommunication } from "../runtime/TaskCommunication.js";
 import { AcpClient, acpMcpServers } from "../acp/client.js";
 import { runAcpTurn } from "../acp/turn.js";
@@ -73,6 +75,7 @@ import {
   buildPromptBundle,
   type PromptBundle,
   refreshRuntimeTurnContext,
+  refreshRuntimeDateContext,
   refreshRuntimeSystemPrompt,
   refreshSessionGoalPrompt,
   messagesForTelemetry,
@@ -94,11 +97,6 @@ import {
   refreshChatDailyDiary,
   type ChatDiaryRefreshResult
 } from "./context/chatDiary.js";
-import {
-  refreshSelfReflection,
-  type SelfReflectionActionCandidate,
-  type SelfReflectionMemoryCandidate
-} from "./context/selfReflection.js";
 import { LocalMemory, redactSecrets } from "./context/LocalMemory.js";
 import { IdentityStorage } from "./context/identityStorage.js";
 import { runSoulCommand as executeSoulCommand } from "./context/soulCommands.js";
@@ -148,9 +146,9 @@ import { ProviderRegistry } from "../llm/ProviderRuntime.js";
 import { LocalEmbeddingManager } from "../llm/embedding/LocalEmbeddingRuntime.js";
 import { selectMemoryEmbeddingModel } from "../llm/embedding/selectMemoryModel.js";
 import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
-import { attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
+import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
-import { messageText } from "./modelMessages.js";
+import { messageText, withMessageSentAt } from "./modelMessages.js";
 import { PluginLifecycleRegistry, type PluginMcpToolCaller } from "../extensions/pluginLifecycle.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
 import { archiveToolResult } from "../session/toolResultArchive.js";
@@ -209,6 +207,8 @@ export interface AgentSessionOptions {
   toolRegistry: ToolRegistry;
   permissionManager: PermissionManager;
   recorder: SessionRecorder;
+  /** 旧 recorder 被放弃时，由装配层收回该会话的外部资源。 */
+  releaseSessionResources?: () => Promise<void>;
   modelManager?: ModelManager;
   skillPrompt?: string | ((selection?: AgentCapabilitySelection["skills"], runId?: string) => string | undefined | Promise<string | undefined>);
   skillNames?: (selection?: AgentCapabilitySelection["skills"], runId?: string) => string[];
@@ -247,8 +247,6 @@ export interface AgentSessionOptions {
   /** 提取进度只通知界面，不进入消息时间线。 */
   onSkillExtractionUpdate?: (notice: SkillExtractionNotice & { runId: string }) => void;
   onTitleGenerated?: (sessionId: string, title: string) => void;
-  /** 自省识别出明确未完成行动后的持久化入口；只创建记录，不启动任务。 */
-  createSelfReflectionTask?: (candidate: SelfReflectionActionCandidate) => Promise<boolean>;
 }
 
 export interface AgentRunOptions {
@@ -807,7 +805,7 @@ export class AgentSession {
     const selectedToolNames = this.selectedToolNames(selection);
     const initialTools = this.promptTools(selectedToolNames ? [...selectedToolNames] : undefined);
     const soulPrompt = soulSnapshot.source === "user"
-      ? renderSoulPrompt(soulSnapshot.content, soulSnapshot.source)
+      ? renderSoulPrompt(soulSnapshot.content, soulSnapshot.source, soulSnapshot.path)
       : undefined;
     let crystalPrompt: string | undefined;
     try {
@@ -827,6 +825,8 @@ export class AgentSession {
       personalization,
       securityPrompt,
       identityPrompt,
+      setupUserPath: this.activeConfig.context.identity.enabled && this.activeConfig.context.identity.userEnabled && !identityPrompt
+        ? path.join(this.identityStorage.directory, "USER.md") : undefined,
       parentThreadPrompt,
       emotionPrompt,
       soulSource: soulSnapshot.source,
@@ -871,13 +871,13 @@ export class AgentSession {
     );
     const mode = capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection;
     const goalTools = this.options.sessionGoals?.get(this.recorder.sessionId)?.status === "active"
-      ? ["GoalGet", "GoalUpdate"] : [];
+      ? ["Bash"] : [];
     if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) {
       return resolved && mode !== "none" ? new Set([...resolved, ...goalTools]) : resolved ?? (mode === "auto"
         ? new Set(this.options.toolRegistry.list().filter((tool) => getToolExposure(tool) === "direct" || getToolExposure(tool) === "model-only").map((tool) => tool.name)) : undefined);
     }
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
-    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "read_tool_result", ...goalTools]);
+    const fallback = new Set([...stableCodingToolNames, ...(this.activeConfig.agent.toolExecutionMode === "direct" ? [toolSearchToolName] : []), ...goalTools]);
     return new Set(this.options.toolRegistry.list().map((tool) => tool.name).filter((name) => fallback.has(name)));
   }
 
@@ -952,7 +952,9 @@ export class AgentSession {
   private async currentEmotionPrompt(now = new Date()): Promise<string | undefined> {
     const fatigue = await this.fatigueService.currentStatus();
     const blended = await this.emotionStorage.readBlended(this.recorder.sessionId, fatigue.fatigue, now);
-    return renderEmotionPrompt(blended, fatigue);
+    const album = new SelfieAlbum();
+    const [selfies, travel] = await Promise.all([album.list(), new TravelStorage().read()]);
+    return [renderEmotionPrompt(blended, fatigue), selfiePrompt(selfies.length, album.directory), travelPrompt(travel, now)].filter(Boolean).join("\n\n");
   }
 
   private async analyzeContextEmotion(sessionId: string, signal: AbortSignal, messageId?: string): Promise<void> {
@@ -1115,7 +1117,7 @@ export class AgentSession {
         await this.turnStore.clear().catch(() => undefined);
         throw new Error(recoveryPlan.message);
       }
-      const replayMessages = await this.rehydrateSessionAttachments(
+      const replayMessages = await this.rehydrateSessionMessages(
         replay.messages,
         replay.events,
         replay.contextStartUserMessageIndex,
@@ -1237,7 +1239,7 @@ export class AgentSession {
         if (!isDeepStrictEqual(await this.turnStore.load(), turn)) throw new Error("Retry checkpoint changed before terminal cleanup.");
         await this.turnStore.clear();
       }
-      const messages = await this.rehydrateSessionAttachments(replay.messages, replay.events, replay.contextStartUserMessageIndex, replay.messageReferences);
+      const messages = await this.rehydrateSessionMessages(replay.messages, replay.events, replay.contextStartUserMessageIndex, replay.messageReferences);
       this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
       this.contextMessageReferences = replay.messageReferences;
@@ -1265,7 +1267,7 @@ export class AgentSession {
         recordSessionUserMessage: false, emptyTurn: true, rebindPausedFollowup: true });
       return;
     }
-    const messages = await this.rehydrateSessionAttachments(
+    const messages = await this.rehydrateSessionMessages(
       replay.messages,
       replay.events,
       replay.contextStartUserMessageIndex,
@@ -1320,7 +1322,7 @@ export class AgentSession {
     return this.crystalService;
   }
 
-  /** 刷新文件型每日工作日志，并按记忆开关自动晋升高置信度自省结果。 */
+  /** 显式刷新聊天工作摘要；人格自省由正常 Agent 按 Skill 执行。 */
   async refreshDailyDiary(
     dateKey: string,
     options: { signal?: AbortSignal; force?: boolean } = {}
@@ -1331,7 +1333,7 @@ export class AgentSession {
     } catch {
       // 没有可用模型时由 diary 模块写确定性 fallback，避免日报依赖聊天模型配置。
     }
-    const result = await refreshChatDailyDiary(dateKey, {
+    return await refreshChatDailyDiary(dateKey, {
       model,
       allowActivity: this.activeConfig.activity.enabled,
       signal: options.signal,
@@ -1340,43 +1342,6 @@ export class AgentSession {
       onModelRequest: async (metrics) => await this.recordModelRequest(metrics),
       requestContext: { operation: "memory" }
     });
-    if (model) {
-      const memories = await this.localMemory.listMemoryEntries({ limit: 40 }).catch(() => undefined);
-      const allowReflectionPromotion = this.activePersonalization.contributeMemories;
-      result.reflection = await refreshSelfReflection(dateKey, {
-        soulStorage: this.soulStorage,
-        emotionStorage: this.emotionStorage,
-        sessionId: this.recorder.sessionId,
-        allowActivity: this.activeConfig.activity.enabled,
-        signal: options.signal,
-        model,
-        memoryContext: memories?.entries.filter((entry) => !entry.tags.includes("self-reflection") && !isActivityMemory(entry)).map((entry) => `- ${entry.content}`).join("\n"),
-        force: options.force,
-        onUsage: async (usage, operation) => { this.recordModelUsage(usage, operation); },
-        onModelRequest: async (metrics) => await this.recordModelRequest(metrics),
-        requestContext: { operation: "memory" },
-        promoteMemory: allowReflectionPromotion
-          ? async (candidate: SelfReflectionMemoryCandidate) => {
-            const result = await this.localMemory.writeAutoEntry({
-              content: candidate.content,
-              source: "auto",
-              tags: ["self-reflection"],
-              rationale: candidate.evidence,
-              threadId: this.recorder.sessionId
-            }, {
-              signal: options.signal,
-              now: new Date(),
-              requireSemantic: true
-            });
-            return result.written;
-          }
-          : undefined,
-        createTask: allowReflectionPromotion && this.options.createSelfReflectionTask
-          ? async (candidate: SelfReflectionActionCandidate) => await this.options.createSelfReflectionTask!(candidate)
-          : undefined
-      }).catch(() => undefined);
-    }
-    return result;
   }
 
   /** 当前长期记忆配置下的嵌入运行时；自动选择仅使用已配置且可用的 Provider。 */
@@ -1635,7 +1600,7 @@ export class AgentSession {
     const prefixEnd = targetIsAssistant ? targetReferenceIndex : userReferenceIndex;
     if (prefixEnd < 0) throw new Error("Retry target is not replayable.");
     const activeEvents = activeSessionEventsForPath(replay.events);
-    const replayMessages = await this.rehydrateSessionAttachments(
+    const replayMessages = await this.rehydrateSessionMessages(
       replay.messages,
       activeEvents,
       replay.contextStartUserMessageIndex,
@@ -1698,7 +1663,11 @@ export class AgentSession {
     const preparedHistoryReferences = preparedHistoryCount ? this.contextMessageReferences.slice(-preparedHistoryCount) : [];
     const continuationMessages = [...prepared.messages];
     const continuationReferences = [...preparedHistoryReferences, replay.messageReferences[userReferenceIndex]];
-    const preparedUser = continuationMessages.at(-1);
+    let preparedUser = continuationMessages.at(-1);
+    if (!replacingUser && preparedUser?.role === "user" && userEvent?.type === "user_message") {
+      preparedUser = withMessageSentAt(preparedUser, userEvent);
+      continuationMessages[continuationMessages.length - 1] = preparedUser;
+    }
     const sourceUserIndex = targetIsAssistant
       ? preparedHistoryReferences.findIndex((reference) => reference?.id === userNode.id)
       : -1;
@@ -1786,7 +1755,7 @@ export class AgentSession {
       await this.recorder.recordAndFlush({ type: "message_version_selected", messageId: next.id, slotId });
       const replay = replaySessionEvents(await readSessionEvents(this.recorder.filePath), { sessionId: this.recorder.sessionId });
       const activeEvents = activeSessionEventsForPath(replay.events);
-      const messages = await this.rehydrateSessionAttachments(
+      const messages = await this.rehydrateSessionMessages(
         replay.messages,
         activeEvents,
         replay.contextStartUserMessageIndex,
@@ -1893,7 +1862,7 @@ export class AgentSession {
     create: (selected: SessionReplay) => Extract<SessionEvent, { type: "user_message" }> | undefined
   ): Promise<SessionEvent | undefined> {
     const recorded = await this.recorder.admitTurnAfterRetryView(kind, async (selected, pausedMarker) => {
-      const messages = await this.rehydrateSessionAttachments(selected.messages, selected.events,
+      const messages = await this.rehydrateSessionMessages(selected.messages, selected.events,
         selected.contextStartUserMessageIndex, selected.messageReferences);
       const references: Array<SessionMessageReference | undefined> = [...selected.messageReferences];
       if (pausedMarker !== undefined && !(messages.at(-1)?.role === "user" && messages.at(-1)?.content === pausedMarker
@@ -2019,7 +1988,7 @@ export class AgentSession {
         attachments: sessionAttachments(clonedAttachments),
         messageId,
         auditOnly: true,
-        metadata: { queuedDelivery: delivery }
+        metadata: { queuedDelivery: delivery, sentAtTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }
       })
     };
     (delivery === "steer" ? queues.steering : queues.queued).push(item);
@@ -2257,7 +2226,7 @@ export class AgentSession {
         sourcePrefix: { byteLength: source.byteLength, sha256: source.contentHash }
       });
       if (canonical.messages.length) {
-        const restored = await this.rehydrateSessionAttachments(canonical.messages, canonical.events, canonical.contextStartUserMessageIndex,
+        const restored = await this.rehydrateSessionMessages(canonical.messages, canonical.events, canonical.contextStartUserMessageIndex,
           canonical.retrySourceEvents ? canonical.messageReferences : undefined);
         const indexes = restored.map((_, index) => index).filter(index => !(canonical.messageReferences[index]?.id === undefined
           && restored[index]?.role === "user" && restored[index].content === pausedTurnMarker));
@@ -2349,6 +2318,7 @@ export class AgentSession {
       let userIndex = messages.length - 1;
       while (userIndex >= 0 && (messages[userIndex]?.role !== "user" || messageReferences[userIndex]?.id === undefined)) userIndex -= 1;
       const selectionEvents = await readSessionEvents(this.recorder.filePath);
+      messages = await this.rehydrateSessionMessages(messages, selectionEvents, 0, messageReferences);
       const origin = selectionEvents.find((event) => event.type === "user_message" && !event.auditOnly && event.runtime?.turnId === runtimeTurnId);
       if (origin?.type === "user_message" && origin.messageId) {
         userIndex = messageReferences.findIndex((reference) => reference?.id === origin.messageId);
@@ -2442,6 +2412,11 @@ export class AgentSession {
       yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection, loadedSkills: prepared.loadedSkills ?? [] } };
       systemPrompt = prepared.systemPrompt;
       messages = prepared.messages;
+      const currentUser = messages.at(-1);
+      const currentUserEvent = events.find(event => event.type === "user_message" && event.messageId === userMessageReference?.id);
+      if (!runOptions.emptyTurn && currentUser?.role === "user" && currentUserEvent?.type === "user_message") {
+        messages[messages.length - 1] = withMessageSentAt(currentUser, currentUserEvent);
+      }
       const selectedHistoryCount = runOptions.emptyTurn ? messages.length : Math.max(0, messages.length - 1);
       messageReferences = [
         ...(selectedHistoryCount ? this.contextMessageReferences.slice(-selectedHistoryCount) : []),
@@ -2481,6 +2456,9 @@ export class AgentSession {
       yield { type: "status", status: "cancelled" };
       yield doneEvent(outcome);
       return;
+    }
+    if (runOptions.continueFrom?.length || runOptions.emptyTurn) {
+      systemPrompt = refreshRuntimeDateContext(systemPrompt, messages, new Date());
     }
     if (!continuing) {
       try {
@@ -2720,7 +2698,7 @@ export class AgentSession {
     let relatedToolCallIds: string[] = [];
     const modelRequestContext = (step: number): ModelRequestContext => {
       const goal = this.options.sessionGoals?.get(this.recorder.sessionId);
-      if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect GoalGet before resuming.");
+      if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect `biny goal show --json` before resuming.");
       if (goal?.status === "active") this.runSessionGoalId = goal.goalId;
       this.sessionGoalRequest = goal?.status === "active" && runOptions.runId !== undefined
         ? { goalId: goal.goalId, revision: goal.revision, generation: goal.generation, runId: runOptions.runId } : undefined;
@@ -2869,6 +2847,10 @@ export class AgentSession {
         ].filter(Boolean).join("\n\n");
       }
     }
+    if (this.activeConfig.agent.toolExecutionMode === "code_mode" && runOptions.capabilitySelection?.tools !== "none" && runOptions.toolAccessSelection !== "none"
+      && !(Array.isArray(runOptions.toolAccessSelection) && runOptions.toolAccessSelection.length === 0)) {
+      coordinator.allowTools(runOptions.initialToolBudget?.toolDiscovery?.tools ?? []);
+    }
     if (runOptions.toolAccessSelection === "auto" && runOptions.capabilitySelection?.tools !== "none") {
       // 仅复用当前活动上下文中的成功发现；用户手选范围不继承旧发现，权限仍逐次检查。
       coordinator.allowTools(toolSearchResultNamesFromMessages(messages));
@@ -3015,6 +2997,7 @@ export class AgentSession {
     let activeRequestContext = loopContext;
     const projectForModelRequest = async (contextMessages: AgentMessage[]): Promise<AgentMessage[]> => {
       const projectedMessages = await projectToolResultsForModel(contextMessages, {
+        maxRetainedBytes: this.activeConfig.context.maxTurnToolResultBytes,
         archiveResult: async ({ message, result, output, sequence }) => await archiveToolResult({
           workspaceRoot: this.options.workspaceRoot,
           sessionId: this.recorder.sessionId,
@@ -3169,6 +3152,10 @@ export class AgentSession {
             context.systemPrompt,
             tools
           );
+          if (this.options.todoStore) {
+            const prompt = context.systemPrompt?.replace(/<!-- biny-todos:start -->[\s\S]*?<!-- biny-todos:end -->/gu, "").trim();
+            context.systemPrompt = [prompt, this.options.todoStore.promptSection()].filter(Boolean).join("\n\n") || undefined;
+          }
           refreshRuntimeTurnContext(context.messages, await this.currentEmotionPrompt());
           this.contextMemory.recordToolSchema(tools);
           context.tools = [...tools];
@@ -3236,7 +3223,7 @@ export class AgentSession {
             prunedMessages = await projectForModelRequest(activeRequestContext.messages);
             requestMessages = this.contextMemory.projectCompactionCheckpoint(prunedMessages);
           }
-          if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect GoalGet before resuming.");
+          if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect `biny goal show --json` before resuming.");
           const absoluteStep = completedStepsBeforeRun + observedSteps;
           if (!softLimitWarningInjected && absoluteStep >= runBudget.softStepLimit) {
             softLimitWarningInjected = true;
@@ -3316,6 +3303,7 @@ export class AgentSession {
                   type: "message.user",
                   messageId: queued.messageId,
                   content: queued.input,
+                  attachments: sessionAttachments(queued.attachments),
                   delivery: queued.delivery
                 };
               }
@@ -3627,6 +3615,12 @@ export class AgentSession {
     return outcome ?? failedTurn("Agent stream ended without a terminal result.", 0);
   }
 
+  private async closeReplacedSession(recorder: SessionRecorder): Promise<void> {
+    const results = await Promise.allSettled([recorder.close(), this.options.releaseSessionResources?.()]);
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "Session resource cleanup failed.");
+  }
+
   async resume(session: string | undefined): Promise<ResumedAgentSession> {
     const release = this.beginOperation("session resume");
     try {
@@ -3640,7 +3634,7 @@ export class AgentSession {
     try {
       if (resumingCurrent) {
         previousClosed = true;
-        await previousRecorder.close();
+        await this.closeReplacedSession(previousRecorder);
       }
       replacementRecorder = new SessionRecorder(this.persistenceRoot(), sessionIdFromFile(filePath), filePath, this.options.runtimeEventSink);
       replacementRecorder.repairTailForAppend();
@@ -3686,7 +3680,7 @@ export class AgentSession {
       if (!resumingCurrent) {
         this.emotionAnalysisScheduler.cancel();
         previousClosed = true;
-        await previousRecorder.close();
+        await this.closeReplacedSession(previousRecorder);
       }
       for (const event of replay.recoveredToolResults) {
         await replacementRecorder.recordAndFlush(event, undefined, this.capabilityOutcomeResolver.redactionOptionsFor(event.result));
@@ -3707,7 +3701,7 @@ export class AgentSession {
           }
       }));
       this.unpersistedRelatedUsage = [];
-      const messages = await this.rehydrateSessionAttachments(
+      const messages = await this.rehydrateSessionMessages(
         replay.messages,
         // Snapshots omit events; attachment references remain in the validated JSONL.
         replay === snapshotReplay ? activeSessionEventsForPath(resumeEvents) : replay.events,
@@ -3773,6 +3767,7 @@ export class AgentSession {
       }
       // 旧 recorder 只是被丢弃；关闭失败不阻断切换到新会话（空草稿关闭时会顺带删除草稿文件）。
       await previousRecorder.close().catch(() => undefined);
+      await this.options.releaseSessionResources?.();
       // 会话级状态全部回到「刚构造」：历史、用量、权限授予、计划清单都不带入新会话。
       this.options.permissionManager.resetSession();
       this.usageRecords = [];
@@ -3852,9 +3847,9 @@ export class AgentSession {
   sessionGoalUnavailableReason(): string | undefined {
     const model = this.options.modelManager?.getModel() ?? this.options.model;
     if (!model) return "No model is configured for this session.";
-    if (model.supportsTools === false) return "The selected model cannot call GoalUpdate.";
-    if (this.activeConfig.chat.defaultToolSelection === "none") return "Session tools are disabled; GoalUpdate cannot record completion.";
-    if (!this.options.toolRegistry.list().some((tool) => tool.name === "GoalUpdate")) return "GoalUpdate is unavailable in this session.";
+    if (model.supportsTools === false) return "The selected model cannot execute goal commands.";
+    if (this.activeConfig.chat.defaultToolSelection === "none") return "Session tools are disabled; goal commands cannot record completion.";
+    if (!this.options.toolRegistry.list().some((tool) => tool.name === "Bash")) return "Bash is unavailable for session goal commands.";
     return undefined;
   }
 
@@ -3873,7 +3868,8 @@ export class AgentSession {
   /** 当前激活模型不支持媒体时返回明确错误；输入本身已先写入会话，方便恢复和切换模型后重试。 */
   assertAttachmentsSupported(attachments: AgentAttachment[]): void {
     if (!attachments.length) return;
-    const unsupported = attachments.find((attachment) => !attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("audio/"));
+    const unsupported = attachments.find((attachment) => !attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("audio/")
+      && (this.options.attachmentRoot === undefined || !attachment.path || attachmentFilePath(this.options.attachmentRoot, attachment.path) === undefined));
     if (unsupported) throw new Error(`不支持的附件类型：${unsupported.mimeType}。当前只接受图片和 MP3/WAV 音频。`);
     const modelAlias = this.options.modelManager?.getInfo().modelAlias ?? this.options.config.defaultModel;
     const model = this.options.config.models[modelAlias];
@@ -4408,8 +4404,12 @@ export class AgentSession {
     this.recordIntermediateAssistant(queues, previousAssistant);
     pending.splice(0, items.length);
     for (const item of items) {
+      const receipt = await item.persisted;
+      item.message = withMessageSentAt(item.message, receipt);
       const reference = this.recordCanonicalMessage({
         type: "user_message",
+        time: receipt.time,
+        metadata: { sentAtTimeZone: item.message.sentAtTimeZone },
         content: item.input,
         attachments: sessionAttachments(item.attachments),
         skills: this.skillPaths(),
@@ -4674,35 +4674,46 @@ export class AgentSession {
   }
 
   private supportedAttachments(attachments: AgentAttachment[] | undefined): AgentAttachment[] {
-    const native = attachments?.filter((attachment) => Boolean(attachment.data)) ?? [];
-    this.assertAttachmentsSupported(native);
-    return native;
+    const available = attachments?.filter((attachment) => Boolean(attachment.data)
+      || (Boolean(attachment.path) && this.options.attachmentRoot !== undefined
+        && attachmentFilePath(this.options.attachmentRoot, attachment.path!) !== undefined)) ?? [];
+    this.assertAttachmentsSupported(available);
+    return available;
   }
 
-  private async rehydrateSessionAttachments(
+  private async rehydrateSessionMessages(
     messages: AgentMessage[],
     events: SessionReplay["events"],
     firstUserEventIndex = 0,
-    references?: readonly SessionMessageReference[]
+    references?: readonly (SessionMessageReference | undefined)[]
   ): Promise<AgentMessage[]> {
-    if (!this.options.attachmentRoot) return messages;
     const userEvents = events.filter((event): event is Extract<typeof event, { type: "user_message" }> => event.type === "user_message" && !event.auditOnly);
+    const userEventById = new Map<string, typeof userEvents[number]>();
+    for (const event of userEvents) {
+      if (event.messageId !== undefined && !userEventById.has(event.messageId)) userEventById.set(event.messageId, event);
+    }
     // 普通回放按模型 user 槽计数：中断标记占位但没有附件，压缩偏移也包含这些槽。
     // retry 的 reference 身份属于其自有投影，不能先按公开活动分支筛掉来源。
     const userSlots = references ? [] : activeSessionEventsForPath(events).filter((event) =>
       event.type === "turn_interrupted" || (event.type === "user_message" && !event.auditOnly));
     let userIndex = firstUserEventIndex;
     const hydrated: AgentMessage[] = [];
-    for (const [index, message] of messages.entries()) {
+    for (const [index, original] of messages.entries()) {
+      let message = original;
       if (message.role !== "user") {
         hydrated.push(message);
         continue;
       }
       const reference = references?.[index];
       const slot = userSlots[userIndex];
-      const event = references ? reference?.id === undefined ? undefined : userEvents.find(item => item.messageId === reference.id)
+      const event = references ? reference?.id === undefined ? undefined : userEventById.get(reference.id)
         : slot?.type === "user_message" ? slot : undefined;
       userIndex += 1;
+      if (event) message = withMessageSentAt(message, event);
+      if (!this.options.attachmentRoot) {
+        hydrated.push(message);
+        continue;
+      }
       const attachments = await Promise.all((event?.attachments ?? []).map(async (attachment) => await readAttachmentFromRoot(this.options.attachmentRoot!, attachment)));
       const files = attachments.filter((attachment): attachment is AgentAttachment => attachment !== undefined);
       this.assertAttachmentsSupported(files);
@@ -4711,7 +4722,7 @@ export class AgentSession {
         continue;
       }
       hydrated.push({
-        role: "user",
+        ...message,
         content: [
           { type: "text", text: message.content },
           ...attachmentMessageParts(files)
@@ -5028,7 +5039,8 @@ function restartToolBudget(
   return {
     accountedToolCalls: 0,
     maxRepeatedActionCount: 0,
-    repeatedActions: []
+    repeatedActions: [],
+    toolDiscovery: budget.toolDiscovery === undefined ? undefined : { tools: budget.toolDiscovery.tools, noProgressCount: 0 }
   };
 }
 

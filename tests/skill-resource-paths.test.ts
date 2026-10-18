@@ -41,7 +41,7 @@ try {
       const name = `${scope}-${filename === "SKILL.md" ? "upper" : "lower"}`;
       const directory = path.join(scope === "project" ? path.join(workspaceRoot, ".biny", "skills") : globalRoot, name);
       await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, filename), `---\nname: ${name}\ndescription: Exact resource path fixture\n---\nRead the listed resource.\n`);
+      await writeFile(path.join(directory, filename), `---\nname: ${name}\ndescription: Exact resource path fixture\nalways-inject: true\n---\nRead the listed resource.\n`);
       for (const [relative] of resources) {
         const target = path.join(directory, relative);
         await mkdir(path.dirname(target), { recursive: true });

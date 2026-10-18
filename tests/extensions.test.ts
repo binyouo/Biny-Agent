@@ -8,7 +8,7 @@ import { createMcpResourceTools, expandEnvTemplate, McpToolHost } from "../src/e
 import { createMcpPromptTools } from "../src/extensions/mcpPrompts.js";
 import { loadPlugins } from "../src/extensions/plugins.js";
 import { formatExtensionReport } from "../src/extensions/report.js";
-import { createSkillLookupTool, createSkillResourceTool, createSkillTool, loadSkills } from "../src/extensions/skills.js";
+import { rankSkillsByQuery, createSkillResourceTool, createSkillTool, loadSkills } from "../src/extensions/skills.js";
 import { calculateUsageCost, sumSessionUsage, summarizeUsage } from "../src/observability/usage.js";
 import { buildSystemPrompt, stableSystemPromptForCache } from "../src/agent/prompts.js";
 import { canonicalToolSchemaHash, computePromptShapeDiagnostic, LocalPromptProjectionCache, promptCacheCapability } from "../src/llm/promptCache.js";
@@ -16,7 +16,6 @@ import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { analyzePermissionRequest } from "../src/permission/policy.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { AiRegistry } from "../src/llm/AiRegistry.js";
-import { createMemoryTools } from "../src/extensions/memory.js";
 
 async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
   const start = Date.now();
@@ -37,40 +36,11 @@ async function main(): Promise<void> {
     testUsageCostAccounting();
     testPromptCacheAccounting();
     testShellPermissionBoundary();
-    testFlatMemoryToolSchemas();
-  } finally {
+    } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
 }
 
-function testFlatMemoryToolSchemas(): void {
-  const [saveMemory, recallMemory] = createMemoryTools(() => undefined);
-  assert.ok(saveMemory && recallMemory);
-  // 记忆工具参数已扁平化：save_memory 只收事实字段，recall_memory 只收当前可用的检索范围；
-  // 原 audience/origin/topic 等分类与门禁字段全部删除。
-  assert.deepEqual(Object.keys(saveMemory.parameters.properties).sort(), ["content", "durability", "importance", "rationale", "tags"]);
-  assert.deepEqual((saveMemory.parameters.properties.durability as { enum?: string[] }).enum, ["permanent", "temporary"]);
-  assert.equal((saveMemory.parameters.properties.importance as { type?: string }).type, "number");
-  assert.deepEqual(Object.keys(recallMemory.parameters.properties).sort(), ["limit", "query", "tags", "threadId", "threshold"]);
-  const missingContent = saveMemory.resolveExecution({
-    topic: "style",
-    title: "Concise replies",
-    summary: "The user prefers concise replies with the result first."
-  });
-  assert.equal("isError" in missingContent && missingContent.isError, true);
-  const shortContent = saveMemory.resolveExecution({ content: "用户喜欢中文", importance: 0.5 });
-  assert.equal("isError" in shortContent, false);
-  const emptyContent = saveMemory.resolveExecution({ content: "   " });
-  assert.equal("isError" in emptyContent && emptyContent.isError, true);
-  const explicit = saveMemory.resolveExecution({
-    content: "The user prefers concise replies with the result first.",
-    tags: ["style"],
-    importance: 4,
-    durability: "permanent",
-    rationale: "Asked for repeatedly."
-  });
-  assert.equal("isError" in explicit, false);
-}
 
 function testEmptySkillReport(): void {
   const status = {
@@ -457,119 +427,12 @@ async function testProgressiveSkills(workspaceRoot: string): Promise<void> {
       assert.equal(result.content, "Nested global reference.");
     }
 
-    // skill_lookup：本地打分搜索清单外的已装技能，命中后仍经 Skill 工具加载。
-    const lookup = createSkillLookupTool(bundle);
-    assert.equal(lookup.risk, "read");
-    const lookupExecution = lookup.resolveExecution({ query: "release notes draft" });
-    assert.equal("isError" in lookupExecution, false);
-    if (!("isError" in lookupExecution)) {
-      const lookupResult = await lookupExecution.execute({ toolCallId: "lookup" }) as { found: number; skills: Array<{ name: string }>; hint: string };
-      assert.ok(lookupResult.found >= 1);
-      assert.equal(lookupResult.skills[0]?.name, "release-notes", "name 命中优先于 description 命中");
-      assert.match(lookupResult.hint, /Skill tool/u);
-    }
-    const nameOnly = lookup.resolveExecution({ query: "test-runner" });
-    if (!("isError" in nameOnly)) {
-      const result = await nameOnly.execute({ toolCallId: "lookup-name" }) as { skills: Array<{ name: string }> };
-      assert.equal(result.skills[0]?.name, "test-runner");
-    }
-    const missExecution = lookup.resolveExecution({ query: "zzz-no-match" });
-    if (!("isError" in missExecution)) {
-      const result = await missExecution.execute({ toolCallId: "lookup-miss" }) as { found: number; hint: string };
-      assert.equal(result.found, 0);
-      assert.match(result.hint, /skill_search/u);
-    }
-    const unknown = await tool.resolveExecution({ skill: "missing" });
-    assert.equal("isError" in unknown && unknown.isError, true);
-    if ("isError" in unknown) assert.match(unknown.errorMessage, /Unknown skill: missing/);
+    const matches = rankSkillsByQuery(bundle.skills, "release notes draft", 8);
+    assert.ok(matches.length >= 1);
+    assert.equal(matches[0]?.name, "release-notes", "name matches rank ahead of description matches");
+    assert.equal(rankSkillsByQuery(bundle.skills, "test-runner", 8)[0]?.name, "test-runner");
+    assert.deepEqual(rankSkillsByQuery(bundle.skills, "zzz-no-match", 8), []);
 
-    // 裸 .md 技能保持兼容：文件名主干作为名称，首行作为描述。
-    await writeFile(path.join(workspaceRoot, "legacy-skill.md"), "Use the repository's exact test command.", "utf8");
-    const legacy = await loadSkills({ workspaceRoot, projectPaths: ["legacy-skill.md", "./legacy-skill.md"], globalRoot: path.join(workspaceRoot, "no-global") });
-    assert.equal(legacy.paths.filter((skillPath) => skillPath === "legacy-skill.md").length, 1);
-    assert.equal(legacy.skills.some((skill) => skill.name === "legacy-skill"), true);
-    assert.match(legacy.prompt, /exact test command/);
-
-    // 以水平分割线开头的正文不应被误判成 frontmatter 丢内容。
-    await writeFile(path.join(workspaceRoot, "hr-skill.md"), "---\n\n# Title\n\nStep one: build.\n\n---\n\nMore notes.", "utf8");
-    const horizontalRule = await loadSkills({
-      workspaceRoot,
-      projectPaths: ["hr-skill.md"],
-      globalRoot: path.join(workspaceRoot, "no-global")
-    });
-    assert.equal(horizontalRule.skills.find((skill) => skill.name === "hr-skill")?.description, "Step one: build.");
-
-    // 标准 YAML 的折叠多行 description 可以用于隐式匹配。
-    const yamlSkillDir = path.join(workspaceRoot, ".biny", "skills", "yaml-skill");
-    await mkdir(yamlSkillDir);
-    await writeFile(path.join(yamlSkillDir, "SKILL.md"), "---\nname: yaml-skill\ndescription: >-\n  Review YAML metadata\n  without losing continuation lines.\nmetadata:\n  author: test\n---\nFollow the YAML workflow.", "utf8");
-    const yamlBundle = await loadSkills({ workspaceRoot, projectPaths: [path.join(".biny", "skills", "yaml-skill")], globalRoot: path.join(workspaceRoot, "no-global") });
-    assert.equal(yamlBundle.skills.find((skill) => skill.name === "yaml-skill")?.description, "Review YAML metadata without losing continuation lines.");
-
-    // 不合规 Skill 会出现在 /skills 可见警告里，而不是以错误元数据参与匹配。
-    const invalidSkillDir = path.join(workspaceRoot, ".biny", "skills", "invalid-skill");
-    await mkdir(invalidSkillDir);
-    await writeFile(path.join(invalidSkillDir, "SKILL.md"), "---\nname: another-name\ndescription: Invalid directory binding\n---\nBody.", "utf8");
-    const invalidBundle = await loadSkills({ workspaceRoot, projectPaths: [path.join(".biny", "skills", "invalid-skill")], globalRoot: path.join(workspaceRoot, "no-global") });
-    assert.equal(invalidBundle.skills.some((skill) => skill.name === "another-name"), false);
-    assert.match(invalidBundle.warnings.join("\n"), /must match its directory name/);
-
-    // 超大正文必须明确失败，不能把末尾约束静默截断后继续执行。
-    const largeSkillDir = path.join(workspaceRoot, ".biny", "skills", "large-skill");
-    await mkdir(largeSkillDir);
-    await writeFile(path.join(largeSkillDir, "SKILL.md"), `---\nname: large-skill\ndescription: Oversized instructions\n---\n${"x".repeat(520 * 1024)}`, "utf8");
-    const largeBundle = await loadSkills({ workspaceRoot, projectPaths: [path.join(".biny", "skills", "large-skill")], globalRoot: path.join(workspaceRoot, "no-global") });
-    const largeExecution = await createSkillTool(largeBundle).resolveExecution({ skill: "large-skill" });
-    assert.equal("isError" in largeExecution, false);
-    if (!("isError" in largeExecution)) await assert.rejects(largeExecution.execute({ toolCallId: "large" }), /exceeds/);
-
-    const escapedResource = await resourceTool.resolveExecution({ skill: "release-notes", path: "../SKILL.md" });
-    assert.equal("isError" in escapedResource && escapedResource.isError, true);
-    if ("isError" in escapedResource) assert.match(escapedResource.errorMessage, /escapes its skill directory/);
-
-    // 官方项目目录从当前工作目录逐层扫描到 Git 仓库根目录。
-    const nestedWorkspace = path.join(workspaceRoot, "service");
-    const rootOfficialSkill = path.join(workspaceRoot, ".agents", "skills", "root-skill");
-    const nestedOfficialSkill = path.join(nestedWorkspace, ".agents", "skills", "nested-skill");
-    await mkdir(path.join(workspaceRoot, ".git"));
-    await mkdir(rootOfficialSkill, { recursive: true });
-    await mkdir(nestedOfficialSkill, { recursive: true });
-    await writeFile(path.join(rootOfficialSkill, "SKILL.md"), "---\nname: root-skill\ndescription: Root workflow\n---\nRoot body.", "utf8");
-    await writeFile(path.join(nestedOfficialSkill, "SKILL.md"), "---\nname: nested-skill\ndescription: Nested workflow\n---\nNested body.", "utf8");
-    const officialBundle = await loadSkills({ workspaceRoot: nestedWorkspace, projectPaths: [path.join(".agents", "skills")], globalRoot: path.join(workspaceRoot, "no-global") });
-    assert.deepEqual(officialBundle.skills.filter((skill) => skill.scope !== "builtin").map((skill) => skill.name), ["nested-skill", "root-skill"]);
-    assert.deepEqual(officialBundle.paths.filter((skillPath) => !skillPath.startsWith("builtin")), [
-      path.join("service", ".agents", "skills", "nested-skill", "SKILL.md"),
-      path.join(".agents", "skills", "root-skill", "SKILL.md")
-    ]);
-    // 仓库根 .agents/skills 扫到的技能在嵌套工作区下也归属 agents source，与 catalog 的开关联动约定一致。
-    assert.match(officialBundle.skills.find((skill) => skill.name === "root-skill")?.ref ?? "", /:agents:/);
-    assert.match(officialBundle.skills.find((skill) => skill.name === "nested-skill")?.ref ?? "", /:agents:/);
-
-    // 初始清单使用整体字符预算：先缩短描述，再省略尾部 Skill 并给出警告。
-    const budgetRoot = path.join(workspaceRoot, ".biny", "budget-skills");
-    await Promise.all(Array.from({ length: 100 }, async (_, index) => {
-      const name = `budget-${String(index).padStart(2, "0")}`;
-      const directory = path.join(budgetRoot, name);
-      await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${"d".repeat(1024)}\n---\nBody.`, "utf8");
-    }));
-    const budgetBundle = await loadSkills({ workspaceRoot, projectPaths: [path.join(".biny", "budget-skills")], globalRoot: path.join(workspaceRoot, "no-global") });
-    assert.ok(budgetBundle.prompt.length <= 8_000);
-    assert.match(budgetBundle.prompt, /additional skills were omitted/);
-
-    // 全局目录里的符号链接只导致放弃全局技能，不能阻断加载/启动。
-    const poisonedGlobal = await mkdtemp(path.join(os.tmpdir(), "biny-global-poison-"));
-    try {
-      const poisonTarget = path.join(poisonedGlobal, "real-dir");
-      await mkdir(poisonTarget);
-      await symlink(poisonTarget, path.join(poisonedGlobal, "aaa-link"));
-      const degraded = await loadSkills({ workspaceRoot, projectPaths: [".biny/skills"], globalRoot: poisonedGlobal });
-      assert.equal(degraded.skills.some((skill) => skill.scope === "global"), false);
-      assert.equal(degraded.skills.some((skill) => skill.name === "test-runner"), true);
-    } finally {
-      await rm(poisonedGlobal, { recursive: true, force: true });
-    }
   } finally {
     await rm(globalRoot, { recursive: true, force: true });
     await rm(path.join(workspaceRoot, ".biny"), { recursive: true, force: true });

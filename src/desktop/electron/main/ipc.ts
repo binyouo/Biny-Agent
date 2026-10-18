@@ -8,6 +8,8 @@ import type { DesktopApplicationImports } from "./DesktopApplicationImports.js";
  * 这一层只做「校验 + 转发 + 系统对话框/菜单」，项目、会话、agent 的实际逻辑都在各服务里。
  */
 import { spawn } from "node:child_process";
+import { interactiveShellInvocation } from "../../../tools/shell/shell.js";
+import { launchDetached } from "../../../utils/launchDetached.js";
 import {
   BrowserWindow,
   dialog,
@@ -383,6 +385,11 @@ export function registerDesktopIpc(context: IpcContext): void {
 
   handle(desktopIpc.openProjectTerminal, async (_event, projectId: unknown) => {
     const project = context.projects.requireProject(idSchema.parse(projectId));
+    if (process.platform === "win32") {
+      const shell = interactiveShellInvocation();
+      await launchDetached(shell.executable, shell.args, project.path);
+      return;
+    }
     const child = spawn("/usr/bin/open", ["-a", "Terminal", project.path], { detached: true, stdio: "ignore" });
     // spawn 失败（如系统命令缺失）会以 error 事件异步抛出，不兜底会变成主进程 uncaughtException。
     child.on("error", () => undefined);

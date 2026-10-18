@@ -1,9 +1,32 @@
 /** New explicit retry API controls; added with product fix, not part of Red. */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { runtimeHostPaths } from "../src/runtime/host/lifecycle.js";
-import { flush, ids, observe, outcome, terminalFixture, until } from "./fixtures/runtime-host-terminal.js";
+import type { HostFrame, HostRequestFrame } from "../src/runtime/host/protocol.js";
+import { flush, ids, MemorySocket, observe, outcome, terminalFixture, until } from "./fixtures/runtime-host-terminal.js";
+
+/** Extend only the Green transport controls; keep the accepted Red fixture frozen. */
+function browserLeaseTransport(t: TestContext) {
+  const state = { hold: false };
+  const requests: Array<{ socket: MemorySocket; frame: HostRequestFrame; resolve(): void; reject(): void }> = [];
+  const originalWrite = MemorySocket.prototype.write;
+  t.mock.method(MemorySocket.prototype, "write", function (this: MemorySocket, data: string): boolean {
+    const frame = JSON.parse(data) as HostFrame;
+    if (frame.kind !== "request" || frame.operation !== "browser.automation.set") return originalWrite.call(this, data);
+    const socket = this;
+    const request = {
+      socket,
+      frame,
+      resolve: () => socket.deliver({ kind: "response", requestId: frame.requestId, ok: true, result: undefined }),
+      reject: () => socket.deliver({ kind: "response", requestId: frame.requestId, ok: false, error: "fixture browser lease rejected" })
+    };
+    requests.push(request);
+    if (!state.hold) queueMicrotask(request.resolve);
+    return true;
+  });
+  return { state, requests };
+}
 
 test("healthy retry is a no-op even when another client opens the shared circuit", async t => {
   const f = await terminalFixture(t);
@@ -109,6 +132,104 @@ test("retired client retry rejects without reviving an intentionally retired obs
   assert.equal(retired.isRetired, true);
   await assert.rejects(retired.retryConnection(), /retired/u);
   assert.equal(f.sockets.length, 2); await f.unchanged();
+});
+
+test("explicit retry waits for the required browser lease and keeps failed observations terminal after lease rejection", async t => {
+  const f = await terminalFixture(t);
+  const lease = browserLeaseTransport(t);
+  f.state.capabilities = ["browser.automation.lease"];
+  const client = await f.connect();
+  const endpoint = { endpoint: "/fixture/browser.sock", token: "synthetic-browser-token", projectId: "project" };
+  assert.equal(await client.setBrowserAutomation(endpoint), true);
+  assert.equal(lease.requests.length, 1);
+  const completion = observe(client.submitPromptForSession("a", "once", [], ids).completion);
+  const idle = observe(client.waitForIdle("a"));
+  await flush();
+  const original = await f.terminal("entry", f.sockets[1]!);
+  assert.deepEqual(completion(), { error: original }); assert.deepEqual(idle(), { error: original });
+  await f.ownerAvailable();
+  lease.state.hold = true;
+  const current = f.snapshots.get("a")!;
+  f.snapshots.set("a", { ...current, revision: 8 });
+  const first = observe(client.retryConnection());
+  const second = observe(client.retryConnection());
+  await until(() => lease.requests.length === 2, "held recovery browser lease after subscription");
+  assert.equal(f.requests.filter(frame => frame.operation === "subscribe").length, 3);
+  assert.equal(first(), undefined); assert.equal(second(), undefined);
+  assert.equal(client.getSnapshot("a").revision, 7, "subscribe data cannot commit before the lease");
+  const beforeLease = observe(client.waitForIdle("idle")); await flush();
+  assert.deepEqual(beforeLease(), { error: original });
+  assert.throws(() => client.submitPromptForSession("a", "must not dispatch"), error => error === original);
+  lease.requests[1]!.reject();
+  await until(() => first() !== undefined && second() !== undefined, "browser lease failure fanout");
+  const failure = first(); assert.ok(failure && "error" in failure);
+  assert.match(String(failure.error), /fixture browser lease rejected/u);
+  assert.deepEqual(second(), failure);
+  assert.equal(client.getSnapshot("a").revision, 7);
+  const afterFailure = observe(client.waitForIdle("idle")); await flush();
+  assert.deepEqual(afterFailure(), { error: original });
+  const recovered = observe(client.retryConnection());
+  await until(() => lease.requests.length === 3, "next explicit recovery browser lease");
+  assert.equal(recovered(), undefined);
+  lease.requests[2]!.resolve();
+  await until(() => recovered() !== undefined, "browser lease and snapshot recovery");
+  assert.deepEqual(recovered(), { value: undefined });
+  assert.equal(client.getSnapshot("a").revision, 8);
+  await client.waitForIdle("idle");
+  const freshIdle = observe(client.waitForIdle("a"));
+  f.idle("a"); await flush();
+  assert.deepEqual(freshIdle(), { value: undefined });
+  assert.deepEqual(completion(), { error: original }); assert.deepEqual(idle(), { error: original });
+  assert.equal(f.requests.filter(frame => frame.operation === "submit").length, 1, "lease recovery never replays the original run");
+  assert.equal(f.requests.filter(frame => frame.operation === "start-interrupted").length, 0);
+  assert.deepEqual(lease.requests.map(request => request.frame.payload), Array.from({ length: 3 }, () => ({ browserAutomation: endpoint })));
+  await f.unchanged();
+});
+
+test("disconnect after a browser lease reply cannot commit stale recovery or complete the replacement owner's retry", async t => {
+  const f = await terminalFixture(t);
+  const lease = browserLeaseTransport(t);
+  f.state.capabilities = ["browser.automation.lease"];
+  const client = await f.connect();
+  assert.equal(await client.setBrowserAutomation(undefined), true);
+  const original = await f.terminal("entry", f.sockets[1]!);
+  await f.ownerAvailable(); lease.state.hold = true;
+  const current = f.snapshots.get("a")!;
+  f.snapshots.set("a", { ...current, revision: 8 });
+  const first = observe(client.retryConnection());
+  await until(() => lease.requests.length === 2, "old owner held browser lease");
+  assert.equal(first(), undefined);
+  // Settle the actual lease request, then lose its socket in the same turn before
+  // reconnect's continuation can commit the subscription snapshot or clear error.
+  lease.requests[1]!.resolve();
+  lease.requests[1]!.socket.destroy();
+  await until(() => first() !== undefined, "old lease settlement loses connection ownership");
+  const failure = first(); assert.ok(failure && "error" in failure);
+  assert.equal(failure.error, original);
+  assert.equal(client.getSnapshot("a").revision, 7, "old lease response cannot commit on a lost connection");
+  const afterLoss = observe(client.waitForIdle("idle")); await flush();
+  assert.deepEqual(afterLoss(), { error: original });
+  f.state.epoch = "epoch-b"; await f.ownerAvailable();
+  const next = observe(client.retryConnection());
+  await until(() => lease.requests.length === 3, "replacement owner held browser lease");
+  assert.equal(client.hostInfo?.hostEpoch, "epoch-b");
+  assert.equal(next(), undefined);
+  // Late old-owner response must neither revive its rejected attempt nor admit observers.
+  lease.requests[1]!.resolve(); await flush();
+  assert.deepEqual(first(), failure); assert.equal(next(), undefined);
+  const beforeLease = observe(client.waitForIdle("idle")); await flush();
+  assert.deepEqual(beforeLease(), { error: original });
+  t.mock.timers.tick(1_000); await flush();
+  assert.equal(lease.requests.length, 3, "explicit retry supersedes the old automatic timer");
+  assert.equal(f.sockets.length, 4);
+  lease.requests[2]!.resolve();
+  await until(() => next() !== undefined, "replacement owner complete synchronization");
+  assert.deepEqual(next(), { value: undefined });
+  await client.waitForIdle("idle");
+  assert.equal(client.getSnapshot("a").revision, 8);
+  assert.deepEqual(lease.requests.map(request => request.frame.payload), Array.from({ length: 3 }, () => ({ browserAutomation: null })));
+  assert.equal(f.requests.filter(frame => frame.operation === "submit" || frame.operation === "start-interrupted").length, 0);
+  await f.unchanged();
 });
 
 for (const explicitlyRetry of [false, true]) {

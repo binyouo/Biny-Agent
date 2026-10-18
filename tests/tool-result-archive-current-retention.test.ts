@@ -12,7 +12,7 @@ import { readSessionEvents } from "../src/session/events.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import { archiveToolResult, readToolResultArchive, resolveToolResultArchivePath, pruneToolResultArchives } from "../src/session/toolResultArchive.js";
-import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
 function deferred() {
@@ -84,7 +84,7 @@ test("clock-skewed older archive mtimes cannot cause a just-persisted public too
     const output = "new complete result " + "x".repeat(40000);
     const registry = new ToolRegistry();
     registry.registerBuiltinTool({ name: "large_fixture", description: "Return synthetic output", parameters: { type: "object", properties: {} }, schema: z.object({}), risk: "read", resolveExecution: () => ({ accesses: [], approvalRule: "large_fixture", execute: async () => ({ output }) }) });
-    registry.registerBuiltinTool(createReadToolResultTool({ workspaceRoot: root, ignore: [] }));
+    registry.registerBuiltinTool(createReadFileTool({ workspaceRoot: root, ignore: [] }));
     recorder = new SessionRecorder(root, "new-current-session");
     await recorder.recordAndFlush({ type: "user_message", content: "read new synthetic output" });
     const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry }, new PermissionManager(config.permission), () => undefined);
@@ -104,7 +104,7 @@ test("clock-skewed older archive mtimes cannot cause a just-persisted public too
     const exists = await fs.stat(target).then(() => true, () => false);
     const replayed = replaySessionEvents(events, { sessionId: recorder.sessionId }).messages.find((message) => message.role === "toolResult" && message.toolCallId === "new-current-call");
     assert.ok(replayed?.role === "toolResult");
-    const reread = await tools.find((tool) => tool.name === "read_tool_result")!.execute("retrieve-current", { archivePath: details.archivePath });
+    const reread = await tools.find((tool) => tool.name === "Read")!.execute("retrieve-current", { path: details.archivePath });
     assert.equal(exists, true, "pruning must not delete the new archive that this successful tool result references");
     assert.equal(reread.isError, false);
     assert.equal(JSON.parse((await readToolResultArchive(root, String(details.archivePath))).output).output, output);

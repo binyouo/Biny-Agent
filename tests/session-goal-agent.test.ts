@@ -1,3 +1,4 @@
+import { createRunCommandTool } from "../src/tools/shell/runCommand.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -102,6 +103,7 @@ for (const scenario of ["complete", "edited", "unknown-budget", "code-mode", "cr
   });
   const recorder = new SessionRecorder(workspace, sessionId, undefined, authority.asSink());
   const agent = new AgentSession({ workspaceRoot: workspace, config, model, toolRegistry: registry, permissionManager: new PermissionManager(config.permission), recorder, sessionGoals: goals });
+  registry.registerBuiltinTool(createRunCommandTool({ workspaceRoot: root, ignore: [] }));
   for (const tool of createSessionGoalTools(goals, () => sessionId, () => agent.currentSessionGoalRequest())) registry.registerBuiltinTool(tool);
   try {
     await agent.initialize();
@@ -171,6 +173,7 @@ for (const scenario of ["complete", "edited", "unknown-budget", "code-mode", "cr
   const registry = new ToolRegistry();
   const recorder = new SessionRecorder(workspace, sessionId, undefined, authority.asSink());
   const agent = new AgentSession({ workspaceRoot: workspace, config, model, toolRegistry: registry, permissionManager: new PermissionManager(config.permission), recorder, sessionGoals: goals });
+  registry.registerBuiltinTool(createRunCommandTool({ workspaceRoot: root, ignore: [] }));
   for (const tool of createSessionGoalTools(goals, () => sessionId, () => agent.currentSessionGoalRequest())) registry.registerBuiltinTool(tool);
   try {
     await agent.initialize();

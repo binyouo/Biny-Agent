@@ -50,7 +50,7 @@ interface MessageTimelineProps {
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   thinking: boolean;
   compacting?: boolean;
-  onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
+  onRetry(targetMessageId: string, input: string, attachments: AttachmentReference[], idempotencyKey: string): Promise<void>;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
   /** 点「编辑」：把消息文本交给底部输入框，提交由 Composer 走 App 回调。 */
   onEditRequest(turn: TimelineTurn): void;
@@ -64,6 +64,7 @@ interface PendingUserMessage {
   id: string;
   messageId: string;
   content: string;
+  attachments?: AttachmentReference[];
 }
 
 interface OptimisticRewrite {
@@ -235,6 +236,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
       id: pendingUserMessage.id,
       userMessageId: pendingUserMessage.messageId,
       user: pendingUserMessage.content,
+      userAttachments: pendingUserMessage.attachments,
       assistant: "",
       reasoning: "",
       skills: [],
@@ -380,7 +382,7 @@ const Turn = memo(function Turn({
   onReferenceMessage(messageId: string): void;
   onShowMessageReferences(messageId: string): void;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
-  onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
+  onRetry(targetMessageId: string, input: string, attachments: AttachmentReference[], idempotencyKey: string): Promise<void>;
   onRetryStart(turn: TimelineTurn, mode: "retry" | "edit", user?: string): void;
   onRetrySettled(turnId: string, succeeded: boolean): void;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
@@ -397,7 +399,7 @@ const Turn = memo(function Turn({
     const existing = retryPromiseRef.current;
     if (existing) return existing;
     onRetryStart(turn, "retry");
-    const pending = Promise.resolve().then(() => onRetry(targetMessageId, turn.user, globalThis.crypto.randomUUID()));
+    const pending = Promise.resolve().then(() => onRetry(targetMessageId, turn.user, turn.userAttachments ?? [], globalThis.crypto.randomUUID()));
     retryPromiseRef.current = pending;
     void pending.then(
       () => {
@@ -432,9 +434,10 @@ const Turn = memo(function Turn({
   const emptyIncompleteTurn = !running && turn.status === "incomplete" && !turn.assistant.trim();
   return (
     <section className={`timeline-turn is-${turn.status}`}>
-      {turn.user ? (
+      {turn.user || turn.userAttachments?.length ? (
         <UserMessage
           content={turn.user}
+          attachments={turn.userAttachments}
           messageId={turn.userMessageId}
           pending={pending}
           hasChangedFiles={listChangedFiles(turn).length > 0}
@@ -596,7 +599,10 @@ export function ExecutionTimeline({ readOnly, keepActivitiesOpen = false,
         if (step.kind === "user") {
           return (
             <div className="execution-step execution-user-step user-message" key={step.id}>
-              <div className="user-bubble"><MarkdownContent breaks content={step.content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /></div>
+              <div className="user-bubble">
+                <MarkdownContent breaks content={step.content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} />
+                {step.attachments?.length ? <MessageAttachments attachments={step.attachments} projectId={projectId} /> : null}
+              </div>
             </div>
           );
         }
@@ -604,18 +610,7 @@ export function ExecutionTimeline({ readOnly, keepActivitiesOpen = false,
         if (step.kind === "tool") return step.tool.tool === "AskUserQuestion"
           ? <UserInputCard key={`${sessionId}:${step.tool.runId}:${step.id}`} tool={step.tool} projectId={projectId} sessionId={sessionId} running={running} />
           : <SubagentActivity key={step.id} tool={step.tool} projectId={projectId} sessionId={sessionId} readOnly={readOnly} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={onResolvePermission} />;
-        if (step.summary) {
-          return (
-            <ActivitySummaryStep
-              content={step.content}
-              key={step.id}
-              onOpenExternal={onOpenExternal}
-              onPreviewFile={onPreviewFile}
-              projectId={projectId}
-            />
-          );
-        }
-        return <div className="execution-step execution-assistant-step" key={step.id}><TypewriterMarkdown active={running && index === entries.length - 1 && !step.completed} content={step.content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /></div>;
+        return <div className="execution-step execution-assistant-step" key={step.id}><TypewriterMarkdown active={running && index === entries.length - 1 && !step.completed && !step.summary} content={step.content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /></div>;
       })}
     </div>
   );
@@ -647,19 +642,6 @@ function isGroupableStep(step: TimelineStep): step is ActivitySegmentStep {
   return step.kind === "reasoning" && step.notice !== "compaction";
 }
 
-function ActivitySummaryStep({ content, onOpenExternal, onPreviewFile, projectId }: {
-  content: string;
-  onOpenExternal(url: string): void;
-  onPreviewFile(path: string): void;
-  projectId: string;
-}): React.JSX.Element {
-  return (
-    <div className="execution-step execution-assistant-step execution-summary-step">
-      <MarkdownContent content={content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} />
-    </div>
-  );
-}
-
 function UserMessage({
   content,
   messageId,
@@ -674,7 +656,8 @@ function UserMessage({
   onReference,
   onShowReferences,
   projectId,
-  time
+  time,
+  attachments
 }: {
   content: string;
   messageId?: string;
@@ -691,12 +674,16 @@ function UserMessage({
   projectId: string;
   /** 消息时间（ISO 字符串）；存在时操作行前置 hover 揭示的日期感知时钟。 */
   time?: string;
+  attachments?: AttachmentReference[];
 }): React.JSX.Element {
   const [animateEntry] = useState(pending);
   // 更多菜单走 portal fixed 定位（与助手菜单共用 hook），内联渲染会把消息列表往下挤。
   const { open: menuOpen, position: menuPosition, anchorRef: moreAnchorRef, menuRef, toggle, close: closeMenu } = useAnchoredMenu({ width: 248, estimatedHeight: 196, align: "end" });
   // 发送时追加给模型的附件清单不该原样显示，拆出来渲染成附件卡片。
-  const message = useMemo(() => splitAttachmentReferences(content), [content]);
+  const message = useMemo(() => {
+    const legacy = splitAttachmentReferences(content);
+    return { text: legacy.text, attachments: attachments?.length ? attachments : legacy.attachments };
+  }, [attachments, content]);
   const clock = time ? <MessageClock time={Date.parse(time)} /> : null;
   return (
     <article aria-label={pending ? "发送中" : undefined} aria-busy={pending || undefined} className={`chat-message user-message${animateEntry ? " is-entering" : ""}`} data-message-id={messageId} data-sender="user" tabIndex={-1}>

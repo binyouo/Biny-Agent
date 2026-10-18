@@ -457,11 +457,15 @@ async function testCliBackgroundSubagentIsReachable(): Promise<void> {
     if (!started) throw new Error("CLI did not start a background subagent task.");
     assert.equal(foregroundCalls, 0);
     assert.equal(manager.getSnapshot(started.taskId)?.status, "running");
+    assert.ok(start?.card);
+    assert.ok(start.card.sections.flatMap((section) => section.rows).some((row) => row.label === "Objective" && row.value === "inspect in background" && !row.detail));
 
     const status = await executeRuntimeCommand(runtime, commandRuntime, "/subagent status", "tui");
     const rejected = assert.rejects(started.completion, SubagentTaskAbortedError);
     const cancel = await executeRuntimeCommand(runtime, commandRuntime, `/subagent cancel ${started.taskId}`, "tui");
     await rejected;
+    assert.ok(cancel?.card);
+    assert.ok(cancel.card.sections.flatMap((section) => section.rows).some((row) => row.label === "Task" && row.value === "aborted" && !row.detail));
     assert.match(start?.content ?? "", /^Started subagent task .+\. Use \/subagent status/);
     assert.match(status?.content ?? "", /inspect in background/);
     assert.match(cancel?.content ?? "", /^Cancelled subagent task /);
@@ -1428,6 +1432,7 @@ function fakeCommandRuntime(options: FakeRuntimeOptions = {}): CommandRuntime {
     },
     subagents: {
       listSnapshots: () => options.subagentTasks ?? [],
+      getSnapshot: (taskId: string) => options.subagentTasks?.find((task) => task.taskId === taskId),
       cancelTask: options.cancelSubagentTask ?? (() => false),
       cancelParent: () => undefined
     },

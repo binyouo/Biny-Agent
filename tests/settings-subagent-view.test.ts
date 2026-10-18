@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { JSDOM } from "jsdom";
 
-test("Subagent settings show runtime-specific model choices and external restrictions; disabled and busy controls cannot edit defaults", async () => {
+test("Subagent settings show the selected model and external restrictions; disabled and busy controls cannot edit defaults", async () => {
   const vite = await createServer({ configFile: false, server: { middlewareMode: true }, appType: "custom", optimizeDeps: { noDiscovery: true } });
   try {
     const { SettingsSubagent } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsSubagent.tsx");
@@ -26,7 +26,7 @@ test("Subagent settings show runtime-specific model choices and external restric
     const native = render("builtin");
     assert.ok(native.querySelector('[aria-label="默认子代理"]'));
     assert.match(native.body.textContent!, /跟随主模型/);
-    assert.match(native.body.textContent!, /Native model/);
+    assert.match(render("builtin", true, false, "native").querySelector('[role="combobox"]')?.textContent ?? "", /native-id/);
     assert.doesNotMatch(native.body.textContent!, /ACP model|沙箱测试限制/);
     const automatic = render("auto");
     assert.equal(automatic.querySelector('select')?.value, "auto");
@@ -40,11 +40,11 @@ test("Subagent settings show runtime-specific model choices and external restric
     assert.ok(native.querySelector('option[value="acp:offline"]:disabled'));
     const acp = render("acp", true, false, "external", "worker");
     assert.equal(acp.querySelector('select')?.value, "acp:worker");
-    assert.match(acp.body.textContent!, /ACP model/);
+    assert.match(acp.querySelector('[role="combobox"]')?.textContent ?? "", /acp-id/);
     assert.doesNotMatch(acp.body.textContent!, /Native model|Other model|跟随主模型/);
     assert.match(acp.body.textContent!, /沙箱测试限制/);
-    const other = render("acp", true, false, undefined, "other-worker");
-    assert.match(other.body.textContent!, /Other model/);
+    const other = render("acp", true, false, "other", "other-worker");
+    assert.match(other.querySelector('[role="combobox"]')?.textContent ?? "", /other-id/);
     assert.doesNotMatch(other.body.textContent!, /ACP model/);
     const empty = render("builtin", true, false, undefined, undefined, false);
     assert.equal(empty.querySelector('option[value^="acp:"]'), null);

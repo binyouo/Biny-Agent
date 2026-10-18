@@ -29,7 +29,7 @@ for (const route of ["connect", "attach", "client-only", "spawn", "spawn-race"] 
     test(`${route} preserves handshakeTimeoutMs=${String(handshakeTimeoutMs)}`, async (context) => {
       const root = await mkdtemp(path.join(os.tmpdir(), "biny-host-options-"));
       const paths = runtimeHostPaths(root);
-      await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
+      await ensureRuntimeHostDirectory(path.dirname(paths.registrationPath));
       const configDir = path.join(root, "config");
       const registration: HostRegistration = {
         ...paths,

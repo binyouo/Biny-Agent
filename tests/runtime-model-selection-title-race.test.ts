@@ -19,6 +19,7 @@ import { DesktopSettingsTransaction } from "../src/desktop/electron/main/Desktop
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import { readSessionEvents } from "../src/session/events.js";
+import { localIpcEndpoint } from "../src/utils/localIpc.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -98,7 +99,7 @@ async function fixture() {
   const configStore = store();
   configStore.supportsDetachedRuntimeHost = false;
   await configStore.save(configSchema.parse({
-    ...defaultConfig,
+    ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     defaultModel: "old", toolModel: "oldAux",
     providers: { local: { type: "openai-compatible", baseUrl: "http://fixture.local/v1", requiresApiKey: false, retry: { maxAttempts: 1 } } },
     models: Object.fromEntries([["old", "chat-old"], ["new", "chat-new"], ["oldAux", "aux-old"], ["newAux", "aux-new"]].map(([alias, model]) => [alias, {
@@ -126,6 +127,7 @@ async function fixture() {
 test("next model-selection turn survives a real background-title revision race", { timeout: 25_000 }, async (t) => {
   const f = await fixture();
   let agents: DesktopAgentManager | undefined;
+  let host: RuntimeHostServer | undefined;
   const completed = new Map<string, string>();
   let notifyCompleted = deferred<void>();
   const timer = setTimeout(() => f.releaseFirst.resolve(), 20_000);
@@ -150,12 +152,15 @@ test("next model-selection turn survives a real background-title revision race",
       return local;
     };
     const initial = await factory(undefined, { resourceRegistry });
-    const registration = { protocolVersion: runtimeHostProtocolVersion, endpoint: "memory-only.sock", registrationPath: path.join(f.root,"unused.json"), lockPath: path.join(f.root,"unused.lock"), rootHash:"probe", configRoot: path.dirname(f.configStore.configPath!()), agentRoot:process.env.BINY_AGENT_DIR!, persistenceRoot, hostEpoch: "probe-epoch", token:"synthetic-probe-token", pid:process.pid, createdAt:new Date().toISOString() };
-    const host = new RuntimeHostServer(initial.runtime, initial.commands, registration, { close: async () => undefined }, factory, { workspaceRoot:f.workspace, resourceRegistry });
+    const registration = { protocolVersion: runtimeHostProtocolVersion, endpoint: localIpcEndpoint(path.join(f.root, "host.sock")), registrationPath: path.join(f.root,"unused.json"), lockPath: path.join(f.root,"unused.lock"), rootHash:"probe", configRoot: path.dirname(f.configStore.configPath!()), agentRoot:process.env.BINY_AGENT_DIR!, persistenceRoot, hostEpoch: "probe-epoch", token:"synthetic-probe-token", pid:process.pid, createdAt:new Date().toISOString() };
+    host = new RuntimeHostServer(initial.runtime, initial.commands, registration, { close: async () => undefined }, factory, { workspaceRoot:f.workspace, resourceRegistry });
     await host.initialize();
+    await host.listen();
     t.mock.method(net, "createConnection", () => {
       const clientSocket = new MemorySocket(); const hostSocket = new MemorySocket(); clientSocket.peer = hostSocket; hostSocket.peer = clientSocket;
-      (host as any).accept(hostSocket); queueMicrotask(() => clientSocket.emit("connect")); return clientSocket as unknown as net.Socket;
+      (host as any).accept(hostSocket);
+      assert.equal(hostSocket.destroyed, false, "Host must accept the fixture connection after endpoint setup");
+      queueMicrotask(() => clientSocket.emit("connect")); return clientSocket as unknown as net.Socket;
     });
     const client = await RuntimeHostClient.connect({ registration, clientId:"desktop-probe", surface:"desktop", configDir:path.dirname(f.configStore.configPath!()) });
     const managed = { runtime:client, host, unsubscribe:(agents as any).wireRuntimeEvents(project.id, client, true) };
@@ -205,7 +210,14 @@ test("next model-selection turn survives a real background-title revision race",
   } finally {
     clearTimeout(timer);
     f.releaseFirst.resolve();
-    await agents?.closeAll();
-    await f.close();
+    try {
+      await agents?.closeAll();
+    } finally {
+      try {
+        await host?.close();
+      } finally {
+        await f.close();
+      }
+    }
   }
 });

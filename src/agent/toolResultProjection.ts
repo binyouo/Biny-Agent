@@ -13,7 +13,7 @@ import type {
   AgentToolCallContent,
   AgentToolResultMessage
 } from "./core/types.js";
-import { serializeToolResult } from "../session/toolResultArchive.js";
+import { isToolResultArchiveReference, serializeToolResult } from "../session/toolResultArchive.js";
 import { redactSecrets } from "../utils/secrets.js";
 import { projectShellStreams, shellOutputExcerpt } from "./shellOutputProjection.js";
 
@@ -25,7 +25,7 @@ const maxSearchOutputBytes = 12 * 1024;
 const projectionMarker = "[biny model projection]";
 const archivePathPattern = /.biny\/tool-results\/tool-result-[0-9a-f]{64}\.json/u;
 
-type ReplacementReason = "duplicate" | "read_covered" | "snapshot_replaced" | "failure_resolved";
+type ReplacementReason = "duplicate" | "read_covered" | "snapshot_replaced" | "failure_resolved" | "budget";
 
 interface ToolCallInfo {
   tool: string;
@@ -73,6 +73,8 @@ export interface ToolResultProjectionOptions {
   thresholdBytes?: number;
   /** 最近结果保留正文；shell 结果始终遵守独立的模型输出字节上限。 */
   keepRecentResults?: number;
+  /** 请求中保留的工具正文预算；最近结果批次与无法安全归档的结果仍保留。 */
+  maxRetainedBytes?: number;
   archiveResult?: (
     request: ToolResultProjectionArchiveRequest
   ) => Promise<ToolResultProjectionArchiveReference>;
@@ -187,6 +189,27 @@ export async function projectToolResultsForModel(
     projected[entry.index] = projectedToolResultMessage(entry.message, value);
     changed = true;
   }
+  if (options.maxRetainedBytes !== undefined) {
+    const limit = Math.max(0, options.maxRetainedBytes);
+    const sizes = entries.map((entry) => Buffer.byteLength(JSON.stringify(projected[entry.index]!.content), "utf8"));
+    let retainedBytes = sizes.reduce((total, bytes) => total + bytes, 0);
+    const recentSteps = new Set(entries.filter((entry) => recentIndexes.has(entry.index)).map((entry) => entry.step));
+    for (const [position, entry] of entries.entries()) {
+      if (retainedBytes <= limit) break;
+      if (recentIndexes.has(entry.index) || recentSteps.has(entry.step)
+        || entry.message.content.some((part) => part.type !== "text")) continue;
+      const current = projected[entry.index];
+      if (!current || current.role !== "toolResult" || asRecord(current.details).modelProjection === "replacement") continue;
+      const replacement = await replacementMessage(entry, { reason: "budget", archive: true }, options);
+      // 无可回查的原文时保留证据，不能用丢失数据来满足预算。
+      if (!asRecord(replacement.details).archivePath) continue;
+      const bytes = Buffer.byteLength(JSON.stringify(replacement.content), "utf8");
+      if (bytes >= sizes[position]!) continue;
+      projected[entry.index] = replacement;
+      retainedBytes -= sizes[position]! - bytes;
+      changed = true;
+    }
+  }
   return changed ? projected : messages;
 }
 
@@ -290,7 +313,7 @@ async function replacementMessage(
   replacement: Replacement,
   options: ToolResultProjectionOptions
 ): Promise<AgentToolResultMessage> {
-  const archived = replacement.archive ? await archiveEntry(entry, options) : {};
+  const archived = replacement.archive ? await archiveEntry(entry, options, replacement.reason === "budget") : {};
   const lines = [
     projectionMarker,
     `Tool: ${entry.message.toolName}`,
@@ -299,7 +322,7 @@ async function replacementMessage(
   if (archived.archivePath) {
     lines.push(
       `Archived result: ${archived.archivePath}`,
-      "Use read_tool_result with this archivePath if the earlier value is needed."
+      "Use Read with this archivePath as path if the earlier value is needed."
     );
   } else {
     lines.push("The complete earlier result remains in durable session history.");
@@ -313,13 +336,17 @@ async function replacementMessage(
     reason: replacement.reason,
     archivePath: archived.archivePath,
     archiveError: archived.error,
+    status: replacement.reason === "budget" ? stringField(asRecord(entry.value), "status").slice(0, 80) || undefined : undefined,
+    exitCode: replacement.reason === "budget" ? numberField(asRecord(entry.value), "exitCode") : undefined,
+    error: replacement.reason === "budget" ? safePrefix(stringField(asRecord(entry.value), "error"), 512) || undefined : undefined,
     summary: lines.join("\n")
   });
 }
 
 async function archiveEntry(
   entry: ToolResultEntry,
-  options: ToolResultProjectionOptions
+  options: ToolResultProjectionOptions,
+  requireOwnArchive = false
 ): Promise<{ archivePath?: string; error?: string }> {
   // Shell output, file text, search context and diffs may quote unrelated archive paths.
   const requiresEnvelope = ["bash", "bashoutput", "read", "grep", "write", "edit"].includes(normalizedToolName(entry.message.toolName));
@@ -327,7 +354,7 @@ async function archiveEntry(
   const existing = requiresEnvelope
     ? isArchivedValue(entry.value) && /^\.biny\/tool-results\/tool-result-[0-9a-f]{64}\.json$/u.test(direct) ? direct : undefined
     : archivePath(entry.value);
-  if (existing) return { archivePath: existing };
+  if (existing && !requireOwnArchive) return { archivePath: existing };
   if (!options.archiveResult) return {};
   try {
     const archived = await options.archiveResult({
@@ -369,6 +396,7 @@ function projectValue(
 ): ValueProjection | undefined {
   const tool = normalizedToolName(entry.message.toolName);
   const large = Buffer.byteLength(entry.serialized, "utf8") > thresholdBytes;
+  if (tool === "read" && isToolResultArchiveReference(asRecord(entry.call?.args).path)) return undefined;
   if (isArchivedValue(entry.value)) return { value: entry.value, archive: false };
 
   if ((tool === "bash" || tool === "bashoutput") && asRecord(entry.value).modelProjection === "shell_excerpt") {
@@ -464,7 +492,7 @@ function projectReadFile(entry: ToolResultEntry): Record<string, unknown> {
     contentOriginalBytes: truncated ? Buffer.byteLength(content, "utf8") : undefined,
     contentRetainedBytes: truncated ? Buffer.byteLength(displayed, "utf8") : undefined,
     contentTruncationDirection: truncated ? "head_and_tail" : undefined,
-    summary: truncated ? "Only the necessary head and tail of this file are shown; the full result is available via read_tool_result." : undefined,
+    summary: truncated ? "Only the necessary head and tail of this file are shown; the full result is available via Read." : undefined,
     startLine: numberField(record, "startLine")
       ?? numberField(record, "lineStart")
       ?? numberField(resultRange, "startLine")
@@ -555,7 +583,7 @@ function projectSearchResult(entry: ToolResultEntry): Record<string, unknown> {
     ]),
     matchesTruncated: truncated ? true : undefined,
     matchesRetainedBytes: truncated ? retainedBytes : undefined,
-    summary: truncated ? "Only bounded match locations and snippets are shown; the full search result is available via read_tool_result." : undefined
+    summary: truncated ? "Only bounded match locations and snippets are shown; the full search result is available via Read." : undefined
   });
 }
 
@@ -611,9 +639,9 @@ function attachProjectionMetadata(
   const compactSummary = stringField(record, "summary");
   const shell = ["bash", "bashoutput"].includes(normalizedToolName(metadata.tool));
   const availability = metadata.archivePath
-    ? `${shell ? "Complete captured result" : "Full result"}: read_tool_result ${metadata.archivePath}.`
+    ? `${shell ? "Complete captured result" : "Full result"}: Read ${metadata.archivePath}.`
     : metadata.archiveError
-      ? `Archiving failed (${metadata.archiveError}); read_tool_result is unavailable for this result. The complete result remains in session history.`
+      ? `Archiving failed (${metadata.archiveError}); archived output is unavailable through Read for this result. The complete result remains in session history.`
       : "The complete result remains in session history; no archive reference is available.";
   const summary = compactSummary ? `${compactSummary} ${availability}` : `Only a compact ${metadata.tool} result is shown. ${availability}`;
   return removeUndefined({
@@ -771,6 +799,7 @@ function resultSignature(entry: ToolResultEntry): string {
 }
 
 function replacementReason(reason: ReplacementReason): string {
+  if (reason === "budget") return "older output was archived to keep the retained tool results within the request budget";
   if (reason === "duplicate") return "an identical tool call and result was already retained";
   if (reason === "read_covered") return "a later read covers this earlier file range";
   if (reason === "snapshot_replaced") return "a later Git snapshot supersedes this earlier snapshot";

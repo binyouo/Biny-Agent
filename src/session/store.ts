@@ -93,7 +93,7 @@ export function sessionFilePath(workspaceRoot: string, sessionId: string): strin
   ) {
     throw new Error(`Invalid session id: ${sessionId}`);
   }
-  const canonicalWorkspace = realpathSync(path.resolve(workspaceRoot));
+  const canonicalWorkspace = realpathSync.native(path.resolve(workspaceRoot));
   const candidatePath = sessionFileCandidatePath(canonicalWorkspace, sessionId);
   const sessionsPath = projectSessionsDir(canonicalWorkspace);
   const existingPaths = findSessionPathsByNameSync(sessionsPath, `${sessionId}.jsonl`);

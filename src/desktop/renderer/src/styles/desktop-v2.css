@@ -3534,19 +3534,10 @@ select option:disabled {
 }
 
 /* ===================== 设置控件可读性 ===================== */
-/* 模型分组选择器：按钮里先看到 provider，再看到模型；展开面板仍在当前卡片内，
-   不把设置页变成一个难以定位的全屏弹窗。 */
+/* 模型选择器在各设置页使用同一紧凑布局，浮层保留设置主题。 */
 .desktop-settings-dialog .settings-modal .settings-model-picker {
   position: relative;
   width: 100%;
-}
-
-.desktop-settings-dialog .settings-modal .settings-model-picker > summary {
-  list-style: none;
-}
-
-.desktop-settings-dialog .settings-modal .settings-model-picker > summary::-webkit-details-marker {
-  display: none;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger {
@@ -3559,10 +3550,10 @@ select option:disabled {
   border: 1px solid var(--border);
   border-radius: var(--st-button-radius);
   color: var(--text);
-  background: var(--surface);
-  box-shadow: 0 1px 2px var(--shadow);
+  background: var(--surface-soft);
+  box-shadow: none;
   cursor: pointer;
-  transition: border-color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease), background-color 0.15s var(--st-ease);
+  transition: border-color 0.15s var(--st-ease), background-color 0.15s var(--st-ease);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger:hover {
@@ -3570,7 +3561,7 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger:focus-visible,
-.desktop-settings-dialog .settings-modal .settings-model-picker[open] > summary {
+.desktop-settings-dialog .settings-modal .settings-model-picker.is-open > button {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   outline: none;
 }
@@ -3588,8 +3579,8 @@ select option:disabled {
   display: flex;
   min-width: 0;
   flex: 1;
-  flex-direction: column;
-  gap: 2px;
+  align-items: baseline;
+  gap: 6px;
   overflow: hidden;
   text-align: left;
 }
@@ -3599,16 +3590,17 @@ select option:disabled {
   overflow: hidden;
   color: var(--text);
   font-size: calc(13px * var(--font-scale, 1));
-  font-weight: 550;
+  font-family: var(--font-mono);
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.desktop-settings-dialog .settings-modal .settings-model-picker-trigger-copy small,
-.desktop-settings-dialog .settings-modal .settings-model-picker-option-copy small {
+.desktop-settings-dialog .settings-modal .settings-model-picker-trigger-copy small {
   overflow: hidden;
   color: var(--text-tertiary);
-  font-size: calc(10px * var(--font-scale, 1));
+  flex: none;
+  font-size: calc(11px * var(--font-scale, 1));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3625,7 +3617,7 @@ select option:disabled {
   transition: transform 0.15s var(--st-ease);
 }
 
-.desktop-settings-dialog .settings-modal .settings-model-picker[open] .settings-model-picker-chevron {
+.desktop-settings-dialog .settings-modal .settings-model-picker.is-open .settings-model-picker-chevron {
   transform: rotate(180deg);
 }
 
@@ -3650,21 +3642,20 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-panel {
-  position: absolute;
+  position: fixed;
   z-index: 40;
-  top: calc(100% + 6px);
-  right: 0;
-  left: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border-strong, var(--border));
   border-radius: var(--st-radius);
   background: var(--st-card);
-  box-shadow: 0 16px 36px var(--shadow-heavy), 0 2px 8px var(--shadow-soft);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-search {
   display: flex;
-  height: 32px;
+  min-height: 38px;
+  flex: none;
   align-items: center;
   gap: 8px;
   padding: 0 11px;
@@ -3675,7 +3666,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-model-picker-search input {
   width: 100%;
   min-height: 0;
-  height: 100%;
+  height: 36px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -3687,23 +3678,23 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-options {
-  max-height: min(340px, 42vh);
-  padding: 6px;
-  overflow: auto;
+  min-height: 0;
+  max-height: 300px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-group + .settings-model-picker-group {
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid var(--border);
+  margin-top: 4px;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-group-heading {
   display: flex;
-  min-height: 30px;
+  min-height: 28px;
   align-items: center;
   gap: 7px;
-  padding: 3px 7px;
+  padding: 4px 8px;
   color: var(--text-secondary);
 }
 
@@ -3722,23 +3713,18 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-model-picker-group-heading strong {
   flex: 1;
   font-size: calc(11px * var(--font-scale, 1));
-  font-weight: 600;
-}
-
-.desktop-settings-dialog .settings-modal .settings-model-picker-group-heading small {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
+  font-weight: 500;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 42px;
+  min-height: calc(34px * var(--font-scale, 1));
   align-items: center;
   gap: 7px;
   padding: 6px 8px;
+  margin: 0;
   border: 0;
   border-radius: calc(var(--st-radius) - 4px);
   color: var(--text);
@@ -3747,9 +3733,9 @@ select option:disabled {
   text-align: left;
 }
 
-/* 悬停底色由流动高亮绘制；选中保留原有底色。 */
-.desktop-settings-dialog .settings-modal .settings-model-picker-option.is-selected {
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+.desktop-settings-dialog .settings-modal .settings-model-picker-option.is-selected,
+.desktop-settings-dialog .settings-modal .settings-model-picker-option:hover:not(:disabled) {
+  background: var(--surface-hover);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option:focus-visible {
@@ -3771,22 +3757,6 @@ select option:disabled {
   color: var(--accent);
 }
 
-.desktop-settings-dialog .settings-modal .settings-model-picker.is-compact .settings-model-picker-trigger-copy {
-  flex-direction: row;
-  align-items: baseline;
-  gap: 6px;
-}
-
-.desktop-settings-dialog .settings-modal .settings-model-picker.is-compact .settings-model-picker-option {
-  min-height: 30px;
-  padding-block: 4px;
-}
-
-.desktop-settings-dialog .settings-modal .settings-model-picker.is-compact .settings-model-picker-option-copy strong {
-  font-family: var(--font-mono);
-  font-weight: 500;
-}
-
 .desktop-settings-dialog .settings-modal .settings-model-picker-option-trailing {
   flex-shrink: 0;
   color: var(--text-tertiary);
@@ -3794,9 +3764,7 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option.is-inherit {
-  margin-bottom: 5px;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
+  color: var(--text-secondary);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-empty {
@@ -3804,6 +3772,12 @@ select option:disabled {
   color: var(--text-tertiary);
   font-size: calc(11px * var(--font-scale, 1));
   text-align: center;
+}
+
+.desktop-settings-dialog .settings-modal .settings-model-picker-option.is-inherit strong {
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-weight: 400;
 }
 
 /* 工具模型：选择器占满剩余宽度，测试按钮与其等高成组；
@@ -3917,14 +3891,6 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-sections input::placeholder,
 .desktop-settings-dialog .settings-modal .settings-sections textarea::placeholder {
   color: var(--text-tertiary);
-}
-
-@media (max-width: 720px) {
-  .desktop-settings-dialog .settings-modal .settings-model-picker-panel {
-    position: static;
-    margin-top: 6px;
-    box-shadow: none;
-  }
 }
 
 /* ── 模型服务商设置：主从式两栏 ─────────────────────────────

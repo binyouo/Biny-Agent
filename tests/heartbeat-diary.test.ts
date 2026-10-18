@@ -1,8 +1,9 @@
 /** 心跳只提醒写日记：真实文件判定、注入时钟，失败重试和关闭均不伪造写入。 */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { upsertDailyMemorySection } from "../src/activity/dailyNotes.js";
 import { HeartbeatScheduler } from "../src/agent/context/heartbeat.js";
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-heartbeat-diary-"));
 try {
@@ -25,22 +26,25 @@ try {
   await scheduler.triggerNow();
   assert.doesNotMatch(prompts.at(-1)!, /DIARY/);
   await assert.rejects(readFile(path.join(root, "memory", "2026-09-22.md")), { code: "ENOENT" });
+  now = new Date(2026, 8, 22, 23);
+  await scheduler.triggerNow();
+  assert.match(prompts.at(-1)!, /DAILY DIARY TIME/u, "morning catch-up must not suppress tonight's diary");
   scheduler.stop();
 
   await mkdir(path.join(root, "memory"));
-  for (const day of [19, 20, 21]) await writeFile(path.join(root, "memory", `2026-09-${day}.md`), "已记录");
+  for (const day of [19, 20, 21]) await upsertDailyMemorySection(`2026-09-${day}`, "自我反思", "已记录", { configDir: root });
   now = new Date(2026, 8, 22, 23);
   const evening = new HeartbeatScheduler({ configDir: root, now: () => now, run: async (prompt) => { prompts.push(prompt); } });
   await evening.triggerNow();
   assert.match(prompts.at(-1)!, /DAILY DIARY TIME.*2026-09-22/s);
   await evening.triggerNow();
   assert.doesNotMatch(prompts.at(-1)!, /DIARY/);
-  await writeFile(path.join(root, "memory", "2026-09-22.md"), "已记录");
+  await upsertDailyMemorySection("2026-09-22", "自我反思", "已记录", { configDir: root });
   now = new Date(2026, 8, 23, 23);
   await evening.triggerNow();
   assert.match(prompts.at(-1)!, /DAILY DIARY TIME.*2026-09-23/s);
   evening.stop();
-  await writeFile(path.join(root, "memory", "2026-09-23.md"), "已记录");
+  await upsertDailyMemorySection("2026-09-23", "自我反思", "已记录", { configDir: root });
   const restart = new HeartbeatScheduler({ configDir: root, now: () => now, run: async (prompt) => { prompts.push(prompt); } });
   await restart.triggerNow();
   assert.doesNotMatch(prompts.at(-1)!, /DIARY/);

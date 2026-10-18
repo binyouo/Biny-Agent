@@ -126,6 +126,20 @@ test("command picker executes the chosen command without a second submission", a
   } finally { await app.exit(); }
 });
 
+test("absolute file paths are submitted as messages instead of slash commands", async () => {
+  const ui = new TUI(terminal());
+  const app = new BinyTui(ui, "/unused");
+  // Keep this regression focused on input routing without starting a Runtime Host.
+  (app as unknown as { ensureRuntimeStarted: () => Promise<void> }).ensureRuntimeStarted = async () => undefined;
+  try {
+    await app.submit("/Users/think/Desktop/宋彬健pt11.pdf");
+    const transcript = app.tuiState.transcript.committed;
+    assert.ok(transcript.some((item) => item.kind === "notification" && item.content.includes("Runtime 尚未就绪")),
+      "the path should reach ordinary message admission");
+    assert.equal(transcript.some((item) => item.kind === "notification" && item.content.includes("Unknown command")), false);
+  } finally { await app.exit(); }
+});
+
 test("TUI serializes admissions, queues follow-ups and preserves the next draft", { timeout: 15_000 }, async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-tui-submit-")));
   let firstResponse: ServerResponse | undefined;
@@ -270,7 +284,7 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
       const result = listener!(data);
       if (!result?.consume) editor.handleInput(result?.data ?? data);
     };
-    for (const prefix of ["/the", "/suba", "/skill:demo"]) {
+    for (const prefix of ["/the", "/gra", "/skill:demo"]) {
       editor.setText("");
       editor.setAutocompleteProvider(new CombinedAutocompleteProvider([
         ...slashCommandsForSurface("tui").map((command) => ({ name: command.name.slice(1), description: command.description })),
@@ -278,9 +292,12 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
       ], root));
       for (const char of prefix) input(char);
       await waitUntil(() => editor.isShowingAutocomplete());
+      const beforeSelection = submitted.length;
       input("\r");
-      if (prefix === "/suba") assert.equal(editor.getText(), "/subagent ");
-      else assert.equal(submitted.at(-1), prefix === "/the" ? "/theme" : "/skill:demo");
+      if (prefix === "/gra" || prefix === "/skill:demo") {
+        assert.equal(editor.getText(), prefix === "/gra" ? "/graph " : "/skill:demo ");
+        assert.equal(submitted.length, beforeSelection, "selecting a task or skill must leave an editable draft");
+      } else assert.equal(submitted.at(-1), "/theme");
     }
     editor.setText("");
     for (const char of "/the") input(char);
@@ -298,9 +315,9 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
 
     await app.submit("/");
     assert.ok(dialog instanceof SelectDialog);
-    dialog.handleInput("/subagent");
+    dialog.handleInput("/graph");
     dialog.handleInput("\r");
-    assert.equal(editor.getText(), "/subagent ", "required arguments remain editable after picker selection");
+    assert.equal(editor.getText(), "/graph ", "required arguments remain editable after picker selection");
 
     const competitor = await connectRuntimeHost(root, { clientId: "other-writer", surface: "cli" });
     assert.ok(competitor);

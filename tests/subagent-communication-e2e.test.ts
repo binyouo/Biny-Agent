@@ -53,8 +53,9 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
       const system = JSON.stringify(body.messages[0]?.content);
       const names = new Set((body.tools ?? []).map((tool) => tool.function?.name ?? tool.name));
       let result: { text: string } | { name: string; args: Record<string, unknown> };
-      if (system.includes("tool search assistant")) result = { text: '{"tools":["Task","TaskMessage","TaskStatus","TaskCancel"]}' };
+      if (system.includes("tool search assistant")) result = { text: '{"tools":["Task","Bash","TaskStatus"]}' };
       else if (system.includes("选择需要的工具") || system.includes("选择需要的技能")) result = { text: '{"tools":[],"skillIds":[]}' };
+      else if (system.includes("为这段对话生成简短、具体的标题")) result = { text: "Independent inspection" };
       else if (system.includes("focused, bounded worker inside Biny")) {
         const messages = JSON.stringify(body.messages);
         if (messages.includes("Additional bounded task:")) {
@@ -80,13 +81,20 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
           assert.equal(notices.length, 2, "the explicit report and completion arrive without TaskStatus polling");
           assert.match(JSON.stringify(notices), /corrected result/);
         }
-        const name = phase === "message" ? "TaskMessage" : phase === "result" ? "TaskStatus" : phase === "cancel" ? "TaskCancel" : "Task";
-        if (!acted && !names.has(name)) result = { name: "ToolSearch", args: { query: name } };
+        const name = phase === "message" || phase === "cancel" ? "Bash" : phase === "result" ? "TaskStatus" : "Task";
+        if (!acted && name === "TaskStatus" && !names.has(name) && names.has("exec")) {
+          acted = true;
+          result = { name: "exec", args: { code: `return await tools.TaskStatus(${JSON.stringify({ taskRunId })});` } };
+        } else if (!acted && !names.has(name)) result = names.has("exec")
+          ? { name: "exec", args: { code: `return await searchTools(${JSON.stringify(name)});` } }
+          : { name: "ToolSearch", args: { query: name } };
         else if (!acted) {
           acted = true;
+          const taskArguments = phase === "cancel" ? ["cancel", taskRunId]
+            : ["message", taskRunId, "also inspect src/b.ts", "--session", sessionId];
           result = { name, args: name === "Task"
             ? { task: phase === "launch" ? "inspect the assigned files" : "cancel target", background: true, constraints: ["preserve original checks"] }
-            : name === "TaskMessage" ? { taskRunId, message: "also inspect src/b.ts" }
+            : name === "Bash" ? { command: [process.execPath, "--import", import.meta.resolve("tsx"), path.resolve("src/cli/index.ts"), "task", ...taskArguments, "--json"].map((part) => `'${part.replaceAll("'", "'\\''")}'`).join(" ") }
             : { taskRunId } };
         } else {
           if (phase === "result") assert.match(JSON.stringify(body.messages), /corrected result/);
@@ -110,7 +118,7 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
   await saveConfig(root, configSchema.parse({
     ...defaultConfig, defaultModel: "synthetic", checkpoints: { enabled: false },
     chat: { ...defaultConfig.chat, defaultToolSelection: "auto", defaultSkillSelection: "none" },
-    permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false },
+    permission: { ...defaultConfig.permission, mode: "full-access", denyPaths: [], criticalAlwaysAsk: false },
     providers: { local: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
     models: { synthetic: { ...defaultConfig.models["deepseek-v4-flash"], provider: "local", model: "synthetic", capabilities: { tools: true, reasoning: false, streaming: true } } },
     extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: true, maxSteps: 4 } },

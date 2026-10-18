@@ -22,6 +22,7 @@ import type { MemorySleepRun } from "../../../../../agent/context/memoryTypes.js
 import { catalogForConnection } from "../../providerCatalog.js";
 import { resolveProviderIconId } from "../../providerIconIds.js";
 import { Icon } from "../Icon.js";
+import { AppIcon } from "../AppIcon.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { ModelTestButton, ModelTestResult } from "./ModelTestButton.js";
 import { SettingsModelPicker } from "./SettingsModelPicker.js";
@@ -136,6 +137,7 @@ export function SettingsMemory({
   const [searching, setSearching] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [memoryRevision, setMemoryRevision] = useState(0);
   const [modelTesting, setModelTesting] = useState(false);
   const [modelTestResult, setModelTestResult] = useState<DesktopModelConnectionTestResult>();
   const [exporting, setExporting] = useState(false);
@@ -404,11 +406,13 @@ export function SettingsMemory({
     const value = editor?.value.trim() ?? "";
     if (!value || !stats || saving) return;
     setSaving(true);
+    let written = false;
     try {
       const editId = editor?.id;
       const next = editId
         ? await onUpdate(editId, { content: value })
         : await onAdd({ content: value, importance: 0.5 });
+      written = true;
       setStats(next);
       setEditor((current) => current === editor ? undefined : current);
       await reload();
@@ -417,6 +421,7 @@ export function SettingsMemory({
       onNotify(errorMessage(cause));
     } finally {
       setSaving(false);
+      if (written) setMemoryRevision(current => current + 1);
     }
   };
 
@@ -752,7 +757,7 @@ export function SettingsMemory({
         </section>
 
         <section className="activity-memory-group" id="memory-add" tabIndex={-1}>
-          <h3>添加记忆</h3>
+          <div className="section-heading-row"><h3>添加记忆</h3><AppIcon animated active={saving} hidden={hidden} memoryRevision={memoryRevision} size={42} /></div>
           <textarea aria-label="输入您希望 AI 记住的内容..." disabled={sessionRunning || saving || editor?.id !== undefined} onChange={(event) => setEditor({ value: event.target.value })} placeholder="输入您希望 AI 记住的内容..." rows={4} value={editor?.id ? "" : editor?.value ?? ""} />
           <button className="settings-primary-button" disabled={saving || editor?.id !== undefined || !editor?.value.trim()} onClick={() => { void saveText(); }} type="button">{saving && !editor?.id ? "添加中…" : "添加记忆"}</button>
         </section>
@@ -763,7 +768,7 @@ export function SettingsMemory({
           <div className="activity-memory-model-picker-row">
             <SettingsModelPicker
               ariaLabel="记忆工具模型"
-              groups={modelPickerGroups(models.filter((model) => model.providerType !== "acp"))}
+              groups={modelPickerGroups(models.filter((model) => model.providerType !== "acp"), snapshot?.models.connections)}
               inheritLabel="使用默认工具模型"
               onChange={(memoryModel) => setMemory({ ...policy, memoryModel })}
               placeholder="使用默认工具模型"
@@ -779,7 +784,6 @@ export function SettingsMemory({
           <p>{selectedEmbeddingModel.kind === "local" ? "本地模型下载后可离线检索。" : "查询及记忆正文会发送到所选服务商。"}</p>
           <SettingsModelPicker
             ariaLabel="选择嵌入模型"
-            compact
             groups={embeddingGroups}
             selectionHint={selectedEmbeddingModel.kind === "auto" ? selectedEmbeddingDescriptor ? "自动" : "暂无可用模型" : undefined}
             onChange={(value) => {
