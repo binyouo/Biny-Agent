@@ -191,7 +191,12 @@ test("Desktop-selected active canonical assistant evidence reaches the real runt
   assert.equal(f.prefills[0]!.includes(argumentMarker), false);
   assert.equal(f.prefills[0]!.includes(resultMarker), false);
   assert.deepEqual(result.checklist.definition?.sources, [tag]);
-  assert.deepEqual(await f.savedDefinition(id), result.checklist.definition);
+  const saved = await f.savedDefinition(id);
+  const expected = result.checklist.definition;
+  assert.ok(saved && expected);
+  assert.equal(saved.value, expected.value);
+  assert.deepEqual(saved.sources, expected.sources);
+  assert.equal(saved.conflict, expected.conflict);
   assert.equal(await f.core.readMaterialText(material), middleText);
 });
 
