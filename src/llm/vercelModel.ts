@@ -26,7 +26,14 @@ export interface VercelModelInput {
 }
 
 export function createVercelLanguageModel(input: VercelModelInput): LanguageModelV4 {
-  const fetcher = input.fetcher;
+  const configuredUserAgent = Object.keys(input.headers).some((name) => name.toLowerCase() === "user-agent");
+  const fetcher: typeof globalThis.fetch = configuredUserAgent ? input.fetcher : (url, init) => {
+    const headers = new Headers(init?.headers ?? (url instanceof Request ? url.headers : undefined));
+    const operation = headers.get("x-biny-operation");
+    const client = operation && operation !== "agent" ? "biny-auxiliary" : "biny";
+    headers.set("user-agent", `${client} ${headers.get("user-agent") ?? ""}`.trim());
+    return input.fetcher(url, { ...init, headers });
+  };
   if (input.api === "anthropic_messages" || input.providerType === "anthropic" || input.providerType === "claude-subscription") {
     const provider = createAnthropic({
       baseURL: input.baseUrl,

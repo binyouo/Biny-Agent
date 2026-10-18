@@ -42,8 +42,8 @@ mac:
   gatekeeperAssess: true
   target:
     - dmg
-    - zip
 win:
+  icon: build/icon.ico
   target:
     - nsis
     - zip

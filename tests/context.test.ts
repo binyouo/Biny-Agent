@@ -211,7 +211,8 @@ function testConversationBoundaryPrompt(): void {
   assert.match(prompt, /Available tools:\n\(none\)/u);
   assert.match(prompt, /only the latest user message as the active task/u);
   assert.match(prompt, /smallest sequence that reaches the outcome/u);
-  assert.match(prompt, /never narrate retries, tool choices, or intermediate failures/u);
+  assert.match(prompt, /Before the first tool call for a task, output a brief, natural acknowledgment/u);
+  assert.match(prompt, /encounter an obstacle or error, or a multi-step task reaches a significant milestone/u);
   assert.match(prompt, /reach for it, don't guess/u);
   assert.match(prompt, /biny memory search/u);
   assert.match(prompt, /text-only promise is not action/u);

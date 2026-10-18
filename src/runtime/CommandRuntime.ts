@@ -727,22 +727,7 @@ async function initializeCommandRuntime(
     attachmentRoot: projectAttachmentRoot,
     runtimeEventSink: runtimeAuthority.asSink(),
     capabilities,
-    pluginLifecycle,
-    createSelfReflectionTask: async (candidate) => {
-      taskRuns.create({
-        taskRunId: candidate.taskRunId,
-        sessionId: recorder.sessionId,
-        task: {
-          type: "self_reflection_action",
-          title: candidate.title,
-          description: candidate.description,
-          evidence: candidate.evidence,
-          sourceDate: candidate.dateKey,
-          sourceHash: candidate.sourceHash
-        }
-      });
-      return true;
-    }
+    pluginLifecycle
   });
   const initializedAgent = agent;
   cleanup.agent = async () => {

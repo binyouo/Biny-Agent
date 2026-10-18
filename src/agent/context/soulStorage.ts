@@ -70,7 +70,7 @@ export class SoulStorage {
 
   async promptText(): Promise<string | undefined> {
     const snapshot = await this.read();
-    return snapshot.source === "user" ? renderSoulPrompt(snapshot.content, snapshot.source) : undefined;
+    return snapshot.source === "user" ? renderSoulPrompt(snapshot.content, snapshot.source, snapshot.path) : undefined;
   }
 
   async set(content: string): Promise<SoulSnapshot> {
@@ -104,66 +104,11 @@ export class SoulStorage {
 
   async appendTrait(description: string): Promise<SoulSnapshot> {
     await this.migrateIfDefault();
-    const trait = normalizeTrait(description);
-    if (!trait) throw new Error("Soul trait cannot be empty.");
-    if (trait.length > maxSoulTraitChars) {
-      throw new Error("Soul trait cannot exceed " + String(maxSoulTraitChars) + " characters.");
-    }
     return await this.withLock(async () => {
       const current = normalizeSoulContent(await readOptional(this.filePath));
-      const date = this.now();
-      const marker = `<!-- biny-soul-growth:${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} -->`;
-      if (current.split("\n").some((line) => line.trim() === "- " + trait)) return await this.read();
-      if (current.includes(marker)) throw new Error("Soul 每天最多新增一条成长特征。");
-      const next = appendTrait(current, trait + "\n" + marker);
-      validateSoulContent(next);
-      await this.writeFile(this.filePath, next + "\n");
+      const next = appendTrait(current, description, this.now());
+      if (next !== current) await this.writeFile(this.filePath, validateSoulContent(next) + "\n");
       return await this.read();
-    });
-  }
-
-  /** 只修改成长区；生成时的 revision 与每日额度都在同一把写锁内检查。 */
-  async applyEvolution(change: SoulEvolution, expectedRevision: string): Promise<SoulEvolutionResult> {
-    if (!change.evidence.trim()) throw new Error("Soul evolution requires evidence.");
-    if (!change.add && !change.revise?.length && !change.remove?.length) return "unchanged";
-    return await this.withLock(async () => {
-      const snapshot = await this.read();
-      if (snapshot.source !== "user") return "missing";
-      if (snapshot.revision !== expectedRevision) return "conflict";
-      const current = snapshot.content;
-      const lines = current.split("\n");
-      let start = lines.findIndex((line) => line.trim() === "## Evolved Traits");
-      if (start < 0) { lines.push("", "## Evolved Traits", ""); start = lines.length - 2; }
-      let end = start + 1;
-      while (end < lines.length && !/^#{1,2}\s/u.test(lines[end]!)) end += 1;
-      const section = lines.slice(start + 1, end);
-      for (const revision of change.revise ?? []) {
-        const index = section.findIndex((line) => line.trim() === "- " + revision.from);
-        if (index < 0) return "conflict";
-        const trait = normalizeTrait(revision.to);
-        if (!trait || trait.length > maxSoulTraitChars) throw new Error("Invalid Soul trait.");
-        section[index] = "- " + trait;
-      }
-      for (const trait of change.remove ?? []) {
-        const index = section.findIndex((line) => line.trim() === "- " + trait);
-        if (index < 0) return "conflict";
-        section.splice(index, 1);
-      }
-      if (change.add) {
-        const trait = normalizeTrait(change.add);
-        if (!trait || trait.length > maxSoulTraitChars) throw new Error("Invalid Soul trait.");
-        if (!section.some((line) => line.trim() === "- " + trait)) {
-          const date = this.now();
-          const marker = `<!-- biny-soul-growth:${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} -->`;
-          if (current.includes(marker)) return "daily_limit";
-          if (section.filter((line) => /^\s*-\s+\S/u.test(line)).length >= maxSoulTraits) return "capacity";
-          section.push("- " + trait, marker);
-        }
-      }
-      const next = [...lines.slice(0, start + 1), ...section, ...lines.slice(end)].join("\n").trim();
-      if (next === current) return "unchanged";
-      await this.writeFile(this.filePath, validateSoulContent(next) + "\n");
-      return "applied";
     });
   }
 
@@ -242,24 +187,35 @@ function normalizeTrait(description: string): string {
     .trim();
 }
 
-function appendTrait(content: string, trait: string): string {
-  const heading = "## Evolved Traits";
-  if (!content.trim()) return heading + "\n\n- " + trait;
-  const lines = content.trim().split("\n");
-  const start = lines.findIndex((line) => line.trim().toLowerCase() === heading.toLowerCase());
-  if (start < 0) return content.trim() + "\n\n" + heading + "\n\n- " + trait;
-
+/** 成长区保留日期和最多十五条特质，其他章节保持原样。 */
+function appendTrait(content: string, description: string, now: Date): string {
+  const trait = validateTrait(description);
+  const lines = content.split("\n");
+  let start = lines.findIndex(line => line.trim().toLowerCase() === "## evolved traits");
+  if (start < 0) { lines.push("", "## Evolved Traits", ""); start = lines.length - 2; }
   let end = start + 1;
-  while (end < lines.length && !/^#{1,2}\s+/u.test(lines[end] ?? "")) end += 1;
-  const sectionLines = lines.slice(start + 1, end);
-  if (sectionLines.some((line) => line.trim() === "- " + trait)) return lines.join("\n").trim();
-  const traitCount = sectionLines.filter((line) => /^\s*-\s+\S/u.test(line)).length;
-  if (traitCount >= maxSoulTraits) {
-    throw new Error("Soul can contain at most " + String(maxSoulTraits) + " evolved traits.");
+  while (end < lines.length && !/^#{1,2}\s/u.test(lines[end]!)) end += 1;
+  const section = lines.slice(start + 1, end).filter(line => !/^<!-- biny-soul-growth:\d{4}-\d{2}-\d{2} -->$/u.test(line.trim()));
+  if (!section.some(line => traitDescription(line) === trait)) {
+    while (section.filter(line => traitDescription(line) !== undefined).length >= maxSoulTraits) {
+      section.splice(section.findIndex(line => traitDescription(line) !== undefined), 1);
+    }
+    let insertion = section.length;
+    while (insertion > 0 && section[insertion - 1]?.trim() === "") insertion -= 1;
+    section.splice(insertion, 0, `- [${now.toISOString().slice(0, 10)}] ${trait}`);
   }
-  const section = sectionLines.join("\n").trim();
-  const nextSection = section ? section + "\n- " + trait : "- " + trait;
-  return [...lines.slice(0, start + 1), "", nextSection, ...lines.slice(end)].join("\n").trim();
+  return [...lines.slice(0, start + 1), ...section, ...lines.slice(end)].join("\n").trim();
+}
+
+function traitDescription(line: string): string | undefined {
+  return line.match(/^\s*-\s+(?:\[\d{4}-\d{2}-\d{2}\]\s+)?(.+)$/u)?.[1];
+}
+
+function validateTrait(description: string): string {
+  const trait = normalizeTrait(description);
+  if (!trait) throw new Error("Soul trait cannot be empty.");
+  if (trait.length > maxSoulTraitChars) throw new Error("Soul trait cannot exceed " + String(maxSoulTraitChars) + " characters.");
+  return trait;
 }
 
 async function readOptional(filePath: string): Promise<string | undefined> {
@@ -278,6 +234,3 @@ function isNotFound(error: unknown): boolean {
 function isAlreadyExists(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
-
-export interface SoulEvolution { add?: string; revise?: Array<{ from: string; to: string }>; remove?: string[]; evidence: string; }
-export type SoulEvolutionResult = "applied" | "unchanged" | "missing" | "conflict" | "daily_limit" | "capacity";

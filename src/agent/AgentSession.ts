@@ -1,3 +1,5 @@
+import { SelfieAlbum, selfiePrompt } from "./context/selfie.js";
+import { TravelStorage, travelPrompt } from "./context/travel.js";
 import type { TaskCommunication } from "../runtime/TaskCommunication.js";
 import { AcpClient, acpMcpServers } from "../acp/client.js";
 import { runAcpTurn } from "../acp/turn.js";
@@ -95,11 +97,6 @@ import {
   refreshChatDailyDiary,
   type ChatDiaryRefreshResult
 } from "./context/chatDiary.js";
-import {
-  refreshSelfReflection,
-  type SelfReflectionActionCandidate,
-  type SelfReflectionMemoryCandidate
-} from "./context/selfReflection.js";
 import { LocalMemory, redactSecrets } from "./context/LocalMemory.js";
 import { IdentityStorage } from "./context/identityStorage.js";
 import { runSoulCommand as executeSoulCommand } from "./context/soulCommands.js";
@@ -250,8 +247,6 @@ export interface AgentSessionOptions {
   /** 提取进度只通知界面，不进入消息时间线。 */
   onSkillExtractionUpdate?: (notice: SkillExtractionNotice & { runId: string }) => void;
   onTitleGenerated?: (sessionId: string, title: string) => void;
-  /** 自省识别出明确未完成行动后的持久化入口；只创建记录，不启动任务。 */
-  createSelfReflectionTask?: (candidate: SelfReflectionActionCandidate) => Promise<boolean>;
 }
 
 export interface AgentRunOptions {
@@ -810,7 +805,7 @@ export class AgentSession {
     const selectedToolNames = this.selectedToolNames(selection);
     const initialTools = this.promptTools(selectedToolNames ? [...selectedToolNames] : undefined);
     const soulPrompt = soulSnapshot.source === "user"
-      ? renderSoulPrompt(soulSnapshot.content, soulSnapshot.source)
+      ? renderSoulPrompt(soulSnapshot.content, soulSnapshot.source, soulSnapshot.path)
       : undefined;
     let crystalPrompt: string | undefined;
     try {
@@ -830,6 +825,8 @@ export class AgentSession {
       personalization,
       securityPrompt,
       identityPrompt,
+      setupUserPath: this.activeConfig.context.identity.enabled && this.activeConfig.context.identity.userEnabled && !identityPrompt
+        ? path.join(this.identityStorage.directory, "USER.md") : undefined,
       parentThreadPrompt,
       emotionPrompt,
       soulSource: soulSnapshot.source,
@@ -955,7 +952,9 @@ export class AgentSession {
   private async currentEmotionPrompt(now = new Date()): Promise<string | undefined> {
     const fatigue = await this.fatigueService.currentStatus();
     const blended = await this.emotionStorage.readBlended(this.recorder.sessionId, fatigue.fatigue, now);
-    return renderEmotionPrompt(blended, fatigue);
+    const album = new SelfieAlbum();
+    const [selfies, travel] = await Promise.all([album.list(), new TravelStorage().read()]);
+    return [renderEmotionPrompt(blended, fatigue), selfiePrompt(selfies.length, album.directory), travelPrompt(travel, now)].filter(Boolean).join("\n\n");
   }
 
   private async analyzeContextEmotion(sessionId: string, signal: AbortSignal, messageId?: string): Promise<void> {
@@ -1323,7 +1322,7 @@ export class AgentSession {
     return this.crystalService;
   }
 
-  /** 刷新文件型每日工作日志，并按记忆开关自动晋升高置信度自省结果。 */
+  /** 显式刷新聊天工作摘要；人格自省由正常 Agent 按 Skill 执行。 */
   async refreshDailyDiary(
     dateKey: string,
     options: { signal?: AbortSignal; force?: boolean } = {}
@@ -1334,7 +1333,7 @@ export class AgentSession {
     } catch {
       // 没有可用模型时由 diary 模块写确定性 fallback，避免日报依赖聊天模型配置。
     }
-    const result = await refreshChatDailyDiary(dateKey, {
+    return await refreshChatDailyDiary(dateKey, {
       model,
       allowActivity: this.activeConfig.activity.enabled,
       signal: options.signal,
@@ -1343,43 +1342,6 @@ export class AgentSession {
       onModelRequest: async (metrics) => await this.recordModelRequest(metrics),
       requestContext: { operation: "memory" }
     });
-    if (model) {
-      const memories = await this.localMemory.listMemoryEntries({ limit: 40 }).catch(() => undefined);
-      const allowReflectionPromotion = this.activePersonalization.contributeMemories;
-      result.reflection = await refreshSelfReflection(dateKey, {
-        soulStorage: this.soulStorage,
-        emotionStorage: this.emotionStorage,
-        sessionId: this.recorder.sessionId,
-        allowActivity: this.activeConfig.activity.enabled,
-        signal: options.signal,
-        model,
-        memoryContext: memories?.entries.filter((entry) => !entry.tags.includes("self-reflection") && !isActivityMemory(entry)).map((entry) => `- ${entry.content}`).join("\n"),
-        force: options.force,
-        onUsage: async (usage, operation) => { this.recordModelUsage(usage, operation); },
-        onModelRequest: async (metrics) => await this.recordModelRequest(metrics),
-        requestContext: { operation: "memory" },
-        promoteMemory: allowReflectionPromotion
-          ? async (candidate: SelfReflectionMemoryCandidate) => {
-            const result = await this.localMemory.writeAutoEntry({
-              content: candidate.content,
-              source: "auto",
-              tags: ["self-reflection"],
-              rationale: candidate.evidence,
-              threadId: this.recorder.sessionId
-            }, {
-              signal: options.signal,
-              now: new Date(),
-              requireSemantic: true
-            });
-            return result.written;
-          }
-          : undefined,
-        createTask: allowReflectionPromotion && this.options.createSelfReflectionTask
-          ? async (candidate: SelfReflectionActionCandidate) => await this.options.createSelfReflectionTask!(candidate)
-          : undefined
-      }).catch(() => undefined);
-    }
-    return result;
   }
 
   /** 当前长期记忆配置下的嵌入运行时；自动选择仅使用已配置且可用的 Provider。 */
@@ -3035,6 +2997,7 @@ export class AgentSession {
     let activeRequestContext = loopContext;
     const projectForModelRequest = async (contextMessages: AgentMessage[]): Promise<AgentMessage[]> => {
       const projectedMessages = await projectToolResultsForModel(contextMessages, {
+        maxRetainedBytes: this.activeConfig.context.maxTurnToolResultBytes,
         archiveResult: async ({ message, result, output, sequence }) => await archiveToolResult({
           workspaceRoot: this.options.workspaceRoot,
           sessionId: this.recorder.sessionId,

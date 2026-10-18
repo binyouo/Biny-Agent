@@ -53,15 +53,6 @@ export class EmotionStorage {
     });
   }
 
-  /** 自省和睡醒后的更新不能覆盖生成期间发生的手动情绪变化。 */
-  async compareAndSetBase(state: EmotionState, expected: EmotionState | undefined): Promise<boolean> {
-    return await withGlobalConfigWriteLock(this.root, async () => {
-      if (JSON.stringify(await this.readBase()) !== JSON.stringify(expected)) return false;
-      await this.writeState(path.join(this.root, baseFileName), state);
-      return true;
-    });
-  }
-
   async readContext(sessionId: string): Promise<EmotionState | undefined> {
     return await this.readState(path.join(this.root, contextDirectoryName, `${safeFileName(sessionId)}.md`), DEFAULT_EMOTION_STATE.energy, false);
   }

@@ -22,6 +22,7 @@ import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand,
 import { registerFatigueCommands } from "./commands/fatigue.js";
 import { registerThemeCommands } from "./commands/theme.js";
 import { registerUserInputCommands } from "./commands/userInput.js";
+import { registerPersonaCommands } from "./commands/persona.js";
 import { registerSoulCommands } from "./commands/soul.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { runCommand, type RunCommandOptions } from "./commands/run.js";
@@ -99,6 +100,7 @@ import {
   temporalClueActionCommand,
   temporalIndexFactsCommand,
   historySearchCommand,
+  historyDayCommand,
   reflectionRunCommand,
   reflectionStatusCommand,
   todoClearCommand,
@@ -139,6 +141,7 @@ program.name("biny").description("Biny — local-first agent for your terminal a
   ].join("\n"));
 registerCrystalCommands(program);
 registerSoulCommands(program);
+registerPersonaCommands(program, workspaceRoot);
 registerFatigueCommands(program);
 registerUserInputCommands(program, wrap);
 registerSkillCommands(program, workspaceRoot);
@@ -314,6 +317,8 @@ memory.command("index-facts").argument("<session-id>").option("--json", "print J
 memory.command("serve").description("Serve authenticated loopback memory REST API").option("--port <number>", "listen port", parsePositiveInteger, 23001).action((options: { port: number }) => wrap(() => memoryServeCommand(workspaceRoot, options.port))());
 memory.command("clear").requiredOption("--yes", "confirm clear").option("--thread-id <id>", "clear active memories for one thread only").option("--json", "print JSON").action((options: { yes?: boolean; threadId?: string; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
 const history = program.command("history").description("Search past conversation transcripts");
+history.command("day").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--json", "print JSON")
+  .action((date: string, options: { json?: boolean }) => wrap(() => historyDayCommand(date, options))());
 history.command("search").argument("<query...>", "full-text query over past user and assistant messages").option("--limit <n>", "maximum hits", "8").option("--json", "print JSON").action((query: string[], options: { limit: string; json?: boolean }) => wrap(() => historySearchCommand(query.join(" "), { limit: Number(options.limit), json: options.json }))());
 
 memory.command("sleep").option("--run", "run maintenance now").option("--preview", "preview without mutation").option("--runs", "recent maintenance runs").option("--cancel", "cancel active maintenance").option("--yes", "confirm maintenance").option("--json", "print JSON").action((options: Parameters<typeof memorySleepCommand>[1]) => wrap(() => memorySleepCommand(workspaceRoot, options))());
@@ -324,7 +329,7 @@ diary.command("refresh").argument("[date]", "today, yesterday, or YYYY-MM-DD", "
 
 const reflection = program.command("reflection").description("Run or inspect daily self-reflection");
 reflection.command("status").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--json", "print JSON").action((date: string, options: { json?: boolean }) => wrap(() => reflectionStatusCommand(workspaceRoot, date, options))());
-reflection.command("run").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--force", "refresh even when markers exist").option("--json", "print JSON").action((date: string, options: { force?: boolean; json?: boolean }) => wrap(() => reflectionRunCommand(workspaceRoot, date, options))());
+reflection.command("run").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--force", "rewrite an existing diary").option("--json", "print JSON").action((date: string, options: { force?: boolean; json?: boolean }) => wrap(() => reflectionRunCommand(workspaceRoot, date, options))());
 
 const heartbeat = program.command("heartbeat").description("Inspect or trigger Heartbeat");
 heartbeat.command("status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => heartbeatStatusCommand(workspaceRoot, options))());

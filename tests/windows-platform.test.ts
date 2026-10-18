@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { runtimeHostPaths } from "../src/runtime/host/lifecycle.js";
 import { runShellCommand, createRunCommandTool } from "../src/tools/shell/runCommand.js";
 import { detectShell, interactiveShellInvocation, shellCommandInvocation } from "../src/tools/shell/shell.js";
+import type { ShellPlan } from "../src/tools/shell/shell.js";
 
 test("Windows Host discovery separates named pipes from private registration and lock files", () => {
   const environment = { platform: "win32" as const, temporaryDirectory: "C:\\Temp", agentRoot: "C:\\Users\\test\\.biny\\agent" };
@@ -74,3 +78,52 @@ test("foreground Bash executes the declared Windows shell explicitly and preserv
     syncBuiltinESMExports();
   }
 });
+
+const availableShell = process.platform === "win32" ? detectShell() : undefined;
+const windowsPowerShellPlans: { name: string; shell: ShellPlan | undefined }[] = [
+  {
+    name: "Windows PowerShell 5.1",
+    shell: {
+      kind: "powershell",
+      executable: path.win32.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    }
+  },
+  { name: "PowerShell 7", shell: availableShell?.kind === "pwsh" ? availableShell : undefined }
+];
+
+for (const { name, shell: explicitShellPlan } of windowsPowerShellPlans) {
+  test(`${name} preserves real command output and completion status`, {
+    skip: process.platform !== "win32" ? "requires Windows" : explicitShellPlan === undefined ? "PowerShell 7 is not installed" : false,
+    timeout: 120_000
+  }, async (context) => {
+    assert.ok(explicitShellPlan);
+    const root = await mkdtemp(path.join(tmpdir(), "biny powershell 中文 "));
+    try {
+      const nativeScript = path.join(root, "native.cjs");
+      await writeFile(nativeScript, "process.stdout.write('中文输出'); process.exit(42);");
+      const nativeCommand = `& '${process.execPath.replaceAll("'", "''")}' '${nativeScript.replaceAll("'", "''")}'`;
+      const cases = [
+        { name: "native failure preserves exit 42 and exact Unicode", command: nativeCommand, exitCode: 42, stdout: "中文输出" },
+        { name: "successful output recovers a native failure", command: `${nativeCommand}\nWrite-Output 'recovered'`, exitCode: 0, stdout: "中文输出recovered" },
+        { name: "terminating throw exits 1", command: "throw 'biny-terminating-error'", exitCode: 1, stderr: "biny-terminating-error" },
+        { name: "using namespace remains a valid script header", command: "using namespace System.Text\nWrite-Output ([StringBuilder]::new('namespace-ok').ToString())", exitCode: 0, stdout: "namespace-ok" },
+        { name: "explicit exit preserves exit 7", command: "exit 7", exitCode: 7, stdout: "" }
+      ];
+      for (const scenario of cases) {
+        await context.test(scenario.name, { timeout: 20_000 }, async () => {
+          const result = await runShellCommand(root, scenario.command, {
+            shell: explicitShellPlan, timeoutMs: 10_000, terminationGraceMs: 500, killSettleMs: 3_000
+          });
+          assert.equal(result.status, scenario.exitCode === 0 ? "completed" : "failed", result.stderr);
+          assert.equal(result.exitCode, scenario.exitCode, result.stderr);
+          if (scenario.stdout !== undefined) {
+            assert.equal(scenario.command === nativeCommand ? result.stdout : result.stdout.trimEnd(), scenario.stdout);
+          }
+          if (scenario.stderr !== undefined) assert.ok(result.stderr.includes(scenario.stderr), result.stderr);
+        });
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
