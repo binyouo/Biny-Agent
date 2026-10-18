@@ -24,7 +24,11 @@ env:
 
 jobs:
   validate:
-    name: Validate tagged source
+    name: Validate tagged source (${{ matrix.shard }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -58,10 +62,15 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test
-        run: xvfb-run -a pnpm test && node --test scripts/release-desktop.test.mjs
+      - name: Test standard suite
+        run: xvfb-run -a pnpm test:standard --shard=${{ matrix.shard }}/4
+
+      - name: Test runtime and release packaging
+        if: matrix.shard == 1
+        run: xvfb-run -a pnpm test:e2e && node --test scripts/release-desktop.test.mjs
 
       - name: Validate bundled Code Mode runtime
+        if: matrix.shard == 1
         run: pnpm build:desktop && pnpm test:code-mode-package
 
   build:
