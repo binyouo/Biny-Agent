@@ -367,13 +367,15 @@ async function setupFixture(t: TestContext) {
     return matches[0]!;
   };
   const input = (): HTMLTextAreaElement => one<HTMLTextAreaElement>('textarea[aria-label="任务输入"]');
+  // Compare DOM presence and identity as booleans: assertion failures must not
+  // recursively inspect React-owned DOM graphs while constructing diagnostics.
   const assertCurrent = (sessionId: string): void => {
     const info = sessionInfo(sessionId);
     assert.ok(document.querySelector('article[data-message-id="' + info.messageId + '"] .markdown-body'));
     assert.equal(document.querySelector('.biny-sidebar-session-item[aria-current="page"]')?.getAttribute("title"), info.title);
     assert.ok(document.querySelector(".biny-workspace-chat .biny-composer .biny-prompt-editor"));
     assert.equal(input().disabled, false);
-    assert.equal(input().closest("[inert]"), null, "The committed conversation must be usable");
+    assert.equal(input().closest("[inert]") === null, true, "The committed conversation must be usable");
   };
   assertCurrent(SESSION);
   assert.equal(document.querySelector(".desktop-toast-message")?.textContent ?? "", "", "Bootstrap must not already be failing");
@@ -421,7 +423,7 @@ async function setupFixture(t: TestContext) {
     assert.equal(input().value, value, "The real controlled textarea must reflect the edit before settlement");
   };
   const reference = async (sender: Sender = "assistant", sessionId = SESSION): Promise<number> => {
-    assert.equal(document.querySelector("dialog[open]"), null, "Never click through an open modal");
+    assert.equal(document.querySelector("dialog[open]") === null, true, "Never click through an open modal");
     const info = sessionInfo(sessionId);
     const messageId = sender === "assistant" ? info.messageId : sessionId + "-user";
     const label = sender === "assistant" ? "更多回复操作" : "更多消息操作";
@@ -431,13 +433,13 @@ async function setupFixture(t: TestContext) {
       .filter(target => target.textContent?.trim() === "查看引用来源");
     assert.equal(targets.length, 1, "Use the real message menu's reference action");
     await act(async () => { targets[0]!.click(); });
-    assert.equal(document.querySelector('[role="menu"]'), null, "Menu closes while lookup is pending");
+    assert.equal(document.querySelector('[role="menu"]') === null, true, "Menu closes while lookup is pending");
     assert.equal(calls.source.length, before + 1);
     assert.deepEqual(calls.source.at(-1), [info.projectId, sessionId, messageId]);
     return before;
   };
   const clickSession = async (sessionId: string): Promise<void> => {
-    assert.equal(document.querySelector("dialog[open]"), null, "Sidebar clicks must not bypass a modal");
+    assert.equal(document.querySelector("dialog[open]") === null, true, "Sidebar clicks must not bypass a modal");
     const info = sessionInfo(sessionId);
     const projectRow = one<HTMLElement>('.biny-project-row[title="/synthetic/' + info.projectId + '"]');
     if (projectRow.getAttribute("aria-expanded") !== "true") {
@@ -448,7 +450,7 @@ async function setupFixture(t: TestContext) {
       .filter(target => target.getAttribute("title") === info.title);
     assert.equal(targets.length, 1, "Expected one actual sidebar button for " + info.title);
     assert.equal(targets[0]!.disabled, false);
-    assert.equal(targets[0]!.closest("[inert]"), null);
+    assert.equal(targets[0]!.closest("[inert]") === null, true);
     await act(async () => { targets[0]!.click(); });
   };
   const navigate = async (sessionId: string): Promise<void> => {
@@ -478,7 +480,7 @@ async function setupFixture(t: TestContext) {
     await clickSession(SESSION_B);
     assert.deepEqual(calls.opened.at(-1), [PROJECT, SESSION_B]);
     assert.deepEqual(calls.selection, [[PROJECT, SESSION, "chat"]], "Destination read is still pending");
-    assert.equal(document.querySelector('article[data-message-id="' + MESSAGE + '"]'), null);
+    assert.equal(document.querySelector('article[data-message-id="' + MESSAGE + '"]') === null, true);
     assert.equal(one<HTMLElement>('.biny-status-state[role="status"]').textContent, "正在恢复会话…");
     assert.ok(input().closest("[inert]"), "The origin Composer remains mounted but inert during the destination read");
   };
@@ -514,7 +516,7 @@ async function setupFixture(t: TestContext) {
     const buttons = modal.querySelectorAll<HTMLButtonElement>(".message-references-list button");
     assert.equal(buttons.length, 1);
     assert.equal(buttons[0]!.querySelector("strong")?.textContent, referenceValue(sessionId, sender).label);
-    assert.equal(modal.querySelector('[role="alert"]'), null);
+    assert.equal(modal.querySelector('[role="alert"]') === null, true);
     return buttons[0]!;
   };
   const closeDialog = async (mode: "button" | "escape" = "button"): Promise<void> => {
@@ -527,12 +529,12 @@ async function setupFixture(t: TestContext) {
         close.click();
       }
     });
-    assert.equal(dialog(), null, "The real App must clear the closed dialog");
+    assert.equal(dialog() === null, true, "The real App must clear the closed dialog");
   };
   const openSource = async (sender: Sender = "assistant", sessionId = SESSION_B): Promise<void> => {
     const button = assertSource(sender, sessionId);
     await act(async () => { button.click(); });
-    assert.equal(dialog(), null);
+    assert.equal(dialog() === null, true);
     assertCurrent(sessionId);
   };
   return { document, input, typeInput, sentinel, calls, reference, clickSession, navigate, assertCurrent,
@@ -551,24 +553,24 @@ for (const mode of ["session-b", "project-c", "aba", "same-row", "same-reload", 
     test("source dialog " + outcome + " cannot open after " + mode + " navigation", { timeout: 20_000 }, async t => {
       const h = await fixture(t);
       const pending = await h.reference();
-      assert.equal(h.dialog(), null);
+      assert.equal(h.dialog() === null, true);
       const originalInput = h.input();
       if (mode === "session-b" || mode === "aba") await h.navigate(SESSION_B);
       if (mode === "project-c") { await h.navigate(SESSION_C); assert.deepEqual(h.calls.projects, [PROJECT_C]); }
       if (mode === "aba") await h.navigate(SESSION);
       if (mode === "same-row") {
         await h.clickSession(SESSION);
-        assert.equal(h.input(), originalInput);
+        assert.equal(h.input() === originalInput, true);
         assert.deepEqual(h.calls.opened, [[PROJECT, SESSION]], "Current row skips reading but advances navigation intent");
         assert.deepEqual(h.calls.selection, [[PROJECT, SESSION, "chat"]]);
       }
-      if (mode === "same-reload") { await h.handoffSession(); assert.equal(h.input(), originalInput); }
-      if (mode !== "same-row" && mode !== "same-reload" && mode !== "pending-b") assert.notEqual(h.input(), originalInput);
+      if (mode === "same-reload") { await h.handoffSession(); assert.equal(h.input() === originalInput, true); }
+      if (mode !== "same-row" && mode !== "same-reload" && mode !== "pending-b") assert.equal(h.input() !== originalInput, true);
       await h.typeInput("Latest independent draft");
       if (mode === "pending-b") await h.beginNavigation();
       await h.settleSource(pending, outcome === "failure" ? new Error("Stale source lookup failed") : undefined);
       assert.equal(h.warning(), "", "Old source errors cannot affect the current navigation epoch");
-      assert.equal(h.dialog(), null, "Old source lookup must not open a dialog in another navigation epoch");
+      assert.equal(h.dialog() === null, true, "Old source lookup must not open a dialog in another navigation epoch");
       assert.deepEqual(h.calls.backlinks, [], "Do not read backlinks for a discarded lookup");
       assert.deepEqual(h.calls.resolved, []);
       assert.equal(h.input().value, "Latest independent draft");
@@ -594,7 +596,7 @@ for (const state of ["newest-pending", "newest-open", "newest-closed"] as const)
       const h = await fixture(t);
       const old = await h.reference("assistant");
       const latest = await h.reference("user");
-      assert.equal(h.dialog(), null, "Both real menu actions happen before a modal exists");
+      assert.equal(h.dialog() === null, true, "Both real menu actions happen before a modal exists");
       if (state !== "newest-pending") {
         await h.settleSource(latest); h.assertSource("user");
         if (state === "newest-closed") await h.closeDialog();
@@ -604,7 +606,7 @@ for (const state of ["newest-pending", "newest-open", "newest-closed"] as const)
       assert.equal(h.warning(), "");
       assert.deepEqual(h.calls.backlinks, reads, "The superseded lookup cannot replace the current dialog");
       if (state === "newest-open") h.assertSource("user");
-      else assert.equal(h.dialog(), null, "A stale result must neither preempt nor reopen a dialog");
+      else assert.equal(h.dialog() === null, true, "A stale result must neither preempt nor reopen a dialog");
       if (state === "newest-pending") {
         await h.settleSource(latest); h.assertSource("user"); await h.closeDialog("escape");
       }
@@ -623,7 +625,7 @@ for (const outcome of ["success", "failure"] as const) {
     const latest = await h.reference();
     assert.deepEqual(h.calls.source[0], h.calls.source[1], "Project, session and message IDs are identical");
     await h.settleSource(old, outcome === "failure" ? new Error("Old same-message lookup failed") : undefined);
-    assert.equal(h.warning(), ""); assert.equal(h.dialog(), null); assert.deepEqual(h.calls.backlinks, []);
+    assert.equal(h.warning(), ""); assert.equal(h.dialog() === null, true); assert.deepEqual(h.calls.backlinks, []);
     await h.settleSource(latest); h.assertSource();
     assert.equal(h.calls.backlinks.length, 1);
     assert.deepEqual(h.calls.network, []);
@@ -636,7 +638,7 @@ for (const sender of ["user", "assistant"] as const) {
     const pending = await h.reference(sender);
     const originalInput = h.input();
     await h.typeInput("Typed during lookup"); await h.rerenderMetadata();
-    assert.equal(h.input(), originalInput);
+    assert.equal(h.input() === originalInput, true);
     assert.deepEqual(h.calls.opened, [[PROJECT, SESSION]]);
     assert.deepEqual(h.calls.selection, [[PROJECT, SESSION, "chat"]]);
     await h.settleSource(pending);
@@ -653,7 +655,7 @@ for (const sender of ["user", "assistant"] as const) {
     const pending = await h.reference(sender);
     await h.settleSource(pending, new Error("Current source lookup failed"));
     assert.equal(h.warning(), "Current source lookup failed");
-    assert.equal(h.dialog(), null); assert.deepEqual(h.calls.backlinks, []);
+    assert.equal(h.dialog() === null, true); assert.deepEqual(h.calls.backlinks, []);
     assert.equal(h.input().value, "");
     assert.deepEqual(h.calls.network, []);
   });
@@ -672,7 +674,7 @@ for (const stage of ["backlinks", "resolve"] as const) {
       const error = outcome === "failure" ? new Error("Closed dialog read failed") : undefined;
       if (stage === "backlinks") await h.settleBacklinks(0, error);
       else await h.settleResolution(0, error);
-      assert.equal(h.dialog(), null); assert.equal(h.warning(), "");
+      assert.equal(h.dialog() === null, true); assert.equal(h.warning(), "");
       assert.deepEqual(h.calls.network, []);
     });
   }
@@ -683,7 +685,7 @@ test("open source dialog retains its project through a real session-handoff even
   const pending = await h.reference(); await h.settleSource(pending);
   h.assertSource(); const modal = h.dialog();
   await h.handoffSession(SESSION_C);
-  assert.equal(h.dialog(), modal, "Keep the existing open-dialog retention behavior");
+  assert.equal(h.dialog() === modal, true, "Keep the existing open-dialog retention behavior");
   h.assertSource();
   assert.deepEqual(h.calls.backlinks, [[PROJECT, referenceValue(SESSION, "assistant").uri]]);
   assert.deepEqual(h.calls.resolved, [[PROJECT, referenceValue(SESSION_B, "assistant").uri]]);
