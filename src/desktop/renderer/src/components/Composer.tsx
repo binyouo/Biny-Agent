@@ -6,7 +6,7 @@ import type { LocalReferenceResult } from "../../../../session/localReferences.j
  * Agent 执行仍沿用原有数据流。输入与补全的局部交互由 PromptInput 负责。
  */
 import { useTooltip } from "@astryxdesign/core/Tooltip";
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ModelRuntimeInfo } from "../../../../llm/ModelManager.js";
 import type { AgentCapabilitySelection } from "../../../../agent/capabilitySelection.js";
 import type { ModelChoice } from "../../../../llm/ModelManager.js";
@@ -210,6 +210,9 @@ export const Composer = memo(function Composer({
   const [stopPending, setStopPending] = useState(false);
   const [optimisticModel, setOptimisticModel] = useState<PendingModelSelection>();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const cancelReferenceFocusRef = useRef<(() => void) | undefined>(undefined);
+  // 新编辑目标与卸载都终止旧输入目标的下一帧副作用。
+  useLayoutEffect(() => () => cancelReferenceFocusRef.current?.(), [editingMessage?.nonce]);
   // 侧栏引用只追加到当前草稿，不经过回填或提交路径。
   useImperativeHandle(ref, () => ({
     async submitSuggestion(text) {
@@ -227,10 +230,32 @@ export const Composer = memo(function Composer({
       const position = value.length;
       const next = insertDraftReference(value, { start: position, end: position, query: "" }, reference, current.tokens);
       rememberDraft({ value: next.value, tokens: next.tokens });
-      window.requestAnimationFrame(() => {
-        const input = inputRef.current;
-        input?.focus();
-        input?.setSelectionRange(next.cursor, next.cursor);
+      // 内容已经追加；后来的输入意图只撤销下一帧的聚焦和光标移动。
+      cancelReferenceFocusRef.current?.();
+      const input = inputRef.current;
+      if (!input) return;
+      const ownerDocument = input.ownerDocument;
+      const ownerWindow = ownerDocument.defaultView;
+      const intentEvents = ["pointerdown", "keydown", "input", "compositionstart", "focusin"] as const;
+      const scheduled: { frame?: number } = {};
+      const cancel = (): void => {
+        if (cancelReferenceFocusRef.current !== cancel) return;
+        cancelReferenceFocusRef.current = undefined;
+        if (scheduled.frame !== undefined) window.cancelAnimationFrame(scheduled.frame);
+        for (const event of intentEvents) ownerDocument.removeEventListener(event, cancel, true);
+        ownerWindow?.removeEventListener("blur", cancel);
+      };
+      cancelReferenceFocusRef.current = cancel;
+      // 捕获阶段也能观察被输入框补全菜单 stopPropagation 的按键。
+      // 不监听 select/selectionchange：受控 value 提交本身也可能发出它们。
+      for (const event of intentEvents) ownerDocument.addEventListener(event, cancel, true);
+      ownerWindow?.addEventListener("blur", cancel);
+      scheduled.frame = window.requestAnimationFrame(() => {
+        if (cancelReferenceFocusRef.current !== cancel) return;
+        cancel();
+        if (inputRef.current !== input || !input.isConnected || input.disabled || input.closest("[inert]")) return;
+        input.focus();
+        input.setSelectionRange(next.cursor, next.cursor);
       });
     }
   }));

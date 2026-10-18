@@ -116,9 +116,13 @@ export function createRuntimeHostMemoryMaintenance(
       // AgentSession 时内存里的初始状态会让调度器重复执行当天的 Sleep。
       const healed = startupHeal?.commands === commands ? startupHeal.promise : undefined;
       if (healed) startupHeal = undefined;
-      const persistedStatus = healed
-        ? await healed
-        : await localMemory.loadMaintenanceStatus({ signal: controller.signal });
+      if (healed) {
+        await healed;
+        controller.signal.throwIfAborted();
+        if (stopped || options.getCommands() !== commands) return;
+      }
+      // 启动恢复可能早于到点检查很久；期间手动运行也会更新当天的成功/失败记录。
+      const persistedStatus = await localMemory.loadMaintenanceStatus({ signal: controller.signal });
       controller.signal.throwIfAborted();
       if (stopped || options.getCommands() !== commands) return;
       if (!force && shouldSkipScheduledRun(persistedStatus, now)) return;
