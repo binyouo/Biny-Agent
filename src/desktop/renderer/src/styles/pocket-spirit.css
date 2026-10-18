@@ -1,0 +1,45 @@
+.pocket-spirit { display: inline-flex; flex: 0 0 auto; vertical-align: middle; }
+.pocket-spirit .fold-art { display:block; overflow:visible; }
+.pocket-spirit[data-animated="false"] * { animation:none !important; transition:none !important; }
+.pocket-spirit[data-paused="true"] * { animation-play-state:paused !important; }
+.pocket-spirit .fold-pose { transform-origin:157px 276px; }
+.pocket-spirit .fold-breathe { transform-origin:157px 276px; }
+.pocket-spirit .fold-head { transform-origin:125px 156px; }
+.pocket-spirit .fold-hood { transform-origin:103px 109px; }
+.pocket-spirit .fold-eyes { transform-origin:183px 117px; }
+.pocket-spirit .fold-cuff { transform-origin:144px 264px; }
+.pocket-spirit .fold-pearl { transform-origin:145px 225px; }
+.pocket-spirit .fold-closed-eyes { opacity:0; }
+.pocket-spirit[data-animated="true"] .fold-breathe { animation:fold-breathing 4.6s ease-in-out infinite; }
+.pocket-spirit[data-animated="true"] .fold-open-eyes { transform-origin:183px 117px; animation:fold-blinking 5.8s linear infinite; }
+.pocket-spirit[data-animated="true"] .fold-pose,
+.pocket-spirit[data-animated="true"] .fold-head,
+.pocket-spirit[data-animated="true"] .fold-hood,
+.pocket-spirit[data-animated="true"] .fold-cuff,
+.pocket-spirit[data-animated="true"] .fold-pearl { transition:transform 720ms cubic-bezier(.22,1,.36,1); }
+.pocket-spirit[data-animated="true"] .fold-closed-eyes { transition:opacity 180ms ease; }
+.pocket-spirit[data-animated="true"] .fold-back,
+.pocket-spirit[data-animated="true"] .fold-cavity { transition:d 720ms cubic-bezier(.22,1,.36,1); }
+.pocket-spirit[data-state="listen"] .fold-pose { transform:scale(.98,1.035); }
+.pocket-spirit[data-state="listen"] .fold-head { transform:translate(0,-7px) rotate(-4deg); }
+.pocket-spirit[data-state="listen"] .fold-hood { transform:rotate(-9deg); }
+.pocket-spirit[data-state="sleep"] .fold-pose { transform:translate(-1px,0) scale(1.07,.73); }
+.pocket-spirit[data-state="sleep"] .fold-back { d:path('M120 130 C148 113 184 120 218 141 C233 152 202 166 191 177 C186 188 218 193 239 207 C273 230 267 250 232 266 C198 282 112 282 80 264 C51 248 41 222 48 210 C57 186 89 146 120 130 Z'); }
+.pocket-spirit[data-state="sleep"] .fold-cavity { d:path('M165 151 C191 151 214 161 201 178 C190 190 162 202 145 213 C125 231 133 241 163 247 C126 259 86 248 76 225 C63 211 94 188 121 171 C140 157 153 151 165 151 Z'); }
+.pocket-spirit[data-state="sleep"] .fold-head { transform:translate(0,39px) rotate(12deg); }
+.pocket-spirit[data-state="sleep"] .fold-hood { transform:rotate(8deg); }
+.pocket-spirit[data-state="sleep"] .fold-cuff { transform:translateY(-9px) scaleY(1.14); }
+.pocket-spirit[data-state="sleep"] .fold-pearl { transform:translate(0,7px) scale(.9,1.16); }
+.pocket-spirit[data-state="sleep"] .fold-open-eyes { visibility:hidden; }
+.pocket-spirit[data-state="sleep"] .fold-closed-eyes { opacity:1; }
+.pocket-spirit[data-state="sleep"] .fold-breathe { animation-duration:6s; }
+@keyframes fold-breathing { 0%,100% { transform:scale(1,1); } 50% { transform:scale(1.008,1.018); } }
+@keyframes fold-blinking { 0%,38%,42%,76%,80%,100% { transform:scaleY(1); } 40%,78% { transform:scaleY(.06); } }
+
+.pocket-spirit[data-state="remember"] .fold-pearl { animation:fold-memory 2.1s cubic-bezier(.22,1,.36,1) both; }
+.pocket-spirit[data-state="remember"] .fold-hood { animation:fold-receive 2.1s ease-in-out both; }
+.pocket-spirit[data-state="remember"] .fold-cuff { animation:fold-protect 2.1s ease-in-out both; }
+@keyframes fold-memory { 0% { transform:translate(36px,-76px) scale(.35); opacity:0; } 20% { transform:translate(24px,-60px) scale(.72); opacity:1; } 60% { transform:translateY(1px) scale(1.05); } 100% { transform:translateY(0) scale(1); opacity:1; } }
+@keyframes fold-receive { 0%,100% { transform:rotate(0); } 25% { transform:rotate(-9deg); } 70% { transform:rotate(3deg); } }
+@keyframes fold-protect { 0%,100% { transform:translateY(0) scaleY(1); } 25% { transform:translateY(2px) scaleY(.95); } 70% { transform:translateY(-7px) scaleY(1.1); } }
+@media(prefers-reduced-motion:reduce) { .pocket-spirit * { animation:none !important; transition:none !important; } }

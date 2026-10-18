@@ -4,6 +4,8 @@
  * 生命周期由 lifecycle/bootstrap 负责，业务调度器由 composition 负责，线协议由 protocol 负责。
  */
 import { randomUUID } from "node:crypto";
+import { globalConfigDir } from "../../config/paths.js";
+import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
 import { TaskCommunication } from "../TaskCommunication.js";
 import { planStatus } from "../../extensions/plan.js";
 import net from "node:net";
@@ -153,8 +155,8 @@ export class RuntimeHostServer {
   private readonly dispatcher = new OperationDispatcher();
   /** 已解码但尚未完成准入的直接提交；run.inspect 不能把暂时缺失误判为未提交。 */
   private readonly pendingRunAdmissions = new Map<string, Set<Promise<void>>>();
-  /** 日报/反思继续串行写同一份记忆，但模型等待不能占据 Host 的请求准入队列。 */
-  private readonly reflectionDispatcher = new OperationDispatcher();
+  /** 聊天日报刷新串行执行，但模型等待不能占据 Host 的请求准入队列。 */
+  private readonly diaryDispatcher = new OperationDispatcher();
   private readonly businessComposition: RuntimeHostBusinessComposition;
   private readonly conversationMirror: ConversationMarkdownMirror;
   private readonly journal: RuntimeHostEventJournal;
@@ -1297,10 +1299,34 @@ export class RuntimeHostServer {
           });
           return record;
         }, runtime);
-      case "diary.refresh":
-      case "reflection.run": {
+      case "reflection.run":
+        return await this.executeAdmission<{ dateKey: string; path: string; written: boolean; reason?: string; runId?: string }>(async () => {
+          const dateKey = requiredString(payload.dateKey, "dateKey");
+          const diaryPath = path.join(globalConfigDir(), "memory", `${dateKey}.md`);
+          const existing = readDailyMemorySection(await readDailyMemoryNote(dateKey) ?? "", "自我反思");
+          if (!payload.force && existing) {
+            return { dateKey, path: diaryPath, written: false, reason: "up_to_date" };
+          }
+          await this.ensureSessionWriter(connection, runtime);
+          this.assertRequestAdmission(connection, admissionOperation);
+          const submitted = runtime.submitPrompt(
+            `Use the self-reflection skill to write your diary for ${dateKey}. Read the day's conversations and your emotions yourself, then write the diary with the normal tools.\n` +
+            `The diary file is ${diaryPath}; preserve its other sections and put your diary under ## 自我反思 with ### subheadings.\n` +
+            `${payload.force ? "Rewrite the existing reflection for this date." : "If this date already has a diary, do not duplicate it."}\n` +
+            `Complete this in the current turn; do not call biny reflection run or biny diary refresh.`,
+            [], readRequestIds(payload), undefined,
+            { tools: commands.config.chat.defaultToolSelection, skills: ["self-reflection"] }
+          );
+          this.trackCompletion(submitted);
+          return new OperationCompletion(submitted.completion.then(async outcome => {
+            if (outcome.status !== "completed") throw new Error(outcome.error ?? "Self-reflection did not complete.");
+            const reflection = readDailyMemorySection(await readDailyMemoryNote(dateKey) ?? "", "自我反思");
+            return { dateKey, path: diaryPath, runId: submitted.runId, written: Boolean(reflection) && reflection !== existing };
+          }));
+        }, runtime);
+      case "diary.refresh": {
         const sessionId = managed.sessionId;
-        return new OperationCompletion(this.reflectionDispatcher.dispatch("mutation", async () => {
+        return new OperationCompletion(this.diaryDispatcher.dispatch("mutation", async () => {
           // 前一次模型调用期间可能已关闭 Host 或重建 session；未开跑的请求不能使用旧 commands。
           if (this.closePromise) throw new Error("Runtime Host is shutting down.");
           if (connection.exitingForPause) throw new Error("This Runtime Host client is exiting and cannot start new work.");

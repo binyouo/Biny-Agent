@@ -221,21 +221,21 @@ async function cancellationBypassesSlowMutation(): Promise<void> {
   } finally { release.resolve(); await slow; await f.close(); }
 }
 
-async function reflectionDoesNotHoldAdmission(): Promise<void> {
+async function diaryDoesNotHoldAdmission(): Promise<void> {
   const f = await fixture();
   const entered = deferred<void>();
   const release = deferred<void>();
   let calls = 0;
   f.local.commands.refreshDailyDiary = async () => { calls += 1; entered.resolve(); await release.promise; return { written: true }; };
-  const slow = f.request<HostOperationResult>("reflection.run", { dateKey: "2026-09-30" });
+  const slow = f.request<HostOperationResult>("diary.refresh", { dateKey: "2026-09-30" });
   let next: Promise<unknown> | undefined;
   try {
-    await bounded(entered.promise, "reflection start");
+    await bounded(entered.promise, "diary start");
     next = f.request("diary.refresh", { dateKey: "2026-09-30" });
     const invocationId = f.capability();
-    const result = await bounded(f.request<HostOperationResult>("capability.result", { invocationId, result: "reflection still running" }), "capability during reflection");
+    const result = await bounded(f.request<HostOperationResult>("capability.result", { invocationId, result: "diary still running" }), "capability during diary");
     assert.equal(result.accepted, true);
-    assert.equal(calls, 1, "diary/reflection retain their own serialization");
+    assert.equal(calls, 1, "diary refreshes retain their own serialization");
   } finally { release.resolve(); await Promise.all([slow, next]); await f.close(); }
   assert.deepEqual((await slow).result, { written: true });
 }
@@ -257,28 +257,28 @@ async function heartbeatCompletionAndErrorsKeepRpcSemantics(): Promise<void> {
     release.resolve(true);
     assert.equal((await slow).result?.triggered, true);
 
-    f.local.commands.refreshDailyDiary = async () => { throw new Error("controlled reflection failure"); };
-    const rejected = await f.request<HostOperationResult>("reflection.run", { dateKey: "2026-09-30" });
+    f.local.commands.refreshDailyDiary = async () => { throw new Error("controlled diary failure"); };
+    const rejected = await f.request<HostOperationResult>("diary.refresh", { dateKey: "2026-09-30" });
     assert.equal(rejected.accepted, false, "completion failures remain operation rejections, not transport errors");
-    assert.match(rejected.reason!, /controlled reflection failure/u);
-    const invalidDate = await f.request<HostOperationResult>("reflection.run");
+    assert.match(rejected.reason!, /controlled diary failure/u);
+    const invalidDate = await f.request<HostOperationResult>("diary.refresh");
     assert.equal(invalidDate.accepted, false, "argument errors keep the operation rejection envelope");
     const invalid = await f.request<HostOperationResult>("task.approve", { taskRunId: "missing", approvalId: "missing" });
     assert.equal(invalid.accepted, false, "failed approval admission must settle without waiting forever");
     f.local.commands.refreshDailyDiary = async () => "recovered";
     const next = await f.request<HostOperationResult>("diary.refresh", { dateKey: "2026-09-30" });
-    assert.equal(next.result, "recovered", "a failed reflection does not poison its queue");
+    assert.equal(next.result, "recovered", "a failed diary does not poison its queue");
   } finally { release.resolve(true); await slow; await f.close(); }
 }
 
-async function queuedReflectionRechecksDrainAndRuntime(): Promise<void> {
+async function queuedDiaryRechecksDrainAndRuntime(): Promise<void> {
   for (const mode of ["drain", "restart"] as const) {
     const f = await fixture();
     const entered = deferred<void>();
     const release = deferred<void>();
     let oldCalls = 0;
     f.local.commands.refreshDailyDiary = async () => { oldCalls += 1; entered.resolve(); await release.promise; return "old runtime"; };
-    const first = f.request<HostOperationResult>("reflection.run", { dateKey: "2026-09-30" });
+    const first = f.request<HostOperationResult>("diary.refresh", { dateKey: "2026-09-30" });
     let second: Promise<HostOperationResult> | undefined;
     try {
       await entered.promise;
@@ -296,7 +296,7 @@ async function queuedReflectionRechecksDrainAndRuntime(): Promise<void> {
         release.resolve();
         assert.equal((await second).result, "replacement runtime");
       }
-      assert.equal(oldCalls, 1, "queued reflection cannot start on drained or replaced commands");
+      assert.equal(oldCalls, 1, "queued diary cannot start on drained or replaced commands");
     } finally { release.resolve(); await Promise.allSettled([first, second]); await f.close(); }
   }
 }
@@ -351,7 +351,7 @@ async function approvalDoesNotHoldMutationOrAdmission(): Promise<void> {
 }
 
 const failures: string[] = [];
-for (const test of [taskCompletionDoesNotHoldAdmission, cancellationBeforeAndAfterDurableAdmission, terminalTaskWithPendingRpcPreventsRetirement, cancellationBypassesSlowMutation, reflectionDoesNotHoldAdmission, heartbeatCompletionAndErrorsKeepRpcSemantics, queuedReflectionRechecksDrainAndRuntime, approvalDoesNotHoldMutationOrAdmission]) {
+for (const test of [taskCompletionDoesNotHoldAdmission, cancellationBeforeAndAfterDurableAdmission, terminalTaskWithPendingRpcPreventsRetirement, cancellationBypassesSlowMutation, diaryDoesNotHoldAdmission, heartbeatCompletionAndErrorsKeepRpcSemantics, queuedDiaryRechecksDrainAndRuntime, approvalDoesNotHoldMutationOrAdmission]) {
   try { await test(); console.log(`PASS ${test.name}`); }
   catch (error) { failures.push(`${test.name}: ${error instanceof Error ? error.stack : String(error)}`); }
 }

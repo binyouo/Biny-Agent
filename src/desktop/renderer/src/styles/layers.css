@@ -26,6 +26,7 @@
 @import "./settings.css" layer(desktop);
 @import "./activity-applications.css" layer(desktop);
 @import "./computer-use.css" layer(desktop);
+@import "./pocket-spirit.css" layer(desktop);
 
 @import "./thread-brief.css" layer(desktop);
 @import "./appearance.css" layer(desktop);

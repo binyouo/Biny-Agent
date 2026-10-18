@@ -71,6 +71,34 @@ async function storedEvents(recorder: SessionRecorder): Promise<SessionEvent[]> 
 }
 
 try {
+  await test("an exhausted turn budget still delivers small command feedback and file pages directly", async () => {
+    const f = await fixture("small-feedback-after-archive", 8_192);
+    const large = await f.tool("Bash").execute("large-first", { command: f.command });
+    assert.equal(record(large.details).archived, true);
+
+    await writeFile(path.join(f.workspaceRoot, "feedback.cjs"),
+      'process.stdout.write("checked target\\n"); process.stderr.write("target is missing\\n"); process.exitCode = 7;');
+    const feedback = await f.tool("Bash").execute("small-failure", {
+      command: `${shellQuote(process.execPath)} feedback.cjs`
+    });
+    assert.equal(feedback.isError, true);
+    assert.equal(record(feedback.details).exitCode, 7);
+    assert.equal(record(feedback.details).stdout, "checked target\n");
+    assert.equal(record(feedback.details).stderr, "target is missing\n");
+    assert.equal(record(feedback.details).archived, undefined,
+      "short failure feedback must not require an extra Read after earlier large output");
+
+    await writeFile(path.join(f.workspaceRoot, "small.txt"), "the requested evidence");
+    const page = await f.tool("Read").execute("small-page", { path: "small.txt" });
+    assert.equal(record(page.details).content, "the requested evidence");
+    assert.equal(record(page.details).archived, undefined);
+    const missing = await f.tool("Read").execute("missing-page", { path: "missing.txt" });
+    assert.equal(missing.isError, true);
+    assert.match(String(record(missing.details).error), /ENOENT|not exist|not found/iu);
+    assert.equal(record(missing.details).archived, undefined);
+    assert.ok((await readToolResultArchive(f.workspaceRoot, record(large.details).archivePath)).output.includes("STDOUT_TAIL"));
+  });
+
   await test("production Bash still refuses unsupported Linux sandbox restrictions before shell capture", {
     skip: process.platform !== "linux"
   }, async () => {

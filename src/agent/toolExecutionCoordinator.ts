@@ -1073,9 +1073,10 @@ export class ToolExecutionCoordinator {
    *
    * The budget bounds what actually reaches the model, so an archived result's
    * own envelope and preview are charged against it too. Once the budget is
-   * spent, later results collapse to a bare reference the model can reopen with
-   * `Read` — otherwise a long turn would still accumulate one
-   * preview per step and overflow the window it was meant to protect.
+   * spent, large results collapse to a reference. Small feedback stays inline
+   * so an exit code or a short file page never needs a second tool call merely
+   * because earlier output was large. Request-time history projection bounds
+   * retained results independently of this cumulative admission budget.
    */
   private applyToolResultBudget(
     call: { id: string; name: string; args: unknown },
@@ -1105,8 +1106,9 @@ export class ToolExecutionCoordinator {
       const resultBytes = Buffer.byteLength(output, "utf8");
       this.producedToolResultBytes += rawResultBytes;
       const remaining = Math.max(0, budget - this.inlineToolResultBytes);
+      const smallResultLimit = Math.min(4_096, Math.floor(budget / 4));
       // 两种显式回查都已限制单页大小；预算耗尽时再次归档会让模型永远读不到证据。
-      if (resultBytes <= remaining || (source === "builtin" && call.name === "Read" && isToolResultArchiveReference((call.args as { path?: unknown } | null)?.path)) || call.name === "read_checkpoint_evidence") {
+      if (resultBytes <= remaining || resultBytes <= smallResultLimit || (source === "builtin" && call.name === "Read" && isToolResultArchiveReference((call.args as { path?: unknown } | null)?.path)) || call.name === "read_checkpoint_evidence") {
         this.inlineToolResultBytes += resultBytes;
         return modelResult;
       }

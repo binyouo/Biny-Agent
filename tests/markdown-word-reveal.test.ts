@@ -29,6 +29,27 @@ test("流式词语原地增长，已完成词语与链接不重建；代码和�
     assert.equal(document.querySelector(".markdown-stream-word"), word);
     assert.equal(document.querySelector("a"), link);
     assert.equal(document.querySelector(".markdown-body")!.getAttribute("data-streaming"), null);
+
+    // 未闭合标记最初属于纯文本；闭合后只转换该标记，不能重播前文淡入。
+    await render("已显示 Hello ");
+    const prefixWords = [...document.querySelectorAll(".markdown-stream-word")];
+    const paragraph = document.querySelector("p")!;
+    for (const content of [
+      "已显示 Hello **加",
+      "已显示 Hello **加粗**",
+      "已显示 Hello **加粗** 和 `code",
+      "已显示 Hello **加粗** 和 `code`",
+      "已显示 Hello **加粗** 和 `code` [手册](https://example.com)",
+      "已显示 Hello **加粗** 和 `code` [手册](https://example.com) 继续"
+    ]) {
+      await render(content);
+      assert.equal(document.querySelector("p"), paragraph);
+      const words = document.querySelectorAll(".markdown-stream-word");
+      assert.ok(prefixWords.every((word, index) => words[index] === word), `行内语法变化后已显示前文必须复用节点：${content}`);
+    }
+    assert.equal(document.querySelector("strong")?.textContent, "加粗");
+    assert.equal(document.querySelector("code .markdown-stream-word"), null);
+    assert.equal(document.querySelector("a")?.textContent, "手册");
   } finally {
     await React.act(() => root.unmount()); dom.window.close();
     for (const [key, value] of saved) { if (value) Object.defineProperty(globalThis, key, value); else Reflect.deleteProperty(globalThis, key); }

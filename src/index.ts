@@ -5,7 +5,6 @@ export * from "./agent/context/crystalStorage.js";
 export * from "./agent/context/crystalTypes.js";
 export * from "./agent/context/fileMemory.js";
 export * from "./agent/context/heartbeat.js";
-export * from "./agent/context/selfReflection.js";
 import type {
   MemoryClearResult as StoredMemoryClearResult,
   MemoryEntriesResult as StoredMemoryEntriesResult,

@@ -31,7 +31,7 @@ export const DEFAULT_EMOTION_STATE: EmotionState = {
   valence: 7,
   energy: 7,
   updatedAt: "",
-  trigger: undefined
+  trigger: "default personality — curious, slightly sassy, warm"
 };
 
 /**

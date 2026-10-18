@@ -4,26 +4,26 @@
  * 分析只读取当前 session 的活动消息路径，输出仅允许更新 context 情绪；模型失败、解析
  * 失败或结果没有变化都静默结束，不把这条旁路变成主回合的依赖。
  */
-import { z } from "zod";
 import type { AgentModel, AgentUsage, ModelRequestContext, ModelRequestMetrics } from "../core/types.js";
-import { generateNativeText, nativeJsonMessages, parseNativeJson } from "../../llm/nativeJson.js";
+import { generateNativeText } from "../../llm/nativeJson.js";
 import { DEFAULT_EMOTION_STATE, type EmotionState } from "./emotionTypes.js";
 import { EmotionStorage } from "./emotionStorage.js";
 
 const analysisDelayMs = 5_000;
 const recentMessageLimit = 10;
 const recentMessageMaxChars = 150;
-const autoEmotionSchema = z.object({
-  mood: z.string().trim().min(1).max(32),
-  valence: z.number().finite(),
-  reason: z.string().trim().max(200)
-}).strict();
 
 const autoEmotionSystemPrompt = [
-  "Analyze the recent conversation from Biny's perspective.",
-  "Return ONLY a JSON object with exactly these fields: mood, valence, reason.",
-  "mood is a short Chinese expression label, valence is a number from 0 to 10, and reason is a concise Chinese explanation.",
-  "This is only an expression context. Do not infer permissions, task status, security decisions, or verified facts."
+  "You analyze chat conversation sentiment FROM BINY'S PERSPECTIVE. Biny is an AI participant in this chat. Based on the recent messages, determine how Biny should feel right now.",
+  "Output EXACTLY one line in this format: mood|valence|reason",
+  "- mood: one word (happy, excited, amused, content, neutral, bored, annoyed, sad, upset, angry)",
+  "- valence: 0-10 (0=very negative, 5=neutral, 10=very positive)",
+  "- reason: brief reason (under 20 chars)",
+  "Examples:",
+  "happy|8|大家聊得很开心",
+  "annoyed|3|有人在骂我",
+  "amused|7|话题很有趣",
+  "neutral|5|普通闲聊"
 ].join("\n");
 
 export interface EmotionAnalysisMessage {
@@ -52,13 +52,17 @@ export async function analyzeContextEmotion(options: AnalyzeContextEmotionOption
 
   const result = await generateNativeText(
     model,
-    nativeJsonMessages(autoEmotionSystemPrompt, [
-      "Recent conversation:",
-      ...messages.map((message) => `${message.role}: ${message.text}`)
-    ].join("\n")),
+    [{
+      role: "user",
+      content: [{ type: "text", text: [
+        "Recent conversation:",
+        ...messages.map((message) => `${message.role}: ${message.text}`)
+      ].join("\n") }]
+    }],
     {
+      systemPrompt: autoEmotionSystemPrompt,
       signal: options.signal,
-      maxOutputTokens: 128,
+      maxOutputTokens: 50,
       reasoning: "off",
       timeoutMs: 10_000,
       onRequestMetrics: options.onRequestMetrics,
@@ -68,14 +72,15 @@ export async function analyzeContextEmotion(options: AnalyzeContextEmotionOption
   if (result.usage) await options.onUsage?.(result.usage);
   options.signal?.throwIfAborted();
 
-  const parsed = autoEmotionSchema.parse(parseNativeJson(result.text));
+  const parts = result.text.trim().split("\n")[0]!.split("|");
+  if (parts.length < 3) return undefined;
   const now = options.now ?? (() => new Date());
   const nextState: EmotionState = {
-    mood: normalizeText(parsed.mood),
-    valence: clamp(parsed.valence),
+    mood: parts[0]!.trim(),
+    valence: Math.min(10, Math.max(0, parseInt(parts[1]!) || 5)),
     energy: (await options.storage.readBase())?.energy ?? DEFAULT_EMOTION_STATE.energy,
     updatedAt: now().toISOString(),
-    trigger: normalizeText(parsed.reason) || undefined
+    trigger: parts.slice(2).join("|").trim() || undefined
   };
   const previous = await options.storage.readContext(options.sessionId);
   if (
@@ -148,13 +153,4 @@ function normalizeMessages(messages: readonly EmotionAnalysisMessage[]): Emotion
     }))
     .filter((message) => message.text.trim())
     .slice(-recentMessageLimit);
-}
-
-function normalizeText(value: string): string {
-  return value.replace(/\s+/gu, " ").trim();
-}
-
-function clamp(value: number): number {
-  if (!Number.isFinite(value)) return 5;
-  return Math.min(10, Math.max(0, value));
 }
