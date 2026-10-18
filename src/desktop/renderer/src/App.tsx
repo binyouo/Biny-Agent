@@ -161,7 +161,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [timeCluesOpen, setTimeCluesOpen] = useState(false);
   const [settingsTargetTab, setSettingsTargetTab] = useState<SettingsTab>();
   const [temporalSourceTarget, setTemporalSourceTarget] = useState<{ sessionId: string; messageId: string }>();
-  const [messageReferencesUri, setMessageReferencesUri] = useState<string>();
+  const [messageReferencesTarget, setMessageReferencesTarget] = useState<{ projectId: string; uri: string }>();
+  const messageReferencesRequestRef = useRef(0);
   const [dateReferenceUri, setDateReferenceUri] = useState<string>();
   const [settingsCloseRequest, setSettingsCloseRequest] = useState<DesktopSettingsCloseRequest>();
   const browserSelectionPending = useRef<string | undefined>(undefined);
@@ -1759,8 +1760,15 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (!projectId || !sessionId) return;
-    try { setMessageReferencesUri((await window.biny.referenceForMessage(projectId, sessionId, messageId)).uri); }
-    catch (error) { setWarning(errorMessage(error)); }
+    const request = ++messageReferencesRequestRef.current;
+    const navigationRequest = loadRequestRef.current;
+    const isCurrentRequest = (): boolean => messageReferencesRequestRef.current === request
+      && loadRequestRef.current === navigationRequest
+      && projectRef.current === projectId && selectedRef.current === sessionId;
+    try {
+      const result = await window.biny.referenceForMessage(projectId, sessionId, messageId);
+      if (isCurrentRequest()) setMessageReferencesTarget({ projectId, uri: result.uri });
+    } catch (error) { if (isCurrentRequest()) setWarning(errorMessage(error)); }
   }, []);
   const addQuoteToConversation = useCallback(async (messageId: string, quote: string): Promise<void> => {
     const projectId = projectRef.current;
@@ -2014,8 +2022,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
             setTemporalSourceTarget({ sessionId, messageId });
             void navigateToSession(projectId, sessionId);
           }} />
-          {messageReferencesUri && workspace?.project.id ? <MessageReferencesDialog projectId={workspace.project.id}
-            uri={messageReferencesUri} onClose={() => setMessageReferencesUri(undefined)} onOpen={(uri) => void openDeepLink(uri)} /> : null}
+          {messageReferencesTarget && workspace?.project.id ? <MessageReferencesDialog projectId={messageReferencesTarget.projectId}
+            uri={messageReferencesTarget.uri} onClose={() => { messageReferencesRequestRef.current += 1; setMessageReferencesTarget(undefined); }}
+            onOpen={(uri) => void openDeepLink(uri, messageReferencesTarget.projectId)} /> : null}
           {dateReferenceUri && workspace?.project.id ? <DateReferenceDetailDialog projectId={workspace.project.id}
             uri={dateReferenceUri} onClose={() => setDateReferenceUri(undefined)} onSource={(sessionId, messageId) => {
               const projectId = workspace.project.id;
