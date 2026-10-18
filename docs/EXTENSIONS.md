@@ -253,4 +253,3 @@ biny task continue <taskRunId> "新的有限任务" --session <sessionId> --mess
 恢复会核对原工具与权限契约；旧断点与当前策略不匹配时保持阻塞。先查明既有副作用，再明确创建新的有限任务，不能把重试当作自动恢复。
 
 配置定义见 [schema.ts](../src/config/schema.ts)。运行实现：[MCP](../src/extensions/mcp.ts)、[Skills](../src/extensions/skills.ts)、[Plugins](../src/extensions/plugins.ts)。
-
