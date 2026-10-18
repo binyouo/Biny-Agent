@@ -79,7 +79,7 @@ async function fixture(t: TestContext) {
   };
   const assertClosed = (): void => {
     const current = observeDatabase();
-    assert.equal(current, undefined, "settled closed maintenance must not retain a reopened connection");
+    assert.equal(current === undefined, true, "settled closed maintenance must not retain a reopened connection");
     for (const database of databases) assert.equal(database.isOpen, false);
   };
   const createGate = (): Gate => {
@@ -237,7 +237,7 @@ await test("a continuation registered before close can immediately reuse the set
   assert.ok(next);
   await next.waitUntilEntered();
   const nextDatabase = f.requireDatabase();
-  assert.notEqual(nextDatabase, firstDatabase);
+  assert.equal(nextDatabase === firstDatabase, false, "the next run must own a distinct connection");
   assert.equal(firstDatabase.isOpen, false);
   assert.equal(nextDatabase.isOpen, true);
   next.release.release();
@@ -255,7 +255,7 @@ await test("a continuation registered before close can immediately reuse the set
   f.assertClosed();
   assert.equal((await f.memory.getOverview()).entryCount, 2);
   const reopened = f.requireDatabase();
-  assert.notEqual(reopened, nextDatabase);
+  assert.equal(reopened === nextDatabase, false, "idle reuse must open a distinct connection");
   assert.equal(reopened.isOpen, true);
   f.memory.close();
   assert.equal(reopened.isOpen, false);
