@@ -280,7 +280,7 @@ try {
           assert.equal(f.row(), before, "actual SQLite rollback must leave ownership and timestamps intact");
           database.exec("DROP TRIGGER report_fixture_failure;");
           const retry = await narrateActivityReport(original, { store: f.first, model: immediateModel(newerText()) });
-          assert.equal(retry.markdown, newerText(), "rollback must not consume the original owner");
+          assert.equal(retry.markdown, newerText().trim(), "rollback must not consume the original owner");
         } finally { database.close(); }
       });
     });
