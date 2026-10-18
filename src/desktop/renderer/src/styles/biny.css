@@ -2639,17 +2639,13 @@
 }
 
 .biny-memory-toggle[data-memory-enabled="true"] {
-  color: var(--biny-focus);
+  --memory-icon-detail: color-mix(in srgb, var(--biny-focus) 70%, var(--biny-text-secondary));
 }
 
-/* 裸图标仍留一层极淡 hover 底色作可点反馈；开启态图标保持蓝色不被覆盖。 */
+/* 外轮廓跟随工具栏，开启态仅点亮内部连接与节点。 */
 .biny-memory-toggle:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--biny-surface-hover);
   color: var(--biny-text);
-}
-
-.biny-memory-toggle[data-memory-enabled="true"]:hover:not(:disabled):not([aria-disabled="true"]) {
-  color: var(--biny-focus);
 }
 
 .biny-model-pill:hover:not(:disabled):not([data-active="true"]),
@@ -5459,13 +5455,27 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-hero-avatar {
-  display: block;
-  width: 72px;
-  height: 72px;
-  margin-bottom: 18px;
-  object-fit: contain;
-  user-select: none;
-  -webkit-user-drag: none;
+  margin-bottom: 14px;
+  animation: biny-hero-arrive 600ms cubic-bezier(.22, 1, .36, 1) backwards;
+}
+
+.biny-hero-avatar[data-paused="true"] {
+  animation-play-state: paused;
+}
+
+.biny-hero-avatar .fold-art {
+  transform-origin: 50% 86%;
+  animation: biny-hero-unfold 650ms cubic-bezier(.22, 1, .36, 1) backwards;
+}
+
+@keyframes biny-hero-arrive {
+  from { opacity: 0; transform: translateY(8px) scale(.94); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes biny-hero-unfold {
+  from { transform: scale(1.04, .9) rotate(-4deg); }
+  to { transform: scale(1) rotate(0); }
 }
 
 .biny-hero-title {
@@ -5489,11 +5499,12 @@ button.capability-check[aria-checked="true"] {
   text-wrap: balance;
 }
 
-/* 立即淡入，持续 0.25s。 */
 .biny-hero-fade {
-  opacity: 0;
-  will-change: opacity;
-  animation: biny-hero-fade 0.25s ease-out forwards;
+  animation: biny-hero-fade 360ms ease-out 60ms backwards;
+}
+
+.biny-hero-subtitle.biny-hero-fade {
+  animation-delay: 120ms;
 }
 
 @keyframes biny-hero-fade {
@@ -5502,6 +5513,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .biny-hero-avatar,
+  .biny-hero-avatar .fold-art,
   .biny-hero-fade {
     opacity: 1;
     animation: none;

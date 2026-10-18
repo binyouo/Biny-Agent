@@ -690,18 +690,7 @@ export function ExecutionTimeline({ readOnly, keepActivitiesOpen = false,
         if (step.kind === "tool") return step.tool.tool === "AskUserQuestion"
           ? <UserInputCard key={`${sessionId}:${step.tool.runId}:${step.id}`} tool={step.tool} projectId={projectId} sessionId={sessionId} running={running} />
           : <SubagentActivity key={step.id} tool={step.tool} projectId={projectId} sessionId={sessionId} readOnly={readOnly} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={onResolvePermission} />;
-        if (step.summary) {
-          return (
-            <ActivitySummaryStep
-              content={step.content}
-              key={step.id}
-              onOpenExternal={onOpenExternal}
-              onPreviewFile={onPreviewFile}
-              projectId={projectId}
-            />
-          );
-        }
-        return <div className="execution-step execution-assistant-step" key={step.id}><TypewriterMarkdown active={running && index === entries.length - 1 && !step.completed} content={step.content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /></div>;
+        return <div className="execution-step execution-assistant-step" key={step.id}><TypewriterMarkdown active={running && index === entries.length - 1 && !step.completed && !step.summary} content={step.content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /></div>;
       })}
     </div>
   );
@@ -731,19 +720,6 @@ function groupExecutionSteps(steps: TimelineStep[]): Array<TimelineStep | Activi
 function isGroupableStep(step: TimelineStep): step is ActivitySegmentStep {
   if (step.kind === "tool") return step.tool.tool !== "Task" && step.tool.tool !== "AskUserQuestion";
   return step.kind === "reasoning" && step.notice !== "compaction";
-}
-
-function ActivitySummaryStep({ content, onOpenExternal, onPreviewFile, projectId }: {
-  content: string;
-  onOpenExternal(url: string): void;
-  onPreviewFile(path: string): void;
-  projectId: string;
-}): React.JSX.Element {
-  return (
-    <div className="execution-step execution-assistant-step execution-summary-step">
-      <MarkdownContent content={content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} />
-    </div>
-  );
 }
 
 function UserMessage({

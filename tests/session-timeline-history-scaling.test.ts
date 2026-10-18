@@ -1,48 +1,43 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activitySummaryText } from "../src/runtime/activitySummary.js";
-import { publicAssistantMessage } from "../src/session/publicMessage.js";
 import type { SessionEvent } from "../src/session/recorder.js";
 import { buildSessionTimeline, createSessionTimelineProjector } from "../src/desktop/renderer/src/sessionTimeline.js";
 import { summaryHistory, adversarialHistory } from "./helpers/session-timeline-history-fixtures.js";
 
-/** Prior step-list scan, kept as a small independent oracle for assistant-step identity/order. */
-function priorAssistantSteps(events: SessionEvent[]) {
-  const steps: Array<{ kind: "assistant"; id: string; content: string; summary: true | undefined }> = [];
-  let assistant = "";
-  let completed = false;
-  for (const event of events) {
-    if (event.type !== "tool_call" && event.type !== "assistant_message" || event.auditOnly) continue;
-    const summary = event.type === "tool_call" ? true : undefined;
-    const content = event.type === "tool_call" ? activitySummaryText(event.assistantContent ?? "") : event.content;
-    if (event.type === "assistant_message") { assistant = event.content || assistant; completed = true; }
-    if (!content || steps.some(step => step.content === content && step.summary === summary)) continue;
-    steps.push({ kind: "assistant", id: `history-1:assistant:${steps.length}`, content, summary });
-  }
-  assistant = publicAssistantMessage(assistant).trimEnd();
-  return steps.map(step => ({ ...step, content: publicAssistantMessage(step.content).trimEnd() }))
-    .filter(step => !(completed && assistant && step.summary && step.content.trim() === assistant.trim()));
-}
-
 for (const versioned of [false, true]) {
-  test(`public summary dedup/count agrees with the original scan (${versioned ? "versioned" : "legacy"})`, () => {
+  test(`公开正文去重保留格式和长尾内容（${versioned ? "版本化" : "旧格式"}）`, () => {
+    const long = "x".repeat(250);
+    const cases: Array<{ inputs: Array<string | undefined>; expected: string[] }> = [
+      { inputs: [undefined, "", "  ", "<biny_notification>synthetic notification</biny_notification>"], expected: [] },
+      { inputs: ["same", "same\n", "same"], expected: ["same"] },
+      { inputs: [" same "], expected: [" same"] },
+      { inputs: ["different", "different"], expected: ["different"] },
+      { inputs: ["通知✓"], expected: ["通知✓"] },
+      { inputs: ["__proto__"], expected: ["__proto__"] },
+      { inputs: ["constructor"], expected: ["constructor"] },
+      { inputs: ["<think>synthetic hidden marker</think>Public"], expected: ["Public"] },
+      { inputs: [`${long}one`, `${long}two`], expected: [`${long}one`, `${long}two`] },
+      { inputs: ["api_key=synthetic-interleaved-secret\n\n公开说明"], expected: ["api_key=[redacted]\n\n公开说明"] },
+      { inputs: ["Done"], expected: [] }
+    ];
     let seed = 4171;
-    const random = (n: number) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % n; };
-    const contents = [undefined, "", "  ", "same", "same\n", " same ", "different", "通知✓", "__proto__", "constructor",
-      "<biny_notification>synthetic notification</biny_notification>", "<think>synthetic hidden marker</think>Public",
-      `${"x".repeat(250)}one`, `${"x".repeat(250)}two`];
     for (let sample = 0; sample < 100; sample += 1) {
-      const events = summaryHistory(0, { versioned });
-      const additions: SessionEvent[] = [];
-      for (let i = 0; i < 40; i += 1) {
-        const content = contents[random(contents.length)];
-        additions.push(random(3) ? { type: "tool_call", tool: "Read", toolCallId: String(random(3)), args: {}, assistantContent: content, auditOnly: random(12) === 0 }
-          : { type: "assistant_message", content: content ?? "", auditOnly: random(12) === 0 });
+      const ordered = [...cases];
+      for (let i = ordered.length - 1; i > 0; i--) {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        const j = seed % (i + 1);
+        [ordered[i], ordered[j]] = [ordered[j]!, ordered[i]!];
       }
+      const events = summaryHistory(0, { versioned });
+      const additions: SessionEvent[] = ordered.flatMap(entry => entry.inputs.map(content => ({
+        type: "tool_call" as const, tool: "Read", args: {}, assistantContent: content
+      })));
+      additions.push({ type: "tool_call", tool: "Read", args: {}, assistantContent: "Audit-only", auditOnly: true });
       events.splice(1, 0, ...additions);
       const before = structuredClone(events);
       const turns = buildSessionTimeline(events, []);
-      assert.deepEqual(turns[0]!.steps.filter(step => step.kind === "assistant"), priorAssistantSteps(events));
+      assert.deepEqual(turns[0]!.steps.filter(step => step.kind === "assistant").map(step => step.content),
+        [...ordered.flatMap(entry => entry.expected), "Done"]);
       assert.deepEqual(createSessionTimelineProjector().update({ sessionId: "synthetic", events, liveEvents: [] }), turns);
       assert.deepEqual(events, before);
     }

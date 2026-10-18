@@ -13,7 +13,7 @@ async function withInspector(check: (fixture: {
   directoryReplies: Map<string, Promise<DesktopWorkspaceDirectory>>;
   recordChange(path: string): Promise<void>;
   render(source?: string, projectId?: string): Promise<void>;
-}) => Promise<void>): Promise<void> {
+}) => Promise<void>, viewportWidth = 1024): Promise<void> {
   const hook = registerHooks({ load(url, context, next) {
     if (url.includes("/@xterm/xterm/")) return { format: "module", source: "export class Terminal {}", shortCircuit: true };
     if (url.includes("/@xterm/addon-fit/")) return { format: "module", source: "export class FitAddon {}", shortCircuit: true };
@@ -23,6 +23,7 @@ async function withInspector(check: (fixture: {
   } });
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "https://desktop.local", pretendToBeVisual: true });
+  dom.window.innerWidth = viewportWidth;
   const React = await import("react");
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
@@ -153,6 +154,26 @@ test("关闭文件、切换会话或项目后选择同路径会重新读取", as
     await act(() => { reads[1]!.resolve(file("old.bin")); reads[2]!.resolve(file("old.bin")); });
     assert.equal(document.querySelector(".file-browser-path-label")?.textContent, "a.bin");
   });
+});
+
+test("收起文件树后关闭当前文件仍能看到文件列表，再选文件时保持文件树可见", async () => {
+  await withInspector(async ({ preview, act, reads, tree }) => {
+    tree.set(".", [{ name: "a.bin", path: "a.bin", kind: "file" }, { name: "b.bin", path: "b.bin", kind: "file" }]);
+    await act(() => preview("a.bin"));
+    await act(() => reads[0]!.resolve(file("a.bin")));
+    await act(() => document.querySelector<HTMLButtonElement>('[aria-label="隐藏文件树"]')!.click());
+    assert.equal(document.querySelector(".file-browser-body")?.classList.contains("is-tree-hidden"), true);
+
+    await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭当前文件"]')!.click());
+    assert.match(document.querySelector(".file-browser-content")?.textContent ?? "", /选择要预览的文件/u);
+    assert.equal(document.querySelector(".file-browser-body")?.classList.contains("is-tree-hidden"), false);
+    assert.match(document.querySelector('[role="treeitem"]')?.textContent ?? "", /a\.bin$/u);
+
+    await act(() => document.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')[1]!.click());
+    await act(() => reads[1]!.resolve(file("b.bin")));
+    assert.equal(document.querySelector(".file-browser-path-label")?.textContent, "b.bin");
+    assert.equal(document.querySelector(".file-browser-body")?.classList.contains("is-tree-hidden"), false);
+  }, 1600);
 });
 
 

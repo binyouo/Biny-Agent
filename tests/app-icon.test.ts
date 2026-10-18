@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
+import { test } from "node:test";
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
+import { JSDOM } from "jsdom";
+
+const assets = registerHooks({ load(url, context, next) {
+  return url.endsWith(".png") ? { format: "module", source: `export default ${JSON.stringify(url)};`, shortCircuit: true } : next(url, context);
+} });
+const { AppIcon } = await import("../src/desktop/renderer/src/components/AppIcon.js");
+assets.deregister();
+
+test("口袋灵按活动和成功回执切换，旧回执不重播，隐藏和卸载停止展示任务", async context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const dom = new JSDOM('<div id="root"></div>', { pretendToBeVisual:true });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key,value] of Object.entries({ window:dom.window, document:dom.window.document, React, IS_REACT_ACT_ENVIRONMENT:true })) {
+    saved.set(key,Object.getOwnPropertyDescriptor(globalThis,key));
+    Object.defineProperty(globalThis,key,{configurable:true,value});
+  }
+  let mediaChanged: (() => void) | undefined;
+  const media = { matches:false, addEventListener(_event: string, listener: () => void) { mediaChanged=listener; }, removeEventListener() { mediaChanged=undefined; } };
+  Object.defineProperty(dom.window, "matchMedia", { value:() => media });
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  const render = async (props: Record<string, unknown> = {}) => {
+    await act(() => root.render(React.createElement(AppIcon,{size:48,animated:true,...props})));
+  };
+  const state = () => dom.window.document.querySelector(".app-icon")?.getAttribute("data-state");
+  try {
+    await render({memoryRevision:4});
+    assert.equal(state(),"idle", "挂载已有保存计数不能播放成功动画");
+    await act(() => context.mock.timers.tick(60_000));
+    assert.equal(state(),"sleep");
+    await act(() => dom.window.dispatchEvent(new dom.window.Event("pointerdown")));
+    assert.equal(state(),"idle");
+    await render({active:true,memoryRevision:4});
+    await act(() => context.mock.timers.tick(60_000));
+    assert.equal(state(),"listen", "运行中不能因空闲计时蜷缩");
+    await render({active:false,memoryRevision:5});
+    assert.equal(state(),"remember");
+    await act(() => context.mock.timers.tick(2_100));
+    assert.equal(state(),"idle");
+    await render({memoryRevision:5});
+    assert.equal(state(),"idle", "相同保存回执不重播");
+    await render({memoryRevision:6});
+    await render({active:true,memoryRevision:6});
+    assert.equal(state(),"listen", "新任务打断收纳，不被旧计时器覆盖");
+    await act(() => context.mock.timers.tick(2_100));
+    assert.equal(state(),"listen");
+    Object.defineProperty(dom.window.document,"hidden",{configurable:true,value:true});
+    await act(() => dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange")));
+    assert.equal(dom.window.document.querySelector(".app-icon")?.getAttribute("data-paused"),"true");
+    Object.defineProperty(dom.window.document,"hidden",{configurable:true,value:false});
+    media.matches=true;
+    await act(() => { dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange")); mediaChanged?.(); });
+    await render({memoryRevision:7});
+    await act(() => context.mock.timers.tick(60_000));
+    assert.equal(state(),"idle", "减少动态效果时不启动睡眠或保存计时");
+    media.matches=false;
+    await act(() => mediaChanged?.());
+    assert.equal(state(),"idle", "恢复动画不补播隐藏期间的保存回执");
+    await act(() => root.unmount());
+    assert.equal(mediaChanged,undefined);
+    await act(() => context.mock.timers.tick(60_000));
+    assert.equal(dom.window.document.getElementById("root")!.childElementCount,0);
+  } finally {
+    await act(() => root.unmount());
+    dom.window.close();
+    for (const [key,value] of saved) {
+      if (value) Object.defineProperty(globalThis,key,value);
+      else Reflect.deleteProperty(globalThis,key);
+    }
+  }
+});

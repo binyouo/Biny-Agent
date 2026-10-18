@@ -100,23 +100,21 @@ try {
     }
 
     await fixture("small CPU slices accumulate across legitimate host waits", async () => {
-      // 用 VM 的公开超时结果选择输入负载，避免把进程启动时间当作 VM 执行时间。
+      // 用连续短段的公开超时结果校准负载，覆盖热循环，避免工具次数上限先于 CPU 预算触发。
       const sliceCode = iterations => `let sum = 0; for (let i = 0; i < ${iterations}; i++) sum += i;`;
+      const executionPolicy = { ...policy, timeoutMs: 800, maxCellDurationMs: 6_000 };
       let iterations = 10_000;
       let calibrated = false;
       for (; iterations <= 64_000_000; iterations *= 2) {
-        const sample = await cell(`${sliceCode(iterations)} return sum;`);
+        const sample = await cell(`for (let j = 0; j < 8; j++) { ${sliceCode(iterations)} } return 1;`, [], { executionPolicy });
         if (!sample.ok) {
           assert.match(sample.error ?? "", /execution|interrupt|budget/iu);
-          assert.ok(iterations > 10_000, "A small calibration slice must fit the VM budget");
-          iterations /= 2;
           calibrated = true;
           break;
         }
       }
       assert.equal(calibrated, true, "A finite calibration load must reach the VM timeout");
       const slice = sliceCode(iterations);
-      const executionPolicy = { ...policy, timeoutMs: 800, maxCellDurationMs: 6_000 };
       const sample = await cell(`${slice} return sum;`, [], { executionPolicy });
       assert.equal(sample.ok, true, sample.error);
       assert.equal(sample.value, iterations * (iterations - 1) / 2);

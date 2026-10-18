@@ -89,11 +89,11 @@ export async function saveConfig(workspaceRoot: string, config: AgentConfig, opt
 /** 保存指定目录下的完整配置文件；凭据字段会被显式清空，不会写入 JSON。 */
 export async function saveConfigFile(root: string, config: AgentConfig): Promise<void> {
   const parsed = configSchema.parse(config);
-  await writeConfigDocumentFile(root, withoutCredentials(parsed));
+  await writeConfigDocumentFile(root, parsed);
 }
 
 async function writeConfigDocumentFile(root: string, settings: AgentConfig): Promise<void> {
-  const serialized = `${JSON.stringify(settings, null, 2)}\n`;
+  const serialized = serializeConfig(settings);
   if (Buffer.byteLength(serialized, "utf8") > maxConfigFileBytes) {
     throw new Error(`${CONFIG_FILE} exceeds the ${String(maxConfigFileBytes)}-byte size limit.`);
   }
@@ -149,7 +149,7 @@ export async function ensureConfig(workspaceRoot: string, options: ConfigPathOpt
     await assertConfigRoot(location);
     created = await fs.open(location.filePath, writeNewFlags(), 0o600);
     await assertConfigBinding(location, created);
-    await created.writeFile(`${JSON.stringify(withoutCredentials(configSchema.parse(defaultConfig)), null, 2)}\n`, "utf8");
+    await created.writeFile(serializeConfig(configSchema.parse(defaultConfig)), "utf8");
     await tightenConfigMode(created);
     await created.sync();
   } catch (error) {
@@ -410,7 +410,7 @@ function preserveOverrideLeaves(
   }
 }
 
-function withoutCredentials(config: AgentConfig): AgentConfig {
+function serializeConfig(config: AgentConfig): string {
   const safe = structuredClone(config);
   for (const provider of Object.values(safe.providers)) {
     provider.apiKey = undefined;
@@ -420,7 +420,11 @@ function withoutCredentials(config: AgentConfig): AgentConfig {
     for (const key of Object.keys(server.credentialRefs?.env ?? {})) delete server.env?.[key];
     for (const key of Object.keys(server.credentialRefs?.headers ?? {})) delete server.headers?.[key];
   }
-  return safe;
+  // 未使用生图配置时不落盘空段，避免共享配置的旧版 Desktop 拒绝未知顶层键。
+  return `${JSON.stringify({
+    ...safe,
+    imageGen: safe.imageGen.model || safe.imageGen.aspectRatio ? safe.imageGen : undefined
+  }, null, 2)}\n`;
 }
 
 function deepEqual(left: unknown, right: unknown): boolean {

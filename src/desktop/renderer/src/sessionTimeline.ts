@@ -15,7 +15,7 @@ import type { CommittedFileChange } from "../../../tools/file/fileChange.js";
 import { parseFileChange } from "../../../tools/file/fileChange.js";
 import type { AgentPermissionEventRequest, AgentRunModel, AgentHostEvent } from "../../../runtime/agentEvents.js";
 import type { PermissionAction } from "../../../permission/PermissionManager.js";
-import { activitySummaryText } from "../../../runtime/activitySummary.js";
+import { redactSecrets } from "../../../utils/redaction.js";
 import { resolvedCapabilitySelectionSchema, type AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import { activeSessionMessageIds, activeSessionEventsForPath, sessionMessageMetadataForIds } from "../../../session/messageTree.js";
 import type { SessionEvent } from "../../../session/recorder.js";
@@ -97,7 +97,7 @@ export interface TimelineAssistantStep {
   content: string;
   /** 正文流已结束；用于区分流式回复与等待下一步的空档。 */
   completed?: boolean;
-  /** 工具前的公开说明，作为时间线正文摘要展示，但不计入最终 assistant 正文。 */
+  /** 工具前的完整公开正文，保留原位置与格式，不计入最终 assistant 正文。 */
   summary?: boolean;
 }
 
@@ -778,7 +778,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const turn = turnFor(event);
     const tools = toolMaps.get(event.runId);
     if (!tools) throw new Error("Timeline tool map is missing.");
-    markActiveAssistantSummary(turn, event.runId);
+    finishAssistantBeforeTool(turn, event.runId);
     const current = tools.get(event.toolCallId);
     if (current) {
       dirtyTools.add(current.id);
@@ -869,10 +869,10 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     activeAssistant.set(turn.id, step);
   };
 
-  const markActiveAssistantSummary = (turn: TimelineTurn, runId: string): void => {
+  const finishAssistantBeforeTool = (turn: TimelineTurn, runId: string): void => {
     const step = activeAssistant.get(runId);
     if (!step) return;
-    const content = activitySummaryText(step.content);
+    const content = redactSecrets(publicAssistantMessage(step.content)).trimEnd();
     const index = turn.steps.indexOf(step);
     if (!content) {
       if (index >= 0) turn.steps.splice(index, 1);
@@ -1354,8 +1354,8 @@ function appendHistoricalReasoning(turn: TimelineTurn, content: string | undefin
 function createHistoricalAssistantAppender(): (turn: TimelineTurn, content: string | undefined, summary?: boolean) => void {
   const byTurn = new Map<TimelineTurn, { summaries: Set<string>; messages: Set<string> }>();
   return (turn, content, summary = false) => {
-    const visibleContent = summary ? activitySummaryText(content ?? "") : content;
-    if (!visibleContent) return;
+    const visibleContent = summary ? redactSecrets(publicAssistantMessage(content ?? "")).trimEnd() : content;
+    if (!visibleContent?.trim()) return;
     let seen = byTurn.get(turn);
     if (!seen) {
       seen = { summaries: new Set(), messages: new Set() };
