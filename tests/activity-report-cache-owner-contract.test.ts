@@ -34,8 +34,14 @@ assert.ok(storeClass);
 const guard = storeClass.members.filter((node): node is ts.MethodDeclaration =>
   ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "writeDailyReportCache");
 assert.equal(guard.length, 1);
+// The helper is absent on the tests-first baseline. Extract its real declaration
+// when present so Red remains a behavioral regression, not a harness failure.
+const ownerCheck = analyzer.statements.some((node) => ts.isFunctionDeclaration(node)
+  && node.name?.text === "isActivityReportCurrent")
+  ? declarations(analyzer, ["isActivityReportCurrent"]) : "";
 const javascript = stripTypeScriptTypes([
   declarations(analyzer, ["reportCacheGenerations", "persistActivityReport"]),
+  ownerCheck,
   declarations(narrative, ["prompt", "narrateActivityReport", "validNarrative"]),
   "class GuardFixture { " + guard[0]!.getText(store) + " }",
   "({ persist: persistActivityReport, narrate: narrateActivityReport, guard: GuardFixture.prototype.writeDailyReportCache });"
@@ -100,8 +106,7 @@ class StoreFixture {
     } };
   }
   getSummary(_kind: string, date: string) {
-    assert.equal(this.inTransaction, true, "owner must be read after BEGIN");
-    this.log.push("read:" + date);
+    this.log.push((this.inTransaction ? "read:" : "check:") + date);
     const row = this.rows.get(date);
     return row ? structuredClone(row) : undefined;
   }
@@ -112,7 +117,13 @@ class StoreFixture {
     this.rows.set(value.dateKey, structuredClone(value));
   }
   writeDailyReportCache(date: string, cache: Cache, create: () => Summary, expected: string | undefined) {
-    return this.contract.guard.call(this, date, cache, create, expected);
+    const start = this.log.length;
+    try {
+      return this.contract.guard.call(this, date, cache, create, expected);
+    } finally {
+      assert.equal(this.log.slice(start).some((line) => line.startsWith("check:")), false,
+        "CAS owner reads must occur after BEGIN; only the separate fallback gate is read-only");
+    }
   }
 }
 function fixture() {
@@ -212,7 +223,7 @@ test("database error still rolls back and returns the existing narration fallbac
   assert.equal(fallback.markdown, initial.markdown);
   assert.equal(fallback.narrativeModel, "fake");
   assert.deepEqual(f.rows.get(initial.date), saved);
-  assert.equal(f.target.log.at(-1), "ROLLBACK;");
+  assert.equal(f.target.log.filter((line) => !line.startsWith("check:")).at(-1), "ROLLBACK;");
   assert.equal(f.target.inTransaction, false);
 });
 
@@ -226,7 +237,8 @@ test("model, invalid-output, cancellation, and no-store behavior stay unchanged"
   const failure = await f.contract.narrate(initial, { store: f.target,
     model: { modelId: "fake", response: Promise.reject(new Error("model unavailable")) } });
   assert.equal(failure.markdown, initial.markdown);
-  assert.equal(f.target.log.length, before);
+  assert.equal(f.target.log.filter((line) => !line.startsWith("check:")).length, before,
+    "fallback checks may read ownership but must not begin a transaction or write");
   const controller = new AbortController(); controller.abort();
   await assert.rejects(f.contract.narrate(initial, { signal: controller.signal }), { name: "AbortError" });
   const output = initial.markdown + "\nIndependent narration.";
