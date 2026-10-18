@@ -12,7 +12,7 @@ export function ChatHero({ children, leaving = false }: ChatHeroProps): React.JS
   return (
     <div className="biny-hero">
       <div className={`biny-hero-inner${leaving ? " is-leaving" : ""}`}>
-        <AppIcon className="biny-hero-avatar biny-hero-fade" size={72} />
+        <AppIcon animated hidden={leaving} className="biny-hero-avatar" size={64} />
         <h1 className="biny-hero-title biny-hero-fade">今天聊点什么？</h1>
         <p className="biny-hero-subtitle biny-hero-fade">把下一件事，交给 Biny。</p>
         {children}

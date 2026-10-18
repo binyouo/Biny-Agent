@@ -23,6 +23,7 @@
   ],
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
+    "build:icons": "node --import tsx scripts/generate-app-icons.tsx",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "build": "pnpm build:desktop",
     "build:cli": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/build-code-mode-runtime.mjs && node scripts/build-calendar-sidecar.mjs && node scripts/copy-bundled-skills.mjs dist/bundled-skills && node scripts/copy-browser-extension.mjs dist/browser-extension",
@@ -33,7 +34,7 @@
     "test:security": "tsx tests/security.test.ts",
     "test:prompts": "tsx tests/prompts.test.ts",
     "test:skills": "tsx tests/skill-discovery.test.ts && tsx tests/skill-diagnostics.test.ts && tsx tests/skill-tools.test.ts",
-    "build:desktop": "pnpm build:cli && pnpm build:activity-sidecar && node scripts/prepare-electron-background.mjs && electron-vite build --config config/electron.vite.config.ts && node scripts/copy-bundled-skills.mjs out/main/bundled-skills && node scripts/copy-browser-extension.mjs out/main/browser-extension",
+    "build:desktop": "pnpm build:icons && pnpm build:cli && pnpm build:activity-sidecar && node scripts/prepare-electron-background.mjs && electron-vite build --config config/electron.vite.config.ts && node scripts/copy-bundled-skills.mjs out/main/bundled-skills && node scripts/copy-browser-extension.mjs out/main/browser-extension",
     "desktop:dev": "pnpm desktop:prepare && electron-vite dev --watch --config config/electron.vite.config.ts",
     "desktop:prepare": "node scripts/prepare-desktop.mjs",
     "desktop:preview": "electron-vite preview --config config/electron.vite.config.ts",
