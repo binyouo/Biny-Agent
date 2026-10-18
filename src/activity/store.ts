@@ -26,6 +26,13 @@ import { activitySummary, redactActivityOcrText, redactActivityText } from "./re
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 import { AGENT_DATABASE_FILE } from "../config/paths.js";
 
+export interface ActivitySummaryWriteSnapshot {
+  kind: ActivitySummaryKind;
+  dateKey: string;
+  /** Exact stored row, including report cache fields; undefined means the row did not exist. */
+  state: string | undefined;
+}
+
 export interface ActivityReportCache {
   report: string;
   reportGeneratedAt: number;
@@ -1020,6 +1027,36 @@ export class ActivityStore {
       }
       const base = previous ?? createSummary();
       this.upsertSummary({ ...base, stats: { ...base.stats, ...report } });
+      database.exec("COMMIT;");
+      return true;
+    } catch (error) {
+      database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  /** Capture the persisted summary slot before reading sources or awaiting a model. */
+  readSummaryWriteSnapshot(kind: ActivitySummaryKind, dateKey: string): ActivitySummaryWriteSnapshot {
+    const row = this.requireDatabase().prepare(
+      "SELECT * FROM activity_summaries WHERE kind = ? AND date_key = ?"
+    ).get(kind, dateKey);
+    return { kind, dateKey, state: row === undefined ? undefined : JSON.stringify(row) };
+  }
+
+  /** Compare and write under one lock; a changed persisted row wins over this older snapshot. */
+  commitSummaryIfCurrent(snapshot: ActivitySummaryWriteSnapshot, summary: ActivityAnySummaryRecord): boolean {
+    if (snapshot.kind !== summary.kind || snapshot.dateKey !== summary.dateKey) {
+      throw new Error("Activity summary does not match its snapshot.");
+    }
+    const database = this.requireDatabase();
+    database.exec("BEGIN IMMEDIATE;");
+    try {
+      const current = this.readSummaryWriteSnapshot(snapshot.kind, snapshot.dateKey);
+      if (current.state !== snapshot.state) {
+        database.exec("ROLLBACK;");
+        return false;
+      }
+      this.upsertSummary(summary);
       database.exec("COMMIT;");
       return true;
     } catch (error) {

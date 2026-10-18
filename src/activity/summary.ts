@@ -182,6 +182,8 @@ export async function refreshActivitySummaryWithNarrative(
   if (kind === "weekly") return refreshActivityWeeklySummary(store, dateKey, options);
   await options.checkpoint?.();
   options.signal?.throwIfAborted();
+  dateKey = dateKey.trim();
+  const snapshot = store.readSummaryWriteSnapshot(kind, dateKey);
   const base = buildActivitySummary(store, kind, dateKey, options.now ?? new Date());
   let summary = base.summary;
   let model: string | undefined;
@@ -211,7 +213,9 @@ export async function refreshActivitySummaryWithNarrative(
   await options.checkpoint?.();
   options.signal?.throwIfAborted();
   const result: ActivitySummaryRecord = { ...base, summary, model };
-  store.upsertSummary(result);
+  if (!store.commitSummaryIfCurrent(snapshot, result)) {
+    throw new DOMException("Activity 摘要已刷新，请重新生成。", "AbortError");
+  }
   return result;
 }
 
@@ -224,6 +228,7 @@ async function refreshActivityWeeklySummary(
   await options.checkpoint?.();
   options.signal?.throwIfAborted();
   const end = parseLocalDateKey(endDateKey);
+  const snapshot = store.readSummaryWriteSnapshot("weekly", formatIsoWeekKey(end));
   const start = new Date(end.getTime());
   start.setDate(start.getDate() - 6);
   const now = options.now ?? new Date();
@@ -287,7 +292,9 @@ async function refreshActivityWeeklySummary(
     isPartial: endDateKey.trim() >= formatLocalDateKey(now),
     generatedAt: now.toISOString()
   };
-  store.upsertSummary(record);
+  if (!store.commitSummaryIfCurrent(snapshot, record)) {
+    throw new DOMException("Activity 摘要已刷新，请重新生成。", "AbortError");
+  }
   return record;
 }
 
