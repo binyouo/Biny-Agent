@@ -91,6 +91,8 @@ biny input answer <tool-call-id> --session <session-id> --run <run-id> --answers
 
 stdio 服务的 stdout 用于协议，诊断写 stderr。远程连接需要正确的传输协议与鉴权；支持 OAuth 的服务通过显式登录流程授权，普通连接不会自动打开浏览器登录。
 
+Tools、Resources 和 Prompts 分别按握手声明的能力启用。只提供资源或提示模板的服务器可以正常连接，不请求未声明的工具目录；已声明 Tools 的服务器若目录读取失败，连接仍报错，不把失败视为空目录。重连以新握手为准，撤下不再提供的工具。
+
 OAuth 凭据绑定其授权服务器。旧凭据缺少此绑定时，连接会要求重新登录，不发送已有凭据；只有显式登录成功才替换存储记录，取消登录保留原记录。
 
 配置中的 `startupTimeoutMs` 控制一次启动的总预算（连接、握手、首份工具目录与可选提示列表），默认 30000 毫秒；`timeoutMs` 控制连接后的请求等待，默认 60000 毫秒，收到进度通知后重新计时。两项均可在 MCP 服务器编辑窗口中调整，范围为 1000–600000 毫秒。启动超时会关闭连接并回收子进程。
@@ -251,3 +253,4 @@ biny task continue <taskRunId> "新的有限任务" --session <sessionId> --mess
 恢复会核对原工具与权限契约；旧断点与当前策略不匹配时保持阻塞。先查明既有副作用，再明确创建新的有限任务，不能把重试当作自动恢复。
 
 配置定义见 [schema.ts](../src/config/schema.ts)。运行实现：[MCP](../src/extensions/mcp.ts)、[Skills](../src/extensions/skills.ts)、[Plugins](../src/extensions/plugins.ts)。
+

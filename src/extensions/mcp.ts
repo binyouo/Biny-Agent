@@ -762,6 +762,8 @@ export class McpToolHost {
   }
 
   private async listAllTools(managed: ManagedMcpServer, client: Client, startupSignal?: AbortSignal): Promise<ListedMcpTool[]> {
+    // tools、resources 和 prompts 分别协商；未提供 tools 的服务器仍可提供资源与提示模板。
+    if (!client.getServerCapabilities()?.tools) return [];
     // tools/list 是分页协议，逐页取完，页数设防御上限。
     const options = startupSignal ? { signal: startupSignal, timeout: managed.config.startupTimeoutMs ?? defaultStartupTimeoutMs } : this.requestOptions(managed);
     const tools: ListedMcpTool[] = [];
@@ -1326,3 +1328,4 @@ async function resolveWorkingDirectory(workspaceRoot: string, configuredPath: st
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
