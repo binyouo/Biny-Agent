@@ -67,7 +67,7 @@ export const FilePreviewPanel = memo(function FilePreviewPanel({ width, preview,
   const treeWidth = Math.min(preferredTreeWidth, Math.max(MIN_TREE_WIDTH, width - MIN_PREVIEW_WIDTH));
   const [resizing, setResizing] = useState(false);
   const browserOnly = !preview && narrow;
-  const treeVisible = browserOnly || (fileTreeOpen && !narrow);
+  const treeVisible = !preview || (fileTreeOpen && !narrow);
   // 按目标宽度布局，开合中的裁切宽度不回写用户的文件树宽度。
   const startTreeResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
@@ -122,7 +122,7 @@ export const FilePreviewPanel = memo(function FilePreviewPanel({ width, preview,
               <div className="file-browser-path-actions">
                 {preview.status === "ready" && path ? <IconButton icon={<Icon name="external" size={14} />} label="使用系统应用打开" onClick={() => onOpenFile(path)} size="sm" variant="ghost" /> : null}
                 {!narrow && fileTreeOpen ? <IconButton icon={<Icon name="folder-panel" size={14} />} label="隐藏文件树" onClick={() => setFileTreeOpen(false)} size="sm" variant="ghost" /> : null}
-                <IconButton icon={<Icon name="close" size={14} />} label="关闭当前文件" onClick={onShowFiles} size="sm" variant="ghost" />
+                <IconButton icon={<Icon name="close" size={14} />} label="关闭当前文件" onClick={() => { setFileTreeOpen(true); onShowFiles(); }} size="sm" variant="ghost" />
               </div>
             </header>
             <div className="file-browser-preview-scroll"><FilePreviewContent key={path} preview={preview} projectId={projectId} onOpenFile={onOpenFile} onPreviewFile={onPreviewFile} onRunHtml={onRunHtml} /></div>

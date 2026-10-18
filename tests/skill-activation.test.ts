@@ -47,7 +47,7 @@ async function main(): Promise<void> {
 
     const builtins = await loadSkills({ workspaceRoot, projectPaths: [], globalRoot });
     const builtinNames = builtins.skills.filter((skill) => skill.scope === "builtin").map((skill) => skill.name);
-    assert.deepEqual(builtinNames, ["browser", "computer-use", "daily-report", "file-manager", "image-gen", "memory-management", "notebook", "plan-weave", "scheduler", "self-reflection", "system-info", "tasks", "todo", "web-fetch", "web-search", "workspace-search"]);
+    assert.deepEqual(builtinNames, ["browser", "computer-use", "daily-report", "file-manager", "image-gen", "memory-management", "notebook", "plan-weave", "scheduler", "self-reflection", "selfie", "system-info", "tasks", "todo", "travel", "web-fetch", "web-search", "workspace-search"]);
     assert.equal(builtins.skills.filter((skill) => skill.scope === "builtin").every((skill) => skill.source === "builtin"), true);
     const report = builtins.skills.find((skill) => skill.name === "daily-report")!;
     assert.equal(report.scope, "builtin");

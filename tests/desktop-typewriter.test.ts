@@ -104,6 +104,24 @@ test("流式文本提交间隔至少 24ms，追平后停止调度，新内容可
     await renderTimeline();
     assert.equal(document.querySelector(".execution-assistant-step")?.textContent, "嘿，已经完成。", "从运行事件到消息正文的完整链路不依赖动画帧收尾");
     assert.equal(frames.size, 0);
+
+    // 工具开始即结束前一段正文动画，已经显示的正文节点继续承载完整内容。
+    events.splice(0, events.length,
+      { ...base, type: "message.user", messageId: "tools-user", content: "检查配置" },
+      { ...base, type: "assistant.delta", content: "先检查入口。" });
+    await renderTimeline();
+    const paragraph = document.querySelector(".execution-assistant-step p");
+    const continuation = `\n\n${"检查公开配置。".repeat(40)}\n\n**工具前正文尾部**`;
+    events.push({ ...base, type: "assistant.delta", content: continuation });
+    await renderTimeline();
+    assert.doesNotMatch(document.querySelector(".execution-assistant-step")?.textContent ?? "", /工具前正文尾部/u);
+    events.push({ ...base, type: "tool.input", toolCallId: "read", tool: "Read", args: { path: "package.json" } },
+      { ...base, type: "tool.started", toolCallId: "read", tool: "Read", args: { path: "package.json" } });
+    await renderTimeline();
+    assert.equal(document.querySelector(".execution-assistant-step p"), paragraph, "工具开始不重新挂载已显示的正文");
+    assert.equal(document.querySelector(".execution-assistant-step strong")?.textContent, "工具前正文尾部");
+    assert.equal(document.querySelector(".execution-assistant-step .with-streaming-cursor"), null);
+    assert.equal(frames.size, 0, "工具开始后取消前一段尚未执行的正文帧回调");
   } finally {
     await React.act(() => root.unmount());
     assert.equal(frames.size, 0);

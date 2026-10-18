@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mock } from "node:test";
 import {
+  defaultHeartbeatSchedule,
   HeartbeatFileStore,
   HeartbeatScheduler,
   isActiveHour,
@@ -32,6 +33,8 @@ async function testHeartbeatFileProtocol(): Promise<void> {
 }
 
 async function testHeartbeatActiveWindowAndForce(): Promise<void> {
+  assert.equal(isActiveHour(defaultHeartbeatSchedule, new Date(2026, 8, 5, 23, 59)), true, "default schedule includes the diary hour");
+  assert.equal(isActiveHour(defaultHeartbeatSchedule, new Date(2026, 8, 6, 0)), false);
   const schedule: HeartbeatSchedule = {
     intervalMinutes: 30,
     activeHoursStart: 22,

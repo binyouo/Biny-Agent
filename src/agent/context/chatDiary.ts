@@ -5,7 +5,6 @@
  * 显式刷新时从已完成 session 回合补齐证据，再生成按天回顾；普通聊天完成不触发写入。
  */
 import { activityDerivedMarker } from "../../activity/modelContext.js";
-import type { SelfReflectionResult } from "./selfReflection.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { AgentModel, ModelRequestContext, ModelRequestObserver } from "../core/types.js";
@@ -50,7 +49,6 @@ export interface ChatDiaryRefreshOptions {
 }
 
 export interface ChatDiaryRefreshResult {
-  reflection?: SelfReflectionResult;
   dateKey: string;
   written: boolean;
   backfilled: number;

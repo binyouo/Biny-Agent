@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { AgentMessage, AgentModel, AgentStopReason, AgentUsage, ModelRequestContext, ModelRequestObserver } from "../agent/core/types.js";
 import { fromVercelFinishReason, fromVercelUsage, toModelMessages } from "../agent/core/vercelModelAdapter.js";
+import { modelRequestHeaders } from "./providerRequest.js";
 
 export interface NativeTextGenerationOptions {
   systemPrompt?: string;
@@ -130,6 +131,7 @@ async function consumeVercelText(
     // model.stream 路径没有这个问题。
     const result = streamText({
       model: tracked?.model ?? model.vercelModel!,
+      headers: modelRequestHeaders(options.requestContext, "auxiliary"),
       system: options.systemPrompt,
       messages: toModelMessages(messages),
       abortSignal: options.signal,

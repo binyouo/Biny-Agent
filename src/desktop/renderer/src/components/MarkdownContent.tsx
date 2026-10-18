@@ -188,15 +188,19 @@ function mediaSources(node?: ExtraProps["node"]): { src?: string; type?: string 
 
 const wordSegments = new Intl.Segmenter("zh", { granularity: "word" });
 function revealWords(node: React.ReactNode): React.ReactNode {
-  if (typeof node === "string") return [...wordSegments.segment(node)].map(({ segment }, index) => /\s/u.test(segment)
-    ? <React.Fragment key={index}>{segment}</React.Fragment> : <span key={index} className="markdown-stream-word">{segment}</span>);
-  if (Array.isArray(node)) return node.map((child, index) => <React.Fragment key={index}>{revealWords(child)}</React.Fragment>);
-  if (isValidElement<{ className?: string; children?: React.ReactNode; node?: { tagName?: string } }>(node)) {
-    const tag = typeof node.type === "string" ? node.type : node.props.node?.tagName;
-    if ((tag && ["code", "pre", "math", "svg", "img"].includes(tag)) || node.props.className?.includes("katex")) return node;
-    if (node.props.children !== undefined) return React.cloneElement(node, undefined, revealWords(node.props.children));
-  }
-  return node;
+  // 行内标记闭合时 children 会从单字符串变为数组；两种输入保持相同层级，避免前文重新淡入。
+  return React.Children.toArray(node).map((child, index) => {
+    let revealed: React.ReactNode = child;
+    if (typeof child === "string") {
+      revealed = [...wordSegments.segment(child)].map(({ segment }, wordIndex) => /\s/u.test(segment)
+        ? <React.Fragment key={wordIndex}>{segment}</React.Fragment> : <span key={wordIndex} className="markdown-stream-word">{segment}</span>);
+    } else if (isValidElement<{ className?: string; children?: React.ReactNode; node?: { tagName?: string } }>(child)) {
+      const tag = typeof child.type === "string" ? child.type : child.props.node?.tagName;
+      const skip = (tag && ["code", "pre", "math", "svg", "img"].includes(tag)) || child.props.className?.includes("katex");
+      if (!skip && child.props.children !== undefined) revealed = React.cloneElement(child, undefined, revealWords(child.props.children));
+    }
+    return <React.Fragment key={index}>{revealed}</React.Fragment>;
+  });
 }
 
 function LocalReferenceLink({ href, projectId, children }: { href: string; projectId: string; children: React.ReactNode }): React.JSX.Element {

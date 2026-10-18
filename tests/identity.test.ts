@@ -54,7 +54,7 @@ async function main(): Promise<void> {
     const systemPrompt = buildSystemPrompt({ cwd: "/workspace" });
     assert.match(systemPrompt, /You are Biny\./u);
     assert.match(systemPrompt, /LANGUAGE RULE \(CRITICAL\)/u);
-    assert.match(systemPrompt, /Do not describe yourself as a generic assistant/u);
+    assert.match(systemPrompt, /NEVER call yourself "a program", "AI assistant"/u);
     assert.match(systemPrompt, /Never fabricate file contents/u);
     assert.doesNotMatch(systemPrompt, /<biny_soul source="builtin">/u);
 

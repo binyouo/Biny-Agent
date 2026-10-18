@@ -20,7 +20,6 @@ export type IconName =
   | "bell"
   | "branch"
   | "brain"
-  | "brain-off"
   | "brain-spark"
   | "calendar"
   | "chart"
@@ -73,6 +72,8 @@ export type IconName =
   | "layout-grid"
   | "layout-list"
   | "menu"
+  | "memory"
+  | "memory-off"
   | "message"
   | "mic"
   | "minus"
@@ -158,8 +159,22 @@ function pathFor(name: IconName): React.JSX.Element {
     case "bell": return <><path {...common} d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" /><path {...common} d="M10 21h4" /></>;
     case "branch": return <><circle {...common} cx="7" cy="5" r="2" /><circle {...common} cx="17" cy="19" r="2" /><path {...common} d="M7 7v5c0 3.9 3.1 7 7 7h1M17 5v4c0 2.2-1.8 4-4 4H7" /></>;
     case "brain": return <path {...common} d="M12 4.5C14.5 3.3 17 4.4 17.2 7C19.6 7.4 20.8 10.2 19.5 12.1C20.9 14 20 16.8 17.4 17C17 19.2 14.2 20.4 12 19.3C9.8 20.4 7 19.2 6.6 17C4 16.8 3.1 14 4.5 12.1C3.2 10.2 4.4 7.4 6.8 7C7 4.4 9.5 3.3 12 4.5ZM12 4.5V19.3M12 12c1.6 0 2.8-.9 3.2-2.4M12 12c-1.6 0-2.8-.9-3.2-2.4" />;
-    // 记忆开关专用：斜杠脑=关闭（对应规范「斜杠表示关闭/隐私保护」），缩小的脑+右上星星=开启（星星代表已启用）。
-    case "brain-off": return <><path {...common} d="M12 4.5C14.5 3.3 17 4.4 17.2 7C19.6 7.4 20.8 10.2 19.5 12.1C20.9 14 20 16.8 17.4 17C17 19.2 14.2 20.4 12 19.3C9.8 20.4 7 19.2 6.6 17C4 16.8 3.1 14 4.5 12.1C3.2 10.2 4.4 7.4 6.8 7C7 4.4 9.5 3.3 12 4.5ZM12 4.5V19.3M12 12c1.6 0 2.8-.9 3.2-2.4M12 12c-1.6 0-2.8-.9-3.2-2.4" /><path {...common} d="m4.5 4.5 15 15" /></>;
+    case "memory":
+    case "memory-off": return (
+      <>
+        <g {...common} opacity={name === "memory-off" ? 0.65 : 1}>
+          <path d="M10 3.5a2.5 2.5 0 0 0-2.5 2.6A3.5 3.5 0 0 0 4.4 12a3.5 3.5 0 0 0 2.8 5.8A2.7 2.7 0 0 0 12 19.5v-14a2 2 0 0 0-2-2Z" fill="currentColor" fillOpacity="0.08" />
+          <path d="M14 3.5a2.5 2.5 0 0 1 2.5 2.6 3.5 3.5 0 0 1 3.1 5.9 3.5 3.5 0 0 1-2.8 5.8 2.7 2.7 0 0 1-4.8 1.7v-14a2 2 0 0 1 2-2Z" fill="currentColor" fillOpacity="0.16" />
+        </g>
+        {name === "memory" ? (
+          <g color="var(--memory-icon-detail, currentColor)">
+            <path {...common} d="M7.5 9.5v1A2.5 2.5 0 0 0 10 13h2m4.5 1.5v-1A2.5 2.5 0 0 0 14 11h-2" />
+            <circle cx="7.5" cy="8.5" fill="currentColor" r="1.25" />
+            <circle cx="16.5" cy="15.5" fill="currentColor" r="1.25" />
+          </g>
+        ) : <path {...common} d="m4 4 16 16" />}
+      </>
+    );
     case "brain-spark": return <><g {...common} transform="translate(-1 3) scale(0.85)"><path d="M12 4.5C14.5 3.3 17 4.4 17.2 7C19.6 7.4 20.8 10.2 19.5 12.1C20.9 14 20 16.8 17.4 17C17 19.2 14.2 20.4 12 19.3C9.8 20.4 7 19.2 6.6 17C4 16.8 3.1 14 4.5 12.1C3.2 10.2 4.4 7.4 6.8 7C7 4.4 9.5 3.3 12 4.5ZM12 4.5V19.3M12 12c1.6 0 2.8-.9 3.2-2.4M12 12c-1.6 0-2.8-.9-3.2-2.4" /></g><path {...common} d="M18.5 2c.4 2.1 1.4 3.1 3.5 3.5-2.1.4-3.1 1.4-3.5 3.5-.4-2.1-1.4-3.1-3.5-3.5 2.1-.4 3.1-1.4 3.5-3.5Z" /></>;
     case "calendar": return <><rect {...common} height="16" rx="2" width="16" x="4" y="5" /><path {...common} d="M8 3v4M16 3v4M4 10h16M8 14h3" /></>;
     case "chart": return <><path {...common} d="M4 20V5M4 20h17" /><path {...common} d="M8 17v-5M12 17V7M16 17v-8" /></>;

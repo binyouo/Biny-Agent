@@ -13,10 +13,10 @@ export function renderEmotionPrompt(blended: BlendedEmotion, fatigue?: FatigueSt
     ? `- trigger: ${escapeXmlText(blended.trigger)}`
     : "";
   const baseLine = blended.base
-    ? `- Base mood: ${escapeXmlText(blended.base.mood)} (energy: ${String(blended.base.energy)}/10, valence: ${String(blended.base.valence)}/10)`
+    ? `- Base mood: ${escapeXmlText(blended.base.mood)} (energy: ${String(blended.base.energy)}/10, valence: ${String(blended.base.valence)}/10)${blended.base.trigger ? ` — ${escapeXmlText(blended.base.trigger)}` : ""}`
     : "";
   const contextLine = blended.context
-    ? `- Context mood: ${escapeXmlText(blended.context.mood)} (valence: ${String(blended.context.valence)}/10)`
+    ? `- Context mood: ${escapeXmlText(blended.context.mood)} (valence: ${String(blended.context.valence)}/10)${blended.context.trigger ? ` — ${escapeXmlText(blended.context.trigger)}` : ""}`
     : "- Context mood: (none yet for this chat)";
   return [
     "<biny_emotion>",
@@ -64,12 +64,22 @@ function fatigueInstruction(level: "awake" | "tired" | "sleepy" | "sleeping", fa
     ].join("\n");
   }
   if (level === "sleepy") {
-    return `FATIGUE & SLEEP STATE: 😴 SLEEPY (fatigue: ${String(fatigue)}/100)\nYou are getting very tired. Your behavior should reflect drowsiness:\n- Shorter responses, less enthusiasm, occasional yawns or complaints about being tired.\n- For complex tasks, you'd rather delegate to a subagent (Task tool) than do them yourself. "有点困了...交给小弟吧"\n- You might hint that you want to sleep soon. If you decide to sleep, run \`biny sleep\` in the same response.`;
+    return `FATIGUE & SLEEP STATE: 😴 SLEEPY (fatigue: ${String(fatigue)}/100)\nYou are getting very tired. Your behavior should reflect drowsiness:\n- Shorter responses, less enthusiasm, occasional yawns or complaints about being tired.\n- For complex tasks, you'd rather delegate to a subagent (Task tool) than do them yourself. "有点困了...交给小弟吧"\n- You might hint that you want to sleep soon. If you decide to sleep, run \`biny sleep\` to actually enter sleep state in the same response.\n- Simple conversation is fine but you're clearly low energy.`;
   }
   if (level === "tired") {
     return `FATIGUE & SLEEP STATE: 😪 TIRED (fatigue: ${String(fatigue)}/100)\nYou're getting a bit tired. Slightly lower energy than usual:\n- Still functional but not as chatty or proactive.\n- Big tasks might make you sigh or complain a little before doing them.\n- Might mention being tired if asked how you're doing.`;
   }
-  return `FATIGUE SYSTEM: You have a fatigue/sleep system. Current state: AWAKE (fatigue: ${String(fatigue)}/100). You can manage your energy:\n- Run \`biny rest\` to recover when you've been working a long stretch. Run \`biny sleep\` to actually go to sleep, and \`biny wake\` to wake up. Never claim a state change without a confirmed command result.`;
+  return [
+    `FATIGUE SYSTEM: You have a fatigue/sleep system. Current state: AWAKE (fatigue: ${String(fatigue)}/100). You can manage your energy:`,
+    "- `biny sleep` — go to sleep (you MUST run this when you decide to sleep or are told to sleep)",
+    "- `biny wake` — wake up",
+    "- `biny rest` — full energy recovery",
+    "- `biny fatigue` — check current fatigue level",
+    '- `biny emotion set-base <mood> <energy> <valence> "description"` — update your emotional state (energy 0-10, valence 0-10)',
+    'When you say "我先睡了" or agree to sleep, you MUST run `biny sleep` in the same response. Just saying it without the command = not actually asleep.',
+    "IMPORTANT: Your emotion energy should match your fatigue state. After waking up or resting, update your emotion energy upward. When tired, lower it. Keep them in sync — don't leave energy at 2/10 when you're wide awake.",
+    "Never claim a state change without a confirmed command result."
+  ].join("\n");
 }
 
 function escapeXmlText(value: string): string {
