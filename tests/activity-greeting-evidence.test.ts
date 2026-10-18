@@ -72,7 +72,7 @@ test("没有焦点事件的截图会话仅提供会话应用集合和时长估�
 test("只有焦点与统计时仍可普通问候，不得表述为阅读证据；主动引用仅针对已分析活动", () => {
   const bundle = buildPromptBundle({ cwd: os.tmpdir(), now,
     activityGreetingPrompt: "今天：9 分钟，共 4 个会话；应用名统计：Browser" });
-  assert.match(bundle.systemPrompt, /only focus observations or duration estimates.*brief natural greeting/iu);
+  assert.match(bundle.systemPrompt, /only focus observations or duration estimates, a brief warm greeting is enough/iu);
   assert.match(bundle.systemPrompt, /focus.*reading/iu);
   assert.match(bundle.systemPrompt, /bundle ID/iu);
   assert.doesNotMatch(bundle.systemPrompt, /Refer naturally to one specific item/u);
