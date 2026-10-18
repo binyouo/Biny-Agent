@@ -115,12 +115,14 @@ async function harness(t: TestContext) {
   const calls = {
     source: [] as Array<Parameters<DesktopApi["referenceForMessage"]>>,
     capture: [] as Array<Parameters<DesktopApi["referenceCaptureSelectionQuote"]>>,
+    resolve: [] as Array<Parameters<DesktopApi["referenceResolve"]>>,
     send: [] as Array<Parameters<DesktopApi["sendPrompt"]>>,
     selection: [] as Array<Parameters<DesktopApi["commitSelection"]>>,
     network: [] as string[]
   };
   const sources: Reference[] = [];
   const captures: Reference[] = [];
+  const resolutions: Reference[] = [];
   const tracked = <T,>(operation: () => Promise<T>): Promise<T> => {
     const promise = Promise.resolve().then(operation);
     pendingCalls.add(promise);
@@ -270,6 +272,15 @@ async function harness(t: TestContext) {
         return result;
       } finally { captureFinished.resolve(); }
     }),
+    referenceResolve: (...args: Parameters<DesktopApi["referenceResolve"]>) => tracked(async () => {
+      calls.resolve.push(args);
+      const [projectId, uri] = args;
+      // The submitted message renders a real LocalReferenceLink, whose mount
+      // validates the stored snippet through the same graph and source service.
+      const result = await graph.resolve(uri, projectId);
+      resolutions.push(result);
+      return result;
+    }),
     sendPrompt: async (...args: Parameters<DesktopApi["sendPrompt"]>) => {
       calls.send.push(args);
       return { sessionId: SESSION, runId: "sent:run", messageId: "sent:user" };
@@ -358,8 +369,11 @@ async function harness(t: TestContext) {
     await React.act(async () => {
       form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
     });
+    await React.act(async () => {
+      while (pendingCalls.size) await waitWithSignal(Promise.allSettled([...pendingCalls]), t.signal);
+    });
   };
-  return { input, document, calls, sources, captures, service, graph, sessionFile, selectAndCapture, releaseCapture, submit, frame,
+  return { input, document, calls, sources, captures, resolutions, service, graph, sessionFile, selectAndCapture, releaseCapture, submit, frame,
     tokens: () => document.querySelectorAll(".biny-prompt-reference-token").length,
     warning: () => document.querySelector(".desktop-toast-message")?.textContent ?? "" };
 }
@@ -407,6 +421,11 @@ test("delivered canonical user selection reaches real snippet storage and the ac
   assert.equal(h.input.value, "");
   assert.equal(h.tokens(), 0);
   assert.equal(h.warning(), "");
+  assert.ok(h.calls.resolve.some(([id, uri]) => id === PROJECT && uri === captured.uri),
+    "the rendered submitted token must request real reference validation");
+  assert.ok(h.resolutions.some(result => result.uri === captured.uri && result.content === QUOTE && result.messageId === USER),
+    "the mounted link must resolve the actual stored snapshot and current source");
+  assert.equal(h.document.querySelector(".markdown-reference-invalid"), null);
   const resolved = await h.graph.resolve(captured.uri, PROJECT);
   assert.equal(resolved.content, QUOTE);
   assert.equal(resolved.messageId, USER);

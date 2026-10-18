@@ -255,10 +255,35 @@ for (const sample of [
     assert.ok(cleanup.prompt.includes(`Memory saved-at: ${savedAt.toISOString()}`));
     assert.match(cleanup.prompt, /saved-at is NOT event\/due\/completion time/u);
     assert.equal(cleanup.systemPrompt, f.extractionPrompts.temporaryMemoryCleanupPrompt + "\n\n" + f.extractionPrompts.memoryTimeAnchorInstruction);
-    assert.deepEqual(f.searches, [{
-      query: `user: ${userInput}\n\nassistant: Acknowledged.`,
-      ids: [f.entry.id], limit: 20, minimumSimilarity: 0.3
-    }], "source metadata must not leak into the semantic query");
+    // AgentSession's rendered user content includes its existing transient turn
+    // context. Compare the actual extraction window, not a raw-input substitute.
+    // Source anchors are a separate section and must never join the search text.
+    const extractionHeader = "Extract memories from this conversation:\n\n";
+    const sourceSeparator = "\n\nOriginal user message source anchors:\n";
+    assert.ok(extraction.prompt.startsWith(extractionHeader));
+    const sourceStart = extraction.prompt.indexOf(sourceSeparator, extractionHeader.length);
+    assert.ok(sourceStart > extractionHeader.length, "the real extraction must separate conversation from source anchors");
+    assert.equal(extraction.prompt.indexOf(sourceSeparator, sourceStart + sourceSeparator.length), -1);
+    const conversation = extraction.prompt.slice(extractionHeader.length, sourceStart);
+    assert.ok(conversation.startsWith("user: <!-- biny-turn-context:start -->\n\n"));
+    const contextEnd = "<!-- biny-turn-context:end -->";
+    const contextEndAt = conversation.indexOf(contextEnd);
+    assert.ok(contextEndAt > 0);
+    assert.ok(conversation.slice(0, contextEndAt).includes("<biny_reminder>Authoritative Local DateTime: "));
+    assert.equal(conversation.slice(contextEndAt + contextEnd.length), `\n\n${userInput}\n\nassistant: Acknowledged.`,
+      "the runtime prefix must be followed by the exact user text and completed assistant response");
+    assert.deepEqual(f.searches, [{ query: conversation, ids: [f.entry.id], limit: 20, minimumSimilarity: 0.3 }],
+      "cleanup search must receive the same rendered conversation as the real extraction");
+    assert.ok(cleanup.prompt.includes(`\n\nCurrent conversation context:\n${conversation}\n\nCurrent conversation source:`),
+      "cleanup model context must preserve that same conversation window");
+    for (const sourceMetadata of [
+      "Original user message source anchors:", "Current conversation source:", "source-message anchors:",
+      "Memory saved-at:", "messageId:", "sentAt:", "timeZone:",
+      anchor.messageId, storedAnchor.messageId, f.entry.id, anchor.sentAt, storedAnchor.sentAt, savedAt.toISOString()
+    ]) {
+      assert.equal(f.searches[0]!.query.includes(sourceMetadata), false,
+        `source metadata must not leak into the semantic query: ${sourceMetadata}`);
+    }
     assert.equal(f.messageMetadata(before, assistantId).memoryExtracted, undefined);
 
     if (sample.completed) {

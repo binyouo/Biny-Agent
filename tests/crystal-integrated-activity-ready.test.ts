@@ -87,7 +87,6 @@ async function fixture(context: TestContext) {
   config.activity.outputDirectory = activityDirectory;
   config.crystal.semanticScanEnabled = false;
   const requests: ModelStreamContext[] = [];
-  let response: unknown;
   const model: AgentModel = {
     provider: "fixture", modelId: "integrated-crystal-fixture",
     stream: async request => {
@@ -155,7 +154,7 @@ async function fixture(context: TestContext) {
   const secondId = terms[1]!.crystalId!;
   const secondBefore = structuredClone(crystals.detail(secondId)!);
   const firstSourceTags = sources.get(topics[0])!.map(source => `turn:activity:${source.id}`);
-  response = Object.fromEntries(crystalTypeFields.concept.map(field => [field, {
+  const response = Object.fromEntries(crystalTypeFields.concept.map(field => [field, {
     value: `${topics[0]} verified ${field}`, sources: [firstSourceTags[0]!]
   }]));
   const filled = await crystals.prefill(firstId);
