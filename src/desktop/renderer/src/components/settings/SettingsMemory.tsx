@@ -582,6 +582,13 @@ export function SettingsMemory({
     }
   };
 
+  const renderMemoryEditor = (entryId: string): React.JSX.Element => (
+    <div className="activity-memory-entry-editor">
+      <textarea aria-label="编辑记忆" onChange={(event) => setEditor({ id: entryId, value: event.target.value })} rows={3} value={editor?.value ?? ""} />
+      <div><button className="text-button" onClick={() => setEditor(undefined)} type="button">取消</button><button className="settings-primary-button" disabled={saving} onClick={() => { void saveText(); }} type="button">保存</button></div>
+    </div>
+  );
+
   if (!workspaceAvailable) return <MemoryState title="请先选择项目" detail="打开项目后即可查看和管理记忆。" />;
   if (!draft) return <MemoryState title="正在加载记忆…" />;
   const policy = draft.memory;
@@ -740,10 +747,7 @@ export function SettingsMemory({
           <div className="activity-memory-entries">
             {entries.map((entry) => (
               <article className="activity-memory-entry" key={entry.id}>
-                {editor?.id === entry.id ? <div className="activity-memory-entry-editor">
-                  <textarea aria-label="编辑记忆" onChange={(event) => setEditor({ id: entry.id, value: event.target.value })} rows={3} value={editor.value} />
-                  <div><button className="text-button" onClick={() => setEditor(undefined)} type="button">取消</button><button className="settings-primary-button" disabled={saving} onClick={() => { void saveText(); }} type="button">保存</button></div>
-                </div> : <>
+                {editor?.id === entry.id ? renderMemoryEditor(entry.id) : <>
                   <div className="activity-memory-entry-content">
                     <div className="activity-memory-entry-meta"><span>{entry.source === "manual" ? "手动" : "自动"}</span><span>{entry.durability === "temporary" ? "临时" : "长期"}</span><span>{formatDate(entry.updatedAt)}</span>{entry.accessCount > 0 ? <span>已访问 {entry.accessCount} 次</span> : null}</div>
                     <p>{entry.content}</p>
@@ -753,6 +757,13 @@ export function SettingsMemory({
               </article>
             ))}
           </div>
+          {/* 保存会按更新时间重排事实；留在当前页的续写草稿仍须可以保存或取消。 */}
+          {editor?.id && !entries.some((entry) => entry.id === editor.id) ? <article className="activity-memory-entry">
+            <div className="activity-memory-entry-content">
+              <p className="settings-effective-hint">正在编辑不在当前页的记忆</p>
+              {renderMemoryEditor(editor.id)}
+            </div>
+          </article> : null}
           {totalEntries > PAGE_SIZE ? <MemoryPagination currentPage={currentPage} disabled={loading} onPageChange={(page) => { void loadPage(page); }} totalEntries={totalEntries} /> : null}
         </section>
 
