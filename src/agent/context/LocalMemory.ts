@@ -1072,7 +1072,10 @@ export class LocalMemory {
       options.signal?.throwIfAborted();
       try {
         const content = proposal.content.trim();
-        if (!content) continue;
+        if (!content) {
+          additionFailed = true;
+          continue;
+        }
         const input = sanitizeMemoryEntryInput({
           content,
           source: "auto",
