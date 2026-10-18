@@ -1,3 +1,5 @@
+import { SelfieAlbum } from "../src/agent/context/selfie.js";
+import { takeSelfie } from "../src/cli/commands/persona.js";
 /**
  * `biny image` 命令测试：模型解析、宽高比映射与 provider 路由，用隔离配置与
  * 本地 stub 服务验证，不调用真实生图 API。
@@ -365,5 +367,31 @@ await test("未覆盖地址的 OpenRouter 连接使用自身默认图片端点",
     });
     await captureStdout(() => imageGenerateCommand(root, "a cat", { configStore, model: "router:openai/gpt-image-1" }));
     assert.deepEqual(urls, ["https://openrouter.ai/api/v1/images"]);
+  });
+});
+
+await test("selfie command sends multiple approved face references through the configured image provider without auto-saving", async () => {
+  await fixture(async (root, server, configStore) => {
+    const previous = process.env.BINY_AGENT_DIR;
+    process.env.BINY_AGENT_DIR = path.join(root, "album-state");
+    try {
+      const album = new SelfieAlbum();
+      const source = path.join(root, "face.png");
+      await writeFile(source, PIXEL_PNG);
+      await album.save(source);
+      await album.save(source);
+      const references = await album.list();
+      await writeConfig(configStore, server, { imageModel: "gem:gemini-2.5-flash-image" });
+      const result = await captureStdout(() => takeSelfie(root, "困倦的眼神，靠着枕头", { configStore, json: true }));
+      const request = server.requests.find(item => item.url.includes("gemini-2.5-flash-image:generateContent"));
+      assert.ok(request);
+      const body = request.body as { contents: Array<{ parts: Array<{ inlineData?: { data: string }; text?: string }> }> };
+      assert.deepEqual(body.contents[0]?.parts.filter(part => part.inlineData).map(part => part.inlineData!.data), [PIXEL_PNG.toString("base64"), PIXEL_PNG.toString("base64")]);
+      assert.match(body.contents[0]?.parts.at(-1)?.text ?? "", /困倦的眼神/u);
+      assert.deepEqual(await readFile(JSON.parse(result.stdout).path), PIXEL_PNG);
+      assert.deepEqual(await album.list(), references, "generation is not approval to save a new identity reference");
+    } finally {
+      if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
+    }
   });
 });

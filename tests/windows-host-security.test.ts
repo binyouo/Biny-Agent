@@ -1,16 +1,47 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
+import { globalAgentDir, projectSessionsDir, projectStateDirName, workspaceAgentDir } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { createFileConfigStore } from "../src/config/store.js";
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
 import { startRuntimeHost } from "../src/runtime/host/bootstrap.js";
 import { acquireHostLock, runtimeHostPaths } from "../src/runtime/host/lifecycle.js";
+import { ensureAgentDirs, listSessionFiles } from "../src/session/store.js";
+
+/** Only equality facts are logged: never print configured or resolved absolute paths. */
+async function reportStatePathEquality(context: TestContext, workspace: string): Promise<void> {
+  try {
+    const configured = globalAgentDir();
+    const syncGlobal = realpathSync(configured);
+    const nativeGlobal = realpathSync.native(configured);
+    const asyncGlobal = await fs.realpath(configured);
+    const expectedAgent = workspaceAgentDir(workspace);
+    const actualAgent = await fs.realpath(expectedAgent);
+    const expectedFromNative = path.join(nativeGlobal, "workspaces", path.basename(expectedAgent));
+    context.diagnostic(JSON.stringify({
+      statePathEquality: {
+        configuredEqualsNative: configured === nativeGlobal,
+        syncEqualsNative: syncGlobal === nativeGlobal,
+        asyncEqualsNative: asyncGlobal === nativeGlobal,
+        globalDifferenceIsCaseOnly: syncGlobal !== nativeGlobal && syncGlobal.toLowerCase() === nativeGlobal.toLowerCase(),
+        agentEqualsAsync: expectedAgent === actualAgent,
+        agentDifferenceIsCaseOnly: expectedAgent !== actualAgent && expectedAgent.toLowerCase() === actualAgent.toLowerCase(),
+        agentLeafEqualsAsync: path.basename(expectedAgent) === path.basename(actualAgent),
+        agentParentEqualsSyncGlobal: path.dirname(expectedAgent) === path.join(syncGlobal, "workspaces"),
+        asyncAgentEqualsNativeGlobalChild: actualAgent === expectedFromNative
+      }
+    }));
+  } catch {
+    // Diagnosis must never replace the original startup/contract failure.
+    context.diagnostic(JSON.stringify({ statePathEqualityUnavailable: true }));
+  }
+}
 
 test("endpoint permission failure refuses startup and releases the listening endpoint and owner gate", { timeout: 150_000 }, async (context) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "biny-endpoint-permission-")));
@@ -48,7 +79,12 @@ test("endpoint permission failure refuses startup and releases the listening end
   syncBuiltinESMExports();
   const probe = net.createServer((socket) => socket.destroy());
   try {
-    await assert.rejects(startRuntimeHost(root, (resourceRegistry) => createInteractiveAgentHost(root, { configStore, resourceRegistry }), { configDir }), (error: unknown) => error === denied || error instanceof Error && error.cause === denied);
+    await assert.rejects(startRuntimeHost(root, (resourceRegistry) => createInteractiveAgentHost(root, { configStore, resourceRegistry }), { configDir }).catch(async (error: unknown) => {
+      if (process.platform === "win32" && error instanceof Error && error.message === "Workspace runtime storage resolves outside the global workspace state directory.") {
+        await reportStatePathEquality(context, root);
+      }
+      throw error;
+    }), (error: unknown) => error === denied || error instanceof Error && error.cause === denied);
     await assert.rejects(fs.access(paths.registrationPath), { code: "ENOENT" });
     await assert.rejects(fs.access(paths.lockPath), { code: "ENOENT" });
     const lock = await acquireHostLock(paths, root);
@@ -59,6 +95,49 @@ test("endpoint permission failure refuses startup and releases the listening end
     await Promise.all([...servers].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
     createServer.mock.restore();
     exec.mock.restore(); chmod.mock.restore(); syncBuiltinESMExports();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Windows workspace state accepts another casing of its own existing global directory", { skip: process.platform !== "win32" }, async (context) => {
+  const root = await fs.mkdtemp(path.join(tmpdir(), "biny-state-casing-"));
+  const previousAgentDir = process.env.BINY_AGENT_DIR;
+  try {
+    const canonicalRoot = await fs.realpath(root);
+    const stateRoot = path.join(canonicalRoot, "MixedCaseAgentState");
+    const stateAlias = path.join(canonicalRoot, "mixedcaseagentstate");
+    const workspaceRoot = path.join(canonicalRoot, "Workspace");
+    await fs.mkdir(stateRoot);
+    await fs.mkdir(workspaceRoot);
+    const workspace = await fs.realpath(workspaceRoot);
+    const canonicalState = await fs.realpath(stateRoot);
+    const aliasNative = realpathSync.native(stateAlias);
+    const aliasAsync = await fs.realpath(stateAlias);
+    // This changes only our own directory's spelling, not its destination.
+    assert.ok(stateAlias !== stateRoot, "fixture must use a different non-drive component casing");
+    assert.ok(aliasNative === canonicalState, "native alias must identify the created state directory");
+    assert.ok(aliasAsync === canonicalState, "async alias must identify the created state directory");
+    context.diagnostic(JSON.stringify({
+      ordinaryDirectoryAlias: {
+        syncEqualsNative: realpathSync(stateAlias) === aliasNative,
+        nativeEqualsAsync: aliasNative === aliasAsync,
+        aliasDifferenceIsCaseOnly: stateAlias !== canonicalState && stateAlias.toLowerCase() === canonicalState.toLowerCase()
+      }
+    }));
+    process.env.BINY_AGENT_DIR = stateAlias;
+    try {
+      await ensureAgentDirs(workspace);
+    } catch (error) {
+      await reportStatePathEquality(context, workspace);
+      throw error;
+    }
+    const partition = projectStateDirName(workspace);
+    assert.ok(workspaceAgentDir(workspace) === path.join(canonicalState, "workspaces", partition), "runtime path must use the canonical global parent");
+    assert.ok(projectSessionsDir(workspace) === path.join(canonicalState, "sessions", partition), "session path must use the canonical global parent");
+    assert.deepEqual(await listSessionFiles(workspace), []);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = previousAgentDir;
     await fs.rm(root, { recursive: true, force: true });
   }
 });

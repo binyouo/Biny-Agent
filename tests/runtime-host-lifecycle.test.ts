@@ -28,15 +28,16 @@ if (process.platform === "win32") {
 }
 assert.match(path.basename(runtimeHostEntryPath()), /^hostProcess\.(ts|js)$/u);
 
+const desktopAppPath = path.join(os.tmpdir(), "Biny.app");
 const detachedDesktopPlan = runtimeHostLaunchPlan("/workspace/data", {
   workspaceRoot: "/workspace/project",
   configDir: "/user/config",
-  electronAppPath: "/Applications/Biny.app",
+  electronAppPath: desktopAppPath,
   lifecycleMode: "ephemeral",
   browserAutomation: { endpoint: "/tmp/browser.sock", token: "private-browser-token", projectId: "project-1" }
 }, { platform: "linux", execPath: process.execPath });
 assert.equal(detachedDesktopPlan.executable, process.execPath);
-assert.deepEqual(detachedDesktopPlan.args.slice(0, 2), ["/Applications/Biny.app", "--biny-runtime-host"]);
+assert.deepEqual(detachedDesktopPlan.args.slice(0, 2), [desktopAppPath, "--biny-runtime-host"]);
 assert.ok(detachedDesktopPlan.args.includes("ephemeral"), "Desktop Host must allow idle retirement");
 assert.ok(detachedDesktopPlan.args.includes("--browser-automation-bootstrap"));
 assert.ok(!detachedDesktopPlan.args.includes("private-browser-token"), "capability tokens must not appear in process arguments");

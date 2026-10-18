@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   const soulPath = path.join(agent, "SOUL.md");
 
   try {
-    const storage = new SoulStorage({ configDir: agent });
+    const storage = new SoulStorage({ configDir: agent, now: () => new Date("2026-10-18T01:00:00Z") });
     const builtIn = await storage.read();
     assert.equal(builtIn.source, "builtin");
     assert.equal(builtIn.content, "");
@@ -27,7 +27,7 @@ async function main(): Promise<void> {
 
     const evolved = await storage.appendTrait("Prefer a short concrete next step.");
     assert.match(evolved.content, /## Evolved Traits/u);
-    assert.match(evolved.content, /- Prefer a short concrete next step\./u);
+    assert.match(evolved.content, /- \[2026-10-18\] Prefer a short concrete next step\./u);
     assert.equal((await storage.appendTrait("Prefer a short concrete next step.")).content, evolved.content);
 
     const prompt = buildSystemPrompt({
@@ -46,6 +46,22 @@ async function main(): Promise<void> {
 
     const show = await runSoulCommand(storage, ["show"]);
     assert.match(show, /Soul source: user override/u);
+
+    // 显式命令不受自动成长频率建议限制，满额时替换最早的特征。
+    const core = "# Soul\n\nCore stays here.\n\n";
+    const suffix = "\n\n## Appearance\n\nKeep this section too.";
+    await storage.set(core + "## Evolved Traits\n\n- Legacy trait\n<!-- biny-soul-growth:2026-10-18 -->\n" +
+      Array.from({ length: 14 }, (_, index) => `- [2026-10-01] Trait ${index + 1}`).join("\n") + suffix);
+    await runSoulCommand(storage, ["append-trait", "A new interest"]);
+    await runSoulCommand(storage, ["append-trait", "A second explicit change"]);
+    const pruned = await storage.read();
+    assert.ok(pruned.content.startsWith(core));
+    assert.ok(pruned.content.endsWith(suffix));
+    assert.doesNotMatch(pruned.content, /Legacy trait|Trait 1\n|biny-soul-growth/u);
+    assert.equal(pruned.content.match(/^- /gmu)?.length, 15);
+    assert.match(pruned.content, /- \[2026-10-18\] A new interest\n- \[2026-10-18\] A second explicit change/u);
+    assert.equal((await storage.appendTrait("A new interest")).content, pruned.content);
+
     const reset = await runSoulCommand(storage, ["delete"]);
     assert.match(reset, /Soul override removed/u);
     assert.equal((await storage.read()).source, "builtin");
