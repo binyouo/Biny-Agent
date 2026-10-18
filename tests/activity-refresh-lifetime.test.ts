@@ -100,14 +100,14 @@ test("a live unchanged start keeps its lifetime; changed settings and stop repla
 async function createFixture(context: TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-refresh-lifetime-"));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
-  let service: ActivityRecorderService | undefined;
+  const owner: { service?: ActivityRecorderService } = {};
   const releases = new Set<() => void>();
   const cleanupTasks: Promise<unknown>[] = [];
   // Register cleanup before starting a child or opening a store.
   context.after(async () => {
     for (const release of releases) release();
     try {
-      await service?.stop();
+      await owner.service?.stop();
     } finally {
       await Promise.allSettled(cleanupTasks);
       if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
@@ -194,7 +194,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const notes: string[] = [];
   const embeddingTimers = new IdleTimers();
   const dailyTimers = new IdleTimers();
-  service = new ActivityRecorderService({
+  const service = new ActivityRecorderService({
     agentDir: root,
     configStore,
     inputMonitorPath,
@@ -207,6 +207,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return path.join(root, `${date}.md`);
     }
   });
+  owner.service = service;
   await service.initialize();
   await waitForStarts(1);
   assert.equal(service.snapshot().state, "running");
