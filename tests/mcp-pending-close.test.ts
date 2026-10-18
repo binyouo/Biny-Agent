@@ -30,6 +30,15 @@ function checkpoint(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+async function killFixtureAndWait(pid: number, closed: Promise<void>): Promise<void> {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+  }
+  await closed;
+}
+
 interface FixtureState {
   starts: number;
   closeCalls: number;
@@ -65,27 +74,30 @@ function fixture(t: TestContext, stage?: StartupStage) {
     }
   });
   t.after(async () => {
+    const cleanupErrors: unknown[] = [];
     releaseClose.resolve();
     try {
       await host.close();
-    } finally {
-      try {
-        if (state.pid !== undefined && state.processCloses === 0) {
-          try {
-            process.kill(state.pid, "SIGKILL");
-          } catch (error) {
-            if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
-          }
-          await processClosed.promise;
-        }
-      } finally {
-        try {
-          await Promise.allSettled(operations);
-        } finally {
-          unsubscribe();
-        }
-      }
+    } catch (error) {
+      cleanupErrors.push(error);
     }
+    try {
+      if (state.pid !== undefined && state.processCloses === 0) {
+        await killFixtureAndWait(state.pid, processClosed.promise);
+      }
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    const settled = await Promise.allSettled(operations);
+    for (const result of settled) {
+      if (result.status === "rejected") cleanupErrors.push(result.reason);
+    }
+    try {
+      unsubscribe();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "MCP fixture cleanup failed");
   });
 
   const startTransport = StdioClientTransport.prototype.start;
