@@ -187,6 +187,8 @@ done
   await chmod(inputMonitorPath, 0o700);
   let config: AgentConfig = {
     ...defaultConfig,
+    providers: {},
+    models: {},
     activity: { ...defaultActivitySettings, outputDirectory: root }
   };
   const configStore = { load: async () => config } as AgentConfigStore;
