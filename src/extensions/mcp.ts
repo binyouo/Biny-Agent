@@ -134,6 +134,7 @@ interface OpenedMcpClient {
 export class McpToolHost {
   private readonly servers = new Map<string, ManagedMcpServer>();
   private readonly openingClients = new Set<Client>();
+  private readonly closingClients = new Set<Client>();
   private registry?: ToolRegistry;
   private workspaceRoot = "";
   private closing = false;
@@ -480,6 +481,7 @@ export class McpToolHost {
     this.closing = true;
     const clients = [...new Set([
       ...this.openingClients,
+      ...this.closingClients,
       ...[...this.servers.values()].map((server) => server.client).filter((client): client is Client => Boolean(client))
     ])];
     await Promise.all(clients.map(async (client) => {
@@ -854,7 +856,14 @@ export class McpToolHost {
     // SDK 握手失败会 fire-and-forget close；所有关闭者必须等待同一次传输回收。
     const closeClient = client.close.bind(client);
     let closingClient: Promise<void> | undefined;
-    client.close = () => closingClient ??= closeClient();
+    client.close = () => {
+      if (!closingClient) {
+        // 重连或启动失败会先清空 managed.client；传输回收结束前仍须由 host 持有。
+        this.closingClients.add(client);
+        closingClient = closeClient().finally(() => { this.closingClients.delete(client); });
+      }
+      return closingClient;
+    };
     // initialize 和首次 tools/list 完成前，连接尚未交给 managed.client，但仍归 host 负责关闭。
     this.openingClients.add(client);
     let abort!: () => void;
