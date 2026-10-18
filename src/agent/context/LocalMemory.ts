@@ -112,6 +112,7 @@ export class LocalMemory {
     failed: 0
   };
   private maintenancePromise: Promise<MemoryMaintenanceResult> | undefined;
+  private maintenanceCloseRequestedFor: Promise<MemoryMaintenanceResult> | undefined;
   private maintenanceAbort: AbortController | undefined;
   private maintenanceLoaded = false;
   private maintenanceOwnerToken: string | undefined;
@@ -143,8 +144,12 @@ export class LocalMemory {
   }
 
   close(): void {
+    const maintenance = this.maintenancePromise;
+    if (maintenance) this.maintenanceCloseRequestedFor = maintenance;
     this.maintenanceAbort?.abort(new DOMException("Memory session closed.", "AbortError"));
-    this.storage.close();
+    // Sleep still persists its terminal audit and releases its owner after abort.
+    // Its wrapper closes the storage before the run settles; idle owners close now.
+    if (!maintenance) this.storage.close();
   }
 
   // SQLite 事实、检索与生命周期操作。
@@ -321,8 +326,15 @@ export class LocalMemory {
       ? controller.signal
       : AbortSignal.any([options.signal, controller.signal]);
     const promise = this.runMemoryMaintenanceImpl({ ...options, signal }, derivedIndex, returnPersistedFailureRun).finally(() => {
-      if (this.maintenancePromise === promise) this.maintenancePromise = undefined;
-      if (this.maintenanceAbort === controller) this.maintenanceAbort = undefined;
+      try {
+        // Close before exposing settlement: a caller may immediately start another
+        // run in an already-registered continuation on this promise.
+        if (this.maintenanceCloseRequestedFor === promise) this.storage.close();
+      } finally {
+        if (this.maintenanceCloseRequestedFor === promise) this.maintenanceCloseRequestedFor = undefined;
+        if (this.maintenancePromise === promise) this.maintenancePromise = undefined;
+        if (this.maintenanceAbort === controller) this.maintenanceAbort = undefined;
+      }
     });
     this.maintenancePromise = promise;
     return promise;
