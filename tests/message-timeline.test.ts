@@ -9,7 +9,7 @@ import { GenerationErrorBanner } from "../src/desktop/renderer/src/components/ch
 import { ActivitySegment } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
 import { ChatResponseContext } from "../src/desktop/renderer/src/chatResponseSettings.js";
 import { MessageTimeline } from "../src/desktop/renderer/src/components/MessageTimeline.js";
-import { buildSessionTimeline, type TimelineTurn } from "../src/desktop/renderer/src/sessionTimeline.js";
+import { buildSessionTimeline, createSessionTimelineProjector, type TimelineTurn } from "../src/desktop/renderer/src/sessionTimeline.js";
 import type { SessionEvent } from "../src/session/events.js";
 
 const base = { sessionId: "session", runId: "run", timestamp: "2026-09-11T00:00:00.000Z" };
@@ -532,3 +532,71 @@ test("external Agent history keeps its content but exposes no unsupported rewrit
   assert.match(external, /External result/u);
   assert.doesNotMatch(external, /aria-label="重新生成"|aria-label="编辑消息"/u);
 });
+
+test("执行中的公开正文完整保留 Markdown，并按两次工具阶段逐步展示", () => {
+  const projector = createSessionTimelineProjector();
+  const events: AgentHostEvent[] = [{ ...base, type: "message.user", messageId: "interleaved-user", content: "检查两个目录" }];
+  const first = `## 先检查入口\n\n${"需要核对入口与配置。".repeat(40)}\n\n**第一阶段尾部**`;
+  const second = "入口已确认。\n\n| 目录 | 状态 |\n| --- | --- |\n| src | 已读取 |";
+  const project = () => projector.update({ sessionId: "session", events: [], liveEvents: events });
+  events.push({ ...base, type: "assistant.delta", content: first.slice(0, 18) });
+  assert.equal(project()[0]?.steps.find(step => step.kind === "assistant")?.content, first.slice(0, 18));
+  events.push({ ...base, type: "assistant.delta", content: first.slice(18) });
+  events.push({ ...base, type: "tool.input", toolCallId: "entry", tool: "Read", args: { path: "src/index.ts" } });
+  events.push({ ...base, type: "tool.started", toolCallId: "entry", tool: "Read", args: { path: "src/index.ts" } });
+  let turns = project();
+  assert.deepEqual(turns[0]?.steps.filter(step => step.kind === "assistant").map(step => step.content), [first]);
+  let dom = new JSDOM(renderTurns(turns, true, "run"));
+  try {
+    assert.equal(dom.window.document.querySelector(".execution-assistant-step h2")?.textContent, "先检查入口");
+    assert.equal(dom.window.document.querySelector(".execution-assistant-step strong")?.textContent, "第一阶段尾部");
+    assert.equal(dom.window.document.querySelectorAll(".chat-activity").length, 1);
+  } finally { dom.window.close(); }
+  events.push({ ...base, type: "tool.completed", toolCallId: "entry", tool: "Read", result: { content: "entry" } });
+  events.push({ ...base, type: "assistant.delta", content: second });
+  turns = project();
+  assert.equal(turns[0]?.status, "running");
+  assert.equal(turns[0]?.steps.findLast(step => step.kind === "assistant")?.content, second, "第二阶段正文须在轮次结束前出现");
+  events.push({ ...base, type: "tool.started", toolCallId: "config", tool: "Read", args: { path: "package.json" } });
+  events.push({ ...base, type: "tool.completed", toolCallId: "config", tool: "Read", result: { content: "config" } });
+  events.push({ ...base, type: "assistant.delta", content: "两个目录检查完成。" });
+  events.push({ ...base, type: "assistant.completed", content: "两个目录检查完成。" });
+  events.push({ ...base, type: "run.completed", durationMs: 100 });
+  turns = project();
+  assert.deepEqual(turns[0]?.steps.map(step => step.kind), ["assistant", "tool", "assistant", "tool", "assistant"]);
+  assert.deepEqual(turns[0]?.steps.filter(step => step.kind === "assistant").map(step => step.content), [first, second, "两个目录检查完成。"]);
+  dom = new JSDOM(renderTurns(turns));
+  try {
+    const entries = [...dom.window.document.querySelector(".execution-timeline")!.children];
+    assert.deepEqual(entries.map(element => element.classList.contains("chat-activity") ? "tools" : "text"), ["text", "tools", "text", "tools", "text"]);
+    assert.equal(entries[2]?.querySelector("table td")?.textContent, "src");
+    assert.equal(dom.window.document.querySelectorAll(".with-streaming-cursor").length, 0);
+  } finally { dom.window.close(); }
+});
+
+for (const versioned of [false, true]) {
+  test(`历史回放完整保留工具间正文，长公共前缀不吞掉后续阶段（${versioned ? "版本化" : "旧格式"}）`, () => {
+    const common = `## 检查进展\n\n${"已核对目录中的公开文件。".repeat(35)}`;
+    const first = `${common}\n\n**入口已确认**`;
+    const second = `${common}\n\n**配置已确认**`;
+    const history: SessionEvent[] = [
+      { type: "user_message", messageId: "history-user", content: "检查两个目录", time: base.timestamp },
+      { type: "tool_call", tool: "Read", toolCallId: "entry", args: {}, assistantContent: `${first}\n<biny_notification>后台通知</biny_notification>`, time: base.timestamp },
+      { type: "tool_call", tool: "Read", toolCallId: "entry-extra", args: {}, assistantContent: first, time: base.timestamp },
+      { type: "tool_result", tool: "Read", toolCallId: "entry", result: { content: "entry" }, time: base.timestamp },
+      { type: "tool_result", tool: "Read", toolCallId: "entry-extra", result: { content: "entry extra" }, time: base.timestamp },
+      { type: "tool_call", tool: "Read", toolCallId: "config", args: {}, assistantContent: second, time: base.timestamp },
+      { type: "tool_result", tool: "Read", toolCallId: "config", result: { content: "config" }, time: base.timestamp },
+      { type: "assistant_message", content: "检查完成。", messageId: "history-answer", slotId: versioned ? "history-user" : undefined, replyToMessageId: versioned ? "history-user" : undefined, time: base.timestamp }
+    ];
+    const turns = buildSessionTimeline(history, []);
+    assert.deepEqual(turns[0]?.steps.filter(step => step.kind === "assistant").map(step => step.content), [first, second, "检查完成。"]);
+    assert.deepEqual(createSessionTimelineProjector().update({ sessionId: "history", events: history, liveEvents: [] }), turns);
+    const dom = new JSDOM(renderTurns(turns));
+    try {
+      assert.deepEqual([...dom.window.document.querySelectorAll(".execution-assistant-step strong")].map(element => element.textContent), ["入口已确认", "配置已确认"]);
+      assert.equal(dom.window.document.querySelectorAll(".chat-activity").length, 2);
+      assert.doesNotMatch(dom.window.document.body.textContent ?? "", /后台通知|biny_notification/u);
+    } finally { dom.window.close(); }
+  });
+}
