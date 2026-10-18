@@ -267,7 +267,8 @@ export class LocalMemory {
 
   async deleteEntryById(id: string, options: MemoryMutationOptions = {}): Promise<MemoryDeleteResult> {
     const result = await this.storage.deleteEntry(id, options);
-    if (result.deleted) this.removeDerivedEntries([result.entry?.originalId ?? id]);
+    // Archived versions have their own row ids; their originalId may still be an active fact.
+    if (result.deleted && result.entry?.archivedAt === undefined) this.removeDerivedEntries([id]);
     return result;
   }
 
