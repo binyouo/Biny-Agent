@@ -587,7 +587,14 @@ export class AgentSession {
         if (sessionIdFromFile(filePath) !== threadId) return undefined;
         const events = await readSessionEvents(filePath);
         const event = events.find((candidate) => (candidate.type === "user_message" || candidate.type === "assistant_message") && candidate.messageId === anchorId);
-        return event?.type === "user_message" || event?.type === "assistant_message" ? event.content : undefined;
+        if (event?.type === "user_message" || event?.type === "assistant_message") return event.content;
+        // Desktop materials may cite an active canonical assistant step without a flat audit event.
+        const active = activeSessionMessageIds(events);
+        const canonical = events.find((candidate) => candidate.type === "agent_message"
+          && candidate.messageId === anchorId && active.has(anchorId) && candidate.message.role === "assistant");
+        return canonical?.type === "agent_message" && canonical.message.role === "assistant"
+          ? canonical.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+          : undefined;
       },
       embedText: async (text, signal) => {
         if (!this.localEmbeddingManager.isReady()) return undefined;
