@@ -111,6 +111,8 @@ Desktop 的模型菜单支持点击和键盘操作：上下键选择入口，右
 
 `imageGen.model` 指定 `biny image generate` / `biny image edit` 使用的默认模型，格式为 `providerAlias:modelId`（例如 `gem:gemini-2.5-flash-image`）或纯 Gemini 模型 ID。留空时按内置优先级从已配置的 Gemini 服务商中自动挑选；显式指定或已配置的模型对应连接失效、停用或缺少凭据时直接报错，不改用其他模型。自动选择只考虑启用且有凭据的 Gemini 连接。`imageGen.aspectRatio` 指定默认宽高比（如 `16:9`），留空由模型自行决定。
 
+初始化或保存配置时，未设置模型和宽高比的 `imageGen` 空段不会写入文件，读取时仍使用默认值。旧版 Desktop 不认识该字段；与新版 CLI 共用配置时，显式保存生图设置需要使用支持它的 Desktop 版本，或通过命令行参数临时指定。
+
 命令行 `--model` 显式覆盖配置。`--aspect`（别名 `--size`）与配置的宽高比同义，显式传入时优先生效；OpenAI 兼容图片 API 会将正方形、横图和竖图分别映射到其标准尺寸。`--reference <路径>` 可重复传入参考图，仅在生成时生效，改图模式忽略；相对路径从当前工作区解析，缺失、空文件或不支持的格式会报错，输入总量限制为 20 MiB。
 
 命令支持 Gemini 的 Generate Content 图片接口、OpenRouter 图片接口与 OpenAI 兼容的 Images 接口；连接能聊天不代表也实现图片 API。`image models` 发现 Gemini 和 OpenRouter 的图片目录，并显示配置的默认项；其他兼容连接需要指定实际图片模型 ID。目录失败会单独报告，配置项本身不证明远端模型可用。
