@@ -78,11 +78,10 @@ async function fixture(
   const inputMonitorPath = path.join(root, "activity-input-monitor");
   const children = new Map<ChildProcessWithoutNullStreams, TrackedChild>();
   const activeIdleTimers = new Set<ReturnType<typeof setTimeout>>();
-  let service: ActivityRecorderService | undefined;
-  let database: DatabaseSync | undefined;
+  const resources: { service?: ActivityRecorderService; database?: DatabaseSync } = {};
   const trackCurrentChild = (): void => {
     // Read the child only for deterministic process cleanup; assertions use public behavior and SQLite.
-    const child = (service as unknown as { child?: ChildProcessWithoutNullStreams } | undefined)?.child;
+    const child = (resources.service as unknown as { child?: ChildProcessWithoutNullStreams } | undefined)?.child;
     if (!child || children.has(child)) return;
     const closed = new Promise<void>(resolve => { child.once("close", () => resolve()); });
     children.set(child, { child, closed });
@@ -91,12 +90,12 @@ async function fixture(
     trackCurrentChild();
     try {
       // A second stop also removes timers left by the intentionally failing baseline.
-      await service?.stop();
+      await resources.service?.stop();
     } finally {
       try {
         await Promise.all([...children.values()].map(killAndWait));
       } finally {
-        database?.close();
+        resources.database?.close();
         await rm(root, { recursive: true, force: true });
       }
     }
@@ -135,7 +134,7 @@ async function fixture(
     outputDirectory: path.join(root, "records"),
     sensitiveApplications: [privateBundle]
   };
-  service = new ActivityRecorderService({
+  const service = new ActivityRecorderService({
     agentDir: root,
     inputMonitorPath,
     configStore: { load: async () => ({ ...defaultConfig, activity: settings }) } as AgentConfigStore,
@@ -149,9 +148,11 @@ async function fixture(
       clearTimeout: handle => { if (handle && typeof handle === "object") activeIdleTimers.delete(handle); }
     }
   });
+  resources.service = service;
   await service.initialize();
   trackCurrentChild();
-  database = new DatabaseSync(path.join(root, "agent.sqlite"));
+  const database = new DatabaseSync(path.join(root, "agent.sqlite"));
+  resources.database = database;
   const db = database;
   const rows = (): EventRow[] => db.prepare(
     "SELECT session_id, kind, app_name, data FROM activity_events ORDER BY rowid"
