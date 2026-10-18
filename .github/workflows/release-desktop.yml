@@ -135,7 +135,7 @@ jobs:
         run: |
           pnpm build:desktop
           pnpm test:code-mode-package
-          args=(--config config/electron-builder.yml --mac dmg zip --${{ matrix.arch }} --publish never)
+          args=(--config config/electron-builder.yml --mac dmg --${{ matrix.arch }} --publish never)
           if [[ "$RELEASE_UNSIGNED" == "true" ]]; then
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
             args+=(--config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.gatekeeperAssess=false --config.mac.notarize=false)
@@ -145,9 +145,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
-          path: |
-            release/*.dmg
-            release/*.zip
+          path: release/*.dmg
           if-no-files-found: error
 
   publish:
@@ -165,10 +163,6 @@ jobs:
           merge-multiple: true
           path: release-assets
 
-      - name: Create checksums
-        working-directory: release-assets
-        run: sha256sum ./*.dmg ./*.zip > SHA256SUMS.txt
-
       - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -179,20 +173,19 @@ jobs:
           Biny 是本地优先、记忆优先的开发协作 Agent，提供 macOS Desktop、TUI 与 CLI，支持通过 MCP、Skills 和插件扩展。
 
           ### macOS Beta 安装
-          - Apple Silicon 下载 `arm64.dmg`；Intel 下载 `x64.dmg`。打开 DMG 后将 Biny 拖入 Applications；ZIP 提供相同 App 的压缩包。
+          - Apple Silicon 下载 `arm64.dmg`；Intel 下载 `x64.dmg`。打开 DMG 后将 Biny 拖入 Applications。
           - 此 Beta 未使用 Apple Developer ID 签名或公证。首次打开可能被 macOS 拦截；确认下载来源后，在“系统设置 → 隐私与安全性”中选择“仍要打开”。[Apple 操作说明](https://support.apple.com/en-us/102445)
-          - `SHA256SUMS.txt` 提供全部 DMG / ZIP 的校验值，可使用 `shasum -a 256 <下载文件>` 核对。
           - 首次使用请配置模型服务商；桌面观察与操作需要相应的 macOS 权限。配置入口见 [用户文档](https://github.com/binyouo/Biny-Agent/blob/main/docs/README.md)。
           - 此版本供测试使用；安装、首次启动及界面交互待人工验收。
           EOF
             notes+=(--notes-file release-notes.md)
           fi
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+            gh release upload "$RELEASE_TAG" release-assets/*.dmg --clobber
           else
             if [[ "$RELEASE_TAG" == *-* ]]; then
-              gh release create "$RELEASE_TAG" release-assets/* --title "Biny ${RELEASE_TAG#v}" --generate-notes --prerelease "${notes[@]}"
+              gh release create "$RELEASE_TAG" release-assets/*.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes --prerelease "${notes[@]}"
             else
-              gh release create "$RELEASE_TAG" release-assets/* --title "Biny ${RELEASE_TAG#v}" --generate-notes
+              gh release create "$RELEASE_TAG" release-assets/*.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes
             fi
           fi

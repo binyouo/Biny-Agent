@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -66,7 +66,41 @@ fi
     assert.ok(args.includes("--config"));
     assert.ok(args.includes("config/electron-builder.yml"));
     assert.ok(args.includes("--config.mac.identity=-"));
+    assert.deepEqual(args.slice(args.indexOf("--mac") + 1, args.indexOf("--arm64")), ["dmg"]);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+for (const exists of [false, true]) {
+  test(`release ${exists ? "upload" : "creation"} publishes only DMG installers`, () => {
+    const publish = workflow.jobs.publish.steps.find(step => step.name === "Create or update release").run;
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "biny-release-assets-"));
+    const assets = path.join(cwd, "release-assets");
+    try {
+      mkdirSync(assets);
+      for (const name of ["Biny-arm64.dmg", "Biny-x64.dmg", "Biny-arm64.zip", "SHA256SUMS.txt"]) {
+        writeFileSync(path.join(assets, name), "fixture");
+      }
+      const gh = path.join(cwd, "gh");
+      writeFileSync(gh, `#!/bin/sh
+if [ "$1 $2" = "release view" ]; then exit ${exists ? 0 : 1}; fi
+printf '%s\\n' "$@"
+`);
+      chmodSync(gh, 0o755);
+      const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-e", "-c", publish], {
+        cwd, env: { PATH: `${cwd}:${process.env.PATH}`, RELEASE_TAG: "v0.0.1-beta.1", RELEASE_UNSIGNED: "true" },
+        encoding: "utf8", timeout: 5000,
+      });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.deepEqual(result.stdout.split("\n").filter(arg => arg.startsWith("release-assets/")), [
+        "release-assets/Biny-arm64.dmg", "release-assets/Biny-x64.dmg",
+      ]);
+      const notes = readFileSync(path.join(cwd, "release-notes.md"), "utf8");
+      assert.ok(notes.includes("arm64.dmg") && notes.includes("x64.dmg"));
+      assert.doesNotMatch(notes, /ZIP|SHA256SUMS/iu);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+}
