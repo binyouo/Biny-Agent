@@ -3035,6 +3035,7 @@ export class AgentSession {
     let activeRequestContext = loopContext;
     const projectForModelRequest = async (contextMessages: AgentMessage[]): Promise<AgentMessage[]> => {
       const projectedMessages = await projectToolResultsForModel(contextMessages, {
+        maxRetainedBytes: this.activeConfig.context.maxTurnToolResultBytes,
         archiveResult: async ({ message, result, output, sequence }) => await archiveToolResult({
           workspaceRoot: this.options.workspaceRoot,
           sessionId: this.recorder.sessionId,
