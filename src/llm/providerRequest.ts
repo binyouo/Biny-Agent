@@ -8,6 +8,15 @@
 import { providerProtocol } from "../ai/provider.js";
 import type { ProviderDefinition } from "../ai/types.js";
 import type { ModelAliasConfig, ModelApiBackend, ProviderConfig } from "../config/schema.js";
+import type { ModelRequestContext } from "../agent/core/types.js";
+
+/** 每次调用独立携带观测身份，不修改共享 provider 或提示词。 */
+export function modelRequestHeaders(context: ModelRequestContext | undefined, fallbackOperation: "agent" | "auxiliary"): Record<string, string> {
+  const headers: Record<string, string> = { "x-biny-operation": context?.operation ?? fallbackOperation };
+  const sessionId = context?.sessionId;
+  if (sessionId && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(sessionId)) headers["x-session-id"] = sessionId;
+  return headers;
+}
 
 export interface ProviderRequestRoute {
   apiBackend: ModelApiBackend;

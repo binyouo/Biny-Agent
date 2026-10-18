@@ -17,6 +17,7 @@ import {
   type LanguageModelV4CallOptions,
 } from "@ai-sdk/provider";
 import { LocalPromptProjectionCache, type PromptShapeDiagnostic } from "../../llm/promptCache.js";
+import { modelRequestHeaders } from "../../llm/providerRequest.js";
 import type {
   AgentAssistantMessage,
   AgentContext,
@@ -452,8 +453,10 @@ function vercelCallSettings(state: VercelLoopState): {
   reasoning: LanguageModelV4CallOptions["reasoning"];
   providerOptions: LanguageModelV4CallOptions["providerOptions"];
   timeout: number | undefined;
+  headers: Record<string, string>;
 } {
   return {
+    headers: modelRequestHeaders(state.modelOptions?.requestContext, "agent"),
     maxOutputTokens: state.modelOptions?.maxOutputTokens,
     temperature: state.modelOptions?.temperature,
     reasoning: toVercelReasoning(state.modelOptions?.reasoning),
