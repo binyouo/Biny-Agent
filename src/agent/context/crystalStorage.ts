@@ -228,10 +228,22 @@ export class CrystalStorage {
     ref: unknown,
     source: CrystalMaterialSource
   ): boolean {
-    const result = this.requireDatabase().prepare(
-      "INSERT OR IGNORE INTO crystal_materials (crystal_id, kind, ref, source, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(crystalId, kind, JSON.stringify(ref), source, this.now().toISOString());
-    return Number(result.changes) > 0;
+    const database = this.requireDatabase();
+    const serialized = JSON.stringify(ref);
+    const key = crystalMaterialReferenceKey(parseJson(serialized));
+    const append = (): boolean => {
+      if (serialized !== undefined) {
+        const existing = database.prepare(
+          "SELECT ref FROM crystal_materials WHERE crystal_id = ? AND kind = ?"
+        ).all(crystalId, kind) as Array<{ ref: unknown }>;
+        if (existing.some((row) => crystalMaterialReferenceKey(parseJson(row.ref)) === key)) return false;
+      }
+      const result = database.prepare(
+        "INSERT OR IGNORE INTO crystal_materials (crystal_id, kind, ref, source, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(crystalId, kind, serialized, source, this.now().toISOString());
+      return Number(result.changes) > 0;
+    };
+    return database.isTransaction ? append() : this.transaction(append);
   }
 
   listMaterials(crystalId: string): CrystalMaterial[] {
@@ -346,6 +358,20 @@ function createTables(database: DatabaseSync): void {
       processed_at TEXT NOT NULL
     );
   `);
+}
+
+/** Compare JSON references without changing persisted values or array order. */
+export function crystalMaterialReferenceKey(ref: unknown): string | undefined {
+  const serialized = JSON.stringify(ref);
+  if (serialized === undefined) return undefined;
+  return JSON.stringify(sortReferenceKeys(JSON.parse(serialized) as unknown));
+}
+
+function sortReferenceKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortReferenceKeys);
+  if (value === null || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(record).sort().map((key) => [key, sortReferenceKeys(record[key])]));
 }
 
 function parseTerm(row: CrystalTermRow): CrystalTerm {
