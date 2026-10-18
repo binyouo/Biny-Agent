@@ -93,6 +93,8 @@ biny todo show --session <session-id> --json
 biny todo replace --session <session-id> --todos '[{"content":"检查结果","status":"pending"}]' --json
 ```
 
+`biny todo show --json` 的 `sessionId` 是实际读取清单所属会话的完整 ID，可用于后续指定同一会话。
+
 `--todos` 接受完整数组或含 `todos` 数组的对象；每次整份替换，不合并旧条目。条目需有非空文字，状态只能是 `pending`、`in_progress` 或 `completed`，最多一项进行中。不合法的输入会报错并保留原清单，不会跳过坏条目后保存剩余部分；显式传入 `[]` 仍会清空清单。清单状态只是工作记录，不替代实际执行和验证证据。
 
 ## 查看子代理执行
