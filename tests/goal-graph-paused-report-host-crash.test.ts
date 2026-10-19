@@ -103,8 +103,22 @@ if (process.argv[2] === "paused-report-crash-child") {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         observed = await client.graphInspect(boundary.graphId) as GraphRecord;
       }
+      const diagnostics: unknown[] = [];
+      if (!observed.nodes.every((node) => node.status === "completed")) {
+        for (const node of observed.nodes) {
+          if (!node.taskRunId || node.status === "completed") continue;
+          try {
+            const inspected = await client.taskInspect(node.taskRunId, boundary.sessionId, { summary: true });
+            diagnostics.push({ node: node.nodeKey, status: node.status, artifact: node.artifact,
+              taskStatus: inspected.status, reason: inspected.reason, stopReason: inspected.stopReason });
+          } catch (error) {
+            diagnostics.push({ node: node.nodeKey, status: node.status, artifact: node.artifact,
+              inspectionError: error instanceof Error ? error.message : String(error) });
+          }
+        }
+      }
       assert.deepEqual(observed.nodes.map((node) => node.status), ["completed", "completed"],
-        "successful public resume must reconcile A and release B; startup/setup errors are separate failures");
+        "successful public resume must reconcile A and release B; startup/setup errors are separate failures: " + JSON.stringify(diagnostics));
       await client.waitForIdle();
       assert.equal(repeatedA, 0);
       assert.equal(secondReports, 1);
