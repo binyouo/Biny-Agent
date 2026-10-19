@@ -1,4 +1,4 @@
-/** Real App/rename DOM and manager snapshots; only presentation and transport boundaries are isolated. */
+/** Real App metadata DOM and manager snapshots; only presentation and transport boundaries are isolated. */
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -230,6 +230,7 @@ async function fixture(context: TestContext) {
   } as DesktopBootstrap;
   const refreshes: Array<{ projectId: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
   const renames: Array<{ projectId: string; sessionId: string; title: string; expectedRevision?: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
+  const pins: Array<{ projectId: string; sessionId: string; pinned: boolean; expectedRevision?: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
   const opens: Promise<DesktopSessionDocument>[] = [];
   const gates: ReadGate[] = [];
   let armed: ReadGate | undefined;
@@ -247,6 +248,12 @@ async function fixture(context: TestContext) {
     renameSession(projectId: string, targetId: string, title: string, expectedRevision?: string) {
       const result = manager.renameSession(projectId, targetId, title, expectedRevision);
       renames.push({ projectId, sessionId: targetId, title, expectedRevision, result });
+      void result.catch(noop);
+      return result;
+    },
+    pinSession(projectId: string, targetId: string, pinned: boolean, expectedRevision?: string) {
+      const result = manager.pinSession(projectId, targetId, pinned, expectedRevision);
+      pins.push({ projectId, sessionId: targetId, pinned, expectedRevision, result });
       void result.catch(noop);
       return result;
     },
@@ -289,7 +296,7 @@ async function fixture(context: TestContext) {
     try { await unmount(); }
     finally {
       for (const gate of gates) gate.release.resolve();
-      await Promise.allSettled([...refreshes.map(call => call.result), ...renames.map(call => call.result), ...opens]);
+      await Promise.allSettled([...refreshes.map(call => call.result), ...renames.map(call => call.result), ...pins.map(call => call.result), ...opens]);
     }
   });
   await React.act(async () => { root.render(React.createElement(compiled.App)); });
@@ -323,7 +330,7 @@ async function fixture(context: TestContext) {
     assert.ok(refresh);
     await React.act(async () => { await refresh.result.catch(noop); await Promise.allSettled(opens); });
   };
-  const openRename = async (targetId = sessionId) => {
+  const selectSessionAction = async (label: string, targetId = sessionId) => {
     const target = summary(targetId);
     const title = target.title;
     const folder = [...dom.window.document.querySelectorAll<HTMLElement>(".biny-project-row")]
@@ -337,10 +344,20 @@ async function fixture(context: TestContext) {
     assert.ok(button, `Missing sidebar row: ${title}`);
     await React.act(async () => { button.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 20, clientY: 20 })); });
     await tick(16);
-    const rename = [...dom.window.document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
-      .find(item => item.textContent?.trim() === "重命名");
-    assert.ok(rename);
-    await React.act(async () => { rename.click(); });
+    const action = [...dom.window.document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find(item => item.textContent?.trim() === label);
+    assert.ok(action);
+    await React.act(async () => { action.click(); });
+  };
+  const openRename = async (targetId = sessionId) => { await selectSessionAction("重命名", targetId); };
+  const savePinned = async (pinned: boolean, targetId = sessionId) => {
+    assert.notEqual(Boolean(summary(targetId).pinned), pinned, "the menu action must change the current pin state");
+    const before = pins.length;
+    await selectSessionAction(pinned ? "置顶" : "取消置顶", targetId);
+    assert.equal(pins.length, before + 1, "the DOM action must reach the real pin API exactly once");
+    const request = pins[before]!;
+    await React.act(async () => { await request.result.catch(noop); });
+    return request;
   };
   const enterTitle = async (title: string) => {
     const input = dom.window.document.querySelector<HTMLInputElement>('input[placeholder="输入新名称…"]');
@@ -370,9 +387,14 @@ async function fixture(context: TestContext) {
   };
   return {
     project, otherProject, dataRoot, otherRoot, sessionId, removableId, otherId, original,
-    refreshes, renames, opens, probe, summary, tick, arm, event, settleRefresh, openRename, enterTitle, submit, rename, unmount,
+    refreshes, renames, pins, opens, probe, summary, tick, arm, event, settleRefresh, openRename, enterTitle, submit, rename, savePinned, unmount,
     document: dom.window.document,
     readTitle: async () => (await catalog.readSessionCatalogRecord(dataRoot, sessionId))?.title,
+    readMetadata: async (targetId = sessionId) => {
+      const record = await catalog.readSessionCatalogRecord(targetId === otherId ? otherRoot : dataRoot, targetId);
+      assert.ok(record);
+      return { pinned: Boolean(record.pinned), revision: catalog.sessionCatalogRecordRevision(record), title: record.title };
+    },
     pin: async () => { await catalog.updateSessionCatalogMetadata(dataRoot, sessionId, { pinned: true }, undefined, { indexRefresh: "wait" }); },
     externalRename: async (title: string) => { await catalog.updateSessionCatalogMetadata(dataRoot, sessionId, { title }, undefined, { indexRefresh: "wait" }); },
     changeMembers: async () => {
@@ -499,4 +521,76 @@ test("unmount cancels a rename-invalidated refresh before its replacement timer 
   await view.tick(1_000);
   assert.equal(view.refreshes.length, 1);
   assert.equal(await view.readTitle(), "Manual title");
+});
+
+for (const pinned of [true, false]) {
+  test(`an old title-event snapshot cannot undo a confirmed DOM ${pinned ? "pin" : "unpin"}`, { timeout: 30_000 }, async context => {
+    const view = await fixture(context);
+    if (!pinned) await (await view.savePinned(true)).result;
+    const initial = view.summary();
+    const gate = view.arm();
+    await view.event();
+    await gate.entered.promise;
+    const request = await view.savePinned(pinned);
+    const confirmed = (await request.result).sessions.find(session => session.id === view.sessionId)!;
+    assert.equal(request.expectedRevision, initial.metadataRevision);
+    assert.equal(confirmed.pinned, pinned);
+    assert.notEqual(confirmed.metadataRevision, initial.metadataRevision);
+    assert.deepEqual(await view.readMetadata(), { pinned, revision: confirmed.metadataRevision, title: "Generated title" });
+    assert.equal(view.summary().pinned, pinned);
+    assert.equal(view.renames.length, 0, "rename invalidation must not hide a missing pin invalidation");
+    gate.release.resolve();
+    await view.settleRefresh(0);
+    const old = (await view.refreshes[0]!.result).sessions.find(session => session.id === view.sessionId)!;
+    assert.equal(Boolean(old.pinned), !pinned, "the real old manager snapshot must contain the earlier pin state");
+    assert.equal(old.metadataRevision, initial.metadataRevision);
+    assert.equal(view.summary().pinned, pinned, "the delayed old snapshot must not roll back a confirmed pin change");
+    assert.equal(view.summary().metadataRevision, confirmed.metadataRevision);
+    const pinnedRow = [...view.document.querySelectorAll<HTMLButtonElement>('section[aria-label="置顶"] .biny-sidebar-session-item')]
+      .find(row => row.title === "Generated title");
+    assert.equal(Boolean(pinnedRow), pinned, "the visible pinned section must match the confirmed state");
+    await view.tick(260);
+    assert.equal(view.refreshes.length, 2, "the pin-invalidated read must schedule a real replacement");
+    await view.settleRefresh(1);
+    assert.equal(view.summary().pinned, pinned);
+    const persisted = await view.readMetadata();
+    assert.equal(view.summary().metadataRevision, persisted.revision);
+    assert.equal(persisted.pinned, pinned);
+    await view.tick(1_000);
+    assert.equal(view.refreshes.length, 2, "a stable pin revision cannot keep retrying");
+  });
+}
+
+test("a failed real DOM pin leaves an in-flight title refresh valid", { timeout: 30_000 }, async context => {
+  const view = await fixture(context);
+  const gate = view.arm();
+  await view.event();
+  await gate.entered.promise;
+  await view.externalRename("Changed elsewhere");
+  const request = await view.savePinned(true);
+  await assert.rejects(request.result, /revision conflict/u);
+  assert.match(view.document.querySelector('[role="status"]')?.textContent ?? "", /revision conflict/u);
+  assert.equal(view.renames.length, 0);
+  assert.equal((await view.readMetadata()).pinned, false);
+  gate.release.resolve();
+  await view.settleRefresh(0);
+  await view.tick(1_000);
+  assert.equal(view.refreshes.length, 1, "a failed pin must not invalidate or retry the existing read");
+  assert.equal((await view.readMetadata()).title, "Changed elsewhere");
+});
+
+test("a DOM pin in another project cannot invalidate this project's in-flight title refresh", { timeout: 30_000 }, async context => {
+  const view = await fixture(context);
+  const gate = view.arm();
+  await view.event();
+  await gate.entered.promise;
+  await (await view.savePinned(true, view.otherId)).result;
+  assert.equal(view.probe().activeProjectId, view.project.id);
+  assert.equal(view.renames.length, 0);
+  gate.release.resolve();
+  await view.settleRefresh(0);
+  await view.tick(1_000);
+  assert.equal(view.refreshes.length, 1);
+  assert.equal(view.summary(view.otherId).pinned, true);
+  assert.equal(view.summary(view.otherId).metadataRevision, (await view.readMetadata(view.otherId)).revision);
 });
