@@ -137,7 +137,6 @@ if (process.argv[2] === "paused-report-crash-child") {
 
 async function crashChild(root: string, marker: string): Promise<void> {
   process.env.BINY_AGENT_DIR = path.join(root, ".agent-test");
-  let client: Client | undefined;
   let commands: CommandRuntime | undefined;
   let sessionId: string | undefined;
   let graphId = "";
@@ -156,7 +155,7 @@ async function crashChild(root: string, marker: string): Promise<void> {
       assert.ok(!packet.includes("synthesize-report"), "B cannot start before paused A is projected");
       if (last.role !== "tool") return streamToolCall("read-before-crash", "Read", { path: "source.txt" });
       assert.match(textContent(last.content), /source fact/u);
-      const paused = await client!.graphPause(graphId);
+      const paused = await client.graphPause(graphId);
       assert.equal(paused.accepted, true, JSON.stringify(paused));
       firstReports += 1;
       return streamText(reportA);
@@ -203,7 +202,7 @@ async function crashChild(root: string, marker: string): Promise<void> {
     };
     return { commands, runtime: new InteractiveAgentRuntime(commands) };
   });
-  client = await connectRuntimeHost(root, { clientId: "paused-report-original", surface: "cli" });
+  const client = await connectRuntimeHost(root, { clientId: "paused-report-original", surface: "cli" });
   assert.equal((await client.submitPrompt("请规划一个先读取 source.txt 再综合上游报告的后台只读分析任务，先保存草稿。").completion).status, "completed");
   const draft = (await client.planList(sessionId!))[0]!;
   graphId = draft.graphId;

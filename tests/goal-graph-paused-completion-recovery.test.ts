@@ -152,7 +152,10 @@ test("ordinary pause/resume does not reconcile a still-active report Worker", { 
     const start = createPlanTools({ graphs, taskRuns: tasks }).find((tool) => tool.name === "PlanStart")!;
     const execution = await start.resolveExecution(start.schema!.parse({
       objective: "Inspect evidence",
-      nodes: [{ key: "inspect", task: "Inspect evidence", acceptance: ["Return observations"] }]
+      nodes: [
+        { key: "inspect", task: "Inspect evidence", acceptance: ["Return observations"] },
+        { key: "synthesize", task: "Synthesize observations", acceptance: ["Cite upstream report"], dependencies: ["inspect"] }
+      ]
     }));
     if ("isError" in execution) throw new Error(execution.errorMessage);
     await execution.execute({ toolCallId: "live-plan", operationId: "live-plan", sessionId: "reports", runId: "reports" });
@@ -166,14 +169,19 @@ test("ordinary pause/resume does not reconcile a still-active report Worker", { 
     await supervisor.tick();
     assert.deepEqual(graphs.inspectGraph(graphId).nodes[0], before);
     assert.equal(calls, 1);
+    // Keep the required downstream node dormant while the existing A finishes.
+    graphs.pauseGraph(graphId);
     release();
     const deadline = Date.now() + 2_000;
     while (Date.now() < deadline && graphs.inspectGraph(graphId).nodes[0]?.status !== "completed") {
       await supervisor.tick();
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    assert.equal(graphs.inspectGraph(graphId).nodes[0]?.status, "completed");
+    const completed = graphs.inspectGraph(graphId);
+    assert.equal(completed.status, "paused");
+    assert.deepEqual(completed.nodes.map((node) => node.status), ["completed", "pending"]);
     assert.equal(calls, 1);
+    assert.equal(tasks.get(before.taskRunId!)?.attempts.length, 1);
   } finally {
     release();
     supervisor.stop();
