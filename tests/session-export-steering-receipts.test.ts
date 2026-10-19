@@ -19,7 +19,7 @@ const previousAgentDir = process.env.BINY_AGENT_DIR;
 const previousFetch = globalThis.fetch;
 const unexpectedNetwork: string[] = [];
 const workspaces = new Set<string>();
-let refreshCatalog: ((workspace: string) => Promise<void>) | undefined;
+const catalogCleanup: { refresh?: (workspace: string) => Promise<void> } = {};
 process.env.BINY_AGENT_DIR = path.join(suiteRoot, "agent");
 globalThis.fetch = async (input: string | URL | Request) => {
   unexpectedNetwork.push(input instanceof Request ? input.url : String(input));
@@ -27,7 +27,7 @@ globalThis.fetch = async (input: string | URL | Request) => {
 };
 after(async () => {
   try {
-    if (refreshCatalog) await Promise.all([...workspaces].map(workspace => refreshCatalog!(workspace)));
+    if (catalogCleanup.refresh) await Promise.all([...workspaces].map(workspace => catalogCleanup.refresh!(workspace)));
   } finally {
     globalThis.fetch = previousFetch;
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
@@ -57,7 +57,7 @@ const { ensureAgentDirs } = storeModule;
 const { exportSessionBundle, exportSessionClaudeCode, importSessionFile } = transferModule;
 const { ToolRegistry } = toolsModule;
 const { refreshSessionIndex } = catalogModule;
-refreshCatalog = refreshSessionIndex;
+catalogCleanup.refresh = refreshSessionIndex;
 type Session = InstanceType<typeof AgentSession>;
 type Runtime = InstanceType<typeof InteractiveAgentRuntime>;
 
@@ -102,12 +102,11 @@ async function fixture(t: TestContext, steer = true) {
   const root = await mkdtemp(path.join(suiteRoot, "case-"));
   const workspace = path.join(root, "workspace");
   workspaces.add(workspace);
-  let agent: Session | undefined;
-  let runtime: Runtime | undefined;
+  const resources: { agent?: Session; runtime?: Runtime } = {};
   t.after(async () => {
     try {
-      if (runtime) await runtime.close();
-      else await agent?.close();
+      if (resources.runtime) await resources.runtime.close();
+      else await resources.agent?.close();
     } finally {
       try { await refreshSessionIndex(workspace); }
       finally {
@@ -139,8 +138,8 @@ async function fixture(t: TestContext, steer = true) {
       if (primary) {
         requests.push(structuredClone(context.messages));
         if (steer && requests.length === 1) {
-          assert.ok(runtime);
-          acceptedSteering = await runtime.steer(steeringInput, [], { messageId: steeringId });
+          assert.ok(resources.runtime);
+          acceptedSteering = await resources.runtime.steer(steeringInput, [], { messageId: steeringId });
         }
       }
       const response: ModelStreamEvent[] = [
@@ -151,16 +150,18 @@ async function fixture(t: TestContext, steer = true) {
     }
   };
   const recorder = new SessionRecorder(workspace);
-  agent = new AgentSession({ workspaceRoot: workspace, config, model, recorder,
+  const agent = new AgentSession({ workspaceRoot: workspace, config, model, recorder,
     toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission) });
+  resources.agent = agent;
   await agent.initialize();
   // Same minimal surrounding-service adapter as retry-visible-root.test.ts.
   // Steering, delivery, message identities and persistence remain production code.
   const session = agent;
-  runtime = new InteractiveAgentRuntime({ agent: session, persistenceRoot: workspace,
+  const runtime = new InteractiveAgentRuntime({ agent: session, persistenceRoot: workspace,
     refreshSkills: async () => {}, setSubagentParentRunId: () => {},
     close: async () => await session.close()
   } as unknown as ConstructorParameters<typeof InteractiveAgentRuntime>[0]);
+  resources.runtime = runtime;
   const liveRuntime = runtime;
   const submitted = liveRuntime.submitPrompt(originalInput);
   const outcome = await submitted.completion;
