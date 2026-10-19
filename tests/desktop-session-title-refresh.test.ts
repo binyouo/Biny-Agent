@@ -52,7 +52,7 @@ async function appModule() {
     AppearanceProvider: "({children}) => children",
     DesktopShell: "({sideNav, children, overlays}) => createElement('div', null, sideNav, children, overlays)",
     Workspace: "(props) => createElement('output', {'data-current-title': true}, props.sessionTitle)",
-    DesktopToast: "({message}) => message ? createElement('p', {role: 'status'}, message) : null",
+    DesktopToast: "({message}) => message ? createElement('p', {role: 'status', 'data-title-toast': true}, message) : null",
     Sidebar: "(props) => { window.__titleSidebar = props; return createElement(RealSidebar, props); }",
     Tooltip: "({children}) => children",
     Collapse: "({children, open, ...props}) => open ? createElement('div', props, children) : null",
@@ -569,7 +569,9 @@ test("a failed real DOM pin leaves an in-flight title refresh valid", { timeout:
   await view.externalRename("Changed elsewhere");
   const request = await view.savePinned(true);
   await assert.rejects(request.result, /revision conflict/u);
-  assert.match(view.document.querySelector('[role="status"]')?.textContent ?? "", /revision conflict/u);
+  const toast = view.document.querySelector('[data-title-toast]');
+  assert.ok(toast, "the App warning toast must be rendered");
+  assert.match(toast.textContent ?? "", /revision conflict/u);
   assert.equal(view.renames.length, 0);
   assert.equal((await view.readMetadata()).pinned, false);
   gate.release.resolve();
