@@ -340,7 +340,7 @@ async function setupFixture(t: TestContext, twoTurns: boolean) {
     assert.equal(document.querySelector('.biny-sidebar-session-item[aria-current="page"]')?.getAttribute("title"), info.title);
     assert.ok(document.querySelector(".biny-workspace-chat .biny-composer .biny-prompt-editor"));
     assert.equal(input().disabled, false);
-    assert.equal(input().closest("[inert]"), null, "The committed conversation must be usable");
+    assert.equal(input().closest("[inert]") === null, true, "The committed conversation must be usable");
   };
   assertCurrent(SESSION);
   assert.equal(document.querySelector(".desktop-toast-message")?.textContent ?? "", "", "Bootstrap must not already be failing");
@@ -379,7 +379,7 @@ async function setupFixture(t: TestContext, twoTurns: boolean) {
   const typeInput = async (value: string): Promise<void> => {
     const target = input();
     assert.equal(target.disabled, false, "Only type through an enabled editor");
-    assert.equal(target.closest("[inert]"), null, "Only type in the current visible conversation");
+    assert.equal(target.closest("[inert]") === null, true, "Only type in the current visible conversation");
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
     assert.equal(typeof setter, "function");
     await act(() => {
@@ -392,7 +392,7 @@ async function setupFixture(t: TestContext, twoTurns: boolean) {
   const beginEdit = async (sessionId = SESSION, index = 0): Promise<void> => {
     const suffix = index === 1 ? "-user-second" : "-user";
     const target = one<HTMLButtonElement>('article[data-message-id="' + sessionId + suffix + '"] [aria-label="编辑消息"]');
-    assert.equal(target.disabled, false); assert.equal(target.closest("[inert]"), null);
+    assert.equal(target.disabled, false); assert.equal(target.closest("[inert]") === null, true);
     await act(() => target.click());
     assert.ok(document.querySelector(".composer-edit-banner"));
     assert.equal(input().value, index === 1 ? "Second source question" : data.documents.get(sessionId)!.session.firstUserMessage);
@@ -400,7 +400,7 @@ async function setupFixture(t: TestContext, twoTurns: boolean) {
   const submit = async (): Promise<void> => {
     const button = one<HTMLButtonElement>('[aria-label="发送消息"]');
     assert.equal(button.disabled, false); assert.notEqual(button.getAttribute("aria-disabled"), "true");
-    assert.equal(button.closest("[inert]"), null);
+    assert.equal(button.closest("[inert]") === null, true);
     const before = edits.length;
     await act(async () => { button.click(); });
     assert.equal(edits.length, before + 1, "The public edit API must receive exactly one submission");
@@ -409,9 +409,9 @@ async function setupFixture(t: TestContext, twoTurns: boolean) {
   };
   const cancelEdit = async (): Promise<void> => {
     const button = one<HTMLButtonElement>('[aria-label="取消编辑"]');
-    assert.equal(button.disabled, false); assert.equal(button.closest("[inert]"), null);
+    assert.equal(button.disabled, false); assert.equal(button.closest("[inert]") === null, true);
     await act(() => button.click());
-    assert.equal(document.querySelector(".composer-edit-banner"), null);
+    assert.equal(document.querySelector(".composer-edit-banner") === null, true);
   };
   const settle = async (index = 0, error?: Error): Promise<void> => {
     const edit = edits[index]; assert.ok(edit); assert.equal(edit.settled, false);
@@ -431,7 +431,7 @@ async function setupFixture(t: TestContext, twoTurns: boolean) {
       .filter(target => target.getAttribute("title") === info.title);
     assert.equal(targets.length, 1, "Expected one actual sidebar button for " + info.title);
     assert.equal(targets[0]!.disabled, false);
-    assert.equal(targets[0]!.closest("[inert]"), null);
+    assert.equal(targets[0]!.closest("[inert]") === null, true);
     await act(async () => { targets[0]!.click(); });
   };
   const navigate = async (sessionId: string): Promise<void> => {
@@ -474,7 +474,7 @@ for (const destination of [SESSION_B, SESSION_C]) {
     const currentInput = h.input();
     await h.settle(); await h.drainFrames();
     h.assertCurrent(destination);
-    assert.equal(h.input(), currentInput, "An old receipt cannot replace the destination Composer");
+    assert.equal(h.input() === currentInput, true, "An old receipt cannot replace the destination Composer");
     assert.equal(h.input().value, "Destination unsent draft");
     assert.deepEqual(h.edits[0]!.args.slice(0, 5), [PROJECT, SESSION, 0, "Submitted source edit", []]);
     assert.deepEqual(h.calls.selection.at(-1), [sessionInfo(destination).projectId, destination, "chat"]);
@@ -492,14 +492,14 @@ for (const destination of [SESSION_B, SESSION_C]) {
       await h.settle(0, outcome === "failure" ? new Error("Old source edit failed") : undefined);
       await h.drainFrames();
       h.assertCurrent(destination);
-      assert.equal(h.input(), currentInput);
+      assert.equal(h.input() === currentInput, true);
       assert.ok(h.document.querySelector(".composer-edit-banner"), "Old settlement cannot cancel the newer edit");
       assert.equal(h.input().value, "Destination edited message");
       assert.equal(h.document.body.textContent?.includes("Old source edit failed"), false);
       await h.typeInput("Destination continued edit"); await h.submit();
       assert.deepEqual(h.edits[1]!.args.slice(0, 5), [sessionInfo(destination).projectId, destination, 0, "Destination continued edit", []]);
       await h.settle(1);
-      assert.equal(h.document.querySelector(".composer-edit-banner"), null);
+      assert.equal(h.document.querySelector(".composer-edit-banner") === null, true);
       assert.equal(h.input().value, "Destination ordinary draft");
       assert.deepEqual(h.calls.network, []);
     });
@@ -514,7 +514,7 @@ test("same-ID A to B to A navigation preserves a newly opened edit from A's olde
   const currentInput = h.input();
   await h.settle(); await h.drainFrames();
   assert.ok(h.document.querySelector(".composer-edit-banner"));
-  assert.equal(h.input(), currentInput);
+  assert.equal(h.input() === currentInput, true);
   assert.equal(h.input().disabled, false);
   assert.equal(h.input().value, "New source edit after returning");
   assert.ok(h.document.querySelector('article[data-message-id="' + MESSAGE + '"] .markdown-body'),
@@ -531,7 +531,7 @@ for (const outcome of ["success", "failure"] as const) {
     const currentInput = h.input();
     await h.settle(0, outcome === "failure" ? new Error("Old source failure") : undefined);
     await h.drainFrames();
-    assert.equal(h.input(), currentInput);
+    assert.equal(h.input() === currentInput, true);
     assert.equal(h.input().disabled, true, "Only the newer request may release its own pending state");
     assert.ok(h.document.querySelector(".composer-edit-banner"));
     const bubbles = [...h.document.querySelectorAll(".user-bubble")].map(element => element.textContent);
@@ -539,7 +539,7 @@ for (const outcome of ["success", "failure"] as const) {
     assert.equal(h.document.body.textContent?.includes("Old source failure"), false);
     await h.settle(1);
     assert.equal(h.input().disabled, false);
-    assert.equal(h.document.querySelector(".composer-edit-banner"), null);
+    assert.equal(h.document.querySelector(".composer-edit-banner") === null, true);
     assert.deepEqual(h.calls.network, []);
   });
 }
@@ -552,7 +552,7 @@ test("current edit succeeds once, disables repeated submission, and restores the
   assert.equal(button.getAttribute("aria-disabled"), "true"); button.click();
   assert.equal(h.edits.length, 1, "The aria-disabled send action cannot duplicate the pending edit");
   await h.settle(); await h.drainFrames();
-  assert.equal(h.document.querySelector(".composer-edit-banner"), null);
+  assert.equal(h.document.querySelector(".composer-edit-banner") === null, true);
   assert.equal(h.input().value, "Ordinary draft to preserve");
   assert.equal(h.input().disabled, false);
   assert.equal(h.document.querySelector('.biny-sidebar-session-item[aria-current="page"]')?.getAttribute("title"), sessionInfo(SESSION).title);
@@ -574,7 +574,7 @@ test("current edit failure retains edited text and a deliberate retry uses a fre
   assert.deepEqual(h.edits[1]!.args.slice(0, 5), [PROJECT, SESSION, 0, "Retried current edit", []]);
   await h.settle(1);
   assert.equal(h.input().value, "Separate ordinary draft");
-  assert.equal(h.document.querySelector(".composer-edit-banner"), null);
+  assert.equal(h.document.querySelector(".composer-edit-banner") === null, true);
   assert.equal(h.document.body.textContent?.includes("Current edit failed"), false);
   assert.deepEqual(h.calls.network, []);
 });
@@ -594,7 +594,7 @@ test("old edit failure cannot publish while destination navigation is still pend
   const navigation = h.holdRead(SESSION_B);
   await h.clickSession(SESSION_B);
   assert.equal(navigation.entered(), true);
-  assert.equal(h.input(), sourceInput, "The old Composer is still mounted during loading");
+  assert.equal(h.input() === sourceInput, true, "The old Composer is still mounted during loading");
   assert.ok(h.input().closest("[inert]"));
   await h.settle(0, new Error("Failure belonging to superseded source")); await h.drainFrames();
   assert.equal(h.document.body.textContent?.includes("Failure belonging to superseded source"), false);
@@ -663,7 +663,7 @@ for (const cancelFirst of [false, true]) {
       await h.typeInput("Explicit first-message edit"); await h.submit();
       assert.deepEqual(h.edits[1]!.args.slice(0, 5), [PROJECT, SESSION, 0, "Explicit first-message edit", []]);
       await h.settle(1);
-      assert.equal(h.document.querySelector(".composer-edit-banner"), null);
+      assert.equal(h.document.querySelector(".composer-edit-banner") === null, true);
       assert.equal(h.input().value, "Separate current-session draft");
       assert.deepEqual(h.calls.network, []);
     });
