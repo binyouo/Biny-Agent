@@ -1452,7 +1452,8 @@ export function formatMemoryMatches(matches: Array<Pick<MemoryMatch, "entry" | "
 
 function formatMemoryExtractionMessages(messages: readonly AgentMessage[]): string {
   return messages.map((message) => {
-    const text = typeof message.content === "string" ? message.content : message.content
+    const content = message.role === "user" ? message.originalContent ?? message.content : message.content;
+    const text = typeof content === "string" ? content : content
       .filter((part) => part.type === "text")
       .map((part) => part.text)
       .join("\n");
