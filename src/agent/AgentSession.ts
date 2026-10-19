@@ -3332,10 +3332,14 @@ export class AgentSession {
           nextLoopEvent = loop.next();
         }
       } finally {
-        await loop.return([]);
+        try {
+          await loop.return([]);
+        } finally {
+          // An aborted model stream can finish before admitted native tools.
+          await coordinator.waitForIdle();
+        }
       }
       yield* pendingEvents.drain();
-      await coordinator.waitForIdle();
       if (reasoningActive) yield { type: "reasoning.completed" };
       if (streamFailure) throw new Error(streamFailure);
       const currentUserMessage = messages.at(-1);
@@ -3570,6 +3574,7 @@ export class AgentSession {
       yield doneEvent(outcome);
     } catch (error) {
       if (retryCommitStarted) throw error;
+      yield* pendingEvents.drain();
       const message = errorMessage(error);
       await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
         type: "error",
