@@ -15,8 +15,7 @@ async function fixture(t: TestContext) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-resume-selector-")));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "global");
-  let host: InteractiveAgentHost | undefined;
-  let observer: SessionLeaseStore | undefined;
+  const cleanup: { host?: InteractiveAgentHost; observer?: SessionLeaseStore } = {};
   let networkRequests = 0;
   t.mock.method(globalThis, "fetch", async () => {
     networkRequests += 1;
@@ -24,9 +23,9 @@ async function fixture(t: TestContext) {
   });
   t.after(async () => {
     try {
-      await host?.runtime.close();
+      await cleanup.host?.runtime.close();
     } finally {
-      observer?.close();
+      cleanup.observer?.close();
       if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
       else process.env.BINY_AGENT_DIR = previousAgentDir;
       await rm(root, { recursive: true, force: true });
@@ -67,8 +66,10 @@ async function fixture(t: TestContext) {
   }
   // Match production startup: create a fresh draft, then resume the saved session.
   // Never construct the fresh runtime with a historical session's ID.
-  host = await createInteractiveAgentHost(root, { configStore });
-  observer = await SessionLeaseStore.open(root);
+  const host = await createInteractiveAgentHost(root, { configStore });
+  cleanup.host = host;
+  const observer = await SessionLeaseStore.open(root);
+  cleanup.observer = observer;
   const aPath = sessionFilePath(root, a);
   const bPath = sessionFilePath(root, b);
   const bBefore = await readFile(bPath);
