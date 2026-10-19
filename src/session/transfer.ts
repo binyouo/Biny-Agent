@@ -511,6 +511,10 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
       boundaryUncertainThrough = callOrder;
     }
     if (event.type === "user_message") {
+      // Queued receipts are audit facts; the canonical delivery carries the input.
+      // Other audit-only users (for example hosted turns) remain conversational.
+      if (event.auditOnly
+        && (event.metadata?.queuedDelivery === "steer" || event.metadata?.queuedDelivery === "queue")) continue;
       lines.push({
         type: "user",
         timestamp: event.time,
