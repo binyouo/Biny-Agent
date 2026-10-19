@@ -1293,7 +1293,8 @@ async function initializeCommandRuntime(
       toolRegistry.unregister("AskUserQuestion");
       if (run) toolRegistry.registerBuiltinTool(createAskUserQuestionTool(userInput));
     },
-    hasBackgroundWork: () => heartbeat.status().running
+    hasBackgroundWork: () => agent.hasPendingMemoryWork()
+      || heartbeat.status().running
       || durableTaskPromises.size > 0
       || workerResumeAdmissions.size > 0
       || Boolean(subagentTaskManager?.listSnapshots().some((task) => task.status === "queued" || task.status === "running")),
@@ -1672,3 +1673,4 @@ export async function withCommandRuntime(workspaceRoot: string, fn: (runtime: Co
     await runtime.close();
   }
 }
+
