@@ -80,8 +80,9 @@ if (process.argv[2] === "paused-report-crash-child") {
       }) as typeof fetch;
       const configuration = config();
       host = await startRuntimeHost(root, async () => {
+        // Match hostProcess: sessionId preallocation is for fresh sessions only;
+        // historical sessions are loaded through resumeSession below.
         commands = await createCommandRuntime(root, {
-          sessionId: boundary.sessionId,
           configStore: { load: async () => configuration, save: async () => undefined }
         });
         const runtime = new InteractiveAgentRuntime(commands);
