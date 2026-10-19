@@ -1005,6 +1005,33 @@ export class GraphSupervisor {
 
   private async scan(): Promise<void> {
     const store = this.store();
+    // Reconcile committed reports before wakes; never replay a Worker or unpause a graph.
+    const tasks = this.taskRuns();
+    if (tasks) {
+      for (const graphId of store.listRunningGraphIds()) {
+        const graph = store.inspectGraph(graphId);
+        for (const node of graph.nodes) {
+          if (node.status !== "running" || node.taskRunId === undefined) continue;
+          const task = tasks.get(node.taskRunId);
+          if (task?.status !== "completed" || !readTaskDefinition(task.task).reportOnly) continue;
+          const result = await runTaskClosure({
+            taskRuns: tasks,
+            taskRunId: task.taskRunId,
+            workspaceRoot: this.options.getWorkspaceRoot?.() ?? process.cwd(),
+            ignore: this.options.getWorkspaceIgnore?.() ?? [],
+            executor: { executeTaskCheck: async () => { throw new Error("Completed report reconciliation cannot execute checks."); } },
+            executeAttempt: async () => { throw new Error("Completed report reconciliation cannot replay a Worker."); }
+          });
+          if (this.stopped || this.store() !== store || this.taskRuns() !== tasks) return;
+          const current = store.getGraph(graphId);
+          const owner = current?.nodes.find((candidate) => candidate.nodeId === node.nodeId);
+          if (current?.status !== "running" || owner?.status !== "running"
+            || owner.revision !== node.revision || owner.taskRunId !== node.taskRunId
+            || tasks.get(task.taskRunId)?.status !== "completed") continue;
+          store.projectTaskClosure(task.taskRunId, result);
+        }
+      }
+    }
     // 先交付已有检查点，再派发新工作；否则独立 ready 节点会推迟审批通知，
     // 甚至不断推进 revision，使等待交付的监督唤醒过期。繁忙会话仍跳过，不抢 writer。
     for (const wake of store.listSupervisorWakes()) {
