@@ -6,7 +6,7 @@ import type { LocalReferenceResult } from "../../../../session/localReferences.j
  * Agent 执行仍沿用原有数据流。输入与补全的局部交互由 PromptInput 负责。
  */
 import { useTooltip } from "@astryxdesign/core/Tooltip";
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ModelRuntimeInfo } from "../../../../llm/ModelManager.js";
 import type { AgentCapabilitySelection } from "../../../../agent/capabilitySelection.js";
 import type { ModelChoice } from "../../../../llm/ModelManager.js";
@@ -163,6 +163,8 @@ export const Composer = memo(function Composer({
   const snapshot = useSyncExternalStore(draftState.subscribe, draftState.getSnapshot, draftState.getSnapshot);
   const [editDraft, setEditDraft] = useState<ReferenceDraft>({ value: "", tokens: [] });
   const editDraftRef = useRef(editDraft);
+  const editingMessageRef = useRef(editingMessage);
+  useLayoutEffect(() => { editingMessageRef.current = editingMessage; }, [editingMessage]);
   const editHistory = useRef<ReferenceDraftTransition[]>([]);
   const editing = editingMessage !== undefined;
   const input = editing ? editDraft.value : snapshot.draft.value;
@@ -337,8 +339,10 @@ export const Composer = memo(function Composer({
         setDraft({ value: "", tokens: [] });
         await onSubmitEdit(value);
       } catch (submitError) {
-        setDraft(draft);
-        if (mounted.current) onSubmitError(errorMessage(submitError));
+        if (mounted.current && editingMessageRef.current === editingMessage) {
+          setDraft(draft);
+          onSubmitError(errorMessage(submitError));
+        }
       } finally {
         setBusy(false);
         submitFlightRef.current = false;
