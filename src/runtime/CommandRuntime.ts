@@ -1673,4 +1673,3 @@ export async function withCommandRuntime(workspaceRoot: string, fn: (runtime: Co
     await runtime.close();
   }
 }
-
