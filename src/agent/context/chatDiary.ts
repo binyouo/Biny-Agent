@@ -13,6 +13,7 @@ import type { ModelUsageObserver } from "../../observability/usage.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
   appendDailyMemoryEntry,
+  dailyMemoryEntryMarker,
   readDailyMemoryNote,
   readDailyMemorySection,
   upsertDailyMemorySection
@@ -79,14 +80,16 @@ export async function appendCompletedChatDiaryEntry(
 }
 
 /**
- * 从全局 session JSONL 补写指定日期缺失的聊天回合。marker 由 writer 做幂等去重，因此
- * 每次日结都可以安全扫描，不需要另建一张“日报已处理”状态表。
+ * 从全局 session JSONL 补写指定日期缺失的聊天回合；每次最多处理 500 个缺失候选。
+ * 已有 marker 不占预算，让后续刷新继续推进；writer 仍在锁内做最终幂等去重。
  */
 export async function backfillDailyChatDiaryEntries(
   dateKey: string,
   options: { configDir?: string; agentDir?: string } = {}
 ): Promise<number> {
   const files = await listAllSessionFiles(options.agentDir);
+  const note = await readDailyMemoryNote(dateKey, { configDir: options.configDir });
+  const existingMarkers = new Set(note?.match(/<!-- biny-daily-entry:[0-9a-f]{24} -->/gu) ?? []);
   let backfilled = 0;
   for (const filePath of files) {
     if (backfilled >= dailyDiaryMaxBackfillTurns) break;
@@ -100,6 +103,8 @@ export async function backfillDailyChatDiaryEntries(
     const projectName = sessionProjectName(filePath);
     for (const turn of completedChatTurns(events, dateKey)) {
       if (backfilled >= dailyDiaryMaxBackfillTurns) break;
+      const marker = dailyMemoryEntryMarker(`${sessionId}\0${turn.turnId}`);
+      if (existingMarkers.has(marker)) continue;
       await appendCompletedChatDiaryEntry({
         sessionId,
         turnId: turn.turnId,
@@ -109,6 +114,7 @@ export async function backfillDailyChatDiaryEntries(
         assistantMessage: turn.assistantMessage,
         occurredAt: turn.occurredAt
       }, { configDir: options.configDir });
+      existingMarkers.add(marker);
       backfilled += 1;
     }
   }

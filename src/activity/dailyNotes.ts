@@ -87,6 +87,11 @@ export async function upsertDailyMemorySection(
   ));
 }
 
+/** writer 和补写预筛共享同一 marker，保持既有条目的去重身份不变。 */
+export function dailyMemoryEntryMarker(entryKey: string): string {
+  return `<!-- biny-daily-entry:${createHash("sha256").update(entryKey).digest("hex").slice(0, 24)} -->`;
+}
+
 /** 追加一个可幂等识别的聊天摘要条目；同一 turn 重试不会重复污染日报。 */
 export async function appendDailyMemoryEntry(
   dateKey: string,
@@ -97,7 +102,7 @@ export async function appendDailyMemoryEntry(
 ): Promise<string> {
   assertDailyDate(dateKey);
   const heading = normalizeSectionHeading(sectionTitle);
-  const marker = `<!-- biny-daily-entry:${createHash("sha256").update(entryKey).digest("hex").slice(0, 24)} -->`;
+  const marker = dailyMemoryEntryMarker(entryKey);
   return await mutateDailyMemoryNote(dateKey, options, (existing) => {
     const withSection = replaceDailySection(existing, dateKey, heading, readDailySection(existing, heading));
     if (withSection.includes(marker)) return withSection;
