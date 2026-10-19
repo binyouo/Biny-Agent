@@ -399,12 +399,13 @@ async function setupFixture(t: TestContext, twoTurns: boolean) {
   };
   const submit = async (): Promise<void> => {
     const button = one<HTMLButtonElement>('[aria-label="发送消息"]');
-    assert.equal(button.disabled, false); assert.equal(button.closest("[inert]"), null);
+    assert.equal(button.disabled, false); assert.notEqual(button.getAttribute("aria-disabled"), "true");
+    assert.equal(button.closest("[inert]"), null);
     const before = edits.length;
     await act(async () => { button.click(); });
     assert.equal(edits.length, before + 1, "The public edit API must receive exactly one submission");
     assert.equal(input().disabled, true, "The pending edit disables keyboard input");
-    assert.equal(one<HTMLButtonElement>('[aria-label="发送消息"]').disabled, true);
+    assert.equal(one<HTMLButtonElement>('[aria-label="发送消息"]').getAttribute("aria-disabled"), "true");
   };
   const cancelEdit = async (): Promise<void> => {
     const button = one<HTMLButtonElement>('[aria-label="取消编辑"]');
@@ -548,8 +549,8 @@ test("current edit succeeds once, disables repeated submission, and restores the
   await h.typeInput("Ordinary draft to preserve");
   await h.beginEdit(); await h.typeInput("Confirmed current edit"); await h.submit();
   const button = h.document.querySelector<HTMLButtonElement>('[aria-label="发送消息"]')!;
-  assert.equal(button.disabled, true); button.click();
-  assert.equal(h.edits.length, 1, "A disabled DOM send cannot duplicate the pending edit");
+  assert.equal(button.getAttribute("aria-disabled"), "true"); button.click();
+  assert.equal(h.edits.length, 1, "The aria-disabled send action cannot duplicate the pending edit");
   await h.settle(); await h.drainFrames();
   assert.equal(h.document.querySelector(".composer-edit-banner"), null);
   assert.equal(h.input().value, "Ordinary draft to preserve");
