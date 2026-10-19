@@ -1037,6 +1037,8 @@ export class ActivityRecorderService {
     const epoch = this.captureEpoch;
     this.captureInFlight = true;
     try {
+      // 每帧固定自己的库代际：删除前的 OCR 失效，之后的新截图无需等待输入进程恢复。
+      const revision = this.store.clearRevision();
       const independentBundle = this.child ? undefined : await this.verifiedIndependentBundle(epoch, settings);
       if (!this.child && !independentBundle) return;
       const application = this.child ? this.currentApplication : independentBundle;
@@ -1073,7 +1075,7 @@ export class ActivityRecorderService {
             this.frameCount = 0;
             // 已落盘帧的 OCR 不受前台切换影响；暂停、重启和清空仍取消旧结果。
             if (!signal.aborted) await this.enqueue(async () => {
-              if (!signal.aborted && this.recordingRevision === this.store.clearRevision()) await this.persistOcr({type:"ocr",captureId,ocrText});
+              if (!signal.aborted && revision === this.store.clearRevision()) await this.persistOcr({type:"ocr",captureId,ocrText});
             });
           } catch (error) {
             // OCR 程序暂缺时尚未完成这一轮识别；下张已保存帧应立即重试。
