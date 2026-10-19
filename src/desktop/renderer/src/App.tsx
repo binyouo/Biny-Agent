@@ -906,11 +906,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   const toggleSessionPinned = useCallback(async (session: DesktopSessionSummary, pinned = !session.pinned): Promise<void> => {
     try {
-      mergeProjectSnapshot(await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision));
+      const snapshot = await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision);
+      invalidateProjectRefresh(session.projectId);
+      mergeProjectSnapshot(snapshot);
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [mergeProjectSnapshot]);
+  }, [invalidateProjectRefresh, mergeProjectSnapshot]);
 
   const deleteSidebarSessions = useCallback(async (sessions: DesktopSessionSummary[], confirm = true, onStarted?: () => void) => {
     const targets = sessions.map(session => ({ projectId: session.projectId, sessionId: session.id }));

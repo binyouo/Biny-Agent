@@ -103,7 +103,7 @@ export function useDesktopEventBridge({
         const epoch = projectRefreshEpochs.current.get(projectId) ?? 0;
         void window.biny.refreshProject(projectId).then(async (snapshot) => {
           if (!active) return;
-          // A confirmed rename supplies a newer complete snapshot. Re-read after the
+          // A confirmed metadata change supplies a newer complete snapshot. Re-read after the
           // existing debounce instead of combining its metadata with this older read.
           if ((projectRefreshEpochs.current.get(projectId) ?? 0) !== epoch) {
             scheduleRefresh(projectId, sessionId);
