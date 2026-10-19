@@ -93,8 +93,17 @@ function snapshots(twoTurns: boolean) {
   }]));
   if (twoTurns) {
     const first = documents.get(SESSION)!;
-    documents.set(SESSION, { ...first, events: [...first.events,
-      { type: "user_message", time: TIME, messageId: SESSION + "-user-second", content: "Second source question" },
+    // Public summaries are not canonical message-tree nodes. Keep both turns
+    // on the real user → assistant → user → assistant ancestry path.
+    documents.set(SESSION, { ...first, events: [first.events[0]!,
+      { type: "agent_message", time: TIME, messageId: MESSAGE, parentMessageId: SESSION + "-user",
+        replyToMessageId: SESSION + "-user", slotId: SESSION + "-answer-slot",
+        message: { role: "assistant", content: [{ type: "text", text: first.session.lastAssistantMessage! }] } },
+      first.events[1]!,
+      { type: "user_message", time: TIME, messageId: SESSION + "-user-second", parentMessageId: MESSAGE, content: "Second source question" },
+      { type: "agent_message", time: TIME, messageId: MESSAGE + "-second", parentMessageId: SESSION + "-user-second",
+        replyToMessageId: SESSION + "-user-second", slotId: SESSION + "-answer-slot-second",
+        message: { role: "assistant", content: [{ type: "text", text: "Second source reply" }] } },
       { type: "assistant_message", time: TIME, messageId: MESSAGE + "-second", replyToMessageId: SESSION + "-user-second",
         slotId: SESSION + "-answer-slot-second", content: "Second source reply" }
     ] });
@@ -647,6 +656,12 @@ for (const cancelFirst of [false, true]) {
   for (const outcome of ["success", "failure"] as const) {
     test("same-session newer message edit survives old " + outcome + (cancelFirst ? " after explicit cancel" : " after selecting another message"), { timeout: 20_000 }, async t => {
       const h = await fixture(t, true);
+      for (const suffix of ["-user", "-user-second"]) {
+        const buttons = h.document.querySelectorAll<HTMLButtonElement>('article[data-message-id="' + SESSION + suffix + '"] [aria-label="编辑消息"]');
+        assert.equal(buttons.length, 1, "Both linked history turns must expose their real edit action before submission");
+        assert.equal(buttons[0]!.disabled, false);
+        assert.equal(buttons[0]!.closest("[inert]") === null, true);
+      }
       await h.typeInput("Separate current-session draft");
       await h.beginEdit(SESSION, 1); await h.typeInput("Submitted second-message edit"); await h.submit();
       assert.equal(h.edits[0]!.args[2], 1);
