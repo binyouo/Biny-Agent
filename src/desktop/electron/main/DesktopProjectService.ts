@@ -43,7 +43,7 @@ import { deleteSessionArtifacts } from "../../../session/cleanup.js";
 import { rebaseForkedSessionEvents } from "../../../session/fork.js";
 import { createSessionId, type SessionTurnStatus } from "../../../session/recorder.js";
 import { SessionRunLedger, type SessionRunRecord } from "../../../session/runLedger.js";
-import { createSessionFile, ensureAgentDirs } from "../../../session/store.js";
+import { createSessionFile, ensureAgentDirs, listSessionFiles } from "../../../session/store.js";
 import { TurnStore } from "../../../session/turnStore.js";
 import { replaySessionEvents } from "../../../session/replay.js";
 import { pausedTurnAvailable, resolveContinuationPlan } from "../../../session/recoveryPlan.js";
@@ -390,17 +390,20 @@ export class DesktopProjectService {
       if (project.missing) { incompleteSessions++; continue; }
       try {
         const dataRoot = await this.storage.ensureProjectData(project);
-        const catalog = await listSessionCatalog(dataRoot);
-        for (const item of catalog) {
-          if (sessionId ? item.id !== sessionId : days !== "all" && Date.parse(item.summary.updatedAt) < start.getTime()) continue;
+        // The recovery catalog omits unreadable or message-less histories; statistics
+        // must inspect every stored session to report incomplete reads honestly.
+        const files = await listSessionFiles(dataRoot);
+        for (const file of files) {
+          const id = file.replace(/\.jsonl$/u, "");
+          if (sessionId && id !== sessionId) continue;
           try {
-            const stored = await this.optimizationIndex.read(dataRoot, item.id);
+            const stored = await this.optimizationIndex.read(dataRoot, id);
             for (const entry of stored) {
               if (seen.has(entry.optimization.id)) continue;
               if (days !== "all" && Date.parse(entry.time) < start.getTime()) continue;
               seen.add(entry.optimization.id);
               entries.push({ optimization: entry.optimization, time: entry.time,
-                origin: entry.toolCallId ? { projectId: project.id, sessionId: item.id, toolCallId: entry.toolCallId } : undefined });
+                origin: entry.toolCallId ? { projectId: project.id, sessionId: id, toolCallId: entry.toolCallId } : undefined });
             }
           } catch { incompleteSessions++; }
         }
