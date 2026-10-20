@@ -40,7 +40,8 @@ const callees = new Set([
   "this.environmentWindows.values", "[...this.environmentWindows.values()].find", "window.isDestroyed",
   "embedded.view.webContents.isDestroyed", "this.window.isDestroyed", "this.evaluate",
   "this.sendDebuggerCommand", "Object.keys", "signal?.throwIfAborted",
-  "debuggerSession.isAttached", "debuggerSession.attach", "debuggerSession.sendCommand", "value.trim"
+  "debuggerSession.isAttached", "debuggerSession.attach", "debuggerSession.sendCommand", "value.trim",
+  "onAction", "group.tabs.values", "[...group.tabs.values()].some"
 ]);
 function audit(node: ts.Node): void {
   assert.notEqual(node.kind, ts.SyntaxKind.ImportKeyword, "No dynamic imports in extracted code");
