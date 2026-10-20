@@ -522,24 +522,29 @@ export class DesktopBrowserService {
    * `url` 省略时打开首页。
    */
   async open(url?: string): Promise<void> {
+    await this.openPage(url);
+  }
+
+  private async openPage(url?: string): Promise<WebContents> {
     const target = url ?? homeUrl;
     if (!isHttpUrl(target)) throw new Error("Browser navigation only supports HTTP and HTTPS URLs.");
     const shown = this.shownBrowser;
     const embedded = shown && this.embeddedProjects.get(shown.projectId)?.tabs.get(shown.tabId);
     if (embedded && !embedded.view.webContents.isDestroyed()) {
-      await embedded.view.webContents.loadURL(target);
       this.automationContents = embedded.view.webContents;
+      await embedded.view.webContents.loadURL(target);
       this.browserSessionManaged = true;
-      return;
+      return embedded.view.webContents;
     }
     this.attachCookieListener();
     if (this.window && !this.window.isDestroyed()) {
-      this.window.show();
-      this.window.focus();
-      await this.window.loadURL(target);
-      this.automationContents = this.window.webContents;
+      const window = this.window;
+      window.show();
+      window.focus();
+      this.automationContents = window.webContents;
+      await window.loadURL(target);
       this.browserSessionManaged = true;
-      return;
+      return window.webContents;
     }
     const window = new BrowserWindow({
       width: 1180,
@@ -577,6 +582,7 @@ export class DesktopBrowserService {
     window.once("ready-to-show", () => window.show());
     await window.loadURL(target);
     this.browserSessionManaged = true;
+    return window.webContents;
   }
 
   /** 小红书凭据仅在主进程与系统剪贴板之间流动，不进入 renderer 快照。 */
@@ -889,6 +895,7 @@ export class DesktopBrowserService {
         : active?.state.environmentId ? this.browserEnvironments.get(active.state.environmentId) : this.browserEnvironments.get("default");
       if (!environment) throw new Error("指定的浏览器环境不存在。");
       await this.prepareBrowserEnvironment(environment.id);
+      let contents: WebContents;
       if (projectId && this.desktopWindow && !this.desktopWindow.isDestroyed()) {
         let tab = active?.state.environmentId === environment.id ? active : undefined;
         if (!tab) {
@@ -896,15 +903,18 @@ export class DesktopBrowserService {
           tab = this.embeddedProjects.get(projectId)?.tabs.get(snapshot.activeId ?? "");
         }
         if (!tab || tab.view.webContents.isDestroyed()) throw new Error("浏览器标签不可用。");
-        this.automationContents = tab.view.webContents;
+        contents = tab.view.webContents;
+        this.automationContents = contents;
         await tab.view.webContents.loadURL(url);
         this.browserSessionManaged ||= environment.id === "default";
       } else if (environment.id === "default") {
-        await this.open(url);
+        contents = await this.openPage(url);
       } else {
-        await this.openInEnvironmentWindow(url, environment.id);
+        contents = await this.openInEnvironmentWindow(url, environment.id);
       }
-      return await this.pageState();
+      // Selection may change through UI IPC while loadURL is pending. Report
+      // the page we actually navigated without restoring an older selection.
+      return await this.pageState(contents);
     }
     await this.ensureContents();
     if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000));
@@ -914,7 +924,11 @@ export class DesktopBrowserService {
     throw new Error(`Unsupported browser automation method: ${method}`);
   }
 
-  private async ensureContents(): Promise<WebContents> {
+  private async ensureContents(owner?: WebContents): Promise<WebContents> {
+    if (owner) {
+      if (owner.isDestroyed()) throw new Error("Browser action page is closed.");
+      return owner;
+    }
     if (this.automationContents && !this.automationContents.isDestroyed()) return this.automationContents;
     const shown = this.shownBrowser;
     const embedded = shown && this.embeddedProjects.get(shown.projectId)?.tabs.get(shown.tabId);
@@ -925,7 +939,7 @@ export class DesktopBrowserService {
     throw new Error("Biny 内置浏览器未打开页面。读取日常浏览器请使用 ChromeRelayListTabs；不会自动打开首页。");
   }
 
-  private async openInEnvironmentWindow(url: string, environmentId: string): Promise<void> {
+  private async openInEnvironmentWindow(url: string, environmentId: string): Promise<WebContents> {
     const partition = browserPartitionForEnvironment(environmentId);
     let window = this.environmentWindows.get(environmentId);
     if (!window || window.isDestroyed()) {
@@ -942,10 +956,11 @@ export class DesktopBrowserService {
     }
     this.automationContents = window.webContents;
     await window.loadURL(url);
+    return window.webContents;
   }
 
-  private async pageState(): Promise<{ url: string; title: string }> {
-    const result = await this.evaluate("({ url: location.href, title: document.title })");
+  private async pageState(contents?: WebContents): Promise<{ url: string; title: string }> {
+    const result = await this.evaluate("({ url: location.href, title: document.title })", undefined, contents);
     const state = asRecord(result);
     return { url: readString(state.url, "url"), title: typeof state.title === "string" ? state.title : "" };
   }
@@ -1018,17 +1033,18 @@ export class DesktopBrowserService {
     return await this.pageState();
   }
 
-  private async evaluate(expression: string, signal?: AbortSignal): Promise<unknown> {
-    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal));
+  private async evaluate(expression: string, signal?: AbortSignal, contents?: WebContents): Promise<unknown> {
+    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal, contents));
     const exception = asRecord(result.exceptionDetails);
     if (Object.keys(exception).length) throw new Error(typeof exception.text === "string" ? exception.text : "Browser page evaluation failed.");
     const remote = asRecord(result.result);
     return remote.value;
   }
 
-  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    const contents = await this.ensureContents();
+  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal, owner?: WebContents): Promise<unknown> {
+    const contents = await this.ensureContents(owner);
     signal?.throwIfAborted();
+    if (contents.isDestroyed()) throw new Error("Browser action page is closed.");
     const debuggerSession = contents.debugger;
     if (!debuggerSession.isAttached()) debuggerSession.attach("1.3");
     signal?.throwIfAborted();
