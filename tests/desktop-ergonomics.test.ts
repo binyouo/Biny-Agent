@@ -15,6 +15,7 @@ async function harness() {
     biny: { updateSettingsDraftState: async () => {}, previewAppearance: async () => {}, activitySettings: async () => { throw new Error("offline"); },
       quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }),
       applicationImports: async () => ({ sources: [], history: [], sync: { enabled: false, hasSelection: false } }),
+      toolOptimizationStats: async () => ({ entries: [], incompleteSessions: 0, rtk: {} }),
       bootstrap: async () => ({ projects: [], sidebarSessions: [] }), onApplicationImportsChanged: () => () => {},
       onActivityEvent: () => () => {}, activitySnapshot: async () => { throw new Error("offline"); }, activityPermissions: async () => { throw new Error("offline"); } } });
   dom.window.HTMLElement.prototype.scrollTo = () => {};
@@ -165,14 +166,14 @@ test("聊天草稿在切项目、切会话和取消历史编辑后保留，默�
   } finally { await h.close(); }
 });
 
-test("16个设置页面直接导航，页头精简且配色可直接进入", async () => {
+test("17个设置页面直接导航，页头精简且配色可直接进入", async () => {
   const h = await harness();
   try {
     const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
     const props = { open: true, version: "test", projects: [], themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
       onNotify() {}, onThemePreference() {}, onFontPreference() {}, onSettingsCommitted() {}, onClose() {} };
     await h.render(h.React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>));
-    const pages = [["通用", "通用"], ["模型", "模型供应商"], ["聊天", "聊天偏好"], ["用户界面", "用户界面"], ["配色", "配色"], ["记忆", "记忆"], ["技能", "技能"], ["MCP 服务器", "MCP 服务器"], ["插件", "插件"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["Appshots", "Appshots"], ["Computer Use", "Computer Use"], ["Computer History", "Computer History"], ["导入", "导入"], ["关于", "关于"]];
+    const pages = [["通用", "通用"], ["模型", "模型供应商"], ["聊天", "聊天偏好"], ["Token 节省", "Token 节省"], ["用户界面", "用户界面"], ["配色", "配色"], ["记忆", "记忆"], ["技能", "技能"], ["MCP 服务器", "MCP 服务器"], ["插件", "插件"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["Appshots", "Appshots"], ["Computer Use", "Computer Use"], ["Computer History", "Computer History"], ["导入", "导入"], ["关于", "关于"]];
     assert.deepEqual([...document.querySelectorAll('.settings-nav-list button')].map(node => node.textContent), pages.map(page => page[1]));
     assert.equal(document.querySelectorAll('.settings-nav-group').length, 0);
     assert.equal(document.querySelectorAll('.settings-titlebar p, .settings-save-hint').length, 0);
@@ -184,6 +185,7 @@ test("16个设置页面直接导航，页头精简且配色可直接进入", asy
       assert.equal(document.querySelector('.settings-nav-list [aria-current="page"]')?.textContent, label, route);
       assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, label, route);
       assert.equal(document.querySelector('.settings-subnav'), null, route);
+      if (route === "Token 节省") assert.ok(document.querySelector('.tool-optimization-page'), "统计页面应正常加载");
     }
     await h.render(h.React.createElement(SettingsOverlay, { ...props, targetTab: "配色" } as unknown as React.ComponentProps<typeof SettingsOverlay>));
     assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "配色");

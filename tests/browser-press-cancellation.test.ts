@@ -27,12 +27,17 @@ const callees = new Set([
   "asRecord", "JSON.parse", "readString", "controller.abort", "socket.once",
   "method.startsWith", "this.computerUse", "this.enqueueAutomation", "controller.signal.throwIfAborted",
   "this.readWebPage", "this.executeAutomation", "this.ensureContents", "this.previewActivity",
-  "contents.getTitle", "contents.isDestroyed", "contents.capturePage",
+  "contents.getTitle", "contents.isDestroyed", "owner.isDestroyed", "contents.capturePage",
   "(await contents.capturePage()).resize", "(await contents.capturePage()).resize({ width: 1024 }).toJPEG",
   "image.toString", "console.error", "socket.off", "socket.write", "JSON.stringify", "String",
-  "this.automationTail.then", "run.then", "isHttpUrl", "this.open", "this.pageState",
+  "this.automationTail.then", "run.then", "isHttpUrl", "this.open", "this.openPage", "this.pageState",
   "this.readDom", "readNumber", "this.click", "this.fill", "this.press",
   "this.embeddedProjects.get", "this.embeddedProjects.get(shown.projectId)?.tabs.get",
+  "this.browserEnvironments.list", "this.browserEnvironments.list().map", "this.browserEnvironments.get",
+  "this.embeddedProjects.get(projectId)?.tabs.get", "this.prepareBrowserEnvironment",
+  "this.desktopWindow.isDestroyed", "this.browserAction", "tab.view.webContents.isDestroyed",
+  "tab.view.webContents.loadURL", "this.openInEnvironmentWindow", "this.automationContents.isDestroyed",
+  "this.environmentWindows.values", "[...this.environmentWindows.values()].find", "window.isDestroyed",
   "embedded.view.webContents.isDestroyed", "this.window.isDestroyed", "this.evaluate",
   "this.sendDebuggerCommand", "Object.keys", "signal?.throwIfAborted",
   "debuggerSession.isAttached", "debuggerSession.attach", "debuggerSession.sendCommand", "value.trim"
@@ -55,12 +60,14 @@ const compiled = ts.transpileModule(code, { compilerOptions: { target: ts.Script
 assert.equal((compiled.diagnostics ?? []).filter(item => item.category === ts.DiagnosticCategory.Error).length, 0);
 
 interface Command { method: string; params: Record<string, unknown> }
-interface Contents { debugger: { isAttached(): boolean; attach(version: string): void; sendCommand(method: string, params: Record<string, unknown>): Promise<unknown> } }
+interface Contents { isDestroyed(): boolean; debugger: { isAttached(): boolean; attach(version: string): void; sendCommand(method: string, params: Record<string, unknown>): Promise<unknown> } }
 interface Response { ok: boolean; error?: string }
 interface Socket { once(name: string, listener: () => void): void; off(name: string, listener: () => void): void; write(value: string): void }
 interface Subject {
   automationTail: Promise<void>;
-  window: { isDestroyed(): boolean; webContents: Contents };
+  window?: { isDestroyed(): boolean; webContents: Contents };
+  automationContents?: Contents;
+  environmentWindows: Map<string, { isDestroyed(): boolean; webContents: Contents }>;
   embeddedProjects: Map<string, never>;
   previewActivity: undefined;
   computerUse: undefined;
@@ -74,7 +81,7 @@ function deferred() {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
-interface Options { pause?: "focus" | "keyDown"; pauseEnsureCall?: number; focusException?: boolean; key?: string; closeOnAttach?: boolean }
+interface Options { pause?: "focus" | "keyDown"; pauseEnsureCall?: number; focusException?: boolean; key?: string; closeOnAttach?: boolean; target?: "automation" | "environment" }
 function fixture(options: Options = {}) {
   const SubjectClass = runInNewContext(compiled.outputText, {
     AbortController, ToolOutcomeUnknownError: class ToolOutcomeUnknownError extends Error {}
@@ -91,7 +98,7 @@ function fixture(options: Options = {}) {
   };
   const close = (): void => { const current = [...(listeners.get("close") ?? [])]; listeners.delete("close"); for (const listener of current) listener(); };
   const listenerCount = (): number => [...listeners.values()].reduce((count, set) => count + set.size, 0);
-  const contents: Contents = { debugger: {
+  const contents: Contents = { isDestroyed: () => false, debugger: {
     isAttached: () => !options.closeOnAttach,
     attach(version) {
       assert.equal(version, "1.3");
@@ -121,6 +128,14 @@ function fixture(options: Options = {}) {
     }
   } };
   subject.window = { isDestroyed: () => false, webContents: contents };
+  subject.environmentWindows = new Map();
+  if (options.target === "automation") {
+    subject.automationContents = contents;
+    subject.window = undefined;
+  } else if (options.target === "environment") {
+    subject.environmentWindows.set("fixture", subject.window);
+    subject.window = undefined;
+  }
   subject.embeddedProjects = new Map<string, never>();
   subject.automationTail = Promise.resolve();
   subject.previewActivity = undefined;
@@ -165,6 +180,18 @@ test("socket close while focus CDP response is pending prevents later keyDown", 
   assert.equal(f.responses[0]?.ok, false);
   assert.equal(f.listenerCount(), 0);
 });
+
+for (const target of ["automation", "environment"] as const) {
+  test(`socket close prevents keyDown for current ${target} contents`, testOptions, async () => {
+    const f = fixture({ target, pause: "focus" }); const run = f.request();
+    await f.reached.promise;
+    assert.deepEqual(f.events, ["focus"]);
+    f.close(); f.release.resolve(); await run;
+    assert.deepEqual(f.events, ["focus"]);
+    assert.equal(f.responses[0]?.ok, false);
+    assert.equal(f.listenerCount(), 0);
+  });
+}
 
 for (const selector of [true, false]) {
   test(`guard after artificial keyDown ensureContents wait, selector=${selector}`, testOptions, async () => {
