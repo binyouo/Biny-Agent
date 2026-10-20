@@ -798,7 +798,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         // 导入已完成时保留项目入口，但较早的回执不能重新取得导航权或覆盖已有摘要。
         setProjects((current) => current.some((project) => project.id === snapshot.project.id)
           ? current : mergeProject(current, snapshot.project));
-        await adoptWorkspace(snapshot, undefined, request);
+        // 意图仍归本次打开所有时再提交；提交使用新请求号，隔离等待期间旧工作区发出的回执。
+        if (loadRequestRef.current === request) await adoptWorkspace(snapshot);
       }
     } catch (error) {
       if (loadRequestRef.current === request) setWarning(errorMessage(error));
@@ -818,7 +819,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       // 创建目录与选择工作区是两件事：后续菜单导航或会话交接不会撤销已创建的项目。
       setProjects((current) => current.some((project) => project.id === snapshot.project.id)
         ? current : mergeProject(current, snapshot.project));
-      if (await adoptWorkspace(snapshot, undefined, request)) setFocusToken((value) => value + 1);
+      if (loadRequestRef.current === request && await adoptWorkspace(snapshot)) setFocusToken((value) => value + 1);
     }
   }, [adoptWorkspace]);
 
