@@ -50,6 +50,8 @@ interface ComposerProps {
   project?: DesktopProject;
   drafts: Map<string, ComposerDraftState>;
   draftKey: string;
+  /** 导航引用可早于 React 卸载更新，派发前同步确认提交仍属于当前聊天。 */
+  isSubmissionCurrent?(): boolean;
   runtimeInfo?: ModelRuntimeInfo;
   models: ModelChoice[];
   connections?: readonly DesktopModelConnection[];
@@ -117,6 +119,7 @@ export const Composer = memo(function Composer({
   project,
   drafts,
   draftKey,
+  isSubmissionCurrent,
   runtimeInfo,
   models,
   connections,
@@ -367,6 +370,9 @@ export const Composer = memo(function Composer({
           return;
         }
       }
+      // 模型保存属于 App，可跨会话继续；尚未派发的输入只属于原 Composer。
+      // 导航卸载后保留原草稿，不把迟到的提交交给新会话的动态回调。
+      if (!mounted.current || isSubmissionCurrent?.() === false) return;
       const [slashName] = value.split(/\s+/, 1);
       const slashCommand = DESKTOP_SLASH_COMMANDS.find((command) => command.name === slashName);
       if (!resume && slashCommand && (value === slashCommand.name || slashCommand.acceptsArgs)) {
