@@ -906,15 +906,19 @@ export class DesktopBrowserService {
       }
       return await this.pageState();
     }
-    await this.ensureContents();
+    const contents = await this.ensureContents();
     if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000));
     if (method === "click") return await this.click(readString(args.selector, "selector"));
     if (method === "fill") return await this.fill(readString(args.selector, "selector"), readString(args.value, "value"));
-    if (method === "press") return await this.press(args.selector === undefined ? undefined : readString(args.selector, "selector"), readString(args.key, "key"), signal);
+    if (method === "press") return await this.press(args.selector === undefined ? undefined : readString(args.selector, "selector"), readString(args.key, "key"), signal, contents);
     throw new Error(`Unsupported browser automation method: ${method}`);
   }
 
-  private async ensureContents(): Promise<WebContents> {
+  private async ensureContents(owner?: WebContents): Promise<WebContents> {
+    if (owner) {
+      if (owner.isDestroyed()) throw new Error("Browser action page is closed.");
+      return owner;
+    }
     if (this.automationContents && !this.automationContents.isDestroyed()) return this.automationContents;
     const shown = this.shownBrowser;
     const embedded = shown && this.embeddedProjects.get(shown.projectId)?.tabs.get(shown.tabId);
@@ -944,8 +948,8 @@ export class DesktopBrowserService {
     await window.loadURL(url);
   }
 
-  private async pageState(): Promise<{ url: string; title: string }> {
-    const result = await this.evaluate("({ url: location.href, title: document.title })");
+  private async pageState(contents?: WebContents): Promise<{ url: string; title: string }> {
+    const result = await this.evaluate("({ url: location.href, title: document.title })", undefined, contents);
     const state = asRecord(result);
     return { url: readString(state.url, "url"), title: typeof state.title === "string" ? state.title : "" };
   }
@@ -1011,24 +1015,28 @@ export class DesktopBrowserService {
     })()`);
   }
 
-  private async press(selector: string | undefined, key: string, signal?: AbortSignal): Promise<unknown> {
-    if (selector) await this.evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.'); element.focus(); })()`, signal);
-    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined }, signal);
-    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key });
-    return await this.pageState();
+  private async press(selector: string | undefined, key: string, signal?: AbortSignal, contents?: WebContents): Promise<unknown> {
+    // UI tab selection is independent of automationTail. Keep this action on its
+    // original page without restoring selection over a newer user choice.
+    const owner = contents ?? await this.ensureContents();
+    if (selector) await this.evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.'); element.focus(); })()`, signal, owner);
+    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined }, signal, owner);
+    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key }, undefined, owner);
+    return await this.pageState(owner);
   }
 
-  private async evaluate(expression: string, signal?: AbortSignal): Promise<unknown> {
-    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal));
+  private async evaluate(expression: string, signal?: AbortSignal, contents?: WebContents): Promise<unknown> {
+    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal, contents));
     const exception = asRecord(result.exceptionDetails);
     if (Object.keys(exception).length) throw new Error(typeof exception.text === "string" ? exception.text : "Browser page evaluation failed.");
     const remote = asRecord(result.result);
     return remote.value;
   }
 
-  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    const contents = await this.ensureContents();
+  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal, owner?: WebContents): Promise<unknown> {
+    const contents = await this.ensureContents(owner);
     signal?.throwIfAborted();
+    if (contents.isDestroyed()) throw new Error("Browser action page is closed.");
     const debuggerSession = contents.debugger;
     if (!debuggerSession.isAttached()) debuggerSession.attach("1.3");
     signal?.throwIfAborted();
