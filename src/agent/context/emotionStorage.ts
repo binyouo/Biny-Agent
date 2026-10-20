@@ -10,7 +10,6 @@ import path from "node:path";
 import { withGlobalConfigWriteLock } from "../../config/versioned.js";
 import { globalConfigDir } from "../../config/paths.js";
 import { blendEmotion, DEFAULT_EMOTION_STATE, type BlendedEmotion, type EmotionState } from "./emotionTypes.js";
-import type { FatigueAction } from "./fatigue.js";
 
 const baseFileName = "base.md";
 const contextDirectoryName = "context";
@@ -39,18 +38,6 @@ export class EmotionStorage {
 
   async writeBase(state: EmotionState): Promise<void> {
     await withGlobalConfigWriteLock(this.root, async () => await this.writeState(path.join(this.root, baseFileName), state));
-  }
-
-  /** 休息只更新能量，锁内读取以保留同时发生的心情变化。 */
-  async updateRestEnergy(action: FatigueAction): Promise<void> {
-    await withGlobalConfigWriteLock(this.root, async () => {
-      const base = await this.readBase() ?? DEFAULT_EMOTION_STATE;
-      await this.writeState(path.join(this.root, baseFileName), {
-        ...base,
-        energy: action === "sleep" ? Math.min(2, base.energy) : action === "rest" ? 10 : Math.max(7, base.energy),
-        updatedAt: this.now().toISOString()
-      });
-    });
   }
 
   async readContext(sessionId: string): Promise<EmotionState | undefined> {

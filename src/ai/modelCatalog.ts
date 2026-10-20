@@ -222,6 +222,9 @@ export function parseModelCatalog(
       audio: firstBoolean(sources, ["supports_audio", "supportsAudio", "audio"]) ?? modalityCapability(modalities, "audio"),
       streaming: firstBoolean(sources, ["supports_streaming", "supportsStreaming", "streaming"]) ?? true
     };
+    const serviceTiers = firstArray(sources, ["service_tiers", "serviceTiers"])
+      ?.filter((tier): tier is "priority" => tier === "priority");
+    if (serviceTiers?.length) capabilities.serviceTiers = [...new Set(serviceTiers)];
     const parallelToolCalls = firstBoolean(sources, [
       "parallel_tool_calls", "parallelToolCalls", "supports_parallel_tool_calls", "supportsParallelToolCalls"
     ]);

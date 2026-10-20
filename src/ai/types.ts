@@ -34,6 +34,8 @@ export interface ModelCapabilities {
   vision?: boolean;
   audio: boolean;
   streaming: boolean;
+  /** Provider-declared request service tiers supported by this model. */
+  serviceTiers?: Array<"priority">;
 }
 
 /** 模型/协议限制。缺失的字段由 ProviderRuntime 用保守默认值补齐。 */

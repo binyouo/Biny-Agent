@@ -16,13 +16,13 @@ import { maxSkillMetadataBytes, parseSkillDocument, readSkillMetadataFields, typ
 import { z } from "zod";
 import { ToolAccesses } from "../tools/access.js";
 import type { Tool } from "../tools/types.js";
-import { globalConfigDir } from "../config/paths.js";
-import { DEFAULT_PROJECT_SKILL_PATHS, defaultGlobalSkillRoots, GLOBAL_SKILL_ROOT_CONVENTIONS, skillRootPrecedence, type SkillRootSource } from "./skillRoots.js";
+import { DEFAULT_PROJECT_SKILL_PATHS, defaultGlobalSkillRoots, GLOBAL_SKILL_ROOT_CONVENTIONS, isBinyGlobalSkillRoot, skillRootPrecedence, type SkillRootSource } from "./skillRoots.js";
 import { resolveSkillActivation } from "./skillActivation.js";
 import { createSkillId, createSkillRef } from "./skillRef.js";
 import type { SkillRef } from "./skillTypes.js";
 import type { CapabilitySelectionValue } from "../agent/capabilitySelection.js";
 import { builtinSkillRoot } from "./builtinSkills.js";
+import { isManagedSkillVersionPath, readManagedSkillVersion } from "./skillVersions.js";
 
 const maxDiscoveredSkillCount = 256;
 const maxSkillInstructionBytes = 512 * 1024;
@@ -632,7 +632,7 @@ function sourceForProjectSkill(candidatePath: string | undefined, projectRoot: s
 }
 
 function sourceForGlobalRoot(configuredPath: string): SkillRootSource {
-  if (path.resolve(configuredPath) === path.join(globalConfigDir(), "skills")) return "biny";
+  if (isBinyGlobalSkillRoot(configuredPath)) return "biny";
   const relative = path.relative(os.homedir(), path.resolve(configuredPath)).split(path.sep).join("/");
   return GLOBAL_SKILL_ROOT_CONVENTIONS.find((convention) => convention.relativePath === relative)?.source ?? "agents";
 }
@@ -787,7 +787,8 @@ async function collectSkillFiles(
       // 悬空或失效的软链只跳过自身，不能拖垮同根下的其他技能。
       return;
     }
-    if (!allowedDirectorySymlinks.some((directory) => isPathInside(directory, canonical))) return;
+    const managedVersionLink = await isCurrentManagedVersionLink(rootPath, target, canonical);
+    if (!managedVersionLink && !allowedDirectorySymlinks.some((directory) => isPathInside(directory, canonical))) return;
     const linkedStat = await fs.lstat(canonical, { bigint: true });
     if (!linkedStat.isDirectory()) return;
     await collectSkillFiles(canonical, canonical, files, seen);
@@ -820,6 +821,17 @@ async function collectSkillFiles(
     // 软链许可继续下传：是否放行由目标是否根的第一层（dirname 校验）决定。
     await collectSkillFiles(rootPath, path.join(target, entry.name), files, seen, allowDirectDirectorySymlink, allowedDirectorySymlinks);
     if (files.length >= maxDiscoveredSkillCount) return;
+  }
+}
+
+async function isCurrentManagedVersionLink(rootPath: string, linkPath: string, canonicalTarget: string): Promise<boolean> {
+  const name = path.basename(linkPath);
+  if (!isManagedSkillVersionPath(rootPath, name, canonicalTarget)) return false;
+  try {
+    const version = await readManagedSkillVersion(rootPath, name);
+    return version?.id === path.basename(path.dirname(canonicalTarget));
+  } catch {
+    return false;
   }
 }
 

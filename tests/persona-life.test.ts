@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, symlink, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -38,6 +38,8 @@ test("virtual journey persists across instances, serializes concurrent events an
     assert.equal(await storage.journal("2026-10-18"), "第一段经历\n\n第二段感受\n\n");
     await assert.rejects(storage.journal("../../outside", "x"), /Invalid/u);
     now = new Date("2026-10-20T10:00:00Z");
+    const statusPath = path.join(root, "travels", "status.json");
+    const statusBeforeHome = await readFile(statusPath, "utf8");
     const home = await storage.change("home");
     assert.equal(home.current, undefined);
     assert.equal(home.trips.length, 1);
@@ -45,19 +47,27 @@ test("virtual journey persists across instances, serializes concurrent events an
     assert.match(travelPrompt(home, now), /RECENTLY RETURNED/u);
     await assert.rejects(storage.change("home"), /Not traveling/u);
     assert.equal((await storage.read()).trips.length, 1);
+    const status = JSON.parse(await readFile(path.join(root, "travels", "status.json"), "utf8"));
+    const history = JSON.parse(await readFile(path.join(root, "travels", "history.json"), "utf8"));
+    assert.equal(status.traveling, false);
+    assert.equal(history.trips.length, 1);
+    await writeFile(statusPath, statusBeforeHome);
+    assert.equal((await storage.read()).current, undefined, "a completed history record repairs a crash before the inactive status replacement");
+    await writeFile(statusPath, JSON.stringify(status));
+    await assert.rejects(access(path.join(root, "travels", "state.json")), { code: "ENOENT" });
     assert.equal(travelPrompt(home, new Date("2026-10-24T10:00:00Z")), "");
     assert.equal(travelHeartbeatPrompt(home, new Date("2026-11-03T10:00:00Z")), "");
     assert.match(travelHeartbeatPrompt(home, new Date("2026-11-04T10:00:00Z")), /TRAVEL SUGGESTION/u);
-    await writeFile(path.join(root, "travels", "state.json"), "broken");
+    await writeFile(path.join(root, "travels", "status.json"), "broken");
     await assert.rejects(storage.change("go", "北京"));
-    assert.equal(await readFile(path.join(root, "travels", "state.json"), "utf8"), "broken", "corrupt state must never reset silently");
+    assert.equal(await readFile(path.join(root, "travels", "status.json"), "utf8"), "broken", "corrupt state must never reset silently");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("selfie album requires explicit save, rejects non-images, and uses a real reference", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-selfie-"));
   try {
-    const album = new SelfieAlbum(root, () => 0);
+    const album = new SelfieAlbum(root);
     assert.deepEqual((await album.prepare("笑着自拍")).reference, []);
     const source = path.join(root, "approved.png");
     await writeFile(source, pixel);
@@ -66,10 +76,12 @@ test("selfie album requires explicit save, rejects non-images, and uses a real r
     await symlink(source, path.join(album.directory, "zz-link.png"));
     assert.deepEqual((await album.prepare("困倦，靠着枕头")).reference, [saved]);
     assert.equal((await album.list()).length, 1, "preparing generation does not add album photos or follow symlink entries");
-    for (let i = 0; i < 5; i += 1) await album.save(source);
+    const latest = path.join(album.directory, "selfie-2999-01-01T00-00-00-000Z-approved.png");
+    await writeFile(latest, pixel);
     const references = await album.list();
-    assert.deepEqual((await album.prepare("开心地挥手")).reference, references.slice(0, 5));
-    assert.deepEqual((await new SelfieAlbum(root, () => 0.999).prepare("换个角度")).reference, references.slice(1).reverse());
+    assert.deepEqual(references.at(-1), latest);
+    assert.deepEqual((await album.prepare("开心地挥手")).reference, [latest]);
+    assert.deepEqual((await new SelfieAlbum(root).prepare("换个角度")).reference, [latest]);
     assert.deepEqual(await album.list(), references);
     await writeFile(source, "not an image");
     await assert.rejects(album.save(source), /Expected a PNG/u);
@@ -109,6 +121,7 @@ test("Christmas greeting window respects local date and starts at 18:30 on Chris
   for (const date of [new Date(2026, 11, 24, 18, 29), new Date(2026, 11, 26), new Date(2026, 10, 25)]) assert.equal(seasonalPrompt(date), "");
   for (const date of [new Date(2026, 11, 24, 18, 30), new Date(2026, 11, 25, 23, 59)]) {
     assert.match(seasonalPrompt(date), /CHRISTMAS EASTER EGG/u);
-    assert.match(seasonalPrompt(date), /For a task.*without the festive prefix/su);
+    assert.match(seasonalPrompt(date), /exact marker <--Christmas-->/u);
+    assert.match(seasonalPrompt(date), /For a task.*without the marker/su);
   }
 });

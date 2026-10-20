@@ -180,13 +180,14 @@ function testEmotionPromptAndSystemPrompt(): void {
   assert.match(emotionPrompt, /YOUR DEFAULT PERSONALITY IS NOT NEUTRAL/u);
   assert.match(emotionPrompt, /biny emotion set-context/u);
   assert.match(emotionPrompt, /emotional gravity/u);
+  assert.match(emotionPrompt, /Emotional energy is your subjective feeling and is independent of fatigue/u);
   assert.match(emotionPrompt, /EXPIRY: Base emotion decays over 6 hours/u);
   assert.match(emotionPrompt, /FATIGUE & SLEEP STATE: 😪 TIRED/u);
   assert.doesNotMatch(emotionPrompt, /SLEEPING/u);
   assert.doesNotMatch(emotionPrompt, /ASLEEP or extremely tired/u);
   const sleepingPrompt = renderEmotionPrompt({ ...blended, fatigue: 80 });
   assert.match(sleepingPrompt, /FATIGUE & SLEEP STATE: 💤 SLEEPING/u);
-  assert.match(sleepingPrompt, /Task/u);
+  assert.match(sleepingPrompt, /Task tool/u);
   assert.match(sleepingPrompt, /ASLEEP or extremely tired/u);
   assert.match(sleepingPrompt, /AUTO-WAKE/u);
   assert.match(sleepingPrompt, /biny wake/u);
@@ -196,6 +197,8 @@ function testEmotionPromptAndSystemPrompt(): void {
   const awakePrompt = renderEmotionPrompt({ ...blended, fatigue: 0 });
   assert.match(awakePrompt, /FATIGUE SYSTEM: You have a fatigue\/sleep system/u);
   assert.match(awakePrompt, /biny rest/u);
+  assert.doesNotMatch(awakePrompt, /emotion energy should match your fatigue/u);
+  assert.doesNotMatch(awakePrompt, /Keep them in sync/u);
   assert.doesNotMatch(emotionPrompt, /biny rest/u);
   assert.doesNotMatch(emotionPrompt, /the emotion tool/u);
   assert.doesNotMatch(emotionPrompt, /cannot grant/u);
@@ -239,6 +242,16 @@ async function testFatigueService(): Promise<void> {
     assert.equal(fatigueLevel(30), "tired");
     assert.equal(fatigueLevel(50), "sleepy");
     assert.equal(fatigueLevel(75), "sleeping");
+    const emotions = new EmotionStorage({ configDir: root, now: () => current });
+    const base = emotion("困倦", 2, 4, current.toISOString(), "睡前状态");
+    await emotions.writeBase(base);
+    await restarted.change("sleep");
+    assert.deepEqual(await emotions.readBase(), base, "sleep changes fatigue without changing emotion energy or timestamp");
+    current = new Date(current.getTime() + 2 * 60 * 60_000);
+    await restarted.currentStatus();
+    assert.deepEqual(await emotions.readBase(), base, "automatic wake changes fatigue without changing base emotion");
+    await restarted.change("rest");
+    assert.deepEqual(await emotions.readBase(), base, "rest leaves emotion energy for the Agent to update from its prompt");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -249,7 +262,7 @@ async function testEmotionAnalysis(): Promise<void> {
   const current = new Date("2026-08-30T10:00:00.000Z");
   const storage = new EmotionStorage({ configDir: root, now: () => current });
   let promptText = "";
-  let output = "专注|8|用户目标明确";
+  let output = '{"mood":"content","valence":8,"reason":"用户目标明确"}';
   let outputLimit: number | undefined;
   const model: AgentModel = {
     provider: "test",
@@ -288,12 +301,12 @@ async function testEmotionAnalysis(): Promise<void> {
       getMessages: async () => messages,
       now: () => current
     });
-    assert.equal(updated?.mood, "专注");
+    assert.equal(updated?.mood, "content");
     assert.equal(updated?.valence, 8);
     assert.equal(updated?.energy, 7);
     assert.equal(updated?.trigger, "用户目标明确");
     assert.equal(outputLimit, 50);
-    assert.match(promptText, /Output EXACTLY one line in this format: mood\|valence\|reason/u);
+    assert.match(promptText, /exactly one JSON object with exactly these three fields: mood, valence, and reason/u);
     assert.match(promptText, /message-10/u);
     assert.doesNotMatch(promptText, /message-0/u, "only the most recent ten messages are analyzed");
     assert.match(promptText, /L{150}/u);
@@ -319,12 +332,13 @@ async function testEmotionAnalysis(): Promise<void> {
     assert.deepEqual(scheduledCalls, ["session-one:message-two"], "cancel aborts pending analysis");
 
     for (const [response, mood, valence, reason] of [
-      ["  happy | 8 | 聊得开心 | 有共鸣  \nangry|1|忽略第二行", "happy", 8, "聊得开心 | 有共鸣"],
-      ["sad|0|低落", "sad", 5, "低落"],
-      ["neutral|invalid|普通闲聊", "neutral", 5, "普通闲聊"],
-      ["excited|12|完成任务", "excited", 10, "完成任务"],
-      ["angry|-2|不愉快", "angry", 0, "不愉快"],
-      ["amused|7.8|有趣", "amused", 7, "有趣"]
+      ['{"mood":"happy","valence":8,"reason":"聊得开心 | 有共鸣"}', "happy", 8, "聊得开心 | 有共鸣"],
+      ['{"mood":"sad","valence":0,"reason":"低落"}', "sad", 0, "低落"],
+      ['{"mood":"neutral","valence":5,"reason":"普通闲聊"}', "neutral", 5, "普通闲聊"],
+      ['{"mood":"excited","valence":12,"reason":"完成任务"}', "excited", 10, "完成任务"],
+      ['{"mood":"angry","valence":-2,"reason":"不愉快"}', "angry", 0, "不愉快"],
+      ['{"mood":"amused","valence":7,"reason":"有趣"}', "amused", 7, "有趣"],
+      ['{"mood":"content","valence":6,"reason":"第一段 | 第二段"}', "content", 6, "第一段 | 第二段"]
     ] as const) {
       output = response;
       const next = await analyzeContextEmotion({
@@ -340,14 +354,22 @@ async function testEmotionAnalysis(): Promise<void> {
       assert.equal(persisted?.trigger, reason);
     }
     const previous = await storage.readContext("session-one");
-    for (const response of ["", "not structured", "happy|8", '{"mood":"happy","valence":8,"reason":"旧格式"}', "说明文字\nhappy|8|第二行不生效"]) {
+    for (const response of [
+      "",
+      "not structured",
+      "happy|8|旧管道格式",
+      '{"mood":"happy","valence":"8","reason":"valence 必须是数字"}',
+      '{"mood":"happy","valence":8}',
+      '{"mood":"happy","valence":8,"reason":"ok","extra":true}',
+      '说明文字\n{"mood":"happy","valence":8,"reason":"JSON 前有其他文字"}'
+    ]) {
       output = response;
       let notified = false;
       assert.equal(await analyzeContextEmotion({
         sessionId: "session-one", storage, getModel: () => model,
         getMessages: async () => messages, now: () => current,
         onUpdated: () => { notified = true; }
-      }), undefined, "incomplete first-line output must not update the context");
+      }), undefined, "invalid emotion output must not update the context");
       assert.deepEqual(await storage.readContext("session-one"), previous);
       assert.equal(notified, false);
     }
@@ -366,8 +388,8 @@ async function testAgentSessionAutoAnalysis(): Promise<void> {
     modelId: "emotion-auto-test",
     stream: async ({ messages, systemPrompt }) => {
       const requestText = JSON.stringify({ messages, systemPrompt });
-      const output = requestText.includes("Output EXACTLY one line in this format: mood|valence|reason")
-        ? "专注|8|用户目标明确"
+      const output = requestText.includes("exactly one JSON object with exactly these three fields: mood, valence, and reason")
+        ? '{"mood":"content","valence":8,"reason":"用户目标明确"}'
         : "ok";
       return (async function* () {
         yield { type: "text-delta" as const, text: output };
@@ -410,7 +432,7 @@ async function testAgentSessionAutoAnalysis(): Promise<void> {
       events = await fs.readFile(agent.getInfo().sessionFile, "utf8");
     }
     const storage = new EmotionStorage({ configDir: path.join(workspaceRoot, "agent") });
-    assert.equal((await storage.readContext(agent.getInfo().sessionId))?.mood, "专注");
+    assert.equal((await storage.readContext(agent.getInfo().sessionId))?.mood, "content");
     assert.match(events, /"type":"message_metadata"/u);
     assert.match(events, /"emotionUpdated":true/u);
     assert.equal(await fs.stat(path.join(workspaceRoot, "agent", "emotions", "base.md")).then(() => true, () => false), false);

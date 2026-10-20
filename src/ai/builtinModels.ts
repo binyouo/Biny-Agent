@@ -46,9 +46,9 @@ const legacyBuiltinProviderModels: Record<string, ModelCatalogEntry[]> = {
     })
   ],
   openai: [
-    model("gpt-5.2", "GPT-5.2", { capabilities: { tools: true, reasoning: true, vision: true } }),
-    model("gpt-5-mini", "GPT-5 Mini", { capabilities: { tools: true, reasoning: true, vision: true } }),
-    model("gpt-4.1", "GPT-4.1", { capabilities: { tools: true, vision: true } })
+    model("gpt-5.2", "GPT-5.2", { capabilities: { tools: true, reasoning: true, vision: true, serviceTiers: ["priority"] } }),
+    model("gpt-5-mini", "GPT-5 Mini", { capabilities: { tools: true, reasoning: true, vision: true, serviceTiers: ["priority"] } }),
+    model("gpt-4.1", "GPT-4.1", { capabilities: { tools: true, vision: true, serviceTiers: ["priority"] } })
   ],
   "openai-codex": openAiCodexCatalogModels.map((entry) => model(entry.id, entry.displayName, {
     contextWindow: entry.contextWindow,

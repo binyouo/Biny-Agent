@@ -1,11 +1,28 @@
 import type { Command } from "commander";
+import { TelegramChannelStore, parseTelegramId } from "../../channels/telegram.js";
 import { TravelStorage } from "../../agent/context/travel.js";
 import { SelfieAlbum } from "../../agent/context/selfie.js";
 import { imageGenerateCommand, type ImageCommandOptions, type ImageCommandStoreOptions } from "./image.js";
 
-export async function takeSelfie(workspaceRoot: string, prompt: string, options: ImageCommandOptions & ImageCommandStoreOptions = {}): Promise<void> {
+export interface SelfieCommandOptions extends Omit<ImageCommandOptions, "localOnly">, ImageCommandStoreOptions {
+  nsfw?: boolean;
+}
+
+export async function takeSelfie(workspaceRoot: string, prompt: string, options: SelfieCommandOptions = {}): Promise<void> {
+  if (options.nsfw) await assertLocalSelfieAuthorization(workspaceRoot);
   const prepared = await new SelfieAlbum().prepare(prompt);
-  await imageGenerateCommand(workspaceRoot, prepared.prompt, { ...options, reference: prepared.reference });
+  const { nsfw, ...imageOptions } = options;
+  await imageGenerateCommand(workspaceRoot, prepared.prompt, { ...imageOptions, reference: prepared.reference, localOnly: nsfw });
+}
+
+async function assertLocalSelfieAuthorization(workspaceRoot: string): Promise<void> {
+  if (!process.env.BINY_AGENT_CONTEXT) return;
+  const sessionId = process.env.BINY_AGENT_SESSION_ID?.trim();
+  if (!sessionId) throw new Error("Local private selfies require a verified owner Telegram session.");
+  const state = await new TelegramChannelStore(workspaceRoot).read();
+  const ownerId = parseTelegramId(state.ownerId);
+  const authorized = ownerId !== undefined && ownerId > 0 && state.sessions[String(ownerId)] === sessionId;
+  if (!authorized) throw new Error("`biny selfie take --nsfw` is available to the owner in a private Telegram session only.");
 }
 
 export function registerPersonaCommands(program: Command, workspaceRoot: string): void {
@@ -14,8 +31,8 @@ export function registerPersonaCommands(program: Command, workspaceRoot: string)
     catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
   };
   const selfie = program.command("selfie").description("Take a selfie using approved face references");
-  selfie.command("take").argument("<description...>").option("--model <model>").option("--aspect <ratio>").option("--json")
-    .action((description: string[], options: ImageCommandOptions) => execute(() => takeSelfie(workspaceRoot, description.join(" "), options)));
+  selfie.command("take").argument("<description...>").option("--model <model>").option("--aspect <ratio>").option("--nsfw", "Use the configured loopback-only local image model").option("--json")
+    .action((description: string[], options: SelfieCommandOptions) => execute(() => takeSelfie(workspaceRoot, description.join(" "), options)));
   selfie.command("save").argument("<path>").action((file: string) => execute(async () => { console.log(await new SelfieAlbum().save(file)); }));
   for (const action of ["list", "latest", "count"] as const) selfie.command(action).action(() => execute(async () => {
     const files = await new SelfieAlbum().list();

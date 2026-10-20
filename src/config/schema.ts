@@ -26,6 +26,7 @@ import { GLOBAL_CONFIG_FORMAT, GLOBAL_CONFIG_VERSION } from "./migrations.js";
 
 const agentSchema = z.object({
   /** code_mode adds an isolated script tool alongside ordinary tool calls. */
+  rtkEnabled: z.boolean().default(true),
   toolExecutionMode: z.enum(["direct", "code_mode"]).default("code_mode"),
   softStepLimit: z.number().int().min(1).max(100_000).default(32),
   hardStepLimit: z.number().int().min(1).max(100_000).default(96),
@@ -34,6 +35,7 @@ const agentSchema = z.object({
   maxConcurrentTools: z.number().int().min(1).max(32).default(4),
   maxQueuedToolCalls: z.number().int().min(1).max(1_024).default(64)
 }).strict().default({
+  rtkEnabled: true,
   toolExecutionMode: "code_mode",
   softStepLimit: 32,
   hardStepLimit: 96,
@@ -88,7 +90,7 @@ export const compactionSchema = z.object({
 export const skillExtractionSchema = z.object({
   /** 总开关；关闭后成功回合不再触发旁路分析。 */
   enabled: z.boolean().default(true),
-  /** 本回合工具调用数达到阈值才分析，避免普通问答也跑辅助模型。 */
+  /** 自上次分析以来新增外层工具调用达到阈值才分析，可跨回合累计。 */
   minToolCalls: z.number().int().min(1).max(100).default(5)
 }).default({ enabled: true, minToolCalls: 5 });
 
@@ -164,16 +166,23 @@ export const crystalSettingsSchema = z.object({
 
 export type CrystalSettings = z.infer<typeof crystalSettingsSchema>;
 
+function isValidTimeZone(timezone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone });
+    return true;
+  } catch { return false; }
+}
+
 /**
- * 心跳(Heartbeat)后台巡检的开关与节奏。默认关闭,由用户显式开启;默认节奏与
- * 默认(30 分钟间隔、8–23 点活动时段)。未知键直接剥离,旧配置里的遗留
- * heartbeat 对象可以安全落入新结构。
+ * Heartbeat 后台巡检的开关与节奏。默认关闭；默认每 30 分钟执行一次，活动时段为 8–23 点。
+ * timezone 可选，省略时使用运行机器的本地时区。未知键直接剥离，旧配置仍可安全读取。
  */
 export const heartbeatConfigSchema = z.object({
   enabled: z.boolean().default(false),
   intervalMinutes: z.number().int().min(1).max(1_440).default(30),
   activeHoursStart: z.number().int().min(0).max(23).default(8),
-  activeHoursEnd: z.number().int().min(0).max(23).default(23)
+  activeHoursEnd: z.number().int().min(0).max(23).default(23),
+  timezone: z.string().trim().min(1).max(100).refine(isValidTimeZone, "Heartbeat timezone must be a valid IANA time zone.").optional()
 }).default({
   enabled: false,
   intervalMinutes: 30,
@@ -254,7 +263,8 @@ const modelCapabilitiesSchema = z.object({
   reasoningSummary: z.boolean().optional(),
   vision: z.boolean().optional(),
   audio: z.boolean().optional(),
-  streaming: z.boolean().optional()
+  streaming: z.boolean().optional(),
+  serviceTiers: z.array(z.enum(["priority"])).optional()
 });
 
 export const modelProfileSchema = z.object({
@@ -454,6 +464,8 @@ const extensionsSchema = z.object({
   subagent: z.object({
     enabled: z.boolean().default(false),
     runtime: z.enum(["auto", "builtin", "codex", "claude-code", "acp"]).optional(),
+    /** ACP backend selected by the default Coding Agent setting; its model may follow the Agent default. */
+    providerAlias: z.string().trim().min(1).optional(),
     maxSteps: z.number().int().min(1).max(100_000).optional(),
     maxOutputTokens: z.number().int().min(256).max(32_768).default(8_000),
     maxConcurrentSubagents: z.number().int().min(1).max(8).default(2),
@@ -503,9 +515,11 @@ const extensionsSchema = z.object({
 const imageGenSchema = z.object({
   /** 生图默认模型：`providerAlias:modelId` 或纯 Gemini 模型 id；留空自动选择。 */
   model: z.string().trim().max(240).optional(),
+  /** 主人私聊自拍的本地模型：必须指向 loopback 上的 OpenAI-compatible 图片服务。 */
+  localModel: z.string().trim().max(240).optional(),
   /** 默认宽高比，如 `16:9`；`auto` 或留空由模型自行决定。 */
   aspectRatio: z.string().trim().max(32).optional()
-}).default({ model: undefined, aspectRatio: undefined });
+}).default({ model: undefined, localModel: undefined, aspectRatio: undefined });
 
 const webSearchSchema = z.object({
   provider: z.enum(["google", "xiaohongshu"]).default("google"),
@@ -673,6 +687,7 @@ const canonicalConfigSchema = z.object({
   defaultModel: z.string().min(1),
   /** 活动分析、摘要与建议共用的工具模型；省略时从可用配置自动选择。 */
   toolModel: z.string().trim().min(1).max(240).optional(),
+  visionModel: z.string().trim().min(1).max(240).optional(),
   providers: z.record(providerConfigSchema),
   /** 凭据正文保存在 Keychain；这里仅保存并发 CAS 使用的非机密版本 nonce。 */
   credentialRevisions: z.record(z.string().min(1).max(128)).optional(),
@@ -788,6 +803,15 @@ const canonicalConfigSchema = z.object({
   }
 
   const subagentAlias = config.extensions.subagent.model;
+  const subagentProviderAlias = config.extensions.subagent.providerAlias;
+  if (subagentProviderAlias) {
+    const subagentProvider = config.providers[subagentProviderAlias];
+    if (config.extensions.subagent.runtime !== "acp" || (subagentProvider && subagentProvider.type !== "acp")
+      || (subagentAlias && config.models[subagentAlias]?.provider !== subagentProviderAlias)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["extensions", "subagent", "providerAlias"],
+        message: "Subagent provider alias must reference the selected ACP provider." });
+    }
+  }
   if (subagentAlias && config.extensions.subagent.runtime !== "codex" && config.extensions.subagent.runtime !== "claude-code") {
     const subagentModel = config.models[subagentAlias];
     if (!subagentModel) {
@@ -917,6 +941,7 @@ export const defaultConfig: AgentConfig = {
   },
   thinking: { enabled: false, effort: "high" },
   agent: {
+    rtkEnabled: true,
     toolExecutionMode: "code_mode",
     softStepLimit: 32,
     hardStepLimit: 96,
@@ -998,7 +1023,7 @@ export const defaultConfig: AgentConfig = {
     },
     cookies: { enabled: false, path: undefined }
   },
-  imageGen: { model: undefined, aspectRatio: undefined },
+  imageGen: { model: undefined, localModel: undefined, aspectRatio: undefined },
   telemetry: { enabled: false, recordInputs: false, recordOutputs: false },
   extensions: {
     mcp: {},
@@ -1015,6 +1040,7 @@ export const defaultConfig: AgentConfig = {
       maxPendingSubagents: 16,
       timeoutMs: undefined,
       inactivityTimeoutMs: 300_000,
+      providerAlias: undefined,
       model: undefined,
       maxCostUsd: undefined,
       allowedTools: [...defaultSubagentAllowedTools],

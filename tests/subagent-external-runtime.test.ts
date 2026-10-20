@@ -88,6 +88,12 @@ process.stdin.on('end', () => {
       assert.match(invocation.prompt, /finite task/);
       assert.equal(invocation.injected, undefined);
       assert.ok(!invocation.args.some((arg: string) => arg.includes("dangerously")));
+      if (kind === "claude-code") {
+        config.extensions.subagent.model = undefined;
+        assert.equal(await runSubagentTask(options, "CLI default task", undefined, "workspace"), "CLI result");
+        const defaultInvocation = JSON.parse(await readFile(path.join(root, "invocation.json"), "utf8"));
+        assert.ok(!defaultInvocation.args.includes("--model"));
+      }
       await assert.rejects(runSubagentTask(options, "missing-terminal", undefined, "workspace"), /terminal/);
       await assert.rejects(runSubagentTask(options, "crash-fixture", undefined, "workspace"), /code 7/);
       await assert.rejects(runSubagentTask(options, "denied-fixture", undefined, "workspace"), (error: unknown) => {

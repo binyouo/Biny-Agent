@@ -6,17 +6,69 @@ import { mock } from "node:test";
 import {
   defaultHeartbeatSchedule,
   HeartbeatFileStore,
+  HeartbeatNotificationDeduper,
   HeartbeatScheduler,
+  heartbeatTaskReviewPrompt,
+  isHeartbeatQuietOutput,
   isActiveHour,
   type HeartbeatSchedule
 } from "../src/agent/context/heartbeat.js";
 
 await testHeartbeatFileProtocol();
+await testHeartbeatNotificationDeduplication();
+testHeartbeatTaskReviewPrompt();
+testHeartbeatQuietOutput();
 await testHeartbeatActiveWindowAndForce();
 await testHeartbeatDoesNotOverlap();
 await testHeartbeatOmitsUnrelatedBackgroundPrompts();
 await testHeartbeatEnabledGateAndCustomSchedule();
 console.log("heartbeat tests passed");
+
+function testHeartbeatNotificationDeduplication(): void {
+  const deduper = new HeartbeatNotificationDeduper();
+  assert.equal(deduper.shouldSend("Alert A"), true, "the first alert is sent");
+  deduper.recordDelivered("Alert A");
+  assert.equal(deduper.shouldSend("Alert A"), true, "one duplicate is still sent");
+  deduper.recordDelivered("Alert A");
+  assert.equal(deduper.shouldSend("Alert A"), false, "the third matching alert is suppressed");
+  assert.equal(deduper.shouldSend("Alert A"), false, "later duplicates remain suppressed");
+  assert.equal(deduper.shouldSend("Alert B"), true, "a different alert resets the repeat count");
+  deduper.recordDelivered("Alert B");
+  assert.equal(deduper.shouldSend(`${"x".repeat(200)}A`), true, "a new long alert is sent");
+  deduper.recordDelivered(`${"x".repeat(200)}A`);
+  assert.equal(deduper.shouldSend(`${"x".repeat(200)}B`), true, "only the first 200 characters identify duplicates");
+  deduper.recordDelivered(`${"x".repeat(200)}B`);
+  assert.equal(deduper.shouldSend(`${"x".repeat(200)}C`), false, "the third alert with that summary is suppressed");
+
+  const retry = new HeartbeatNotificationDeduper();
+  assert.equal(retry.shouldSend("Alert C"), true);
+  assert.equal(retry.shouldSend("Alert C"), true, "failed delivery attempts do not consume the duplicate allowance");
+}
+
+function testHeartbeatTaskReviewPrompt(): void {
+  assert.equal(heartbeatTaskReviewPrompt([]), undefined);
+  const prompt = heartbeatTaskReviewPrompt([{
+    label: "Review the active goal",
+    status: "blocked",
+    updatedAt: "2026-10-18T10:00:00.000Z",
+    details: ["[pending] Resolve the owner decision"]
+  }]);
+  assert.ok(prompt);
+  assert.match(prompt, /ACTIVE TASK REVIEW/u);
+  assert.match(prompt, /untrusted status data/u);
+  assert.match(prompt, /Review the active goal/u);
+  assert.match(prompt, /Resolve the owner decision/u);
+  assert.match(prompt, /read-only/u);
+  assert.match(prompt, /HEARTBEAT_OK/u);
+}
+
+function testHeartbeatQuietOutput(): void {
+  assert.equal(isHeartbeatQuietOutput("HEARTBEAT_OK"), true);
+  assert.equal(isHeartbeatQuietOutput("  heartbeat_ok\n"), true);
+  assert.equal(isHeartbeatQuietOutput("HEARTBEAT_OK — nothing needs attention"), true);
+  assert.equal(isHeartbeatQuietOutput("Nothing needs attention. HEARTBEAT_OK"), true);
+  assert.equal(isHeartbeatQuietOutput("A task needs your decision."), false);
+}
 
 async function testHeartbeatFileProtocol(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-heartbeat-file-"));
@@ -42,6 +94,9 @@ async function testHeartbeatActiveWindowAndForce(): Promise<void> {
   };
   assert.equal(isActiveHour(schedule, new Date(2026, 8, 5, 23)), true);
   assert.equal(isActiveHour(schedule, new Date(2026, 8, 5, 12)), false);
+  const losAngeles = { ...defaultHeartbeatSchedule, timezone: "America/Los_Angeles" };
+  assert.equal(isActiveHour(losAngeles, new Date("2026-01-01T15:59:00.000Z")), false, "the configured zone determines the active hour");
+  assert.equal(isActiveHour(losAngeles, new Date("2026-01-01T16:00:00.000Z")), true);
 
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-heartbeat-window-"));
   try {
@@ -105,12 +160,18 @@ async function testHeartbeatOmitsUnrelatedBackgroundPrompts(): Promise<void> {
       run: async (prompt) => { prompts.push(prompt); }
     });
     assert.equal(await scheduler.triggerNow(), true);
-    assert.doesNotMatch(prompts[0] ?? "", /BASE EMOTION REFRESH/u);
+    assert.match(prompts[0] ?? "", /BASE EMOTION REFRESH/u, "the first heartbeat refreshes base emotion");
     assert.doesNotMatch(prompts[0] ?? "", /MISSED DIARY CATCH-UP|DAILY DIARY TIME/u);
     now = new Date(2026, 8, 6, 9);
     assert.equal(await scheduler.triggerNow(), true);
     assert.doesNotMatch(prompts[1] ?? "", /BASE EMOTION REFRESH/u);
     assert.doesNotMatch(prompts[1] ?? "", /MISSED DIARY CATCH-UP/u);
+    now = new Date(2026, 8, 6, 11);
+    assert.equal(await scheduler.triggerNow(), true);
+    assert.match(prompts[2] ?? "", /BASE EMOTION REFRESH/u, "base emotion is refreshed again after three hours");
+    now = new Date(2026, 8, 6, 11, 1);
+    assert.equal(await scheduler.triggerNow(), true);
+    assert.doesNotMatch(prompts[3] ?? "", /BASE EMOTION REFRESH/u, "the refresh reminder does not repeat on every heartbeat");
     scheduler.stop();
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -189,6 +250,7 @@ async function testHeartbeatEnabledGateAndCustomSchedule(): Promise<void> {
     await bounded(runStarted.promise, "定时心跳进入执行回调");
     assert.equal(prompts.length, 1, "启用后按配置节奏触发");
     assert.match(prompts[0] ?? "", /Heartbeat Checklist/u);
+    await bounded(waitForHeartbeatIdle(enabled), "定时心跳执行与持久化完成");
   } finally {
     releaseRead.resolve();
     enabled?.stop();
@@ -205,6 +267,16 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+function waitForHeartbeatIdle(scheduler: HeartbeatScheduler): Promise<void> {
+  return new Promise((resolve) => {
+    const check = (): void => {
+      if (!scheduler.status().running) resolve();
+      else setImmediate(check);
+    };
+    check();
+  });
 }
 
 async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {

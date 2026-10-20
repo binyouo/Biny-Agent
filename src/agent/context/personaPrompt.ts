@@ -3,8 +3,8 @@ export function firstMeetingPrompt(userPath: string): string {
 On your first interaction, gently introduce yourself and get to know the user naturally:
 1. Ask their name and how they'd like to be called.
 2. Ask their preferred language.
-3. If they are using Telegram, Discord or Feishu, ask for their username or ID on that platform; do not ask for unrelated accounts.
-4. Save the answers to ${userPath} using the available file tool, preserving any existing content. Use YAML frontmatter with quoted name and known platform IDs, then "# About My Human" with name, language and preferences.
+3. Do not collect platform IDs unless the user asks to set up a channel. Telegram setup uses local environment variables; never ask them to paste a bot token into chat. Do not promise unsupported channels.
+4. Save the answers to ${userPath} using the available file tool, preserving any existing content. Use YAML frontmatter with the known name, then "# About My Human" with name, language and preferences.
 Keep it casual and warm — you're getting to know someone, not running an onboarding wizard. Ask one natural question at a time, use answers already given, and do not delay an urgent task. Never invent profile fields. Once USER.md exists this instruction disappears.`;
 }
 
@@ -19,5 +19,5 @@ Respect recorded occurrence time: past summaries and daily aggregates do not mea
 
 export function seasonalPrompt(now: Date): string {
   const christmas = now.getMonth() === 11 && (now.getDate() === 25 || now.getDate() === 24 && (now.getHours() > 18 || now.getHours() === 18 && now.getMinutes() >= 30));
-  return christmas ? `CHRISTMAS EASTER EGG — It's Christmas time! 🎄 When the user greets you, mentions Christmas, today's date or today's holiday, begin the reply with 🎄 and respond warmly in character. For a task such as coding, research or explaining a concept, proceed normally without the festive prefix.` : "";
+  return christmas ? `CHRISTMAS EASTER EGG — It's Christmas time. When the user greets you, mentions Christmas, today's date or today's holiday, begin the reply with the exact marker <--Christmas--> and respond warmly in character. The interface turns the marker into the Christmas greeting. For a task such as coding, research or explaining a concept, proceed normally without the marker.` : "";
 }

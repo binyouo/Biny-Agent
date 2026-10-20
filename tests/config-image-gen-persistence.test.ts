@@ -40,7 +40,7 @@ for (const operation of ["initialize", "save", "file update", "desktop update"] 
       const document = JSON.parse(await fs.readFile(path.join(root, "config.json"), "utf8"));
       assert.equal(Object.hasOwn(document, "imageGen"), false,
         "an unused feature must not add a root key rejected by released Desktop builds");
-      assert.deepEqual((await loadConfigFile(root)).imageGen, { model: undefined, aspectRatio: undefined });
+      assert.deepEqual((await loadConfigFile(root)).imageGen, { model: undefined, localModel: undefined, aspectRatio: undefined });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -52,6 +52,7 @@ test("saving preserves explicit image generation settings and does not mutate th
   try {
     for (const imageGen of [
       { model: "gem:gemini-2.5-flash-image" },
+      { localModel: "local:uncensored-image-model" },
       { aspectRatio: "16:9" },
       { model: "oai:gpt-image-1", aspectRatio: "1:1" }
     ]) {

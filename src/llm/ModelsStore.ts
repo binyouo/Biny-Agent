@@ -112,7 +112,8 @@ const modelSchema = z.object({
     reasoningSummary: z.boolean().optional(),
     vision: z.boolean().optional(),
     audio: z.boolean().optional(),
-    streaming: z.boolean().optional()
+    streaming: z.boolean().optional(),
+    serviceTiers: z.array(z.enum(["priority"])).optional()
   }),
   reasoningEfforts: z.array(z.enum(["minimal", "low", "medium", "high", "xhigh", "max"])),
   reasoningEffortsSource: z.enum(["declared", "inferred"]).optional(),

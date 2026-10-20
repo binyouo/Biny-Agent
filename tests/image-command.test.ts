@@ -11,6 +11,7 @@ import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { imageEditCommand, imageGenerateCommand, imageModelsCommand } from "../src/cli/commands/image.js";
+import { TelegramChannelStore } from "../src/channels/telegram.js";
 import { createFileConfigStore } from "../src/config/store.js";
 import { defaultConfig } from "../src/config/schema.js";
 
@@ -47,7 +48,7 @@ async function fixture(run: (root: string, server: StubServer, configStore: Retu
 interface StubServer {
   url: string;
   requests: Array<{ url: string; body: unknown; headers: import("node:http").IncomingHttpHeaders }>;
-  responses: Map<string, { status?: number; body: unknown }>;
+  responses: Map<string, { status?: number; body: unknown; headers?: Record<string, string> }>;
   close(): Promise<void>;
 }
 
@@ -65,7 +66,13 @@ async function startStubServer(): Promise<StubServer> {
     req.on("end", () => {
       requests.push({ url: req.url ?? "", body: raw ? safeJson(raw) : undefined, headers: req.headers });
       const override = responses.get(req.url ?? "") ?? responses.get((req.url ?? "").split("?")[0]!);
-      if (override) { res.statusCode = override.status ?? 200; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(override.body)); return; }
+      if (override) {
+        res.statusCode = override.status ?? 200;
+        res.setHeader("Content-Type", "application/json");
+        for (const [name, value] of Object.entries(override.headers ?? {})) res.setHeader(name, value);
+        res.end(JSON.stringify(override.body));
+        return;
+      }
       if (req.url?.split("?")[0] === "/v1beta/models") {
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify({
@@ -107,7 +114,7 @@ function safeJson(raw: string): unknown {
   try { return JSON.parse(raw); } catch { return raw; }
 }
 
-async function writeConfig(configStore: ReturnType<typeof createFileConfigStore>, server: StubServer, options: { imageModel?: string } = {}): Promise<void> {
+async function writeConfig(configStore: ReturnType<typeof createFileConfigStore>, server: StubServer, options: { imageModel?: string; localImageModel?: string } = {}): Promise<void> {
   const config = {
     ...defaultConfig,
     defaultModel: "test",
@@ -124,7 +131,7 @@ async function writeConfig(configStore: ReturnType<typeof createFileConfigStore>
       }
     },
     models: { test: { provider: "gem", model: "gemini-2.5-flash" } },
-    imageGen: { model: options.imageModel, aspectRatio: undefined }
+    imageGen: { model: options.imageModel, localModel: options.localImageModel, aspectRatio: undefined }
   };
   await configStore.save(config as Parameters<typeof configStore.save>[0]);
 }
@@ -188,6 +195,18 @@ async function main(): Promise<void> {
     const openAiCall = server.requests.find((r) => r.url === "/v1/images/generations");
     assert.ok(openAiCall, "expected an OpenAI-compatible generations request");
     assert.equal(server.requests.some((r) => r.url.includes(":generateContent") && r.url.includes("gpt-image-1")), false);
+  });
+
+  // A configured local OpenAI-compatible image server may not require authentication.
+  await fixture(async (root, server, configStore) => {
+    const config = await configStore.load();
+    config.providers.local = { type: "openai-compatible", baseUrl: `${server.url}/v1`, requiresApiKey: false };
+    config.imageGen.model = "local:realvis";
+    await configStore.save(config);
+    await captureStdout(() => imageGenerateCommand(root, "a portrait", { configStore }));
+    const call = server.requests.find((r) => r.url === "/v1/images/generations");
+    assert.ok(call, "expected the configured local image server to receive the request");
+    assert.equal(call.headers.authorization, undefined, "a local provider without credentials receives no bearer header");
   });
 
   // 配置的 imageGen.model 作为默认模型生效。
@@ -370,7 +389,7 @@ await test("未覆盖地址的 OpenRouter 连接使用自身默认图片端点",
   });
 });
 
-await test("selfie command sends multiple approved face references through the configured image provider without auto-saving", async () => {
+await test("selfie command sends only the latest approved face reference through the configured image provider", async () => {
   await fixture(async (root, server, configStore) => {
     const previous = process.env.BINY_AGENT_DIR;
     process.env.BINY_AGENT_DIR = path.join(root, "album-state");
@@ -386,10 +405,122 @@ await test("selfie command sends multiple approved face references through the c
       const request = server.requests.find(item => item.url.includes("gemini-2.5-flash-image:generateContent"));
       assert.ok(request);
       const body = request.body as { contents: Array<{ parts: Array<{ inlineData?: { data: string }; text?: string }> }> };
-      assert.deepEqual(body.contents[0]?.parts.filter(part => part.inlineData).map(part => part.inlineData!.data), [PIXEL_PNG.toString("base64"), PIXEL_PNG.toString("base64")]);
+      const latestReference = await readFile(references.at(-1)!);
+      assert.deepEqual(body.contents[0]?.parts.filter(part => part.inlineData).map(part => part.inlineData!.data), [latestReference.toString("base64")]);
       assert.match(body.contents[0]?.parts.at(-1)?.text ?? "", /困倦的眼神/u);
       assert.deepEqual(await readFile(JSON.parse(result.stdout).path), PIXEL_PNG);
       assert.deepEqual(await album.list(), references, "generation is not approval to save a new identity reference");
+    } finally {
+      if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
+    }
+  });
+});
+
+await test("owner private Telegram session can use the loopback-only local selfie route", async () => {
+  await fixture(async (root, server, configStore) => {
+    const previous = {
+      agentDir: process.env.BINY_AGENT_DIR,
+      context: process.env.BINY_AGENT_CONTEXT,
+      sessionId: process.env.BINY_AGENT_SESSION_ID
+    };
+    const agentDir = path.join(root, "agent-state");
+    const sessionId = "telegram-owner-session";
+    process.env.BINY_AGENT_DIR = agentDir;
+    process.env.BINY_AGENT_CONTEXT = "foreground-command-scope";
+    process.env.BINY_AGENT_SESSION_ID = sessionId;
+    try {
+      const config = await configStore.load();
+      config.providers.local = { type: "openai-compatible", baseUrl: `${server.url}/v1`, requiresApiKey: false };
+      config.imageGen.localModel = "local:uncensored-image-model";
+      await configStore.save(config);
+      const channels = new TelegramChannelStore(root);
+      const state = await channels.read();
+      state.ownerId = "42";
+      state.sessions["42"] = sessionId;
+      await channels.write(state);
+
+      const { stdout } = await captureStdout(() => takeSelfie(root, "夕阳下的自拍", { nsfw: true, json: true, configStore }));
+      const call = server.requests.find(request => request.url === "/v1/images/generations");
+      assert.ok(call, "the private owner route sends requests to the configured local image API");
+      assert.equal((call.body as { model: string }).model, "uncensored-image-model");
+      assert.deepEqual(await readFile(JSON.parse(stdout).path), PIXEL_PNG);
+    } finally {
+      if (previous.agentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous.agentDir;
+      if (previous.context === undefined) delete process.env.BINY_AGENT_CONTEXT; else process.env.BINY_AGENT_CONTEXT = previous.context;
+      if (previous.sessionId === undefined) delete process.env.BINY_AGENT_SESSION_ID; else process.env.BINY_AGENT_SESSION_ID = previous.sessionId;
+    }
+  });
+});
+
+await test("group and unrelated sessions cannot use the local selfie route", async () => {
+  await fixture(async (root, server, configStore) => {
+    const previous = {
+      agentDir: process.env.BINY_AGENT_DIR,
+      context: process.env.BINY_AGENT_CONTEXT,
+      sessionId: process.env.BINY_AGENT_SESSION_ID
+    };
+    const agentDir = path.join(root, "agent-state");
+    process.env.BINY_AGENT_DIR = agentDir;
+    process.env.BINY_AGENT_CONTEXT = "foreground-command-scope";
+    process.env.BINY_AGENT_SESSION_ID = "telegram-group-session";
+    try {
+      const config = await configStore.load();
+      config.providers.local = { type: "openai-compatible", baseUrl: `${server.url}/v1`, requiresApiKey: false };
+      config.imageGen.localModel = "local:uncensored-image-model";
+      await configStore.save(config);
+      const channels = new TelegramChannelStore(root);
+      const state = await channels.read();
+      state.ownerId = "42";
+      state.sessions["-100123"] = "telegram-group-session";
+      await channels.write(state);
+      await assert.rejects(takeSelfie(root, "群聊请求", { nsfw: true, configStore }), /owner in a private Telegram session/u);
+      assert.equal(server.requests.length, 0, "authorization failures never contact the image service");
+    } finally {
+      if (previous.agentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous.agentDir;
+      if (previous.context === undefined) delete process.env.BINY_AGENT_CONTEXT; else process.env.BINY_AGENT_CONTEXT = previous.context;
+      if (previous.sessionId === undefined) delete process.env.BINY_AGENT_SESSION_ID; else process.env.BINY_AGENT_SESSION_ID = previous.sessionId;
+    }
+  });
+});
+
+await test("the local selfie route rejects remote image providers and has no fallback", async () => {
+  await fixture(async (root, server, configStore) => {
+    const previous = process.env.BINY_AGENT_DIR;
+    process.env.BINY_AGENT_DIR = path.join(root, "agent-state");
+    try {
+      const config = await configStore.load();
+      config.providers.remoteLocal = { type: "openai-compatible", baseUrl: "https://images.example/v1", apiKey: "must-not-be-sent" };
+      config.imageGen.localModel = "remoteLocal:uncensored-image-model";
+      await configStore.save(config);
+      await assert.rejects(takeSelfie(root, "本地测试", { nsfw: true, configStore }), /loopback baseUrl/u);
+      assert.equal(server.requests.length, 0, "a remote endpoint is rejected before any request or normal-model fallback");
+    } finally {
+      if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
+    }
+  });
+});
+
+await test("the local selfie route blocks redirects and remote result URLs", async () => {
+  await fixture(async (root, server, configStore) => {
+    const previous = process.env.BINY_AGENT_DIR;
+    process.env.BINY_AGENT_DIR = path.join(root, "agent-state");
+    try {
+      const config = await configStore.load();
+      config.providers.local = { type: "openai-compatible", baseUrl: `${server.url}/v1`, requiresApiKey: false };
+      config.imageGen.localModel = "local:uncensored-image-model";
+      await configStore.save(config);
+
+      server.responses.set("/v1/images/generations", {
+        status: 302,
+        headers: { Location: "https://images.example/redirected.png" },
+        body: {}
+      });
+      await assert.rejects(takeSelfie(root, "自拍", { nsfw: true, configStore }), /Image request failed/u);
+      assert.equal(server.requests.length, 1, "a local service redirect is not followed to a remote host");
+
+      server.responses.set("/v1/images/generations", { body: { data: [{ url: "https://images.example/result.png" }] } });
+      await assert.rejects(takeSelfie(root, "自拍", { nsfw: true, configStore }), /must return image data directly/u);
+      assert.equal(server.requests.length, 2, "a remote image result URL is never downloaded");
     } finally {
       if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
     }

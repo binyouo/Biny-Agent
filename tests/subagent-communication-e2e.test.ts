@@ -82,11 +82,11 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
           assert.match(JSON.stringify(notices), /corrected result/);
         }
         const name = phase === "message" || phase === "cancel" ? "Bash" : phase === "result" ? "TaskStatus" : "Task";
-        if (!acted && name === "TaskStatus" && !names.has(name) && names.has("exec")) {
+        if (!acted && name === "TaskStatus" && !names.has(name) && names.has("run_script")) {
           acted = true;
-          result = { name: "exec", args: { code: `return await tools.TaskStatus(${JSON.stringify({ taskRunId })});` } };
-        } else if (!acted && !names.has(name)) result = names.has("exec")
-          ? { name: "exec", args: { code: `return await searchTools(${JSON.stringify(name)});` } }
+          result = { name: "run_script", args: { description: "Run fixture workflow", code: `return await tools.TaskStatus(${JSON.stringify({ taskRunId })});` } };
+        } else if (!acted && !names.has(name)) result = names.has("run_script")
+          ? { name: "run_script", args: { description: "Run fixture workflow", code: `return await searchTools(${JSON.stringify(name)});` } }
           : { name: "ToolSearch", args: { query: name } };
         else if (!acted) {
           acted = true;

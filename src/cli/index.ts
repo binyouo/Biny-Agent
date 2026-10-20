@@ -16,6 +16,7 @@ import { registerApplicationImportCommands } from "./commands/applicationImports
 import { registerComputerCommands } from "./commands/computer.js";
 import { registerCuCommands } from "./commands/cu.js";
 import { registerBrowserCommands } from "./commands/browser.js";
+import { registerInAppBrowserCommands } from "./commands/iab.js";
 import { registerCrystalCommands } from "./commands/crystal.js";
 import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
   referenceTokenCommand, referenceContextCommand, referenceOpenCommand } from "./commands/references.js";
@@ -37,6 +38,8 @@ import { registerSkillCommands } from "./commands/skills.js";
 import { runtimeHostCommand } from "./commands/runtimeHost.js";
 import { emotionGetCommand, emotionSetBaseCommand, emotionSetContextCommand, emotionStatusCommand } from "./commands/emotion.js";
 import { imageEditCommand, imageGenerateCommand, imageModelsCommand } from "./commands/image.js";
+import { videoAnalyzeCommand } from "./commands/video.js";
+import { telegramDmCommand, telegramDmOwnerCommand, telegramRunCommand } from "./commands/telegram.js";
 import {
   activityConfigCommand,
   activityConfigSetCommand,
@@ -148,6 +151,7 @@ registerSkillCommands(program, workspaceRoot);
 registerComputerCommands(program);
 registerCuCommands(program);
 registerBrowserCommands(program);
+registerInAppBrowserCommands(program);
 registerThemeCommands(program);
 
 program.command("acp").description("Inspect external ACP Agents").command("check")
@@ -160,6 +164,18 @@ image.command("generate").argument("<prompt...>", "image description").option("-
   .action((prompt: string[], options: { model?: string; aspect?: string; size?: string; reference?: string[]; json?: boolean }) => wrap(() => imageGenerateCommand(workspaceRoot, prompt.join(" "), options))());
 image.command("edit").argument("<image-path>", "source image to edit").argument("<prompt...>", "edit description").option("--model <model>", "providerAlias:modelId or Gemini model id").option("--aspect <ratio>", "aspect ratio like 16:9, 9:16, 1:1, or auto").option("--size <size>", "alias of --aspect").option("--json", "print JSON")
   .action((editPath: string, prompt: string[], options: { model?: string; aspect?: string; size?: string; json?: boolean }) => wrap(() => imageEditCommand(workspaceRoot, editPath, prompt.join(" "), options))());
+
+const video = program.command("video").description("Analyze video files with Gemini");
+video.command("analyze").argument("<video-path>", "video file path or @attachments reference").argument("<prompt...>", "what to analyze").option("--model <model>", "providerAlias:modelId or Gemini model id").option("--json", "print JSON")
+  .action((videoPath: string, prompt: string[], options: { model?: string; json?: boolean }) => wrap(() => videoAnalyzeCommand(workspaceRoot, videoPath, prompt.join(" "), options))());
+
+const telegram = program.command("telegram").description("Connect an owner-controlled Telegram bot to this workspace");
+telegram.command("run").description("Run the Telegram bridge in the foreground")
+  .action(wrap(() => telegramRunCommand(workspaceRoot)));
+telegram.command("dm-owner").argument("<message...>", "message to send to the configured owner")
+  .action((message: string[]) => wrap(() => telegramDmOwnerCommand(workspaceRoot, message.join(" ")))());
+telegram.command("dm").argument("<user-id>", "positive numeric Telegram user ID").argument("<message...>", "message to send")
+  .action((userId: string, message: string[]) => wrap(() => telegramDmCommand(userId, message.join(" ")))());
 
 const ref = program.command("ref").description("Search and resolve local @ references");
 ref.command("kinds").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => referenceKindsCommand(workspaceRoot, options))());
@@ -225,7 +241,8 @@ automation
   .argument("<name>", "automation name")
   .requiredOption("--prompt <text>", "prompt to execute")
   .requiredOption("--trigger <type>", "heartbeat, cron, interval, or once")
-  .option("--cron <expression>", "five-field cron expression")
+  .option("--cron <expression>", "cron expression")
+  .option("--timezone <iana-name>", "IANA time zone for cron schedules")
   .option("--interval-ms <milliseconds>", "interval in milliseconds", parsePositiveInteger)
   .option("--at <timestamp>", "ISO timestamp for once")
   .option("--jitter-ms <milliseconds>", "maximum schedule jitter", parseNonNegativeInteger)
@@ -233,10 +250,10 @@ automation
   .option("--max-fires <count>", "maximum fire count", parsePositiveInteger)
   .option("--expires-at <timestamp>", "ISO expiry timestamp")
   .option("--json", "print JSON")
-  .action((name: string, options: { prompt: string; trigger: string; cron?: string; intervalMs?: number; at?: string; jitterMs?: number; session?: string; maxFires?: number; expiresAt?: string; json?: boolean }) => wrap(() => automationCreateCommand(workspaceRoot, {
+  .action((name: string, options: { prompt: string; trigger: string; cron?: string; timezone?: string; intervalMs?: number; at?: string; jitterMs?: number; session?: string; maxFires?: number; expiresAt?: string; json?: boolean }) => wrap(() => automationCreateCommand(workspaceRoot, {
     name,
     triggerType: options.trigger as "heartbeat" | "cron" | "interval" | "once",
-    schedule: { cron: options.cron, intervalMs: options.intervalMs, at: options.at, jitterMs: options.jitterMs },
+    schedule: { cron: options.cron, timezone: options.timezone, intervalMs: options.intervalMs, at: options.at, jitterMs: options.jitterMs },
     executionTemplate: { prompt: options.prompt, sessionId: options.session },
     maxFires: options.maxFires,
     expiresAt: options.expiresAt

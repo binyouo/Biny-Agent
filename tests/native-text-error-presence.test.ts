@@ -140,13 +140,13 @@ for (const route of ["prepare", "injected"] as const) {
   });
 }
 
-test("an error after valid JSON cannot reach the emotion-analysis write", async () => {
+test("an error after a valid pipe-delimited line cannot reach the emotion-analysis write", async () => {
   let writes = 0;
   let usageCallbacks = 0;
   const storage = {
     readBase: async () => undefined, readContext: async () => undefined, writeContext: async () => { writes++; }
   } as unknown as EmotionStorage;
-  const source = sourceFor([...textParts('{"mood":"calm","valence":5,"reason":"fixture"}'), { type: "error", error: undefined }, finish]);
+  const source = sourceFor([...textParts("calm|5|fixture"), { type: "error", error: undefined }, finish]);
   await assert.rejects(analyzeContextEmotion({
     sessionId: "fixture", storage, getModel: () => modelFor(source),
     getMessages: async () => [{ role: "user", text: "fixture" }], onUsage: () => { usageCallbacks++; }

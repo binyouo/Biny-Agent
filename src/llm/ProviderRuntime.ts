@@ -349,6 +349,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       runtime: "provider",
       dataResidency: normalizedModel.dataResidency ?? this.config.dataResidency,
       supportsTools: capabilities.tools,
+      serviceTiers: capabilities.serviceTiers,
       vercelModel,
       vercelOptions: {
         providerOptions,
@@ -883,7 +884,8 @@ function mergeCatalogCapabilities(
     reasoningSummary: base?.reasoningSummary ?? override?.reasoningSummary,
     vision: base?.vision ?? override?.vision,
     audio: base?.audio ?? override?.audio,
-    streaming: base?.streaming ?? override?.streaming
+    streaming: base?.streaming ?? override?.streaming,
+    serviceTiers: base?.serviceTiers ?? override?.serviceTiers
   };
 }
 
@@ -899,7 +901,8 @@ function mergeUserCapabilities(
     reasoningSummary: override?.reasoningSummary ?? base?.reasoningSummary,
     vision: override?.vision ?? base?.vision,
     audio: override?.audio ?? base?.audio,
-    streaming: override?.streaming ?? base?.streaming
+    streaming: override?.streaming ?? base?.streaming,
+    serviceTiers: override?.serviceTiers ?? base?.serviceTiers
   };
 }
 

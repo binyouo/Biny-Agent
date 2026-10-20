@@ -4,7 +4,6 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { globalAgentDir } from "../../config/paths.js";
 import { withGlobalConfigWriteLock } from "../../config/versioned.js";
-import { EmotionStorage } from "./emotionStorage.js";
 
 const twoHoursMs = 2 * 60 * 60 * 1_000;
 export type FatigueLevel = "awake" | "tired" | "sleepy" | "sleeping";
@@ -31,12 +30,10 @@ export interface FatigueServiceOptions { agentDir?: string; now?: () => Date; }
 export class FatigueService {
   private readonly filePath: string;
   private readonly now: () => Date;
-  private readonly emotions: EmotionStorage;
   private state: FatigueState;
   constructor(options: FatigueServiceOptions = {}) {
     this.filePath = path.join(path.resolve(options.agentDir ?? globalAgentDir()), "fatigue.json");
     this.now = options.now ?? (() => new Date());
-    this.emotions = new EmotionStorage({ configDir: options.agentDir, now: this.now });
     this.state = defaultState(this.now());
   }
   get path(): string { return this.filePath; }
@@ -45,7 +42,7 @@ export class FatigueService {
     return await withGlobalConfigWriteLock(path.dirname(this.filePath), async () => {
       const state = await this.readState();
       const before = JSON.stringify(state);
-      if (this.refreshSleep(state, this.now())) await this.emotions.updateRestEnergy("wake");
+      this.refreshSleep(state, this.now());
       if (before !== JSON.stringify(state)) await this.writeState(state);
       this.state = state;
       return { ...state };
@@ -64,7 +61,6 @@ export class FatigueService {
       state.manualWake = action === "wake";
       if (action === "wake") state.fatigue = Math.max(0, state.fatigue - 30);
       if (action === "rest") { state.fatigue = 0; state.messageCount = 0; }
-      await this.emotions.updateRestEnergy(action);
     });
   }
   status(): FatigueStatus {
@@ -86,7 +82,7 @@ export class FatigueService {
     return await withGlobalConfigWriteLock(path.dirname(this.filePath), async () => {
       const state = await this.readState();
       const now = this.now();
-      if (this.refreshSleep(state, now)) await this.emotions.updateRestEnergy("wake");
+      this.refreshSleep(state, now);
       state.fatigue = decayFatigue(state, now);
       state.lastMessageTime = now.toISOString();
       await change(state, now);

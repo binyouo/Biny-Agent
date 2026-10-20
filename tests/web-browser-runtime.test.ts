@@ -8,9 +8,10 @@ import path from "node:path";
 import { test } from "node:test";
 import type { WebSearchArgs, WebSearchResponse } from "../src/tools/web/search.js";
 import { createToolRegistry } from "../src/tools/registry.js";
-import { requestBrowser } from "../src/tools/browser.js";
+import { createBrowserTools, requestBrowser } from "../src/tools/browser.js";
 import { createWebFetchTool } from "../src/tools/web/fetch.js";
 import { defaultConfig } from "../src/config/schema.js";
+import { BrowserEnvironmentStore, browserPartitionForEnvironment } from "../src/desktop/browserEnvironments.js";
 
 class Contents extends EventEmitter {
   static nextId = 1;
@@ -52,13 +53,18 @@ class Window extends EventEmitter {
 
 test("WebSearch 经浏览器控制 socket 返回结果，关闭侧栏时使用隐藏窗口并释放", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-web-"));
-  const fake = { BrowserWindow: Window, WebContentsView: View, clipboard: {}, session: { fromPartition: () => ({ webRequest: { onBeforeRequest() {} }, cookies: { on() {}, get: async () => [] } }) } };
+  const proxyChanges: Array<{ mode?: string; proxyRules?: string; proxyBypassRules?: string }> = [];
+  const fake = { BrowserWindow: Window, WebContentsView: View, clipboard: {}, session: { fromPartition: () => ({
+    webRequest: { onBeforeRequest() {} }, cookies: { on() {}, get: async () => [], set: async () => {}, remove: async () => {} },
+    setProxy: async (config: { mode?: string; proxyRules?: string; proxyBypassRules?: string }) => { proxyChanges.push(config); },
+    closeAllConnections: async () => {}, clearStorageData: async () => {}, clearAuthCache: async () => {}, clearCache: async () => {}
+  }) } };
   Object.assign(globalThis, { __webRuntimeElectron: fake });
   const hooks = registerHooks({ load(url, context, next) { return /\/electron\/index\.js$/.test(url) ? { format: "module", source: "export const {BrowserWindow,WebContentsView,clipboard,session}=globalThis.__webRuntimeElectron;", shortCircuit: true } : next(url, context); } });
   let service: { dispose(): Promise<void> } | undefined;
   try {
     const { DesktopBrowserService } = await import("../src/desktop/electron/main/DesktopBrowserService.js");
-    const browser = new DesktopBrowserService(async () => path.join(root, "cookies.json"), undefined, async () => ["93.184.216.34"]); service = browser;
+    const browser = new DesktopBrowserService(async () => path.join(root, "cookies.json"), undefined, async () => ["93.184.216.34"], new BrowserEnvironmentStore()); service = browser;
     const endpoint = await browser.startAutomationServer(path.join(root, "b.sock"));
     await assert.rejects(requestBrowser(endpoint, "read_dom", {}), /未打开|不可用/);
     assert.equal(Window.instances.length, 0, "读取不能创建首页并冒充用户当前浏览器");
@@ -78,6 +84,27 @@ test("WebSearch 经浏览器控制 socket 返回结果，关闭侧栏时使用�
     assert.equal(fetched.content, "Document");
     assert.equal(fetched.hasMore, true);
     assert.equal(fetched.truncatedAtByteLimit, false);
+
+    const host = Object.assign(new EventEmitter(), { isDestroyed: () => false, getContentBounds: () => ({ width: 1200, height: 800 }), contentView: { addChildView() {}, removeChildView() {} }, webContents: { send() {}, getZoomFactor: () => 1 } });
+    browser.attachDesktopWindow(host as unknown as Electron.BrowserWindow);
+    const environment = await browser.createBrowserEnvironment({ name: "Work", proxy: { mode: "fixed_servers", proxyRules: "https=127.0.0.1:7890" } });
+    const browserTools = createBrowserTools({ ...endpoint, projectId: "p" });
+    const openExecution = await browserTools.find((tool) => tool.name === "BrowserOpen")!.resolveExecution!({ url: "https://example.org/account", environment: "Work" });
+    if ("isError" in openExecution) assert.fail("browser navigation plan failed");
+    await openExecution.execute({ toolCallId: "open-env", operationId: "open-env-operation", signal: undefined });
+    assert.equal(browser.browserSnapshot("p").tabs.at(-1)?.environmentId, environment.id);
+    assert.equal(browser.browserSnapshot("p").tabs.at(-1)?.environmentName, "Work");
+    const listExecution = await browserTools.find((tool) => tool.name === "BrowserListEnvironments")!.resolveExecution!({});
+    if ("isError" in listExecution) assert.fail("environment listing plan failed");
+    const listed = await listExecution.execute({ toolCallId: "list-env", operationId: "list-env-operation", signal: undefined }) as Array<{ id: string; name: string; color: string }>;
+    assert.deepEqual(listed.at(-1), { id: environment.id, name: "Work", color: environment.color });
+    assert.deepEqual(proxyChanges.at(-1), { mode: "fixed_servers", proxyRules: "https=127.0.0.1:7890", proxyBypassRules: undefined });
+
+    const authenticatedFetch = createWebFetchTool(defaultConfig.web.fetch, { enabled: false }, { browser: endpoint });
+    const authenticatedExecution = await authenticatedFetch.resolveExecution({ url: "https://example.org/account", environment: "Work" });
+    if ("isError" in authenticatedExecution) assert.fail("environment WebFetch plan failed");
+    await authenticatedExecution.execute({ toolCallId: "fetch-env", operationId: "fetch-env-operation", signal: undefined });
+    assert.equal((Window.instances.at(-1)!.options.webPreferences as { partition: string }).partition, browserPartitionForEnvironment(environment.id));
 
     // 保留旧替身默认不返回标记；以下覆盖经过真实 service、socket 和客户端脱敏路径。
     const search = async (query: string): Promise<WebSearchResponse> => {
@@ -121,16 +148,14 @@ test("WebSearch 经浏览器控制 socket 返回结果，关闭侧栏时使用�
       Contents.webReadOverride = undefined;
     }
 
-    const host = Object.assign(new EventEmitter(), { isDestroyed: () => false, getContentBounds: () => ({ width: 1200, height: 800 }), contentView: { addChildView() {}, removeChildView() {} }, webContents: { send() {}, getZoomFactor: () => 1 } });
-    browser.attachDesktopWindow(host as unknown as Electron.BrowserWindow);
     const tab = browser.browserAction("p", { type: "new", url: "https://example.org/" });
     browser.showEmbeddedBrowser("p", tab.activeId!, { x: 0, y: 0, width: 500, height: 600 });
     const windowsBefore = Window.instances.length;
     await requestBrowser({ ...endpoint, projectId: "q" }, "web_read", { url: "https://example.org/", visible: true, projectId: "q" });
     assert.equal(Window.instances.length, windowsBefore + 1, "其他项目不能借用当前可见标签");
-    assert.equal(browser.browserSnapshot("p").tabs.length, 1);
+    assert.equal(browser.browserSnapshot("p").tabs.length, 2);
     await requestBrowser(endpoint, "web_read", { url: "https://example.org/", visible: true, projectId: "p" });
-    assert.equal(browser.browserSnapshot("p").tabs.length, 2, "同项目创建新的 Agent 标签");
+    assert.equal(browser.browserSnapshot("p").tabs.length, 3, "同项目创建新的 Agent 标签");
 
     Contents.hang = true;
     const cancel = new AbortController();

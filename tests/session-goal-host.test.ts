@@ -36,7 +36,7 @@ const provider = createServer((request, response) => { void (async () => {
   let source = "";
   for await (const chunk of request) source += String(chunk);
   const body = JSON.parse(source) as { messages: unknown[]; tools?: Array<{ function?: { name?: string } }> };
-  if (!body.tools?.some(tool => tool.function?.name === (executionMode === "direct" ? "Bash" : "exec"))) {
+  if (!body.tools?.some(tool => tool.function?.name === (executionMode === "direct" ? "Bash" : "run_script"))) {
     send(response, { content: JSON.stringify({ skillIds: [], tools: [] }) });
     return;
   }
@@ -44,7 +44,7 @@ const provider = createServer((request, response) => { void (async () => {
   requests += 1;
   const call = (name: string, args: unknown) => ({ tool_calls: [{ index: 0, id: `goal-tool-${requests}`, type: "function", function: executionMode === "direct"
     ? { name, arguments: JSON.stringify(args) }
-    : { name: "exec", arguments: JSON.stringify({ code: `return await tools.${name}(${JSON.stringify(args)});` }) } }] });
+    : { name: "run_script", arguments: JSON.stringify({ description: "Run fixture workflow", code: `return await tools.${name}(${JSON.stringify(args)});` }) } }] });
   if (hold) { held = response; return; }
   if (goalReadsOnly) {
     if ((body.messages.at(-1) as { role?: string })?.role === "tool") send(response, { content: "目标状态已核对，仍未产生工作证据。" });

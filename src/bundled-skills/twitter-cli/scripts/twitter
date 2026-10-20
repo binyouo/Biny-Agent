@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -z "${TWITTER_PROXY:-}" ]; then
+  for proxy_value in "${HTTPS_PROXY:-}" "${https_proxy:-}" "${ALL_PROXY:-}" "${all_proxy:-}" "${HTTP_PROXY:-}" "${http_proxy:-}"; do
+    if [ -n "$proxy_value" ]; then
+      export TWITTER_PROXY="$proxy_value"
+      break
+    fi
+  done
+fi
+
+if [ -z "${TWITTER_PROXY:-}" ] && command -v scutil >/dev/null 2>&1; then
+  system_proxy=$(scutil --proxy 2>/dev/null | awk '
+    /HTTPSEnable : 1/ { https_enabled = 1 } /HTTPSProxy :/ { https_host = $3 } /HTTPSPort :/ { https_port = $3 }
+    /SOCKSEnable : 1/ { socks_enabled = 1 } /SOCKSProxy :/ { socks_host = $3 } /SOCKSPort :/ { socks_port = $3 }
+    END {
+      if (https_enabled && https_host != "" && https_port != "") print "http://" https_host ":" https_port
+      else if (socks_enabled && socks_host != "" && socks_port != "") print "socks5://" socks_host ":" socks_port
+    }' || true)
+  if [ -n "$system_proxy" ]; then
+    export TWITTER_PROXY="$system_proxy"
+  fi
+fi
+
+if command -v twitter >/dev/null 2>&1 && twitter --help 2>/dev/null | grep -q "Twitter/X CLI"; then
+  exec twitter "$@"
+fi
+
+if command -v uvx >/dev/null 2>&1; then
+  exec uvx --from twitter-cli twitter "$@"
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  exec uv tool run --from twitter-cli twitter "$@"
+fi
+
+cat >&2 <<'MSG'
+twitter-cli is not installed and uv/uvx is unavailable.
+
+Install twitter-cli with one of:
+  uv tool install twitter-cli
+  pipx install twitter-cli
+MSG
+
+exit 127

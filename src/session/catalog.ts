@@ -48,6 +48,7 @@ export interface SessionCatalogRecord {
   labels?: string[];
   personalization?: ChatPersonalizationOverride;
   isolation?: SessionIsolation;
+  fastMode?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -66,6 +67,7 @@ export interface SessionCatalogItem {
   labels?: string[];
   personalization?: ChatPersonalizationOverride;
   isolation?: SessionIsolation;
+  fastMode?: boolean;
   metadataRevision?: string;
   hasChildren: boolean;
 }
@@ -103,6 +105,7 @@ export interface SessionCatalogMetadataPatch {
   labels?: string[];
   personalization?: ChatPersonalizationOverride;
   isolation?: SessionIsolation;
+  fastMode?: boolean;
 }
 
 export class SessionCatalogConflictError extends Error {
@@ -153,6 +156,7 @@ export async function registerSessionBranch(
       ? undefined
       : cloneChatPersonalizationOverride(parent.personalization),
     isolation: parent?.isolation,
+    fastMode: parent?.fastMode,
     createdAt: now,
     updatedAt: now
   });
@@ -225,6 +229,7 @@ export async function updateSessionCatalogMetadata(
           ? base.personalization
           : cloneChatPersonalizationOverride(patch.personalization),
         isolation: patch.isolation === undefined ? base.isolation : patch.isolation,
+        fastMode: patch.fastMode === undefined ? base.fastMode : patch.fastMode,
         updatedAt: now
       };
       assertCatalogRecord(next);
@@ -438,6 +443,7 @@ function toCatalogItem(summary: SessionSummary, record: SessionCatalogRecord | u
       ? undefined
       : cloneChatPersonalizationOverride(record.personalization),
     isolation: record?.isolation,
+    fastMode: record?.fastMode,
     metadataRevision: record === undefined ? undefined : sessionCatalogRecordRevision(record),
     hasChildren: false
   };
@@ -577,6 +583,7 @@ async function writeSessionIndexFile(workspaceRoot: string, items: readonly Sess
         updatedAt: item.summary.updatedAt,
         eventCount: item.summary.eventCount,
         isolation: item.isolation,
+        fastMode: item.fastMode,
       }))
     };
     await writeAtomically(path.join(sessionsDirectory, sessionIndexFileName), `${JSON.stringify(payload, null, 2)}\n`);
@@ -641,7 +648,8 @@ function catalogMetadataEquals(left: SessionCatalogRecord, right: SessionCatalog
     && left.unread === right.unread
     && optionalStringArraysEqual(left.labels, right.labels)
     && JSON.stringify(left.personalization) === JSON.stringify(right.personalization)
-    && left.isolation === right.isolation;
+    && left.isolation === right.isolation
+    && left.fastMode === right.fastMode;
 }
 
 function optionalStringArraysEqual(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
@@ -832,6 +840,7 @@ function isCatalogRecord(value: unknown): value is SessionCatalogRecord {
   if (value.labels !== undefined && (!Array.isArray(value.labels) || !value.labels.every((label) => typeof label === "string"))) return false;
   if (value.personalization !== undefined && !chatPersonalizationOverrideSchema.safeParse(value.personalization).success) return false;
   if (value.isolation !== undefined && value.isolation !== "shared" && value.isolation !== "worktree") return false;
+  if (value.fastMode !== undefined && typeof value.fastMode !== "boolean") return false;
   return typeof value.createdAt === "string" && typeof value.updatedAt === "string";
 }
 
@@ -842,6 +851,7 @@ function assertCatalogMetadata(record: SessionCatalogRecord): void {
   if (record.isolation !== undefined && record.isolation !== "shared" && record.isolation !== "worktree") {
     throw new Error("Invalid session isolation.");
   }
+  if (record.fastMode !== undefined && typeof record.fastMode !== "boolean") throw new Error("Invalid session fast mode.");
 }
 
 function assertBranchPoint(value: SessionBranchPoint): void {

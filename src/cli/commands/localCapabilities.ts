@@ -6,6 +6,7 @@
  */
 import { executeSessionCommand } from "./sessionManagement.js";
 import { readConversationDay, searchConversationHistory } from "../../session/searchHistory.js";
+import { hasReflectionDate, readReflectionDiary } from "../../agent/context/reflectionDates.js";
 import { connectOrSpawnRuntimeHost, connectRuntimeHost, type RuntimeHostClient } from "../../runtime/RuntimeHost.js";
 import { archiveConversationMarkdown } from "../../session/markdownArchive.js";
 import { startMemoryHttpServer } from "../../runtime/host/memory-http.js";
@@ -205,9 +206,11 @@ export async function diaryRefreshCommand(workspaceRoot: string, dateInput: stri
 
 export async function reflectionStatusCommand(_workspaceRoot: string, dateInput: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
   const dateKey = resolveDateKey(dateInput);
+  const diary = await readReflectionDiary(dateKey);
   const note = await readDailyMemoryNote(dateKey, { configDir: globalConfigDir() });
-  const reflection = note === undefined ? undefined : readDailyMemorySection(note, "自我反思");
-  printResult({ dateKey, exists: reflection !== undefined, reflection }, options.json, (value) => {
+  const reflection = diary ?? (note === undefined ? undefined : readDailyMemorySection(note, "自我反思"));
+  const exists = await hasReflectionDate(dateKey) || diary !== undefined || reflection !== undefined;
+  printResult({ dateKey, exists, reflection }, options.json, (value) => {
     const record = asRecord(value);
     return record.exists === true
       ? typeof record.reflection === "string" ? record.reflection : "已有反思记录。"

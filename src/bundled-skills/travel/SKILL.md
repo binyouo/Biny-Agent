@@ -125,6 +125,6 @@ While traveling:
 
 ## Storage
 
-- Current trip and history: `travels/state.json` in the global Biny data directory.
+- Current trip: `travels/status.json`; completed trips: `travels/history.json` in the global Biny data directory.
 - Diaries: `travels/YYYY-MM-DD.md`; use the journal command to read and append.
 - These are virtual experiences, not evidence of physical travel or user activities. Keep real destination research separate from imagined events. Never book, buy or message anyone merely to progress a virtual trip.

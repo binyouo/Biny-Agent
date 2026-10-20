@@ -11,7 +11,7 @@ import type {
 } from "../CapabilityStore.js";
 import type { HostSurface } from "./types.js";
 
-export const runtimeHostProtocolVersion = 11 as const;
+export const runtimeHostProtocolVersion = 14 as const;
 export const runtimeHostEventHistoryLimit = 4_000;
 export const runtimeHostMaxFrameBytes = 8 * 1024 * 1024;
 /** 旧名保留：重连基准延迟。实际退避曲线（minMs/maxMs/stableConnectionMs）见 reconnect.ts。 */
@@ -41,7 +41,8 @@ export const runtimeHostCapabilities = [
   "personalization",
   "memory",
   "browser.automation.lease",
-  "host.idle-retirement"
+  "host.idle-retirement",
+  "agent.fast-mode"
 ] as const;
 
 /**
@@ -130,6 +131,12 @@ export interface HostCapabilityOfferFrame {
   registration: CapabilityRegistration;
 }
 
+export interface HostOwnerNotificationFrame {
+  kind: "owner-notification";
+  notificationId: string;
+  text: string;
+}
+
 export type HostFrame =
   | HostHelloFrame
   | HostRetiredFrame
@@ -138,7 +145,8 @@ export type HostFrame =
   | HostEventFrame
   | HostCompletionFrame
   | HostGapFrame
-  | HostCapabilityOfferFrame;
+  | HostCapabilityOfferFrame
+  | HostOwnerNotificationFrame;
 
 export function encodeHostFrame(frame: HostFrame): string {
   return `${JSON.stringify(frame)}\n`;
@@ -217,6 +225,13 @@ export function isCapabilityOfferFrame(value: unknown): value is HostCapabilityO
   return record.kind === "capability-offer"
     && typeof invocation.invocationId === "string"
     && typeof registration.registrationId === "string";
+}
+
+export function isOwnerNotificationFrame(value: unknown): value is HostOwnerNotificationFrame {
+  const record = asRecord(value);
+  return record.kind === "owner-notification"
+    && typeof record.notificationId === "string"
+    && typeof record.text === "string";
 }
 
 export function isRuntimeUpdate(value: unknown): value is AgentRuntimeUpdate {

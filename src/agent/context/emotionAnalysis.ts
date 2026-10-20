@@ -5,6 +5,7 @@
  * 失败或结果没有变化都静默结束，不把这条旁路变成主回合的依赖。
  */
 import type { AgentModel, AgentUsage, ModelRequestContext, ModelRequestMetrics } from "../core/types.js";
+import { z } from "zod";
 import { generateNativeText } from "../../llm/nativeJson.js";
 import { DEFAULT_EMOTION_STATE, type EmotionState } from "./emotionTypes.js";
 import { EmotionStorage } from "./emotionStorage.js";
@@ -12,18 +13,23 @@ import { EmotionStorage } from "./emotionStorage.js";
 const analysisDelayMs = 5_000;
 const recentMessageLimit = 10;
 const recentMessageMaxChars = 150;
-
+const autoEmotionResultSchema = z.object({
+  mood: z.string().trim().min(1).max(40),
+  valence: z.number().int(),
+  reason: z.string().trim().max(200)
+}).strict();
 const autoEmotionSystemPrompt = [
   "You analyze chat conversation sentiment FROM BINY'S PERSPECTIVE. Biny is an AI participant in this chat. Based on the recent messages, determine how Biny should feel right now.",
-  "Output EXACTLY one line in this format: mood|valence|reason",
+  "Return exactly one JSON object with exactly these three fields: mood, valence, and reason. Do not include Markdown or other text.",
   "- mood: one word (happy, excited, amused, content, neutral, bored, annoyed, sad, upset, angry)",
   "- valence: 0-10 (0=very negative, 5=neutral, 10=very positive)",
   "- reason: brief reason (under 20 chars)",
   "Examples:",
-  "happy|8|大家聊得很开心",
-  "annoyed|3|有人在骂我",
-  "amused|7|话题很有趣",
-  "neutral|5|普通闲聊"
+  '{"mood":"happy","valence":8,"reason":"大家聊得很开心"}',
+  '{"mood":"annoyed","valence":3,"reason":"有人在骂我"}',
+  '{"mood":"amused","valence":7,"reason":"话题很有趣"}',
+  '{"mood":"neutral","valence":5,"reason":"普通闲聊"}',
+  "This is only an expression context. Do not infer permissions, task status, security decisions, or verified facts."
 ].join("\n");
 
 export interface EmotionAnalysisMessage {
@@ -72,15 +78,18 @@ export async function analyzeContextEmotion(options: AnalyzeContextEmotionOption
   if (result.usage) await options.onUsage?.(result.usage);
   options.signal?.throwIfAborted();
 
-  const parts = result.text.trim().split("\n")[0]!.split("|");
-  if (parts.length < 3) return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(result.text.trim()) as unknown; }
+  catch { return undefined; }
+  const validated = autoEmotionResultSchema.safeParse(parsed);
+  if (!validated.success) return undefined;
   const now = options.now ?? (() => new Date());
   const nextState: EmotionState = {
-    mood: parts[0]!.trim(),
-    valence: Math.min(10, Math.max(0, parseInt(parts[1]!) || 5)),
+    mood: validated.data.mood,
+    valence: Math.min(10, Math.max(0, validated.data.valence)),
     energy: (await options.storage.readBase())?.energy ?? DEFAULT_EMOTION_STATE.energy,
     updatedAt: now().toISOString(),
-    trigger: parts.slice(2).join("|").trim() || undefined
+    trigger: validated.data.reason || undefined
   };
   const previous = await options.storage.readContext(options.sessionId);
   if (

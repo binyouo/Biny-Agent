@@ -130,6 +130,12 @@ function testEmotionStrippedAndHeartbeatDefaultsToDisabled(): void {
   assert.equal("emotion" in parsed.context, false);
   assert.deepEqual(parsed.heartbeat, { enabled: true, intervalMinutes: 45, activeHoursStart: 8, activeHoursEnd: 23 });
 
+  const withHeartbeatTimeZone = structuredClone(defaultConfig) as unknown as Record<string, unknown>;
+  withHeartbeatTimeZone.heartbeat = { enabled: true, timezone: "America/Los_Angeles" };
+  assert.equal(configSchema.parse(withHeartbeatTimeZone).heartbeat.timezone, "America/Los_Angeles");
+  withHeartbeatTimeZone.heartbeat = { enabled: true, timezone: "not/a-zone" };
+  assert.throws(() => configSchema.parse(withHeartbeatTimeZone), /valid IANA time zone/u);
+
   const withoutHeartbeat = structuredClone(defaultConfig) as unknown as Record<string, unknown>;
   delete withoutHeartbeat.heartbeat;
   assert.deepEqual(configSchema.parse(withoutHeartbeat).heartbeat, {

@@ -467,15 +467,26 @@ function vercelCallSettings(state: VercelLoopState): {
 
 function vercelProviderOptions(state: VercelLoopState): LanguageModelV4CallOptions["providerOptions"] {
   const providerOptions = state.modelOptions?.providerOptions;
-  if (!providerOptions || !state.vercelModel) return providerOptions as LanguageModelV4CallOptions["providerOptions"];
-  const providerKey = state.vercelModel.provider.split(".", 1)[0] ?? state.vercelModel.provider;
-  if (providerOptions[providerKey] !== undefined || providerOptions[state.model.provider] === undefined) {
-    return providerOptions as LanguageModelV4CallOptions["providerOptions"];
+  const providerKey = state.vercelModel?.provider.split(".", 1)[0] ?? state.vercelModel?.provider;
+  let resolved = providerOptions;
+  if (providerOptions && state.vercelModel && providerKey
+    && providerOptions[providerKey] === undefined && providerOptions[state.model.provider] !== undefined) {
+    // Biny 按协议名保存 provider options；AI SDK 的 custom provider 则按 factory name 取值。
+    resolved = { ...providerOptions, [providerKey]: providerOptions[state.model.provider] };
   }
-  // Biny 按协议名保存 provider options；AI SDK 的 custom provider 则按 factory name 取值。
+  if (state.modelOptions?.serviceTier !== "priority" || !providerKey) {
+    return resolved as LanguageModelV4CallOptions["providerOptions"];
+  }
+  const isOpenAiProvider = state.model.provider === "openai" || state.model.provider === "openai-codex";
+  const optionsKey = isOpenAiProvider ? "openai" : providerKey;
+  const tierOption = isOpenAiProvider ? { serviceTier: "priority" } : { service_tier: "priority" };
+  const inherited = resolved?.[optionsKey];
   return {
-    ...providerOptions,
-    [providerKey]: providerOptions[state.model.provider]
+    ...resolved,
+    [optionsKey]: {
+      ...(typeof inherited === "object" && inherited !== null && !Array.isArray(inherited) ? inherited : {}),
+      ...tierOption
+    }
   } as LanguageModelV4CallOptions["providerOptions"];
 }
 

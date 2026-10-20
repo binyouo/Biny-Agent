@@ -28,6 +28,7 @@ function findLoops(node: ts.Node): void {
 findLoops(bridge);
 assert.equal(loops.length, 1, "extract exactly the skill notification loop");
 const calls = new Set([
+  "input.installedSkills.find", "input.onAnalyzed", "path.dirname", "fs.readFile", "existingPath?.includes",
   "collectTurnMaterial", "analyzeWithModel", "authorWithModel", "input.onNotice",
   "input.refreshSkills", "defaultManagedSkillRoot", "path.join", "fileExists",
   "withGlobalConfigWriteLock", "fs.lstat", "fs.lstat(skillDirectory).catch",
@@ -134,7 +135,7 @@ function fixture(initial: Entry = "directory", priorBody = "old") {
       try { return await operation(); }
       finally { extractionLockHeld = false; }
     }),
-    collectTurnMaterial: () => ({ toolCalls: 5 }),
+    collectTurnMaterial: () => ({ toolCalls: 5, analyzedToolCalls: 0 }),
     analyzeWithModel: async () => { assert.equal(extractionLockHeld, false); return { worthy: true, skillName: "workflow", skillDescription: "workflow" }; },
     authorWithModel: async () => { assert.equal(extractionLockHeld, false); return { raw: "new", frontmatter: { name: "workflow", description: "workflow" } }; }
   }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as (input: object) => Promise<Outcome>;
@@ -164,7 +165,7 @@ test("version alias and non-directory entries skip without writes or success not
     assert.equal(f.body(), "old", "the actual version document must remain unchanged");
     assert.equal(outcome.stage, "skipped"); assert.equal(outcome.installedPath, undefined);
     assert.deepEqual(f.operations, ["lstat"]);
-    assert.deepEqual(f.notices.map((item) => item.stage), ["extracting", "skipped"]);
+    assert.deepEqual(f.notices.map((item) => item.stage), ["analyzing", "extracting", "skipped"]);
     assert.equal(f.refreshes, 0);
   }
 });
@@ -174,7 +175,7 @@ test("candidate storage is entirely under the shared lock; refresh and terminal 
   await f.run();
   assert.ok(f.storageLocks.length > 0);
   assert.equal(f.storageLocks.every(Boolean), true);
-  assert.deepEqual(f.noticeLocks, [false, true, false]);
+  assert.deepEqual(f.noticeLocks, [false, false, true, false]);
 });
 
 test("ordinary directory creation and same-name update retain existing behavior", async () => {
@@ -183,7 +184,7 @@ test("ordinary directory creation and same-name update retain existing behavior"
     assert.equal(outcome.stage, "done"); assert.equal(outcome.updated, entry === "directory");
     assert.equal(outcome.installedPath, f.document); assert.equal(f.files.get(f.document), "new");
     assert.equal(f.refreshes, 1);
-    assert.deepEqual(f.notices.map((item) => item.stage), ["extracting", "saving", "done"]);
+    assert.deepEqual(f.notices.map((item) => item.stage), ["analyzing", "extracting", "saving", "done"]);
   }
 });
 

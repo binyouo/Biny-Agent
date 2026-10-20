@@ -36,7 +36,7 @@ biny emotion
 
 The history command returns full user and assistant messages with session IDs, timestamps and source paths. Follow archived tool-result references if the output is too large; do not stop at the first preview. Search specific details with `biny history search "<query>" --json` when needed.
 
-Read the existing daily notes, MEMORY.md, and the day's virtual travel journal if present. Persistent files are in `${BINY_AGENT_DIR:-$HOME/.config/biny}`. Respect the user's Activity setting. Emotions are current snapshots with update timestamps, not a historical timeline; don't present an old snapshot as an event on the diary date. Virtual travel is an imagined experience. Don't invent inaccessible conversations or missing events.
+Read the existing daily notes, MEMORY.md, any diary already saved for this date, and the day's virtual travel journal if present. Persistent files are in `${BINY_AGENT_DIR:-$HOME/.config/biny}`. Respect the user's Activity setting. Emotions are current snapshots with update timestamps, not a historical timeline; don't present an old snapshot as an event on the diary date. Virtual travel is an imagined experience. Don't invent inaccessible conversations or missing events.
 
 ### Step 2: Reflect (Think Deeply)
 
@@ -93,7 +93,7 @@ Anything else — random observations, funny moments, small things worth remembe
 
 Write the diary YOURSELF using the normal file or Bash tools. Do not delegate it to another model or invoke `biny reflection run` / `biny diary refresh` from this workflow; those commands are entry points, not a diary-writing step.
 
-Read `memory/<date>.md` before editing. Preserve its existing notes and Activity sections. Add or replace only `## 自我反思`; use `###` for the diary subsections shown above. If you used Activity records, include `<!-- biny-activity-derived -->` inside this section. Ordinary notes without a reflection section are not a completed diary.
+Save the diary as its own file at `diary/<date>.md`, separate from `memory/<date>.md` and its daily notes or Activity sections. Use the diary section headings shown above. When rewriting, read the existing diary first and avoid duplicate entries unless the user explicitly requested a rewrite. A date marker in `.reflection-dates` tracks completed diary dates; use `biny reflection status <date> --json` to check completion.
 
 Use Bash when the file is outside the workspace (Read/Write/Edit operate within the workspace). For a full-file write, prepare the complete Markdown in a temporary file beside the target and rename it over the target only after writing succeeds. Do not truncate the original file before the new content is ready. For catch-up, use the requested date consistently; when a diary already exists, read it and avoid duplicate entries unless the user explicitly requested a rewrite.
 
@@ -116,6 +116,8 @@ If today's experiences revealed a new trait or changed how you see yourself:
 # Only if genuinely meaningful — max 1 per day, don't force it
 biny soul append-trait "description of new trait or growth"
 ```
+
+Before adding a trait, review the existing `## Evolved Traits` section. If an earlier entry no longer fits, update or remove only that entry in the Soul file reported by `biny soul show`; leave every section above `## Evolved Traits` untouched. Keep this section under 15 entries.
 
 Most days you won't evolve your personality. That's normal. Growth is slow.
 

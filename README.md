@@ -24,7 +24,7 @@ Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 提供一次�
 | Activity Recorder | 记录桌面活动与 OCR 线索，支持回看、检索和活动摘要。 |
 | 长任务执行 | 保存会话目标与任务进度，支持检查点续跑、重试和完成验证。 |
 | 模型与扩展 | 接入多家模型服务商和 OpenAI-compatible 接口；通过 MCP、Plugins、Skills、Subagents 扩展工具与工作流。 |
-| 工具与操作控制 | 操作项目文件、执行受控命令；Desktop 可通过应用授权观察和操作 macOS 窗口。 |
+| 工具与操作控制 | 操作项目文件、执行受控命令；Desktop 可通过应用授权观察和操作 macOS 窗口，也可从 `biny iab` 操作内置浏览器。 |
 
 ## 快速开始
 

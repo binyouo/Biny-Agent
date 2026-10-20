@@ -61,8 +61,8 @@ for (const executionMode of ["direct", "code_mode"] as const) {
         }
         if (taskSteps < 2) {
           const command = `${biny} task cancel ${quote(taskSteps === 0 ? foreignTaskId : ownedTaskId)} --json`;
-          const name = executionMode === "direct" ? "Bash" : "exec";
-          const args = name === "Bash" ? { command } : { code: `return await tools.Bash(${JSON.stringify({ command })});` };
+          const name = executionMode === "direct" ? "Bash" : "run_script";
+          const args = name === "Bash" ? { command } : { description: "Run fixture workflow", code: `return await tools.Bash(${JSON.stringify({ command })});` };
           delta = { tool_calls: [{ index: 0, id: `task-cli-${taskSteps}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] };
           reason = "tool_calls";
         } else delta = { content: "owned task cancelled" };
@@ -95,15 +95,15 @@ for (const executionMode of ["direct", "code_mode"] as const) {
         }
         planSteps++;
         if (planCommand) {
-          const name = executionMode === "direct" ? "Bash" : "exec";
-          const args = name === "Bash" ? { command: planCommand } : { code: `return await tools.Bash(${JSON.stringify({ command: planCommand })});` };
+          const name = executionMode === "direct" ? "Bash" : "run_script";
+          const args = name === "Bash" ? { command: planCommand } : { description: "Run fixture workflow", code: `return await tools.Bash(${JSON.stringify({ command: planCommand })});` };
           delta = { tool_calls: [{ index: 0, id: `plan-cli-${planSteps}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] };
           reason = "tool_calls";
         } else delta = { content: "plan cancelled" };
       } else if (phase === "supervision") {
         if (supervisionSteps++ === 0) {
-          const name = executionMode === "direct" ? "Bash" : "exec";
-          const args = name === "Bash" ? { command: "touch supervisor-must-not-write" } : { code: "return await tools.Bash({command:'touch supervisor-must-not-write'});" };
+          const name = executionMode === "direct" ? "Bash" : "run_script";
+          const args = name === "Bash" ? { command: "touch supervisor-must-not-write" } : { description: "Run fixture workflow", code: "return await tools.Bash({command:'touch supervisor-must-not-write'});" };
           delta = { tool_calls: [{ index: 0, id: "supervisor-shell", type: "function", function: { name, arguments: JSON.stringify(args) } }] };
           reason = "tool_calls";
         } else {
@@ -112,8 +112,8 @@ for (const executionMode of ["direct", "code_mode"] as const) {
         }
       } else {
         if (steps++ === 0) {
-          const name = executionMode === "direct" ? "Bash" : "exec";
-          const args = name === "Bash" ? { command } : { code: `return await tools.Bash(${JSON.stringify({ command })});` };
+          const name = executionMode === "direct" ? "Bash" : "run_script";
+          const args = name === "Bash" ? { command } : { description: "Run fixture workflow", code: `return await tools.Bash(${JSON.stringify({ command })});` };
           delta = { tool_calls: [{ index: 0, id: "manage-cli", type: "function", function: { name, arguments: JSON.stringify(args) } }] };
           reason = "tool_calls";
         } else {

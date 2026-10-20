@@ -4,8 +4,8 @@
  * 生命周期由 lifecycle/bootstrap 负责，业务调度器由 composition 负责，线协议由 protocol 负责。
  */
 import { randomUUID } from "node:crypto";
-import { globalConfigDir } from "../../config/paths.js";
 import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
+import { hasReflectionDate, markReflectionDate, readReflectionDiary, reflectionDiaryPath } from "../../agent/context/reflectionDates.js";
 import { TaskCommunication } from "../TaskCommunication.js";
 import { planStatus } from "../../extensions/plan.js";
 import net from "node:net";
@@ -71,10 +71,12 @@ import {
   publicErrorData,
   readAttachments,
   readCapabilitySelection,
+  readFastMode,
   readAutomationCreateInput,
   readCapabilityOwnerType,
   readGraphNodes,
   readLocalEmbeddingModel,
+  readModelRoute,
   readOptionalRunStatus,
   readOptionalTaskStatus,
   readTaskRetrySafety,
@@ -119,8 +121,16 @@ interface HostConnection {
   negotiatedCapabilities: readonly string[];
   /** undefined 表示订阅全部 session；空集合表示不接收 session 事件。 */
   sessionFilter?: ReadonlySet<string>;
+  ownerNotificationsSubscribed?: boolean;
   /** 该连接已选择退出；在其任务暂停期间拒绝新的工作。 */
   exitingForPause?: boolean;
+}
+
+interface PendingOwnerNotification {
+  connection: HostConnection;
+  resolve(): void;
+  reject(error: Error): void;
+  timeout: ReturnType<typeof setTimeout>;
 }
 
 function readSessionFilter(value: unknown): ReadonlySet<string> | undefined {
@@ -155,6 +165,8 @@ export class RuntimeHostServer {
   private readonly dispatcher = new OperationDispatcher();
   /** 已解码但尚未完成准入的直接提交；run.inspect 不能把暂时缺失误判为未提交。 */
   private readonly pendingRunAdmissions = new Map<string, Set<Promise<void>>>();
+  private ownerNotificationSubscriber: HostConnection | undefined;
+  private readonly pendingOwnerNotifications = new Map<string, PendingOwnerNotification>();
   /** 聊天日报刷新串行执行，但模型等待不能占据 Host 的请求准入队列。 */
   private readonly diaryDispatcher = new OperationDispatcher();
   private readonly businessComposition: RuntimeHostBusinessComposition;
@@ -205,7 +217,11 @@ export class RuntimeHostServer {
       onBrowserAutomationChange?: (endpoint: BrowserAutomationEndpoint | undefined) => void;
     } = {}
   ) {
-    this.createRuntime = createRuntime;
+    this.createRuntime = createRuntime === undefined ? undefined : async (sessionId, factoryOptions) => {
+      const host = await createRuntime(sessionId, factoryOptions);
+      this.attachOwnerNotificationSink(host.commands);
+      return host;
+    };
     this.conversationMirror = new ConversationMarkdownMirror(registration.agentRoot);
     this.journal = new RuntimeHostEventJournal(path.join(agentDir(registration.persistenceRoot), "runs", hostJournalFile), eventHistoryLimit);
     this.resourceRegistry = options.resourceRegistry ?? new RuntimeHostResourceRegistry();
@@ -217,9 +233,10 @@ export class RuntimeHostServer {
     this.shutdownDrainMs = options.shutdownDrainMs ?? 4_000;
     this.onClosing = options.onClosing;
     this.onBrowserAutomationChange = options.onBrowserAutomationChange;
+    this.attachOwnerNotificationSink(commands);
     if (!Number.isSafeInteger(this.shutdownDrainMs) || this.shutdownDrainMs < 1) throw new Error("shutdownDrainMs must be a positive safe integer.");
     this.registry = new SessionRuntimeRegistry({ runtime, commands }, {
-      createRuntime,
+      createRuntime: this.createRuntime,
       sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
       canEvict: (entry) => !this.sessionWriterOwners.has(entry.sessionId) && !this.dispatcher.hasPendingSession(entry.sessionId),
       onUpdate: (update, managed) => this.handleRuntimeUpdate(update, managed)
@@ -527,6 +544,9 @@ export class RuntimeHostServer {
         }
       }
       this.businessComposition.stop();
+      this.ownerNotificationSubscriber = undefined;
+      for (const entry of this.registry.list()) entry.commands.setOwnerNotificationSink?.(undefined);
+      this.rejectPendingOwnerNotifications(new Error("Runtime Host is shutting down."));
       for (const entry of this.registry.list()) {
         if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun("host_shutdown");
       }
@@ -592,6 +612,7 @@ export class RuntimeHostServer {
       clearTimeout(handshakeTimeout);
       connection.writer.dispose();
       this.connections.delete(connection);
+      this.releaseOwnerNotificationConnection(connection);
       if (this.closePromise !== undefined) return;
       if (connection.authenticated && connection.surface === "desktop") this.detachBrowserAutomationForClient(connection.clientId);
       if (connection.clientId) this.commands.capabilities?.releaseOwner(connection.clientId);
@@ -600,6 +621,7 @@ export class RuntimeHostServer {
     socket.once("error", () => {
       connection.writer.dispose();
       this.connections.delete(connection);
+      this.releaseOwnerNotificationConnection(connection);
       if (this.closePromise !== undefined) return;
       if (connection.clientId) this.commands.capabilities?.releaseOwner(connection.clientId);
       void this.releaseSessionWriters(connection.clientId);
@@ -818,6 +840,9 @@ export class RuntimeHostServer {
       return;
     }
     if (frame.operation === "client.pause-owned-runs") return await this.pauseOwnedRunsForExit(connection);
+    if (frame.operation.startsWith("owner-notification.")) {
+      return await this.executeOwnerNotificationRequest(connection, frame.operation, payload);
+    }
     if (frame.operation === "session.ensure") {
       const requestedSessionId = optionalString(payload.sessionId);
       const requestedIsolation = readRuntimeIsolation(payload.isolation);
@@ -1087,7 +1112,9 @@ export class RuntimeHostServer {
           readAttachments(payload.attachments),
           ids,
           readPromptContext(payload.promptContext),
-          readCapabilitySelection(payload.capabilitySelection)
+          readCapabilitySelection(payload.capabilitySelection),
+          readModelRoute(payload.modelRoute),
+          readFastMode(payload.fastMode)
         );
         this.trackCompletion(submitted);
         return {
@@ -1120,7 +1147,9 @@ export class RuntimeHostServer {
             readAttachments(payload.attachments),
             ids,
             readPromptContext(payload.promptContext),
-            readCapabilitySelection(payload.capabilitySelection)
+            readCapabilitySelection(payload.capabilitySelection),
+            readModelRoute(payload.modelRoute),
+            readFastMode(payload.fastMode)
           );
           this.trackCompletion(submitted);
           return { accepted: true, sessionId: runtime.getSnapshot().info.sessionId, revision: runtime.getSnapshot().revision,
@@ -1302,16 +1331,17 @@ export class RuntimeHostServer {
       case "reflection.run":
         return await this.executeAdmission<{ dateKey: string; path: string; written: boolean; reason?: string; runId?: string }>(async () => {
           const dateKey = requiredString(payload.dateKey, "dateKey");
-          const diaryPath = path.join(globalConfigDir(), "memory", `${dateKey}.md`);
-          const existing = readDailyMemorySection(await readDailyMemoryNote(dateKey) ?? "", "自我反思");
-          if (!payload.force && existing) {
+          const diaryPath = reflectionDiaryPath(dateKey);
+          const existing = await readReflectionDiary(dateKey);
+          const legacy = readDailyMemorySection(await readDailyMemoryNote(dateKey) ?? "", "自我反思");
+          if (!payload.force && (existing || legacy || await hasReflectionDate(dateKey))) {
             return { dateKey, path: diaryPath, written: false, reason: "up_to_date" };
           }
           await this.ensureSessionWriter(connection, runtime);
           this.assertRequestAdmission(connection, admissionOperation);
           const submitted = runtime.submitPrompt(
             `Use the self-reflection skill to write your diary for ${dateKey}. Read the day's conversations and your emotions yourself, then write the diary with the normal tools.\n` +
-            `The diary file is ${diaryPath}; preserve its other sections and put your diary under ## 自我反思 with ### subheadings.\n` +
+            `Write the complete diary to ${diaryPath}. Keep it separate from memory/${dateKey}.md, which contains daily notes and activity records.\n` +
             `${payload.force ? "Rewrite the existing reflection for this date." : "If this date already has a diary, do not duplicate it."}\n` +
             `Complete this in the current turn; do not call biny reflection run or biny diary refresh.`,
             [], readRequestIds(payload), undefined,
@@ -1320,7 +1350,8 @@ export class RuntimeHostServer {
           this.trackCompletion(submitted);
           return new OperationCompletion(submitted.completion.then(async outcome => {
             if (outcome.status !== "completed") throw new Error(outcome.error ?? "Self-reflection did not complete.");
-            const reflection = readDailyMemorySection(await readDailyMemoryNote(dateKey) ?? "", "自我反思");
+            const reflection = await readReflectionDiary(dateKey);
+            if (reflection && reflection !== existing) await markReflectionDate(dateKey);
             return { dateKey, path: diaryPath, runId: submitted.runId, written: Boolean(reflection) && reflection !== existing };
           }));
         }, runtime);
@@ -2093,6 +2124,89 @@ export class RuntimeHostServer {
       }
     } finally {
       if (connection.eventReplay === replay) connection.eventReplay = undefined;
+    }
+  }
+
+  private async executeOwnerNotificationRequest(
+    connection: HostConnection,
+    operation: string,
+    payload: Record<string, unknown>
+  ): Promise<unknown> {
+    if (operation === "owner-notification.subscribe") {
+      if (connection.surface !== "cli") throw new Error("Only a CLI channel bridge can receive owner notifications.");
+      const current = this.ownerNotificationSubscriber;
+      if (current !== undefined && current !== connection && !current.socket.destroyed) {
+        throw new Error("Another channel bridge is already receiving owner notifications.");
+      }
+      this.ownerNotificationSubscriber = connection;
+      connection.ownerNotificationsSubscribed = true;
+      return;
+    }
+    if (operation === "owner-notification.unsubscribe") {
+      this.releaseOwnerNotificationConnection(connection);
+      return;
+    }
+    if (operation === "owner-notification.send") {
+      const text = requiredString(payload.text, "text").trim();
+      if (!text) throw new Error("Owner notification must not be empty.");
+      await this.publishOwnerNotification(text);
+      return;
+    }
+    if (operation === "owner-notification.ack") {
+      const notificationId = requiredString(payload.notificationId, "notificationId");
+      const pending = this.pendingOwnerNotifications.get(notificationId);
+      if (!pending) return false;
+      if (pending.connection !== connection) throw new Error("Owner notification acknowledgement belongs to another channel bridge.");
+      if (typeof payload.delivered !== "boolean") throw new Error("Owner notification acknowledgement must report delivery status.");
+      this.pendingOwnerNotifications.delete(notificationId);
+      clearTimeout(pending.timeout);
+      if (payload.delivered) pending.resolve();
+      else pending.reject(new Error(optionalString(payload.error) ?? "Telegram owner notification delivery failed."));
+      return true;
+    }
+    throw new Error(`Unknown Runtime Host owner notification operation: ${operation}`);
+  }
+
+  private attachOwnerNotificationSink(commands: CommandRuntime): void {
+    commands.setOwnerNotificationSink?.(async (text) => await this.publishOwnerNotification(text));
+  }
+
+  private async publishOwnerNotification(text: string): Promise<void> {
+    const connection = this.ownerNotificationSubscriber;
+    if (!connection || !connection.ownerNotificationsSubscribed || connection.socket.destroyed) {
+      throw new Error("No Telegram bridge is connected to receive owner notifications.");
+    }
+    const notificationId = randomUUID();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingOwnerNotifications.delete(notificationId);
+        reject(new Error("Telegram owner notification delivery timed out."));
+      }, 30_000);
+      this.pendingOwnerNotifications.set(notificationId, { connection, resolve, reject, timeout });
+      if (!connection.writer.send({ kind: "owner-notification", notificationId, text })) {
+        this.pendingOwnerNotifications.delete(notificationId);
+        clearTimeout(timeout);
+        reject(new Error("Telegram bridge connection closed before notification delivery."));
+      }
+    });
+  }
+
+  private releaseOwnerNotificationConnection(connection: HostConnection): void {
+    connection.ownerNotificationsSubscribed = false;
+    if (this.ownerNotificationSubscriber === connection) this.ownerNotificationSubscriber = undefined;
+    for (const [notificationId, pending] of this.pendingOwnerNotifications) {
+      if (pending.connection !== connection) continue;
+      this.pendingOwnerNotifications.delete(notificationId);
+      clearTimeout(pending.timeout);
+      pending.reject(new Error("Telegram bridge disconnected before notification delivery."));
+    }
+  }
+
+  private rejectPendingOwnerNotifications(error: Error): void {
+    for (const [notificationId, pending] of this.pendingOwnerNotifications) {
+      this.pendingOwnerNotifications.delete(notificationId);
+      clearTimeout(pending.timeout);
+      pending.reject(error);
     }
   }
 

@@ -41,6 +41,7 @@ import {
   isCompletionFrame,
   isEventFrame,
   isGapFrame,
+  isOwnerNotificationFrame,
   isResponseFrame,
   isRetiredFrame,
   type HostFrame
@@ -133,6 +134,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private readonly allListeners = new Set<(update: AgentRuntimeUpdate) => void>();
   private readonly idleWaiters = new Set<() => void>();
   private readonly capabilityOfferListeners = new Set<(offer: { invocation: CapabilityInvocation; registration: CapabilityRegistration }) => void>();
+  private readonly ownerNotificationListeners = new Set<(notification: { notificationId: string; text: string }) => void | Promise<void>>();
+  private ownerNotificationsSubscribed = false;
   private readonly pendingUpdates: AgentRuntimeUpdate[] = [];
   private readonly snapshots = new Map<string, InteractiveRuntimeSnapshot>();
   private readonly snapshotSequences = new Map<string, number>();
@@ -213,8 +216,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.applyBrowserAutomationLease();
   }
 
-  submitPrompt(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds, promptContext?: string, capabilitySelection?: AgentCapabilitySelection): SubmittedAgentRun {
-    return this.submitPromptForSession(this.focusedSessionId, input, attachments, requestIds, promptContext, capabilitySelection);
+  submitPrompt(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds, promptContext?: string, capabilitySelection?: AgentCapabilitySelection, modelRoute?: "tool", fastMode?: boolean): SubmittedAgentRun {
+    return this.submitPromptForSession(this.focusedSessionId, input, attachments, requestIds, promptContext, capabilitySelection, modelRoute, fastMode);
   }
 
   /** 向指定 session 提交回合；旧 submitPrompt 始终指向 focused session。 */
@@ -224,7 +227,9 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     attachments: AgentAttachment[] = [],
     requestIds?: RuntimeRequestIds,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    modelRoute?: "tool",
+    fastMode?: boolean
   ): SubmittedAgentRun {
     if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
     const ids = normalizeRequestIds(requestIds);
@@ -242,6 +247,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       replaceUserMessageId: ids.replaceUserMessageId,
       promptContext,
       capabilitySelection,
+      modelRoute,
+      fastMode,
       sessionId,
       writeIntent: true,
       expectedRevision: this.currentRevision(sessionId)
@@ -263,9 +270,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     attachments: AgentAttachment[] = [],
     requestIds?: RuntimeRequestIds,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    fastMode?: boolean
   ): Promise<HostOperationResult<{ runId: string; messageId: string }>> {
-    return await this.submitRunForSession(this.focusedSessionId, input, attachments, requestIds, promptContext, capabilitySelection);
+    return await this.submitRunForSession(this.focusedSessionId, input, attachments, requestIds, promptContext, capabilitySelection, fastMode);
   }
 
   async submitRunForSession(
@@ -274,7 +282,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     attachments: AgentAttachment[] = [],
     requestIds?: RuntimeRequestIds,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    fastMode?: boolean
   ): Promise<HostOperationResult<{ runId: string; messageId: string }>> {
     if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
     const ids = normalizeRequestIds(requestIds);
@@ -294,6 +303,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       promptContext,
       replaceUserMessageId: ids.replaceUserMessageId,
       capabilitySelection,
+      fastMode,
       sessionId,
       writeIntent: true,
       expectedRevision: this.currentRevision(sessionId)
@@ -450,6 +460,41 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   async heartbeatRun(): Promise<HostOperationResult<unknown>> {
     return await this.request("heartbeat.run", {});
+  }
+
+  async sendOwnerNotification(text: string): Promise<void> {
+    if (!text.trim()) throw new Error("Owner notification must not be empty.");
+    await this.request("owner-notification.send", { text });
+  }
+
+  async subscribeOwnerNotifications(
+    listener: (notification: { notificationId: string; text: string }) => void | Promise<void>
+  ): Promise<() => void> {
+    this.ownerNotificationListeners.add(listener);
+    if (!this.ownerNotificationsSubscribed) {
+      this.ownerNotificationsSubscribed = true;
+      try {
+        await this.request("owner-notification.subscribe", {});
+      } catch (error) {
+        this.ownerNotificationsSubscribed = false;
+        this.ownerNotificationListeners.delete(listener);
+        throw error;
+      }
+    }
+    return () => {
+      this.ownerNotificationListeners.delete(listener);
+      if (this.ownerNotificationListeners.size !== 0 || !this.ownerNotificationsSubscribed) return;
+      this.ownerNotificationsSubscribed = false;
+      void this.request("owner-notification.unsubscribe", {}).catch((error) => this.reportError(error));
+    };
+  }
+
+  async acknowledgeOwnerNotification(notificationId: string, delivered: boolean, error?: string): Promise<void> {
+    await this.request("owner-notification.ack", {
+      notificationId,
+      delivered,
+      error: delivered ? undefined : error?.slice(0, 500)
+    });
   }
 
   async taskCancel(taskRunId: string, reason?: string): Promise<HostOperationResult<unknown>> {
@@ -936,6 +981,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     for (const pending of this.pending.values()) pending.reject(new Error("Runtime Host client closed."));
     this.pending.clear();
     this.rejectCompletions(new Error("Runtime Host client closed."));
+    this.ownerNotificationsSubscribed = false;
+    this.ownerNotificationListeners.clear();
     for (const settle of [...this.idleWaiters]) settle();
     // 等本地 socket 完成关闭，让 Host 有机会在 close 回调中释放该 client 的
     // session claim/capability owner；最多等待 1 秒，不能把退出变成无限等待。
@@ -1347,6 +1394,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, this.focusedSessionId === result.snapshot.info.sessionId);
     this.applySessionSummaries(result.sessions, result.sequence);
     if (this.socket === socket && !socket?.destroyed) this.acknowledgeEvents(result.sequence, result.hostEpoch);
+    if (this.ownerNotificationsSubscribed) await this.request("owner-notification.subscribe", {}, this.handshakeTimeoutMs);
     await this.recoverCompletions();
   }
 
@@ -1505,6 +1553,17 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.reconnectTimer = undefined;
       // 正常回收不是连接故障；已发出的请求仍由 disconnect 明确失败，绝不重放。
       this.socket?.destroy();
+      return;
+    }
+    if (isOwnerNotificationFrame(frame)) {
+      for (const listener of this.ownerNotificationListeners) {
+        try {
+          const pending = listener({ notificationId: frame.notificationId, text: frame.text });
+          if (pending instanceof Promise) void pending.catch((error) => this.reportError(error));
+        } catch (error) {
+          this.reportError(error);
+        }
+      }
       return;
     }
     if (isResponseFrame(frame)) {

@@ -71,7 +71,7 @@ async function main(): Promise<void> {
     await waitUntil(() => extractionEvents.some((event) => event.type === "skill_extraction.updated" && event.stage === "done"), 15_000);
     assert.deepEqual(
       extractionEvents.map((event) => (event.type === "skill_extraction.updated" ? event.stage : "")),
-      ["extracting", "saving", "done"],
+      ["analyzing", "extracting", "saving", "done"],
       "进度事件必须按序到达 runtime 订阅出口（Desktop/TUI 消费同一出口）"
     );
     const done = extractionEvents.at(-1)!;
@@ -84,6 +84,9 @@ async function main(): Promise<void> {
     const events = await readSessionEvents(sessionFilePath(root, sessionId));
     const audit = events.filter((event) => event.type === "message_metadata" && event.metadata.skillExtracted !== undefined);
     assert.equal(audit.length, 1, "保存成功后必须留下 skillExtracted 审计 metadata");
+    const progress = events.filter(event => event.type === "message_metadata" && event.metadata.skillExtractionAnalyzed === true);
+    assert.equal(progress.length, 1);
+    assert.equal(progress[0]?.type === "message_metadata" && progress[0].metadata.skillExtractionToolCallCount, 5);
 
     // 刷新链路：下一回合的技能目录必须包含新技能（refreshSkills 已强制重扫）。
     const refreshed = commands.listSkills();

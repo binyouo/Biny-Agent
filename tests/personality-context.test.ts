@@ -94,13 +94,14 @@ test("model requests retain complete personality and both mood causes when a cus
   }
 });
 
-test("fatigue instructions retain recovery commands, energy synchronization and sleepy conversation", () => {
+test("fatigue instructions retain recovery commands, separate emotional energy and fatigue, and allow sleepy conversation", () => {
   const state = { mood: "cheerful", energy: 7, valence: 7, updatedAt: "", source: "base" as const, fatigue: 0 };
   const awake = renderEmotionPrompt(state);
   for (const command of ["biny sleep", "biny wake", "biny rest", "biny fatigue", "biny emotion set-base"]) {
     assert.ok(awake.includes(command), `awake guidance must expose ${command}`);
   }
-  assert.match(awake, /Keep them in sync/u);
+  assert.match(awake, /Emotional energy is your subjective feeling and is independent of fatigue/u);
+  assert.doesNotMatch(awake, /Keep them in sync|emotion energy should match your fatigue/u);
   const sleepy = renderEmotionPrompt({ ...state, fatigue: 55 });
   assert.match(sleepy, /Simple conversation is fine but you're clearly low energy/u);
   assert.doesNotMatch(sleepy, /SLEEPING/u);

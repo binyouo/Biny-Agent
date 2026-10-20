@@ -5,6 +5,7 @@
  * 图片内容发给指定服务商；生成结果写入独立的本地临时文件。
  */
 import { promises as fs } from "node:fs";
+import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createFileConfigStore, type AgentConfigStore } from "../../config/store.js";
@@ -37,6 +38,8 @@ export interface ImageCommandOptions {
   size?: string;
   reference?: string[];
   json?: boolean;
+  /** Internal route used only by the owner-only local selfie command. */
+  localOnly?: boolean;
 }
 
 interface ResolvedImageModel {
@@ -96,10 +99,10 @@ async function readResponseBytes(response: Response, limit: number, prefixOnly =
   return Buffer.concat(chunks);
 }
 
-async function imageRequest(provider: ProviderConfig, url: string, init: RequestInit = {}, timeoutMs = 300_000): Promise<Response> {
+async function imageRequest(provider: ProviderConfig, url: string, init: RequestInit = {}, timeoutMs = 300_000, localOnly = false): Promise<Response> {
   let response: Response;
   try {
-    response = await getSharedProxyAwareFetch()(url, { ...init, signal: AbortSignal.timeout(provider.timeoutMs ?? timeoutMs) });
+    response = await getSharedProxyAwareFetch()(url, { ...init, redirect: localOnly ? "error" : init.redirect, signal: AbortSignal.timeout(provider.timeoutMs ?? timeoutMs) });
   } catch (error) { throw new Error(safeImageError(`Image request failed: ${String(error)}`, provider)); }
   if (!response.ok) {
     const diagnostic = (await readResponseBytes(response, 8_192, true)).toString("utf8");
@@ -177,7 +180,7 @@ async function resolveImageModel(config: AgentConfig, override?: string): Promis
     const provider = config.providers[alias];
     if (!provider) throw new Error(`Unknown provider alias: ${alias}`);
     if (provider.enabled === false) throw new Error(`Provider "${alias}" is disabled`);
-    if (!providerApiKey(provider)) throw new Error(`Provider "${alias}" has no API key`);
+    if (!providerApiKey(provider) && provider.requiresApiKey !== false) throw new Error(`Provider "${alias}" has no API key`);
     if (!isGeminiProvider(provider) && providerProtocol(provider, providerDefinition(provider.type)) !== "openai-compatible") {
       throw new Error(`Provider "${alias}" does not support the image API`);
     }
@@ -189,6 +192,33 @@ async function resolveImageModel(config: AgentConfig, override?: string): Promis
   const best = pickBestGeminiModel(await listGeminiImageModels(provider));
   if (!best) throw new Error("No Gemini image generation model available on the configured provider");
   return { providerAlias: alias, provider, modelId: best, source: "auto" };
+}
+
+async function resolveLocalSelfieModel(config: AgentConfig, override?: string): Promise<ResolvedImageModel> {
+  const spec = override ?? config.imageGen.localModel?.trim();
+  if (!spec) throw new Error("Configure imageGen.localModel before using `biny selfie take --nsfw`.");
+  const resolved = await resolveImageModel(config, spec);
+  if (isGeminiProvider(resolved.provider) || providerProtocol(resolved.provider, providerDefinition(resolved.provider.type)) !== "openai-compatible") {
+    throw new Error("The local selfie model must use an OpenAI-compatible image provider.");
+  }
+  if (!isLoopbackImageEndpoint(resolved.provider.baseUrl)) {
+    throw new Error("The local selfie model must use an HTTP(S) loopback baseUrl such as http://127.0.0.1:8188/v1.");
+  }
+  return { ...resolved, source: override === undefined ? "configured" : "manual" };
+}
+
+function isLoopbackImageEndpoint(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    const url = new URL(baseUrl);
+    const hostname = url.hostname.toLowerCase();
+    const address = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+    const loopback = address === "localhost"
+      || isIP(address) === 4 && address.split(".")[0] === "127"
+      || address === "::1";
+    return loopback && (url.protocol === "http:" || url.protocol === "https:")
+      && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
 }
 
 interface InputImage { data: Buffer; mimeType: string }
@@ -259,11 +289,12 @@ async function generateViaGemini(provider: ProviderConfig, modelId: string, opti
   throw new Error("No image generated");
 }
 
-async function generateViaOpenAICompatible(provider: ProviderConfig, modelId: string, options: { prompt: string; images: InputImage[]; aspect?: string }): Promise<string> {
+async function generateViaOpenAICompatible(provider: ProviderConfig, modelId: string, options: { prompt: string; images: InputImage[]; aspect?: string; localOnly?: boolean }): Promise<string> {
   const endpoint = provider.baseUrl ?? providerDefinition(provider.type).baseUrl;
   if (!endpoint) throw new Error("Image provider requires a baseUrl");
   const baseUrl = endpoint.replace(/\/+$/u, "");
-  const headers = { ...provider.headers, Authorization: `Bearer ${providerApiKey(provider)!}` };
+  const apiKey = providerApiKey(provider);
+  const headers = { ...provider.headers, ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) };
   let response: Response;
   if (provider.type === "openrouter") {
     response = await imageRequest(provider, `${baseUrl}/images`, {
@@ -271,22 +302,23 @@ async function generateViaOpenAICompatible(provider: ProviderConfig, modelId: st
       body: JSON.stringify({ model: modelId, prompt: options.prompt,
         input_references: options.images.length ? options.images.map(image => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data.toString("base64")}` } })) : undefined,
         aspect_ratio: options.aspect })
-    });
+    }, 300_000, options.localOnly);
   } else if (options.images.length) {
     const form = new FormData();
     form.append("model", modelId); form.append("prompt", options.prompt);
     const size = aspectToOpenAISize(options.aspect); if (size) form.append("size", size);
     options.images.forEach((image, index) => form.append(options.images.length > 1 ? "image[]" : "image", new Blob([new Uint8Array(image.data)], { type: image.mimeType }), `input-${index}.${image.mimeType.split("/")[1]}`));
     const editHeaders = new Headers(headers); editHeaders.delete("Content-Type");
-    response = await imageRequest(provider, `${baseUrl}/images/edits`, { method: "POST", headers: editHeaders, body: form });
+    response = await imageRequest(provider, `${baseUrl}/images/edits`, { method: "POST", headers: editHeaders, body: form }, 300_000, options.localOnly);
   } else {
     response = await imageRequest(provider, `${baseUrl}/images/generations`, { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: modelId, prompt: options.prompt, size: aspectToOpenAISize(options.aspect) }) });
+      body: JSON.stringify({ model: modelId, prompt: options.prompt, size: aspectToOpenAISize(options.aspect) }) }, 300_000, options.localOnly);
   }
   const data = await imageJson(response) as { output_format?: string; data?: Array<{ b64_json?: string; url?: string; media_type?: string }> };
   const image = data.data?.[0];
   if (!image) throw new Error("No image returned from API");
   if (image.b64_json) return await writeImage(decodeImage(image.b64_json), image.media_type ?? `image/${data.output_format ?? "png"}`);
+  if (options.localOnly) throw new Error("The local selfie service must return image data directly, not a remote URL.");
   if (!image.url || !/^https?:\/\//u.test(image.url)) throw new Error("API returned no valid image URL or data");
   const downloaded = await imageRequest(provider, image.url, {}, 30_000);
   return await writeImage(await readResponseBytes(downloaded, maxImageBytes), downloaded.headers.get("content-type") ?? image.media_type ?? "image/png");
@@ -350,11 +382,13 @@ export async function imageGenerateCommand(workspaceRoot: string, prompt: string
   if (!prompt.trim()) throw new Error("Image prompt must not be empty");
   const aspect = imageAspect(options.aspect ?? options.size ?? config.imageGen.aspectRatio);
   const images = await readInputImages(workspaceRoot, options.reference ?? []);
-  const resolved = await resolveImageModel(config, options.model);
+  const resolved = options.localOnly
+    ? await resolveLocalSelfieModel(config, options.model)
+    : await resolveImageModel(config, options.model);
   console.error(`[image] Using ${resolved.providerAlias}:${resolved.modelId} (${resolved.source})`);
   const outPath = isGeminiProvider(resolved.provider)
     ? await generateViaGemini(resolved.provider, resolved.modelId, { prompt, images, aspect })
-    : await generateViaOpenAICompatible(resolved.provider, resolved.modelId, { prompt, images, aspect });
+    : await generateViaOpenAICompatible(resolved.provider, resolved.modelId, { prompt, images, aspect, localOnly: options.localOnly });
   if (options.json) console.log(JSON.stringify({ path: outPath, model: `${resolved.providerAlias}:${resolved.modelId}` }));
   else console.log(outPath);
 }

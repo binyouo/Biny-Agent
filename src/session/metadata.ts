@@ -17,7 +17,7 @@ export interface PersonalizationMetadata {
   instructionsHash?: string;
 }
 
-export type UsageOperation = "agent" | "plan" | "compaction" | "memory" | "subagent";
+export type UsageOperation = "agent" | "plan" | "compaction" | "memory" | "subagent" | "vision";
 export type ContextBudgetSource = "estimated" | "provider";
 /** 最近一次实际请求的分类估算；不包含输出预留，也不是累计消耗。 */
 export type ContextTokenBreakdown = Record<"messages" | "mcpTools" | "systemTools" | "skills" | "systemPrompt" | "other", number>;

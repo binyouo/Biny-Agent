@@ -1,5 +1,7 @@
+import type { ToolOptimization } from "../session/toolOptimization.js";
 import { randomUUID } from "node:crypto";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../agent/AgentSession.js";
+import type { AgentModel } from "../agent/core/types.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import type { AgentCapabilitySelection } from "../agent/capabilitySelection.js";
 import {
@@ -88,7 +90,7 @@ export interface InteractiveAgentHost {
 
 /** Desktop、TUI 和 Unix socket 客户端共享的最小交互运行时形状。 */
 export interface InteractiveRuntimeHandle {
-  submitPrompt(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds, promptContext?: string, capabilitySelection?: AgentCapabilitySelection): SubmittedAgentRun;
+  submitPrompt(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds, promptContext?: string, capabilitySelection?: AgentCapabilitySelection, modelRoute?: "tool", fastMode?: boolean): SubmittedAgentRun;
   /** Host 内部目标推进回合，不生成可见用户输入。 */
   submitFollowupTurn?(requestIds: RuntimeRequestIds): SubmittedAgentRun;
   /** Host 内部监督回合：输入只进入本轮上下文，不写成新的 user_message。 */
@@ -140,6 +142,8 @@ interface AgentRun extends ActiveRunSnapshot {
   attachments: AgentAttachment[];
   promptContext?: string;
   capabilitySelection?: AgentCapabilitySelection;
+  fastMode?: boolean;
+  modelOverride?: AgentModel;
   retryOfMessageId?: string;
   replaceUserMessageId?: string;
   replacementUserMessageId?: string;
@@ -240,7 +244,7 @@ export class InteractiveAgentRuntime {
     commandRuntime.agent.setOnSkillExtractionUpdate?.((notice) => {
       this.emit({
         type: "skill_extraction.updated",
-        sessionId: this.commandRuntime.agent.getInfo().sessionId,
+        sessionId: notice.sessionId,
         runId: notice.runId,
         timestamp: new Date().toISOString(),
         stage: notice.stage,
@@ -265,9 +269,11 @@ export class InteractiveAgentRuntime {
     attachments: AgentAttachment[] = [],
     requestIds?: RuntimeRequestIds,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    modelRoute?: "tool",
+    fastMode?: boolean
   ): SubmittedAgentRun {
-    return this.startRun(input, attachments, false, requestIds, undefined, promptContext, capabilitySelection);
+    return this.startRun(input, attachments, false, requestIds, undefined, promptContext, capabilitySelection, false, false, false, modelRoute, fastMode);
   }
 
   submitFollowupTurn(requestIds: RuntimeRequestIds): SubmittedAgentRun {
@@ -438,7 +444,12 @@ export class InteractiveAgentRuntime {
         { parentRunId: previousRun.runId, continuationSource: "message_queue", allowUserInput: previousRun.allowUserInput },
         undefined,
         undefined,
-        previousRun.capabilitySelection
+        previousRun.capabilitySelection,
+        false,
+        false,
+        false,
+        undefined,
+        previousRun.fastMode
       );
     } catch (error) {
       // 新一轮尚未成功受理时保留队列，避免资源未就绪等同步失败直接吞掉用户输入。
@@ -476,7 +487,9 @@ export class InteractiveAgentRuntime {
     capabilitySelection?: AgentCapabilitySelection,
     supervision = false,
     emptyTurn = false,
-    planSupervision = false
+    planSupervision = false,
+    modelRoute?: "tool",
+    fastMode?: boolean
   ): SubmittedAgentRun {
     if (this.closed) throw new Error("Agent runtime is closed.");
     if (this.state.kind === "maintenance") {
@@ -517,6 +530,8 @@ export class InteractiveAgentRuntime {
         && requestIds?.continuationSource === undefined,
       promptContext,
       capabilitySelection,
+      fastMode,
+      modelOverride: modelRoute === "tool" ? this.commandRuntime.resolveToolModelForRun?.() : undefined,
       retryOfMessageId: requestIds?.retryOfMessageId,
       replaceUserMessageId: requestIds?.replaceUserMessageId,
       replacementUserMessageId: requestIds?.replaceUserMessageId === undefined ? undefined : randomUUID(),
@@ -1238,7 +1253,12 @@ export class InteractiveAgentRuntime {
       messageId: run.messageId,
       retryOfMessageId: run.retryOfMessageId,
       input: run.input,
-      model: {
+      model: run.modelOverride ? {
+        alias: run.modelOverride.providerAlias ?? info.modelAlias,
+        provider: run.modelOverride.provider,
+        label: run.modelOverride.modelId,
+        reasoning: info.reasoningLabel
+      } : {
         alias: info.modelAlias,
         provider: info.provider,
         label: info.modelLabel,
@@ -1264,6 +1284,8 @@ export class InteractiveAgentRuntime {
         attachments: run.attachments,
         promptContext: run.promptContext,
         capabilitySelection: run.capabilitySelection,
+        fastMode: run.fastMode,
+        modelOverride: run.modelOverride,
         runId: run.runId,
         messageId: run.messageId,
         retryOfMessageId: run.retryOfMessageId,
@@ -1649,12 +1671,12 @@ export class InteractiveAgentRuntime {
     }
 
     if (event.type === "tool.completed") {
-      this.completeTool(run, event.toolCallId, event.tool, event.result, event.durationMs, event.executionStatus, event.recovered, event.operationId, event.evidence);
+      this.completeTool(run, event.toolCallId, event.tool, event.result, event.durationMs, event.executionStatus, event.recovered, event.operationId, event.evidence, event);
       return undefined;
     }
 
     if (event.type === "tool.failed") {
-      this.failTool(run, event.toolCallId, event.tool, event.error, event.result, event.durationMs, event.executionStatus, event.recovered, event.operationId, event.evidence);
+      this.failTool(run, event.toolCallId, event.tool, event.error, event.result, event.durationMs, event.executionStatus, event.recovered, event.operationId, event.evidence, event);
       return undefined;
     }
 
@@ -1702,14 +1724,15 @@ export class InteractiveAgentRuntime {
     executionStatus?: "cancelled" | "succeeded" | "failed" | "unknown",
     recovered?: boolean,
     operationId?: string,
-    evidence?: string
+    evidence?: string,
+    projection?: { optimization?: ToolOptimization; modelResult?: unknown }
   ): void {
     const active = this.tools.get(toolCallId);
     const durationMs = reportedDurationMs
       ?? readNumber(result, "durationMs")
       ?? (active ? Date.now() - active.startedAtMs : undefined);
     const publicResult = redactSensitiveValue(result);
-    this.emit({ ...this.eventBase(run), type: "tool.completed", toolCallId, tool, result: publicResult, durationMs, executionStatus, recovered, operationId, evidence });
+    this.emit({ ...this.eventBase(run), type: "tool.completed", toolCallId, tool, result: publicResult, durationMs, executionStatus, recovered, operationId, evidence, optimization: projection?.optimization, modelResult: redactSensitiveValue(projection?.modelResult) });
     this.tools.delete(toolCallId);
   }
 
@@ -1723,7 +1746,8 @@ export class InteractiveAgentRuntime {
     executionStatus?: "cancelled" | "succeeded" | "failed" | "unknown",
     recovered?: boolean,
     operationId?: string,
-    evidence?: string
+    evidence?: string,
+    projection?: { optimization?: ToolOptimization; modelResult?: unknown }
   ): void {
     const active = this.tools.get(toolCallId);
     const durationMs = reportedDurationMs
@@ -1742,7 +1766,9 @@ export class InteractiveAgentRuntime {
       executionStatus,
       recovered,
       operationId,
-      evidence
+      evidence,
+      optimization: projection?.optimization,
+      modelResult: redactSensitiveValue(projection?.modelResult)
     });
     this.tools.delete(toolCallId);
   }

@@ -75,9 +75,9 @@ for (const executionMode of ["direct", "code_mode"] as const) {
         let reason = "stop";
         if (!Array.isArray(body.tools)) delta = { content: '{"tools":[]}' };
         else if (steps++ === 0) {
-          const name = executionMode === "direct" ? "Bash" : "exec";
+          const name = executionMode === "direct" ? "Bash" : "run_script";
           const args = name === "Bash" ? { command, timeoutMs: shellTimeoutMs }
-            : { code: `return await tools.Bash(${JSON.stringify({ command, timeoutMs: shellTimeoutMs })});` };
+            : { description: "Run fixture workflow", code: `return await tools.Bash(${JSON.stringify({ command, timeoutMs: shellTimeoutMs })});` };
           delta = { tool_calls: [{ index: 0, id: `ask-cli-${modelResults.length}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] };
           reason = "tool_calls";
         } else {

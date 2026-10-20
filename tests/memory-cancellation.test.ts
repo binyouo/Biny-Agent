@@ -458,12 +458,12 @@ async function testSdkCleanupSessionQuarantine(): Promise<void> {
   const mainModel: AgentModel = {
     provider: "fixture", modelId: "main", supportsTools: true,
     stream: async (context) => {
-      const hasExec = context.tools.some(({ name }) => name === "exec");
+      const hasExec = context.tools.some(({ name }) => name === "run_script");
       if (hasExec) execSteps++;
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         if (hasExec && execSteps === 1) {
-          yield { type: "tool-call", id: "sdk-session-exec", name: "exec", arguments: {
-            code: "return await tools.WebSearch({query: 'release'});"
+          yield { type: "tool-call", id: "sdk-session-exec", name: "run_script", arguments: {
+            description: "Search release notes", code: "return await tools.WebSearch({query: 'release'});"
           } };
           yield { type: "finish", reason: "tool-calls" };
         } else { yield { type: "text-delta", text: "ready" }; yield { type: "finish", reason: "stop" }; }

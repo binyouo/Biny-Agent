@@ -155,8 +155,10 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "capability.list"
     || operation === "capability.get"
     || operation === "host.info"
+    || operation === "owner-notification.send"
   ) return "query";
-  if (operation === "client.keep-alive" || operation === "task.message" || operation === "task.cancel" || operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download" || operation === "memory.embedding.cancel-rebuild") return "control";
+  if (operation === "client.keep-alive" || operation === "task.message" || operation === "task.cancel" || operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download" || operation === "memory.embedding.cancel-rebuild"
+    || operation === "owner-notification.subscribe" || operation === "owner-notification.unsubscribe" || operation === "owner-notification.ack") return "control";
   if (operation === "capability.cancel" || operation === "capability.fail" || operation === "capability.release" || operation === "capability.reject") return "control";
   if (operation === "graph.pause" || operation === "graph.cancel") return "control";
   if (operation === "capability.register" || operation === "capability.replace" || operation === "capability.invoke" || operation === "capability.accept" || operation === "capability.start" || operation === "capability.result" || operation === "capability.chunk" || operation === "capability.admit" || operation === "graph.start" || operation === "graph.resume") return "admission";

@@ -1,9 +1,9 @@
 /**
- * 回合后自动技能提取（自进化，对齐 Agent Skills 的 Skill Extraction 管线）。
+ * 回合后自动技能提取。
  *
  * 成功回合的旁路分析：工具调用达到阈值后，用辅助模型两步（analyst 判断是否值得
  * 提取 → author 生成 SKILL.md）把可复用工作流原子写入受管全局技能根，并请求
- * Runtime 重扫让下一回合的 <available_skills> 直接可见。任何失败都静默返回 skipped，
+ * Runtime 重扫让下一回合的 <available_skills> 直接可见。失败结束进度提示，
  * 不影响已完成的回合与界面主链路。
  */
 import { randomBytes } from "node:crypto";
@@ -19,7 +19,7 @@ import { defaultManagedSkillRoot } from "../extensions/managedSkillSources.js";
 import { redactSecrets } from "../utils/secrets.js";
 import type { SessionEvent } from "../session/recorder.js";
 
-export type SkillExtractionStage = "extracting" | "saving" | "done" | "skipped";
+export type SkillExtractionStage = "analyzing" | "extracting" | "saving" | "done" | "skipped";
 
 export interface SkillExtractionNotice {
   stage: SkillExtractionStage;
@@ -38,7 +38,8 @@ export interface SkillExtractionInput {
   /** 本回合根 user 消息的 messageId；用于从全量事件中截取本回合素材。 */
   messageId: string;
   events: readonly SessionEvent[];
-  installedSkills: ReadonlyArray<{ name: string; description: string }>;
+  installedSkills: ReadonlyArray<{ name: string; description: string; filePath?: string; scope?: string }>;
+  onAnalyzed?: (toolCallCount: number) => Promise<void>;
   model?: AgentModel;
   minToolCalls: number;
   /** 测试或嵌入宿主可注入隔离 home；正常运行时使用当前用户 home。 */
@@ -56,97 +57,118 @@ const analystResponseSchema = z.object({
 });
 
 /** 素材预算：analyst 与 author 共用同一份对话摘要，避免旁路请求占用过多 token。 */
-const maxMaterialChars = 12_000;
+const maxMaterialChars = 18_000;
 
 export async function runSkillExtraction(input: SkillExtractionInput): Promise<SkillExtractionOutcome> {
   const material = collectTurnMaterial(input.events, input.messageId);
-  if (!material || material.toolCalls < input.minToolCalls || !input.model) {
+  if (!material || material.toolCalls - material.analyzedToolCalls < input.minToolCalls || !input.model) {
     return { stage: "done" };
   }
   const model = input.model;
 
-  // analyst：判断是否值得提取。多数回合应当不值得，因此 worthy=false 直接结束且不发通知。
-  const analyst = await analyzeWithModel(model, material, input.installedSkills);
-  if (!analyst.worthy) return { stage: "done" };
+  try {
+    input.onNotice?.({ stage: "analyzing" });
+    const analyst = await analyzeWithModel(model, material, input.installedSkills);
+    if (!analyst.worthy) {
+      input.onNotice?.({ stage: "skipped" });
+      return { stage: "skipped" };
+    }
 
-  input.onNotice?.({ stage: "extracting", skillName: analyst.skillName, skillDescription: analyst.skillDescription });
+    input.onNotice?.({ stage: "extracting", skillName: analyst.skillName, skillDescription: analyst.skillDescription });
 
-  // author：生成完整 SKILL.md。
-  const document = await authorWithModel(model, material, analyst);
-  const name = document.frontmatter.name;
-  const description = document.frontmatter.description;
-  if (typeof name !== "string" || typeof description !== "string") throw new Error("生成的 SKILL.md 缺少 name 或 description。");
+    // author：生成完整 SKILL.md。
+    const existing = input.installedSkills.find(skill => skill.name === analyst.existingSkillToUpdate);
+    const existingPath = existing?.filePath;
+    if (existing?.scope === "builtin" || existingPath?.includes(`${path.sep}.biny-versions${path.sep}`)) {
+      input.onNotice?.({ stage: "skipped" });
+      return { stage: "skipped" };
+    }
+    const existingContent = existingPath ? await fs.readFile(existingPath, "utf8") : undefined;
+    const document = await authorWithModel(model, material, analyst, existingContent);
+    const name = document.frontmatter.name;
+    const description = document.frontmatter.description;
+    if (typeof name !== "string" || typeof description !== "string") throw new Error("生成的 SKILL.md 缺少 name 或 description。");
 
-  const managedRoot = defaultManagedSkillRoot(input.homeDir);
-  const skillDirectory = path.join(managedRoot, name);
-  const documentPath = path.join(skillDirectory, "SKILL.md");
-  const saved = await withGlobalConfigWriteLock(managedRoot, async () => {
-    const status = await fs.lstat(skillDirectory).catch((error: unknown) => {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return undefined;
-      throw error;
+    const managedRoot = defaultManagedSkillRoot(input.homeDir);
+    if (existing && name !== existing.name) throw new Error("更新技能不能改变原技能名称。");
+    const skillDirectory = existingPath ? path.dirname(existingPath) : path.join(managedRoot, name);
+    const documentPath = path.join(skillDirectory, "SKILL.md");
+    const saved = await withGlobalConfigWriteLock(managedRoot, async () => {
+      const status = await fs.lstat(skillDirectory).catch((error: unknown) => {
+        if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      // 官方安装入口通过软链指向不可变版本；自动提取不能原地改写其正文。
+      // 与 publishSkillVersion 共用根目录写锁，检查和落盘之间不能发布新入口。
+      if (status && !status.isDirectory()) return undefined;
+      if (!status) await fs.mkdir(skillDirectory);
+      if (existingContent !== undefined && await fs.readFile(documentPath, "utf8") !== existingContent) {
+        throw new Error("技能在生成期间已改变，跳过覆盖。");
+      }
+      const updated = await fileExists(documentPath);
+      input.onNotice?.({ stage: "saving", skillName: name, skillDescription: description, updated });
+      // 同目录临时文件 + 原子 rename，避免半写文件被下一回合扫描当成坏技能。
+      const temporary = path.join(skillDirectory, `.skill-write-${process.pid}-${randomBytes(6).toString("hex")}.md`);
+      await fs.writeFile(temporary, document.raw, "utf8");
+      await fs.rename(temporary, documentPath);
+      return { updated };
     });
-    // 官方安装入口通过软链指向不可变版本；自动提取不能原地改写其正文。
-    // 与 publishSkillVersion 共用根目录写锁，检查和落盘之间不能发布新入口。
-    if (status && !status.isDirectory()) return undefined;
-    if (!status) await fs.mkdir(skillDirectory);
-    const updated = await fileExists(documentPath);
-    input.onNotice?.({ stage: "saving", skillName: name, skillDescription: description, updated });
-    // 同目录临时文件 + 原子 rename，避免半写文件被下一回合扫描当成坏技能。
-    const temporary = path.join(skillDirectory, `.skill-write-${process.pid}-${randomBytes(6).toString("hex")}.md`);
-    await fs.writeFile(temporary, document.raw, "utf8");
-    await fs.rename(temporary, documentPath);
-    return { updated };
-  });
-  if (!saved) {
-    input.onNotice?.({ stage: "skipped", skillName: name, skillDescription: description });
-    return { stage: "skipped" };
-  }
-  const { updated } = saved;
-  await input.refreshSkills?.();
+    if (!saved) {
+      input.onNotice?.({ stage: "skipped", skillName: name, skillDescription: description });
+      return { stage: "skipped" };
+    }
+    const { updated } = saved;
+    await input.refreshSkills?.();
 
-  const outcome: SkillExtractionOutcome = { stage: "done", skillName: name, skillDescription: description, updated, installedPath: documentPath };
-  input.onNotice?.({ stage: "done", skillName: name, skillDescription: description, updated });
-  return outcome;
+    const outcome: SkillExtractionOutcome = { stage: "done", skillName: name, skillDescription: description, updated, installedPath: documentPath };
+    input.onNotice?.({ stage: "done", skillName: name, skillDescription: description, updated });
+    return outcome;
+  } catch (error) {
+    input.onNotice?.({ stage: "skipped" });
+    throw error;
+  } finally {
+    await input.onAnalyzed?.(material.toolCalls);
+  }
 }
 
 interface TurnMaterial {
-  userText: string;
-  assistantText: string;
-  toolSummary: string;
+  conversation: string;
   toolCalls: number;
+  analyzedToolCalls: number;
 }
 
-/** 从 messageId 的 user_message 截取到事件末尾（调用前已 flush，末尾即本回合结束）。 */
+/** 累计到目标回合结束；后续回合的内容和工具不能进入本次分析。 */
 function collectTurnMaterial(events: readonly SessionEvent[], messageId: string): TurnMaterial | undefined {
-  const startIndex = events.findIndex((event) => event.type === "user_message" && event.messageId === messageId);
-  if (startIndex === -1) return undefined;
-  let userText = "";
-  const assistantParts: string[] = [];
-  const toolParts: string[] = [];
+  const start = events.findIndex(event => event.type === "user_message" && event.messageId === messageId);
+  if (start < 0) return undefined;
+  const next = events.findIndex((event, index) => index > start && event.type === "user_message" && !event.auditOnly);
+  const bounded = events.slice(0, next < 0 ? events.length : next);
+  const messages: Array<{ role: string; text: string; tools: string[] }> = [];
   let toolCalls = 0;
-  for (const event of events.slice(startIndex)) {
-    if (event.type === "user_message") {
-      if (!userText) userText = event.content;
-    } else if (event.type === "assistant_message") {
-      if (event.content.trim()) assistantParts.push(event.content.trim());
-    } else if (event.type === "tool_call") {
-      toolCalls += 1;
-      toolParts.push(`${event.tool}(${summarizeValue(event.args, 200)})`);
-    } else if (event.type === "tool_result") {
-      toolParts.push(`=> ${summarizeValue(event.result, 200)}`);
+  let analyzedToolCalls = 0;
+  const messageIds = new Set(bounded.flatMap(event => event.type === "user_message" && event.messageId ? [event.messageId] : []));
+  // 后台分析的 metadata 可能晚于后续回合写入，按消息归属读取，不能按落盘位置丢掉。
+  for (const event of events) {
+    if (event.type === "message_metadata" && messageIds.has(event.messageId) && event.metadata.skillExtractionAnalyzed === true) {
+      const count = event.metadata.skillExtractionToolCallCount;
+      if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) analyzedToolCalls = Math.max(analyzedToolCalls, count);
     }
   }
-  return {
-    userText: userText.slice(0, 2_000),
-    assistantText: assistantParts.join("\n").slice(0, 4_000),
-    toolSummary: toolParts.join("\n").slice(0, maxMaterialChars - 6_000),
-    toolCalls
-  };
-}
-
-function summarizeValue(value: unknown, limit: number): string {
-  const text = redactSecrets(typeof value === "string" ? value : JSON.stringify(value) ?? "");
-  return text.length <= limit ? text : `${text.slice(0, limit)}…`;
+  for (const event of bounded) {
+    if ((event.type === "user_message" || event.type === "assistant_message") && !event.auditOnly) {
+      messages.push({ role: event.type === "user_message" ? "User" : "Assistant", text: redactSecrets(event.content), tools: [] });
+    } else if (event.type === "tool_call" && !event.parentToolCallId && !event.auditOnly) {
+      toolCalls++;
+      if (!messages.length || messages.at(-1)!.role !== "Assistant") messages.push({ role: "Assistant", text: "", tools: [] });
+      messages.at(-1)!.tools.push(event.tool);
+    }
+  }
+  const split = Math.max(0, messages.length - 8);
+  const format = (items: typeof messages, limit: number) => items.map(item =>
+    [item.text ? `${item.role}: ${item.text.slice(0, limit)}` : "", ...item.tools.map(name => `[Tool: ${name}]`)].filter(Boolean).join("\n")).join("\n\n");
+  const earlier = format(messages.slice(0, split), 300).slice(0, 3_000);
+  const recent = format(messages.slice(split), 3_000);
+  return { toolCalls, analyzedToolCalls, conversation: [earlier && `Earlier context:\n${earlier}`, `Recent conversation:\n${recent}`].filter(Boolean).join("\n\n").slice(0, maxMaterialChars) };
 }
 
 interface AnalystVerdict {
@@ -184,7 +206,7 @@ async function analyzeWithModel(
   };
 }
 
-async function authorWithModel(model: AgentModel, material: TurnMaterial, analyst: AnalystVerdict): Promise<{ raw: string; frontmatter: { name?: unknown; description?: unknown } }> {
+async function authorWithModel(model: AgentModel, material: TurnMaterial, analyst: AnalystVerdict, existingContent?: string): Promise<{ raw: string; frontmatter: { name?: unknown; description?: unknown } }> {
   const updateHint = analyst.existingSkillToUpdate
     ? `本次是对已有技能 ${analyst.existingSkillToUpdate} 的更新：保留其仍然有效的部分，融入本对话的新工作流。`
     : "";
@@ -195,6 +217,7 @@ async function authorWithModel(model: AgentModel, material: TurnMaterial, analys
     "硬性约束：name 必须是小写字母/数字/单个连字符、与目录名一致、不超过 64 字符；description 一句话说清何时使用、不超过 1024 字符；allowed-tools 只列真正需要的工具（如 Bash、Read、Write、Edit、Glob、Grep）。",
     "不要包含：本对话特有的文件路径、变量名、调试弯路、用户个人信息。",
     updateHint,
+    existingContent ? `已有技能全文：\n${existingContent}` : "",
     "只输出完整 SKILL.md 内容（含 --- frontmatter 分隔符），不要输出其他文字。"
   ].filter(Boolean).join("\n");
   const response = await generateNativeText(model, materialMessages(material, analyst), {
@@ -222,9 +245,8 @@ async function authorWithModel(model: AgentModel, material: TurnMaterial, analys
 
 function materialMessages(material: TurnMaterial, analyst?: AnalystVerdict): AgentMessage[] {
   const content = [
-    `用户请求：${material.userText || "(空)"}`,
-    material.assistantText ? `助手回复要点：${material.assistantText}` : "",
-    material.toolSummary ? `工具调用序列：\n${material.toolSummary}` : "",
+    `累计工具调用：${material.toolCalls}`,
+    material.conversation,
     analyst ? `拟提取技能：${analyst.skillName} — ${analyst.skillDescription}` : ""
   ].filter(Boolean).join("\n\n");
   return [{ role: "user", content: content.slice(0, maxMaterialChars) }];

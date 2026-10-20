@@ -5,7 +5,7 @@
  */
 import os from "node:os";
 import path from "node:path";
-import { globalConfigDir } from "../config/paths.js";
+import { BINY_AGENT_DIR_ENV, DEFAULT_CONFIG_DIR, globalConfigDir } from "../config/paths.js";
 
 export type SkillRootEngine = "biny" | "codex" | "claude" | "pi";
 export type SkillRootSource = "biny" | "agents" | "builtin";
@@ -46,10 +46,7 @@ export function skillRootPrecedence(scope: SkillRootScope, configuredPath: strin
   const conventions = scope === "project" ? PROJECT_SKILL_ROOT_CONVENTIONS : GLOBAL_SKILL_ROOT_CONVENTIONS;
   let relativePath = path.normalize(configuredPath).split(path.sep).join("/");
   if (scope === "global") {
-    const configRoot = homeDir === undefined
-      ? globalConfigDir()
-      : globalConfigDir({ env: {}, homeDir });
-    if (path.resolve(configuredPath) === path.resolve(configRoot, "skills")) {
+    if (isBinyGlobalSkillRoot(configuredPath, homeDir)) {
       relativePath = ".biny/skills";
     } else if (path.isAbsolute(configuredPath)) {
       relativePath = path.relative(homeDir ?? os.homedir(), path.resolve(configuredPath)).split(path.sep).join("/");
@@ -58,6 +55,14 @@ export function skillRootPrecedence(scope: SkillRootScope, configuredPath: strin
   const index = conventions.findIndex((convention) => convention.relativePath === relativePath);
   const fallback = conventions.length + 1;
   return (scope === "project" ? 0 : 100) + (index === -1 ? fallback : index);
+}
+
+export function isBinyGlobalSkillRoot(configuredPath: string, homeDir?: string): boolean {
+  const configuredAgentDir = process.env[BINY_AGENT_DIR_ENV]?.trim();
+  const configRoot = homeDir === undefined
+    ? configuredAgentDir ? path.resolve(configuredAgentDir) : path.resolve(os.homedir(), DEFAULT_CONFIG_DIR)
+    : globalConfigDir({ env: {}, homeDir });
+  return path.resolve(configuredPath) === path.resolve(configRoot, "skills");
 }
 
 export function defaultGlobalSkillRoots(homeDir?: string): string[] {

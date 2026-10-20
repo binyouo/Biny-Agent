@@ -263,7 +263,8 @@ export function modelCapabilities(model: ModelAliasConfig): ModelCapabilities {
     reasoningSummary: reasoningEnabled ? model.capabilities?.reasoningSummary ?? false : false,
     vision: model.capabilities?.vision,
     audio: model.capabilities?.audio ?? false,
-    streaming: model.capabilities?.streaming ?? true
+    streaming: model.capabilities?.streaming ?? true,
+    serviceTiers: model.capabilities?.serviceTiers
   };
 }
 
@@ -317,7 +318,8 @@ export function normalizeModelMetadata(
       : false,
     vision: explicitCapabilities.vision ?? defaults.capabilities.vision,
     audio: explicitCapabilities.audio ?? defaults.capabilities.audio ?? false,
-    streaming: explicitCapabilities.streaming ?? defaults.capabilities.streaming ?? true
+    streaming: explicitCapabilities.streaming ?? defaults.capabilities.streaming ?? true,
+    serviceTiers: explicitCapabilities.serviceTiers ?? defaults.capabilities.serviceTiers
   };
   return {
     ...model,

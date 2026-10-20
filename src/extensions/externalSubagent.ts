@@ -27,17 +27,20 @@ export async function prepareExternalSubagent(
   }
   if (execution?.resume) throw new Error("External worker recovery is unsupported; the task was not replayed.");
   const model = definition?.model ?? settings.model;
-  const useCliDefault = runtime === "claude-code" && (definition?.runtime ?? settings.runtime) === "auto";
-  if (!model && !useCliDefault) throw new Error("External subagents require an explicit model.");
+  const useCliDefault = runtime === "claude-code";
   const selected = model ? config.models[model] : undefined;
-  const provider = selected ? config.providers[selected.provider] : undefined;
-  if (runtime === "acp" && (provider?.type !== "acp" || !provider.acp || provider.enabled === false)) throw new Error(`Subagent model ${model} requires an enabled ACP provider.`);
+  const providerAlias = selected?.provider ?? (runtime === "acp" ? settings.providerAlias : undefined);
+  const provider = providerAlias ? config.providers[providerAlias] : undefined;
+  if (!model && !useCliDefault && !(runtime === "acp" && providerAlias)) throw new Error("External subagents require an explicit model or ACP provider.");
+  if (runtime === "acp" && (provider?.type !== "acp" || !provider.acp || provider.enabled === false)) {
+    throw new Error(`Subagent ACP provider ${providerAlias ?? "unknown"} requires an enabled launch configuration.`);
+  }
   const launch = runtime === "acp" ? provider!.acp! : undefined;
   const client = launch ? new AcpClient({ launch, cwd: options.workspaceRoot,
     mcpServers: acpMcpServers(config, launch, permission.getStatus().mode), timeoutMs: provider?.timeoutMs }) : undefined;
   const instructions = definition?.prompt ?? "";
   const session = execution ? await WorkerSession.open(execution, task, options.workspaceRoot,
-    { runtime, model, launch }, instructions, { provider: runtime, id: runtime === "acp" ? selected!.model : model ?? "CLI default" }) : undefined;
+    { runtime, model, launch }, instructions, { provider: runtime, id: runtime === "acp" ? selected?.model ?? "ACP default" : model ?? "CLI default" }) : undefined;
   const recordToolEvent = async (event: AgentSessionEvent) => {
     if (event.type === "tool.started") await session?.recorder.recordAndFlush({ type: "tool_call", tool: event.tool, toolCallId: event.toolCallId, args: event.args });
     else if (event.type === "tool.completed" || event.type === "tool.failed") await session?.recorder.recordAndFlush({ type: "tool_result", tool: event.tool,
@@ -70,7 +73,7 @@ export async function prepareExternalSubagent(
         if (runtime !== "acp") {
           output = await runSubagentCli({ runtime, model, command, prompt: content[0]!.text, cwd: options.workspaceRoot, signal: combined, onActivity: activity, onEvent: recordToolEvent });
           await session?.recorder.recordAndFlush({ type: "assistant_message", content: output });
-        } else for await (const event of runAcpTurn(client!, { content, model: selected!.model, signal: combined,
+        } else for await (const event of runAcpTurn(client!, { content, model: selected?.model ?? "default", signal: combined,
           workspaceRoot: options.workspaceRoot, sessionId: session?.sessionId ?? randomUUID(), permissionManager: permission })) {
           activity();
           await recordToolEvent(event);

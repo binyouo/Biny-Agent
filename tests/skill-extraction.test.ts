@@ -1,6 +1,6 @@
 /** 回合后技能提取管线：阈值跳过、两步辅助模型、校验落盘与进度通知。 */
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -94,7 +94,7 @@ async function main(): Promise<void> {
     const saved = await readFile(outcome.installedPath!, "utf8");
     assert.match(saved, /^---\nname: deploy-staging\n/u);
     assert.equal(refreshed, 1, "保存后必须强制刷新技能目录");
-    assert.deepEqual(notices.map((notice) => notice.stage), ["extracting", "saving", "done"], "进度通知只覆盖真实提取，不含 analyst 阶段");
+    assert.deepEqual(notices.map((notice) => notice.stage), ["analyzing", "extracting", "saving", "done"], "进度通知覆盖分析、生成与保存");
     // analyst 提示词带已有技能清单，供重叠判断。
     assert.match(accepted.calls[0]!, /daily-report/u);
 
@@ -105,10 +105,11 @@ async function main(): Promise<void> {
       skillMarkdown.replace("Deploy the current workspace", "Deploy the workspace")
     ]);
     const updatedOutcome = await runSkillExtraction({
-      messageId: "m1", events: turnEvents(6), installedSkills: [{ name: "deploy-staging", description: "old" }],
+      messageId: "m1", events: turnEvents(6), installedSkills: [{ name: "deploy-staging", description: "old", filePath: outcome.installedPath }],
       model: update.model, minToolCalls: 5, homeDir: root,
       onNotice: (notice) => updateNotices.push(notice)
     });
+    assert.match(update.calls[1]!, /1\. Run the checks\./u, "更新必须提供原技能正文");
     assert.equal(updatedOutcome.updated, true);
     assert.equal(updateNotices.at(-1)?.updated, true);
     assert.match(await readFile(updatedOutcome.installedPath!, "utf8"), /Deploy the workspace/u);
@@ -144,14 +145,14 @@ async function main(): Promise<void> {
     ]);
     const skipped = await runSkillExtraction({
       messageId: "m1", events: turnEvents(6),
-      installedSkills: [{ name: versionedName, description: "Versioned workflow" }],
+      installedSkills: [{ name: versionedName, description: "Versioned workflow", filePath: await realpath(versionedPath) }],
       model: protectedUpdate.model, minToolCalls: 5, homeDir: root,
       onNotice: (notice) => versionNotices.push(notice),
       refreshSkills: async () => { versionRefreshes += 1; }
     });
     assert.equal(skipped.stage, "skipped");
     assert.equal(skipped.installedPath, undefined);
-    assert.deepEqual(versionNotices.map((notice) => notice.stage), ["extracting", "skipped"]);
+    assert.deepEqual(versionNotices.map((notice) => notice.stage), ["analyzing", "extracting", "skipped"]);
     assert.equal(versionRefreshes, 0);
     assert.equal((await lstat(path.dirname(versionedPath))).isSymbolicLink(), true);
     assert.equal(await readFile(versionedPath, "utf8"), secondMarkdown);

@@ -423,7 +423,7 @@ function serializeConfig(config: AgentConfig): string {
   // 未使用生图配置时不落盘空段，避免共享配置的旧版 Desktop 拒绝未知顶层键。
   return `${JSON.stringify({
     ...safe,
-    imageGen: safe.imageGen.model || safe.imageGen.aspectRatio ? safe.imageGen : undefined
+    imageGen: safe.imageGen.model || safe.imageGen.localModel || safe.imageGen.aspectRatio ? safe.imageGen : undefined
   }, null, 2)}\n`;
 }
 

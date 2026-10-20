@@ -75,9 +75,23 @@ API Key 默认打码显示，点击右侧图标可查看；输入新值后自动
 
 旧配置可能仍有 `apiKey`。这些文件属于敏感本地数据；公开示例使用 `apiKeyEnv`，不放真实密钥。
 
+## Telegram 渠道
+
+`biny telegram run` 在前台连接 Telegram Bot API，并把主人发来的私聊映射到当前工作区的独立 Session。先通过本地环境管理方式设置 `BINY_TELEGRAM_BOT_TOKEN` 和自己的数字 Telegram 用户 ID `BINY_TELEGRAM_OWNER_ID`，再私聊 bot 并运行命令。Heartbeat 通知和 Agent 的 `dm-owner` 命令由 Runtime Host 通过本地连接交给正在运行的 Telegram 桥接进程投递；Host 不保存 Bot Token。要接收这类主动消息，需保持 `biny telegram run` 运行。Bot Token 不写入 Biny 配置、会话或渠道状态文件。
+
+群聊需要将群组或超级群的数字 ID 加入 `BINY_TELEGRAM_GROUP_IDS`，多个 ID 用逗号分隔。白名单群里的成员明确提及 Biny 或回复 Biny 自己发的消息时可以触发 Agent；主人消息保留已配置的工具和 Skill，其他成员的回合禁用工具和 Skill，只能回应群内请求，不能执行操作或披露私密信息。群巡查读取最近消息摘要，至少静默 5 分钟后触发，每个群 30 分钟最多一次、每轮最多巡查 3 个群，先使用工具模型，结构化回复无效或调用失败时改用主模型重试，并关闭工具和 Skill。巡查可以回复群聊、只私信主人或保持安静。若要让 bot 读取未提及它的群消息，需要在 Telegram 侧关闭 Bot 的群隐私模式或赋予相应管理权限。
+
+主人私聊和获准群聊可以发送图片、静态贴纸、普通文件、视频、动画、音频和语音。图片及静态贴纸作为图片附件进入会话；其他媒体保存在当前工作区的附件目录，并以受限路径提供给可用工具。Agent 可通过视频阅读 Skill 调用 `biny video analyze` 分析视频。单文件下载上限为 20 MB，每条消息附件合计上限为 40 MB。配置本地语音模型后，Biny 会先在本机尝试转写；未配置本地模型时使用已配置的 OpenAI 服务商。两种转写都不可用时，音频仍保存在附件目录，Agent 会收到该文件的受限路径和未转写提示，不能推断语音内容。联系人、位置和投票会以文本形式交给 Agent。同一媒体组即使分散在连续的轮询响应中，也会收齐后合并成一次会话输入，最多额外等待约 1 秒；白名单群里最近一分钟的图片、文档、视频、动画、音频、语音和贴纸可随下一条提及 Biny 的请求一起处理，每群最多五个文件且所有群合计不超过 40 MB，桥接退出时清空。论坛话题的普通回复会返回原话题。获准群聊中的新表情反应会交由 Agent 判断是否回一个表情，同一群每 30 秒最多处理一次，超过 2 分钟的旧反应会忽略。Biny 当前没有 Telegram 行内按钮；收到按钮回调时会结束加载状态并提示该操作不可用。
+
+设置 `BINY_TELEGRAM_WHISPER_MODEL` 可启用本地语音转写，值为 Transformers.js 支持的语音识别 ONNX 模型 ID 或本地模型目录；首次使用模型 ID 时会下载权重并缓存在全局 Biny 数据目录的 `models/telegram-whisper`。本地解码需要系统可执行的 `ffmpeg`，本地转写限制为 15 分钟；模型加载、解码或转写失败时继续尝试已配置的 OpenAI 服务商。可选的 `BINY_TELEGRAM_WHISPER_LANGUAGE` 用于指定语音语言（例如 `chinese`）；留空时由模型自动识别。模型未配置或转写服务都不可用时，音频仍按附件路径交给 Agent。
+
+启用 Biny Heartbeat 并运行 Telegram 桥接后，Runtime 会把 Heartbeat 通知发送给主人；相同通知按前 200 个字符识别，成功投递两次后才抑制后续重复，Runtime 重启后计数重置。桥接会等 Telegram API 确认发送，再向 Host 确认投递。Bot 必须先收到主人的私聊，Telegram 才允许它向该账号发起消息。Agent 可通过 `biny telegram dm-owner <消息>` 私信主人；只有主人明确要求并提供对方数字用户 ID 时，才通过 `biny telegram dm <用户ID> <消息>` 联系其他用户。回复可发送图片命令生成的图片；自拍相册原图只允许在已验证主人的私聊中按其明确请求发送，群聊只允许发送新生成的图片。群映射及最近消息保存在当前工作区的本地运行数据中。
+
 ## 模型切换与辅助请求
 
 Desktop 的模型菜单支持点击和键盘操作：上下键选择入口，右方向键或 Enter 进入模型、推理强度选项；Escape 先返回上一级，再关闭菜单并回到触发按钮。设置页的模型选择器打开后可直接搜索，上下键跳过不可用项，Escape 收起选择器。
+
+聊天输入框会在当前模型明确支持 `priority` 服务档位时显示“快速”开关。新回合会通过当前 Provider 请求优先档位；运行中的请求保持原设置。开关按会话保存，未单独设置的会话沿用 Desktop 最近一次选择。自定义 Provider 或网关需要在模型 Profile 或模型目录中声明 `serviceTiers: ["priority"]`，并实际支持 OpenAI 兼容请求中的 `service_tier` 字段；否则不要启用此选项。
 
 运行中保存新的模型或思考设置，后续根回合采用新选择。当前已开始的回合保持准入时的选择；保存成功不表示当前请求已经换了模型。
 
@@ -111,7 +125,7 @@ Desktop 的模型菜单支持点击和键盘操作：上下键选择入口，右
 
 ## 图片生成
 
-`imageGen.model` 指定 `biny image generate` / `biny image edit` 使用的默认模型，格式为 `providerAlias:modelId`（例如 `gem:gemini-2.5-flash-image`）或纯 Gemini 模型 ID。留空时按内置优先级从已配置的 Gemini 服务商中自动挑选；显式指定或已配置的模型对应连接失效、停用或缺少凭据时直接报错，不改用其他模型。自动选择只考虑启用且有凭据的 Gemini 连接。`imageGen.aspectRatio` 指定默认宽高比（如 `16:9`），留空由模型自行决定。
+`imageGen.model` 指定 `biny image generate` / `biny image edit` 使用的默认模型，格式为 `providerAlias:modelId`（例如 `gem:gemini-2.5-flash-image`）或纯 Gemini 模型 ID。留空时按内置优先级从已配置的 Gemini 服务商中自动挑选；显式指定的连接失效、停用或未满足服务商的凭据要求时直接报错，不改用其他模型。自动选择只考虑启用且有凭据的 Gemini 连接。OpenAI 兼容服务商也可指向实现 `/images/generations` 与 `/images/edits` 的本地生图服务；服务商配置 `requiresApiKey: false` 时不发送 Bearer 凭据。`imageGen.localModel` 单独指定 `biny selfie take --nsfw` 使用的模型，必须是 OpenAI 兼容 Provider 且 `baseUrl` 为 `localhost`、`127.0.0.0/8` 或 `::1` 的 HTTP(S) 地址。该命令拒绝远程地址、重定向和远程图片 URL，不会回退到普通生图模型；Agent 代执行时还要求当前 Session 映射到已验证主人的 Telegram 私聊。直接运行本机 CLI 时可使用本地路由。`imageGen.aspectRatio` 指定默认宽高比（如 `16:9`），留空由模型自行决定。
 
 初始化或保存配置时，未设置模型和宽高比的 `imageGen` 空段不会写入文件，读取时仍使用默认值。旧版 Desktop 不认识该字段；与新版 CLI 共用配置时，显式保存生图设置需要使用支持它的 Desktop 版本，或通过命令行参数临时指定。
 
@@ -126,6 +140,17 @@ biny image models
 biny image generate "a cat on a windowsill, afternoon light"
 biny image generate --aspect 16:9 "cinematic landscape"
 biny image edit /path/to/source.jpg "make the background blue"
+```
+
+## 视频理解
+
+Agent 收到视频并被问及其内容时，可通过视频阅读 Skill 调用 `biny video analyze` 使用 Gemini 原生视频理解。命令也可直接读取当前工作区内的视频文件或 `@attachments/...` 附件路径；支持 MP4、MOV、WebM、AVI、MKV、M4V、MPEG、MPG 和 3GP。普通本地文件最大 2 GB，附件路径读取上限为 40 MB。
+
+命令优先使用当前默认模型（默认服务商为 Gemini 时），否则选择已启用且有凭据的 Gemini 服务商；`--model providerAlias:modelId` 可指定模型。请求会将视频上传到 Gemini Files API，分析后立即请求删除远端文件；若删除失败，上传文件由服务端自动过期。
+
+```sh
+biny video analyze /path/to/clip.mp4 "Summarize the key events and include timestamps"
+biny video analyze '@attachments/clip.mp4' "What did the speakers say?"
 ```
 
 ## 桌面控制
@@ -208,3 +233,9 @@ ACP 的执行循环、原生工具、上下文压缩和外部记忆由该 Agent 
 每个聊天独立管理外部进程及会话。会话关联保存在聊天 JSONL 旁的 `.acp.json` 文件，重启时仅在 Agent 声明支持 `session/load` 后恢复；不支持时要求新建聊天。启动命令、显式凭据引用的实际值或 MCP 连接变化时要求新建聊天；模型和模式可使用同一外部会话。聊天事件保存 ACP 连接标记；关联文件缺失或切换执行引擎时明确拒绝。旧版未保存标记的 ACP 聊天需新建。外部 Agent 的登录文件或 OAuth 账号变化无法通过标准会话握手验证，切换账号后也应新建聊天。停止先发取消通知，1 秒内未响应则结束进程。异常退出不自动重放任务，未收到结果的工具标记为未知，回合为未完成；待审批请求随回合结束失效，并发审批逐项展示。
 
 ACP 权限请求接入当前 Biny 权限模式，交互批准只选本次授权；这不是操作系统沙箱，外部程序可以自行执行不经 ACP 询问的操作，也能访问当前用户可读的本地文件；关闭记忆不等于限制文件访问。仅连接可信程序，需要强隔离时应在受限系统账号或容器中运行外部 Agent。外部 token 用量与 Biny 内置循环的步数预算暂未接入，执行限制以外部 Agent 为准。当前只支持文本任务；附件、编辑旧消息、重新生成、Biny 断点续跑及跨 Agent 迁移上下文未接入。运行中插话、排队和 Biny 工具选择不可用；切换执行引擎必须新建聊天；会话导出不携带外部 Agent 的私有历史与会话关联。
+
+## 独立视觉模型
+
+通用设置按工具模型、视觉模型、Coding Agent 排列。视觉模型选用已配置且支持图片输入的模型，选择后立即保存为全局 `visionModel`；选择“跟随主模型”清除该项。启用后，图片附件与工具返回的图片由视觉模型生成文字描述，再提交主模型；描述可能遗漏细节，原图仍保留在会话中。识别失败会提示错误，不自动切换模型。每次识别最多 60 秒、输出 4096 tokens，消耗计入用量；同一回合相同图片复用结果，跨回合可能重新识别。
+
+Coding Agent 选择执行后端：自动模式优先使用可执行的本地 Claude Code，未找到时使用内置 Agent；Claude Code 直接使用本机 CLI 及其默认模型；内置 Agent 沿用当前聊天模型。ACP 按已配置的 Provider 连接列出选项，不要求该连接另有 Biny 模型别名，执行时使用 ACP Agent 的默认模型；未配置的目录项不显示，已配置但停用的连接显示为禁用项。卡片显示已配置 ACP Provider 数量，并可跳转到模型供应商设置管理连接。旧选择在用户更改前保留；选择后随设置保存生效。现有权限与外部子代理限制继续适用；外部执行失败不会自动重跑为内置任务。

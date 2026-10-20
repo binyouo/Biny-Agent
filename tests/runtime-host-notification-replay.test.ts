@@ -41,7 +41,7 @@ class MemorySocket extends EventEmitter {
   }
 }
 
-async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = []) {
+async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = [], surface: "desktop" | "cli" = "desktop") {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-notification-replay-"));
   const priorAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "agent");
@@ -55,7 +55,13 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = []) {
   const runtime = { getSnapshot: () => current, subscribe: (listener: typeof publish) => {
     publish = listener; return () => { publish = () => undefined; };
   }, close: async () => undefined } as unknown as InteractiveRuntimeHandle;
-  const server = new RuntimeHostServer(runtime, {} as CommandRuntime, registration, { close: async () => undefined });
+  let sendOwnerNotification: ((text: string) => Promise<void>) | undefined;
+  const commands = {
+    setOwnerNotificationSink(sink: ((text: string) => Promise<void>) | undefined) {
+      sendOwnerNotification = sink;
+    }
+  } as unknown as CommandRuntime;
+  const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined });
   await server.initialize();
   await writeFile(paths.registrationPath, JSON.stringify(registration), { mode: 0o600 });
   const internals = server as unknown as {
@@ -80,14 +86,15 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = []) {
       assert.equal(frame.kind, "request");
       assert.ok(frame.kind === "request");
       requests.push(frame);
-      assert.ok(["subscribe", "host.info", "snapshot", "session.ensure"].includes(frame.operation),
+      assert.ok(["subscribe", "host.info", "snapshot", "session.ensure", "owner-notification.subscribe", "owner-notification.unsubscribe",
+        "owner-notification.send", "owner-notification.ack"].includes(frame.operation),
         "recovery and navigation must not submit a run or another side effect");
       const result = await internals.execute(connection, frame);
       const response: HostFrame = { kind: "response", requestId: frame.requestId, ok: true, result };
       connection.writer.send(response);
       if (frame.operation === "subscribe") subscribed.emit("settled");
     });
-    const connection = { authenticated: true, subscribed: false, clientId: "notification-fixture", surface: "desktop",
+    const connection = { socket: socket as unknown as net.Socket, authenticated: true, subscribed: false, clientId: "notification-fixture", surface,
       writer: { ready: true, send(frame: HostFrame): boolean {
         serverFrames.push(frame);
         if (drop?.(frame, index)) return true;
@@ -104,7 +111,7 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = []) {
     current = snapshot(root, current.revision + 1);
     publish({ snapshot: current, event });
   }
-  const client = await RuntimeHostClient.connect({ registration, surface: "desktop" });
+  const client = await RuntimeHostClient.connect({ registration, surface });
   const delivered: AgentHostEvent[] = [];
   const updates: AgentRuntimeUpdate[] = [];
   client.subscribeAllRuntimeEvents((update) => {
@@ -112,6 +119,10 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = []) {
     if (update.event) delivered.push(update.event);
   });
   return { client, server, sockets, requests, serverFrames, delivered, updates, registration,
+    async sendOwnerNotification(text: string) {
+      if (!sendOwnerNotification) throw new Error("Runtime Host did not attach the owner notification sink.");
+      await sendOwnerNotification(text);
+    },
     dropFrames(filter: typeof drop) { drop = filter; },
     async changeEpoch() {
       registration.hostEpoch = "replacement-epoch";
@@ -144,6 +155,22 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = []) {
     }
   };
 }
+
+test("Runtime Host relays Heartbeat and CLI owner notifications through the subscribed bridge and waits for delivery acknowledgement", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t, [], "cli");
+  const notifications: string[] = [];
+  try {
+    const unsubscribe = await f.client.subscribeOwnerNotifications(async (notification) => {
+      notifications.push(notification.text);
+      await f.client.acknowledgeOwnerNotification(notification.notificationId, true);
+    });
+    await f.sendOwnerNotification("Heartbeat needs your attention.");
+    await f.client.sendOwnerNotification("CLI owner message.");
+    assert.deepEqual(notifications, ["Heartbeat needs your attention.", "CLI owner message."]);
+    assert.ok(f.requests.some((request) => request.operation === "owner-notification.ack"));
+    unsubscribe();
+  } finally { await f.close(); }
+});
 
 function terminal(type: "run.completed" | "run.blocked", runId: string = type): AgentHostEvent {
   const base = { sessionId: "primary", runId, timestamp: "2026-10-06T00:00:00.000Z", durationMs: 1, notification: `${runId} notification` };

@@ -40,19 +40,20 @@ for (const executionMode of ["direct", "code_mode"] as const) {
         mainSchemaChecked = true;
         const step = modelSteps++;
         if (step === 0) {
-          const name = executionMode === "direct" ? "Bash" : "exec";
+          const name = executionMode === "direct" ? "Bash" : "run_script";
           assert.ok(names.includes(name));
-          const args = name === "Bash" ? { command } : { code: `return await tools.Bash(${JSON.stringify({ command })});` };
+          const args = name === "Bash" ? { command } : { description: "Run fixture workflow", code: `const result = await tools.Bash(${JSON.stringify({ command })}); return result.stdout.match(/cli-live-marker|history-live-marker|live-skill/g);` };
           delta = { tool_calls: [{ index: 0, id: "cli-live", type: "function", function: { name, arguments: JSON.stringify(args) } }] };
           reason = "tool_calls";
         } else if (step === 1) {
           const result = JSON.stringify(body.messages.findLast((message: { role: string }) => message.role === "tool"));
+          if (executionMode === "code_mode") assert.doesNotMatch(result, /stdout|stderr/u, "raw child command envelope must not reach the provider");
           assert.match(result, /cli-live-marker/u, `active-turn CLI write must reach the next model step: ${result}`);
           assert.match(result, /history-live-marker/u, "current user text must already be indexed by the CLI");
           assert.match(result, /live-skill/u, "CLI installed-skill search sees newly written metadata");
           assert.doesNotMatch(result, /Session is busy|isError.*true/u);
-          const name = executionMode === "direct" ? "ToolSearch" : "exec";
-          const args = name === "ToolSearch" ? { query: "Skill" } : { code: "return await searchTools('Skill');" };
+          const name = executionMode === "direct" ? "ToolSearch" : "run_script";
+          const args = name === "ToolSearch" ? { query: "Skill" } : { description: "Run fixture workflow", code: "return await searchTools('Skill');" };
           delta = { tool_calls: [{ index: 0, id: "discover-skill", type: "function", function: { name, arguments: JSON.stringify(args) } }] };
           reason = "tool_calls";
         } else if (step === 2) {
@@ -92,7 +93,17 @@ for (const executionMode of ["direct", "code_mode"] as const) {
     for (const name of removed) assert.ok(!catalog.includes(name), `${name} must be absent from the runtime catalog`);
     client = await connectRuntimeHost(root, { surface: "cli", clientId: "cli-consolidation" });
     assert.ok(client);
+    const optimizations: unknown[] = [];
+    const stop = client.subscribe(update => {
+      if (update.event?.type === "tool.completed" && update.event.tool === "run_script") {
+        optimizations.push(update.event.optimization);
+        assert.ok(update.event.modelResult, "Host transports the exact script result projection");
+      }
+    });
     const outcome = await client.submitPrompt("history-live-marker: save the local marker using CLI").completion;
+    stop();
+    assert.equal(optimizations.length, executionMode === "code_mode" ? 2 : 0);
+    assert.ok(optimizations.every(value => value && typeof value === "object" && "kind" in value && value.kind === "ptc"));
     assert.equal(outcome.status, "completed", JSON.stringify({ outcome, failures: failures.map(String) }));
     assert.deepEqual(failures, []);
     assert.ok(mainSchemaChecked);

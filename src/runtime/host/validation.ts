@@ -38,6 +38,18 @@ export function readPromptContext(value: unknown): string | undefined {
   return value;
 }
 
+export function readModelRoute(value: unknown): "tool" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "tool") return value;
+  throw new Error("Runtime Host modelRoute must be tool when provided.");
+}
+
+export function readFastMode(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "boolean") return value;
+  throw new Error("Runtime Host fastMode must be a boolean when provided.");
+}
+
 export function readCapabilitySelection(value: unknown): AgentCapabilitySelection | undefined {
   if (value === undefined) return undefined;
   return agentCapabilitySelectionSchema.parse(value);
@@ -198,6 +210,7 @@ export function readAutomationCreateInput(payload: Record<string, unknown>): Aut
     triggerType,
     schedule: {
       cron: optionalString(schedule.cron),
+      timezone: optionalString(schedule.timezone),
       intervalMs: intervalMs as number | undefined,
       at: optionalString(schedule.at),
       jitterMs: jitterMs as number | undefined

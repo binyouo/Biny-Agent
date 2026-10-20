@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -12,6 +13,7 @@ import type { HostOperationResult } from "../src/runtime/host/types.js";
 import { SoulStorage } from "../src/agent/context/soulStorage.js";
 import { upsertDailyMemorySection, readDailyMemoryNote } from "../src/activity/dailyNotes.js";
 import { readSessionEvents } from "../src/session/events.js";
+import { hasReflectionDate, readReflectionDiary } from "../src/agent/context/reflectionDates.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-reflection-runtime-"));
 const old = process.env.BINY_AGENT_DIR;
@@ -22,7 +24,7 @@ let wrote = false;
 let loadedSkill = false;
 let targetDate = "2026-10-18";
 const requests: Array<{ model: string; messages: unknown[]; tools?: Array<{ function: { name: string } }> }> = [];
-const diary = "# 2026-10-18\n\n## 聊天摘要\n已有的聊天记录。\n\n## 自我反思\n\n### Most Memorable Moments\n今天我慢慢学会了倾听。\n";
+const diary = "# 2026-10-18\n\n## Most Memorable Moments\n今天我慢慢学会了倾听。\n";
 const provider = createServer((req, res) => { void (async () => {
   let text = "";
   for await (const chunk of req) text += String(chunk);
@@ -37,7 +39,7 @@ const provider = createServer((req, res) => { void (async () => {
   const delta = load
     ? { tool_calls: [{ index: 0, id: "load-reflection", type: "function", function: { name: "Skill", arguments: JSON.stringify({ skill: "self-reflection" }) } }] }
     : write
-    ? { tool_calls: [{ index: 0, id: "diary-write", type: "function", function: { name: "Write", arguments: JSON.stringify({ path: `state/memory/${targetDate}.md`, content: diary.replaceAll("2026-10-18", targetDate) }) } }] }
+    ? { tool_calls: [{ index: 0, id: "diary-write", type: "function", function: { name: "Write", arguments: JSON.stringify({ path: `state/diary/${targetDate}.md`, content: diary.replaceAll("2026-10-18", targetDate) }) } }] }
     : { content: "今天的日记写好了。" };
   res.writeHead(200, { "content-type": "text/event-stream" });
   res.end([{ choices: [{ index: 0, delta, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: write || load ? "tool_calls" : "stop" }] }, "[DONE]"].map(part => `data: ${typeof part === "string" ? part : JSON.stringify(part)}\n\n`).join(""));
@@ -88,7 +90,9 @@ try {
   assert.ok(!main.tools?.some(tool => ["remember", "evolve_personality", "set_base_emotion"].includes(tool.function.name)));
   assert.equal(result.result?.written, true);
   assert.ok(result.result?.runId);
-  assert.equal((await readDailyMemoryNote("2026-10-18"))?.trim(), diary.trim());
+  assert.equal((await readReflectionDiary("2026-10-18", process.env.BINY_AGENT_DIR))?.trim(), diary.trim());
+  assert.match(await readDailyMemoryNote("2026-10-18") ?? "", /已有的聊天记录/u, "writing a diary must preserve daily notes in their separate file");
+  assert.equal(await hasReflectionDate("2026-10-18", process.env.BINY_AGENT_DIR), true, "a verified written diary records its completion date");
   const events = await readSessionEvents(local.commands.agent.getSessionRecorder().filePath);
   assert.ok(events.some(event => event.type === "tool_call" && event.tool === "Skill"));
   assert.ok(events.some(event => event.type === "tool_call" && event.tool === "Write"));
@@ -98,16 +102,18 @@ try {
   assert.equal(requests.length, before, "existing diary skips model execution");
   mode = "text";
   assert.equal((await run("2026-10-17")).result?.written, false, "a text-only claim is not a saved diary");
-  assert.equal(await readDailyMemoryNote("2026-10-17"), undefined);
+  assert.equal(await readReflectionDiary("2026-10-17", process.env.BINY_AGENT_DIR), undefined);
   assert.equal((await run("2026-10-18", true)).result?.written, false, "force without editing cannot claim an old diary was newly written");
   mode = "write";
   loadedSkill = false;
   wrote = false;
   targetDate = "2026-10-16";
+  mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-17T12:00:00") });
   await writeFile(path.join(process.env.BINY_AGENT_DIR!, "HEARTBEAT.md"), "Use the self-reflection skill to write the diary for 2026-10-16.");
   const heartbeatStart = requests.length;
   assert.equal(await local.commands.heartbeat.triggerNow(), true);
-  assert.equal((await readDailyMemoryNote(targetDate))?.trim(), diary.replaceAll("2026-10-18", targetDate).trim());
+  assert.equal((await readReflectionDiary(targetDate, process.env.BINY_AGENT_DIR))?.trim(), diary.replaceAll("2026-10-18", targetDate).trim());
+  assert.equal(await hasReflectionDate(targetDate, process.env.BINY_AGENT_DIR), true, "heartbeat writes the same completion marker");
   const heartbeatRequests = requests.slice(heartbeatStart).filter(request => request.model === "persona");
   assert.ok(heartbeatRequests.some(request => JSON.stringify(request.messages).includes("伤痕文学")), "heartbeat loads the same Skill into its normal agent turn");
   assert.ok(heartbeatRequests.some(request => JSON.stringify(request.messages).includes("PERSONA_FOR_DIARY")), "heartbeat retains the persona");
@@ -115,8 +121,9 @@ try {
   const failure = await run("2026-10-18", true);
   assert.equal(failure.accepted, false);
   assert.match(failure.reason ?? "", /controlled reflection failure/u);
-  assert.equal((await readDailyMemoryNote("2026-10-18"))?.trim(), diary.trim());
+  assert.equal((await readReflectionDiary("2026-10-18", process.env.BINY_AGENT_DIR))?.trim(), diary.trim());
 } finally {
+  mock.timers.reset();
   await host?.close();
   provider.closeAllConnections();
   await new Promise<void>(resolve => provider.close(() => resolve()));

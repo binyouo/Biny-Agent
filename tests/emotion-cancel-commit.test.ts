@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { z } from "zod";
 
 // Product modules are source text only. Only the fixed declarations below are
 // transpiled, after AST call auditing. Every model, storage and lock dependency
@@ -38,6 +39,10 @@ const limits = ["recentMessageLimit", "recentMessageMaxChars"].map((name) => {
   assert.ok(found[0]!.initializer && ts.isNumericLiteral(found[0]!.initializer));
   return `const ${found[0]!.getText(analysisSource)};`;
 });
+const emotionResultSchema = analysisSource.statements.flatMap((node) => ts.isVariableStatement(node) ? [...node.declarationList.declarations] : [])
+  .filter((node) => node.name.getText(analysisSource) === "autoEmotionResultSchema");
+assert.equal(emotionResultSchema.length, 1);
+const emotionResultSchemaCode = `const ${emotionResultSchema[0]!.getText(analysisSource)};`;
 const storageNames = ["baseFileName", "contextDirectoryName"].map((name) => {
   const found = storageSource.statements.flatMap((node) => ts.isVariableStatement(node) ? [...node.declarationList.declarations] : [])
     .filter((node) => node.name.getText(storageSource) === name);
@@ -47,10 +52,9 @@ const storageNames = ["baseFileName", "contextDirectoryName"].map((name) => {
 });
 const calls = new Set([
   "options.getModel", "normalizeMessages", "options.getMessages", "generateNativeText",
+  "result.text.trim", "JSON.parse", "autoEmotionResultSchema.safeParse",
   "messages.map", "options.onUsage", "options.signal?.throwIfAborted",
   "options.storage.readBase",
-  "result.text.trim", "result.text.trim().split", 'result.text.trim().split("\\n")[0]!.split',
-  "parts[0]!.trim", "parseInt", "parts.slice", "parts.slice(2).join", 'parts.slice(2).join("|").trim',
   "now().toISOString", "now", "options.storage.readContext", "options.storage.writeContext", "options.onUpdated",
   "Array.from", "Array.from(message.text).slice", "Array.from(message.text).slice(0, recentMessageMaxChars).join",
   "message.text.trim", "value.replace",
@@ -90,6 +94,7 @@ function printFunction(node: ts.FunctionDeclaration, file: ts.SourceFile): strin
 }
 const selectedCode = [
   ...limits,
+  emotionResultSchemaCode,
   ...storageNames,
   ...analysisFunctions.map((node) => printFunction(node, analysisSource)),
   ...storageFunctions.map((node) => printFunction(node, storageSource)),
@@ -166,6 +171,7 @@ function fixture(gateName?: GateName) {
     async unlink(file: string) { calls.push("unlink"); files.delete(file); }
   };
   const extracted = runInNewContext(transpiled.outputText, {
+    z,
     fs,
     path: { join: (...parts: string[]) => parts.join("/"), dirname: (file: string) => file.slice(0, file.lastIndexOf("/")) },
     randomUUID: () => `fixture-${++sequence}`,
@@ -173,7 +179,7 @@ function fixture(gateName?: GateName) {
     DEFAULT_EMOTION_STATE: { ...state },
     autoEmotionSystemPrompt: "inert fixture prompt",
     generateNativeText: async (_model: unknown, _messages: unknown, _options: unknown) => ({
-      text: "专注|8|fixture"
+      text: '{"mood":"专注","valence":8,"reason":"fixture"}'
     })
   }, { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }) as Extracted;
   const storage = Object.assign(Object.create(extracted.storage) as Storage, {

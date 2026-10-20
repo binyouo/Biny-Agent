@@ -60,7 +60,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
           assert.doesNotMatch(result, /PRIVATE_REFERENCE_BODY/u, "loading instructions must only list resource paths");
           const args = { skill: "progressive-demo", path: "references/guide.md" };
           delta = executionMode === "direct" ? toolCall("read_skill_resource", args)
-            : toolCall("exec", { code: `return await tools.read_skill_resource(${JSON.stringify(args)});` });
+            : toolCall("run_script", { description: "Run fixture workflow", code: `return await tools.read_skill_resource(${JSON.stringify(args)});` });
         } else {
           assert.equal(mainSteps, 2, "the fixture must finish after one instruction read and one resource read");
           assert.match(JSON.stringify(body.messages.findLast((message: { role: string }) => message.role === "tool")), /PRIVATE_REFERENCE_BODY/u);

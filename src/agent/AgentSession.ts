@@ -1,3 +1,4 @@
+import { createVisionProjection } from "./context/visionProjection.js";
 import { SelfieAlbum, selfiePrompt } from "./context/selfie.js";
 import { TravelStorage, travelPrompt } from "./context/travel.js";
 import type { TaskCommunication } from "../runtime/TaskCommunication.js";
@@ -242,15 +243,19 @@ export interface AgentSessionOptions {
     messageId: string;
     events: readonly SessionEvent[];
     minToolCalls: number;
+    onAnalyzed: (toolCallCount: number) => Promise<void>;
     onNotice: (notice: SkillExtractionNotice) => void;
   }) => Promise<SkillExtractionOutcome | undefined>;
   /** 提取进度只通知界面，不进入消息时间线。 */
-  onSkillExtractionUpdate?: (notice: SkillExtractionNotice & { runId: string }) => void;
+  onSkillExtractionUpdate?: (notice: SkillExtractionNotice & { runId: string; sessionId: string }) => void;
   onTitleGenerated?: (sessionId: string, title: string) => void;
 }
 
 export interface AgentRunOptions {
   abortSignal?: AbortSignal;
+  /** Host-owned internal sessions may select the model for one run without changing user model state. */
+  modelOverride?: AgentModel;
+  fastMode?: boolean;
   /** 后台发起的消息保留来源，防止被当成用户原话建立日期索引。 */
   source?: "heartbeat" | "auto";
   confirmPermission?: (request: AgentPermissionRequest) => Promise<AgentPermissionResult>;
@@ -425,6 +430,7 @@ export class AgentSession {
   private readonly lingeringExternalTools = new Map<Promise<unknown>, { tool: string; toolCallId: string }>();
   private readonly pendingCrystalTasks = new Set<Promise<void>>();
   private readonly queuedCrystalRuns = new Set<string>();
+  private pendingSkillExtraction: Promise<void> = Promise.resolve();
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
   private temporalIndexFlight: Promise<void> = Promise.resolve();
   /** Runtime 已接纳的普通发送；让 canonical user_message 先于前台 generating 状态落盘。 */
@@ -968,7 +974,7 @@ export class AgentSession {
         storage: this.emotionStorage,
         getModel: () => {
           try {
-            return this.memoryModelFor("memoryModel");
+            return this.toolModel();
           } catch {
             return undefined;
           }
@@ -2282,7 +2288,7 @@ export class AgentSession {
       return;
     }
     recordPerfPhase("turn.preparePrompt", preparePromptPerfStartedAt, { runId: runtimeRunId });
-    const model = this.options.modelManager?.getModel() ?? this.options.model;
+    const model = runOptions.modelOverride ?? this.options.modelManager?.getModel() ?? this.options.model;
     if (!model) {
       recordUserMessage();
       const outcome = failedTurn("Model runtime is not configured.", completedStepsBeforeRun);
@@ -2673,8 +2679,18 @@ export class AgentSession {
       return next;
     };
     let systemPrompt = initialSystemPrompt;
-    const activeModel = this.options.modelManager?.getModel() ?? this.options.model;
-    const modelSettings: ModelSettings | undefined = this.options.modelManager?.getModelSettings()
+    const activeModel = runOptions.modelOverride ?? this.options.modelManager?.getModel() ?? this.options.model;
+    const modelSettings: ModelSettings | undefined = runOptions.modelOverride
+      ? {
+        model: runOptions.modelOverride,
+        vercelModel: runOptions.modelOverride.vercelModel,
+        providerOptions: runOptions.modelOverride.vercelOptions?.providerOptions,
+        maxOutputTokens: runOptions.modelOverride.vercelOptions?.maxOutputTokens,
+        timeoutMs: runOptions.modelOverride.vercelOptions?.timeoutMs,
+        maxRetries: runOptions.modelOverride.vercelOptions?.maxRetries,
+        contextWindow: undefined
+      }
+      : this.options.modelManager?.getModelSettings()
       ?? (activeModel ? {
         model: activeModel,
         vercelModel: activeModel.vercelModel,
@@ -2995,6 +3011,20 @@ export class AgentSession {
       runContextCompacted = true;
     };
     let activeRequestContext = loopContext;
+    const visionAlias = this.activeConfig.visionModel;
+    const projectVision = visionAlias ? createVisionProjection({
+      getModel: () => {
+        const registry = new ProviderRegistry(this.activeConfig, [], undefined, undefined, undefined,
+          this.options.configStore ? createProviderCredentialPersistence(this.options.configStore, this.options.workspaceRoot) : undefined);
+        const resolved = registry.forModel(visionAlias);
+        const capabilities = this.options.modelManager?.listModels().find(model => model.alias === visionAlias)?.capabilities ?? modelCapabilities(resolved.model);
+        if (resolved.provider.config.type === "acp" || capabilities.vision !== true) throw new Error("配置的视觉模型不支持图片输入。");
+        return registry.createModelSettings(visionAlias).model;
+      }, signal: abortSignal,
+      onRequestMetrics: async metrics => { await this.recordModelRequest(metrics); },
+      requestContext: () => ({ ...modelRequestContext(completedStepsBeforeRun + observedSteps), operation: "vision" }),
+      onUsage: usage => { this.recordModelUsage(usage, "vision", visionAlias); }
+    }) : undefined;
     const projectForModelRequest = async (contextMessages: AgentMessage[]): Promise<AgentMessage[]> => {
       const projectedMessages = await projectToolResultsForModel(contextMessages, {
         maxRetainedBytes: this.activeConfig.context.maxTurnToolResultBytes,
@@ -3008,7 +3038,8 @@ export class AgentSession {
           output
         })
       });
-      return this.contextMemory.pruneToolResultsForStep(projectedMessages);
+      const pruned = this.contextMemory.pruneToolResultsForStep(projectedMessages);
+      return projectVision ? await projectVision(pruned) : pruned;
     };
 
     recordPerfPhase("turn.loopPre", loopPerfStartedAt, { runId: runOptions.runId });
@@ -3034,6 +3065,7 @@ export class AgentSession {
           temperature: this.activeConfig.chat.temperature,
           reasoning: activeModelSettings.reasoning,
           providerOptions: activeModelSettings.providerOptions,
+          serviceTier: runOptions.fastMode && activeModelSettings.model.serviceTiers?.includes("priority") ? "priority" : undefined,
           cacheMarkers: activeModelSettings.cacheMarkers,
           timeoutMs: activeModelSettings.timeoutMs,
           onRequestMetrics: (metrics) => this.recordModelRequest(metrics),
@@ -3172,6 +3204,7 @@ export class AgentSession {
               temperature: this.activeConfig.chat.temperature,
               reasoning: settings.reasoning,
               providerOptions: settings.providerOptions,
+              serviceTier: runOptions.fastMode && settings.model.serviceTiers?.includes("priority") ? "priority" : undefined,
               cacheMarkers: settings.cacheMarkers,
               timeoutMs: settings.timeoutMs,
               onRequestMetrics: (metrics) => this.recordModelRequest(metrics),
@@ -3554,7 +3587,8 @@ export class AgentSession {
           this.pendingMemoryTasks.add(memoryTask);
         }
         void this.enqueueRecipeSuggestions(runOptions).catch(() => undefined);
-        void this.enqueueSkillExtraction(runOptions).catch(() => undefined);
+        const extractionRecorder = this.recorder;
+        this.pendingSkillExtraction = this.pendingSkillExtraction.then(() => this.enqueueSkillExtraction(runOptions, extractionRecorder)).catch(() => undefined);
         yield { type: "status", status: "completed" };
       } else if (outcome.status === "incomplete") {
         yield { type: "status", status: "incomplete" };
@@ -3616,6 +3650,7 @@ export class AgentSession {
   }
 
   private async closeReplacedSession(recorder: SessionRecorder): Promise<void> {
+    await this.pendingSkillExtraction;
     const results = await Promise.allSettled([recorder.close(), this.options.releaseSessionResources?.()]);
     const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
     if (failures.length) throw new AggregateError(failures, "Session resource cleanup failed.");
@@ -3878,7 +3913,7 @@ export class AgentSession {
     const capabilities = this.options.modelManager?.getCapabilities()
       ?? modelCapabilities(new ProviderRegistry(this.options.config).forModel(modelAlias).model);
     const image = attachments.find((attachment) => attachment.mimeType.startsWith("image/"));
-    if (image && capabilities.vision === false) {
+    if (image && capabilities.vision === false && !this.activeConfig.visionModel) {
       throw new Error(`当前模型 ${modelAlias} 未启用图片输入。请在模型设置中将“图片输入”设为“启用”，或切换到支持图片的模型。`);
     }
     const audio = attachments.find((attachment) => attachment.mimeType.startsWith("audio/"));
@@ -3932,32 +3967,39 @@ export class AgentSession {
    * 回合后技能提取（自进化）：只在成功回合触发，由宿主装配的辅助模型与技能目录
    * 完成分析；保存成功后向本回合消息记 metadata 留审计痕迹。任何失败静默。
    */
-  private async enqueueSkillExtraction(runOptions: AgentRunOptions): Promise<void> {
+  private async enqueueSkillExtraction(runOptions: AgentRunOptions, recorder: SessionRecorder): Promise<void> {
     const config = this.activeConfig.chat.skillExtraction;
     if (!config.enabled || !this.options.extractSkill || !runOptions.messageId) return;
     // 后台监督回合显式关闭技能，自进化分析也不应在其上运行。
     if (runOptions.capabilitySelection?.skills === "none") return;
-    await this.recorder.flush();
-    const events = await readSessionEvents(this.recorder.filePath);
+    await recorder.flush();
+    const events = await readSessionEvents(recorder.filePath);
     const outcome = await this.options.extractSkill({
       messageId: runOptions.messageId,
       events,
       minToolCalls: config.minToolCalls,
+      onAnalyzed: async (toolCallCount) => {
+        recorder.recordWithRuntimeContext({ type: "message_metadata", messageId: runOptions.messageId!,
+          metadata: { skillExtractionAnalyzed: true, skillExtractionAnalyzedAt: new Date().toISOString(), skillExtractionToolCallCount: toolCallCount } });
+        await recorder.flush();
+      },
       onNotice: (notice) => {
+        if (notice.stage === "done") return;
         try {
-          this.options.onSkillExtractionUpdate?.({ ...notice, runId: runOptions.runId ?? "" });
+          this.options.onSkillExtractionUpdate?.({ ...notice, runId: runOptions.runId ?? "", sessionId: recorder.sessionId });
         } catch {
           // 界面通知失败不影响提取本身。
         }
       }
     });
     if (!outcome?.installedPath || !outcome.skillName || outcome.stage !== "done") return;
-    this.recorder.recordWithRuntimeContext({
+    recorder.recordWithRuntimeContext({
       type: "message_metadata",
       messageId: runOptions.messageId,
       metadata: { skillExtracted: { name: outcome.skillName, path: outcome.installedPath, updated: outcome.updated === true } }
     });
-    await this.recorder.flush();
+    await recorder.flush();
+    this.options.onSkillExtractionUpdate?.({ stage: "done", skillName: outcome.skillName, skillDescription: outcome.skillDescription, updated: outcome.updated, runId: runOptions.runId ?? "", sessionId: recorder.sessionId });
   }
 
   async readCheckpointEvidence(args: CheckpointEvidenceArgs, signal?: AbortSignal): Promise<unknown> {
@@ -4468,6 +4510,7 @@ export class AgentSession {
     this.titleAbort.abort();
     await this.titleTask;
     await Promise.allSettled([...this.pendingMemoryTasks]);
+    await this.pendingSkillExtraction;
     this.closed = true;
     await Promise.allSettled([...this.pendingCrystalTasks]);
     this.memoryRetriever.close();
@@ -4526,7 +4569,7 @@ export class AgentSession {
     };
     const record = createSessionUsage(usage, operation, modelInfo, new Date().toISOString(), this.modelRequestRecords.at(-1)?.promptShape);
     this.usageRecords.push(record);
-    if (operation === "subagent" || operation === "memory"
+    if (operation === "subagent" || operation === "memory" || operation === "vision"
       || (operation === "compaction" && this.activeOperation === "agent turn")) this.unpersistedRelatedUsage.push(record);
     return record;
   }

@@ -9,20 +9,29 @@ const eventSchema = z.object({ day: z.number().int().positive(), summary: z.stri
 const tripSchema = z.object({ destination: z.string(), departedAt: z.string().datetime(), day: z.number().int().positive(),
   events: z.array(eventSchema), mood: z.string(), budget: z.number().nonnegative() });
 const stateSchema = z.object({ current: tripSchema.optional(), trips: z.array(tripSchema.extend({ returnedAt: z.string().datetime(), days: z.number().int().positive(), totalSpent: z.number().nonnegative() })) });
+const statusSchema = z.object({ traveling: z.boolean(), destination: z.string().nullable(), departedAt: z.string().nullable(), day: z.number().int().nonnegative(),
+  events: z.array(eventSchema), mood: z.string(), budget: z.number().nonnegative() });
+const historySchema = z.object({ trips: z.array(tripSchema.extend({ returnedAt: z.string().datetime(), days: z.number().int().positive(), totalSpent: z.number().nonnegative() })) });
 export type TravelState = z.infer<typeof stateSchema>;
 
-/** 当前行程与历史在同一事务中保存，回家后不能留下重复或丢失的行程。 */
+/** 当前行程与历史分别落盘；回家后通过读取时的状态比较识别中断的归档写入。 */
 export class TravelStorage {
   readonly directory: string;
   constructor(configDir = globalConfigDir(), private readonly now = () => new Date(), private readonly random = Math.random) {
     this.directory = path.join(configDir, "travels");
   }
   async read(): Promise<TravelState> {
-    try { return stateSchema.parse(JSON.parse(await fs.readFile(path.join(this.directory, "state.json"), "utf8"))); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { trips: [] };
-      throw error;
-    }
+    const legacy = await readOptionalJson(path.join(this.directory, "state.json"));
+    const statusData = await readOptionalJson(path.join(this.directory, "status.json"));
+    const historyData = await readOptionalJson(path.join(this.directory, "history.json"));
+    const previous = legacy === undefined || statusData !== undefined && historyData !== undefined ? undefined : stateSchema.parse(legacy);
+    const history = historyData === undefined ? previous?.trips ?? [] : historySchema.parse(historyData).trips;
+    if (statusData === undefined) return { current: completedTripIsCurrent(previous?.current, history) ? undefined : previous?.current, trips: history };
+    const status = statusSchema.parse(statusData);
+    const current = status.traveling
+      ? tripSchema.parse({ destination: status.destination, departedAt: status.departedAt, day: status.day, events: status.events, mood: status.mood, budget: status.budget })
+      : undefined;
+    return stateSchema.parse({ current: completedTripIsCurrent(current, history) ? undefined : current, trips: history });
   }
   async change(action: "go" | "event" | "advance" | "mood" | "home", text?: string): Promise<TravelState> {
     if (["go", "event", "mood"].includes(action) && (!text?.trim() || text.length > 2000)) throw new Error("Provide 1–2000 characters.");
@@ -47,11 +56,13 @@ export class TravelStorage {
         }
       }
       stateSchema.parse(state);
-      const temporary = path.join(this.directory, `.state-${randomUUID()}.tmp`);
-      try {
-        await fs.writeFile(temporary, JSON.stringify(state, null, 2), { mode: 0o600, flag: "wx" });
-        await fs.rename(temporary, path.join(this.directory, "state.json"));
-      } finally { await fs.rm(temporary, { force: true }); }
+      const current = state.current;
+      await writeJsonAtomic(path.join(this.directory, "history.json"), { trips: state.trips });
+      await writeJsonAtomic(path.join(this.directory, "status.json"), current ? {
+        traveling: true, destination: current.destination, departedAt: current.departedAt, day: current.day,
+        events: current.events, mood: current.mood, budget: current.budget
+      } : { traveling: false, destination: null, departedAt: null, day: 0, events: [], mood: "neutral", budget: 1000 });
+      await fs.rm(path.join(this.directory, "state.json"), { force: true });
       return state;
     });
   }
@@ -68,6 +79,25 @@ export class TravelStorage {
     try { return await fs.readFile(file, "utf8"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   }
+}
+
+function completedTripIsCurrent(current: TravelState["current"], trips: TravelState["trips"]): boolean {
+  return current !== undefined && trips.some(trip => trip.destination === current.destination
+    && trip.departedAt === current.departedAt && trip.day === current.day && trip.mood === current.mood
+    && trip.budget === current.budget && JSON.stringify(trip.events) === JSON.stringify(current.events));
+}
+
+async function readOptionalJson(file: string): Promise<unknown | undefined> {
+  try { return JSON.parse(await fs.readFile(file, "utf8")) as unknown; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+}
+
+async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, JSON.stringify(value, null, 2), { mode: 0o600, flag: "wx" });
+    await fs.rename(temporary, file);
+  } finally { await fs.rm(temporary, { force: true }); }
 }
 
 export function travelPrompt(state: TravelState, now = new Date()): string {

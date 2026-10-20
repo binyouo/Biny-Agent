@@ -9,6 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createFileConfigStore, type AgentConfigStore } from "../config/store.js";
 import type { AgentConfig } from "../config/schema.js";
 import { AgentSession, type AgentAttachment } from "../agent/AgentSession.js";
+import type { AgentModel } from "../agent/core/types.js";
 import type { AgentTurnOutcome, AgentPermissionRequest, AgentPermissionResult } from "../agent/types.js";
 import { ModelManager } from "../llm/ModelManager.js";
 import type { ToolModelSelectionState } from "../llm/toolModelRequest.js";
@@ -69,13 +70,14 @@ import { CapabilityStore } from "./CapabilityStore.js";
 import { RuntimeHostResourceScope, type RuntimeHostResourceRegistry, type RuntimeResourceSnapshot, type RuntimeResourceReadiness } from "./host/resources.js";
 import { listEnabledGlobalPluginPaths, listEnabledProjectPluginPaths } from "../extensions/pluginRegistry.js";
 import { globalPluginRoot } from "../config/paths.js";
-import { HeartbeatScheduler } from "../agent/context/heartbeat.js";
+import { heartbeatTaskReviewPrompt, HeartbeatNotificationDeduper, HeartbeatScheduler, isHeartbeatQuietOutput, type HeartbeatTaskReviewItem } from "../agent/context/heartbeat.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../tools/browser.js";
 import { attachDesktopComputerMcp, desktopComputerMcpName } from "../computer/desktopMcp.js";
 import { createComputerMcpLease } from "../computer/mcpLease.js";
 import { createWebFetchTool } from "../tools/web/fetch.js";
 import { createWebSearchTool } from "../tools/web/search.js";
 import { ToolExecutionCoordinator } from "../agent/toolExecutionCoordinator.js";
+import { sendTelegramOwnerNotification } from "../channels/telegram.js";
 import type { AgentSessionEvent, AgentToolEvent } from "../agent/types.js";
 import {
   isTaskVerificationEvidence,
@@ -104,6 +106,7 @@ export interface CommandRuntime {
   taskRuns: DurableTaskRunStore;
   automationStore: AutomationStore;
   heartbeat: HeartbeatScheduler;
+  resolveToolModelForRun?(): AgentModel | undefined;
   graphs: GoalGraphStore;
   sessionGoals: SessionGoalStore;
   capabilities: CapabilityStore;
@@ -111,6 +114,7 @@ export interface CommandRuntime {
   taskCommunication?: TaskCommunication;
   userInput?: UserInputRequests;
   setUserInputRun?(run?: { sessionId: string; runId: string }): void;
+  setOwnerNotificationSink?(sink: ((notification: string) => Promise<void>) | undefined): void;
   extensionReport(section?: ExtensionSection): string;
   /** 扩展实时状态的快照；`/status` 等命令的卡片和文本报告共用。 */
   extensionStatus(): ExtensionStatus;
@@ -220,7 +224,7 @@ export interface CommandRuntimeOptions {
 }
 
 type CommandRuntimeStartupCleanup = Partial<Record<
-  "background" | "subagents" | "agent" | "processes" | "recorder" | "resources"
+  "background" | "subagents" | "heartbeatAgent" | "heartbeatCommunication" | "agent" | "processes" | "recorder" | "resources"
   | "automation" | "graphs" | "sessionGoals" | "capabilities" | "communication" | "taskRuns" | "authority",
   () => unknown
 >>;
@@ -232,7 +236,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   } catch (error) {
     // Stop producers first; all borrowed views must close before their authority.
     // Read each slot when reached: a successful Agent close owns the recorder.
-    for (const owner of ["background", "subagents", "agent", "processes", "recorder", "resources",
+    for (const owner of ["background", "subagents", "heartbeatAgent", "heartbeatCommunication", "agent", "processes", "recorder", "resources",
       "automation", "graphs", "sessionGoals", "capabilities", "communication", "taskRuns", "authority"] as const) {
       try { await cleanup[owner]?.(); }
       catch { /* Cleanup must neither mask the startup error nor skip another owner. */ }
@@ -362,13 +366,14 @@ async function initializeCommandRuntime(
       const lease = { context, controller, goal: agent?.currentSessionGoalRequest(), supervision: supervisionRun, actions: new Set<string>() };
       commandScopes.set(token, lease);
       return {
-        env: { BINY_AGENT_SESSION_ID: agent?.getInfo().sessionId ?? recorder.sessionId, BINY_AGENT_CONTEXT: token },
+        env: { BINY_AGENT_SESSION_ID: context.sessionId ?? agent?.getInfo().sessionId ?? recorder.sessionId, BINY_AGENT_CONTEXT: token },
         resultMetadata: () => ({ goalControlOnly: isGoalControlCommand(args.command) && lease.actions.size > 0 && [...lease.actions].every(action => action === "GoalGet" || action === "GoalUpdate") ? true : undefined }),
         dispose: () => { commandScopes.delete(token); controller.abort(new Error("Foreground command has ended.")); }
       };
-    }
+    },
+    async () => (await configStore.load(workspaceRoot)).agent.rtkEnabled
   );
-  const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerLaunch", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction", "ComputerSequence"];
+  const browserToolNames = ["BrowserOpen", "BrowserListEnvironments", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerLaunch", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction", "ComputerSequence"];
   let registeredMcpTools: string[] = [];
   let browserAutomationAttached = false;
   const setBrowserAutomation = (endpoint?: BrowserAutomationEndpoint): void => {
@@ -697,11 +702,12 @@ async function initializeCommandRuntime(
     recorder,
     skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
     skillNames: (selection, runId) => loadedSkillNamesForSelection(skillsForRun(runId), selection),
-    extractSkill: async ({ messageId, events, minToolCalls, onNotice }) => await runSkillExtraction({
+    extractSkill: async ({ messageId, events, minToolCalls, onNotice, onAnalyzed }) => await runSkillExtraction({
       messageId,
       events,
       minToolCalls,
       onNotice,
+      onAnalyzed,
       installedSkills: requireSkillBundle(skills).skills,
       model: resolveToolModel(config, providerCredentials),
       refreshSkills: async () => await refreshSkills(true)
@@ -737,18 +743,90 @@ async function initializeCommandRuntime(
   await agent.initialize();
   if (!agent) throw new Error("Failed to initialize Biny agent runtime.");
 
-  const heartbeatAgent = agent;
+  const heartbeatRecorder = new SessionRecorder(persistenceRoot, "heartbeat", undefined, runtimeAuthority.asSink());
+  cleanup.heartbeatAgent = async () => await heartbeatRecorder.close();
+  const heartbeatCommunication = new TaskCommunication(taskRuns, heartbeatRecorder.sessionId);
+  cleanup.heartbeatCommunication = () => heartbeatCommunication.close();
+  const heartbeatToolModel = resolveToolModel(config, providerCredentials);
+  const heartbeatNotificationDeduper = new HeartbeatNotificationDeduper();
+  let ownerNotificationSink: ((notification: string) => Promise<void>) | undefined;
+  const heartbeatModel = heartbeatToolModel ?? modelManager.getModel();
+  const heartbeatAgent = new AgentSession({
+    workspaceRoot,
+    persistenceRoot,
+    configStore,
+    config,
+    model: heartbeatModel,
+    toolRegistry,
+    permissionManager,
+    recorder: heartbeatRecorder,
+    skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
+    skillNames: (selection, runId) => loadedSkillNamesForSelection(skillsForRun(runId), selection),
+    subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
+    skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
+    selectCapabilities: async (input, runId) => await preselectCapabilities({
+      ...input,
+      models: resolveToolModelCandidates(input.config, providerCredentials),
+      tools: toolRegistry.list().filter(isToolModelVisible),
+      skills: skillsForRun(runId).skills,
+      selectionState: selectionStateForConfig(input.config)
+    }),
+    prepareToolDiscovery: async (query, signal) => {
+      const result = await resourceScope.waitForMcpDiscovery({ query, signal });
+      refreshExtensionTools();
+      return { pending: result.pending, timedOut: result.timedOut };
+    },
+    mcpPrompt: () => mcpHost.instructionsPrompt(),
+    todoStore: todos,
+    sessionGoals,
+    taskCommunication: heartbeatCommunication,
+    createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
+    attachmentRoot: projectAttachmentRoot,
+    runtimeEventSink: runtimeAuthority.asSink(),
+    capabilities,
+    pluginLifecycle
+  });
+  cleanup.heartbeatAgent = async () => await heartbeatAgent.close();
+  await heartbeatAgent.initialize();
   const heartbeat = new HeartbeatScheduler({
     configDir: undefined,
     enabled: config.heartbeat.enabled,
     schedule: {
       intervalMinutes: config.heartbeat.intervalMinutes,
       activeHoursStart: config.heartbeat.activeHoursStart,
-      activeHoursEnd: config.heartbeat.activeHoursEnd
+      activeHoursEnd: config.heartbeat.activeHoursEnd,
+      timezone: config.heartbeat.timezone
     },
     run: async (prompt, signal) => {
-      const outcome = await heartbeatAgent.runTask(prompt, { abortSignal: signal, runId: randomUUID(), turnId: randomUUID(), emotionAnalysis: false, source: "heartbeat" });
+      const taskReview = await buildHeartbeatTaskReview(persistenceRoot, recorder.sessionId, sessionGoals, graphs, taskRuns);
+      const heartbeatPrompt = taskReview ? `${prompt}\n\n${taskReview}` : prompt;
+      const diary = /(?:DAILY DIARY TIME|MISSED DIARY CATCH-UP)/u.test(heartbeatPrompt);
+      const primaryModel = modelManager.getModel();
+      const model = diary ? primaryModel : heartbeatToolModel ?? primaryModel;
+      const runWithModel = async (selectedModel: typeof model) => await heartbeatAgent.runTask(heartbeatPrompt, {
+        abortSignal: signal,
+        runId: randomUUID(),
+        turnId: randomUUID(),
+        emotionAnalysis: false,
+        source: "heartbeat",
+        modelOverride: selectedModel
+      });
+      let outcome = await runWithModel(model);
+      const isDifferentModel = model && primaryModel
+        && (model.provider !== primaryModel.provider || model.modelId !== primaryModel.modelId);
+      if (!diary && isDifferentModel && outcome.status === "failed" && outcome.steps === 0) {
+        outcome = await runWithModel(primaryModel);
+      }
       if (outcome.status !== "completed") throw new Error(outcome.error ?? "Heartbeat did not complete.");
+      const heartbeatNotification = isHeartbeatQuietOutput(outcome.output) ? undefined : outcome.notification;
+      if (heartbeatNotification && heartbeatNotificationDeduper.shouldSend(heartbeatNotification)) {
+        try {
+          if (ownerNotificationSink) await ownerNotificationSink(heartbeatNotification);
+          else if (!await sendTelegramOwnerNotification(heartbeatNotification)) throw new Error("Telegram owner notification is not configured.");
+          heartbeatNotificationDeduper.recordDelivered(heartbeatNotification);
+        }
+        catch (error) { console.warn(`[biny] Telegram heartbeat notification failed: ${redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 500)}`); }
+      }
     }
   });
   const backgroundOwner = {
@@ -1275,6 +1353,7 @@ async function initializeCommandRuntime(
     persistenceRoot,
     config,
     agent,
+    resolveToolModelForRun: () => heartbeatToolModel,
     managedProcesses,
     checkpoints,
     mcp: mcpHost,
@@ -1288,6 +1367,7 @@ async function initializeCommandRuntime(
     subagents: subagentTaskManager,
     taskCommunication,
     userInput,
+    setOwnerNotificationSink(sink) { ownerNotificationSink = sink; },
     setUserInputRun(run) {
       userInput.setRun(run);
       toolRegistry.unregister("AskUserQuestion");
@@ -1454,6 +1534,8 @@ async function initializeCommandRuntime(
         if (wasOwner) backgroundOwners.values().next().value?.start();
         await Promise.allSettled([...workerResumeAdmissions.values()].map(pending => pending.promise));
         await subagentTaskManager?.close();
+        await heartbeatAgent?.close();
+        heartbeatCommunication.close();
         await agent.close();
       } finally {
         try {
@@ -1630,6 +1712,92 @@ function taskFailureReason(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const message = (value as { message?: unknown }).message;
   return typeof message === "string" ? message : undefined;
+}
+
+async function buildHeartbeatTaskReview(
+  persistenceRoot: string,
+  currentSessionId: string,
+  sessionGoals: SessionGoalStore,
+  graphs: GoalGraphStore,
+  taskRuns: DurableTaskRunStore
+): Promise<string | undefined> {
+  const goals = sessionGoals.list().filter((goal) => goal.status !== "completed").slice(0, 5);
+  const sessions = new Set([currentSessionId, ...goals.map((goal) => goal.sessionId)]);
+  const todosBySession = new Map<string, string[]>();
+  for (const sessionId of sessions) {
+    const store = new TodoStore(persistenceRoot, sessionId);
+    await store.initialize();
+    const items = store.list().filter((item) => item.status !== "completed")
+      .slice(0, 4).map((item) => `[${item.status}] ${item.content}`);
+    if (items.length) todosBySession.set(sessionId, items);
+  }
+
+  const goalItems: HeartbeatTaskReviewItem[] = goals.map((goal) => ({
+    label: goal.objective,
+    status: goal.status,
+    updatedAt: goal.updatedAt,
+    details: todosBySession.get(goal.sessionId)
+  }));
+  const currentSessionHasGoal = goals.some((goal) => goal.sessionId === currentSessionId);
+  const currentTodos = todosBySession.get(currentSessionId);
+  const currentTodoItem = !currentSessionHasGoal && currentTodos
+    ? { label: "Current session checklist", status: "open", details: currentTodos }
+    : undefined;
+
+  const ongoingGraphs = graphs.listGraphs()
+    .filter((graph) => graph.status !== "completed" && graph.status !== "cancelled")
+    .slice(0, 4);
+  const graphItems: HeartbeatTaskReviewItem[] = [];
+  for (const graph of ongoingGraphs) {
+    const nodes = graph.nodes.filter((node) => node.status !== "completed" && node.status !== "cancelled")
+      .slice(0, 4).map((node) => `[${node.status}] ${node.nodeKey}`);
+    graphItems.push({
+      label: `Plan ${graph.graphId.slice(0, 8)}`,
+      status: graph.status,
+      updatedAt: graph.updatedAt,
+      details: nodes
+    });
+  }
+
+  const now = Date.now();
+  const recentTaskRuns = taskRuns.list({ order: "desc", limit: 100 }).tasks.filter((task) => {
+    if (!isTaskRunTerminal(task.status)) return true;
+    if (task.status === "cancelled" || task.status === "aborted") return false;
+    const updatedAt = Date.parse(task.updatedAt);
+    return Number.isFinite(updatedAt) && now - updatedAt <= 30 * 60_000;
+  }).slice(0, 6);
+  const taskItems: HeartbeatTaskReviewItem[] = [];
+  for (const task of recentTaskRuns) {
+    const ageMs = now - Date.parse(task.createdAt);
+    const definition = typeof task.task === "object" && task.task !== null
+      ? task.task as { prompt?: unknown; name?: unknown }
+      : undefined;
+    const prompt = typeof task.task === "string" ? task.task : definition?.prompt;
+    const name = typeof definition?.name === "string" ? definition.name : undefined;
+    const attempt = task.attempts.at(-1);
+    const artifacts = typeof attempt?.artifacts === "object" && attempt.artifacts !== null
+      ? attempt.artifacts as { output?: unknown }
+      : undefined;
+    const failure = typeof attempt?.failure === "object" && attempt.failure !== null
+      ? attempt.failure as { message?: unknown }
+      : undefined;
+    const details = [
+      attempt ? `attempt: ${attempt.status}` : undefined,
+      typeof artifacts?.output === "string" ? `result: ${redactSecrets(artifacts.output).slice(0, 300)}` : undefined,
+      typeof failure?.message === "string" ? `reason: ${redactSecrets(failure.message).slice(0, 180)}` : undefined,
+      task.status === "running" && ageMs >= 10 * 60_000
+        ? `running for about ${String(Math.floor(ageMs / 60_000))} minutes`
+        : undefined
+    ].filter((detail): detail is string => detail !== undefined);
+    taskItems.push({
+      label: `${name ? `${name}: ` : ""}${typeof prompt === "string" ? prompt : "Background task"}`,
+      status: task.status,
+      updatedAt: task.updatedAt,
+      details
+    });
+  }
+  const items = [...taskItems, ...goalItems, ...(currentTodoItem ? [currentTodoItem] : []), ...graphItems];
+  return heartbeatTaskReviewPrompt(items);
 }
 
 function subagentModelSettings(config: AgentConfig, modelManager: ModelManager, modelAlias?: string): ModelSettings {

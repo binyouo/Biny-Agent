@@ -34,10 +34,10 @@ test("普通模式发现提问工具后经 Host 提问、CLI 回答并落盘；�
       modelCalls++;
       let frames: unknown[];
       if (!body.tools.some((tool) => tool.function?.name === "AskUserQuestion")) {
-        assert.ok(body.tools.some((tool) => tool.function?.name === "exec"), "未预选提问工具时仍可通过脚本精确发现");
+        assert.ok(body.tools.some((tool) => tool.function?.name === "run_script"), "未预选提问工具时仍可通过脚本精确发现");
         assert.ok(!body.tools.some((tool) => tool.function?.name === "ToolSearch"));
         frames = [{ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "discover-question", type: "function", function: {
-          name: "exec", arguments: JSON.stringify({ code: "return await searchTools('AskUserQuestion');" })
+          name: "run_script", arguments: JSON.stringify({ description: "Run fixture workflow", code: "return await searchTools('AskUserQuestion');" })
         } }] }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }];
       } else if (body.messages.at(-1)?.role === "tool" && body.messages.at(-1)?.tool_call_id?.startsWith("question-")) {
         sawAnswer = JSON.stringify(body.messages.at(-1)).includes("下载目录");
