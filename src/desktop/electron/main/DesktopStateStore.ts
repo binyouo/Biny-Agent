@@ -250,7 +250,7 @@ export class DesktopStateStore {
   }
 
   async setThemePreference(theme: DesktopThemePreference): Promise<void> {
-    await this.applySettingsPreferences({ themePreference: theme }, this.state.preferenceRevision);
+    await this.queueSettingsPreferences({ themePreference: theme });
   }
 
   fontPreference(): DesktopFontPreference {
@@ -262,11 +262,11 @@ export class DesktopStateStore {
   }
 
   async setAppearancePreference(preference: AppearancePreference): Promise<void> {
-    await this.applySettingsPreferences({ appearancePreference: preference }, this.state.preferenceRevision);
+    await this.queueSettingsPreferences({ appearancePreference: preference });
   }
 
   async setFontPreference(font: DesktopFontPreference): Promise<void> {
-    await this.applySettingsPreferences({ fontPreference: font }, this.state.preferenceRevision);
+    await this.queueSettingsPreferences({ fontPreference: font });
   }
 
   quickChatSettings(): DesktopQuickChatSettings {
@@ -302,37 +302,41 @@ export class DesktopStateStore {
     patch: DesktopPreferencePatch,
     expectedRevision: number
   ): Promise<DesktopPreferenceSnapshot> {
-    if (this.state.preferenceRevision !== expectedRevision) {
-      throw new DesktopPreferenceRevisionConflictError(expectedRevision, this.state.preferenceRevision);
-    }
-    const themePreference = patch.themePreference ?? this.state.themePreference;
-    const fontPreference = patch.fontPreference === undefined
-      ? this.state.fontPreference
-      : normalizeFontPreference(patch.fontPreference);
-    const appearancePreference = patch.appearancePreference === undefined
-      ? this.state.appearancePreference
-      : appearancePreferenceSchema.parse(patch.appearancePreference) as AppearancePreference;
-    if (themePreference === this.state.themePreference && sameFont(fontPreference, this.state.fontPreference)
-      && JSON.stringify(appearancePreference) === JSON.stringify(this.state.appearancePreference)) {
-      return this.settingsPreferences();
-    }
-    const previous = this.settingsPreferences();
-    this.state.themePreference = themePreference;
-    this.state.fontPreference = { ...fontPreference };
-    this.state.appearancePreference = structuredClone(appearancePreference);
-    this.state.preferenceRevision += 1;
-    try {
-      await this.save();
-      return this.settingsPreferences();
-    } catch (error) {
-      if (this.state.preferenceRevision === previous.revision + 1) {
-        this.state.themePreference = previous.themePreference;
-        this.state.fontPreference = { ...previous.fontPreference };
-        this.state.appearancePreference = structuredClone(previous.appearancePreference);
-        this.state.preferenceRevision = previous.revision;
+    return await this.queueSettingsPreferences(patch, expectedRevision);
+  }
+
+  private queueSettingsPreferences(
+    patch: DesktopPreferencePatch,
+    expectedRevision?: number
+  ): Promise<DesktopPreferenceSnapshot> {
+    const capturedPatch = structuredClone(patch);
+    // Preserve invocation order for ordinary fields without exposing tentative preferences.
+    const snapshot = structuredClone(this.state);
+    return this.enqueueWrite(async () => {
+      const previous = this.settingsPreferences();
+      if (expectedRevision !== undefined && previous.revision !== expectedRevision) {
+        throw new DesktopPreferenceRevisionConflictError(expectedRevision, previous.revision);
       }
-      throw error;
-    }
+      const themePreference = capturedPatch.themePreference ?? previous.themePreference;
+      const fontPreference = capturedPatch.fontPreference === undefined
+        ? previous.fontPreference
+        : normalizeFontPreference(capturedPatch.fontPreference);
+      const appearancePreference = capturedPatch.appearancePreference === undefined
+        ? previous.appearancePreference
+        : appearancePreferenceSchema.parse(capturedPatch.appearancePreference) as AppearancePreference;
+      if (themePreference === previous.themePreference && sameFont(fontPreference, previous.fontPreference)
+        && JSON.stringify(appearancePreference) === JSON.stringify(previous.appearancePreference)) {
+        return previous;
+      }
+      const preferenceRevision = previous.revision + 1;
+      await this.writeSnapshot({ ...snapshot, themePreference, fontPreference, appearancePreference, preferenceRevision });
+      // Only commit our fields: ordinary mutations may have arrived during the I/O.
+      this.state.themePreference = themePreference;
+      this.state.fontPreference = { ...fontPreference };
+      this.state.appearancePreference = structuredClone(appearancePreference);
+      this.state.preferenceRevision = preferenceRevision;
+      return this.settingsPreferences();
+    });
   }
 
   /** 补偿也推进 revision，避免回滚后旧 Renderer 草稿重新变成可提交状态。 */
@@ -361,15 +365,25 @@ export class DesktopStateStore {
   }
 
   private save(): Promise<void> {
-    const snapshot = JSON.stringify(this.state, null, 2);
-    const run = this.writeTail.then(async () => {
-      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-      const temporaryPath = `${this.filePath}.tmp`;
-      await fs.writeFile(temporaryPath, `${snapshot}\n`, "utf8");
-      await fs.rename(temporaryPath, this.filePath);
+    const snapshot = structuredClone(this.state);
+    return this.enqueueWrite(async () => {
+      const { revision, ...preferences } = this.settingsPreferences();
+      await this.writeSnapshot({ ...snapshot, ...preferences, preferenceRevision: revision });
     });
-    this.writeTail = run.catch(() => undefined);
+  }
+
+  private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.writeTail.then(operation);
+    this.writeTail = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  private async writeSnapshot(snapshot: PersistedDesktopState): Promise<void> {
+    const serialized = JSON.stringify(snapshot, null, 2);
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    const temporaryPath = `${this.filePath}.tmp`;
+    await fs.writeFile(temporaryPath, `${serialized}\n`, "utf8");
+    await fs.rename(temporaryPath, this.filePath);
   }
 }
 

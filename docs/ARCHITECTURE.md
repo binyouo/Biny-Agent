@@ -55,6 +55,8 @@ Desktop 进入项目或打开历史会话时，在后台准备该项目的 Host�
 | 长期事实与活动记录 | 全局本地 SQLite；向量和检索索引属于派生数据。 |
 | 模型和用户设置 | 全局配置与项目覆盖；凭据正文使用独立存储。 |
 
+桌面主题、字体与外观偏好由 `DesktopStateStore` 串行发布，落盘成功后才更新可见偏好与 revision；失败不消耗 revision，也不会被随后排队的窗口位置或侧栏保存重新带入。设置事务的显式 CAS 在排队执行时校验；普通窗口、侧栏和项目字段仍保留调用时快照及原有内存更新语义。回归入口为 [desktop-state-preference-publication.test.ts](../tests/desktop-state-preference-publication.test.ts)。
+
 列表、搜索和 UI 都是投影。投影错误不直接证明原始历史被删除，UI 显示的耗时也不等于服务商请求耗时。
 
 全局设置默认在 `~/.config/biny/`，按项目分区的运行数据在 `~/.biny/agent/`。具体路径与覆盖规则见 [模型与配置](CONFIGURATION.md)。
