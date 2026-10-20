@@ -322,3 +322,63 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
+
+test("a successful theme publication excludes a later failed window-bounds save", async () => {
+  await withStateFixture(async ({ state, statePath }) => {
+    const before = state.settingsPreferences();
+    await withPublicationGate(statePath, 2, async gate => {
+      // Start both operations before the queue runs. The preference write must
+      // retain its invocation-time non-preference snapshot, even though bounds
+      // are changed in memory before its queued callback begins.
+      const theme = gate.start(state.setThemePreference("dark"));
+      const bounds = gate.start(state.setWindowBounds(changedBounds));
+      await gate.waitForFirstPublication();
+      gate.release();
+      await theme;
+      await assert.rejects(bounds, error => error === gate.failure);
+
+      assert.equal(gate.failureCount(), 1);
+      assert.equal(gate.publicationCount(), 2);
+      assert.equal(state.themePreference(), "dark");
+      assert.equal(state.settingsPreferences().revision, before.revision + 1);
+      assert.deepEqual(state.fontPreference(), before.fontPreference);
+      assert.deepEqual(state.appearancePreference(), before.appearancePreference);
+      // Ordinary setters retain their existing eager in-memory semantics.
+      assert.deepEqual(state.windowBounds(), changedBounds);
+      const restored = new DesktopStateStore(statePath);
+      await restored.load();
+      assert.deepEqual(restored.settingsPreferences(), state.settingsPreferences());
+      assert.deepEqual(restored.windowBounds(), initialBounds,
+        "the earlier successful theme save must not publish a later failed bounds update");
+    });
+  });
+});
+
+test("a successful sidebar publication excludes a later failed window-bounds save", async () => {
+  await withStateFixture(async ({ state, statePath }) => {
+    const before = state.settingsPreferences();
+    await withPublicationGate(statePath, 2, async gate => {
+      // Independent ordinary fields still use invocation-time snapshots. Moving
+      // their snapshot into the queue would publish the later bounds too soon.
+      const sidebar = gate.start(state.setSidebarWidth(320));
+      const bounds = gate.start(state.setWindowBounds(changedBounds));
+      await gate.waitForFirstPublication();
+      gate.release();
+      await sidebar;
+      await assert.rejects(bounds, error => error === gate.failure);
+
+      assert.equal(gate.failureCount(), 1);
+      assert.equal(gate.publicationCount(), 2);
+      assert.equal(state.sidebarWidth(), 320);
+      assert.deepEqual(state.settingsPreferences(), before);
+      // Failure rollback for ordinary setters is not part of this repair.
+      assert.deepEqual(state.windowBounds(), changedBounds);
+      const restored = new DesktopStateStore(statePath);
+      await restored.load();
+      assert.equal(restored.sidebarWidth(), 320);
+      assert.deepEqual(restored.settingsPreferences(), before);
+      assert.deepEqual(restored.windowBounds(), initialBounds,
+        "the earlier successful sidebar save must not publish a later failed bounds update");
+    });
+  });
+});
