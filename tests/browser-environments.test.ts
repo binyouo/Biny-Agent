@@ -281,4 +281,3 @@ test("browser environment navigation keeps explicit CLI targets separate from th
     Reflect.deleteProperty(globalThis, "__environmentNavigationElectron");
   }
 });
-
