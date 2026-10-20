@@ -49,6 +49,7 @@ const syncDebounceMs = 800;
 
 interface EmbeddedTab { view: WebContentsView; state: DesktopBrowserTab; navigation: number; inspection: number; popup?: BrowserWindow }
 interface EmbeddedProject { revision: number; tabs: Map<string, EmbeddedTab>; activeId?: string }
+type BrowserActionTarget = (contents: WebContents) => void;
 
 export class DesktopBrowserService {
   private previewActivity?: (source: { id: string; label: string; projectId?: string; sessionId?: string; capture: () => Promise<import("../../../computer/protocol.js").ComputerImage> }) => void;
@@ -748,17 +749,28 @@ export class DesktopBrowserService {
       const abort = (): void => controller.abort();
       socket.once("close", abort);
       let result: unknown;
+      const previewTarget: { contents?: WebContents } = {};
       try {
         result = method.startsWith("computer_") && this.computerUse ? await this.computerUse(method, args, controller.signal) : await this.enqueueAutomation(() => {
           controller.signal.throwIfAborted();
-          return method === "web_read" ? this.readWebPage(args, controller.signal) : this.executeAutomation(method, args, controller.signal);
+          return method === "web_read" ? this.readWebPage(args, controller.signal) : this.executeAutomation(method, args, controller.signal, contents => { previewTarget.contents = contents; });
         });
-        if (["navigate", "click", "fill", "press"].includes(method) && this.previewActivity) {
+        if (["navigate", "click", "fill", "press"].includes(method) && this.previewActivity && previewTarget.contents) {
           try {
-          const contents = await this.ensureContents(); const shown = this.shownBrowser;
-          this.previewActivity({ id: `browser:${contents.id}`, label: contents.getTitle() || "浏览器", projectId: shown?.projectId, sessionId: typeof args.sessionId === "string" ? args.sessionId : undefined,
-            capture: async () => { if (contents.isDestroyed()) throw new Error("browser_preview_closed"); const image = (await contents.capturePage()).resize({ width: 1024 }).toJPEG(50); if (image.byteLength > 1048576) throw new Error("browser_preview_budget_exceeded"); return { mimeType: "image/jpeg", dataBase64: image.toString("base64") }; }
-          });
+            const contents = previewTarget.contents;
+            if (contents.isDestroyed()) throw new Error("browser_preview_closed");
+            const sessionId = typeof args.sessionId === "string" ? args.sessionId : undefined;
+            let projectId = typeof args.projectId === "string" ? args.projectId : undefined;
+            // A session without an explicit project is resolved by the renderer.
+            // CLI requests without either identity may return to the source tab's project.
+            if (projectId === undefined && sessionId === undefined) {
+              for (const [id, group] of this.embeddedProjects) {
+                if ([...group.tabs.values()].some(tab => tab.view.webContents === contents)) { projectId = id; break; }
+              }
+            }
+            this.previewActivity({ id: `browser:${contents.id}`, label: contents.getTitle() || "浏览器", projectId, sessionId,
+              capture: async () => { if (contents.isDestroyed()) throw new Error("browser_preview_closed"); const image = (await contents.capturePage()).resize({ width: 1024 }).toJPEG(50); if (image.byteLength > 1048576) throw new Error("browser_preview_budget_exceeded"); return { mimeType: "image/jpeg", dataBase64: image.toString("base64") }; }
+            });
           } catch (error) { console.error("Browser preview notification failed after completed action", error instanceof Error ? error.name : "Error"); }
         }
       } finally { socket.off("close", abort); }
@@ -882,7 +894,7 @@ export class DesktopBrowserService {
     });
   }
 
-  private async executeAutomation(method: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  private async executeAutomation(method: string, args: Record<string, unknown>, signal?: AbortSignal, onAction?: BrowserActionTarget): Promise<unknown> {
     if (method === "list_environments") return this.browserEnvironments.list().map(({ id, name, color }) => ({ id, name, color }));
     if (method === "navigate") {
       const url = readString(args.url, "url");
@@ -914,13 +926,14 @@ export class DesktopBrowserService {
       }
       // Selection may change through UI IPC while loadURL is pending. Report
       // the page we actually navigated without restoring an older selection.
+      onAction?.(contents);
       return await this.pageState(contents);
     }
     await this.ensureContents();
     if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000));
-    if (method === "click") return await this.click(readString(args.selector, "selector"));
-    if (method === "fill") return await this.fill(readString(args.selector, "selector"), readString(args.value, "value"));
-    if (method === "press") return await this.press(args.selector === undefined ? undefined : readString(args.selector, "selector"), readString(args.key, "key"), signal);
+    if (method === "click") return await this.click(readString(args.selector, "selector"), onAction);
+    if (method === "fill") return await this.fill(readString(args.selector, "selector"), readString(args.value, "value"), onAction);
+    if (method === "press") return await this.press(args.selector === undefined ? undefined : readString(args.selector, "selector"), readString(args.key, "key"), signal, onAction);
     throw new Error(`Unsupported browser automation method: ${method}`);
   }
 
@@ -997,17 +1010,17 @@ export class DesktopBrowserService {
     })()`);
   }
 
-  private async click(selector: string): Promise<unknown> {
+  private async click(selector: string, onAction?: BrowserActionTarget): Promise<unknown> {
     return await this.evaluate(`(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
       if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.');
       element.scrollIntoView({ block: 'center', inline: 'center' });
       element.click();
       return { tag: element.tagName.toLowerCase(), text: element.innerText?.trim().slice(0, 200) || '' };
-    })()`);
+    })()`, undefined, undefined, onAction);
   }
 
-  private async fill(selector: string, value: string): Promise<unknown> {
+  private async fill(selector: string, value: string, onAction?: BrowserActionTarget): Promise<unknown> {
     return await this.evaluate(`(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
       if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.');
@@ -1023,32 +1036,35 @@ export class DesktopBrowserService {
       element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(value)} }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
       return { tag: element.tagName.toLowerCase() };
-    })()`);
+    })()`, undefined, undefined, onAction);
   }
 
-  private async press(selector: string | undefined, key: string, signal?: AbortSignal): Promise<unknown> {
+  private async press(selector: string | undefined, key: string, signal?: AbortSignal, onAction?: BrowserActionTarget): Promise<unknown> {
     if (selector) await this.evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.'); element.focus(); })()`, signal);
     await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined }, signal);
-    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key });
+    // Preview the last input target, not a later pageState read after selection changes.
+    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key }, undefined, undefined, onAction);
     return await this.pageState();
   }
 
-  private async evaluate(expression: string, signal?: AbortSignal, contents?: WebContents): Promise<unknown> {
-    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal, contents));
+  private async evaluate(expression: string, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
+    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal, contents, onAction));
     const exception = asRecord(result.exceptionDetails);
     if (Object.keys(exception).length) throw new Error(typeof exception.text === "string" ? exception.text : "Browser page evaluation failed.");
     const remote = asRecord(result.result);
     return remote.value;
   }
 
-  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal, owner?: WebContents): Promise<unknown> {
+  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal, owner?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
     const contents = await this.ensureContents(owner);
     signal?.throwIfAborted();
     if (contents.isDestroyed()) throw new Error("Browser action page is closed.");
     const debuggerSession = contents.debugger;
     if (!debuggerSession.isAttached()) debuggerSession.attach("1.3");
     signal?.throwIfAborted();
-    return await debuggerSession.sendCommand(method, params);
+    const result = await debuggerSession.sendCommand(method, params);
+    onAction?.(contents);
+    return result;
   }
 
   private async readSessionCookies(): Promise<StoredCookie[]> {

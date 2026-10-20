@@ -83,7 +83,9 @@ biny browser press <browser-id> <tab-id> Enter --json
 
 Agent 使用 `BrowserOpen` 打开页面，通过 `BrowserReadDom` 读取文字和 selector，再使用点击、输入与按键工具。每次交互后重新读取确认。
 
-`BrowserOpen` 返回本次实际导航页面的 URL 与标题。等待加载期间切换标签或环境，不会把返回结果改成新选中的页面，也不会在加载结束后把后续操作切回旧页面；新的独立请求仍使用最新选择。导航页面关闭或加载失败时报告失败，不借其他标签代替结果。这个约束固定页面身份，不固定同一标签内的文档版本，也不改变监督预览的归属。实现与回归入口为 `DesktopBrowserService.executeAutomation` 和 `tests/browser-environments.test.ts`。
+`BrowserOpen` 返回本次实际导航页面的 URL 与标题。等待加载期间切换标签或环境，不会把返回结果改成新选中的页面，也不会在加载结束后把后续操作切回旧页面；新的独立请求仍使用最新选择。导航页面关闭或加载失败时报告失败，不借其他标签代替结果。这个约束固定页面身份，不固定同一标签内的文档版本。实现与回归入口为 `DesktopBrowserService.executeAutomation` 和 `tests/browser-environments.test.ts`。
+
+操作成功后加入监督预览的来源保留最近一次完成的导航或输入所用页面，不随等待期间选择的新标签改换来源；“返回聊天”保留请求原有的项目和会话。预览失败不改写已完成的操作结果，来源页面关闭后也不以其他页面代替。实时画面不是动作完成时的历史截图，不能证明网页业务已经提交。
 
 内置 `Browser*` 使用同一个浏览器界面中的多个隔离环境，不提供独立浏览器窗口池，也不具备 Chrome Relay 的全部文件、截图和高级定位能力。Desktop 浏览器执行端不可用时，不能把网页搜索或 Chrome Relay 声称为同一个页面。
 
