@@ -8,6 +8,7 @@ import { createUnifiedDiff } from "../../utils/diff.js";
 import { resolveWorkspacePath, toWorkspaceRelative } from "../../workspace/resolvePath.js";
 import { ToolAccesses } from "../access.js";
 import type { Tool, ToolContext } from "../types.js";
+import { zodToolInput } from "../zodToolInput.js";
 import type { FileChangeResult } from "./fileChange.js";
 import { applyHashlineEdits, type HashlineEdit } from "./hashline.js";
 import { applyStringEdit } from "./stringEdit.js";
@@ -29,18 +30,18 @@ export type EditArgs =
   | { operation: "move"; path: string; to: string };
 
 const hashlineEditsSchema = z.array(z.discriminatedUnion("op", [
-  z.object({ op: z.literal("replace"), pos: z.string().min(1), end: z.string().min(1).optional(), lines: z.array(z.string()) }),
-  z.object({ op: z.literal("append"), pos: z.string().min(1).optional(), lines: z.array(z.string()) }),
-  z.object({ op: z.literal("prepend"), pos: z.string().min(1).optional(), lines: z.array(z.string()) })
+  z.object({ op: z.literal("replace"), pos: z.string().min(1).describe("LINE#HASH anchor from Read"), end: z.string().min(1).describe("Inclusive end anchor for replace").optional(), lines: z.array(z.string()) }).strict(),
+  z.object({ op: z.literal("append"), pos: z.string().min(1).describe("LINE#HASH anchor from Read").optional(), lines: z.array(z.string()) }).strict(),
+  z.object({ op: z.literal("prepend"), pos: z.string().min(1).describe("LINE#HASH anchor from Read").optional(), lines: z.array(z.string()) }).strict()
 ])).min(1);
 
 const hashlineEditArgsSchema = z.discriminatedUnion("operation", [
-  z.object({ operation: z.literal("update"), path: z.string().min(1), edits: hashlineEditsSchema }),
-  z.object({ operation: z.literal("delete"), path: z.string().min(1) }),
-  z.object({ operation: z.literal("move"), path: z.string().min(1), to: z.string().min(1) })
+  z.object({ operation: z.literal("update"), path: z.string().min(1), edits: hashlineEditsSchema }).strict(),
+  z.object({ operation: z.literal("delete"), path: z.string().min(1) }).strict(),
+  z.object({ operation: z.literal("move"), path: z.string().min(1), to: z.string().min(1) }).strict()
 ]);
 const stringEditArgsSchema = z.union([
-  z.object({ operation: z.literal("update").default("update"), path: z.string().min(1), old_string: z.string().min(1), new_string: z.string().default(""), replace_all: z.boolean().default(false) }).strict(),
+  z.object({ operation: z.literal("update").default("update"), path: z.string().min(1), old_string: z.string().min(1), new_string: z.string().default(""), replace_all: z.boolean().default(false).describe("Replace every occurrence; defaults to false") }).strict(),
   z.object({ operation: z.literal("delete"), path: z.string().min(1) }).strict(),
   z.object({ operation: z.literal("move"), path: z.string().min(1), to: z.string().min(1) }).strict()
 ]);
@@ -56,45 +57,7 @@ export function createEditFileTool(context: ToolContext, hashline = false): Tool
       hashline ? "Group independent changes to one file into one Edit call; use lines arrays" : "Use replace_all only when every matching occurrence should change",
       "Use operation delete to remove a file, operation move to rename it, and Write only for new files or intentional full rewrites"
     ],
-    parameters: hashline ? {
-      type: "object",
-      properties: {
-        operation: { type: "string", enum: ["update", "delete", "move"], description: "File operation to perform." },
-        path: { type: "string", minLength: 1, description: "Workspace-relative source file path." },
-        to: { type: "string", minLength: 1, description: "Workspace-relative destination path for move." },
-        edits: {
-          type: "array",
-          minItems: 1,
-          description: "Atomic Hashline operations for update.",
-          items: {
-            type: "object",
-            properties: {
-              op: { type: "string", enum: ["replace", "append", "prepend"] },
-              pos: { type: "string", minLength: 1, description: "LINE#HASH anchor from Read." },
-              end: { type: "string", minLength: 1, description: "Inclusive end anchor for replace." },
-              lines: { type: "array", items: { type: "string" }, description: "Replacement lines without newline characters." }
-            },
-            required: ["op", "lines"],
-            additionalProperties: false
-          }
-        }
-      },
-      required: ["operation", "path"],
-      additionalProperties: false
-    } : {
-      type: "object",
-      properties: {
-        path: { type: "string", minLength: 1 },
-        old_string: { type: "string", minLength: 1 },
-        new_string: { type: "string" },
-        replace_all: { type: "boolean", description: "Replace every occurrence; defaults to false." },
-        operation: { type: "string", enum: ["update", "delete", "move"], description: "Defaults to update." },
-        to: { type: "string" }
-      },
-      required: ["path"],
-      additionalProperties: false
-    },
-    schema: hashline ? hashlineEditArgsSchema : stringEditArgsSchema,
+    ...zodToolInput<EditArgs>(hashline ? hashlineEditArgsSchema : stringEditArgsSchema),
     capability: "filesystem.edit",
     risk: "write",
     async resolveExecution(args) {

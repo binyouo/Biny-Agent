@@ -1,0 +1,11 @@
+{
+  "version": "0.29.0",
+  "repository": "rtk-ai/rtk",
+  "assets": {
+    "darwin-arm64": { "file": "rtk-aarch64-apple-darwin.tar.gz", "sha256": "37aa73c09f04436032b4c6ef18e486ef31e5d90cba34b19d2c2ba36e72fa4072" },
+    "darwin-x64": { "file": "rtk-x86_64-apple-darwin.tar.gz", "sha256": "600a50b63e53eff3c8bc1fbde0099b70b1bc7518baba50ebd85ff8cb25634ba6" },
+    "linux-arm64": { "file": "rtk-aarch64-unknown-linux-gnu.tar.gz", "sha256": "11d9fd49b68dd6d05be953428482059bca69b7c0270a4fdd97e5ec1e4773a9db" },
+    "linux-x64": { "file": "rtk-x86_64-unknown-linux-musl.tar.gz", "sha256": "17151422df8928eece4a66254b974d6a72658820be00cc1a18aa87cb77cffc68" },
+    "win32-x64": { "file": "rtk-x86_64-pc-windows-msvc.zip", "sha256": "aba4a5add0b1cd04dccf6ff1832ab650fb747658e6009f72e1d8af0dbd35fb9f" }
+  }
+}

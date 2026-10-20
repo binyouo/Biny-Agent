@@ -1152,6 +1152,16 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
       return {
         fileChange,
         fileChangeIsResult: contract !== undefined,
+        interpretResult: contract ? undefined : (result, { script }) => {
+          const projected = normalizeMcpResult(result);
+          const failed = isRecord(result) && result.isError === true;
+          return {
+            result: script ? result : projected,
+            errorMessage: failed
+              ? isRecord(projected) && typeof projected.error === "string" ? projected.error : "MCP tool returned isError."
+              : undefined
+          };
+        },
         retrySafety: contract ? "unsafe" : undefined,
         accesses: ToolAccesses.all(),
         display: { kind: "generic", summary: `MCP ${serverName}/${definition.name}`, detail: args },
@@ -1224,7 +1234,8 @@ function normalizeMcpResult(result: unknown): unknown {
       if (part.type === "text" && typeof part.text === "string") return { type: "text", text: part.text };
       if (part.type === "image" || part.type === "audio") {
         const data = typeof part.data === "string" ? part.data : "";
-        return { type: part.type, mimeType: part.mimeType, bytes: Math.floor(data.length * 3 / 4), note: "binary content omitted" };
+        const bytes = typeof part.data === "string" ? Math.floor(data.length * 3 / 4) : part.bytes;
+        return { type: part.type, mimeType: part.mimeType, bytes, note: "binary content omitted" };
       }
       if (part.type === "resource_link") return { type: "resource_link", uri: part.uri, name: part.name, description: part.description };
       if (part.type === "resource" && isRecord(part.resource)) {

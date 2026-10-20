@@ -42,7 +42,7 @@ const hostReadQueryRegistrations = new WeakMap<RegisteredTool, {
   schema: Tool["schema"];
 }>();
 const reviewedBuiltinReads = new Set(["Read", "Glob", "Grep",
-  "WebSearch", "WebFetch", "BrowserReadDom", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
+  "WebSearch", "WebFetch", "BrowserReadDom", "BrowserListEnvironments", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
   "WidgetReadme", "read_checkpoint_evidence"]);
 
 /** Shared by discovery and execution. Serialized/tool-supplied hints grant no authority. */
@@ -57,7 +57,7 @@ export function isCodeModeReadTool(entry: RegisteredTool): boolean {
 }
 
 export function isCodeModeTool(entry: RegisteredTool): boolean {
-  if (entry.tool.name === "exec") return false;
+  if ((entry.tool.name === "exec" || entry.tool.name === "run_script")) return false;
   if (isCodeModeReadTool(entry)) return true;
   if (entry.source === "builtin" && ["Write", "Edit", "apply_patch", "Bash", "KillShell"].includes(entry.tool.name)) return true;
   return entry.source === "mcp" && !codeModeNestedToolNames.has(entry.tool.name);
@@ -172,7 +172,8 @@ export function createToolRegistry(
   getToolSearchModels?: () => readonly ToolModelCandidate[],
   browser?: BrowserAutomationEndpoint,
   getToolModelSelectionState?: () => ToolModelSelectionState,
-  executionScope?: import("./shell/runCommand.js").RunCommandToolOptions["executionScope"]
+  executionScope?: import("./shell/runCommand.js").RunCommandToolOptions["executionScope"],
+  rtkEnabled?: () => boolean | Promise<boolean>
 ): ToolRegistry {
   // 这里集中注册内置工具；外部扩展在 CommandRuntime 装配完成后追加到同一 registry。
   const registry = new ToolRegistry();
@@ -185,7 +186,7 @@ export function createToolRegistry(
   registry.register(createSearchFilesTool(context));
   registry.register(createWriteFileTool(context));
   registry.register(createEditFileTool(context));
-  registry.register(createRunCommandTool(context, sandboxConfig, { controlledComputerUse: true, executionScope }, managedProcessService));
+  registry.register(createRunCommandTool(context, sandboxConfig, { controlledComputerUse: true, executionScope, rtkEnabled }, managedProcessService));
   if (managedProcessService) {
     registry.registerHostReadQuery(createBashOutputTool(managedProcessService), "BashOutput");
     registry.register(createKillShellTool(managedProcessService));

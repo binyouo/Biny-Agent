@@ -36,7 +36,7 @@ export interface BrowserDomSnapshot {
   interactive: Array<{ tag: string; role?: string; name?: string; selector: string }>;
 }
 
-interface BrowserNavigateArgs { url: string }
+interface BrowserNavigateArgs { url: string; environment?: string }
 interface BrowserReadDomArgs { maxCharacters?: number }
 interface BrowserSelectorArgs { selector: string }
 interface BrowserFillArgs { selector: string; value: string }
@@ -45,6 +45,7 @@ interface BrowserPressArgs { selector?: string; key: string }
 export function createBrowserTools(endpoint: BrowserAutomationEndpoint): Tool[] {
   return [
     createBrowserNavigateTool(endpoint),
+    createBrowserListEnvironmentsTool(endpoint),
     createBrowserReadDomTool(endpoint),
     createBrowserClickTool(endpoint),
     createBrowserFillTool(endpoint),
@@ -63,15 +64,34 @@ function createBrowserNavigateTool(endpoint: BrowserAutomationEndpoint): Tool<Br
     ],
     parameters: {
       type: "object",
-      properties: { url: { type: "string", minLength: 1, maxLength: 4_096, description: "Absolute HTTP or HTTPS URL." } },
+      properties: {
+        url: { type: "string", minLength: 1, maxLength: 4_096, description: "Absolute HTTP or HTTPS URL." },
+        environment: { type: "string", minLength: 1, maxLength: 60, description: "Existing browser environment name, only when the user names one." }
+      },
       required: ["url"],
       additionalProperties: false
     },
-    schema: z.object({ url: z.string().url().max(4_096) }),
+    schema: z.object({ url: z.string().url().max(4_096), environment: z.string().trim().min(1).max(60).optional() }),
     capability: "browser.navigate",
     risk: "read",
     resolveExecution(args) {
       return browserExecution(endpoint, "navigate", args, `Navigate browser to ${args.url}`);
+    }
+  };
+}
+
+function createBrowserListEnvironmentsTool(endpoint: BrowserAutomationEndpoint): Tool {
+  return {
+    name: "BrowserListEnvironments",
+    description: "List existing Biny browser environments and their separate login states. Does not create or delete environments.",
+    promptSnippet: "List available browser login environments",
+    promptGuidelines: ["Only select a named environment when the user identifies the account or environment needed"],
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    schema: z.object({}),
+    capability: "browser.read_dom",
+    risk: "read",
+    resolveExecution() {
+      return browserExecution(endpoint, "list_environments", {}, "List browser environments");
     }
   };
 }
@@ -181,7 +201,7 @@ function browserExecution(
     description,
     approvalRule: `browser_${method}`,
     async execute({ signal, sessionId }: ToolExecutionContext) {
-      return await requestBrowser(endpoint, method, { ...detail, sessionId }, signal);
+      return await requestBrowser(endpoint, method, { ...detail, projectId: endpoint.projectId, sessionId }, signal);
     }
   };
 }

@@ -5,7 +5,7 @@ import type { AgentTool, AgentToolResult } from "./core/types.js";
 /** Names are a VM surface bound; host registration provenance is checked separately. */
 export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep",
   "TaskStatus", "BashOutput", "read_skill_resource", "Write", "Edit", "apply_patch", "Bash", "KillShell",
-  "WebSearch", "WebFetch", "BrowserReadDom", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
+  "WebSearch", "WebFetch", "BrowserReadDom", "BrowserListEnvironments", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
   "WidgetReadme", "read_checkpoint_evidence"]);
 
 export const codeModePolicy = Object.freeze({
@@ -18,7 +18,7 @@ export const codeModePolicy = Object.freeze({
   memoryLimitBytes: 64 * 1024 * 1024,
   maxStackSizeBytes: 2 * 1024 * 1024,
   maxResultBytes: 1024 * 1024,
-  maxConsoleOutputBytes: 1,
+  maxConsoleOutputBytes: 1024 * 1024,
   maxSourceBytes: 64 * 1024,
   maxToolInputBytes: 1024 * 1024,
   maxToolOutputBytes: 1024 * 1024,
@@ -28,9 +28,12 @@ export const codeModePolicy = Object.freeze({
 export type CodeModeLimits = Readonly<{ [Limit in keyof typeof codeModePolicy]: number }>;
 const hostDrainTimeoutMs = 500;
 
+class RecoverableCodeModeToolError extends CodeModeToolError {}
+
 export interface CodeModeResult {
   ok: boolean;
   value?: unknown;
+  stdout?: string;
   error?: string;
   outcomeUnknown?: boolean;
   childCalls: Array<{ tool: string; toolCallId: string }>;
@@ -56,8 +59,22 @@ const sourcePrefix = `return await (async (__binyHostTools)=>{
 const tools=new Proxy(Object.create(null),{get(_target,name){return args=>__binyHostTools.${discoveryBridgeNames.invoke}({name:String(name),args});}});
 const searchTools=(query,options={})=>__binyHostTools.${discoveryBridgeNames.search}({query,...options});
 const describeTool=(name)=>__binyHostTools.${discoveryBridgeNames.tool}({name});
-const describeNamespace=(name)=>__binyHostTools.${discoveryBridgeNames.namespace}({name});\n`;
-const sourceSuffix = "\n})(tools);";
+const describeNamespace=(name)=>__binyHostTools.${discoveryBridgeNames.namespace}({name});
+const sh=async(command,options={})=>{
+  if(typeof command!=="string"||!command)throw new Error("sh requires a command string");
+  if(Object.keys(options).some(key=>!["cwd","timeoutMs"].includes(key)))throw new Error("sh supports cwd and timeoutMs only");
+  const result=await tools.Bash({command,...options});
+  if(result.exitCode!==0)throw new Error("Shell exited with "+result.exitCode+": "+String(result.stderr||result.stdout||"").slice(0,2000));
+  return result.stdout;
+};
+const fetch=async(url,options={})=>{
+  if(options.method&&options.method!=="GET"||Object.keys(options).some(key=>key!=="method"))throw new Error("fetch supports GET only; use sh with curl for other HTTP requests under Shell permissions");
+  const result=await tools.WebFetch({url:String(url),raw:true,length:200000});
+  if(result.hasMore||result.truncatedAtByteLimit)throw new Error("Response exceeds fetch limit; use tools.WebFetch with offset/length to page the response");
+  return {ok:result.status>=200&&result.status<300,status:result.status,url:result.finalUrl,text:async()=>result.content,json:async()=>JSON.parse(result.content)};
+};
+const __binyValue=await(async()=>{\n`;
+const sourceSuffix = "\n})();return {value:__binyValue??null};})(tools);";
 
 /**
  * Only the QuickJS worker receives source. Host tools remain behind the caller's
@@ -66,6 +83,9 @@ const sourceSuffix = "\n})(tools);";
  */
 export async function executeCodeModeCell(input: {
   code: string;
+  language?: "javascript" | "typescript";
+  timeoutMs?: number;
+  archiveStdout?: (stdout: string) => Promise<string>;
   parentToolCallId: string;
   /** Existing callers supply reviewed built-ins here. */
   tools: readonly AgentTool[];
@@ -78,22 +98,25 @@ export async function executeCodeModeCell(input: {
   /** Semantic matching reuses the caller's tool discovery implementation. */
   searchTools?: CodeModeSearch;
   signal?: AbortSignal;
+  onToolResult?: (result: AgentToolResult) => void;
   isCurrent: (name: string, tool: AgentTool) => boolean;
   onUnsettled?: (operations: readonly { toolCallId: string; settlement: Promise<unknown> }[]) => void;
   /** Tests may tighten, but never widen, the complete production policy. */
   executionPolicy?: CodeModeLimits;
 }): Promise<CodeModeResult> {
-  const policy = input.executionPolicy ?? codeModePolicy;
+  const policy = { ...(input.executionPolicy ?? codeModePolicy) };
+  if (input.timeoutMs !== undefined && (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > codeModePolicy.maxCellDurationMs)) throw new Error("Invalid script timeout_ms.");
   for (const key of Object.keys(codeModePolicy) as Array<keyof typeof codeModePolicy>) {
     if (!Number.isSafeInteger(policy[key]) || policy[key] < 1 || policy[key] > codeModePolicy[key]) {
       throw new Error(`Invalid Code Mode limit: ${key}`);
     }
   }
+  policy.maxCellDurationMs = Math.min(policy.maxCellDurationMs, input.timeoutMs ?? 120_000);
   // Stock packages ignore executionTimeoutMs. A larger wall deadline is safe only
   // when both patched layers explicitly advertise the synchronous VM budget.
-  const runner = experimental_runCodeMode as typeof experimental_runCodeMode & { executionTimeoutBudgetVersion?: number };
-  if (runner.executionTimeoutBudgetVersion !== 1) {
-    return { ok: false, error: "Code Mode execution-time protection is unavailable. Install the pinned runtime patches before using Code Mode.", childCalls: [] };
+  const runner = experimental_runCodeMode as typeof experimental_runCodeMode & { executionTimeoutBudgetVersion?: number; consoleOutputVersion?: number };
+  if (runner.executionTimeoutBudgetVersion !== 1 || runner.consoleOutputVersion !== 1) {
+    return { ok: false, error: "Code Mode execution-time protection or streaming console support is unavailable. Install the pinned runtime patches before using Code Mode.", childCalls: [] };
   }
   const active = new Map([...input.tools.filter((entry) => codeModeNestedToolNames.has(entry.name)), ...(input.admittedTools ?? [])]
     .map((entry) => [entry.name, entry] as const));
@@ -163,8 +186,9 @@ export async function executeCodeModeCell(input: {
           return value;
         } catch (error) {
           if (closed) return { status: "unknown", late: true };
-          fatalError ??= error instanceof Error ? error.message : String(error);
-          throw new CodeModeToolError(fatalError, { toolName: name });
+          const message = error instanceof Error ? error.message : String(error);
+          if (!(error instanceof RecoverableCodeModeToolError) || signal.aborted) fatalError ??= message;
+          throw new CodeModeToolError(fatalError ?? message, { toolName: name });
         } finally {
           clearTimeout(hostTimer);
           hostTimers.delete(hostTimer);
@@ -173,6 +197,8 @@ export async function executeCodeModeCell(input: {
       }
     });
   };
+  let stdout = "";
+  let stdoutTruncated = false;
   addBridge(discoveryBridgeNames.invoke, async (args, signal, _id, setOperationId) => {
     const name = discoveryString(args.name, "tool name", 500);
     if ((Object.values(discoveryBridgeNames) as string[]).includes(name)) throw new Error(`Reserved Code Mode tool name: ${name}`);
@@ -188,7 +214,11 @@ export async function executeCodeModeCell(input: {
     childCalls.push({ tool: name, toolCallId });
     setOperationId(toolCallId);
     const result: AgentToolResult = await entry.execute(toolCallId, args.args as Record<string, unknown>, signal);
-    if (result.isError) throw new CodeModeToolError(`Nested ${name} failed: ${nestedToolFailurePreview(result.details)}`, { toolName: name });
+    input.onToolResult?.(result);
+    if (result.isError) {
+      const ErrorType = result.recoverableError === true ? RecoverableCodeModeToolError : CodeModeToolError;
+      throw new ErrorType(`Nested ${name} failed: ${nestedToolFailurePreview(result.details)}`, { toolName: name });
+    }
     return result.details ?? result.content;
   });
   addBridge(discoveryBridgeNames.search, async (args, signal, id) => {
@@ -209,7 +239,7 @@ export async function executeCodeModeCell(input: {
       const entry = byName.get(name);
       if (!entry || unique.has(name) || !input.isCurrent(name, entry) || unique.size >= limit) return [];
       unique.add(name);
-      return [{ ...toolSummary(entry), invocation: active.has(name) ? undefined : "direct" }];
+      return [describeDiscovered(entry)];
     });
   });
   addBridge(discoveryBridgeNames.tool, async (args, signal) => {
@@ -232,21 +262,37 @@ export async function executeCodeModeCell(input: {
   let result: CodeModeResult;
   try {
     if (Buffer.byteLength(input.code) > policy.maxSourceBytes) throw new Error("Code Mode source exceeds its byte limit.");
+    let code = input.code;
+    if (input.language === "typescript") {
+      const { default: ts } = await import("typescript");
+      const compiled = ts.transpileModule(`async function __binyTS(){\n${input.code}\n}`, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }, reportDiagnostics: true
+      });
+      const error = compiled.diagnostics?.find(item => item.category === ts.DiagnosticCategory.Error);
+      if (error) throw new Error(ts.flattenDiagnosticMessageText(error.messageText, "\n"));
+      code = compiled.outputText + "\nreturn await __binyTS();";
+    }
+    if (Buffer.byteLength(code) > policy.maxSourceBytes * 4) throw new Error("Compiled TypeScript exceeds its byte limit.");
     const value = await experimental_runCodeMode({
-      js: sourcePrefix + input.code + sourceSuffix,
+      js: sourcePrefix + code + sourceSuffix,
+      onConsole: (event) => {
+        stdout += event.text;
+        stdoutTruncated ||= event.truncated;
+      },
       tools: toolSet,
       toolExecutionOptions: { toolCallId: input.parentToolCallId, abortSignal: cellAbortSignal },
       options: { executionPolicy: {
         ...sandboxLimits,
         // 固定发现前缀不占用用户代码的源码字节预算。
-        maxSourceBytes: policy.maxSourceBytes + Buffer.byteLength(sourcePrefix + sourceSuffix),
+        maxSourceBytes: Math.max(policy.maxSourceBytes, Buffer.byteLength(code)) + Buffer.byteLength(sourcePrefix + sourceSuffix),
         timeoutMs: wallTimeoutMs,
         executionTimeoutMs: vmTimeoutMs
       } }
     });
+    cellAbortSignal.throwIfAborted();
     result = fatalError !== undefined
       ? { ok: false, error: fatalError, childCalls }
-      : { ok: true, value: value ?? null, childCalls };
+      : { ok: true, value: (value as { value?: unknown } | undefined)?.value ?? null, childCalls };
   } catch (error) {
     result = { ok: false, error: fatalError ?? (error instanceof Error ? error.message : String(error)), childCalls };
   } finally {
@@ -259,11 +305,23 @@ export async function executeCodeModeCell(input: {
   bridgeAbort.abort(new Error("Code Mode cell ended."));
   if (!await drainHostOperations(pending, hostDrainTimeoutMs)) {
     input.onUnsettled?.([...pending].map(([settlement, toolCallId]) => ({ toolCallId, settlement })));
-    return { ok: false, error: "A nested tool did not settle after Code Mode ended; its outcome is unknown. Do not replay this cell.", outcomeUnknown: true, childCalls };
+    result = { ok: false, error: "A nested tool did not settle after Code Mode ended; its outcome is unknown. Do not replay this cell.", outcomeUnknown: true, childCalls };
   }
   if (result.ok && detachedChildren) {
-    return { ok: false, error: "Code Mode returned before all nested tools settled; do not replay this cell.", childCalls };
+    result = { ok: false, error: "Code Mode returned before all nested tools settled; do not replay this cell.", childCalls };
   }
+  // 取消或 VM 失败不清空宿主已经收到的输出。
+  if (stdoutTruncated) stdout += "\n[Console capture limit reached; additional output is not retained.]";
+  if (stdout.length > 16_000 && input.archiveStdout) {
+    try {
+      const archivePath = await input.archiveStdout(stdout);
+      result.stdout = stdout.slice(0, 16_000) + `\n[Output truncated. Read ${stdoutTruncated ? "captured" : "full"} stdout at ${archivePath}]`;
+    } catch (error) {
+      result.ok = false;
+      result.error = [result.error, `Stdout archiving failed: ${String(error)}. Do not replay this cell.`].filter(Boolean).join(" ");
+      result.stdout = stdout.slice(0, 16_000) + "\n[Output truncated; archive unavailable]";
+    }
+  } else if (stdout) result.stdout = stdout;
   return result;
 }
 

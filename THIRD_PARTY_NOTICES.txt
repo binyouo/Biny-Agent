@@ -224,3 +224,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+RTK 0.29.0
+Source: https://github.com/rtk-ai/rtk/tree/v0.29.0
+License: MIT; copyright (c) 2024 Patrick Szymkowiak.
+Desktop distributions include the complete license in resources/rtk/LICENSE.

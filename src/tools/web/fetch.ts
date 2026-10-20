@@ -20,6 +20,8 @@ const maxLength = 200_000;
 
 export interface WebFetchArgs {
   url: string;
+  raw?: boolean;
+  environment?: string;
   offset?: number;
   length?: number;
 }
@@ -57,11 +59,13 @@ export function createWebFetchTool(
     name: "WebFetch",
     description: `Fetch a public http(s) URL and return its readable text. HTML pages use article extraction with a plain-text fallback. Returns at most ${String(maxLength)} UTF-16 code units. Page boundaries preserve surrogate pairs; continue with the returned offset + content.length.`,
     promptSnippet: "Fetch readable text from a public HTTP or HTTPS URL",
-    promptGuidelines: ["Use WebFetch to inspect a known URL and page through truncated documents with offset"],
+    promptGuidelines: ["Use WebFetch to inspect a known URL and page through truncated documents with offset", "Only select a browser environment when the user names the account or environment needed"],
     parameters: {
       type: "object",
       properties: {
         url: { type: "string", minLength: 1, description: "Absolute http or https URL to fetch." },
+        raw: { type: "boolean", description: "Return raw response text without HTML article extraction." },
+        environment: { type: "string", minLength: 1, maxLength: 60, description: "Existing browser environment name for a signed-in fetch, only when the user names one." },
         offset: { type: "integer", minimum: 0, description: "UTF-16 code-unit offset into the extracted text. Defaults to 0; an offset inside a surrogate pair rounds back to its start." },
         length: { type: "integer", minimum: 1, maximum: maxLength, description: `UTF-16 code units to return. Defaults to ${String(defaultLength)}; a length of 1 may return a whole surrogate pair (2 units).` }
       },
@@ -70,6 +74,8 @@ export function createWebFetchTool(
     },
     schema: z.object({
       url: z.string().min(1).max(4_096),
+      raw: z.boolean().optional(),
+      environment: z.string().trim().min(1).max(60).optional(),
       offset: z.number().int().min(0).optional(),
       length: z.number().int().min(1).max(maxLength).optional()
     }),
@@ -84,9 +90,10 @@ export function createWebFetchTool(
         approvalRule: `WebFetch(${target.origin})`,
         async execute({ signal }) {
           signal?.throwIfAborted();
+          if (args.environment && !dependencies?.browser) throw new Error("选择登录环境需要 Desktop 内置浏览器。");
           const jar = !dependencies?.browser && cookieJarPath ? await readCookieJar(cookieJarPath) : [];
           const fetched = dependencies?.browser
-            ? await requestBrowser(dependencies.browser, "web_read", { url: target.href, projectId: dependencies.browser.projectId, visible: dependencies.visibleBrowsing, timeoutMs, maxBytes, maxRedirects, allowPrivateNetwork }, signal) as BrowserFetchedDocument
+            ? await requestBrowser(dependencies.browser, "web_read", { url: target.href, projectId: dependencies.browser.projectId, visible: dependencies.visibleBrowsing, timeoutMs, maxBytes, maxRedirects, allowPrivateNetwork, environment: args.environment }, signal) as BrowserFetchedDocument
             : await fetchDocument(target, {
             timeoutMs,
             maxBytes,
@@ -95,7 +102,7 @@ export function createWebFetchTool(
             jar,
             resolveHostname: dependencies?.resolveHostname
           }, signal);
-          const readable = isHtml(fetched.contentType)
+          const readable = !args.raw && isHtml(fetched.contentType)
             ? await extractReadableHtml(fetched.body, fetched.finalUrl)
             : { title: undefined, text: fetched.body };
           const text = readable.text;

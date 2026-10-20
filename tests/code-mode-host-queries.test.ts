@@ -264,14 +264,14 @@ try {
     selectCapabilities: async () => ({ tools: ["ToolSearch"], skills: "none" }),
     model: { provider: "fixture", modelId: "host-query-main-flow", supportsTools: true, async stream(context) {
       steps++;
-      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["exec"]);
-      const catalog = context.tools.find((tool) => tool.name === "exec")?.promptSnippet ?? "";
+      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["run_script"]);
+      const catalog = context.tools.find((tool) => tool.name === "run_script")?.promptSnippet ?? "";
       if (steps === 1) assert.doesNotMatch(catalog, /TaskStatus:|BashOutput:/u);
       else assert.doesNotMatch(catalog, /TaskStatus:|BashOutput:/u);
       assert.doesNotMatch(catalog, /Skill:|read_skill_resource:|Task:/u);
       const events: ModelStreamEvent[] = steps === 1
-        ? [{ type: "tool-call", id: "flow-query-search", name: "exec", arguments: { code: "return await searchTools('task status and installed skill metadata');" } }, { type: "finish", reason: "tool-calls" }]
-        : steps === 2 ? [{ type: "tool-call", id: "flow-query-exec", name: "exec", arguments: { code:
+        ? [{ type: "tool-call", id: "flow-query-search", name: "run_script", arguments: { description: "Exercise script tool flow", code: "return await searchTools('task status and installed skill metadata');" } }, { type: "finish", reason: "tool-calls" }]
+        : steps === 2 ? [{ type: "tool-call", id: "flow-query-exec", name: "run_script", arguments: { description: "Exercise script tool flow", code:
           "const s = await tools.TaskStatus({taskRunId:'fixture'}); const k = await tools.BashOutput({query:'query-fixture'}); return {status:s.status,found:k.found};" } }, { type: "finish", reason: "tool-calls" }]
           : [{ type: "text-delta", text: "queries complete" }, { type: "finish", reason: "stop" }];
       return (async function* (): AsyncGenerator<ModelStreamEvent> { yield* events; })();

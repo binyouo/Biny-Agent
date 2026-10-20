@@ -1,5 +1,5 @@
 diff --git a/packages/run/src/run.ts b/packages/run/src/run.ts
-index c8d5198..b888623 100644
+index c8d5198..9dd5afd 100644
 --- a/packages/run/src/run.ts
 +++ b/packages/run/src/run.ts
 @@ -273,6 +273,13 @@ export const createRunner = <TOKEN = string>(
@@ -16,6 +16,12 @@ index c8d5198..b888623 100644
  let defaultRunner:
    | {
        continuationSecret: string | undefined;
+@@ -299,3 +306,5 @@ export const run = async <OUTPUT = unknown>(
+   }
+   return await defaultRunner.runner.run<OUTPUT>(input);
+ };
++
++Object.defineProperty(createRunner, 'consoleOutputVersion', { value: 1, writable: false, configurable: false });
 diff --git a/packages/run/src/runtime/execution-budget.ts b/packages/run/src/runtime/execution-budget.ts
 new file mode 100644
 index 0000000..b466f11
@@ -83,10 +89,46 @@ index 0000000..b466f11
 +  }
 +}
 diff --git a/packages/run/src/runtime/manager.ts b/packages/run/src/runtime/manager.ts
-index 40e93a7..cb35b2b 100644
+index 40e93a7..25f06eb 100644
 --- a/packages/run/src/runtime/manager.ts
 +++ b/packages/run/src/runtime/manager.ts
-@@ -893,9 +893,13 @@ function startWorkerRun({
+@@ -459,6 +459,7 @@ export async function runManaged(input: InternalRunInput): Promise<RunResult> {
+ }
+ 
+ function startWorkerRun({
++  onConsole,
+   source,
+   sourceType,
+   originalSource,
+@@ -736,6 +737,7 @@ function startWorkerRun({
+     normalizedOptions.timeoutMs,
+   );
+ 
++  let consoleBytes = 0;
+   const onMessage = bindInvocationContext((value: unknown) => {
+     try {
+       assertWorkerToMainMessage(value);
+@@ -761,6 +763,19 @@ function startWorkerRun({
+       return;
+     }
+ 
++    if (message.type === 'console') {
++      if (terminalReached) return;
++      consoleBytes += Buffer.byteLength(message.text);
++      if (consoleBytes > normalizedOptions.maxConsoleOutputBytes) {
++        failTerminal(new RunProtocolError('Console output exceeds its byte budget.'));
++        return;
++      }
++      try {
++        if (onConsole) onConsole({ stream: message.stream, text: message.text, truncated: message.truncated });
++        else process[message.stream].write(message.text);
++      } catch (error) { failTerminal(error); }
++      return;
++    }
+     if (message.type === 'result') {
+       try {
+         if (message.success) {
+@@ -893,9 +908,13 @@ function startWorkerRun({
      invocationId,
      moduleLoader: moduleLoader !== undefined,
      options: {
@@ -104,7 +146,7 @@ index 40e93a7..cb35b2b 100644
        maxConsoleOutputBytes: normalizedOptions.maxConsoleOutputBytes,
        maxHostFunctionInputBytes: normalizedOptions.maxHostFunctionInputBytes,
 diff --git a/packages/run/src/runtime/protocol-validation.ts b/packages/run/src/runtime/protocol-validation.ts
-index 718bfb8..030d152 100644
+index 718bfb8..ed7d0c6 100644
 --- a/packages/run/src/runtime/protocol-validation.ts
 +++ b/packages/run/src/runtime/protocol-validation.ts
 @@ -52,6 +52,7 @@ const isRunOptions = (value: unknown): boolean => {
@@ -134,6 +176,18 @@ index 718bfb8..030d152 100644
  };
  
  const isDeterminism = (value: unknown): boolean => {
+@@ -270,6 +277,11 @@ export const assertWorkerToMainMessage: AssertWorkerToMainMessage = value => {
+   if (!isRecord(value) || typeof value.type !== 'string') {
+     throw invalidMessage('worker-to-main');
+   }
++  if (value.type === 'console') {
++    assertExactKeys(value, ['type', 'invocationId', 'stream', 'text', 'truncated']);
++    if (!isIdentifier(value.invocationId) || !['stdout', 'stderr'].includes(String(value.stream)) || typeof value.text !== 'string' || Buffer.byteLength(value.text) > 16384 || typeof value.truncated !== 'boolean') throw invalidMessage('console');
++    return;
++  }
+   if (value.type === 'host-function-request') {
+     assertHostFunctionRequest(value);
+     return;
 diff --git a/packages/run/src/runtime/protocol.test.ts b/packages/run/src/runtime/protocol.test.ts
 index 5bbd474..a41ade2 100644
 --- a/packages/run/src/runtime/protocol.test.ts
@@ -147,7 +201,7 @@ index 5bbd474..a41ade2 100644
    maxConsoleOutputBytes: 64 * 1024,
    maxHostFunctionInputBytes: 1024 * 1024,
 diff --git a/packages/run/src/runtime/protocol.ts b/packages/run/src/runtime/protocol.ts
-index 63cbae9..83177dc 100644
+index 63cbae9..299b29e 100644
 --- a/packages/run/src/runtime/protocol.ts
 +++ b/packages/run/src/runtime/protocol.ts
 @@ -25,6 +25,7 @@ export interface WorkerRunMessage {
@@ -158,6 +212,23 @@ index 63cbae9..83177dc 100644
    };
  }
  
+@@ -72,7 +73,16 @@ export interface WorkerBridgeIdleMessage {
+   responseCount: number;
+ }
+ 
++export interface WorkerConsoleMessage {
++  type: 'console';
++  invocationId: string;
++  stream: 'stdout' | 'stderr';
++  text: string;
++  truncated: boolean;
++}
++
+ export type WorkerToMainMessage =
++  | WorkerConsoleMessage
+   | WorkerHostFunctionRequest
+   | WorkerBridgeIdleMessage
+   | WorkerResultMessage
 diff --git a/packages/run/src/runtime/worker-message.test.ts b/packages/run/src/runtime/worker-message.test.ts
 index c6c3388..f0d3b27 100644
 --- a/packages/run/src/runtime/worker-message.test.ts
@@ -171,9 +242,15 @@ index c6c3388..f0d3b27 100644
      maxConsoleOutputBytes: 64 * 1024,
      maxHostFunctionInputBytes: 1024 * 1024,
 diff --git a/packages/run/src/runtime/worker.ts b/packages/run/src/runtime/worker.ts
-index 516b385..8420e1b 100644
+index 516b385..525e2e8 100644
 --- a/packages/run/src/runtime/worker.ts
 +++ b/packages/run/src/runtime/worker.ts
+@@ -1,4 +1,4 @@
+-// @banned-pattern-ignore: audited worker bootstrap writes only budgeted output to inherited stdout/stderr descriptors
++// @banned-pattern-ignore: audited worker bootstrap writes fatal initialization diagnostics only
+ import { writeSync } from 'node:fs';
+ import { formatWithOptions } from 'node:util';
+ import { parentPort } from 'node:worker_threads';
 @@ -16,6 +16,7 @@ import { parseJson } from '../utils/parse-json.js';
  import { createPromiseWithResolvers } from '../utils/promise-with-resolvers.js';
  import { buildGuestRuntimeSetupSource, wrapUserCode } from './guest-sources.js';
@@ -230,7 +307,15 @@ index 516b385..8420e1b 100644
    let bridgeFunctions:
      | {
          invokeHostFunction: JSValueHandle;
-@@ -279,6 +299,7 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+@@ -254,6 +274,7 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+     consoleFormatter = installConsole(
+       context,
+       message.options.maxConsoleOutputBytes,
++      message.invocationId,
+     );
+     bridgeFunctions = createBridgeFunctions(
+       context,
+@@ -279,6 +300,7 @@ async function execute(message: WorkerRunMessage): Promise<string> {
        serializeJsonPayloadHandle,
        getTrustedErrorCodeHandle,
        () => {
@@ -238,7 +323,7 @@ index 516b385..8420e1b 100644
          if (cancelled) {
            throw new Error('Worker execution cancelled by host');
          }
-@@ -294,11 +315,16 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+@@ -294,11 +316,16 @@ async function execute(message: WorkerRunMessage): Promise<string> {
      if (messageFailure !== undefined) {
        throw messageFailure.error;
      }
@@ -257,7 +342,7 @@ index 516b385..8420e1b 100644
      if (activeCancellation?.invocationId === message.invocationId) {
        activeCancellation = undefined;
      }
-@@ -339,29 +365,41 @@ function initializeGuestRuntime(
+@@ -339,29 +366,41 @@ function initializeGuestRuntime(
    );
    let setupFunction: JSValueHandle;
    try {
@@ -310,7 +395,7 @@ index 516b385..8420e1b 100644
        };
      } finally {
        setupResult.dispose();
-@@ -387,10 +425,8 @@ async function evaluateUserSource(
+@@ -387,10 +426,8 @@ async function evaluateUserSource(
    if (message.sourceType === 'module') {
      let modulePromise: JSValueHandle;
      try {
@@ -323,7 +408,7 @@ index 516b385..8420e1b 100644
        );
      } catch (error) {
        throw toUserSourceError(dumpQuickJSError(context, error), message.source);
-@@ -426,12 +462,16 @@ async function evaluateUserSource(
+@@ -426,12 +463,16 @@ async function evaluateUserSource(
    }
    const wrapped = wrapUserCode(message.source);
    try {
@@ -342,7 +427,7 @@ index 516b385..8420e1b 100644
    const resolvedResult = await resolveQuickJSPromise(
      context,
      promiseHandle,
-@@ -525,12 +565,14 @@ function serializeQuickJSJsonPayload(
+@@ -525,12 +566,14 @@ function serializeQuickJSJsonPayload(
  ): string {
    let result: JSValueHandle;
    try {
@@ -359,8 +444,14 @@ index 516b385..8420e1b 100644
    } finally {
      result.dispose();
    }
-@@ -543,7 +585,8 @@ function installConsole(
-   const outputBudget = { remainingBytes: maxOutputBytes };
+@@ -539,11 +582,13 @@ function serializeQuickJSJsonPayload(
+ function installConsole(
+   context: QuickJS,
+   maxOutputBytes: number,
++  invocationId: string,
+ ): JSValueHandle {
+-  const outputBudget = { remainingBytes: maxOutputBytes };
++  const outputBudget = { remainingBytes: maxOutputBytes, remainingMessages: 4096 };
    let boundedFormatter: JSValueHandle;
    try {
 -    boundedFormatter = context.evalCode(`
@@ -369,7 +460,14 @@ index 516b385..8420e1b 100644
        (value, maxChars) => {
          let rendered;
          try {
-@@ -557,11 +600,12 @@ function installConsole(
+@@ -552,16 +597,17 @@ function installConsole(
+         return String(rendered === undefined ? value : rendered)
+         .slice(0, maxChars)
+         .replace(/[\\u0000-\\u001f\\u007f-\\u009f]/gu, character =>
+-          character === '\\t'
+-            ? '\\t'
++          character === '\\t' || character === '\\n' || character === '\\r'
++            ? character
              : '\\\\u' + character.charCodeAt(0).toString(16).padStart(4, '0')
          );
        }
@@ -384,7 +482,40 @@ index 516b385..8420e1b 100644
    const handles = [
      [
        'log',
-@@ -606,9 +650,13 @@ function installConsole(
+@@ -571,6 +617,7 @@ function installConsole(
+         'stdout',
+         outputBudget,
+         boundedFormatter,
++        invocationId,
+       ),
+     ],
+     [
+@@ -581,6 +628,7 @@ function installConsole(
+         'stdout',
+         outputBudget,
+         boundedFormatter,
++        invocationId,
+       ),
+     ],
+     [
+@@ -591,8 +639,10 @@ function installConsole(
+         'stdout',
+         outputBudget,
+         boundedFormatter,
++        invocationId,
+       ),
+     ],
++    ['warn', createConsoleFunction(context, 'console.warn', 'stderr', outputBudget, boundedFormatter, invocationId)],
+     [
+       'error',
+       createConsoleFunction(
+@@ -601,14 +651,19 @@ function installConsole(
+         'stderr',
+         outputBudget,
+         boundedFormatter,
++        invocationId,
+       ),
+     ],
    ] as const;
  
    for (const [name, handle] of handles) {
@@ -400,9 +531,14 @@ index 516b385..8420e1b 100644
  
    for (const [, handle] of handles) {
      handle.dispose();
-@@ -624,28 +672,30 @@ function createConsoleFunction(
-   outputBudget: { remainingBytes: number },
+@@ -621,31 +676,43 @@ function createConsoleFunction(
+   context: QuickJS,
+   name: string,
+   stream: 'stdout' | 'stderr',
+-  outputBudget: { remainingBytes: number },
++  outputBudget: { remainingBytes: number; remainingMessages: number },
    boundedFormatter: JSValueHandle,
++  invocationId: string,
  ): JSValueHandle {
 -  return context.newFunction(name, (...args: JSValueHandle[]) => {
 -    if (outputBudget.remainingBytes === 0) {
@@ -434,13 +570,22 @@ index 516b385..8420e1b 100644
 +      );
 +      const line = formatWithOptions({ colors: false, depth: 0 }, ...values);
 +      const output = `${line}\n`;
-+      const outputBytes = Buffer.byteLength(output);
-+      if (outputBytes > outputBudget.remainingBytes) {
-+        outputBudget.remainingBytes = 0;
-+        return context.undefined;
++      const bytes = Buffer.from(output);
++      const truncated = bytes.length > outputBudget.remainingBytes;
++      const captured = bytes.subarray(0, outputBudget.remainingBytes);
++      outputBudget.remainingBytes -= captured.length;
++      // Decode complete UTF-8 characters only; every message stays small.
++      let end = captured.length;
++      if (truncated) while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
++      const text = captured.subarray(0, end).toString('utf8');
++      for (let offset = 0; offset < text.length;) {
++        let next = Math.min(offset + 2048, text.length);
++        if (next < text.length && text.charCodeAt(next - 1) >= 0xd800 && text.charCodeAt(next - 1) <= 0xdbff) next--;
++        parentPort?.postMessage({ type: 'console', invocationId, stream, text: text.slice(offset, next), truncated: false });
++        offset = next;
++        if (--outputBudget.remainingMessages === 0) { outputBudget.remainingBytes = 0; break; }
 +      }
-+      outputBudget.remainingBytes -= outputBytes;
-+      writeSync(stream === 'stderr' ? 2 : 1, output);
++      if (truncated || outputBudget.remainingBytes === 0) parentPort?.postMessage({ type: 'console', invocationId, stream, text: '', truncated: true });
        return context.undefined;
 -    }
 -    outputBudget.remainingBytes -= outputBytes;
@@ -452,7 +597,7 @@ index 516b385..8420e1b 100644
  }
  
  function formatConsoleArg(
-@@ -654,17 +704,21 @@ function formatConsoleArg(
+@@ -654,17 +721,21 @@ function formatConsoleArg(
    arg: JSValueHandle,
    remainingBytes: number,
  ): string {
@@ -482,7 +627,7 @@ index 516b385..8420e1b 100644
        try {
          return formatWithOptions({ colors: false, depth: 4 }, parseJson(value));
        } catch {
-@@ -688,55 +742,65 @@ function createBridgeFunctions(
+@@ -688,55 +759,65 @@ function createBridgeFunctions(
    invokeHostFunction: JSValueHandle;
    invokeSyncHostFunction: JSValueHandle;
  } {
@@ -593,7 +738,7 @@ index 516b385..8420e1b 100644
    );
  
    return { invokeHostFunction, invokeSyncHostFunction };
-@@ -863,7 +927,13 @@ function requestSyncHost(
+@@ -863,7 +944,13 @@ function requestSyncHost(
    while (
      Atomics.load(header, SyncBridgeHeader.State) === SyncBridgeState.Request
    ) {
@@ -608,7 +753,7 @@ index 516b385..8420e1b 100644
    }
    if (
      Atomics.load(header, SyncBridgeHeader.State) !== SyncBridgeState.Response
-@@ -906,7 +976,7 @@ function requestHost(
+@@ -906,7 +993,7 @@ function requestHost(
    aggregateBridgeRequestCounter += 1;
    bridgeRequestCounter += 1;
    const requestId = `${invocationId}:bridge-${bridgeRequestCounter}`;
@@ -617,7 +762,7 @@ index 516b385..8420e1b 100644
    pendingBridgeRequests.set(requestId, {
      context,
      deferred,
-@@ -934,17 +1004,19 @@ function resolveBridgeResponse(
+@@ -934,17 +1021,19 @@ function resolveBridgeResponse(
  ): void {
    resetGuestDateNow(context, resetDateNow, message.dateNowMs);
    if (message.success) {
@@ -642,7 +787,7 @@ index 516b385..8420e1b 100644
  }
  
  function registerBridgeError(
-@@ -959,9 +1031,15 @@ function registerBridgeError(
+@@ -959,9 +1048,15 @@ function registerBridgeError(
    const name = jsToHandle(context, serializedError?.name);
    const code = jsToHandle(context, serializedError?.code);
    try {
@@ -661,7 +806,7 @@ index 516b385..8420e1b 100644
    } catch (registrationError) {
      throw toError(dumpQuickJSError(context, registrationError));
    } finally {
-@@ -978,10 +1056,12 @@ function resetGuestDateNow(
+@@ -978,10 +1073,12 @@ function resetGuestDateNow(
    if (resetDateNow === undefined) {
      return;
    }
@@ -676,7 +821,7 @@ index 516b385..8420e1b 100644
      } catch (error) {
        throw toError(dumpQuickJSError(context, error));
      }
-@@ -995,28 +1075,30 @@ function jsToHandle(context: QuickJS, value: unknown): JSValueHandle {
+@@ -995,28 +1092,30 @@ function jsToHandle(context: QuickJS, value: unknown): JSValueHandle {
      return context.null;
    }
    if (typeof value === 'string') {
@@ -713,7 +858,7 @@ index 516b385..8420e1b 100644
        handle.dispose();
      }
      return result;
-@@ -1025,7 +1107,7 @@ function jsToHandle(context: QuickJS, value: unknown): JSValueHandle {
+@@ -1025,7 +1124,7 @@ function jsToHandle(context: QuickJS, value: unknown): JSValueHandle {
  }
  
  function drainPendingJobs(context: QuickJS): void {
@@ -722,7 +867,7 @@ index 516b385..8420e1b 100644
  }
  
  async function resolveQuickJSPromise(
-@@ -1033,7 +1115,9 @@ async function resolveQuickJSPromise(
+@@ -1033,7 +1132,9 @@ async function resolveQuickJSPromise(
    promiseHandle: JSValueHandle,
    assertActive: () => void,
  ) {
@@ -733,7 +878,7 @@ index 516b385..8420e1b 100644
    const notSettled = Symbol('not-settled');
    for (;;) {
      assertActive();
-@@ -1127,16 +1211,16 @@ function readTrustedErrorCode(
+@@ -1127,16 +1228,16 @@ function readTrustedErrorCode(
  ): string | undefined {
    let result: JSValueHandle;
    try {
@@ -755,7 +900,7 @@ index 516b385..8420e1b 100644
    } finally {
      result.dispose();
    }
-@@ -1146,7 +1230,9 @@ function createBridgeErrorHandle(
+@@ -1146,7 +1247,9 @@ function createBridgeErrorHandle(
    context: QuickJS,
    error: WorkerBridgeResponse['error'],
  ): JSValueHandle {
@@ -766,7 +911,7 @@ index 516b385..8420e1b 100644
  }
  
  function dumpQuickJSError(context: QuickJS, error: unknown): unknown {
-@@ -1164,20 +1250,25 @@ function dumpQuickJSErrorHandle(
+@@ -1164,20 +1267,25 @@ function dumpQuickJSErrorHandle(
    context: QuickJS,
    handle: JSValueHandle,
  ): unknown {
@@ -796,7 +941,7 @@ index 516b385..8420e1b 100644
          Object.defineProperty(dumped, 'code', { enumerable: true, value });
        } else {
 diff --git a/packages/run/src/types.ts b/packages/run/src/types.ts
-index c4e4ce5..951816e 100644
+index c4e4ce5..6cf9dae 100644
 --- a/packages/run/src/types.ts
 +++ b/packages/run/src/types.ts
 @@ -65,6 +65,8 @@ export type HostFunctionManifest = ReadonlyMap<string, ReadonlySet<string>>;
@@ -808,7 +953,16 @@ index c4e4ce5..951816e 100644
    /** @default `64 * 1024 * 1024` */
    memoryLimitBytes?: number;
    /** @default `2 * 1024 * 1024` */
-@@ -289,6 +291,7 @@ export interface InternalRunInput extends RunInput<unknown> {
+@@ -104,6 +106,8 @@ export type RunSourceType = 'function-body' | 'module';
+ 
+ /** Input accepted by `run` and `Runner.run`. */
+ export interface RunInput<TOKEN = unknown> {
++  /** Receives bounded console output while the worker is executing. */
++  onConsole?: (event: { stream: 'stdout' | 'stderr'; text: string; truncated: boolean }) => void;
+   /**
+    * JavaScript or type-stripped TypeScript function-body source. Runtime type
+    * stripping is used when provided natively by Node or Bun, or through the
+@@ -289,6 +293,7 @@ export interface InternalRunInput extends RunInput<unknown> {
  /** @internal */
  export interface NormalizedRunOptions {
    timeoutMs: number;

@@ -10,6 +10,7 @@ export interface ToolPresentation {
 }
 
 const toolPresentations: Record<string, ToolPresentation> = {
+  run_script: { label: "脚本处理", selectable: false },
   exec: { label: "运行脚本", selectable: false },
   apply_patch: { group: "workspace", label: "应用文件补丁", detail: "按补丁更新项目文件。" },
   recall_memory: { label: "检索记忆", selectable: false },
@@ -49,6 +50,7 @@ const toolPresentations: Record<string, ToolPresentation> = {
   WebFetch: { group: "web", label: "网络获取", detail: "抓取 URL 的原始内容。" },
   WebSearch: { group: "web", label: "网络搜索", detail: "在网上搜索最新信息。" },
   BrowserOpen: { group: "web", label: "打开网页", detail: "在 Biny 浏览器中打开网页。" },
+  BrowserListEnvironments: { group: "web", label: "列出浏览器环境", detail: "查看可选的独立登录环境。" },
   BrowserReadDom: { group: "web", label: "读取网页", detail: "读取当前网页的文本和可交互元素。" },
   BrowserClick: { group: "web", label: "点击网页", detail: "点击网页上的可见元素。" },
   BrowserType: { group: "web", label: "填写网页", detail: "向网页输入框或编辑器填写内容。" },

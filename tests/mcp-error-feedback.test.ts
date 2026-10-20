@@ -160,3 +160,96 @@ await test("script envelopes still retain the full structured error and original
     assert.equal(fake.calls(), 1);
   } finally { await host.close(); mock.restoreAll(); }
 });
+
+for (const ledger of [false, true]) {
+  for (const entrypoint of ["direct", "script", "plugin"] as const) {
+    for (const isError of [false, undefined, true]) {
+      const failed = isError === true;
+      await test(`MCP ${entrypoint} ledger=${String(ledger)} uses protocol isError=${String(isError)} rather than business fields`, { timeout: 10_000 }, async () => {
+        const business = { result: { approved: false, reason: "Review pending", status: "failed", exitCode: 9, error: "Business validation failed", isError: true } };
+        const protocol = { content: [{ type: "text", text: "Protocol failure" }], structuredContent: business, isError } satisfies CallToolResult;
+        const fake = fakeServer(protocol);
+        const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-business-result-"));
+        await ensureAgentDirs(root);
+        const host = new McpToolHost();
+        const registry = new ToolRegistry();
+        const recorder = new SessionRecorder(root, "business-result");
+        const authority = ledger ? await RuntimeEventAuthority.open(root, { backfillLegacySessions: false }) : undefined;
+        const capabilities = authority ? await CapabilityStore.open(root, authority) : undefined;
+        const config = configSchema.parse({ ...defaultConfig,
+          permission: { ...defaultConfig.permission, mode: "full-access" },
+          extensions: { ...defaultConfig.extensions, mcp: { fixture: {
+            type: "http", url: "https://mcp-error-feedback.invalid/mcp", transportProtocol: "streamable-http", exposure: entrypoint === "script" ? "codemode" : "direct", timeoutMs: 2_000
+          } } }
+        });
+        const emitted: Array<AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>> = [];
+        const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, capabilities },
+          new PermissionManager(config.permission), event => emitted.push(event));
+        try {
+          await host.connectConfiguredServers(root, config, registry);
+          const tool = coordinator.createAgentTools(undefined, { script: entrypoint === "script" }).find(entry => entry.name === "mcp_fixture_lookup");
+          assert.ok(tool);
+          const result = entrypoint === "plugin"
+            ? await coordinator.executePluginMcpTool("fixture", "lookup", {}, "business")
+            : await tool.execute("business", {});
+          assert.equal(result.isError, failed);
+          const details = result.details as Record<string, unknown>;
+          if (entrypoint === "script") assert.deepEqual(details.structuredContent, business);
+          else if (failed) assert.deepEqual(details.structuredContent, business);
+          else assert.deepEqual(details.result, business.result);
+          assert.equal(emitted.some(event => event.type === "tool.failed"), failed);
+          assert.equal(emitted.some(event => event.type === "tool.completed"), !failed);
+          const events = await readSessionEvents(recorder.filePath);
+          const saved = events.find(event => event.type === "tool_result");
+          assert.ok(saved?.type === "tool_result");
+          assert.equal(saved.executionStatus, failed ? "failed" : "succeeded");
+          const replayed = replaySessionEvents(events, { sessionId: recorder.sessionId }).messages.find(message => message.role === "toolResult");
+          assert.ok(replayed?.role === "toolResult");
+          assert.equal(replayed.isError, failed);
+          assert.equal(fake.calls(), 1);
+        } finally {
+          await coordinator.waitForIdle();
+          await recorder.close();
+          capabilities?.close();
+          authority?.close();
+          await host.close();
+          mock.restoreAll();
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+}
+
+await test("ordinary MCP projection preserves media metadata from the protocol envelope", { timeout: 5_000 }, async () => {
+  const fake = fakeServer({ content: [{ type: "text", text: "picture" }, { type: "image", mimeType: "image/png", data: "AAAA" }], isError: false });
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-media-result-"));
+  await ensureAgentDirs(root);
+  const host = new McpToolHost();
+  const registry = new ToolRegistry();
+  const recorder = new SessionRecorder(root, "media-result");
+  const config = configSchema.parse({ ...defaultConfig, permission: { ...defaultConfig.permission, mode: "full-access" },
+    extensions: { ...defaultConfig.extensions, mcp: { fixture: {
+      type: "http", url: "https://mcp-error-feedback.invalid/mcp", transportProtocol: "streamable-http", exposure: "direct", timeoutMs: 2_000
+    } } }
+  });
+  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry },
+    new PermissionManager(config.permission), () => undefined);
+  try {
+    await host.connectConfiguredServers(root, config, registry);
+    const tool = coordinator.createAgentTools().find(entry => entry.name === "mcp_fixture_lookup");
+    assert.ok(tool);
+    const result = await tool.execute("media", {});
+    assert.equal(result.isError, false);
+    assert.deepEqual((result.details as { parts: unknown[] }).parts, [
+      { type: "text", text: "picture" }, { type: "image", mimeType: "image/png", bytes: 3, note: "binary content omitted" }
+    ]);
+    assert.equal(fake.calls(), 1);
+  } finally {
+    await coordinator.waitForIdle();
+    await recorder.close();
+    await host.close();
+    mock.restoreAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});

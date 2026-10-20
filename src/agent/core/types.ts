@@ -76,7 +76,7 @@ export interface AgentUsage {
   cacheMissTokens?: number;
 }
 
-export type ModelRequestOperation = "agent" | "compaction" | "memory" | "subagent";
+export type ModelRequestOperation = "agent" | "compaction" | "memory" | "subagent" | "vision";
 
 export type ModelRequestErrorCode =
   | "aborted"
@@ -142,6 +142,8 @@ export interface AgentToolResult<TDetails = unknown> {
   content: AgentToolResultContent[];
   details?: TDetails;
   isError?: boolean;
+  /** Host classification for Code Mode recovery; never inferred from tool-provided details. */
+  recoverableError?: boolean;
   /** 当前工具批次完成后是否可以跳过下一次模型请求。 */
   terminate?: boolean;
   usage?: AgentUsage;
@@ -194,6 +196,7 @@ export interface ModelStreamOptions {
   temperature?: number;
   reasoning?: "off" | ReasoningEffort;
   providerOptions?: Record<string, unknown>;
+  serviceTier?: "priority";
   /** 按协议给稳定前缀打 prompt 缓存标记；undefined 时不下发标记。 */
   cacheMarkers?: CacheMarkerPlan;
   timeoutMs?: number;
@@ -223,6 +226,7 @@ export interface AgentModel {
   /** 这是显式元数据，不是由 provider 名称或 URL 推导出的结论。 */
   dataResidency?: ActivityDataResidency;
   supportsTools?: boolean;
+  serviceTiers?: Array<"priority">;
   /** 显式注入的本地/测试模型可以提供的最小兼容流；配置 Provider 统一使用 vercelModel。 */
   stream?(
     context: ModelStreamContext,

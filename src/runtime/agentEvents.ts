@@ -94,7 +94,7 @@ export type AgentHostEvent =
   /** 回合后技能提取进度；不进入时间线，仅触发聊天内提示卡。 */
   | (AgentEventBase & {
     type: "skill_extraction.updated";
-    stage: "extracting" | "saving" | "done" | "skipped";
+    stage: "analyzing" | "extracting" | "saving" | "done" | "skipped";
     skillName?: string;
     skillDescription?: string;
     updated?: boolean;

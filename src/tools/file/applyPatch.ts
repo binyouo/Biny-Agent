@@ -3,6 +3,7 @@ import { applyDiff } from "@openai/agents-core/utils";
 import { z } from "zod";
 import { resolveWorkspacePath } from "../../workspace/resolvePath.js";
 import type { Tool, ToolContext } from "../types.js";
+import { zodToolInput } from "../zodToolInput.js";
 import type { FileChangeResult } from "./fileChange.js";
 import { createEditFileTool } from "./editFile.js";
 import { createWriteFileTool, readOptionalFile } from "./writeFile.js";
@@ -29,8 +30,7 @@ export function createApplyPatchTool(context: ToolContext): Tool<PatchArgs, File
     promptSnippet: "Create, update, or delete one file using a structured patch",
     promptGuidelines: ["Use apply_patch for file changes. Read before updating; do not retry with a different editing protocol after a failure."],
     providerTool: "openai-apply-patch",
-    parameters: { type: "object", properties: { callId: { type: "string" }, operation: { type: "object", properties: { type: { type: "string", enum: ["create_file", "update_file", "delete_file"] }, path: { type: "string" }, diff: { type: "string" } }, required: ["type", "path"], additionalProperties: false } }, required: ["callId", "operation"], additionalProperties: false },
-    schema: patchArgsSchema,
+    ...zodToolInput(patchArgsSchema),
     capability: "filesystem.edit",
     risk: "write",
     async resolveExecution({ callId, operation }) {

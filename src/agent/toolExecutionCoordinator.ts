@@ -1,3 +1,5 @@
+import { estimateTokens } from "./context/tokenUsage.js";
+import type { ToolOptimization } from "../session/toolOptimization.js";
 /**
  * Native tool execution coordinator.
  *
@@ -87,6 +89,7 @@ interface PreparedToolCall {
 
 interface FailedPreparedToolCall {
   ok: false;
+  validationFailure?: boolean;
   result: unknown;
   errorMessage: string;
   executionStatus?: ToolExecutionResultStatus;
@@ -119,7 +122,7 @@ interface ToolCallExecutionOptions {
   /** Internal host-query result semantics; never read from a tool's payload. */
   taskStatusResultIsData?: boolean;
   /** Model projection may archive a failure; retain its authoritative outcome. */
-  onResultStatus?: (status: ToolExecutionResultStatus) => void;
+  onResultStatus?: (status: ToolExecutionResultStatus, recoverableError: boolean) => void;
   onActualResult?: (result: unknown) => void;
 }
 
@@ -201,12 +204,13 @@ export class ToolExecutionCoordinator {
   private readonly toolImages = new Map<string, AgentImageContent>();
   private imageBytes = 0;
   private codeModeCellActive = false;
+  private readonly scriptParents = new Map<string, string>();
   private readonly goalControlCalls = new Set<string>();
 
   constructor(
     private readonly context: AgentRuntimeContext,
     private readonly permissionManager: PermissionManager,
-    private readonly emit: (event: AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>) => void,
+    private readonly emitEvent: (event: AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>) => void,
     private readonly getStepContext: () => AgentStepContext = () => ({}),
     allowedToolNames?: ReadonlySet<string>,
     private readonly executionBudget?: ToolExecutionBudget,
@@ -266,7 +270,7 @@ export class ToolExecutionCoordinator {
 
   /** Model-facing tool envelope. */
   createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }, options?: {
-    auditOnly?: boolean; script?: boolean; discovery?: boolean; toolDiscoveryNames?: ReadonlySet<string>; toolDiscoveryModelNames?: ReadonlySet<string>; toolDiscoveryNamespace?: string;
+    parentToolCallId?: string; auditOnly?: boolean; script?: boolean; discovery?: boolean; toolDiscoveryNames?: ReadonlySet<string>; toolDiscoveryModelNames?: ReadonlySet<string>; toolDiscoveryNamespace?: string;
   }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
       .filter((entry) => options?.script
@@ -305,12 +309,14 @@ export class ToolExecutionCoordinator {
           // 写入工具的准备、权限确认和实际执行必须保持同一顺序，避免并发预览互相失效。
           executionMode: registered.risk === "write" ? "sequential" as const : "parallel" as const,
           execute: async (toolCallId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> => {
+            if (options?.parentToolCallId) this.scriptParents.set(toolCallId, options.parentToolCallId);
             let resultStatus: ToolExecutionResultStatus | undefined;
+            let recoverableError = false;
             const result = await this.trackExecution(this.execute(
               registered,
               scriptPatch ? { ...args, callId: toolCallId } : args,
               { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly, script: options?.script,
-                onResultStatus: (status) => { resultStatus = status; },
+                onResultStatus: (status, recoverable) => { resultStatus = status; recoverableError = recoverable; },
                 toolDiscoveryNames: options?.toolDiscoveryNames, toolDiscoveryModelNames: options?.toolDiscoveryModelNames, toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
                 assertCurrentRegistration: options?.script ? () => {
                   if (!isCurrent()) {
@@ -319,14 +325,15 @@ export class ToolExecutionCoordinator {
                 } : undefined },
               source
             ), toolCallId);
-            const isError = resultStatus === undefined ? Boolean(failedToolResultMessage(result)) : resultStatus !== "succeeded";
+            const isError = resultStatus !== "succeeded";
             const image = this.toolImages.get(toolCallId);
             this.toolImages.delete(toolCallId);
             if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
             return {
               content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...(!isError && image ? [image] : [])],
               details: result,
-              isError
+              isError,
+              recoverableError: options?.script ? recoverableError : undefined
             };
           }
         };
@@ -358,7 +365,7 @@ export class ToolExecutionCoordinator {
       onResultStatus: (status) => { resultStatus = status; },
       onActualResult: (value) => { actualResult = value; }
     }, registration.source), toolCallId);
-    const isError = resultStatus !== "succeeded" || Boolean(failedToolResultMessage(actualResult));
+    const isError = resultStatus !== "succeeded";
     return {
       content: [{ type: "text", text: serializeToolResult(actualResult, { context: "mcp-result" }) }],
       details: actualResult,
@@ -375,34 +382,36 @@ export class ToolExecutionCoordinator {
         this.context.toolRegistry.listEntries().some((registered) => registered.tool.name === name && getToolExposure(registered.tool) === "direct"));
     });
     return {
-      name: "exec",
-      description: "Run isolated JavaScript with admitted tools.* calls. Use searchTools(query, {limit, namespace}), describeTool(name), and describeNamespace(name) to discover tools and read schemas on demand. Matches marked invocation: direct become ordinary tools on the next model step; call them directly, never through tools.*. Nested calls use normal permissions and budgets. No direct filesystem, network, process or imports. Return a JSON-serializable value.",
-      promptSnippet: `Compose tool calls in isolated JavaScript. Discover tools with searchTools, describeTool and describeNamespace. Selected host tools:\n${codeModeCatalog(visible) || "(none selected)"}`,
-      promptGuidelines: ["Return only the result needed by the user. Use standard tool calls when scripting is unnecessary. Never retry an entire cell after a partial failure; inspect child outcomes first."],
-      parameters: { type: "object", properties: { code: { type: "string", minLength: 1, maxLength: 65_536 } }, required: ["code"], additionalProperties: false },
+      name: "run_script",
+      description: "Use scripts for loops, filtering, aggregation or chained calls; never wrap a single ordinary tool call. Run isolated JavaScript or TypeScript (language: typescript) with admitted tools.* calls. sh(command, {cwd, timeoutMs}) uses Bash and returns stdout; fetch(url) performs a bounded GET through WebFetch, returning text()/json(). Non-GET requests use sh with curl under Shell permissions. console.log prints only selected final data. Stdout beyond 16000 characters is archived for Read; console capture is streamed to the host independently of tool calls and limited to 1 MiB / 4096 chunks; omitted output is marked. Supply a short description in the user language. timeout_ms defaults to 120000, maximum 600000. Use searchTools(query, {limit, namespace}), describeTool(name), and describeNamespace(name) to discover tools and read schemas on demand. searchTools returns matching tool definitions including parameters. Inspect those schemas in a discovery step before composing execution code; do not guess argument names or truncate schemas. Invoke tools as tools.ToolName({...}), not tools.invoke(name, args). tools.Read returns an object with content; sh returns a stdout string. Catch parameter-validation errors and safe built-in read failures to recover locally; uncaught errors fail the cell. Permission, budget, cancellation, deadline, uncertain-outcome and other tool failures still stop subsequent calls even when caught. Matches marked invocation: direct become ordinary tools on the next model step; call them directly, never through tools.*. Nested calls use normal permissions and budgets. No direct filesystem, process, module imports or unrestricted network access. Return a JSON-serializable value or print selected results.",
+      promptSnippet: `Compose tool calls in isolated JavaScript/TypeScript. Discover tools with searchTools, describeTool and describeNamespace. Selected host tools:\n${codeModeCatalog(visible) || "(none selected)"}`,
+      promptGuidelines: ["Return only the result needed by the user. Call a single tool directly; use scripts for loops, filtering, aggregation or chained calls. Never retry an entire cell after a partial failure; inspect child outcomes first."],
+      parameters: { type: "object", properties: { description: { type: "string", minLength: 1, maxLength: 120, description: "Short task title in the user language, at most 8 words." }, timeout_ms: { type: "integer", minimum: 1, maximum: 600_000 }, code: { type: "string", minLength: 1, maxLength: 65_536 }, language: { type: "string", enum: ["javascript", "typescript"] } }, required: ["description", "code"], additionalProperties: false },
       executionMode: "sequential",
       execute: async (toolCallId, args, signal) => {
         const sequence = this.nextSequence();
         const operationId = createToolOperationId(this.context.recorder.sessionId, toolCallId);
         const step = this.getStepContext();
-        await this.recordAndFlush({ type: "tool_call", tool: "exec", toolCallId, args, sequence,
+        await this.recordAndFlush({ type: "tool_call", tool: "run_script", toolCallId, args, sequence,
           assistantContent: step.assistantContent, reasoningContent: step.reasoningContent,
           reasoningProviderOptions: step.reasoningProviderOptions, reasoningBlocks: step.reasoningBlocks });
-        await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId, state: "not_started", retrySafety: "unsafe" });
-        this.emit({ type: "tool.started", tool: "exec", toolCallId, args: { sourceBytes: Buffer.byteLength(String(args.code ?? "")) }, operationId });
+        await this.recordAndFlush({ type: "tool_execution", tool: "run_script", toolCallId, sequence, operationId, state: "not_started", retrySafety: "unsafe" });
+        this.emit({ type: "tool.started", tool: "run_script", toolCallId, args: { code: args.code, description: args.description }, operationId });
+        let inputResultTokens = 0;
+        let resultCount = 0;
         let result: unknown;
         let error: string | undefined;
         let status: ToolExecutionResultStatus = "succeeded";
         if (this.duplicateToolCallIds.has(toolCallId)) {
-          error = `Duplicate exec tool call id: ${toolCallId}`;
+          error = `Duplicate run_script tool call id: ${toolCallId}`;
           result = { ok: false, error, childCalls: [] };
           status = "failed";
-        } else if (typeof args.code !== "string" || !args.code.length || Buffer.byteLength(args.code) > codeModePolicy.maxSourceBytes) {
-          error = "exec requires non-empty code of at most 64 KiB.";
+        } else if ((args.description !== undefined && (typeof args.description !== "string" || !args.description.trim() || args.description.length > 120)) || (args.timeout_ms !== undefined && (typeof args.timeout_ms !== "number" || !Number.isSafeInteger(args.timeout_ms) || args.timeout_ms < 1 || args.timeout_ms > 600_000)) || (args.language !== undefined && args.language !== "javascript" && args.language !== "typescript") || typeof args.code !== "string" || !args.code.length || Buffer.byteLength(args.code) > codeModePolicy.maxSourceBytes) {
+          error = "run_script requires code of at most 64 KiB, a valid language, an optional nonempty description of at most 120 characters, and timeout_ms between 1 and 600000.";
           result = { ok: false, error, childCalls: [] };
           status = "failed";
         } else if (signal?.aborted) {
-          error = "exec was cancelled before starting.";
+          error = "run_script was cancelled before starting.";
           result = { ok: false, error, childCalls: [] };
           status = "cancelled";
         } else if (this.uncertainExecutions.size > 0) {
@@ -416,10 +425,19 @@ export class ToolExecutionCoordinator {
         } else {
           this.codeModeCellActive = true;
           try {
-            const children = this.createAgentTools(editing, { auditOnly: true, script: true });
-            await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId, state: "running", retrySafety: "unsafe" });
+            const children = this.createAgentTools(editing, { auditOnly: true, script: true, parentToolCallId: toolCallId });
+            await this.recordAndFlush({ type: "tool_execution", tool: "run_script", toolCallId, sequence, operationId, state: "running", retrySafety: "unsafe" });
             result = await executeCodeModeCell({
-              code: args.code, parentToolCallId: toolCallId, tools: [], admittedTools: children, signal, executionPolicy,
+              code: args.code, language: args.language as "javascript" | "typescript" | undefined, parentToolCallId: toolCallId, tools: [], admittedTools: children, signal, executionPolicy,
+              timeoutMs: args.timeout_ms as number | undefined,
+              archiveStdout: async (stdout) => (await archiveToolResult({
+                workspaceRoot: this.context.workspaceRoot, sessionId: this.context.recorder.sessionId,
+                toolCallId: `${toolCallId}:stdout`, sequence, tool: "run_script", result: stdout
+              })).archivePath,
+              onToolResult: (child) => {
+                inputResultTokens += estimateTokens(serializeToolResult(child.details ?? child.content));
+                resultCount++;
+              },
               getModelTools: () => this.createAgentTools(editing, { discovery: true }),
               prepareTools: async (query, discoverySignal) => {
                 if (!query || !this.context.toolRegistry.listEntries().some((entry) => entry.tool.name === query && entry.source !== "mcp")) {
@@ -427,7 +445,7 @@ export class ToolExecutionCoordinator {
                   if (discovery?.timedOut) throw new Error("MCP discovery is still pending. Try again after the connection is ready.");
                 }
                 discoverySignal?.throwIfAborted();
-                return this.createAgentTools(editing, { auditOnly: true, script: true });
+                return this.createAgentTools(editing, { auditOnly: true, script: true, parentToolCallId: toolCallId });
               },
               searchTools: async (query, options) => {
                 const search = this.context.toolRegistry.listEntries().find((entry) => entry.tool.name === toolSearchToolName);
@@ -461,7 +479,7 @@ export class ToolExecutionCoordinator {
               error = (result as { error?: string }).error ?? "Code Mode execution failed.";
               status = (result as { outcomeUnknown?: boolean }).outcomeUnknown || this.uncertainExecutions.size
                 ? "unknown" : signal?.aborted ? "cancelled" : "failed";
-              if (status === "unknown") this.uncertainExecutions.set(operationId, "exec");
+              if (status === "unknown") this.uncertainExecutions.set(operationId, "run_script");
             }
           } catch (failure) {
             error = failure instanceof Error ? failure.message : String(failure);
@@ -471,14 +489,14 @@ export class ToolExecutionCoordinator {
             this.codeModeCellActive = false;
           }
         }
-        await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId,
+        await this.recordAndFlush({ type: "tool_execution", tool: "run_script", toolCallId, sequence, operationId,
           state: status === "succeeded" ? "succeeded" : status === "cancelled" ? "cancelled" : status === "unknown" ? "unknown" : "failed", retrySafety: "unsafe", evidence: error === undefined ? undefined : toolResultPreview(redactSecrets(error)),
           outcomeUnknownReason: status === "unknown" ? "unsettled_previous_invocation" : undefined });
         const children = (result as { childCalls: Array<{ toolCallId: string }> }).childCalls;
         const goalControlOnly = children.length > 0 && children.every(child => this.goalControlCalls.has(child.toolCallId)) ? true : undefined;
-        const modelResult = await this.finishSyntheticCall({ id: toolCallId, name: "exec", args }, sequence,
+        const modelResult = await this.finishSyntheticCall({ id: toolCallId, name: "run_script", args }, sequence,
           { ...(result as object), operationId, executionStatus: status, goalControlOnly }, error,
-          { executionStatus: status, operationId, outcomeUnknownReason: status === "unknown" ? "unsettled_previous_invocation" : undefined });
+          { executionStatus: status, operationId, optimizationInput: { beforeTokens: inputResultTokens, toolCalls: resultCount }, outcomeUnknownReason: status === "unknown" ? "unsettled_previous_invocation" : undefined });
         return { content: [{ type: "text", text: serializeToolResult(modelResult) }], details: modelResult, isError: status !== "succeeded" };
       }
     };
@@ -492,11 +510,16 @@ export class ToolExecutionCoordinator {
     }
   }
 
+  private emit(event: AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>): void {
+    this.emitEvent(event.type === "tool.started" ? { ...event, parentToolCallId: this.scriptParents.get(event.toolCallId) } : event);
+  }
+
   private recordAndFlush(event: SessionEvent, resultRedactionOptions?: SensitiveValueRedactionOptions): Promise<SessionEvent> {
     const runtimeContext = this.context.runId !== undefined && this.context.turnId !== undefined
       ? { runId: this.context.runId, turnId: this.context.turnId }
       : this.context.recorder.runtimeContextSnapshot();
-    return this.context.recorder.recordAndFlush(event, runtimeContext, resultRedactionOptions);
+    const record = event.type === "tool_call" && event.toolCallId ? { ...event, parentToolCallId: this.scriptParents.get(event.toolCallId) } : event;
+    return this.context.recorder.recordAndFlush(record, runtimeContext, resultRedactionOptions);
   }
 
   getExecutionBudgetSnapshot(): ToolExecutionBudgetSnapshot {
@@ -629,6 +652,7 @@ export class ToolExecutionCoordinator {
     let latestEvidence: string | undefined;
     let retrySafety: ToolRetrySafety = "unknown";
     let executionStarted = false;
+    let validationFailure = false;
     let finishPromise: Promise<unknown> | undefined;
     let committedChange: CommittedFileChange | undefined;
     let budgetAdmitted = false;
@@ -750,7 +774,8 @@ export class ToolExecutionCoordinator {
           }
         );
         options.onActualResult?.(result);
-        options.onResultStatus?.(status);
+        options.onResultStatus?.(status, status === "failed" && !signal?.aborted && !committedChange
+          && (validationFailure || executionStarted && source === "builtin" && toolDefinition.risk === "read" && retrySafety === "safe"));
         return modelResult;
       })();
       return finishPromise;
@@ -787,6 +812,7 @@ export class ToolExecutionCoordinator {
           await persistState("running");
           const prepared = await this.prepareToolCall(toolDefinition, call, source, signal);
           if (!prepared.ok) {
+            validationFailure = prepared.validationFailure === true;
             this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
             return await finish(prepared.result, prepared.errorMessage, prepared.executionStatus ?? "failed");
           }
@@ -980,11 +1006,29 @@ export class ToolExecutionCoordinator {
       evidence?: string;
       auditOnly?: boolean;
       scriptResult?: boolean;
+      optimizationInput?: { beforeTokens: number; toolCalls: number };
       source?: ToolSource;
       taskStatusResultIsData?: boolean;
     } = {}
   ): Promise<unknown> {
-    const modelResult = metadata.scriptResult ? result : await this.applyToolResultBudget(call, sequence, result, metadata.source);
+    const rtk = call.name === "Bash" && metadata.source === "builtin" && typeof result === "object" && result !== null
+      ? (result as { rtk?: { beforeTokens: number; afterTokens: number; command: string; originalCommand?: string; durationMs?: number } }).rtk : undefined;
+    // 统计与执行命令属于本地审计，不作为工具正文发给脚本或模型。
+    const modelInput = rtk && typeof result === "object" && result !== null
+      ? Object.fromEntries(Object.entries(result).filter(([key]) => key !== "rtk" && key !== "executedCommand")) : result;
+    const modelResult = metadata.scriptResult ? modelInput : await this.applyToolResultBudget(call, sequence, modelInput, metadata.source);
+    const projectedTokens = metadata.optimizationInput ? estimateTokens(serializeToolResult(modelResult)) : 0;
+    const optimization: ToolOptimization | undefined = metadata.optimizationInput ? {
+      id: metadata.operationId ?? call.id, kind: "ptc", estimator: "utf8/3",
+      beforeTokens: metadata.optimizationInput.beforeTokens,
+      afterTokens: projectedTokens,
+      savedTokens: metadata.optimizationInput.beforeTokens - projectedTokens,
+      toolCalls: metadata.optimizationInput.toolCalls
+    } : rtk ? {
+      id: metadata.operationId ?? call.id, kind: "rtk", estimator: "rtk",
+      beforeTokens: rtk.beforeTokens, afterTokens: rtk.afterTokens,
+      savedTokens: rtk.beforeTokens - rtk.afterTokens, toolCalls: 1, command: rtk.command, originalCommand: rtk.originalCommand, durationMs: rtk.durationMs
+    } : undefined;
     // 模型侧预算只改变返回值；session、实时界面和归档都以工具实际产出的结果为事实。
     // 否则一次预算溢出会把“模型看见的引用”误当成工具真正返回的内容，后续恢复只能看到二次包装。
     const persistedResult = await this.outlineToolResultForPersistence(call, sequence, result, metadata.source);
@@ -999,7 +1043,9 @@ export class ToolExecutionCoordinator {
       recovered: metadata.recovered,
       operationId: metadata.operationId,
       evidence: metadata.evidence,
-      auditOnly: metadata.auditOnly
+      auditOnly: metadata.auditOnly,
+      modelResult: metadata.optimizationInput ? modelResult : undefined,
+      optimization
     }, { context: metadata.source === "mcp" ? "mcp-result" : undefined });
     try {
       await this.onToolResultPersisted?.();
@@ -1013,7 +1059,7 @@ export class ToolExecutionCoordinator {
       this.context.recorder.record({ type: "error", message: diagnostic });
       this.emit({ type: "error", message: diagnostic, recorded: true, fatal: false });
     }
-    this.emitToolResult(call, result, diagnostic, metadata);
+    this.emitToolResult(call, result, diagnostic, { ...metadata, optimization, modelResult: metadata.optimizationInput ? modelResult : undefined });
     return modelResult;
   }
 
@@ -1028,12 +1074,14 @@ export class ToolExecutionCoordinator {
       operationId?: string;
       evidence?: string;
       taskStatusResultIsData?: boolean;
+      optimization?: ToolOptimization;
+      modelResult?: unknown;
     } = {}
   ): void {
     const durationMs = resultNumber(result, "durationMs");
     const error = metadata.executionStatus === "unknown" || metadata.executionStatus === "cancelled"
       ? undefined
-      : errorMessage ?? (metadata.taskStatusResultIsData && metadata.executionStatus === "succeeded"
+      : errorMessage ?? (metadata.executionStatus === "succeeded"
         ? undefined : failedToolResultMessage(result));
     if (error) {
       this.emit({
@@ -1047,7 +1095,9 @@ export class ToolExecutionCoordinator {
         outcomeUnknownReason: metadata.outcomeUnknownReason,
         recovered: metadata.recovered,
         operationId: metadata.operationId,
-        evidence: metadata.evidence
+        evidence: metadata.evidence,
+        optimization: metadata.optimization,
+        modelResult: metadata.modelResult
       });
       return;
     }
@@ -1061,7 +1111,9 @@ export class ToolExecutionCoordinator {
       outcomeUnknownReason: metadata.outcomeUnknownReason,
       recovered: metadata.recovered,
       operationId: metadata.operationId,
-      evidence: metadata.evidence
+      evidence: metadata.evidence,
+      optimization: metadata.optimization,
+      modelResult: metadata.modelResult
     });
   }
 
@@ -1183,7 +1235,7 @@ export class ToolExecutionCoordinator {
     modelResult: unknown,
     source?: ToolSource
   ): Promise<unknown> {
-    const goalControlOnly = (call.name === "exec" || call.name === "Bash" && source === "builtin")
+    const goalControlOnly = (call.name === "run_script" || call.name === "Bash" && source === "builtin")
       && typeof modelResult === "object" && modelResult !== null && (modelResult as { goalControlOnly?: unknown }).goalControlOnly === true ? true : undefined;
     if (goalControlOnly) this.goalControlCalls.add(call.id);
     // 工具本身若已经返回可取回的归档引用，不再重复包装它。
@@ -1317,13 +1369,15 @@ export class ToolExecutionCoordinator {
     signal?: AbortSignal
   ): Promise<PreparedToolCall | FailedPreparedToolCall> {
     let resolution: Promise<ToolExecution> | undefined;
+    let argumentsValidated = false;
     try {
       const schemaValidation = validateJsonSchema(toolDefinition.parameters, call.args);
       if (!schemaValidation.ok) {
         const message = `Invalid tool arguments for ${call.name}: ${schemaValidation.errors.join("; ")}`;
-        return { ok: false, result: { error: message, validation: true }, errorMessage: message };
+        return { ok: false, validationFailure: true, result: { error: message, validation: true }, errorMessage: message };
       }
       const args = toolDefinition.schema.parse(call.args);
+      argumentsValidated = true;
       resolution = Promise.resolve(toolDefinition.resolveExecution(args));
       const execution = source === "builtin"
         ? await resolution
@@ -1353,6 +1407,7 @@ export class ToolExecutionCoordinator {
       return {
         ok: false,
         result: error instanceof ZodError ? { error: message, validation: true } : { error: message },
+        validationFailure: error instanceof ZodError && !argumentsValidated,
         errorMessage: message
       };
     }
@@ -1394,7 +1449,7 @@ export class ToolExecutionCoordinator {
             toolDiscoveryNames: options?.toolDiscoveryNames, toolDiscoveryModelNames: options?.toolDiscoveryModelNames,
             toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
             prepareToolDiscovery: options?.script ? undefined : this.context.prepareToolDiscovery,
-            mcpResultMode: options?.script && source === "mcp" ? "envelope" : undefined,
+            mcpResultMode: source === "mcp" && (options?.script || execution.interpretResult) ? "envelope" : undefined,
             deniedPaths: this.permissionManager.getDeniedPaths(),
             toolCallId: call.id,
             operationId: operationId ?? createToolOperationId(this.context.recorder.sessionId, call.id),
@@ -1461,8 +1516,10 @@ export class ToolExecutionCoordinator {
           throw new FileChangeUncertainError("File change result does not match durable commit evidence.");
         }
       }
-      const summarized = attachToolSummary(result, Date.now() - startedAt);
-      const executionFailure = options?.taskStatusResultIsData ? undefined : failedToolResultMessage(summarized);
+      const interpreted = execution.interpretResult?.(result, { script: options?.script });
+      const summarized = attachToolSummary(interpreted ? interpreted.result : result, Date.now() - startedAt);
+      const executionFailure = interpreted ? interpreted.errorMessage
+        : options?.taskStatusResultIsData ? undefined : failedToolResultMessage(summarized);
       const executionStatus = (latestExecutionState as ToolExecutionState) === "unknown" ? "unknown" : executionFailure ? "failed" : "succeeded";
       reportExecutionState(executionStatus, executionFailure);
       return {

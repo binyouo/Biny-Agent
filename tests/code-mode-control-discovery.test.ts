@@ -36,10 +36,10 @@ try {
         const current = step++;
         if (disabled) assert.deepEqual(context.tools, []);
         else if (current === 0) {
-          assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["Read", "exec"]);
-          assert.doesNotMatch(context.tools.find((tool) => tool.name === "exec")!.promptSnippet ?? "", /Grep:|AskUserQuestion:/u);
+          assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["Read", "run_script"]);
+          assert.doesNotMatch(context.tools.find((tool) => tool.name === "run_script")!.promptSnippet ?? "", /Grep:|AskUserQuestion:/u);
           return (async function* (): AsyncGenerator<ModelStreamEvent> {
-            yield { type: "tool-call", id: "discover", name: "exec", arguments: { code: selection === "auto"
+            yield { type: "tool-call", id: "discover", name: "run_script", arguments: { description: "Exercise script tool flow", code: selection === "auto"
               ? "const hits=await searchTools('Grep AskUserQuestion'); const page=await tools.Grep({query:'needle'}); return {hits, paths:page.matches.map(row=>row.path)};"
               : "return await searchTools('Grep AskUserQuestion');" } };
             yield { type: "finish", reason: "tool-calls" };
@@ -87,7 +87,7 @@ try {
       if (!first) assert.ok(context.tools.some((tool) => tool.name === "AskUserQuestion"), "completed script discovery restores the ordinary control schema");
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         if (first) {
-          yield { type: "tool-call", id: "resume-control-search", name: "exec", arguments: { code: "return await searchTools('AskUserQuestion');" } };
+          yield { type: "tool-call", id: "resume-control-search", name: "run_script", arguments: { description: "Exercise script tool flow", code: "return await searchTools('AskUserQuestion');" } };
           yield { type: "finish", reason: "tool-calls" };
         } else {
           yield { type: "text-delta", text: "Discovery restored." };

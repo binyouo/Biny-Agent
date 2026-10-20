@@ -1,3 +1,4 @@
+import { toolOptimizationSchema } from "./toolOptimization.js";
 /**
  * Session 事件读取模块。
  *
@@ -52,7 +53,7 @@ const modelRequestContextSchema = z.object({
   runId: z.string().optional(),
   turnId: z.string().optional(),
   step: z.number().int().nonnegative().optional(),
-  operation: z.enum(["agent", "plan", "compaction", "memory", "subagent"]).optional(),
+  operation: z.enum(["agent", "plan", "compaction", "memory", "subagent", "vision"]).optional(),
   promptEpoch: z.number().int().nonnegative().optional(),
   promptEpochReason: z.enum(["initial", "compaction", "rewind", "fork", "provider_changed", "model_changed", "tool_schema_changed"]).optional(),
   promptEpochCreatedAt: z.string().optional(),
@@ -165,6 +166,7 @@ const sessionEventSchema = z.discriminatedUnion("type", [
   }).passthrough(),
   z.object({
     type: z.literal("tool_call"),
+    parentToolCallId: z.string().optional(),
     tool: z.string(),
     args: z.unknown().optional(),
     toolCallId: z.string().optional(),
@@ -192,6 +194,8 @@ const sessionEventSchema = z.discriminatedUnion("type", [
   }).passthrough(),
   z.object({
     type: z.literal("tool_result"),
+    optimization: toolOptimizationSchema.optional(),
+    modelResult: z.unknown().optional(),
     tool: z.string(),
     result: z.unknown().optional(),
     toolCallId: z.string().optional(),

@@ -131,12 +131,12 @@ async function runFixture(
 try {
   const coexist = await runFixture("exposure-coexist", registryWithTools(), [
     (context) => {
-      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["Read", "Write", "exec"]);
+      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["Read", "Write", "run_script"]);
       assert.doesNotMatch(context.systemPrompt ?? "", new RegExp(schemaMarker, "u"));
       return call("coexist-read", "Read", { path: "hello.txt" });
     },
     () => call("coexist-write", "Write", { path: "direct.txt", content: "ordinary tools remain usable" }),
-    () => call("coexist-exec", "exec", { code: "const row = await tools.Read({path:'hello.txt'}); return {read:row.content};" }),
+    () => call("coexist-exec", "run_script", { description: "Run fixture workflow", code: "const row = await tools.Read({path:'hello.txt'}); return {read:row.content};" }),
     finish
   ]);
   assert.equal(await readFile(path.join(workspaceRoot, "direct.txt"), "utf8"), "ordinary tools remain usable");
@@ -148,7 +148,7 @@ try {
 
   let localPreparation = 0;
   const localRead = await runFixture("exposure-local-readiness", registryWithTools(false), [
-    () => call("local-read-exec", "exec", { code: "return (await tools.Read({path:'hello.txt'})).content;" }), finish
+    () => call("local-read-exec", "run_script", { description: "Run fixture workflow", code: "return (await tools.Read({path:'hello.txt'})).content;" }), finish
   ], {
     async prepareToolDiscovery() { localPreparation++; return { pending: ["reports"], timedOut: true }; }
   });
@@ -160,10 +160,10 @@ try {
   const discovered = await runFixture("exposure-script-discovery", discoveryRegistry, [
     (context) => {
       assert.ok(!context.tools.some((tool) => tool.name === reportName));
-      const exec = context.tools.find((tool) => tool.name === "exec");
+      const exec = context.tools.find((tool) => tool.name === "run_script");
       assert.ok(exec);
       assert.doesNotMatch(`${exec.description}\n${exec.promptSnippet ?? ""}`, /project-key-schema-marker|Reports require a project key/u);
-      return call("report-exec", "exec", { code: `const scope = await describeNamespace('reports');
+      return call("report-exec", "run_script", { description: "Run fixture workflow", code: `const scope = await describeNamespace('reports');
 const hits = await searchTools('查询项目报告', {namespace:'reports',limit:2});
 const signature = await describeTool(hits[0].name);
 const data = await tools[hits[0].name]({project:'demo'});
@@ -204,7 +204,7 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
       const direct = context.tools.find((tool) => tool.name === reportName);
       assert.ok(direct, "ToolSearch discloses deferred MCP as an ordinary tool");
       assert.match(JSON.stringify(direct.parameters), /project-key-schema-marker/u);
-      assert.ok(!context.tools.some((tool) => tool.name === "exec"));
+      assert.ok(!context.tools.some((tool) => tool.name === "run_script"));
       return call("report-direct", reportName, { project: "demo" });
     }, finish
   ], { executionMode: "direct" });
@@ -215,9 +215,9 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
     (context) => {
       assert.ok(context.tools.some((tool) => tool.name === privateNames[1]), "model-only tools remain directly callable when selected");
       assert.ok(!context.tools.some((tool) => tool.name === privateNames[0]), "hidden tools are never disclosed to the model");
-      return call("private-description", "exec", { code: `return {hidden:await describeTool('${privateNames[0]}'), modelOnly:await describeTool('${privateNames[1]}')};` });
+      return call("private-description", "run_script", { description: "Run fixture workflow", code: `return {hidden:await describeTool('${privateNames[0]}'), modelOnly:await describeTool('${privateNames[1]}')};` });
     },
-    () => call("private-call", "exec", { code: `try { await tools['${privateNames[0]}']({project:'demo'}); } catch {} return await tools['${privateNames[1]}']({project:'demo'});` }),
+    () => call("private-call", "run_script", { description: "Run fixture workflow", code: `try { await tools['${privateNames[0]}']({project:'demo'}); } catch {} return await tools['${privateNames[1]}']({project:'demo'});` }),
     finish
   ], { automatic: false, run: { capabilitySelection: { tools: "all", skills: "none" } } });
   const descriptions = (resultFor(privateEvents, "private-description") as { value: { hidden: unknown; modelOnly: { name: string; invocation: string } } }).value;
@@ -235,7 +235,7 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
   } });
   failureRegistry.registerMcpTool(failureTool);
   const failed = await runFixture("exposure-fail-closed", failureRegistry, [
-    () => call("failed-script", "exec", { code: "try { await tools.mcp__reports__failure({project:'demo'}); } catch {} return await tools.mcp__reports__failure({project:'demo'});" }), finish
+    () => call("failed-script", "run_script", { description: "Run fixture workflow", code: "try { await tools.mcp__reports__failure({project:'demo'}); } catch {} return await tools.mcp__reports__failure({project:'demo'});" }), finish
   ]);
   assert.equal((resultFor(failed, "failed-script") as { ok: boolean }).ok, false);
   assert.equal(failedCalls, 1, "caught script failures neither replay the cell nor dispatch the second child");
@@ -251,7 +251,7 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
   } });
   permissionRegistry.registerMcpTool(remoteWrite);
   const denied = await runFixture("exposure-permission-denied", permissionRegistry, [
-    () => call("denied-script", "exec", { code: "try { await tools.mcp__reports__write({project:'demo'}); } catch {} return await tools.mcp__reports__write({project:'demo'});" }), finish
+    () => call("denied-script", "run_script", { description: "Run fixture workflow", code: "try { await tools.mcp__reports__write({project:'demo'}); } catch {} return await tools.mcp__reports__write({project:'demo'});" }), finish
   ], { permissionMode: "read-only" });
   assert.equal((resultFor(denied, "denied-script") as { ok: boolean }).ok, false);
   assert.equal(deniedWrites, 0, "the real permission authority denies the MCP write before dispatch");
@@ -261,10 +261,10 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
 
   const manual = await runFixture("exposure-manual", registryWithTools(), [
     (context) => {
-      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["Read", "exec"]);
-      return call("manual-description", "exec", { code: "return await describeNamespace('reports');" });
+      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["Read", "run_script"]);
+      return call("manual-description", "run_script", { description: "Run fixture workflow", code: "return await describeNamespace('reports');" });
     },
-    () => call("manual-call", "exec", { code: "return await tools.mcp__reports__list({project:'demo'});" }), finish
+    () => call("manual-call", "run_script", { description: "Run fixture workflow", code: "return await tools.mcp__reports__list({project:'demo'});" }), finish
   ], { automatic: false, run: { capabilitySelection: { tools: ["Read"], skills: "none" } } });
   assert.equal((resultFor(manual, "manual-description") as { value: unknown }).value, null);
   assert.equal((resultFor(manual, "manual-call") as { ok: boolean }).ok, false);
@@ -278,7 +278,7 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
   const directScriptEvents = await runFixture("exposure-script-unselected-direct", scriptDirect, [
     (context) => {
       assert.ok(!context.tools.some((tool) => tool.name === reportName));
-      return call("unselected-direct-exec", "exec", { code: `const hits=await searchTools('${reportName}'); return {invocation:hits[0].invocation, data:await tools[hits[0].name]({project:'demo'})};` });
+      return call("unselected-direct-exec", "run_script", { description: "Run fixture workflow", code: `const hits=await searchTools('${reportName}'); return {invocation:hits[0].invocation, data:await tools[hits[0].name]({project:'demo'})};` });
     },
     (context) => {
       assert.ok(!context.tools.some((tool) => tool.name === reportName), "script discovery need not publish callable MCP schemas");
@@ -291,7 +291,7 @@ return {instructions:scope.instructions, signature:signature.parameters.properti
   await runFixture("exposure-direct-mode", registryWithTools(), [(context) => {
     assert.ok(context.tools.some((tool) => tool.name === "Read"));
     assert.ok(context.tools.some((tool) => tool.name === "Write"));
-    assert.ok(!context.tools.some((tool) => tool.name === "exec"));
+    assert.ok(!context.tools.some((tool) => tool.name === "run_script"));
     return finish();
   }], { executionMode: "direct" });
 } finally { await rm(workspaceRoot, { recursive: true, force: true }); }

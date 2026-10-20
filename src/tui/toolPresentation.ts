@@ -23,13 +23,16 @@ export interface RunningToolItemOptions {
 
 export function createRunningToolItem(options: RunningToolItemOptions): ToolTranscriptItem {
   const argsSummary = summarizeToolArgs(options.tool, options.args);
+  const scriptDescription = options.tool === "run_script" && typeof options.args === "object" && options.args !== null
+    && "description" in options.args && typeof options.args.description === "string" ? options.args.description : undefined;
+  const description = scriptDescription ?? options.description;
   const item: ToolTranscriptItem = {
     id: options.id,
     kind: "tool",
     toolCallId: options.toolCallId,
     tool: options.tool,
-    description: options.description,
-    title: semanticToolTitle(options.tool, argsSummary, options.display, options.description, true),
+    description,
+    title: semanticToolTitle(options.tool, argsSummary, options.display, description, true),
     argsSummary,
     display: options.display,
     status: "running",
@@ -151,6 +154,7 @@ export function semanticToolTitle(
   }
   if (tool === "BashOutput") return `${running ? "Reading" : "Read"} background process${argsSummary ? ` ${argsSummary}` : "es"}`;
   if (tool === "KillShell") return `${running ? "Stopping" : "Stopped"} background process${argsSummary ? ` ${argsSummary}` : ""}`;
+  if (tool === "run_script" && description?.trim() && description.length <= 120) return description.trim();
   if (toolPresentation(tool)) return `${running ? "正在" : "已"}${toolDisplayName(tool)}`;
   const safeDescription = description?.trim();
   if (safeDescription && safeDescription.length <= 120) return safeDescription;

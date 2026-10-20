@@ -1,3 +1,4 @@
+import { prepareRtk, type RtkReceipt } from "./rtk.js";
 /**
  * Shell 命令工具模块。
  *
@@ -46,6 +47,9 @@ export type RunCommandToolResult =
 
 export interface RunCommandResult {
   status: "completed" | "failed" | "timed_out";
+  rtk?: RtkReceipt;
+  executedCommand?: string;
+  optimizationWarning?: string;
   /** 这次执行实际生效的沙箱边界；未生效时说明原因。 */
   sandbox?: string;
   stdout: string;
@@ -89,6 +93,7 @@ export interface RunShellCommandOptions {
 export type ShellCompletionEvidence = "normal_exit" | "unconfirmed";
 
 export interface RunCommandToolOptions {
+  rtkEnabled?: () => boolean | Promise<boolean>;
   shell?: ShellPlan;
   /** 内部调用方可收紧单次命令超时；普通模型工具继续使用 runShellCommand 的默认值。 */
   timeoutMs?: number;
@@ -180,16 +185,19 @@ export function createRunCommandTool(
           if (currentCwd !== commandCwd) throw new Error("The command working directory changed after the tool call was prepared.");
           const cwd = args.cwd || !inferredCwd ? commandCwd : context.workspaceRoot;
           const executionSandbox = { ...sandboxOptions, denyPaths: deniedPaths };
-          const sandboxed = sandboxCommand(args.command, context.workspaceRoot, executionSandbox, {
-            platform: process.platform,
-            home: homedir(),
-            temporaryDirectory: tmpdir()
-          });
-          const sandboxDescription = sandboxed.applied
-            ? describeSandbox(executionSandbox, process.platform)
-            : `not applied (${sandboxed.reason ?? "unknown"})`;
-          const scope = options.executionScope?.(executionContext, args);
+          const rtk = args.background !== true && shell.kind !== "cmd" && await options.rtkEnabled?.()
+            ? await prepareRtk(args.command, shell.kind) : undefined;
+          let scope: ReturnType<NonNullable<RunCommandToolOptions["executionScope"]>>;
           try {
+            const sandboxed = sandboxCommand(rtk?.command ?? args.command, context.workspaceRoot, executionSandbox, {
+              platform: process.platform,
+              home: homedir(),
+              temporaryDirectory: tmpdir()
+            });
+            const sandboxDescription = sandboxed.applied
+              ? describeSandbox(executionSandbox, process.platform)
+              : `not applied (${sandboxed.reason ?? "unknown"})`;
+            scope = options.executionScope?.(executionContext, args);
             if (args.background === true) {
               const process = await managedProcesses!.start({
                 command: sandboxed.command,
@@ -202,12 +210,26 @@ export function createRunCommandTool(
               });
               return { background: true, sandbox: sandboxDescription, process };
             }
+            const commandStarted = performance.now();
             const result = await runShellCommand(cwd, sandboxed.command, {
               signal, onUpdate, timeoutMs: args.timeoutMs ?? options.timeoutMs,
-              captureFullOutput: true, shell, env: scope?.env
+              captureFullOutput: true, shell, env: { ...scope?.env, ...rtk?.env }
             });
-            return { ...result, background: false, sandbox: sandboxDescription, ...scope?.resultMetadata() };
-          } finally { scope?.dispose(); }
+            const durationMs = Math.max(0, Math.round(performance.now() - commandStarted));
+            let receipt: RtkReceipt | undefined;
+            let optimizationWarning: string | undefined;
+            if (rtk?.env) {
+              try {
+                receipt = rtk.readReceipt();
+                if (receipt) receipt.durationMs = durationMs;
+              }
+              catch { optimizationWarning = "命令已执行，RTK 统计不可用；不会重新执行命令。"; }
+              if (!receipt) optimizationWarning ??= "命令已执行，未取得 RTK 统计。";
+            }
+            return { ...result, background: false, sandbox: sandboxDescription, ...scope?.resultMetadata(),
+              rtk: receipt, executedCommand: rtk?.env ? rtk.command : undefined, optimizationWarning };
+
+          } finally { try { scope?.dispose(); } finally { await rtk?.dispose(); } }
         }
       };
     }

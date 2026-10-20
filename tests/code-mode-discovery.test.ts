@@ -45,7 +45,7 @@ return {hits, description, namespace, inaccessible: await describeTool('mcp__pri
 assert.equal(discovered.ok, true, discovered.error);
 assert.deepEqual(searches, [{ query: "查询项目报告", names: [reports.name], limit: 2, namespace: "reports" }]);
 assert.deepEqual(discovered.value, {
-  hits: [{ name: reports.name, description: reports.description, namespace: "reports" }],
+  hits: [{ name: reports.name, description: reports.description, namespace: "reports", parameters: reports.parameters, outputSchema: reports.outputSchema }],
   description: { name: reports.name, description: reports.description, parameters: reports.parameters, outputSchema: reports.outputSchema, namespace: "reports" },
   namespace: { name: "reports", description: "Issue reporting", instructions: "Use the project key.", tools: [
     { name: reports.name, description: reports.description, parameters: reports.parameters, outputSchema: reports.outputSchema, namespace: "reports" }

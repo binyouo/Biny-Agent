@@ -60,7 +60,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
       assert.ok(plan, "only explicitly scripted model requests are permitted");
       const active = plan;
       assert.deepEqual(context.tools.map((tool) => tool.name).sort(),
-        active.mode === "code_mode" ? [...selectedTools, "exec"].sort() : [...selectedTools].sort());
+        active.mode === "code_mode" ? [...selectedTools, "run_script"].sort() : [...selectedTools].sort());
       assert.doesNotMatch(context.systemPrompt ?? "", /DO_NOT_ACTIVATE_FIXTURE/u,
         "queries must not activate a skill or inject its instructions");
       let response: ModelStreamEvent[];
@@ -164,7 +164,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
       assert.deepEqual(commands.config.permission, policy);
     };
     const nested = async (id: string, code: string, inspect: (value: unknown) => void): Promise<void> => await run({
-      mode: "code_mode", calls: [{ id, name: "exec", arguments: { code } }],
+      mode: "code_mode", calls: [{ id, name: "run_script", arguments: { description: "Exercise script tool flow", code } }],
       inspect(results) {
         const result = results[0];
         assert.ok(result);
@@ -209,7 +209,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
       ["status-foreign", "fixture-foreign", /belongs to another session/u],
       ["status-missing", "fixture-missing", /does not exist/u]
     ] as const) {
-      await run({ mode: "code_mode", calls: [{ id, name: "exec", arguments: { code: `return await tools.TaskStatus({taskRunId:${JSON.stringify(taskRunId)}});` } }],
+      await run({ mode: "code_mode", calls: [{ id, name: "run_script", arguments: { description: "Exercise script tool flow", code: `return await tools.TaskStatus({taskRunId:${JSON.stringify(taskRunId)}});` } }],
         inspect(results) {
           const result = results[0];
           assert.ok(result);
@@ -235,7 +235,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
     for (const [id, code] of [
       ["task-excluded", "return await tools.Task({task:'must never start'});"],
       ["skill-excluded", "return await tools.Skill({name:'query-fixture'});"]
-    ] as const) await run({ mode: "code_mode", calls: [{ id, name: "exec", arguments: { code } }], inspect(results) {
+    ] as const) await run({ mode: "code_mode", calls: [{ id, name: "run_script", arguments: { description: "Exercise script tool flow", code } }], inspect(results) {
       assert.equal(results[0]?.isError, true);
       const details = record(results[0]?.details);
       assert.equal(details.ok, false);
@@ -328,10 +328,10 @@ await test("CommandRuntime scripts inspect plans through CLI without exposing na
   let steps = 0;
   const model: AgentModel = { provider: "fixture", modelId: "query-runtime-fixture", supportsTools: true, async stream(context) {
     const response: ModelStreamEvent[] = steps++ === 0 ? [
-      { type: "tool-call", id: "plan-query", name: "exec", arguments: { code: `return await tools.Bash(${JSON.stringify({ command: `${biny} plan status ${quote(graphId)} --json` })});` } },
+      { type: "tool-call", id: "plan-query", name: "run_script", arguments: { description: "Exercise script tool flow", code: `return await tools.Bash(${JSON.stringify({ command: `${biny} plan status ${quote(graphId)} --json` })});` } },
       { type: "finish", reason: "tool-calls" }
     ] : steps === 2 ? [
-      { type: "tool-call", id: "forbidden-plan-update", name: "exec", arguments: { code: `return await tools.PlanUpdate({graphId:${JSON.stringify(graphId)},action:'finish',outcome:'completed',summary:'Must not change the plan'});` } },
+      { type: "tool-call", id: "forbidden-plan-update", name: "run_script", arguments: { description: "Exercise script tool flow", code: `return await tools.PlanUpdate({graphId:${JSON.stringify(graphId)},action:'finish',outcome:'completed',summary:'Must not change the plan'});` } },
       { type: "finish", reason: "tool-calls" }
     ] : [{ type: "text-delta", text: "plan inspected" }, { type: "finish", reason: "stop" }];
     if (steps === 2) {

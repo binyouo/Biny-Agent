@@ -53,7 +53,7 @@ try {
     const result = await cell("return await tools.Read({});", [{ name: "Read", parameters: { type: "object" },
       execute: async () => { calls++; return value("unreachable"); } }]);
     assert.equal(result.ok, false);
-    assert.match(result.error, /execution-time protection is unavailable/u);
+    assert.match(result.error, /execution-time protection or streaming console support is unavailable/u);
     assert.equal(calls, 0, "Unavailable runtime must fail before any host dispatch");
     assert.deepEqual(result.childCalls, []);
     console.log(JSON.stringify({ status: "passed", mode: "fail-closed", modulePath }));
@@ -64,10 +64,10 @@ try {
       assert.equal(result.value, 42);
     });
 
-    await fixture("compiled guest cannot access host process, filesystem or network globals", async () => {
+    await fixture("compiled guest has bounded fetch without Node globals", async () => {
       const result = await cell("return [typeof process, typeof require, typeof fetch, typeof Buffer];");
       assert.equal(result.ok, true, result.error);
-      assert.deepEqual(result.value, ["undefined", "undefined", "undefined", "undefined"]);
+      assert.deepEqual(result.value, ["undefined", "undefined", "function", "undefined"]);
     });
 
     await fixture("host wait exceeds VM budget and invokes each child once", async () => {

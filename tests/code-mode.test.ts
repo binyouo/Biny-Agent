@@ -87,6 +87,14 @@ try {
   assert.match(exec.promptSnippet ?? "", /Write/u);
   const result = await exec.execute("parent-1", { code: "const a = await tools.Read({path:'hello.txt'}); return a.content.toUpperCase();" });
   assert.equal(result.isError, false);
+  assert.equal(exec.name, "run_script");
+  const optimizationEvent = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line)).find(event => event.type === "tool_result" && event.toolCallId === "parent-1");
+  assert.equal(optimizationEvent.optimization.kind, "ptc");
+  assert.equal(optimizationEvent.optimization.estimator, "utf8/3");
+  assert.equal(optimizationEvent.optimization.afterTokens, Math.ceil(Buffer.byteLength(result.content.map(part => part.type === "text" ? part.text : "").join("")) / 3));
+  assert.equal(optimizationEvent.optimization.savedTokens, optimizationEvent.optimization.beforeTokens - optimizationEvent.optimization.afterTokens);
+  assert.ok(!JSON.stringify(result.details).includes('"optimization"'));
+
   assert.equal((result.details as { value?: string }).value, "HELLO CODE MODE\n");
   assert.equal(reads, 1);
   assert.equal(writes, 0);
@@ -98,7 +106,7 @@ try {
   assert.equal(writes, 0);
 
   const noFs = await exec.execute("parent-3", { code: "return typeof process + ':' + typeof require + ':' + typeof fetch;" });
-  assert.equal((noFs.details as { value?: string }).value, "undefined:undefined:undefined");
+  assert.equal((noFs.details as { value?: string }).value, "undefined:undefined:function");
 
   const cancelled = new AbortController();
   cancelled.abort();
@@ -458,10 +466,16 @@ try {
   const model: AgentModel = { provider: "fixture", modelId: "code-mode-agent-session", supportsTools: true,
     async stream(context) {
       modelSteps++;
-      assert.deepEqual(context.tools.map((item) => item.name), ["Read", "Write", "exec"]);
+      assert.deepEqual(context.tools.map((item) => item.name), ["Read", "Write", "run_script"]);
       const response: ModelStreamEvent[] = modelSteps === 1
-        ? [{ type: "tool-call", id: "session-exec", name: "exec", arguments: { code: "const r = await tools.Read({path:'hello.txt'}); return r.content;" } }, { type: "finish", reason: "tool-calls" }]
+        ? [{ type: "tool-call", id: "session-exec", name: "run_script", arguments: { description: "Exercise script tool flow", code: "const r = await tools.Read({path:'hello.txt'}); return r.content.length;" } }, { type: "finish", reason: "tool-calls" }]
         : [{ type: "text-delta", text: "read complete" }, { type: "finish", reason: "stop" }];
+      if (modelSteps === 2) {
+        const sent = JSON.stringify(context.messages);
+        assert.ok(!sent.includes("hello code mode"), "raw child file content must not enter the model request");
+        assert.ok(!sent.includes('"optimization"'), "local savings telemetry must not enter the model request");
+        assert.ok(context.messages.some(message => message.role === "toolResult" && message.toolName === "run_script"));
+      }
       return (async function* () { yield* response; })();
     }
   };
@@ -500,12 +514,12 @@ try {
   const searchFlow: AgentModel = { provider: "fixture", modelId: "code-mode-search-session", supportsTools: true,
     async stream(context) {
       searchSteps++;
-      assert.deepEqual(context.tools.map((item) => item.name).sort(), ["exec"]);
+      assert.deepEqual(context.tools.map((item) => item.name).sort(), ["run_script"]);
       assert.ok(!context.tools.some((item) => item.name === "ToolSearch"));
       const response: ModelStreamEvent[] = searchSteps === 1
-        ? [{ type: "tool-call", id: "search-read", name: "exec", arguments: { code: "return await searchTools('read workspace files');" } }, { type: "finish", reason: "tool-calls" }]
+        ? [{ type: "tool-call", id: "search-read", name: "run_script", arguments: { description: "Exercise script tool flow", code: "return await searchTools('read workspace files');" } }, { type: "finish", reason: "tool-calls" }]
         : searchSteps === 2
-          ? [{ type: "tool-call", id: "search-exec", name: "exec", arguments: { code: "const r = await tools.Read({path:'hello.txt'}); const m = await tools.WebSearch({query:'zebrastone'}); const h = await tools.mcp__history__search({query:'zebrastone'}); return {read:r.content, memory:m.originalQuery, hits:h.hits.length};" } }, { type: "finish", reason: "tool-calls" }]
+          ? [{ type: "tool-call", id: "search-exec", name: "run_script", arguments: { description: "Exercise script tool flow", code: "const r = await tools.Read({path:'hello.txt'}); const m = await tools.WebSearch({query:'zebrastone'}); const h = await tools.mcp__history__search({query:'zebrastone'}); return {read:r.content, memory:m.originalQuery, hits:h.hits.length};" } }, { type: "finish", reason: "tool-calls" }]
           : [{ type: "text-delta", text: "searched and read" }, { type: "finish", reason: "stop" }];
       return (async function* () { yield* response; })();
     }
@@ -555,10 +569,10 @@ try {
   let execModelSteps = 0;
   const crossRunModel: AgentModel = { provider: "fixture", modelId: "code-mode-cross-run", supportsTools: true,
     async stream(context) {
-      const hasExec = context.tools.some((item) => item.name === "exec");
+      const hasExec = context.tools.some((item) => item.name === "run_script");
       if (hasExec) execModelSteps++;
       const response: ModelStreamEvent[] = hasExec && execModelSteps === 1
-        ? [{ type: "tool-call", id: "cross-run-first", name: "exec", arguments: { code: "return await tools.WebSearch({query:'zebrastone'});" } }, { type: "finish", reason: "tool-calls" }]
+        ? [{ type: "tool-call", id: "cross-run-first", name: "run_script", arguments: { description: "Exercise script tool flow", code: "return await tools.WebSearch({query:'zebrastone'});" } }, { type: "finish", reason: "tool-calls" }]
         : [{ type: "text-delta", text: "ready" }, { type: "finish", reason: "stop" }];
       return (async function* () { yield* response; })();
     }

@@ -5,7 +5,9 @@ import type { AgentModel, AgentTool } from "../src/agent/core/types.js";
 import type { ModelApiBackend } from "../src/config/schema.js";
 import { createVercelLanguageModel } from "../src/llm/vercelModel.js";
 import { canonicalToolSchemaHash } from "../src/llm/promptCache.js";
-import type { JsonObjectSchema } from "../src/tools/schema.js";
+import { validateJsonSchema, type JsonObjectSchema } from "../src/tools/schema.js";
+import { createEditFileTool } from "../src/tools/file/editFile.js";
+import { createApplyPatchTool } from "../src/tools/file/applyPatch.js";
 
 const parameters = {
   type: "object",
@@ -64,7 +66,11 @@ for (const adapter of adapters) {
     }
   });
   const otherTool = { ...agentTool, name: "aaa_schema_probe" };
-  const orders = [[agentTool, otherTool], [otherTool, agentTool]];
+  const context = { workspaceRoot: process.cwd(), ignore: [] };
+  const fileTools = [createEditFileTool(context), createApplyPatchTool(context)].map(tool => ({
+    ...agentTool, name: tool.name, parameters: tool.parameters
+  }));
+  const orders = [[agentTool, otherTool, ...fileTools], [...fileTools].reverse().concat(otherTool, agentTool)];
   for (const tools of orders) {
     for await (const _event of vercelAgentLoopContinue(
       { messages: [{ role: "user", content: "probe" }], tools },
@@ -87,6 +93,15 @@ for (const adapter of adapters) {
   assert.deepEqual(schema.required, adapter.omitEmptyRequired === true ? undefined : []);
   assert.deepEqual((schema.properties as Record<string, Record<string, unknown>>).optionalObject?.required, adapter.omitEmptyRequired === true ? undefined : []);
   assert.deepEqual((schema.properties as Record<string, Record<string, unknown>>).requiredObject?.required, ["value"]);
+  const edit = findSchema(bodies[0], "old_string") as unknown as JsonObjectSchema;
+  const patch = findSchema(bodies[0], "callId") as unknown as JsonObjectSchema;
+  assert.ok(edit, `${adapter.label} must transmit the Edit contract`);
+  assert.ok(patch, `${adapter.label} must transmit the patch contract`);
+  assert.equal(validateJsonSchema(edit, { operation: "update", path: "index.ts" }).ok, false, adapter.label);
+  assert.equal(validateJsonSchema(edit, { operation: "move", path: "index.ts" }).ok, false, adapter.label);
+  assert.equal(validateJsonSchema(edit, { operation: "delete", path: "index.ts" }).ok, true, adapter.label);
+  assert.equal(validateJsonSchema(patch, { callId: "call", operation: { type: "update_file", path: "index.ts" } }).ok, false, adapter.label);
+  assert.equal(validateJsonSchema(patch, { callId: "call", operation: { type: "delete_file", path: "index.ts" } }).ok, true, adapter.label);
 }
 
 assert.equal(parameters.required, undefined, "adapter projection must not mutate the registered schema");

@@ -201,14 +201,14 @@ try {
     }
   });
   await test("script selection and control boundaries reject unselected Bash, hidden tools, session controls and recursive exec", { timeout: 15_000 }, async () => {
-    const current = fixture({ selected: ["Read", "Write", "AskUserQuestion", "GoalUpdate", "Skill", "Task", "PlanUpdate", "exec"] });
+    const current = fixture({ selected: ["Read", "Write", "AskUserQuestion", "GoalUpdate", "Skill", "Task", "PlanUpdate", "run_script"] });
     let effects = 0;
-    for (const name of ["AskUserQuestion", "GoalUpdate", "Skill", "Task", "PlanUpdate", "exec"]) {
+    for (const name of ["AskUserQuestion", "GoalUpdate", "Skill", "Task", "PlanUpdate", "run_script"]) {
       current.registry.register({ name, description: "Fixture control", risk: "read", parameters: { type: "object", properties: {} },
         resolveExecution: () => ({ approvalRule: name, async execute() { effects++; return {}; } }) });
     }
     current.registry.get("Write").exposure = "hidden";
-    for (const name of ["Bash", "Write", "AskUserQuestion", "GoalUpdate", "Skill", "Task", "PlanUpdate", "exec"]) {
+    for (const name of ["Bash", "Write", "AskUserQuestion", "GoalUpdate", "Skill", "Task", "PlanUpdate", "run_script"]) {
       const result = await current.call("code_mode", name, name === "Bash" ? { command: "printf forbidden > unselected.txt" } : {});
       assert.equal(result.isError, true);
       assert.deepEqual((result.details as { childCalls: unknown[] }).childCalls, []);
@@ -246,10 +246,10 @@ try {
       async stream(context) {
         steps++;
         assert.ok(context.tools.some((tool) => tool.name === "Write"));
-        assert.ok(context.tools.some((tool) => tool.name === "exec"));
+        assert.ok(context.tools.some((tool) => tool.name === "run_script"));
         let response: ModelStreamEvent[];
         if (steps === 1) response = [
-          { type: "tool-call", id: "partial-write", name: "exec", arguments: { code: "await tools.Write({path:'partial.txt',content:'committed once'}); throw new Error('stop after commit');" } },
+          { type: "tool-call", id: "partial-write", name: "run_script", arguments: { description: "Exercise script tool flow", code: "await tools.Write({path:'partial.txt',content:'committed once'}); throw new Error('stop after commit');" } },
           { type: "finish", reason: "tool-calls" }
         ];
         else {

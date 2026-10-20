@@ -86,7 +86,7 @@ export interface ToolExecutionContext {
   toolDiscoveryModelNames?: ReadonlySet<string>;
   toolDiscoveryNamespace?: string;
   prepareToolDiscovery?: (query?: string, signal?: AbortSignal) => Promise<{ pending: string[]; timedOut: boolean }>;
-  /** 脚本子调用保留 MCP 内容块与结构化结果，由执行边界选择，模型参数不能设置。 */
+  /** MCP 结果适配及脚本子调用保留协议回执；执行边界选择，模型参数不能设置。 */
   mcpResultMode?: "envelope";
   /** 仅由运行时绑定的本地电脑桥接租约，不从工具参数接收。 */
   computerMcpLeaseId?: string;
@@ -122,6 +122,8 @@ export interface RunnableToolExecution<TResult = unknown> {
   description?: string;
   retrySafety?: ToolRetrySafety;
   approvalRule: string;
+  /** Adapter-owned protocol outcome and projection, applied after durable execution. */
+  interpretResult?(result: TResult, context: { script?: boolean }): { result: unknown; errorMessage?: string };
   execute(context: ToolExecutionContext): Promise<TResult>;
 }
 

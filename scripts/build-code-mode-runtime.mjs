@@ -62,6 +62,8 @@ export async function verifyCodeModeRuntimeInputs(root = projectRoot) {
   const { createRunner } = await import(pathToFileURL(runRequire.resolve("run")).href);
   assert.equal(experimental_runCodeMode.executionTimeoutBudgetVersion, identity.contractVersion, "Missing SDK timing capability");
   assert.equal(createRunner.executionTimeoutBudgetVersion, identity.contractVersion, "Missing runtime timing capability");
+  assert.equal(experimental_runCodeMode.consoleOutputVersion, 1, "Missing SDK console streaming capability");
+  assert.equal(createRunner.consoleOutputVersion, 1, "Missing runtime console streaming capability");
   const { INLINE_RUN_WORKER_SOURCE } = await import(pathToFileURL(path.join(run.root, "dist/runtime/worker-source.js")).href);
   const wasm = /^globalThis\.__RUN_QUICKJS_WASM_BASE64__ = "([A-Za-z0-9+/=]+)";/u.exec(INLINE_RUN_WORKER_SOURCE);
   assert.ok(wasm, "Worker must contain its WASM asset");

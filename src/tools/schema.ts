@@ -27,6 +27,7 @@ export interface JsonObjectSchema {
   required?: string[];
   additionalProperties?: boolean;
   description?: string;
+  anyOf?: JsonSchema[];
 }
 
 export interface JsonStringSchema {
@@ -35,6 +36,7 @@ export interface JsonStringSchema {
   minLength?: number;
   maxLength?: number;
   enum?: string[];
+  const?: string;
 }
 
 export interface JsonNumberSchema {
@@ -131,7 +133,7 @@ export function validateJsonSchema(schema: JsonSchema, value: unknown, path = "a
 }
 
 function validateValue(schema: JsonSchema, value: unknown, path: string, errors: string[]): void {
-  if ("anyOf" in schema) {
+  if ("anyOf" in schema && schema.anyOf !== undefined) {
     const matched = schema.anyOf.some(branch => {
       const branchErrors: string[] = [];
       validateValue(branch, value, path, branchErrors);
@@ -197,6 +199,7 @@ function validateString(schema: JsonStringSchema, value: unknown, path: string, 
   if (schema.enum !== undefined && !schema.enum.includes(value)) {
     errors.push(`${path} must be one of: ${schema.enum.join(", ")}`);
   }
+  if (schema.const !== undefined && value !== schema.const) errors.push(`${path} must be ${schema.const}`);
 }
 
 function validateNumber(schema: JsonNumberSchema, value: unknown, path: string, errors: string[]): void {

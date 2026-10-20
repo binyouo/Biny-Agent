@@ -1,18 +1,41 @@
 diff --git a/src/run-code-mode.ts b/src/run-code-mode.ts
-index 95435bd..e2ce4fa 100644
+index 95435bd..0c0f795 100644
 --- a/src/run-code-mode.ts
 +++ b/src/run-code-mode.ts
-@@ -70,6 +70,9 @@ let invocationCounter = 0;
+@@ -70,6 +70,12 @@ let invocationCounter = 0;
   */
  export async function runCodeMode(input: RunCodeModeInput): Promise<unknown> {
    const policy = resolveExecutionPolicy(input.options?.executionPolicy);
++  if (input.onConsole && (createRunner as typeof createRunner & { consoleOutputVersion?: number }).consoleOutputVersion !== 1) {
++    throw new CodeModeProtocolError('Streaming console output requires the patched runtime.');
++  }
 +  if (policy.executionTimeoutMs !== undefined && !supportsExecutionTimeoutBudget()) {
 +    throw new CodeModeProtocolError('Cumulative execution budgets require the exact run@2.1.6 runtime timing patch.');
 +  }
    assertSourceSize(input.js, policy.maxSourceBytes);
  
    const toolNames = Object.keys(input.tools).sort();
-@@ -160,6 +163,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<unknown> {
+@@ -109,7 +115,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<unknown> {
+   });
+ 
+   try {
+-    const result = await runner.run({
++    const runInput: Parameters<typeof runner.run>[0] = {
+       source,
+       hostFunctions,
+       limits: toRunLimits(policy, source, input.js),
+@@ -123,7 +129,9 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<unknown> {
+       ...(continuationState.resolutions === undefined
+         ? {}
+         : { resolutions: continuationState.resolutions }),
+-    });
++    };
++    if (input.onConsole) runInput.onConsole = input.onConsole;
++    const result = await runner.run(runInput);
+ 
+     if (result.status === 'completed') {
+       return fromJsonPayload(
+@@ -160,6 +168,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<unknown> {
  
  interface ResolvedExecutionPolicy {
    timeoutMs: number;
@@ -20,7 +43,7 @@ index 95435bd..e2ce4fa 100644
    memoryLimitBytes: number;
    maxStackSizeBytes: number;
    maxResultBytes: number;
-@@ -171,11 +175,25 @@ interface ResolvedExecutionPolicy {
+@@ -171,11 +180,25 @@ interface ResolvedExecutionPolicy {
    maxInFlightBridgeRequests: number;
  }
  
@@ -46,7 +69,7 @@ index 95435bd..e2ce4fa 100644
      memoryLimitBytes: policy.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES,
      maxStackSizeBytes: policy.maxStackSizeBytes ?? DEFAULT_STACK_LIMIT_BYTES,
      maxResultBytes: policy.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
-@@ -363,6 +381,7 @@ function toRunLimits(
+@@ -363,6 +386,7 @@ function toRunLimits(
  ): RunLimits {
    return {
      timeoutMs: policy.timeoutMs,
@@ -54,7 +77,7 @@ index 95435bd..e2ce4fa 100644
      memoryLimitBytes: policy.memoryLimitBytes,
      maxStackSizeBytes: policy.maxStackSizeBytes,
      maxResultBytes: expandedSerializationLimit(policy.maxResultBytes),
-@@ -679,6 +698,7 @@ function toCodeModeRuntimeError(error: unknown): unknown {
+@@ -679,6 +703,7 @@ function toCodeModeRuntimeError(error: unknown): unknown {
  function translateLimitPath(message: string): string {
    const paths: Record<string, string> = {
      'limits.timeoutMs': 'executionPolicy.timeoutMs',
@@ -62,8 +85,14 @@ index 95435bd..e2ce4fa 100644
      'limits.memoryLimitBytes': 'executionPolicy.memoryLimitBytes',
      'limits.maxStackSizeBytes': 'executionPolicy.maxStackSizeBytes',
      'limits.maxResultBytes': 'executionPolicy.maxResultBytes',
+@@ -716,3 +741,5 @@ function translateSourceStack<T>(error: T): T {
+   );
+   return error;
+ }
++
++if ((createRunner as typeof createRunner & { consoleOutputVersion?: number }).consoleOutputVersion === 1) Object.defineProperty(runCodeMode, 'consoleOutputVersion', { value: 1, writable: false, configurable: false });
 diff --git a/src/types.ts b/src/types.ts
-index b317e9d..d58e583 100644
+index b317e9d..f9563dc 100644
 --- a/src/types.ts
 +++ b/src/types.ts
 @@ -162,6 +162,8 @@ export type CodeModeApprovalInterrupt =
@@ -75,3 +104,12 @@ index b317e9d..d58e583 100644
    /** @defaultValue `64 * 1024 * 1024` */
    memoryLimitBytes?: number;
    /** @defaultValue `2 * 1024 * 1024` */
+@@ -211,6 +213,8 @@ export interface CodeModeContinuationSecurityOptions {
+  * Input for `runCodeMode`.
+  */
+ export interface RunCodeModeInput {
++  /** Bounded console output delivered independently of tool bridge requests. */
++  onConsole?: (event: { stream: 'stdout' | 'stderr'; text: string; truncated: boolean }) => void;
+   js: string;
+   tools: CodeModeToolSet;
+   toolExecutionOptions?: Partial<CodeModeToolExecutionOptions>;

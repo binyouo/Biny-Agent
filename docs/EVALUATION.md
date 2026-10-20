@@ -40,6 +40,16 @@ pnpm exec electron benchmarks/tool-preselection.mjs /absolute/new-output-dir 3
 
 输出保留任务、源码摘要、原始模型输出、工具审计及逐回合 verifier。成功要求执行预期调用并给出正确答案，不能只依据模型的 completed。统计任务成功率、从回合开始到首个主模型请求的延迟、搜索次数和主/辅助模型合计 token；缺失用量保留未知。Provider 缓存和网络波动未被控制，小样本结果不能直接外推到其他模型、目录或 Code Mode。
 
+## 工具结果处理对照
+
+```bash
+pnpm exec electron benchmarks/tool-result-optimization.mjs /absolute/new-output-dir
+```
+
+使用当前聊天模型、相同 Read 工具和固定合成文件，对照直接调用与允许 `run_script` 的模式。覆盖记录搜索、日志汇总和多文件聚合；模型自主决定是否使用脚本。每题两种模式各运行一次，交替顺序、隔离会话与记忆，最多 6 步、12 次工具调用、每题 120 秒。凭据通过既有存储读取，不写入报告。
+
+输出任务和源码摘要、调用记录、独立答案判定、每次请求用量和累计上下文文本字节数。总 token 包含脚本生成；缺失用量保持未知。单次样本、自动路由端点和未控制的 Provider 缓存不能证明普遍收益，也不能换算成账单节省；RTK 的命令执行需另行验证。
+
 ## Terminal-Bench
 
 仓库提供 [Harbor 接入说明](../scripts/evals/harbor/README.md) 与相应 adapter。Harbor 管理任务环境，官方 verifier 检查实际产物；Agent 回答文本不参与最终通过判定。

@@ -123,11 +123,11 @@ async function integration(): Promise<void> {
     const bridge = input.tools.__biny_code_mode_invoke;
     assert.ok(bridge?.execute, "the real Code Mode invoke bridge must be installed");
     try {
-      return await bridge.execute({ name: "Bash", args: { command } }, { toolCallId: `${id}:bridge`, abortSignal: signal });
+      return { value: await bridge.execute({ name: "Bash", args: { command } }, { toolCallId: `${id}:bridge`, abortSignal: signal }) };
     } finally {
       runnerFinishes.add(id);
     }
-  }, { executionTimeoutBudgetVersion: 1 });
+  }, { executionTimeoutBudgetVersion: 1, consoleOutputVersion: 1 });
 
   mock.module("@ai-sdk/code-mode", { namedExports: {
     CodeModeToolError: FakeCodeModeToolError,
@@ -245,8 +245,8 @@ async function integration(): Promise<void> {
       const a = invoke("Bash", ids.a, { command: commands.a });
       await approvals.first.promise;
       assert.equal(approvals.pendingId, ids.a);
-      const b = invoke("exec", ids.b, { code: `return await tools.Bash({command:${JSON.stringify(commands.b)}});` });
-      const c = invoke("exec", ids.c, { code: `return await tools.Bash({command:${JSON.stringify(commands.c)}});` });
+      const b = invoke("run_script", ids.b, { description: "Run fixture workflow", code: `return await tools.Bash({command:${JSON.stringify(commands.b)}});` });
+      const c = invoke("run_script", ids.c, { description: "Run fixture workflow", code: `return await tools.Bash({command:${JSON.stringify(commands.c)}});` });
       await bEvaluated.promise;
       assert.deepEqual(runnerStarts, [ids.b], "C must not enter Code Mode while B is active");
       assert.equal(evaluations.get(commands.b), 1, "B must reach the real permission queue, not its prompt");

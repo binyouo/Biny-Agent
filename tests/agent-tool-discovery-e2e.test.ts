@@ -221,8 +221,8 @@ async function testDiscoveryWithoutProgress(scenario: {
           if (action === "inspect") {
             yield { type: "tool-call", id: `inspect-${requests}`, name: "inspect_records", arguments: {} };
           } else if (action === "script" || action === "script-loop") {
-            yield { type: "tool-call", id: `exec-${requests}`, name: "exec", arguments: {
-              code: action === "script-loop" ? 'for (let i = 0; i < 8; i++) await searchTools("other_records alternative " + i);' : `return await searchTools("other_records alternative ${requests}");`
+            yield { type: "tool-call", id: `exec-${requests}`, name: "run_script", arguments: {
+              description: "Discover alternative tools", code: action === "script-loop" ? 'for (let i = 0; i < 8; i++) await searchTools("other_records alternative " + i);' : `return await searchTools("other_records alternative ${requests}");`
             } };
           } else {
             for (let index = 0; index < (action === "parallel" ? 3 : 1); index++) {

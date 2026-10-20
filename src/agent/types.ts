@@ -1,3 +1,4 @@
+import type { ToolOptimization } from "../session/toolOptimization.js";
 /** AgentSession 对外发布的规范化运行事件。 */
 import type { AgentConfig } from "../config/schema.js";
 import type { AgentModel } from "./core/types.js";
@@ -99,11 +100,11 @@ export type AgentSessionUpdate =
 
 export type AgentToolEvent =
   | { type: "tool.input"; toolCallId: string; tool: string; args: unknown }
-  | { type: "tool.started"; toolCallId: string; tool: string; args: unknown; description?: string; display?: ToolInputDisplay; operationId?: string }
+  | { type: "tool.started"; parentToolCallId?: string; toolCallId: string; tool: string; args: unknown; description?: string; display?: ToolInputDisplay; operationId?: string }
   | { type: "tool.progress"; toolCallId: string; tool: string; update: ToolUpdate }
   | { type: "tool.change_committed"; toolCallId: string; tool: string; operationId: string; change: import("../tools/file/fileChange.js").CommittedFileChange }
-  | { type: "tool.completed"; toolCallId: string; tool: string; result: unknown; durationMs?: number; executionStatus?: ToolExecutionResultStatus; outcomeUnknownReason?: ToolOutcomeUnknownReason; recovered?: boolean; operationId?: string; evidence?: string }
-  | { type: "tool.failed"; toolCallId: string; tool: string; error: string; result?: unknown; durationMs?: number; executionStatus?: ToolExecutionResultStatus; outcomeUnknownReason?: ToolOutcomeUnknownReason; recovered?: boolean; operationId?: string; evidence?: string };
+  | { type: "tool.completed"; optimization?: ToolOptimization; modelResult?: unknown; toolCallId: string; tool: string; result: unknown; durationMs?: number; executionStatus?: ToolExecutionResultStatus; outcomeUnknownReason?: ToolOutcomeUnknownReason; recovered?: boolean; operationId?: string; evidence?: string }
+  | { type: "tool.failed"; optimization?: ToolOptimization; modelResult?: unknown; toolCallId: string; tool: string; error: string; result?: unknown; durationMs?: number; executionStatus?: ToolExecutionResultStatus; outcomeUnknownReason?: ToolOutcomeUnknownReason; recovered?: boolean; operationId?: string; evidence?: string };
 
 /** Provider 原始分片在 Session 内归一化，宿主不需要理解 provider wire 协议。 */
 export type AgentSessionEvent =

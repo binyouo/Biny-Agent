@@ -11,6 +11,7 @@ console.log("tool display label tests passed");
 
 assert.equal(executionToolLabel("Bash"), "执行命令");
 assert.equal(executionToolLabel("exec"), "运行脚本");
+assert.equal(executionToolLabel("run_script"), "脚本处理");
 assert.equal(executionToolLabel("ToolSearch"), "搜索工具");
 assert.equal(executionToolLabel("recall_memory"), "检索记忆");
 assert.equal(executionToolLabel("custom_plugin_action"), "custom_plugin_action");

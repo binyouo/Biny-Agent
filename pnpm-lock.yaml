@@ -16,10 +16,10 @@ packageExtensionsChecksum: sha256-l4QtdpkwYZ45rQJLYFA5+PIQYxq1pTMiBQMB/Oibt1c=
 
 patchedDependencies:
   '@ai-sdk/code-mode@1.0.50':
-    hash: 9a7d638863eacf50354422bcaf796d859f54854a1d536670dbc6c3a84f280df9
+    hash: 3599031e5faf94bc0306e7a29850b6a0fb7114db6f242453a92830b3f0e409e1
     path: patches/@ai-sdk-code-mode@1.0.50.patch
   run@2.1.6:
-    hash: 4fef79be9cad7c4c0ee14a1c750e578d392c09251553ccc750f737c50cafd5ad
+    hash: d18893479916603076cfa0fcb0980da3d65d8932362ffd16a73762ddb5f85f8e
     path: patches/run@2.1.6.patch
 
 importers:
@@ -34,7 +34,7 @@ importers:
         version: 4.0.49(zod@3.25.76)
       '@ai-sdk/code-mode':
         specifier: 1.0.50
-        version: 1.0.50(patch_hash=9a7d638863eacf50354422bcaf796d859f54854a1d536670dbc6c3a84f280df9)(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)
+        version: 1.0.50(patch_hash=3599031e5faf94bc0306e7a29850b6a0fb7114db6f242453a92830b3f0e409e1)(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)
       '@ai-sdk/google':
         specifier: 4.0.17
         version: 4.0.17(zod@3.25.76)
@@ -176,6 +176,9 @@ importers:
       thinking-orbs:
         specifier: 0.2.0
         version: 0.2.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
       undici:
         specifier: 6.28.1
         version: 6.28.1
@@ -243,9 +246,6 @@ importers:
       tsx:
         specifier: ^4.23.1
         version: 4.23.1
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
       typescript-eslint:
         specifier: ^8.65.0
         version: 8.65.0(eslint@10.7.0(jiti@2.7.0))(typescript@5.9.3)
@@ -4576,10 +4576,10 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.36(zod@3.25.76)
       zod: 3.25.76
 
-  '@ai-sdk/code-mode@1.0.50(patch_hash=9a7d638863eacf50354422bcaf796d859f54854a1d536670dbc6c3a84f280df9)(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)':
+  '@ai-sdk/code-mode@1.0.50(patch_hash=3599031e5faf94bc0306e7a29850b6a0fb7114db6f242453a92830b3f0e409e1)(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)':
     dependencies:
       ai: 7.0.93(zod@3.25.76)
-      run: 2.1.6(patch_hash=4fef79be9cad7c4c0ee14a1c750e578d392c09251553ccc750f737c50cafd5ad)(typescript@5.9.3)
+      run: 2.1.6(patch_hash=d18893479916603076cfa0fcb0980da3d65d8932362ffd16a73762ddb5f85f8e)(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript
 
@@ -8836,7 +8836,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  run@2.1.6(patch_hash=4fef79be9cad7c4c0ee14a1c750e578d392c09251553ccc750f737c50cafd5ad)(typescript@5.9.3):
+  run@2.1.6(patch_hash=d18893479916603076cfa0fcb0980da3d65d8932362ffd16a73762ddb5f85f8e)(typescript@5.9.3):
     optionalDependencies:
       typescript: 5.9.3
 

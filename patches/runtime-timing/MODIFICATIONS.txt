@@ -56,3 +56,10 @@ These paths describe intended bundle locations. The static source-input
 manifest is source-provenance.json. The separate generated provenance.json
 contains measured CLI output hashes; Desktop main build hashes are recorded in
 out/main/code-mode-runtime-provenance.json.
+
+The runtime also streams bounded console output over a separate worker message
+channel to an invocation-scoped host callback. Output does not consume tool
+bridge quotas or depend on a guest finally block. The SDK forwards the callback
+and advertises consoleOutputVersion only when the runtime supports it. Capture
+is bounded by bytes and 4096 messages; truncation is explicit. Worker messages
+are validated and attributed to the active invocation before delivery.

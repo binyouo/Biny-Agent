@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const force = process.argv.includes("--force");
+if (!process.argv.includes("--dry-run")) run(process.execPath, [path.join(root, "scripts/prepare-rtk.mjs")]);
 const dryRun = process.argv.includes("--dry-run");
 const packageRoot = path.join(root, "node_modules");
 const cacheRoot = path.join(packageRoot, ".cache/biny");

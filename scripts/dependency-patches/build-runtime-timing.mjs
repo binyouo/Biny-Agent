@@ -13,6 +13,7 @@ const artifactRoot = join(projectRoot, 'patches/runtime-timing');
 const identityPath = join(artifactRoot, 'identity.json');
 const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
 const write = process.argv.includes('--write');
+const buildOnly = process.argv.includes('--build-only');
 assert.ok(write || process.argv.includes('--check'), 'Specify --check or --write');
 function argument(name) {
   const index = process.argv.indexOf(name);
@@ -148,7 +149,7 @@ try {
   assert.deepEqual(hashes(join(runSource, 'dist')), runHashes, 'Run build is not deterministic');
   command(process.execPath, [toolRequire.resolve('typescript/bin/tsc'), '-p', 'tsconfig.build.json', '--noEmit'], runSource);
   command(process.execPath, [toolRequire.resolve('typescript/bin/tsc'), '-p', 'src/tsconfig.json'], runSource);
-  command(process.execPath, [join(projectRoot, 'scripts/dependency-patches/runtime-timing-fixtures.mjs'), '--runtime', join(runSource, 'dist/index.js')], projectRoot);
+  if (!buildOnly) command(process.execPath, [join(projectRoot, 'scripts/dependency-patches/runtime-timing-fixtures.mjs'), '--runtime', join(runSource, 'dist/index.js')], projectRoot);
 
   const sdkSource = join(work, 'sdk-source');
   cpSync(pristine['@ai-sdk/code-mode'], sdkSource, { recursive: true });
@@ -176,7 +177,7 @@ try {
   const sdkHashes = hashes(join(sdkSource, 'dist'));
   buildSdk();
   assert.deepEqual(hashes(join(sdkSource, 'dist')), sdkHashes, 'SDK build is not deterministic');
-  command(process.execPath, [join(projectRoot, 'scripts/dependency-patches/runtime-timing-capability-fixtures.mjs'), '--sdk-root', sdkSource, '--stock-runtime', pristine.run, '--patched-runtime', runSource, '--ai-package', aiRoot], projectRoot);
+  if (!buildOnly) command(process.execPath, [join(projectRoot, 'scripts/dependency-patches/runtime-timing-capability-fixtures.mjs'), '--sdk-root', sdkSource, '--stock-runtime', pristine.run, '--patched-runtime', runSource, '--ai-package', aiRoot], projectRoot);
 
   const runPatched = join(work, 'run-patched');
   cpSync(pristine.run, runPatched, { recursive: true });
@@ -198,7 +199,7 @@ try {
     identity.patchedDistSha256 = emitted;
     writeFileSync(identityPath, `${JSON.stringify(identity, null, 2)}\n`);
   } else assert.deepEqual(emitted, identity.patchedDistSha256, 'Emitted distribution hashes differ');
-  console.log(JSON.stringify({ status: 'passed', mode: write ? 'write' : 'check', upstreamCommit: identity.upstream.commit, wasmSha256: identity.embeddedWasmSha256, workerSha256: runHashes['runtime/worker-source.js'], patches: Object.fromEntries(Object.entries(outputs).map(([name, contents]) => [name, sha256(contents)])) }, null, 2));
+  console.log(JSON.stringify({ status: 'passed', behaviorFixtures: buildOnly ? 'not-run' : 'passed', mode: write ? 'write' : 'check', upstreamCommit: identity.upstream.commit, wasmSha256: identity.embeddedWasmSha256, workerSha256: runHashes['runtime/worker-source.js'], patches: Object.fromEntries(Object.entries(outputs).map(([name, contents]) => [name, sha256(contents)])) }, null, 2));
 } finally {
   if (process.argv.includes('--keep-work')) console.log(`Build workspace: ${work}`);
   else rmSync(work, { recursive: true, force: true });

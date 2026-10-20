@@ -14,9 +14,12 @@ directories:
   buildResources: build
 files:
   - out/**/*
+  - "!out/rtk/**/*"
   - dist/**/*
   - package.json
 extraResources:
+  - from: out/rtk/${arch}
+    to: rtk
   - from: THIRD_PARTY_NOTICES.txt
     to: THIRD_PARTY_NOTICES.txt
     filter:
