@@ -521,12 +521,12 @@ export class DesktopBrowserService {
    * 打开浏览器窗口并导航到目标地址；窗口已存在则复用（再开一个只会让登录态看起来分裂）。
    * `url` 省略时打开首页。
    */
-  async open(url?: string): Promise<void> {
+  async open(url?: string, requiredEnvironment?: "default"): Promise<void> {
     const target = url ?? homeUrl;
     if (!isHttpUrl(target)) throw new Error("Browser navigation only supports HTTP and HTTPS URLs.");
     const shown = this.shownBrowser;
     const embedded = shown && this.embeddedProjects.get(shown.projectId)?.tabs.get(shown.tabId);
-    if (embedded && !embedded.view.webContents.isDestroyed()) {
+    if (embedded && !embedded.view.webContents.isDestroyed() && (!requiredEnvironment || embedded.state.environmentId === requiredEnvironment)) {
       await embedded.view.webContents.loadURL(target);
       this.automationContents = embedded.view.webContents;
       this.browserSessionManaged = true;
@@ -900,7 +900,7 @@ export class DesktopBrowserService {
         await tab.view.webContents.loadURL(url);
         this.browserSessionManaged ||= environment.id === "default";
       } else if (environment.id === "default") {
-        await this.open(url);
+        await this.open(url, requestedEnvironment ? "default" : undefined);
       } else {
         await this.openInEnvironmentWindow(url, environment.id);
       }

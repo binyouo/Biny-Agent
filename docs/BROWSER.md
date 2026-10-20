@@ -35,6 +35,8 @@ Relay 管理配对连接与请求，扩展在目标 Chrome 配置中读取或操
 
 终端中的 `biny iab` 操作 Biny 内置浏览器，依赖正在运行的 Desktop；`biny browser` 仍用于 Chrome Relay。`iab envs` 列出登录环境，`iab goto <url> --env <name>` 在指定环境打开页面，`iab info` 读取当前页面，`iab fetch <url...> --env <name>` 抓取登录态页面。抓取默认返回可读正文，传 `--html` 返回 HTML，传 `--json` 返回结构化结果。直接调用 CLI 由用户发起，不经过模型工具审批。
 
+`iab goto` 显式指定 `--env default` 或 `--env 默认` 时只使用默认环境，不会复用当前显示的其他账号或小红书专用标签；未指定环境时仍延续当前显示的内置标签。
+
 内置浏览器的“环境”用于并排使用不同账号。每个环境单独保存 Cookie 和网页存储，标签会显示环境颜色；默认环境继续使用现有的内置浏览器登录态。用户可在浏览器环境菜单中新建、改名、设置代理、导入默认环境 Cookie、清空或删除自定义环境。默认环境不能通过环境菜单清空或删除。环境设置保存在本机 Desktop 用户数据中。
 
 Agent 可通过 `BrowserListEnvironments` 查看已有环境，并在用户指定账号或任务需要特定登录时，将环境名称传给 `BrowserOpen` 或 `WebFetch`。未指定时，`BrowserOpen` 延续当前内置标签的环境；没有当前标签时使用默认环境。`WebFetch` 默认使用默认环境。Agent 不能新建、修改、清空、导入或删除环境。
