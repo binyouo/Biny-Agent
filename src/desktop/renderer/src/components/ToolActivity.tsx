@@ -101,7 +101,7 @@ function PermissionRequest({ tool, onResolvePermission }: {
     }
   };
 
-  return <PermissionCard error={resolutionError} disabled={resolving} permission={optimisticResult ? { ...tool.permission!, ...optimisticResult, resolved: true } : tool.permission!} onResolve={resolve} />;
+  return <PermissionCard error={resolutionError} disabled={resolving} permission={optimisticResult && !tool.permission!.resolved ? { ...tool.permission!, ...optimisticResult, resolved: true } : tool.permission!} onResolve={resolve} />;
 }
 
 // 「Command exited with code N.」只是退出码徽标的复读，不单独成段。
