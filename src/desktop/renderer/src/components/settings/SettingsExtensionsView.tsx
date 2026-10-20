@@ -376,6 +376,7 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
   })).filter((group) => group.skills.length > 0), [skills]);
   return (
     <>
+      <SkillExtractionSettings />
       <div className="settings-extension-list-heading">
         <span>{query.trim() ? `${skills.length} / ${totalSkills} 个技能` : `${totalSkills} 个技能可用`}</span>
         <div>
@@ -410,7 +411,6 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
             />)}
           </section>
         ))}
-        <SkillExtractionSettings />
       </section>
     </>
   );

@@ -1,5 +1,4 @@
 /* 对话待办状态、项目建议提示和确认草稿的样式。 */
-.biny-brief-session-status { display: inline-flex; flex-shrink: 0; color: var(--biny-focus); }
 .biny-project-suggestion-banner { display: flex; align-items: center; gap: 10px; max-width: 720px; margin: 0 auto 8px; padding: 8px 12px; border: 1px solid var(--biny-border); border-radius: 12px; background: var(--biny-surface-elevated); font-size: 12px; }
 .biny-project-suggestion-banner > div { flex: 1; min-width: 0; }
 .biny-project-suggestion-banner strong, .biny-project-suggestion-banner small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

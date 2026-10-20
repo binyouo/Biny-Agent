@@ -1,3 +1,4 @@
+import { ScriptToolDetails } from "./chat/ScriptToolDetails.js";
 /**
  * 工具调用详情体（headless）。
  *
@@ -31,10 +32,17 @@ export const ToolActivityDetail = memo(function ToolActivityDetail({ projectId, 
   const diff = useMemo(() => committedDiff ? analyzeDiff(committedDiff) : undefined, [committedDiff]);
   const webSearch = useMemo(() => tool.tool === "WebSearch" ? projectWebSearchView(tool.args, tool.result) : undefined, [tool.args, tool.result, tool.tool]);
   const errorText = meaningfulError(tool, command);
+  const commandMetadata = command && tool.result && typeof tool.result === "object" ? tool.result as Record<string, unknown> : undefined;
+  const script = tool.tool === "run_script" || tool.tool === "exec";
 
   return (
     <div className="tool-details" data-project-id={projectId}>
+      {tool.optimization ? <p className="tool-optimization-note">{tool.optimization.kind === "ptc" ? "脚本筛选与聚合" : "RTK 命令输出压缩"} · ≈{tool.optimization.beforeTokens.toLocaleString()} → ≈{tool.optimization.afterTokens.toLocaleString()} tokens。工具结果估算，不代表账单节省。</p> : null}
+      {script ? <ScriptToolDetails tool={tool} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} /> : null}
       {command ? <CommandLog command={command} error={errorText} status={tool.permission && !tool.permission.resolved ? "waiting" : tool.status} running={tool.status === "running" && (!tool.permission || tool.permission.resolved)} /> : null}
+      {typeof commandMetadata?.executedCommand === "string" ? <details><summary>实际执行命令</summary><IoCard input={commandMetadata.executedCommand} output={null} /></details> : null}
+      {typeof commandMetadata?.optimizationWarning === "string" ? <p className="tool-optimization-note">{commandMetadata.optimizationWarning}</p> : null}
+      {tool.optimization?.kind === "rtk" ? <p className="tool-optimization-note">当前记录保存压缩后的输出；原始命令输出未保留。</p> : null}
       {tool.fileChange ? <section className="tool-section">
         <h4 className="tool-section-label">{tool.fileChange.server ? `远端变更 · ${tool.fileChange.server}` : "已提交变更"}</h4>
         <pre><code>{tool.fileChange.operation} {tool.fileChange.path}{tool.fileChange.destinationPath ? ` → ${tool.fileChange.destinationPath}` : ""}</code></pre>
@@ -49,7 +57,7 @@ export const ToolActivityDetail = memo(function ToolActivityDetail({ projectId, 
           <pre><code>{tool.display.detail}</code></pre>
         </section>
       ) : null}
-      {!command && !diff && !webSearch && !tool.fileChange ? <ToolPayload onPreviewFile={onPreviewFile} tool={tool} /> : null}
+      {!script && !command && !diff && !webSearch && !tool.fileChange ? <ToolPayload onPreviewFile={onPreviewFile} tool={tool} /> : null}
       {errorText && !command ? (
         <section className="tool-section">
           <h4 className="tool-section-label">错误</h4>

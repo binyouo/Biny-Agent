@@ -75,7 +75,16 @@ export const ActivitySegment = memo(function ActivitySegment({
 }: ActivitySegmentProps): React.JSX.Element | null {
   const { collapseThinking } = useChatResponseSettings();
   const items: ActivityPhaseItem[] = useMemo(
-    () => steps.map((step, index) => ({ step, index })),
+    () => {
+      const parents = steps.filter((step): step is TimelineToolStep => step.kind === "tool" && ["run_script", "exec"].includes(step.tool.tool));
+      const parentOf = (tool: TimelineTool) => parents.find(parent => tool.parentToolCallId === parent.tool.id
+        || parent.tool.tool === "exec" && tool.id.startsWith(`${parent.tool.id}:nested:`));
+      return steps.filter(step => step.kind !== "tool" || !parentOf(step.tool)).map((step, index) => ({
+        step: step.kind === "tool" && parents.includes(step) ? { ...step, tool: { ...step.tool,
+          children: steps.flatMap(child => child.kind === "tool" && parentOf(child.tool) === step ? [child.tool] : [])
+        } } : step, index
+      }));
+    },
     [steps]
   );
   const phases = useMemo(() => buildActivityPhases(items), [items]);
@@ -435,6 +444,8 @@ export const ActivityToolRow = memo(function ActivityToolRow({
         {tool.durationMs !== undefined ? (
           <span className="chat-tool-row-duration" title="耗时"><Icon name="timer" size={12} />{formatDuration(tool.durationMs)}</span>
         ) : null}
+        {tool.optimization ? <span className="chat-tool-row-duration" title="工具结果估算，不代表账单节省">{tool.optimization.savedTokens >= 0 ? "减少" : "增加"} ≈{Math.abs(tool.optimization.savedTokens).toLocaleString()} tokens</span> : null}
+        {tool.children?.length && !tool.optimization ? <span className="chat-tool-row-duration">已完成 {tool.children.filter(child => !["running", "waiting"].includes(child.status)).length} / {tool.children.length}</span> : null}
         <span className="chat-tool-row-chevron"><Icon name="chevron" size={14} /></span>
       </button>
       <Collapse className="chat-tool-row-collapse" open={open}>
@@ -447,7 +458,10 @@ export const ActivityToolRow = memo(function ActivityToolRow({
           /> : null}
         </div>
       </Collapse>
-      {onResolvePermission ? <ToolPermission tool={tool} onResolvePermission={onResolvePermission} /> : null}
+      {onResolvePermission ? <>
+        <ToolPermission tool={tool} onResolvePermission={onResolvePermission} />
+        {tool.children?.map(child => <ToolPermission key={child.id} tool={child} onResolvePermission={onResolvePermission} />)}
+      </> : null}
     </div>
   );
 });

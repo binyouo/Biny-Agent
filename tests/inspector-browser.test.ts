@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
+import { BrowserEnvironmentStore, browserPartitionForEnvironment } from "../src/desktop/browserEnvironments.js";
 
 class Contents extends EventEmitter {
   url = "about:blank"; destroyed = false;
@@ -28,12 +29,22 @@ class Popup extends EventEmitter {
 }
 
 test("内嵌浏览器标签按项目隔离，隐藏保留页面，关闭释放进程且拒绝本地导航", async () => {
-  const fake = { WebContentsView: View, BrowserWindow: Popup, dialog: {}, session: { fromPartition: () => ({ cookies: { on() {} } }) } };
+  const partitionCalls: string[] = [];
+  const cookieListenerPartitions: string[] = [];
+  const proxyApplications: Array<{ partition: string; config: unknown }> = [];
+  const fake = { WebContentsView: View, BrowserWindow: Popup, dialog: {}, session: { fromPartition: (partition: string) => {
+    partitionCalls.push(partition);
+    return {
+      cookies: { on: () => { cookieListenerPartitions.push(partition); }, get: async () => [], set: async () => {}, remove: async () => {} },
+      setProxy: async (config: unknown) => { proxyApplications.push({ partition, config }); },
+      closeAllConnections: async () => {}, clearStorageData: async () => {}, clearAuthCache: async () => {}, clearCache: async () => {}
+    };
+  } } };
   Object.assign(globalThis, { __inspectorElectron: fake });
   const hooks = registerHooks({ load(url, context, next) { return /\/electron\/index\.js$/.test(url) ? { format: "module", source: "export const {WebContentsView,BrowserWindow,clipboard,session}=globalThis.__inspectorElectron;", shortCircuit: true } : next(url, context); } });
   try {
     const { DesktopBrowserService } = await import("../src/desktop/electron/main/DesktopBrowserService.js");
-    const browser = new DesktopBrowserService(async () => "/unused");
+    const browser = new DesktopBrowserService(async () => "/unused", undefined, undefined, new BrowserEnvironmentStore());
     const host = Object.assign(new EventEmitter(), { isDestroyed: () => false, getContentBounds: () => ({ width: 1200, height: 800 }), contentView: { addChildView() {}, removeChildView() {} }, webContents: { send() {}, getZoomFactor: () => 1 } });
     browser.attachDesktopWindow(host as unknown as Electron.BrowserWindow);
     const first = browser.browserAction("p", { type: "new" });
@@ -92,6 +103,17 @@ test("内嵌浏览器标签按项目隔离，隐藏保留页面，关闭释放�
     assert.equal(View.instances[0]!.webContents.destroyed, true);
     assert.equal(browser.browserSnapshot("p").activeId, b);
     assert.deepEqual((View.instances[1]!.options as { webPreferences: object }).webPreferences, { partition: "persist:biny-browser", contextIsolation: true, nodeIntegration: false, sandbox: true });
+    const environment = await browser.createBrowserEnvironment({ name: "Work", proxy: { mode: "fixed_servers", proxyRules: "http=127.0.0.1:7890" } });
+    const isolated = browser.browserAction("p", { type: "new", environmentId: environment.id });
+    const isolatedTab = isolated.tabs.find((tab) => tab.id === isolated.activeId)!;
+    assert.equal(isolatedTab.environmentName, "Work");
+    assert.deepEqual(cookieListenerPartitions, ["persist:biny-browser"], "共享 Cookie jar 只监听默认环境");
+    assert.equal((View.instances[2]!.options as { webPreferences: { partition: string } }).webPreferences.partition, browserPartitionForEnvironment(environment.id));
+    assert.deepEqual(proxyApplications.at(-1), { partition: browserPartitionForEnvironment(environment.id), config: { mode: "fixed_servers", proxyRules: "http=127.0.0.1:7890", proxyBypassRules: undefined } });
+    await assert.rejects(browser.clearBrowserEnvironment("default"), /默认环境/);
+    await browser.deleteBrowserEnvironment(environment.id);
+    assert.equal(browser.browserSnapshot("p").tabs.some((tab) => tab.environmentId === environment.id), false);
+    assert.ok(partitionCalls.includes(browserPartitionForEnvironment(environment.id)));
     host.emit("closed");
     assert.equal(View.instances[1]!.webContents.destroyed, true);
   } finally { hooks.deregister(); Reflect.deleteProperty(globalThis, "__inspectorElectron"); }

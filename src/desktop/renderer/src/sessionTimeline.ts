@@ -1,3 +1,4 @@
+import type { ToolOptimization } from "../../../session/toolOptimization.js";
 import { toolDisplayName } from "../../../tools/presentation.js";
 /**
  * 会话时间线构建。
@@ -55,6 +56,10 @@ export interface TimelineCommand {
 }
 
 export interface TimelineTool {
+  parentToolCallId?: string;
+  optimization?: ToolOptimization;
+  modelResult?: unknown;
+  children?: TimelineTool[];
   id: string;
   runId?: string;
   tool: string;
@@ -448,7 +453,7 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
           continue;
         }
         if (event.type === "tool_call") {
-          if (event.auditOnly) continue;
+          if (event.auditOnly && !event.parentToolCallId && !event.toolCallId?.includes(":nested:")) continue;
           const turn = ensureTurn(event.time);
           const toolName = event.tool;
           const projection = historicalToolProjection(toolName, event.args);
@@ -457,6 +462,7 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
           const tool: TimelineTool = {
             id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
             runId: event.runtime?.runId,
+            parentToolCallId: event.parentToolCallId,
             tool: toolName,
             args: event.args,
             status: "running",
@@ -475,6 +481,8 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
           const tool = turn.tools.findLast((candidate) => candidate.id === event.toolCallId || (candidate.tool === toolName && candidate.result === undefined));
           if (tool) {
             applyToolResult(tool, event.result);
+            tool.optimization = event.optimization;
+            tool.modelResult = event.modelResult;
             tool.status = timelineToolStatus(event.result, event.executionStatus);
             tool.error = resultError(event.result);
             tool.executionStatus = event.executionStatus;
@@ -654,7 +662,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       continue;
     }
     if (event.type === "tool_call") {
-      if (event.auditOnly) continue;
+      if (event.auditOnly && !event.parentToolCallId && !event.toolCallId?.includes(":nested:")) continue;
       const turn = turnForEvent(event, event.time);
       const toolName = event.tool;
       const projection = historicalToolProjection(toolName, event.args);
@@ -663,6 +671,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       const tool: TimelineTool = {
         id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
         runId: event.runtime?.runId,
+        parentToolCallId: event.parentToolCallId,
         tool: toolName,
         args: event.args,
         status: "running",
@@ -681,6 +690,8 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       const tool = turn.tools.findLast((candidate) => candidate.id === event.toolCallId || (candidate.tool === toolName && candidate.result === undefined));
       if (tool) {
         applyToolResult(tool, event.result);
+        tool.optimization = event.optimization;
+        tool.modelResult = event.modelResult;
         tool.status = timelineToolStatus(event.result, event.executionStatus);
         tool.error = resultError(event.result);
         tool.executionStatus = event.executionStatus;
@@ -972,6 +983,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       const tool = toolFor(event, event.tool);
       tool.tool = event.tool;
       tool.args = event.args;
+      tool.parentToolCallId = event.parentToolCallId;
       tool.status = "running";
       tool.description = event.description;
       tool.display = event.display;
@@ -992,6 +1004,8 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     } else if (event.type === "tool.completed") {
       const tool = toolFor(event, event.tool);
       applyToolResult(tool, event.result);
+      tool.optimization = event.optimization;
+      tool.modelResult = event.modelResult;
       tool.status = timelineToolStatus(event.result, event.executionStatus);
       tool.executionStatus = event.executionStatus;
       tool.recovered = event.recovered;
@@ -1002,6 +1016,8 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     } else if (event.type === "tool.failed") {
       const tool = toolFor(event, event.tool);
       if (event.result !== undefined) applyToolResult(tool, event.result);
+      tool.optimization = event.optimization;
+      tool.modelResult = event.modelResult;
       tool.status = timelineToolStatus(event.result ?? { error: event.error }, event.executionStatus === "unknown" ? "unknown" : event.executionStatus === "cancelled" ? "cancelled" : "failed");
       tool.executionStatus = event.executionStatus;
       tool.recovered = event.recovered;

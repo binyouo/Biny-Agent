@@ -241,9 +241,8 @@ export function SettingsDraftProvider({
   const setSubagent = useCallback((value: DesktopSettingsSnapshot["subagent"]): void => {
     setDraft((current) => current ? { ...current, subagent: value } : current);
   }, []);
-  const setToolExecutionMode = useCallback((value: DesktopSettingsSnapshot["toolExecutionMode"]): void => {
-    setDraft((current) => current ? { ...current, toolExecutionMode: value } : current);
-  }, []);
+
+
 
   const setPermission = useCallback((value: DesktopPermissionSettings): void => {
     setDraft((current) => current ? { ...current, permission: value } : current);
@@ -428,8 +427,8 @@ export function SettingsDraftProvider({
       if (!snapshotNow || generation !== loadGenerationRef.current) throw new Error("设置页面已切换，请重新操作。");
       if (snapshotNow.pendingRecovery) throw new Error("存在未恢复的保存事务，请先处理再修改模型配置。");
       const models = typeof update === "function" ? update(snapshotNow) : update;
-      const toolModelOnly = models.toolModel !== undefined && models.upserts.length === 0 && models.removeAliases.length === 0
-        && Object.keys(models).every((key) => key === "upserts" || key === "removeAliases" || key === "toolModel");
+      const modelSelectionOnly = (models.toolModel !== undefined || models.visionModel !== undefined) && models.upserts.length === 0 && models.removeAliases.length === 0
+        && Object.keys(models).every((key) => key === "upserts" || key === "removeAliases" || key === "toolModel" || key === "visionModel");
       const result = await window.biny.saveSettings(snapshotNow.projectId, {
         expectedPreferenceRevision: snapshotNow.preferenceRevision,
         expectedConfigRevision: snapshotNow.configRevision,
@@ -444,7 +443,7 @@ export function SettingsDraftProvider({
         setSaveState(result.snapshot.pendingRecovery ? "recovery_required" : pendingModelSavesRef.current > 1 ? "saving" : "clean");
         setDraft((current) => current ? {
           ...rebaseUneditedFields(current, draftFromSnapshot(snapshotNow), draftFromSnapshot(result.snapshot)),
-          models: toolModelOnly ? current.models : {
+          models: modelSelectionOnly ? current.models : {
             upserts: [],
             removeAliases: [],
             defaultModel: undefined,
@@ -553,7 +552,6 @@ export function SettingsDraftProvider({
     setMemory,
     setCompaction,
     setChatParams,
-    setToolExecutionMode,
     setSubagent,
     setPermission,
     setWebSearch,
@@ -593,7 +591,6 @@ export function SettingsDraftProvider({
     preferencesOnly,
     setChat,
     setChatParams,
-    setToolExecutionMode,
     setSubagent,
     setCompaction,
     setModelProfile,
@@ -624,7 +621,6 @@ function draftFromSnapshot(snapshot: DesktopSettingsSnapshot): DesktopSettingsDr
     memory: structuredClone(snapshot.memory),
     compaction: structuredClone(snapshot.compaction),
     chatParams: structuredClone(snapshot.chatParams),
-    toolExecutionMode: snapshot.toolExecutionMode,
     subagent: structuredClone(snapshot.subagent),
     permission: structuredClone(snapshot.permission),
     webSearch: webSearchInput(snapshot.webSearch),
@@ -674,7 +670,6 @@ function countNonPreferenceDirtyFields(snapshot: DesktopSettingsSnapshot, draft:
   if (!sameJson(draft.memory, snapshot.memory)) count += 1;
   if (!sameJson(draft.compaction, snapshot.compaction)) count += 1;
   if (!sameJson(draft.chatParams, snapshot.chatParams)) count += 1;
-  if (draft.toolExecutionMode !== snapshot.toolExecutionMode) count += 1;
   if (!sameJson(draft.subagent, snapshot.subagent)) count += 1;
   if (!sameJson(draft.permission, snapshot.permission)) count += 1;
   if (!sameWebSearch(draft.webSearch, snapshot.webSearch)) count += 1;
@@ -686,7 +681,8 @@ function countNonPreferenceDirtyFields(snapshot: DesktopSettingsSnapshot, draft:
 }
 
 function validDraft(draft: DesktopSettingsDraft): boolean {
-  if (draft.subagent.enabled && draft.subagent.runtime !== "builtin" && draft.subagent.runtime !== "auto" && !draft.subagent.model?.trim()) return false;
+  if (draft.subagent.enabled && draft.subagent.runtime === "acp" && !draft.subagent.providerAlias?.trim() && !draft.subagent.model?.trim()) return false;
+  if (draft.subagent.enabled && draft.subagent.runtime === "codex" && !draft.subagent.model?.trim()) return false;
   const compaction = draft.compaction;
   if (compaction.triggerPercent !== undefined && (compaction.triggerPercent < 0.5 || compaction.triggerPercent > 0.95)) return false;
   if (compaction.keepRecentMessages !== undefined && (!Number.isInteger(compaction.keepRecentMessages) || compaction.keepRecentMessages < 1 || compaction.keepRecentMessages > 500)) return false;
@@ -727,7 +723,6 @@ function saveInput(snapshot: DesktopSettingsSnapshot, draft: DesktopSettingsDraf
     memory: sameJson(draft.memory, snapshot.memory) ? undefined : draft.memory,
     compaction: sameJson(draft.compaction, snapshot.compaction) ? undefined : draft.compaction,
     chatParams: sameJson(draft.chatParams, snapshot.chatParams) ? undefined : draft.chatParams,
-    toolExecutionMode: draft.toolExecutionMode === snapshot.toolExecutionMode ? undefined : draft.toolExecutionMode,
     subagent: sameJson(draft.subagent, snapshot.subagent) ? undefined : draft.subagent,
     permission: sameJson(draft.permission, snapshot.permission) ? undefined : draft.permission,
     webSearch: sameWebSearch(draft.webSearch, snapshot.webSearch) ? undefined : draft.webSearch,

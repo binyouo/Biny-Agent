@@ -25,6 +25,9 @@ ipcRenderer.on(desktopIpc.referenceOpen, (_event, target: { uri: string; project
 const readRequest = createDesktopReadRequest((channel, ...args) => ipcRenderer.invoke(channel, ...args));
 
 const api: DesktopApi = {
+  rtkStatus: async () => await ipcRenderer.invoke(desktopIpc.rtkStatus),
+  toolOptimizationDetail: async (projectId, sessionId, toolCallId) => await ipcRenderer.invoke(desktopIpc.toolOptimizationDetail, projectId, sessionId, toolCallId),
+  toolOptimizationStats: async (days, projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.toolOptimizationStats, days, projectId, sessionId),
   applicationImports: async () => await ipcRenderer.invoke(desktopIpc.applicationImports),
   onApplicationImportsChanged(listener) {
     const handler = (): void => listener();
@@ -40,7 +43,7 @@ const api: DesktopApi = {
   crystalRequest: async (request) => await ipcRenderer.invoke(desktopIpc.crystalRequest, request),
   bootstrap: async () => await readRequest(desktopIpc.bootstrap),
   openProject: async () => await ipcRenderer.invoke(desktopIpc.openProject),
-  createEmptyProject: async () => await ipcRenderer.invoke(desktopIpc.createEmptyProject),
+  createEmptyProject: async (siteUrl) => await ipcRenderer.invoke(desktopIpc.createEmptyProject, siteUrl),
   selectProject: async (projectId) => await ipcRenderer.invoke(desktopIpc.selectProject, projectId),
   commitSelection: async (projectId, sessionId, activeView) => await ipcRenderer.invoke(desktopIpc.commitSelection, projectId, sessionId, activeView),
   setActiveView: async (activeView) => await ipcRenderer.invoke(desktopIpc.setActiveView, activeView),
@@ -66,6 +69,7 @@ const api: DesktopApi = {
   renameSession: async (projectId, sessionId, title, expectedRevision) => await ipcRenderer.invoke(desktopIpc.renameSession, projectId, sessionId, title, expectedRevision),
   pinSession: async (projectId, sessionId, pinned, expectedRevision) => await ipcRenderer.invoke(desktopIpc.pinSession, projectId, sessionId, pinned, expectedRevision),
   archiveSession: async (projectId, sessionId, archived, expectedRevision) => await ipcRenderer.invoke(desktopIpc.archiveSession, projectId, sessionId, archived, expectedRevision),
+  setSessionFastMode: async (projectId, sessionId, fastMode, expectedRevision) => await ipcRenderer.invoke(desktopIpc.setSessionFastMode, projectId, sessionId, fastMode, expectedRevision),
   markSessionRead: async (projectId, sessionId, expectedRevision) => await ipcRenderer.invoke(desktopIpc.markSessionRead, projectId, sessionId, expectedRevision),
   duplicateSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.duplicateSession, projectId, sessionId),
   deleteSessions: async (targets, confirm, onStarted) => {
@@ -124,6 +128,12 @@ const api: DesktopApi = {
   projectPreviewStatus: async (projectId) => await readRequest(desktopIpc.projectPreviewStatus, projectId),
   stopProjectPreview: async (projectId) => await ipcRenderer.invoke(desktopIpc.stopProjectPreview, projectId),
   browserSnapshot: async (projectId) => await ipcRenderer.invoke(desktopIpc.browserSnapshot, projectId),
+  browserEnvironments: async () => await ipcRenderer.invoke(desktopIpc.browserEnvironments),
+  createBrowserEnvironment: async (input) => await ipcRenderer.invoke(desktopIpc.browserEnvironmentCreate, input),
+  updateBrowserEnvironment: async (id, input) => await ipcRenderer.invoke(desktopIpc.browserEnvironmentUpdate, id, input),
+  deleteBrowserEnvironment: async (id) => await ipcRenderer.invoke(desktopIpc.browserEnvironmentDelete, id),
+  clearBrowserEnvironment: async (id) => await ipcRenderer.invoke(desktopIpc.browserEnvironmentClear, id),
+  importBrowserEnvironmentCookies: async (sourceId, targetId) => await ipcRenderer.invoke(desktopIpc.browserEnvironmentImportCookies, sourceId, targetId),
   browserInspect: async (projectId, tabId, enabled) => await ipcRenderer.invoke(desktopIpc.browserInspect, projectId, tabId, enabled),
   browserCapture: async (projectId, tabId, selection) => await ipcRenderer.invoke(desktopIpc.browserCapture, projectId, tabId, selection),
   browserRelayStatus: async () => await ipcRenderer.invoke(desktopIpc.browserRelayStatus),
@@ -239,6 +249,7 @@ const api: DesktopApi = {
   // 渲染进程拿不到拖入文件的真实路径，只有 preload 里的 webUtils 能解析。
   resolveDroppedFile: (file) => webUtils.getPathForFile(file),
   listWorkspaceDirectory: async (projectId, relativePath) => await ipcRenderer.invoke(desktopIpc.listWorkspaceDirectory, projectId, relativePath),
+  workspaceFileIndex: async (projectId) => await ipcRenderer.invoke(desktopIpc.workspaceFileIndex, projectId),
   readWorkspaceFile: async (projectId, relativePath) => await ipcRenderer.invoke(desktopIpc.readWorkspaceFile, projectId, relativePath),
   htmlPreviewUrl: async (projectId, relativePath) => await ipcRenderer.invoke(desktopIpc.htmlPreviewUrl, projectId, relativePath),
   getWorkspaceMediaUrl: async (projectId, relativePath) => await ipcRenderer.invoke(desktopIpc.getWorkspaceMediaUrl, projectId, relativePath),

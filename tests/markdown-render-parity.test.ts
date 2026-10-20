@@ -38,6 +38,12 @@ test("不完整的外链保留标签，不让整条回复渲染失败", () => {
   assert.match(render("[未完成地址](https://)"), /未完成地址/);
 });
 
+test("Christmas marker renders as a greeting and never leaks its protocol text", () => {
+  const html = render("<--Christmas--> Merry Christmas");
+  assert.match(html, /🎄 Merry Christmas/u);
+  assert.doesNotMatch(html, /<--Christmas-->/u);
+});
+
 test("安全 HTML 保留排版，主动内容和任意远程 iframe 不进入正文", () => {
   const html = render('<details><summary>详情</summary><p>说明 <mark>重点</mark></p></details>\n\n<script>alert(1)</script><iframe src="https://example.com"></iframe><img src="javascript:alert(2)" onerror="alert(3)">');
   assert.match(html, /<details>/);

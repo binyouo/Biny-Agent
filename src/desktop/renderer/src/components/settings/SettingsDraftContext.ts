@@ -43,7 +43,6 @@ export interface DesktopSettingsDraft {
   memory: DesktopMemorySettings;
   compaction: DesktopCompactionSettings;
   chatParams: DesktopChatParamsSettings;
-  toolExecutionMode: DesktopSettingsSnapshot["toolExecutionMode"];
   subagent: DesktopSettingsSnapshot["subagent"];
   permission: DesktopPermissionSettings;
   webSearch: DesktopWebSearchSettingsInput;
@@ -81,7 +80,6 @@ export interface SettingsDraftContextValue {
   setCompaction(value: DesktopCompactionSettings): void;
   setChatParams(value: DesktopChatParamsSettings): void;
   setSubagent(value: DesktopSettingsSnapshot["subagent"]): void;
-  setToolExecutionMode(value: DesktopSettingsSnapshot["toolExecutionMode"]): void;
   setPermission(value: DesktopPermissionSettings): void;
   setWebSearch(value: DesktopWebSearchSettingsInput): void;
   setChat(value: DesktopChatPersonalizationOverride): void;

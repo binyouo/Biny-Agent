@@ -212,6 +212,7 @@ export interface DesktopSettingsConfigSnapshot {
   memory: AgentConfig["context"]["memory"];
   compaction: AgentConfig["context"]["compaction"];
   chatParams: AgentConfig["chat"];
+  rtkEnabled?: boolean;
   toolExecutionMode: AgentConfig["agent"]["toolExecutionMode"];
   subagent: import("../../protocol.js").DesktopSubagentSettings;
   externalSubagentBlockers: string[];
@@ -352,10 +353,17 @@ export class DesktopAgentManager {
     // 旧预热可能已捕获熔断错误，先等它结算，避免重试复用复位前的失败初始化。
     await this.runtimeInitializations.get(projectId)?.catch(() => undefined);
     if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) throw new Error("Project runtime was disposed.");
+    const hadRuntimeFailure = this.runtimeErrors.has(projectId);
     runtimeHostSpawnCircuitFor(runtimeHostPaths(persistenceRoot).endpoint).reset();
     try {
-      if (sessionId === undefined) await this.ensureRuntime(projectId);
-      else await this.resolveSessionRuntime(projectId, sessionId, false);
+      await this.configStore.load();
+      const managed = sessionId === undefined
+        ? await this.ensureRuntime(projectId)
+        : await this.resolveSessionRuntime(projectId, sessionId, false);
+      // 连接成功不代表旧 owner 能加载当前配置；在真正重建成功之前保留故障。
+      if (hadRuntimeFailure && managed.runtime instanceof RuntimeHostClient) {
+        await managed.runtime.restartRuntime(sessionId);
+      }
       if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.runtimeErrors.delete(projectId);
     } catch (error) {
       if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.recordRuntimeFailure(projectId, error);
@@ -713,6 +721,12 @@ export class DesktopAgentManager {
     return await this.workspaceSnapshot(projectId);
   }
 
+  async setSessionFastMode(projectId: string, sessionId: string, fastMode: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot> {
+    const revision = await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision);
+    await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { fastMode }, revision);
+    return await this.workspaceSnapshot(projectId);
+  }
+
   async markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot> {
     const revision = await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision);
     await this.projects.markSessionRead(this.projects.requireProject(projectId), sessionId, revision);
@@ -728,7 +742,8 @@ export class DesktopAgentManager {
     personalization?: DesktopChatPersonalizationOverride,
     idempotencyKey?: string,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    fastMode?: boolean
   ): Promise<DesktopRunReceipt> {
     try {
       return await this.runIdempotently(projectId, "send", idempotencyKey, async () => await this.sendPromptOnce(
@@ -740,7 +755,8 @@ export class DesktopAgentManager {
         personalization,
         promptContext,
         capabilitySelection,
-        idempotencyKey?.trim() || undefined
+        idempotencyKey?.trim() || undefined,
+        fastMode
       ));
     } catch (error) {
       if (isSessionWriterConflictError(error)) this.recordRuntimeFailure(projectId, error);
@@ -757,7 +773,8 @@ export class DesktopAgentManager {
     personalization?: DesktopChatPersonalizationOverride,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    messageId?: string
+    messageId?: string,
+    fastMode?: boolean
   ): Promise<DesktopRunReceipt> {
     const sendPerfStartedAt = perfNow();
     const selectedBeforeSend = this.state.selectedSessionId(projectId);
@@ -802,7 +819,8 @@ export class DesktopAgentManager {
         agentAttachments,
         requestIds,
         promptContext,
-        capabilitySelection
+        capabilitySelection,
+        fastMode
       );
       if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
       if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
@@ -814,7 +832,7 @@ export class DesktopAgentManager {
         messageId: accepted.result.messageId
       };
     }
-    const submitted = runtime.submitPrompt(prompt, agentAttachments, { ...requestIds, allowUserInput: true }, promptContext, capabilitySelection);
+    const submitted = runtime.submitPrompt(prompt, agentAttachments, { ...requestIds, allowUserInput: true }, promptContext, capabilitySelection, undefined, fastMode);
     if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
     if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
     this.observeRunCompletion(projectId, submitted.completion);
@@ -1175,6 +1193,7 @@ export class DesktopAgentManager {
       || input.memory !== undefined
       || input.compaction !== undefined
       || input.chatParams !== undefined
+      || input.rtkEnabled !== undefined
       || input.toolExecutionMode !== undefined
       || input.subagent !== undefined
       || input.permission !== undefined
@@ -1214,6 +1233,7 @@ export class DesktopAgentManager {
         }
       });
     }
+    if (input.rtkEnabled !== undefined) next = configSchema.parse({ ...next, agent: { ...next.agent, rtkEnabled: input.rtkEnabled } });
     if (input.toolExecutionMode !== undefined) {
       next = configSchema.parse({ ...next, agent: { ...next.agent, toolExecutionMode: input.toolExecutionMode } });
     }
@@ -1322,6 +1342,7 @@ export class DesktopAgentManager {
           ...next,
           defaultModel: defaultRemoved ? firstRemaining : next.defaultModel,
           toolModel: next.toolModel && removeAliases.has(next.toolModel) ? undefined : next.toolModel,
+          visionModel: next.visionModel && removeAliases.has(next.visionModel) ? undefined : next.visionModel,
           models,
           providers
         };
@@ -1394,6 +1415,18 @@ export class DesktopAgentManager {
           }
         });
       }
+      if (input.models.visionModel !== undefined) {
+        const reference = input.models.visionModel.alias;
+        const alias = reference === undefined ? undefined : resolveConfiguredModelAlias(next, reference);
+        if (reference !== undefined && !alias) throw new Error(`未知视觉模型：${reference}`);
+        if (alias) {
+          validateModelConfiguration(next, alias);
+          const visionCatalogs = await restoreProviderCatalogs(Object.keys(next.providers), this.modelsStore, next.providers);
+          const choice = listConfiguredModelChoices(next, visionCatalogs).find(model => model.alias === alias);
+          if (choice?.providerType === "acp" || choice?.capabilities?.vision !== true) throw new Error("请选择支持图片输入的视觉模型。");
+        }
+        next = configSchema.parse({ ...next, visionModel: alias });
+      }
       if (input.models.toolModel !== undefined) {
         const reference = input.models.toolModel.alias;
         const alias = reference === undefined ? undefined : resolveConfiguredModelAlias(next, reference);
@@ -1409,8 +1442,14 @@ export class DesktopAgentManager {
 
     if (input.subagent !== undefined) {
       const settings = input.subagent;
-      if (settings.enabled && settings.runtime !== "builtin" && settings.runtime !== "auto" && !settings.model?.trim()) {
+      if (settings.enabled && settings.runtime === "codex" && !settings.model?.trim()) {
         throw new Error("请选择子代理模型。");
+      }
+      const selectedSubagentProviderAlias = settings.runtime === "acp"
+        ? settings.providerAlias ?? (settings.model ? next.models[settings.model]?.provider : undefined) : undefined;
+      if (settings.enabled && settings.runtime === "acp") {
+        const provider = selectedSubagentProviderAlias ? next.providers[selectedSubagentProviderAlias] : undefined;
+        if (!provider || provider.type !== "acp" || !provider.acp || provider.enabled === false) throw new Error("请选择已启用的 ACP Provider。");
       }
       if (settings.model && (settings.runtime === "builtin" || settings.runtime === "auto" || settings.runtime === "acp")) {
         const model = next.models[settings.model];
@@ -1421,7 +1460,8 @@ export class DesktopAgentManager {
         }
       }
       next = configSchema.parse({ ...next, extensions: { ...next.extensions,
-        subagent: { ...next.extensions.subagent, enabled: settings.enabled, runtime: settings.runtime, model: settings.model?.trim() } } });
+        subagent: { ...next.extensions.subagent, enabled: settings.enabled, runtime: settings.runtime,
+          providerAlias: selectedSubagentProviderAlias, model: settings.model?.trim() } } });
     }
 
     if (input.memory !== undefined
@@ -3673,6 +3713,7 @@ function describeSettingsConfigSnapshot(
     memory: structuredClone(config.context.memory),
     compaction: structuredClone(config.context.compaction),
     chatParams: structuredClone(config.chat),
+    rtkEnabled: config.agent.rtkEnabled,
     toolExecutionMode: config.agent.toolExecutionMode,
     externalSubagentBlockers: [
       ...(config.sandbox.mode !== "off" || !config.sandbox.allowNetwork ? ["当前沙箱或网络限制不支持外部子代理。"] : []),
@@ -3680,8 +3721,8 @@ function describeSettingsConfigSnapshot(
         ? ["请先在配置文件中移除子代理步数或费用上限，或使用 Biny 内置运行方式。"] : [])
     ],
     subagent: { enabled: config.extensions.subagent.enabled, runtime: config.extensions.subagent.runtime ?? "builtin", model: config.extensions.subagent.model,
-      providerAlias: config.extensions.subagent.runtime === "acp" && config.extensions.subagent.model
-        ? config.models[config.extensions.subagent.model]?.provider : undefined },
+      providerAlias: config.extensions.subagent.runtime === "acp"
+        ? config.extensions.subagent.providerAlias ?? (config.extensions.subagent.model ? config.models[config.extensions.subagent.model]?.provider : undefined) : undefined },
     permission: structuredClone(config.permission),
     webSearch: describeWebSearchSettings(config.web.search),
     models: {
@@ -3694,6 +3735,7 @@ function describeSettingsConfigSnapshot(
       embeddingModels: describeEmbeddingModels(config),
       defaultModel: config.defaultModel,
       toolModel: config.toolModel,
+      visionModel: config.visionModel,
       resolvedToolModel: resolveToolModelAlias(config),
       thinking: config.thinking.enabled ? config.thinking.effort : "off",
       modelProfiles: Object.fromEntries(Object.entries(config.providers).map(([providerAlias, provider]) => [
@@ -4024,6 +4066,6 @@ async function loadAgentAttachments(persistenceRoot: string, attachments: Deskto
 
 /** 选择只在回合入口读取；连接、凭据和其它共享资源仍要求空闲。 */
 function isModelSelectionChange(before: AgentConfig, after: AgentConfig): boolean {
-  return configDocumentRevision({ ...after, defaultModel: before.defaultModel, thinking: before.thinking, toolModel: before.toolModel })
+  return configDocumentRevision({ ...after, defaultModel: before.defaultModel, thinking: before.thinking, toolModel: before.toolModel, visionModel: before.visionModel })
     === configDocumentRevision(before);
 }

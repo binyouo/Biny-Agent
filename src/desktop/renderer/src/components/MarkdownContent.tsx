@@ -43,6 +43,7 @@ const rehypePlugins: PluggableList = [rehypeRaw, [rehypeSanitize, {
 }], [rehypeKatex, { throwOnError: false, errorColor: "var(--biny-text-secondary)", trust: false }]];
 const StreamingContext = createContext(false);
 const WordRevealContext = createContext(false);
+const christmasMarker = "<--Christmas-->";
 const MermaidBlock = lazy(() => import("./MermaidBlock.js").then(module => ({ default: module.MermaidBlock })));
 const transformUrl: NonNullable<React.ComponentProps<typeof Markdown>["urlTransform"]> = (url, key, node) => {
   if (key === "href" && (url.startsWith("biny://") || url.startsWith("file://"))) return url;
@@ -91,7 +92,8 @@ export const MarkdownContent = memo(function MarkdownContent({
   useEffect(() => { if (streaming) setWasStreaming(true); }, [streaming]);
   // 流结束不切换组件树，保留代码/表格节点和用户的横向滚动位置。
   const partitioned = streaming || wasStreaming;
-  const blocks = useMemo(() => partitioned ? parseBlocks(content) : [content], [content, parseBlocks, partitioned]);
+  const displayContent = content.replaceAll(christmasMarker, "🎄");
+  const blocks = useMemo(() => partitioned ? parseBlocks(displayContent) : [displayContent], [displayContent, parseBlocks, partitioned]);
   const remarkPlugins = useMemo(
     () => [[remarkGfm, { singleTilde: false }], remarkCjkFriendly, [remarkCjkStrikethrough, { singleTilde: false }],
       ...(breaks ? [remarkBreaks] : []), [remarkMath, { singleDollarTextMath: singleDollarMath }]] as PluggableList,

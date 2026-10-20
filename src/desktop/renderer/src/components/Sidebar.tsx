@@ -15,11 +15,11 @@ import type { LoadedSessionTreePage } from "../app/sessionTreePageLifetime.js";
 import type { SidebarPeekHandlers, SidebarResizeHandlers } from "../app/useSidebarLayout.js";
 import { useClosingPresence } from "../useClosingPresence.js";
 import { useFluidHover, useRegisterFluidHoverItem, type UseFluidHoverReturn } from "../useFluidHover.js";
+import { CopyButton } from "./CopyButton.js";
 import { Collapse } from "./Collapse.js";
 import { CrystalDock } from "./CrystalDock.js";
 import { FluidHoverHighlight } from "./FluidHoverHighlight.js";
 import { Icon, type IconName } from "./Icon.js";
-import { ThreadBriefSessionMenu, ThreadBriefSessionState } from "../threadBrief/ThreadBriefSessionState.js";
 import { SessionDeleteButton } from "./SessionDeleteButton.js";
 import { WorkingIndicator } from "./WorkingIndicator.js";
 import { useAppearance } from "../appearanceContext.js";
@@ -656,7 +656,6 @@ export const Sidebar = memo(function Sidebar({
           setSessionMenuVisible(false);
         }}
         menu={sessionMenu}
-        onClose={() => setSessionMenuVisible(false)}
         onAction={(action) => {
           setSessionMenuVisible(false);
           if (!sessionMenu) return;
@@ -977,7 +976,6 @@ function SessionTreeRow({
           <span className="biny-sidebar-session-line">
             {session.pinned ? <span aria-hidden="true" className="biny-sidebar-session-pin"><Icon name="pin" size={12} /></span> : session.unread ? <span aria-label="未读" className="biny-sidebar-session-unread" /> : null}
             <span className="biny-sidebar-session-title">{title}</span>
-            <ThreadBriefSessionState sessionId={session.id} />
             {running ? <WorkingIndicator waiting={session.status === "waiting_permission"} /> : meta && metaTitle ? <span aria-label={`上次活动：${metaTitle}`} className="biny-sidebar-session-meta" title={metaTitle}>{meta}</span> : null}
           </span>
         </button>
@@ -1064,7 +1062,8 @@ const ProjectRow = memo(function ProjectRow({
         role="button"
         tabIndex={0}
       >
-        {appearance.skin !== "default" ? <RetroFolderIcon /> : <Icon name={sessionsExpanded ? "folder-open" : "folder"} size={16} />}
+        {project.iconDataUrl ? <img alt="" className="biny-project-row-icon" src={project.iconDataUrl} />
+          : appearance.skin !== "default" ? <RetroFolderIcon /> : <Icon name={sessionsExpanded ? "folder-open" : "folder"} size={16} />}
         <span className="biny-project-row-label">{project.name}</span>
         {project.missing ? <span className="biny-project-status is-failed" title="路径不可用" /> : null}
       </div>
@@ -1093,20 +1092,15 @@ function ProjectMenu({ anchorRef, project, open, onPin, onRefresh, onReveal, onO
 }
 
 /** 会话右键菜单：替代原先由主进程弹出的原生菜单，样式与侧栏其余菜单保持一致。 */
-function SessionContextMenu({ menu, onAction, onClose, onSelectMode, open }: { onSelectMode(): void; menu?: { session: DesktopSessionSummary; point: { x: number; y: number } }; onAction(action: DesktopSessionMenuAction): void; onClose(): void; open: boolean }): React.JSX.Element | null {
+function SessionContextMenu({ menu, onAction, onSelectMode, open }: { onSelectMode(): void; menu?: { session: DesktopSessionSummary; point: { x: number; y: number } }; onAction(action: DesktopSessionMenuAction): void; open: boolean }): React.JSX.Element | null {
   if (!menu) return null;
   const { session } = menu;
   return (
-    <FloatingSidebarMenu ariaLabel="会话操作菜单" open={open} point={menu.point}>
-      <ThreadBriefSessionMenu sessionId={session.id} onClose={onClose} />
+    <FloatingSidebarMenu ariaLabel="会话操作菜单" className="is-session" open={open} point={menu.point}>
       <button onClick={() => onAction("rename")} role="menuitem" type="button"><Icon name="edit" size={15} /><span>重命名</span></button>
+      <CopyButton key={`${session.id}:${open}`} value={session.id} label="复制会话 ID" role="menuitem" className="" size={15} showLabel />
       <button onClick={() => onAction(session.pinned ? "unpin" : "pin")} role="menuitem" type="button"><Icon name="pin" size={15} /><span>{session.pinned ? "取消置顶" : "置顶"}</span></button>
       <button onClick={() => onAction(session.archived ? "unarchive" : "archive")} role="menuitem" type="button"><Icon name="archive" size={15} /><span>{session.archived ? "取消归档" : "归档"}</span></button>
-      <button onClick={() => onAction("duplicate")} role="menuitem" title="保留当前历史，创建可独立继续的子会话" type="button"><Icon name="copy" size={15} /><span>创建会话分支</span></button>
-      <div className="biny-sidebar-menu-separator" />
-      <button onClick={() => onAction("export-bundle")} role="menuitem" type="button"><Icon name="download" size={15} /><span>导出会话包…</span></button>
-      <button onClick={() => onAction("export-claude")} role="menuitem" type="button"><Icon name="download" size={15} /><span>导出为 Claude Code…</span></button>
-      <div className="biny-sidebar-menu-separator" />
       <button onClick={onSelectMode} role="menuitem" type="button"><Icon name="check" size={15} /><span>多选</span></button>
       <button className="is-danger" onClick={() => onAction("delete")} role="menuitem" type="button"><Icon name="trash" size={15} /><span>删除</span></button>
     </FloatingSidebarMenu>

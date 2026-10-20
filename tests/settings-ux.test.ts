@@ -194,17 +194,17 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     await h.overlay({ targetTab: "用户界面" });
     await h.click('input[value="dark"]');
     const navLabels = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].map(button => button.textContent);
-    assert.deepEqual(navLabels.slice(0, 7), ["通用", "模型供应商", "聊天偏好", "用户界面", "配色", "记忆", "技能"], "日常偏好应先于扩展与系统工具，旧覆盖只检查入口存在");
+    assert.deepEqual(navLabels.slice(0, 8), ["通用", "模型供应商", "聊天偏好", "Token 节省", "用户界面", "配色", "记忆", "技能"], "日常偏好应先于扩展与系统工具，旧覆盖只检查入口存在");
     assert.ok(!navLabels.includes("快速对话"), "快速对话不再是独立页面，已并入通用");
     assert.ok(!navLabels.includes("工具模型"), "工具模型不再是独立页面，已并入通用");
     const general = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].find(button => button.textContent === "通用");
     assert.ok(general); general.focus();
     await h.React.act(() => general.click());
     assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "通用");
-    assert.ok(!document.querySelector("#vision-model"), "未实现的视觉模型占位不应占用通用设置");
+    assert.ok(document.querySelector("#vision-model"), "已接入的视觉模型设置应显示在通用页");
     const quickChat = document.querySelector("#quickchat-behavior")!;
-    assert.ok(quickChat.compareDocumentPosition(document.querySelector("#tool-model")!) & 4, "悬浮窗口偏好先于后台模型");
-    assert.ok(document.querySelector("#tool-model")!.compareDocumentPosition(document.querySelector("#tool-execution")!) & 4, "工具编排调优排在最后");
+    assert.ok(document.querySelector("#subagent")!.compareDocumentPosition(quickChat) & 4, "工具模型、视觉模型和 Coding Agent 设置先于快速对话");
+    assert.equal(document.querySelector("#tool-execution"), null, "工具编排设置已归属 Token 节省页");
     assert.ok(document.querySelector("#tool-model"), "工具模型卡片在通用页里");
     assert.ok(document.querySelector("#quickchat-behavior"), "快速对话卡片在通用页里");
     assert.ok(document.querySelector("#quickchat-shortcut") === null, "移除没有配置入口的快捷键展示块");
@@ -221,47 +221,6 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     assert.equal(h.confirmations.length, 1);
     assert.match(h.confirmations[0] ?? "", /未保存|关闭/u);
     assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /未保存/u);
-  } finally { await h.close(); }
-});
-
-test("通用 Code Mode 开关保存实际模式并回读，失败保留草稿；原设置测试未覆盖编排配置", async () => {
-  let current = snapshot();
-  const writes: DesktopSettingsSaveInput[] = [];
-  const h = await harness({ settingsSnapshot: async () => current,
-    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
-      writes.push(settingsSaveInputSchema.parse(input));
-      if (writes.length === 1) throw new Error("配置写入失败");
-      current = { ...current, toolExecutionMode: input.toolExecutionMode!, configRevision: `config:${writes.length}` };
-      return { status: "committed", journalId: "code-mode", appliedFields: ["toolExecutionMode"], snapshot: current };
-    }
-  });
-  try {
-    await h.overlay({ targetTab: "通用" });
-    const selector = 'input[role="switch"][aria-label="Code Mode"]';
-    assert.equal(document.querySelector<HTMLInputElement>(selector)?.checked, true);
-    await h.click("#tool-execution .settings-switch-copy");
-    assert.equal(document.querySelector<HTMLInputElement>(selector)?.checked, true);
-    await h.click(selector);
-    assert.equal(writes.length, 0);
-    await h.click(".settings-save-button");
-    assert.match(document.querySelector('.settings-page-footer [role="alert"]')?.textContent ?? "", /配置写入失败/u);
-    assert.equal(document.querySelector<HTMLInputElement>(selector)?.checked, false);
-    await h.click(".settings-save-button");
-    assert.equal(writes[1]?.toolExecutionMode, "direct");
-    assert.equal(writes[1]?.chatParams, undefined);
-    await h.overlay({ open: false });
-    await h.overlay({ open: true });
-    assert.equal(document.querySelector<HTMLInputElement>(selector)?.checked, false);
-    await h.click(selector);
-    await h.click(".settings-save-button");
-    assert.equal(writes[2]?.toolExecutionMode, "code_mode");
-    assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /所有更改已保存/u);
-    await h.input('[aria-label="搜索设置"]', "codemode");
-    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /通用/u);
-    current = { ...current, hasRunningTasks: true };
-    await h.overlay({ open: false });
-    await h.overlay({ open: true });
-    assert.equal(document.querySelector<HTMLInputElement>(selector)?.disabled, true);
   } finally { await h.close(); }
 });
 
@@ -368,7 +327,7 @@ test("运行中的工具模型选择仍可打开并即时保存，不夹带其�
     await h.click('.settings-model-picker-option');
     assert.equal(writes.length, 1);
     assert.deepEqual(writes[0]?.models, { upserts: [], removeAliases: [], toolModel: { alias: undefined } });
-    assert.match(document.querySelector('#tool-model')?.textContent ?? "", /后续回合/u);
+    assert.match(document.querySelector('#tool-model')?.textContent ?? "", /下回合生效/u);
   } finally { await h.close(); }
 });
 
@@ -762,31 +721,66 @@ test("自动工具模型显示实际模型，打开菜单不保存也不发起�
   } finally { await h.close(); }
 });
 
-test("子代理模型浮层仅提供当前运行时和连接的模型，选择保留模型别名", async () => {
+test("Coding Agent 展示默认后端说明、ACP Provider 数量，并按 Provider 保存选择", async () => {
   const h = await harness();
   try {
     const { SettingsSubagent } = await import("../src/desktop/renderer/src/components/settings/SettingsSubagent.js");
     const { SettingsDraftContext } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
-    const models = [
-      { alias: "native", provider: "api", providerType: "openai", displayName: "Native model", model: "native-id", supportsTools: true },
-      { alias: "external", provider: "worker", providerType: "acp", displayName: "ACP model", model: "acp-id", supportsTools: true },
-      { alias: "other", provider: "other-worker", providerType: "acp", displayName: "Other model", model: "other-id", supportsTools: true }
+    const connections = [
+      { providerAlias: "worker", providerType: "acp", displayName: "Claude ACP", enabled: true },
+      { providerAlias: "codex", providerType: "acp", displayName: "Codex CLI", enabled: true },
+      { providerAlias: "gemini", providerType: "acp", displayName: "Gemini CLI", enabled: true },
+      { providerAlias: "offline", providerType: "acp", displayName: "Offline ACP", enabled: false }
     ];
-    for (const [runtime, providerAlias, expectedId, expectedAlias] of [
-      ["builtin", "api", "native-id", "native"], ["acp", "worker", "acp-id", "external"], ["acp", "other-worker", "other-id", "other"]
-    ]) {
-      let selected: string | undefined;
-      const context = { draft: { subagent: { enabled: true, runtime, providerAlias }, permission: { mode: "full-access", denyPaths: [] } },
-        snapshot: { ...snapshot(), models: { configured: models, connections: [
-          { providerAlias: "api", providerType: "openai" }, { providerAlias: "worker", providerType: "acp" }, { providerAlias: "other-worker", providerType: "acp" }
-        ] } }, saveState: "idle", setSubagent: (next: { model?: string }) => { selected = next.model; } };
-      await h.render(h.React.createElement(SettingsDraftContext.Provider, { value: context as never },
-        h.React.createElement(SettingsSubagent, { key: `${runtime}:${providerAlias}`, onOpenModels() {} })));
-      await h.click('[aria-label="子代理模型"]');
-      assert.deepEqual([...document.querySelectorAll('.settings-model-picker-option:not(.is-inherit)')].map(node => node.textContent), [expectedId]);
-      await h.click('.settings-model-picker-option:not(.is-inherit)');
-      assert.equal(selected, expectedAlias);
-    }
+    let selected: { model?: string; providerAlias?: string; runtime?: string; enabled?: boolean } | undefined;
+    let openProviders = 0;
+    const context = { draft: { subagent: { enabled: true, runtime: "auto" }, permission: { mode: "full-access", denyPaths: [] } },
+      snapshot: { ...snapshot(), models: { configured: [], connections } }, saveState: "idle",
+      setSubagent: (next: typeof selected) => { selected = next; } };
+    await h.render(h.React.createElement(SettingsDraftContext.Provider, { value: context as never },
+      h.React.createElement(SettingsSubagent, { onOpenProviders: () => { openProviders++; } })));
+    const select = document.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]');
+    assert.ok(select);
+    assert.equal(select.value, "auto");
+    assert.deepEqual([...select.options].map(option => option.textContent), ["自动", "Claude Code", "内置 Agent", "Claude ACP", "Codex CLI", "Gemini CLI", "Offline ACP"]);
+    assert.equal(select.querySelector<HTMLOptionElement>('option[value="acp:offline"]')?.disabled, true, "已配置但停用的 Provider 不可选择");
+    assert.match(document.querySelector("#subagent")?.textContent ?? "", /选择 `coder` 类型 subagent 执行代码任务时使用的后端/u);
+    for (const description of ["优先使用 Claude Code，不可用时回退到内置 agent。", "直接使用本地安装的 Claude Code CLI。",
+      "使用 Biny 内置子代理，并沿用当前聊天模型。", "使用已配置的 ACP provider，例如 Codex CLI 或 Gemini CLI。"])
+      assert.ok(document.querySelector("#subagent")?.textContent?.includes(description), description);
+    assert.match(document.querySelector("#subagent")?.textContent ?? "", /ACP Providers: 4/u);
+    const selectValue = Object.getOwnPropertyDescriptor(h.dom.window.HTMLSelectElement.prototype, "value")!.set!;
+    await h.React.act(() => {
+      selectValue.call(select, "acp:gemini");
+      select.dispatchEvent(new h.dom.window.Event("change", { bubbles: true }));
+    });
+    assert.deepEqual(selected, { enabled: true, runtime: "acp", providerAlias: "gemini" });
+    await h.click("#subagent .settings-subagent-manage");
+    assert.equal(openProviders, 1);
+
+    const noAcp = snapshot();
+    let emptyProviderChoice = "";
+    const noAcpContext = { draft: { subagent: { enabled: true, runtime: "builtin" }, permission: { mode: "full-access", denyPaths: [] } },
+      snapshot: noAcp, saveState: "idle", setSubagent(next: { runtime: string }) { emptyProviderChoice = next.runtime; } };
+    await h.render(h.React.createElement(SettingsDraftContext.Provider, { value: noAcpContext as never },
+      h.React.createElement(SettingsSubagent, { onOpenProviders() {} })));
+    const emptySelect = document.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]');
+    assert.deepEqual([...emptySelect!.options].map(option => option.textContent), ["自动", "Claude Code", "内置 Agent"]);
+    assert.match(document.querySelector("#subagent")?.textContent ?? "", /还没有配置 ACP provider。/u);
+    await h.React.act(() => {
+      selectValue.call(emptySelect, "auto");
+      emptySelect!.dispatchEvent(new h.dom.window.Event("change", { bubbles: true }));
+    });
+    assert.equal(emptyProviderChoice, "auto");
+  } finally { await h.close(); }
+});
+
+test("Coding Agent 的管理 Providers 按钮打开模型供应商设置", async () => {
+  const h = await harness();
+  try {
+    await h.overlay({ targetTab: "通用" });
+    await h.click("#subagent .settings-subagent-manage");
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "模型供应商");
   } finally { await h.close(); }
 });
 
@@ -1075,8 +1069,8 @@ test("自动技能提取与技能开关进入统一草稿，保存时保留聊�
     assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "技能");
     const skillList = document.querySelector('[aria-label="技能列表"]')!;
     const extraction = document.querySelector('#skill-extraction')!;
-    assert.ok(skillList.contains(extraction), "自动提取随技能内容滚动，不挤占列表首屏");
-    assert.ok(document.querySelector('.settings-skill-group')!.compareDocumentPosition(extraction) & 4, "先管理已有技能，再配置自动提取");
+    assert.equal(skillList.contains(extraction), false, "自动提取独立于技能列表滚动区");
+    assert.ok(extraction.compareDocumentPosition(document.querySelector('.settings-extension-list-heading')!) & 4, "自动提取位于技能数量、操作栏和搜索框上方");
     assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用自动技能提取"]')?.checked, true);
     assert.equal(document.querySelector<HTMLInputElement>('[aria-label="最少工具调用次数"]')?.value, "5");
     assert.equal(document.querySelectorAll('#skill-extraction p').length, 0, "标题与阈值标签已说明用途，不重复添加说明段落");
@@ -1178,6 +1172,65 @@ test("工具模型选择器只显示模型 ID 一行，并画服务商自己的�
       PROVIDER_ICON_DATA.Apple!.body,
       "自定义服务商应当画用户在服务商页挑的那个图标（实际画的是：" + (logo?.innerHTML ?? "(没有图标)") + "）"
     );
+  } finally { await h.close(); }
+});
+
+test("视觉模型只列出可用且明确支持图片输入的已启用 API 模型", async () => {
+  const base = snapshot();
+  const model = (alias: string, provider: string, vision: boolean | undefined, extra: Record<string, unknown> = {}) => ({
+    alias, displayName: alias, provider, providerType: "openai-compatible", model: alias,
+    capabilities: vision === undefined ? {} : { vision }, available: true, showInPicker: true,
+    efforts: [], thinkingLevelMap: {}, defaultThinking: "off", ...extra
+  });
+  const configured = [
+    model("vision-good", "vision", true),
+    model("text-only", "vision", false),
+    model("vision-unknown", "vision", undefined),
+    model("vision-unavailable", "vision", true, { available: false }),
+    model("vision-hidden", "vision", true, { showInPicker: false }),
+    model("vision-disabled-provider", "disabled", true),
+    model("vision-acp", "worker", true, { providerType: "acp" })
+  ];
+  const settings = {
+    ...base,
+    models: {
+      ...base.models,
+      configured,
+      connections: [
+        { providerAlias: "vision", providerType: "openai-compatible", enabled: true, requiresApiKey: true, hasCredential: true },
+        { providerAlias: "disabled", providerType: "openai-compatible", enabled: false, requiresApiKey: true, hasCredential: true },
+        { providerAlias: "worker", providerType: "acp", enabled: true, requiresApiKey: false, hasCredential: true }
+      ],
+      visionModel: "text-only"
+    } as never
+  };
+  const writes: Array<{ visionModel?: { alias?: string } }> = [];
+  const context = {
+    snapshot: settings,
+    saveState: "clean",
+    saveModels: async (input: { visionModel?: { alias?: string } }) => { writes.push(input); return undefined; }
+  };
+  const h = await harness();
+  try {
+    const { SettingsDraftContext } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    const { SettingsVisionModel } = await import("../src/desktop/renderer/src/components/settings/SettingsVisionModel.js");
+    await h.render(h.React.createElement(SettingsDraftContext.Provider, { value: context as never }, h.React.createElement(SettingsVisionModel)));
+    assert.equal(writes.length, 0, "打开设置不能自动清除旧的无视觉能力配置");
+    await h.click('[aria-label="视觉模型"]');
+    const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    assert.deepEqual(options.map(option => option.textContent?.trim()), ["跟随主模型", "vision-good"]);
+    assert.ok(!options.some(option => option.textContent?.includes("text-only")), "旧的无视觉能力模型不得作为选项出现");
+    await h.React.act(async () => options.find(option => option.textContent?.includes("vision-good"))?.click());
+    assert.deepEqual(writes, [{ upserts: [], removeAliases: [], visionModel: { alias: "vision-good" } }]);
+  } finally { await h.close(); }
+});
+test("通用设置按工具模型、视觉模型、Coding Agent 顺序显示模型卡片", async () => {
+  const h = await harness();
+  try {
+    await h.overlay({ targetTab: "通用" });
+    const cards = [...document.querySelectorAll<HTMLElement>(".settings-general > section")]
+      .map(section => section.id).filter(id => ["tool-model", "vision-model", "subagent"].includes(id));
+    assert.deepEqual(cards, ["tool-model", "vision-model", "subagent"]);
   } finally { await h.close(); }
 });
 test("保存响应保留等待期间修改的聊天草稿，再次保存使用新的修订号", async () => {
@@ -1519,5 +1572,9 @@ test("子代理草稿阻止空外部模型保存，失败后保留修改，重�
     await h.React.act(async () => { await context!.saveAll(); });
     assert.equal(payload!.subagent!.runtime, "auto");
     assert.equal(context!.dirtyCount, 0);
+    await h.React.act(async () => context!.setSubagent({ enabled: true, runtime: "claude-code" }));
+    assert.equal(context!.invalid, false);
+    await h.React.act(async () => { await context!.saveAll(); });
+    assert.deepEqual(payload!.subagent, { enabled: true, runtime: "claude-code" });
   } finally { await h.close(); }
 });

@@ -229,6 +229,29 @@
 .inspector-browser-tab > button:first-child span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-browser-tab svg { flex-shrink: 0; }
 .inspector-browser-new-tab { border-radius: 8px; }
+.inspector-browser-environment-anchor { position: relative; flex: 0 0 auto; }
+.inspector-browser-environment-trigger { display: inline-flex; align-items: center; max-width: 150px; gap: 6px; min-height: 32px; padding: 0 8px; border: 1px solid var(--biny-border); border-radius: 8px; background: var(--biny-surface-elevated); color: var(--biny-text); cursor: pointer; }
+.inspector-browser-environment-trigger > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-browser-env-dot { display: inline-block; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; }
+.inspector-browser-environment-menu { position: absolute; z-index: 21; top: calc(100% + 8px); right: 0; width: min(360px, calc(100vw - 48px)); max-height: 440px; overflow: auto; padding: 12px; border: 1px solid var(--biny-border); border-radius: 10px; background: var(--biny-surface-elevated); box-shadow: 0 12px 30px var(--shadow-heavy); color: var(--biny-text); }
+.inspector-browser-environment-heading { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
+.inspector-browser-environment-heading > button { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.inspector-browser-environment-menu > p { margin: 4px 0 10px; color: var(--biny-text-secondary); font-size: 12px; line-height: 1.45; }
+.inspector-browser-environment-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 0; border-top: 1px solid var(--biny-border); }
+.inspector-browser-environment-open { display: flex; align-items: center; flex: 1 1 130px; min-width: 0; gap: 8px; padding: 6px; border: 0; border-radius: 6px; background: transparent; color: var(--biny-text); text-align: left; cursor: pointer; }
+.inspector-browser-environment-open:hover, .inspector-browser-environment-heading > button:hover { background: var(--biny-surface-hover); }
+.inspector-browser-environment-open > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-browser-environment-open small { margin-left: auto; color: var(--biny-text-secondary); }
+.inspector-browser-environment-row-actions { display: flex; flex-wrap: wrap; gap: 3px; }
+.inspector-browser-environment-row-actions button, .inspector-browser-environment-create, .inspector-browser-environment-form button { min-height: 28px; padding: 4px 7px; border: 1px solid var(--biny-border); border-radius: 6px; background: var(--biny-surface); color: var(--biny-text); cursor: pointer; font: inherit; font-size: 11px; }
+.inspector-browser-environment-row-actions button:hover, .inspector-browser-environment-create:hover, .inspector-browser-environment-form button:hover { background: var(--biny-surface-hover); }
+.inspector-browser-environment-create { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; font-size: 12px; }
+.inspector-browser-environment-form { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--biny-border); }
+.inspector-browser-environment-form > strong { font-size: 12px; }
+.inspector-browser-environment-form label { display: grid; gap: 4px; color: var(--biny-text-secondary); font-size: 11px; }
+.inspector-browser-environment-form input, .inspector-browser-environment-form select { box-sizing: border-box; width: 100%; min-height: 30px; padding: 5px 7px; border: 1px solid var(--biny-border); border-radius: 6px; background: var(--biny-surface); color: var(--biny-text); font: inherit; font-size: 12px; }
+.inspector-browser-environment-form > div { display: flex; gap: 6px; }
+.inspector-browser-environment-menu .inspector-error { margin-top: 8px; }
 .inspector-browser-navigation { position: relative; flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
 .inspector-browser-history, .inspector-browser-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 2px; }
 .inspector-browser-history { border-left: 1px solid var(--biny-border); padding-left: 6px; }

@@ -74,6 +74,7 @@ import { useDesktopSettingsActions } from "./app/useDesktopSettingsActions.js";
 import { useSidebarLayout } from "./app/useSidebarLayout.js";
 import { Composer, type ComposerHandle, type ComposerMemoryState } from "./components/Composer.js";
 import { WorkspaceContextBar } from "./components/project/WorkspaceContextBar.js";
+import { NewProjectDialog } from "./components/project/NewProjectDialog.js";
 import { resolveContextCapacity, type ContextUsage } from "./usagePresentation.js";
 import { DesktopShell } from "./components/DesktopShell.js";
 import { Sidebar } from "./components/Sidebar.js";
@@ -98,6 +99,11 @@ interface RenameTarget {
   sessionId?: string;
   title: string;
   metadataRevision?: string;
+}
+
+function readLastFastMode(): boolean {
+  try { return window.localStorage.getItem("biny.lastFastMode") === "true"; }
+  catch { return false; }
 }
 
 export function App({ settingsEnabled = true }: { settingsEnabled?: boolean }): React.JSX.Element {
@@ -130,6 +136,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const documentRef = useRef<DesktopSessionDocument | undefined>(undefined);
   const [writerConflict, setWriterConflict] = useState<DesktopSessionWriterConflict>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
+  const [lastFastMode, setLastFastMode] = useState(readLastFastMode);
+  const [fastModeOverride, setFastModeOverride] = useState<{ sessionId?: string; value: boolean }>();
   const [loading, setLoading] = useState(true);
   // 启动与后续会话加载分开，避免导航时再次隐藏整个客户端。
   const [starting, setStarting] = useState(true);
@@ -157,6 +165,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [projectBranches, setProjectBranches] = useState<DesktopGitBranch[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [timeCluesOpen, setTimeCluesOpen] = useState(false);
   const [settingsTargetTab, setSettingsTargetTab] = useState<SettingsTab>();
@@ -269,6 +278,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   const selectedSession = workspace?.sessions.find((session) => session.id === selectedSessionId)
     ?? (document?.session.id === selectedSessionId ? document?.session : undefined);
+  const composerFastMode = fastModeOverride !== undefined && fastModeOverride.sessionId === selectedSessionId
+    ? fastModeOverride.value
+    : selectedSession?.fastMode ?? lastFastMode;
   // Composer 归属的项目：未进入会话时跟随未发送草稿的目标项目（缺省回落到当前工作区项目），
   // 进入会话后固定为工作区项目。同一项目也驱动顶栏的项目/分支选择器。
   const composerProject = selectedSessionId === undefined && draftProjectId
@@ -340,6 +352,26 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       : replaceProjectSessions(current, snapshot.project.id, snapshot.sessions));
     if (projectRef.current === snapshot.project.id) setWorkspace(snapshot);
   }, [sessionTreePages]);
+
+  const changeFastMode = useCallback(async (fastMode: boolean): Promise<void> => {
+    setLastFastMode(fastMode);
+    try { window.localStorage.setItem("biny.lastFastMode", String(fastMode)); }
+    catch { /* The per-session setting remains available when local storage is unavailable. */ }
+    setFastModeOverride({ sessionId: selectedSession?.id, value: fastMode });
+    if (!selectedSession) return;
+    try {
+      mergeProjectSnapshot(await window.biny.setSessionFastMode(
+        selectedSession.projectId,
+        selectedSession.id,
+        fastMode,
+        selectedSession.metadataRevision
+      ));
+    } catch (error) {
+      setWarning(errorMessage(error));
+    } finally {
+      setFastModeOverride(undefined);
+    }
+  }, [mergeProjectSnapshot, selectedSession]);
 
   useEffect(() => {
     const subscribe = window.biny.onApplicationImportsChanged;
@@ -767,15 +799,15 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
   }, [adoptWorkspace]);
 
-  const createEmptyProject = useCallback(async (): Promise<void> => {
-    try {
-      const snapshot = await window.biny.createEmptyProject();
-      if (snapshot) {
-        await adoptWorkspace(snapshot);
-        setFocusToken((value) => value + 1);
-      }
-    } catch (error) {
-      setWarning(errorMessage(error));
+  const createEmptyProject = useCallback((): void => {
+    setNewProjectOpen(true);
+  }, []);
+
+  const submitNewProject = useCallback(async (siteUrl?: string): Promise<void> => {
+    const snapshot = await window.biny.createEmptyProject(siteUrl);
+    if (snapshot) {
+      await adoptWorkspace(snapshot);
+      setFocusToken((value) => value + 1);
     }
   }, [adoptWorkspace]);
 
@@ -1003,7 +1035,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     };
   }, [newTask, openProject, openSearch, openSettings, toggleSidebar]);
 
-  const sendPrompt = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<DesktopRunReceipt> => {
+  const sendPrompt = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<DesktopRunReceipt> => {
     const activeProjectId = projectRef.current;
     const projectId = selectedRef.current === undefined
       ? draftProjectId ?? activeProjectId
@@ -1027,7 +1059,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       previousSessionId === undefined && draftMemoryOverride !== undefined ? draftPersonalization : undefined,
       idempotencyKey,
       undefined,
-      capabilitySelection
+      capabilitySelection,
+      fastMode
     );
     // 新输入已被 Runtime 接收，旧断点不再是当前会话可继续的任务。
     setDocument((current) => current?.session.id === receipt.sessionId && current.recovery
@@ -1077,7 +1110,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     mergeProjectSnapshot(result.workspace);
     setDocument(result.document);
     setWriterConflict(result.document?.writerConflict);
-    setGenerationError(undefined);
+    setGenerationError(result.workspace.runtimeError?.message);
   }, [mergeProjectSnapshot]);
 
   const refreshRuntimeFailure = useCallback(async (projectId: string, sessionId?: string): Promise<void> => {
@@ -1119,7 +1152,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [openSession, refreshRuntimeFailure]);
 
   // 发送直接进入聊天布局；临时用户消息覆盖 IPC/事件桥的空窗，真实事件到达后自动替换。
-  const sendPromptWithTransition = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void> => {
+  const sendPromptWithTransition = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<void> => {
     if (loading) throw new Error("会话正在加载，请稍后发送。");
     setGenerationError(undefined);
     const pendingProjectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
@@ -1136,7 +1169,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       });
     }
     try {
-      const receipt = await sendPrompt(input, attachments, delivery, pendingId, capabilitySelection);
+      const receipt = await sendPrompt(input, attachments, delivery, pendingId, capabilitySelection, fastMode);
       if (pendingProjectId) {
         setPendingPrompt((current) => current?.id === pendingId
           ? { ...current, sessionId: receipt.sessionId, messageId: receipt.messageId }
@@ -1904,6 +1937,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       modelSetupRequired={Boolean(workspace?.requiresModelConfiguration)}
       models={workspace?.pickerModels ?? workspace?.models ?? []}
       connections={workspace?.connections}
+      fastMode={composerFastMode}
+      onChangeFastMode={(fastMode) => { void changeFastMode(fastMode); }}
       onSaveAttachment={saveAttachment}
       onSend={sendPromptWithTransition}
       recovery={!loading && document?.session.id === selectedSessionId ? document?.recovery : undefined}
@@ -1949,10 +1984,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
             onClose={closeSearch}
             onProject={(projectId) => void selectProject(projectId)}
             onSession={(projectId, sessionId) => void navigateToSession(projectId, sessionId)}
+            onFile={(path) => inspector.previewFile(path)}
             open={searchOpen}
             projects={projects}
+            selectedProjectId={workspace?.project.id}
             sessions={sidebarSessions}
           />
+          <NewProjectDialog open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={submitNewProject} />
           <SettingsOverlay
             closeRequest={settingsCloseRequest}
             projects={projects}

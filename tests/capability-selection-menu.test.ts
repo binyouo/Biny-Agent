@@ -32,7 +32,7 @@ for (const exposure of ["hidden", "model-only"] as const) {
 }
 
 test("session controls stay outside the per-message capability selector", () => {
-  for (const name of ["exec", "GoalGet", "GoalUpdate", "PlanDraft", "TaskStatus"]) {
+  for (const name of ["exec", "run_script", "GoalGet", "GoalUpdate", "PlanDraft", "TaskStatus"]) {
     assert.equal(shouldShowToolInCapabilityMenu({ name, source: "builtin" }), false, name);
   }
 });

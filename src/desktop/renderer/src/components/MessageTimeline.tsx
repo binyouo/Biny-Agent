@@ -1,3 +1,4 @@
+import { summarizeToolOptimizations } from "../../../../session/toolOptimization.js";
 import { useChatResponseSettings } from "../chatResponseSettings.js";
 /**
  * 对话时间线：逐轮渲染用户消息、思考过程、助手回复和工具活动。
@@ -81,6 +82,11 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
   if (turn.status === "running" || turn.status === "waiting_permission") return true;
   return runtimeActiveRunId !== undefined && ((turn.status === "idle" && turn.id === runtimeActiveRunId)
     || turn.tools.some((tool) => tool.runId === runtimeActiveRunId && (tool.status === "running" || tool.status === "waiting")));
+}
+
+function christmasSeasonActive(now = new Date()): boolean {
+  return now.getMonth() === 11 && (now.getDate() === 25
+    || now.getDate() === 24 && (now.getHours() > 18 || now.getHours() === 18 && now.getMinutes() >= 30));
 }
 
 export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, externalAgent = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, compacting = false, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
@@ -246,9 +252,10 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
     }]
     : displayedTurns;
   const busy = compacting || thinking || Boolean(rewrite) || visibleTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId));
+  const christmasThread = christmasSeasonActive() && visibleTurns.some((turn) => turn.assistant.includes("<--Christmas-->"));
   // 失败状态跟随对应消息，切会话、重启后仍可定位和重试。
   return (
-    <div className="message-timeline" ref={timelineRef} onMouseUp={updateQuoteSelection}>
+    <div className="message-timeline" data-christmas={christmasThread ? "true" : undefined} ref={timelineRef} onMouseUp={updateQuoteSelection}>
       {visibleTurns.map((turn) => (
         turn.recoveryOnly ? <SavedMessageRecovery key={turn.id} messages={turn.savedMessages ?? []} detached /> :
         <Turn
@@ -757,6 +764,12 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
   const stopSpeechRef = useRef<() => void>(undefined);
   const { showTokenUsage } = useChatResponseSettings();
   const usageRows = showTokenUsage ? buildUsageDetailRows(usage, metrics ?? {}) : [];
+  const optimization = summarizeToolOptimizations(turn.tools);
+  if (showTokenUsage && optimization.runs) {
+    usageRows.push({ key: "optimization", label: optimization.savedTokens < 0 ? "增加上下文（估算）" : "减少上下文（估算）", value: `${Math.abs(optimization.savedTokens).toLocaleString()} tokens` },
+      { key: "rtk", label: "命令输出压缩", value: `${optimization.rtkTokens.toLocaleString()} tokens` },
+      { key: "ptc", label: "脚本筛选与聚合", value: `${optimization.ptcTokens.toLocaleString()} tokens` });
+  }
   const tone = finishReason ? finishReasonTone(finishReason) : undefined;
   // 更多菜单走 portal fixed 定位；条目数按需增减（用量/结束原因 + 分隔线），高度用于弹出方向判断。
   const menuItemCount = 5 + Number(Boolean(onReference)) + Number(Boolean(onShowReferences)) + (usageRows.length ? 1 : 0) + (finishReason ? 1 : 0) + ((usageRows.length || finishReason) ? 1 : 0);

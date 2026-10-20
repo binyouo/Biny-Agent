@@ -102,14 +102,20 @@ export const settingsSaveInputSchema = z.object({
   memory: memorySettingsSchema.optional(),
   compaction: compactionSchema.optional(),
   chatParams: chatParamsSchema.optional(),
+  rtkEnabled: z.boolean().optional(),
   toolExecutionMode: z.enum(["direct", "code_mode"]).optional(),
   subagent: z.object({
     enabled: z.boolean(),
     runtime: z.enum(["auto", "builtin", "codex", "claude-code", "acp"]),
     providerAlias: z.string().trim().min(1).optional(),
     model: z.string().trim().min(1).optional()
-  }).strict().refine((value) => !value.enabled || value.runtime === "builtin" || value.runtime === "auto" || !!value.model,
-    { message: "请选择子代理模型。", path: ["model"] }).optional(),
+  }).strict()
+    .refine((value) => !value.enabled || value.runtime !== "acp" || !!value.providerAlias || !!value.model,
+      { message: "请选择 ACP Provider。", path: ["providerAlias"] })
+    .refine((value) => value.runtime === "acp" || value.providerAlias === undefined,
+      { message: "Provider alias 仅适用于 ACP。", path: ["providerAlias"] })
+    .refine((value) => !value.enabled || value.runtime !== "codex" || !!value.model,
+      { message: "请选择子代理模型。", path: ["model"] }).optional(),
   permission: permissionSettingsSchema.optional(),
   webSearch: webSearchSettingsSchema.optional(),
   models: z.object({
@@ -133,6 +139,7 @@ export const settingsSaveInputSchema = z.object({
     removeProviderAliases: z.array(idSchema).max(200).optional(),
     providerApiFormats: z.record(idSchema, z.union([modelApiBackendSchema, z.literal("auto")])).optional(),
     toolModel: z.object({ alias: idSchema.optional() }).strict().optional(),
+    visionModel: z.object({ alias: idSchema.optional() }).strict().optional(),
     defaultModel: z.object({ alias: idSchema, thinking: thinkingSchema }).strict().optional(),
     oauthCredentialHandles: z.array(z.string().uuid()).max(20).optional(),
     modelProfiles: z.record(idSchema, z.record(z.string().trim().min(1).max(240), modelProfileSchema)).optional()

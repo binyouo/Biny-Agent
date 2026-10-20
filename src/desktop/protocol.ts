@@ -1,3 +1,4 @@
+import type { ToolOptimizationEntry } from "../session/toolOptimization.js";
 import type { TaskInspection, TaskInspectionOptions } from "../runtime/TaskCommunication.js";
 import type { ApplicationImportSource, ApplicationImportSnapshot, ApplicationImportPreview, ApplicationImportHistory } from "../imports/types.js";
 /**
@@ -23,6 +24,7 @@ import type { ActivityRuntimeSnapshot } from "../activity/types.js";
 import type { ActivityPermissionStatus } from "../activity/httpServer.js";
 import type { ActivityReportResult } from "../activity/analyzer.js";
 import type { ActivitySearchResult, ActivitySessionDetail } from "../activity/store.js";
+import type { DesktopWorkspaceFileIndex } from "./projectFiles.js";
 import type { ModelCatalogEntry } from "../ai/types.js";
 import type { ChatParamsConfig, CompactionConfig, ModelApiBackend, ModelCompatibility, ModelLimits, ModelProfile, ModelProvider, ThinkingLevelMap, WebSearchConfig } from "../config/schema.js";
 import type { EmbeddingModelDescriptor } from "../llm/embedding/types.js";
@@ -109,6 +111,9 @@ export const desktopIpc = {
   openProjectTerminal: "desktop:project:terminal",
   startDraft: "desktop:session:draft",
   readSessionTrace: "desktop:session:trace",
+  toolOptimizationStats: "desktop:tools:optimization-stats",
+  toolOptimizationDetail: "desktop:tools:optimization-detail",
+  rtkStatus: "desktop:tools:rtk-status",
   openSession: "desktop:session:open",
   retryRuntime: "desktop:runtime:retry",
   sessionHandoff: "desktop:session:handoff",
@@ -117,6 +122,7 @@ export const desktopIpc = {
   renameSession: "desktop:session:rename",
   pinSession: "desktop:session:pin",
   archiveSession: "desktop:session:archive",
+  setSessionFastMode: "desktop:session:fast-mode",
   markSessionRead: "desktop:session:mark-read",
   duplicateSession: "desktop:session:duplicate",
   confirmSessionDeletion: "desktop:sessions:confirm-delete",
@@ -163,6 +169,12 @@ export const desktopIpc = {
   browserRelayOpenChrome: "desktop:browser:relay-open-chrome",
   browserRelaySetup: "desktop:browser:relay-setup",
   browserRelayDisconnect: "desktop:browser:relay-disconnect",
+  browserEnvironments: "desktop:browser:environments",
+  browserEnvironmentCreate: "desktop:browser:environment:create",
+  browserEnvironmentUpdate: "desktop:browser:environment:update",
+  browserEnvironmentDelete: "desktop:browser:environment:delete",
+  browserEnvironmentClear: "desktop:browser:environment:clear",
+  browserEnvironmentImportCookies: "desktop:browser:environment:import-cookies",
   browserAction: "desktop:browser:action",
   browserBounds: "desktop:browser:bounds",
   browserState: "desktop:browser:state",
@@ -246,6 +258,7 @@ export const desktopIpc = {
   saveAttachment: "desktop:attachment:save",
   resolveDroppedFile: "desktop:attachment:resolve-path",
   listWorkspaceDirectory: "desktop:file:list-directory",
+  workspaceFileIndex: "desktop:file:index",
   readWorkspaceFile: "desktop:file:read",
   htmlPreviewUrl: "desktop:file:html-preview-url",
   getWorkspaceMediaUrl: "desktop:file:media-url",
@@ -392,6 +405,7 @@ export interface DesktopProject {
   id: string;
   path: string;
   name: string;
+  iconDataUrl?: string;
   branch?: string;
   dirty: boolean;
   missing: boolean;
@@ -405,6 +419,9 @@ export interface DesktopBrowserTab {
   id: string;
   title: string;
   url: string;
+  environmentId?: string;
+  environmentName?: string;
+  environmentColor?: string;
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -420,9 +437,19 @@ export interface DesktopBrowserSnapshot {
   activeId?: string;
   tabs: DesktopBrowserTab[];
 }
+export interface DesktopBrowserEnvironment {
+  id: string;
+  name: string;
+  color: string;
+  proxy: { mode: "system" | "direct" | "fixed_servers"; proxyRules?: string; proxyBypassRules?: string };
+}
+export interface DesktopBrowserEnvironmentInput {
+  name: string;
+  proxy: { mode: "system" | "direct" | "fixed_servers"; proxyRules?: string; proxyBypassRules?: string };
+}
 export interface DesktopBrowserBounds { x: number; y: number; width: number; height: number }
 export type DesktopBrowserAction =
-  | { type: "new"; url?: string }
+  | { type: "new"; url?: string; environmentId?: string }
   | { type: "navigate"; tabId: string; url: string }
   | { type: "close" | "select" | "back" | "forward" | "reload" | "stop" | "float"; tabId: string };
 
@@ -466,6 +493,7 @@ export interface DesktopSessionSummary {
   isolation?: SessionIsolation;
   metadataRevision?: string;
   personalization?: DesktopChatPersonalizationOverride;
+  fastMode?: boolean;
   hasChildren?: boolean;
   /** 最近一次运行来自 run ledger；live runtime 仍优先于这个历史投影。 */
   latestRun?: DesktopSessionRunSummary;
@@ -1283,6 +1311,7 @@ export interface DesktopSettingsModelsSnapshot {
   embeddingModels: DesktopEmbeddingModelDescriptor[];
   defaultModel: string;
   toolModel?: string;
+  visionModel?: string;
   resolvedToolModel?: string;
   thinking: ThinkingSelection;
   /** provider alias -> 原始模型 ID -> 用户声明的元数据覆盖。 */
@@ -1332,6 +1361,7 @@ export interface DesktopSettingsSnapshot {
   memory: DesktopMemorySettings;
   compaction: DesktopCompactionSettings;
   chatParams: DesktopChatParamsSettings;
+  rtkEnabled?: boolean;
   toolExecutionMode: "direct" | "code_mode";
   subagent: DesktopSubagentSettings;
   externalSubagentBlockers: string[];
@@ -1358,6 +1388,7 @@ export interface DesktopSettingsModelsInput {
   removeAliases: string[];
   /** 省略表示不修改，空对象表示恢复自动选择。 */
   toolModel?: { alias?: string };
+  visionModel?: { alias?: string };
   defaultModel?: {
     alias: string;
     thinking: ThinkingSelection;
@@ -1402,6 +1433,7 @@ export interface DesktopSettingsSaveInput {
   memory?: DesktopMemorySettings;
   compaction?: DesktopCompactionSettings;
   chatParams?: DesktopChatParamsSettings;
+  rtkEnabled?: boolean;
   toolExecutionMode?: "direct" | "code_mode";
   subagent?: DesktopSubagentSettings;
   permission?: DesktopPermissionSettings;
@@ -1591,7 +1623,16 @@ export type DesktopTerminalEvent =
  * 大部分方法返回更新后的 `DesktopWorkspaceSnapshot`，渲染层直接整体替换状态即可，
  * 不需要自己推算改动结果。`on*` 系列返回取消订阅函数。
  */
+export interface DesktopToolOptimizationStats {
+  entries: ToolOptimizationEntry[];
+  incompleteSessions: number;
+  rtk: { path?: string; version?: string; reason?: string };
+}
+
 export interface DesktopApi {
+  rtkStatus(): Promise<DesktopToolOptimizationStats["rtk"]>;
+  toolOptimizationDetail(projectId: string, sessionId: string, toolCallId: string): Promise<{ events: SessionEvent[] }>;
+  toolOptimizationStats(days: 1 | 7 | 30 | "all", projectId?: string, sessionId?: string): Promise<DesktopToolOptimizationStats>;
   applicationImports(): Promise<ApplicationImportSnapshot>;
   onApplicationImportsChanged(listener: () => void): () => void;
   previewApplicationImport(source: ApplicationImportSource): Promise<ApplicationImportPreview | undefined>;
@@ -1603,7 +1644,7 @@ export interface DesktopApi {
   crystalRequest(request: DesktopCrystalRequest): Promise<DesktopCrystalSnapshot>;
   bootstrap(): Promise<DesktopBootstrap>;
   openProject(): Promise<DesktopWorkspaceSnapshot | undefined>;
-  createEmptyProject(): Promise<DesktopWorkspaceSnapshot | undefined>;
+  createEmptyProject(siteUrl?: string): Promise<DesktopWorkspaceSnapshot | undefined>;
   selectProject(projectId: string): Promise<DesktopWorkspaceSnapshot>;
   commitSelection(projectId: string, sessionId: string | undefined, activeView: DesktopActiveView): Promise<void>;
   setActiveView(activeView: DesktopActiveView): Promise<void>;
@@ -1629,6 +1670,7 @@ export interface DesktopApi {
   renameSession(projectId: string, sessionId: string, title: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   pinSession(projectId: string, sessionId: string, pinned: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
+  setSessionFastMode(projectId: string, sessionId: string, fastMode: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot>;
   deleteSessions(targets: DesktopSessionTarget[], confirm?: boolean, onStarted?: () => void): Promise<DesktopSessionDeleteResult>;
@@ -1645,7 +1687,8 @@ export interface DesktopApi {
     personalization?: DesktopChatPersonalizationOverride,
     idempotencyKey?: string,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    fastMode?: boolean
   ): Promise<DesktopRunReceipt>;
   mutateQueuedMessage(
     projectId: string,
@@ -1683,6 +1726,12 @@ export interface DesktopApi {
   projectPreviewStatus(projectId: string): Promise<{ kind: "starting"; terminalId: string } | { kind: "script"; terminalId: string; url: string } | { kind: "static"; url: string } | { kind: "failed"; error: string } | { kind: "stopped" }>;
   stopProjectPreview(projectId: string): Promise<void>;
   browserSnapshot(projectId: string): Promise<DesktopBrowserSnapshot>;
+  browserEnvironments(): Promise<DesktopBrowserEnvironment[]>;
+  createBrowserEnvironment(input: DesktopBrowserEnvironmentInput): Promise<DesktopBrowserEnvironment>;
+  updateBrowserEnvironment(id: string, input: DesktopBrowserEnvironmentInput): Promise<DesktopBrowserEnvironment>;
+  deleteBrowserEnvironment(id: string): Promise<void>;
+  clearBrowserEnvironment(id: string): Promise<void>;
+  importBrowserEnvironmentCookies(sourceId: string, targetId: string): Promise<{ imported: number }>;
   browserInspect(projectId: string, tabId: string, enabled: boolean): Promise<DesktopBrowserSnapshot>;
   browserCapture(projectId: string, tabId: string, selection?: boolean): Promise<LocalReferenceResult>;
   browserRelayStatus(): Promise<{ running: boolean; connected: boolean; browsers: Array<{ browserId: string; browserName: string }> }>;
@@ -1770,6 +1819,7 @@ export interface DesktopApi {
   cancelMemoryEmbeddingRebuild(projectId: string): Promise<DesktopMemoryEmbeddingCancellationResult>;  saveAttachment(projectId: string, name: string, mimeType: string, bytes: Uint8Array): Promise<DesktopAttachment>;
   resolveDroppedFile(file: File): string;
   listWorkspaceDirectory(projectId: string, relativePath: string): Promise<DesktopWorkspaceDirectory>;
+  workspaceFileIndex(projectId: string): Promise<DesktopWorkspaceFileIndex>;
   readWorkspaceFile(projectId: string, relativePath: string): Promise<DesktopWorkspaceFilePreview>;
   htmlPreviewUrl(projectId: string, relativePath: string): Promise<{ url: string }>;
   getWorkspaceMediaUrl(projectId: string, relativePath: string): Promise<{ url: string; mimeType: string }>;

@@ -1,3 +1,5 @@
+import { ToolOptimizationIndex } from "../../../session/toolOptimizationIndex.js";
+import type { ToolOptimizationEntry } from "../../../session/toolOptimization.js";
 /**
  * 桌面端项目与会话服务。
  *
@@ -54,6 +56,7 @@ import {
 } from "../../../session/transfer.js";
 import { gitInspectionEnvironment } from "../../../tools/git/environment.js";
 import { resolveWorkspaceDirectory, resolveWorkspacePath, toWorkspaceRelative } from "../../../workspace/resolvePath.js";
+import { readDesktopWorkspaceFileIndex } from "../../workspaceFileIndex.js";
 import { saveAttachmentContext, attachmentFilePath, attachmentPathPrefix, saveAttachment as saveProjectAttachment } from "../../../attachments/store.js";
 import type {
   DesktopAttachment,
@@ -98,6 +101,7 @@ const imageMediaTypes: Record<string, string> = {
 };
 
 export class DesktopProjectService {
+  private readonly optimizationIndex = new ToolOptimizationIndex();
   private readonly gitMutations = new Set<string>();
   constructor(
     private readonly state: DesktopStateStore,
@@ -109,7 +113,7 @@ export class DesktopProjectService {
    * 打开（或重新打开）一个项目目录。同一路径已存在时沿用原有 id、名称、置顶状态和加入时间，
    * 只更新最后打开时间，这样重复打开不会变成一个新项目、也不会丢掉用户改过的名字。
    */
-  async createProject(projectPath: string): Promise<DesktopProject> {
+  async createProject(projectPath: string, iconDataUrl?: string): Promise<DesktopProject> {
     const resolvedPath = path.resolve(projectPath);
     const stat = await fs.stat(resolvedPath);
     if (!stat.isDirectory()) throw new Error("Selected project path is not a directory.");
@@ -119,6 +123,7 @@ export class DesktopProjectService {
       id: existing?.id ?? projectId(resolvedPath),
       path: resolvedPath,
       name: existing?.name ?? path.basename(resolvedPath),
+      iconDataUrl: iconDataUrl ?? existing?.iconDataUrl,
       branch: existing?.branch,
       dirty: existing?.dirty ?? false,
       missing: false,
@@ -131,7 +136,7 @@ export class DesktopProjectService {
     return project;
   }
 
-  async createEmptyProject(projectPath: string): Promise<DesktopProject> {
+  async createEmptyProject(projectPath: string, iconDataUrl?: string): Promise<DesktopProject> {
     const resolvedPath = path.resolve(projectPath);
     try {
       await fs.mkdir(resolvedPath);
@@ -139,7 +144,7 @@ export class DesktopProjectService {
       if (isAlreadyExists(error)) throw new Error("项目文件夹已存在，请选择其他名称。");
       throw error;
     }
-    return await this.createProject(resolvedPath);
+    return await this.createProject(resolvedPath, iconDataUrl);
   }
 
   /**
@@ -373,6 +378,46 @@ export class DesktopProjectService {
     return availability.command;
   }
 
+  async toolOptimizationStats(days: number | "all", projectId?: string, sessionId?: string): Promise<{ entries: ToolOptimizationEntry[]; incompleteSessions: number }> {
+    const entries: ToolOptimizationEntry[] = [];
+    let incompleteSessions = 0;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    if (days !== "all") start.setDate(start.getDate() - days + 1);
+    const projects = projectId ? [this.requireProject(projectId)] : this.state.projects();
+    const seen = new Set<string>();
+    for (const project of projects) {
+      if (project.missing) { incompleteSessions++; continue; }
+      try {
+        const dataRoot = await this.storage.ensureProjectData(project);
+        const catalog = await listSessionCatalog(dataRoot);
+        for (const item of catalog) {
+          if (sessionId ? item.id !== sessionId : days !== "all" && Date.parse(item.summary.updatedAt) < start.getTime()) continue;
+          try {
+            const stored = await this.optimizationIndex.read(dataRoot, item.id);
+            for (const entry of stored) {
+              if (seen.has(entry.optimization.id)) continue;
+              if (days !== "all" && Date.parse(entry.time) < start.getTime()) continue;
+              seen.add(entry.optimization.id);
+              entries.push({ optimization: entry.optimization, time: entry.time,
+                origin: entry.toolCallId ? { projectId: project.id, sessionId: item.id, toolCallId: entry.toolCallId } : undefined });
+            }
+          } catch { incompleteSessions++; }
+        }
+      } catch { incompleteSessions++; }
+    }
+    return { entries, incompleteSessions };
+  }
+
+  async toolOptimizationDetail(projectId: string, sessionId: string, toolCallId: string): Promise<{ events: import("../../../session/recorder.js").SessionEvent[] }> {
+    const project = this.requireProject(projectId);
+    const root = await this.storage.ensureProjectData(project);
+    const stored = await readStoredSessionEvents(root, sessionId);
+    const result = stored.events.find(event => event.type === "tool_result" && event.toolCallId === toolCallId && event.optimization);
+    if (!result) throw new Error("对应工具调用已不存在，或没有统计记录。");
+    return { events: stored.events.filter(event => (event.type === "tool_call" || event.type === "tool_result" || event.type === "tool_execution") && event.toolCallId === toolCallId) };
+  }
+
   async listModels(project: DesktopProject): Promise<ModelChoice[]> {
     return listModelChoices(await this.configStore.load(project.path));
   }
@@ -578,6 +623,7 @@ export class DesktopProjectService {
       unread: catalogRecord?.unread,
       labels: catalogRecord?.labels,
       personalization: catalogRecord?.personalization,
+      fastMode: catalogRecord?.fastMode,
       metadataRevision: catalogRecord === undefined ? undefined : sessionCatalogRecordRevision(catalogRecord),
       hasChildren: false
     };
@@ -752,7 +798,8 @@ export class DesktopProjectService {
       pinned: false,
       archived: false,
       unread: false,
-      labels: source?.labels === undefined ? undefined : [...source.labels]
+      labels: source?.labels === undefined ? undefined : [...source.labels],
+      fastMode: source?.fastMode
     });
   }
 
@@ -792,6 +839,12 @@ export class DesktopProjectService {
       path: directoryRelativePath.split(path.sep).join("/"),
       entries
     };
+  }
+
+  async workspaceFileIndex(project: DesktopProject): Promise<Awaited<ReturnType<typeof readDesktopWorkspaceFileIndex>>> {
+    if (project.missing || !await directoryExists(project.path)) return { files: [], incomplete: true };
+    const config = await this.configStore.load(project.path);
+    return await readDesktopWorkspaceFileIndex(project.path, config.workspace.ignore);
   }
 
   /**
@@ -953,6 +1006,7 @@ function desktopSessionSummary(
     isolation: item.isolation,
     metadataRevision: item.metadataRevision,
     personalization: item.personalization,
+    fastMode: item.fastMode,
     hasChildren: item.hasChildren,
     rootSessionId: item.rootSessionId,
     parentSessionId: item.parentSessionId,

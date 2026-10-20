@@ -39,12 +39,11 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
       .finally(() => setTesting(false));
   };
   return (
-    <div className="settings-sections">
-      <section className="settings-preference-section" id="tool-model" tabIndex={-1}>
+    <section className="settings-preference-section" id="tool-model" tabIndex={-1}>
         <h3>工具模型</h3>
         <div className="settings-form-group">
-          <p>用于标题、记忆、工具筛选和活动分析等后台任务。</p>
-          {snapshot.hasRunningTasks ? <p>更改用于后续回合，当前回合继续使用原模型。</p> : null}
+          <p>用于标题、记忆、工具筛选与活动分析。</p>
+          {snapshot.hasRunningTasks ? <p>下回合生效。</p> : null}
           <div className="tool-model-row">
             <SettingsModelPicker
               ariaLabel="工具模型"
@@ -63,7 +62,6 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
           <ModelTestResult result={testResult} />
           {error ? <p role="alert">{error}</p> : null}
         </div>
-      </section>
-    </div>
+    </section>
   );
 }

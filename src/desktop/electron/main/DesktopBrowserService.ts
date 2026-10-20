@@ -1,12 +1,12 @@
 /**
- * 桌面端内嵌浏览器与 cookie 管理。
+ * 桌面端内嵌浏览器、隔离环境与 Cookie 管理。
  *
- * 浏览器窗口跑在独立的持久 partition 上，用户在里面登录网站（Google、小红书……），登录态
- * 由 Electron 自己保存；同时这里把 cookie 同步写进共享 jar，`WebSearch` 的 Google provider
- * 和 `WebFetch` 就能读到同一份登录态 —— 登录一次，agent 侧直接可用。
+ * 默认环境沿用原有持久 partition，Cookie 会同步到共享 jar，供 `WebSearch` 和默认 `WebFetch`
+ * 读取。自定义环境各用独立的持久 partition 保存登录态，不把 Cookie 写进共享 jar。
  *
  * 几个刻意的选择：
- * - 用独立 partition 而不是默认 session：浏览的是任意站点，不能和应用自身的 session 混在一起；
+ * - 用隔离 partition 而不是默认 session：网页站点不能和应用自身的 session 混在一起；
+ * - 保留既有默认 partition，让原来的浏览器登录态继续可用；
  * - 浏览器窗口不挂应用 preload：那座桥是给渲染层用的，网页拿到就等于拿到主进程能力；
  * - cookie 变化后延迟合并再落盘：一次登录会连着触发几十次 changed 事件，逐次写盘没有意义。
  *
@@ -36,6 +36,7 @@ import {
 import { listBrowserProfiles, readBrowserProfileCookies } from "./browserProfileCookies.js";
 import { ToolOutcomeUnknownError } from "../../../tools/types.js";
 import { localIpcEndpoint, removeLocalIpcEndpoint, secureLocalIpcEndpoint } from "../../../utils/localIpc.js";
+import { BrowserEnvironmentStore, browserPartitionForEnvironment, type BrowserEnvironmentInput } from "../../browserEnvironments.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -102,6 +103,9 @@ export class DesktopBrowserService {
   private window: BrowserWindow | undefined;
   private desktopWindow: BrowserWindow | undefined;
   private readonly embeddedProjects = new Map<string, EmbeddedProject>();
+  private readonly environmentWindows = new Map<string, BrowserWindow>();
+  private readonly proxyReady = new Map<string, Promise<void>>();
+  private automationContents: WebContents | undefined;
   private shownBrowser: { projectId: string; tabId: string } | undefined;
   private readonly guardedPages = new Map<number, { allowPrivateNetwork: boolean; reject(error: Error): void }>();
   private readonly guardedPartitions = new Set<string>();
@@ -118,8 +122,128 @@ export class DesktopBrowserService {
   constructor(
     private readonly getJarPath: () => Promise<string>,
     private readonly assertCookieMutationAllowed: () => void = () => undefined,
-    private readonly resolveWebHostname?: HostnameResolver
+    private readonly resolveWebHostname?: HostnameResolver,
+    private readonly browserEnvironments = new BrowserEnvironmentStore()
   ) {}
+
+  browserEnvironmentSnapshot() { return this.browserEnvironments.list(); }
+
+  async initializeBrowserEnvironments(): Promise<void> {
+    await Promise.all(this.browserEnvironments.list().filter((environment) => environment.id !== "default")
+      .map((environment) => this.prepareBrowserEnvironment(environment.id)));
+  }
+
+  async createBrowserEnvironment(input: BrowserEnvironmentInput) {
+    this.assertCookieMutationAllowed();
+    const environment = await this.browserEnvironments.create(input);
+    try { await this.applyBrowserEnvironmentProxy(environment.id); }
+    catch (error) { await this.browserEnvironments.delete(environment.id); throw error; }
+    return environment;
+  }
+
+  async updateBrowserEnvironment(id: string, input: BrowserEnvironmentInput) {
+    this.assertCookieMutationAllowed();
+    const previous = this.browserEnvironments.get(id);
+    if (!previous || id === "default") throw new Error("浏览器环境不存在或不可修改。");
+    const updated = await this.browserEnvironments.update(id, input);
+    this.proxyReady.delete(id);
+    try { await this.applyBrowserEnvironmentProxy(id); }
+    catch (error) {
+      await this.browserEnvironments.update(id, { name: previous.name, proxy: previous.proxy });
+      this.proxyReady.delete(id);
+      await this.applyBrowserEnvironmentProxy(id).catch(() => undefined);
+      throw error;
+    }
+    return updated;
+  }
+
+  async deleteBrowserEnvironment(id: string): Promise<void> {
+    this.assertCookieMutationAllowed();
+    if (id === "default" || !this.browserEnvironments.get(id)) throw new Error("默认环境不可删除或浏览器环境不存在。");
+    const partition = browserPartitionForEnvironment(id);
+    for (const [projectId, group] of this.embeddedProjects) {
+      for (const [tabId, tab] of group.tabs) {
+        if (tab.state.environmentId !== id) continue;
+        tab.popup?.close();
+        group.tabs.delete(tabId);
+        if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+        this.desktopWindow?.contentView.removeChildView(tab.view);
+        if (group.activeId === tabId) group.activeId = group.tabs.keys().next().value;
+        if (this.shownBrowser?.tabId === tabId) this.shownBrowser = undefined;
+        if (this.automationContents === tab.view.webContents) this.automationContents = undefined;
+      }
+      this.emitBrowserState(projectId);
+    }
+    const window = this.environmentWindows.get(id);
+    if (window && !window.isDestroyed()) window.destroy();
+    this.environmentWindows.delete(id);
+    const environmentSession = session.fromPartition(partition);
+    const getAllWindows = (BrowserWindow as unknown as { getAllWindows?: () => BrowserWindow[] }).getAllWindows;
+    for (const candidate of getAllWindows?.() ?? []) {
+      if (candidate.webContents.session === environmentSession && !candidate.isDestroyed()) candidate.destroy();
+    }
+    await environmentSession.clearStorageData();
+    await environmentSession.clearAuthCache();
+    await environmentSession.clearCache();
+    await this.browserEnvironments.delete(id);
+    this.proxyReady.delete(id);
+  }
+
+  async clearBrowserEnvironment(id: string): Promise<void> {
+    this.assertCookieMutationAllowed();
+    if (id === "default" || !this.browserEnvironments.get(id)) throw new Error("默认环境不可清空或浏览器环境不存在。");
+    const partition = browserPartitionForEnvironment(id);
+    const environmentSession = session.fromPartition(partition);
+    await environmentSession.clearStorageData();
+    await environmentSession.clearAuthCache();
+    await environmentSession.clearCache();
+  }
+
+  async importBrowserEnvironmentCookies(sourceId: string, targetId: string): Promise<{ imported: number }> {
+    this.assertCookieMutationAllowed();
+    if (sourceId === targetId) throw new Error("源环境和目标环境不能相同。");
+    if (!this.browserEnvironments.get(sourceId) || !this.browserEnvironments.get(targetId)) throw new Error("浏览器环境不存在。");
+    await this.prepareBrowserEnvironment(sourceId);
+    await this.prepareBrowserEnvironment(targetId);
+    const source = session.fromPartition(browserPartitionForEnvironment(sourceId));
+    const target = session.fromPartition(browserPartitionForEnvironment(targetId));
+    const cookies = await source.cookies.get({});
+    for (const cookie of await target.cookies.get({})) {
+      await target.cookies.remove(toCookiesSetDetails(toStoredCookie(cookie)).url, cookie.name);
+    }
+    let imported = 0;
+    try {
+      for (const cookie of cookies) { await target.cookies.set(toCookiesSetDetails(toStoredCookie(cookie))); imported++; }
+    } catch (error) {
+      throw new Error(`已复制 ${imported} 个 Cookie，后续写入失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    return { imported };
+  }
+
+  async prepareBrowserEnvironment(id: string): Promise<void> {
+    const environment = this.browserEnvironments.get(id);
+    if (!environment) throw new Error("浏览器环境不存在。");
+    if (id === "default") return;
+    let pending = this.proxyReady.get(id);
+    if (!pending) {
+      pending = this.applyBrowserEnvironmentProxy(id);
+      this.proxyReady.set(id, pending);
+      void pending.catch(() => { if (this.proxyReady.get(id) === pending) this.proxyReady.delete(id); });
+    }
+    await pending;
+  }
+
+  private async applyBrowserEnvironmentProxy(id: string): Promise<void> {
+    const environment = this.browserEnvironments.get(id);
+    if (!environment || id === "default") throw new Error("浏览器环境不存在或不能更改默认代理。");
+    const environmentSession = session.fromPartition(browserPartitionForEnvironment(id));
+    await environmentSession.setProxy({
+      mode: environment.proxy.mode,
+      proxyRules: environment.proxy.proxyRules,
+      proxyBypassRules: environment.proxy.proxyBypassRules
+    });
+    await environmentSession.closeAllConnections();
+  }
 
   /** 网页由主进程创建，不注入应用 preload；隐藏标签不销毁页面，关窗时统一释放。 */
   attachDesktopWindow(host: BrowserWindow): void {
@@ -140,7 +264,7 @@ export class DesktopBrowserService {
     return { projectId, revision: group?.revision ?? 0, activeId: group?.activeId, tabs: [...(group?.tabs.values() ?? [])].map((tab) => ({ ...tab.state })) };
   }
 
-  browserAction(projectId: string, action: DesktopBrowserAction, partition = browserPartition): DesktopBrowserSnapshot {
+  browserAction(projectId: string, action: DesktopBrowserAction, partition?: string): DesktopBrowserSnapshot {
     const host = this.desktopWindow;
     if (!host || host.isDestroyed()) throw new Error("浏览器主窗口不可用。");
     if ((action.type === "new" || action.type === "navigate") && action.url !== undefined && !isHttpUrl(action.url)) throw new Error("浏览器仅支持 HTTP 和 HTTPS 地址。");
@@ -148,14 +272,26 @@ export class DesktopBrowserService {
     if (!group) { group = { revision: 0, tabs: new Map() }; this.embeddedProjects.set(projectId, group); }
     if (action.type === "new") {
       if (group.tabs.size >= 20) throw new Error("最多打开 20 个浏览器标签，请先关闭部分标签。");
+      const current = group.activeId ? group.tabs.get(group.activeId) : undefined;
+      const environmentId = action.environmentId ?? current?.state.environmentId ?? "default";
+      const environment = this.browserEnvironments.get(environmentId);
+      if (!environment) throw new Error("浏览器环境不存在。");
+      const targetPartition = partition ?? browserPartitionForEnvironment(environmentId);
+      const managedEnvironmentPartition = targetPartition === browserPartitionForEnvironment(environmentId);
       this.hideEmbeddedBrowser();
-      this.attachCookieListener();
-      const view = new WebContentsView({ webPreferences: { partition, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+      if (targetPartition === browserPartition) this.attachCookieListener();
+      const view = new WebContentsView({ webPreferences: { partition: targetPartition, contextIsolation: true, nodeIntegration: false, sandbox: true } });
       view.setVisible(false); host.contentView.addChildView(view);
       const id = randomUUID();
-      const tab: EmbeddedTab = { view, navigation: 0, inspection: 0, state: { id, title: "新标签页", url: "", loading: false, canGoBack: false, canGoForward: false } };
+      const tab: EmbeddedTab = { view, navigation: 0, inspection: 0, state: {
+        id, title: "新标签页", url: "", environmentId: managedEnvironmentPartition ? environment.id : undefined,
+        environmentName: managedEnvironmentPartition ? environment.name : "小红书",
+        environmentColor: managedEnvironmentPartition ? environment.color : "#f49bbc",
+        loading: false, canGoBack: false, canGoForward: false
+      } };
       group.tabs.set(id, tab); group.activeId = id;
       const contents = view.webContents;
+      this.automationContents = contents;
       const update = (): void => {
         if (contents.isDestroyed() || !group?.tabs.has(id)) return;
         const url = contents.getURL();
@@ -192,7 +328,7 @@ export class DesktopBrowserService {
       contents.on("render-process-gone", () => { tab.state = { ...tab.state, error: "网页进程已退出，请重新加载。", loading: false }; this.emitBrowserState(projectId); });
       contents.setWindowOpenHandler(({ url }) => {
         if (isHttpUrl(url) && this.shownBrowser?.tabId === id) {
-          try { this.browserAction(projectId, { type: "new", url }); }
+          try { this.browserAction(projectId, { type: "new", url, environmentId }); }
           catch (error) { tab.state.error = String(error); this.emitBrowserState(projectId); }
         }
         return { action: "deny" };
@@ -207,8 +343,13 @@ export class DesktopBrowserService {
         group.tabs.delete(action.tabId); host.contentView.removeChildView(tab.view); contents.close();
         if (group.activeId === action.tabId) group.activeId = group.tabs.keys().next().value;
         if (this.shownBrowser?.tabId === action.tabId) this.shownBrowser = undefined;
+        if (this.automationContents === contents) {
+          const active = group.activeId ? group.tabs.get(group.activeId) : undefined;
+          this.automationContents = active?.view.webContents;
+        }
       } else if (action.type === "select") {
         this.hideEmbeddedBrowser(); group.activeId = action.tabId;
+        this.automationContents = contents;
       } else if (action.type === "float") {
         if (tab.popup) tab.popup.close();
         else {
@@ -228,7 +369,7 @@ export class DesktopBrowserService {
           });
           resize(); tab.view.setVisible(true); popup.show();
         }
-      } else if (action.type === "navigate") this.navigateEmbedded(projectId, tab, action.url);
+      } else if (action.type === "navigate") { this.automationContents = contents; this.navigateEmbedded(projectId, tab, action.url); }
       else if (action.type === "reload") { tab.state.error = undefined; contents.reload(); }
       else if (action.type === "stop") contents.stop();
       else if (action.type === "back" && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
@@ -325,7 +466,8 @@ export class DesktopBrowserService {
   private navigateEmbedded(projectId: string, tab: EmbeddedTab, url: string): void {
     const navigation = ++tab.navigation;
     tab.state = { ...tab.state, url, error: undefined, loading: true };
-    this.browserSessionManaged = true;
+    this.automationContents = tab.view.webContents;
+    if (tab.state.environmentId === "default") this.browserSessionManaged = true;
     void tab.view.webContents.loadURL(url).catch((error: unknown) => {
       if (navigation !== tab.navigation || tab.view.webContents.isDestroyed() || String(error).includes("ERR_ABORTED")) return;
       tab.state = { ...tab.state, error: String(error), loading: false }; this.emitBrowserState(projectId);
@@ -386,6 +528,7 @@ export class DesktopBrowserService {
     const embedded = shown && this.embeddedProjects.get(shown.projectId)?.tabs.get(shown.tabId);
     if (embedded && !embedded.view.webContents.isDestroyed()) {
       await embedded.view.webContents.loadURL(target);
+      this.automationContents = embedded.view.webContents;
       this.browserSessionManaged = true;
       return;
     }
@@ -394,6 +537,7 @@ export class DesktopBrowserService {
       this.window.show();
       this.window.focus();
       await this.window.loadURL(target);
+      this.automationContents = this.window.webContents;
       this.browserSessionManaged = true;
       return;
     }
@@ -412,6 +556,7 @@ export class DesktopBrowserService {
       }
     });
     this.window = window;
+    this.automationContents = window.webContents;
     // 站内弹窗（OAuth 登录常用）留在同一个 partition 里开新窗口，否则登录流程会走不完。
     window.webContents.setWindowOpenHandler(({ url: requested }) => {
       if (!isHttpUrl(requested)) return { action: "deny" };
@@ -549,6 +694,8 @@ export class DesktopBrowserService {
     if (this.browserSessionManaged) await this.syncToJar().catch(() => undefined);
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = undefined;
+    for (const window of this.environmentWindows.values()) if (!window.isDestroyed()) window.destroy();
+    this.environmentWindows.clear(); this.automationContents = undefined;
     this.hideEmbeddedBrowser();
     for (const group of this.embeddedProjects.values()) for (const tab of group.tabs.values()) {
       tab.popup?.close();
@@ -644,12 +791,17 @@ export class DesktopBrowserService {
     try {
       await Promise.race([assertFetchableUrl(target, { allowPrivateNetwork, resolveHostname: this.resolveWebHostname }), interrupted]);
       controller.signal.throwIfAborted();
-      const partition = args.engine === "xiaohongshu" ? xiaohongshuPartition : browserPartition;
+      const requestedEnvironment = typeof args.environment === "string" ? this.browserEnvironments.get(args.environment) : undefined;
+      if (typeof args.environment === "string" && !requestedEnvironment) throw new Error("指定的浏览器环境不存在。");
+      const environmentId = requestedEnvironment?.id ?? "default";
+      const xiaohongshu = args.engine === "xiaohongshu" && !requestedEnvironment;
+      const partition = xiaohongshu ? xiaohongshuPartition : browserPartitionForEnvironment(environmentId);
+      if (!xiaohongshu) await this.prepareBrowserEnvironment(environmentId);
       this.guardWebPartition(partition);
       const visible = args.visible === true && typeof args.projectId === "string" && this.shownBrowser?.projectId === args.projectId;
       if (visible) {
         projectId = args.projectId as string;
-        const state = this.browserAction(projectId, { type: "new" }, partition);
+        const state = this.browserAction(projectId, { type: "new", environmentId }, partition);
         tabId = state.activeId!;
         const tab = this.embeddedProjects.get(projectId)!.tabs.get(tabId)!;
         tab.state.url = target.href;
@@ -725,10 +877,33 @@ export class DesktopBrowserService {
   }
 
   private async executeAutomation(method: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if (method === "list_environments") return this.browserEnvironments.list().map(({ id, name, color }) => ({ id, name, color }));
     if (method === "navigate") {
       const url = readString(args.url, "url");
       if (!isHttpUrl(url)) throw new Error("Browser navigation only supports HTTP and HTTPS URLs.");
-      await this.open(url);
+      const requestedEnvironment = typeof args.environment === "string" ? args.environment : undefined;
+      const projectId = typeof args.projectId === "string" ? args.projectId : undefined;
+      const active = projectId ? this.embeddedProjects.get(projectId)?.tabs.get(this.embeddedProjects.get(projectId)?.activeId ?? "") : undefined;
+      const environment = requestedEnvironment
+        ? this.browserEnvironments.get(requestedEnvironment)
+        : active?.state.environmentId ? this.browserEnvironments.get(active.state.environmentId) : this.browserEnvironments.get("default");
+      if (!environment) throw new Error("指定的浏览器环境不存在。");
+      await this.prepareBrowserEnvironment(environment.id);
+      if (projectId && this.desktopWindow && !this.desktopWindow.isDestroyed()) {
+        let tab = active?.state.environmentId === environment.id ? active : undefined;
+        if (!tab) {
+          const snapshot = this.browserAction(projectId, { type: "new", environmentId: environment.id });
+          tab = this.embeddedProjects.get(projectId)?.tabs.get(snapshot.activeId ?? "");
+        }
+        if (!tab || tab.view.webContents.isDestroyed()) throw new Error("浏览器标签不可用。");
+        this.automationContents = tab.view.webContents;
+        await tab.view.webContents.loadURL(url);
+        this.browserSessionManaged ||= environment.id === "default";
+      } else if (environment.id === "default") {
+        await this.open(url);
+      } else {
+        await this.openInEnvironmentWindow(url, environment.id);
+      }
       return await this.pageState();
     }
     await this.ensureContents();
@@ -740,11 +915,33 @@ export class DesktopBrowserService {
   }
 
   private async ensureContents(): Promise<WebContents> {
+    if (this.automationContents && !this.automationContents.isDestroyed()) return this.automationContents;
     const shown = this.shownBrowser;
     const embedded = shown && this.embeddedProjects.get(shown.projectId)?.tabs.get(shown.tabId);
     if (embedded && !embedded.view.webContents.isDestroyed()) return embedded.view.webContents;
-    if (!this.window || this.window.isDestroyed()) throw new Error("Biny 内置浏览器未打开页面。读取日常浏览器请使用 ChromeRelayListTabs；不会自动打开首页。");
-    return this.window.webContents;
+    if (this.window && !this.window.isDestroyed()) return this.window.webContents;
+    const environmentWindow = [...this.environmentWindows.values()].find((window) => !window.isDestroyed());
+    if (environmentWindow) return environmentWindow.webContents;
+    throw new Error("Biny 内置浏览器未打开页面。读取日常浏览器请使用 ChromeRelayListTabs；不会自动打开首页。");
+  }
+
+  private async openInEnvironmentWindow(url: string, environmentId: string): Promise<void> {
+    const partition = browserPartitionForEnvironment(environmentId);
+    let window = this.environmentWindows.get(environmentId);
+    if (!window || window.isDestroyed()) {
+      window = new BrowserWindow({ width: 1180, height: 820, minWidth: 480, minHeight: 400, title: "Biny 浏览器", show: false,
+        webPreferences: { partition, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+      this.environmentWindows.set(environmentId, window);
+      window.webContents.setWindowOpenHandler(({ url: requested }) => isHttpUrl(requested)
+        ? { action: "allow", overrideBrowserWindowOptions: { width: 620, height: 760, webPreferences: { partition, contextIsolation: true, nodeIntegration: false, sandbox: true } } }
+        : { action: "deny" });
+      window.once("ready-to-show", () => window?.show());
+      window.once("closed", () => { if (this.environmentWindows.get(environmentId) === window) this.environmentWindows.delete(environmentId); });
+    } else {
+      window.show(); window.focus();
+    }
+    this.automationContents = window.webContents;
+    await window.loadURL(url);
   }
 
   private async pageState(): Promise<{ url: string; title: string }> {

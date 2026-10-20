@@ -660,6 +660,39 @@ select option:disabled {
   width: 100%;
 }
 
+.message-timeline[data-christmas="true"] {
+  position: relative;
+  isolation: isolate;
+}
+
+.message-timeline[data-christmas="true"]::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  opacity: .38;
+  background-image:
+    radial-gradient(2px 2px at 18px 24px, rgb(255 255 255 / 78%) 55%, transparent 60%),
+    radial-gradient(1.5px 1.5px at 76px 104px, rgb(255 255 255 / 65%) 55%, transparent 60%),
+    radial-gradient(2.5px 2.5px at 146px 58px, rgb(255 255 255 / 55%) 55%, transparent 60%);
+  background-size: 180px 180px, 230px 230px, 280px 280px;
+  animation: biny-christmas-snow 14s linear infinite;
+}
+
+.message-timeline[data-christmas="true"] > * {
+  position: relative;
+  z-index: 2;
+}
+
+@keyframes biny-christmas-snow {
+  to { background-position: 0 180px, 0 230px, 0 280px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-timeline[data-christmas="true"]::before { animation: none; }
+}
+
 .desktop-empty-state,
 .desktop-loading-state,
 .runtime-error-state {
@@ -1219,6 +1252,24 @@ select option:disabled {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.command-palette-row-remove {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.command-palette-row-remove:hover,
+.command-palette-row-remove:focus-visible {
+  background: var(--surface-hover);
+  color: var(--color-text-primary);
 }
 
 .desktop-dialog-content {
@@ -3545,6 +3596,8 @@ select option:disabled {
   width: 100%;
   min-height: var(--st-control-h);
   align-items: center;
+  justify-content: flex-start;
+  text-align: left;
   gap: 9px;
   padding: 5px 10px;
   border: 1px solid var(--border);
@@ -3606,7 +3659,12 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-placeholder {
+  min-width: 0;
   flex: 1;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-secondary);
   font-size: 12px;
 }

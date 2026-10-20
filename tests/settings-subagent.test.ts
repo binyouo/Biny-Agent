@@ -80,6 +80,16 @@ test("Subagent defaults round-trip through real settings transactions without lo
     const worker = await prepareSubagentTask({ workspaceRoot: workspace, config: await store.load(workspace),
       toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("Must use selected ACP runtime"); } }, "Inspect settings", "workspace");
     try { assert.match(await worker.run(), /Reply 1/); } finally { await worker.close(); }
+    const providerDefaultBefore = await transaction.snapshot(project.id);
+    const providerDefault = await transaction.save(project.id, { expectedPreferenceRevision: providerDefaultBefore.preferenceRevision,
+      expectedConfigRevision: providerDefaultBefore.configRevision,
+      subagent: { enabled: true, runtime: "acp", providerAlias: "worker" } });
+    assert.equal(providerDefault.status, "committed", JSON.stringify(providerDefault));
+    assert.deepEqual(providerDefault.snapshot.subagent, { enabled: true, runtime: "acp", providerAlias: "worker", model: undefined });
+    assert.equal((await loadConfigFile(configRoot)).extensions.subagent.model, undefined);
+    const defaultModelWorker = await prepareSubagentTask({ workspaceRoot: workspace, config: await store.load(workspace),
+      toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("Must use the selected ACP provider default model"); } }, "Inspect settings", "workspace");
+    try { assert.match(await defaultModelWorker.run(), /Reply 1/); } finally { await defaultModelWorker.close(); }
     const disconnected = await loadConfigFile(configRoot);
     disconnected.providers.worker!.enabled = false;
     await saveConfigFile(configRoot, disconnected);
@@ -88,6 +98,12 @@ test("Subagent defaults round-trip through real settings transactions without lo
       expectedConfigRevision: unavailable.configRevision, subagent: { ...unavailable.subagent, enabled: false } });
     assert.equal(disabled.status, "committed", "A disabled provider must not prevent turning subagents off");
     assert.equal((await loadConfigFile(configRoot)).extensions.subagent.enabled, false);
+    const claudeBefore = await transaction.snapshot(project.id);
+    const claude = await transaction.save(project.id, settingsSaveInputSchema.parse({ expectedPreferenceRevision: claudeBefore.preferenceRevision,
+      expectedConfigRevision: claudeBefore.configRevision, subagent: { enabled: true, runtime: "claude-code" } }));
+    assert.equal(claude.status, "committed", JSON.stringify(claude));
+    assert.equal((await loadConfigFile(configRoot)).extensions.subagent.model, undefined);
+    assert.equal(claude.snapshot.subagent.runtime, "claude-code");
     const autoBefore = await transaction.snapshot(project.id);
     const auto = await transaction.save(project.id, settingsSaveInputSchema.parse({ expectedPreferenceRevision: autoBefore.preferenceRevision,
       expectedConfigRevision: autoBefore.configRevision, subagent: { enabled: true, runtime: "auto" } }));

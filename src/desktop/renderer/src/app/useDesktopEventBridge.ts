@@ -29,7 +29,7 @@ export interface RecipeNotice extends DesktopRecipeSuggestion {
 export interface SkillExtractionCardState {
   sessionId: string;
   runId: string;
-  stage: "extracting" | "saving" | "done";
+  stage: "analyzing" | "extracting" | "saving" | "done";
   skillName?: string;
   skillDescription?: string;
   updated?: boolean;

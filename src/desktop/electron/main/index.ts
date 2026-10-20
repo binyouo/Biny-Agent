@@ -24,6 +24,7 @@ import { DesktopAgentManager } from "./DesktopAgentManager.js";
 import { ActivityRecorderService, defaultActivityInputMonitorPath } from "./ActivityRecorderService.js";
 import { captureActivityDesktopScreen, encodeActivityFrame, recompressActivitySnapshot } from "./activityCapture.js";
 import { DesktopBrowserService } from "./DesktopBrowserService.js";
+import { BrowserEnvironmentStore } from "../../browserEnvironments.js";
 import { DesktopConfigStore } from "./DesktopConfigStore.js";
 import { DesktopMcpService } from "./DesktopMcpService.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
@@ -188,10 +189,15 @@ async function startDesktopApplication(): Promise<void> {
   // 浏览器控制面先于 Agent Host 启动，这样独立 Runtime Host 也能拿到同一个可见窗口。
   // 回调只在用户/Agent 真的触碰 cookie 或浏览器动作时执行，此时 agents 已完成装配。
   const defaultCookieJarPath = path.join(desktopRoot, "cookies.json");
+  const browserEnvironments = new BrowserEnvironmentStore(path.join(userDataRoot, "browser-environments.json"));
+  await browserEnvironments.load();
   const browser = new DesktopBrowserService(
     async () => (await configStore.load()).web.cookies.path ?? defaultCookieJarPath,
-    () => agents.assertNoRunningTasks("任务运行期间不能修改 Cookie 或驱动浏览器。")
+    () => agents.assertNoRunningTasks("任务运行期间不能修改 Cookie 或驱动浏览器。"),
+    undefined,
+    browserEnvironments
   );
+  await browser.initializeBrowserEnvironments();
   const browserAutomation = await browser.startAutomationServer(path.join(desktopRoot, "browser-control.sock"));
   await fs.mkdir(path.dirname(computerDesktopEndpoint()), { recursive: true, mode: 0o700 });
   await fs.writeFile(computerDesktopEndpoint(), JSON.stringify(browserAutomation), { mode: 0o600 });

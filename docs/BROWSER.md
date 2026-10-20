@@ -33,6 +33,12 @@ Relay 管理配对连接与请求，扩展在目标 Chrome 配置中读取或操
 
 两种浏览器有各自的标签和登录态。导入 Cookie 不等于连接已有标签，内置浏览器也不能用来报告用户日常 Chrome 的当前状态。
 
+终端中的 `biny iab` 操作 Biny 内置浏览器，依赖正在运行的 Desktop；`biny browser` 仍用于 Chrome Relay。`iab envs` 列出登录环境，`iab goto <url> --env <name>` 在指定环境打开页面，`iab info` 读取当前页面，`iab fetch <url...> --env <name>` 抓取登录态页面。抓取默认返回可读正文，传 `--html` 返回 HTML，传 `--json` 返回结构化结果。直接调用 CLI 由用户发起，不经过模型工具审批。
+
+内置浏览器的“环境”用于并排使用不同账号。每个环境单独保存 Cookie 和网页存储，标签会显示环境颜色；默认环境继续使用现有的内置浏览器登录态。用户可在浏览器环境菜单中新建、改名、设置代理、导入默认环境 Cookie、清空或删除自定义环境。默认环境不能通过环境菜单清空或删除。环境设置保存在本机 Desktop 用户数据中。
+
+Agent 可通过 `BrowserListEnvironments` 查看已有环境，并在用户指定账号或任务需要特定登录时，将环境名称传给 `BrowserOpen` 或 `WebFetch`。未指定时，`BrowserOpen` 延续当前内置标签的环境；没有当前标签时使用默认环境。`WebFetch` 默认使用默认环境。Agent 不能新建、修改、清空、导入或删除环境。
+
 Desktop 浏览器面板首次打开当前项目时检查预览入口。切回窗口或再次打开面板会保留检查结果；在外部新增 HTML 页面或修改项目启动脚本后，点击“运行预览”旁的“重新检查预览入口”按钮更新结果。没有入口或检查失败时也可通过该按钮重试。
 
 ## 连接 Chrome
@@ -77,7 +83,7 @@ biny browser press <browser-id> <tab-id> Enter --json
 
 Agent 使用 `BrowserOpen` 打开页面，通过 `BrowserReadDom` 读取文字和 selector，再使用点击、输入与按键工具。每次交互后重新读取确认。
 
-内置 `Browser*` 不提供独立浏览器实例池，也不具备 Chrome Relay 的全部文件、截图和高级定位能力。Desktop 浏览器执行端不可用时，不能把网页搜索或 Chrome Relay 声称为同一个页面。
+内置 `Browser*` 使用同一个浏览器界面中的多个隔离环境，不提供独立浏览器窗口池，也不具备 Chrome Relay 的全部文件、截图和高级定位能力。Desktop 浏览器执行端不可用时，不能把网页搜索或 Chrome Relay 声称为同一个页面。
 
 ## 排查
 

@@ -1,7 +1,7 @@
 /** 通过 DOM 与 IPC 替身验证操作契约；视觉及原生网页焦点由用户验收。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { DesktopBrowserAction, DesktopBrowserSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopBrowserAction, DesktopBrowserEnvironment, DesktopBrowserSnapshot } from "../src/desktop/protocol.js";
 
 test("浏览器新建后聚焦地址、搜索、恢复地址及标签键盘切换", async () => {
   const { JSDOM } = await import("jsdom");
@@ -16,12 +16,20 @@ test("浏览器新建后聚焦地址、搜索、恢复地址及标签键盘切�
     Object.defineProperty(globalThis, key, { configurable: true, value });
   }
   let snapshot: DesktopBrowserSnapshot = { projectId: "p", revision: 0, tabs: [] };
+  const environments: DesktopBrowserEnvironment[] = [{ id: "default", name: "默认", color: "#aeb5c2", proxy: { mode: "system" } }];
   const actions: DesktopBrowserAction[] = [];
   let failNewTab = false;
   let expanded = 0;
   const references: string[] = [];
   Object.assign(dom.window, { biny: {
     browserSnapshot: async () => snapshot, onBrowserState: () => () => {}, browserBounds: async () => {},
+    browserEnvironments: async () => environments,
+    createBrowserEnvironment: async (input: { name: string; proxy: DesktopBrowserEnvironment["proxy"] }) => {
+      const environment = { id: "00000000-0000-4000-8000-000000000001", name: input.name, color: "#75c9f2", proxy: input.proxy };
+      environments.push(environment); return environment;
+    },
+    updateBrowserEnvironment: async () => environments[1]!,
+    deleteBrowserEnvironment: async () => {}, clearBrowserEnvironment: async () => {}, importBrowserEnvironmentCookies: async () => ({ imported: 2 }),
     browserCapture: async () => ({ kind: "scratch", uri: "biny://scratch/page", label: "Page", content: "Page body" }),
     browserInspect: async (_: string, tabId: string, enabled: boolean) => {
       snapshot = { ...snapshot, revision: snapshot.revision + 1, tabs: snapshot.tabs.map((tab) => tab.id === tabId ? { ...tab, inspecting: enabled } : tab) };
@@ -35,7 +43,9 @@ test("浏览器新建后聚焦地址、搜索、恢复地址及标签键盘切�
       snapshot = { ...snapshot, revision: snapshot.revision + 1 };
       if (action.type === "new") {
         const id = `tab-${snapshot.revision}`;
-        snapshot = { ...snapshot, activeId: id, tabs: [...snapshot.tabs, { id, title: "新标签页", url: action.url ?? "", loading: false, canGoBack: false, canGoForward: false }] };
+        const activeEnvironment = environments.find((item) => item.id === snapshot.tabs.find((tab) => tab.id === snapshot.activeId)?.environmentId);
+        const environment = environments.find((item) => item.id === action.environmentId) ?? activeEnvironment ?? environments[0]!;
+        snapshot = { ...snapshot, activeId: id, tabs: [...snapshot.tabs, { id, title: "新标签页", url: action.url ?? "", environmentId: environment.id, environmentName: environment.name, environmentColor: environment.color, loading: false, canGoBack: false, canGoForward: false }] };
       } else if (action.type === "navigate") {
         snapshot = { ...snapshot, tabs: snapshot.tabs.map((tab) => tab.id === action.tabId ? { ...tab, url: action.url } : tab) };
       } else if (action.type === "select") snapshot = { ...snapshot, activeId: action.tabId };
@@ -102,6 +112,20 @@ test("浏览器新建后聚焦地址、搜索、恢复地址及标签键盘切�
     assert.equal(document.querySelectorAll('[role="tab"]').length, 1, "新建失败不伪造标签");
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /新建失败/);
     assert.ok(document.activeElement !== field(), "失败时不误跳到地址栏");
+    failNewTab = false;
+    await React.act(async () => (document.querySelector('[aria-label="浏览器环境"]') as HTMLButtonElement).click());
+    assert.ok(document.querySelector('[role="dialog"][aria-label="浏览器环境"]'));
+    await React.act(async () => (document.querySelector('.inspector-browser-environment-create') as HTMLButtonElement).click());
+    const environmentName = document.querySelector('.inspector-browser-environment-form input') as HTMLInputElement;
+    await React.act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!.call(environmentName, "Work");
+      environmentName.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    await React.act(async () => (document.querySelector('.inspector-browser-environment-form button') as HTMLButtonElement).click());
+    assert.equal(environments.at(-1)?.name, "Work", "环境菜单创建持久环境");
+    const workButton = [...document.querySelectorAll<HTMLButtonElement>('.inspector-browser-environment-open')].find((button) => button.textContent?.includes("Work"))!;
+    await React.act(async () => workButton.click());
+    assert.deepEqual(actions.at(-1), { type: "new", environmentId: environments.at(-1)!.id });
   } finally {
     await React.act(async () => root.unmount()); dom.window.close();
     for (const [key, descriptor] of saved) {

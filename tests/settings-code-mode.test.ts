@@ -1,3 +1,4 @@
+import { buildSessionTimeline } from "../src/desktop/renderer/src/sessionTimeline.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
@@ -51,14 +52,16 @@ test("Code Mode settings commit through real transactions to disk and the next m
     assert.equal((await transaction.snapshot(project.id)).toolExecutionMode, "code_mode");
     for (const mode of ["direct", "code_mode"] as const) {
       const before = await transaction.snapshot(project.id);
-      const input = { expectedPreferenceRevision: before.preferenceRevision, expectedConfigRevision: before.configRevision, toolExecutionMode: mode };
+      const rtkEnabled = mode === "code_mode";
+      const input = { rtkEnabled, expectedPreferenceRevision: before.preferenceRevision, expectedConfigRevision: before.configRevision, toolExecutionMode: mode };
       assert.throws(() => settingsSaveInputSchema.parse({ ...input, toolExecutionMode: "automatic" }));
       const saved = await transaction.save(project.id, settingsSaveInputSchema.parse(input));
       assert.equal(saved.status, "committed", JSON.stringify(saved));
-      assert.deepEqual(saved.appliedFields, ["toolExecutionMode"]);
+      assert.deepEqual(saved.appliedFields, ["rtkEnabled", "toolExecutionMode"]);
+      assert.equal(saved.snapshot.rtkEnabled, rtkEnabled);
       assert.equal(saved.snapshot.toolExecutionMode, mode);
       const stored = await loadConfigFile(configRoot);
-      assert.deepEqual(stored.agent, { ...originalAgent, toolExecutionMode: mode });
+      assert.deepEqual(stored.agent, { ...originalAgent, rtkEnabled, toolExecutionMode: mode });
       assert.equal((await transaction.snapshot(project.id)).toolExecutionMode, mode);
       const stale = await transaction.save(project.id, { ...input, toolExecutionMode: before.toolExecutionMode });
       assert.equal(stale.status, "rolled_back");
@@ -67,7 +70,7 @@ test("Code Mode settings commit through real transactions to disk and the next m
       const model: AgentModel = { provider: "fixture", modelId: "settings-code-mode", supportsTools: true,
         async stream(context) {
           modelCalls++;
-          assert.equal(context.tools.some((tool) => tool.name === "exec"), mode === "code_mode");
+          assert.equal(context.tools.some((tool) => tool.name === "run_script"), mode === "code_mode");
           assert.ok(context.tools.some((tool) => tool.name === "Write"));
           return (async function* () { yield { type: "text-delta" as const, text: "mode inspected" }; yield { type: "finish" as const, reason: "stop" as const }; })();
         }
@@ -82,6 +85,32 @@ test("Code Mode settings commit through real transactions to disk and the next m
         assert.equal(modelCalls, 1);
       } finally { await agent.close(); await recorder.close(); }
     }
+    const statsRecorder = new SessionRecorder(workspace, "optimization-stats");
+    const optimization = { id: "stable-operation", kind: "ptc" as const, estimator: "utf8/3" as const, beforeTokens: 900, afterTokens: 100, savedTokens: 800, toolCalls: 2 };
+    try {
+      statsRecorder.record({ type: "user_message", content: "fixture" });
+      statsRecorder.record({ type: "tool_call", tool: "run_script", toolCallId: "a", args: { code: "return 1" } });
+      statsRecorder.record({ type: "tool_result", tool: "run_script", toolCallId: "a", result: { value: 1 }, optimization });
+      statsRecorder.record({ type: "tool_result", tool: "run_script", toolCallId: "a", result: { value: 1 }, optimization });
+      await statsRecorder.flush();
+      const stats = await projects.toolOptimizationStats(7, project.id, "optimization-stats");
+      assert.equal(stats.entries.length, 1, "stored duplicate receipts must not increase statistics");
+      assert.equal(stats.entries[0]?.optimization.savedTokens, 800);
+      assert.equal(stats.incompleteSessions, 0);
+      assert.deepEqual(stats.entries[0]?.origin, { projectId: project.id, sessionId: "optimization-stats", toolCallId: "a" });
+      const detail = await projects.toolOptimizationDetail(project.id, "optimization-stats", "a");
+      assert.ok(detail.events.some(event => event.type === "tool_call" && (event.args as { code?: string } | undefined)?.code === "return 1"));
+      assert.ok(detail.events.every(event => event.type !== "user_message"));
+      assert.equal(buildSessionTimeline(detail.events, []).flatMap(turn => turn.tools).find(tool => tool.id === "a")?.tool, "run_script");
+      await assert.rejects(projects.toolOptimizationDetail(project.id, "optimization-stats", "missing"));
+      statsRecorder.record({ type: "tool_call", time: "2000-01-01T00:00:00.000Z", tool: "Bash", toolCallId: "old", args: { command: 'git log --oneline -5' } });
+      statsRecorder.record({ type: "tool_result", time: "2000-01-01T00:00:01.000Z", tool: "Bash", toolCallId: "old", result: {}, optimization: { ...optimization, id: "old-operation", kind: "rtk", command: "git log" } });
+      await statsRecorder.flush();
+      assert.equal((await projects.toolOptimizationStats(30, project.id, "optimization-stats")).entries.length, 1);
+      const cumulative = await projects.toolOptimizationStats("all", project.id, "optimization-stats");
+      assert.equal(cumulative.entries.length, 2);
+      assert.equal(cumulative.entries.find(entry => entry.optimization.id === "old-operation")?.optimization.originalCommand, "git log --oneline -5");
+    } finally { await statsRecorder.close(); }
   } finally {
     await manager?.closeAll();
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previousAgentDir;

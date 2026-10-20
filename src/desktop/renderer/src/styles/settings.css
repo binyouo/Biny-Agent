@@ -103,7 +103,6 @@
 .desktop-settings-dialog .settings-modal .settings-chat-page .setting-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; justify-content: stretch; gap: 8px; min-height: 0; margin: 0; padding: 0; border: 0; }
 .desktop-settings-dialog .settings-modal .settings-chat-page .setting-row > .activity-number-input { width: min(100%, 180px); }
 .desktop-settings-dialog .settings-modal .settings-chat-page .chat-params-settings .activity-number-input { width: 100%; }
-.desktop-settings-dialog .settings-modal .settings-chat-page .compaction-advanced > section { border: 0; padding: 12px 0 0; }
 
 .settings-load-state { display: grid; justify-items: start; align-content: center; gap: 14px; min-height: 180px; padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); }
 .settings-load-state h3 { margin: 0; font-size: calc(15px * var(--font-scale, 1)); font-weight: 550; }
@@ -233,3 +232,64 @@
 .subagent-setting-row > :is(input, select, .settings-model-picker) { width: 220px; min-width: 0; max-width: 100%; flex: 0 1 220px; }
 .subagent-setting-row > input { min-height: var(--st-control-h); padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--st-button-radius); background: var(--surface-soft); color: var(--text); font: inherit; }
 .subagent-setting-row > input:focus-visible { border-color: var(--accent); outline: none; }
+
+.desktop-settings-dialog .settings-modal .settings-general {
+  gap: 22px;
+}
+.desktop-settings-dialog .settings-modal .settings-general > :is(#tool-model, #vision-model, #subagent) {
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.desktop-settings-dialog .settings-modal .settings-general > :is(#tool-model, #vision-model, #subagent) > h3 {
+  margin: 0 0 32px;
+  color: var(--text);
+  font-size: calc(16px * var(--font-scale, 1));
+  font-weight: 600;
+  line-height: 1.5;
+}
+.desktop-settings-dialog .settings-modal .settings-general > :is(#tool-model, #vision-model, #subagent) > .settings-form-group {
+  gap: 28px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.desktop-settings-dialog .settings-modal .settings-general > :is(#tool-model, #vision-model, #subagent) > .settings-form-group > p:first-child {
+  min-height: calc(36px * var(--font-scale, 1));
+  line-height: 1.5;
+}
+.desktop-settings-dialog .settings-modal .settings-general > :is(#tool-model, #vision-model, #subagent) .settings-model-picker-trigger {
+  min-height: calc(38px * var(--font-scale, 1));
+  padding: 8px 12px;
+  border-radius: 12px;
+}
+.desktop-settings-dialog .settings-modal .settings-general > #subagent > h3 { margin-bottom: 8px; }
+.desktop-settings-dialog .settings-modal .settings-general > #subagent > .settings-form-group { gap: 20px; }
+.settings-subagent-select-field { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.settings-subagent-select-field > label { color: var(--text); font-size: calc(13px * var(--font-scale, 1)); font-weight: 500; }
+.settings-preferences .settings-subagent-select {
+  width: 100%; min-width: 0; min-height: calc(38px * var(--font-scale, 1)); flex: 1 1 auto;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 12px;
+}
+.settings-subagent-help { display: flex; flex-direction: column; gap: 4px; }
+.settings-subagent-help > p { margin: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5; }
+.settings-subagent-providers {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0;
+  padding: 8px 12px; border: 1px solid var(--border-subtle); border-radius: 12px;
+}
+.settings-subagent-providers > p { margin: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
+.desktop-settings-dialog .settings-modal .settings-general .tool-model-row {
+  gap: 8px;
+}
+.desktop-settings-dialog .settings-modal .settings-general .model-test-button {
+  width: calc(38px * var(--font-scale, 1));
+  min-height: calc(38px * var(--font-scale, 1));
+  padding: 0;
+  border-radius: 12px;
+}
+@container settings (max-width: 560px) {
+  .desktop-settings-dialog .settings-modal .settings-general > :is(#tool-model, #vision-model, #subagent) {
+    padding: 20px;
+  }
+}

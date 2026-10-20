@@ -208,7 +208,7 @@ const EXPLORING_TOOLS = new Set([
   "mcp_list_resources", "mcp_read_resource",
   "activity_search", "activity_search_semantic", "activity_sessions", "activity_session_show",
   "activity_report", "activity_digest",
-  "recall_memory", "skill_search", "BrowserReadDom",
+  "recall_memory", "skill_search", "BrowserReadDom", "BrowserListEnvironments",
   "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
 ]);
 
@@ -339,6 +339,9 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
   const error = tool.status === "failed" || tool.status === "denied" || tool.status === "unknown";
   const row: ActivityToolRowModel = { verb: "", object: "", running, error };
   switch (tool.tool) {
+    case "run_script":
+      row.verb = stringArg(tool, "description")?.trim() || "脚本处理";
+      return row;
     case "Read":
     case "read_skill_resource":
     case "mcp_read_resource":
@@ -423,7 +426,11 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       return row;
     case "BrowserOpen":
       row.verb = "打开";
-      row.object = stringArg(tool, "url") ?? tool.description ?? "…";
+      row.object = [stringArg(tool, "url"), stringArg(tool, "environment")].filter(Boolean).join(" · ") || tool.description || "…";
+      return row;
+    case "BrowserListEnvironments":
+      row.verb = "列出浏览器环境";
+      row.object = tool.description ?? "";
       return row;
     case "BrowserClick":
       row.verb = "点击";

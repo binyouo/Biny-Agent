@@ -10,6 +10,7 @@ import { Icon } from "./Icon.js";
 
 interface CopyButtonProps {
   value: string;
+  role?: "menuitem";
   label?: string;
   className?: string;
   size?: number;
@@ -21,6 +22,7 @@ interface CopyButtonProps {
 
 export function CopyButton({
   value,
+  role,
   label = "复制",
   className = "copy-button",
   size = 12,
@@ -43,6 +45,7 @@ export function CopyButton({
   const feedback = copied ? "已复制" : failed ? "复制失败，点击重试" : label;
   return (
     <button
+      role={role}
       aria-label={feedback}
       className={`${className}${copied ? " is-copied" : ""}`}
       onClick={() => {

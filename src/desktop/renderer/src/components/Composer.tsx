@@ -53,6 +53,8 @@ interface ComposerProps {
   runtimeInfo?: ModelRuntimeInfo;
   models: ModelChoice[];
   connections?: readonly DesktopModelConnection[];
+  fastMode?: boolean;
+  onChangeFastMode(fastMode: boolean): void;
   /** 已解析好的上下文用量；取不到真实数字时为空，此时不展示用量。 */
   contextUsage?: ContextUsage;
   memoryState: ComposerMemoryState;
@@ -75,7 +77,7 @@ interface ComposerProps {
   capabilityDefaults: DesktopCapabilityDefaults;
   skills: DesktopSkillCatalogEntry[];
   toolCatalog: DesktopToolCatalogEntry[];
-  onSend(input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void>;
+  onSend(input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<void>;
   onMutateQueuedMessage(action: "update" | "remove" | "move" | "steer" | "send-all", mutation?: { messageId?: string; input?: string; targetMessageId?: string; placeAfter?: boolean }): Promise<void>;
   /** 正在编辑的历史消息；nonce 变化时把 value 回填进输入框并聚焦。 */
   editingMessage?: { nonce: number; value: string };
@@ -118,12 +120,15 @@ export const Composer = memo(function Composer({
   runtimeInfo,
   models,
   connections,
+  fastMode = false,
+  onChangeFastMode,
   contextUsage,
   memoryState,
   memoryToggleBusy,
   memoryToggleDisabled,
   memoryToggleDisabledReason,
   running,
+  runtimeBusy,
   compacting = false,
   recovery,
   onResume,
@@ -386,7 +391,7 @@ export const Composer = memo(function Composer({
           if (!recovery?.canContinue) throw new Error(recovery?.message ?? "当前任务无法继续。");
           await onResume();
         } else {
-          await onSend(value, sentAttachments, delivery, globalThis.crypto.randomUUID(), capabilitySelection);
+          await onSend(value, sentAttachments, delivery, globalThis.crypto.randomUUID(), capabilitySelection, fastMode);
         }
       } catch (submitError) {
         if (suggestion === undefined) draftState.update({ draft: originalDraft, attachments, history: sentHistory });
@@ -491,6 +496,7 @@ export const Composer = memo(function Composer({
     )
     : undefined;
   const toolsSupported = selectedModel?.supportsTools !== false;
+  const fastModeSupported = selectedModel?.capabilities?.serviceTiers?.includes("priority") === true;
   const modelName = selectedModel?.displayName ?? runtimeInfo?.modelLabel ?? "未配置模型";
   const startModelSwitch = (alias: string, thinking: ThinkingSelection): void => {
     const requestId = modelSwitchRequestRef.current + 1;
@@ -757,6 +763,20 @@ export const Composer = memo(function Composer({
                 thinkingLevels={thinkingLevels}
               />
             </div>
+            {fastModeSupported ? (
+              <ComposerActionButton
+                aria-pressed={fastMode}
+                className="biny-model-pill"
+                data-fast-mode={fastMode ? "enabled" : "disabled"}
+                disabled={running || runtimeBusy || modelSwitchPending}
+                active={fastMode}
+                label="快速"
+                onClick={() => onChangeFastMode(!fastMode)}
+                tooltip={fastMode ? "使用优先服务档位" : "启用优先服务档位"}
+              >
+                快速
+              </ComposerActionButton>
+            ) : null}
           </div>
           <div className="biny-composer-footer-end">
             <div className="composer-menu-anchor">

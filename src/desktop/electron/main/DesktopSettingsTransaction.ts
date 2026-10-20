@@ -716,6 +716,7 @@ export class DesktopSettingsTransaction {
       memory: config.memory,
       compaction: structuredClone(config.compaction),
       chatParams: structuredClone(config.chatParams),
+      rtkEnabled: config.rtkEnabled,
       toolExecutionMode: config.toolExecutionMode,
       subagent: structuredClone(config.subagent),
       externalSubagentBlockers: [...config.externalSubagentBlockers],
@@ -883,6 +884,7 @@ function createJournal(
     || input.memory !== undefined
     || input.compaction !== undefined
     || input.chatParams !== undefined
+    || input.rtkEnabled !== undefined
     || input.toolExecutionMode !== undefined
     || input.subagent !== undefined
     || input.permission !== undefined
@@ -1202,6 +1204,7 @@ function listAppliedFields(input: DesktopSettingsSaveInput): string[] {
   if (input.memory !== undefined) fields.push("memory");
   if (input.compaction !== undefined) fields.push("compaction");
   if (input.chatParams !== undefined) fields.push("chatParams");
+  if (input.rtkEnabled !== undefined) fields.push("rtkEnabled");
   if (input.toolExecutionMode !== undefined) fields.push("toolExecutionMode");
   if (input.subagent !== undefined) fields.push("subagent");
   if (input.permission !== undefined) fields.push("permission");

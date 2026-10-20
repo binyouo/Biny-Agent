@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { JSDOM } from "jsdom";
 
-test("Subagent settings show the selected model and external restrictions; disabled and busy controls cannot edit defaults", async () => {
+test("Coding Agent settings show configured ACP providers and keep disabled or busy choices unavailable", async () => {
   const vite = await createServer({ configFile: false, server: { middlewareMode: true }, appType: "custom", optimizeDeps: { noDiscovery: true } });
   try {
     const { SettingsSubagent } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsSubagent.tsx");
@@ -21,40 +21,27 @@ test("Subagent settings show the selected model and external restrictions; disab
             { providerAlias: "offline", providerType: "acp", displayName: "Offline", enabled: false }] : [] } },
         saveState: "idle", setSubagent() {} };
       return new JSDOM(renderToStaticMarkup(createElement(SettingsDraftContext.Provider, { value },
-        createElement(SettingsSubagent, { onOpenModels() {} })))).window.document;
+        createElement(SettingsSubagent, { onOpenProviders() {} })))).window.document;
     };
     const native = render("builtin");
-    assert.ok(native.querySelector('[aria-label="默认子代理"]'));
-    assert.match(native.body.textContent!, /跟随主模型/);
-    assert.match(render("builtin", true, false, "native").querySelector('[role="combobox"]')?.textContent ?? "", /native-id/);
-    assert.doesNotMatch(native.body.textContent!, /ACP model|沙箱测试限制/);
-    const automatic = render("auto");
-    assert.equal(automatic.querySelector('select')?.value, "auto");
-    assert.equal(automatic.querySelector('[aria-label="子代理模型"]'), null);
-    assert.equal(automatic.querySelector('input[aria-label="子代理模型 ID"]'), null);
-    assert.match(automatic.body.textContent!, /优先使用.*Claude Code/);
-    const options = [...native.querySelectorAll('select[aria-label="默认子代理"] option')];
-    assert.ok(options.some((option) => option.textContent === "Claude Code（ACP）"));
-    assert.ok(options.some((option) => option.textContent === "Codex CLI（ACP）"));
-    assert.ok(!options.some((option) => option.textContent === "ACP"));
-    assert.ok(native.querySelector('option[value="acp:offline"]:disabled'));
-    const acp = render("acp", true, false, "external", "worker");
-    assert.equal(acp.querySelector('select')?.value, "acp:worker");
-    assert.match(acp.querySelector('[role="combobox"]')?.textContent ?? "", /acp-id/);
-    assert.doesNotMatch(acp.body.textContent!, /Native model|Other model|跟随主模型/);
+    assert.equal(native.querySelector('[aria-label="默认 Coding Agent"]')?.value, "builtin");
+    assert.deepEqual([...native.querySelectorAll<HTMLSelectElement>('[aria-label="默认 Coding Agent"] option')].map(option => option.textContent),
+      ["自动", "Claude Code", "内置 Agent", "Claude Code", "Codex CLI", "Offline"]);
+    assert.equal(native.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"] option[value="acp:offline"]')?.disabled, true);
+    assert.match(native.body.textContent!, /ACP Providers: 3/u);
+    assert.match(native.body.textContent!, /沿用当前聊天模型/);
+    assert.doesNotMatch(native.body.textContent!, /沙箱测试限制/);
+    assert.match(render("auto").body.textContent!, /优先.*Claude Code/);
+    const acp = render("acp", true, false, undefined, "worker");
+    assert.equal(acp.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "acp:worker");
     assert.match(acp.body.textContent!, /沙箱测试限制/);
-    const other = render("acp", true, false, "other", "other-worker");
-    assert.match(other.querySelector('[role="combobox"]')?.textContent ?? "", /other-id/);
-    assert.doesNotMatch(other.body.textContent!, /ACP model/);
-    const empty = render("builtin", true, false, undefined, undefined, false);
-    assert.equal(empty.querySelector('option[value^="acp:"]'), null);
-    assert.match(empty.body.textContent!, /添加外部 Agent/);
+    assert.equal(render("acp", true, false, undefined, "other-worker").querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "acp:other-worker");
+    assert.doesNotMatch(render("builtin", true, false, undefined, undefined, false).body.textContent!, /添加外部 Agent|管理 Agent 连接|ACP Providers: [1-9]/u);
     const cli = render("codex", true, false, "custom-id");
-    assert.equal(cli.querySelector('input[aria-label="子代理模型 ID"]')?.getAttribute("value"), "custom-id");
-    assert.equal(cli.querySelector('[role="combobox"]'), null);
-    assert.match(cli.body.textContent!, /路径/);
-    assert.equal(render("builtin", false).querySelector('[aria-label="默认子代理"]'), null);
-    assert.ok(render("codex", true, true).querySelector('input[aria-label="子代理模型 ID"]:disabled'));
-    assert.match(render("acp", true, false, "missing").body.textContent!, /不可用/);
+    assert.equal(cli.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "auto");
+    assert.equal(cli.querySelector('input'), null);
+    assert.match(cli.body.textContent!, /直接使用本地安装的 Claude Code CLI/u);
+    assert.ok(render("codex", true, true).querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]:disabled'));
+    assert.equal(render("acp", true, false, "missing").querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "auto");
   } finally { await vite.close(); }
 });

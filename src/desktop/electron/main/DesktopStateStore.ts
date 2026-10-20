@@ -76,7 +76,11 @@ export class DesktopStateStore {
       const raw = JSON.parse(await fs.readFile(this.filePath, "utf8")) as Partial<PersistedDesktopState>;
       this.state = {
         version: 2,
-        projects: Array.isArray(raw.projects) ? raw.projects.map((project) => ({ ...project, pinned: project.pinned === true })) : [],
+        projects: Array.isArray(raw.projects) ? raw.projects.map((project) => ({
+          ...project,
+          iconDataUrl: validProjectIconDataUrl(project.iconDataUrl) ? project.iconDataUrl : undefined,
+          pinned: project.pinned === true
+        })) : [],
         activeProjectId: typeof raw.activeProjectId === "string" ? raw.activeProjectId : undefined,
         selectedSessionIds: isRecord(raw.selectedSessionIds) ? stringRecord(raw.selectedSessionIds) : {},
         activeView: validActiveView(raw.activeView) ? raw.activeView : "chat",
@@ -425,6 +429,10 @@ function validActiveView(value: unknown): value is DesktopActiveView {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validProjectIconDataUrl(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 700_000 && /^data:image\/png;base64,[A-Za-z\d+/]+=*$/u.test(value);
 }
 
 function stringRecord(value: Record<string, unknown>): Record<string, string> {

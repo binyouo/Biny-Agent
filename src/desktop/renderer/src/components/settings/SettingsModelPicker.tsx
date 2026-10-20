@@ -161,9 +161,9 @@ export function SettingsModelPicker({
         ref={triggerRef}
         title={selected ? `${selectedGroup?.label} · ${selected.label}` : value ?? placeholder}
       >
+        <ProviderMark iconId={selectedGroup?.iconId} iconTone={selectedGroup?.iconTone ?? "model"} />
         {selected ? (
           <>
-            <ProviderMark iconId={selectedGroup?.iconId} iconTone={selectedGroup?.iconTone ?? "compatible"} />
             <span className="settings-model-picker-trigger-copy">
               <strong>{selected.label}</strong>
               {selectionHint ? <small>（{selectionHint}）</small> : null}

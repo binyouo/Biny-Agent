@@ -1,3 +1,4 @@
+import { findRtk } from "../../../tools/shell/rtk.js";
 import type { DesktopApplicationImports } from "./DesktopApplicationImports.js";
 /**
  * 桌面端 IPC handler 注册。
@@ -57,6 +58,7 @@ import { appearancePreferenceSchema } from "../../../appearance/preferences.js";
 import { DesktopSettingsTransaction } from "./DesktopSettingsTransaction.js";
 import { DesktopTerminalManager } from "./DesktopTerminalManager.js";
 import { StaticPreviewServer } from "./StaticPreviewServer.js";
+import { fetchSiteIconDataUrl } from "./siteIcon.js";
 import { QuickChatContextService } from "./QuickChatContextService.js";
 import type { QuickChatWindowController } from "./quickChatWindow.js";
 import { runtimeMutationStartsWork } from "./settingsRuntimeGate.js";
@@ -129,6 +131,14 @@ const sessionTreePageOptionsSchema = z.object({
 const permissionModeSchema = z.enum(["ask", "read-only", "auto", "full-access"]);
 const activeViewSchema = z.enum(["chat", "runtime"]);
 const systemSettingsPaneSchema = z.enum(["screen-recording", "accessibility"]);
+const browserEnvironmentInputSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  proxy: z.object({
+    mode: z.enum(["system", "direct", "fixed_servers"]),
+    proxyRules: z.string().trim().max(1_000).optional(),
+    proxyBypassRules: z.string().trim().max(1_000).optional()
+  }).strict()
+}).strict();
 /** QuickChat 三开关的入参边界：逐字段布尔，额外字段拒绝，与 DesktopStateStore 归一化逻辑对齐。 */
 const quickChatSettingsSchema = z.object({
   autoHideOnBlur: z.boolean(),
@@ -293,7 +303,8 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.workspaceSnapshot(project.id);
   });
 
-  handle(desktopIpc.createEmptyProject, async () => {
+  handle(desktopIpc.createEmptyProject, async (_event, siteUrl: unknown) => {
+    const parsedSiteUrl = z.string().trim().max(2_048).optional().parse(siteUrl);
     const window = context.getWindow();
     const options: SaveDialogOptions = {
       title: "新建 Biny 项目",
@@ -305,8 +316,24 @@ export function registerDesktopIpc(context: IpcContext): void {
       ? await dialog.showSaveDialog(window, options)
       : await dialog.showSaveDialog(options);
     if (result.canceled || !result.filePath) return undefined;
-    const project = await context.projects.createEmptyProject(result.filePath);
+    const iconDataUrl = parsedSiteUrl
+      ? await fetchSiteIconDataUrl(parsedSiteUrl).catch(() => undefined)
+      : undefined;
+    const project = await context.projects.createEmptyProject(result.filePath, iconDataUrl);
     return await context.agents.workspaceSnapshot(project.id);
+  });
+
+  handle(desktopIpc.rtkStatus, async () => await findRtk());
+  handle(desktopIpc.toolOptimizationDetail, async (_event, projectId: unknown, sessionId: unknown, toolCallId: unknown) =>
+    await context.projects.toolOptimizationDetail(idSchema.parse(projectId), idSchema.parse(sessionId), idSchema.parse(toolCallId)));
+
+  handle(desktopIpc.toolOptimizationStats, async (_event, days: unknown, projectId: unknown, sessionId: unknown) => {
+    const range = z.union([z.literal(1), z.literal(7), z.literal(30), z.literal("all")]).parse(days);
+    const project = idSchema.optional().parse(projectId);
+    const session = idSchema.optional().parse(sessionId);
+    if (session && !project) throw new Error("Session statistics require a project.");
+    const stats = await context.projects.toolOptimizationStats(range, project, session);
+    return { ...stats, rtk: await findRtk() };
   });
 
   handle(desktopIpc.selectProject, async (_event, projectId: unknown) => {
@@ -459,6 +486,11 @@ export function registerDesktopIpc(context: IpcContext): void {
   handle(desktopIpc.archiveSession, async (_event, projectId: unknown, sessionId: unknown, archived: unknown, expectedRevision: unknown) => {
     const parsedProjectId = idSchema.parse(projectId);
     return await context.agents.archiveSession(parsedProjectId, idSchema.parse(sessionId), z.boolean().parse(archived), revisionSchema.parse(expectedRevision));
+  });
+
+  handle(desktopIpc.setSessionFastMode, async (_event, projectId: unknown, sessionId: unknown, fastMode: unknown, expectedRevision: unknown) => {
+    const parsedProjectId = idSchema.parse(projectId);
+    return await context.agents.setSessionFastMode(parsedProjectId, idSchema.parse(sessionId), z.boolean().parse(fastMode), revisionSchema.parse(expectedRevision));
   });
 
   handle(desktopIpc.markSessionRead, async (_event, projectId: unknown, sessionId: unknown, expectedRevision: unknown) => {
@@ -767,6 +799,30 @@ export function registerDesktopIpc(context: IpcContext): void {
     assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
     return context.browser.browserSnapshot(project.id);
   });
+  handle(desktopIpc.browserEnvironments, (event) => {
+    assertBrowserSender(event);
+    return context.browser.browserEnvironmentSnapshot();
+  });
+  handle(desktopIpc.browserEnvironmentCreate, async (event, input: unknown) => {
+    assertBrowserSender(event);
+    return await context.browser.createBrowserEnvironment(browserEnvironmentInputSchema.parse(input));
+  });
+  handle(desktopIpc.browserEnvironmentUpdate, async (event, id: unknown, input: unknown) => {
+    assertBrowserSender(event);
+    return await context.browser.updateBrowserEnvironment(z.string().uuid().parse(id), browserEnvironmentInputSchema.parse(input));
+  });
+  handle(desktopIpc.browserEnvironmentDelete, async (event, id: unknown) => {
+    assertBrowserSender(event);
+    await context.browser.deleteBrowserEnvironment(z.string().uuid().parse(id));
+  });
+  handle(desktopIpc.browserEnvironmentClear, async (event, id: unknown) => {
+    assertBrowserSender(event);
+    await context.browser.clearBrowserEnvironment(z.string().uuid().parse(id));
+  });
+  handle(desktopIpc.browserEnvironmentImportCookies, async (event, sourceId: unknown, targetId: unknown) => {
+    assertBrowserSender(event);
+    return await context.browser.importBrowserEnvironmentCookies(z.string().min(1).max(64).parse(sourceId), z.string().uuid().parse(targetId));
+  });
   handle(desktopIpc.browserRelayStatus, (event) => {
     assertBrowserSender(event);
     return context.browser.relayStatus();
@@ -790,13 +846,18 @@ export function registerDesktopIpc(context: IpcContext): void {
     assertBrowserSender(event);
     await context.browser.disconnectRelay();
   });
-  handle(desktopIpc.browserAction, (event, projectId: unknown, action: unknown) => {
+  handle(desktopIpc.browserAction, async (event, projectId: unknown, action: unknown) => {
     assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
     const parsed = z.discriminatedUnion("type", [
-      z.object({ type: z.literal("new"), url: externalUrlSchema.optional() }).strict(),
+      z.object({ type: z.literal("new"), url: externalUrlSchema.optional(), environmentId: z.string().min(1).max(64).optional() }).strict(),
       z.object({ type: z.literal("navigate"), tabId: idSchema, url: externalUrlSchema }).strict(),
       z.object({ type: z.enum(["close", "select", "back", "forward", "reload", "stop", "float"]), tabId: idSchema }).strict()
     ]).parse(action);
+    if (parsed.type === "new") {
+      const snapshot = context.browser.browserSnapshot(project.id);
+      const active = snapshot.tabs.find((tab) => tab.id === snapshot.activeId);
+      await context.browser.prepareBrowserEnvironment(parsed.environmentId ?? active?.environmentId ?? "default");
+    }
     return context.browser.browserAction(project.id, parsed);
   });
   handle(desktopIpc.browserInspect, async (event, projectId: unknown, tabId: unknown, enabled: unknown) => {
@@ -1285,6 +1346,11 @@ export function registerDesktopIpc(context: IpcContext): void {
   handle(desktopIpc.listWorkspaceDirectory, async (_event, projectId: unknown, relativePath: unknown) => {
     const project = context.projects.requireProject(idSchema.parse(projectId));
     return await context.projects.listWorkspaceDirectory(project, z.string().min(1).max(2_000).parse(relativePath));
+  });
+
+  handle(desktopIpc.workspaceFileIndex, async (_event, projectId: unknown) => {
+    const project = context.projects.requireProject(idSchema.parse(projectId));
+    return await context.projects.workspaceFileIndex(project);
   });
 
   handle(desktopIpc.openWorkspaceFile, async (_event, projectId: unknown, relativePath: unknown) => {

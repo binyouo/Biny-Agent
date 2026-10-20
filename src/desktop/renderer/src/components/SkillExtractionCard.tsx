@@ -9,7 +9,8 @@ import type { SkillExtractionCardState } from "../app/useDesktopEventBridge.js";
 import { Icon } from "./Icon.js";
 
 const stageCopy: Record<SkillExtractionCardState["stage"], { title: string; detail: string }> = {
-  extracting: { title: "正在提取可复用技能…", detail: "从本回合工作流生成 SKILL.md" },
+  analyzing: { title: "正在分析可复用工作流…", detail: "检查新增工具调用是否值得提取为技能" },
+  extracting: { title: "正在提取可复用技能…", detail: "从会话工作流生成 SKILL.md" },
   saving: { title: "正在保存技能…", detail: "写入全局技能目录，下一回合可用" },
   done: { title: "已提取新技能", detail: "下一回合可直接调用" }
 };

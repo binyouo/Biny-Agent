@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { DesktopBrowserAction, DesktopBrowserSnapshot } from "../../../../protocol.js";
 import type { LocalReferenceResult } from "../../../../../session/localReferences.js";
 import { Icon } from "../Icon.js";
+import { BrowserEnvironmentMenu } from "./BrowserEnvironmentMenu.js";
 
 export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExpanded, onAttachReference, onWarning, onOpenTerminal, onFixPreview }: {
   projectId: string;
@@ -320,10 +321,12 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
           const index = tabs.findIndex((item) => item.id === tab.id);
           const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowLeft" ? -1 : 1) + tabs.length) % tabs.length;
           void perform({ type: "select", tabId: tabs[next]!.id });
-        }} title={tab.url || "新标签页"}><Icon name="globe" size={14} /><span>{tab.title}</span></button>
+        }} title={`${tab.title}${tab.environmentName ? ` · ${tab.environmentName}` : ""}`}><span className="inspector-browser-env-dot" style={{ backgroundColor: tab.environmentColor ?? "#aeb5c2" }} /><Icon name="globe" size={14} /><span>{tab.title}</span></button>
         <button type="button" aria-label={`关闭 ${tab.title}`} title="关闭标签页" disabled={busy} onClick={() => void perform({ type: "close", tabId: tab.id })}><Icon name="close" size={14} /></button>
       </div>)}
-    </div><button className="inspector-browser-new-tab" type="button" aria-label="新建网页标签" title="新建标签页" disabled={busy} onClick={() => void perform({ type: "new" })}><Icon name="add" size={18} /></button></div>
+    </div><button className="inspector-browser-new-tab" type="button" aria-label="新建网页标签" title="新建标签页" disabled={busy} onClick={() => void perform({ type: "new" })}><Icon name="add" size={18} /></button>
+      <BrowserEnvironmentMenu current={selected?.environmentId ? { id: selected.environmentId, name: selected.environmentName ?? "默认", color: selected.environmentColor ?? "#aeb5c2" } : undefined} disabled={busy} onOpen={(environmentId) => void perform({ type: "new", environmentId })} onNotice={setServerNotice} />
+    </div>
     <form className="inspector-subtoolbar inspector-browser-navigation" onSubmit={(event) => { event.preventDefault(); navigate(); }}>
       <button className="inspector-browser-preview-action" type="button" title={previewUnavailable && previewAvailability?.available === false ? previewAvailability.reason : "运行或停止项目预览"} disabled={serverBusy || previewUnavailable} onClick={() => void toggleServer()}><Icon name={serverId || staticUrl ? "stop" : "play"} size={16} />{serverBusy ? "处理中…" : serverStarting ? "停止启动" : previewRunning ? "停止预览" : "运行预览"}</button>
       <button type="button" aria-label="重新检查预览入口" title="重新检查预览入口" disabled={availabilityChecking || serverBusy} onClick={() => void refreshAvailability()}><Icon name="refresh" size={16} /></button>
