@@ -4,8 +4,9 @@ import { buildSessionTimeline, type TimelineTool } from "../../sessionTimeline.j
 import { ToolActivityDetail } from "../ToolActivity.js";
 import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
 
-export function OptimizationCallDetail({ origin, onClose }: {
+export function OptimizationCallDetail({ origin, optimizationId, onClose }: {
   origin: NonNullable<ToolOptimizationEntry["origin"]>;
+  optimizationId: string;
   onClose(): void;
 }): React.JSX.Element {
   const [tool, setTool] = useState<TimelineTool>();
@@ -15,11 +16,11 @@ export function OptimizationCallDetail({ origin, onClose }: {
     setTool(undefined); setError(undefined);
     void window.biny.toolOptimizationDetail(origin.projectId, origin.sessionId, origin.toolCallId).then(result => {
       if (!current) return;
-      const found = buildSessionTimeline(result.events, []).flatMap(turn => turn.tools).find(item => item.id === origin.toolCallId);
+      const found = buildSessionTimeline(result.events, []).flatMap(turn => turn.tools).find(item => item.id === origin.toolCallId && item.optimization?.id === optimizationId);
       if (found) setTool(found); else setError("对应调用无法还原。");
     }, failure => { if (current) setError(String(failure)); });
     return () => { current = false; };
-  }, [origin]);
+  }, [origin, optimizationId]);
   return <SettingsDetailLayer onClose={onClose}><section className="model-dialog savings-call-detail" role="dialog" aria-modal="true" aria-label="工具调用详情">
     <header><h3>工具调用详情</h3><button type="button" onClick={onClose}>关闭</button></header>
     <p className="savings-notice">会话 {origin.sessionId} · {origin.toolCallId}</p>
