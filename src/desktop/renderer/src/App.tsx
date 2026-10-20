@@ -789,13 +789,19 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }), [settingsEnabled]);
 
   const openProject = useCallback(async (): Promise<void> => {
+    const request = ++loadRequestRef.current;
+    setPendingNavigation(undefined);
+    setLoading(false);
     try {
       const snapshot = await window.biny.openProject();
       if (snapshot) {
-        await adoptWorkspace(snapshot);
+        // 导入已完成时保留项目入口，但较早的回执不能重新取得导航权或覆盖已有摘要。
+        setProjects((current) => current.some((project) => project.id === snapshot.project.id)
+          ? current : mergeProject(current, snapshot.project));
+        await adoptWorkspace(snapshot, undefined, request);
       }
     } catch (error) {
-      setWarning(errorMessage(error));
+      if (loadRequestRef.current === request) setWarning(errorMessage(error));
     }
   }, [adoptWorkspace]);
 
@@ -804,10 +810,15 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, []);
 
   const submitNewProject = useCallback(async (siteUrl?: string): Promise<void> => {
+    const request = ++loadRequestRef.current;
+    setPendingNavigation(undefined);
+    setLoading(false);
     const snapshot = await window.biny.createEmptyProject(siteUrl);
     if (snapshot) {
-      await adoptWorkspace(snapshot);
-      setFocusToken((value) => value + 1);
+      // 创建目录与选择工作区是两件事：后续菜单导航或会话交接不会撤销已创建的项目。
+      setProjects((current) => current.some((project) => project.id === snapshot.project.id)
+        ? current : mergeProject(current, snapshot.project));
+      if (await adoptWorkspace(snapshot, undefined, request)) setFocusToken((value) => value + 1);
     }
   }, [adoptWorkspace]);
 
