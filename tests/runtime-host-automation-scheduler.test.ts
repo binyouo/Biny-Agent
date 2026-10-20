@@ -30,6 +30,7 @@ function controlledRuntime(sessionId: string) {
   const submissions: string[] = [];
   const completions: Array<() => void> = [];
   let released = false;
+  let cancelActive: (runId: string) => boolean = () => false;
   const snapshot: InteractiveRuntimeSnapshot = {
     revision: 0,
     info: {
@@ -61,6 +62,12 @@ function controlledRuntime(sessionId: string) {
         snapshot.state = { kind: "idle" };
         completion.resolve({ runId, status: "completed", stopReason: "model_stop", steps: 1, output: "done", durationMs: 1 });
       };
+      cancelActive = (candidate) => {
+        if (candidate !== runId || snapshot.state.kind !== "runs" || snapshot.state.activeRun.runId !== runId) return false;
+        snapshot.state = { kind: "idle" };
+        completion.resolve({ runId, status: "cancelled", stopReason: "cancelled", steps: 1, output: "", durationMs: 1 });
+        return true;
+      };
       if (released) finish();
       else completions.push(finish);
       return { runId, messageId, completion: completion.promise };
@@ -71,7 +78,7 @@ function controlledRuntime(sessionId: string) {
     startInterruptedTurn: unused,
     waitForIdle: unused,
     cancelCurrentRun: unused,
-    cancelRun: unused,
+    cancelRun: (runId) => cancelActive(runId),
     answerPermission: unused,
     claimSession: unused,
     releaseSessionClaim: unused,
@@ -95,6 +102,55 @@ function controlledRuntime(sessionId: string) {
     }
   };
 }
+
+await test("untargeted recurring automation cancels an isolated run after eight minutes", async (t) => {
+  const start = Date.parse("2030-01-01T00:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: new Date(start) });
+  const f = await fixture();
+  try {
+    f.create("isolated-timeout", undefined, {
+      triggerType: "interval", schedule: { intervalMs: 1_000 }
+    });
+    t.mock.timers.setTime(start + 1_000);
+    const tick = f.tick();
+    await flush();
+    const runtime = f.runtimeFor("fresh-1").runtime;
+    assert.equal(runtime.getSnapshot().state.kind, "runs");
+    t.mock.timers.tick(8 * 60_000);
+    await flush();
+    await tick;
+    const [fire] = f.store.listPending("isolated-timeout");
+    assert.equal(fire?.status, "failed");
+    assert.match(fire?.error ?? "", /8-minute time limit/u);
+    assert.equal(runtime.getSnapshot().state.kind, "idle", "the timed-out run is cancelled before the fire fails");
+  } finally {
+    await f.close();
+  }
+});
+
+await test("session-bound automation can run longer than the isolated execution limit", async (t) => {
+  const start = Date.parse("2030-01-01T00:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: new Date(start) });
+  const f = await fixture();
+  try {
+    f.create("session-bound", "owner-session", {
+      triggerType: "interval", schedule: { intervalMs: 1_000 }
+    });
+    t.mock.timers.setTime(start + 1_000);
+    const tick = f.tick();
+    await flush();
+    const runtime = f.runtimeFor("owner-session").runtime;
+    t.mock.timers.tick(8 * 60_000);
+    await flush();
+    assert.equal(f.store.listPending("session-bound")[0]?.status, "running");
+    f.runtimeFor("owner-session").release();
+    await tick;
+    assert.equal(f.store.listPending("session-bound")[0]?.status, "completed");
+    assert.equal(runtime.getSnapshot().state.kind, "idle");
+  } finally {
+    await f.close();
+  }
+});
 
 async function fixture(options: Partial<AutomationSchedulerOptions> = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-automation-scheduler-"));

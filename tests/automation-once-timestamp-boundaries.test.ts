@@ -110,6 +110,39 @@ await test("once automation without at remains due at its creation timestamp", a
   });
 });
 
+for (const triggerType of ["interval", "cron"] as const) {
+  await test(`${triggerType} skips missed recurring occurrences and keeps the overdue fire`, async (t) => {
+    const previousZone = process.env.TZ;
+    process.env.TZ = "UTC";
+    const start = Date.parse("2038-05-04T12:00:00.000Z");
+    t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+    try {
+      await withStore((store) => {
+        const automation = store.create({
+          name: triggerType,
+          triggerType,
+          schedule: triggerType === "cron" ? { cron: "* * * * *" } : { intervalMs: 60_000 },
+          executionTemplate: { prompt: "Synthetic missed-cycle check; do not execute" }
+        });
+        const overdueAt = triggerType === "cron" ? start + 60_000 : start + 60_000;
+        const now = new Date(start + 5 * 60_000);
+        t.mock.timers.setTime(now.getTime());
+        const [fire] = store.claimDue(now);
+        assert.equal(fire?.automationId, automation.automationId);
+        assert.equal(fire?.scheduledAt, new Date(overdueAt).toISOString(), "the current overdue occurrence runs once");
+        assert.ok(Date.parse(store.get(automation.automationId)?.nextFireAt ?? "") > now.getTime(), "the recurrence cursor moves beyond now");
+        assert.deepEqual(store.claimDue(now), [fire], "rediscovery returns the same durable fire instead of creating a catch-up queue");
+        assert.ok(store.claimFire(fire!.fireId));
+        store.completeFire(fire!.fireId, "synthetic-completion");
+        assert.deepEqual(store.claimDue(now), [], "missed recurring occurrences are skipped after the overdue fire completes");
+      });
+    } finally {
+      if (previousZone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousZone;
+    }
+  });
+}
+
 await test("invalid once timestamp is rejected without creating an automation", async () => {
   await withStore((store) => {
     assert.throws(() => store.create({

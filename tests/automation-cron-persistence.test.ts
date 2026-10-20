@@ -14,15 +14,17 @@ await test("creating cron during a repeated hour persists a future fire across r
   let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
   let store = await AutomationStore.open(root, authority);
   try {
-    // Pure cron checks do not verify creation, persisted nextFireAt or due-fire admission.
+    // Verify create, persisted nextFireAt, and due-fire admission against the selected timezone.
     const record = store.create({ name: "Fold fixture", triggerType: "cron", schedule: { cron: "* * * * *" }, executionTemplate: { prompt: "Synthetic fixture" } });
     assert.equal(record.nextFireAt, "2025-11-02T07:00:00.000Z");
+    assert.equal(record.schedule.timezone, "America/New_York");
     assert.deepEqual(store.claimDue(new Date()), []);
     store.close();
     authority.close();
     authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
     store = await AutomationStore.open(root, authority);
     assert.equal(store.get(record.automationId)?.nextFireAt, "2025-11-02T07:00:00.000Z");
+    assert.equal(store.get(record.automationId)?.schedule.timezone, "America/New_York");
     assert.deepEqual(store.claimDue(new Date()), []);
     t.mock.timers.setTime(Date.parse("2025-11-02T07:00:00.000Z"));
     const fires = store.claimDue(new Date());

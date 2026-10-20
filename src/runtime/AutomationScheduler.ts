@@ -9,13 +9,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nextCron } from "./AutomationCron.js";
 import type { RuntimeEventAuthority } from "./RuntimeAuthority.js";
-import type { InteractiveRuntimeHandle } from "./InteractiveAgentRuntime.js";
+import type { AgentRunOutcome, InteractiveRuntimeHandle, SubmittedAgentRun } from "./InteractiveAgentRuntime.js";
 
 export type AutomationTriggerType = "heartbeat" | "cron" | "interval" | "once";
 export type AutomationStatus = "active" | "paused" | "completed" | "failed" | "expired";
 
 export interface AutomationSchedule {
   cron?: string;
+  timezone?: string;
   intervalMs?: number;
   at?: string;
   jitterMs?: number;
@@ -81,6 +82,7 @@ export class AutomationTargetBusyError extends Error {
 
 class AutomationClaimRejectedError extends Error {}
 class AutomationCreationExpiredError extends Error {}
+const isolatedAutomationRunTimeoutMs = 8 * 60_000;
 
 interface AutomationRow {
   automation_id: unknown;
@@ -325,7 +327,10 @@ export class AutomationStore {
             throw new AutomationCreationExpiredError();
           }
           this.database.prepare("INSERT OR IGNORE INTO automation_pending_fires (fire_id, automation_id, scheduled_at, status, created_at) VALUES (?, ?, ?, 'pending', ?)").run(fireId, automationId, scheduledAt, admittedAt);
-          const next = advanceFireAt(automation, new Date(scheduledAt));
+          const scheduledNext = advanceFireAt(automation, new Date(scheduledAt));
+          const next = scheduledNext !== undefined && Date.parse(scheduledNext) <= nowMs
+            ? advanceFireAt(automation, new Date(nowMs))
+            : scheduledNext;
           this.database.prepare("UPDATE automations SET next_fire_at = ?, revision = revision + 1, updated_at = ? WHERE automation_id = ?").run(next ?? null, admittedAt, automationId);
         });
       } catch (error) {
@@ -653,7 +658,9 @@ export class AutomationScheduler {
       );
       didSubmit = true;
       store.bindFireRun(claimed.fireId, submitted.runId);
-      const outcome = await submitted.completion;
+      const outcome = automation.triggerType !== "heartbeat" && targetSessionId === undefined && this.options.createFreshRuntime
+        ? await waitForIsolatedAutomationRun(target, submitted)
+        : await submitted.completion;
       store = this.store();
       if (outcome.status === "completed") store.completeFire(claimed.fireId, submitted.runId);
       else store.failFire(claimed.fireId, outcome.error ?? "Automation run ended as " + outcome.status + ".");
@@ -765,14 +772,21 @@ export class AutomationScheduler {
 function normalizeAutomationInput(input: AutomationCreateInput): AutomationCreateInput {
   if (!input.name.trim()) throw new Error("Automation name cannot be empty.");
   const executionTemplate = normalizeExecutionTemplate(input.executionTemplate);
+  const schedule = { ...input.schedule };
   if (input.maxFires !== undefined && (!Number.isSafeInteger(input.maxFires) || input.maxFires < 1)) throw new Error("Automation maxFires must be a positive integer.");
-  if (input.triggerType === "cron" && !input.schedule.cron?.trim()) throw new Error("Cron automation requires a cron expression.");
-  if (input.triggerType === "cron") validateCronExpression(input.schedule.cron!);
-  if ((input.triggerType === "interval" || input.triggerType === "heartbeat") && (!Number.isSafeInteger(input.schedule.intervalMs) || (input.schedule.intervalMs ?? 0) < 100)) throw new Error("Interval automation requires intervalMs >= 100.");
-  if (input.triggerType === "once" && input.schedule.at !== undefined && Number.isNaN(Date.parse(input.schedule.at))) throw new Error("Once automation at must be an ISO timestamp.");
-  if (input.schedule.jitterMs !== undefined && (!Number.isSafeInteger(input.schedule.jitterMs) || input.schedule.jitterMs < 0)) throw new Error("Automation jitterMs must be a non-negative integer.");
+  if (input.triggerType === "cron") {
+    if (!schedule.cron?.trim()) throw new Error("Cron automation requires a cron expression.");
+    const timezone = schedule.timezone?.trim();
+    if (schedule.timezone !== undefined && !timezone) throw new Error("Cron timezone cannot be empty.");
+    schedule.timezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } else if (schedule.timezone !== undefined) {
+    throw new Error("Automation timezone is only supported for cron schedules.");
+  }
+  if ((input.triggerType === "interval" || input.triggerType === "heartbeat") && (!Number.isSafeInteger(schedule.intervalMs) || (schedule.intervalMs ?? 0) < 100)) throw new Error("Interval automation requires intervalMs >= 100.");
+  if (input.triggerType === "once" && schedule.at !== undefined && Number.isNaN(Date.parse(schedule.at))) throw new Error("Once automation at must be an ISO timestamp.");
+  if (schedule.jitterMs !== undefined && (!Number.isSafeInteger(schedule.jitterMs) || schedule.jitterMs < 0)) throw new Error("Automation jitterMs must be a non-negative integer.");
   if (input.expiresAt !== undefined && !Number.isFinite(Date.parse(input.expiresAt))) throw new Error("Automation expiresAt must be a valid timestamp.");
-  return { ...input, name: input.name.trim(), executionTemplate };
+  return { ...input, name: input.name.trim(), schedule, executionTemplate };
 }
 
 function normalizeExecutionTemplate(value: unknown): AutomationExecutionTemplate {
@@ -796,7 +810,7 @@ function initialFireAt(type: AutomationTriggerType, schedule: AutomationSchedule
     return new Date(schedule.at ?? now).toISOString();
   }
   if (type === "interval" || type === "heartbeat") return new Date(Date.parse(now) + (schedule.intervalMs ?? 60_000)).toISOString();
-  return nextCron(schedule.cron ?? "* * * * *", new Date(now)).toISOString();
+  return nextCron(schedule.cron ?? "* * * * *", new Date(now), schedule.timezone).toISOString();
 }
 
 function advanceFireAt(automation: AutomationRecord, scheduledAt: Date): string | undefined {
@@ -804,33 +818,30 @@ function advanceFireAt(automation: AutomationRecord, scheduledAt: Date): string 
   if (automation.triggerType === "interval" || automation.triggerType === "heartbeat") {
     return new Date(scheduledAt.getTime() + (automation.schedule.intervalMs ?? 60_000) + jitter(automation.schedule.jitterMs)).toISOString();
   }
-  return nextCron(automation.schedule.cron ?? "* * * * *", scheduledAt).toISOString();
-}
-
-function validateCronExpression(expression: string): void {
-  const fields = expression.trim().split(/\s+/u);
-  if (fields.length !== 5) throw new Error("Cron expression must have five fields.");
-  const bounds = [["minute", 0, 59], ["hour", 0, 23], ["day", 1, 31], ["month", 1, 12], ["weekday", 0, 6]] as const;
-  for (const [index, [name, minimum, maximum]] of bounds.entries()) {
-    const field = fields[index]!;
-    const valid = field.split(",").every((part) => {
-      if (!/^(?:\*|\d+(?:-\d+)?)(?:\/\d+)?$/u.test(part)) return false;
-      const [range, stepText] = part.split("/");
-      const step = stepText === undefined ? 1 : Number(stepText);
-      if (!Number.isSafeInteger(step) || step < 1) return false;
-      if (range === "*") return true;
-      const [startText, endText] = range!.split("-");
-      const start = Number(startText);
-      const end = endText === undefined ? start : Number(endText);
-      return Number.isSafeInteger(start) && Number.isSafeInteger(end)
-        && start >= minimum && end <= maximum && start <= end;
-    });
-    if (!valid) throw new Error(`Invalid cron ${name} field: ${field}.`);
-  }
+  return nextCron(automation.schedule.cron ?? "* * * * *", scheduledAt, automation.schedule.timezone).toISOString();
 }
 
 function jitter(maximum = 0): number {
   return maximum > 0 ? Math.floor(Math.random() * (maximum + 1)) : 0;
+}
+
+async function waitForIsolatedAutomationRun(target: InteractiveRuntimeHandle, submitted: SubmittedAgentRun): Promise<AgentRunOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      submitted.completion.then(outcome => ({ outcome })),
+      new Promise<{ timedOut: true }>(resolve => {
+        timer = setTimeout(() => resolve({ timedOut: true }), isolatedAutomationRunTimeoutMs);
+        timer.unref?.();
+      })
+    ]);
+    if ("outcome" in result) return result.outcome;
+    if (!target.cancelRun(submitted.runId, "cancelled")) return await submitted.completion;
+    await submitted.completion;
+    throw new Error("Isolated automation run exceeded its 8-minute time limit and was cancelled.");
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function deferDelay(automation: AutomationRecord): number {

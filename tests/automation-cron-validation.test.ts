@@ -21,19 +21,18 @@ await test("cron creation rejects malformed fields instead of saving a different
   const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
   const store = await AutomationStore.open(root, authority);
   try {
-    const create = (cron: string) => store.create(readAutomationCreateInput({
-      name: "Synthetic schedule", triggerType: "cron", schedule: { cron },
+    const create = (cron: string, timezone?: string) => store.create(readAutomationCreateInput({
+      name: "Synthetic schedule", triggerType: "cron", schedule: { cron, timezone },
       executionTemplate: { prompt: "Synthetic validation only; do not execute" }
     }));
     for (const cron of [
-      "0 9-24 * * *", "0,60 * * * *", "0 9 0-31 * *", "0 9 * 1-13 *", "0 9 * * 1-7",
+      "0 9-24 * * *", "0,60 * * * *", "0 9 0-31 * *", "0 9 * 1-13 *",
       "*/15/2 * * * *", "0 9 * * 1-5-7", "5, * * * *", "0,word * * * *", "0,5-1 * * * *",
       "0,*/0 * * * *", "0,*/1.5 * * * *", "0,*/9007199254740992 * * * *"
     ]) {
-      // Existing due-time coverage only used valid cron fields; malformed members were ignored or truncated.
       await t.test(`${cron} fails before persisting any definition or creation event`, () => {
         const before = { records: store.list(), events: authority.readEvents() };
-        assert.throws(() => create(cron), /Invalid cron (minute|hour|day|month|weekday) field:/u);
+        assert.throws(() => create(cron), (error: unknown) => error instanceof Error && error.message.length > 0);
         assert.deepEqual({ records: store.list(), events: authority.readEvents() }, before);
       });
     }
@@ -42,16 +41,39 @@ await test("cron creation rejects malformed fields instead of saving a different
       ["*/15 * * * *", "2035-06-12T08:15:00.000Z"],
       ["5-50/15 8-17 * * 1-5", "2035-06-12T08:20:00.000Z"],
       ["05,20 8,12 * * *", "2035-06-12T08:20:00.000Z"],
-      ["0 9 1-31 1-12 0-6", "2035-06-12T09:00:00.000Z"]
+      ["0 9 1-31 1-12 0-6", "2035-06-12T09:00:00.000Z"],
+      ["0 9 * * 1-7", "2035-06-12T09:00:00.000Z"],
+      ["0 9 1 JAN *", "2036-01-01T09:00:00.000Z"],
+      ["0 9 1 * MON", "2035-06-18T09:00:00.000Z"],
+      ["0 9 L * *", "2035-06-30T09:00:00.000Z"],
+      ["15 * * * * *", "2035-06-12T08:07:15.000Z"]
     ] as const) {
       await t.test(`${cron} retains its existing next occurrence`, () => {
         const record = create(cron);
         assert.equal(record.nextFireAt, expected);
         assert.equal(record.schedule.cron, cron);
+        assert.equal(record.schedule.timezone, "UTC", "the local timezone is captured when creating the automation");
         assert.equal(record.status, "active");
         assert.deepEqual(store.get(record.automationId), record);
       });
     }
+    await t.test("explicit IANA timezone is validated and persisted", () => {
+      const record = create("0 9 * * *", "Asia/Kolkata");
+      assert.equal(record.nextFireAt, "2035-06-13T03:30:00.000Z");
+      assert.equal(record.schedule.timezone, "Asia/Kolkata");
+      assert.deepEqual(store.get(record.automationId), record);
+    });
+    await t.test("unknown timezone fails before persistence", () => {
+      const before = { records: store.list(), events: authority.readEvents() };
+      assert.throws(() => create("0 9 * * *", "Mars/Base"), (error: unknown) => error instanceof Error);
+      assert.deepEqual({ records: store.list(), events: authority.readEvents() }, before);
+    });
+    await t.test("timezone is rejected for interval schedules", () => {
+      assert.throws(() => store.create({
+        name: "Synthetic interval", triggerType: "interval", schedule: { intervalMs: 60_000, timezone: "UTC" },
+        executionTemplate: { prompt: "Synthetic validation only; do not execute" }
+      }), /only supported for cron/u);
+    });
   } finally {
     store.close();
     authority.close();
@@ -111,10 +133,11 @@ process.once("exit", () => {
   assert.equal(closed, 1);
 });
 `);
-    const run = (cron: string, json: boolean) => spawnSync(process.execPath, [
+    const run = (cron: string, json: boolean, timezone?: string) => spawnSync(process.execPath, [
       "--import", import.meta.resolve("tsx"), "--import", pathToFileURL(preload).href,
       path.resolve("src/cli/index.ts"), "automation", "create", "office-hours",
       "--trigger", "cron", "--cron", cron, "--prompt", "Synthetic reminder; do not execute",
+      ...(timezone ? ["--timezone", timezone] : []),
       ...(json ? ["--json"] : [])
     ], { cwd: root, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf8", timeout: 15_000 });
     for (const json of [true, false]) {
@@ -125,19 +148,20 @@ process.once("exit", () => {
         assert.equal(result.signal, null);
         assert.equal(result.status, 1, `stdout: ${result.stdout}; stderr: ${result.stderr}`);
         assert.equal(result.stdout, "");
-        assert.equal(result.stderr, "Invalid cron hour field: 9-24.\n");
+        assert.match(result.stderr, /CronPattern/u);
         assert.deepEqual({ records: store.list(), events: authority.readEvents() }, before);
       });
       await t.test(`valid office-hours schedule in ${json ? "JSON" : "text"} mode succeeds and is saved`, () => {
         const before = store.list().length;
-        const result = run("*/15 9-17 * * 1-5", json);
+        const result = run("*/15 9-17 * * 1-5", json, "Asia/Kolkata");
         assert.equal(result.error, undefined);
         assert.equal(result.signal, null);
         assert.equal(result.status, 0, result.stderr);
         assert.equal(result.stderr, "");
-        const record = JSON.parse(result.stdout) as { automationId: string; status: string; schedule: { cron: string } };
+        const record = JSON.parse(result.stdout) as { automationId: string; status: string; schedule: { cron: string; timezone: string } };
         assert.equal(record.status, "active");
         assert.equal(record.schedule.cron, "*/15 9-17 * * 1-5");
+        assert.equal(record.schedule.timezone, "Asia/Kolkata");
         assert.deepEqual(JSON.parse(JSON.stringify(store.get(record.automationId))), record);
         assert.equal(store.list().length, before + 1);
         assert.equal(result.stdout, `${JSON.stringify(record, null, json ? undefined : 2)}\n`);
