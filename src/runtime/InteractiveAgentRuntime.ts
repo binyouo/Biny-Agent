@@ -671,6 +671,9 @@ export class InteractiveAgentRuntime {
     if (this.closed) throw new Error("Agent runtime is closed.");
     const filePath = await resolveSessionFile(this.commandRuntime.persistenceRoot, session);
     const sessionId = sessionIdFromFile(filePath);
+    if (this.queuedMessages.length > 0 && sessionId !== this.getInfo().sessionId) {
+      throw new Error("Cannot switch sessions while queued messages are pending.");
+    }
     if (this.sessionWriterClaim?.sessionId === sessionId) return;
     if (this.state.kind !== "idle" || this.activeRun) {
       // 当前运行已经持有同一 session 的执行 lease，可以把它升级成长期 claim；
@@ -707,6 +710,9 @@ export class InteractiveAgentRuntime {
     const sessionId = sessionIdFromFile(filePath);
     if (this.state.kind !== "idle" || this.activeRun) {
       throw new Error("Cannot start resume while the runtime is busy.");
+    }
+    if (this.queuedMessages.length > 0 && sessionId !== this.getInfo().sessionId) {
+      throw new Error("Cannot switch sessions while queued messages are pending.");
     }
     const alreadyClaimed = this.sessionWriterClaim?.sessionId === sessionId;
     await this.claimSession(sessionId);
