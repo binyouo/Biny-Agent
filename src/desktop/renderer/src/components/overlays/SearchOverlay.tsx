@@ -1,5 +1,5 @@
 /** Cmd+K 项目与任务搜索。 */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CommandPalette, CommandPaletteInput, useCommandPaletteContext } from "@astryxdesign/core/CommandPalette";
 import { createStaticSource, type SearchableItem, type SearchSource } from "@astryxdesign/core/Typeahead";
 import type { DesktopProject, DesktopSessionSummary } from "../../../../protocol.js";
@@ -31,8 +31,22 @@ function getRecentSearchStorage(): RecentSearchStorage | null {
   try { return typeof window === "undefined" ? null : window.localStorage; } catch { return null; }
 }
 
-function SearchPaletteInput({ itemById }: { itemById: { current: Map<string, DesktopSearchItem> } }): React.JSX.Element {
+function SearchPaletteInput({
+  itemById,
+  projectId
+}: {
+  itemById: { current: Map<string, DesktopSearchItem> };
+  projectId?: string;
+}): React.JSX.Element {
   const palette = useCommandPaletteContext();
+  const previousProjectId = useRef(projectId);
+  useLayoutEffect(() => {
+    if (previousProjectId.current === projectId) return;
+    previousProjectId.current = projectId;
+    // Changing the source alone does not retire the palette's async results.
+    // Reset through its query API without remounting the dialog/focus owner.
+    palette?.setSearch("");
+  }, [palette, projectId]);
   return (
     <CommandPaletteInput
       endContent={<kbd>⌘K</kbd>}
@@ -250,7 +264,7 @@ export function SearchOverlay({
     <CommandPalette
       emptyBootstrapText="还没有可搜索的项目或任务"
       emptySearchText={fileIndexLoading && query.trim().length >= 2 ? "正在搜索当前项目文件…" : "没有匹配结果"}
-      input={<SearchPaletteInput itemById={itemById} />}
+      input={<SearchPaletteInput itemById={itemById} projectId={selectedProjectId} />}
       isOpen={open}
       label="快速打开"
       maxHeight="min(560px, calc(100vh - 96px))"
@@ -258,6 +272,7 @@ export function SearchOverlay({
       onValueChange={value => {
         const selected = itemById.current.get(value)?.auxiliaryData;
         if (!selected || selected.kind === "recent") return;
+        if (selected.kind === "file" && selected.projectId !== selectedProjectId) return;
         const nextQueries = rememberRecentSearch(getRecentSearchStorage(), queryRef.current);
         recentQueriesRef.current = nextQueries;
         setRecentQueries(nextQueries);
