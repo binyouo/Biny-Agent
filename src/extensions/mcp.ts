@@ -369,7 +369,13 @@ export class McpToolHost {
       try {
         let cursor: string | undefined;
         for (let page = 0; page < maxResourceListPages; page += 1) {
-          const listed = await this.requestWithCredentials(managed, () => client.listResources(cursor === undefined ? undefined : { cursor }, this.requestOptions(managed, signal)));
+          let nextCursor: string | undefined;
+          const listed = await this.requestWithCredentials(managed, async () => {
+            const result = await client.listResources(cursor === undefined ? undefined : { cursor }, this.requestOptions(managed, signal));
+            // Continuations stay private to this client; output credential scrubbing must not change the protocol cursor.
+            nextCursor = result.nextCursor;
+            return result;
+          });
           signal?.throwIfAborted();
           for (const resource of listed.resources) {
             resources.push({
@@ -380,7 +386,7 @@ export class McpToolHost {
               mimeType: resource.mimeType
             });
           }
-          cursor = listed.nextCursor;
+          cursor = nextCursor;
           if (!cursor) break;
         }
       } catch (error) {
@@ -425,9 +431,15 @@ export class McpToolHost {
         let cursor: string | undefined;
         const seen = new Set<string>();
         for (let page = 0; page < maxResourceListPages; page += 1) {
-          const result = await this.requestWithCredentials(managed, () => client.listPrompts({ cursor }, this.requestOptions(managed, signal)));
+          let nextCursor: string | undefined;
+          const result = await this.requestWithCredentials(managed, async () => {
+            const listed = await client.listPrompts({ cursor }, this.requestOptions(managed, signal));
+            // Use the original continuation only on this client; public prompt metadata is still scrubbed.
+            nextCursor = listed.nextCursor;
+            return listed;
+          });
           prompts.push(...result.prompts.slice(0, 128 - prompts.length));
-          cursor = result.nextCursor;
+          cursor = nextCursor;
           if (!cursor || seen.has(cursor) || prompts.length >= 128) break;
           seen.add(cursor);
         }
