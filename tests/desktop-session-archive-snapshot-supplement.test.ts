@@ -283,10 +283,23 @@ function bootstrapFor(ids: string[], activeId = ids[0]): DesktopBootstrap {
 }
 
 
+async function acceptCurrentCatalog(h:Awaited<ReturnType<typeof fixture>>, snapshot:DesktopWorkspaceSnapshot):Promise<void> {
+  // A current catalog may arrive through manual refresh independently of an
+  // older archive-owned read. Pin mutation ownership has its own regression suite.
+  const refresh = h.api.refreshProject;
+  let calls = 0;
+  h.api.refreshProject = async (projectId:string) => {
+    assert.equal(projectId,snapshot.project.id); calls += 1; return snapshot;
+  };
+  try { await h.menuEntry(snapshot.project.id,'刷新项目状态'); }
+  finally { h.api.refreshProject = refresh; }
+  assert.equal(calls,1,'The actual manual-refresh entry publishes the current catalog');
+}
+
 function archivedSnapshot(id='a'): DesktopWorkspaceSnapshot { const snapshot=workspace(id); snapshot.sessions=snapshot.sessions.map(item=>item.id===`session-${id}`?{...item,archived:true,metadataRevision:`revision:${item.id}:archived`}:item); return withPage(snapshot,'catalog:archived'); }
 function archived(h:Awaited<ReturnType<typeof fixture>>,id='session-a'):boolean {const row=h.document.querySelector(`button.biny-sidebar-session-item[title="Conversation ${id}"]`);assert.ok(row);return Boolean(row.closest('.biny-sidebar-session-entry.is-archived'));}
 test('unarchive success alone invalidates a running reconciliation read',async t=>{
- const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));const intermediate=archivedSnapshot();intermediate.sessions=intermediate.sessions.map(x=>x.id==='pin-a'?{...x,pinned:false,metadataRevision:'revision:pin-a:unpinned'}:x);h.api.pinSession=async()=>withPage(intermediate,'catalog:intermediate');await h.sessionMenu('pin-a','取消置顶');await h.tick(260);assert.equal(h.refreshes.length,1);
+ const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));const intermediate=archivedSnapshot();intermediate.sessions=intermediate.sessions.map(x=>x.id==='pin-a'?{...x,pinned:false,metadataRevision:'revision:pin-a:unpinned'}:x);await acceptCurrentCatalog(h,withPage(intermediate,'catalog:intermediate'));await h.tick(260);assert.equal(h.refreshes.length,1);
  await h.sessionMenu('session-a','取消归档');const fresh=withPage({...intermediate,sessions:intermediate.sessions.map(x=>x.id==='session-a'?{...x,archived:false,metadataRevision:'revision:session-a:unarchived'}:x)},'catalog:unarchived');await h.React.act(async()=>h.archives[1]!.gate.resolve(fresh));await h.tick(1040);assert.equal(h.refreshes.length,1,'No concurrent read');await h.React.act(async()=>h.refreshes[0]!.gate.resolve(withPage(intermediate,'catalog:intermediate')));assert.equal(Boolean(h.document.querySelector('section[aria-label="置顶"] button[title="Conversation pin-a"]')),false,'Unpinned state remains intact');await h.tick(260);assert.equal(h.refreshes.length,2,'Successful unarchive demands a post-write read');await h.React.act(async()=>h.refreshes[1]!.gate.resolve(fresh));await h.tick(1040);assert.equal(h.refreshes.length,2);assert.equal(archived(h),false);
 });
 test('delete success invalidates an already-running archive reconciliation',async t=>{

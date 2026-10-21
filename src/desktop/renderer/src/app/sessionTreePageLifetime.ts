@@ -22,7 +22,7 @@ interface CatalogProject {
 // Match the existing event-refresh debounce; never spin on a superseded read.
 const CATALOG_REFRESH_DELAY_MS = 260;
 
-/** Independent tree-page ownership and archive-triggered catalog reconciliation.
+/** Independent tree-page ownership and metadata-triggered catalog reconciliation.
  * Catalog hashes are equality/CAS tokens, never ordered versions. */
 export function createSessionTreePageLifetime() {
   let lifetime = {};
@@ -93,7 +93,7 @@ export function createSessionTreePageLifetime() {
       const project = catalogProjects.get(projectId);
       return () => project !== undefined && catalogProjects.get(projectId) === project;
     },
-    /** Successful archive writes demand a fresh catalog; the mutation response is not adopted. */
+    /** Successful metadata writes demand a fresh catalog; the mutation response is not adopted. */
     refreshCatalog(
       projectId: string,
       read: CatalogRefresh["read"],
@@ -106,6 +106,7 @@ export function createSessionTreePageLifetime() {
       // response has been accepted. Keep one flight and one coalesced demand.
       project.publication = {};
       const refresh = project.refresh ?? { read, publish, onError, running: false };
+      refresh.onError = onError;
       project.refresh = refresh;
       scheduleCatalogRefresh(projectId, project, refresh);
     },

@@ -283,6 +283,19 @@ function bootstrapFor(ids: string[], activeId = ids[0]): DesktopBootstrap {
 }
 
 
+async function acceptCurrentCatalog(h:Awaited<ReturnType<typeof fixture>>, snapshot:DesktopWorkspaceSnapshot):Promise<void> {
+  // A current catalog may arrive through manual refresh independently of an
+  // older archive-owned read. Pin mutation ownership has its own regression suite.
+  const refresh = h.api.refreshProject;
+  let calls = 0;
+  h.api.refreshProject = async (projectId:string) => {
+    assert.equal(projectId,snapshot.project.id); calls += 1; return snapshot;
+  };
+  try { await h.menuEntry(snapshot.project.id,'刷新项目状态'); }
+  finally { h.api.refreshProject = refresh; }
+  assert.equal(calls,1,'The actual manual-refresh entry publishes the current catalog');
+}
+
 function archivedSnapshot(id='a'): DesktopWorkspaceSnapshot { const snapshot=workspace(id); snapshot.sessions=snapshot.sessions.map(item=>item.id===`session-${id}`?{...item,archived:true,metadataRevision:`revision:${item.id}:archived`}:item); return withPage(snapshot,'catalog:archived'); }
 function archived(h:Awaited<ReturnType<typeof fixture>>,id='session-a'):boolean {const row=h.document.querySelector(`button.biny-sidebar-session-item[title="Conversation ${id}"]`);assert.ok(row);return Boolean(row.closest('.biny-sidebar-session-entry.is-archived'));}
 type View=Awaited<ReturnType<typeof fixture>>;
@@ -308,16 +321,16 @@ for(const cancelled of [false,true])test(`${cancelled?'cancelled':'failed'} dele
  await finishArchive(h,0,archivedSnapshot());assert.equal(archived(h),true);assert.equal(h.hasSession('second-a'),true);
 });
 test('later committed unarchive survives old archive response and any reconciliation',async t=>{
- const h=await fixture(t);await h.sessionMenu('session-a','归档');const intermediate=archivedSnapshot();intermediate.sessions=intermediate.sessions.map(x=>x.id==='pin-a'?{...x,pinned:false}:x);h.api.pinSession=async()=>withPage(intermediate,'catalog:intermediate');await h.sessionMenu('pin-a','取消置顶');assert.equal(archived(h),true);
+ const h=await fixture(t);await h.sessionMenu('session-a','归档');const intermediate=archivedSnapshot();intermediate.sessions=intermediate.sessions.map(x=>x.id==='pin-a'?{...x,pinned:false}:x);await acceptCurrentCatalog(h,withPage(intermediate,'catalog:intermediate'));assert.equal(archived(h),true);
  await h.sessionMenu('session-a','取消归档');assert.equal(h.archives[1]!.expectedRevision,'revision:session-a:archived');const fresh=withPage({...intermediate,sessions:intermediate.sessions.map(x=>x.id==='session-a'?{...x,archived:false,metadataRevision:'revision:session-a:unarchived'}:x)},'catalog:unarchived');
  await finishArchive(h,1,fresh);assert.equal(archived(h),false);await finishArchive(h,0,archivedSnapshot(),fresh,()=>assert.equal(archived(h),false));assert.equal(archived(h),false);
 });
 for(const kind of ['pin','new-session'] as const)test(`archive preserves newer accepted ${kind}`,async t=>{
- const h=await fixture(t);await h.sessionMenu('session-a','归档');const fresh=archivedSnapshot();fresh.sessions=fresh.sessions.map(x=>x.id==='second-a'?{...x,pinned:true,metadataRevision:'revision:second-a:pinned'}:x);fresh.sessions.push(session('a','new-a'));const current=withPage(fresh,'catalog:pinned');h.api.pinSession=async()=>current;await h.sessionMenu('second-a','置顶');const pinned=()=>Boolean(h.document.querySelector('section[aria-label="置顶"] button[title="Conversation second-a"]'));assert.equal(pinned(),true);assert.equal(h.hasSession('new-a'),true);
+ const h=await fixture(t);await h.sessionMenu('session-a','归档');const fresh=archivedSnapshot();fresh.sessions=fresh.sessions.map(x=>x.id==='second-a'?{...x,pinned:true,metadataRevision:'revision:second-a:pinned'}:x);fresh.sessions.push(session('a','new-a'));const current=withPage(fresh,'catalog:pinned');await acceptCurrentCatalog(h,current);const pinned=()=>Boolean(h.document.querySelector('section[aria-label="置顶"] button[title="Conversation second-a"]'));assert.equal(pinned(),true);assert.equal(h.hasSession('new-a'),true);
  const check=()=>assert.equal(kind==='pin'?pinned():h.hasSession('new-a'),true);await finishArchive(h,0,archivedSnapshot(),current,check);check();
 });
 test('archive rejection preserves newer catalog and does not start a replacement read',async t=>{
- const h=await fixture(t);await h.sessionMenu('session-a','归档');const fresh=workspace('a');fresh.sessions=fresh.sessions.map(x=>x.id==='second-a'?{...x,pinned:true}:x);fresh.sessions.push(session('a','new-a'));h.api.pinSession=async()=>withPage(fresh,'catalog:pinned');await h.sessionMenu('second-a','置顶');await h.React.act(async()=>h.archives[0]!.gate.reject(new Error('Synthetic archive conflict')));await h.tick(1040);assert.equal(h.hasSession('new-a'),true);assert.equal(archived(h),false);assert.equal(h.refreshes.length,0);
+ const h=await fixture(t);await h.sessionMenu('session-a','归档');const fresh=workspace('a');fresh.sessions=fresh.sessions.map(x=>x.id==='second-a'?{...x,pinned:true}:x);fresh.sessions.push(session('a','new-a'));await acceptCurrentCatalog(h,withPage(fresh,'catalog:pinned'));await h.React.act(async()=>h.archives[0]!.gate.reject(new Error('Synthetic archive conflict')));await h.tick(1040);assert.equal(h.hasSession('new-a'),true);assert.equal(archived(h),false);assert.equal(h.refreshes.length,0);
 });
 test('other project deletion cannot retire archive work',async t=>{
  const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.sessionMenu('session-b','删除');await h.React.act(async()=>h.deletions[0]!.gate.resolve({cancelled:false,deleted:h.deletions[0]!.targets,failures:[]}));const fresh=workspace('b');fresh.sessions=fresh.sessions.filter(x=>x.id!=='session-b');await h.React.act(async()=>h.refreshes[0]!.gate.resolve(withPage(fresh,'catalog:deleted')));await finishArchive(h,0,archivedSnapshot());assert.equal(archived(h),true);assert.equal(h.hasSession('session-b'),false);
@@ -331,11 +344,11 @@ test('replacement-read failure reports saved archive, stops, and manual refresh 
  await h.menuEntry('a','刷新项目状态');assert.equal(h.refreshes.length,2);await h.React.act(async()=>h.refreshes[1]!.gate.resolve(archivedSnapshot()));assert.equal(archived(h),true);assert.equal(h.archives.length,1,'Refresh retry never repeats archive write');
 });
 test('newer accepted pin supersedes an archive reread and coalesces one delayed replacement',async t=>{
- const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));await h.tick(260);assert.equal(h.refreshes.length,1);const fresh=archivedSnapshot();fresh.sessions=fresh.sessions.map(x=>x.id==='second-a'?{...x,pinned:true}:x);const current=withPage(fresh,'catalog:pinned');h.api.pinSession=async()=>current;await h.sessionMenu('second-a','置顶');
+ const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));await h.tick(260);assert.equal(h.refreshes.length,1);const fresh=archivedSnapshot();fresh.sessions=fresh.sessions.map(x=>x.id==='second-a'?{...x,pinned:true}:x);const current=withPage(fresh,'catalog:pinned');await acceptCurrentCatalog(h,current);
  await h.React.act(async()=>h.refreshes[0]!.gate.resolve(archivedSnapshot()));const pinned=()=>Boolean(h.document.querySelector('section[aria-label="置顶"] button[title="Conversation second-a"]'));assert.equal(pinned(),true,'Stale reread cannot undo newer pin');assert.equal(h.refreshes.length,1);await h.tick(259);assert.equal(h.refreshes.length,1);await h.tick(1);assert.equal(h.refreshes.length,2);await h.React.act(async()=>h.refreshes[1]!.gate.resolve(current));await h.tick(1040);assert.equal(h.refreshes.length,2);assert.equal(pinned(),true);
 });
 test('later successful unarchive invalidates an in-flight archive reread without overlapping reads',async t=>{
- const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));await h.tick(260);assert.equal(h.refreshes.length,1);const intermediate=archivedSnapshot();intermediate.sessions=intermediate.sessions.map(x=>x.id==='pin-a'?{...x,pinned:false}:x);h.api.pinSession=async()=>withPage(intermediate,'catalog:intermediate');await h.sessionMenu('pin-a','取消置顶');await h.sessionMenu('session-a','取消归档');const fresh=withPage({...intermediate,sessions:intermediate.sessions.map(x=>x.id==='session-a'?{...x,archived:false,metadataRevision:'revision:session-a:unarchived'}:x)},'catalog:unarchived');await h.React.act(async()=>h.archives[1]!.gate.resolve(fresh));await h.tick(1040);assert.equal(h.refreshes.length,1,'Successful second write cannot overlap an in-flight read');
+ const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));await h.tick(260);assert.equal(h.refreshes.length,1);const intermediate=archivedSnapshot();intermediate.sessions=intermediate.sessions.map(x=>x.id==='pin-a'?{...x,pinned:false}:x);await acceptCurrentCatalog(h,withPage(intermediate,'catalog:intermediate'));await h.sessionMenu('session-a','取消归档');const fresh=withPage({...intermediate,sessions:intermediate.sessions.map(x=>x.id==='session-a'?{...x,archived:false,metadataRevision:'revision:session-a:unarchived'}:x)},'catalog:unarchived');await h.React.act(async()=>h.archives[1]!.gate.resolve(fresh));await h.tick(1040);assert.equal(h.refreshes.length,1,'Successful second write cannot overlap an in-flight read');
  await h.React.act(async()=>h.refreshes[0]!.gate.resolve(archivedSnapshot()));await h.tick(260);assert.equal(h.refreshes.length,2);await h.React.act(async()=>h.refreshes[1]!.gate.resolve(fresh));await h.tick(1040);assert.equal(h.refreshes.length,2);assert.equal(archived(h),false);assert.equal(h.archives.length,2);
 });
 test('unmount retires a pending archive before its successful response',async t=>{
@@ -358,7 +371,7 @@ test('removed and re-added same project ID does not inherit old archive work',as
  const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.removeEntry('a');await h.resolveRemoval(0);h.api.bootstrap=async()=>bootstrapFor(['a','b','c']);await h.emit('onApplicationImportsChanged',undefined as never);assert.equal(archived(h),false);await finishArchive(h,0,archivedSnapshot());assert.equal(h.refreshes.length,0);assert.equal(archived(h),false);
 });
 test('obsolete catalog-read rejection serves newer demand without surfacing stale error',async t=>{
- const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));await h.tick(260);assert.equal(h.refreshes.length,1);const fresh=archivedSnapshot();fresh.sessions=fresh.sessions.map(x=>x.id==='second-a'?{...x,pinned:true}:x);const current=withPage(fresh,'catalog:pinned');h.api.pinSession=async()=>current;await h.sessionMenu('second-a','置顶');await h.React.act(async()=>h.refreshes[0]!.gate.reject(new Error('Obsolete read failure')));assert.ok(!h.text().includes('Obsolete read failure'));await h.tick(260);assert.equal(h.refreshes.length,2);await h.React.act(async()=>h.refreshes[1]!.gate.resolve(current));await h.tick(1040);assert.equal(h.refreshes.length,2);assert.equal(archived(h),true);
+ const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));await h.tick(260);assert.equal(h.refreshes.length,1);const fresh=archivedSnapshot();fresh.sessions=fresh.sessions.map(x=>x.id==='second-a'?{...x,pinned:true}:x);const current=withPage(fresh,'catalog:pinned');await acceptCurrentCatalog(h,current);await h.React.act(async()=>h.refreshes[0]!.gate.reject(new Error('Obsolete read failure')));assert.ok(!h.text().includes('Obsolete read failure'));await h.tick(260);assert.equal(h.refreshes.length,2);await h.React.act(async()=>h.refreshes[1]!.gate.resolve(current));await h.tick(1040);assert.equal(h.refreshes.length,2);assert.equal(archived(h),true);
 });
 for(const dispatched of [false,true])test(`unmount retires ${dispatched?'running':'scheduled'} catalog reconciliation`,async t=>{
  const h=await fixture(t);await h.sessionMenu('session-a','归档');await h.React.act(async()=>h.archives[0]!.gate.resolve(archivedSnapshot()));if(dispatched){await h.tick(260);assert.equal(h.refreshes.length,1);}await h.unmount();if(dispatched)await h.React.act(async()=>h.refreshes[0]!.gate.resolve(archivedSnapshot()));await h.tick(1040);assert.equal(h.refreshes.length,dispatched?1:0);

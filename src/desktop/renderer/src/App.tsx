@@ -966,14 +966,22 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [document, temporalSourceTarget]);
 
   const toggleSessionPinned = useCallback(async (session: DesktopSessionSummary, pinned = !session.pinned): Promise<void> => {
+    const ownsProject = sessionTreePages.captureCatalogProject(session.projectId);
     try {
-      const snapshot = await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision);
+      await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision);
       invalidateProjectRefresh(session.projectId);
-      mergeProjectSnapshot(snapshot);
+      if (ownsProject()) {
+        sessionTreePages.refreshCatalog(
+          session.projectId,
+          () => window.biny.refreshProject(session.projectId),
+          mergeProjectSnapshot,
+          error => setWarning(`置顶状态已保存，但会话列表刷新失败：${errorMessage(error)}`)
+        );
+      }
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [invalidateProjectRefresh, mergeProjectSnapshot]);
+  }, [invalidateProjectRefresh, mergeProjectSnapshot, sessionTreePages]);
 
   const deleteSidebarSessions = useCallback(async (sessions: DesktopSessionSummary[], confirm = true, onStarted?: () => void) => {
     const targets = sessions.map(session => ({ projectId: session.projectId, sessionId: session.id }));
@@ -1023,6 +1031,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       if (action === "archive" || action === "unarchive") {
         const ownsProject = sessionTreePages.captureCatalogProject(session.projectId);
         await window.biny.archiveSession(session.projectId, session.id, action === "archive", session.metadataRevision);
+        invalidateProjectRefresh(session.projectId);
         if (ownsProject()) {
           sessionTreePages.refreshCatalog(
             session.projectId,
@@ -1056,7 +1065,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, mergeProjectSnapshot, sessionTreePages, toggleSessionPinned]);
+  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, invalidateProjectRefresh, mergeProjectSnapshot, sessionTreePages, toggleSessionPinned]);
 
   const importSessionIntoProject = useCallback(async (projectId: string): Promise<void> => {
     const projectLifetime = projectRemovalRef.current.get(projectId);
@@ -2208,15 +2217,19 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
               if (renameTarget.kind === "project") {
                 mergeProjectSnapshot(await window.biny.renameProject(renameTarget.projectId, title));
               } else if (renameTarget.sessionId) {
-                const snapshot = await window.biny.renameSession(renameTarget.projectId, renameTarget.sessionId, title, renameTarget.metadataRevision);
+                const ownsProject = sessionTreePages.captureCatalogProject(renameTarget.projectId);
+                await window.biny.renameSession(renameTarget.projectId, renameTarget.sessionId, title, renameTarget.metadataRevision);
                 invalidateProjectRefresh(renameTarget.projectId);
-                mergeProjectSnapshot(snapshot);
-                setDocument((current) => {
-                  if (!current || current.session.id !== renameTarget.sessionId) return current;
-                  return { events: current.events, liveEvents: current.liveEvents, session: { ...current.session, title } };
-                });
+                if (ownsProject()) {
+                  sessionTreePages.refreshCatalog(
+                    renameTarget.projectId,
+                    () => window.biny.refreshProject(renameTarget.projectId),
+                    mergeProjectSnapshot,
+                    error => setWarning(`名称已保存，但会话列表刷新失败：${errorMessage(error)}`)
+                  );
+                }
               }
-              setRenameTarget(undefined);
+              setRenameTarget(current => current === renameTarget ? undefined : current);
             }}
             open={Boolean(renameTarget)}
             title={renameTarget?.kind === "project" ? "重命名项目" : "重命名会话"}
