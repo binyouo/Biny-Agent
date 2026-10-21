@@ -101,8 +101,8 @@ export class TaskCommunication {
     return this.append(task, "parent", content, id);
   }
 
-  messages(taskRunId: string): TaskMessage[] {
-    return mailbox(this.read(taskRunId)).messages.map((message) => message.direction === "worker" && this.tasks.hasMessageReceipt(taskRunId, message.id) ? { ...message, delivered: true } : message);
+  messages(taskRunId: string, sessionId = this.sessionId): TaskMessage[] {
+    return mailbox(this.readForSession(taskRunId, sessionId)).messages.map((message) => message.direction === "worker" && this.tasks.hasMessageReceipt(taskRunId, message.id) ? { ...message, delivered: true } : message);
   }
 
   notifications(maxCharacters = 6000, receivingSessionId = this.sessionId): TaskNotification[] {
@@ -229,16 +229,16 @@ export class TaskCommunication {
 
   notify(taskRunId: string): void { for (const listener of this.listeners) listener(taskRunId); }
 
-  async wait(taskRunId: string, waitMs = 0, afterRevision?: number, signal?: AbortSignal): Promise<TaskRunWithAttempts> {
+  async wait(taskRunId: string, waitMs = 0, afterRevision?: number, signal?: AbortSignal, sessionId = this.sessionId): Promise<TaskRunWithAttempts> {
     if (afterRevision !== undefined && (!Number.isSafeInteger(afterRevision) || afterRevision < 0)) throw new Error("Invalid task revision.");
-    const task = this.read(taskRunId);
+    const task = this.readForSession(taskRunId, sessionId);
     const revision = afterRevision ?? task.revision;
     const ready = (): boolean => {
-      const current = this.read(taskRunId);
+      const current = this.readForSession(taskRunId, sessionId);
       return current.revision > revision || isTaskRunTerminal(current.status) || ["blocked", "needs_approval"].includes(current.status);
     };
     await this.waitFor(taskRunId, waitMs, ready, signal);
-    return this.read(taskRunId);
+    return this.readForSession(taskRunId, sessionId);
   }
 
   private async waitFor(taskRunId: string, waitMs: number, ready: () => boolean, signal?: AbortSignal): Promise<void> {
