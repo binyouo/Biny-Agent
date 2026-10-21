@@ -45,7 +45,8 @@ function SearchPaletteInput({
   useLayoutEffect(() => {
     const previous = previousSource.current;
     previousSource.current = { projectId, staticItemsKey };
-    if (previous.projectId !== projectId || previous.staticItemsKey === staticItemsKey || !palette?.isOpen) return;
+    if (previous.projectId !== projectId) { palette?.setSearch(""); return; }
+    if (previous.staticItemsKey === staticItemsKey || !palette?.isOpen) return;
     // Source replacement alone does not rerun the palette's current query.
     // Its query API preserves the input and retires older async results.
     palette.setSearch(palette.search);
@@ -278,6 +279,7 @@ export function SearchOverlay({
       onValueChange={value => {
         const selected = itemById.current.get(value)?.auxiliaryData;
         if (!selected || selected.kind === "recent") return;
+        if (selected.kind === "file" && selected.projectId !== selectedProjectId) return;
         const nextQueries = rememberRecentSearch(getRecentSearchStorage(), queryRef.current);
         recentQueriesRef.current = nextQueries;
         setRecentQueries(nextQueries);
