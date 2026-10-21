@@ -43,6 +43,8 @@ biny run "检查项目结构" --permission-mode read-only --json
 
 文件写入在批准后继续核对目标路径和文件状态。拒绝路径优先于一般允许规则；软链或目标变化不能用旧批准绕过检查。
 
+Desktop 的授权卡片可以先显示本次提交的选择；收到同一请求的实际审批结果后，以该结果和说明为准，即使提交回执仍在等待。任务取消或其他客户端已作出决定时，不会继续把本地选择显示成实际授权结果。新请求的确认输入独立，旧提交的迟到回执不会关闭新请求。
+
 ## 参数校验与调用结果
 
 `Read`、`Write`、`Edit`、`ProcessStatus` 及结构化 `apply_patch` 的参数由 Zod 定义，同时生成发给模型的 JSON Schema。`Edit` 每次只处理一个源文件：字符串更新必须提供 `old_string` 和 `new_string`，删除匹配文本时显式传 `new_string: ""`；Hashline 更新提供非空 `edits`；删除整文件用 `operation: "delete"`；移动用 `operation: "move"` 并提供 `to`，目标不得已存在。字符串替换允许省略 `operation`（默认更新）和 `replace_all`（默认 false）。缺少参数或分支带有无关参数，在权限确认和执行前拒绝。
