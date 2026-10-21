@@ -712,7 +712,7 @@ export class InteractiveAgentRuntime {
     const alreadyClaimed = this.sessionWriterClaim?.sessionId === sessionId;
     await this.claimSession(sessionId);
     try {
-      return await this.runMaintenanceOperation("resume", async () => await this.commandRuntime.agent.resume(session), undefined, sessionId);
+      return await this.runMaintenanceOperation("resume", async () => await this.commandRuntime.agent.resume(sessionId), undefined, sessionId);
     } catch (error) {
       if (!alreadyClaimed) await this.releaseSessionClaim(sessionId);
       throw error;
