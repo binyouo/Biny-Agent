@@ -43,11 +43,14 @@ function run(value: string, maxBytes: number) {
   return { result, counts };
 }
 
-// Independent finite oracle: enumerate every UTF-16 prefix of small fixtures.
-// This intentionally preserves the old treatment of unpaired surrogate code units.
+// Independent finite oracle: enumerate UTF-16 prefixes but never split a valid pair.
+// Already-unpaired source units retain their existing byte accounting and output.
 function expectedPrefix(value: string, maxBytes: number): string {
   let expected = "";
   for (let index = 0; index <= value.length; index++) {
+    const before = value.charCodeAt(index - 1);
+    const after = value.charCodeAt(index);
+    if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) continue;
     const prefix = value.slice(0, index);
     if (Buffer.byteLength(prefix, "utf8") <= maxBytes) expected = prefix;
   }
@@ -64,7 +67,7 @@ test("UTF-8 truncation preserves ASCII, CJK, emoji, mixed and lone-surrogate pre
       assert.ok(Buffer.byteLength(result as string, "utf8") <= budget);
     }
   }
-  assert.equal(run("a😀", 4).result, "a\ud83d", "do not silently change existing split-surrogate output");
+  assert.equal(run("a😀", 4).result, "a", "a valid pair must be omitted together when its four bytes do not fit");
 });
 
 test("64 KiB CJK truncation has bounded prefix-measurement work", () => {
