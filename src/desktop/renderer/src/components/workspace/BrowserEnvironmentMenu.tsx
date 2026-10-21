@@ -110,13 +110,13 @@ export function BrowserEnvironmentMenu({ current, disabled, onOpen, onNotice }: 
         if (event.key === "Enter" && event.target instanceof HTMLElement && ["INPUT", "SELECT"].includes(event.target.tagName)) { event.preventDefault(); void save(); }
       }}>
         <strong>{editing === "new" ? "新建环境" : "编辑环境"}</strong>
-        <label>名称<input autoFocus maxLength={60} value={name} onChange={(event) => setName(event.target.value)} /></label>
-        <label>代理<select value={proxyMode} onChange={(event) => setProxyMode(event.target.value as typeof proxyMode)}>
+        <label>名称<input autoFocus maxLength={60} disabled={busy} value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <label>代理<select disabled={busy} value={proxyMode} onChange={(event) => setProxyMode(event.target.value as typeof proxyMode)}>
           <option value="system">系统代理</option><option value="direct">直连</option><option value="fixed_servers">手动代理</option>
         </select></label>
         {proxyMode === "fixed_servers" ? <>
-          <label>代理规则<input placeholder="http=127.0.0.1:7890;https=127.0.0.1:7890" value={proxyRules} onChange={(event) => setProxyRules(event.target.value)} /></label>
-          <label>绕过规则<input placeholder="localhost;127.0.0.1" value={proxyBypassRules} onChange={(event) => setProxyBypassRules(event.target.value)} /></label>
+          <label>代理规则<input disabled={busy} placeholder="http=127.0.0.1:7890;https=127.0.0.1:7890" value={proxyRules} onChange={(event) => setProxyRules(event.target.value)} /></label>
+          <label>绕过规则<input disabled={busy} placeholder="localhost;127.0.0.1" value={proxyBypassRules} onChange={(event) => setProxyBypassRules(event.target.value)} /></label>
         </> : null}
         <div><button type="button" disabled={busy || !name.trim()} onClick={() => void save()}>{busy ? "保存中…" : "保存"}</button><button type="button" disabled={busy} onClick={() => setEditing(undefined)}>取消</button></div>
       </div> : <button className="inspector-browser-environment-create" type="button" disabled={busy} onClick={() => beginEdit("new")}><Icon name="add" size={15} />新建环境</button>}
