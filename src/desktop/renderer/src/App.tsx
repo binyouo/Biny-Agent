@@ -937,12 +937,21 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [document, temporalSourceTarget]);
 
   const toggleSessionPinned = useCallback(async (session: DesktopSessionSummary, pinned = !session.pinned): Promise<void> => {
+    const ownsProject = sessionTreePages.captureCatalogProject(session.projectId);
     try {
-      mergeProjectSnapshot(await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision));
+      await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision);
+      if (ownsProject()) {
+        sessionTreePages.refreshCatalog(
+          session.projectId,
+          () => window.biny.refreshProject(session.projectId),
+          mergeProjectSnapshot,
+          error => setWarning(`置顶状态已保存，但会话列表刷新失败：${errorMessage(error)}`)
+        );
+      }
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [mergeProjectSnapshot]);
+  }, [mergeProjectSnapshot, sessionTreePages]);
 
   const deleteSidebarSessions = useCallback(async (sessions: DesktopSessionSummary[], confirm = true, onStarted?: () => void) => {
     const targets = sessions.map(session => ({ projectId: session.projectId, sessionId: session.id }));
@@ -2078,13 +2087,18 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
               if (renameTarget.kind === "project") {
                 mergeProjectSnapshot(await window.biny.renameProject(renameTarget.projectId, title));
               } else if (renameTarget.sessionId) {
-                mergeProjectSnapshot(await window.biny.renameSession(renameTarget.projectId, renameTarget.sessionId, title, renameTarget.metadataRevision));
-                setDocument((current) => {
-                  if (!current || current.session.id !== renameTarget.sessionId) return current;
-                  return { events: current.events, liveEvents: current.liveEvents, session: { ...current.session, title } };
-                });
+                const ownsProject = sessionTreePages.captureCatalogProject(renameTarget.projectId);
+                await window.biny.renameSession(renameTarget.projectId, renameTarget.sessionId, title, renameTarget.metadataRevision);
+                if (ownsProject()) {
+                  sessionTreePages.refreshCatalog(
+                    renameTarget.projectId,
+                    () => window.biny.refreshProject(renameTarget.projectId),
+                    mergeProjectSnapshot,
+                    error => setWarning(`名称已保存，但会话列表刷新失败：${errorMessage(error)}`)
+                  );
+                }
               }
-              setRenameTarget(undefined);
+              setRenameTarget(current => current === renameTarget ? undefined : current);
             }}
             open={Boolean(renameTarget)}
             title={renameTarget?.kind === "project" ? "重命名项目" : "重命名会话"}
