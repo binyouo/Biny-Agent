@@ -396,7 +396,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       void window.biny.bootstrap().then(bootstrap => {
         if (!active || request !== generation) return;
         setProjects(bootstrap.projects);
-        sessionTreePages.replaceAll(bootstrap.sidebarSessions);
+        sessionTreePages.replaceAll(bootstrap.sidebarSessions, bootstrap.projects.map(project => project.id));
         resetSessionRootPages(bootstrap.workspace);
         setSidebarSessions(bootstrap.sidebarSessions);
         if (bootstrap.workspace && projectRef.current === bootstrap.workspace.project.id) setWorkspace(bootstrap.workspace);
@@ -706,8 +706,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       if (!active) return;
       setVersion(bootstrap.version);
       setProjects(bootstrap.projects);
-      sessionTreePages.replaceAll(bootstrap.sidebarSessions);
-      resetSessionRootPages(bootstrap.workspace);
+      sessionTreePages.replaceAll(bootstrap.sidebarSessions, bootstrap.projects.map(project => project.id));
+        resetSessionRootPages(bootstrap.workspace);
       setSidebarSessions(bootstrap.sidebarSessions);
       setSidebarExpandedWidth(bootstrap.sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH);
       setFilePanelWidth(bootstrap.filePanelWidth ?? DEFAULT_FILE_PANEL_WIDTH);
@@ -995,7 +995,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (result.cancelled) return result;
     const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
     for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
-      sessionTreePages.replaceProject(projectId, []);
+      sessionTreePages.removeProject(projectId);
       invalidateSessionRootPage(projectId);
       invalidateSessionRootPage(projectId);
       void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
@@ -1021,7 +1021,16 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         return;
       }
       if (action === "archive" || action === "unarchive") {
-        mergeProjectSnapshot(await window.biny.archiveSession(session.projectId, session.id, action === "archive", session.metadataRevision));
+        const ownsProject = sessionTreePages.captureCatalogProject(session.projectId);
+        await window.biny.archiveSession(session.projectId, session.id, action === "archive", session.metadataRevision);
+        if (ownsProject()) {
+          sessionTreePages.refreshCatalog(
+            session.projectId,
+            () => window.biny.refreshProject(session.projectId),
+            mergeProjectSnapshot,
+            error => setWarning(`归档状态已保存，但会话列表刷新失败：${errorMessage(error)}`)
+          );
+        }
         return;
       }
       if (action === "export-bundle" || action === "export-claude") {
@@ -1047,7 +1056,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, mergeProjectSnapshot, toggleSessionPinned]);
+  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, mergeProjectSnapshot, sessionTreePages, toggleSessionPinned]);
 
   const importSessionIntoProject = useCallback(async (projectId: string): Promise<void> => {
     const projectLifetime = projectRemovalRef.current.get(projectId);
@@ -1457,7 +1466,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       projectRemovalRef.current.set(projectId, {});
       // This receipt confirms only this removal, not a replacement of newer catalog/view state.
       setProjects((current) => current.filter((project) => project.id !== projectId));
-      sessionTreePages.replaceProject(projectId, []);
+      sessionTreePages.removeProject(projectId);
       invalidateSessionRootPage(projectId);
       setSidebarSessions((current) => current.filter((session) => session.projectId !== projectId));
       setDraftProjectId((current) => current === projectId ? undefined : current);
