@@ -346,7 +346,7 @@ export class LocalMemory {
         }
       }
       deleted.push(...await this.cleanupTemporaryMemories(
-        formatMemoryExtractionMessages(recentMessages), now, options.signal, options.userId ?? null, retainedIds
+        formatMemoryExtractionMessages(recentMessages), now, options.signal, options.userId ?? null, retainedIds, originAnchors
       ));
     }
     return { created, updated, deleted };
@@ -456,7 +456,10 @@ export class LocalMemory {
     }
   }
 
-  private async cleanupTemporaryMemories(conversation: string, now: Date, signal: AbortSignal | undefined, userId: string | null, retainedIds: ReadonlySet<string>): Promise<ExtractedMemory[]> {
+  private async cleanupTemporaryMemories(
+    conversation: string, now: Date, signal: AbortSignal | undefined, userId: string | null,
+    retainedIds: ReadonlySet<string>, originAnchors?: MemoryOriginAnchor[]
+  ): Promise<ExtractedMemory[]> {
     let candidates: MemoryEntry[] | undefined;
     try {
       candidates = await this.findSemanticMemoryEntries(conversation, 20, 0.3, signal, userId);
@@ -469,12 +472,20 @@ export class LocalMemory {
     const temporary = candidates?.filter((entry) => entry.durability === "temporary" && !retainedIds.has(entry.id)) ?? [];
     if (!temporary.length) return [];
     const formatDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${date.toLocaleTimeString()}`;
-    const memories = temporary.map((entry) => `- id: "${entry.id}", created: "${formatDate(new Date(entry.createdAt))}", content: "${entry.content}"`).join("\n");
-    const prompt = `Current date and time: ${formatDate(now)}\n\nCurrent conversation context:\n${conversation}\n\nTemporary memories related to this conversation:\n${memories}`;
+    const memories = temporary.map((entry) => {
+      const source = entry.originAnchors?.length
+        ? `source-message anchors: ${JSON.stringify(entry.originAnchors)}`
+        : "original message time/timezone unknown";
+      return `- id: "${entry.id}", created: "${formatDate(new Date(entry.createdAt))}", content: "${entry.content}" [Memory saved-at: ${entry.createdAt}; ${source}; saved-at is NOT event/due/completion time.]`;
+    }).join("\n");
+    const conversationSource = originAnchors?.length
+      ? `source-message anchors: ${JSON.stringify(originAnchors)}`
+      : "original message time/timezone unknown";
+    const prompt = `Current date and time: ${formatDate(now)}\n\nCurrent conversation context:\n${conversation}\n\nCurrent conversation source: ${conversationSource}\n\nTemporary memories related to this conversation:\n${memories}`;
     let selected: unknown[];
     try {
       const response = await generateNativeText(this.getToolModel(), [{ role: "user", content: prompt }], {
-        systemPrompt: temporaryMemoryCleanupPrompt,
+        systemPrompt: temporaryMemoryCleanupPrompt + "\n\n" + memoryTimeAnchorInstruction,
         signal,
         timeoutMs: memoryModelTimeoutMs,
         onRequestMetrics: this.onModelRequest,
