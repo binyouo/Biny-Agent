@@ -14,6 +14,7 @@ import { redactSecrets } from "../../utils/secrets.js";
 import {
   appendDailyMemoryEntry,
   dailyMemoryEntryMarker,
+  DailyMemorySectionConflictError,
   readDailyMemoryNote,
   readDailyMemorySection,
   upsertDailyMemorySection
@@ -54,7 +55,7 @@ export interface ChatDiaryRefreshResult {
   written: boolean;
   backfilled: number;
   model?: string;
-  reason?: "empty" | "up_to_date";
+  reason?: "empty" | "up_to_date" | "superseded";
 }
 
 /** 显式日记刷新时补入单轮事实，以 session 和 turn 标识去重。 */
@@ -182,12 +183,17 @@ export async function refreshChatDailyDiary(
     }
   }
   summary ??= renderDeterministicDailySummary(dateKey, source);
-  await upsertDailyMemorySection(
-    dateKey,
-    "每日总结",
-    [marker, options.allowActivity && readDailyMemorySection(note, "活动记录") ? activityDerivedMarker : "", `<!-- biny-daily-model:${modelId ? modelKey : "fallback"} -->`, summary].join("\n"),
-    { configDir: options.configDir }
-  );
+  try {
+    await upsertDailyMemorySection(
+      dateKey,
+      "每日总结",
+      [marker, options.allowActivity && readDailyMemorySection(note, "活动记录") ? activityDerivedMarker : "", `<!-- biny-daily-model:${modelId ? modelKey : "fallback"} -->`, summary].join("\n"),
+      { configDir: options.configDir, expectedSectionContent: existingSummary ?? "" }
+    );
+  } catch (error) {
+    if (!(error instanceof DailyMemorySectionConflictError)) throw error;
+    return { dateKey, written: false, backfilled, reason: "superseded" };
+  }
   return { dateKey, written: true, backfilled, model: modelId };
 }
 

@@ -70,21 +70,29 @@ export function readDailyMemorySection(content: string, sectionTitle: string): s
   return section || undefined;
 }
 
-/** 替换指定 section，供 Activity 这类可整体重建的派生来源使用。 */
+export class DailyMemorySectionConflictError extends Error {
+  readonly name = "DailyMemorySectionConflictError";
+
+  constructor() {
+    super("Daily memory section changed while the refresh was running.");
+  }
+}
+
+/** 替换指定 section；提供快照时在文件锁内比较，避免覆盖其他刷新已提交的正文。 */
 export async function upsertDailyMemorySection(
   dateKey: string,
   sectionTitle: string,
   content: string,
-  options: DailyNoteWriteOptions = {}
+  options: DailyNoteWriteOptions & { expectedSectionContent?: string } = {}
 ): Promise<string> {
   assertDailyDate(dateKey);
   const heading = normalizeSectionHeading(sectionTitle);
-  return await mutateDailyMemoryNote(dateKey, options, (existing) => replaceDailySection(
-    existing,
-    dateKey,
-    heading,
-    content.trim() || "（暂无可写入内容。）"
-  ));
+  return await mutateDailyMemoryNote(dateKey, options, (existing) => {
+    if (options.expectedSectionContent !== undefined && readDailySection(existing, heading) !== options.expectedSectionContent) {
+      throw new DailyMemorySectionConflictError();
+    }
+    return replaceDailySection(existing, dateKey, heading, content.trim() || "（暂无可写入内容。）");
+  });
 }
 
 /** writer 和补写预筛共享同一 marker，保持既有条目的去重身份不变。 */
