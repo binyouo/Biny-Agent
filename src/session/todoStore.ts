@@ -26,6 +26,7 @@ export const maxTodoContentLength = 500;
 export class TodoStore {
   private items: TodoItem[] = [];
   private loaded = false;
+  private projectionRevision = 0;
   private commitQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly workspaceRoot: string, private sessionId: string) {}
@@ -51,14 +52,18 @@ export class TodoStore {
 
   private async loadCurrentSession(): Promise<void> {
     this.loaded = true;
+    const revision = ++this.projectionRevision;
+    let items: TodoItem[];
     try {
       const raw = await fs.readFile(this.filePath(), "utf8");
       const parsed: unknown = JSON.parse(raw);
-      this.items = normalizeItems(parsed);
+      items = normalizeItems(parsed);
     } catch {
       // 没有清单、清单损坏或读不出来，都从空清单开始 —— 它是工作记忆，不是事实来源。
-      this.items = [];
+      items = [];
     }
+    // A shared heartbeat read may settle after a session switch, newer refresh, or commit.
+    if (revision === this.projectionRevision) this.items = items;
   }
 
   list(): TodoItem[] {
@@ -104,6 +109,7 @@ export class TodoStore {
       // 并发 rename 的磁盘完成顺序未必等于 Promise 恢复顺序；串行提交才能让内存与磁盘一致。
       const commit = this.commitQueue.then(async () => {
         await fs.rename(temporary, target);
+        this.projectionRevision++;
         this.items = items;
       });
       // 单次失败不能阻断后续提交；清理留在队列外，也不能重新发布旧版本。
