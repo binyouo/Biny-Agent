@@ -340,13 +340,19 @@ export async function executeCodeModeCell(input: {
   // 取消或 VM 失败不清空宿主已经收到的输出。
   if (stdoutTruncated) stdout += "\n[Console capture limit reached; additional output is not retained.]";
   if (stdout.length > 16_000 && input.archiveStdout) {
+    let previewEnd = 16_000;
+    const last = stdout.charCodeAt(previewEnd - 1);
+    const next = stdout.charCodeAt(previewEnd);
+    // Keep the UTF-16 limit without cutting a valid surrogate pair in half.
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) previewEnd--;
+    const preview = stdout.slice(0, previewEnd);
     try {
       const archivePath = await input.archiveStdout(stdout);
-      result.stdout = stdout.slice(0, 16_000) + `\n[Output truncated. Read ${stdoutTruncated ? "captured" : "full"} stdout at ${archivePath}]`;
+      result.stdout = preview + `\n[Output truncated. Read ${stdoutTruncated ? "captured" : "full"} stdout at ${archivePath}]`;
     } catch (error) {
       result.ok = false;
       result.error = [result.error, `Stdout archiving failed: ${String(error)}. Do not replay this cell.`].filter(Boolean).join(" ");
-      result.stdout = stdout.slice(0, 16_000) + "\n[Output truncated; archive unavailable]";
+      result.stdout = preview + "\n[Output truncated; archive unavailable]";
     }
   } else if (stdout) result.stdout = stdout;
   return result;
