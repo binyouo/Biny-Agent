@@ -84,6 +84,11 @@ export class TaskCommunication {
     return this.readForSession(taskRunId, this.sessionId);
   }
 
+  /** Validate a trusted execution owner without rebinding this channel or its workers. */
+  assertOwnership(taskRunId: string, sessionId = this.sessionId): void {
+    this.readForSession(taskRunId, sessionId);
+  }
+
   private readForSession(taskRunId: string, sessionId: string): TaskRunWithAttempts {
     const task = this.tasks.get(taskRunId);
     if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
