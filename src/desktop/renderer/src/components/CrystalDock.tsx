@@ -71,7 +71,10 @@ export function CrystalDock({ sessionId, onInsert }: { sessionId?: string; onIns
   );
   return <>
     <Tooltip content="结晶" delay={150} placement="above">
-      <button aria-label="结晶" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-crystal-button" onClick={() => changeOpen(true)} type="button">
+      <button aria-label="结晶" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-crystal-button" onClick={() => {
+        setSnapshot(current => current ? { overview: current.overview } : undefined);
+        changeOpen(true);
+      }} type="button">
         <Icon name="cube" size={16} />
       </button>
     </Tooltip>
