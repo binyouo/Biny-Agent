@@ -1823,6 +1823,22 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|agent|mcp|model|provider|tool|tool-call|task|cron|crystal|bundle|plan)\//u.test(url)) {
       const projectId = requestedProjectId ?? workspace?.project.id;
       if (!projectId) return;
+      if (url.startsWith("biny://file/")) {
+        const switching = projectId !== projectRef.current;
+        const selection = switching || requestedProjectId ? selectProject(projectId) : undefined;
+        const navigationRequest = loadRequestRef.current;
+        const request = inspector.reserveFilePreview({ projectId, source: `${projectId}:${switching ? "draft" : selectedRef.current ?? "draft"}` },
+          () => loadRequestRef.current === navigationRequest);
+        try {
+          await selection;
+          if (!request.current() || projectRef.current !== projectId) { request.cancel(); return; }
+          const reference = await window.biny.referenceResolve(projectId, url);
+          if (reference.kind === "file") request.open(reference.label);
+        } catch (error) {
+          if (request.current() && projectRef.current === projectId) { request.cancel(); setWarning(errorMessage(error)); }
+        }
+        return;
+      }
       try {
         if (requestedProjectId && requestedProjectId !== workspace?.project.id) await selectProject(requestedProjectId);
         const reference = await window.biny.referenceResolve(projectId, url);
