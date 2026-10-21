@@ -57,9 +57,14 @@ export function applyHashlineEdits(content: string, edits: readonly HashlineEdit
   assertIndependentEdits(resolved);
 
   const nextLines = [...parsed.lines];
+  // Preserve the existing file signature when inserting before its original first line.
+  // Resolve anchors first; explicit line replacements and inserted FEFF stay literal.
+  const preserveBom = content.startsWith("\uFEFF") && resolved.some((edit) => edit.start === 0 && edit.deleteCount === 0);
+  if (preserveBom) nextLines[0] = nextLines[0]!.slice(1);
   for (const edit of [...resolved].sort((left, right) => right.start - left.start)) {
     nextLines.splice(edit.start, edit.deleteCount, ...edit.lines);
   }
+  if (preserveBom) nextLines[0] = `\uFEFF${nextLines[0]!}`;
   const next = joinTextLines(nextLines, parsed);
   if (next === content) throw new Error("Edit operations would not change the file.");
   return { content: next, firstChangedLine: Math.min(...resolved.map((edit) => edit.start + 1)) };
