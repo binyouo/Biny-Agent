@@ -22,6 +22,8 @@ import type { HostOperationResult } from "../src/runtime/host/types.js";
 import { BinyTui } from "../src/tui/app.js";
 import { PermissionDialog, SelectDialog } from "../src/tui/components/dialogs.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -239,8 +241,10 @@ async function hostFixture(t: TestContext) {
       yield { type: "done", content: "done", outcome: { status: "completed", stopReason: "model_stop", finishReason: "stop", steps: 1, output: "done" } };
     }
   };
-  const commands = { agent, workspaceRoot: root, refreshSkills: async () => undefined, setSubagentParentRunId: () => undefined,
-    close: async () => undefined, taskRuns: { get: () => undefined } } as unknown as CommandRuntime;
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
+  const stores = await createHostTestStores(root, authority);
+  const commands = { ...stores, agent, workspaceRoot: root, refreshSkills: async () => undefined, setSubagentParentRunId: () => undefined,
+    close: async () => undefined } as unknown as CommandRuntime;
   const runtime = new InteractiveAgentRuntime(commands);
   const registration = { protocolVersion: runtimeHostProtocolVersion, endpoint: path.join(root, "unused.sock"), registrationPath: path.join(root, "unused.json"), lockPath: path.join(root, "unused.lock"), rootHash: "synthetic", persistenceRoot: root, configRoot: path.join(root, "config"), agentRoot: process.env.BINY_AGENT_DIR,
     hostEpoch: randomUUID(), token: "synthetic-token", pid: process.pid, createdAt: new Date().toISOString() };
@@ -280,9 +284,18 @@ async function hostFixture(t: TestContext) {
   const app = new BinyTui(new TUI(terminal()), root);
   app["runtime"] = client; app["runtimeSnapshot"] = client.getSnapshot(); app["subscribeRuntime"](client); app["syncPermissionDialog"]();
   t.after(async () => {
-    app["closeOverlay"](); await app.exit(); for (const socket of sockets) socket.destroy(); await host.close();
-    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previousAgentDir;
-    await rm(root, { recursive: true, force: true });
+    try {
+      app["closeOverlay"](); await app.exit(); for (const socket of sockets) socket.destroy(); await host.close();
+    } finally {
+      stores.heartbeat.stop();
+      try {
+        await stores.managedProcesses.close();
+      } finally {
+        authority.close();
+        if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previousAgentDir;
+        await rm(root, { recursive: true, force: true });
+      }
+    }
   });
   return { app, client, runtime, run, request, calls, sockets, host: internal,
     setBeforeAnswer: (hook: () => Promise<void>) => { beforeAnswer = hook; },

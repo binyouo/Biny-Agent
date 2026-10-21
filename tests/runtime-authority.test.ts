@@ -197,6 +197,35 @@ try {
     "执行失败不能覆盖用户在执行期间设置的暂停状态"
   );
 
+  // Keep the current invalid-date case below, and independently cover valid leap advancement
+  // plus malformed stored syntax without weakening either queue-isolation contract.
+  {
+    const scheduledAt = "2024-02-29T00:00:00.000Z";
+    const dueAt = new Date("2024-03-01T00:00:01.000Z");
+    const validLeap = automations.create({ automationId: "automation-valid-leap-control", name: "valid-leap-control",
+      triggerType: "cron", schedule: { cron: "0 0 29 2 *", timezone: "UTC" }, executionTemplate: { prompt: "leap control" } });
+    const malformed = automations.create({ automationId: "automation-malformed-control", name: "malformed-control",
+      triggerType: "cron", schedule: { cron: "0 0 * * *", timezone: "UTC" }, executionTemplate: { prompt: "must not execute" } });
+    const healthy = automations.create({ automationId: "automation-healthy-control", name: "healthy-control",
+      triggerType: "interval", schedule: { intervalMs: 100 }, executionTemplate: { prompt: "healthy control" } });
+    authority.databaseHandle().prepare("UPDATE automations SET next_fire_at = ? WHERE automation_id = ?")
+      .run(scheduledAt, validLeap.automationId);
+    authority.databaseHandle().prepare("UPDATE automations SET schedule_json = ?, next_fire_at = ? WHERE automation_id = ?")
+      .run(JSON.stringify({ cron: "61 * * * *", timezone: "UTC" }), scheduledAt, malformed.automationId);
+    authority.databaseHandle().prepare("UPDATE automations SET next_fire_at = ? WHERE automation_id = ?")
+      .run(dueAt.toISOString(), healthy.automationId);
+    const fires = automations.claimDue(dueAt);
+    assert.equal(automations.get(validLeap.automationId)?.status, "active");
+    assert.equal(automations.get(validLeap.automationId)?.nextFireAt, "2028-02-29T00:00:00.000Z");
+    assert.equal(fires.filter(fire => fire.automationId === validLeap.automationId).length, 1);
+    assert.equal(fires.find(fire => fire.automationId === validLeap.automationId)?.scheduledAt, scheduledAt);
+    assert.equal(automations.get(malformed.automationId)?.status, "paused");
+    assert.equal(fires.some(fire => fire.automationId === malformed.automationId), false,
+      "malformed stored cron must not publish a pending fire");
+    assert.equal(fires.some(fire => fire.automationId === healthy.automationId), true,
+      "malformed stored cron must not block later healthy definitions");
+  }
+
   assert.throws(
     () => automations.create({
       automationId: "automation-unsupported-template",

@@ -39,7 +39,7 @@ export function createBrowserRelayTools(file?: string, workspace: Pick<ToolConte
     if (method === "read") properties.maxCharacters = { type: "integer", minimum: 1000, maximum: 100000 };
     if (["navigate", "download"].includes(method)) { properties.url = { type: "string", maxLength: 4096 }; required.push("url"); }
     if (["click", "fill", "press", "scroll", "wait", "upload"].includes(method)) { properties.selector = { type: "string", minLength: 1, maxLength: 2000, description: "Observed CSS (>>> crosses open shadow roots), role=button|Exact name, text=Exact text, or testid=ID. Must be unique." }; if (["click", "fill", "upload"].includes(method)) required.push("selector"); }
-    if (["navigate", "click", "fill", "press", "wait", "upload", "download"].includes(method)) properties.timeoutMs = { type: "integer", minimum: 0, maximum: 8000 };
+    if (["navigate", "click", "fill", "press", "wait", "upload", "download"].includes(method)) properties.timeoutMs = { type: "integer", minimum: method === "download" ? 1 : 0, maximum: 8000 };
     if (method === "navigate") properties.waitUntil = { type: "string", enum: ["none", "domcontentloaded", "load"] };
     if (method === "wait") properties.state = { type: "string", enum: ["visible", "hidden", "attached", "domcontentloaded", "load"] };
     if (method === "screenshot") properties.fullPage = { type: "boolean" };

@@ -89,6 +89,7 @@ async function fixture(t: TestContext, options: { stallOwner?: boolean; shared?:
   // dependencies and the synthetic owner runtime are needed by its close path.
   const host: RuntimeHostServer = Object.assign(Object.create(RuntimeHostServer.prototype) as RuntimeHostServer, {
     registration, lock, admission: { beginDrain: () => undefined }, businessComposition: { stop: () => undefined }, registry,
+    pendingOwnerNotifications: new Map(),
     sessionWriterOwners: new Map(), sessionGoalOwners: new Map(), shutdownDrainMs: 10,
     conversationMirror: { close: async () => undefined },
     resourceRegistry: { close: async () => { if (options.resourceFailure) throw options.resourceFailure; } },
@@ -136,8 +137,18 @@ function assertClientDisposed(f: Awaited<ReturnType<typeof fixture>>): void {
 
 test("client cleanup keeps its existing one-second socket-close deadline after Host failure", async t => {
   const f = await fixture(t, { resourceFailure: new Error("Synthetic resource cleanup failure") });
+  const rejectedNotifications: Error[] = [];
+  f.host["pendingOwnerNotifications"].set("pending-notification", {
+    connection: [...f.host["connections"]][0]!,
+    resolve: () => assert.fail("shutdown must not acknowledge undelivered notification"),
+    reject: (error) => { rejectedNotifications.push(error); },
+    timeout: setTimeout(() => assert.fail("notification timer must be cleared by shutdown"), 60_000)
+  });
   // A socket that never emits close must use the real client's bounded fallback.
   t.mock.method(f.socket, "destroy", () => { f.socket.destroyed = true; return f.socket; });
+  // The detached owner fails independently; TUI exit only owns its client.
+  await assert.rejects(f.host.close(), /Synthetic resource cleanup failure/u);
+  assert.equal(f.hostClose.mock.callCount(), 1);
   const exiting = f.app.exit();
   await flush();
   assert.equal(f.client["closed"], true);
@@ -147,6 +158,13 @@ test("client cleanup keeps its existing one-second socket-close deadline after H
   assert.equal(f.stops(), 0);
   t.mock.timers.tick(1);
   await exiting;
+  assert.equal(f.hostClose.mock.callCount(), 1, "TUI must not close the detached owner again");
+  assert.equal(f.host["pendingOwnerNotifications"].size, 0);
+  assert.equal(rejectedNotifications.length, 1);
+  assert.match(rejectedNotifications[0]!.message, /Runtime Host is shutting down/u);
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(rejectedNotifications.length, 1, "no late notification timeout or duplicate reply");
   await f.running;
   assertClientDisposed(f);
 });

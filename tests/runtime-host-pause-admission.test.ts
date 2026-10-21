@@ -75,7 +75,15 @@ const selected = [...operations, ...goals, "permission"].map((operation) => {
   return clauses[0]!.getText(parsed);
 });
 const methods = ["assertRequestAdmission", "executeAdmission", "ensureSessionWriter", "claimSessionWriter"];
-const isolated = stripTypeScriptTypes(`class PauseAdmissionHarness {
+const validationSource = readFileSync(new URL("../src/runtime/host/validation.ts", import.meta.url), "utf8");
+const validationParsed = ts.createSourceFile("validation.ts", validationSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const validationHelpers = ["readModelRoute", "readFastMode"].map((name) => {
+  const matches = validationParsed.statements.filter((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.equal(matches.length, 1, `Expected actual validation helper ${name}`);
+  return matches[0]!.getText(validationParsed).replace(/^export /u, "");
+}).join("\n");
+const isolated = stripTypeScriptTypes(`(() => { ${validationHelpers}\nclass PauseAdmissionHarness {
 ${methods.map((name) => method(name).getText(parsed)).join("\n")}
 async execute(connection, frame) {
 ${statements.slice(0, initialFenceIndex + 1).map((node) => node.getText(parsed)).join("\n")}
@@ -83,7 +91,19 @@ ${route.map((node) => node.getText(parsed)).join("\n")}
 switch (frame.operation) { ${selected.join("\n")} default: throw new Error("Unextracted operation"); }
 }
 }
-PauseAdmissionHarness.prototype;`, { mode: "strip" });
+return PauseAdmissionHarness.prototype; })();`, { mode: "strip" });
+
+test("actual optional model-route and fast-mode parsers retain validation", () => {
+  const helpers = runInNewContext(stripTypeScriptTypes(`${validationHelpers}\n({ readModelRoute, readFastMode });`, { mode: "strip" })) as {
+    readModelRoute(value: unknown): "tool" | undefined;
+    readFastMode(value: unknown): boolean | undefined;
+  };
+  assert.equal(helpers.readModelRoute(undefined), undefined);
+  assert.equal(helpers.readModelRoute("tool"), "tool");
+  for (const value of [null, false, "other", 1, {}]) assert.throws(() => helpers.readModelRoute(value), /modelRoute must be tool/u);
+  for (const value of [undefined, true, false]) assert.equal(helpers.readFastMode(value), value);
+  for (const value of [null, "true", 1, {}]) assert.throws(() => helpers.readFastMode(value), /fastMode must be a boolean/u);
+});
 
 type RecordValue = Record<string, unknown>;
 interface Connection { clientId: string; surface: string; exitingForPause: boolean }
@@ -126,7 +146,7 @@ class FakeCompletion {
     this.completion = completion;
   }
 }
-const extracted = runInNewContext(isolated, {
+const extract = (overrides: Record<string, unknown> = {}) => runInNewContext(isolated, {
   asRecord: record,
   isRuntimeHostAdmissionOperation: (operation: string) => [...operations, ...goals].includes(operation as typeof operations[number]),
   OperationCompletion: FakeCompletion,
@@ -138,14 +158,16 @@ const extracted = runInNewContext(isolated, {
   readPermissionResult: (value: unknown) => value,
   readGoalTokenBudget: () => undefined, readGoalExpected: () => undefined,
   publicError: (error: unknown) => String(record(error).message ?? error),
-  publicErrorCode: () => undefined, publicErrorData: () => undefined
+  publicErrorCode: () => undefined, publicErrorData: () => undefined,
+  ...overrides
 }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as State;
 function gate() {
   let release!: () => void;
   const promise = new Promise<void>((resolve) => { release = resolve; });
   return { promise, release };
 }
-function fixture() {
+function fixture(overrides: Record<string, unknown> = {}) {
+  const extracted = extract(overrides);
   const counts = { claim: 0, mutations: 0, tracked: 0, scheduled: 0, permission: 0 };
   const connection: Connection = { clientId: "client-a", surface: "desktop", exitingForPause: false };
   const other: Connection = { clientId: "client-b", surface: "tui", exitingForPause: false };
@@ -189,6 +211,17 @@ function fixture() {
   });
   return { state, managed, runtime, connection, other, controls, counts, request };
 }
+test("extracted admission uses lexical validators instead of ambient stubs", async () => {
+  const forbidden = () => { assert.fail("ambient validator must not run"); };
+  const f = fixture({ readModelRoute: forbidden, readFastMode: forbidden });
+  const result = await f.request("run.submit", f.connection, { modelRoute: "tool", fastMode: false });
+  assert.notEqual(record(result).accepted, false);
+  assert.equal(f.counts.mutations, 1);
+  await expectRejected(f.request("run.submit", f.connection, { modelRoute: "other" }), "run.submit", /modelRoute must be tool/u);
+  await expectRejected(f.request("run.submit", f.connection, { fastMode: "true" }), "run.submit", /fastMode must be a boolean/u);
+  assert.equal(f.counts.mutations, 1, "invalid options must not mutate the runtime");
+});
+
 const pauseError = /exiting and cannot start new work/u;
 const innerEnvelope = new Set(["run.submit", "run.queue", "run.continue"]);
 async function expectRejected(promise: Promise<unknown>, operation: string, reason = pauseError): Promise<void> {

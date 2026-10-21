@@ -111,6 +111,8 @@ biny input answer <tool-call-id> --session <session-id> --run <run-id> --answers
 }
 ```
 
+HTTP 与 SSE 连接只跟随同源重定向（协议、主机和端口相同，同一主机从 HTTP 升级到 HTTPS 除外），跨源重定向会报错，不向新目标转发请求。服务如果跳转到其他主机或端口，请把 MCP 的 `url` 配置为最终服务地址；自动回退 SSE 不会放宽这一边界。
+
 stdio 服务的 stdout 用于协议，诊断写 stderr。远程连接需要正确的传输协议与鉴权；支持 OAuth 的服务通过显式登录流程授权，普通连接不会自动打开浏览器登录。
 
 Tools、Resources 和 Prompts 分别按握手声明的能力启用。只提供资源或提示模板的服务器可以正常连接，不请求未声明的工具目录；已声明 Tools 的服务器若目录读取失败，连接仍报错，不把失败视为空目录。重连以新握手为准，撤下不再提供的工具。

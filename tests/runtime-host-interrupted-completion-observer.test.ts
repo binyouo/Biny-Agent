@@ -46,6 +46,8 @@ class RecordingCompletion {
   }
 }
 interface Fixture {
+  ownerNotificationListeners: Set<() => void>;
+  ownerNotificationsSubscribed: boolean;
   options: { surface: string };
   completions: Map<string, Pending>;
   pending: Map<string, { reject(error: Error): void }>;
@@ -101,6 +103,7 @@ function fixture(scenario: Scenario) {
   const state: Fixture = {
     options: { surface: "desktop" }, completions: new Map(), pending: new Map(), idleWaiters: new Set(), ownerNotificationListeners: new Set(), closed: false, retired: false,
     socket: { destroyed: false }, hostEpoch: "epoch", focusedSessionId: "session-a",
+    ownerNotificationsSubscribed: false,
     snapshots: new Map([["session-a", { state: scenario === "active" ? { kind: "runs", activeRun: { runId: ids.runId } } : { kind: "idle" } }]]),
     request: async (operation, payload, _timeout, onDispatch) => {
       onDispatch?.(state.socket);
@@ -135,7 +138,13 @@ for (const scenario of ["absent", "ownerless", "inactive", "close"] as const) {
     assert.equal(f.reconnects(), 1);
     assert.equal(f.state.completions.size, 1, "uncertain admission remains tracked");
     assert.equal(f.completion().settled, 0);
-    if (scenario === "close") await extracted.close.call(f.state);
+    if (scenario === "close") {
+      f.state.ownerNotificationListeners.add(() => assert.fail("unexpected owner notification"));
+      f.state.ownerNotificationsSubscribed = true;
+      await extracted.close.call(f.state);
+      assert.equal(f.state.ownerNotificationListeners.size, 0);
+      assert.equal(f.state.ownerNotificationsSubscribed, false);
+    }
     else await f.state.recoverCompletions();
     assert.equal(f.completion().settled, 1);
     assert.match(f.completion().error?.message ?? "", scenario === "absent" ? /not admitted/u : scenario === "close" ? /client closed/u : /no active Host execution/u);

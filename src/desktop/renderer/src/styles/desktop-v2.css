@@ -673,9 +673,9 @@ select option:disabled {
   pointer-events: none;
   opacity: .38;
   background-image:
-    radial-gradient(2px 2px at 18px 24px, rgb(255 255 255 / 78%) 55%, transparent 60%),
-    radial-gradient(1.5px 1.5px at 76px 104px, rgb(255 255 255 / 65%) 55%, transparent 60%),
-    radial-gradient(2.5px 2.5px at 146px 58px, rgb(255 255 255 / 55%) 55%, transparent 60%);
+    radial-gradient(2px 2px at 18px 24px, var(--christmas-snow-near) 55%, transparent 60%),
+    radial-gradient(1.5px 1.5px at 76px 104px, var(--christmas-snow-middle) 55%, transparent 60%),
+    radial-gradient(2.5px 2.5px at 146px 58px, var(--christmas-snow-far) 55%, transparent 60%);
   background-size: 180px 180px, 230px 230px, 280px 280px;
   animation: biny-christmas-snow 14s linear infinite;
 }

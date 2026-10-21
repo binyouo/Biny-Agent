@@ -111,6 +111,7 @@ async function replayWindow(sequences: number[] | undefined, count: number, gate
       "resource readiness updates cannot append provisional sequences while journal recovery is in flight");
     release.resolve();
     await Promise.all([starting, alsoStarting]);
+    assert.equal(f.server.info.protocolRevision, runtimeHostProtocolVersion, "startup recovery retains the current connection protocol");
     assert.equal(initializationCount, 1, "concurrent initialize calls cannot load and splice history twice");
     const highWater = sequences?.at(-1) ?? 0;
     const finalSequence = highWater + count;

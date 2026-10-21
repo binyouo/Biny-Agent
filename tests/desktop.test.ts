@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
 import { promisify } from "node:util";
 import type { AgentRunOptions, AgentSessionInfo } from "../src/agent/AgentSession.js";
 import type { AgentSessionEvent } from "../src/agent/types.js";
@@ -840,6 +841,7 @@ async function testDesktopHostVersionConflict(): Promise<void> {
     const paths = runtimeHostPaths(dataRoot);
     await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
     const registration = { ...paths, protocolVersion: 2, persistenceRoot: dataRoot, hostEpoch: "old-owner", token: "test-only-token", pid: process.pid, createdAt: new Date().toISOString() };
+    assert.notEqual(registration.protocolVersion, runtimeHostProtocolVersion, "fixture must represent an incompatible live owner");
     await writeRegistration(registration);
     await writeFile(paths.lockPath, `${process.pid}\n`, { mode: 0o600 });
     const agents = new DesktopAgentManager(state, projects, configStore, () => undefined);

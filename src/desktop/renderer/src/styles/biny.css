@@ -6642,7 +6642,7 @@ button.capability-check[aria-checked="true"] {
 
 .biny-project-create-dialog input:focus-visible {
   border-color: var(--biny-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--biny-accent) 20%, transparent);
+  box-shadow: none;
 }
 
 .biny-project-create-hint { margin: -10px 0 0; }
@@ -6665,7 +6665,7 @@ button.capability-check[aria-checked="true"] {
 
 .biny-project-create-dialog footer button.is-primary {
   border-color: transparent;
-  color: var(--biny-on-accent, #fff);
+  color: var(--accent-foreground);
   background: var(--biny-accent);
 }
 
@@ -10638,7 +10638,7 @@ button.capability-check[aria-checked="true"] {
 .tool-optimization-note { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 
 .tool-optimization-page { display: flex; flex-direction: column; gap: 24px; container-type: inline-size; }
-.tool-optimization-page .savings-card { display: flex; flex-direction: column; gap: 24px; padding: 24px 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: 0 1px 2px rgb(0 0 0 / 5%); }
+.tool-optimization-page .savings-card { display: flex; flex-direction: column; gap: 24px; padding: 24px 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: 0 1px 2px var(--savings-card-shadow); }
 .savings-card > header, .savings-card-content { padding: 0 24px; min-width: 0; }
 .tool-optimization-page .savings-card h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; font-weight: 600; line-height: 1; }
 .savings-card > header p { margin: 6px 0 0; color: var(--text-secondary); font-size: 14px; line-height: 1.5; }
@@ -10656,18 +10656,18 @@ button.capability-check[aria-checked="true"] {
 .savings-gauge > div { display: flex; flex-direction: column; align-items: center; margin-top: -48px; }
 .savings-gauge strong { font-size: 30px; line-height: 36px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .savings-gauge span { color: var(--text-secondary); font-size: 12px; line-height: 16px; }
-.savings-emerald { color: #10b981; }
-.savings-cyan { color: #06b6d4; }
-.savings-blue { color: #3b82f6; }
-.savings-violet { color: #8b5cf6; }
-.savings-fuchsia { color: #d946ef; }
-.savings-amber { color: #f59e0b; }
-.savings-rose { color: #f43f5e; }
-.savings-teal { color: #14b8a6; }
+.savings-emerald { color: var(--savings-emerald); }
+.savings-cyan { color: var(--savings-cyan); }
+.savings-blue { color: var(--savings-blue); }
+.savings-violet { color: var(--savings-violet); }
+.savings-fuchsia { color: var(--savings-fuchsia); }
+.savings-amber { color: var(--savings-amber); }
+.savings-rose { color: var(--savings-rose); }
+.savings-teal { color: var(--savings-teal); }
 .savings-daily-chart { height: 160px; display: flex; align-items: flex-end; gap: 1px; position: relative; }
 .savings-column { flex: 1; position: relative; background: color-mix(in srgb, currentColor 70%, transparent); border-radius: 4px 4px 0 0; transition: background 150ms; min-width: 0; }
 .savings-column:hover, .savings-column:focus-visible { background: currentColor; z-index: 1; }
-.savings-tooltip { display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: max-content; max-width: 240px; padding: 6px 10px; border-radius: 6px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); font-size: 12px; box-shadow: 0 2px 8px rgb(0 0 0 / 10%); pointer-events: none; }
+.savings-tooltip { display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: max-content; max-width: 240px; padding: 6px 10px; border-radius: 6px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); font-size: 12px; box-shadow: 0 2px 8px var(--savings-tooltip-shadow); pointer-events: none; }
 .savings-column:first-child .savings-tooltip { left: 0; transform: none; }
 .savings-column:last-child:not(:first-child) .savings-tooltip { left: auto; right: 0; transform: none; }
 .savings-column:hover .savings-tooltip, .savings-column:focus-visible .savings-tooltip { display: block; }

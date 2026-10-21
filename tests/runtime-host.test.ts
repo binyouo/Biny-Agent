@@ -6,6 +6,7 @@ import { promises as fs } from "node:fs";
 import { mkdtemp, readFile, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
 import type { AgentRuntimeUpdate, InteractiveRuntimeSnapshot } from "../src/runtime/agentEvents.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import type { MemorySleepPreview } from "../src/agent/context/memoryTypes.js";
@@ -851,6 +852,7 @@ async function main(): Promise<void> {
   };
   await fs.writeFile(hostPaths.registrationPath, JSON.stringify(incompatibleRegistration), { mode: 0o600 });
   await fs.chmod(hostPaths.registrationPath, 0o600);
+  assert.notEqual(incompatibleRegistration.protocolVersion, runtimeHostProtocolVersion, "fixture must represent an incompatible live owner");
   await assert.rejects(
     connectRuntimeHost(workspace, { clientId: "incompatible-client", surface: "tui" }),
     /protocol 2 is incompatible with 16/u

@@ -18,6 +18,9 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
   const server = new McpServer(
     { name: "computer-use", version: "1.0.0" },
     {
+      // Bound SDK validation before Zod allocates per-element errors. Even a
+      // five-step sequence with every declared field uses at most 130 elements.
+      maxToolInputElements: 256,
       instructions:
         "通过 Biny 操作 macOS 原生应用。先观察准确窗口，再使用该次观察中的控件引用或截图坐标。\n" +
         "优先使用无障碍控件；输入默认后台投递，不自动升级到前台。每次输入消费观察凭据，" +
