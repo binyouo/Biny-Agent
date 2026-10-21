@@ -955,6 +955,12 @@ export class ActivityRecorderService {
         return;
       }
       if (message.eventType === "keypress") {
+        // stop 已占用 operation queue；尾部按键与其它输入一起在旧 session 内结算，
+        // 不能排到 stop/restart 之后再创建 session、聚合按键或启动计时器。
+        if (this.inputMonitorStopping) {
+          this.bufferedInputMessages.push(message);
+          return;
+        }
         this.lastInputAt = Date.parse(message.occurredAt);
         void this.enqueue(async () => { this.ensureSession(message.occurredAt); this.touchSession(); });
         this.pendingKey = { ...message, inputEventFirstAt: this.pendingKey?.inputEventFirstAt ?? message.occurredAt,
