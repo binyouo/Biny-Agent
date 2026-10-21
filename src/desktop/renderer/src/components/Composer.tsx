@@ -466,15 +466,26 @@ export const Composer = memo(function Composer({
       }));
       setPendingAttachments((current) => [...current, ...uploadItems.map((item) => item.pending)]);
       const results = await Promise.all(uploadItems.map(async ({ file, pending }) => {
+        let unsubscribe = (): void => {};
         try {
-          const saved = await onSaveAttachment(file);
-          if (!draftState.getSnapshot().pendingAttachments.some((item) => item.id === pending.id)) return { pending };
+          // 移除附件只结束此草稿的等待；底层保存可继续，但不能占住下一次操作。
+          const canceled = new Promise<undefined>((resolve) => {
+            const checkCanceled = (): void => {
+              if (!draftState.getSnapshot().pendingAttachments.some((item) => item.id === pending.id)) resolve(undefined);
+            };
+            unsubscribe = draftState.subscribe(checkCanceled);
+            checkCanceled();
+          });
+          const saved = await Promise.race([onSaveAttachment(file), canceled]);
+          if (!saved || !draftState.getSnapshot().pendingAttachments.some((item) => item.id === pending.id)) return { pending };
           return { pending, saved };
         } catch (uploadError) {
           if (!draftState.getSnapshot().pendingAttachments.some((item) => item.id === pending.id)) return { pending };
           const message = errorMessage(uploadError);
           setPendingAttachments((current) => current.map((item) => item.id === pending.id ? { ...item, error: message, status: "error" } : item));
           return { error: message, pending };
+        } finally {
+          unsubscribe();
         }
       }));
       const activeResults = results.filter((result) => draftState.getSnapshot().pendingAttachments.some((item) => item.id === result.pending.id));
