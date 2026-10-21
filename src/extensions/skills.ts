@@ -659,7 +659,13 @@ function firstDescriptiveLine(body: string): string | undefined {
 }
 
 function truncateChars(value: string, maxChars: number): string {
-  return value.length <= maxChars ? value : `${value.slice(0, maxChars - 1)}…`;
+  if (value.length <= maxChars) return value;
+  let end = maxChars - 1;
+  // Keep the UTF-16 budget, but never split an existing valid surrogate pair.
+  const previous = value.charCodeAt(end - 1);
+  const next = value.charCodeAt(end);
+  if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+  return `${value.slice(0, end)}…`;
 }
 
 interface SkillResourceEntry {
