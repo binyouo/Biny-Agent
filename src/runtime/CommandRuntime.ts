@@ -545,8 +545,9 @@ async function initializeCommandRuntime(
       }
     },
     readTaskResult: async (input, context) => {
-      const task = await taskCommunication.wait(input.taskRunId, input.waitMs, input.afterRevision, context.signal);
-      return { ...taskRunToolResult(task), messages: taskCommunication.messages(input.taskRunId).slice(-4).map((message) => ({ ...message, content: message.content.slice(0, 1000) })) };
+      const sessionId = context.sessionId ?? recorder.sessionId;
+      const task = await taskCommunication.wait(input.taskRunId, input.waitMs, input.afterRevision, context.signal, sessionId);
+      return { ...taskRunToolResult(task), messages: taskCommunication.messages(input.taskRunId, sessionId).slice(-4).map((message) => ({ ...message, content: message.content.slice(0, 1000) })) };
     }
   };
   const subagentTaskManager = config.extensions.subagent.enabled
