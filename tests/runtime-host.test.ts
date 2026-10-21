@@ -1,3 +1,4 @@
+import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
@@ -892,9 +893,10 @@ async function main(): Promise<void> {
   };
   await fs.writeFile(hostPaths.registrationPath, JSON.stringify(incompatibleRegistration), { mode: 0o600 });
   await fs.chmod(hostPaths.registrationPath, 0o600);
+  assert.notEqual(incompatibleRegistration.protocolVersion, runtimeHostProtocolVersion, "fixture must represent an incompatible live owner");
   await assert.rejects(
     connectRuntimeHost(workspace, { clientId: "incompatible-client", surface: "tui" }),
-    /protocol 2 is incompatible with 11/u
+    new RegExp(`protocol 2 is incompatible with ${runtimeHostProtocolVersion}`, "u")
   );
   assert.deepEqual(JSON.parse(await readFile(hostPaths.registrationPath, "utf8")), incompatibleRegistration);
   await fs.rm(hostPaths.registrationPath);

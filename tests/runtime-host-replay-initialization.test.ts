@@ -108,6 +108,7 @@ async function replayWindow(sequences: number[] | undefined, count: number, gate
       "resource readiness updates cannot append provisional sequences while journal recovery is in flight");
     release.resolve();
     await Promise.all([starting, alsoStarting]);
+    assert.equal(f.server.info.protocolRevision, runtimeHostProtocolVersion, "startup recovery retains the current connection protocol");
     assert.equal(initializationCount, 1, "concurrent initialize calls cannot load and splice history twice");
     const highWater = sequences?.at(-1) ?? 0;
     const finalSequence = highWater + count;
@@ -250,7 +251,6 @@ try {
   await replayWindow([Number.MAX_SAFE_INTEGER - 2], 1, false);
   await closeDrainsRebasedJournal();
   for (const mode of ["read", "close", "exhausted", "overflow"] as const) await initializationFailure(mode);
-  assert.equal(runtimeHostProtocolVersion, 11, "startup recovery retains the current connection protocol");
 } finally {
   if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
   else process.env.BINY_AGENT_DIR = previousAgentDir;

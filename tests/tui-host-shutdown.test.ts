@@ -88,7 +88,7 @@ async function fixture(t: TestContext, options: { stallOwner?: boolean; shared?:
   // dependencies and the synthetic owner runtime are needed by its close path.
   const host: RuntimeHostServer = Object.assign(Object.create(RuntimeHostServer.prototype) as RuntimeHostServer, {
     registration, lock, admission: { beginDrain: () => undefined }, businessComposition: { stop: () => undefined }, registry,
-    sessionWriterOwners: new Map(), sessionGoalOwners: new Map(), shutdownDrainMs: 10,
+    sessionWriterOwners: new Map(), sessionGoalOwners: new Map(), pendingOwnerNotifications: new Map(), shutdownDrainMs: 10,
     conversationMirror: { close: async () => undefined },
     resourceRegistry: { close: async () => { if (options.resourceFailure) throw options.resourceFailure; } },
     connections: new Set([{ socket }]), listening: false, journal: { close: async () => undefined }
@@ -184,12 +184,25 @@ test("client cleanup keeps its existing one-second socket-close deadline after H
 
 test("successful owned Host cleanup still closes both Host and client once", async t => {
   const f = await fixture(t);
+  const rejectedNotifications: Error[] = [];
+  f.host["pendingOwnerNotifications"].set("pending-notification", {
+    connection: [...f.host["connections"]][0]!,
+    resolve: () => assert.fail("shutdown must not acknowledge undelivered notification"),
+    reject: (error) => { rejectedNotifications.push(error); },
+    timeout: setTimeout(() => assert.fail("notification timer must be cleared by shutdown"), 60_000)
+  });
   await f.app.exit();
   await f.running;
   assert.equal(f.hostClose.mock.callCount(), 1);
   assert.equal(f.ownerClose.mock.callCount(), 1);
   assert.equal(f.lockClose.mock.callCount(), 1);
+  assert.equal(f.host["pendingOwnerNotifications"].size, 0);
+  assert.equal(rejectedNotifications.length, 1);
+  assert.match(rejectedNotifications[0]!.message, /Runtime Host is shutting down/u);
   assertClientDisposed(f);
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(rejectedNotifications.length, 1, "no late notification timeout or duplicate reply");
 });
 
 test("shared Host attachment closes only the TUI client", async t => {
