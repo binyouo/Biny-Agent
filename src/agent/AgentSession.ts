@@ -4506,6 +4506,11 @@ export class AgentSession {
     });
   }
 
+  /** 已完成回合的记忆写入仍在进行时，Host 不能把会话视为空闲进程。 */
+  hasPendingMemoryWork(): boolean {
+    return this.pendingMemoryTasks.size > 0;
+  }
+
   async close(): Promise<void> {
     await this.acpClient?.close();
     await this.sessionSearchIndex.close();
