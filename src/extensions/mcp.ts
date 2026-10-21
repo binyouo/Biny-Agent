@@ -331,8 +331,8 @@ export class McpToolHost {
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
     try {
       onDispatched?.();
-      const result = await this.requestWithCredentials(managed, () =>
-        client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, this.requestOptions(managed, signal)));
+      const result = await this.requestWithCredentials(managed, (options) =>
+        client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, options), signal);
       return rawResult ? result : normalizeMcpResult(result);
     } catch (error) {
       if (signal?.aborted || !isConnectionError(error)) throw error;
@@ -368,7 +368,7 @@ export class McpToolHost {
       try {
         let cursor: string | undefined;
         for (let page = 0; page < maxResourceListPages; page += 1) {
-          const listed = await this.requestWithCredentials(managed, () => client.listResources(cursor === undefined ? undefined : { cursor }, this.requestOptions(managed, signal)));
+          const listed = await this.requestWithCredentials(managed, (options) => client.listResources(cursor === undefined ? undefined : { cursor }, options), signal);
           signal?.throwIfAborted();
           for (const resource of listed.resources) {
             resources.push({
@@ -397,7 +397,7 @@ export class McpToolHost {
     signal?.throwIfAborted();
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
-    const result = await this.requestWithCredentials(managed, () => client.readResource({ uri }, this.requestOptions(managed, signal)));
+    const result = await this.requestWithCredentials(managed, (options) => client.readResource({ uri }, options), signal);
     return {
       server: serverName,
       uri,
@@ -424,7 +424,7 @@ export class McpToolHost {
         let cursor: string | undefined;
         const seen = new Set<string>();
         for (let page = 0; page < maxResourceListPages; page += 1) {
-          const result = await this.requestWithCredentials(managed, () => client.listPrompts({ cursor }, this.requestOptions(managed, signal)));
+          const result = await this.requestWithCredentials(managed, (options) => client.listPrompts({ cursor }, options), signal);
           prompts.push(...result.prompts.slice(0, 128 - prompts.length));
           cursor = result.nextCursor;
           if (!cursor || seen.has(cursor) || prompts.length >= 128) break;
@@ -446,7 +446,7 @@ export class McpToolHost {
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected.`);
     // 模板通过普通工具结果返回，不提升为 system 消息，也不自动执行其中的操作。
-    const result = await this.requestWithCredentials(managed, () => client.getPrompt({ name, arguments: args }, this.requestOptions(managed, signal)));
+    const result = await this.requestWithCredentials(managed, (options) => client.getPrompt({ name, arguments: args }, options), signal);
     let remaining = maxResourceTextBytes;
     let textClipped = false;
     const bounded = (text: string): string => {
@@ -509,11 +509,23 @@ export class McpToolHost {
     return managed;
   }
 
-  private async requestWithCredentials<T>(managed: ManagedMcpServer, request: () => Promise<T>): Promise<T> {
+  private async requestWithCredentials<T>(managed: ManagedMcpServer, request: (options: RequestOptions) => Promise<T>, signal?: AbortSignal): Promise<T> {
     const authProvider = managed.authProvider;
     const credentials = [...mcpCredentialValues(managed.config), ...await authProvider?.credentialValues() ?? []];
     try {
-      const result = await request();
+      signal?.throwIfAborted();
+      // SDK retains its request abort listener after settlement. Give each RPC its
+      // own signal, so completed calls cannot retain or react to the caller's signal.
+      const controller = signal ? new AbortController() : undefined;
+      const abort = (): void => controller?.abort(signal?.reason);
+      signal?.addEventListener("abort", abort, { once: true });
+      let result: T;
+      try {
+        result = await request(this.requestOptions(managed, controller?.signal));
+      } finally {
+        // Do not abort on cleanup: that would cancel an already completed request.
+        signal?.removeEventListener("abort", abort);
+      }
       // 刷新令牌后响应可能同时回显旧值与新值；在途请求始终使用自己的 provider。
       credentials.push(...await authProvider?.credentialValues() ?? []);
       return scrubMcpCredentials(result, credentials) as T;
