@@ -1039,10 +1039,21 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, mergeProjectSnapshot, toggleSessionPinned]);
 
   const importSessionIntoProject = useCallback(async (projectId: string): Promise<void> => {
+    let request = ++loadRequestRef.current;
+    setPendingNavigation(undefined);
+    setLoading(false);
     try {
-      if (projectRef.current !== projectId) await adoptWorkspace(await window.biny.selectProject(projectId));
-      openSettings("导入");
-    } catch (error) { setWarning(errorMessage(error)); }
+      if (projectRef.current !== projectId) {
+        const snapshot = await window.biny.selectProject(projectId);
+        if (loadRequestRef.current !== request) return;
+        // 提交使用新请求号，隔离等待期间旧工作区发出的发送与命令回执。
+        request = ++loadRequestRef.current;
+        if (!await adoptWorkspace(snapshot, undefined, request)) return;
+      }
+      if (loadRequestRef.current === request) openSettings("导入");
+    } catch (error) {
+      if (loadRequestRef.current === request) setWarning(errorMessage(error));
+    }
   }, [adoptWorkspace, openSettings]);
 
   useEffect(() => {
