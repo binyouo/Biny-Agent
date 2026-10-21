@@ -26,7 +26,7 @@ const allowedCalls = new Set([
   "signal?.throwIfAborted", "this.requireServer", "waitForMcpReconnect", "this.reconnect",
   "this.requestWithCredentials", "client.getPrompt", "this.requestOptions", "truncateUtf8",
   "Math.max", "Math.min", "Math.floor", "Buffer.byteLength", "bounded", "result.messages.slice",
-  "result.messages.slice(0, 32).map", "value.slice"
+  "result.messages.slice(0, 32).map", "value.slice", "value.charCodeAt"
 ]);
 const guard = (node: ts.Node): void => {
   assert.ok(!ts.isImportDeclaration(node) && !ts.isImportEqualsDeclaration(node)
@@ -143,9 +143,9 @@ test("exact occupancy, ASCII overflow and the message cap retain existing flags"
   await check("33 messages", { messages: [...messages, text("omitted")] }, { messages }, true);
 });
 
-test("clipping state is per invocation and existing UTF-16 prefixes stay unchanged", async () => {
+test("clipping state is per invocation and valid surrogate pairs stay intact", async () => {
   await check("split surrogate", { description: "a".repeat(65_533), messages: [text("😀")] },
-    { description: "a".repeat(65_533), messages: [text("\ud83d")] }, true);
+    { description: "a".repeat(65_533), messages: [text("")] }, true);
   await check("short after clipped", { messages: [text("short", "assistant")] }, { messages: [text("short", "assistant")] }, false);
   await check("empty", { description: "", messages: [] }, { messages: [] }, false);
 });

@@ -1301,7 +1301,7 @@ function freezeMcpToolMetadata(tool: Tool): Tool {
 function truncateUtf8(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
   let end = Math.min(value.length, maxBytes);
-  // Keep the ASCII-prefix fast path; search UTF-16 indices to preserve existing output.
+  // Keep the ASCII-prefix fast path; search UTF-16 indices within the byte budget.
   if (Buffer.byteLength(value.slice(0, end), "utf8") <= maxBytes) return value.slice(0, end);
   let start = 0;
   while (start + 1 < end) {
@@ -1309,6 +1309,10 @@ function truncateUtf8(value: string, maxBytes: number): string {
     if (Buffer.byteLength(value.slice(0, middle), "utf8") <= maxBytes) start = middle;
     else end = middle;
   }
+  // Never create an unpaired surrogate by cutting an otherwise valid pair.
+  const previous = value.charCodeAt(start - 1);
+  const current = value.charCodeAt(start);
+  if (previous >= 0xd800 && previous <= 0xdbff && current >= 0xdc00 && current <= 0xdfff) start -= 1;
   return value.slice(0, start);
 }
 
