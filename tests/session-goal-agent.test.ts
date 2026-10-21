@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import { createRunCommandTool } from "../src/tools/shell/runCommand.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -23,7 +25,7 @@ try {
   const goals = await SessionGoalStore.open(root, authority);
   goals.set("session-agent", objective);
   let captured: ModelStreamContext | undefined;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "goal-agent", supportsTools: true,
     async stream(context) {
       captured = context;
@@ -32,12 +34,12 @@ try {
         yield { type: "finish" as const, reason: "stop" as const, usage: { inputTokens: 2, cacheReadTokens: 0, outputTokens: 1 } };
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     context: {
       ...defaultConfig.context,
-      emotion: { ...defaultConfig.context.emotion, enabled: false },
+
       identity: { ...defaultConfig.context.identity, enabled: false },
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
     }
@@ -71,7 +73,7 @@ for (const scenario of ["complete", "edited", "unknown-budget", "code-mode", "cr
   const registry = new ToolRegistry();
   let calls = 0;
   const requestGoals: string[] = [];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "goal-controls", supportsTools: true,
     async stream(context) {
       calls += 1;
@@ -90,13 +92,13 @@ for (const scenario of ["complete", "edited", "unknown-budget", "code-mode", "cr
         }
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     agent: { ...defaultConfig.agent, toolExecutionMode: scenario === "code-mode" ? "code_mode" : "direct" },
     context: {
       ...defaultConfig.context,
-      emotion: { ...defaultConfig.context.emotion, enabled: false },
+
       identity: { ...defaultConfig.context.identity, enabled: false },
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
     }
@@ -152,7 +154,7 @@ for (const scenario of ["complete", "edited", "unknown-budget", "code-mode", "cr
     "## All User Messages", "- Perform the work. <!-- evidence:m0 -->",
     "## Next Steps", "1. Continue. <!-- evidence:m0 -->", "## Critical Context", "- (none recorded)"
   ].join("\n");
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "goal-compaction", supportsTools: true,
     async stream(context) {
       const compacting = context.tools.length === 0;
@@ -163,11 +165,11 @@ for (const scenario of ["complete", "edited", "unknown-budget", "code-mode", "cr
         yield { type: "finish" as const, reason: "stop" as const, usage: { inputTokens: compacting ? 6 : 10, cacheReadTokens: compacting ? 2 : 4, outputTokens: compacting ? 1 : 2 } };
       })();
     }
-  };
+  });
   const config = configSchema.parse({ ...defaultConfig, context: {
     ...defaultConfig.context, maxInputTokens: 32_768,
     compaction: { ...defaultConfig.context.compaction, keepRecentMessages: 2, keepRecentTokens: 1_000, maxSummaryTokens: 2_048 },
-    emotion: { ...defaultConfig.context.emotion, enabled: false }, identity: { ...defaultConfig.context.identity, enabled: false },
+     identity: { ...defaultConfig.context.identity, enabled: false },
     memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
   } });
   const registry = new ToolRegistry();

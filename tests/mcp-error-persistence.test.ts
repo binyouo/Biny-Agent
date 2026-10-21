@@ -97,7 +97,7 @@ for (const scenario of [
       });
       await host.connectConfiguredServers(root, config, registry);
       if (scenario.ledger) {
-        authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+        authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
         capabilities = await CapabilityStore.open(root, authority);
       }
       const emitted: Array<AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>> = [];

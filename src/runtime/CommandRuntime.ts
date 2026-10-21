@@ -29,7 +29,7 @@ import { TodoStore } from "../session/todoStore.js";
 import { CheckpointStore } from "../session/checkpointStore.js";
 import { PermissionManager } from "../permission/PermissionManager.js";
 import { createSkillResourceTool, createSkillTool, type SkillBundle, type SkillDefinition } from "../extensions/skills.js";
-import { loadedSkillNamesForSelection, skillPathsForSelection, skillPromptForSelection } from "../extensions/skills.js";
+import { skillPathsForSelection, skillPromptForSelection } from "../extensions/skills.js";
 import type { Tool, ToolRisk, ToolSource } from "../tools/types.js";
 import { perfNow, recordPerfPhase } from "../observability/perfTiming.js";
 import { loadPlugins, loadPluginsFromRoot } from "../extensions/plugins.js";
@@ -56,12 +56,11 @@ import { modelReasoningConfig } from "../ai/capabilities.js";
 import { attachmentRoot, ensureAttachmentRoot } from "../attachments/store.js";
 import { AiRegistry } from "../llm/AiRegistry.js";
 import { RuntimeEventAuthority } from "./RuntimeAuthority.js";
-import { DurableTaskRunStore, isTaskRunTerminal, isLegacyWorkerOwnerBoundary, type TaskRetrySafety, type TaskRunWithAttempts } from "./TaskRunStore.js";
+import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "./TaskRunStore.js";
 import { evaluateTaskRetry } from "./TaskRetryPolicy.js";
 import { readWorkerAttemptCheckpoint, runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
 import { isSessionWriterConflictError } from "./SessionLease.js";
 import { readWorkerSessionCheckpoint } from "./WorkerSession.js";
-import { readLegacyWorkerOwner } from "./legacyWorkerOwner.js";
 import { AutomationStore } from "./AutomationScheduler.js";
 import { GoalGraphStore } from "./GoalGraphStore.js";
 import { SessionGoalStore } from "./SessionGoalStore.js";
@@ -122,8 +121,8 @@ export interface CommandRuntime {
   listSkills(): SkillDefinition[];
   /** 供下一回合能力选择使用的实时工具目录，不修改活动回合的执行注册表。 */
   listTools(): RuntimeToolCatalogEntry[];
-  /** 每个新根回合前重新扫描 Skill，使新增和元数据修改无需重启即可生效。 */
-  refreshSkills(): Promise<void>;
+  /** 按目录缓存有效期刷新 Skill；显式强制刷新使文件修改立即生效。 */
+  refreshSkills(force?: boolean): Promise<void>;
   /** 刷新共享 MCP/Skill 代理；回合开始前调用，避免活动回合看到半套工具。 */
   refreshExtensionTools?(): void;
   /** Desktop 客户端能力可在 Host 生命周期内挂载或撤销。 */
@@ -137,7 +136,7 @@ export interface CommandRuntime {
   /** 实时重新扫描具名子代理定义（会话期间可编辑生效）。 */
   listSubagentAgents(): Promise<SubagentDefinition[]>;
   startSubagentTask(task: string, options?: SubagentTaskRunOptions): SubmittedSubagentTask;
-  /** Host、Desktop fallback 与模型可见 Task 共用的唯一 TaskRun 派发入口。 */
+  /** Host 与模型可见 Task 共用的唯一 TaskRun 派发入口。 */
   startTaskRun(taskRunId: string, options?: { retrySafety?: TaskRetrySafety }): Promise<{
     task: TaskRunWithAttempts;
     completion: Promise<TaskClosureResult>;
@@ -148,9 +147,7 @@ export interface CommandRuntime {
     completion: Promise<TaskClosureResult>;
   }>;
   continueTaskRun(taskRunId: string, message: string, requestId?: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
-  canResumeWorkerTask?(taskRunId: string): Promise<boolean>;
-  /** Read-only routing evidence; only explicit resume may persist a missing owner. */
-  legacyWorkerOwner?(taskRunId: string): Promise<string>;
+  canResumeWorkerTask(taskRunId: string): Promise<boolean>;
   /** Exact validated resume admission, before its durable owner can be reconciled. */
   pendingTaskResume?(taskRunId: string): { attemptId: string; sessionId: string } | undefined;
   /** 一次性主任务通过同一份 TaskRun 验收闭环执行，不把回合完成当作产物已验证。 */
@@ -611,8 +608,8 @@ async function initializeCommandRuntime(
   // Desktop Host 的 MCP/Skill 启动在后台进行；私有 CLI/TUI runtime 仍在这里等待首个稳定快照。
   if (resourceBoot === "blocking") await resourceStart;
   skills = resourceScope.skills;
-  toolRegistry.registerUserTool(createSkillTool(currentSkillBundle, async () => {
-    await refreshSkills(true);
+  toolRegistry.registerUserTool(createSkillTool(currentSkillBundle, async (force) => {
+    await refreshSkills(force);
     // 显式激活更新本回合的技能元数据，后续资源读取也能定位刚安装的技能。
     if (subagentParentRunId !== undefined) runSkillSnapshots.set(subagentParentRunId, structuredClone(requireSkillBundle(skills)));
   }));
@@ -701,7 +698,6 @@ async function initializeCommandRuntime(
     permissionManager,
     recorder,
     skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
-    skillNames: (selection, runId) => loadedSkillNamesForSelection(skillsForRun(runId), selection),
     extractSkill: async ({ messageId, events, minToolCalls, onNotice, onAnalyzed }) => await runSkillExtraction({
       messageId,
       events,
@@ -761,7 +757,6 @@ async function initializeCommandRuntime(
     permissionManager,
     recorder: heartbeatRecorder,
     skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
-    skillNames: (selection, runId) => loadedSkillNamesForSelection(skillsForRun(runId), selection),
     subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
     skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
     selectCapabilities: async (input, runId) => await preselectCapabilities({
@@ -1079,8 +1074,7 @@ async function initializeCommandRuntime(
     const admittedQueuedContinuation = task.status === "queued"
       && hasSafeQueuedTaskContinuation(task, latestEvent);
     const parkedWorker = task.status === "blocked" && (latest?.failure as { failureClass?: string } | undefined)?.failureClass === "worker_interrupted";
-    const legacyWorker = isLegacyWorkerOwnerBoundary(task);
-    if ((task.status === "running" || parkedWorker || legacyWorker) && latest && config.extensions.subagent.enabled) {
+    if ((task.status === "running" || parkedWorker) && latest && config.extensions.subagent.enabled) {
       const checkpoint = readWorkerAttemptCheckpoint(latest.artifacts);
       if (checkpoint) {
         const controller = new AbortController();
@@ -1089,19 +1083,15 @@ async function initializeCommandRuntime(
           let prepared: PreparedSubagentTask | undefined;
           try {
             controller.signal.throwIfAborted();
-            const legacyOwner = task.sessionId === undefined
-              ? await readLegacyWorkerOwner(persistenceRoot, task, runtimeAuthority, workspaceRoot) : undefined;
-            if (legacyOwner && legacyOwner.sessionId !== agent.getInfo().sessionId) {
-              throw new Error(`Legacy Worker belongs to session ${legacyOwner.sessionId}; resume it through that session.`);
-            }
+            if (!task.sessionId) throw new Error("Worker task has no persisted session owner.");
             controller.signal.throwIfAborted();
             if (durableTaskControllers.has(taskRunId)) throw new Error("TaskRun acquired another execution during resume admission.");
             // Reuse the closure's cancellation controller across preparation and dispatch.
-            pending.sessionId = legacyOwner?.sessionId ?? task.sessionId;
+            pending.sessionId = task.sessionId;
             durableTaskControllers.set(taskRunId, controller);
             prepared = await prepareSubagentTask(subagentOptions, checkpoint.prompt,
               definition.review || definition.reportOnly || subagentAccessMode(permissionManager) === "read-only" ? "read-only" : checkpoint.accessMode ?? "workspace", definition.agent ?? checkpoint.agent, {
-                persistenceRoot, taskId: latest.attemptId, parentSessionId: legacyOwner?.sessionId ?? task.sessionId,
+                persistenceRoot, taskId: latest.attemptId, parentSessionId: task.sessionId,
                 resume: true, runtimeEventSink: { appendSessionEvent: (event) => {
                   runtimeAuthority.appendSessionEvent(event);
                   taskCommunication.notify(taskRunId);
@@ -1111,13 +1101,7 @@ async function initializeCommandRuntime(
             controller.signal.throwIfAborted();
             const current = taskRuns.get(taskRunId);
             if (current?.status !== task.status || current.revision !== task.revision || current.attempts.at(-1)?.attemptId !== latest.attemptId) throw new Error("Worker Attempt changed during continuation admission.");
-            // The prepared Worker holds its lease; revalidate facts that preparation does not itself compare.
-            const heldProof = legacyOwner ? await readLegacyWorkerOwner(persistenceRoot, task, runtimeAuthority, workspaceRoot) : undefined;
-            controller.signal.throwIfAborted();
-            if (heldProof && heldProof.sessionId !== legacyOwner?.sessionId) throw new Error("Legacy Worker owner changed during preparation.");
-            if (heldProof?.completionDigest !== legacyOwner?.completionDigest) throw new Error("Legacy Worker completion evidence changed during preparation.");
-            if (heldProof) taskRuns.reconcileWorkerOwner(heldProof);
-            else if (parkedWorker) taskRuns.resumeWorkerAttempt(taskRunId, latest.attemptId, task.revision);
+            if (parkedWorker) taskRuns.resumeWorkerAttempt(taskRunId, latest.attemptId, task.revision);
             controller.signal.throwIfAborted();
             assertTaskOwner(taskRuns.get(taskRunId));
             const submitted = await dispatchTaskRun(taskRunId, {}, prepared);
@@ -1275,7 +1259,8 @@ async function initializeCommandRuntime(
   runTaskWithVerification = async (input) => {
     const attemptSignal = input.attemptSignal ?? input.signal;
     const task = taskRuns.create({
-      task: { prompt: input.prompt, verification: input.verification }
+      task: { prompt: input.prompt, verification: input.verification },
+      sessionId: agent.getInfo().sessionId
     });
     let turnOutcome: AgentTurnOutcome | undefined;
     try {
@@ -1428,21 +1413,13 @@ async function initializeCommandRuntime(
         || taskRuns.get(taskRunId)?.attempts.at(-1)?.attemptId !== pending.attemptId) return undefined;
       return { attemptId: pending.attemptId, sessionId: pending.sessionId };
     },
-    async legacyWorkerOwner(taskRunId) {
-      const task = taskRuns.get(taskRunId);
-      if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-      return (await readLegacyWorkerOwner(persistenceRoot, task, runtimeAuthority)).sessionId;
-    },
     async canResumeWorkerTask(taskRunId) {
       const task = taskRuns.get(taskRunId);
       const attempt = task?.attempts.at(-1);
       const admission = readWorkerAttemptCheckpoint(attempt?.artifacts);
       if (!task || !attempt || !admission) return false;
       try {
-        if (task.sessionId === undefined) {
-          await readLegacyWorkerOwner(persistenceRoot, task, runtimeAuthority);
-          return true;
-        }
+        if (task.sessionId === undefined) return false;
         const { checkpoint, facts } = await readWorkerSessionCheckpoint(persistenceRoot, attempt.attemptId);
         return checkpoint.prompt === admission.prompt && facts.parentSessionId === task.sessionId;
       } catch { return false; }
@@ -1450,6 +1427,7 @@ async function initializeCommandRuntime(
     runTaskWithVerification,
     cancelTaskRun,
     async sessionCommand(command, input, scope, revision, signal, onEvent) {
+      const directToolCall = command === "ToolCall";
       const currentRecorder = agent.getSessionRecorder();
       const sessionId = currentRecorder.sessionId;
       const lease = scope === undefined ? undefined : commandScopes.get(scope);
@@ -1457,20 +1435,28 @@ async function initializeCommandRuntime(
         throw new Error("Session command context expired or belongs to another run.");
       }
       if (typeof input !== "object" || input === null || Array.isArray(input)) throw new Error("Session command input must be an object.");
-      const args = input as Record<string, unknown>;
       if (lease?.supervision && command !== "PlanStatus" && command !== "PlanUpdate") throw new Error("Plan supervision allows only plan status and plan update.");
+      if (directToolCall) {
+        const call = input as { name?: unknown; input?: unknown };
+        if (typeof call.name !== "string") throw new Error("Tool call requires a tool name.");
+        command = call.name;
+        input = call.input;
+        if (typeof input !== "object" || input === null || Array.isArray(input)) throw new Error("Tool arguments must be an object.");
+        if (!lease) refreshExtensionTools();
+      }
+      const args = input as Record<string, unknown>;
       const context = lease?.context;
       const combinedSignal = AbortSignal.any([signal, context?.signal, lease?.controller.signal].filter((value): value is AbortSignal => value !== undefined));
       combinedSignal.throwIfAborted();
       if (command === "TodoShow") return { sessionId, todos: todos.list() };
       if (command === "GoalUpdate" && !lease) throw new Error("Goal completion requires the current foreground model command context.");
       if (command === "AskUserQuestion" && !lease) throw new Error("Asking requires the current foreground model command context.");
-      const registry = new ToolRegistry();
-      const tool = command === "GoalGet" || command === "GoalUpdate"
+      const registry = directToolCall ? toolRegistry : new ToolRegistry();
+      const tool = directToolCall ? toolRegistry.list().find(entry => entry.name === command) : command === "GoalGet" || command === "GoalUpdate"
         ? createSessionGoalTools(sessionGoals, () => sessionId, () => lease?.goal).find(entry => entry.name === command)
         : (command === "AskUserQuestion" ? toolRegistry : managementTools).list().find(entry => entry.name === command);
       if (!tool) throw new Error(`Unknown session command: ${command}`);
-      registry.register(tool, tool.source ?? "builtin");
+      if (!directToolCall) registry.register(tool, tool.source ?? "builtin");
       const runId = context?.runId ?? `cli:${randomUUID()}`;
       if (command === "PlanUpdate" && !lease) {
         const graphId = (input as { graphId?: unknown })?.graphId;
@@ -1487,14 +1473,20 @@ async function initializeCommandRuntime(
         workspaceRoot, config: { ...config, agent: { ...config.agent, toolExecutionMode: "direct" } },
         recorder: currentRecorder, toolRegistry: registry, permissionManager, runId,
         confirmPermission: async request => ({ approved: !request.requireFullYes, action: "allow_once", scope: "once" })
-      }, permissionManager, onEvent ?? (() => undefined), () => ({}), new Set([command]), { maxToolCalls: 1, maxRepeatedActions: 1 });
+      }, permissionManager, onEvent ?? (() => undefined), () => ({}), new Set([command]), directToolCall ? undefined : { maxToolCalls: 1, maxRepeatedActions: 1 });
       const executable = coordinator.createAgentTools().find(entry => entry.name === command);
       if (!executable) throw new Error(`Session command is unavailable: ${command}`);
-      const result = await executable.execute(randomUUID(), args, combinedSignal);
-      await coordinator.waitForIdle();
-      await currentRecorder.flush();
-      if (result.isError) throw new Error(JSON.stringify(result.details));
-      return result.details;
+      const previousContext = currentRecorder.runtimeContextSnapshot();
+      if (directToolCall && !lease) currentRecorder.setRuntimeContext({ runId, turnId: runId });
+      try {
+        const result = await executable.execute(randomUUID(), args, combinedSignal);
+        await coordinator.waitForIdle();
+        await currentRecorder.flush();
+        if (result.isError) throw new Error(JSON.stringify(result.details));
+        return result.details;
+      } finally {
+        if (directToolCall && !lease) currentRecorder.setRuntimeContext(previousContext);
+      }
     },
     async startPlanDraft(graphId, revision, signal) {
       const graph = graphs.inspectGraph(graphId);

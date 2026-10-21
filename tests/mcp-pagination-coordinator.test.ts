@@ -23,7 +23,7 @@ const cursor = Buffer.from(JSON.stringify({ page: 2, record: "fixture-page" })).
 let authority: RuntimeEventAuthority | undefined;
 let capabilities: CapabilityStore | undefined;
 try {
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   capabilities = await CapabilityStore.open(root, authority);
   for (const ledger of [false, true]) {
     for (const script of [false, true]) {

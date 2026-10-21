@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 使用真实上下文组装验证并行记忆召回、压缩收益和停止后的状态隔离。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -40,18 +42,18 @@ const checkpoint = (goal: string): string => [
   return `${line} <!-- evidence:m0 -->`;
 }).join("\n");
 let response = checkpoint("old request");
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test", modelId: "summary",
   stream: async (_context, options) => {
     calls++;
     assert.equal(options?.reasoning, "off");
-    assert.equal(options?.timeoutMs, 300_000, "30 秒是空闲期限，不再是整个摘要的总期限");
+    assert.ok(options?.signal, "SDK requests receive the compaction deadline signal");
     return (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: response };
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 try {
   const workspace = new WorkspaceContext(root, [], 4096);
   const local = new LocalMemory(root, () => model);
@@ -172,10 +174,10 @@ try {
   assert.equal(calls, after);
 
   let releaseModel!: () => void;
-  const slowModel: AgentModel = { ...model, stream: async () => {
+  const slowModel: AgentModel = testModel({ ...model, stream: async () => {
     await new Promise<void>((resolve) => { releaseModel = resolve; });
     return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "late summary" }; })();
-  } };
+  } });
   const cancelled = new ContextMemory(() => slowModel, new WorkspaceContext(root, [], 4096), undefined, 8_000, 4096);
   cancelled.replaceHistory(original);
   const before = cancelled.snapshot();

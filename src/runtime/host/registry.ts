@@ -22,7 +22,7 @@ export interface ManagedSessionRuntime {
 }
 
 export interface SessionRuntimeRegistryOptions {
-  readonly createRuntime?: RuntimeHostFactory;
+  readonly createRuntime: RuntimeHostFactory;
   readonly sessionRuntimeCacheTarget?: number;
   /** 有外部 writer claim 的 session 仍是用户正在使用的资源，不能被 LRU 静默驱逐。 */
   canEvict?(entry: ManagedSessionRuntime): boolean;
@@ -191,16 +191,6 @@ export class SessionRuntimeRegistry {
     return current;
   }
 
-  /** primary runtime 通过 startDraft 原地换 session 后，同步注册表键。 */
-  syncPrimarySession(): ManagedSessionRuntime {
-    const actualSessionId = this.primaryEntry.runtime.getSnapshot().info.sessionId;
-    if (this.primaryEntry.sessionId === actualSessionId) return this.primaryEntry;
-    this.entries.delete(this.primaryEntry.sessionId);
-    this.primaryEntry.sessionId = actualSessionId;
-    this.entries.set(actualSessionId, this.primaryEntry);
-    return this.primaryEntry;
-  }
-
   async closeAll(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -239,7 +229,6 @@ export class SessionRuntimeRegistry {
   private async create(sessionId: string, factoryOptions?: RuntimeHostFactoryOptions): Promise<ManagedSessionRuntime> {
     const existing = this.entries.get(sessionId);
     if (existing) return existing;
-    if (!this.options.createRuntime) throw new Error("Runtime Host cannot create a second session runtime without a factory.");
     // 缓存目标只触发尽力回收；忙碌、被 claim 或有在途操作的会话不能驱逐，也不能挡住新聊天。
     const occupiedSlots = this.entries.size + this.reservations.size;
     if (occupiedSlots > this.sessionRuntimeCacheTarget) {

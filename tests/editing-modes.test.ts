@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 编辑输入切换的真实文件与 Responses 线协议回归；不进行界面自动验收。 */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -42,7 +44,7 @@ const config = configSchema.parse({ ...defaultConfig, permission: { ...defaultCo
 const recorder = new SessionRecorder(root, "editing-modes");
 await recorder.recordAndFlush({ type: "user_message", content: "edit files" });
 const workspace = new WorkspaceContext(root, [], 32_768, path.join(root, "missing-global.md"));
-const contextModel: AgentModel = { provider: "fixture", modelId: "context-only", async stream() { throw new Error("Workspace refresh must not request a model"); } };
+const contextModel: AgentModel = testModel({ provider: "fixture", modelId: "context-only", async stream() { throw new Error("Workspace refresh must not request a model"); } });
 const contextMemory = new ContextMemory(() => contextModel, workspace, undefined, 65_536, 32_768);
 const runtime = { workspaceRoot: root, config, recorder, contextMemory, toolRegistry: createToolRegistry({ workspaceRoot: root, ignore: [] }) };
 const coordinator = new ToolExecutionCoordinator(runtime, new PermissionManager(config.permission), () => undefined);
@@ -54,7 +56,7 @@ try {
   assert.equal(replaceTools.find((tool) => tool.name === "Edit")?.executionMode, "sequential");
   await writeFile(path.join(root, "parallel-edit.txt"), "left\nright\n");
   let parallelEditRequests = 0;
-  const parallelEditModel: AgentModel = {
+  const parallelEditModel: AgentModel = testModel({
     provider: "fixture",
     modelId: "parallel-edit",
     async stream() {
@@ -68,7 +70,7 @@ try {
           ]
         : [{ type: "start" }, { type: "finish", reason: "stop" }]);
     }
-  };
+  });
   for await (const event of vercelAgentLoopContinue(
     { messages: [{ role: "user", content: "edit both lines" }], tools: replaceTools },
     { model: parallelEditModel, tools: replaceTools, maxSteps: 2 }
@@ -121,7 +123,7 @@ try {
     ];
     return new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
   } });
-  const unusedModel: AgentModel = { provider: "fixture", modelId: "gpt-5.4", async stream() { throw new Error("Must use the native Responses transport"); } };
+  const unusedModel: AgentModel = testModel({ provider: "fixture", modelId: "gpt-5.4", async stream() { throw new Error("Must use the native Responses transport"); } });
   let history: AgentMessage[] = [];
   for await (const event of vercelAgentLoopContinue({ messages: [{ role: "user", content: "create update delete" }], tools: patchTools }, { model: unusedModel, vercelModel: provider.responses("gpt-5.4"), tools: patchTools, maxSteps: 5 })) {
     if (event.type === "error") throw new Error(event.error);

@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 后台摘要契约：开启时间、预算、用户意图、手动状态和项目草稿的副作用边界。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel } from "../src/agent/core/types.js";
@@ -13,11 +15,11 @@ const store = new ThreadBriefStore(root, now);
 const threads = new Map<string, BriefThread>();
 let output: unknown = { topic: "编辑器交付", goal: "上线编辑器", objects: ["Canvas"], conclusions: ["校验通过"], followUp: { what: "发布编辑器", quote: "明天我会发布编辑器" } };
 let fail = false;
-const model: AgentModel = { provider: "test", modelId: "brief-test", stream: async function* () {
+const model: AgentModel = testModel({ provider: "test", modelId: "brief-test", stream: async function* () {
   if (fail) throw new Error("provider disconnected");
   yield { type: "text-delta", text: JSON.stringify(output) };
   yield { type: "finish", reason: "stop" };
-} };
+} });
 const service = new ThreadBriefService({ store, now, readThread: async (id) => threads.get(id), getModel: async () => model });
 const makeThread = (id: string, date = "2026-09-23T00:00:00Z"): BriefThread => ({
   sessionId: id, projectId: "workspace", title: "编辑器", createdAt: date,
@@ -104,13 +106,13 @@ let finish!: () => void;
 const waiting = new Promise<void>((resolve) => { started = resolve; });
 const release = new Promise<void>((resolve) => { finish = resolve; });
 const cancelledStore = new ThreadBriefStore(cancellationRoot, now);
-const cancellation = new ThreadBriefService({ store: cancelledStore, readThread: async () => makeThread("cancel"), getModel: async () => ({
+const cancellation = new ThreadBriefService({ store: cancelledStore, readThread: async () => makeThread("cancel"), getModel: async () => (testModel({
   provider: "test", modelId: "slow", stream: async function* () {
     started();
     await release;
     yield { type: "text-delta", text: JSON.stringify({ topic: "迟到结果", goal: "", objects: [], conclusions: [], followUp: null }) };
   }
-}) });
+})) });
 try {
   await cancellation.initialize();
   const pending = cancellation.enqueue("cancel");
@@ -127,7 +129,7 @@ const clusterRoot = await mkdtemp(path.join(os.tmpdir(), "biny-brief-cluster-"))
 const clusterStore = new ThreadBriefStore(clusterRoot, now);
 const clusterThreads = new Map(["a", "b", "c"].map((id) => [id, makeThread(id)]));
 let members = [1, 2];
-const clusterService = new ThreadBriefService({ store: clusterStore, readThread: async (id) => clusterThreads.get(id), getModel: async () => ({
+const clusterService = new ThreadBriefService({ store: clusterStore, readThread: async (id) => clusterThreads.get(id), getModel: async () => (testModel({
   provider: "test", modelId: "cluster", stream: async function* (context) {
     const clustering = JSON.stringify(context.messages).includes("sameThing");
     yield { type: "text-delta", text: JSON.stringify(clustering
@@ -135,7 +137,7 @@ const clusterService = new ThreadBriefService({ store: clusterStore, readThread:
       : { topic: "Canvas", goal: "上线编辑器", objects: ["Canvas"], conclusions: [], followUp: null }) };
     yield { type: "finish", reason: "stop" };
   }
-}) });
+})) });
 try {
   await clusterService.initialize();
   for (const id of clusterThreads.keys()) await clusterService.enqueue(id);

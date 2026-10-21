@@ -33,7 +33,7 @@ try {
     models: { "local-test": { ...defaultConfig.models["deepseek-v4-flash"]!, provider: "local", model: "local-test" } }
   }, { globalDir: configDir });
 
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const capabilities = await CapabilityStore.open(root, authority);
   const registration = capabilities.register({
     ownerType: "host",
@@ -65,7 +65,7 @@ try {
     idleGraceMs: 10
   });
 
-  const recoveredAuthority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const recoveredAuthority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const recoveredCapabilities = await CapabilityStore.open(root, recoveredAuthority);
   try {
     for (const abandoned of abandonedOffers) {

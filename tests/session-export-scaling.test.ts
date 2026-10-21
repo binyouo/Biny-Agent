@@ -42,7 +42,7 @@ async function checkBoundedExport(label: string, events: SessionEvent[], expecte
   let warm;
   try { warm = await exportSessionClaudeCode(workspace, label); }
   finally { Array.prototype.filter = filter; }
-  assert.equal(hash(warm.content), expectedHash, "generated identities and complete output stay deterministic");
+  assert.equal(hash(warm.content), expectedHash, "identities and complete output stay deterministic");
   assert.equal(hash(await readFile(source)), hash(raw), "public export never rewrites source bytes");
   const calls = new Set<string>();
   const resultIds: string[] = [];
@@ -50,8 +50,8 @@ async function checkBoundedExport(label: string, events: SessionEvent[], expecte
     const line = JSON.parse(row) as { message: { content: string | Array<{ type: string; id: string; tool_use_id: string }> } };
     if (!Array.isArray(line.message.content)) continue;
     for (const block of line.message.content) {
-      if (block.type === "tool_use") {
-        assert.ok(!calls.has(block.id), "generated and unique explicit call identities cannot collide");
+      if (block.type === "tool_use" && block.id !== "") {
+        assert.ok(!calls.has(block.id), "explicit call identities cannot collide");
         calls.add(block.id);
       }
       if (block.type === "tool_result") resultIds.push(block.tool_use_id);
@@ -98,7 +98,7 @@ for (const identity of ["explicit", "sequence"] as const) {
       const fields = identity === "explicit" ? { toolCallId: `explicit_${index}` } : { sequence: index - 12_000.5 };
       events.push({ type: "tool_call", tool: index % 2 ? "Read" : "Bash", args: { index }, ...fields });
       results.push({ type: "tool_result", tool: index % 2 ? "Read" : "Bash", result: String(index), ...fields });
-      expected.push(identity === "explicit" ? `explicit_${index}` : `call_${index + 1}`);
+      expected.push(identity === "explicit" ? `explicit_${index}` : "");
     }
     // Reverse completion order also exercises removal away from each group's head.
     events.push(...results.reverse(), { type: "assistant_message", content: "Synthetic complete" });

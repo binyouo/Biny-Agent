@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CrystalService, normalizeTerms, normalizeTerm } from "../src/agent/context/crystalService.js";
@@ -65,22 +67,22 @@ await testAnchorRetryAfterExtractionFailure();
   assert.equal(normalizeTerm("ProjectX("), "projectx");
   let extractionOutput = "";
   let extractionCalls = 0;
-  const extractionModel: AgentModel = {
+  const extractionModel: AgentModel = testModel({
     provider: "test",
     modelId: "crystal-extraction",
     stream: async (request, options) => {
       extractionCalls += 1;
       assert.equal(createHash("sha256").update(request.systemPrompt ?? "").digest("hex"), "d8f0100261e8ba5acdbe5ef9fadb8ba6a476e8853be90b6635f0a69b7eb89978");
-      assert.deepEqual(request.messages, [{ role: "user", content: [{ type: "text", text: "ProjectX review" }] }]);
+      assert.deepEqual(request.messages, [{ role: "user", content: "ProjectX review" }]);
       assert.equal(options?.maxOutputTokens, undefined);
       assert.equal(options?.reasoning, undefined);
-      assert.equal(options?.timeoutMs, 30_000);
+      assert.ok(options?.signal, "SDK request receives its timeout signal");
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         yield { type: "text-delta", text: extractionOutput };
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const extractionService = new CrystalService({ storage, getModel: () => extractionModel });
   assert.deepEqual(await extractionService.extract("   x   "), []);
   assert.equal(extractionCalls, 0);
@@ -225,20 +227,20 @@ await testAnchorRetryAfterExtractionFailure();
   const paddedNote = `  ${"n".repeat(410)}  `;
   service.addMaterial(seed.id, "note", { text: paddedNote });
   service.addMaterial(seed.id, "note", { text: "   " });
-  const prefillModel: AgentModel = {
+  const prefillModel: AgentModel = testModel({
     provider: "test",
     modelId: "crystal-prefill",
     stream: async (request, options) => (async function* (): AsyncGenerator<ModelStreamEvent> {
       assert.equal(request.systemPrompt, `你是一个资料整理员。根据来源材料，为对象「Release Theme」预填清单字段。\n每个字段输出 {"value": "...", "sources": ["tag", ...]}，sources 必须引用给出的材料 tag，且只引用真正支持该 value 的材料。\n材料不足以填写的字段输出 null，绝不编造。\n只输出一个 JSON 对象，键为字段名。不要任何解释。`);
       assert.equal(options?.maxOutputTokens, undefined);
       assert.equal(options?.reasoning, undefined);
-      assert.equal(options?.timeoutMs, 30_000);
+      assert.ok(options?.signal, "SDK request receives its timeout signal");
       const expectedMaterials = storage.listMaterials(seed.id).flatMap((material) => {
         if (material.kind === "note") return [`[note:${material.id}] ${(material.ref as { text: string }).text.slice(0, 400)}`];
         if (material.kind === "turn") return [`[turn:message-4]   Referenced conversation text  `];
         return [];
       });
-      assert.deepEqual(request.messages, [{ role: "user", content: [{ type: "text", text: ["字段: definition, includes, excludes, examples, source", "", "材料:", ...expectedMaterials].join("\n") }] }]);
+      assert.deepEqual(request.messages, [{ role: "user", content: ["字段: definition, includes, excludes, examples, source", "", "材料:", ...expectedMaterials].join("\n") }]);
       service.updateChecklist(seed.id, "definition", { value: "User edited during prefill", sources: [noteTag] });
       yield { type: "text-delta", text: JSON.stringify({
         definition: { value: "Release focus", sources: [noteTag] },
@@ -249,7 +251,7 @@ await testAnchorRetryAfterExtractionFailure();
       }) };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
   let readyEvents = 0;
   const prefillService = new CrystalService({
     storage,
@@ -308,19 +310,19 @@ async function testPrefillMaterialWindow(): Promise<void> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-crystal-prefill-window-"));
   const store = new CrystalStorage({ agentDir: directory });
   let calls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "material-window",
     stream: async (request) => {
       calls += 1;
       const expected = Array.from({ length: 29 }, (_, index) => `[note:${31 - (index + 1)}] evidence-${index + 1}`);
-      assert.deepEqual(request.messages, [{ role: "user", content: [{ type: "text", text: ["字段: definition, includes, excludes, examples, source", "", "材料:", ...expected].join("\n") }] }]);
+      assert.deepEqual(request.messages, [{ role: "user", content: ["字段: definition, includes, excludes, examples, source", "", "材料:", ...expected].join("\n") }]);
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         yield { type: "text-delta", text: "{}" };
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const service = new CrystalService({ storage: store, getModel: () => model });
   try {
     await service.initialize();

@@ -17,7 +17,7 @@ let authority: RuntimeEventAuthority | undefined;
 let capabilities: CapabilityStore | undefined;
 let recorder: SessionRecorder | undefined;
 try {
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   capabilities = await CapabilityStore.open(root, authority);
   const sessionId = "fixture-pagination-crash";
   const tool = "mcp_fixture_list";

@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, readFile, rm } from "node:fs/promises";
+import { mkdtemp, realpath, readFile, } from "node:fs/promises";
 import { Session } from "node:inspector/promises";
 import os from "node:os";
 import path from "node:path";
@@ -43,14 +45,14 @@ test("real model runs avoid disabled telemetry projections at short and long his
       let modelMessages = 0;
       const agent = new AgentSession({ workspaceRoot: root, config, recorder, toolRegistry: new ToolRegistry(),
         permissionManager: new PermissionManager(config.permission),
-        model: { provider: "fixture", modelId: "review", runtime: "builtin-llama.cpp", dataResidency: "local",
+        model: testModel({ provider: "fixture", modelId: "review", runtime: "builtin-llama.cpp", dataResidency: "local",
           stream: async context => {
             modelCalls += 1;
             modelMessages = context.messages.length;
             assert.ok(modelMessages >= historyMessages + 1);
             return (async function* () { yield { type: "text-delta" as const, text: "fixture answer" }; yield { type: "finish" as const, reason: "stop" as const }; })();
           }
-        }
+        })
       });
       try {
         await agent.initialize();

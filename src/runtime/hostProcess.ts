@@ -5,16 +5,15 @@
  * 重建都留在 `runtime/host/`，便于 CLI、Desktop 和测试共享同一套边界。
  */
 import path from "node:path";
+import { AgentMemoryClient } from "./memory/client.js";
 import { fileURLToPath } from "node:url";
 import { createFileConfigStore, type AgentConfigStore } from "../config/store.js";
-import { createInteractiveAgentHost, type InteractiveAgentHost } from "./InteractiveAgentRuntime.js";
+import { createRuntimeHostFactory } from "./host/runtimeFactory.js";
 import { WorktreeManager } from "./host/worktree.js";
 import {
   findLatestInterruptedSession,
   startRuntimeHost,
-  type RuntimeHostServer,
-  type RuntimeHostFactory,
-  type RuntimeHostFactoryOptions
+  type RuntimeHostServer
 } from "./RuntimeHost.js";
 import type { BrowserAutomationEndpoint } from "../tools/browser.js";
 
@@ -99,26 +98,15 @@ export async function runRuntimeHostProcess(
   browserAutomation = options.browserAutomationBootstrap
     ? await receiveBrowserAutomationBootstrap()
     : undefined;
-  const createRuntime: RuntimeHostFactory = async (sessionId?: string, factoryOptions?: RuntimeHostFactoryOptions): Promise<InteractiveAgentHost> => {
-    const fresh = factoryOptions?.fresh === true;
-    const host = await createInteractiveAgentHost(factoryOptions?.workspaceRoot ?? options.workspaceRoot, {
-      persistenceRoot: options.persistenceRoot,
-      configStore,
-      attachmentRoot: options.attachmentRoot,
-      sessionId: fresh ? sessionId : undefined,
-      browserAutomation,
-      resourceRegistry: factoryOptions?.resourceRegistry,
-      resourceBoot: factoryOptions?.resourceBoot ?? (factoryOptions?.resourceRegistry === undefined ? "blocking" : "background")
-    });
-    try {
-      host.commands.setBrowserAutomation?.(browserAutomation);
-      if (sessionId !== undefined && !fresh) await host.runtime.resumeSession(sessionId);
-      return host;
-    } catch (error) {
-      await host.runtime.close();
-      throw error;
-    }
-  };
+  const createRuntime = createRuntimeHostFactory(options.workspaceRoot, () => ({
+    persistenceRoot: options.persistenceRoot,
+    configStore,
+    attachmentRoot: options.attachmentRoot,
+    browserAutomation
+  }), (host) => {
+    // 创建期间 Desktop 可能已断开或更换端点；交付前同步最新能力。
+    host.commands.setBrowserAutomation?.(browserAutomation);
+  });
 
   const worktrees = new WorktreeManager(options.workspaceRoot, options.persistenceRoot);
   const initialFactoryOptions = selectedSession === undefined
@@ -136,6 +124,7 @@ export async function runRuntimeHostProcess(
     onClosing: armShutdownDeadline,
     onBrowserAutomationChange: (endpoint) => { browserAutomation = endpoint; }
   });
+  void new AgentMemoryClient(undefined, options.configDir).sleepStatus().catch(() => undefined);
   if (shuttingDown) closeOwner();
   else {
     if (shutdownDeadline) clearTimeout(shutdownDeadline);

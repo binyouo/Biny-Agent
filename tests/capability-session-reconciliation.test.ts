@@ -20,7 +20,7 @@ import { createToolOperationId } from "../src/tools/types.js";
 test("cold session recovery restores an already durable capability result exactly once", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-result-reconciliation-"));
   await ensureAgentDirs(root);
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   let capabilities = await CapabilityStore.open(root, authority);
   const sessionId = "durable-result";
   const toolCallId = "call";
@@ -39,7 +39,7 @@ test("cold session recovery restores an already durable capability result exactl
   assert.equal((await tryReadSessionSnapshot(recorder.filePath, fingerprint))?.recoveredToolResults[0]?.executionStatus, "unknown", "a cached protocol repair is not execution authority");
   capabilities.close();
   authority.close();
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   capabilities = await CapabilityStore.open(root, authority);
   const config = structuredClone(defaultConfig);
   config.context.memory.useMemories = false;

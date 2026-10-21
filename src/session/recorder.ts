@@ -40,7 +40,7 @@ import { redactSecrets, redactSensitiveValue, type SensitiveValueRedactionOption
 import { assertSessionFileSize, maxSessionEventLineBytes } from "./limits.js";
 import { sessionFilePath } from "./store.js";
 import { projectSessionsDir } from "../config/paths.js";
-import type { SessionContextCheckpoint, SessionContextState, SessionContextUsage, SessionUsage } from "./metadata.js";
+import type { SessionContextCheckpoint, SessionContextState, SessionUsage } from "./metadata.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import type { AgentMessage, ModelRequestMetrics } from "../agent/core/types.js";
 import type { ToolExecutionResultStatus, ToolExecutionState, ToolOutcomeUnknownReason, ToolRetrySafety } from "../tools/types.js";
@@ -106,9 +106,9 @@ export interface SessionTurnStatusEvent {
 
 type SessionEventPayload =
   // session 事件类型要保持稳定；resume、未来上下文压缩和记忆功能都会依赖这几个基础类型。
-  | { type: "user_message"; metadata?: Record<string, unknown>; content: string; attachments?: AttachmentReference[]; skills?: string[]; contextUsage?: SessionContextUsage; contextState?: SessionContextState; preparationUsage?: SessionUsage[]; messageId?: string; parentMessageId?: string; slotId?: string; auditOnly?: boolean; time?: string }
-  | { type: "assistant_message"; metadata?: Record<string, unknown>; content: string; reasoningContent?: string; reasoningProviderOptions?: Record<string, unknown>; reasoningBlocks?: ReasoningBlock[]; usage?: SessionUsage; relatedUsage?: SessionUsage[]; contextState?: SessionContextState; messageId?: string; parentMessageId?: string; slotId?: string; replyToMessageId?: string; retryOfMessageId?: string; auditOnly?: boolean; time?: string }
-  | { type: "tool_call"; parentToolCallId?: string; tool: string; args: unknown; toolCallId?: string; sequence?: number; assistantContent?: string; reasoningContent?: string; reasoningProviderOptions?: Record<string, unknown>; reasoningBlocks?: ReasoningBlock[]; auditOnly?: boolean; time?: string }
+  | { type: "user_message"; metadata?: Record<string, unknown>; content: string; attachments?: AttachmentReference[]; skills?: string[]; contextState?: SessionContextState; preparationUsage?: SessionUsage[]; messageId?: string; parentMessageId?: string; slotId?: string; auditOnly?: boolean; time?: string }
+  | { type: "assistant_message"; metadata?: Record<string, unknown>; content: string; reasoningContent?: string; reasoningBlocks?: ReasoningBlock[]; usage?: SessionUsage; relatedUsage?: SessionUsage[]; contextState?: SessionContextState; messageId?: string; parentMessageId?: string; slotId?: string; replyToMessageId?: string; retryOfMessageId?: string; auditOnly?: boolean; time?: string }
+  | { type: "tool_call"; parentToolCallId?: string; tool: string; args: unknown; toolCallId?: string; sequence?: number; assistantContent?: string; reasoningContent?: string; reasoningBlocks?: ReasoningBlock[]; auditOnly?: boolean; time?: string }
   | { type: "tool_execution"; tool: string; toolCallId: string; sequence: number; operationId: string; state: ToolExecutionState; evidence?: string; retrySafety?: ToolRetrySafety; outcomeUnknownReason?: ToolOutcomeUnknownReason; change?: CommittedFileChange; fileChangeIsResult?: boolean; time?: string }
   | { type: "tool_result"; optimization?: ToolOptimization; modelResult?: unknown; tool: string; result: unknown; toolCallId?: string; sequence?: number; relatedUsage?: SessionUsage[]; executionStatus?: ToolExecutionResultStatus; outcomeUnknownReason?: ToolOutcomeUnknownReason; recovered?: boolean; operationId?: string; evidence?: string; auditOnly?: boolean; time?: string }
   | { type: "agent_message"; metadata?: Record<string, unknown>; message: Exclude<AgentMessage, { role: "user" }>; messageId?: string; parentMessageId?: string; slotId?: string; replyToMessageId?: string; retryOfMessageId?: string; time?: string }
@@ -516,7 +516,7 @@ export class SessionRecorder {
           replyToMessageId: turn.retryOrigin.replyToMessageId, retryOfMessageId: turn.retryOrigin.targetMessageId,
           reasoningContent: reasoningBlocks.map(block => block.text).join("") || undefined,
           reasoningBlocks: reasoningBlocks.length ? reasoningBlocks : undefined,
-          reasoningProviderOptions: reasoningBlocks.length === 1 ? reasoningBlocks[0]?.providerOptions : undefined };
+        };
         const audits = source.events.filter(event => event.type === "assistant_message" && event.messageId === phase.replyMessageId);
         const normalizedAudit = redactSessionEvent(expectedAudit);
         if (audits.length > 1 || audits.some(event => event.type === "assistant_message" && (event.runtime?.runId !== phase.runId
@@ -737,7 +737,6 @@ function redactSessionEvent(event: SessionEvent, resultRedactionOptions: Sensiti
       ...event,
       content: redactSecrets(publicAssistantMessage(event.content)),
       reasoningContent: event.reasoningContent === undefined ? undefined : redactSecrets(event.reasoningContent),
-      reasoningProviderOptions: event.reasoningProviderOptions === undefined ? undefined : redactSensitiveValue(event.reasoningProviderOptions) as Record<string, unknown>,
       reasoningBlocks: redactReasoningBlocks(event.reasoningBlocks),
       contextState: event.contextState === undefined
         ? undefined
@@ -750,7 +749,6 @@ function redactSessionEvent(event: SessionEvent, resultRedactionOptions: Sensiti
       args: redactSensitiveValue(event.args),
       assistantContent: event.assistantContent === undefined ? undefined : redactSecrets(publicAssistantMessage(event.assistantContent)),
       reasoningContent: event.reasoningContent === undefined ? undefined : redactSecrets(event.reasoningContent),
-      reasoningProviderOptions: event.reasoningProviderOptions === undefined ? undefined : redactSensitiveValue(event.reasoningProviderOptions) as Record<string, unknown>,
       reasoningBlocks: redactReasoningBlocks(event.reasoningBlocks)
     };
   }
@@ -1009,9 +1007,9 @@ function lastPersistedRuntimeEvent(raw: Buffer): RuntimeHighWater | undefined {
 /**
  * 生成新 session 的逻辑 id，同时就是 session 文件的 basename（`<id>.jsonl`）。
  *
- * 格式 `<yyyymmdd-hhmmss>-<rand8>`，与 7 月旧布局同构：时间戳段用本地时间（跟墙上时钟一致，
+ * 格式 `<yyyymmdd-hhmmss>-<rand8>`：时间戳段用本地时间（跟墙上时钟一致，
  * "按时间找会话"才符合直觉，也对齐外部 rollout 的本地时间命名；单机使用时字典序仍按创建
- * 先后排列），8 位 hex 随机段消掉同一秒内的碰撞。catalog/runLedger/claim/resume 只把 id 当
+ * 先后排列），8 位 hex 随机段消掉同一秒内的碰撞。catalog/runtime/claim/resume 只把 id 当
  * 不透明字符串，所以改格式不需要动那 30 处耦合；store 的 `sessionFilePath` 靠"先查重、再落
  * 候选路径"保证 id 与文件名始终一致。
  */

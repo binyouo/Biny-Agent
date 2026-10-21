@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -28,7 +30,7 @@ for (const [name, wrap] of wrappers) {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-analysis-json-fences-"));
     const store = new ActivityStore();
     let calls = 0;
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "json-fence-fixture", runtime: "builtin-llama.cpp", dataResidency: "local",
       stream: async () => {
         calls += 1;
@@ -37,7 +39,7 @@ for (const [name, wrap] of wrappers) {
           yield { type: "finish", reason: "stop" };
         })();
       }
-    };
+    });
     const candidates: unknown[] = [];
     try {
       await store.open(root, root);

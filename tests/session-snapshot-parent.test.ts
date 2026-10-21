@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 快照恢复、模型输出、落盘与聊天投影共用真实消息父链。 */
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, rm, stat } from "node:fs/promises";
+import { appendFile, mkdtemp, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -49,11 +51,11 @@ for (const mode of ["cold", "snapshot", "selected"] as const) {
       clearSessionParseCache();
       const config = configSchema.parse({ ...defaultConfig,
         context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } } });
-      const model: AgentModel = { provider: "test", modelId: "snapshot-parent", supportsTools: false,
+      const model: AgentModel = testModel({ provider: "test", modelId: "snapshot-parent", supportsTools: false,
         async stream() { return (async function* () {
           yield { type: "text-delta" as const, text: "第二条回答" };
           yield { type: "finish" as const, reason: "stop" as const };
-        })(); } };
+        })(); } });
       agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(),
         permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(workspaceRoot) });
       await agent.initialize();

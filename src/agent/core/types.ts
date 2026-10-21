@@ -1,8 +1,7 @@
 /**
  * Biny 自有 Agent Runtime 的基础协议。
  *
- * 这里不依赖任何模型 SDK。Provider 只需要把自己的流式响应归一化成
- * `ModelStreamEvent`，Agent Loop 就可以独立处理消息、工具和事件生命周期。
+ * API 模型使用 LanguageModelV4；ModelStreamEvent 是界面与会话的展示事件。
  */
 import type { JsonSchema } from "../../tools/schema.js";
 import type { ToolNamespace } from "../../tools/types.js";
@@ -212,7 +211,7 @@ export interface AgentModel {
   prepareTextRequest?(signal?: AbortSignal): Promise<AgentModel>;
   /** Pure, per-request capability projection; undefined reasoning means no supported override. */
   resolveTextReasoning?(requested: NonNullable<ModelStreamOptions["reasoning"]>): Pick<ModelStreamOptions, "reasoning" | "providerOptions">;
-  /** ProviderRuntime 创建的模型同时保留 Vercel 实例，辅助文本调用也复用同一条 provider 链路。 */
+  /** API 模型的唯一执行协议；ACP 外部 Agent 不提供此实例。 */
   vercelModel?: LanguageModelV4;
   /** 与 Vercel 实例配套的模型级默认参数；调用方显式传入的辅助参数优先。 */
   vercelOptions?: {
@@ -227,11 +226,7 @@ export interface AgentModel {
   dataResidency?: ActivityDataResidency;
   supportsTools?: boolean;
   serviceTiers?: Array<"priority">;
-  /** 显式注入的本地/测试模型可以提供的最小兼容流；配置 Provider 统一使用 vercelModel。 */
-  stream?(
-    context: ModelStreamContext,
-    options?: ModelStreamOptions
-  ): Promise<AsyncIterable<ModelStreamEvent>>;
+
 }
 
 export type ModelStreamEvent =

@@ -1,3 +1,4 @@
+import { createHostTestStores } from "./helpers/hostStores.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -91,7 +92,7 @@ await run("git", ["config", "user.email", "biny-tests@example.invalid"], { cwd: 
 await writeFile(path.join(workspaceRoot, "README.md"), "runtime host client test\n");
 await run("git", ["add", "README.md"], { cwd: workspaceRoot });
 await run("git", ["commit", "--quiet", "-m", "initial"], { cwd: workspaceRoot });
-const commands = {} as CommandRuntime;
+const commands = await createHostTestStores(workspaceRoot) as unknown as CommandRuntime;
 const primary = fakeRuntime("primary", workspaceRoot, "full-access");
 const createdFactoryOptions: Array<{ isolation?: string; workspaceRoot?: string; resourceRegistry?: unknown }> = [];
 const createdRuntimes = new Map<string, ReturnType<typeof fakeRuntime>>();

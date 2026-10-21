@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 截图会话的已保存应用名单须进入公开分析入口的模型输入。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { analyzeActivitySession } from "../src/activity/analyzer.js";
@@ -33,7 +35,7 @@ try {
   assert.equal(store.listSessionEventSummaries(sessionId).length, 0, "截图不伪装成语义事件");
 
   let prompt = "";
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "analysis-apps-fixture",
     runtime: "builtin-llama.cpp",
@@ -45,7 +47,7 @@ try {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const result = await analyzeActivitySession({ store, model }, sessionId);
   assert.equal(result.status, "analyzed");
   assert.match(prompt, /Apps: Editor/u);

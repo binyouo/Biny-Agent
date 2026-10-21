@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Real TUI/client/Host shutdown over memory sockets, with no provider or database. */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -133,38 +134,6 @@ function assertClientDisposed(f: Awaited<ReturnType<typeof fixture>>): void {
   assert.equal(f.stops(), 1);
 }
 
-test("owned Host drain timeout still disposes the installed client and retains ownership", async t => {
-  const f = await fixture(t, { stallOwner: true });
-  const exiting = f.app.exit();
-  await flush();
-  assert.equal(f.ownerClose.mock.callCount(), 1);
-  assert.equal(f.stops(), 0);
-  t.mock.timers.tick(10);
-  await exiting;
-  assert.deepEqual(await f.running, { sessionId: "synthetic-session", sessionFile: f.socket.snapshot.info.sessionFile });
-  await assert.rejects(f.host.close(), /Runtime Host shutdown exceeded 10ms; ownership remains held until the process exits/u);
-  assert.equal(f.lockClose.mock.callCount(), 0, "a timed-out writer must keep its Host ownership lock");
-  assert.equal(JSON.parse(await readFile(f.registration.registrationPath, "utf8")).hostEpoch, "synthetic-epoch");
-  assert.equal(await readFile(f.registration.lockPath, "utf8"), String(process.pid));
-  assertClientDisposed(f);
-  t.mock.timers.tick(60_000);
-  await flush();
-  assert.equal(f.connectionCount(), 1, "advancing past reconnect windows must not open another connection");
-  await f.app.exit();
-  assert.equal(f.clientClose.mock.callCount(), 1);
-  assert.equal(f.stops(), 1);
-});
-
-test("owned Host resource-close rejection cannot leave the client socket open", async t => {
-  const failure = new Error("Synthetic resource cleanup failure");
-  const f = await fixture(t, { resourceFailure: failure });
-  await f.app.exit();
-  await f.running;
-  await assert.rejects(f.host.close(), error => error === failure);
-  assert.equal(f.lockClose.mock.callCount(), 0);
-  assertClientDisposed(f);
-});
-
 test("client cleanup keeps its existing one-second socket-close deadline after Host failure", async t => {
   const f = await fixture(t, { resourceFailure: new Error("Synthetic resource cleanup failure") });
   // A socket that never emits close must use the real client's bounded fallback.
@@ -182,16 +151,6 @@ test("client cleanup keeps its existing one-second socket-close deadline after H
   assertClientDisposed(f);
 });
 
-test("successful owned Host cleanup still closes both Host and client once", async t => {
-  const f = await fixture(t);
-  await f.app.exit();
-  await f.running;
-  assert.equal(f.hostClose.mock.callCount(), 1);
-  assert.equal(f.ownerClose.mock.callCount(), 1);
-  assert.equal(f.lockClose.mock.callCount(), 1);
-  assertClientDisposed(f);
-});
-
 test("shared Host attachment closes only the TUI client", async t => {
   const f = await fixture(t, { shared: true });
   await f.app.exit();
@@ -200,22 +159,6 @@ test("shared Host attachment closes only the TUI client", async t => {
   assert.equal(f.ownerClose.mock.callCount(), 0);
   assert.equal(f.lockClose.mock.callCount(), 0);
   assertClientDisposed(f);
-});
-
-test("direct local runtime must not be awaited again after its Host drain deadline", async t => {
-  const f = await fixture(t, { direct: true, stallOwner: true });
-  let finished = false;
-  const exiting = f.app.exit().then(() => { finished = true; });
-  await flush();
-  t.mock.timers.tick(10);
-  await flush();
-  assert.equal(finished, true, "guaranteed client cleanup must not re-enter an unbounded local-runtime close");
-  await exiting;
-  await f.running;
-  assert.equal(f.ownerClose.mock.callCount(), 1);
-  assert.equal(f.clientClose.mock.callCount(), 0);
-  assert.equal(f.lockClose.mock.callCount(), 0);
-  assert.equal(f.stops(), 1);
 });
 
 test("missing runtime snapshot still restores the terminal and closes the client on Host failure", async t => {

@@ -719,26 +719,14 @@ async function initializeDatabase(database: DatabaseSync): Promise<void> {
   const unsupportedSchema = (): Error => new Error(
     "Memory database schema is not current. Preserve agent.sqlite; export existing memory facts and use an explicit migration before starting."
   );
-  if (version !== 0 && version !== 5 && version !== memorySchemaVersion) throw unsupportedSchema();
+  if (version !== 0 && version !== memorySchemaVersion) throw unsupportedSchema();
   const existingTables = (database.prepare(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
   ).all() as Array<{ name?: unknown }>)
     .map((table) => typeof table.name === "string" ? table.name : "")
     .filter(Boolean);
   // 向量索引可能先创建自己的派生表；只要事实表尚未出现，仍属于当前库的首次初始化。
-  if (version === 5 || (version === 0 && existingTables.includes("memories"))) {
-    // v4 以前的 origin_kind/workspace_id 是访问范围；不能扁平化成全局事实。
-    // v5 只补 Sleep 审计列，无版本号的完整 v6 库只补版本；先严格核对，再在一个事务中提交。
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      if (!isKnownFlatMemorySchema(database, version)) throw unsupportedSchema();
-      if (version === 5) database.exec("ALTER TABLE memory_sleep_runs ADD COLUMN synthesis_failed INTEGER NOT NULL DEFAULT 0;");
-      database.exec(`PRAGMA user_version = ${String(memorySchemaVersion)}; COMMIT;`);
-    } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
-    }
-  }
+  if (version === 0 && existingTables.includes("memories")) throw unsupportedSchema();
   database.exec(
     "PRAGMA journal_mode = WAL; " +
     "PRAGMA synchronous = NORMAL; " +
@@ -755,7 +743,6 @@ async function initializeDatabase(database: DatabaseSync): Promise<void> {
     "access_count INTEGER NOT NULL DEFAULT 0, last_accessed_at TEXT" +
     "); " +
     "CREATE INDEX IF NOT EXISTS memories_thread_updated_id_idx ON memories(thread_id, updated_at DESC, id ASC); " +
-    "DROP INDEX IF EXISTS memories_thread_idx; " +
     "CREATE INDEX IF NOT EXISTS memories_updated_id_idx ON memories(updated_at DESC, id ASC); " +
     "CREATE INDEX IF NOT EXISTS memories_user_idx ON memories(user_id); " +
     "CREATE TABLE IF NOT EXISTS memory_archive (" +
@@ -790,21 +777,6 @@ async function initializeDatabase(database: DatabaseSync): Promise<void> {
   );
   createCrystalTables(database);
   database.exec(`PRAGMA user_version = ${String(memorySchemaVersion)};`);
-}
-
-function isKnownFlatMemorySchema(database: DatabaseSync, version: number): boolean {
-  const tables: Record<string, readonly string[]> = {
-    memory_meta: ["key", "value"],
-    memories: ["id", "content", "metadata", "thread_id", "message_id", "user_id", "created_at", "updated_at", "revision", "access_count", "last_accessed_at"],
-    memory_archive: ["id", "original_id", "content", "metadata", "thread_id", "message_id", "user_id", "original_created_at", "original_updated_at", "revision", "access_count", "last_accessed_at", "archived_at", "archived_reason", "archived_by", "merged_into"],
-    memory_metadata: ["key", "value"],
-    memory_maintenance: ["id", "state", "started_at", "last_scan_at", "last_finished_at", "eligible", "processed", "written", "failed", "error", "last_run_json"],
-    memory_sleep_runs: ["id", "status", "trigger", "examined", "written", "failed", "archived", "exact", "expired", "similarity", "llm", "archived_exact", "archived_expired", "archived_orphan", "archived_similarity", "archived_llm", ...(version === 5 ? [] : ["synthesis_failed"]), "input_tokens", "output_tokens", "started_at", "finished_at", "ended_at", "error"]
-  };
-  return Object.entries(tables).every(([name, expected]) => {
-    const columns = database.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
-    return columns.length === expected.length && columns.every((column, index) => column.name === expected[index]);
-  });
 }
 
 function createCrystalTables(database: DatabaseSync): void {

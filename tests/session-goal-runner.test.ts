@@ -53,7 +53,7 @@ async function createFixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-session-goal-runner-"));
   const oldAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const goals = await SessionGoalStore.open(root, authority);
   const boundaries = new Map<string, RuntimeBoundary>();
   const allBoundaries = new Set<RuntimeBoundary>();

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { AgentModel, AgentStopReason, ModelRequestMetrics, ModelStreamEvent } from "../src/agent/core/types.js";
+import type { ModelRequestMetrics } from "../src/agent/core/types.js";
 import { generateNativeText } from "../src/llm/nativeJson.js";
 
 const usage = {
@@ -44,26 +44,4 @@ for (const reason of reasons) {
       assert.equal(source.locked, false);
     });
   }
-}
-
-const injectedReasons: Array<AgentStopReason | undefined> = ["stop", "length", "tool-calls", "error", "aborted", "other", undefined];
-for (const reason of injectedReasons) {
-  test(`auxiliary injected finish ${String(reason)}`, async () => {
-    const finalUsage = { inputTokens: 2, outputTokens: 3, totalTokens: 5 };
-    const model: AgentModel = {
-      provider: "fixture", modelId: "injected-finish",
-      stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
-        yield { type: "text-delta", text: "complete" };
-        if (reason !== undefined) yield { type: "finish", reason, usage: finalUsage };
-      })()
-    };
-    const metrics: ModelRequestMetrics[] = [];
-    const result = await generateNativeText(model, messages, { onRequestMetrics: value => { metrics.push(value); } });
-    assert.deepEqual(result, { text: "complete", usage: reason === undefined ? undefined : finalUsage, finishReason: reason });
-    assert.equal(metrics.length, 1);
-    assert.equal(metrics[0]?.finishReason, reason);
-    assert.deepEqual(metrics[0]?.usage, result.usage);
-    assert.equal(metrics[0]?.error, undefined);
-    assert.equal(metrics[0]?.eventCount, 1);
-  });
 }

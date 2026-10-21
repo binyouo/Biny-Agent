@@ -53,7 +53,7 @@ try {
   await check("tui", tui, target =>
     /^(?:node:)?(?:fs(?:\/.*)?|child_process|worker_threads|cluster|net|http|https|http2|tls|dgram|dns(?:\/.*)?)$/.test(target)
       || /^electron(?:\/|$)/.test(target)
-      || /^src\/(?:tools\/|agent\/AgentSession\.|runtime\/(?:InteractiveAgentRuntime|CommandRuntime|ExecutionService|RuntimeHost)\.|session\/(?:store|recorder|cleanup|searchIndex)\.)/.test(target)
+      || /^src\/(?:tools\/|agent\/AgentSession\.|runtime\/(?:InteractiveAgentRuntime|CommandRuntime|RuntimeHost)\.|session\/(?:store|recorder|cleanup|searchIndex)\.)/.test(target)
       ? "execution or persistence access is forbidden" : undefined);
 } catch (error) {
   console.error(error.message);

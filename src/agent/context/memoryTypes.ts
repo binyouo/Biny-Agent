@@ -267,7 +267,7 @@ export interface MemorySearchResult {
 export interface MemoryDerivedIndexSink {
   prepareSynthesis?(content: string, signal?: AbortSignal): Promise<((entry: MemoryEntry) => void) | undefined>;
   indexEntry(entry: MemoryEntry): Promise<void>;
-  removeEntries?(entryIds: readonly string[]): void;
+  removeEntries?(entryIds: readonly string[]): void | Promise<void>;
   requestRebuild?(): void;
   findSimilarPairs?: (
     entries: readonly MemoryEntry[],

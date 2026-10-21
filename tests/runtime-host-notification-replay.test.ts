@@ -1,7 +1,9 @@
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Reconnect must request missed Host events before the hello high-water, without native notifications. */
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -57,11 +59,12 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = [], sur
   }, close: async () => undefined } as unknown as InteractiveRuntimeHandle;
   let sendOwnerNotification: ((text: string) => Promise<void>) | undefined;
   const commands = {
+    ...await createHostTestStores(root),
     setOwnerNotificationSink(sink: ((text: string) => Promise<void>) | undefined) {
       sendOwnerNotification = sink;
     }
   } as unknown as CommandRuntime;
-  const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined });
+  const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
   await server.initialize();
   await writeFile(paths.registrationPath, JSON.stringify(registration), { mode: 0o600 });
   const internals = server as unknown as {

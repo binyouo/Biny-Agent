@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { DatabaseSync } from "node:sqlite";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,12 +16,11 @@ import { startRuntimeHost, connectRuntimeHost } from "../src/runtime/RuntimeHost
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { GoalGraphStore } from "../src/runtime/GoalGraphStore.js";
 import { SessionGoalStore } from "../src/runtime/SessionGoalStore.js";
-import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import { runtimeCommandOperation } from "../src/runtime/commands.js";
 
 test("workspace goals are absent while session goals and graph execution remain available", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-workspace-goal-removal-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const graphs = await GoalGraphStore.open(root, authority);
   const goals = await SessionGoalStore.open(root, authority);
   try {
@@ -32,11 +33,11 @@ test("workspace goals are absent while session goals and graph execution remain 
     assert.equal(runtimeCommandOperation("/goal pause"), "session.goal.pause");
     const goal = goals.set("session-a", "Finish the current objective");
     assert.equal(goals.get("session-a")?.goalId, goal.goalId);
-    const graph = graphs.createGraph([{ nodeKey: "inspect", prompt: "Inspect the workspace" }]);
+    const graph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "inspect", prompt: "Inspect the workspace" }] });
     graphs.startGraph(graph.graphId);
     graphs.claimIntent(graph.graphId, graph.nodes[0]!.nodeId);
     graphs.completeNode(graph.graphId, graph.nodes[0]!.nodeId, "completed", { report: "done" });
-    assert.equal(graphs.inspectGraph(graph.graphId).status, "completed");
+    assert.equal(graphs.inspectGraph(graph.graphId).status, "running", "the supervisor decides when the graph is complete");
     assert.equal(goals.get("session-a")?.status, "active", "graph completion does not finish a session objective");
   } finally {
     goals.close(); graphs.close(); authority.close();
@@ -55,15 +56,15 @@ test("Host and CLI reject workspace goal operations and expose independent graph
     heartbeat: { ...defaultConfig.heartbeat, enabled: false }
   }, { globalDir: configDir });
   const local = await createInteractiveAgentHost(root, { configStore: createFileConfigStore(root, { globalDir: configDir }) });
-  const server = await startRuntimeHost(root, async () => local, { configDir });
+  const server = await startRuntimeHost(root, async () => local, {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir });
   const client = await connectRuntimeHost(root, { spawnOptions: { workspaceRoot: root, configDir } });
   try {
     assert.ok(client);
     for (const action of ["create", "get", "list", "pause", "resume", "cancel"]) {
       await assert.rejects(client.request(`goal.${action}`, { title: "Removed objective", goalId: "old-goal" }), /Unknown Runtime Host operation/u);
     }
-    const created = await client.graphCreate({ nodes: [{ nodeKey: "inspect", prompt: "Inspect without starting a model" }] });
-    assert.equal(created.accepted, true);
+    await assert.rejects(client.request("graph.create", { nodes: [] }), /Unknown Runtime Host operation/u);
+    local.commands.graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "inspect", prompt: "Inspect without starting a model" }] });
     const graphs = await client.graphList() as Array<{ graphId: string }>;
     assert.equal(graphs.length, 1);
     assert.equal(local.commands.graphs.inspectGraph(graphs[0]!.graphId).nodes.length, 1);
@@ -76,58 +77,23 @@ test("Host and CLI reject workspace goal operations and expose independent graph
     assert.match(help.stdout, /show|set|pause|resume|clear/u);
     assert.doesNotMatch(help.stdout, /create|cancel|workspace|list/u);
     await assert.rejects(execFile(process.execPath, [...process.execArgv, cli, "goal", "create", "old-goal"], options), /unknown command/u);
-    await assert.rejects(execFile(process.execPath, [...process.execArgv, cli, "graph", "create", "--nodes", "[]", "--goal-id", "old-goal"], options), /unknown option/u);
+    await assert.rejects(execFile(process.execPath, [...process.execArgv, cli, "graph", "create", "--nodes", "[]", "--goal-id", "old-goal"], options), /unknown command/u);
   } finally {
     await client?.close(); await server.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("schema 12 upgrade removes workspace goal data and linkage while preserving graphs, session objectives and audit", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-workspace-goal-migration-"));
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+test("unsupported runtime schemas are rejected without rewriting stored records", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-old-runtime-schema-"));
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
+  const databasePath = authority.databasePath;
+  authority.databaseHandle().exec("PRAGMA user_version = 12;");
+  authority.close();
   try {
-    const graphs = await GoalGraphStore.open(root, authority);
-    const goals = await SessionGoalStore.open(root, authority);
-    const graph = graphs.createGraph([{ nodeKey: "inspect", prompt: "Inspect the workspace" }]);
-    graphs.startGraph(graph.graphId);
-    graphs.pauseGraph(graph.graphId);
-    const goal = goals.set("session-a", "Keep this complete session objective");
-    const tasks = await DurableTaskRunStore.open(root, authority);
-    const createdTask = tasks.create({ sessionId: "session-a", task: "Keep this admitted task record" });
-    const task = tasks.get(createdTask.taskRunId)!;
-    authority.appendEvent({
-      eventId: "old-goal-created", sessionId: "goal:old-goal", invocationId: "old-goal",
-      runId: "goal:old-goal", turnId: "goal:old-goal", eventType: "goal.created",
-      payload: { title: "Workspace objective" }
-    });
-    const eventsBefore = authority.readEvents({ limit: 100 }).events;
-    const database = authority.databaseHandle();
-    database.exec("CREATE TABLE goals (goal_id TEXT PRIMARY KEY, workspace_id TEXT, title TEXT, status TEXT); ALTER TABLE graphs ADD COLUMN goal_id TEXT; PRAGMA user_version = 12;");
-    database.prepare("INSERT INTO goals VALUES (?, ?, ?, ?)").run("old-goal", authority.workspaceId, "Workspace objective", "active");
-    database.prepare("UPDATE graphs SET goal_id = ? WHERE graph_id = ?").run("old-goal", graph.graphId);
-    tasks.close(); graphs.close(); goals.close(); authority.close();
-
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
-    const migratedGraphs = await GoalGraphStore.open(root, authority);
-    const migratedGoals = await SessionGoalStore.open(root, authority);
-    assert.equal(authority.schemaRevision(), 14);
-    assert.equal(authority.databaseHandle().prepare("SELECT name FROM sqlite_master WHERE name = 'goals'").get(), undefined);
-    const columns = authority.databaseHandle().prepare("PRAGMA table_info(graphs)").all() as Array<{ name: string }>;
-    assert.equal(columns.some(column => column.name === "goal_id"), false);
-    const preserved = migratedGraphs.inspectGraph(graph.graphId);
-    assert.equal(preserved.status, "paused");
-    assert.deepEqual(preserved.nodes, graph.nodes);
-    assert.equal("goalId" in preserved, false);
-    assert.deepEqual(migratedGoals.get("session-a"), goal);
-    const migratedTasks = await DurableTaskRunStore.open(root, authority);
-    assert.deepEqual(migratedTasks.get(task.taskRunId), task);
-    assert.deepEqual(authority.readEvents({ limit: 100 }).events, eventsBefore);
-    migratedGraphs.resumeGraph(graph.graphId);
-    assert.equal(migratedGraphs.readyNodes(graph.graphId).length, 1);
-    migratedTasks.close(); migratedGraphs.close(); migratedGoals.close();
-  } finally {
-    authority.close();
-    await rm(root, { recursive: true, force: true });
-  }
+    await assert.rejects(RuntimeEventAuthority.open(root), /Unsupported runtime schema revision 12/u);
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try { assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 12); }
+    finally { database.close(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

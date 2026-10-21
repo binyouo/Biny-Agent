@@ -11,7 +11,7 @@ test("只读运行投影不创建数据库、不迁移、不接受写入", async
   try {
     assert.equal(await RuntimeEventAuthority.openReadOnly(root), undefined);
     await assert.rejects(access(path.join(agentDir(root), "runtime.sqlite")), { code: "ENOENT" });
-    const writer = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const writer = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const event = writer.appendEvent({ sessionId: "session", runId: "run", turnId: "turn", eventType: "test.saved", payload: { text: "saved" } });
     writer.close();
     const before = await readFile(writer.databasePath);
@@ -22,11 +22,11 @@ test("只读运行投影不创建数据库、不迁移、不接受写入", async
       assert.throws(() => reader.appendEvent({ sessionId: "session", runId: "run", turnId: "turn", eventType: "test.forbidden" }), /readonly|read-only/iu);
     } finally { reader.close(); }
     assert.deepEqual(await readFile(writer.databasePath), before);
-    const outdated = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const outdated = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     outdated.databaseHandle().exec("PRAGMA user_version = 1");
     outdated.close();
     const oldBytes = await readFile(writer.databasePath);
-    await assert.rejects(RuntimeEventAuthority.openReadOnly(root), /requires an explicit runtime startup/u);
+    await assert.rejects(RuntimeEventAuthority.openReadOnly(root), /unsupported/u);
     assert.deepEqual(await readFile(writer.databasePath), oldBytes, "浏览不得执行 schema 升级");
   } finally {
     await rm(root, { recursive: true, force: true });

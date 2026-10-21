@@ -1,3 +1,4 @@
+import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { promises as fs, realpathSync } from "node:fs";
@@ -79,7 +80,7 @@ test("endpoint permission failure refuses startup and releases the listening end
   syncBuiltinESMExports();
   const probe = net.createServer((socket) => socket.destroy());
   try {
-    await assert.rejects(startRuntimeHost(root, (resourceRegistry) => createInteractiveAgentHost(root, { configStore, resourceRegistry }), { configDir }).catch(async (error: unknown) => {
+    await assert.rejects(startRuntimeHost(root, (resourceRegistry) => createInteractiveAgentHost(root, { configStore, resourceRegistry }), {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir }).catch(async (error: unknown) => {
       if (process.platform === "win32" && error instanceof Error && error.message === "Workspace runtime storage resolves outside the global workspace state directory.") {
         await reportStatePathEquality(context, root);
       }
@@ -89,13 +90,13 @@ test("endpoint permission failure refuses startup and releases the listening end
     await assert.rejects(fs.access(paths.lockPath), { code: "ENOENT" });
     const lock = await acquireHostLock(paths, root);
     await lock.close();
-    await fs.rm(paths.lockPath);
+    await removeTestRoot(paths.lockPath);
     await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(paths.endpoint, resolve); });
   } finally {
     await Promise.all([...servers].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
     createServer.mock.restore();
     exec.mock.restore(); chmod.mock.restore(); syncBuiltinESMExports();
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 });
 
@@ -138,6 +139,6 @@ test("Windows workspace state accepts another casing of its own existing global 
   } finally {
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 });

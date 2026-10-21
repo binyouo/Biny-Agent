@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** Real canonical session files and SQLite, with a deterministic deferred model; no provider/network. */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -73,7 +75,7 @@ async function fixture(name: string) {
   let calls = 0;
   let acquisitions = 0;
   const prompts: string[] = [];
-  const model: AgentModel = { provider: "test", modelId: "deferred-brief", stream: async (context) => {
+  const model: AgentModel = testModel({ provider: "test", modelId: "deferred-brief", stream: async (context) => {
     const gate = gates[calls++];
     assert.ok(gate, "unexpected extra model invocation");
     prompts.push(JSON.stringify(context.messages));
@@ -85,7 +87,7 @@ async function fixture(name: string) {
         yield { type: "finish", reason: "stop" };
       } finally { gate.finished.resolve(); }
     })();
-  } };
+  } });
   (service.engine as unknown as EngineModelSeam).options.getModel = async () => { acquisitions += 1; return model; };
   async function append(...events: SessionEvent[]) {
     const writer = new SessionRecorder(workspace, sessionId, file);

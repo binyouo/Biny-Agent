@@ -1,3 +1,5 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
@@ -8,7 +10,7 @@ import { createSessionUsage, sumSessionUsage, summarizeUsage } from "../src/obse
 import { usageSnapshot } from "../src/session/metadata.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import type { SessionEvent } from "../src/session/recorder.js";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -183,13 +185,13 @@ test("completed tool-step usage survives a later provider failure, disk replay a
     models: { fixture: { provider: "fixture", model: "fixture", contextWindow: 1_000_000,
       pricing: { inputPerMillionTokens: 2, outputPerMillionTokens: 4, cacheReadPerMillionTokens: 0.5 } } },
     context: { ...defaultConfig.context,
-      emotion: { ...defaultConfig.context.emotion, enabled: false },
+
       identity: { ...defaultConfig.context.identity, enabled: false },
       compaction: { ...defaultConfig.context.compaction, enabled: false },
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "fixture", supportsTools: true, vercelOptions: { maxRetries: 0 },
     async stream() {
       requests++;
@@ -200,7 +202,7 @@ test("completed tool-step usage survives a later provider failure, disk replay a
           usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cacheReadTokens: 80 } };
       })();
     }
-  };
+  });
   const createAgent = () => {
     const registry = new ToolRegistry();
     registry.registerBuiltinTool(createReadFileTool({ workspaceRoot: workspace, ignore: [] }));

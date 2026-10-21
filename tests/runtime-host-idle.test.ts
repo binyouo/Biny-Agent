@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** 真实 Host、socket 和持久化目录上的生命周期契约；时间等待只用于验证空闲宽限窗口。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm, access } from "node:fs/promises";
+import { mkdtemp, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
@@ -19,7 +20,7 @@ await saveConfig(root, {
   heartbeat: { ...defaultConfig.heartbeat, enabled: false }
 }, { globalDir: configDir });
 const local = await createInteractiveAgentHost(root, { configStore: createFileConfigStore(root, { globalDir: configDir }) });
-const server = await startRuntimeHost(root, async () => local, { configDir });
+const server = await startRuntimeHost(root, async () => local, {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir });
 const clientOptions = { spawnOptions: { workspaceRoot: root, configDir } };
 let first = await connectRuntimeHost(root, { ...clientOptions, clientId: "first" });
 let second = await connectRuntimeHost(root, { ...clientOptions, clientId: "second" });

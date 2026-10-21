@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 真实 AgentSession 请求保留原消息，并只注入可读的本地引用正文。 */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -24,10 +26,10 @@ try {
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(directory, "source.jsonl"), JSON.stringify({ type: "user_message", messageId: "m1", content: "批准的规格是保留原文" }) + "\n");
   const requests: ModelStreamContext[] = [];
-  const model: AgentModel = { provider: "fixture", modelId: "reference-runtime", stream: async (context) => {
+  const model: AgentModel = testModel({ provider: "fixture", modelId: "reference-runtime", stream: async (context) => {
     requests.push(context);
     return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "收到" }; yield { type: "finish", reason: "stop" }; })();
-  } };
+  } });
   const config = structuredClone(defaultConfig);
   config.context.memory.useMemories = false;
   config.context.memory.generateMemories = false;

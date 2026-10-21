@@ -100,22 +100,6 @@ test("rewritten message parent reports session, event and field without exposing
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("schema upgrade without an old content hash replays the next change conservatively", async () => {
-  const { root, file } = await workspace();
-  try {
-    await writeFile(file, event("first"));
-    (await open(root)).close();
-    const db = new DatabaseSync(path.join(agentDir(root), "runtime.sqlite"));
-    try { db.exec("ALTER TABLE runtime_backfills DROP COLUMN content_hash; PRAGMA user_version = 10"); }
-    finally { db.close(); }
-    await appendFile(file, event("second"));
-    const authority = await open(root);
-    try { assert.equal(authority.readEvents({ sessionId: "backfill-test" }).events.length, 2); }
-    finally { authority.close(); }
-    assert.equal(watermark(root).event_count, 2);
-    assert.equal(watermark(root).content_hash, createHash("sha256").update(await readFile(file)).digest("hex"));
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
 
 
 test("same-size rewrite with restored mtime still checks the old projection", async () => {

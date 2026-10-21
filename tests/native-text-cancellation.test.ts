@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** 辅助模型即使忽略取消，也不能拖住停止或返回迟到结果。 */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -9,7 +10,7 @@ import { generateNativeText } from "../src/llm/nativeJson.js";
 let calls = 0;
 let release!: () => void;
 let pending = new Promise<void>((resolve) => { release = resolve; });
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test", modelId: "ignores-abort",
   stream: async () => {
     calls++;
@@ -18,20 +19,20 @@ const model: AgentModel = {
       yield { type: "text-delta", text: "late result" };
     })();
   }
-};
+});
 const preaborted = new AbortController();
 preaborted.abort();
-await assert.rejects(generateNativeText(model, [], { signal: preaborted.signal }), { name: "AbortError" });
+await assert.rejects(generateNativeText(model, [{ role: "user", content: "fixture request" }], { signal: preaborted.signal }), { name: "AbortError" });
 assert.equal(calls, 0);
 const controller = new AbortController();
-const result = generateNativeText(model, [], { signal: controller.signal });
+const result = generateNativeText(model, [{ role: "user", content: "fixture request" }], { signal: controller.signal });
 controller.abort();
 await assert.rejects(result, { name: "AbortError" });
 release();
 await delay(0);
 pending = new Promise<void>((resolve) => { release = resolve; });
 try {
-  await assert.rejects(generateNativeText(model, [], { timeoutMs: 20 }), { name: "TimeoutError" });
+  await assert.rejects(generateNativeText(model, [{ role: "user", content: "fixture request" }], { timeoutMs: 20 }), { name: "TimeoutError" });
 } finally {
   release();
 }
@@ -43,7 +44,7 @@ test("持续输出刷新空闲期限，但总期限仍然生效", async (t) => {
   let advance!: () => void;
   let consumed!: () => void;
   let acknowledged = new Promise<void>((resolve) => { consumed = resolve; });
-  const streaming: AgentModel = {
+  const streaming: AgentModel = testModel({
     provider: "test", modelId: "active-stream",
     async stream() {
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -55,15 +56,17 @@ test("持续输出刷新空闲期限，但总期限仍然生效", async (t) => {
         }
       })();
     }
-  };
-  const result = generateNativeText(streaming, [], { idleTimeoutMs: 30, timeoutMs: 100 });
+  });
+  const result = generateNativeText(streaming, [{ role: "user", content: "fixture request" }], { idleTimeoutMs: 30, timeoutMs: 100 });
   const rejected = assert.rejects(result, { name: "TimeoutError", message: "Auxiliary model request timed out." });
   await acknowledged;
+  await new Promise<void>(resolve => setImmediate(resolve));
   for (let i = 0; i < 3; i++) {
     t.mock.timers.tick(25);
     acknowledged = new Promise<void>((resolve) => { consumed = resolve; });
     advance();
     await acknowledged;
+  await new Promise<void>(resolve => setImmediate(resolve));
   }
   t.mock.timers.tick(25);
   await rejected;
@@ -72,8 +75,8 @@ test("持续输出刷新空闲期限，但总期限仍然生效", async (t) => {
 
 test("空闲期限覆盖首包等待，取消后不能重试或接收迟到输出", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const neverStarts: AgentModel = { provider: "test", modelId: "stalled", stream: async () => await new Promise(() => undefined) };
-  const result = generateNativeText(neverStarts, [], { idleTimeoutMs: 30, timeoutMs: 100 });
+  const neverStarts: AgentModel = testModel({ provider: "test", modelId: "stalled", stream: async () => await new Promise(() => undefined) });
+  const result = generateNativeText(neverStarts, [{ role: "user", content: "fixture request" }], { idleTimeoutMs: 30, timeoutMs: 100 });
   const rejected = assert.rejects(result, { name: "TimeoutError", message: "Auxiliary model stream stalled." });
   t.mock.timers.tick(30);
   await rejected;

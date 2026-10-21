@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInMemoryActivitySuggestionCache, generateActivitySuggestions } from "../src/activity/suggestions.js";
@@ -48,7 +50,7 @@ async function testActivitySuggestionsAreGroundedAndCached(): Promise<void> {
     });
     let calls = 0;
     let prompt = "";
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test",
       modelId: "suggestion-model",
       runtime: "builtin-llama.cpp",
@@ -61,7 +63,7 @@ async function testActivitySuggestionsAreGroundedAndCached(): Promise<void> {
           yield { type: "finish", reason: "stop" };
         })();
       }
-    };
+    });
     const cache = createInMemoryActivitySuggestionCache();
     const deps = {
       store,
@@ -132,7 +134,7 @@ async function testActivitySuggestionsUseExternalModel(): Promise<void> {
       inputHash: "external-suggestions-test"
     });
     let calls = 0;
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "external",
       modelId: "cloud",
       runtime: "provider",
@@ -143,7 +145,7 @@ async function testActivitySuggestionsUseExternalModel(): Promise<void> {
           yield { type: "finish", reason: "stop" };
         })();
       }
-    };
+    });
     const result = await generateActivitySuggestions({
       store,
       model,
@@ -168,13 +170,13 @@ async function testShortAndMixedSuggestionsAreRetained(): Promise<void> {
       worthMemory: false, worthKnowledge: false, isMeeting: false, storageTier: "standard",
       confidence: 1, sourceEventCount: 3, inputHash: "count-test"
     });
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "count-test", runtime: "builtin-llama.cpp", dataResidency: "local",
       stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
         yield { type: "text-delta", text: JSON.stringify(["看看检索设计", 7, "继续完善检索", "x".repeat(120), "y".repeat(121)]) };
         yield { type: "finish", reason: "stop" };
       })()
-    };
+    });
     const result = await generateActivitySuggestions({ store, model, now: new Date("2026-09-24T09:00:00.000Z") });
     assert.deepEqual(result.suggestions, ["看看检索设计", "继续完善检索", "x".repeat(120)]);
     assert.equal(result.reason, undefined);
@@ -192,7 +194,7 @@ async function testEmptySuggestionsAreCached(): Promise<void> {
       isMeeting: false, storageTier: "standard", confidence: 1, sourceEventCount: 3, inputHash: "empty-cache-test"
     });
     let calls = 0;
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "empty-cache-test", stream: async () => {
         calls += 1;
         return (async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -200,7 +202,7 @@ async function testEmptySuggestionsAreCached(): Promise<void> {
           yield { type: "finish", reason: "stop" };
         })();
       }
-    };
+    });
     const cache = createInMemoryActivitySuggestionCache();
     const deps = { store, model, cache, now: new Date("2026-09-24T09:00:00.000Z") };
     assert.deepEqual((await generateActivitySuggestions(deps)).suggestions, []);

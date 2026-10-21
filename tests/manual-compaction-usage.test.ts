@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -175,7 +177,7 @@ async function fixture(responses: Attempt[]) {
   config.context.compaction.keepRecentTokens = 2_000;
   config.heartbeat.enabled = false;
   config.crystal.passiveEnabled = false;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "manual-usage",
     async stream(context) {
       const summary = context.systemPrompt?.includes("durable context checkpoint") === true;
@@ -188,7 +190,7 @@ async function fixture(responses: Attempt[]) {
         yield { type: "finish", reason: response.reason ?? "stop", usage: response.usage };
       })();
     }
-  };
+  });
   const createAgent = () => new AgentSession({ workspaceRoot: root, config, model, toolRegistry: new ToolRegistry(),
     permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(root) });
   const initial = createAgent();

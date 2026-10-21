@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -17,10 +19,10 @@ test("the local date survives auxiliary-context omission and is charged to the i
     if (previousZone === undefined) delete process.env.TZ; else process.env.TZ = previousZone;
     await rm(root, { recursive: true, force: true });
   });
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "date-budget", runtime: "builtin-llama.cpp", dataResidency: "local",
     stream: async () => { throw new Error("No model request expected"); }
-  };
+  });
   const context = new ContextMemory(() => model, new WorkspaceContext(root, [], 4096), undefined,
     1000, 4096, undefined, undefined, { enabled: false, reserveTokens: 100 });
   context.replaceHistory([{ role: "user", content: "older context ".repeat(60) },

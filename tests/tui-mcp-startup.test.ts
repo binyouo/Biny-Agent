@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, access } from "node:fs/promises";
+import { mkdtemp, writeFile, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,7 +11,7 @@ import { RuntimeHostResourceScope, RuntimeHostResourceRegistry } from "../src/ru
 import { buildMcpCard } from "../src/runtime/commandCards.js";
 import type { AgentRuntimeUpdate, InteractiveRuntimeSnapshot } from "../src/runtime/agentEvents.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
-import { createCommandRuntime, type CommandRuntime } from "../src/runtime/CommandRuntime.js";
+import { createCommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { RuntimeHostClient } from "../src/runtime/host/client.js";
 import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
 import { BinyTui } from "../src/tui/app.js";
@@ -145,11 +146,11 @@ await test("TUI follows MCP loading, failure, recovery and deduplicates resource
   let reads = 0;
   const runtime = {
     getSnapshot: () => snapshot,
+    mcpStatus: async () => { reads += 1; return statuses; },
     subscribe: (callback: typeof listener) => { listener = callback; return () => { listener = undefined; }; }
   } as InteractiveRuntimeHandle;
   app["runtime"] = runtime;
   app["runtimeSnapshot"] = snapshot;
-  app["commands"] = { mcp: { listServers: () => { reads += 1; return statuses; } } } as unknown as CommandRuntime;
   const publish = async (): Promise<void> => {
     snapshot = { ...snapshot, revision: snapshot.revision + 1, resourceReadiness: { revision: snapshot.resourceReadiness!.revision + 1, state: "ready" } };
     listener?.({ snapshot });
@@ -197,6 +198,7 @@ await test("a delayed MCP status response cannot overwrite a newer runtime snaps
   const replies: Array<(servers: McpServerStatus[]) => void> = [];
   const runtime = Object.assign(Object.create(RuntimeHostClient.prototype) as RuntimeHostClient, {
     getSnapshot: () => snapshot,
+    mcpStatus: async () => { reads += 1; return statuses; },
     mcpStatus: () => new Promise<McpServerStatus[]>(resolve => { replies.push(resolve); }),
     subscribe: (callback: typeof listener) => { listener = callback; return () => { listener = undefined; }; }
   });

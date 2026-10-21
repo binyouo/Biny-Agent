@@ -12,12 +12,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentMessage } from "../agent/core/types.js";
 import type { SessionReplay, SessionMessageReference, SessionDiscardedToolCall, SessionMessageNode } from "./replay.js";
-import type { SessionEvent, SessionContextUsage, SessionContextState, SessionContextCheckpoint, SessionUsage } from "./recorder.js";
+import type { SessionEvent, SessionContextState, SessionContextCheckpoint, SessionUsage } from "./recorder.js";
 import type { ModelRequestMetrics } from "../agent/core/types.js";
 import type { RuntimeHighWater } from "./runtimeEvent.js";
 
 // 只标记可重建的 replay 投影版本；原始 JSONL 的事件格式不变。
-const replayVersion = 4;
+const replayVersion = 5;
 
 export interface SessionSnapshotData {
   replayVersion: number;
@@ -32,7 +32,6 @@ export interface SessionSnapshotData {
   contextStartMessageIndex: number;
   contextStartUserMessageIndex: number;
   totalMessageCount: number;
-  contextUsage?: SessionContextUsage;
   contextState?: SessionContextState;
   contextCheckpoint?: SessionContextCheckpoint;
   usage: SessionUsage[];
@@ -112,7 +111,6 @@ export async function writeSessionSnapshot(
       contextStartMessageIndex: replay.contextStartMessageIndex,
       contextStartUserMessageIndex: replay.contextStartUserMessageIndex,
       totalMessageCount: replay.totalMessageCount,
-      contextUsage: replay.contextUsage,
       contextState: replay.contextState,
       contextCheckpoint: replay.contextCheckpoint,
       usage: replay.usage,
@@ -143,7 +141,6 @@ export function snapshotToReplay(snapshot: SessionSnapshotData): SessionReplay {
     contextStartMessageIndex: snapshot.contextStartMessageIndex,
     contextStartUserMessageIndex: snapshot.contextStartUserMessageIndex,
     totalMessageCount: snapshot.totalMessageCount,
-    contextUsage: snapshot.contextUsage,
     contextState: snapshot.contextState,
     contextCheckpoint: snapshot.contextCheckpoint,
     usage: snapshot.usage,

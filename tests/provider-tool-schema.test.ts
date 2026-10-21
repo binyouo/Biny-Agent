@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** 真实 AI SDK adapter 的出站请求必须携带稳定、有合法结构且互不污染的工具 schema。 */
 import assert from "node:assert/strict";
 import { vercelAgentLoopContinue } from "../src/agent/core/vercelAgentLoop.js";
@@ -30,11 +31,11 @@ const agentTool: AgentTool = {
   executionMode: "parallel",
   execute: async () => ({ content: [] })
 };
-const fallbackModel: AgentModel = {
+const fallbackModel: AgentModel = testModel({
   provider: "fixture",
   modelId: "fixture",
   stream: async () => { throw new Error("The provider adapter must handle this request."); }
-};
+});
 
 const adapters: Array<{ label: string; providerType: string; api: ModelApiBackend; supportsReasoning: boolean; omitEmptyRequired?: boolean }> = [
   { label: "OpenAI Chat", providerType: "openai", api: "chat_completions", supportsReasoning: true },

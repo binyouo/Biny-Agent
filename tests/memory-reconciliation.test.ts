@@ -1,10 +1,14 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
 import { test } from "node:test";
+import { AgentMemoryOwner } from "../src/runtime/memory/owner.js";
+import { canonicalMemoryRoot, serveMemoryOwner } from "../src/runtime/memory/transport.js";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel } from "../src/agent/core/types.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
@@ -264,6 +268,7 @@ await test("manual semantic search selects top-K within user, thread and tag sco
 await test("a real AgentSession persists automatic correction metadata and the revised fact", { timeout: 15_000 }, async () => {
   const f = await fixture();
   let agent: AgentSession | undefined;
+  let memoryServer: Awaited<ReturnType<typeof serveMemoryOwner>> | undefined;
   let requests = 0;
   const server = createServer(async (request, response) => {
     assert.equal(request.url, "/v1/embeddings");
@@ -292,6 +297,8 @@ await test("a real AgentSession persists automatic correction metadata and the r
     config.context.memory.embeddingModel = { kind: "provider", provider: "embed", model: "test-embedding" };
     config.toolModel = undefined;
     await ensureAgentDirs(f.root);
+    const owner = new AgentMemoryOwner(await canonicalMemoryRoot(f.root), { load: async () => config, save: async () => { throw new Error("Unexpected config write"); } });
+    memoryServer = await serveMemoryOwner(await canonicalMemoryRoot(f.root), f.root, owner);
     const recorder = new SessionRecorder(f.root, "memory-reconcile-agent");
     agent = new AgentSession({
       workspaceRoot: f.root, config, model: f.model, recorder, toolRegistry: new ToolRegistry(),
@@ -317,6 +324,7 @@ await test("a real AgentSession persists automatic correction metadata and the r
     assert.ok(requests >= 3, "initial indexing, candidate search and corrected indexing use the real provider adapter");
   } finally {
     await agent?.close();
+    await memoryServer?.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await f.close();
   }
@@ -330,7 +338,7 @@ async function fixture() {
     respond: (_prompt: string): string | Promise<string> => JSON.stringify({ operation: "ADD" }),
     failPassage: false
   };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "reconcile-fixture",
     async stream(context, options) {
       const prompt = context.messages.map((message) => typeof message.content === "string" ? message.content : "").join("\n");
@@ -341,7 +349,7 @@ async function fixture() {
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
-  };
+  });
   const ref = { kind: "provider", provider: "test", model: "embedding" } as const;
   const runtime: EmbeddingModelRuntime = {
     descriptor: { ref, fingerprint: "reconcile", displayName: "fixture", dimensions: 2, recommendedThreshold: 0.3, source: "provider" },

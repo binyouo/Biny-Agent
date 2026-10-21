@@ -9,7 +9,7 @@ import { TUI, type Terminal } from "@earendil-works/pi-tui";
 import * as hostBoundary from "../src/runtime/RuntimeHost.js";
 
 const workerFlag = "--late-host-shutdown-worker";
-type Mode = "failed-direct" | "successful-direct" | "failed-client";
+type Mode = "successful-client" | "failed-client";
 
 async function worker(mode: Mode): Promise<void> {
   const starting = Promise.withResolvers<void>();
@@ -17,27 +17,16 @@ async function worker(mode: Mode): Promise<void> {
   const releaseClose = Promise.withResolvers<void>();
   let runtimeCloseCalls = 0;
   let hostCloseCalls = 0;
-  const close = async () => {
+  const runtime = Object.assign(Object.create(hostBoundary.RuntimeHostClient.prototype), { close: async () => {
     runtimeCloseCalls += 1;
-    if (mode === "failed-direct") await releaseClose.promise;
-  };
-  const runtime = mode === "failed-client"
-    ? Object.assign(Object.create(hostBoundary.RuntimeHostClient.prototype), { close })
-    : { close };
-  const host = {
-    getCurrentRuntime: () => runtime,
-    getCurrentCommands: () => ({}),
-    close: async () => {
-      hostCloseCalls += 1;
-      if (mode !== "successful-direct") throw new Error("Synthetic Host shutdown deadline");
-    }
-  };
+    if (mode === "failed-client") throw new Error("Synthetic client close failure");
+  } });
   // Replace only process startup/connection boundaries; BinyTui run/start/exit
   // execute normally with a memory terminal and cannot access a provider or UI.
   mock.module("../src/runtime/RuntimeHost.js", { namedExports: {
     ...hostBoundary,
-    connectOrSpawnRuntimeHost: async () => { throw new Error("Synthetic initial attach unavailable"); },
-    startRuntimeHost: async () => { starting.resolve(); await started.promise; return host; },
+    connectOrSpawnRuntimeHost: async () => { starting.resolve(); await started.promise; return runtime; },
+    startRuntimeHost: async () => { hostCloseCalls++; throw new Error("TUI cannot own a direct runtime"); },
     connectRuntimeHost: async () => undefined
   } });
   const { BinyTui } = await import("../src/tui/app.js");
@@ -58,9 +47,8 @@ async function worker(mode: Mode): Promise<void> {
     assert.equal(terminalStops, 1, "terminal exits before the late Host is published");
     started.resolve();
     await nextTurn();
-    assert.equal(hostCloseCalls, 1);
-    assert.equal(runtimeCloseCalls, mode === "failed-direct" ? 0 : 1,
-      "a failed Host close may release its client, but must not re-enter the direct runtime close");
+    assert.equal(hostCloseCalls, 0);
+    assert.equal(runtimeCloseCalls, 1, "a late client must be closed exactly once");
     assert.equal(settled, true, "late startup must return after bounded Host cleanup");
     await app.exit();
     assert.equal(terminalStops, 1);
@@ -75,7 +63,7 @@ async function worker(mode: Mode): Promise<void> {
 if (process.argv[2] === workerFlag) {
   await worker(process.argv[3] as Mode);
 } else {
-  for (const mode of ["failed-direct", "successful-direct", "failed-client"] as const) {
+  for (const mode of ["successful-client", "failed-client"] as const) {
     test(`late local Host cleanup preserves shutdown boundaries (${mode})`, { timeout: 10_000 }, async () => {
       // Module-boundary mocks require Node's explicit opt-in and an isolated
       // process. The child deadline also bounds failures before a startup barrier.

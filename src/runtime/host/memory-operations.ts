@@ -5,9 +5,6 @@
  * 统一落到 AgentSession，避免协议路由层直接拼装领域读写细节。
  */
 import type { CommandRuntime } from "../CommandRuntime.js";
-import { PersistedSleepRunError } from "../../agent/context/LocalMemory.js";
-import type { MemoryEntry } from "../../agent/context/memoryTypes.js";
-import { resolveMemoryModelAlias } from "../../llm/toolModel.js";
 import {
   optionalSafeInteger,
   readMemoryEntryInput,
@@ -34,41 +31,9 @@ export async function executeRuntimeHostMemoryOperation(
     const [overview, entries, maintenance] = await Promise.all([
       memory.getOverview(),
       memory.listMemoryEntries(),
-      memory.loadMaintenanceStatus()
+      commands.agent.memoryMaintenanceStatus()
     ]);
     return { overview, entries, allEntries: entries, maintenance };
-  }
-  if (action === "stats") {
-    const listed = await memory.listMemoryEntries({ limit: Number.MAX_SAFE_INTEGER });
-    const bySource = new Map<string, number>();
-    const byThread = new Map<string, number>();
-    for (const entry of listed.entries) {
-      const source = entry.source || "unknown";
-      bySource.set(source, (bySource.get(source) ?? 0) + 1);
-      if (entry.threadId) byThread.set(entry.threadId, (byThread.get(entry.threadId) ?? 0) + 1);
-    }
-    return { total: listed.total, bySource: Object.fromEntries(bySource), byThread: Object.fromEntries(byThread) };
-  }
-  if (action === "tool-model") {
-    const alias = resolveMemoryModelAlias(commands.config);
-    const selected = alias ? commands.config.models[alias] : undefined;
-    return {
-      model: selected ? `${selected.provider}:${selected.model}` : null,
-      isAutoDetected: !commands.config.context.memory.memoryModel && !commands.config.toolModel
-    };
-  }
-  if (action === "service-status") {
-    const embedding = await commands.agent.memoryEmbeddingStatus();
-    return {
-      // Host 持有可用的 SQLite 事实库；派生索引重建不会封锁事实读写。
-      ready: true,
-      initialized: true,
-      error: null,
-      rebuilding: embedding.operation?.kind === "rebuild" && embedding.operation.state === "running"
-    };
-  }
-  if (action === "stored-embedding-model") {
-    return { model: commands.agent.storedMemoryEmbeddingModel() };
   }
   if (action === "list") {
     return await memory.listMemoryEntries({
@@ -112,81 +77,13 @@ export async function executeRuntimeHostMemoryOperation(
     );
   }
   if (action === "sleep-status") {
-    return await memory.loadMaintenanceStatus();
-  }
-  if (action === "sleep-http-status") {
-    const [status, personalization, archive] = await Promise.all([
-      memory.loadMaintenanceStatus(),
-      commands.agent.getPersonalizationState(),
-      memory.listArchivedEntries({ limit: 0 })
-    ]);
-    const policy = personalization.memory;
-    const now = new Date();
-    const hour = Number(policy.sleepTime.slice(0, 2));
-    const minute = Number(policy.sleepTime.slice(3, 5));
-    const recent = [...(status.sleepRuns ?? []), ...(status.lastRun && !status.sleepRuns?.some((run) => run.id === status.lastRun?.id)
-      ? [status.lastRun] : [])]
-      .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
-      .slice(0, 5);
-    const completedToday = recent.some((run) => run.status === "completed" && sameLocalDate(new Date(run.startedAt), now));
-    const next = new Date(now);
-    if (completedToday || now.getHours() * 60 + now.getMinutes() >= hour * 60 + minute) next.setDate(next.getDate() + 1);
-    return {
-      sleeping: status.state === "running",
-      currentRunId: status.state === "running" ? status.lastRun?.id ?? null : null,
-      lastRun: status.lastRun ?? null,
-      nextRunDate: localDateKey(next),
-      // Sleep settings 只覆盖整理策略；本地复用个性化策略字段生成 REST 投影。
-      settings: {
-        enabled: policy.enabled && policy.sleepEnabled,
-        dailyTime: policy.sleepTime,
-        temporaryTtlDays: policy.temporaryTtl,
-        archiveRetentionDays: policy.archiveRetentionDays,
-        similarityMergeThreshold: policy.similarityMergeThreshold,
-        llmMergeLow: policy.llmMergeLow,
-        llmEnabled: policy.useLlm,
-        llmBatchSize: policy.llmBatchSize,
-        // 用户命名空间相互隔离，因此不跨用户执行精确去重。
-        dedupAcrossUserIds: false
-      },
-      archiveCount: archive.total
-    };
+    return await commands.agent.memoryMaintenanceStatus();
   }
   if (action === "sleep-runs") {
-    return (await memory.loadMaintenanceStatus()).sleepRuns ?? [];
+    return (await commands.agent.memoryMaintenanceStatus()).sleepRuns ?? [];
   }
-  if (action === "sleep-run-now") {
-    const state = await commands.agent.getPersonalizationState();
-    const policy = state.memory;
-    try {
-      const result = await memory.runMemoryMaintenance({
-        trigger: "manual",
-        archiveRetentionDays: policy.archiveRetentionDays,
-        temporaryTtl: policy.temporaryTtl,
-        similarityMergeThreshold: policy.similarityMergeThreshold,
-        useLlm: policy.useLlm,
-        llmMergeLow: policy.llmMergeLow,
-        llmBatchSize: policy.llmBatchSize
-      }, {
-        indexEntry: async (entry: MemoryEntry) => await commands.agent.indexMemoryEntry(entry),
-        prepareSynthesis: (content, signal) => commands.agent.prepareMemorySynthesis(content, signal),
-        requestRebuild: () => context.scheduleEmbeddingRebuild(),
-        findSimilarPairs: async (entries: readonly MemoryEntry[], minimumSimilarity: number, signal?: AbortSignal) => (
-          await commands.agent.findMemorySimilarityPairs(entries, minimumSimilarity, signal)
-        )
-      }, true);
-      return { result, maintenance: memory.maintenanceStatus() };
-    } catch (error) {
-      if (error instanceof PersistedSleepRunError) return { maintenance: { lastRun: error.run } };
-      throw error;
-    }
-  }
-  if (action === "sleep-preview") {
-    const state = await commands.agent.getPersonalizationState();
-    return await memory.previewMaintenance(state.memory, {
-      findSimilarPairs: async (entries, threshold, signal) => commands.agent.findMemorySimilarityPairs(entries, threshold, signal)
-    });
-  }
+  if (action === "sleep-run-now") return commands.agent.runMemoryMaintenance();
+  if (action === "sleep-preview") return commands.agent.previewMemoryMaintenance();
   if (action === "write") {
     return await memory.writeEntry(readMemoryEntryInput(payload.entry));
   }
@@ -228,14 +125,4 @@ export async function executeRuntimeHostMemoryOperation(
       : await memory.clearThreadEntries(requiredString(payload.threadId, "threadId"));
   }
   throw new Error(`Unknown memory operation: ${action}`);
-}
-
-function sameLocalDate(left: Date, right: Date): boolean {
-  return left.getFullYear() === right.getFullYear()
-    && left.getMonth() === right.getMonth()
-    && left.getDate() === right.getDate();
-}
-
-function localDateKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }

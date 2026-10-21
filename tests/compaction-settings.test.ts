@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 // 压缩自定义额度回归：triggerPercent 触发、条数保留、reserve 优先级、摘要模型注入与项目级覆盖解析。
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentMessage, AgentModel, AgentStopReason, ModelStreamContext, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -55,7 +57,7 @@ class RecordingModel {
     private readonly finishReason: AgentStopReason | null | readonly (AgentStopReason | null)[] = "stop"
   ) {}
 
-  readonly model: AgentModel = {
+  readonly model: AgentModel = testModel({
     provider: "compaction-test",
     modelId: "compaction-test",
     stream: async (context: ModelStreamContext, options): Promise<AsyncIterable<ModelStreamEvent>> => {
@@ -75,7 +77,7 @@ class RecordingModel {
         if (finishReason !== null && finishReason !== undefined) yield { type: "finish" as const, reason: finishReason, usage: { inputTokens: 0, outputTokens: 1, totalTokens: 1 } };
       }).call(this);
     }
-  };
+  });
 }
 
 async function withTempWorkspace(fn: (workspaceRoot: string) => Promise<void>): Promise<void> {

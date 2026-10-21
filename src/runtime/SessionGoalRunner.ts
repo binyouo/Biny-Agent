@@ -55,7 +55,7 @@ export class SessionGoalRunner {
     if (store !== this.subscribedStore) {
       this.unsubscribe?.();
       this.subscribedStore = store;
-      this.unsubscribe = store?.subscribe(() => {
+      this.unsubscribe = store.subscribe(() => {
         this.options.onChange?.();
         this.requestTick();
       });
@@ -63,7 +63,7 @@ export class SessionGoalRunner {
     this.scheduled = setImmediate(() => {
       this.scheduled = undefined;
       if (this.stopped || !this.options.canStart()) return;
-      for (const goal of this.options.getCommands().sessionGoals?.list({ status: "active" }) ?? []) {
+      for (const goal of this.options.getCommands().sessionGoals.list({ status: "active" })) {
         if (this.pending.has(goal.sessionId)) {
           this.rerun.add(goal.sessionId);
           continue;

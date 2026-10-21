@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 通过真实 AgentSession 验证准备并行、能力门禁和取消落盘；只替换模型边界。 */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -36,7 +38,7 @@ let providerCalls = 0;
 const preparationStages: string[] = [];
 let releaseSelection!: () => void;
 const selectionGate = new Promise<void>((resolve) => { releaseSelection = resolve; });
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test", modelId: "test",
   stream: async (context) => {
     assert.equal(selectionReady, true, "主模型必须等待能力筛选完成");
@@ -53,7 +55,7 @@ const model: AgentModel = {
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 let cancelSelection = false;
 const toolRegistry = new ToolRegistry();
 toolRegistry.registerBuiltinTool({

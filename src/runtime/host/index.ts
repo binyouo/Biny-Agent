@@ -4,7 +4,6 @@ export * from "./errors.js";
 export * from "./protocol.js";
 export * from "./credentials.js";
 export * from "./composition.js";
-export * from "./maintenance.js";
 export * from "./memory-operations.js";
 export * from "./lifecycle.js";
 export * from "./bootstrap.js";

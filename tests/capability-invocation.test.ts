@@ -35,7 +35,7 @@ async function main(): Promise<void> {
     testFailureToPersistUnknownStillReturnsUnknown,
     testClosedCapabilityStoreDoesNotKeepAnOperationActive,
     testRestartBeforeReportedDispatchSettlesAsCancelled,
-    testLegacyRunningInvocationRemainsUnknownAfterMigration,
+    testOldInvocationSchemaRequiresExplicitReset,
     testUnknownInvalidationReasonReachesSessionResult,
     testAbortedExternalCapabilityQuarantinesItsExecutor,
     testMcpTransportFailureIsDurableUnknownAndNotReplayed
@@ -324,7 +324,7 @@ async function testTimedOutReconnectCannotDispatchLater(): Promise<void> {
 
 async function testClosedCapabilityStoreDoesNotKeepAnOperationActive(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "capability-store-close-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const firstStore = await CapabilityStore.open(root, authority);
   let secondStore: CapabilityStore | undefined;
   let markStarted!: () => void;
@@ -375,7 +375,7 @@ async function testClosedCapabilityStoreDoesNotKeepAnOperationActive(): Promise<
 
 async function testRestartBeforeReportedDispatchSettlesAsCancelled(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "capability-restart-before-dispatch-"));
-  const firstAuthority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const firstAuthority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const firstStore = await CapabilityStore.open(root, firstAuthority);
   let secondAuthority: RuntimeEventAuthority | undefined;
   let secondStore: CapabilityStore | undefined;
@@ -403,7 +403,7 @@ async function testRestartBeforeReportedDispatchSettlesAsCancelled(): Promise<vo
     firstStore.close();
     firstAuthority.close();
 
-    secondAuthority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    secondAuthority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     secondStore = await CapabilityStore.open(root, secondAuthority);
     assert.equal(secondStore.recoverUnsettledInvocations("host_restarted"), 1);
     const registration = secondStore.list().find((item) => item.capabilityName === input.capabilityName)!;
@@ -432,10 +432,10 @@ async function testRestartBeforeReportedDispatchSettlesAsCancelled(): Promise<vo
   }
 }
 
-async function testLegacyRunningInvocationRemainsUnknownAfterMigration(): Promise<void> {
+async function testOldInvocationSchemaRequiresExplicitReset(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "capability-legacy-dispatch-migration-"));
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
-  let store = await CapabilityStore.open(root, authority);
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
+  const store = await CapabilityStore.open(root, authority);
   let invocationId: string | undefined;
   try {
     const registration = store.register({
@@ -459,13 +459,8 @@ async function testLegacyRunningInvocationRemainsUnknownAfterMigration(): Promis
     authority.databaseHandle().exec("ALTER TABLE capability_invocations DROP COLUMN dispatch_state; PRAGMA user_version = 8");
     store.close();
     authority.close();
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
-    store = await CapabilityStore.open(root, authority);
+    await assert.rejects(RuntimeEventAuthority.open(root, { reconcileSessions: false }), /Unsupported runtime schema revision 8/u);
 
-    assert.equal(authority.schemaRevision(), 14);
-    assert.equal(store.getInvocation(invocationId)?.dispatchState, "dispatched", "legacy records without a dispatch marker must migrate conservatively");
-    assert.equal(store.recoverUnsettledInvocations("host_restarted"), 1);
-    assert.equal(store.getInvocation(invocationId)?.status, "unknown");
   } finally {
     store.close();
     authority.close();
@@ -527,7 +522,7 @@ async function testFailureToPersistUnknownStillReturnsUnknown(): Promise<void> {
 async function testUnknownInvalidationReasonReachesSessionResult(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "capability-unknown-result-"));
   await ensureAgentDirs(root);
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const capabilities = await CapabilityStore.open(root, authority);
   const recorder = new SessionRecorder(root, "capability-unknown-result", undefined, authority.asSink());
   recorder.setRuntimeContext({ runId: "run-capability-unknown", turnId: "turn-capability-unknown" });
@@ -599,7 +594,7 @@ async function testUnknownInvalidationReasonReachesSessionResult(): Promise<void
 async function testAbortedExternalCapabilityQuarantinesItsExecutor(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "capability-abort-quarantine-"));
   await ensureAgentDirs(root);
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const capabilities = await CapabilityStore.open(root, authority);
   const recorder = new SessionRecorder(root, "capability-abort-quarantine", undefined, authority.asSink());
   recorder.setRuntimeContext({ runId: "run-abort-quarantine", turnId: "turn-abort-quarantine" });
@@ -713,7 +708,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 });
 `, "utf8");
 
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const capabilities = await CapabilityStore.open(root, authority);
   const recorder = new SessionRecorder(root, "mcp-transport-outcome", undefined, authority.asSink());
   recorder.setRuntimeContext({ runId: "run-mcp-transport", turnId: "turn-mcp-transport" });
@@ -784,7 +779,7 @@ async function createCapabilityFixture(prefix: string): Promise<{
   close(): Promise<void>;
 }> {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const store = await CapabilityStore.open(root, authority);
   return {
     store,

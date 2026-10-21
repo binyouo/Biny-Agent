@@ -81,6 +81,7 @@ test("duplicate source tool IDs retain every call/result without guessing a winn
     const results = events.filter((event) => event.type === "tool_result");
     assert.deepEqual(results.map((event) => [event.tool, event.result]), [["tool", "result one"], ["tool", "result two"]]);
     assert.deepEqual(events.filter((event) => event.type === "tool_call").map((event) => event.tool), ["first", "second"]);
-    assert.deepEqual(replaySessionEvents(events).messages.filter((message) => message.role === "toolResult").map((message) => message.details), ["result one", "result two"]);
+    assert.ok(results.every(event => event.auditOnly));
+    assert.deepEqual(replaySessionEvents(events).messages.filter((message) => message.role === "toolResult"), [], "ambiguous IDs remain audit facts, not executable model history");
   });
 });

@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 分析与记忆投影的调度边界：慢投影不能占住后续待分析会话，退出前须收齐投影。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { analyzePendingActivitySessions } from "../src/activity/analyzer.js";
@@ -14,7 +16,7 @@ try {
   await store.open(root, root);
   const first = addSession("2026-09-10T11:00:00.000Z", "2026-09-10T12:00:00.000Z");
   const second = addSession("2026-09-10T09:00:00.000Z", "2026-09-10T10:00:00.000Z");
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "activity-projection-test", runtime: "provider", dataResidency: "local",
     stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: JSON.stringify({
@@ -23,7 +25,7 @@ try {
       }) };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
   const projectionStarted = Promise.withResolvers<void>();
   const writes: string[] = [];
   const sweep = analyzePendingActivitySessions({

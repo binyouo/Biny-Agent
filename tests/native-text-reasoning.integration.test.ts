@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
+import type { AgentModel } from "../src/agent/core/types.js";
 import { defaultConfig, type AgentConfig } from "../src/config/schema.js";
 import { generateNativeText } from "../src/llm/nativeJson.js";
 import { ProviderRegistry } from "../src/llm/ProviderRuntime.js";
@@ -193,21 +193,4 @@ test("custom Vercel model without resolver receives standardized reasoning", asy
   await generateNativeText(model, messages, { reasoning: "max" });
   assert.deepEqual(calls.map(call => call.reasoning), ["none", "xhigh"]);
   assert.ok(calls.every(call => call.providerOptions === undefined));
-});
-
-test("injected stream keeps raw reasoning and never uses the Vercel-only resolver", async () => {
-  const calls: unknown[] = [];
-  const model: AgentModel = {
-    provider: "fixture", modelId: "injected",
-    resolveTextReasoning: () => { throw new Error("Injected options must retain their existing contract"); },
-    stream: async (_context, options) => {
-      calls.push(options?.reasoning);
-      return (async function* (): AsyncGenerator<ModelStreamEvent> {
-        yield { type: "text-delta", text: "complete" };
-        yield { type: "finish", reason: "stop" };
-      })();
-    }
-  };
-  await generateNativeText(model, messages, { reasoning: "off" });
-  assert.deepEqual(calls, ["off"]);
 });

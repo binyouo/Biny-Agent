@@ -1,8 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Failed output delivery must be observable to scripts without interrupting runtime cleanup. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -63,7 +64,8 @@ try {
       } else {
         assert.match(result.stdout, /OUTPUT_MARKER/u);
       }
-      assert.deepEqual((await readdir(agent, { recursive: true })).filter((file) => file.endsWith(".lock")), [], "output errors must not prevent normal lease cleanup");
+      // 全局记忆 owner 可继续读取配置；会话执行租约必须在输出前释放。
+      assert.deepEqual((await readdir(agent, { recursive: true })).filter((file) => file.endsWith(".lock") && path.basename(file) !== ".config.write.lock"), [], "output errors must not prevent normal lease cleanup");
     }
   }
   // Parser exits also write asynchronously; a successful help/version status cannot hide lost output.

@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** supervised GoalGraph、模型工具入口与 Host 监督唤醒的最小闭环。 */
 import { createRequire } from "node:module";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -137,7 +138,7 @@ async function testSupervisedGraphStateMachine(): Promise<void> {
         return { runId: "wake", messageId: "wake-message", completion: Promise.resolve({ runId: "wake", status: "completed", stopReason: "model_stop", steps: 1, output: "reported", durationMs: 1 }) };
       }
     } as unknown as InteractiveRuntimeHandle;
-    const supervisor = new GraphSupervisor({ store: graphs, runtime: fakeRuntime, taskRuns: tasks, resolveSupervisorRuntime: async () => fakeRuntime });
+    const supervisor = new GraphSupervisor({ getStore: () => graphs, getTaskRuns: () => tasks, resolveSupervisorCommands: async () => { throw new Error("Unexpected node dispatch"); }, resolveSupervisorRuntime: async () => fakeRuntime });
     await supervisor.tick();
     await waitUntil(() => wakeRuns === 1 && graphs.listSupervisorWakes().every((wake) => wake.graphId !== wakeGraph.graphId));
     await supervisor.tick();
@@ -155,7 +156,7 @@ async function testSupervisedGraphStateMachine(): Promise<void> {
     authority.finishRun({ runId: claimed.runId!, status: "completed", payload: { output: "already delivered" } });
     graphs.close();
     graphs = await GoalGraphStore.open(root, authority);
-    const restartedSupervisor = new GraphSupervisor({ store: graphs, runtime: fakeRuntime, taskRuns: tasks, resolveSupervisorRuntime: async () => fakeRuntime });
+    const restartedSupervisor = new GraphSupervisor({ getStore: () => graphs, getTaskRuns: () => tasks, resolveSupervisorCommands: async () => { throw new Error("Unexpected node dispatch"); }, resolveSupervisorRuntime: async () => fakeRuntime });
     await restartedSupervisor.tick();
     await waitUntil(() => graphs.listSupervisorWakes().every((wake) => wake.graphId !== terminalWakeGraph.graphId));
     assert.equal(wakeRuns, 1, "a terminal deterministic wake run must not execute again after restart");
@@ -177,13 +178,21 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
   const outcome = { runId: "boundary-run", status: "completed", stopReason: "model_stop", steps: 1, output: "done", durationMs: 1 };
   const idleRuntime = {
     getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "idle-session" } }),
-    submitPrompt: () => ({ completion: Promise.resolve(outcome) })
+    runExclusiveOperation: async (_operation: unknown, run: (signal: AbortSignal) => Promise<unknown>) => run(new AbortController().signal)
   } as unknown as InteractiveRuntimeHandle;
   const ownerRuntime = {
     getSnapshot: () => ({ state: { kind: busy ? "runs" : "idle" }, info: { sessionId: "owner" } }),
     submitSupervisionTurn: () => ({ completion: Promise.resolve(outcome) })
   } as unknown as InteractiveRuntimeHandle;
-  const supervisor = new GraphSupervisor({ store: graphs, runtime: idleRuntime, resolveSupervisorRuntime: async () => ownerRuntime });
+  const supervisor = new GraphSupervisor({ getStore: () => graphs, getTaskRuns: () => tasks,
+    resolveSupervisorRuntime: async sessionId => sessionId === "owner" ? ownerRuntime : idleRuntime,
+    resolveSupervisorCommands: async () => ({ taskRuns: tasks, startTaskRun: async (id: string) => {
+      const attempt = tasks.createAttempt(id);
+      tasks.transition(id, "running", { attemptId: attempt.attemptId });
+      tasks.transition(id, "completed", { attemptId: attempt.attemptId, artifacts: { output: "done" } });
+      return { completion: Promise.resolve({ status: "completed", output: "done" }) };
+    } }) as unknown as CommandRuntime
+  });
   try {
     // Given 监督检查点所属会话繁忙；Then 保留待处理 wake，但允许其他空闲会话推进。
     const waiting = graphs.createSupervisedGraph({ supervisorSessionId: "owner", nodes: [node("a", []), node("b", ["a"])] });
@@ -192,7 +201,7 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
     graphs.claimIntent(waiting.graphId, first.nodeId);
     graphs.completeNode(waiting.graphId, first.nodeId, "failed");
     const wake = graphs.listSupervisorWakes()[0]!;
-    const fixed = graphs.createGraph([{ nodeKey: "independent", prompt: "work" }, { nodeKey: "next", prompt: "more work" }]);
+    const fixed = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "independent", prompt: "work" }, { nodeKey: "next", prompt: "more work" }] });
     graphs.startGraph(fixed.graphId);
     const scheduleWakeId = graphs.createWake(fixed.graphId, "test-ready");
     await supervisor.tick();
@@ -207,7 +216,8 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
     await waitUntil(() => !graphs.listSupervisorWakes().some((item) => item.wakeId === wake.wakeId));
     assert.equal(graphs.inspectGraph(fixed.graphId).nodes[1]?.status, "pending");
     await supervisor.tick();
-    await waitUntil(() => graphs.inspectGraph(fixed.graphId).status === "completed");
+    await waitUntil(() => graphs.inspectGraph(fixed.graphId).nodes.every(node => node.status === "completed"));
+    assert.equal(graphs.inspectGraph(fixed.graphId).status, "running", "worker completion still needs the supervising agent final check");
   } finally {
     supervisor.stop();
     graphs.close(); tasks.close(); authority.close();
@@ -259,7 +269,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     const configStore: AgentConfigStore = { load: async () => config(), save: async () => undefined };
     const commands = await createCommandRuntime(root, { configStore });
     const runtime = new InteractiveAgentRuntime(commands);
-    host = await startRuntimeHost(root, async () => ({ commands, runtime }));
+    host = await startRuntimeHost(root, async () => ({ commands, runtime }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     const sessionId = commands.agent.getInfo().sessionId;
     const outcome = await runtime.submitPrompt("请执行一个需要先准备再验收、并且重启后还能继续的长程任务。").completion;
     assert.equal(outcome.status, "completed");
@@ -452,7 +462,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
   };
   try {
     await mkdir(path.join(root, ".verification-state"));
-    host = await startRuntimeHost(root, factory);
+    host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     client = await connectRuntimeHost(root, { clientId: "plan-test", surface: "cli" });
     const outcome = await client.submitPrompt(independent
       ? "请在后台分别生成并验收两个独立文件，遇到审批及时告诉我。"
@@ -465,7 +475,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
       assert.deepEqual(workerWrites, []);
       await client.close(); client = undefined;
       await host.close(); host = undefined;
-      host = await startRuntimeHost(root, factory);
+      host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
       client = await connectRuntimeHost(root, { clientId: "plan-draft-restarted", surface: "cli" });
       assert.equal("planning" in commands!.agent.getInfo(), false, "removed planning mode is not restored into a session");
       await assert.rejects(client.startPlanDraft(sessionId!, draft.graphId, draft.revision + 1), /stale/u);
@@ -603,7 +613,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     host = undefined;
 
     // 重新装配 Host 和所有 stores，从同一持久 Session 恢复等待审批的节点。
-    host = await startRuntimeHost(root, factory);
+    host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     client = await connectRuntimeHost(root, { clientId: "plan-test-restarted", surface: "cli" });
     assert.equal(commands!.taskRuns.get(first.taskRunId)?.status, "needs_approval");
     assert.equal((await client.taskApprove(first.taskRunId, approval.approvalId)).accepted, true);
@@ -615,7 +625,9 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     assert.ok(secondApproval);
     await client.waitForIdle();
     assert.equal((await client.taskApprove(second.taskRunId, secondApproval.approvalId)).accepted, true);
-    await waitUntil(() => commands!.graphs.inspectGraph(graphId).status === "completed", 15_000);
+    await waitUntil(() => commands!.graphs.inspectGraph(graphId).status === "completed", 15_000).catch((error: unknown) => {
+      throw new Error(JSON.stringify({ graph: commands!.graphs.inspectGraph(graphId), wakes: commands!.graphs.listSupervisorWakes(), events: commands!.graphs.listGraphEvents(graphId, { limit: 30 }) }), { cause: error });
+    });
     await client.waitForIdle();
     assert.deepEqual(workerWrites, ["first.txt", "second.txt"], "approval and restart must not repeat a Worker");
     assert.equal(await readFile(path.join(root, ".verification-state/checks"), "utf8"), "first.txt\nsecond.txt\n");
@@ -708,7 +720,7 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
   };
   try {
     await writeFile(path.join(root, "source.txt"), "source fact");
-    host = await startRuntimeHost(root, factory);
+    host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     client = await connectRuntimeHost(root, { clientId: "report-test", surface: "cli" });
     assert.equal((await client.submitPrompt("请先规划一个可在后台持续、重启后恢复的本地资料分析任务：读取来源，再综合结论，不修改文件。").completion).status, "completed");
     const draft = (await client.planList(sessionId!))[0]!;
@@ -717,7 +729,7 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
     assert.equal(commands!.taskRuns.list().tasks.length, 0);
     await client.close(); client = undefined;
     await host.close(); host = undefined;
-    host = await startRuntimeHost(root, factory);
+    host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     client = await connectRuntimeHost(root, { clientId: "report-restarted", surface: "cli" });
     await client.startPlanDraft(sessionId!, graphId, draft.revision);
     await waitUntil(() => commands!.graphs.inspectGraph(graphId).status === "completed", 15_000);

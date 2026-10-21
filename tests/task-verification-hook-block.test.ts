@@ -63,7 +63,7 @@ for (const hookBlocks of [true, false]) {
     ? "a configured beforeTool hook stops verification without starting repair attempts"
     : "an unmatched hook preserves repair after an ordinary acceptance-command failure", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-verification-hook-closure-"));
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const tasks = await DurableTaskRunStore.open(root, authority);
     const recorder = new SessionRecorder(root, "hook-checks", undefined, authority.asSink());
     recorder.repairTailForAppend();

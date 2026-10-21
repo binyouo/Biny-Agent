@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import type { AgentModel, AgentUsage, ModelRequestMetrics } from "../src/agent/core/types.js";
 import { generateNativeText } from "../src/llm/nativeJson.js";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -17,7 +19,7 @@ import { workerSessionId } from "../src/runtime/WorkerSession.js";
 import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
 
 const requests: ModelRequestMetrics[] = [];
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test", modelId: "goal-auxiliary",
   async stream() {
     return (async function* () {
@@ -25,7 +27,7 @@ const model: AgentModel = {
       yield { type: "finish" as const, reason: "stop" as const, usage: { inputTokens: 10, cacheReadTokens: 4, outputTokens: 2 } };
     })();
   }
-};
+});
 await generateNativeText(model, [{ role: "user", content: "Summarize." }], {
   requestContext: { sessionId: "session-usage", runId: "run-usage", operation: "compaction" },
   onRequestMetrics: (metrics) => { requests.push(metrics); }
@@ -35,7 +37,7 @@ assert.equal(requests[0]?.usage?.inputTokens, 10);
 assert.equal(requests[0]?.usage?.cacheReadTokens, 4);
 assert.equal(requests[0]?.requestContext?.sessionId, "session-usage");
 
-const failed: AgentModel = {
+const failed: AgentModel = testModel({
   provider: "test", modelId: "goal-auxiliary",
   async stream() {
     return (async function* () {
@@ -43,7 +45,7 @@ const failed: AgentModel = {
       throw new Error("synthetic stream failure after usage");
     })();
   }
-};
+});
 await assert.rejects(generateNativeText(failed, [{ role: "user", content: "Summarize." }], {
   onRequestMetrics: (metrics) => { requests.push(metrics); }
 }), /synthetic stream failure/u);
@@ -59,7 +61,7 @@ let releaseRequest!: () => void;
 const released = new Promise<void>((resolve) => { releaseRequest = resolve; });
 let endedRequest!: () => void;
 const ended = new Promise<void>((resolve) => { endedRequest = resolve; });
-const cancellationIgnoringModel: AgentModel = {
+const cancellationIgnoringModel: AgentModel = testModel({
   provider: "test", modelId: "goal-auxiliary-cancelled",
   async stream() {
     enteredRequest();
@@ -69,8 +71,8 @@ const cancellationIgnoringModel: AgentModel = {
       finally { endedRequest(); }
     })();
   }
-};
-const cancelledRequest = generateNativeText(cancellationIgnoringModel, [], {
+});
+const cancelledRequest = generateNativeText(cancellationIgnoringModel, [{ role: "user", content: "fixture request" }], {
   signal: auxiliaryController.signal,
   onRequestMetrics: (metrics) => { cancelledMetrics.push(metrics); }
 });
@@ -84,12 +86,12 @@ await ended;
 assert.equal(cancelledMetrics.length, 1, "late completion must not account the same request twice");
 
 const selectionMetrics: ModelRequestMetrics[] = [];
-const selector: AgentModel = { ...model, async stream(context) {
+const selector: AgentModel = testModel({ ...model, async stream(context) {
   return (async function* () {
     yield { type: "text-delta" as const, text: context.systemPrompt?.includes("skillIds") ? '{"skillIds":[]}' : '{"tools":[]}' };
     yield { type: "finish" as const, reason: "stop" as const, usage: { inputTokens: 5, cacheReadTokens: 0, outputTokens: 1 } };
   })();
-} };
+} });
 await preselectCapabilities({
   input: "Complete the task", config: defaultConfig, history: [], previousTools: [], models: [{ model: selector, failureDomain: "selection-fixture" }],
   tools: [{ name: "OptionalRead", description: "Read a resource", parameters: { type: "object", properties: {} } }],
@@ -113,7 +115,7 @@ for (const scenario of ["failed-and-resumed", "budget", "already-exhausted", "ca
   const controller = new AbortController();
   const observed: ModelRequestMetrics[] = [];
   const publishedUsage: AgentUsage[] = [];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "goal-worker", supportsTools: true,
     async stream() {
       calls += 1;
@@ -128,7 +130,7 @@ for (const scenario of ["failed-and-resumed", "budget", "already-exhausted", "ca
         }
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: true, maxSteps: 5, allowedTools: ["Read"] } }

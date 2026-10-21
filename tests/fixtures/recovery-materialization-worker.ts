@@ -1,3 +1,4 @@
+import { testModel } from "../helpers/model.js";
 /** Real process-crash fixture. All providers and tools are local injected stand-ins. */
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
@@ -37,11 +38,11 @@ const sink = { appendSessionEvent(input: { event: unknown }) {
 } };
 const agent = new AgentSession({ workspaceRoot: root, recorder: new SessionRecorder(root, undefined, undefined, sink),
   runtimeEventSink: sink, config, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission),
-  model: { provider: "synthetic", modelId: "crash-recovery", supportsTools: true, stream: async context => {
+  model: testModel({ provider: "synthetic", modelId: "crash-recovery", supportsTools: true, stream: async context => {
     providerCalls += 1;
     messages = structuredClone(context.messages);
     return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "Recovered safely" }; yield { type: "finish", reason: "stop" }; })();
-  } }
+  } })
 });
 try {
   await agent.initialize();

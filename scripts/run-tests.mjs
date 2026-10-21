@@ -69,6 +69,13 @@ if (list) {
           break;
         }
       } finally {
+        await new Promise((resolve, reject) => {
+          const cleanup = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), path.join(root, "tests/helpers/memoryOwnerCleanup.ts"), agentDir], {
+            cwd: root, env: { ...process.env, BINY_AGENT_DIR: agentDir }, stdio: "inherit"
+          });
+          cleanup.once("error", reject);
+          cleanup.once("exit", code => code === 0 ? resolve() : reject(new Error("Test memory owner cleanup failed.")));
+        });
         await rm(agentDir, { recursive: true, force: true });
       }
     }

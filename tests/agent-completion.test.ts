@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 普通运行自然收尾，不通过额外模型请求或完成声明证明任务达成。 */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -99,7 +101,7 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
     } })
   });
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "natural-completion", supportsTools: true,
     async stream(context) {
       requests += 1;
@@ -143,7 +145,7 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
       });
       return (async function* () { yield* response; })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     chat: { ...defaultConfig.chat, maxOutputTokens: scenario === "length" ? 2560 : undefined },
@@ -243,7 +245,7 @@ async function testOutputLimitDiagnosticsUseTheFinalRequest(): Promise<void> {
     const registry = new ToolRegistry();
     registry.registerBuiltinTool(createWriteFileTool({ workspaceRoot, ignore: [] }));
     let requests = 0;
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "output-limit-diagnostics", supportsTools: true,
       vercelOptions: { maxOutputTokens: scenario.modelLimit },
       async stream() {
@@ -258,7 +260,7 @@ async function testOutputLimitDiagnosticsUseTheFinalRequest(): Promise<void> {
         ];
         return (async function* () { yield* response; })();
       },
-    };
+    });
     const config = configSchema.parse({
       ...defaultConfig,
       chat: { ...defaultConfig.chat, maxOutputTokens: scenario.globalLimit },
@@ -307,14 +309,14 @@ async function testStepPersistenceFailureIsATurnFailure(): Promise<void> {
       return super.record(event);
     }
   }
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "persistence-failure",
     stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: "must not complete" };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },
@@ -362,7 +364,7 @@ async function testRepeatedActionBudgetStopsTheLoop(withFileProgress = false): P
     })
   });
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "repeated-action-limit",
     supportsTools: true,
@@ -387,7 +389,7 @@ async function testRepeatedActionBudgetStopsTheLoop(withFileProgress = false): P
         yield { type: "finish", reason: "tool-calls" };
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },
@@ -445,7 +447,7 @@ async function testInterruptedTurnMarkerIsModelVisibleOnlyForManualStop(): Promi
   const modelStarted = new Promise<void>((resolve) => { started = resolve; });
   let requests = 0;
   let resumedMessages: AgentMessage[] | undefined;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "turn-interruption",
     async stream(context, options) {
@@ -468,7 +470,7 @@ async function testInterruptedTurnMarkerIsModelVisibleOnlyForManualStop(): Promi
         yield { type: "finish", reason: "aborted" };
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },
@@ -514,7 +516,7 @@ async function testReplacedTurnDoesNotWriteInterruptionMarker(): Promise<void> {
   await ensureAgentDirs(workspaceRoot);
   let started: (() => void) | undefined;
   const modelStarted = new Promise<void>((resolve) => { started = resolve; });
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "turn-replaced",
     async stream(_context, options) {
@@ -529,7 +531,7 @@ async function testReplacedTurnDoesNotWriteInterruptionMarker(): Promise<void> {
         yield { type: "finish", reason: "aborted" };
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },
@@ -567,7 +569,7 @@ async function testUnattributedCancellationDoesNotWriteInterruptionMarker(): Pro
   await ensureAgentDirs(workspaceRoot);
   let started: (() => void) | undefined;
   const modelStarted = new Promise<void>((resolve) => { started = resolve; });
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "turn-cancelled",
     async stream(_context, options) {
@@ -582,7 +584,7 @@ async function testUnattributedCancellationDoesNotWriteInterruptionMarker(): Pro
         yield { type: "finish", reason: "aborted" };
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },

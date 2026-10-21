@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -264,7 +266,7 @@ async function testEmotionAnalysis(): Promise<void> {
   let promptText = "";
   let output = '{"mood":"content","valence":8,"reason":"用户目标明确"}';
   let outputLimit: number | undefined;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "emotion-analysis-test",
     stream: async ({ messages, systemPrompt }, options) => {
@@ -275,7 +277,7 @@ async function testEmotionAnalysis(): Promise<void> {
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
-  };
+  });
   let scheduled: (() => void) | undefined;
   const scheduler = new EmotionAnalysisScheduler({
     delayMs: 5_000,
@@ -383,7 +385,7 @@ async function testAgentSessionAutoAnalysis(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-emotion-auto-session-test-"));
   const previousAgentDir = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = path.join(workspaceRoot, "agent");
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "emotion-auto-test",
     stream: async ({ messages, systemPrompt }) => {
@@ -396,7 +398,7 @@ async function testAgentSessionAutoAnalysis(): Promise<void> {
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     defaultModel: "emotion-auto-test",
@@ -449,7 +451,7 @@ async function testAgentSessionFatigue(): Promise<void> {
   const previousAgentDir = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = path.join(workspaceRoot, "agent");
   await ensureAgentDirs(workspaceRoot);
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "emotion-test",
     stream: async () => (async function* () {
@@ -457,7 +459,7 @@ async function testAgentSessionFatigue(): Promise<void> {
       yield { type: "text-delta" as const, text: "ok" };
       yield { type: "finish" as const, reason: "stop" as const };
     })()
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     defaultModel: "emotion-test",

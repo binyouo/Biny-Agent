@@ -192,7 +192,7 @@ test("edited user branch retains only its own completed tool pair", () => {
   assert.equal(facts[1]?.type === "tool_result" ? facts[1].result : undefined, "new body");
 });
 
-test("linear legacy ID-less calls preserve unique name pairing", () => {
+test("export does not infer missing tool identities from unique names", () => {
   const events: SessionEvent[] = [
     { type: "user_message", content: "read file" },
     { type: "tool_call", tool: "Read", args: { path: "note.txt" } },
@@ -206,7 +206,8 @@ test("linear legacy ID-less calls preserve unique name pairing", () => {
   const facts = imported.filter(event => event.type === "tool_call" || event.type === "tool_result");
   assert.equal(facts.length, 2);
   assert.equal(facts[0]?.toolCallId, facts[1]?.toolCallId);
-  assert.ok(facts[0]?.toolCallId);
+  assert.equal(facts[0]?.toolCallId, "");
+  assert.ok(facts.every(event => event.auditOnly));
 });
 test("Recorder-linked user with legacy flat assistant preserves existing transfer fixture", () => {
   // tests/session-transfer.test.ts:recordConversation gets a linked user from

@@ -1,10 +1,11 @@
+import { testModel } from "./helpers/model.js";
 /** 配置模型的日期提取须返回可由索引再次校验的结构化提议。 */
 import assert from "node:assert/strict";
 import { createTemporalModelExtractor } from "../src/session/temporalModelExtractor.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 
 const prompts: string[] = [];
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test", modelId: "temporal",
   async stream(context) {
     const input = context.messages.at(-1);
@@ -17,7 +18,7 @@ const model: AgentModel = {
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 const extractor = createTemporalModelExtractor(model);
 const source = { sessionId: "s", messageId: "m", text: "明天交报告，已提交报告", sentAt: "2026-09-24T03:00:00.000Z", timeZone: "Asia/Shanghai" };
 assert.equal((await extractor.extractClues?.(source) as Array<{ date: string }>)[0]?.date, "2026-09-25");
@@ -37,7 +38,7 @@ let firstTwoStarted: (() => void) | undefined;
 const started = new Promise<void>((resolve) => { firstTwoStarted = resolve; });
 let thirdStarted: (() => void) | undefined;
 const third = new Promise<void>((resolve) => { thirdStarted = resolve; });
-const slowModel: AgentModel = {
+const slowModel: AgentModel = testModel({
   provider: "test", modelId: "temporal-concurrency",
   async stream() {
     active += 1;
@@ -53,7 +54,7 @@ const slowModel: AgentModel = {
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 const bounded = createTemporalModelExtractor(slowModel);
 const calls = [1, 2, 3].map(() => bounded.extractClues!(source));
 await started;

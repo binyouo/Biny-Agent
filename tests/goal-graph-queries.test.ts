@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Graph 查询必须沿持久 graph identity 汇总事件，不能遗漏 TaskRun 承载的节点事实。 */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -15,7 +16,7 @@ import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 for (const status of ["completed", "failed", "blocked"] as const) {
   await test(`graph events includes persisted TaskRun ${status} outcomes through the public command`, async () => {
     await fixture(async (_root, authority, graphs, tasks) => {
-      const graph = graphs.createGraph([{ nodeKey: "work", prompt: "Inspect fixture" }], {}, `fixed-${status}`);
+      const graph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "work", prompt: "Inspect fixture" }], payload: {}, graphId: `fixed-${status}` });
       const node = graph.nodes[0]!;
       const taskRunId = `graph:${graph.graphId}:${node.nodeId}`;
       tasks.create({ taskRunId, task: node.intent, parentRunId: `graph:${graph.graphId}` });
@@ -78,7 +79,7 @@ await test("graph events retains recovery and supervisor facts after a read-only
 
 await test("run-or-turn event filters preserve workspace isolation, identity, order, and pagination", async () => {
   await fixture(async (root, authority) => {
-    const other = await RuntimeEventAuthority.open(root, { workspaceId: "another-workspace", backfillLegacySessions: false });
+    const other = await RuntimeEventAuthority.open(root, { workspaceId: "another-workspace", reconcileSessions: false });
     try {
       const firstInput = { eventId: "first", sessionId: "one", runId: "run-one", turnId: "shared-turn", eventType: "fixture.first", payload: {}, createdAt: "2026-01-01T00:00:00.000Z" };
       const first = authority.appendEvent(firstInput);
@@ -127,7 +128,7 @@ await test("graph list, detail, and plan projection retain dependency and sessio
     assert.equal(status.nodes[0]!.taskStatus, undefined);
     assert.throws(() => planStatus({ graphs, taskRuns: tasks }, graph.graphId, "other-session"), /does not belong/u);
 
-    const foreign = await RuntimeEventAuthority.open(root, { workspaceId: "foreign-workspace", backfillLegacySessions: false });
+    const foreign = await RuntimeEventAuthority.open(root, { workspaceId: "foreign-workspace", reconcileSessions: false });
     const foreignGraphs = await GoalGraphStore.open(root, foreign);
     try {
       assert.deepEqual(foreignGraphs.listGraphs(), []);
@@ -148,7 +149,7 @@ async function fixture(execute: (root: string, authority: RuntimeEventAuthority,
   process.env.BINY_AGENT_DIR = path.join(temporary, "agent");
   const root = path.join(temporary, "workspace");
   await mkdir(root);
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const graphs = await GoalGraphStore.open(root, authority);
   const tasks = await DurableTaskRunStore.open(root, authority);
   try {

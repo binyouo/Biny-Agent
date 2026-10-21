@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -85,7 +87,7 @@ try {
   const exec = coordinator.createCodeModeTool();
   assert.match(exec.promptSnippet ?? "", /Read/u);
   assert.match(exec.promptSnippet ?? "", /Write/u);
-  const result = await exec.execute("parent-1", { code: "const a = await tools.Read({path:'hello.txt'}); return a.content.toUpperCase();" });
+  const result = await exec.execute("parent-1", { description: "parent-1", code: "const a = await tools.Read({path:'hello.txt'}); return a.content.toUpperCase();" });
   assert.equal(result.isError, false);
   assert.equal(exec.name, "run_script");
   const optimizationEvent = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line)).find(event => event.type === "tool_result" && event.toolCallId === "parent-1");
@@ -100,18 +102,18 @@ try {
   assert.equal(writes, 0);
   assert.equal(coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 1);
 
-  const unselected = await exec.execute("parent-2", { code: "return await tools.Edit({});" });
+  const unselected = await exec.execute("parent-2", { description: "parent-2", code: "return await tools.Edit({});" });
   assert.equal(unselected.isError, true);
   assert.deepEqual((unselected.details as { childCalls: unknown[] }).childCalls, []);
   assert.equal(writes, 0);
 
-  const noFs = await exec.execute("parent-3", { code: "return typeof process + ':' + typeof require + ':' + typeof fetch;" });
+  const noFs = await exec.execute("parent-3", { description: "parent-3", code: "return typeof process + ':' + typeof require + ':' + typeof fetch;" });
   assert.equal((noFs.details as { value?: string }).value, "undefined:undefined:function");
 
   const cancelled = new AbortController();
   cancelled.abort();
   const beforeCancellation = reads;
-  assert.equal((await exec.execute("parent-cancel", { code: "return await tools.Read({path:'hello.txt'});" }, cancelled.signal)).isError, true);
+  assert.equal((await exec.execute("parent-cancel", { description: "parent-cancel", code: "return await tools.Read({path:'hello.txt'});" }, cancelled.signal)).isError, true);
   assert.equal(reads, beforeCancellation);
 
   const permissionsConfig = structuredClone(config);
@@ -128,7 +130,7 @@ try {
         confirmPermission: async () => { approvals++; return { approved: false }; } },
       new PermissionManager(permissionsConfig.permission), () => undefined, () => ({}), new Set(["Read"]));
     const beforeDenied = reads;
-    const deniedRead = await permissionCoordinator.createCodeModeTool().execute("parent-permission", { code: "return await tools.Read({path:'hello.txt'});" });
+    const deniedRead = await permissionCoordinator.createCodeModeTool().execute("parent-permission", { description: "parent-permission", code: "return await tools.Read({path:'hello.txt'});" });
     assert.equal(deniedRead.isError, true);
     assert.equal(reads, beforeDenied);
     assert.equal(approvals, 0);
@@ -141,7 +143,7 @@ try {
       new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["Read"]),
       { maxToolCalls: 1, maxRepeatedActions: 3 });
     const beforeBudget = reads;
-    const overBudget = await budgetCoordinator.createCodeModeTool().execute("parent-budget", {
+    const overBudget = await budgetCoordinator.createCodeModeTool().execute("parent-budget", { description: "parent-budget",
       code: "await tools.Read({path:'hello.txt'}); return await tools.Read({path:'hello.txt'});"
     });
     assert.equal(overBudget.isError, true);
@@ -170,9 +172,9 @@ try {
     const mcpExec = mcpCoordinator.createCodeModeTool();
     assert.doesNotMatch(mcpExec.promptSnippet ?? "", /Untrusted read-only MCP/u);
     assert.doesNotMatch(mcpExec.promptSnippet ?? "", /WebSearch:|Grep:/u);
-    assert.equal((await mcpExec.execute("parent-mcp", { code: "return await tools.Read({});" })).isError, true);
-    assert.equal((await mcpExec.execute("parent-mcp-memory", { code: "return await tools.WebSearch({query:'private'});" })).isError, true);
-    assert.equal((await mcpExec.execute("parent-mcp-history", { code: "return await tools.Grep({query:'private'});" })).isError, true);
+    assert.equal((await mcpExec.execute("parent-mcp", { description: "parent-mcp", code: "return await tools.Read({});" })).isError, true);
+    assert.equal((await mcpExec.execute("parent-mcp-memory", { description: "parent-mcp-memory", code: "return await tools.WebSearch({query:'private'});" })).isError, true);
+    assert.equal((await mcpExec.execute("parent-mcp-history", { description: "parent-mcp-history", code: "return await tools.Grep({query:'private'});" })).isError, true);
     assert.equal(mcpCalls, 0, "read risk or MCP hints cannot grant nested access");
     assert.equal(mcpMemoryCalls, 0, "MCP same-name tools cannot impersonate reviewed builtin queries");
   } finally { await mcpRecorder.close(); }
@@ -204,11 +206,11 @@ try {
       new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["WebSearch", "mcp__history__search"]));
     const memoryExec = memoryCoordinator.createCodeModeTool();
     assert.match(memoryExec.promptSnippet ?? "", /WebSearch:.*shared durable memory library/u);
-    const description = await memoryExec.execute("history-description", { code: "return await describeTool('mcp__history__search');" });
+    const description = await memoryExec.execute("history-description", { description: "history-description", code: "return await describeTool('mcp__history__search');" });
     assert.equal(description.isError, false);
     assert.match(JSON.stringify(description.details), /across projects/u);
     assert.equal(historyFlushes, 0, "describing an external query never searches its data");
-    const nested = await memoryExec.execute("memory-nested", {
+    const nested = await memoryExec.execute("memory-nested", { description: "memory-nested",
       code: "const m = await tools.WebSearch({query:'zebrastone'}); const h = await tools.mcp__history__search({query:'zebrastone'}); return {query:m.originalQuery, hits:h.hits.length};"
     });
     assert.equal(nested.isError, false);
@@ -218,7 +220,7 @@ try {
     const beforeCancel = recallCalls;
     const cancelledMemory = new AbortController();
     cancelledMemory.abort();
-    assert.equal((await memoryExec.execute("memory-cancelled", { code: "return await tools.WebSearch({query:'zebrastone'});" }, cancelledMemory.signal)).isError, true);
+    assert.equal((await memoryExec.execute("memory-cancelled", { description: "memory-cancelled", code: "return await tools.WebSearch({query:'zebrastone'});" }, cancelledMemory.signal)).isError, true);
     assert.equal(recallCalls, beforeCancel);
     const memoryEvents = (await readFile(memoryRecorder.filePath, "utf8")).trim().split("\n")
       .map((line) => JSON.parse(line) as { type: string; toolCallId?: string; operationId?: string; auditOnly?: boolean });
@@ -241,11 +243,11 @@ try {
         confirmPermission: async () => { askCount++; return { approved: false }; } },
       new PermissionManager(askConfig.permission), () => undefined, () => ({}), new Set(["WebSearch", "mcp__history__search"]));
     const beforeDenied = historyFlushes;
-    const deniedHistory = await askCoordinator.createCodeModeTool().execute("history-denied", { code: "return await tools.mcp__history__search({query:'zebrastone'});" });
+    const deniedHistory = await askCoordinator.createCodeModeTool().execute("history-denied", { description: "history-denied", code: "return await tools.mcp__history__search({query:'zebrastone'});" });
     assert.equal(deniedHistory.isError, true);
     assert.equal(askCount, 1, "medium-risk history search still asks under the existing policy");
     assert.equal(historyFlushes, beforeDenied, "denied history search must not execute");
-    const allowedRecall = await askCoordinator.createCodeModeTool().execute("memory-low-risk", { code: "return await tools.WebSearch({query:'zebrastone'});" });
+    const allowedRecall = await askCoordinator.createCodeModeTool().execute("memory-low-risk", { description: "memory-low-risk", code: "return await tools.WebSearch({query:'zebrastone'});" });
     assert.equal(allowedRecall.isError, false);
     assert.equal(askCount, 1, "reviewed builtin reads retain their low-risk policy");
   } finally { await askRecorder.close(); }
@@ -256,7 +258,7 @@ try {
       { workspaceRoot: root, config: askConfig, recorder: approvedRecorder, toolRegistry: memoryRegistry,
         confirmPermission: async () => ({ approved: true, scope: "once" }) },
       new PermissionManager(askConfig.permission), () => undefined, () => ({}), new Set(["mcp__history__search"]));
-    const approvedHistory = await approvedCoordinator.createCodeModeTool().execute("history-approved", { code: "return (await tools.mcp__history__search({query:'zebrastone'})).hits.length;" });
+    const approvedHistory = await approvedCoordinator.createCodeModeTool().execute("history-approved", { description: "history-approved", code: "return (await tools.mcp__history__search({query:'zebrastone'})).hits.length;" });
     assert.equal(approvedHistory.isError, false);
     assert.equal((approvedHistory.details as { value?: number }).value, 1);
   } finally { await approvedRecorder.close(); }
@@ -344,12 +346,12 @@ try {
       new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["Read"]));
     const lateExec = lateCoordinator.createCodeModeTool(undefined, shortPolicy);
     const lateStartedAt = Date.now();
-    const unknown = await lateExec.execute("parent-late", { code: "return await tools.Read({});" });
+    const unknown = await lateExec.execute("parent-late", { description: "parent-late", code: "return await tools.Read({});" });
     assert.equal(unknown.isError, true);
     assert.equal((unknown.details as { executionStatus?: string }).executionStatus, "unknown");
     assert.ok(Date.now() - lateStartedAt < 3_000, "coordinator cell must return despite uncooperative child");
     assert.throws(() => lateCoordinator.assertCanContinue(), /unknown side effect/u);
-    assert.equal((await lateExec.execute("parent-late-retry", { code: "return await tools.Read({});" })).isError, true);
+    assert.equal((await lateExec.execute("parent-late-retry", { description: "parent-late-retry", code: "return await tools.Read({});" })).isError, true);
     assert.equal(lateCalls, 1, "unknown work must not be replayed");
     const idleAt = Date.now();
     await lateCoordinator.waitForIdle();
@@ -365,7 +367,7 @@ try {
     assert.equal(lateEvents.find((event) => event.type === "tool_result" && event.toolCallId === "parent-late:nested:1")?.auditOnly, true);
   } finally { releaseLate(); await lateRecorder.close(); }
 
-  const tooLarge = await exec.execute("parent-large", { code: `return '${"x".repeat(65_537)}';` });
+  const tooLarge = await exec.execute("parent-large", { description: "parent-large", code: `return '${"x".repeat(65_537)}';` });
   assert.equal(tooLarge.isError, true);
   assert.equal((tooLarge.details as { childCalls: unknown[] }).childCalls.length, 0);
 
@@ -396,11 +398,11 @@ try {
       new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["Read"]));
     const controller = new AbortController();
     const inFlightExec = inFlightCoordinator.createCodeModeTool();
-    const execution = inFlightExec.execute("parent-flight", {
+    const execution = inFlightExec.execute("parent-flight", { description: "parent-flight",
       code: "await tools.Read({}); return await tools.Read({});"
     }, controller.signal);
     await didStart;
-    const overlapping = await inFlightExec.execute("parent-overlap", { code: "return await tools.Read({});" });
+    const overlapping = await inFlightExec.execute("parent-overlap", { description: "parent-overlap", code: "return await tools.Read({});" });
     assert.equal(overlapping.isError, true, "a second cell cannot overlap the first");
     controller.abort();
     assert.equal((await execution).isError, true);
@@ -422,7 +424,7 @@ try {
     const unknownCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config, recorder: unknownRecorder, toolRegistry: unknownRegistry },
       new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["WebSearch"]));
-    const uncertain = await unknownCoordinator.createCodeModeTool().execute("parent-unknown", {
+    const uncertain = await unknownCoordinator.createCodeModeTool().execute("parent-unknown", { description: "parent-unknown",
       code: "try { await tools.WebSearch({query:'zebrastone'}); } catch {} return await tools.WebSearch({query:'zebrastone'});"
     });
     assert.equal(uncertain.isError, true);
@@ -444,7 +446,7 @@ try {
     const archiveCoordinator = new ToolExecutionCoordinator(
       { workspaceRoot: root, config: archiveConfig, recorder: archiveRecorder, toolRegistry: archiveRegistry },
       new PermissionManager(archiveConfig.permission), () => undefined, () => ({}), new Set(["Read"]));
-    const archived = await archiveCoordinator.createCodeModeTool().execute("parent-archive", { code: "return await tools.Read({});" });
+    const archived = await archiveCoordinator.createCodeModeTool().execute("parent-archive", { description: "parent-archive", code: "return await tools.Read({});" });
     assert.equal(archived.isError, false);
     const outerArchivePath = (archived.details as { archivePath?: string }).archivePath;
     assert.ok(outerArchivePath, "outer result must retain its archive handle");
@@ -463,7 +465,7 @@ try {
   });
   const sessionRecorder = new SessionRecorder(root, "code-mode-agent-session");
   let modelSteps = 0;
-  const model: AgentModel = { provider: "fixture", modelId: "code-mode-agent-session", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "fixture", modelId: "code-mode-agent-session", supportsTools: true,
     async stream(context) {
       modelSteps++;
       assert.deepEqual(context.tools.map((item) => item.name), ["Read", "Write", "run_script"]);
@@ -478,7 +480,7 @@ try {
       }
       return (async function* () { yield* response; })();
     }
-  };
+  });
   const agent = new AgentSession({ workspaceRoot: root, config: sessionConfig, model, toolRegistry: registry,
     permissionManager: new PermissionManager(sessionConfig.permission), recorder: sessionRecorder });
   try {
@@ -499,7 +501,7 @@ try {
     parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
     schema: z.object({}), resolveExecution: () => ({ approvalRule: "mcp_read", async execute() { return "mcp"; } })
   }, "mcp");
-  const selector: AgentModel = { provider: "fixture", modelId: "code-mode-selector", supportsTools: false,
+  const selector: AgentModel = testModel({ provider: "fixture", modelId: "code-mode-selector", supportsTools: false,
     async stream(context) { return (async function* (): AsyncGenerator<ModelStreamEvent> {
       assert.match(context.systemPrompt ?? "", /Read/u);
       assert.match(context.systemPrompt ?? "", /Write|mcp_read/u);
@@ -507,11 +509,11 @@ try {
       yield { type: "text-delta", text: '{"tools":["Read","WebSearch","mcp__history__search","Write","mcp_read"]}' };
       yield { type: "finish", reason: "stop" };
     })(); }
-  };
+  });
   searchRegistry.register(createToolSearchTool(() => searchRegistry.listEntries(), () => [{ model: selector, failureDomain: "test-selector" }]));
   const searchRecorder = new SessionRecorder(root, "code-mode-search-session");
   let searchSteps = 0;
-  const searchFlow: AgentModel = { provider: "fixture", modelId: "code-mode-search-session", supportsTools: true,
+  const searchFlow: AgentModel = testModel({ provider: "fixture", modelId: "code-mode-search-session", supportsTools: true,
     async stream(context) {
       searchSteps++;
       assert.deepEqual(context.tools.map((item) => item.name).sort(), ["run_script"]);
@@ -523,7 +525,7 @@ try {
           : [{ type: "text-delta", text: "searched and read" }, { type: "finish", reason: "stop" }];
       return (async function* () { yield* response; })();
     }
-  };
+  });
   const searchAgent = new AgentSession({ workspaceRoot: root, config: sessionConfig, model: searchFlow, toolRegistry: searchRegistry,
     permissionManager: new PermissionManager(sessionConfig.permission), recorder: searchRecorder,
     selectCapabilities: async () => ({ tools: ["ToolSearch"], skills: [] }) });
@@ -535,7 +537,7 @@ try {
   } finally { await searchAgent.close(); await historyIndex.close(); }
 
   const noToolsRecorder = new SessionRecorder(root, "code-mode-no-tools");
-  const noToolsModel: AgentModel = { provider: "fixture", modelId: "code-mode-no-tools", supportsTools: true,
+  const noToolsModel: AgentModel = testModel({ provider: "fixture", modelId: "code-mode-no-tools", supportsTools: true,
     async stream(context) {
       assert.deepEqual(context.tools, [], "explicit tool selection none must suppress exec as well");
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -543,7 +545,7 @@ try {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const noToolsAgent = new AgentSession({ workspaceRoot: root, config: sessionConfig, model: noToolsModel, toolRegistry: searchRegistry,
     permissionManager: new PermissionManager(sessionConfig.permission), recorder: noToolsRecorder,
     selectCapabilities: async () => ({ tools: "none", skills: [] }) });
@@ -567,7 +569,7 @@ try {
   assert.ok(crossRunRecall);
   crossRunRegistry.registerBuiltinTool(crossRunRecall);
   let execModelSteps = 0;
-  const crossRunModel: AgentModel = { provider: "fixture", modelId: "code-mode-cross-run", supportsTools: true,
+  const crossRunModel: AgentModel = testModel({ provider: "fixture", modelId: "code-mode-cross-run", supportsTools: true,
     async stream(context) {
       const hasExec = context.tools.some((item) => item.name === "run_script");
       if (hasExec) execModelSteps++;
@@ -576,7 +578,7 @@ try {
         : [{ type: "text-delta", text: "ready" }, { type: "finish", reason: "stop" }];
       return (async function* () { yield* response; })();
     }
-  };
+  });
   const crossRunRecorder = new SessionRecorder(root, "code-mode-cross-run");
   const crossRunAgent = new AgentSession({ workspaceRoot: root, config: sessionConfig, model: crossRunModel,
     toolRegistry: crossRunRegistry, permissionManager: new PermissionManager(sessionConfig.permission), recorder: crossRunRecorder });

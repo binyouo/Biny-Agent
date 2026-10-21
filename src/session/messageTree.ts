@@ -69,7 +69,7 @@ function mergeMessageMetadata(previous: Record<string, unknown>, patch: Record<s
   return metadata;
 }
 
-/** 新格式保留 canonical 消息的父子关系；旧事件没有 ID 时由时间线继续按扁平事件展示。 */
+/** 模型消息保留父子关系；未提交模型消息的审计事件由时间线展示。 */
 export function sessionMessageTree(events: readonly SessionEvent[]): SessionMessageNode[] {
   return events.flatMap((event, eventIndex): SessionMessageNode[] => {
     if (event.type === "user_message" && !event.auditOnly) {
@@ -223,7 +223,7 @@ export function activeSessionEventsForPath(events: readonly SessionEvent[]): Ses
       return event.messageId === undefined || activeIds.has(event.messageId);
     }
     if ((event.type === "assistant_message" || event.type === "message_metadata") && event.messageId !== undefined) {
-      // 旧会话可能只有 assistant_message，没有对应的 canonical agent_message 节点；
+      // 尚未提交的回答审计可能还没有对应的 agent_message 节点；
       // 这类事件不参与版本筛选，不能因为带了 messageId 就被误删。
       return !messageTreeIds.has(event.messageId) || activeIds.has(event.messageId);
     }

@@ -19,9 +19,9 @@ async function createWorkspace(name: string): Promise<string> {
   return root;
 }
 
-async function open(root: string, backfillLegacySessions: boolean): Promise<number> {
+async function open(root: string, reconcileSessions: boolean): Promise<number> {
   const start = performance.now();
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions });
   authority.close();
   return performance.now() - start;
 }

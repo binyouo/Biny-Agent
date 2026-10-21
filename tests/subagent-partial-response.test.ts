@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";

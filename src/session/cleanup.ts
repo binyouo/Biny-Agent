@@ -8,7 +8,6 @@ import { realpath } from "node:fs/promises";
 import { projectSessionsDir } from "../config/paths.js";
 import { deleteSessionCatalogRecord } from "./catalog.js";
 import { deleteInterruptedTurn } from "./turnStore.js";
-import { SessionRunLedger } from "./runLedger.js";
 import { RecipeStateStore } from "./recipes.js";
 import { deleteSessionFile } from "./store.js";
 import { SessionSearchIndex } from "./searchIndex.js";
@@ -24,7 +23,6 @@ export async function deleteSessionArtifacts(persistenceRoot: string, sessionId:
     }),
     () => deleteSessionCatalogRecord(persistenceRoot, sessionId),
     () => deleteInterruptedTurn(persistenceRoot, sessionId),
-    async () => await new SessionRunLedger(persistenceRoot).deleteSessionRuns(sessionId),
     async () => await new RecipeStateStore(persistenceRoot).clear(sessionId),
     async () => await new SessionSearchIndex().forgetSession(sessionId, sourcePath
       ? { sourcePath }

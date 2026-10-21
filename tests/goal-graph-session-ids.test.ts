@@ -53,8 +53,8 @@ for (const populated of [false, true]) {
           assert.equal(current.nodeRows, 0);
           assert.equal(current.jsonParses, 0);
           assert.equal(current.jsonBytes, 0);
-          assert.equal(old.sql.length, populated ? 16 : 1);
-          assert.equal(old.nodeRows, populated ? 15 : 0);
+          assert.equal(old.sql.length, populated ? 14 : 1);
+          assert.equal(old.nodeRows, populated ? 13 : 0);
           assert.ok(!populated || old.jsonParses > 0);
           assert.equal(database.isTransaction, transaction, "discovery preserves the caller's transaction");
           assert.equal(database.prepare("SELECT total_changes() AS n").get()!.n, changes);
@@ -80,8 +80,6 @@ function seed(database: DatabaseSync): void {
   // Persisted query fixtures, not claims that every state is creatable through the writer API.
   statuses.forEach((status, index) => add(`history-${index}`, "owner", status, workspaceId, "supervised", 3 - index % 3));
   sessions.slice(1, -1).forEach((session, index) => add(`session-${index + 1}`, session));
-  add("fixed", "owner", "draft", workspaceId, "fixed");
-  add("null-session", null);
   for (const [index, workspace] of ["foreign", "Workspace'_%", "workspace'_% "].entries()) {
     add(`foreign-${index}`, "owner", "draft", workspace);
   }

@@ -33,12 +33,12 @@ async function prepareRepair(tasks: DurableTaskRunStore, root: string, sessionId
 
 for (const reports of [0, 97, 98, 99]) test(`cold repair retains failed verification details after ${reports} worker reports`, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-repair-history-"));
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   let tasks = await DurableTaskRunStore.open(root, authority);
   try {
     const id = await prepareRepair(tasks, root, "session", reports);
     tasks.close(); authority.close();
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     tasks = await DurableTaskRunStore.open(root, authority);
     let resumedPrompt = "";
     const result = await runTaskClosure({ taskRuns: tasks, taskRunId: id, workspaceRoot: root, ignore: [], executeAttempt: async (prompt) => { resumedPrompt = prompt; return "repaired candidate"; }, executor: { executeTaskCheck: async () => ({ result: { exitCode: 0 }, toolCallId: "repair-pass", eventReferences: ["repair-pass"] }) } });
@@ -78,7 +78,7 @@ for (const reports of [0, 97, 98, 99]) test(`CommandRuntime admits a valid queue
 
 test("latest event preserves append ordering, task isolation and public history on read-only reopen", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-latest-task-event-"));
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   let tasks = await DurableTaskRunStore.open(root, authority);
   try {
     const empty = tasks.create({ task: "no lifecycle events yet" });

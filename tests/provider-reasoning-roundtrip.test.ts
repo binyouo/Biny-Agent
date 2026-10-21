@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** 真实 SDK adapter 的思考元数据必须从 SSE 经持久化投影回到下一轮请求。 */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -109,7 +110,7 @@ async function runLoop(provider: LanguageModelV4, modelOptions: ModelStreamOptio
   for await (const event of vercelAgentLoopContinue(
     { messages: [{ role: "user", content: "Inspect the fixture." }], tools: [tool] },
     {
-      model: { provider: provider.provider, modelId: provider.modelId, stream: async () => { throw new Error("Must use the native provider adapter."); } },
+      model: testModel({ provider: provider.provider, modelId: provider.modelId, stream: async () => { throw new Error("Must use the native provider adapter."); } }),
       vercelModel: provider, tools: [tool], maxSteps: 2, maxRetries: 0, modelOptions,
       persistStep: async ({ message }) => { saved.push(structuredClone(message)); }
     }

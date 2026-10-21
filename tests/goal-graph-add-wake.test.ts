@@ -140,11 +140,11 @@ async function fixture(execute: (value: Fixture) => Promise<void> | void): Promi
     assert.deepEqual(await readdir(root), []);
     await mkdir(workspace);
     assert.equal(existsSync(agent), false);
-    const authority = await RuntimeEventAuthority.open(workspace, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(workspace, { reconcileSessions: false });
     const store = await GoalGraphStore.open(workspace, authority);
     current = { store, authority, async reopen() {
       this.store.close(); this.authority.close();
-      this.authority = await RuntimeEventAuthority.open(workspace, { backfillLegacySessions: false });
+      this.authority = await RuntimeEventAuthority.open(workspace, { reconcileSessions: false });
       this.store = await GoalGraphStore.open(workspace, this.authority);
     } };
     assert.ok(authority.databasePath.startsWith(agent + path.sep));

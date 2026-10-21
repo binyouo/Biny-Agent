@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Configured provider timeouts also bound auxiliary requests and credential preparation. */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -43,7 +44,7 @@ for (const override of ["inherited", "explicit", "disabled"] as const) {
     const prepared = deferred<AgentModel>();
     let preparationSignal: AbortSignal | undefined;
     let calls = 0;
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "fixture", modelId: "prepare-timeout", vercelOptions: { timeoutMs: 1_000 },
       prepareTextRequest: async (signal) => {
         preparationSignal = signal;
@@ -51,11 +52,11 @@ for (const override of ["inherited", "explicit", "disabled"] as const) {
       },
       stream: async () => {
         calls++;
-        return (async function* () { yield { type: "text-delta" as const, text: "complete" }; })();
+        return (async function* () { yield { type: "text-delta" as const, text: "complete" }; yield { type: "finish" as const, reason: "stop" as const }; })();
       }
-    };
+    });
     const options = override === "inherited" ? {} : { timeoutMs: override === "explicit" ? 2_000 : undefined };
-    const outcome = generateNativeText(model, [], options).catch((error: unknown) => error);
+    const outcome = generateNativeText(model, [{ role: "user", content: "fixture request" }], options).catch((error: unknown) => error);
     try {
       t.mock.timers.tick(1_000);
       assert.equal(preparationSignal?.aborted ?? false, override === "inherited");
@@ -66,7 +67,8 @@ for (const override of ["inherited", "explicit", "disabled"] as const) {
       prepared.resolve(model);
       const result = await outcome;
       if (override === "disabled") {
-        assert.deepEqual(result, { text: "complete", usage: undefined, finishReason: undefined });
+        assert.equal((result as { text: string }).text, "complete");
+        assert.equal((result as { finishReason: string }).finishReason, "stop");
         assert.equal(calls, 1);
       } else {
         assert.ok(result instanceof DOMException);

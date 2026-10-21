@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Error presence is independent of payload. All provider streams are in-memory. */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -127,15 +128,15 @@ for (const strict of [false, true]) {
     });
   }
 }
-for (const route of ["prepare", "injected"] as const) {
+for (const route of ["prepare", "provider"] as const) {
   test(`raw undefined ${route} rejection reports error`, async () => {
     const metrics: ModelRequestMetrics[] = [];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "fixture", modelId: "raw-undefined",
       ...(route === "prepare" ? { prepareTextRequest: async () => { throw undefined; } } : {}),
       stream: async () => { throw undefined; }
-    };
-    await assert.rejects(generateNativeText(model, messages, { onRequestMetrics: (value) => { metrics.push(value); } }), (error: unknown) => error === undefined);
+    });
+    await assert.rejects(generateNativeText(model, messages, { onRequestMetrics: (value) => { metrics.push(value); } }), (error: unknown) => route === "prepare" ? error === undefined : error instanceof Error && error.message === "undefined");
     assertFailureMetrics(metrics, "undefined");
   });
 }

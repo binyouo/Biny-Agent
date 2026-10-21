@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -59,7 +60,7 @@ try {
   assert.equal(await read(), null, "cold CLI query is available before a Host exists");
   host = await startRuntimeHost(root, async () => await createInteractiveAgentHost(root, {
     sessionId: "goal-cli", configStore: { load: async () => config, save: async () => undefined }
-  }));
+  }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   const objective = "完成当前任务\n保留  所有验收条件";
   const set = JSON.parse((await run("set", objective, "--session", "goal-cli", "--json")).stdout) as { sessionId: string; objective: string; status: string };
   assert.equal(set.sessionId, "goal-cli");

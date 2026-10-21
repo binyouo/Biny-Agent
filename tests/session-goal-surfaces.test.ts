@@ -34,7 +34,7 @@ assert.ok(buildDesktopComposerItems([]).some((item) => item.id === "/goal"));
 assert.equal(slashCommandsForSurface("tui").find((entry) => entry.name === "/goal")?.requiresArgs, undefined);
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-session-goal-surface-"));
-const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
 const sessionGoals = await SessionGoalStore.open(root, authority);
 const graphs = await GoalGraphStore.open(root, authority);
 const cancellations: string[] = [];

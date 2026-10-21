@@ -1,3 +1,4 @@
+import { createHostTestStores } from "./hostStores.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
@@ -97,7 +98,7 @@ export async function createReplayFixture(t: TestContext) {
   let closePromise: Promise<void> | undefined;
   const fixture = { root, configDir, registration,
     async start(listen = false) {
-      const commands = { agent: {
+      const commands = { ...await createHostTestStores(root), agent: {
         getInfo: () => ({ sessionId: replaySessionId, sessionFile: path.join(root, "session.jsonl"), workspaceRoot: root,
           provider: "test", modelAlias: "test", modelLabel: "Test", reasoningLabel: "Off", thinking: "off", skills: [] }),
         getPermissionMode: () => "ask",
@@ -105,7 +106,7 @@ export async function createReplayFixture(t: TestContext) {
         memoryEmbeddingStatus: async () => ({ activeModel: undefined, needsRebuild: false, pendingEntries: 0 })
       }, close: async () => undefined } as unknown as CommandRuntime;
       const runtime = new InteractiveAgentRuntime(commands);
-      const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined });
+      const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected runtime creation"); });
       servers.push(server);
       // Deterministic transport tests need no journal I/O; the Unix test initializes
       // the actual journal and Host exactly as the Bash event-budget integration does.

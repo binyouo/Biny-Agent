@@ -123,7 +123,7 @@ await test("all fingerprint APIs reject a pre-aborted signal before reading file
 
 async function withStore(run: (root: string, tasks: DurableTaskRunStore) => Promise<void>): Promise<void> {
   const root = await workspace();
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   try { await run(root, tasks); }
   finally {

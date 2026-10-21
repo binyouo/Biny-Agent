@@ -14,7 +14,6 @@ import type { RuntimeRunStatus } from "../RuntimeAuthority.js";
 import type { TaskRunStatus } from "../TaskRunStore.js";
 import type { TaskRetrySafety } from "../TaskRunStore.js";
 import type { AutomationCreateInput } from "../AutomationScheduler.js";
-import type { GraphNodeInput } from "../GoalGraphStore.js";
 import type { HostResponseFrame } from "./protocol.js";
 import type { HostOperationResult, HostSurface, RuntimeIsolation } from "./types.js";
 import { localEmbeddingModelIds, type LocalEmbeddingModelId } from "../../llm/embedding/types.js";
@@ -224,23 +223,6 @@ export function readAutomationCreateInput(payload: Record<string, unknown>): Aut
   };
 }
 
-export function readGraphNodes(value: unknown): GraphNodeInput[] {
-  if (!Array.isArray(value) || value.length === 0) throw new Error("Graph nodes must be a non-empty array.");
-  return value.map((item, index) => {
-    const node = asRecord(item);
-    const dependencies = node.dependencies;
-    if (dependencies !== undefined && (!Array.isArray(dependencies) || dependencies.some((dependency) => typeof dependency !== "string"))) {
-      throw new Error(`Graph node ${String(index)} dependencies are invalid.`);
-    }
-    return {
-      nodeKey: requiredString(node.nodeKey, `nodes[${String(index)}].nodeKey`),
-      prompt: requiredString(node.prompt, `nodes[${String(index)}].prompt`),
-      dependencies: dependencies as string[] | undefined,
-      intent: node.intent,
-      verification: node.verification
-    };
-  });
-}
 
 export function assertAllowedKeys(record: Record<string, unknown>, allowed: readonly string[], label: string): void {
   const unexpected = Object.keys(record).find((key) => !allowed.includes(key));

@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1042,7 +1044,7 @@ async function testActivitySummaryNarrativePersistence(): Promise<void> {
   const store = new ActivityStore();
   try {
     await store.open(root, root);
-    const failingModel: AgentModel = {
+    const failingModel: AgentModel = testModel({
       provider: "test",
       modelId: "failing-summary-model",
       runtime: "provider",
@@ -1050,7 +1052,7 @@ async function testActivitySummaryNarrativePersistence(): Promise<void> {
         throw new Error("temporary model failure");
         yield { type: "finish" as const, reason: "stop" as const };
       })()
-    };
+    });
     const fallback = await refreshActivitySummaryWithNarrative(store, "daily", "2026-08-28", {
       model: failingModel,
       withNarrative: true,
@@ -1059,7 +1061,7 @@ async function testActivitySummaryNarrativePersistence(): Promise<void> {
     assert.ok(fallback.summary, "模型失败时仍保存确定性摘要供读取");
     assert.equal(fallback.model, undefined, "fallback 不能标记成成功叙事");
     assert.equal(store.getSummary("daily", "2026-08-28")?.model, undefined);
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test",
       modelId: "summary-model",
       runtime: "provider",
@@ -1067,7 +1069,7 @@ async function testActivitySummaryNarrativePersistence(): Promise<void> {
         yield { type: "text-delta" as const, text: "今天完成了编辑器和浏览器之间的工作切换。" };
         yield { type: "finish" as const, reason: "stop" as const };
       })()
-    };
+    });
     const summary = await refreshActivitySummaryWithNarrative(
       store,
       "daily",

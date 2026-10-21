@@ -9,14 +9,14 @@ import ts from "typescript";
 const root = process.env.BINY_CLI_CANCEL_SOURCE_ROOT ?? process.cwd();
 const source = readFileSync(process.env.BINY_CLI_CANCEL_BASELINE_RUN ?? path.join(root, "src/cli/commands/run.ts"), "utf8");
 const parsed = ts.createSourceFile("run.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const attached = parsed.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "runAttachedCommand");
+const attached = parsed.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "runCommand");
 assert.ok(attached?.body);
 function descendants(node: ts.Node, predicate: (item: ts.Node) => boolean): ts.Node[] {
   const found: ts.Node[] = [];
   const visit = (item: ts.Node): void => { if (predicate(item)) found.push(item); ts.forEachChild(item, visit); };
   visit(node); return found;
 }
-const aborts = descendants(attached, node => ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "onAbort");
+const aborts = descendants(attached, node => ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "abort");
 assert.equal(aborts.length, 1);
 const abort = aborts[0]!;
 assert.ok(ts.isVariableDeclaration(abort) && abort.initializer && ts.isArrowFunction(abort.initializer));
@@ -57,7 +57,7 @@ function fixture(initial: "pending" | "fulfilled" | "rejected") {
     reportError: () => assert.fail("no new logging contract")
   };
   const callback = runInNewContext(callbackCode, {
-    runtime, submitted: { runId: "submitted-run" }, sessionId: "submitted-session", Promise: undefined
+    client: runtime, runId: "submitted-run", sessionId: "submitted-session", Promise: undefined
   }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as () => void;
   return { rpc, failure, calls, callback };
 }
@@ -66,7 +66,7 @@ for (const initial of ["pending", "fulfilled", "rejected"] as const) {
   test(`SIGINT synchronously observes the ${initial} cancellation RPC without changing its target`, () => {
     const f = fixture(initial);
     assert.equal(f.callback(), undefined);
-    assert.deepEqual(f.calls, [["submitted-run", "interrupted", "submitted-session"]]);
+    assert.deepEqual(f.calls, [["submitted-run", "cancelled", "submitted-session"]]);
     assert.equal(f.rpc.rejectionHandlers.length, 1, "attach a rejection observer before returning from the abort callback");
     assert.equal(f.rpc.children.length, 1);
     if (initial === "pending") f.rpc.reject(f.failure);
@@ -77,7 +77,7 @@ for (const initial of ["pending", "fulfilled", "rejected"] as const) {
 
 test("the callback keeps completion and finally cleanup ownership outside the cancel RPC", () => {
   assert.ok(attached.body);
-  const waits = descendants(attached, node => ts.isAwaitExpression(node) && node.expression.getText(parsed) === "submitted.completion");
+  const waits = descendants(attached, node => ts.isAwaitExpression(node) && node.expression.getText(parsed) === "client.executeRun(sessionId, input, attachments, options, runId)");
   assert.equal(waits.length, 1);
   const removals = descendants(attached, node => ts.isCallExpression(node) && node.expression.getText(parsed) === "signal.removeEventListener");
   assert.equal(removals.length, 1);
@@ -85,9 +85,9 @@ test("the callback keeps completion and finally cleanup ownership outside the ca
   assert.ok(ts.isCallExpression(removal));
   assert.equal(removal.arguments.length, 2);
   assert.equal(removal.arguments[0]?.getText(parsed), '"abort"');
-  assert.equal(removal.arguments[1]?.getText(parsed), "onAbort");
+  assert.equal(removal.arguments[1]?.getText(parsed), "abort");
   const outer = attached.body.statements.find((node): node is ts.TryStatement => ts.isTryStatement(node));
   assert.ok(outer?.finallyBlock);
   assert.equal(outer.finallyBlock.statements.length, 1);
-  assert.equal(outer.finallyBlock.statements[0]?.getText(parsed), "await runtime.close();");
+  assert.equal(outer.finallyBlock.statements[0]?.getText(parsed), "await client.close();");
 });

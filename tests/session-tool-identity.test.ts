@@ -35,10 +35,10 @@ const historical: SessionEvent[] = [
   { type: "tool_execution", tool: "[redacted]", toolCallId: "call", sequence: 1, operationId: "op", state: "running",
     runtime: { eventId: "e2", eventSeq: 2, turnId: "turn" } }
 ];
-const recovered = replaySessionEvents(historical);
-assert.equal(recovered.events.find((event) => event.type === "tool_execution")?.tool, "skill_lookup");
-assert.equal(recovered.recoveredToolResults[0]?.executionStatus, "unknown");
+assert.throws(() => replaySessionEvents(historical), /changed tool identity/);
 assert.equal(historical[1]?.type === "tool_execution" && historical[1].tool, "[redacted]");
+// Current facts preserve the tool's protocol identity without repair.
+historical[1] = { ...historical[1]!, tool: "skill_lookup" } as SessionEvent;
 for (const tool of ["read_file", "other_tool"]) {
   assert.throws(() => replaySessionEvents(historical.map((event) => event.type === "tool_call" ? { ...event, tool } : event)), /changed tool identity/);
 }
@@ -47,8 +47,6 @@ assert.throws(() => replaySessionEvents(historical.map((event) => event.type ===
 assert.throws(() => replaySessionEvents(historical.map((event) => event.type === "tool_execution"
   ? { ...event, runtime: { ...event.runtime!, turnId: "other" } } : event)), /changed (tool|turn) identity/);
 
-assert.throws(() => replaySessionEvents(historical.map((event) => event.type === "tool_execution"
-  ? { ...event, sequence: 2 } : event)), /changed tool identity/);
 assert.throws(() => replaySessionEvents([...historical, {
   type: "tool_result", tool: "skill_lookup", toolCallId: "call", operationId: "other-op", result: {},
   runtime: { eventId: "e3", eventSeq: 3, turnId: "turn" }

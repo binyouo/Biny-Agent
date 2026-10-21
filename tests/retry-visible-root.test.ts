@@ -1,3 +1,5 @@
+import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import fsSync, { promises as fs } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
@@ -67,16 +69,16 @@ async function gap(t: TestContext, older = true, selected = false, compacted = f
   const make = () => {
     const session = new AgentSession({ workspaceRoot: root, attachmentRoot: attachmentRoot(root), config,
       recorder: new SessionRecorder(root), permissionManager: new PermissionManager(config.permission), toolRegistry: registry,
-      model: { provider: "synthetic", modelId: "visible-root", supportsTools: true,
+      model: testModel({ provider: "synthetic", modelId: "visible-root", supportsTools: true,
         stream: async (context, options) => {
           const events = context.systemPrompt?.includes("durable context checkpoint") ? answer(checkpointText())
             : options?.requestContext?.operation === "agent"
               ? (requests.push(structuredClone(context.messages)), await response()) : answer("AUXILIARY_TITLE");
           return (async function* () { yield* events; })();
-        } } });
+        } }) });
     sessions.push(session); return session;
   };
-  t.after(async () => { for (const session of sessions) await session.close(); await fs.rm(root, { recursive: true, force: true }); });
+  t.after(async () => { for (const session of sessions) await session.close(); await removeTestRoot(root, { recursive: true, force: true }); });
   const live = make(); await live.initialize(); let step = 0;
   if (compacted) {
     response = async () => answer("HISTORIC_ANSWER ".repeat(100));
@@ -170,7 +172,7 @@ test("duplicate host admission shares hydration, excludes navigation, and reuses
 for (const checkpoint of ["missing", "corrupt", "originless"] as const) for (const entry of ["host", "direct"] as const) {
   test(`${entry} fresh input abandons ${checkpoint} checkpoint from a retry-scoped view`, async t => {
     const f = await gap(t);
-    if (checkpoint === "missing") await fs.rm(f.turnPath);
+    if (checkpoint === "missing") await removeTestRoot(f.turnPath);
     else if (checkpoint === "corrupt") await fs.writeFile(f.turnPath, "invalid old checkpoint");
     else { const saved = JSON.parse(f.checkpoint); delete saved.turn.retryOrigin; delete saved.turn.retryWindow;
       await fs.writeFile(f.turnPath, JSON.stringify(saved)); }
@@ -198,10 +200,9 @@ test("normalized compacted selected state matches admitted metadata and cold con
   const event = (await readSessionEvents(f.file)).find(event => event.type === "user_message" && event.messageId === "compact-input");
   assert.ok(event?.type === "user_message");
   const status = await f.cold.contextStatus();
-  assert.deepEqual(event.contextUsage, JSON.parse(JSON.stringify(status.budget)));
-  assert.deepEqual(event.contextState?.budget, event.contextUsage);
+  assert.deepEqual(event.contextState?.budget, JSON.parse(JSON.stringify(status.budget)));
   assert.deepEqual(event.contextState?.checkpoint, JSON.parse(JSON.stringify(selected.contextCheckpoint)));
-  assert.equal(event.contextUsage?.maxTokens, 700_000);
+  assert.equal(event.contextState?.budget?.maxTokens, 700_000);
   const checkpoint = await f.store.load(); assert.equal(checkpoint?.completedSteps, 0); assert.equal(checkpoint?.facts, undefined);
   const cold = f.make(); await cold.initialize(); await cold.resume(f.sessionId);
   f.setResponse(async () => answer("COMPACTED_NEW_ANSWER"));
@@ -498,7 +499,7 @@ for (const mutation of ["selection", "new-root", "terminal", "checkpoint", "boun
     else assert.ok(error instanceof Error);
     assert.equal((await readSessionEvents(f.file)).filter(event => event.type === "user_message" && event.messageId === "race-input").length, mutation === "metadata" ? 1 : 0);
     if (mutation !== "metadata" && mutation !== "checkpoint") assert.equal(await fs.readFile(f.turnPath, "utf8"), f.checkpoint);
-    if (mutation === "bound-file") { await fs.rm(f.file); await fs.rename(`${f.file}.original`, f.file); }
+    if (mutation === "bound-file") { await removeTestRoot(f.file); await fs.rename(`${f.file}.original`, f.file); }
   });
 }
 

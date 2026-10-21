@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Host 的归档分页契约：无参数 CLI 保持全量，带参数只传输请求页。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
@@ -36,7 +37,7 @@ try {
     runExclusiveOperation: async (_name: string, execute: (signal: AbortSignal) => Promise<unknown>) => await execute(new AbortController().signal),
     close: async () => undefined
   } as unknown as InteractiveRuntimeHandle;
-  host = await startRuntimeHost(root, async () => ({ runtime, commands }));
+  host = await startRuntimeHost(root, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   const client = await connectRuntimeHost(root, { surface: "cli", clientId: "archive-page" });
   assert.ok(client);
   try {

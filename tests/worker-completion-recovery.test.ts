@@ -11,7 +11,7 @@ import { captureTaskWorkspaceSnapshot, fingerprintTaskVerificationDefinitions } 
 
 test("worker output is durable before completion and cold report recovery never reruns it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-output-"));
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   let tasks = await DurableTaskRunStore.open(root, authority);
   const task = tasks.create({ task: { prompt: "inspect", planBlock: { kind: "report" } } });
   tasks.transition(task.taskRunId, "queued");
@@ -30,7 +30,7 @@ test("worker output is durable before completion and cold report recovery never 
     await manager.close();
     tasks.close();
     authority.close();
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     tasks = await DurableTaskRunStore.open(root, authority);
     const result = await runTaskClosure({ taskRuns: tasks, taskRunId: task.taskRunId, workspaceRoot: root, ignore: [],
       executor: { executeTaskCheck: async () => assert.fail("report must not run verification commands") },
@@ -63,7 +63,7 @@ test("worker completion persistence failure rejects instead of reporting success
 
 test("task closure commits its original verification baseline before dispatching a worker", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-baseline-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   await writeFile(path.join(root, "artifact.txt"), "before");
   const task = tasks.create({ task: { prompt: "produce candidate", verification: {
@@ -88,7 +88,7 @@ test("task closure commits its original verification baseline before dispatching
 
 test("cold worker continuation rejects changed verification definitions before dispatch", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-contract-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   const contract = { objective: "candidate exists", checks: [{ command: "node --version", definitionPaths: ["check.txt"] }],
     artifactPaths: ["artifact.txt"], allowedRepairPaths: ["artifact.txt"], maxAttempts: 1 };
@@ -116,7 +116,7 @@ test("cold worker continuation rejects changed verification definitions before d
 
 test("explicit parked worker admission retains the same attempt and rejects stale or unsafe boundaries", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-admission-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   try {
     for (const failureClass of ["worker_interrupted", "unsafe_recovery"]) {

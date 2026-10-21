@@ -1,8 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Foreground CLI management reaches the owning Host without a second session writer. */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -145,7 +146,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
     runtime = await createInteractiveAgentHost(root, { resourceRegistry });
     catalog = runtime.commands.listTools().map(tool => tool.name);
     return runtime;
-  });
+  }, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   try {
     const client = await connectRuntimeHost(root, { surface: "cli", clientId: "management-fixture" });
     assert.ok(client);

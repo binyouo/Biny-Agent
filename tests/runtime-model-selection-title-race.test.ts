@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Real Desktop/Runtime model isolation with a controlled post-turn title race; only transport and provider I/O are in memory. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { EventEmitter } from "node:events";
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";

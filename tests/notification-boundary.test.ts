@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 通知协议只能进入通知元数据；真实投影入口、工具审计和多步执行都不能泄漏到正文。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -109,7 +111,7 @@ test("带通知的工具步经过真实 Agent 入口后，工具审计及最终�
   const tools = new ToolRegistry();
   tools.registerBuiltinTool(createWriteFileTool({ workspaceRoot: root, ignore: [] }));
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "notification", supportsTools: true,
     async stream(context) {
       requests += 1;
@@ -124,7 +126,7 @@ test("带通知的工具步经过真实 Agent 入口后，工具审计及最终�
       ] : [{ type: "text-delta", text: `已${block}完成` }, { type: "finish", reason: "stop" }];
       return (async function* () { yield* events; })();
     }
-  };
+  });
   const config = configSchema.parse({ ...defaultConfig, context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } } });
   const agent = new AgentSession({ workspaceRoot: root, config, model, toolRegistry: tools, permissionManager: new PermissionManager(config.permission), recorder });
   try {

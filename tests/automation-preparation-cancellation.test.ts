@@ -108,8 +108,8 @@ function fixture(t: TestContext, path: "fresh" | "resume", rejectPreparation: bo
     runExclusiveOperation: unused, startBackgroundOperation: unused, compactConversation: unused
   };
   const scheduler = new AutomationScheduler({
-    store: store as unknown as AutomationStore, getRuntime: () => runtime,
-    createFreshRuntime: path === "fresh" ? async () => { await prepare(); return runtime; } : undefined
+    getStore: () => store as unknown as AutomationStore, getRuntime: () => runtime,
+    createFreshRuntime: async (sessionId) => { await prepare(); if (sessionId) snapshot.info.sessionId = sessionId; return runtime; }
   });
   const pending: Promise<unknown>[] = [];
   function tick() {

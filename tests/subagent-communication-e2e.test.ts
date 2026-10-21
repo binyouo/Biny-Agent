@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -78,7 +79,7 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
         parentRequests += 1;
         if (phase === "result" && !acted) {
           const notices = body.messages.filter((message) => message.role === "user" && JSON.stringify(message.content).includes("Subagent notice"));
-          assert.equal(notices.length, 2, "the explicit report and completion arrive without TaskStatus polling");
+          assert.equal(notices.length, 2, `the explicit report and completion arrive without TaskStatus polling; operation=${String(req.headers["x-biny-operation"])}; system=${system.slice(0, 180)}`);
           assert.match(JSON.stringify(notices), /corrected result/);
         }
         const name = phase === "message" || phase === "cancel" ? "Bash" : phase === "result" ? "TaskStatus" : "Task";
@@ -124,7 +125,7 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
     extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: true, maxSteps: 4 } },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   }));
-  const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }));
+  const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   cleanup(async () => { await host.close(); });
   const connected = await connectRuntimeHost(root, { surface: "cli", clientId: "parent-client" });
   assert.ok(connected);

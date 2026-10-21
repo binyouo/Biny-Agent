@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -19,12 +21,12 @@ async function fixture(run: (context: {
     service: undefined as unknown as ThreadBriefService, store, requests: [] as string[],
     respond: (_request: number): unknown => valid, material: "检查编辑器"
   };
-  const model: AgentModel = { provider: "test", modelId: "brief-validation", stream: async function* (input) {
+  const model: AgentModel = testModel({ provider: "test", modelId: "brief-validation", stream: async function* (input) {
     context.requests.push(JSON.stringify(input.messages));
     const response = context.respond(context.requests.length);
     yield { type: "text-delta", text: JSON.stringify(response) };
     yield { type: "finish", reason: "stop" };
-  } };
+  } });
   context.service = new ThreadBriefService({ store, getModel: async () => model, readThread: async (sessionId) => ({
     sessionId, projectId: "workspace", title: "发布", createdAt: "2026-10-17T00:00:00Z",
     messages: [{ role: "user", text: context.material }]

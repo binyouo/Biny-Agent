@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 原任务工具选择与本轮发现结果在终态断点续跑时保留，不继承更早任务的发现范围。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -34,7 +36,7 @@ async function testSelectionRecovery(mode: "none" | "manual" | "discovered", ste
   const targetRequest = new Promise<void>((resolve) => { requestStarted = resolve; });
   let releaseRequest!: () => void;
   const targetGate = new Promise<void>((resolve) => { releaseRequest = resolve; });
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "tool-selection-recovery", supportsTools: true,
     async stream(context) {
       let response: ModelStreamEvent[];
@@ -72,7 +74,7 @@ async function testSelectionRecovery(mode: "none" | "manual" | "discovered", ste
       }
       return (async function* () { yield* response; })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     chat: { ...defaultConfig.chat, defaultToolSelection: "none" },

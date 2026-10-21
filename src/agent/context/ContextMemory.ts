@@ -23,7 +23,7 @@ import { stripTransientTurnContext } from "../prompts.js";
 import { checkpointClaims } from "../../session/checkpointClaims.js";
 import { anchoredRequestTokens, requestFingerprints } from "./requestAnchor.js";
 import type { SessionUsageAnchor, SessionCompactionFailure } from "../../session/metadata.js";
-import { contextCheckpointSchema, contextStateSchema, contextUsageSchema } from "../../session/contextSchema.js";
+import { contextCheckpointSchema, contextStateSchema } from "../../session/contextSchema.js";
 import { isActivityMemory } from "../../activity/modelContext.js";
 
 const piReserveTokens = 16_384;
@@ -519,17 +519,16 @@ export class ContextMemory {
     };
   }
 
-  restore(messages: AgentMessage[], state?: ContextBudgetStatus | SessionContextState): void {
+  restore(messages: AgentMessage[], contextState?: SessionContextState): void {
     // 必须先验证再改内存；快照恢复也会走这里，不能只依赖 JSONL 解析器。
-    if (state !== undefined) (isContextState(state) ? contextStateSchema : contextUsageSchema).parse(state);
+    if (contextState !== undefined) contextStateSchema.parse(contextState);
     this.memoryRecall = emptyMemoryRecallReport();
     this.memoryInjectedSummaries = [];
     this.replaceHistory(messages);
-    const contextState = isContextState(state) ? state : undefined;
     this.usageAnchor = contextState?.usageAnchor === undefined ? undefined : structuredClone(contextState.usageAnchor);
     this.pendingRequest = undefined;
     this.compactionFailure = contextState?.compactionFailure === undefined ? undefined : { ...contextState.compactionFailure };
-    const budget: ContextBudgetStatus | undefined = contextState?.budget ?? (isContextState(state) ? undefined : state);
+    const budget = contextState?.budget;
     this.checkpoint = contextState?.checkpoint === undefined ? undefined : cloneContextCheckpoint(contextState.checkpoint);
     this.summary = contextState?.checkpoint?.summary ?? contextState?.summary;
     this.checkpointState = contextState?.checkpoint?.state === undefined
@@ -1661,10 +1660,6 @@ function noCompaction(summary: string | undefined, tokensBefore: number): Compac
     tokensBefore,
     summary
   };
-}
-
-function isContextState(value: ContextBudgetStatus | SessionContextState | undefined): value is SessionContextState {
-  return value !== undefined && "budget" in value;
 }
 
 function cloneBudget(budget: ContextBudgetStatus): ContextBudgetStatus {

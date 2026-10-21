@@ -14,7 +14,7 @@ import { connectOrSpawnRuntimeHost, connectRuntimeHost, runtimeHostPaths, type R
 import { runRuntimeHostProcess } from "../../runtime/hostProcess.js";
 import { agentDir, ensureAgentDirs } from "../../session/store.js";
 import type { AutomationCreateInput } from "../../runtime/AutomationScheduler.js";
-import { GoalGraphStore, type GraphNodeInput } from "../../runtime/GoalGraphStore.js";
+import { GoalGraphStore } from "../../runtime/GoalGraphStore.js";
 import { RuntimeEventAuthority } from "../../runtime/RuntimeAuthority.js";
 import { SessionGoalStore } from "../../runtime/SessionGoalStore.js";
 
@@ -186,7 +186,7 @@ export async function sessionGoalActionCommand(workspaceRoot: string, action: "s
   if (action === "show") {
     let record;
     if (await fileExists(path.join(agentDir(workspaceRoot), "runtime.sqlite"))) {
-      const authority = await RuntimeEventAuthority.open(workspaceRoot, { backfillLegacySessions: false });
+      const authority = await RuntimeEventAuthority.open(workspaceRoot, { reconcileSessions: false });
       try {
         const goals = await SessionGoalStore.open(workspaceRoot, authority);
         try { record = goals.get(sessionId); }
@@ -211,17 +211,11 @@ function requireGoalSession(sessionId?: string): string {
   return sessionId.trim();
 }
 
-export async function graphCreateCommand(workspaceRoot: string, options: JsonOption & { graphId?: string; nodes: string; payload?: string } ): Promise<void> {
-  const parsedNodes = JSON.parse(options.nodes) as unknown;
-  if (!Array.isArray(parsedNodes)) throw new Error("--nodes must be a JSON array.");
-  await hostAction(workspaceRoot, options, async (client) => await client.graphCreate({ graphId: options.graphId, nodes: parsedNodes as GraphNodeInput[], payload: parseJsonOption(options.payload) }));
-}
-
 export async function graphListCommand(workspaceRoot: string, options: JsonOption = {}): Promise<void> {
   await graphReadAction(workspaceRoot, options, (graphs) => graphs?.listGraphs() ?? []);
 }
 
-export async function graphActionCommand(workspaceRoot: string, action: "start" | "pause" | "resume" | "cancel" | "inspect" | "events", graphId: string, options: JsonOption & { cursor?: number; limit?: number } = {}): Promise<void> {
+export async function graphActionCommand(workspaceRoot: string, action: "pause" | "resume" | "cancel" | "inspect" | "events", graphId: string, options: JsonOption & { cursor?: number; limit?: number } = {}): Promise<void> {
   if (action === "inspect" || action === "events") {
     await graphReadAction(workspaceRoot, options, (graphs) => {
       if (action === "events") return graphs?.listGraphEvents(graphId, { afterSequence: options.cursor, limit: options.limit })
@@ -232,7 +226,6 @@ export async function graphActionCommand(workspaceRoot: string, action: "start" 
     return;
   }
   await hostAction(workspaceRoot, options, async (client) => {
-    if (action === "start") return await client.graphStart(graphId);
     if (action === "pause") return await client.graphPause(graphId);
     if (action === "resume") return await client.graphResume(graphId);
     return await client.graphCancel(graphId);
@@ -267,11 +260,6 @@ async function hostAction<T>(workspaceRoot: string, options: HostActionOptions, 
   } finally {
     await client.close();
   }
-}
-
-function parseJsonOption(value: string | undefined): unknown {
-  if (value === undefined) return undefined;
-  return JSON.parse(value) as unknown;
 }
 
 function formatPlain(value: unknown): string {

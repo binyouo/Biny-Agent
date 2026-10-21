@@ -78,7 +78,7 @@ for (const ledger of [false, true]) {
       });
       await host.connectConfiguredServers(root, config, registry);
       if (ledger) {
-        authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+        authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
         capabilities = await CapabilityStore.open(root, authority);
       }
       const emitted: Array<AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>> = [];
@@ -174,7 +174,7 @@ for (const ledger of [false, true]) {
         const host = new McpToolHost();
         const registry = new ToolRegistry();
         const recorder = new SessionRecorder(root, "business-result");
-        const authority = ledger ? await RuntimeEventAuthority.open(root, { backfillLegacySessions: false }) : undefined;
+        const authority = ledger ? await RuntimeEventAuthority.open(root, { reconcileSessions: false }) : undefined;
         const capabilities = authority ? await CapabilityStore.open(root, authority) : undefined;
         const config = configSchema.parse({ ...defaultConfig,
           permission: { ...defaultConfig.permission, mode: "full-access" },

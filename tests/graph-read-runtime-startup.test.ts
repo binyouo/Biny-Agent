@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Graph projections must not boot a cold owner or a Host. No sockets, models, or network. */
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -55,7 +56,7 @@ await test("RPC, client wrappers, CLI and selected-session slash graph reads nev
     }
     assert.deepEqual(await f.rpc("graph.events", { graphId: "missing", sessionId: "missing-owner" }), emptyPage);
     await assert.rejects(f.rpc("graph.inspect", { graphId: "missing", sessionId: "missing-owner" }), /Graph missing does not exist/u);
-    assert.deepEqual(await f.rpc("graph.inspect", { graphId: "fixed", sessionId: "any-owner" }), wire(f.graphs.inspectGraph("fixed")));
+    await assert.rejects(f.rpc("graph.inspect", { graphId: "fixed", sessionId: "any-owner" }), /belongs to another session/u);
     for (const source of ["desktop", "tui"] as const) {
       for (const sessionId of [undefined, "cold-owner", "other"]) {
         // Slash graph reads have always been workspace reads; do not add RPC ownership restrictions.
@@ -183,11 +184,11 @@ await test("CLI reads see live WAL facts, close read handles, and never migrate 
       await assert.rejects(access(agentDir(missing)), { code: "ENOENT" });
 
       const legacy = path.join(f.temporary, "legacy"); await mkdir(legacy);
-      const writer = await RuntimeEventAuthority.open(legacy, { backfillLegacySessions: false });
+      const writer = await RuntimeEventAuthority.open(legacy, { reconcileSessions: false });
       writer.databaseHandle().exec("PRAGMA user_version = 1"); writer.close();
       const before = await readFile(writer.databasePath);
       for (const operation of [() => graphListCommand(legacy, { json: true }), () => graphActionCommand(legacy, "inspect", graphId, { json: true }), () => graphActionCommand(legacy, "events", graphId, { json: true })]) {
-        await assert.rejects(operation(), /requires an explicit runtime startup/u);
+        await assert.rejects(operation(), /unsupported/u);
       }
       assert.deepEqual(await readFile(writer.databasePath), before);
       await writeFile(writer.databasePath, "corrupt-fixture");
@@ -200,21 +201,21 @@ await test("CLI reads see live WAL facts, close read handles, and never migrate 
 
 await test("graph mutations and unknown slash commands retain routing while task reads use persisted facts", async (t) => {
   await fixture(t, async (f) => {
-    for (const operation of ["graph.start", "graph.pause", "graph.resume", "graph.cancel"]) {
+    for (const operation of ["graph.pause", "graph.resume", "graph.cancel"]) {
       await assert.rejects(f.rpc(operation, { graphId }), /FACTORY_NOT_ALLOWED/u);
     }
-    for (const input of [`/graph start ${graphId}`, `/graph pause ${graphId}`, `/graph list`, `/graph mystery ${graphId}`]) {
+    for (const input of [`/graph pause ${graphId}`, `/graph list`, `/graph mystery ${graphId}`]) {
       await assert.rejects(f.rpc("command", { input, source: "tui", sessionId: "cold-owner" }), /FACTORY_NOT_ALLOWED/u);
     }
     // Task reads now share the durable read boundary; graph mutation routing is unchanged.
     const factoriesBeforeTaskRead = f.counts.factory;
     assert.deepEqual(await f.rpc("task.get", { taskRunId: "cold-task" }), wire(f.commands.taskRuns.get("cold-task")));
     assert.equal(f.counts.factory, factoriesBeforeTaskRead);
-    assert.equal(f.counts.factory, 8);
-    for (const action of ["start", "pause", "resume", "cancel"] as const) {
+    assert.equal(f.counts.factory, 6);
+    for (const action of ["pause", "resume", "cancel"] as const) {
       assert.deepEqual(JSON.parse(await f.output(() => graphActionCommand(f.root, action, graphId, { json: true }))), { action, graphId });
     }
-    assert.equal(f.counts.connection, 4);
+    assert.equal(f.counts.connection, 3);
   });
 });
 
@@ -231,11 +232,11 @@ async function fixture(t: TestContext, run: (f: Fixture) => Promise<void>): Prom
   const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-graph-read-startup-")));
   const previous = process.env.BINY_AGENT_DIR; process.env.BINY_AGENT_DIR = path.join(temporary, "agent");
   const root = path.join(temporary, "workspace"); await mkdir(root);
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const graphs = await GoalGraphStore.open(root, authority);
   const tasks = await DurableTaskRunStore.open(root, authority);
   graphs.createSupervisedGraph({ graphId, supervisorSessionId: "cold-owner", nodes: [{ nodeKey: "work", prompt: "Read local facts" }] });
-  graphs.createGraph([{ nodeKey: "fixed", prompt: "Fixed facts" }], {}, "fixed");
+  graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "fixed", prompt: "Fixed facts" }], payload: {}, graphId: "fixed" });
   for (let index = 0; index < 3; index++) authority.appendEvent({ eventId: `event-${index}`, sessionId: "cold-owner", runId: `task-${index}`, turnId: `graph:${graphId}`, eventType: "fixture.graph" });
   tasks.create({ taskRunId: "cold-task", sessionId: "cold-owner", task: { prompt: "Unrelated task" } });
   const commands = { graphs, taskRuns: tasks, runtimeAuthority: authority } as CommandRuntime;

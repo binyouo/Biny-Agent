@@ -1,11 +1,12 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /**
- * 会话命名、目录迁移与导入导出的端到端测试。
+ * 会话命名、目录边界与导入导出的端到端测试。
  *
  * 隔离约定：用 BINY_AGENT_DIR 把全局 agent 目录重定向到临时目录，本测试绝不触碰真实
  * `~/.biny`。新写法参考：先 mkdtemp + realpath（macOS 上 /var 是 symlink），再设环境变量。
  */
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -13,13 +14,13 @@ const agentRoot = await mkdtemp(path.join(os.tmpdir(), "biny-transfer-agent-"));
 process.env.BINY_AGENT_DIR = agentRoot;
 
 const { attachmentFilePath, attachmentRoot, readAttachment, saveAttachment } = await import("../src/attachments/store.js");
-const { globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName } = await import("../src/config/paths.js");
+const { projectStateDirName } = await import("../src/config/paths.js");
 const { readStoredSessionEvents } = await import("../src/session/events.js");
 const { replaySessionEvents } = await import("../src/session/replay.js");
 const { toModelMessages } = await import("../src/agent/core/vercelModelAdapter.js");
 const { createSessionId, SessionRecorder } = await import("../src/session/recorder.js");
 const { RuntimeEventAuthority } = await import("../src/runtime/RuntimeAuthority.js");
-const { ensureAgentDirs, resolveSessionFile } = await import("../src/session/store.js");
+const { ensureAgentDirs } = await import("../src/session/store.js");
 const { sessionImportCommand } = await import("../src/cli/commands/sessionTransfer.js");
 const {
   BINY_BUNDLE_FORMAT,
@@ -67,57 +68,6 @@ try {
     assert.ok(projectStateDirName(longName).length <= 48 + 9);
     // 同名不同路径靠 hash8 消歧。
     assert.notEqual(projectStateDirName("/tmp/a/biny"), projectStateDirName("/tmp/b/biny"));
-  }
-
-  // ── 迁移：旧 24hex 目录 + 日期分层 + .DS_Store → rename 到新目录并摊平 ──────
-  {
-    const root = await tempWorkspace("biny-migrate-ws-");
-    const legacyDir = path.join(globalAgentDir(), "sessions", legacyProjectStateDirName(root));
-    const dated = path.join(legacyDir, "2026", "08", "26");
-    await mkdir(dated, { recursive: true });
-    await mkdir(path.join(legacyDir, ".catalog"), { recursive: true });
-    await writeFile(path.join(dated, "20260826-100000-abcdef12.jsonl"), `${JSON.stringify({ type: "user_message", content: "旧会话", time: "2026-08-26T02:00:00.000Z" })}\n`);
-    await writeFile(path.join(legacyDir, ".DS_Store"), "finder junk");
-    await writeFile(path.join(legacyDir, ".catalog", "20260826-100000-abcdef12.json"), JSON.stringify({ version: 1, sessionId: "20260826-100000-abcdef12", title: "旧标题" }));
-
-    await ensureAgentDirs(root);
-
-    const newDir = projectSessionsDir(root);
-    assert.match(path.basename(newDir), /^biny-migrate-ws-[0-9A-Za-z]+-[0-9a-f]{8}$/u);
-    // 旧目录消失、文件摊平到根、.DS_Store 放行没炸、catalog 记录跟着走。
-    await assert.rejects(lstat(legacyDir), /ENOENT/u);
-    const migrated = path.join(newDir, "20260826-100000-abcdef12.jsonl");
-    assert.ok((await lstat(migrated)).isFile());
-    assert.ok((await lstat(path.join(newDir, ".catalog", "20260826-100000-abcdef12.json"))).isFile());
-    assert.equal(await resolveSessionFile(root, "20260826-100000-abcdef12"), migrated);
-    assert.equal((await lstat(migrated)).mode & 0o777, 0o600);
-  }
-
-  // ── 迁移：新旧目录同时存在 → 并入而不是跳过 ────────────────────────────────
-  {
-    const root = await tempWorkspace("biny-merge-ws-");
-    const legacyDir = path.join(globalAgentDir(), "sessions", legacyProjectStateDirName(root));
-    const newDir = projectSessionsDir(root);
-    await mkdir(path.join(legacyDir, "2026", "08", "26"), { recursive: true });
-    await mkdir(path.join(legacyDir, ".catalog"), { recursive: true });
-    await mkdir(path.join(newDir, ".catalog"), { recursive: true });
-    const legacyEvent = `${JSON.stringify({ type: "user_message", content: "旧版写入", time: "2026-08-26T03:00:00.000Z" })}\n`;
-    const freshEvent = `${JSON.stringify({ type: "user_message", content: "新版写入", time: "2026-08-26T04:00:00.000Z" })}\n`;
-    await writeFile(path.join(legacyDir, "2026", "08", "26", "20260826-110000-aaaa1111.jsonl"), legacyEvent);
-    await writeFile(path.join(legacyDir, ".catalog", "20260826-110000-aaaa1111.json"), JSON.stringify({ version: 1, sessionId: "20260826-110000-aaaa1111", title: "旧版标题" }));
-    await writeFile(path.join(newDir, "20260826-120000-bbbb2222.jsonl"), freshEvent);
-    await writeFile(path.join(newDir, ".catalog", "20260826-120000-bbbb2222.json"), JSON.stringify({ version: 1, sessionId: "20260826-120000-bbbb2222", title: "新版标题" }));
-
-    await ensureAgentDirs(root);
-
-    await assert.rejects(lstat(legacyDir), /ENOENT/u);
-    // 两个会话都在新目录根（旧的分层文件被摊平），两边的 catalog 记录都保住。
-    assert.ok((await lstat(path.join(newDir, "20260826-110000-aaaa1111.jsonl"))).isFile());
-    assert.ok((await lstat(path.join(newDir, "20260826-120000-bbbb2222.jsonl"))).isFile());
-    assert.ok((await lstat(path.join(newDir, ".catalog", "20260826-110000-aaaa1111.json"))).isFile());
-    assert.ok((await lstat(path.join(newDir, ".catalog", "20260826-120000-bbbb2222.json"))).isFile());
-    const { events } = await readStoredSessionEvents(root, "20260826-110000-aaaa1111");
-    assert.equal(events[0]?.type, "user_message");
   }
 
   // ── bundle：导出 → 导入另一工作区，事件与附件完整往返 ───────────────────────

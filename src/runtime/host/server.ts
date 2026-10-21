@@ -1,3 +1,6 @@
+import { forkSession } from "../../session/fork.js";
+import { isDeepStrictEqual } from "node:util";
+import { validateRunOptions, type RunCommandOptions } from "../oneShot.js";
 /**
  * Runtime Host Server：连接接入、请求入口和 owner 侧事件发布。
  *
@@ -55,7 +58,7 @@ import {
   type HostFrame,
   type HostRequestFrame
 } from "./protocol.js";
-import { OperationCompletion, OperationDispatcher, operationLane, operationLaneKey, memoryQueryActions, commandWritesSession } from "./operations.js";
+import { OperationCompletion, OperationDispatcher, operationLane, operationLaneKey, commandWritesSession } from "./operations.js";
 import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.js";
 import {
   RuntimeHostAdmission,
@@ -74,7 +77,6 @@ import {
   readFastMode,
   readAutomationCreateInput,
   readCapabilityOwnerType,
-  readGraphNodes,
   readLocalEmbeddingModel,
   readModelRoute,
   readOptionalRunStatus,
@@ -155,6 +157,7 @@ export class RuntimeHostServer {
   private readonly server = net.createServer((socket) => this.accept(socket));
   private readonly connections = new Set<HostConnection>();
   /** 按会话保护正在准入、执行和收尾的写入；空闲浏览不保留客户端占用。 */
+  private readonly oneShotSessions = new Map<string, { options: RunCommandOptions; started: boolean; clientId: string }>();
   private readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface; pendingCompletions: number }>();
   /** 目标的发起者跨回合保留；不能用长期 writer lease 表示持续工作的归属。 */
   private readonly sessionGoalOwners = new Map<string, { clientId: string; goalId: string }>();
@@ -180,7 +183,7 @@ export class RuntimeHostServer {
   private readonly resourceRegistry: RuntimeHostResourceRegistry;
   private readonly onBrowserAutomationChange: ((endpoint: BrowserAutomationEndpoint | undefined) => void) | undefined;
   private browserAutomationOwnerClientId: string | undefined;
-  private readonly createRuntime: RuntimeHostFactory | undefined;
+  private readonly createRuntime: RuntimeHostFactory;
   private closePromise: Promise<void> | undefined;
   /** 重建只锁定目标 session，不能让一个 session 的配置刷新挡住其它 session。 */
   private readonly runtimeRestartPromises = new Map<string, Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }>>();
@@ -207,7 +210,7 @@ export class RuntimeHostServer {
     commands: CommandRuntime,
     private readonly registration: HostRegistration,
     private readonly lock: RuntimeHostLock,
-    createRuntime?: RuntimeHostFactory,
+    createRuntime: RuntimeHostFactory,
     options: {
       workspaceRoot?: string;
       sessionRuntimeCacheTarget?: number;
@@ -217,7 +220,7 @@ export class RuntimeHostServer {
       onBrowserAutomationChange?: (endpoint: BrowserAutomationEndpoint | undefined) => void;
     } = {}
   ) {
-    this.createRuntime = createRuntime === undefined ? undefined : async (sessionId, factoryOptions) => {
+    this.createRuntime = async (sessionId, factoryOptions) => {
       const host = await createRuntime(sessionId, factoryOptions);
       this.attachOwnerNotificationSink(host.commands);
       return host;
@@ -238,7 +241,7 @@ export class RuntimeHostServer {
     this.registry = new SessionRuntimeRegistry({ runtime, commands }, {
       createRuntime: this.createRuntime,
       sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
-      canEvict: (entry) => !this.sessionWriterOwners.has(entry.sessionId) && !this.dispatcher.hasPendingSession(entry.sessionId),
+      canEvict: (entry) => !this.oneShotSessions.has(entry.sessionId) && !this.sessionWriterOwners.has(entry.sessionId) && !this.dispatcher.hasPendingSession(entry.sessionId),
       onUpdate: (update, managed) => this.handleRuntimeUpdate(update, managed)
     });
     this.businessComposition = createRuntimeHostBusinessComposition({
@@ -246,10 +249,7 @@ export class RuntimeHostServer {
       onGraphChange: () => this.publishSnapshot(),
       getRuntime: () => this.runtime,
       getCommands: () => this.commands,
-      createRuntime,
-      createFreshRuntime: createRuntime === undefined
-        ? undefined
-        : async (sessionId) => {
+      createFreshRuntime: async (sessionId) => {
           if (sessionId !== undefined) {
             const existing = this.registry.get(sessionId);
             if (existing) {
@@ -260,41 +260,25 @@ export class RuntimeHostServer {
           }
           return (await this.registry.createFresh({ isolation: "shared", resourceRegistry: this.resourceRegistry })).runtime;
         },
-      resolveSessionRuntime: createRuntime === undefined
-        ? async (sessionId) => {
-          const existing = this.registry.get(sessionId);
-          if (!existing) throw new Error(`Supervisor session runtime ${sessionId} is unavailable.`);
-          return existing.runtime;
-        }
-        : async (sessionId) => {
+      resolveSessionRuntime: async (sessionId) => {
           const existing = this.registry.get(sessionId);
           if (existing) return existing.runtime;
           return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).runtime;
         },
-      resolveSessionCommands: createRuntime === undefined
-        ? async (sessionId) => {
-          const existing = this.registry.get(sessionId);
-          if (!existing) throw new Error(`Supervisor session commands ${sessionId} are unavailable.`);
-          return existing.commands;
-        }
-        : async (sessionId) => {
+      resolveSessionCommands: async (sessionId) => {
           const existing = this.registry.get(sessionId);
           if (existing) return existing.commands;
           return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).commands;
         },
       sessionExists: async (sessionId) => this.registry.get(sessionId) !== undefined
         || (await listSessionFiles(this.registration.persistenceRoot)).includes(`${sessionId}.jsonl`),
-      isBusy: () => this.registry.list().some((entry) => runtimeIsBusy(entry.runtime.getSnapshot())),
       canStartAutomationRun: () => !this.admission.isDraining(),
       canStartGoalRun: () => !this.admission.isDraining() && this.primaryGoalSchedulingReady,
       admitGoal: async (sessionId, execute) => await this.dispatcher.dispatch("run", async () => {
         this.assertEventSequenceAvailable();
         this.admission.assertAdmission();
         return await execute();
-      }, sessionId),
-      restartRuntime: async () => {
-        await this.restartRuntime(undefined);
-      }
+      }, sessionId)
     });
   }
 
@@ -307,9 +291,7 @@ export class RuntimeHostServer {
    * 记忆 Sleep 是可中断的后台维护：启动时补扫，之后按调度周期运行。用户一旦开始新回合，
    * handleRuntimeUpdate 会立即中断模型调用，让前台聊天始终优先；已有记忆仍留在事实库等待下次整理。
    */
-  startMemoryMaintenance(): void {
-    this.businessComposition.startMemoryMaintenance();
-  }
+
 
   setBrowserAutomation(endpoint: BrowserAutomationEndpoint | undefined, ownerClientId?: string): void {
     this.browserAutomationOwnerClientId = ownerClientId;
@@ -329,7 +311,7 @@ export class RuntimeHostServer {
     return await this.businessComposition.previewMemorySleep();
   }
 
-  cancelMemorySleep(): boolean {
+  cancelMemorySleep(): Promise<boolean> {
     return this.businessComposition.cancelMemorySleep();
   }
 
@@ -399,27 +381,19 @@ export class RuntimeHostServer {
 
   /** Host 重启后旧进程里的 bounded subagent 已不存在；只续验已有候选，其余运行中任务保守阻塞。 */
   private async recoverTaskRuns(): Promise<void> {
-    // 允许旧的嵌入式测试/轻量 fallback 只提供部分 CommandRuntime；真实 Runtime 永远带有 TaskRunStore。
-    if (!this.commands.taskRuns) return;
     let cursor: number | undefined;
     do {
       const page = this.commands.taskRuns.list({ limit: 1_000, cursor });
       for (const task of page.tasks) {
         const latestAttempt = task.attempts.at(-1);
-        const legacyUnsafeQueue = task.status === "queued"
-          && latestAttempt?.status === "queued"
-          && typeof latestAttempt.failure === "object"
-          && latestAttempt.failure !== null
-          && (latestAttempt.failure as { message?: unknown }).message === "TaskRun execution was recovered after a process restart.";
-        if (task.status !== "running" && task.status !== "verifying" && !legacyUnsafeQueue) continue;
+        if (task.status !== "running" && task.status !== "verifying") continue;
         try {
-          const owner = this.createRuntime === undefined
-            || task.sessionId === undefined
+          const owner = task.sessionId === undefined
             || task.sessionId === this.runtime.getSnapshot().info.sessionId
             ? this.commands
             : (await this.registry.ensure(task.sessionId, await this.factoryOptionsForSession(task.sessionId))).commands;
-          if (task.status === "running" || legacyUnsafeQueue) {
-            const resumable = task.status === "running" && await owner.canResumeWorkerTask?.(task.taskRunId);
+          if (task.status === "running") {
+            const resumable = await owner.canResumeWorkerTask(task.taskRunId);
             owner.taskRuns.transition(task.taskRunId, "blocked", {
               attemptId: latestAttempt?.attemptId,
               artifacts: latestAttempt?.artifacts,
@@ -451,7 +425,7 @@ export class RuntimeHostServer {
     if (submitted) this.trackCompletion(submitted);
   }
 
-  /** 当前 owner runtime；仅供同进程的 TUI fallback 在重建 session 后重新绑定。 */
+  /** 返回 Host 当前的主会话运行时。 */
   getCurrentRuntime(): InteractiveRuntimeHandle {
     return this.runtime;
   }
@@ -475,22 +449,22 @@ export class RuntimeHostServer {
     }
     const revision = this.activityRevision;
     for (const { runtime, commands } of this.registry.list()) {
-      const processes = await commands.managedProcesses?.list({ includeExited: false });
-      const heartbeat = commands.heartbeat?.status();
+      const processes = await commands.managedProcesses.list({ includeExited: false });
+      const heartbeat = commands.heartbeat.status();
       const snapshot = runtime.getSnapshot();
       // 暂停队列尚未交付且只在内存中；自动退出必须等用户清空或继续。
       const activeWork = runtimeIsBusy(snapshot)
         || Boolean(snapshot.queuedMessages?.length)
-        || commands.hasBackgroundWork?.()
-        || Boolean(processes?.length)
-        || heartbeat?.running
-        || commands.automationStore?.listPending().some((entry) => entry.status === "running")
-        || (["queued", "running", "verifying"] as const).some((status) => Boolean(commands.taskRuns?.list({ status, limit: 1 }).tasks.length));
+        || commands.hasBackgroundWork()
+        || Boolean(processes.length)
+        || heartbeat.running
+        || commands.automationStore.listPending().some((entry) => entry.status === "running")
+        || (["queued", "running", "verifying"] as const).some((status) => Boolean(commands.taskRuns.list({ status, limit: 1 }).tasks.length));
       // 定时职责保留进程，但历史终态和等待人工处理的记录并不是执行中的工作。
-      const scheduledWork = heartbeat?.enabled
-        || commands.automationStore?.list().some((entry) => entry.status === "active")
-        || commands.graphs?.listGraphs().some((entry) => entry.status === "running");
-      const activeGoals = commands.sessionGoals?.list({ status: "active" }).length;
+      const scheduledWork = heartbeat.enabled
+        || commands.automationStore.list().some((entry) => entry.status === "active")
+        || commands.graphs.listGraphs().some((entry) => entry.status === "running");
+      const activeGoals = commands.sessionGoals.list({ status: "active" }).length;
       if (activeWork || scheduledWork || activeGoals) {
         this.idleSince = undefined;
         return false;
@@ -615,7 +589,7 @@ export class RuntimeHostServer {
       this.releaseOwnerNotificationConnection(connection);
       if (this.closePromise !== undefined) return;
       if (connection.authenticated && connection.surface === "desktop") this.detachBrowserAutomationForClient(connection.clientId);
-      if (connection.clientId) this.commands.capabilities?.releaseOwner(connection.clientId);
+      if (connection.clientId) this.commands.capabilities.releaseOwner(connection.clientId);
       void this.releaseSessionWriters(connection.clientId);
     });
     socket.once("error", () => {
@@ -623,7 +597,7 @@ export class RuntimeHostServer {
       this.connections.delete(connection);
       this.releaseOwnerNotificationConnection(connection);
       if (this.closePromise !== undefined) return;
-      if (connection.clientId) this.commands.capabilities?.releaseOwner(connection.clientId);
+      if (connection.clientId) this.commands.capabilities.releaseOwner(connection.clientId);
       void this.releaseSessionWriters(connection.clientId);
     });
   }
@@ -732,7 +706,7 @@ export class RuntimeHostServer {
       if (this.closePromise) throw new Error("Runtime Host is shutting down.");
       const payload = asRecord(frame.payload);
       const runId = optionalString(payload.runId);
-      if ((frame.operation === "submit" || frame.operation === "run.submit" || frame.operation === "start-interrupted")
+      if ((frame.operation === "run.execute" || frame.operation === "run.submit" || frame.operation === "start-interrupted")
         && runId !== undefined && runId.trim()) {
         // 在 dispatch 让出执行之前登记；重连的查询仍走独立 query lane。
         finishPendingAdmission = this.registerPendingRunAdmission(runId);
@@ -833,6 +807,10 @@ export class RuntimeHostServer {
       const store = this.registry.get(sessionId)?.commands.sessionGoals ?? this.commands.sessionGoals;
       return store.get(sessionId);
     }
+    if (frame.operation === "session.fork") {
+      this.assertRequestAdmission(connection, frame.operation);
+      return await forkSession(this.registration.persistenceRoot, optionalString(payload.session), { upToEvent: optionalSafeInteger(payload.upToEvent) });
+    }
     if (frame.operation === "session.list") return this.sessionSummaries();
     if (frame.operation === "client.keep-alive") {
       if (typeof payload.keepAlive !== "boolean") throw new Error("keepAlive must be a boolean.");
@@ -844,6 +822,9 @@ export class RuntimeHostServer {
       return await this.executeOwnerNotificationRequest(connection, frame.operation, payload);
     }
     if (frame.operation === "session.ensure") {
+      const runOptions = payload.runOptions as RunCommandOptions | undefined;
+      if (runOptions !== undefined) validateRunOptions(runOptions);
+      if (payload.processLifetime !== undefined && payload.processLifetime !== "runtime" && payload.processLifetime !== "execution-environment") throw new Error("Invalid process lifetime.");
       const requestedSessionId = optionalString(payload.sessionId);
       const requestedIsolation = readRuntimeIsolation(payload.isolation);
       const writeIntent = payload.writeIntent === true;
@@ -853,6 +834,7 @@ export class RuntimeHostServer {
       const resident = sessionId === undefined ? undefined : this.registry.get(sessionId);
       // 注册表中的实例已经确认过 checkout 绑定。普通发送复用它，不再枚举整个会话目录；
       // 显式更改隔离方式仍走下方完整校验，写入者仍需取得真实 session lease。
+      if (resident && runOptions) throw new Error("Run overrides require a new session.");
       if (resident && requestedIsolation === undefined) {
         this.registry.touch(resident.sessionId);
         if (writeIntent) await this.claimSessionWriter(connection, resident.sessionId);
@@ -874,6 +856,7 @@ export class RuntimeHostServer {
           if (!isNotFound(error)) throw error;
         }
       }
+      if (runOptions && sessionFileExists) throw new Error("Run overrides require a new session.");
       const worktree = sessionId === undefined ? undefined : await this.worktrees.get(sessionId);
       // 物理 worktree 是 catalog 写入失败后的最后事实来源；一旦 session 已有 runtime，
       // isolation 也不能靠传入的新参数静默改写，否则同一份 transcript 会同时绑定两个 checkout。
@@ -893,8 +876,15 @@ export class RuntimeHostServer {
           ? undefined
           : { sessionId: requestedSessionId, fresh: !sessionFileExists, isolation: "shared" as const };
       const managed = requestedSessionId === undefined
-        ? await this.registry.createFresh({ sessionId, ...factoryOptions, isolation, resourceRegistry: this.resourceRegistry })
-        : await this.registry.ensure(requestedSessionId, { ...factoryOptions, resourceRegistry: this.resourceRegistry });
+        ? await this.registry.createFresh({ sessionId, ...factoryOptions, isolation, runOptions, processLifetime: payload.processLifetime, resourceRegistry: this.resourceRegistry })
+        : await this.registry.ensure(requestedSessionId, { ...factoryOptions, runOptions, processLifetime: payload.processLifetime, resourceRegistry: this.resourceRegistry });
+      if (runOptions) {
+        if (connection.socket.destroyed) {
+          await this.registry.closeSession(managed.sessionId);
+          throw new Error("One-shot caller disconnected before preparation completed.");
+        }
+        this.oneShotSessions.set(managed.sessionId, { options: structuredClone(runOptions), started: false, clientId: connection.clientId });
+      }
       if (writeIntent) {
         this.assertSessionWriterAvailable(connection, managed.sessionId);
         // 新 session 还没有 JSONL 时，runtime 尚未能建立文件 lease；先登记连接 owner，
@@ -916,6 +906,7 @@ export class RuntimeHostServer {
       const sessionId = requiredString(payload.sessionId, "sessionId");
       this.assertSessionWriterAvailable(connection, sessionId);
       await this.registry.closeSession(sessionId);
+      this.oneShotSessions.delete(sessionId);
       if (this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) {
         this.sessionWriterOwners.delete(sessionId);
       }
@@ -1047,8 +1038,17 @@ export class RuntimeHostServer {
           this.publishSnapshot(runtime);
           return result;
         };
-        if (scope !== undefined || command === "TodoShow" || command === "GoalGet" || command === "PlanStatus") return await execute();
+        if (scope !== undefined && command !== "ToolCall" || command === "TodoShow" || command === "GoalGet" || command === "PlanStatus") return await execute();
         await this.ensureSessionWriter(connection, runtime);
+        if (command === "ToolCall") {
+          const controller = new AbortController();
+          const disconnected = (): void => controller.abort(new Error("Tool caller disconnected."));
+          connection.socket.once("close", disconnected);
+          if (connection.socket.destroyed) disconnected();
+          const completion = runtime.runExclusiveOperation("tool", signal => execute(AbortSignal.any([signal, controller.signal])))
+            .finally(() => connection.socket.off("close", disconnected));
+          return new OperationCompletion(completion);
+        }
         return new OperationCompletion(runtime.runExclusiveOperation("plan", execute));
       }
       case "plan.list": {
@@ -1102,27 +1102,26 @@ export class RuntimeHostServer {
           optionalString(payload.afterHostEpoch),
           readSessionFilter(payload.sessions)
         );
-      case "submit": {
-        this.assertRevision(payload, runtime);
+      case "run.execute": {
+        const options = payload.options as RunCommandOptions;
+        validateRunOptions(options);
         await this.ensureSessionWriter(connection, runtime);
         this.assertRequestAdmission(connection, admissionOperation);
-        const ids = readRequestIds(payload);
-        const submitted = runtime.submitPrompt(
-          requiredString(payload.input, "input"),
-          readAttachments(payload.attachments),
-          ids,
-          readPromptContext(payload.promptContext),
-          readCapabilitySelection(payload.capabilitySelection),
-          readModelRoute(payload.modelRoute),
-          readFastMode(payload.fastMode)
-        );
-        this.trackCompletion(submitted);
-        return {
-          runId: submitted.runId,
-          messageId: submitted.messageId
-        };
+        const sessionId = managed.sessionId;
+        const prepared = this.oneShotSessions.get(sessionId);
+        if (!prepared || prepared.started || prepared.clientId !== connection.clientId) throw new Error("One-shot execution requires a fresh prepared session.");
+        if (!isDeepStrictEqual(prepared.options, options)) throw new Error("Run options differ from the prepared session.");
+        const input = requiredString(payload.input, "input");
+        const attachments = readAttachments(payload.attachments);
+        const runId = requiredString(payload.runId, "runId");
+        prepared.started = true;
+        return new OperationCompletion(runtime.executeOneShot(input, attachments, prepared.options, runId).finally(async () => {
+          try { await this.registry.closeSession(sessionId); }
+          finally { this.oneShotSessions.delete(sessionId); }
+        }));
       }
       case "run.submit": {
+        if (this.oneShotSessions.has(managed.sessionId)) throw new Error("Prepared one-shot sessions require run.execute.");
         try {
           this.admission.assertAdmission();
           const snapshot = runtime.getSnapshot();
@@ -1407,7 +1406,7 @@ export class RuntimeHostServer {
               taskRunId,
               approvalId: requiredString(payload.approvalId, "approvalId"),
               workspaceRoot: commands.workspaceRoot || this.registration.persistenceRoot,
-              ignore: commands.config?.workspace.ignore ?? []
+              ignore: commands.config.workspace.ignore ?? []
             });
             const started = await this.startTaskRun(taskRunId, commands);
             // 权限校验、持久审批和派发仍在准入队列内；会话独占持续到验收结束。
@@ -1460,20 +1459,6 @@ export class RuntimeHostServer {
         }, runtime);
       case "automation.pending":
         return commands.automationStore.listPending(optionalString(payload.automationId));
-      case "graph.create":
-        return await this.executeAdmission(async () => commands.graphs.createGraph(
-          readGraphNodes(payload.nodes),
-          payload.payload,
-          optionalString(payload.graphId)
-        ), runtime);
-      case "graph.start":
-        return await this.executeAdmission(async () => {
-          const graphId = requiredString(payload.graphId, "graphId");
-          if (commands.graphs.inspectGraph(graphId).mode === "supervised") throw new Error("Supervised drafts require plan.start with the reviewed revision.");
-          const graph = commands.graphs.startGraph(graphId);
-          commands.graphs.createWake(graph.graphId, "graph_started");
-          return graph;
-        }, runtime);
       case "graph.pause":
         return await this.executeControl(async () => commands.graphs.pauseGraph(requiredString(payload.graphId, "graphId")), runtime);
       case "graph.resume":
@@ -1686,58 +1671,34 @@ export class RuntimeHostServer {
           "mcp",
           async () => await commands.mcp.reconnectServer(requiredString(payload.server, "server"))
         );
-      case "memory": {
-        // 追加条目由 Host mutation 队列和存储事务串行化，允许回合中的 CLI 保存；整理仍需会话独占。
-        if (memoryQueryActions.has(String(payload.action)) || payload.action === "write") {
-          return await executeRuntimeHostMemoryOperation({
-            getCommands: () => commands,
-            scheduleEmbeddingRebuild: () => this.businessComposition.scheduleMemoryEmbeddingRebuild()
-          }, payload);
-        }
-        return await runtime.runExclusiveOperation(
-          "memory",
-          async () => await executeRuntimeHostMemoryOperation({
-            getCommands: () => commands,
-            scheduleEmbeddingRebuild: () => this.businessComposition.scheduleMemoryEmbeddingRebuild()
-          }, payload)
-        );
-      }
+      case "memory":
+        return await executeRuntimeHostMemoryOperation({
+          getCommands: () => commands,
+          scheduleEmbeddingRebuild: () => this.businessComposition.scheduleMemoryEmbeddingRebuild()
+        }, payload);
       case "memory.sleep.cancel":
-        return { cancelled: this.businessComposition.cancelMemorySleep() };
+        return { cancelled: await this.businessComposition.cancelMemorySleep() };
       case "memory.embedding.status":
         return await commands.agent.memoryEmbeddingStatus();
       case "memory.embedding.download":
-        return await runtime.runExclusiveOperation(
-          "memory",
-          async (signal) => {
-            await commands.agent.downloadMemoryEmbeddingModel(readLocalEmbeddingModel(payload.model), signal);
-            return await commands.agent.memoryEmbeddingStatus();
-          }
-        );
+        await commands.agent.downloadMemoryEmbeddingModel(readLocalEmbeddingModel(payload.model));
+        return await commands.agent.memoryEmbeddingStatus();
       case "memory.embedding.cancel-download":
         return {
-          cancelled: commands.agent.cancelMemoryEmbeddingDownload(readLocalEmbeddingModel(payload.model)),
+          cancelled: await commands.agent.cancelMemoryEmbeddingDownload(readLocalEmbeddingModel(payload.model)),
           status: await commands.agent.memoryEmbeddingStatus()
         };
       case "memory.embedding.delete":
-        return await runtime.runExclusiveOperation(
-          "memory",
-          async () => ({
-            ...(await commands.agent.removeMemoryEmbeddingModel(readLocalEmbeddingModel(payload.model))),
-            status: await commands.agent.memoryEmbeddingStatus()
-          })
-        );
+        return {
+          ...(await commands.agent.removeMemoryEmbeddingModel(readLocalEmbeddingModel(payload.model))),
+          status: await commands.agent.memoryEmbeddingStatus()
+        };
       case "memory.embedding.rebuild":
-        return await runtime.runExclusiveOperation(
-          "memory",
-          async (signal) => {
-            await commands.agent.rebuildMemoryEmbeddingIndex(signal);
-            return await commands.agent.memoryEmbeddingStatus();
-          }
-        );
+        await commands.agent.rebuildMemoryEmbeddingIndex();
+        return await commands.agent.memoryEmbeddingStatus();
       case "memory.embedding.cancel-rebuild":
         return {
-          cancelled: commands.agent.cancelMemoryEmbeddingRebuild(),
+          cancelled: await commands.agent.cancelMemoryEmbeddingRebuild(),
           status: await commands.agent.memoryEmbeddingStatus()
         };
       case "runtime.restart":
@@ -1788,7 +1749,7 @@ export class RuntimeHostServer {
   private pauseGoalForRun(runtime: InteractiveRuntimeHandle, commands: CommandRuntime, runId: string): void {
     const snapshot = runtime.getSnapshot();
     if (snapshot.state.kind !== "runs" || snapshot.state.activeRun.runId !== runId) return;
-    const goal = commands.sessionGoals?.get(snapshot.info.sessionId);
+    const goal = commands.sessionGoals.get(snapshot.info.sessionId);
     if (goal?.status === "active") commands.sessionGoals.pause(goal.sessionId, goal);
   }
 
@@ -1988,13 +1949,10 @@ export class RuntimeHostServer {
     if (pendingOwner && pendingOwner.pending.sessionId !== pendingOwner.entry.sessionId) {
       throw new Error("Pending TaskRun resume session changed; cancellation was not routed.");
     }
-    const taskSessionId = task?.sessionId ?? pendingOwner?.pending.sessionId ?? (operation === "task.resume" && task !== undefined
-      ? await routingCommands.legacyWorkerOwner?.(task.taskRunId) : undefined);
+    const taskSessionId = task?.sessionId ?? pendingOwner?.pending.sessionId;
     const graphSessionId = graphId === undefined ? undefined : routingCommands.graphs.getGraph(graphId)?.supervisorSessionId;
-    // 真实 CommandRuntime 始终提供 authority；保留无 authority 的轻量测试/fallback 也能
-    // 继续把未带 sessionId 的取消交给当前 primary，而不是在路由层先抛 TypeError。
     const authority = routingCommands.runtimeAuthority;
-    const sourceRun = sourceRunId === undefined || authority === undefined ? undefined : authority.getRun(sourceRunId);
+    const sourceRun = sourceRunId === undefined ? undefined : authority.getRun(sourceRunId);
     const sourceSessionId = sourceRun?.sessionId;
     const requestedSessionId = explicitSessionId ?? sessionFromFile;
     if (requestedSessionId !== undefined && graphSessionId !== undefined && requestedSessionId !== graphSessionId) {
@@ -2257,6 +2215,14 @@ export class RuntimeHostServer {
 
   private async releaseSessionWriters(clientId: string): Promise<void> {
     if (!clientId) return;
+    for (const [sessionId, prepared] of this.oneShotSessions) {
+      if (prepared.clientId !== clientId || prepared.started) continue;
+      await this.dispatcher.dispatch("run", async () => {
+        if (this.oneShotSessions.get(sessionId) !== prepared || prepared.started) return;
+        try { await this.registry.closeSession(sessionId); }
+        finally { this.oneShotSessions.delete(sessionId); }
+      }, sessionId);
+    }
     const owned = [...this.sessionWriterOwners.entries()]
       .filter(([, owner]) => owner.clientId === clientId)
       .map(([sessionId]) => sessionId);
@@ -2405,37 +2371,14 @@ export class RuntimeHostServer {
   }
 
   /** 创建一个新的 session runtime；已有 session 和 writer claim 保持不变。 */
-  async startDraftRuntime(targetSessionId?: string): Promise<AgentSessionInfo> {
-    const target = targetSessionId === undefined
-      ? this.registry.primary()
-      : await this.registry.ensure(targetSessionId, await this.factoryOptionsForSession(targetSessionId));
-    if (this.createRuntime) {
-      const managed = await this.registry.createFresh({
-        fresh: true,
-        isolation: "shared",
-        resourceRegistry: this.resourceRegistry
-      });
-      this.publishSnapshot(managed.runtime);
-      return managed.runtime.getSnapshot().info;
-    }
-
-    // 同进程 fallback 没有 Host factory，只能保留原来的单 runtime 语义；有 factory 的
-    // 正常 Host 永远走上面的新注册表条目路径，不会把旧 session 改名。
-    if (runtimeIsBusy(target.runtime.getSnapshot())) {
-      throw new Error(`Cannot start a new session while session ${target.sessionId} is busy.`);
-    }
-    if (!target.primary) throw new Error("Runtime Host fallback cannot create a second session runtime.");
-    const previousSessionId = target.sessionId;
-    const info = await target.runtime.startDraft();
-    this.registry.syncPrimarySession();
-    this.sessionWriterOwners.delete(previousSessionId);
-    this.publishSnapshot(target.runtime);
-    return info;
+  async startDraftRuntime(_targetSessionId?: string): Promise<AgentSessionInfo> {
+    const managed = await this.registry.createFresh({ isolation: "shared", resourceRegistry: this.resourceRegistry });
+    this.publishSnapshot(managed.runtime);
+    return managed.runtime.getSnapshot().info;
   }
 
   /** 为删除主 session 轮换主 runtime；普通重启必须保留 sessionId。 */
   async rotatePrimaryRuntime(): Promise<InteractiveRuntimeSnapshot> {
-    if (!this.createRuntime) throw new Error("Runtime Host owner cannot create a replacement primary runtime.");
     const current = this.registry.primary();
     if (runtimeIsBusy(current.runtime.getSnapshot())) {
       throw new Error(`Cannot replace the primary session while it is busy: ${current.sessionId}.`);
@@ -2458,7 +2401,6 @@ export class RuntimeHostServer {
   }
 
   private async performRuntimeRestart(sessionId?: string): Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }> {
-    if (!this.createRuntime) throw new Error("Runtime Host owner cannot rebuild its runtime.");
     const target = sessionId === undefined
       ? this.registry.primary()
       : await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));

@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** A background event's log identity must not replace the task owning a checkpoint. */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -38,10 +40,10 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 function provider(response: () => ModelStreamEvent[]): AgentModel & Required<Pick<AgentModel, "stream">> {
-  return {
+  return testModel({
     provider: "synthetic", modelId: "checkpoint-turn-identity", supportsTools: true,
     stream: async () => (async function* () { yield* response(); })()
-  };
+  });
 }
 
 function agent(root: string, recorder: SessionRecorder, model: AgentModel, toolRegistry = new ToolRegistry()): AgentSession {
@@ -134,15 +136,15 @@ for (const background of ["none", "previous-turn", "unscoped"] as const) {
 
       let resumedRequests = 0;
       const resumedProvider = provider(() => [{ type: "text-delta", text: "recovered" }, { type: "finish", reason: "stop" }]);
-      resumed = agent(root, new SessionRecorder(root), {
+      resumed = agent(root, new SessionRecorder(root), testModel({
         ...resumedProvider,
         stream: async (context, options) => {
           resumedRequests += 1;
           assert.ok(context.messages.some((message) => message.role === "toolResult" && message.toolCallId === "fast-call"));
-          assert.ok(stripTransientTurnContext(context.messages).some((message) => message.role === "user" && message.content === "current task"));
+          assert.ok(stripTransientTurnContext(context.messages).some((message) => message.role === "user" && JSON.stringify(message.content).includes("current task")));
           return await resumedProvider.stream(context, options);
         }
-      }, registry);
+      }), registry);
       await resumed.initialize();
       await resumed.resume(sessionId);
       assert.equal((await resumed.interruptedTurn())?.turnId, "new-turn");
@@ -150,7 +152,7 @@ for (const background of ["none", "previous-turn", "unscoped"] as const) {
       for await (const event of resumed.continueInterruptedTurn({ emotionAnalysis: false })) {
         if (event.type === "done") result = event.outcome;
       }
-      assert.equal(result?.status, "completed");
+      assert.equal(result?.status, "completed", JSON.stringify(result));
       assert.equal(resumedRequests, 1);
       assert.equal(toolExecutions, 2, "continuation must not rerun either already dispatched tool");
       assert.equal(await resumed.interruptedTurn(), undefined);

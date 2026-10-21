@@ -1,3 +1,5 @@
+import type { ForkedSession } from "../../session/fork.js";
+import type { RunCommandOptions, RunCommandResult } from "../oneShot.js";
 /**
  * Runtime Host Client：面向 TUI、CLI 和 Desktop 的可重连运行时句柄。
  *
@@ -25,7 +27,6 @@ import { sessionIdFromFile } from "../../session/store.js";
 import type { RuntimeCommandResult } from "../commands.js";
 import type { CommandRuntime } from "../CommandRuntime.js";
 import type { AutomationCreateInput } from "../AutomationScheduler.js";
-import type { GraphNodeInput } from "../GoalGraphStore.js";
 import type { SessionGoalRecord, SessionGoalExpected } from "../SessionGoalStore.js";
 import type { CapabilityInvocation, CapabilityInvocationInput, CapabilityRegistration, CapabilityRegistrationInput } from "../CapabilityStore.js";
 import type { BrowserAutomationEndpoint } from "../../tools/browser.js";
@@ -234,25 +235,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
     const ids = normalizeRequestIds(requestIds);
     const completion = this.createCompletion(ids.runId);
-    void this.request<{ runId: string; messageId: string }>("submit", {
-      input,
-      attachments,
-      runId: ids.runId,
-      messageId: ids.messageId,
-      turnId: ids.turnId,
-      allowUserInput: this.options.surface === "desktop",
-      parentRunId: ids.parentRunId,
-      continuationSource: ids.continuationSource,
-      retryOfMessageId: ids.retryOfMessageId,
-      replaceUserMessageId: ids.replaceUserMessageId,
-      promptContext,
-      capabilitySelection,
-      modelRoute,
-      fastMode,
-      sessionId,
-      writeIntent: true,
-      expectedRevision: this.currentRevision(sessionId)
-    })
+    void this.submitRunForSession(sessionId, input, attachments, ids, promptContext, capabilitySelection, fastMode, modelRoute)
+      .then(result => { if (!result.accepted) throw errorFromHostOperation(result); })
       .catch((error) => {
         if (isTransientHostError(error)) {
           this.reportError(error);
@@ -283,7 +267,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     requestIds?: RuntimeRequestIds,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    fastMode?: boolean
+    fastMode?: boolean,
+    modelRoute?: "tool"
   ): Promise<HostOperationResult<{ runId: string; messageId: string }>> {
     if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
     const ids = normalizeRequestIds(requestIds);
@@ -304,6 +289,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       replaceUserMessageId: ids.replaceUserMessageId,
       capabilitySelection,
       fastMode,
+      modelRoute,
       sessionId,
       writeIntent: true,
       expectedRevision: this.currentRevision(sessionId)
@@ -593,14 +579,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("session.goal.clear", { sessionId, expected });
   }
 
-  async graphCreate(input: { nodes: GraphNodeInput[]; payload?: unknown; graphId?: string }): Promise<HostOperationResult<unknown>> {
-    return await this.request("graph.create", input);
-  }
-
-  async graphStart(graphId: string): Promise<HostOperationResult<unknown>> {
-    return await this.request("graph.start", { graphId });
-  }
-
   async graphPause(graphId: string): Promise<HostOperationResult<unknown>> {
     return await this.request("graph.pause", { graphId });
   }
@@ -643,6 +621,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   async capabilityRelease(registrationId: string, reason?: string): Promise<HostOperationResult<CapabilityRegistration>> {
     return await this.request("capability.release", { registrationId, reason });
+  }
+
+  async forkSession(session?: string, upToEvent?: number): Promise<ForkedSession> {
+    return await this.request("session.fork", { session, upToEvent });
   }
 
   async capabilityList(): Promise<CapabilityRegistration[]> {
@@ -860,13 +842,21 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return this.focusedSessionId;
   }
 
-  async ensureSession(options: { sessionId?: string; isolation?: RuntimeIsolation; writeIntent?: boolean; focus?: boolean } = {}): Promise<{ sessionId: string; snapshot: InteractiveRuntimeSnapshot }> {
+  async executeOneShot(input: string, attachments: AgentAttachment[], options: RunCommandOptions, runId: string): Promise<RunCommandResult & { output: string }> {
+    return await this.executeRun(this.focusedSessionId!, input, attachments, options, runId);
+  }
+
+  async executeRun(sessionId: string, input: string, attachments: AgentAttachment[], options: RunCommandOptions, runId: string): Promise<RunCommandResult & { output: string }> {
+    return await this.request("run.execute", { sessionId, input, attachments, options, runId });
+  }
+
+  async ensureSession(options: { sessionId?: string; isolation?: RuntimeIsolation; writeIntent?: boolean; focus?: boolean; runOptions?: RunCommandOptions; processLifetime?: "runtime" | "execution-environment" } = {}): Promise<{ sessionId: string; snapshot: InteractiveRuntimeSnapshot }> {
     const result = await this.request<{
       sessionId: string;
       snapshot: InteractiveRuntimeSnapshot;
       sequence: number;
       sessions: RuntimeHostSessionSummary[];
-    }>("session.ensure", { sessionId: options.sessionId, isolation: options.isolation, writeIntent: options.writeIntent });
+    }>("session.ensure", { sessionId: options.sessionId, isolation: options.isolation, writeIntent: options.writeIntent, runOptions: options.runOptions, processLifetime: options.processLifetime });
     if (options.focus !== false) this.focusedSessionId = result.sessionId;
     this.applySessionSummaries(result.sessions, result.sequence);
     this.applySnapshot(result.snapshot, result.sequence, undefined, true);

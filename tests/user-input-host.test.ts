@@ -1,8 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** 真实 socket、Runtime、模型协议与 JSONL；模型只使用本机 HTTP 替身。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
@@ -61,7 +62,7 @@ test("普通模式发现提问工具后经 Host 提问、CLI 回答并落盘；�
     models: { "local-test": { ...defaultConfig.models["deepseek-v4-flash"], provider: "local", model: "local-test", contextWindow: 128000, capabilities: { tools: true, reasoning: false, streaming: true } } },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   }));
-  const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }));
+  const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   const connected = await connectRuntimeHost(root, { surface: "desktop", clientId: "input-test" });
   assert.ok(connected);
   let client = connected;

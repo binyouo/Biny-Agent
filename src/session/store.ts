@@ -1,7 +1,7 @@
 /**
  * Session 存储定位模块。
  *
- * 全局项目 session 目录以及全局按项目隔离的运行目录的创建、按年/月/日组织的 session
+ * 全局项目 session 目录以及全局按项目隔离的运行目录的创建、平铺存放的 session
  * 文件路径、latest 解析和 session id 前缀匹配都在这里处理。命令层只需要给出 workspace
  * 和可选 session 参数，不必关心文件布局。
  */
@@ -9,14 +9,12 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, constants, lstatSync, mkdirSync, promises as fs, readdirSync, realpathSync, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
-import { globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName, workspaceAgentDir } from "../config/paths.js";
+import { globalAgentDir, projectSessionsDir, workspaceAgentDir } from "../config/paths.js";
 import { sameSessionFingerprint } from "./parseCache.js";
 import { readBoundedSessionHandle } from "./limits.js";
 
 const sessionMetadataConcurrency = 8;
 const managedStateDirectories = ["attachments", "logs", "runs", "processes", "tool-results", "todos", "turns", "evals"] as const;
-/** 项目 session 目录里的元数据文件名，列出会话时要跳过。 */
-const sessionIndexFileName = "index.json";
 
 interface PathIdentity {
   path: string;
@@ -391,226 +389,12 @@ async function ensureProjectSessionStorage(canonicalWorkspace: string): Promise<
   const canonicalGlobal = await fs.realpath(configuredGlobal);
   const globalSessionsPath = path.join(canonicalGlobal, "sessions");
   await ensureRealDirectory(globalSessionsPath, "global sessions");
-  await migrateLegacyProjectSessionDir(canonicalGlobal, canonicalWorkspace);
   const sessionsPath = projectSessionsDir(canonicalWorkspace);
   await ensureRealDirectory(sessionsPath, "current project sessions");
   if (await fs.realpath(sessionsPath) !== sessionsPath) {
     throw new Error("Project session storage resolves outside the global sessions directory.");
   }
   await validateSessionDirectories(sessionsPath);
-  await flattenDatedSessionDirectories(sessionsPath);
-}
-
-/**
- * 把旧版纯 24hex 项目 session 目录迁移到新的 `<basename>-<hash8>` 目录。
- *
- * 新目录不存在时整体 `rename`：目录里的旧文件保持原名，绝不重写已有 session 文件名。
- * 两边同时存在（一般是迁移后又有旧版本进程写回过旧目录）就走并入逻辑，把旧目录内容合进
- * 新目录。`.DS_Store`、tombstone 这类系统/临时文件放行不搬；真正不认识的条目才抛出，
- * 留待人工处理，绝不猜测。
- */
-async function migrateLegacyProjectSessionDir(canonicalGlobal: string, canonicalWorkspace: string): Promise<void> {
-  const legacyName = legacyProjectStateDirName(canonicalWorkspace);
-  const newName = projectStateDirName(canonicalWorkspace);
-  if (legacyName === newName) return;
-  const globalSessionsPath = path.join(canonicalGlobal, "sessions");
-  const legacyPath = path.join(globalSessionsPath, legacyName);
-  const newPath = path.join(globalSessionsPath, newName);
-
-  let legacyStat: Stats;
-  try {
-    legacyStat = await fs.lstat(legacyPath);
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) return;
-    throw error;
-  }
-  if (legacyStat.isSymbolicLink() || !legacyStat.isDirectory()) {
-    throw new Error("Legacy project session storage must be a real directory, not a symbolic link.");
-  }
-  if (await fs.realpath(legacyPath) !== legacyPath) {
-    throw new Error("Legacy project session storage resolves outside the global sessions directory.");
-  }
-  if (await pathExists(newPath)) {
-    await mergeLegacyProjectSessionDir(legacyPath, newPath);
-    return;
-  }
-
-  const entries = await fs.readdir(legacyPath, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) continue;
-    if (entry.isFile() && (isSessionFileName(entry.name) || entry.name === sessionIndexFileName || isIgnorableSessionEntry(entry.name))) continue;
-    throw new Error(`Legacy project session storage contains an unexpected entry: ${entry.name}`);
-  }
-  try {
-    await fs.rename(legacyPath, newPath);
-  } catch (error) {
-    // 并发下另一个进程可能先迁好；目标已出现就当成功，否则向上抛。
-    if (hasErrorCode(error, "ENOENT") || hasErrorCode(error, "ENOTEMPTY") || hasErrorCode(error, "EEXIST")) {
-      if (await pathExists(newPath)) return;
-    }
-    throw error;
-  }
-}
-
-/**
- * 新旧项目目录同时存在时的并入逻辑：session 文件按原名移动（同名且不同 inode 视为冲突报错，
- * 绝不覆盖），年份分层目录递归并入（随后由 flatten 统一摊平），`.catalog` 里按会话一份的
- * 元数据 JSON 只补新目录缺失的记录。全部搬完后删除旧目录；缓存类条目（index.json、
- * .DS_Store、tombstone）不搬。
- */
-async function mergeLegacyProjectSessionDir(legacyPath: string, newPath: string): Promise<void> {
-  const entries = await fs.readdir(legacyPath, { withFileTypes: true });
-  for (const entry of entries) {
-    const source = path.join(legacyPath, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === ".catalog") {
-        await mergeLegacyCatalogRecords(source, path.join(newPath, entry.name));
-        continue;
-      }
-      if (/^\d{4}$/u.test(entry.name)) {
-        await mergeLegacyDirectory(source, path.join(newPath, entry.name));
-        continue;
-      }
-      throw new Error(`Legacy project session storage contains an unexpected directory: ${entry.name}`);
-    }
-    if (!entry.isFile()) throw unsafeSessionError(entry.name);
-    if (entry.name === sessionIndexFileName || isIgnorableSessionEntry(entry.name)) continue;
-    if (!isSessionFileName(entry.name)) {
-      throw new Error(`Legacy project session storage contains an unexpected entry: ${entry.name}`);
-    }
-    await moveLegacySessionFile(source, path.join(newPath, entry.name));
-  }
-  await fs.rm(legacyPath, { recursive: true });
-}
-
-/** 递归并入旧目录：目标子目录不存在就整目录 rename，存在就逐文件并入。 */
-async function mergeLegacyDirectory(source: string, target: string): Promise<void> {
-  if (!await pathExists(target)) {
-    await fs.rename(source, target);
-    return;
-  }
-  const entries = await fs.readdir(source, { withFileTypes: true });
-  for (const entry of entries) {
-    const sourcePath = path.join(source, entry.name);
-    const targetPath = path.join(target, entry.name);
-    if (entry.isDirectory()) {
-      await mergeLegacyDirectory(sourcePath, targetPath);
-      continue;
-    }
-    if (!entry.isFile()) throw unsafeSessionError(entry.name);
-    if (!isSessionFileName(entry.name)) {
-      if (isIgnorableSessionEntry(entry.name)) continue;
-      throw new Error(`Legacy project session storage contains an unexpected entry: ${entry.name}`);
-    }
-    await moveLegacySessionFile(sourcePath, targetPath);
-  }
-}
-
-/** 按 inode 去重的移动：目标不存在就 rename；目标与源是同一 inode 说明重复，删掉源即可。 */
-async function moveLegacySessionFile(source: string, target: string): Promise<void> {
-  const sourceStat = await fs.lstat(source);
-  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw unsafeSessionError(path.basename(source));
-  if (sourceStat.nlink !== 1) throw unsafeSessionError(path.basename(source));
-  if (await pathExists(target)) {
-    const targetStat = await fs.lstat(target);
-    if (sourceStat.dev !== targetStat.dev || sourceStat.ino !== targetStat.ino) {
-      throw new Error(`Duplicate session id exists while merging legacy storage: ${sessionIdFromFile(path.basename(source))}`);
-    }
-    await fs.unlink(source);
-    return;
-  }
-  await fs.rename(source, target);
-  await fs.chmod(target, 0o600);
-}
-
-/** `.catalog` 每会话一份 `<sessionId>.json`：只补新目录缺失的记录，锁与已有记录不动。 */
-async function mergeLegacyCatalogRecords(source: string, target: string): Promise<void> {
-  const entries = await fs.readdir(source, { withFileTypes: true });
-  await fs.mkdir(target, { recursive: true, mode: 0o700 });
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const targetPath = path.join(target, entry.name);
-    if (await pathExists(targetPath)) continue;
-    await fs.rename(path.join(source, entry.name), targetPath);
-  }
-}
-
-/**
- * 项目 session 目录里允许存在、但迁移/合并时不携带的系统与临时文件：
- * Finder 的 `.DS_Store`（真实数据里几乎每个目录都有）、删除/置顶流程留下的 tombstone。
- */
-function isIgnorableSessionEntry(name: string): boolean {
-  return name === ".DS_Store"
-    || name.endsWith(".delete")
-    || name.endsWith(".pinned-backup")
-    || name.endsWith(".pinned-after-verification");
-}
-
-/**
- * 旧版按 `YYYY/MM/DD/<id>.jsonl` 分层的 session 平铺回项目 session 目录根。
- *
- * 文件名保持不变，只改位置；同名冲突（根目录与日期目录里各有一份）时抛出，绝不猜测覆盖顺序。
- * 迁移完会清掉空掉的日期目录和 `index.json` 一并保留在根。
- */
-async function flattenDatedSessionDirectories(sessionsPath: string): Promise<void> {
-  const entries = await fs.readdir(sessionsPath, { withFileTypes: true });
-  for (const entry of entries) {
-
-    if (!entry.isDirectory()) continue;
-    if (!/^\d{4}$/u.test(entry.name)) continue; // 只有 4 位年份目录才可能是旧日期分层。
-    const yearDirectory = path.join(sessionsPath, entry.name);
-    if (await fs.realpath(yearDirectory) !== yearDirectory) {
-      throw new Error("Session date directory resolves outside the current project's global session directory.");
-    }
-    const datedFiles: string[] = [];
-    await collectDatedSessionFiles(yearDirectory, datedFiles);
-    for (const source of datedFiles) {
-      const fileName = path.basename(source);
-      const sourceStat = await fs.lstat(source);
-      if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw unsafeSessionError(fileName);
-      const target = path.join(sessionsPath, fileName);
-      if (await pathExists(target)) {
-        const targetStat = await fs.lstat(target);
-        if (sourceStat.dev !== targetStat.dev || sourceStat.ino !== targetStat.ino) {
-          throw new Error(`Duplicate session id exists in flat and dated storage: ${sessionIdFromFile(fileName)}`);
-        }
-        await fs.unlink(source).catch((error: unknown) => {
-          if (!hasErrorCode(error, "ENOENT")) throw error;
-        });
-        await fs.chmod(target, 0o600);
-        continue;
-      }
-      if (sourceStat.nlink !== 1) throw unsafeSessionError(fileName);
-      await fs.rename(source, target);
-      await fs.chmod(target, 0o600);
-    }
-    await fs.rm(yearDirectory, { recursive: true });
-  }
-}
-
-async function collectDatedSessionFiles(directory: string, out: string[]): Promise<void> {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      if (await fs.realpath(entryPath) !== entryPath) {
-        throw new Error("Session date directory resolves outside the current project's global session directory.");
-      }
-      await collectDatedSessionFiles(entryPath, out);
-      continue;
-    }
-    if (entry.isFile() && isSessionFileName(entry.name)) out.push(entryPath);
-  }
-}
-
-async function pathExists(target: string): Promise<boolean> {
-  try {
-    await fs.lstat(target);
-    return true;
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) return false;
-    throw error;
-  }
 }
 
 async function validateSessionDirectories(directory: string): Promise<void> {
@@ -618,12 +402,12 @@ async function validateSessionDirectories(directory: string): Promise<void> {
   for (const entry of entries) {
     if (entry.isSymbolicLink()) {
       if (entry.name.endsWith(".jsonl")) continue;
-      throw new Error("Session date directory must be a real directory, not a symbolic link.");
+      throw new Error("Session directory must be a real directory, not a symbolic link.");
     }
     if (!entry.isDirectory()) continue;
     const child = path.join(directory, entry.name);
     if (await fs.realpath(child) !== child) {
-      throw new Error("Session date directory resolves outside the current project's global session directory.");
+      throw new Error("Session directory resolves outside the current project's global session directory.");
     }
     await validateSessionDirectories(child);
   }
@@ -652,7 +436,7 @@ async function ensureSessionDirectory(location: SessionStorageLocation, director
   const relativeDirectory = path.relative(location.sessions.path, path.resolve(directory));
   if (!relativeDirectory || relativeDirectory.startsWith("..") || path.isAbsolute(relativeDirectory)) {
     if (relativeDirectory === "") return;
-    throw new Error("Session date directory resolves outside the current project's global session directory.");
+    throw new Error("Session directory resolves outside the current project's global session directory.");
   }
 
   let current = location.sessions.path;
@@ -660,7 +444,7 @@ async function ensureSessionDirectory(location: SessionStorageLocation, director
     current = path.join(current, segment);
     await ensureRealDirectory(current, `session date directory ${segment}`);
     if (await fs.realpath(current) !== current) {
-      throw new Error("Session date directory resolves outside the current project's global session directory.");
+      throw new Error("Session directory resolves outside the current project's global session directory.");
     }
   }
 }
@@ -669,7 +453,7 @@ function ensureSessionDirectorySync(sessionsPath: string, directory: string): vo
   const relativeDirectory = path.relative(sessionsPath, path.resolve(directory));
   if (!relativeDirectory || relativeDirectory.startsWith("..") || path.isAbsolute(relativeDirectory)) {
     if (relativeDirectory === "") return;
-    throw new Error("Session date directory resolves outside the current project's global session directory.");
+    throw new Error("Session directory resolves outside the current project's global session directory.");
   }
 
   let current = sessionsPath;
@@ -691,7 +475,7 @@ function ensureSessionDirectorySync(sessionsPath: string, directory: string): vo
       }
     }
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error("Session date directory must be a real directory, not a symbolic link.");
+      throw new Error("Session directory must be a real directory, not a symbolic link.");
     }
     chmodSync(current, 0o700);
   }
@@ -704,7 +488,7 @@ async function listSessionFileEntries(location: SessionStorageLocation): Promise
   const failures: Array<{ error: unknown } | undefined> = new Array(entries.length);
   let nextIndex = 0;
   let failed = false;
-  // 只在顶层有界并发；子目录仍串行，避免递归放大并发量。
+  // 平铺会话文件有界并发读取，不枚举历史子目录。
   await Promise.all(Array.from({ length: Math.min(sessionMetadataConcurrency, entries.length) }, async () => {
     while (!failed && nextIndex < entries.length) {
       const index = nextIndex++;
@@ -712,9 +496,7 @@ async function listSessionFileEntries(location: SessionStorageLocation): Promise
       const files = filesByEntry[index]!;
       const filePath = path.join(location.sessions.path, entry.name);
       try {
-        if (entry.isDirectory()) {
-          await listSessionFileEntriesFromDirectory(location, filePath, files);
-        } else if (entry.isFile() && isSessionFileName(entry.name)) {
+        if (entry.isFile() && isSessionFileName(entry.name)) {
           const existing = await existingSessionFileAt(location, filePath, entry.name);
           if (existing) files.push({ fileName: entry.name, filePath: existing });
         }
@@ -764,54 +546,9 @@ async function listJsonlFiles(directory: string, signal?: AbortSignal): Promise<
   return files.sort((left, right) => left.localeCompare(right));
 }
 
-async function listSessionFileEntriesFromDirectory(
-  location: SessionStorageLocation,
-  directory: string,
-  files: SessionFileEntry[]
-): Promise<void> {
-  const directoryStat = await fs.lstat(directory);
-  if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
-    throw new Error(`Session date directory must be a real directory: ${path.basename(directory)}`);
-  }
-  const canonicalDirectory = await fs.realpath(directory);
-  const canonicalSessions = location.sessions.path;
-  const relativeDirectory = path.relative(canonicalSessions, canonicalDirectory);
-  if (relativeDirectory.startsWith("..") || path.isAbsolute(relativeDirectory)) {
-    throw new Error("Session date directory resolves outside the current project's global session directory.");
-  }
-  const entries = await fs.readdir(canonicalDirectory, { withFileTypes: true });
-  for (const entry of entries) {
-    const filePath = path.join(canonicalDirectory, entry.name);
-    if (entry.isDirectory()) {
-      await listSessionFileEntriesFromDirectory(location, filePath, files);
-      continue;
-    }
-    if (!entry.isFile() || !isSessionFileName(entry.name)) continue;
-    const existing = await existingSessionFileAt(location, filePath, entry.name);
-    if (existing) files.push({ fileName: entry.name, filePath: existing });
-  }
-}
-
 async function findSessionFileByName(location: SessionStorageLocation, fileName: string): Promise<string | undefined> {
-  const directPath = sessionFileCandidatePath(location.workspace.path, fileName.replace(/\.jsonl$/u, ""));
-  const direct = await existingSessionFileAt(location, directPath, fileName);
-  if (direct) return direct;
-  const matchingPath = await findSessionPathByName(location.sessions.path, fileName);
-  if (matchingPath) return await existingSessionFileAt(location, matchingPath, fileName);
-  return undefined;
-}
-
-async function findSessionPathByName(directory: string, fileName: string): Promise<string | undefined> {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.name === fileName) return path.join(directory, entry.name);
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const nested = await findSessionPathByName(path.join(directory, entry.name), fileName);
-    if (nested) return nested;
-  }
-  return undefined;
+  const filePath = sessionFileCandidatePath(location.workspace.path, fileName.replace(/\.jsonl$/u, ""));
+  return existingSessionFileAt(location, filePath, fileName);
 }
 
 async function existingSessionFileAt(location: SessionStorageLocation, filePath: string, fileName: string): Promise<string | undefined> {
@@ -848,12 +585,12 @@ async function isSessionFileParentBound(location: SessionStorageLocation, filePa
     throw error;
   }
   if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
-    throw new Error("Session date directory must be a real directory, not a symbolic link.");
+    throw new Error("Session directory must be a real directory, not a symbolic link.");
   }
   const canonicalParent = await fs.realpath(parent);
   const relativeParent = path.relative(location.sessions.path, canonicalParent);
   if (canonicalParent !== parent || relativeParent.startsWith("..") || path.isAbsolute(relativeParent)) {
-    throw new Error("Session date directory resolves outside the current project's global session directory.");
+    throw new Error("Session directory resolves outside the current project's global session directory.");
   }
   return true;
 }

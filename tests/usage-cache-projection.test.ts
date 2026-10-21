@@ -189,12 +189,10 @@ test("TUI footer does not fall back to a legacy rate when projected rate is unkn
   const summary = summarizeUsage([make(adapter(undefined, 7)), make(adapter(10, 3))]);
   summary.latestCacheHitRate = 1; summary.sessionCacheHitRate = 1;
   const tui = Object.create(BinyTui.prototype) as {
-    runtime: { getSnapshot(): { info: { sessionId: string } } };
-    commands: { agent: { usageSummary(): UsageSummary } };
+    runtime: { getSnapshot(): { info: { sessionId: string } }; usage(): Promise<{ summary: UsageSummary }>  };
     cacheHitRate?: number; sessionCacheHitRate?: number; refreshChrome(): void; refreshUsage(): Promise<void>;
   };
-  Object.assign(tui, { runtime: { getSnapshot: () => ({ info: { sessionId: "fixture" } }) },
-    commands: { agent: { usageSummary: () => summary } }, refreshChrome: () => undefined });
+  Object.assign(tui, { runtime: { getSnapshot: () => ({ info: { sessionId: "fixture" } }), usage: async () => ({ summary }) }, refreshChrome: () => undefined });
   await tui.refreshUsage();
   assert.equal(tui.cacheHitRate, 0.3); assert.equal(tui.sessionCacheHitRate, undefined);
 });
@@ -251,8 +249,7 @@ test("malformed projected summary rates/maps stay unknown without legacy fallbac
     assert.doesNotMatch(formatUsageSummary(summary), /NaN|Infinity|30%/u);
   }
   const tui = Object.create(BinyTui.prototype) as {
-    runtime: { getSnapshot(): { info: { sessionId: string } } };
-    commands: { agent: { usageSummary(): UsageSummary } };
+    runtime: { getSnapshot(): { info: { sessionId: string } }; usage(): Promise<{ summary: UsageSummary }>  };
     cacheHitRate?: number; sessionCacheHitRate?: number; refreshChrome(): void; refreshUsage(): Promise<void>;
   };
   Object.assign(tui, { runtime: { getSnapshot: () => ({ info: { sessionId: "fixture" } }) },

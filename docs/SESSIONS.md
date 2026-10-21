@@ -1,6 +1,6 @@
 # 会话与恢复
 
-会话保存对话、工具调用和运行结果。Desktop、TUI 与 CLI chat 使用共享的本机 Runtime Host；一次性 `run` 复用执行核心，输出一个任务结果。
+会话保存对话、工具调用和运行结果。Desktop、TUI 与 CLI chat 使用共享的本机 Runtime Host；一次性 `run` 也经 Host 执行，输出一个任务结果。
 
 ## 一次对话如何留下记录
 
@@ -21,6 +21,8 @@
 每次开始生成时提供当前本地时间；从断点恢复、重新生成或暂停后空输入继续时重新采样，历史消息的发送时间保持原样。当前日期、星期和 UTC 偏移另有独立预算，不随 Activity、日报等辅助上下文一起省略。同一次生成的工具循环沿用开始时的时间快照。
 
 ## 选择入口
+
+命令行的 `session rename/pin/unpin/archive/unarchive/duplicate/delete` 通过 Desktop 管理同一份会话元数据与记录；`session create/usage/compact` 连接已有 Host。`session messages/search` 从本地记录读取当前消息分支或查找会话，`usage` 汇总已落盘的全局用量。`tool list/call` 查询目录或经所属 Host 执行工具，沿用权限、审计和空闲会话准入。分页、去重依据与使用条件见 [CLI 使用指南](CLI_USAGE.md#会话用量与工具)。
 
 | 入口 | 用途 |
 | --- | --- |
@@ -49,6 +51,8 @@ Desktop 连续选择会话时以最后一次选择为准，无需等待前一次
 状态行显示运行耗时与待发送消息数量，有会话目标时在同一行显示 Goal 状态和目标摘要。`/goal` 查看目标、状态与用量，设置、暂停、继续和清除直接更新状态行。底栏保留工作区、会话、上下文用量、权限模式、缓存指标和模型；有空间时显示快捷键提示。运行中按 Esc 中断，Ctrl+S 将当前输入作为即时引导；首次 Ctrl+C 会取消当前运行或清空草稿，并短暂显示退出提示，在 500ms 内再按一次退出。
 
 ## 一次性任务
+
+`run` 的模型、步数、权限和 headless 参数只作用于本次新会话，结束后释放临时运行实例；全局配置保持持久设置。取消绑定本次 run ID，超时与产物验收由 Host 执行。运行查询统一读取 SQLite 投影，对话和回合终态以 JSONL 为准。
 
 ```bash
 biny run "阅读项目并总结入口模块" --permission-mode read-only --json

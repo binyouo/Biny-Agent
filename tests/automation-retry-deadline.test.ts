@@ -16,7 +16,7 @@ async function fixture() {
   };
   let authority: RuntimeEventAuthority;
   try {
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   } catch (error) {
     restoreEnvironment();
     await rm(root, { recursive: true, force: true });
@@ -44,7 +44,7 @@ async function fixture() {
     async reopen() {
       store.close();
       authority.close();
-      authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+      authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
       store = await AutomationStore.open(root, authority);
     },
     async close() {

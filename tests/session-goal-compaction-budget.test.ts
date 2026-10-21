@@ -116,7 +116,6 @@ interface TransformBindings {
 interface AdapterState {
   config: { transformContext(messages: string[]): Promise<unknown[]>; onRequestContext(): Promise<void> };
   context: { messages: string[]; tools: [] };
-  vercelModel?: object;
   signal: AbortSignal;
 }
 interface Extracted {
@@ -220,11 +219,10 @@ function fixture(scenario: Scenario, operation = "agent turn", firstFinish = "le
     applyRunContextCompaction: async () => { counts.applied += 1; }, emitUpdate: () => undefined,
     completedStepsBeforeRun: 2, observedSteps: 0, runBudget: { softStepLimit: 1 }
   });
-  async function beforeProvider(direct: boolean): Promise<void> {
+  async function beforeProvider(): Promise<void> {
     await extracted.modelMessages({
       config: { transformContext: transform, onRequestContext: async () => { counts.telemetry += 1; } },
-      context: { messages: memory.history, tools: [] }, signal: controller.signal,
-      vercelModel: direct ? {} : undefined
+      context: { messages: memory.history, tools: [] }, signal: controller.signal
     });
     // Explicit fake admission boundary, not an SDK/provider invocation.
     counts.provider += 1;
@@ -300,14 +298,13 @@ test("already stopped active goal does not start a summary", { timeout: 5_000 },
   assert.equal(await f.memory.compactClosedRunContext(f.memory.history, f.controller.signal, "automatic"), undefined);
   assert.equal(f.counts.summaries, 0);
 });
-for (const direct of [true, false]) {
   for (const scenario of ["exhausted", "unknown", "usage-failure"] as const) {
     for (const finish of ["stop", "length"]) {
-      test(`${direct ? "direct" : "injected"} preprocessing: ${scenario}/${finish} blocks the prepared main request`, { timeout: 5_000 }, async () => {
+      test(`SDK preprocessing: ${scenario}/${finish} blocks the prepared main request`, { timeout: 5_000 }, async () => {
         const f = fixture(scenario, "agent turn", finish);
         const history = [...f.memory.history];
         const failure = f.memory.compactionFailure;
-        await assert.rejects(f.beforeProvider(direct), error => scenario === "usage-failure" ? error === f.budgetError : /goal budget stopped/u.test(String(error)));
+        await assert.rejects(f.beforeProvider(), error => scenario === "usage-failure" ? error === f.budgetError : /goal budget stopped/u.test(String(error)));
         assert.equal(f.counts.summaries, 1);
         assert.equal(f.counts.usage, 1);
         assert.equal(f.counts.failure, 0);
@@ -326,16 +323,15 @@ for (const direct of [true, false]) {
       });
     }
   }
-  test(`${direct ? "direct" : "injected"} preprocessing: sufficient budget admits main request`, { timeout: 5_000 }, async () => {
+  test(`SDK preprocessing: sufficient budget admits main request`, { timeout: 5_000 }, async () => {
     const f = fixture("sufficient");
-    await f.beforeProvider(direct);
+    await f.beforeProvider();
     assert.equal(f.counts.summaries, 2);
     assert.equal(f.counts.usage, 2);
     assert.equal(f.counts.failure, 0);
     assert.equal(f.counts.fallback, 0);
     assert.equal(f.counts.provider, 1);
-    assert.equal(f.counts.telemetry, direct ? 1 : 0);
+    assert.equal(f.counts.telemetry, 1);
     assert.equal(f.goal()?.status, "active");
     assert.equal(f.goal()?.usageKnown, true);
   });
-}

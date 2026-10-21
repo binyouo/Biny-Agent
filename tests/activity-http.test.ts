@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -151,7 +153,7 @@ async function testSuggestionsResponseAndForceQuery(): Promise<void> {
     });
     let calls = 0;
     const suggestions = ["Review the Activity API", "Check the local report", "Inspect the recent session", "Continue the REST work"];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: `http-suggestions-${root}`,
       stream: async () => {
         calls += 1;
@@ -160,7 +162,7 @@ async function testSuggestionsResponseAndForceQuery(): Promise<void> {
           yield { type: "finish", reason: "stop" };
         })();
       }
-    };
+    });
     const deps = { agentDir: root, loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: root }), getModel: () => model };
     const pathname = "/api/activity-recorder/suggestions";
     const first = await handleActivityHttpRequest({ method: "GET", pathname }, deps);
@@ -192,7 +194,7 @@ async function testHttpCancellationDiscardsLateAnalysis(): Promise<void> {
     const late = Promise.withResolvers<void>();
     const finished = Promise.withResolvers<void>();
     let projections = 0;
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "late-test", runtime: "builtin-llama.cpp", dataResidency: "local",
       stream: async (_input, options) => (async function* (): AsyncGenerator<ModelStreamEvent> {
         started.resolve(options!.signal!);
@@ -202,7 +204,7 @@ async function testHttpCancellationDiscardsLateAnalysis(): Promise<void> {
           yield { type: "finish", reason: "stop" };
         } finally { finished.resolve(); }
       })()
-    };
+    });
     const api = await startActivityHttpServer({
       agentDir: root,
       loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: root }),
@@ -247,14 +249,14 @@ async function testActivitySummaryReadsWithoutGeneratingAndManualAnalysisRetries
   const settings: ActivitySettings = { ...defaultActivitySettings, outputDirectory: root };
   const store = new ActivityStore();
   let calls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "tool-test", runtime: "provider",
     stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       calls += 1;
       yield { type: "text-delta", text: JSON.stringify({ worth: true, title: "修复登录", description: "修复了登录错误", memoryCandidates: [] }) };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
   const deps = { agentDir: root, loadSettings: async () => settings, getModel: () => model };
   try {
     await store.open(root, root);
@@ -538,7 +540,7 @@ async function testActivityHttpReportDoesNotProjectMemoryCallbacks(): Promise<vo
   let memoryWrites = 0;
   let analyzedCallbacks = 0;
   let modelCalls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "activity-http-test",
     runtime: "builtin-llama.cpp",
@@ -561,7 +563,7 @@ async function testActivityHttpReportDoesNotProjectMemoryCallbacks(): Promise<vo
       };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
 
   try {
     const skeletonOnly = await handleActivityHttpRequest({

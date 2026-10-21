@@ -31,6 +31,8 @@ export type RuntimeOperation =
   | "soul"
   | "personalization"
   | "plan"
+  | "tool"
+  | "verification"
   | "model_catalog"
   | "checkpoint"
   | "message_version";

@@ -9,10 +9,9 @@ import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
-  migrateProjectSettingsDocument,
   PROJECT_SETTINGS_FORMAT,
   PROJECT_SETTINGS_VERSION
-} from "./migrations.js";
+} from "./format.js";
 import { projectBinyDir, projectSettingsPath } from "./paths.js";
 import { reasoningEffortSchema } from "./schema.js";
 import { withGlobalConfigWriteLock } from "./versioned.js";
@@ -112,8 +111,7 @@ export async function loadProjectSettings(workspaceRoot: string): Promise<Projec
   }
 
   try {
-    const migration = migrateProjectSettingsDocument(JSON.parse(raw));
-    const document = projectSettingsDocumentSchema.parse(migration.document);
+    const document = projectSettingsDocumentSchema.parse(JSON.parse(raw));
     return projectSettingsFromDocument(document);
   } catch (error) {
     throw new Error(`Invalid project .biny/settings.json: ${error instanceof Error ? error.message : String(error)}`);

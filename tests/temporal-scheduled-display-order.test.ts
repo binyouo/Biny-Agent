@@ -23,7 +23,7 @@ async function withAutomations(inputs: Array<{ id: string; at: string }>, run: (
   let store: AutomationStore | undefined;
   const service = new DateReferenceDetailService(stateRoot);
   try {
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     store = await AutomationStore.open(root, authority);
     for (const input of inputs) {
       const created = store.create(readAutomationCreateInput({ automationId: input.id, name: input.id,

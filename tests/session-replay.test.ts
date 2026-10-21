@@ -15,7 +15,7 @@ function main(): void {
       toolCallId: "read-1",
       sequence: 1,
       reasoningContent: "Start with the entry point.",
-      reasoningProviderOptions: signedReasoning
+      reasoningBlocks: [{ text: "Start with the entry point.", providerOptions: signedReasoning }]
     },
     { type: "tool_result", tool: "Read", toolCallId: "read-1", sequence: 1, result: { path: "src/index.ts", content: "export {};" } },
     { type: "tool_call", tool: "Bash", args: { command: "pnpm typecheck" }, toolCallId: "check-1", sequence: 2 }
@@ -261,7 +261,6 @@ function main(): void {
       type: "assistant_message",
       content: "answer",
       reasoningContent: "first thoughtsecond thought",
-      reasoningProviderOptions: secondSignature,
       reasoningBlocks: [
         { text: "first thought", providerOptions: firstSignature },
         { text: "second thought", providerOptions: secondSignature }
@@ -277,7 +276,6 @@ function main(): void {
     {
       type: "assistant_message",
       content: "answer",
-      reasoningProviderOptions: secondSignature,
       reasoningBlocks: [
         { text: "redacted block" },
         { text: "second thought", providerOptions: secondSignature }

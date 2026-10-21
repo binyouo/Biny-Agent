@@ -25,7 +25,7 @@ import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
 import { publicAssistantMessage, publicUserMessage } from "./publicMessage.js";
 import { validateRuntimeEventRecord, type RuntimeEventIdentity } from "./runtimeEvent.js";
-import { contextCheckpointSchema, contextStateSchema, contextUsageSchema } from "./contextSchema.js";
+import { contextCheckpointSchema, contextStateSchema } from "./contextSchema.js";
 
 const sessionListReadConcurrency = 8;
 const maxSummaryCacheBytes = 8 * 1024 * 1024;
@@ -137,7 +137,6 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     content: z.string(),
     attachments: z.array(attachmentReferenceSchema).optional(),
     skills: z.array(z.string()).optional(),
-    contextUsage: contextUsageSchema.optional(),
     contextState: contextStateSchema.optional(),
     preparationUsage: z.array(sessionUsageSchema).optional(),
     messageId: z.string().optional(),
@@ -151,7 +150,6 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     metadata: z.record(z.unknown()).optional(),
     content: z.string(),
     reasoningContent: z.string().optional(),
-    reasoningProviderOptions: z.record(z.unknown()).optional(),
     reasoningBlocks: z.array(reasoningBlockSchema).optional(),
     usage: sessionUsageSchema.optional(),
     relatedUsage: z.array(sessionUsageSchema).optional(),
@@ -173,7 +171,6 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     sequence: z.number().finite().optional(),
     assistantContent: z.string().optional(),
     reasoningContent: z.string().optional(),
-    reasoningProviderOptions: z.record(z.unknown()).optional(),
     reasoningBlocks: z.array(reasoningBlockSchema).optional(),
     auditOnly: z.boolean().optional(),
     time: z.string().optional()

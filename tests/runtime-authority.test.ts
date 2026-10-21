@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { appendFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { agentDir, ensureAgentDirs, sessionFilePath } from "../src/session/store.js";
@@ -213,7 +215,7 @@ try {
     executionTemplate: { prompt: "must not execute", mode: "plan" } as unknown as AutomationExecutionTemplate
   }), /unsupported field: mode/u);
 
-  // 闰日 cron 触发后 366 天内找不到下一次：推进失败只能暂停自己，不能阻塞同一轮其他 automation。
+  // 持久化的无效日期 cron 无下次触发：推进失败只能暂停自己，不能阻塞其他 automation。
   const leapDay = new Date(2024, 1, 29, 0, 0, 0).toISOString();
   const afterLeapDay = new Date(2024, 2, 1, 0, 0, 0);
   const leapCron = automations.create({
@@ -225,7 +227,7 @@ try {
   });
   authority.databaseHandle()
     .prepare("UPDATE automations SET schedule_json = ?, next_fire_at = ? WHERE automation_id = ?")
-    .run(JSON.stringify({ cron: "0 0 29 2 *" }), leapDay, leapCron.automationId);
+    .run(JSON.stringify({ cron: "0 0 31 2 *" }), leapDay, leapCron.automationId);
   const healthyAutomation = automations.create({
     automationId: "automation-healthy",
     name: "healthy",
@@ -244,10 +246,10 @@ try {
   );
   assert.equal(automations.get(leapCron.automationId)?.status, "paused");
 
-  const graph = graphs.createGraph([
+  const graph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [
     { nodeKey: "first", prompt: "first" },
     { nodeKey: "second", prompt: "second", dependencies: ["first"] }
-  ]);
+  ] });
   graphs.startGraph(graph.graphId);
   const first = graphs.readyNodes(graph.graphId).find((node) => node.nodeKey === "first");
   assert.ok(first);
@@ -255,7 +257,7 @@ try {
   graphs.completeNode(graph.graphId, first.nodeId, "completed", { artifact: "a" });
   assert.equal(graphs.readyNodes(graph.graphId).find((node) => node.nodeKey === "second")?.nodeKey, "second");
 
-  const recoverableGraph = graphs.createGraph([{ nodeKey: "recoverable", prompt: "recoverable" }]);
+  const recoverableGraph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "recoverable", prompt: "recoverable" }] });
   graphs.startGraph(recoverableGraph.graphId);
   const recoverableNode = graphs.readyNodes(recoverableGraph.graphId)[0]!;
   assert.ok(graphs.claimIntent(recoverableGraph.graphId, recoverableNode.nodeId, "claim-before-restart", "graph-recoverable-task"));
@@ -263,7 +265,7 @@ try {
   assert.equal(graphs.inspectGraph(recoverableGraph.graphId).nodes[0]!.status, "ready");
   assert.ok(graphs.claimIntent(recoverableGraph.graphId, recoverableNode.nodeId, "claim-after-restart", "graph-recoverable-task"));
 
-  const blockedGraph = graphs.createGraph([{ nodeKey: "uncertain", prompt: "uncertain" }]);
+  const blockedGraph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "uncertain", prompt: "uncertain" }] });
   graphs.startGraph(blockedGraph.graphId);
   const blockedNode = graphs.readyNodes(blockedGraph.graphId)[0]!;
   assert.ok(graphs.claimIntent(blockedGraph.graphId, blockedNode.nodeId, "claim-uncertain", "graph-uncertain-task"));
@@ -271,10 +273,10 @@ try {
   const uncertainAttempt = tasks.createAttempt(uncertainTask.taskRunId, { runId: "graph-uncertain-run", turnId: "graph-uncertain-turn" });
   tasks.transition(uncertainTask.taskRunId, "running", { attemptId: uncertainAttempt.attemptId });
   graphs.recoverRunningNodes(tasks);
-  assert.equal(graphs.inspectGraph(blockedGraph.graphId).status, "blocked");
+  assert.equal(graphs.inspectGraph(blockedGraph.graphId).status, "running");
   assert.equal(graphs.inspectGraph(blockedGraph.graphId).nodes[0]!.status, "blocked");
 
-  const cancelledGraph = graphs.createGraph([{ nodeKey: "cancelled", prompt: "cancelled" }]);
+  const cancelledGraph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "cancelled", prompt: "cancelled" }] });
   graphs.startGraph(cancelledGraph.graphId);
   const cancelledNode = graphs.readyNodes(cancelledGraph.graphId)[0]!;
   assert.ok(graphs.claimIntent(cancelledGraph.graphId, cancelledNode.nodeId));
@@ -435,12 +437,18 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
     let behavior: "busy_snapshot" | "busy_throw" | "explode" = "busy_snapshot";
     const runtime = {
       getSnapshot: () => behavior === "busy_snapshot" ? busySnapshot : idleSnapshot,
-      submitPrompt: () => {
-        if (behavior === "explode") throw new Error("provider exploded");
-        throw new Error("Cannot submit a prompt while the runtime is busy.");
-      }
+      runExclusiveOperation: async (_operation: string, execute: (signal: AbortSignal) => Promise<unknown>) => await execute(new AbortController().signal)
     } as unknown as InteractiveRuntimeHandle;
-    const supervisor = new GraphSupervisor({ store: isolatedGraphs, runtime });
+    const taskRuns = await DurableTaskRunStore.open(workspace, isolatedAuthority);
+    const supervisor = new GraphSupervisor({ getStore: () => isolatedGraphs, getTaskRuns: () => taskRuns,
+      resolveSupervisorRuntime: async () => runtime,
+      resolveSupervisorCommands: async () => ({ taskRuns,
+        startTaskRun: async () => {
+          if (behavior === "explode") throw new Error("provider exploded");
+          throw new Error("Cannot submit a prompt while the runtime is busy.");
+        }
+      } as unknown as CommandRuntime)
+    });
     const tickAndSettle = async (): Promise<void> => {
       await supervisor.tick();
       // executeNode 归还串行槽位的 finally 在微任务里跑；等一个 macrotask 让下一次 tick 不被占住。
@@ -448,7 +456,7 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
     };
     try {
       // 快照已 busy：不认领、不反复改写 revision，后续空闲通知再推进。
-      const prechecked = isolatedGraphs.createGraph([{ nodeKey: "prechecked", prompt: "prechecked" }]);
+      const prechecked = isolatedGraphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "prechecked", prompt: "prechecked" }] });
       const started = isolatedGraphs.startGraph(prechecked.graphId);
       await tickAndSettle();
       assert.equal(isolatedGraphs.inspectGraph(prechecked.graphId).nodes[0]!.status, "pending");
@@ -459,7 +467,7 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
       // supervisor 串行调度且按创建顺序扫描，先取消旧 graph 保证本轮 claim 落到新节点。
       behavior = "busy_throw";
       isolatedGraphs.cancelGraph(prechecked.graphId);
-      const raced = isolatedGraphs.createGraph([{ nodeKey: "raced", prompt: "raced" }]);
+      const raced = isolatedGraphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "raced", prompt: "raced" }] });
       isolatedGraphs.startGraph(raced.graphId);
       await tickAndSettle();
       assert.equal(isolatedGraphs.inspectGraph(raced.graphId).nodes[0]!.status, "ready");
@@ -468,13 +476,14 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
       // 真实执行失败仍然判 failed。
       behavior = "explode";
       isolatedGraphs.cancelGraph(raced.graphId);
-      const failing = isolatedGraphs.createGraph([{ nodeKey: "failing", prompt: "failing" }]);
+      const failing = isolatedGraphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "failing", prompt: "failing" }] });
       isolatedGraphs.startGraph(failing.graphId);
       await tickAndSettle();
       assert.equal(isolatedGraphs.inspectGraph(failing.graphId).nodes[0]!.status, "failed");
-      assert.equal(isolatedGraphs.inspectGraph(failing.graphId).status, "failed");
+      assert.equal(isolatedGraphs.inspectGraph(failing.graphId).status, "running", "supervisor decides the overall outcome");
     } finally {
       supervisor.stop();
+      taskRuns.close();
     }
   } finally {
     isolatedGraphs.close();

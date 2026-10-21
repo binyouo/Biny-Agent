@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -32,7 +34,7 @@ try {
   config.heartbeat.enabled = false;
   await ensureAgentDirs(root);
   let invalidSummary = true;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "compact-test", modelId: "test-model",
     stream: async (context, options) => {
       const isSummary = context.systemPrompt?.includes("durable context checkpoint") === true;
@@ -44,7 +46,7 @@ try {
         yield { type: "finish", reason: "stop", usage: { inputTokens: 0, outputTokens: 1, totalTokens: 1 } };
       })();
     }
-  };
+  });
   const recorder = new SessionRecorder(root, "compact-e2e");
   const agent = new AgentSession({
     workspaceRoot: root, config, model,

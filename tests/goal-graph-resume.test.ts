@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** 暂停使旧监督检查点过期；恢复后仍须交付当前依赖状态，不重新执行节点。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { GoalGraphStore, GraphSupervisor, type SupervisorCheckpoint } from "../src/runtime/GoalGraphStore.js";
@@ -28,7 +29,7 @@ async function testResumeCheckpoint(checkpoint: SupervisorCheckpoint, finishWhil
     },
     submitPrompt: () => { throw new Error("Resume must not rerun completed or failed work."); }
   } as unknown as InteractiveRuntimeHandle;
-  const supervisor = new GraphSupervisor({ getStore: () => graphs, runtime });
+  const supervisor = new GraphSupervisor({ getStore: () => graphs, resolveSupervisorRuntime: async () => runtime, getTaskRuns: () => { throw new Error("Unexpected startup recovery"); }, resolveSupervisorCommands: async () => { throw new Error("Unexpected node dispatch"); } });
   try {
     const graph = graphs.createSupervisedGraph({
       supervisorSessionId: "owner",
@@ -96,7 +97,7 @@ async function testResumeRunnableAndFixedGraphs(): Promise<void> {
   const graphs = await GoalGraphStore.open(root, authority);
   try {
     const nodes = [{ nodeKey: "first", prompt: "Work" }];
-    const fixed = graphs.createGraph(nodes);
+    const fixed = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: nodes });
     const supervised = graphs.createSupervisedGraph({ supervisorSessionId: "owner", nodes });
     for (const graph of [fixed, supervised]) {
       graphs.startGraph(graph.graphId);

@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";

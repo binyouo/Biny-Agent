@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 请求计量回归：最新请求、来源分类、缓存完整性和恢复后的展示不能相互冒充。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ContextMemory } from "../src/agent/context/ContextMemory.js";
@@ -95,7 +97,7 @@ async function testRequestLifecycle(): Promise<void> {
   const calls: ModelStreamContext[] = [];
   const observed: ModelStreamContext[] = [];
   let alias = "first";
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "test",
     stream: async (context) => {
       calls.push(structuredClone({ ...context, tools: [] }));
@@ -105,7 +107,7 @@ async function testRequestLifecycle(): Promise<void> {
         yield { type: "finish", reason: calls.length === 1 ? "tool-calls" : "stop", usage: { inputTokens: calls.length === 1 ? 100 : 240, cacheReadTokens: 80 } };
       })();
     }
-  };
+  });
   const makeMemory = () => new ContextMemory(() => model, new WorkspaceContext(root, [], 32_768), undefined, 900, 32_768, undefined, () => ({
     contextWindow: 1_000, contextWindowIsFallback: false, maxInputTokens: 900, modelAlias: alias, toolSchemaReserveTokens: 50_000
   }));
@@ -124,7 +126,14 @@ async function testRequestLifecycle(): Promise<void> {
       if (event.type === "turn_end") memory.recordProviderUsage(event.message.usage ?? {});
     }
     assert.equal(calls.length, 2);
-    assert.deepEqual(observed, calls, "sample the actual post-transform context once per request");
+    assert.equal(observed.length, 2, "sample context once per SDK request");
+    assert.equal(observed[0]?.systemPrompt, "System");
+    assert.deepEqual(observed[0]?.messages, [{ role: "user", content: "Read" }]);
+    assert.equal(observed[1]?.systemPrompt, "Updated system");
+    assert.deepEqual(observed[1]?.messages.map(message => message.role), ["user", "assistant", "toolResult"]);
+    assert.deepEqual(observed[1]?.messages[2]?.content, [{ type: "text", text: "pruned" }]);
+    assert.deepEqual(calls.map(call => call.messages.map(message => message.role)), [["user"], ["user", "assistant", "toolResult"]]);
+    assert.deepEqual(calls[1]?.messages[2]?.content, [{ type: "text", text: "pruned" }]);
     assert.equal(memory.getBudget().usedTokens, 240, "latest request, not 100 + 240");
     assert.equal(memory.getBudget().breakdown?.systemTools, 0, "use the next step's tools");
     assert.ok((memory.getBudget().estimatedTokens ?? 0) < 50_000, "tool reserve is not usage");
@@ -160,7 +169,7 @@ async function testDirectProviderSampling(): Promise<void> {
   }) });
   const observed: ModelStreamContext[] = [];
   for await (const _event of vercelAgentLoopContinue({ systemPrompt: "system", messages: [{ role: "user", content: "unprojected" }], tools: [] }, {
-    model: { provider: "test", modelId: "test", stream: async () => { throw new Error("unexpected adapter route"); } },
+    model: testModel({ provider: "test", modelId: "test", stream: async () => { throw new Error("unexpected adapter route"); } }),
     vercelModel, tools: [], maxSteps: 1,
     transformContext: async () => [{ role: "user", content: "actual projected message" }],
     onRequestContext: (context) => { observed.push(context); }
@@ -175,15 +184,14 @@ async function testSessionPersistence(): Promise<void> {
   const previousGlobal = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = path.join(root, "global");
   let calls = 0;
-  const model: AgentModel = { provider: "test", modelId: "test", stream: async (context) => {
-    const last = context.messages.at(-1);
-    const conversationRequest = last?.role === "user" && (last.originalContent === "hi" || last.originalContent === "continue");
-    if (conversationRequest) calls++;
+  const model: AgentModel = testModel({ provider: "test", modelId: "test", stream: async (context) => {
+    assert.equal(context.messages.at(-1)?.role, "user");
+    calls++;
     return (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: "ok" };
       yield { type: "finish", reason: "stop", usage: { inputTokens: calls <= 1 ? 100 : 900, cacheReadTokens: calls <= 1 ? 0 : 900 } };
     })();
-  } };
+  } });
   const config = configSchema.parse({
     ...defaultConfig, defaultModel: "test",
     providers: { test: { type: "openai", apiKey: "test-placeholder" } },

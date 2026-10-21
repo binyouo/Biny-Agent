@@ -55,17 +55,7 @@ export async function createActivityMemoryPipeline(options: ActivityMemoryPipeli
         console.error("[ActivityMemoryPipeline] project memory skipped because workspace is unknown", context.sessionId);
         continue;
       }
-      const memory = new LocalMemory(
-        workspaceRoot ?? options.workspaceRoot,
-        () => context.model,
-        undefined,
-        5,
-        undefined,
-        undefined,
-        options.indexEntry === undefined ? undefined : { indexEntry: options.indexEntry },
-        options.findSimilarEntries,
-        () => context.model
-      );
+      const memory = new LocalMemory(workspaceRoot ?? options.workspaceRoot, () => context.model, undefined, 5, undefined, undefined, options.indexEntry === undefined ? undefined : { indexEntry: options.indexEntry }, options.findSimilarEntries);
       let deferred = false;
       try {
         const input = activityMemoryInput(candidate, context);

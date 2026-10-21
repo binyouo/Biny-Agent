@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -75,10 +77,10 @@ test("strict checkpoint retry origin rejects corrupt identities and cannot poiso
       await writeFile(turnPath, JSON.stringify(changed));
       assert.throws(() => resolveRetryScope(facts, changed.turn.retryOrigin!, changed.turn), name);
       const session = new AgentSession({ workspaceRoot: root, recorder: new SessionRecorder(root), config,
-        permissionManager: new PermissionManager(config.permission), toolRegistry: new ToolRegistry(), model: {
+        permissionManager: new PermissionManager(config.permission), toolRegistry: new ToolRegistry(), model: testModel({
           provider: "synthetic", modelId: "must-not-dispatch", supportsTools: true,
           stream: async () => { requests += 1; throw new Error("unexpected provider"); }
-        } });
+        }) });
       try { await session.initialize(); await assert.rejects(session.resume("retry-origin"), name); }
       finally { await session.close(); }
     }

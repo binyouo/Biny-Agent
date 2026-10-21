@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { memoryAddCommand, memoryClearCommand, memoryListCommand, memorySearchCommand } from "../src/cli/commands/localCapabilities.js";
@@ -48,7 +49,7 @@ const runtime = {
 let host: Awaited<ReturnType<typeof startRuntimeHost>> | undefined;
 const originalLog = console.log;
 try {
-  host = await startRuntimeHost(root, async () => ({ runtime, commands }));
+  host = await startRuntimeHost(root, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   console.log = () => undefined;
   await memoryListCommand(root, { noSpawn: true, json: true });
   assert.deepEqual(listLimits, [100], "CLI list forwards the public default page size");
@@ -82,10 +83,8 @@ try {
     memoryAddCommand(root, undefined, { entry: '[]', noSpawn: true }),
     /JSON 对象/u
   );
-  await assert.rejects(memoryClearCommand(root, { threadId: "thread-1", yes: true, noSpawn: true }), /Session is busy/u);
-  assert.deepEqual(clearedThreads, [], "maintenance remains exclusive while the model is running");
-  busy = false;
   await memoryClearCommand(root, { threadId: "thread-1", yes: true, noSpawn: true });
+  assert.equal(busy, true, "global memory writes do not replace the active chat operation");
   assert.deepEqual(clearedThreads, ["thread-1"]);
   assert.equal(clearedAll, 0, "按 thread 清理不能落到全库清理");
   await assert.rejects(memoryClearCommand(root, { threadId: " ", yes: true, noSpawn: true }), /threadId/u);

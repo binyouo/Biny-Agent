@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, realpath, readFile, rm } from "node:fs/promises";
+import { mkdtemp, realpath, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -95,7 +96,7 @@ try {
   host = await startRuntimeHost(root, async () => {
     factories += 1;
     return await createInteractiveAgentHost(root, { sessionId: "goal-session", configStore: { load: async () => config, save: async () => undefined } });
-  });
+  }, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   client = await connectRuntimeHost(root);
   client.subscribe(update => {
     if (update.event?.type === "message.user") userInputs.push(update.event.content);

@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -144,14 +146,14 @@ for (const maxSteps of [1, 2]) {
     const f = await fixture();
     let requests = 0;
     try {
-      const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+      const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
         stream: async (context) => {
           requests += 1;
           if (requests === 1) f.communication.send("child", "include the new finding", "late-context");
           else assert.match(JSON.stringify(context.messages), /include the new finding/);
           return textResponse(requests === 1 ? "initial candidate" : "updated result");
         }
-      };
+      });
       const config = structuredClone(defaultConfig);
       config.extensions.subagent.maxSteps = maxSteps;
       const run = runSubagentTask({ workspaceRoot: f.root, config, toolRegistry: new ToolRegistry(),

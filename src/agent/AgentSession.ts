@@ -122,10 +122,7 @@ import { LocalReferenceService, localReferenceContext, localReferenceProjectId }
 import { readFileMemoryPrompt } from "./context/fileMemory.js";
 import { MemoryVectorIndex } from "./context/MemoryVectorIndex.js";
 import { SemanticMemoryRetriever } from "./context/SemanticMemoryRetriever.js";
-import {
-  MemoryEmbeddingService,
-  type MemoryEmbeddingRuntimeStatus
-} from "./context/MemoryEmbeddingService.js";
+import type { MemoryEmbeddingRuntimeStatus } from "./context/MemoryEmbeddingService.js";
 import { CrystalService } from "./context/crystalService.js";
 import { WorkspaceContext } from "./context/WorkspaceContext.js";
 import type { CompactionResult, ContextStatus } from "./context/types.js";
@@ -144,9 +141,8 @@ import type { ModelSettings } from "../llm/modelFactory.js";
 import { isModelContextOverflowError } from "../llm/modelErrors.js";
 import { generateNativeText } from "../llm/nativeJson.js";
 import { ProviderRegistry } from "../llm/ProviderRuntime.js";
-import { LocalEmbeddingManager } from "../llm/embedding/LocalEmbeddingRuntime.js";
-import { selectMemoryEmbeddingModel } from "../llm/embedding/selectMemoryModel.js";
-import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
+import { AgentMemoryClient } from "../runtime/memory/client.js";
+import type { EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
 import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import { messageText, withMessageSentAt } from "./modelMessages.js";
@@ -184,7 +180,7 @@ import { checkpointClaims } from "../session/checkpointClaims.js";
 import type { CheckpointEvidenceArgs } from "../extensions/checkpointEvidence.js";
 import type { CapabilityPreselectionInput } from "./capabilityPreselection.js";
 import { stableCodingToolNames } from "./capabilityPreselection.js";
-import { accumulatedAutomaticToolNames } from "./automaticToolHistory.js";
+import { accumulatedAutomaticSkillIds, accumulatedAutomaticToolNames } from "./automaticToolHistory.js";
 import {
   isToolSearchTerminalFailure,
   toolSearchResultNames,
@@ -413,9 +409,8 @@ export class AgentSession {
   private titleTaskSessionId?: string;
   private pendingTitleSessionId?: string;
   private readonly titleAbort = new AbortController();
-  private readonly localEmbeddingManager: LocalEmbeddingManager;
   private readonly memoryRetriever: SemanticMemoryRetriever;
-  private readonly memoryEmbeddingService: MemoryEmbeddingService;
+  private readonly memoryEmbeddingService: AgentMemoryClient;
   private readonly crystalService: CrystalService;
   private usageRecords: SessionUsage[] = [];
   private sessionGoalRequest?: SessionGoalExpectation & { runId: string; generation: number };
@@ -505,7 +500,7 @@ export class AgentSession {
     const initialContextBudget = options.modelManager?.getContextBudget();
     this.localMemory = new LocalMemory(
       persistenceRoot,
-      () => this.memoryModelFor("extractModel"),
+      () => this.memoryModelFor("memoryModel"),
       onUsage,
       () => this.activeConfig.context.memory.maxRecalled,
       onModelRequest,
@@ -513,23 +508,7 @@ export class AgentSession {
       {
         indexEntry: async (entry) => await this.indexMemoryEntry(entry),
         removeEntries: (entryIds) => this.removeMemoryEmbeddingEntries(entryIds)
-      },
-      async (query, searchOptions) => {
-        const snapshot = await this.localMemory.listMemoryEntries({
-          signal: searchOptions.signal
-        });
-        return await this.memoryEmbeddingService.findSimilarEntries(
-          query,
-          searchOptions.userId === undefined
-            ? snapshot.entries
-            : snapshot.entries.filter((entry) => entry.userId === (searchOptions.userId ?? undefined)),
-          searchOptions.limit,
-          searchOptions.minimumSimilarity,
-          searchOptions.signal
-        );
-      },
-      () => this.memoryModelFor("memoryModel")
-    );
+      }, (query, searchOptions) => this.memoryEmbeddingService.findSimilarInScope(query, searchOptions));
     this.identityStorage = new IdentityStorage();
     this.soulStorage = new SoulStorage();
     this.emotionStorage = new EmotionStorage();
@@ -537,20 +516,10 @@ export class AgentSession {
     this.emotionAnalysisScheduler = new EmotionAnalysisScheduler({
       analyze: async (sessionId, signal, messageId) => await this.analyzeContextEmotion(sessionId, signal, messageId)
     });
-    this.localEmbeddingManager = new LocalEmbeddingManager(path.join(globalAgentDir(), "models", "embeddings"));
     const memoryIndexRoot = globalAgentDir();
     const openReadOnlyMemoryIndex = (): MemoryVectorIndex | undefined => MemoryVectorIndex.openReadOnly(memoryIndexRoot);
-    this.memoryEmbeddingService = new MemoryEmbeddingService({
-      localMemory: this.localMemory,
-      localManager: this.localEmbeddingManager,
-      getVectorIndex: () => new MemoryVectorIndex(memoryIndexRoot),
-      getReadOnlyVectorIndex: openReadOnlyMemoryIndex,
-      getActiveModel: () => this.resolvedMemoryEmbeddingRef(),
-      getConfiguredModel: () => this.activeConfig.context.memory.embeddingModel,
-      getProviderModels: () => this.providerEmbeddingModels(),
-      getNeedsRebuild: () => this.activeConfig.needsEmbeddingRebuild,
-      getRuntime: async () => await this.activeMemoryEmbeddingRuntime()
-    });
+    this.memoryEmbeddingService = new AgentMemoryClient(memoryIndexRoot,
+      options.configStore?.configPath ? path.dirname(options.configStore.configPath()) : undefined);
     this.memoryRetriever = new SemanticMemoryRetriever({
       localMemory: this.localMemory,
       getEmbeddingRuntime: async () => await this.memoryEmbeddingService.embeddingRuntime(),
@@ -596,8 +565,8 @@ export class AgentSession {
         return event?.type === "user_message" || event?.type === "assistant_message" ? event.content : undefined;
       },
       embedText: async (text, signal) => {
-        if (!this.localEmbeddingManager.isReady()) return undefined;
-        const runtime = await this.localEmbeddingManager.createRuntime("multilingual-e5-small");
+        const runtime = await this.memoryEmbeddingService.embeddingRuntime(true);
+        if (!runtime) return undefined;
         const embedded = await runtime.embed({
           texts: [text],
           inputType: "passage",
@@ -732,9 +701,7 @@ export class AgentSession {
       return await activityContextForTurn({
         store, input, now, enabled: this.activeConfig.activity.enabled,
         getEmbeddingRuntime: this.options.getActivityEmbeddingRuntime
-          ?? (async () => this.localEmbeddingManager.isReady()
-            ? await this.localEmbeddingManager.createRuntime("multilingual-e5-small").catch(() => undefined)
-            : undefined),
+          ?? (() => this.memoryEmbeddingService.embeddingRuntime(true)),
         signal
       });
     } catch {
@@ -924,6 +891,7 @@ export class AgentSession {
     const history = options.history ?? nodes
       .filter((node) => active.has(node.id) && node.id !== options.messageId).map((node) => node.message);
     const previousTools = accumulatedAutomaticToolNames(events, active, options.messageId);
+    const previousSkills = accumulatedAutomaticSkillIds(events, active, options.messageId);
     const startedAt = perfNow();
     const selectionController = new AbortController();
     const forwardAbort = (): void => selectionController.abort(options.signal?.reason);
@@ -932,7 +900,7 @@ export class AgentSession {
     try {
       const selected = await this.options.selectCapabilities({
         input: options.input, config: this.activeConfig, selection: options.selection, signal: selectionController.signal,
-        history, previousTools,
+        history, previousTools, previousSkills,
         requestContext: this.sideModelRequestContext(), onRequestMetrics: async (metrics) => {
           await this.recordModelRequest(metrics);
           // 候选切换也属于新的请求；目标预算停止后不能继续辅助采样。
@@ -945,7 +913,8 @@ export class AgentSession {
         await this.recorder.recordAndFlush({ type: "message_metadata", messageId: options.messageId, metadata: {
           capabilitySelection: selected,
           toolAccessSelection: selected.tools === "none" ? "none" : toolAccessSelection,
-          automaticToolSelection: (options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto"
+          automaticToolSelection: (options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto",
+          automaticSkillSelection: (options.selection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto"
         } });
       }
       return selected;
@@ -1169,7 +1138,7 @@ export class AgentSession {
       const continuationReferences = turn.terminal
         ? [...recoveredReferences, undefined]
         : recoveredReferences;
-      this.contextMemory.restore(recoveredMessages, replay.contextState ?? replay.contextUsage);
+      this.contextMemory.restore(recoveredMessages, replay.contextState);
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
       this.contextMessageReferences = recoveredReferences.map((reference) => reference === undefined ? undefined : { ...reference });
       this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
@@ -1184,7 +1153,7 @@ export class AgentSession {
           && event.runtime?.turnId === turnId);
         if (emptyFollowup) {
           // 新回合刚写入初始检查点就崩溃时，仍使用其新 turn 身份和历史，不能重试旧用户输入。
-          this.contextMemory.restore(replayMessages, replay.contextState ?? replay.contextUsage);
+          this.contextMemory.restore(replayMessages, replay.contextState);
           this.contextMessageReferences = replay.messageReferences.map((reference) => reference === undefined ? undefined : { ...reference });
           yield* this.runTurn("", {
             ...runOptions, runId, turnId, maxSteps: recoveryPlan.remainingSteps,
@@ -1246,7 +1215,7 @@ export class AgentSession {
         await this.turnStore.clear();
       }
       const messages = await this.rehydrateSessionMessages(replay.messages, replay.events, replay.contextStartUserMessageIndex, replay.messageReferences);
-      this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
+      this.contextMemory.restore(messages, replay.contextState);
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
       this.contextMessageReferences = replay.messageReferences;
       this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
@@ -1280,7 +1249,7 @@ export class AgentSession {
       replay.retrySourceEvents ? replay.messageReferences : undefined
     );
     if (!messages.length) throw new Error("The interrupted conversation has no history to continue.");
-    this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
+    this.contextMemory.restore(messages, replay.contextState);
     if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
     this.contextMessageReferences = replay.messageReferences.map((reference) => reference === undefined ? undefined : { ...reference });
     this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
@@ -1352,19 +1321,7 @@ export class AgentSession {
 
   /** 当前长期记忆配置下的嵌入运行时；自动选择仅使用已配置且可用的 Provider。 */
   async getEmbeddingRuntime(): Promise<EmbeddingModelRuntime | undefined> {
-    const ref = this.resolvedMemoryEmbeddingRef();
-    if (!ref || ref.kind === "auto") return undefined;
-    if (ref.kind === "local") return await this.localEmbeddingManager.createRuntime(ref.model);
-    const providers = new ProviderRegistry(this.activeConfig);
-    const descriptor = providers.listEmbeddingModels().find((candidate) => (
-      candidate.ref.kind === "provider"
-      && candidate.ref.provider === ref.provider
-      && candidate.ref.model === ref.model
-    ));
-    if (!descriptor?.endpoint || descriptor.available === false) {
-      throw new Error(`Embedding model ${ref.provider}/${ref.model} is currently unavailable.`);
-    }
-    return providers.createEmbeddingRuntime(ref);
+    return this.memoryEmbeddingService.embeddingRuntime();
   }
 
   /** 身份资料由同一个 AgentSession 读取，Desktop 也可通过本地存储服务复用这份权威。 */
@@ -1401,8 +1358,24 @@ export class AgentSession {
     return result;
   }
 
-  cancelMemoryMaintenance(): boolean {
-    return this.localMemory.cancelMaintenance();
+  cancelMemoryMaintenance(): Promise<boolean> {
+    return this.memoryEmbeddingService.cancelSleep();
+  }
+
+  memoryMaintenanceStatus() {
+    return this.memoryEmbeddingService.sleepStatus();
+  }
+
+  runMemoryMaintenance(): Promise<unknown> {
+    return this.memoryEmbeddingService.runSleep();
+  }
+
+  previewMemoryMaintenance() {
+    return this.memoryEmbeddingService.previewSleep();
+  }
+
+  maintainMemory(): Promise<void> {
+    return this.memoryEmbeddingService.maintain();
   }
 
   async memoryEmbeddingStatus(): Promise<MemoryEmbeddingRuntimeStatus> {
@@ -1411,15 +1384,18 @@ export class AgentSession {
   }
 
   storedMemoryEmbeddingModel(): string | null {
-    return this.memoryEmbeddingService.storedModelId();
+    const index = MemoryVectorIndex.openReadOnly(globalAgentDir());
+    try { return index?.storedModelId() ?? null; }
+    finally { index?.close(); }
   }
 
   async downloadMemoryEmbeddingModel(model: LocalEmbeddingModelId, signal?: AbortSignal): Promise<void> {
     await this.refreshMemoryConfig();
-    await this.memoryEmbeddingService.download(model, signal);
+    signal?.throwIfAborted();
+    await this.memoryEmbeddingService.download(model);
   }
 
-  cancelMemoryEmbeddingDownload(model: LocalEmbeddingModelId): boolean {
+  cancelMemoryEmbeddingDownload(model: LocalEmbeddingModelId): Promise<boolean> {
     return this.memoryEmbeddingService.cancelDownload(model);
   }
 
@@ -1430,11 +1406,11 @@ export class AgentSession {
 
   async rebuildMemoryEmbeddingIndex(signal?: AbortSignal): Promise<void> {
     await this.refreshMemoryConfig();
-    await this.memoryEmbeddingService.rebuild(signal);
-    await this.clearEmbeddingRebuildMarker();
+    signal?.throwIfAborted();
+    await this.memoryEmbeddingService.rebuild();
   }
 
-  cancelMemoryEmbeddingRebuild(): boolean {
+  cancelMemoryEmbeddingRebuild(): Promise<boolean> {
     return this.memoryEmbeddingService.cancelRebuild();
   }
 
@@ -1443,11 +1419,6 @@ export class AgentSession {
     // 对外伪装成失败并诱发重复提交；查询按当前事实 revision 过滤旧向量，避免召回旧内容。
     await this.refreshMemoryConfig().catch(() => undefined);
     await this.memoryEmbeddingService.indexEntry(entry);
-  }
-
-  async prepareMemorySynthesis(content: string, signal?: AbortSignal): Promise<((entry: MemoryEntry) => void) | undefined> {
-    await this.refreshMemoryConfig();
-    return this.memoryEmbeddingService.prepareSynthesis(content, signal);
   }
 
   async findMemorySimilarityPairs(
@@ -1459,8 +1430,8 @@ export class AgentSession {
     return await this.memoryEmbeddingService.findSimilarPairs(entries, minimumSimilarity, signal);
   }
 
-  removeMemoryEmbeddingEntries(entryIds: readonly string[]): void {
-    this.memoryEmbeddingService.removeEntries(entryIds);
+  async removeMemoryEmbeddingEntries(entryIds: readonly string[]): Promise<void> {
+    await this.memoryEmbeddingService.call("embedding.remove-entries", { ids: entryIds });
   }
 
   /** 三端共享的读模型；正文只在 global/chat 配置中，resolved 元数据可安全投影到 session。 */
@@ -1630,7 +1601,7 @@ export class AgentSession {
     this.activeConfig = snapshot.config;
     this.activePersonalization = snapshot.state.resolved;
     const personalization = snapshot.state.resolved;
-    this.contextMemory.restore(prefixMessages, replay.contextState ?? replay.contextUsage);
+    this.contextMemory.restore(prefixMessages, replay.contextState);
     this.contextMessageReferences = prefixReferences;
     // Mark the installed view before preflight/admission can fail. An edit
     // replaces any earlier retry-scoped view at this same installation boundary.
@@ -1767,7 +1738,7 @@ export class AgentSession {
         replay.contextStartUserMessageIndex,
         replay.retrySourceEvents ? replay.messageReferences : undefined
       );
-      this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
+      this.contextMemory.restore(messages, replay.contextState);
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
       this.contextMessageReferences = replay.messageReferences.map((reference) => ({ ...reference }));
       this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
@@ -1845,7 +1816,6 @@ export class AgentSession {
         parentMessageId: replacement?.parentMessageId,
         slotId: replacement?.slotId,
         skills: this.skillPaths(undefined, options.runId),
-        contextUsage: selected ? selected.contextState?.budget ?? selected.contextUsage : this.contextMemory.getBudget(),
         contextState: selected ? selected.contextState : this.contextMemory.persistedState()
       });
       const reference = rebind
@@ -1879,11 +1849,10 @@ export class AgentSession {
       // Normalize with the same restore logic in an unused workspace view.
       // No preparation, initialization, provider or memory work runs here.
       const stagedContext = this.createStagingContextMemory();
-      stagedContext.restore(messages, selected.contextState ?? selected.contextUsage);
+      stagedContext.restore(messages, selected.contextState);
       if (selected.contextCheckpoint) stagedContext.setCheckpoint(selected.contextCheckpoint);
-      const budget = stagedContext.getBudget();
       const state = stagedContext.snapshot();
-      const event = create({ ...selected, contextUsage: budget, contextState: state });
+      const event = create({ ...selected, contextState: state });
       if (kind === "ordinary" && event) event.metadata = { ...event.metadata, sentAtTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
       return { event, install: () => {
         this.contextMemory.restore(messages, state);
@@ -2105,7 +2074,6 @@ export class AgentSession {
         content: input,
         attachments: sessionAttachments(runOptions.attachments),
         skills: this.skillPaths(runOptions.capabilitySelection?.skills, runOptions.runId),
-        contextUsage: selected ? selected.contextState?.budget ?? selected.contextUsage : this.contextMemory.getBudget(),
         contextState: selected ? selected.contextState : this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState(),
         preparationUsage: this.usageRecords.slice(usageBeforePreparation),
         // 普通发送沿用回执/实时事件的 ID，避免落盘后变成另一条用户消息。
@@ -2240,7 +2208,7 @@ export class AgentSession {
         const references = indexes.map(index => canonical.messageReferences[index]);
         runOptions.continueFrom = turn.terminal ? [...history, runtimeContinuationMessage(turn.terminal)] : history;
         runOptions.continueMessageReferences = turn.terminal ? [...references, undefined] : references;
-        this.contextMemory.restore(history, canonical.contextState ?? canonical.contextUsage);
+        this.contextMemory.restore(history, canonical.contextState);
         if (canonical.contextCheckpoint) this.contextMemory.setCheckpoint(canonical.contextCheckpoint);
         this.contextMessageReferences = references;
         this.nextSessionMessageIndex = Math.max(canonical.totalMessageCount, canonical.messageTree.length);
@@ -2793,7 +2761,6 @@ export class AgentSession {
         // 工具审计必须绑定到发起它的模型 step，不能等整个 run 结束后再取累计 reasoning。
         assistantContent: publicAssistantMessage(stepAssistantContent) || undefined,
         reasoningContent: stepReasoningOutput || undefined,
-        reasoningProviderOptions: stepReasoningBlocks?.length === 1 ? stepReasoningBlocks[0]?.providerOptions : undefined,
         reasoningBlocks: stepReasoningBlocks
       }),
       allowedToolNames,
@@ -3409,7 +3376,6 @@ export class AgentSession {
           memoryRecallDegraded: finalContextStatus.memoryRecallDegraded
         },
         reasoningContent: lastStepReasoningOutput || undefined,
-        reasoningProviderOptions: stepReasoningBlocks?.length === 1 ? stepReasoningBlocks[0]?.providerOptions : undefined,
         reasoningBlocks: stepReasoningBlocks,
         usage: usageRecord,
         relatedUsage: this.takeRelatedUsage(),
@@ -3743,7 +3709,7 @@ export class AgentSession {
         replay.contextStartUserMessageIndex,
         replay.retrySourceEvents ? replay.messageReferences : undefined
       );
-      this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
+      this.contextMemory.restore(messages, replay.contextState);
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
       if (catalogRecord?.parentSessionId !== undefined) this.contextMemory.advancePromptEpoch("fork");
       this.contextMessageReferences = replay.messageReferences.map((reference) => ({ ...reference }));
@@ -4455,7 +4421,6 @@ export class AgentSession {
         content: item.input,
         attachments: sessionAttachments(item.attachments),
         skills: this.skillPaths(),
-        contextUsage: this.contextMemory.getBudget(),
         contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState(),
         messageId: item.messageId
       });
@@ -4498,7 +4463,6 @@ export class AgentSession {
       type: "assistant_message",
       content: agentMessageText(message),
       reasoningContent: blocks?.map((block) => block.text).join("") || undefined,
-      reasoningProviderOptions: blocks?.length === 1 ? blocks[0]?.providerOptions : undefined,
       reasoningBlocks: blocks
     });
   }
@@ -4514,10 +4478,8 @@ export class AgentSession {
     this.closed = true;
     await Promise.allSettled([...this.pendingCrystalTasks]);
     this.memoryRetriever.close();
-    this.memoryEmbeddingService.close();
     this.localMemory.close();
     this.crystalService.close();
-    await this.localEmbeddingManager.close();
     const relatedUsage = this.takeRelatedUsage();
     if (relatedUsage) {
       this.recorder.record({
@@ -4647,54 +4609,11 @@ export class AgentSession {
     };
   }
 
-  private providerEmbeddingModels(): EmbeddingModelDescriptor[] {
-    return new ProviderRegistry(this.activeConfig).listEmbeddingModels();
-  }
-
-  private resolvedMemoryEmbeddingRef(): EmbeddingModelRef | undefined {
-    return selectMemoryEmbeddingModel(this.activeConfig.context.memory.embeddingModel, this.providerEmbeddingModels());
-  }
-
-  private async activeMemoryEmbeddingRuntime(): Promise<EmbeddingModelRuntime | undefined> {
-    const ref = this.resolvedMemoryEmbeddingRef();
-    if (!ref || ref.kind === "auto") return undefined;
-    if (ref.kind === "local") return await this.localEmbeddingManager.createRuntime(ref.model);
-    const providers = new ProviderRegistry(this.activeConfig);
-    const descriptor = providers.listEmbeddingModels().find((candidate) => (
-      candidate.ref.kind === "provider"
-      && candidate.ref.provider === ref.provider
-      && candidate.ref.model === ref.model
-    ));
-    if (!descriptor?.endpoint || descriptor.available === false) {
-      throw new Error(`Embedding model ${ref.provider}/${ref.model} is currently unavailable.`);
-    }
-    return providers.createEmbeddingRuntime(ref);
-  }
-
   private async refreshMemoryConfig(): Promise<void> {
     const snapshot = await this.readPersonalizationState();
     this.activeConfig = snapshot.config;
     this.activePersonalization = snapshot.state.resolved;
   }
-
-  private async clearEmbeddingRebuildMarker(): Promise<void> {
-    if (!this.activeConfig.needsEmbeddingRebuild) return;
-    const store = this.options.configStore;
-    if (!store?.loadVersioned || !store.saveVersioned) return;
-    const activeModel = this.activeConfig.context.memory.embeddingModel;
-    const current = await store.loadVersioned(this.options.workspaceRoot);
-    if (!sameEmbeddingModel(current.config.context.memory.embeddingModel, activeModel)) return;
-    if (!current.config.needsEmbeddingRebuild) {
-      this.activeConfig = current.config;
-      return;
-    }
-    const next = configSchema.parse({ ...current.config, needsEmbeddingRebuild: false });
-    const saved = await store.saveVersioned(next, current.revision, this.options.workspaceRoot);
-    const refreshed = await this.readPersonalizationState(saved);
-    this.activeConfig = refreshed.config;
-    this.activePersonalization = refreshed.state.resolved;
-  }
-
 
 
   /**

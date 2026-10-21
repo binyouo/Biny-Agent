@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Graph history cursors must cross every public reader without changing durable facts. */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -28,7 +29,7 @@ type PageOptions = { afterSequence?: number; limit?: number };
 await test("graph history continuation reaches failed and recovered node facts after read-only reopen", async (t) => {
   await fixture(t, async ({ root, authority, commands, read, rpc }) => {
     const graphId = "graph:cursor_%";
-    const graph = commands.graphs.createGraph([{ nodeKey: "work", prompt: "Read persisted evidence" }], {}, graphId);
+    const graph = commands.graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "work", prompt: "Read persisted evidence" }], payload: {}, graphId: graphId });
     commands.graphs.startGraph(graphId);
     for (let index = 0; index < 105; index += 1) {
       authority.appendEvent({ eventId: `history-${index}`, sessionId: "owner", runId: index % 2 ? `task-${index}` : `graph:${graphId}`,
@@ -47,7 +48,7 @@ await test("graph history continuation reaches failed and recovered node facts a
     const before = wire(authority.readEvents({ limit: 1000 }));
     const graphBefore = commands.graphs.inspectGraph(graphId);
     const otherCursor = before.events.find((event) => event.eventId === "lookalike-50")!.sequence;
-    const foreign = await RuntimeEventAuthority.open(root, { workspaceId: "foreign", backfillLegacySessions: false });
+    const foreign = await RuntimeEventAuthority.open(root, { workspaceId: "foreign", reconcileSessions: false });
     foreign.appendEvent({ eventId: "foreign-exact", sessionId: "owner", runId: `graph:${graphId}`, turnId: `graph:${graphId}`, eventType: "fixture.foreign" });
     foreign.close();
 
@@ -210,7 +211,7 @@ async function fixture(t: TestContext, execute: (context: {
   process.env.BINY_AGENT_DIR = path.join(temporary, "agent");
   const root = path.join(temporary, "workspace");
   await mkdir(root);
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const graphs = await GoalGraphStore.open(root, authority);
   const tasks = await DurableTaskRunStore.open(root, authority);
   const commands = { graphs, taskRuns: tasks, runtimeAuthority: authority } as CommandRuntime;
@@ -223,7 +224,7 @@ async function fixture(t: TestContext, execute: (context: {
   const registration = { ...paths, ...currentRuntimeHostIdentity({}), protocolVersion: runtimeHostProtocolVersion,
     persistenceRoot: root, hostEpoch: "graph-page-fixture", token: "synthetic-graph-pages-token", pid: process.pid, createdAt: new Date().toISOString() };
   await writeFile(paths.registrationPath, JSON.stringify(registration), { mode: 0o600 });
-  const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined });
+  const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
   const entry = server as unknown as { execute(connection: unknown, frame: HostRequestFrame): Promise<unknown> };
   const rpc = async (operation: string, payload: Record<string, unknown>) => wire(await entry.execute({ surface: "cli" }, { kind: "request", requestId: "graph-pages", operation, payload }));
   // Only connection/IPC transport is replaced. CLI parsing, discovery, client.graphEvents,

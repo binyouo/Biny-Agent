@@ -22,7 +22,7 @@ import {
   memoryPolicySchema,
   type MemoryPolicy
 } from "../personalization/index.js";
-import { GLOBAL_CONFIG_FORMAT, GLOBAL_CONFIG_VERSION } from "./migrations.js";
+import { GLOBAL_CONFIG_FORMAT, GLOBAL_CONFIG_VERSION } from "./format.js";
 
 const agentSchema = z.object({
   /** code_mode adds an isolated script tool alongside ordinary tool calls. */
@@ -200,7 +200,7 @@ const contextSchema = z.object({
   compaction: compactionSchema,
   identity: identityPolicySchema,
   memory: memoryPolicySchema
-}).default({
+}).strict().default({
   maxTurnToolResultBytes: 128 * 1024,
   instructionsMaxBytes: 32 * 1024,
   compaction: { enabled: true, reserveTokens: undefined, triggerPercent: undefined, keepRecentTokens: undefined, keepRecentMessages: undefined, maxSummaryTokens: 4_096, summaryModel: undefined },

@@ -1,3 +1,4 @@
+import { createHostTestStores } from "./helpers/hostStores.js";
 /** Only an explicit pre-admission CAS rejection permits one same-owner send retry. */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -35,7 +36,7 @@ async function fixture(t: TestContext, scenario: Scenario, rewriteRejection?: (r
   } } as unknown as InteractiveRuntimeHandle;
   // The real Host run.submit route, CAS assertion and admission wrapper execute.
   // Persistence/writer acquisition is counted, not replaced by a second CAS implementation.
-  const server = new RuntimeHostServer(runtime, {} as CommandRuntime, registration, { close: async () => undefined });
+  const server = new RuntimeHostServer(runtime, await createHostTestStores() as unknown as CommandRuntime, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
   const internal = server as unknown as { ensureSessionWriter(): Promise<void>; execute(connection: unknown, frame: HostRequestFrame): Promise<unknown> };
   internal.ensureSessionWriter = async () => { writerChecks += 1; };
   const event = (epoch: string) => ({ kind: "event", hostEpoch: epoch, sequence: 3, update: { snapshot: snapshot(revision, kind) } }) as HostFrame;

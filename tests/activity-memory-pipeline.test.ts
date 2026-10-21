@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -25,14 +27,14 @@ const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-memory-pipeline
 const previousAgentDir = process.env[BINY_AGENT_DIR_ENV];
 process.env[BINY_AGENT_DIR_ENV] = path.join(root, "agent");
 
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test",
   modelId: "activity-test",
   stream: async () => (async function* () {
     yield { type: "text-delta" as const, text: JSON.stringify({ operation: "ADD" }) };
     yield { type: "finish" as const, reason: "stop" as const };
   })()
-};
+});
 
 try {
   await testDefaultRequiresSemantic();
@@ -158,14 +160,14 @@ async function testDeferredCandidatesRecover(): Promise<void> {
   let available = false;
   let modelCalls = 0;
   const candidate = { type: "project", content: "项目保留独立的发布前验收清单，每次正式发布前必须完成回归检查。", why: "重复且稳定的流程" };
-  const toolModel: AgentModel = {
+  const toolModel: AgentModel = testModel({
     provider: "test", modelId: "projection-test", runtime: "builtin-llama.cpp", dataResidency: "local",
     stream: async () => (async function* () {
       modelCalls += 1;
       yield { type: "text-delta" as const, text: JSON.stringify({ worth: true, summary: "维护发布清单", memoryCandidates: [candidate] }) };
       yield { type: "finish" as const, reason: "stop" as const };
     })()
-  };
+  });
   const pipeline = await createActivityMemoryPipeline({ workspaceRoot: root, requireSemantic: true, findSimilarEntries: async () => available ? [] : undefined });
   const store = new ActivityStore();
   const settings = { ...defaultActivitySettings, outputDirectory: path.join(root, "recovery") };

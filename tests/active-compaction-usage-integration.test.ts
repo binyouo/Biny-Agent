@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -41,7 +43,7 @@ test("automatic compaction repair usage survives disk replay and cold reopen", {
       { inputTokens: 11, outputTokens: 3, totalTokens: 14, cacheReadTokens: 2 },
       { inputTokens: 23, outputTokens: 7, totalTokens: 30, cacheReadTokens: 5 }
     ];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "fixture", modelId: "active-compaction-usage", supportsTools: false, vercelOptions: { maxRetries: 0 },
       async stream(context) {
         const summary = context.systemPrompt?.includes("durable context checkpoint") === true;
@@ -59,7 +61,7 @@ test("automatic compaction repair usage survives disk replay and cold reopen", {
             usage: summary ? attempts[attempt - 1] : attempt === 1 ? undefined : { inputTokens: 4, outputTokens: 1, totalTokens: 5, cacheReadTokens: 0 } };
         })();
       }
-    };
+    });
     const createAgent = () => new AgentSession({ workspaceRoot: workspace, config, model,
       toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(workspace) });
     await ensureAgentDirs(workspace);

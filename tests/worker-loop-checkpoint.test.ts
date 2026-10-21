@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,7 +23,7 @@ test("worker cold continuation retains settled tool history and never rewrites t
   let writes = 0;
   let requests = 0;
   const registry = registryWithWrite(root, async () => { writes += 1; await writeFile(path.join(root, "artifact.txt"), "candidate"); });
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async (context) => {
       requests += 1;
       if (requests === 2) throw new Error("provider disappeared after the tool result");
@@ -31,7 +33,7 @@ test("worker cold continuation retains settled tool history and never rewrites t
       }
       return toolCall();
     }
-  };
+  });
   const options = workerOptions(root, registry, model);
   try {
     await assert.rejects(runSubagentTask(options, "produce candidate", undefined, "workspace", undefined, { taskId: "attempt-one", persistenceRoot: root }), /provider disappeared/u);
@@ -52,9 +54,9 @@ test("worker refuses to continue an interrupted dispatched write and changed cap
     controller.abort(new Error("lost outcome"));
     throw controller.signal.reason;
   });
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async () => { requests += 1; return toolCall(); }
-  };
+  });
   const options = workerOptions(root, registry, model);
   try {
     await assert.rejects(runSubagentTask(options, "produce candidate", controller.signal, "workspace", undefined, { taskId: "attempt-two", persistenceRoot: root }));
@@ -81,9 +83,9 @@ test("replay preserves committed tool results when a canonical step was only par
 test("a final assistant committed before the completion checkpoint is recovered without another provider request", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-final-window-"));
   let requests = 0;
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async () => { requests += 1; return response("durable final handoff"); }
-  };
+  });
   const options = workerOptions(root, registryWithWrite(root, async () => assert.fail("no write expected")), model);
   const execution = { taskId: "final-window", persistenceRoot: root };
   try {
@@ -101,14 +103,14 @@ test("a final assistant committed before the completion checkpoint is recovered 
 test("safe interrupted reads produce recovery results while step budgets and child identities remain bounded", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-safe-read-"));
   let requests = 0;
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async (context) => {
       requests += 1;
       if (requests === 1) throw new Error("provider disappeared");
       assert.ok(context.messages.some((message) => message.role === "toolResult" && message.toolCallId === "interrupted-read"));
       return response("read can be retried");
     }
-  };
+  });
   const options = workerOptions(root, registryWithWrite(root, async () => assert.fail("no write expected")), model);
   const execution = { taskId: "read-window", persistenceRoot: root };
   try {
@@ -125,7 +127,7 @@ test("safe interrupted reads produce recovery results while step budgets and chi
     assert.notEqual(workerSessionId("read-window"), workerSessionId("other-worker"));
     options.config.extensions.subagent.maxSteps = 1;
     const exhausted = { taskId: "budget-window", persistenceRoot: root };
-    const failing: AgentModel = { ...model, stream: async () => { requests += 1; throw new Error("no response"); } };
+    const failing: AgentModel = testModel({ ...model, stream: async () => { requests += 1; throw new Error("no response"); } });
     options.getModelSettings = () => ({ model: failing, contextWindow: undefined });
     await assert.rejects(runSubagentTask(options, "inspect", undefined, "workspace", undefined, exhausted));
     const count = requests;
@@ -137,9 +139,9 @@ test("safe interrupted reads produce recovery results while step budgets and chi
 test("child writers are mutually exclusive and truncated JSONL tails are repaired before continuation appends", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-tail-"));
   let requests = 0;
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async () => { requests += 1; if (requests === 1) throw new Error("interrupted request"); return response("restored"); }
-  };
+  });
   const options = workerOptions(root, registryWithWrite(root, async () => assert.fail("no write expected")), model);
   const execution = { taskId: "tail-worker", persistenceRoot: root };
   let prepared: Awaited<ReturnType<typeof prepareSubagentTask>> | undefined;
@@ -182,9 +184,9 @@ test("prepared workers keep their admitted tool and budget policy while queued",
   let writes = 0;
   let requests = 0;
   const registry = registryWithWrite(root, async () => { writes += 1; });
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async () => { requests += 1; return requests === 1 ? toolCall() : response("done"); }
-  };
+  });
   const options = workerOptions(root, registry, model);
   const prepared = await prepareSubagentTask(options, "inspect", "workspace", undefined, { taskId: "queued-policy", persistenceRoot: root });
   try {
@@ -204,9 +206,9 @@ test("prepared workers keep their admitted tool and budget policy while queued",
 test("a safe checkpoint refuses capability policy changes without spending a new model request", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-policy-change-"));
   let requests = 0;
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async () => { requests += 1; throw new Error("provider interrupted"); }
-  };
+  });
   const options = workerOptions(root, registryWithWrite(root, async () => assert.fail("no write expected")), model);
   const execution = { taskId: "changed-policy", persistenceRoot: root };
   try {
@@ -225,7 +227,7 @@ test("default worker budget permits a task beyond 32 model steps and persists it
   let requests = 0;
   let writes = 0;
   const registry = registryWithWrite(root, async () => { writes += 1; });
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async () => {
       requests += 1;
       if (requests === 35) return response("all steps completed");
@@ -235,7 +237,7 @@ test("default worker budget permits a task beyond 32 model steps and persists it
         yield { type: "finish", reason: "tool-calls" };
       })();
     }
-  };
+  });
   const options = workerOptions(root, registry, model);
   options.config.extensions.subagent = structuredClone(defaultConfig.extensions.subagent);
   try {

@@ -5,7 +5,7 @@
  * 获取模型设置，项目覆盖由 workspaceRoot 决定。
  */
 import path from "node:path";
-import { CONFIG_FILE, loadConfig, saveConfig, type ConfigPathOptions } from "./loader.js";
+import { CONFIG_FILE, applyProjectSettings, loadConfig, saveConfig, type ConfigPathOptions } from "./loader.js";
 import {
   applyStoredCredentials,
   CREDENTIAL_TRANSACTION_JOURNAL,
@@ -26,6 +26,7 @@ import {
   withGlobalConfigWriteLock,
   type VersionedConfigSnapshot
 } from "./versioned.js";
+import { loadProjectSettings } from "./projectSettings.js";
 import { globalConfigDir } from "./paths.js";
 
 const configUpdateMaxAttempts = 3;
@@ -106,173 +107,147 @@ export async function updateConfig(
 }
 
 export function createFileConfigStore(workspaceRoot: string, options: FileConfigStoreOptions = {}): AgentConfigStore {
-  const credentials = options.credentialStore ?? createCredentialStore();
-  const pathOptions: ConfigPathOptions = { globalDir: options.globalDir };
-  const configRoot = options.globalDir ?? globalConfigDir();
-  let revision = 0;
-  let writeTail = Promise.resolve();
-  const journalPath = path.join(configRoot, CREDENTIAL_TRANSACTION_JOURNAL);
-  const loadUnlocked = async (requestedWorkspaceRoot?: string): Promise<AgentConfig> => {
-    const targetRoot = requestedWorkspaceRoot ?? workspaceRoot;
-    const loadDocument = async (): Promise<AgentConfig> => await loadConfig(targetRoot, pathOptions);
-    await recoverStoredCredentialTransaction(credentials, journalPath, loadDocument);
+  return new FileConfigStore(workspaceRoot, options);
+}
+
+/** CLI 与 Desktop 共用的配置事务；平台差异只在凭据 adapter 和 Host 能力。 */
+export class FileConfigStore implements AgentConfigStore {
+  readonly supportsDetachedRuntimeHost: boolean;
+  private currentRevision = 0;
+  private writeTail = Promise.resolve();
+  private readonly credentials: CredentialStore;
+  private readonly configRoot: string;
+  private readonly pathOptions: ConfigPathOptions;
+  private readonly journalPath: string;
+
+  constructor(private readonly workspaceRoot: string, options: FileConfigStoreOptions = {}) {
+    this.credentials = options.credentialStore ?? createCredentialStore();
+    this.configRoot = options.globalDir ?? globalConfigDir();
+    // 默认根目录的配置解析归 loader 所有，两种入口走同一读取规则。
+    this.pathOptions = { globalDir: path.resolve(this.configRoot) === path.resolve(globalConfigDir()) ? undefined : this.configRoot };
+    this.journalPath = path.join(this.configRoot, CREDENTIAL_TRANSACTION_JOURNAL);
+    this.supportsDetachedRuntimeHost = options.credentialStore === undefined;
+  }
+
+  // 保留 File store 的闭包调用约定：方法解构后仍绑定同一个事务实例。
+  configPath = (): string => path.join(this.configRoot, CONFIG_FILE);
+  revision = (): number => this.currentRevision;
+
+  private transaction<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.writeTail.then(() => withGlobalConfigWriteLock(this.configRoot, operation));
+    this.writeTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async loadUnlocked(workspaceRoot: string): Promise<AgentConfig> {
+    const loadDocument = () => loadConfig(workspaceRoot, this.pathOptions);
+    await recoverStoredCredentialTransaction(this.credentials, this.journalPath, loadDocument);
     let document = await loadDocument();
-    if (hasInlineCredentials(document)) {
-      if (!credentials.persistent) {
-        throw new Error(
-          "配置文件包含明文凭据，但当前平台没有持久凭据存储；请改用 providers.<alias>.apiKeyEnv。"
-        );
+    if (Object.values(document.providers).some(provider => Boolean(provider.apiKey || provider.oauth?.refreshToken))) {
+      if (!this.credentials.persistent) {
+        throw new Error("配置文件包含明文凭据，但当前平台没有持久凭据存储；请改用 providers.<alias>.apiKeyEnv。");
       }
-      const previous = structuredClone(document);
       const target = structuredClone(document);
       await saveConfigAndStoredCredentials(
-        target,
-        previous,
-        credentials,
-        journalPath,
-        async () => await saveConfig(targetRoot, target, pathOptions),
-        loadDocument
+        target, document, this.credentials, this.journalPath,
+        () => saveConfig(workspaceRoot, target, this.pathOptions), loadDocument
       );
       document = await loadDocument();
-      revision += 1;
+      this.currentRevision += 1;
     }
-    return await applyStoredCredentials(document, credentials);
-  };
-  const load = async (requestedWorkspaceRoot?: string): Promise<AgentConfig> => {
-    const run = writeTail.then(async () => await withGlobalConfigWriteLock(
-      configRoot,
-      async () => await loadUnlocked(requestedWorkspaceRoot)
-    ));
-    writeTail = run.then(() => undefined, () => undefined);
-    return await run;
-  };
-  const saveUnlocked = async (
-    config: AgentConfig,
-    requestedWorkspaceRoot?: string,
-    deferredFor?: string
-  ): Promise<void> => {
-    const targetRoot = requestedWorkspaceRoot ?? workspaceRoot;
-    const previous = await loadUnlocked(targetRoot);
+    return await applyStoredCredentials(document, this.credentials);
+  }
+
+  private async saveUnlocked(config: AgentConfig, workspaceRoot: string, deferredFor?: string): Promise<void> {
+    const previous = await this.loadUnlocked(workspaceRoot);
+    if (deferredFor !== undefined) {
+      const effective = applyProjectSettings(config, await loadProjectSettings(workspaceRoot));
+      // 外层恢复只持有有效 before 快照，无法还原被项目遮住的全局旧值；在写入前拒绝。
+      if (configDocumentRevision(effective) !== configDocumentRevision(config)) {
+        throw new Error("延迟配置事务不能修改被项目设置覆盖的字段；请使用全局配置视图修改。");
+      }
+    }
     await saveConfigAndStoredCredentials(
-      config,
-      previous,
-      credentials,
-      journalPath,
-      async () => await saveConfig(targetRoot, config, pathOptions),
-      async () => await loadConfig(targetRoot, pathOptions),
-      { deferredFor }
+      config, previous, this.credentials, this.journalPath,
+      () => saveConfig(workspaceRoot, config, this.pathOptions),
+      () => loadConfig(workspaceRoot, this.pathOptions), { deferredFor }
     );
-    revision += 1;
-  };
-  return {
-    configPath: () => path.join(configRoot, CONFIG_FILE),
-    // 注入的凭据实现不一定能被子进程重新构建；不能先 spawn 失败再靠吞错回到同进程。
-    supportsDetachedRuntimeHost: options.credentialStore === undefined,
-    load,
-    save: async (config, requestedWorkspaceRoot) => {
-      const run = writeTail.then(async () => await withGlobalConfigWriteLock(
-        configRoot,
-        async () => await saveUnlocked(config, requestedWorkspaceRoot)
-      ));
-      writeTail = run.then(() => undefined, () => undefined);
-      await run;
-    },
-    revision: () => revision,
-    loadVersioned: async (requestedWorkspaceRoot) => {
-      const config = await load(requestedWorkspaceRoot);
-      return { config, revision: configDocumentRevision(config) };
-    },
-    saveVersioned: async (config, expectedRevision, requestedWorkspaceRoot) => {
-      const run = writeTail.then(async () => await withGlobalConfigWriteLock(configRoot, async () => {
-        assertConfigRevision(expectedRevision, await loadUnlocked(requestedWorkspaceRoot));
-        await saveUnlocked(config, requestedWorkspaceRoot);
-        // 提交值可能只改变被项目覆盖遮住的全局字段；返回值和 CAS revision 必须来自
-        // 保存后的有效配置，否则调用方会暂时绕过项目设置并拿到无法复用的 revision。
-        const saved = await loadUnlocked(requestedWorkspaceRoot);
-        return { config: saved, revision: configDocumentRevision(saved) };
-      }));
-      writeTail = run.then(() => undefined, () => undefined);
-      return await run;
-    },
-    saveVersionedDeferred: async (config, expectedRevision, deferredFor, requestedWorkspaceRoot) => {
-      const run = writeTail.then(async () => await withGlobalConfigWriteLock(configRoot, async () => {
-        assertConfigRevision(expectedRevision, await loadUnlocked(requestedWorkspaceRoot));
-        await saveUnlocked(config, requestedWorkspaceRoot, deferredFor);
-        return { config, revision: configDocumentRevision(config) };
-      }));
-      writeTail = run.then(() => undefined, () => undefined);
-      return await run;
-    },
-    deferredCredentialStatus: async (deferredFor, requestedWorkspaceRoot) => {
-      const run = writeTail.then(async () => await withGlobalConfigWriteLock(configRoot, async () => {
-        const targetRoot = requestedWorkspaceRoot ?? workspaceRoot;
-        return await deferredCredentialTransactionStatus(
-          credentials,
-          journalPath,
-          async () => await loadConfig(targetRoot, pathOptions),
-          deferredFor
-        );
-      }));
-      writeTail = run.then(() => undefined, () => undefined);
-      return await run;
-    },
-    finalizeDeferredCredentials: async (deferredFor, requestedWorkspaceRoot) => {
-      const run = writeTail.then(async () => await withGlobalConfigWriteLock(configRoot, async () => {
-        const targetRoot = requestedWorkspaceRoot ?? workspaceRoot;
-        await finalizeDeferredCredentialTransaction(
-          credentials,
-          journalPath,
-          async () => await loadConfig(targetRoot, pathOptions),
-          deferredFor
-        );
-      }));
-      writeTail = run.then(() => undefined, () => undefined);
-      await run;
-    },
-    rollbackVersionedDeferred: async (before, targetRevision, deferredFor, requestedWorkspaceRoot) => {
-      const run = writeTail.then(async () => await withGlobalConfigWriteLock(configRoot, async () => {
-        const targetRoot = requestedWorkspaceRoot ?? workspaceRoot;
-        const loadDocument = async (): Promise<AgentConfig> => await loadConfig(targetRoot, pathOptions);
-        await recoverStoredCredentialTransaction(credentials, journalPath, loadDocument);
+    this.currentRevision += 1;
+  }
+
+  load = (workspaceRoot = this.workspaceRoot): Promise<AgentConfig> => {
+    return this.transaction(() => this.loadUnlocked(workspaceRoot));
+  }
+
+  save = (config: AgentConfig, workspaceRoot = this.workspaceRoot): Promise<void> => {
+    return this.transaction(() => this.saveUnlocked(config, workspaceRoot));
+  }
+
+  loadVersioned = async (workspaceRoot = this.workspaceRoot): Promise<VersionedConfigSnapshot> => {
+    const config = await this.load(workspaceRoot);
+    return { config, revision: configDocumentRevision(config) };
+  }
+
+  saveVersioned = (config: AgentConfig, expectedRevision: string, workspaceRoot = this.workspaceRoot): Promise<VersionedConfigSnapshot> => {
+    return this.saveVersionedTransaction(config, expectedRevision, workspaceRoot);
+  }
+
+  saveVersionedDeferred = (config: AgentConfig, expectedRevision: string, deferredFor: string, workspaceRoot = this.workspaceRoot): Promise<VersionedConfigSnapshot> => {
+    return this.saveVersionedTransaction(config, expectedRevision, workspaceRoot, deferredFor);
+  }
+
+  private saveVersionedTransaction(config: AgentConfig, expectedRevision: string, workspaceRoot: string, deferredFor?: string): Promise<VersionedConfigSnapshot> {
+    return this.transaction(async () => {
+      assertConfigRevision(expectedRevision, await this.loadUnlocked(workspaceRoot));
+      await this.saveUnlocked(config, workspaceRoot, deferredFor);
+      // 项目覆盖可能遮住刚保存的全局值；普通及 deferred 保存都返回锁内重读的有效快照。
+      const saved = await this.loadUnlocked(workspaceRoot);
+      return { config: saved, revision: configDocumentRevision(saved) };
+    });
+  }
+
+  deferredCredentialStatus = (deferredFor: string, workspaceRoot = this.workspaceRoot): Promise<DeferredCredentialTransactionStatus> => {
+    return this.transaction(() => deferredCredentialTransactionStatus(
+      this.credentials, this.journalPath, () => loadConfig(workspaceRoot, this.pathOptions), deferredFor
+    ));
+  }
+
+  finalizeDeferredCredentials = (deferredFor: string, workspaceRoot = this.workspaceRoot): Promise<void> => {
+    return this.transaction(() => finalizeDeferredCredentialTransaction(
+      this.credentials, this.journalPath, () => loadConfig(workspaceRoot, this.pathOptions), deferredFor
+    ));
+  }
+
+  rollbackVersionedDeferred = async (before: AgentConfig, targetRevision: string, deferredFor: string, workspaceRoot = this.workspaceRoot): Promise<"not_needed" | "completed" | "failed"> => {
+    try {
+      return await this.transaction(async () => {
+        const loadDocument = () => loadConfig(workspaceRoot, this.pathOptions);
+        await recoverStoredCredentialTransaction(this.credentials, this.journalPath, loadDocument);
         const currentRevision = configDocumentRevision(await loadDocument());
         const beforeRevision = configDocumentRevision(before);
         const configNeedsRollback = currentRevision === targetRevision && targetRevision !== beforeRevision;
-        if (!configNeedsRollback && currentRevision !== beforeRevision) return "failed" as const;
+        if (!configNeedsRollback && currentRevision !== beforeRevision) return "failed";
         const credentialSide = await rollbackDeferredCredentialTransaction(
-          credentials,
-          journalPath,
-          loadDocument,
-          deferredFor,
-          configNeedsRollback
-            ? async () => {
-                await saveConfig(targetRoot, before, pathOptions);
-                assertConfigRevision(beforeRevision, await loadDocument());
-              }
-            : undefined
+          this.credentials, this.journalPath, loadDocument, deferredFor,
+          configNeedsRollback ? async () => {
+            await saveConfig(workspaceRoot, before, this.pathOptions);
+            assertConfigRevision(beforeRevision, await loadDocument());
+          } : undefined
         );
-        if (configNeedsRollback) revision += 1;
-        return configNeedsRollback || credentialSide === "target" ? "completed" as const : "not_needed" as const;
-      }).catch(() => "failed" as const));
-      writeTail = run.then(() => undefined, () => undefined);
-      return await run;
-    },
-    rollbackDeferredCredentials: async (deferredFor, requestedWorkspaceRoot) => {
-      const run = writeTail.then(async () => await withGlobalConfigWriteLock(configRoot, async () => {
-        const targetRoot = requestedWorkspaceRoot ?? workspaceRoot;
-        const side = await rollbackDeferredCredentialTransaction(
-          credentials,
-          journalPath,
-          async () => await loadConfig(targetRoot, pathOptions),
-          deferredFor
-        );
-        return side === "target" ? "completed" as const : "not_needed" as const;
-      }).catch(() => "failed" as const));
-      writeTail = run.then(() => undefined, () => undefined);
-      return await run;
-    }
-  };
-}
+        if (configNeedsRollback) this.currentRevision += 1;
+        return configNeedsRollback || credentialSide === "target" ? "completed" : "not_needed";
+      });
+    } catch { return "failed"; }
+  }
 
-function hasInlineCredentials(config: AgentConfig): boolean {
-  return Object.values(config.providers).some((provider) => Boolean(provider.apiKey || provider.oauth?.refreshToken));
+  rollbackDeferredCredentials = async (deferredFor: string, workspaceRoot = this.workspaceRoot): Promise<"not_needed" | "completed" | "failed"> => {
+    try {
+      return await this.transaction(async () => {
+        const side = await rollbackDeferredCredentialTransaction(
+          this.credentials, this.journalPath, () => loadConfig(workspaceRoot, this.pathOptions), deferredFor
+        );
+        return side === "target" ? "completed" : "not_needed";
+      });
+    } catch { return "failed"; }
+  }
 }

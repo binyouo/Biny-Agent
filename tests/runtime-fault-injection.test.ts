@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile, writeFile, mkdtemp, realpath, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +15,7 @@ import { InteractiveAgentRuntime } from "../src/runtime/InteractiveAgentRuntime.
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { SessionLeaseError, SessionLeaseStore } from "../src/runtime/SessionLease.js";
-import { SessionRunLedger, type FinishSessionRunOptions, type StartSessionRunOptions } from "../src/session/runLedger.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { SessionRecorder, type SessionTurnStatusEvent } from "../src/session/recorder.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import { readSessionEvents } from "../src/session/events.js";
@@ -123,7 +124,7 @@ async function testAtomicRuntimeProjectionRollback(): Promise<void> {
       payload: { phase: "before-crash" }
     }, () => {
       authority.databaseHandle().prepare(
-        "INSERT INTO graphs (graph_id, workspace_id, status, payload_json, created_at, updated_at, revision) VALUES (?, ?, 'draft', '{}', ?, ?, 0)"
+        "INSERT INTO graphs (graph_id, workspace_id, mode, supervisor_session_id, status, payload_json, created_at, updated_at, revision) VALUES (?, ?, 'supervised', 'supervisor', 'draft', '{}', ?, ?, 0)"
       ).run("atomic-graph", authority.workspaceId, new Date().toISOString(), new Date().toISOString());
       throw new Error("injected projection crash");
     }), /injected projection crash/);
@@ -235,13 +236,15 @@ async function testTerminalCommitOrdering(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-runtime-fault-terminal-"));
   try {
     const log: string[] = [];
-    const runLedger = new RecordingLedger(root, log);
+    const authority = await RuntimeEventAuthority.open(root);
+    const finish = authority.finishRun.bind(authority);
+    authority.finishRun = input => { const result = finish(input); log.push("sqlite-terminal"); return result; };
     const runtime = new InteractiveAgentRuntime(createFakeCommandRuntime(root, async function* (_input, options) {
       assert.equal(options.runId, "run-terminal");
       assert.equal(typeof options.turnId, "string");
       yield { type: "status", status: "completed" };
       yield done({ status: "completed", stopReason: "model_stop", finishReason: "stop", steps: 1, output: "done" });
-    }, log), { runLedger });
+    }, log), { runtimeAuthority: authority });
     const hostEvents: string[] = [];
     runtime.subscribe((update) => {
       if (update.event) hostEvents.push(update.event.type);
@@ -251,10 +254,11 @@ async function testTerminalCommitOrdering(): Promise<void> {
     const outcome = await submitted.completion;
     assert.equal(outcome.status, "completed");
     assert.equal(log.indexOf("canonical-terminal") >= 0, true);
-    assert.equal(log.indexOf("ledger-finish") > log.indexOf("canonical-terminal"), true);
+    assert.equal(log.indexOf("sqlite-terminal") > log.indexOf("canonical-terminal"), true);
     assert.equal(hostEvents.indexOf("run.completed") >= 0, true);
-    assert.equal(log.indexOf("host-terminal") > log.indexOf("ledger-finish"), true);
+    assert.equal(log.indexOf("host-terminal") > log.indexOf("sqlite-terminal"), true);
     await runtime.close();
+    authority.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -516,22 +520,6 @@ async function testSecondProcessCannotBypassLease(): Promise<void> {
     store?.close();
     child?.kill();
     await rm(root, { recursive: true, force: true });
-  }
-}
-
-class RecordingLedger extends SessionRunLedger {
-  constructor(root: string, private readonly log: string[]) {
-    super(root);
-  }
-
-  override async start(options: StartSessionRunOptions) {
-    this.log.push("ledger-start");
-    return await super.start(options);
-  }
-
-  override async finish(runId: string, options: FinishSessionRunOptions) {
-    this.log.push("ledger-finish");
-    return await super.finish(runId, options);
   }
 }
 

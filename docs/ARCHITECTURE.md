@@ -11,15 +11,15 @@ flowchart LR
     Terminal[TUI / CLI chat] --> Host
     Host --> Runtime[InteractiveAgentRuntime]
     Runtime --> Session[AgentSession]
-    Run[CLI run] --> Execution[CommandRuntime / ExecutionService]
-    Execution --> Session
+    Run[CLI run] --> Host
+    Session --> Memory[Agent 数据根的全局记忆服务]
     Session --> Provider[模型 Provider]
     Session --> Tools[工具与扩展]
     Session --> State[会话事件与本地状态]
     Tools --> Policy[权限与执行边界]
 ```
 
-交互式客户端通过本机 IPC 连接 Host：macOS/Linux 使用 Unix socket，Windows 使用 Named Pipe。Windows 运行目录和管道限制为当前账号及 SYSTEM，权限设置成功后才接纳连接；各平台仍校验相同的连接令牌、工作区身份与会话写入权。一次性 `run` 可附着已有 Host，或在独立命令运行环境中复用执行核心；它不要求创建第二套 Agent 行为。
+交互式客户端通过本机 IPC 连接 Host：macOS/Linux 使用 Unix socket，Windows 使用 Named Pipe。Windows 运行目录和管道限制为当前账号及 SYSTEM，权限设置成功后才接纳连接；各平台仍校验相同的连接令牌、工作区身份与会话写入权。一次性 `run` 也连接或启动 Host，由独立会话持有本次配置覆盖；运行结束即释放覆盖。
 
 Host 启动者退出后，诊断用 stderr 管道断开不会结束仍服务其他客户端的 Host；其他输出错误仍作为故障处理。
 

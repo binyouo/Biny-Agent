@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 独立进程修改 Activity 配置或清空数据，验证真实 HTTP/工具入口拒绝迟到结果。 */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -32,7 +34,7 @@ for (const route of ["analyze", "summary", "suggestions"] as const) {
       const release = Promise.withResolvers<void>();
       let modelCalls = 0;
       let projections = 0;
-      const model: AgentModel = {
+      const model: AgentModel = testModel({
         provider: "test", modelId: "cross-process-test", runtime: "provider", dataResidency: "external",
         stream: async () => (async function* () {
           modelCalls += 1;
@@ -42,7 +44,7 @@ for (const route of ["analyze", "summary", "suggestions"] as const) {
           yield { type: "text-delta" as const, text: route === "analyze" ? "invalid json" : route === "suggestions" ? '["迟到的活动建议"]' : "迟到的日报" };
           yield { type: "finish" as const, reason: "stop" as const };
         })()
-      };
+      });
       const pathname = route === "analyze" ? `/api/activity-recorder/sessions/${id}/analyze`
         : route === "summary" ? "/api/activity-recorder/summary/daily/2026-09-13" : "/api/activity-recorder/suggestions";
       const task = handleActivityHttpRequest({ method: route === "suggestions" ? "GET" : "POST", pathname, searchParams: new URLSearchParams("narrative=true&force=true") }, {
@@ -67,7 +69,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
   store.recordAnalysis(analysis(id));
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "chat", runtime: "provider", dataResidency: "external",
     stream: async () => (async function* () {
       started.resolve();
@@ -75,7 +77,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
       yield { type: "text-delta" as const, text: "# 今日工作日记\n\n## 项目\n我检查了发布。" };
       yield { type: "finish" as const, reason: "stop" as const };
     })()
-  };
+  });
   const operation = createActivityOperation(store, settings, loadSettings);
   const skeleton = await buildActivityReport({ store, now: () => new Date(Date.now() - 3_600_000), ...operation }, "today", { skeletonOnly: true });
   assert.equal(skeleton.sessionCount, 1);
@@ -91,7 +93,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
   store.recordAnalysis(analysis(id));
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "failing-report", runtime: "provider", dataResidency: "external",
     stream: async () => (async function* () {
       started.resolve();
@@ -99,7 +101,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
       yield { type: "text-delta" as const, text: "# 未完成的报告" };
       throw new Error("provider failed after recording was disabled");
     })()
-  };
+  });
   const operation = createActivityOperation(store, settings, loadSettings);
   const skeleton = await buildActivityReport({ store, now: () => new Date(Date.now() - 3_600_000), ...operation }, "today", { skeletonOnly: true });
   assert.equal(skeleton.sessionCount, 1);
@@ -168,14 +170,14 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
   const release = Promise.withResolvers<void>();
   const candidate = { type: "project" as const, content: "项目在每次正式发布前都必须完成独立的兼容性和回归检查。", why: "稳定发布约束" };
   let modelCalls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "memory-checkpoint", runtime: "provider", dataResidency: "external",
     stream: async () => (async function* () {
       modelCalls += 1;
       yield { type: "text-delta" as const, text: JSON.stringify({ worth: true, summary: "维护发布检查", memoryCandidates: [candidate] }) };
       yield { type: "finish" as const, reason: "stop" as const };
     })()
-  };
+  });
   const memory = new MemoryStorage(root);
   const existing = await memory.writeEntry(activityMemoryInput(candidate, { sessionId: "previous", analyzedAt: new Date().toISOString(), model }));
   assert.ok(existing.entry);

@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 问候不产生工作日记；显式生成的日记仍可通过 Desktop 预览；模型只替换外部边界。 */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { writeDailyMemoryNote } from "../src/activity/dailyNotes.js";
@@ -26,10 +28,10 @@ try {
   await mkdir(workspaceRoot);
   await ensureAgentDirs(workspaceRoot);
   const config = configSchema.parse({ ...defaultConfig, context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } } });
-  const model: AgentModel = { provider: "test", modelId: "diary-resource", async *stream() {
+  const model: AgentModel = testModel({ provider: "test", modelId: "diary-resource", async *stream() {
     for (const text of "hey~ what's up?\n\n</think>\nPrivate reasoning") yield { type: "text-delta", text };
     yield { type: "finish", reason: "stop" };
-  } };
+  } });
   const recorder = new SessionRecorder(workspaceRoot);
   const agent = new AgentSession({ workspaceRoot, config, model, recorder, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission) });
   try {

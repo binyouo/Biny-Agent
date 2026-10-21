@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -831,7 +833,7 @@ function scriptedModel(
   identity: { runtime?: ActivityModelRuntime; dataResidency?: ActivityDataResidency } = {}
 ): { model: AgentModel; calls: () => number } {
   let calls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "analyzer-test-model",
     runtime: identity.runtime ?? "builtin-llama.cpp",
@@ -848,7 +850,7 @@ function scriptedModel(
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   return { model, calls: () => calls };
 }
 

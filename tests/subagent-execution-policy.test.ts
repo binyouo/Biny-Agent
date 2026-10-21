@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -50,7 +52,7 @@ test("tool progress keeps a long worker alive while a stalled model request expi
   let entered!: (signal: AbortSignal) => void;
   const waiting = new Promise<AbortSignal>(resolve => { entered = resolve; });
   let requests = 0;
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async (_context, options) => {
       requests += 1;
       if (requests === 1) return call("progress", "Bash", { command: "node slow.cjs" });
@@ -60,7 +62,7 @@ test("tool progress keeps a long worker alive while a stalled model request expi
         signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       });
     }
-  };
+  });
   const registry = new ToolRegistry();
   registry.registerBuiltinTool({ name: "Bash", description: "progress fixture", risk: "execute", capability: "shell.execute",
     parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
@@ -93,7 +95,7 @@ test("a workspace worker can write and execute an assigned program through the n
   const config = structuredClone(defaultConfig);
   config.permission = { ...config.permission, mode: "full-access", denyPaths: [] };
   let requests = 0;
-  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async (context) => {
       requests += 1;
       if (requests === 1) return call("write", "Write", { path: "hello.cjs", content: 'console.log("Hello, World!");\n' });
@@ -104,7 +106,7 @@ test("a workspace worker can write and execute an assigned program through the n
         yield { type: "start" }; yield { type: "text-delta", text: "created and verified hello.cjs" }; yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   try {
     const output = await runSubagentTask({ workspaceRoot: root, config,
       toolRegistry: createToolRegistry({ workspaceRoot: root, ignore: [] }, { ...config.web.search, enabled: false }),
@@ -133,7 +135,7 @@ for (const [mode, denyPaths, stopReason] of [
     const config = structuredClone(defaultConfig);
     config.permission = { ...config.permission, mode, denyPaths: [...denyPaths] };
     let requests = 0;
-    const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+    const model: AgentModel = testModel({ provider: "synthetic", modelId: "synthetic", supportsTools: true,
       stream: async () => {
         requests += 1;
         return (async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -145,7 +147,7 @@ for (const [mode, denyPaths, stopReason] of [
           } else { yield { type: "text-delta", text: "incorrect success" }; yield { type: "finish", reason: "stop" }; }
         })();
       }
-    };
+    });
     try {
       await assert.rejects(runSubagentTask({ workspaceRoot: root, config,
         toolRegistry: createToolRegistry({ workspaceRoot: root, ignore: [] }, { ...config.web.search, enabled: false }),

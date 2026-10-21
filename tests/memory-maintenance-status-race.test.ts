@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { LocalMemory } from "../src/agent/context/LocalMemory.js";
+import { MemoryMaintenance } from "../src/agent/context/MemoryMaintenance.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 
@@ -13,20 +13,21 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-async function withFixture(run: (memory: LocalMemory, storage: MemoryStorage, reader: MemoryStorage) => Promise<void>): Promise<void> {
+async function withFixture(run: (memory: MemoryMaintenance, storage: MemoryStorage, reader: MemoryStorage) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-maintenance-status-race-"));
   const previous = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = root;
-  const memory = new LocalMemory(root, () => { throw new Error("Fixture must not call a real model."); });
-  const storage = (memory as unknown as { storage: MemoryStorage }).storage;
+  const storage = new MemoryStorage(root);
+  const memory = new MemoryMaintenance(storage, () => { throw new Error("Fixture must not call a real model."); });
   const reader = new MemoryStorage(root, { agentDir: root });
   try {
-    await memory.writeEntry({ content: "First permanent fact keeps the fake similarity scan observable." });
-    await memory.writeEntry({ content: "Second permanent fact is distinct and must remain unchanged." });
+    await storage.writeEntry({ content: "First permanent fact keeps the fake similarity scan observable." });
+    await storage.writeEntry({ content: "Second permanent fact is distinct and must remain unchanged." });
     await memory.runMemoryMaintenance({ useLlm: false });
     await run(memory, storage, reader);
   } finally {
-    memory.close();
+    memory.cancelMaintenance();
+    storage.close();
     reader.close();
     if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV];
     else process.env[BINY_AGENT_DIR_ENV] = previous;
@@ -73,7 +74,7 @@ await test("interrupted recovery racing with admission cannot publish idle for t
   });
 });
 
-for (const outcome of ["completed", "failed", "cancelled", "closed"] as const) {
+for (const outcome of ["completed", "failed", "cancelled"] as const) {
   await test(`a delayed status read cannot replace a newer ${outcome} run after its owner is released`, async () => {
     await withFixture(async (memory, storage, reader) => {
       const previous = memory.maintenanceStatus();
@@ -104,12 +105,11 @@ for (const outcome of ["completed", "failed", "cancelled", "closed"] as const) {
         settled = Promise.allSettled([running]);
         await entered.promise;
         if (outcome === "cancelled") assert.equal(memory.cancelMaintenance(), true);
-        if (outcome === "closed") memory.close();
         releaseScan.resolve();
         const [result] = await settled;
-        assert.equal(result?.status, outcome === "cancelled" || outcome === "closed" ? "rejected" : "fulfilled");
+        assert.equal(result?.status, outcome === "cancelled" ? "rejected" : "fulfilled");
         const current = memory.maintenanceStatus();
-        assert.equal(current.lastRun?.status, outcome === "closed" ? "cancelled" : outcome);
+        assert.equal(current.lastRun?.status, outcome);
         assert.notEqual(current.lastRun?.id, previous.lastRun?.id);
         assert.equal(memory.cancelMaintenance(), false, "the newer operation already released its owner (ABA)");
         releaseRead.resolve();

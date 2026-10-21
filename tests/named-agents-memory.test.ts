@@ -1,5 +1,9 @@
+import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
+import { MemoryMaintenance } from "../src/agent/context/MemoryMaintenance.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -247,13 +251,13 @@ function streamingCompletionResponse(payload: Record<string, unknown>): Response
 }
 
 function unusedModel(): AgentModel {
-  return {
+  return testModel({
     provider: "test",
     modelId: "unused",
     async stream() {
       return (async function* () { /* explicit memory operations do not call the model */ })();
     }
-  };
+  });
 }
 
 /** 扁平化后记忆只有 content 正文。 */
@@ -333,8 +337,10 @@ async function testMaintenanceScansDurableEntries(): Promise<void> {
   const agentRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-maintenance-agent-"));
   const previousAgentRoot = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = agentRoot;
+  const memory = new LocalMemory(workspaceRoot, unusedModel);
+  const memoryMaintenanceStorage = new MemoryStorage(workspaceRoot);
   try {
-    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    const memoryMaintenance = new MemoryMaintenance(memoryMaintenanceStorage, unusedModel);
     const summary = "The same durable maintenance workflow is shared by every memory writer.";
     const first = await memory.writeEntry(projectEntry(summary), { now: new Date("2026-08-01T00:00:00.000Z") });
     const second = await memory.writeEntry(projectEntry(
@@ -346,7 +352,7 @@ async function testMaintenanceScansDurableEntries(): Promise<void> {
     assert.equal(edited.written, true);
 
     let rebuilds = 0;
-    const result = await memory.runMemoryMaintenance({ now: new Date("2026-08-01T07:00:00.000Z"), useLlm: false }, {
+    const result = await memoryMaintenance.runMemoryMaintenance({ now: new Date("2026-08-01T07:00:00.000Z"), useLlm: false }, {
       requestRebuild: () => { rebuilds += 1; }
     });
     assert.equal(result.failed, 0);
@@ -358,9 +364,12 @@ async function testMaintenanceScansDurableEntries(): Promise<void> {
     const archived = (await memory.listArchivedEntries()).entries;
     assert.equal(archived.length, 1);
     assert.equal(archived[0]?.archivedReason, "exact_dup");
-    const status = await memory.loadMaintenanceStatus();
+    const status = await memoryMaintenance.loadMaintenanceStatus();
     assert.equal(status.lastRun?.exact, 1);
+
   } finally {
+    memoryMaintenanceStorage.close();
+    memory.close();
     if (previousAgentRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV];
     else process.env[BINY_AGENT_DIR_ENV] = previousAgentRoot;
     await rm(workspaceRoot, { recursive: true, force: true });

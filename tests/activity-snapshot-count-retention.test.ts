@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 截图轮转只删除保存的图像，不抹去用于分析阈值的会话累计截图数。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ActivityStore } from "../src/activity/store.js";
@@ -12,14 +14,14 @@ const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-snapshot-count-
 const store = new ActivityStore();
 const started = new Date(2026, 7, 1, 10);
 let modelCalls = 0;
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test", modelId: "retained-snapshot-threshold", runtime: "builtin-llama.cpp", dataResidency: "local",
   stream: async () => (async function* () {
     modelCalls += 1;
     yield { type: "text-delta" as const, text: JSON.stringify({ worth: true, title: "Reviewed screenshots", summary: "Reviewed three captured frames." }) };
     yield { type: "finish" as const, reason: "stop" as const };
   })()
-};
+});
 try {
   await store.open(root, root);
   const sessionId = store.startSession(started.toISOString());

@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -31,7 +33,7 @@ async function testDiscoveryFailure(permanent: boolean): Promise<void> {
   });
   let repaired = false;
   let searches = 0;
-  const auxiliary: AgentModel = {
+  const auxiliary: AgentModel = testModel({
     provider: "test", modelId: "discovery", supportsTools: false,
     async stream() {
       searches += 1;
@@ -41,10 +43,10 @@ async function testDiscoveryFailure(permanent: boolean): Promise<void> {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries(), () => [{ model: auxiliary, failureDomain: "test-discovery" }]));
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "discovery-main", supportsTools: true,
     async stream(context) {
       requests += 1;
@@ -64,7 +66,7 @@ async function testDiscoveryFailure(permanent: boolean): Promise<void> {
         }
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
@@ -126,7 +128,7 @@ async function testDiscoveryAcrossTurns(): Promise<void> {
   registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries()));
   const requests: string[][] = [];
   let searched = false;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "discovery-history", supportsTools: true,
     async stream(context) {
       requests.push(context.tools.map((tool) => tool.name));
@@ -141,7 +143,7 @@ async function testDiscoveryAcrossTurns(): Promise<void> {
         }
       })();
     }
-  };
+  });
   const config = configSchema.parse({ ...defaultConfig,
     agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },
@@ -205,13 +207,13 @@ async function testDiscoveryWithoutProgress(scenario: {
     resolveExecution: () => ({ approvalRule: "other_records", execute: async () => ({ records: [2] }) })
   });
   registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries(), () => [{
-    failureDomain: "empty-fixture", model: { provider: "test", modelId: "empty-fixture", stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
+    failureDomain: "empty-fixture", model: testModel({ provider: "test", modelId: "empty-fixture", stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: scenario.actions.includes("invalid") ? '{}' : '{"tools":[]}' };
       yield { type: "finish", reason: "stop" };
-    })() }
+    })() })
   }]));
   let requests = 0;
-  const model: AgentModel = { provider: "test", modelId: "repeated-discovery", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "test", modelId: "repeated-discovery", supportsTools: true,
     async stream() {
       requests += 1;
       const action = scenario.actions[requests - 1];
@@ -238,7 +240,7 @@ async function testDiscoveryWithoutProgress(scenario: {
         }
       })();
     }
-  };
+  });
   const config = configSchema.parse({ ...defaultConfig,
     agent: { ...defaultConfig.agent, toolExecutionMode: scenario.actions.some((action) => action.startsWith("script")) ? "code_mode" : "direct", maxRepeatedActions: 2 },
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },

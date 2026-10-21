@@ -7,7 +7,7 @@ import type { OperationLane } from "./types.js";
 import { sessionIdFromFile } from "../../session/store.js";
 import { runtimeCommandOperation } from "../commands.js";
 
-export const memoryQueryActions = new Set(["overview", "stats", "service-status", "stored-embedding-model", "tool-model", "list", "get", "search", "archive-list", "archive-chains", "sleep-status", "sleep-http-status", "sleep-runs", "sleep-preview"]);
+export const memoryQueryActions = new Set(["overview", "list", "get", "search", "archive-list", "archive-chains", "sleep-status", "sleep-runs", "sleep-preview"]);
 
 export function commandWritesSession(input: string): boolean {
   const [command, action] = input.trim().replace(/^\/+/, "/").split(/\s+/u);
@@ -102,9 +102,9 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "run.cancel"
     || operation === "run.permission"
     || operation === "input.answer"
-    || operation === "submit"
     || operation === "start-interrupted"
     || operation === "run.submit"
+    || operation === "run.execute"
     || operation === "run.continue"
     || operation === "queue"
     || operation === "run.queue"
@@ -161,6 +161,6 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "owner-notification.subscribe" || operation === "owner-notification.unsubscribe" || operation === "owner-notification.ack") return "control";
   if (operation === "capability.cancel" || operation === "capability.fail" || operation === "capability.release" || operation === "capability.reject") return "control";
   if (operation === "graph.pause" || operation === "graph.cancel") return "control";
-  if (operation === "capability.register" || operation === "capability.replace" || operation === "capability.invoke" || operation === "capability.accept" || operation === "capability.start" || operation === "capability.result" || operation === "capability.chunk" || operation === "capability.admit" || operation === "graph.start" || operation === "graph.resume") return "admission";
+  if (operation === "capability.register" || operation === "capability.replace" || operation === "capability.invoke" || operation === "capability.accept" || operation === "capability.start" || operation === "capability.result" || operation === "capability.chunk" || operation === "capability.admit" || operation === "graph.resume") return "admission";
   return "mutation";
 }

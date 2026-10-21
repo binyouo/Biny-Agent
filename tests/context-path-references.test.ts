@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -24,13 +26,13 @@ const summary = [
   "## Critical Context", "- (none recorded)"
 ].join("\n");
 
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "context-path-test", modelId: "context-path-test",
   stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
     yield { type: "text-delta", text: summary };
     yield { type: "finish", reason: "stop" };
   })()
-};
+});
 
 test("explicit paths preserve complete supported extensions and reject longer suffixes", () => {
   assert.deepEqual(extractPathReferences("`src/App.tsx`, (src/View.jsx); package.json. src/core.ts... src/legacy.js!"), exactPaths);

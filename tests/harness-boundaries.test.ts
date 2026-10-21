@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 使用真实入口和模拟 provider，覆盖主/后台请求、停止语义及持久化恢复边界。 */
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +35,7 @@ const config = configSchema.parse({
   models: { audit: { provider: "audit", model: "audit-model", capabilities: { tools: true, reasoning: false } } },
   context: {
     ...defaultConfig.context,
-    emotion: { ...defaultConfig.context.emotion, enabled: false },
+
     memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
   }
 });
@@ -174,7 +176,7 @@ async function testSubagentStopsAndExplicitBudget(): Promise<void> {
   selected.extensions.subagent.allowedTools = ["Read"];
   const registry = createToolRegistry({ workspaceRoot: root, ignore: [] }, { ...config.web.search, enabled: false });
   let calls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     ...textModel(),
     stream: async () => (async function* () {
       calls += 1;
@@ -183,7 +185,7 @@ async function testSubagentStopsAndExplicitBudget(): Promise<void> {
       if (calls < 9) yield { type: "tool-call", id: `read-${calls}`, name: "Read", arguments: { path: "README.md" } } as const;
       yield { type: "finish", reason: calls < 9 ? "tool-calls" : "stop" } as const;
     })()
-  };
+  });
   const options = { workspaceRoot: root, config: selected, toolRegistry: registry, getModelSettings: () => ({ model, contextWindow: undefined }) };
   for (const word of ["审阅", "审计", "检查"]) {
     calls = 0;
@@ -218,10 +220,10 @@ async function testQueuedMessageCancellationAndRecovery(): Promise<void> {
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const abort = new AbortController();
   const recorder = new SessionRecorder(root, "queued-cancel");
-  const agent = makeAgent(recorder, { ...textModel(), stream: async () => {
+  const agent = makeAgent(recorder, testModel({ ...textModel(), stream: async () => {
     started();
     return (async function* () { await gate; yield { type: "finish", reason: "stop" } as const; })();
-  } });
+  } }));
   await agent.initialize();
   try {
     const run = agent.runTask("first", { abortSignal: abort.signal, emotionAnalysis: false });
@@ -286,13 +288,13 @@ async function queueCrashWorker(): Promise<void> {
   const watchdog = setTimeout(() => process.exit(1), 15_000);
   let started!: () => void;
   const requestStarted = new Promise<void>((resolve) => { started = resolve; });
-  const agent = makeAgent(new SessionRecorder(root, "queued-recovery"), {
+  const agent = makeAgent(new SessionRecorder(root, "queued-recovery"), testModel({
     ...textModel(),
     stream: async () => {
       started();
       return await new Promise<never>(() => { /* 等待父进程强制结束，模拟在途 provider。 */ });
     }
-  });
+  }));
   await agent.initialize();
   void agent.runTask("original", { emotionAnalysis: false }).catch(() => { clearTimeout(watchdog); process.exit(1); });
   await requestStarted;
@@ -330,10 +332,10 @@ async function testRecoveryOnlyBlocksRelatedOperations(): Promise<void> {
 async function testCanonicalUserContentSurvivesTurns(): Promise<void> {
   const literal = "逐字解释：<!-- biny-turn-context:start -->用户原文<!-- biny-turn-context:end -->";
   const received: string[] = [];
-  const agent = makeAgent(new SessionRecorder(root), { ...textModel(), stream: async (context) => {
+  const agent = makeAgent(new SessionRecorder(root), testModel({ ...textModel(), stream: async (context) => {
     received.push(JSON.stringify(context.messages));
     return await textModel().stream(context);
-  } });
+  } }));
   await agent.initialize();
   try {
     await agent.runTask(literal, { emotionAnalysis: false });
@@ -348,7 +350,7 @@ function makeAgent(recorder: SessionRecorder, model: AgentModel): AgentSession {
 }
 
 function textModel(onRequest?: () => void): AgentModel {
-  return {
+  return testModel({
     provider: "synthetic", modelId: "synthetic", supportsTools: true,
     stream: async () => {
       onRequest?.();
@@ -358,5 +360,5 @@ function textModel(onRequest?: () => void): AgentModel {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
 }

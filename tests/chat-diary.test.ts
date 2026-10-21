@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { backfillDailyChatDiaryEntries, refreshChatDailyDiary } from "../src/agent/context/chatDiary.js";
@@ -38,7 +40,7 @@ async function testBackfillAndFallbackSummary(): Promise<void> {
   assert.match(note, /完成了 1 个聊天回合/u);
 
   let modelCalls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "daily-diary-test",
     stream: async function* () {
@@ -46,7 +48,7 @@ async function testBackfillAndFallbackSummary(): Promise<void> {
       yield { type: "text-delta", text: "模型生成的整体回顾。" };
       yield { type: "finish", reason: "stop" };
     }
-  };
+  });
   const generated = await refreshChatDailyDiary("2026-09-04", { agentDir: root, configDir: root, model });
   assert.equal(generated.model, "daily-diary-test");
   assert.equal(modelCalls, 1, "fallback 生成后模型可用时应重试一次整体回顾");

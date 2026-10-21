@@ -1,12 +1,13 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentTool } from "../src/agent/core/types.js";
 import { AgentSession, type AgentRunOptions, type AgentSessionInfo } from "../src/agent/AgentSession.js";
 import type { ContextStatus } from "../src/agent/context/types.js";
 import type { AgentSessionEvent } from "../src/agent/types.js";
-import { assertCompletedCliRun } from "../src/cli/commands/run.js";
+import { assertCompletedCliRun } from "../src/runtime/oneShot.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import {
   buildSubagentSystemPrompt,
@@ -1386,6 +1387,7 @@ function fakeCommandRuntime(options: FakeRuntimeOptions = {}): CommandRuntime {
     recordHostedToolResult: (tool: string, _result: unknown, _toolCallId: string, _sequence: number) => {
       options.audit?.push(`result:${tool}`);
     },
+    ensureTerminalOutcome: async (runId: string, turnId: string) => ({ eventId: `terminal-${runId}`, eventSeq: 1, runId, turnId }),
     recordError: () => undefined,
     close: async () => undefined
   };

@@ -20,7 +20,7 @@ process.env.BINY_AGENT_DIR = path.join(root, "agent");
 let authority: RuntimeEventAuthority | undefined;
 let store: CapabilityStore | undefined;
 try {
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   store = await CapabilityStore.open(root, authority);
   const input = (id: string, request: Record<string, unknown> = {}) => ({
     capabilityName: "host:mcp:fixture-list", schema, sessionId: "fixture-session", turnId: "fixture-turn",
@@ -45,7 +45,7 @@ try {
   assert.deepEqual(replay, firstPayload);
   store.close();
   authority.close();
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   store = await CapabilityStore.open(root, authority);
   const recovered = await store.executeHostCapability(firstInput, async () => { throw new Error("must not redispatch after reopen"); });
   assert.deepEqual(JSON.parse(serializeToolResult(recovered, mcpResult)), firstPayload);

@@ -39,7 +39,7 @@ export interface McpDiscoveryReadiness {
   timedOut: boolean;
 }
 
-const defaultSkillBundle: SkillBundle = { skills: [], paths: [], prompt: "", warnings: [], conflicts: [], errors: [] };
+const defaultSkillBundle: SkillBundle = { skills: [], paths: [], instructions: {}, prompt: "", warnings: [], conflicts: [], errors: [] };
 const mcpBaselineBudgetMs = 10_000;
 const skillCacheTtlMs = 30_000;
 

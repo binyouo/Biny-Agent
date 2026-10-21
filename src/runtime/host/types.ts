@@ -83,6 +83,8 @@ export interface RuntimeHostFactoryOptions {
   /** 预先分配的 session id；fresh 为 true 时不能再调用 resume。 */
   readonly sessionId?: string;
   readonly fresh?: boolean;
+  readonly runOptions?: import("../oneShot.js").RunCommandOptions;
+  readonly processLifetime?: "runtime" | "execution-environment";
   readonly isolation?: RuntimeIsolation;
   /** Host 级 MCP/Skill 资源注册表；CLI/TUI 私有 runtime 不提供。 */
   readonly resourceRegistry?: RuntimeHostResourceRegistry;
@@ -124,7 +126,7 @@ export interface RuntimeHostStartOptions {
   /** Host 的主 checkout；初始 runtime 可能已经位于某个 worktree，不能从它反推仓库根。 */
   workspaceRoot?: string;
   /** 远端请求新会话、配置重载或编辑分支时，按 sessionId 重建 owner。 */
-  createRuntime?: RuntimeHostFactory;
+  createRuntime: RuntimeHostFactory;
   /** 显式要求 owner 进程启动后检查并续跑在途 turn。默认不续跑。 */
   resumeInterrupted?: boolean;
   /** Host 发现身份必须包含配置根，避免同一工作区的隔离实例复用错误 owner。 */

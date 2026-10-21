@@ -10,7 +10,7 @@ import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRunti
 
 for (const alreadyFinished of [false, true]) test(`canonical stop reason is preserved when alreadyFinished=${alreadyFinished}`, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-terminal-enrichment-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   try {
     authority.startRun({ runId: "run", turnId: "turn", sessionId: "session" });
     const canonical = authority.appendEvent({ eventId: "terminal", sessionId: "session", runId: "run", turnId: "turn", eventType: "session.turn_status", payload: { type: "turn_status", status: "completed", stopReason: "model_stop", steps: 2 } });
@@ -23,7 +23,7 @@ for (const alreadyFinished of [false, true]) test(`canonical stop reason is pres
 
 test("compatible repeated terminal projection cannot erase an existing output", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-terminal-payload-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   try {
     authority.startRun({ runId: "run", turnId: "turn", sessionId: "session" });
     const canonical = authority.appendEvent({ eventId: "terminal", sessionId: "session", runId: "run", turnId: "turn", eventType: "session.turn_status", payload: { type: "turn_status", status: "completed", stopReason: "model_stop", steps: 2 } });
@@ -88,7 +88,7 @@ test("omitted and sparse compatible evidence preserves full projection, timestam
 for (const payload of ["opaque", 7, ["opaque"], null, { output: "self-contained terminal" }]) {
   test(`self-contained run.terminal remains immutable for ${JSON.stringify(payload)}`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-terminal-opaque-"));
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     try {
       authority.startRun({ runId: "run", turnId: "turn", sessionId: "session" });
       const finished = authority.finishRun({ runId: "run", status: "completed", payload });
@@ -113,7 +113,7 @@ test("opaque session projection accepts exact replay and no payload but has no g
 
 async function fixture(run: (authority: RuntimeEventAuthority, eventId: string, root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-terminal-evidence-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   try {
     authority.startRun({ runId: "run", turnId: "turn", sessionId: "session" });
     const terminal = authority.appendEvent({ eventId: "terminal", sessionId: "session", runId: "run", turnId: "turn", eventType: "session.turn_status", payload: { type: "turn_status", status: "completed", stopReason: "model_stop", finishReason: "stop", steps: 2, summary: "original canonical summary" } });
@@ -124,7 +124,7 @@ async function fixture(run: (authority: RuntimeEventAuthority, eventId: string, 
 for (const status of ["completed", "incomplete", "blocked", "cancelled", "aborted", "failed"] as const) {
   test(`actual JSONL reconciliation enriches a ${status} terminal and preserves repeated full projection`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-canonical-terminal-recovery-"));
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const recorder = new SessionRecorder(root, "session");
     try {
       authority.startRun({ runId: "run", turnId: "turn", sessionId: "session" });
@@ -154,7 +154,7 @@ for (const status of ["completed", "incomplete", "blocked", "cancelled", "aborte
 
 test("output and timing placeholders can be filled separately without dropping canonical evidence", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-terminal-staged-enrichment-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const recorder = new SessionRecorder(root, "session");
   try {
     authority.startRun({ runId: "run", turnId: "turn", sessionId: "session" }); recorder.setRuntimeContext({ runId: "run", turnId: "turn" });

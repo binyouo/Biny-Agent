@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { createRunDeadlineSignal } from "../src/cli/runDeadline.js";
+import { createRunDeadlineSignal } from "../src/runtime/runDeadline.js";
 
 const maxTimeoutMs = 2_147_483_647;
 const thirtyDaysMs = 30 * 24 * 60 * 60 * 1_000;

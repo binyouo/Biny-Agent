@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 注册目录、模型声明与脚本调用采用独立的暴露策略；暴露本身不授予执行权限。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -141,7 +143,7 @@ try {
     new PermissionManager(config.permission), () => undefined
   );
   try {
-    const result = await envelopeCoordinator.createCodeModeTool().execute("error-cell", {
+    const result = await envelopeCoordinator.createCodeModeTool().execute("error-cell", { description: "error-cell",
       code: "try { await tools.remote_error({}); } catch {} return await tools.remote_error({});"
     });
     assert.equal(remoteCalls, 1, "a remote protocol error must block the second child even when caught by the script");
@@ -184,7 +186,7 @@ try {
     })
   };
   changingRegistry.registerMcpTool(versionOne);
-  const semanticModel: AgentModel = {
+  const semanticModel: AgentModel = testModel({
     provider: "fixture", modelId: "changing-tool-catalog",
     async stream(context) {
       assert.ok(context.systemPrompt?.includes(versionOne.description), "semantic selection starts from the original catalog");
@@ -195,7 +197,7 @@ try {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   changingRegistry.registerBuiltinTool(createToolSearchTool(() => changingRegistry.listEntries(), () => [
     { model: semanticModel, failureDomain: "changing-catalog" }
   ]));
@@ -215,7 +217,7 @@ try {
     new PermissionManager(config.permission), () => undefined
   );
   try {
-    const result = await changingCoordinator.createCodeModeTool().execute("changing-cell", {
+    const result = await changingCoordinator.createCodeModeTool().execute("changing-cell", { description: "changing-cell",
       code: `const [matches, current] = await Promise.all([
 searchTools('查询项目记录'),
 (async () => { const definition = await describeTool('${remoteName}'); await tools.${remoteName}({current:'live'}); return definition; })()

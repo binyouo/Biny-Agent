@@ -71,9 +71,8 @@ export async function generateNativeText(
     const result = (async () => {
       const prepared = await model.prepareTextRequest?.(signal) ?? model;
       signal?.throwIfAborted();
-      return prepared.vercelModel === undefined
-        ? await consumeInjectedText(prepared, messages, { ...options, signal, onRequestMetrics }, onProgress)
-        : await consumeVercelText(prepared, messages, { ...nativeTextRequestOptions(prepared, options), signal, onRequestMetrics }, onProgress);
+      if (!prepared.vercelModel) throw new Error("This backend does not provide an API language model.");
+      return await consumeVercelText(prepared, messages, { ...nativeTextRequestOptions(prepared, options), signal, onRequestMetrics }, onProgress);
     })();
     if (aborted !== undefined) return await Promise.race([result, aborted]);
     try {
@@ -126,9 +125,7 @@ async function consumeVercelText(
     ? trackProviderModel(model.vercelModel!, options.signal)
     : undefined;
   try {
-    // 辅助请求也走流式：相当一部分 OpenAI 兼容代理只支持 SSE，非流式请求会拿到
-    // 无法按 JSON 解析的响应体（Invalid JSON response），Vercel 统一重构前的
-    // model.stream 路径没有这个问题。
+    // 辅助请求也使用 SSE，以支持仅提供流式响应的 OpenAI 兼容服务。
     const result = streamText({
       model: tracked?.model ?? model.vercelModel!,
       headers: modelRequestHeaders(options.requestContext, "auxiliary"),
@@ -326,40 +323,6 @@ async function reportVercelMetrics(
     });
   } catch {
     // 观测失败不应覆盖已完成或已失败的辅助模型请求。
-  }
-}
-
-async function consumeInjectedText(
-  model: AgentModel,
-  messages: AgentMessage[],
-  options: NativeTextGenerationOptions,
-  onProgress: () => void
-): Promise<NativeTextGenerationResult> {
-  const startedAtMs = Date.now();
-  options.signal?.throwIfAborted();
-  let text = "";
-  let usage: AgentUsage | undefined;
-  let finishReason: AgentStopReason | undefined;
-  if (!model.stream) throw new Error("Vercel model is unavailable for this text request.");
-  const streamModel = model.stream.bind(model);
-  const { systemPrompt, onRequestMetrics: _observer, awaitModelSettlementOnAbort: _awaitModelSettlementOnAbort, ...streamOptions } = options;
-  try {
-    for await (const event of await streamModel({ systemPrompt, messages, tools: [] }, streamOptions)) {
-      options.signal?.throwIfAborted();
-      onProgress();
-      if (event.type === "text-delta") text += event.text;
-      else if (event.type === "finish") {
-        usage = event.usage;
-        finishReason = event.reason;
-      }
-      else if (event.type === "error") throw event.error instanceof Error ? event.error : new Error(String(event.error));
-    }
-    options.signal?.throwIfAborted();
-    await reportVercelMetrics(model, options, startedAtMs, usage, undefined, finishReason);
-    return { text, usage, finishReason };
-  } catch (error) {
-    await reportVercelMetrics(model, options, startedAtMs, usage, { error });
-    throw error;
   }
 }
 

@@ -46,7 +46,7 @@ try {
     warmTimes.push(performance.now() - start);
   }
 
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const db = authority.databaseHandle();
   const indexSql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'runtime_events_toolcall_idx'").get() as { sql: string }).sql;
   db.exec("DROP INDEX runtime_events_toolcall_idx");

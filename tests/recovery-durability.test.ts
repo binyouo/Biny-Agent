@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 用真实文件、公开会话入口及硬退出验证断点故障不会越过执行或终态边界。 */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,19 +28,19 @@ const config = configSchema.parse({
   permission: { ...defaultConfig.permission, mode: "full-access" },
   context: {
     ...defaultConfig.context,
-    emotion: { ...defaultConfig.context.emotion, enabled: false },
+
     memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
   }
 });
 
 function model(response: () => Promise<ModelStreamEvent[]>): AgentModel {
-  return {
+  return testModel({
     provider: "synthetic", modelId: "durability-test", supportsTools: true,
     stream: async () => {
       const events = await response();
       return (async function* () { yield* events; })();
     }
-  };
+  });
 }
 
 const answer: ModelStreamEvent[] = [{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }];
@@ -107,13 +109,13 @@ async function stepCheckpointFailure(root: string): Promise<void> {
     }
   }
   const resumedModel = model(async () => answer);
-  const resumed = agent(root, new SessionRecorder(root), {
+  const resumed = agent(root, new SessionRecorder(root), testModel({
     ...resumedModel,
     stream: async (context) => {
       assert.ok(context.messages.some((message) => message.role === "toolResult" && message.toolCallId === "write-1"), "恢复的模型上下文必须包含已成功提交的工具结果");
       return await resumedModel.stream(context);
     }
-  }, registry);
+  }), registry);
   try {
     await resumed.initialize();
     await resumed.resume("step-failure");
@@ -132,13 +134,13 @@ async function pausedTurn(root: string, beforeExecution = false): Promise<void> 
   const controller = new AbortController();
   const sessionId = beforeExecution ? "paused-before-execution" : "paused-turn";
   const recorder = new SessionRecorder(root, sessionId);
-  const session = agent(root, recorder, {
+  const session = agent(root, recorder, testModel({
     provider: "synthetic", modelId: "pause-test", supportsTools: true,
     stream: async () => {
       controller.abort(new AgentTurnCancellationError("paused"));
       throw controller.signal.reason;
     }
-  });
+  }));
   try {
     await session.initialize();
     if (beforeExecution) controller.abort(new AgentTurnCancellationError("paused"));
@@ -205,13 +207,13 @@ async function pauseUnknownSideEffect(root: string): Promise<void> {
   } finally { await resumed.close(); }
   let followupContext = "";
   const followupModel = model(async () => answer);
-  const followup = agent(root, new SessionRecorder(root), {
+  const followup = agent(root, new SessionRecorder(root), testModel({
     ...followupModel,
     stream: async (context) => {
       followupContext = JSON.stringify(context.messages);
       return await followupModel.stream(context);
     }
-  }, registry);
+  }), registry);
   try {
     await followup.initialize();
     await followup.resume("paused-unknown");
@@ -346,10 +348,10 @@ async function emptyFollowupCheckpointRestart(root: string): Promise<void> {
 
   let request = "";
   const provider = model(async () => answer);
-  const resumed = agent(root, new SessionRecorder(root), {
+  const resumed = agent(root, new SessionRecorder(root), testModel({
     ...provider,
     stream: async (context) => { request = JSON.stringify(context.messages); return await provider.stream(context); }
-  });
+  }));
   try {
     await resumed.initialize();
     await resumed.resume(sessionId);

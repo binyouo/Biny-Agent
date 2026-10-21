@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -51,13 +53,13 @@ async function fixture(t: TestContext) {
       toolRegistry: registry, permissionManager: new PermissionManager(config.permission),
       selectCapabilities: async () => { calls.selection += 1; return { tools: "none", skills: "none" }; },
       skillPrompt: async () => { calls.preparation += 1; return ""; },
-      model: { provider: "synthetic", modelId: "recovery-input", supportsTools: true,
+      model: testModel({ provider: "synthetic", modelId: "recovery-input", supportsTools: true,
         async stream(context) {
           calls.provider += 1; requests.push(structuredClone(context.messages));
           return (async function* (): AsyncGenerator<ModelStreamEvent> {
             yield { type: "text-delta", text: "Recovered safely." }; yield { type: "finish", reason: "stop" };
           })();
-        } }
+        } })
     });
     agents.push(agent);
     await agent.initialize();

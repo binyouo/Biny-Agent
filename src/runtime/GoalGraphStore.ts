@@ -9,14 +9,13 @@ import { DatabaseSync } from "node:sqlite";
 import type { InteractiveRuntimeHandle } from "./InteractiveAgentRuntime.js";
 import type { CommandRuntime } from "./CommandRuntime.js";
 import type { RuntimeEventAuthority, RuntimeRunStatus } from "./RuntimeAuthority.js";
-import { isTaskRunTerminal, type DurableTaskRunStore, type TaskAttemptRecord, type TaskRunStatus } from "./TaskRunStore.js";
-import { runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
-import { readTaskDefinition, type TaskCommandExecutor } from "./taskVerification.js";
+import { isTaskRunTerminal, type DurableTaskRunStore, type TaskRunStatus } from "./TaskRunStore.js";
+import { type TaskClosureResult } from "./TaskClosure.js";
+import { readTaskDefinition } from "./taskVerification.js";
 import { latestPlanNode, planBlock, planReviewResultSchema, planWorkPacket } from "./planWork.js";
 
 export type GraphStatus = "draft" | "running" | "paused" | "completed" | "failed" | "blocked" | "cancelled";
 export type GraphNodeStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
-export type GraphMode = "fixed" | "supervised";
 export type SupervisorCheckpoint = "needs_attention" | "settled";
 
 export interface GraphNodeInput {
@@ -44,8 +43,8 @@ export interface GraphRecord {
   graphId: string;
   workspaceId: string;
   status: GraphStatus;
-  mode: GraphMode;
-  supervisorSessionId?: string;
+  mode: "supervised";
+  supervisorSessionId: string;
   maxReplans: number;
   replanCount: number;
   revision: number;
@@ -137,10 +136,6 @@ export class GoalGraphStore {
     return new GoalGraphStore(authority.databaseHandle(), authority);
   }
 
-  createGraph(nodes: readonly GraphNodeInput[], payload: unknown = {}, graphId: string = randomUUID()): GraphRecord {
-    return this.createGraphRecord({ nodes, payload, graphId, mode: "fixed", maxReplans: 0 });
-  }
-
   createSupervisedGraph(input: SupervisedGraphInput): GraphRecord {
     const sessionId = input.supervisorSessionId.trim();
     if (!sessionId) throw new Error("Supervised graph requires a supervisor session.");
@@ -163,8 +158,8 @@ export class GoalGraphStore {
     nodes: readonly GraphNodeInput[];
     payload: unknown;
     graphId: string;
-    mode: GraphMode;
-    supervisorSessionId?: string;
+    mode: "supervised";
+    supervisorSessionId: string;
     supervisorRunId?: string;
     maxReplans: number;
   }): GraphRecord {
@@ -240,14 +235,14 @@ export class GoalGraphStore {
 
   startSupervisedDraft(graphId: string, sessionId: string, revision: number): GraphRecord {
     const graph = this.requireGraph(graphId);
-    if (graph.mode !== "supervised" || graph.supervisorSessionId !== sessionId) throw new Error("Plan belongs to another session.");
+    if (graph.supervisorSessionId !== sessionId) throw new Error("Plan belongs to another session.");
     if (graph.status !== "draft" || graph.revision !== revision) throw new Error("Plan revision changed or plan already started.");
     return this.startGraph(graphId);
   }
 
   reviseSupervisedDraft(graphId: string, sessionId: string, revision: number, nodes: GraphNodeInput[], payload: unknown): GraphRecord {
     const graph = this.requireGraph(graphId);
-    if (graph.supervisorSessionId !== sessionId || graph.mode !== "supervised") throw new Error("Plan belongs to another session.");
+    if (graph.supervisorSessionId !== sessionId) throw new Error("Plan belongs to another session.");
     if (graph.status !== "draft" || graph.revision !== revision) throw new Error("Only the current draft revision may be edited.");
     validateGraphNodes(nodes, 20);
     for (const node of nodes) readTaskDefinition(node.intent);
@@ -547,7 +542,7 @@ export class GoalGraphStore {
       this.database.prepare("UPDATE graph_intent_claims SET status = ? WHERE graph_id = ? AND node_id = ? AND status = 'claimed'").run(status, graphId, nodeId);
       this.touchGraph(graphId, now);
     });
-    const projected = this.projectGraphStatus(graphId);
+    const projected = this.requireGraph(graphId);
     this.queueCurrentSupervisorCheckpoint(projected);
     return this.requireGraph(graphId);
   }
@@ -573,7 +568,7 @@ export class GoalGraphStore {
   }
 
   /** Host 启动时回收上一个进程留下的 running claim，避免 Graph 永久停滞。 */
-  recoverRunningNodes(taskRuns?: DurableTaskRunStore): void {
+  recoverRunningNodes(taskRuns: DurableTaskRunStore): void {
     // Paused graphs never dispatch at startup. Only their provably undispatched
     // scheduler claims can be released so a later explicit resume is not stranded.
     const pausedClaims = this.database.prepare(`
@@ -586,7 +581,7 @@ export class GoalGraphStore {
     for (const graphId of this.listRunningGraphIds()) {
       const graph = this.requireGraph(graphId);
       for (const node of graph.nodes.filter((candidate) => candidate.status === "running")) {
-        const task = node.taskRunId === undefined ? undefined : taskRuns?.get(node.taskRunId);
+        const task = node.taskRunId === undefined ? undefined : taskRuns.get(node.taskRunId);
         const attempt = task?.attempts.at(-1);
         const runtimeRun = attempt === undefined ? undefined : this.authority.getRun(attempt.runId);
         const terminalStatus = runtimeRun?.terminalStatus ?? (task !== undefined && isTaskRunTerminal(task.status) ? task.status : undefined);
@@ -609,7 +604,7 @@ export class GoalGraphStore {
           continue;
         }
         if (terminalStatus !== undefined) {
-          if (taskRuns && task && !isTaskRunTerminal(task.status)) {
+          if (task && !isTaskRunTerminal(task.status)) {
             try {
               taskRuns.transition(task.taskRunId, recoveredTaskStatus(terminalStatus), { attemptId: attempt?.attemptId });
             } catch {
@@ -630,7 +625,7 @@ export class GoalGraphStore {
 
   noteSupervisorCheckpoint(graphId: string, checkpoint: SupervisorCheckpoint): GraphRecord {
     const graph = this.requireGraph(graphId);
-    if (graph.mode !== "supervised" || graph.status !== "running") return graph;
+    if (graph.status !== "running") return graph;
     const now = new Date().toISOString();
     this.touchGraph(graphId, now);
     const current = this.requireGraph(graphId);
@@ -698,7 +693,7 @@ export class GoalGraphStore {
     if (!row || (row.status !== "pending" && row.status !== "claimed")) return undefined;
     const wake = toWake(row);
     const graph = this.getGraph(wake.graphId);
-    if (!graph || graph.status !== "running" || graph.mode !== "supervised" || graph.revision !== wake.graphRevision || graph.supervisorSessionId !== wake.sessionId) {
+    if (!graph || graph.status !== "running" || graph.revision !== wake.graphRevision || graph.supervisorSessionId !== wake.sessionId) {
       this.finishSupervisorWake(wakeId, "discarded");
       return undefined;
     }
@@ -797,23 +792,6 @@ export class GoalGraphStore {
     });
   }
 
-  private projectGraphStatus(graphId: string): GraphRecord {
-    const graph = this.requireGraph(graphId);
-    if (isGraphTerminal(graph.status)) return graph;
-    // supervised Graph 的节点终态只是监督检查点，不能替主 Agent宣告用户目标完成。
-    if (graph.mode === "supervised") return graph;
-    const statuses = graph.nodes.map((node) => node.status);
-    const status: GraphStatus = statuses.every((nodeStatus) => nodeStatus === "completed")
-      ? "completed"
-      : statuses.some((nodeStatus) => nodeStatus === "failed")
-        ? "failed"
-        : statuses.some((nodeStatus) => nodeStatus === "blocked")
-          ? "blocked"
-          : graph.status;
-    const projected = status === graph.status ? graph : this.updateGraph(graphId, status);
-    return projected;
-  }
-
   /** 把 running 节点退回 ready/blocked 并放弃当前 claim；Host 重启回收与 supervisor 的 busy 重试共用。 */
   recoverNode(graphId: string, nodeId: string, status: "ready" | "blocked", reason: string, taskRunId?: string): GraphRecord {
     const graph = this.requireGraph(graphId);
@@ -834,7 +812,7 @@ export class GoalGraphStore {
       this.database.prepare("UPDATE graph_intent_claims SET status = 'abandoned' WHERE graph_id = ? AND node_id = ? AND status = 'claimed'").run(graphId, nodeId);
       this.touchGraph(graphId, now);
     });
-    const projected = this.projectGraphStatus(graphId);
+    const projected = this.requireGraph(graphId);
     this.queueCurrentSupervisorCheckpoint(projected);
     return this.requireGraph(graphId);
   }
@@ -846,7 +824,6 @@ export class GoalGraphStore {
 
   private requireSupervisedGraph(graphId: string, sessionId: string): GraphRecord {
     const graph = this.requireGraph(graphId);
-    if (graph.mode !== "supervised") throw new Error(`Graph ${graphId} is not supervised.`);
     if (graph.supervisorSessionId !== sessionId) throw new Error(`Graph ${graphId} belongs to another session.`);
     if (graph.status !== "running") throw new Error(`Supervised graph ${graphId} is not running.`);
     return graph;
@@ -864,7 +841,7 @@ export class GoalGraphStore {
 
   /** 展示与调度共享同一检查点定义，审批事实只读取 TaskRun，不复制到节点状态。 */
   supervisorCheckpoint(graph: GraphRecord): SupervisorCheckpoint | undefined {
-    if (graph.mode !== "supervised" || graph.status !== "running") return undefined;
+    if (graph.status !== "running") return undefined;
     const current = currentGraphNodes(graph);
     const pendingApproval = current.some((node) => node.taskRunId !== undefined
       && this.database.prepare("SELECT 1 FROM task_runs WHERE task_run_id = ? AND status = 'needs_approval'").get(node.taskRunId) !== undefined);
@@ -883,7 +860,7 @@ export class GoalGraphStore {
   }
 
   private createSupervisorWake(graph: GraphRecord, checkpoint: SupervisorCheckpoint): string {
-    if (graph.mode !== "supervised" || graph.supervisorSessionId === undefined) {
+    if (graph.supervisorSessionId === undefined) {
       throw new Error("Supervisor wake requires a supervised graph with a session.");
     }
     const supervisorSessionId = graph.supervisorSessionId;
@@ -942,17 +919,10 @@ export class GoalGraphStore {
 
 export interface GraphSupervisorOptions {
   onActivity?(): void;
-  store?: GoalGraphStore;
-  getStore?: () => GoalGraphStore;
-  runtime?: InteractiveRuntimeHandle;
-  getRuntime?: () => InteractiveRuntimeHandle;
-  taskRuns?: DurableTaskRunStore;
-  getTaskRuns?: () => DurableTaskRunStore | undefined;
-  getTaskCommandExecutor?: () => TaskCommandExecutor | undefined;
-  getWorkspaceRoot?: () => string;
-  getWorkspaceIgnore?: () => readonly string[];
-  resolveSupervisorRuntime?: (sessionId: string) => Promise<InteractiveRuntimeHandle>;
-  resolveSupervisorCommands?: (sessionId: string) => Promise<CommandRuntime>;
+  getStore(): GoalGraphStore;
+  getTaskRuns(): DurableTaskRunStore;
+  resolveSupervisorRuntime(sessionId: string): Promise<InteractiveRuntimeHandle>;
+  resolveSupervisorCommands(sessionId: string): Promise<CommandRuntime>;
   supervisorSessionExists?: (sessionId: string) => Promise<boolean>;
 }
 
@@ -972,7 +942,7 @@ export class GraphSupervisor {
   start(): void {
     if (this.started || this.stopped) return;
     this.started = true;
-    this.store().recoverRunningNodes(this.taskRuns());
+    this.options.getStore().recoverRunningNodes(this.options.getTaskRuns());
     this.requestTick();
   }
 
@@ -1004,7 +974,7 @@ export class GraphSupervisor {
   }
 
   private async scan(): Promise<void> {
-    const store = this.store();
+    const store = this.options.getStore();
     // 先交付已有检查点，再派发新工作；否则独立 ready 节点会推迟审批通知，
     // 甚至不断推进 revision，使等待交付的监督唤醒过期。繁忙会话仍跳过，不抢 writer。
     for (const wake of store.listSupervisorWakes()) {
@@ -1017,7 +987,7 @@ export class GraphSupervisor {
         store.finishSupervisorWake(wake.wakeId, "discarded");
         continue;
       }
-      const runtime = await this.supervisorRuntime(wake.sessionId);
+      const runtime = await this.options.resolveSupervisorRuntime(wake.sessionId);
       if (this.stopped) return;
       if (runtime.getSnapshot().state.kind !== "idle") continue;
       const claimed = store.claimSupervisorWake(wake.wakeId);
@@ -1036,9 +1006,7 @@ export class GraphSupervisor {
       const ready = store.readyNodes(graphId);
       if (!ready.length) continue;
       const graph = store.inspectGraph(graphId);
-      const runtime = graph.supervisorSessionId === undefined
-        ? this.runtime()
-        : await this.supervisorRuntime(graph.supervisorSessionId);
+      const runtime = await this.options.resolveSupervisorRuntime(graph.supervisorSessionId);
       if (this.stopped) return;
       if (runtime.getSnapshot().state.kind !== "idle") continue;
       for (const node of ready) {
@@ -1058,7 +1026,7 @@ export class GraphSupervisor {
   }
 
   private async executeSupervisorWake(wake: GraphWakeRecord, runtime: InteractiveRuntimeHandle): Promise<void> {
-    const store = this.store();
+    const store = this.options.getStore();
     const existing = wake.runId === undefined ? undefined : store.runtimeRun(wake.runId);
     if (existing?.terminalStatus !== undefined) {
       store.finishSupervisorWake(wake.wakeId, "completed");
@@ -1105,15 +1073,12 @@ export class GraphSupervisor {
 
   private async executeNode(graphId: string, node: GraphNodeRecord, claim: GraphClaim): Promise<void> {
     let taskRunId: string | undefined;
-    let attempt: TaskAttemptRecord | undefined;
+    let commands: CommandRuntime | undefined;
     let preparing = true;
-    const store = this.store();
-    const taskRuns = this.taskRuns();
+    const store = this.options.getStore();
     const graph = store.inspectGraph(graphId);
     try {
-      const runtime = graph.mode === "supervised" && graph.supervisorSessionId !== undefined
-        ? await this.supervisorRuntime(graph.supervisorSessionId)
-        : this.runtime();
+      const runtime = await this.options.resolveSupervisorRuntime(graph.supervisorSessionId);
       if (this.stopped || !store.canDispatchClaim(claim)) {
         store.releaseUndispatchedClaim(claim, "Graph preparation stopped before dispatch.");
         return;
@@ -1124,101 +1089,48 @@ export class GraphSupervisor {
         return;
       }
       const parentRunId = "graph:" + graphId;
-      if (graph.mode === "supervised" && graph.supervisorSessionId !== undefined && this.options.resolveSupervisorCommands) {
-        const commands = await this.options.resolveSupervisorCommands(graph.supervisorSessionId);
-        if (this.stopped || !store.canDispatchClaim(claim)) {
-          store.releaseUndispatchedClaim(claim, "Graph preparation stopped before dispatch.");
-          return;
-        }
-        preparing = false;
-        const durableTaskRunId = `graph:${graphId}:${node.nodeId}`;
-        const block = planBlock(node.intent);
-        let review: import("./planWork.js").PlanReviewCandidate | undefined;
-        if (block?.kind === "review") {
-          const candidate = latestPlanNode(graph, block.reviewTarget!);
-          const task = candidate.taskRunId ? commands.taskRuns.get(candidate.taskRunId) : undefined;
-          const attempt = task?.attempts.at(-1);
-          const contract = readTaskDefinition(candidate.intent).verification;
-          if (!task || !attempt || !contract || task.status !== "completed") throw new Error("Review requires completed candidate evidence.");
-          review = { taskRunId: task.taskRunId, attemptId: attempt.attemptId, contract, evidence: attempt.verification as import("./taskVerification.js").TaskVerificationEvidence };
-        }
-        commands.taskRuns.create({
-          taskRunId: durableTaskRunId,
-          task: { ...node.intent as object, prompt: planWorkPacket(graph, node), review },
-          sessionId: graph.supervisorSessionId,
-          parentRunId
-        });
-        taskRunId = durableTaskRunId;
-        // Worker 和验收也会向原会话写审计事件，必须持有同一维护锁/lease。
-        // 不能仅用监督器的串行计数阻止第二个交互 writer。
-        const result = await runtime.runExclusiveOperation("subagent", async (signal) => {
-          const cancel = (): void => { commands.cancelTaskRun(durableTaskRunId, "Plan execution cancelled."); };
-          signal.addEventListener("abort", cancel, { once: true });
-          try {
-            signal.throwIfAborted();
-            const started = await commands.startTaskRun(durableTaskRunId);
-            return await started.completion;
-          } finally {
-            signal.removeEventListener("abort", cancel);
-          }
-        });
-        store.projectTaskClosure(durableTaskRunId, result);
+      commands = await this.options.resolveSupervisorCommands(graph.supervisorSessionId);
+      const taskCommands = commands;
+      if (this.stopped || !store.canDispatchClaim(claim)) {
+        store.releaseUndispatchedClaim(claim, "Graph preparation stopped before dispatch.");
         return;
       }
       preparing = false;
-      const task = taskRuns?.create({ taskRunId: "graph:" + graphId + ":" + node.nodeId, task: node.intent, parentRunId });
-      taskRunId = task?.taskRunId;
-      if (!task || !taskRuns) {
-        const runId = randomUUID();
-        const turnId = randomUUID();
-        const submitted = runtime.submitPrompt(String((node.intent as { prompt?: unknown })?.prompt ?? node.nodeKey), [], {
-          runId,
-          turnId,
-          parentRunId,
-          continuationSource: "graph:" + graphId + ":intent:" + claim.claimId
-        });
-        const outcome = await submitted.completion;
-        if (outcome.status !== "completed") throw new Error(outcome.error ?? `Graph worker stopped with ${outcome.status}.`);
-        store.completeNode(graphId, node.nodeId, "completed", { output: outcome.output }, taskRunId);
-        return;
+      const durableTaskRunId = `graph:${graphId}:${node.nodeId}`;
+      const block = planBlock(node.intent);
+      let review: import("./planWork.js").PlanReviewCandidate | undefined;
+      if (block?.kind === "review") {
+        const candidate = latestPlanNode(graph, block.reviewTarget!);
+        const task = candidate.taskRunId ? commands.taskRuns.get(candidate.taskRunId) : undefined;
+        const attempt = task?.attempts.at(-1);
+        const contract = readTaskDefinition(candidate.intent).verification;
+        if (!task || !attempt || !contract || task.status !== "completed") throw new Error("Review requires completed candidate evidence.");
+        review = { taskRunId: task.taskRunId, attemptId: attempt.attemptId, contract, evidence: attempt.verification as import("./taskVerification.js").TaskVerificationEvidence };
       }
-      const executor = this.options.getTaskCommandExecutor?.() ?? {
-        executeTaskCheck: async () => { throw new Error("Graph task verification runtime is unavailable."); }
-      };
-      const workspaceRoot = this.options.getWorkspaceRoot?.() ?? process.cwd();
-      const result = await runTaskClosure({
-        taskRuns,
-        taskRunId: task.taskRunId,
-        workspaceRoot,
-        ignore: this.options.getWorkspaceIgnore?.() ?? [],
-        executor,
-        executeAttempt: async (prompt, currentAttempt) => {
-          attempt = currentAttempt;
-          const submitted = runtime.submitPrompt(prompt, [], {
-            runId: currentAttempt.runId,
-            turnId: currentAttempt.turnId,
-            parentRunId,
-            continuationSource: "graph:" + graphId + ":intent:" + claim.claimId
-          });
-          const outcome = await submitted.completion;
-          if (outcome.status !== "completed") throw new Error(outcome.error ?? `Graph worker stopped with ${outcome.status}.`);
-          return outcome.output;
+      commands.taskRuns.create({
+        taskRunId: durableTaskRunId,
+        task: { ...node.intent as object, prompt: planWorkPacket(graph, node), review },
+        sessionId: graph.supervisorSessionId,
+        parentRunId
+      });
+      taskRunId = durableTaskRunId;
+      // Worker 和验收也会向原会话写审计事件，必须持有同一维护锁/lease。
+      // 不能仅用监督器的串行计数阻止第二个交互 writer。
+      const result = await runtime.runExclusiveOperation("subagent", async (signal) => {
+        const cancel = (): void => { taskCommands.cancelTaskRun(durableTaskRunId, "Plan execution cancelled."); };
+        signal.addEventListener("abort", cancel, { once: true });
+        try {
+          signal.throwIfAborted();
+          const started = await taskCommands.startTaskRun(durableTaskRunId);
+          return await started.completion;
+        } finally {
+          signal.removeEventListener("abort", cancel);
         }
       });
-      if (result.status === "completed") {
-        store.completeNode(graphId, node.nodeId, "completed", { output: result.output, verification: result.evidence }, taskRunId);
-      } else if (result.status === "needs_approval") {
-        // 节点仍由当前 TaskRun 持有，批准前不失败、不解锁下游，也不重新派发 Worker。
-        store.noteSupervisorCheckpoint(graphId, "needs_attention");
-        return;
-      } else if (result.status === "blocked" || result.status === "cancelled") {
-        store.completeNode(graphId, node.nodeId, "blocked", { error: result.reason, verification: result.evidence }, taskRunId);
-      } else {
-        store.completeNode(graphId, node.nodeId, "failed", { error: result.reason, verification: result.evidence }, taskRunId);
-      }
+      store.projectTaskClosure(durableTaskRunId, result);
+      return;
     } catch (error) {
       // Rejected preparation obeys the same ownership boundary as fulfillment.
-      // After preparation, preserve TaskRun and no-TaskRun fallback result handling.
       if (preparing && (this.stopped || !store.canDispatchClaim(claim))) {
         store.releaseUndispatchedClaim(claim, "Graph preparation stopped before dispatch.");
         return;
@@ -1229,52 +1141,17 @@ export class GraphSupervisor {
         store.recoverNode(graphId, node.nodeId, "ready", "Runtime is busy; node execution deferred.");
         return;
       }
-      this.transitionTask(taskRuns, taskRunId, "failed", attempt?.attemptId, { error: error instanceof Error ? error.message : String(error) });
-      store.completeNode(graphId, node.nodeId, "failed", { error: error instanceof Error ? error.message : String(error) }, taskRunId);
+
+      const message = error instanceof Error ? error.message : String(error);
+      const task = taskRunId ? commands?.taskRuns.get(taskRunId) : undefined;
+      if (task && (task.status === "created" || task.status === "queued")) {
+        commands!.taskRuns.transition(task.taskRunId, "failed", { failure: { message } });
+      }
+      store.completeNode(graphId, node.nodeId, "failed", { error: message }, taskRunId);
     }
   }
 
-  private transitionTask(
-    taskRuns: DurableTaskRunStore | undefined,
-    taskRunId: string | undefined,
-    status: TaskRunStatus,
-    attemptId?: string,
-    failure?: unknown
-  ): void {
-    if (!taskRuns || taskRunId === undefined) return;
-    try {
-      const task = taskRuns.get(taskRunId);
-      if (!task || isTaskRunTerminal(task.status)) return;
-      taskRuns.transition(taskRunId, status, { attemptId, failure });
-    } catch {
-      // 取消或 Host 重启后的晚到结果不能再次改变 durable 终态。
-    }
-  }
 
-  private runtime(): InteractiveRuntimeHandle {
-    const runtime = this.options.getRuntime?.() ?? this.options.runtime;
-    if (!runtime) throw new Error("Graph supervisor runtime is unavailable.");
-    return runtime;
-  }
-
-  private async supervisorRuntime(sessionId: string): Promise<InteractiveRuntimeHandle> {
-    if (this.options.resolveSupervisorRuntime) return await this.options.resolveSupervisorRuntime(sessionId);
-    const runtime = this.runtime();
-    if (runtime.getSnapshot().info.sessionId !== sessionId) {
-      throw new Error(`Supervisor session runtime ${sessionId} is unavailable.`);
-    }
-    return runtime;
-  }
-
-  private store(): GoalGraphStore {
-    const store = this.options.getStore?.() ?? this.options.store;
-    if (!store) throw new Error("Graph supervisor store is unavailable.");
-    return store;
-  }
-
-  private taskRuns(): DurableTaskRunStore | undefined {
-    return this.options.getTaskRuns?.() ?? this.options.taskRuns;
-  }
 }
 
 function toGraph(row: GraphRow): Omit<GraphRecord, "nodes"> {
@@ -1283,7 +1160,7 @@ function toGraph(row: GraphRow): Omit<GraphRecord, "nodes"> {
     workspaceId: stringValue(row.workspace_id),
     status: graphStatus(row.status),
     mode: graphMode(row.mode),
-    supervisorSessionId: optionalString(row.supervisor_session_id),
+    supervisorSessionId: stringValue(row.supervisor_session_id),
     maxReplans: integerValue(row.max_replans),
     replanCount: integerValue(row.replan_count),
     revision: integerValue(row.revision),
@@ -1352,8 +1229,8 @@ function graphStatus(value: unknown): GraphStatus {
   throw new Error("Invalid graph status: " + String(value));
 }
 
-function graphMode(value: unknown): GraphMode {
-  if (value === "fixed" || value === "supervised") return value;
+function graphMode(value: unknown): "supervised" {
+  if (value === "supervised") return value;
   throw new Error("Invalid graph mode: " + String(value));
 }
 

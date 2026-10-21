@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultActivitySettings } from "../src/activity/settings.js";
@@ -164,7 +166,7 @@ async function request(
 }
 
 function prefillModel(source: () => string, expectedMaterial?: string): AgentModel {
-  return {
+  return testModel({
     provider: "test",
     modelId: "crystal-http-prefill",
     stream: async (request, _options) => (async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -182,5 +184,5 @@ function prefillModel(source: () => string, expectedMaterial?: string): AgentMod
       };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
 }

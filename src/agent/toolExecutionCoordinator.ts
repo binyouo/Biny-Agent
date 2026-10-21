@@ -50,7 +50,7 @@ import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, isToolResultArchiveReference, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
 import { redactSecrets, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
 import { projectSingleToolResultForModel, readResultLineRange } from "./toolResultProjection.js";
-import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
+import { codeModeCatalog, codeModeDescription, codeModeInput, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
 import type {
   AgentPermissionRequest,
   AgentPermissionResult,
@@ -104,7 +104,6 @@ const inlineResultPersistMaxBytes = 32 * 1024;
 export interface AgentStepContext {
   assistantContent?: string;
   reasoningContent?: string;
-  reasoningProviderOptions?: Record<string, unknown>;
   /** Individually signed reasoning blocks for this step, in provider order. */
   reasoningBlocks?: ReasoningBlock[];
 }
@@ -383,10 +382,10 @@ export class ToolExecutionCoordinator {
     });
     return {
       name: "run_script",
-      description: "Use scripts for loops, filtering, aggregation or chained calls; never wrap a single ordinary tool call. Run isolated JavaScript or TypeScript (language: typescript) with admitted tools.* calls. sh(command, {cwd, timeoutMs}) uses Bash and returns stdout; fetch(url) performs a bounded GET through WebFetch, returning text()/json(). Non-GET requests use sh with curl under Shell permissions. console.log prints only selected final data. Stdout beyond 16000 characters is archived for Read; console capture is streamed to the host independently of tool calls and limited to 1 MiB / 4096 chunks; omitted output is marked. Supply a short description in the user language. timeout_ms defaults to 120000, maximum 600000. Use searchTools(query, {limit, namespace}), describeTool(name), and describeNamespace(name) to discover tools and read schemas on demand. searchTools returns matching tool definitions including parameters. Inspect those schemas in a discovery step before composing execution code; do not guess argument names or truncate schemas. Invoke tools as tools.ToolName({...}), not tools.invoke(name, args). tools.Read returns an object with content; sh returns a stdout string. Catch parameter-validation errors and safe built-in read failures to recover locally; uncaught errors fail the cell. Permission, budget, cancellation, deadline, uncertain-outcome and other tool failures still stop subsequent calls even when caught. Matches marked invocation: direct become ordinary tools on the next model step; call them directly, never through tools.*. Nested calls use normal permissions and budgets. No direct filesystem, process, module imports or unrestricted network access. Return a JSON-serializable value or print selected results.",
+      description: codeModeDescription,
       promptSnippet: `Compose tool calls in isolated JavaScript/TypeScript. Discover tools with searchTools, describeTool and describeNamespace. Selected host tools:\n${codeModeCatalog(visible) || "(none selected)"}`,
       promptGuidelines: ["Return only the result needed by the user. Call a single tool directly; use scripts for loops, filtering, aggregation or chained calls. Never retry an entire cell after a partial failure; inspect child outcomes first."],
-      parameters: { type: "object", properties: { description: { type: "string", minLength: 1, maxLength: 120, description: "Short task title in the user language, at most 8 words." }, timeout_ms: { type: "integer", minimum: 1, maximum: 600_000 }, code: { type: "string", minLength: 1, maxLength: 65_536 }, language: { type: "string", enum: ["javascript", "typescript"] } }, required: ["description", "code"], additionalProperties: false },
+      parameters: codeModeInput.parameters,
       executionMode: "sequential",
       execute: async (toolCallId, args, signal) => {
         const sequence = this.nextSequence();
@@ -394,7 +393,7 @@ export class ToolExecutionCoordinator {
         const step = this.getStepContext();
         await this.recordAndFlush({ type: "tool_call", tool: "run_script", toolCallId, args, sequence,
           assistantContent: step.assistantContent, reasoningContent: step.reasoningContent,
-          reasoningProviderOptions: step.reasoningProviderOptions, reasoningBlocks: step.reasoningBlocks });
+          reasoningBlocks: step.reasoningBlocks });
         await this.recordAndFlush({ type: "tool_execution", tool: "run_script", toolCallId, sequence, operationId, state: "not_started", retrySafety: "unsafe" });
         this.emit({ type: "tool.started", tool: "run_script", toolCallId, args: { code: args.code, description: args.description }, operationId });
         let inputResultTokens = 0;
@@ -402,12 +401,13 @@ export class ToolExecutionCoordinator {
         let result: unknown;
         let error: string | undefined;
         let status: ToolExecutionResultStatus = "succeeded";
+        const parsed = codeModeInput.schema.safeParse(args);
         if (this.duplicateToolCallIds.has(toolCallId)) {
           error = `Duplicate run_script tool call id: ${toolCallId}`;
           result = { ok: false, error, childCalls: [] };
           status = "failed";
-        } else if ((args.description !== undefined && (typeof args.description !== "string" || !args.description.trim() || args.description.length > 120)) || (args.timeout_ms !== undefined && (typeof args.timeout_ms !== "number" || !Number.isSafeInteger(args.timeout_ms) || args.timeout_ms < 1 || args.timeout_ms > 600_000)) || (args.language !== undefined && args.language !== "javascript" && args.language !== "typescript") || typeof args.code !== "string" || !args.code.length || Buffer.byteLength(args.code) > codeModePolicy.maxSourceBytes) {
-          error = "run_script requires code of at most 64 KiB, a valid language, an optional nonempty description of at most 120 characters, and timeout_ms between 1 and 600000.";
+        } else if (!parsed.success || Buffer.byteLength(parsed.data.code) > codeModePolicy.maxSourceBytes) {
+          error = "run_script requires a nonempty description of at most 120 characters, code of at most 64 KiB, a valid language, and timeout_ms between 1 and 600000. Unknown parameters are rejected.";
           result = { ok: false, error, childCalls: [] };
           status = "failed";
         } else if (signal?.aborted) {
@@ -428,8 +428,8 @@ export class ToolExecutionCoordinator {
             const children = this.createAgentTools(editing, { auditOnly: true, script: true, parentToolCallId: toolCallId });
             await this.recordAndFlush({ type: "tool_execution", tool: "run_script", toolCallId, sequence, operationId, state: "running", retrySafety: "unsafe" });
             result = await executeCodeModeCell({
-              code: args.code, language: args.language as "javascript" | "typescript" | undefined, parentToolCallId: toolCallId, tools: [], admittedTools: children, signal, executionPolicy,
-              timeoutMs: args.timeout_ms as number | undefined,
+              code: parsed.data.code, language: parsed.data.language, parentToolCallId: toolCallId, tools: [], admittedTools: children, signal, executionPolicy,
+              timeoutMs: parsed.data.timeout_ms,
               archiveStdout: async (stdout) => (await archiveToolResult({
                 workspaceRoot: this.context.workspaceRoot, sessionId: this.context.recorder.sessionId,
                 toolCallId: `${toolCallId}:stdout`, sequence, tool: "run_script", result: stdout
@@ -580,7 +580,6 @@ export class ToolExecutionCoordinator {
         sequence,
         assistantContent: stepContext.assistantContent,
         reasoningContent: stepContext.reasoningContent,
-        reasoningProviderOptions: stepContext.reasoningProviderOptions,
         reasoningBlocks: stepContext.reasoningBlocks
       });
       await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "not_started", retrySafety: "unknown" });
@@ -603,7 +602,6 @@ export class ToolExecutionCoordinator {
         sequence,
         assistantContent: this.getStepContext().assistantContent,
         reasoningContent: this.getStepContext().reasoningContent,
-        reasoningProviderOptions: this.getStepContext().reasoningProviderOptions,
         reasoningBlocks: this.getStepContext().reasoningBlocks
       });
       await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "not_started", retrySafety: "unknown" });
@@ -644,7 +642,6 @@ export class ToolExecutionCoordinator {
       sequence,
       assistantContent: stepContext.assistantContent,
       reasoningContent: stepContext.reasoningContent,
-      reasoningProviderOptions: stepContext.reasoningProviderOptions,
       reasoningBlocks: stepContext.reasoningBlocks,
       auditOnly: options.auditOnly
     });
@@ -1183,7 +1180,7 @@ export class ToolExecutionCoordinator {
     modelResult: unknown
   ): Promise<Record<string, unknown>> {
     // 预算耗尽后连摘要都不再放行，只留引用；否则每步一个 preview 仍会把窗口撑爆。
-    const shell = call.name === "Bash" || call.name === "BashOutput";
+    const shell = call.name === "Bash" || call.name === "ProcessStatus";
     const preview = toolResultPreview(shell ? serializeToolResult(modelResult) : output, Math.min(remaining, maxArchivedPreviewCharacters));
     const shared = {
       ...(call.name === "Read" ? readResultLineRange(result) : undefined),
@@ -1631,7 +1628,7 @@ export class ToolExecutionCoordinator {
 
   private canonicalPermissionArgs(args: unknown, execution: RunnableToolExecution, toolName: string): unknown {
     if (execution.fileChange?.server) return args;
-    if (toolName === "read_skill_resource" || toolName === "BashOutput") {
+    if (toolName === "read_skill_resource" || toolName === "ProcessStatus") {
       const target = execution.accesses?.find((access) => access.kind === "file" && access.operation === "read" && !access.recursive);
       if (target?.kind === "file" && typeof args === "object" && args !== null) {
         // Resource arguments are skill-relative; logs have only an opaque process ID.

@@ -44,7 +44,7 @@ const inspectText = method("src/desktop/electron/main/DesktopProjectService.ts",
 ]);
 const servicePageText = method("src/desktop/electron/main/DesktopProjectService.ts", "DesktopProjectService", "listSessionTreePage", [
   "this.storage.ensureProjectData", "ensureAgentDirs", "listSessionCatalog", "querySessionCatalogItems", "catalog.filter",
-  "Map", "[...page.items, ...(pinnedItems ?? [])].map", "SessionRunLedger", "runLedger.latestSessionRuns", "visible.keys", "[...visible].map", "desktopSessionSummary",
+  "Map", "[...page.items, ...(pinnedItems ?? [])].map", "RuntimeEventAuthority.readLatestSessionRuns", "visible.keys", "[...visible].map", "desktopSessionSummary",
   "latestRuns.get", "page.items.map", "summaries.get", "pinnedItems?.map"
 ]);
 const managerText = method("src/desktop/electron/main/DesktopAgentManager.ts", "DesktopAgentManager", "listSessionTreePage", [
@@ -76,9 +76,9 @@ function fixture(input: { exists?: boolean; storedMissing?: boolean; items?: Ite
       assert.equal(received, catalog); queries.push(options); if (failures.query) throw failures.query;
       return { items, revision: "revision", nextCursor: input.nextCursor, revisionChanged: input.revisionChanged ?? false };
     },
-    SessionRunLedger: class {
+    RuntimeEventAuthority: class {
       constructor(root: string) { assert.equal(root, project.path); }
-      async latestSessionRuns(ids: string[]) {
+      static async readLatestSessionRuns(_root: string, ids: string[]) {
         if (failures.ledger) throw failures.ledger;
         return new Map(ids.map(id => [id, `run:${id}`]));
       }

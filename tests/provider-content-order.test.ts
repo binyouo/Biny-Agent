@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** SDK content is ordered by block starts, not by text/reasoning/tool categories. */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -45,7 +46,7 @@ async function run(parts: LanguageModelV4StreamPart[], withTools = true) {
   for await (const event of vercelAgentLoopContinue(
     { messages: [{ role: "user", content: "Inspect." }], tools: [tool] },
     {
-      model: { provider: provider.provider, modelId: provider.modelId, stream: async () => { throw new Error("Unexpected legacy model"); } },
+      model: testModel({ provider: provider.provider, modelId: provider.modelId, stream: async () => { throw new Error("Unexpected legacy model"); } }),
       vercelModel: provider, tools: [tool], maxSteps: 2, maxRetries: 0,
       persistStep: async ({ message }) => { saved.push(structuredClone(message)); }
     }

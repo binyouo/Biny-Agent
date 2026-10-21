@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -35,7 +37,7 @@ for (const scenario of ["no-goal", "normal-goal", "known-budget", "unknown-budge
     activity: { ...defaultConfig.activity, enabled: false },
     context: {
       ...defaultConfig.context,
-      emotion: { ...defaultConfig.context.emotion, enabled: false },
+
       identity: { ...defaultConfig.context.identity, enabled: false },
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
     }
@@ -44,7 +46,7 @@ for (const scenario of ["no-goal", "normal-goal", "known-budget", "unknown-budge
   let enteredPrimary!: () => void;
   const primaryEntered = new Promise<void>((resolve) => { enteredPrimary = resolve; });
   const usage = { inputTokens: 4, cacheReadTokens: 0, outputTokens: 1 };
-  const primary: AgentModel = {
+  const primary: AgentModel = testModel({
     provider: "fixture", modelId: "primary-selection",
     async stream(_context, options) {
       counts.primary += 1;
@@ -63,8 +65,8 @@ for (const scenario of ["no-goal", "normal-goal", "known-budget", "unknown-budge
         throw new Error("Insufficient Balance");
       })();
     }
-  };
-  const fallback: AgentModel = {
+  });
+  const fallback: AgentModel = testModel({
     provider: "fixture", modelId: "fallback-selection",
     async stream() {
       counts.fallback += 1;
@@ -73,8 +75,8 @@ for (const scenario of ["no-goal", "normal-goal", "known-budget", "unknown-budge
         yield { type: "finish", reason: "stop", usage };
       })();
     }
-  };
-  const model: AgentModel = {
+  });
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "main-selection", supportsTools: true,
     async stream() {
       counts.main += 1;
@@ -83,7 +85,7 @@ for (const scenario of ["no-goal", "normal-goal", "known-budget", "unknown-budge
         yield { type: "finish", reason: "stop", usage };
       })();
     }
-  };
+  });
   const registry = new ToolRegistry();
   registry.registerBuiltinTool({
     name: "InspectArtifact", description: "Inspect an artifact", risk: "read",

@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 成功回合的异步记忆任务须使用该回合的策略快照。 */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -25,7 +27,7 @@ try {
   config.context.memory.enabled = true;
   config.context.memory.generateMemories = true;
   config.context.memory.excludeExternalContext = false;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "memory-turn-policy-test",
     modelId: "memory-turn-policy-test",
     async stream() {
@@ -35,7 +37,7 @@ try {
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
-  };
+  });
   agent = new AgentSession({
     workspaceRoot, config, model, recorder: new SessionRecorder(workspaceRoot, "policy-snapshot"),
     toolRegistry: new ToolRegistry(),

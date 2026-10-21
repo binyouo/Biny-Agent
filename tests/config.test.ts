@@ -1,9 +1,9 @@
+import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig, loadConfigFile, saveConfig, saveConfigFile } from "../src/config/loader.js";
-import { migrateLegacyGlobalState } from "../src/config/globalStateMigration.js";
 import { BINY_AGENT_DIR_ENV, globalAgentDir, globalConfigDir, globalConfigPath, globalModelsStorePath, globalPluginRoot, projectSessionsDir } from "../src/config/paths.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import {
@@ -20,17 +20,14 @@ import { resolveRunBudget } from "../src/agent/runBudget.js";
 import { createFileConfigStore, updateConfig } from "../src/config/store.js";
 import { loadProjectSettings, updateProjectSettings } from "../src/config/projectSettings.js";
 import { ConfigRevisionConflictError, configDocumentRevision } from "../src/config/versioned.js";
-import { migrateGlobalConfigDocument } from "../src/config/migrations.js";
 import type { CredentialStore } from "../src/config/credentials.js";
 import { DesktopConfigStore } from "../src/desktop/electron/main/DesktopConfigStore.js";
 
 await testGlobalPathResolution();
-await testLegacyGlobalStateMigration();
 testRunBudget();
 testMemoryEmbeddingDefaultsToE5();
-testEmotionStrippedAndHeartbeatDefaultsToDisabled();
+testRemovedEmotionRejectedAndHeartbeatDefaults();
 testRemovedToolNamesAreNotMigrated();
-testLegacySubagentDefaultMigration();
 testRemovedModelFormatsRequireManualUpdate();
 await testProjectOverridesAndGlobalPersistence();
 await testConcurrentProjectSettingUpdates();
@@ -38,8 +35,8 @@ await testRemovedProjectBudgetFieldsAreRejected();
 await testProjectCredentialFieldsAreRejected();
 await testProjectModelAliasMustBeGlobal();
 await testLegacyProjectConfigIsIgnored();
-await testVersionedActivityEmbeddingFieldsMigrateToMemory();
-await testRemovedMemoryPolicyFieldsAreIgnored();
+await testOldActivityEmbeddingConfigIsRejected();
+await testOldMemoryPolicyConfigIsRejected();
 await testVersionedGlobalConfigRejectsStaleWriters();
 await testInlineCredentialsRequirePersistentStorage();
 await testMcpCredentialReferencesStayOutOfConfig();
@@ -119,16 +116,11 @@ function testRunBudget(): void {
   }), /Unrecognized key/u);
 }
 
-function testEmotionStrippedAndHeartbeatDefaultsToDisabled(): void {
+function testRemovedEmotionRejectedAndHeartbeatDefaults(): void {
   const document = structuredClone(defaultConfig) as unknown as Record<string, unknown>;
   const context = document.context as Record<string, unknown>;
   context.emotion = { enabled: false, allowModelUpdate: false, autoAnalyze: false };
-  // 遗留 heartbeat 对象（含未知键）落入新结构：未知键剥离，缺省键补默认值。
-  document.heartbeat = { enabled: true, intervalMinutes: 45, legacyPrompt: "outdated" };
-  const migrated = migrateGlobalConfigDocument(document).document;
-  const parsed = configSchema.parse(migrated);
-  assert.equal("emotion" in parsed.context, false);
-  assert.deepEqual(parsed.heartbeat, { enabled: true, intervalMinutes: 45, activeHoursStart: 8, activeHoursEnd: 23 });
+  assert.throws(() => configSchema.parse(document), /Unrecognized key/u);
 
   const withHeartbeatTimeZone = structuredClone(defaultConfig) as unknown as Record<string, unknown>;
   withHeartbeatTimeZone.heartbeat = { enabled: true, timezone: "America/Los_Angeles" };
@@ -151,61 +143,7 @@ function testRemovedToolNamesAreNotMigrated(): void {
   document.permission.allowTools = ["read_file", "write_file", "multi_edit", "apply_patch", "Read"];
   document.extensions.subagent.allowedTools = ["read_file", "multi_edit", "apply_patch", "write_file"];
 
-  const migrated = migrateGlobalConfigDocument(document).document;
-  assert.deepEqual((migrated as Record<string, any>).permission.allowTools, document.permission.allowTools);
-  assert.deepEqual((migrated as Record<string, any>).extensions.subagent.allowedTools, document.extensions.subagent.allowedTools);
-  assert.throws(() => configSchema.parse(migrated), /Invalid enum value/u);
-}
-
-function testLegacySubagentDefaultMigration(): void {
-  const versioned = structuredClone(defaultConfig) as unknown as Record<string, any>;
-  delete versioned.extensions.subagent.enabled;
-  const migratedVersioned = migrateGlobalConfigDocument(versioned).document as Record<string, any>;
-  assert.equal(migratedVersioned.extensions.subagent.enabled, true);
-
-  const explicitlyDisabled = structuredClone(defaultConfig) as unknown as Record<string, any>;
-  const migratedDisabled = migrateGlobalConfigDocument(explicitlyDisabled).document as Record<string, any>;
-  assert.equal(migratedDisabled.extensions.subagent.enabled, false);
-
-  const unversioned = structuredClone(defaultConfig) as unknown as Record<string, any>;
-  delete unversioned.format;
-  delete unversioned.configVersion;
-  delete unversioned.extensions.subagent.enabled;
-  const migratedUnversioned = migrateGlobalConfigDocument(unversioned).document as Record<string, any>;
-  assert.equal(migratedUnversioned.extensions.subagent.enabled, true);
-}
-
-async function testLegacyGlobalStateMigration(): Promise<void> {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-migration-"));
-  try {
-    const legacyRoot = path.join(home, ".biny");
-    const legacyAgentRoot = path.join(legacyRoot, "agent");
-    const legacyIdentityRoot = path.join(legacyAgentRoot, "identity");
-    await fs.mkdir(legacyIdentityRoot, { recursive: true });
-    await fs.mkdir(path.join(legacyAgentRoot, "memory"), { recursive: true });
-    await fs.writeFile(path.join(legacyRoot, "config.json"), JSON.stringify(defaultConfig), "utf8");
-    await fs.writeFile(path.join(legacyAgentRoot, "models-store.json"), JSON.stringify({ version: 2, providers: {} }), "utf8");
-    await fs.writeFile(path.join(legacyAgentRoot, "SOUL.md"), "旧 Soul\n", "utf8");
-    await fs.writeFile(path.join(legacyRoot, "SOUL.md"), "实验版旧 Soul\n", "utf8");
-    await fs.writeFile(path.join(legacyIdentityRoot, "USER.md"), "旧用户资料\n", "utf8");
-    await fs.writeFile(path.join(legacyAgentRoot, "memory", "2026-09-08.md"), "旧日报\n", "utf8");
-    await fs.writeFile(path.join(legacyAgentRoot, "memory", "memory.sqlite"), "runtime state", "utf8");
-
-    const result = await migrateLegacyGlobalState({ env: {}, homeDir: home });
-    const targetRoot = path.join(home, ".config", "biny");
-    assert.ok(result.moved.length >= 5);
-    assert.equal(await fs.readFile(path.join(targetRoot, "config.json"), "utf8"), JSON.stringify(defaultConfig));
-    assert.equal(await fs.readFile(path.join(targetRoot, "models-store.json"), "utf8"), JSON.stringify({ version: 2, providers: {} }));
-    assert.equal(await fs.readFile(path.join(targetRoot, "SOUL.md"), "utf8"), "旧 Soul\n");
-    assert.equal(await fs.readFile(path.join(legacyRoot, "SOUL.md"), "utf8"), "实验版旧 Soul\n");
-    assert.equal(result.conflicts.filter((entry) => entry.endsWith(`${path.sep}SOUL.md`)).length, 1);
-    assert.equal(await fs.readFile(path.join(targetRoot, "USER.md"), "utf8"), "旧用户资料\n");
-    assert.equal(await fs.readFile(path.join(targetRoot, "memory", "2026-09-08.md"), "utf8"), "旧日报\n");
-    assert.equal(await fs.readFile(path.join(legacyAgentRoot, "memory", "memory.sqlite"), "utf8"), "runtime state");
-    await assert.rejects(fs.stat(path.join(legacyRoot, "config.json")), { code: "ENOENT" });
-  } finally {
-    await fs.rm(home, { recursive: true, force: true });
-  }
+  assert.throws(() => configSchema.parse(document), /Invalid enum value/u);
 }
 
 function testMemoryEmbeddingDefaultsToE5(): void {
@@ -256,14 +194,12 @@ async function testProjectOverridesAndGlobalPersistence(): Promise<void> {
     await fs.mkdir(path.join(workspace, ".biny"));
     await fs.writeFile(path.join(workspace, ".biny", "settings.json"), JSON.stringify({
       format: "biny-project-settings",
-      configVersion: 1,
+      configVersion: 2,
       defaultModel: "deepseek-v4-flash",
       thinking: { enabled: false },
       agent: { softStepLimit: 2 },
-      permission: { mode: "read-only" },
       context: {
-        compaction: { reserveTokens: 2_048, keepRecentTokens: 8_192, maxSummaryTokens: 1_024 },
-        memory: { maxRecalled: 1 }
+        compaction: { reserveTokens: 2_048, keepRecentTokens: 8_192, maxSummaryTokens: 1_024 }
       },
       sandbox: { mode: "workspace-write" }
     }));
@@ -277,7 +213,7 @@ async function testProjectOverridesAndGlobalPersistence(): Promise<void> {
     assert.equal(effective.context.compaction.keepRecentTokens, 8_192);
     assert.equal(effective.context.compaction.maxSummaryTokens, 1_024);
     assert.deepEqual(effective.context.identity, defaultConfig.context.identity);
-    // 个性化和记忆策略只有 global + chat 两层；旧 project memory override 迁移后被移除。
+    // 个性化和记忆策略只从全局配置与会话设置读取。
     assert.equal(effective.context.memory.maxRecalled, defaultConfig.context.memory.maxRecalled);
     assert.equal(effective.sandbox.mode, "workspace-write");
 
@@ -291,10 +227,10 @@ async function testProjectOverridesAndGlobalPersistence(): Promise<void> {
     assert.equal((await loadConfig(workspace, { globalDir: globalRoot })).defaultModel, "deepseek-v4-flash");
     assert.equal((await loadConfig(workspace, { globalDir: globalRoot })).permission.mode, "full-access");
     const projectDocument = JSON.parse(await fs.readFile(path.join(workspace, ".biny", "settings.json"), "utf8")) as Record<string, unknown>;
-    assert.equal(projectDocument.configVersion, 1, "read-only config loading must not rewrite project settings");
-    assert.deepEqual(projectDocument.permission, { mode: "read-only" });
+    assert.equal(projectDocument.configVersion, 2, "read-only config loading must not rewrite project settings");
+    assert.equal(projectDocument.permission, undefined);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -317,7 +253,7 @@ async function testRemovedProjectBudgetFieldsAreRejected(): Promise<void> {
       /Invalid project [\s\S]*Unrecognized key\(s\)/u
     );
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -332,7 +268,7 @@ async function testConcurrentProjectSettingUpdates(): Promise<void> {
     assert.equal(current.defaultModel, "deepseek-v4-pro");
     assert.equal(current.agent?.softStepLimit, 9);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -346,7 +282,7 @@ async function testProjectCredentialFieldsAreRejected(): Promise<void> {
     }));
     await assert.rejects(loadConfig(workspace, { globalDir: path.join(root, "global") }), /Unrecognized key|Invalid project/u);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -357,10 +293,10 @@ async function testProjectModelAliasMustBeGlobal(): Promise<void> {
   await fs.mkdir(path.join(workspace, ".biny"), { recursive: true });
   try {
     await saveConfig(workspace, defaultConfig, { globalDir: globalRoot });
-    await fs.writeFile(path.join(workspace, ".biny", "settings.json"), JSON.stringify({ defaultModel: "project-only" }));
+    await fs.writeFile(path.join(workspace, ".biny", "settings.json"), JSON.stringify({ format: "biny-project-settings", configVersion: 2, defaultModel: "project-only" }));
     await assert.rejects(loadConfig(workspace, { globalDir: globalRoot }), /Project defaultModel.*not configured in global/u);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -374,7 +310,7 @@ async function testLegacyProjectConfigIsIgnored(): Promise<void> {
     await saveConfigFile(workspace, { ...defaultConfig, defaultModel: "deepseek-v4-pro" });
     assert.equal((await loadConfig(workspace, { globalDir: globalRoot })).defaultModel, defaultConfig.defaultModel);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -411,7 +347,7 @@ async function testVersionedGlobalConfigRejectsStaleWriters(): Promise<void> {
     assert.ok((await firstLoad()).config.context.memory, "memory config section should exist");
     await assert.rejects(fs.access(path.join(globalRoot, ".config.write.lock")));
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -445,7 +381,7 @@ async function testVersionedCredentialUpdatesRejectStaleWriters(): Promise<void>
     );
     assert.equal((await firstStore.loadVersioned!()).config.providers.deepseek?.apiKey, "first-secret");
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -471,7 +407,7 @@ async function testInlineCredentialsRequirePersistentStorage(): Promise<void> {
     );
     assert.equal((await fs.readFile(path.join(globalRoot, "config.json"), "utf8")).includes("inline-test-secret"), true);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -519,7 +455,7 @@ async function testMcpCredentialReferencesStayOutOfConfig(): Promise<void> {
     const restored = await loadStoredCredentials(persisted, store);
     assert.equal(restored.extensions.mcp["demo-server"]?.env?.DEMO_TOKEN, "mcp-inline-secret");
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -568,7 +504,7 @@ async function testConfigUpdatesBindClassStoreMethods(): Promise<void> {
     assert.equal(updated.permission.mode, "full-access");
     assert.equal((await store.load(root)).permission.mode, "full-access");
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -638,7 +574,7 @@ async function testCredentialTransactionCompensatesPartialWrites(): Promise<void
     assert.equal([...values.keys()].some((account) => account.startsWith("settings-tx:")), false);
     await assert.rejects(fs.access(journalPath), /ENOENT/u);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -715,7 +651,7 @@ async function testDeferredCredentialTransactionKeepsRollbackLineage(): Promise<
     assert.equal([...values.keys()].some((key) => key.startsWith("settings-tx:")), false);
     await assert.rejects(fs.access(journalPath), /ENOENT/u);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -762,7 +698,7 @@ async function testFileConfigStoreDeferredCredentialContract(): Promise<void> {
     assert.equal(values.get(account), "deferred-store-target");
     await assert.rejects(fs.access(path.join(globalRoot, ".credentials.transaction.json")), /ENOENT/u);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
@@ -822,7 +758,7 @@ async function testMacKeychainCredentialStoreCachesReads(): Promise<void> {
   assert.equal(await store.get("provider:cached:apiKey"), undefined);
 }
 
-async function testVersionedActivityEmbeddingFieldsMigrateToMemory(): Promise<void> {
+async function testOldActivityEmbeddingConfigIsRejected(): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-activity-embedding-"));
   try {
     // 复刻历史文件形态：配置已版本化，但嵌入字段还留在 activity.*（版本门内迁移够不到）。
@@ -837,16 +773,15 @@ async function testVersionedActivityEmbeddingFieldsMigrateToMemory(): Promise<vo
     await fs.mkdir(root, { recursive: true });
     await fs.writeFile(path.join(root, "config.json"), JSON.stringify(document, null, 2) + "\n", "utf8");
 
-    const loaded = await loadConfigFile(root);
-    assert.equal("embeddingConsents" in (loaded.activity as Record<string, unknown>), false, "activity 段的嵌入字段必须被清除");
-    assert.equal("cloudEmbeddingConsents" in loaded.context.memory, false);
-    assert.deepEqual(loaded.context.memory.embeddingModel, { kind: "local", model: "multilingual-e5-small" });
+    const before = await fs.readFile(path.join(root, "config.json"), "utf8");
+    await assert.rejects(loadConfigFile(root));
+    assert.equal(await fs.readFile(path.join(root, "config.json"), "utf8"), before);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 
-async function testRemovedMemoryPolicyFieldsAreIgnored(): Promise<void> {
+async function testOldMemoryPolicyConfigIsRejected(): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-removed-memory-fields-"));
   try {
     const document = JSON.parse(JSON.stringify(defaultConfig)) as Record<string, any>;
@@ -864,13 +799,10 @@ async function testRemovedMemoryPolicyFieldsAreIgnored(): Promise<void> {
     await fs.mkdir(root, { recursive: true });
     await fs.writeFile(path.join(root, "config.json"), JSON.stringify(document, null, 2) + "\n", "utf8");
 
-    const loaded = await loadConfigFile(root);
-    const memory = loaded.context.memory as Record<string, unknown>;
-    assert.equal("telos" in memory, false);
-    assert.equal("similarityThresholds" in memory, false);
-    assert.equal("dedupAcrossUserIds" in memory, false);
-    assert.equal(loaded.context.memory.enabled, defaultConfig.context.memory.enabled);
+    const before = await fs.readFile(path.join(root, "config.json"), "utf8");
+    await assert.rejects(loadConfigFile(root));
+    assert.equal(await fs.readFile(path.join(root, "config.json"), "utf8"), before);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }

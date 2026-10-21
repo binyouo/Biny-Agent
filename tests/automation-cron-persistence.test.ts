@@ -11,7 +11,7 @@ await test("creating cron during a repeated hour persists a future fire across r
   process.env.TZ = "America/New_York";
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2025-11-02T06:30:30.000Z") });
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-cron-fold-"));
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   let store = await AutomationStore.open(root, authority);
   try {
     // Verify create, persisted nextFireAt, and due-fire admission against the selected timezone.
@@ -21,7 +21,7 @@ await test("creating cron during a repeated hour persists a future fire across r
     assert.deepEqual(store.claimDue(new Date()), []);
     store.close();
     authority.close();
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     store = await AutomationStore.open(root, authority);
     assert.equal(store.get(record.automationId)?.nextFireAt, "2025-11-02T07:00:00.000Z");
     assert.equal(store.get(record.automationId)?.schedule.timezone, "America/New_York");

@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Lifecycle-sensitive memory rewrites opt into waiting; other auxiliary text calls retain their default. */
 import assert from "node:assert/strict";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -10,7 +11,7 @@ for (const route of ["injected", "sdk-request", "sdk-stream"] as const) {
     const held = deferred<void>();
     let model: AgentModel;
     if (route === "injected") {
-      model = {
+      model = testModel({
         provider: "fixture", modelId: route,
         stream: async (_context, options) => {
           assert.ok(options?.signal);
@@ -20,7 +21,7 @@ for (const route of ["injected", "sdk-request", "sdk-stream"] as const) {
             yield { type: "text-delta", text: "late result" };
           })();
         }
-      };
+      });
     } else {
       const provider: LanguageModelV4 = {
         specificationVersion: "v4", provider: "fixture", modelId: route, supportedUrls: {},
@@ -65,9 +66,9 @@ await testSdkProviderCleanup();
 await testSdkNaturalClosure();
 await testSdkCleanupFailure();
 
-const success: AgentModel = { provider: "fixture", modelId: "success", stream: async () =>
-  (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "rewritten terms" }; })() };
-assert.equal((await generateNativeText(success, [], { awaitModelSettlementOnAbort: true })).text, "rewritten terms");
+const success: AgentModel = testModel({ provider: "fixture", modelId: "success", stream: async () =>
+  (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "rewritten terms" }; yield { type: "finish", reason: "stop" }; })() });
+assert.equal((await generateNativeText(success, [{ role: "user", content: "fixture request" }], { awaitModelSettlementOnAbort: true })).text, "rewritten terms");
 console.log("memory rewrite settlement tests passed");
 
 async function testSdkProviderCleanup(): Promise<void> {

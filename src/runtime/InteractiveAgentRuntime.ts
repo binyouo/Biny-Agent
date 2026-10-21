@@ -1,3 +1,5 @@
+import { createRunDeadlineSignal } from "./runDeadline.js";
+import { validateRunOptions, parseRunVerification, withRunTaskGuidance, resolveRunDeadlineBudget, runVerificationApproval, closureStopReason, type RunCommandOptions, type RunCommandResult } from "./oneShot.js";
 import type { ToolOptimization } from "../session/toolOptimization.js";
 import { randomUUID } from "node:crypto";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../agent/AgentSession.js";
@@ -21,7 +23,6 @@ import { redactSecrets, redactSensitiveValue } from "../utils/secrets.js";
 import { AgentEventBus } from "./AgentEventBus.js";
 import { createCommandRuntime, type CommandRuntime, type CommandRuntimeOptions } from "./CommandRuntime.js";
 import { resolveSessionFile, sessionIdFromFile } from "../session/store.js";
-import { SessionRunLedger, type FinishSessionRunOptions } from "../session/runLedger.js";
 import type { SessionTurnStatusEvent } from "../session/recorder.js";
 import { SessionLeaseStore, type SessionLease } from "./SessionLease.js";
 import type { RuntimeEventAuthority, RuntimeRunRecord } from "./RuntimeAuthority.js";
@@ -78,7 +79,6 @@ export interface InteractiveAgentRuntimeOptions {
   /** 由 composition root 注入；测试可省略跨进程租约。 */
   sessionLeases?: SessionLeaseStore;
   /** 运行 ledger 可注入，未提供时由真实 CommandRuntime 的 persistenceRoot 创建。 */
-  runLedger?: SessionRunLedger;
   /** 新 RuntimeEvent 先进入 SQLite authority，再由 SessionRecorder 写 JSONL。 */
   runtimeAuthority?: RuntimeEventAuthority;
 }
@@ -122,6 +122,7 @@ export interface InteractiveRuntimeHandle {
     operation: RuntimeOperation,
     start: (signal: AbortSignal) => T
   ): T;
+  executeOneShot(input: string, attachments: AgentAttachment[], options: RunCommandOptions, runId: string): Promise<RunCommandResult & { output: string }>;
   compactConversation(hint?: string): Promise<string>;
   getSnapshot(): InteractiveRuntimeSnapshot;
   subscribe(listener: (update: AgentRuntimeUpdate) => void): () => void;
@@ -181,7 +182,6 @@ export class InteractiveAgentRuntime {
   private static readonly defaultShutdownDrainMs = 2_000;
   private readonly updates = new AgentEventBus<AgentRuntimeUpdate>();
   private readonly sessionLeases: SessionLeaseStore | undefined;
-  private readonly runLedger: SessionRunLedger | undefined;
   private readonly runtimeAuthority: RuntimeEventAuthority | undefined;
   private sessionLease: SessionLease | undefined;
   /** 打开会话后保持的 writer claim；运行 lease 可以与它共享同一个文件 lease。 */
@@ -202,6 +202,7 @@ export class InteractiveAgentRuntime {
   private activeOperationCompletion: Promise<void> | undefined;
   private closePromise: Promise<void> | undefined;
   private commandRuntimeClosePromise: Promise<void> | undefined;
+  private oneShot: { runId: string; controller: AbortController } | undefined;
   private closed = false;
   private readonly shutdownDrainMs: number;
   private resourceChangeUnsubscribe: (() => void) | undefined;
@@ -218,10 +219,6 @@ export class InteractiveAgentRuntime {
       throw new Error("shutdownDrainMs must be a non-negative safe integer.");
     }
     this.sessionLeases = options.sessionLeases;
-    this.runLedger = options.runLedger
-      ?? (typeof commandRuntime.persistenceRoot === "string"
-        ? new SessionRunLedger(commandRuntime.persistenceRoot)
-        : undefined);
     this.runtimeAuthority = options.runtimeAuthority ?? commandRuntime.runtimeAuthority;
     this.resourceChangeUnsubscribe = commandRuntime.subscribeResourceChanges?.(() => this.publishSnapshot());
     this.goalChangeUnsubscribe = commandRuntime.sessionGoals?.subscribe?.((sessionId) => {
@@ -632,6 +629,10 @@ export class InteractiveAgentRuntime {
   }
 
   cancelRun(runId: string, reason: AgentTurnCancellationReason): boolean {
+    if (this.oneShot?.runId === runId && this.state.kind === "maintenance") {
+      this.oneShot.controller.abort(new AgentTurnCancellationError(reason));
+      return true;
+    }
     if (this.activeRun?.runId === runId) {
       const cancellation = new AgentTurnCancellationError(reason);
       this.commandRuntime.subagents?.cancelParent(this.activeRun.runId, cancellation.message);
@@ -793,6 +794,64 @@ export class InteractiveAgentRuntime {
       this.setState({ kind: "idle" });
       this.releaseSessionLease(leaseState);
       throw error;
+    }
+  }
+
+  async executeOneShot(input: string, attachments: AgentAttachment[], options: RunCommandOptions, runId: string): Promise<RunCommandResult & { output: string }> {
+    validateRunOptions(options);
+    if (this.oneShot || this.state.kind !== "idle") throw new Error("Runtime is busy.");
+    const controller = new AbortController();
+    this.oneShot = { runId, controller };
+    const budget = options.deadlineAtMs === undefined ? undefined : resolveRunDeadlineBudget(options.deadlineAtMs, options.finalizationReserveMs);
+    const deadline = budget ? createRunDeadlineSignal(budget.deadlineAtMs) : undefined;
+    const workDeadline = budget && budget.finalizationReserveMs > 0 ? createRunDeadlineSignal(budget.workDeadlineAtMs, 0) : undefined;
+    const signal = AbortSignal.any([controller.signal, ...(deadline ? [deadline.signal] : [])]);
+    const attemptSignal = workDeadline ? AbortSignal.any([signal, workDeadline.signal]) : signal;
+    const verification = parseRunVerification(options.verification);
+    const prompt = withRunTaskGuidance(input, options.deadlineAtMs, options.finalizationReserveMs, verification ?? false);
+    try {
+      let turn: AgentTurnOutcome;
+      let verified: Awaited<ReturnType<CommandRuntime["runTaskWithVerification"]>> | undefined;
+      if (verification) {
+        verified = await this.runExclusiveOperation("verification", async operationSignal => {
+          const combined = AbortSignal.any([signal, operationSignal]);
+          const permissionRun = this.standaloneRun(this.getInfo().sessionId, runId, input);
+          const cancelPermission = () => {
+            this.pendingPermission?.resolve({ approved: false, action: "deny", scope: "once" });
+            this.pendingPermission = undefined;
+          };
+          combined.addEventListener("abort", cancelPermission, { once: true });
+          try {
+            combined.throwIfAborted();
+            return await this.commandRuntime.runTaskWithVerification({ prompt, attachments, verification,
+              signal: combined, attemptSignal: AbortSignal.any([attemptSignal, operationSignal]),
+              confirmPermission: options.headless ? (async () => ({ approved: true, scope: "session" as const }))
+                : request => this.waitForPermission(permissionRun, request)
+            });
+          } finally { combined.removeEventListener("abort", cancelPermission); cancelPermission(); }
+        });
+        turn = verified.turnOutcome ?? { status: verified.closure.status === "cancelled" ? "cancelled" : "incomplete", stopReason: closureStopReason(verified.closure.status), steps: 0, output: verified.closure.output ?? "" };
+      } else {
+        attemptSignal.throwIfAborted();
+        const submitted = this.submitPrompt(prompt, attachments, { runId });
+        const cancel = () => this.cancelRun(submitted.runId, "cancelled");
+        attemptSignal.addEventListener("abort", cancel, { once: true });
+        try { if (attemptSignal.aborted) cancel(); turn = await submitted.completion; }
+        finally { attemptSignal.removeEventListener("abort", cancel); }
+      }
+      const info = this.getInfo();
+      return { status: turn.status, stopReason: turn.stopReason, steps: turn.steps, error: turn.error,
+        output: turn.output || verified?.closure.output || "", sessionId: info.sessionId, sessionFile: info.sessionFile,
+        modelAlias: info.modelAlias, provider: info.provider, model: info.modelLabel,
+        usage: this.commandRuntime.agent.usageSummary(), modelRequests: this.commandRuntime.agent.modelRequestSummary(),
+        verificationStatus: verified?.closure.status ?? "not_run",
+        deliveryStatus: verified ? verified.closure.status === "completed" ? "verified" : verified.closure.status : "unverified",
+        verificationReason: verified?.closure.reason, verification: verified?.closure.evidence,
+        approval: verified && verification ? runVerificationApproval(verified.closure.evidence, verification) : undefined,
+        taskRunId: verified?.taskRunId };
+    } finally {
+      deadline?.dispose(); workDeadline?.dispose();
+      if (this.oneShot?.runId === runId) this.oneShot = undefined;
     }
   }
 
@@ -1140,22 +1199,6 @@ export class InteractiveAgentRuntime {
     });
   }
 
-  private async startRunLedger(run: AgentRun): Promise<void> {
-    this.runtimeAuthority?.markRunRunning(run.runId, run.startedAt);
-    await this.runLedger?.start({
-      runId: run.runId,
-      sessionId: run.sessionId,
-      messageId: run.messageId,
-      runtimeId: this.sessionLeases?.runtimeId,
-      turnId: run.turnId,
-      startedAt: run.startedAt
-    }).catch(() => undefined);
-  }
-
-  private async finishRunLedger(run: ActiveRunSnapshot, options: FinishSessionRunOptions): Promise<void> {
-    await this.runLedger?.finish(run.runId, options).catch(() => undefined);
-  }
-
   /**
    * Canonical terminal fact must exist before the control-plane projection and
    * before any host terminal event becomes visible to a client.
@@ -1163,31 +1206,9 @@ export class InteractiveAgentRuntime {
   private async commitTerminal(
     run: AgentRun,
     outcome: AgentTurnOutcome,
-    projection: Omit<FinishSessionRunOptions, "terminal">
+    projection: Pick<AgentTurnOutcome, "status" | "stopReason" | "finishReason" | "steps" | "resumable" | "blockedReason" | "requiredAction" | "error"> & { durationMs: number }
   ): Promise<void> {
-    const ensureTerminalOutcome = (this.commandRuntime.agent as unknown as {
-      ensureTerminalOutcome?: (runId: string, turnId: string, value: AgentTurnOutcome) => Promise<unknown>;
-    }).ensureTerminalOutcome;
-    if (!ensureTerminalOutcome) {
-      // Lightweight embedded test hosts may provide only the historical
-      // AgentSession surface. The real AgentSession always implements this
-      // canonical commit boundary.
-      this.runtimeAuthority?.finishRun({
-        runId: run.runId,
-        status: outcome.status,
-        payload: {
-          stopReason: outcome.stopReason,
-          finishReason: outcome.finishReason,
-          steps: outcome.steps,
-          output: outcome.output,
-          error: outcome.error,
-          projection
-        }
-      });
-      await this.finishRunLedger(run, projection);
-      return;
-    }
-    const terminal = await ensureTerminalOutcome.call(this.commandRuntime.agent, run.runId, run.turnId, outcome) as FinishSessionRunOptions["terminal"];
+    const terminal = await this.commandRuntime.agent.ensureTerminalOutcome(run.runId, run.turnId, outcome);
     if (!terminal) throw new Error(`Run ${run.runId} terminal commit returned no runtime identity.`);
     this.runtimeAuthority?.finishRun({
       runId: run.runId,
@@ -1202,7 +1223,6 @@ export class InteractiveAgentRuntime {
         projection
       }
     });
-    await this.finishRunLedger(run, { ...projection, terminal });
   }
 
   private async executeRun(run: AgentRun, signal: AbortSignal): Promise<AgentRunOutcome> {
@@ -1268,7 +1288,7 @@ export class InteractiveAgentRuntime {
     });
 
     // 首批事件是前台时间线进入运行态的信号；账本落盘属于后台持久化，不能阻挡用户消息先展示。
-    await this.startRunLedger(run);
+    this.runtimeAuthority?.markRunRunning(run.runId, run.startedAt);
     try {
       // Skill/MCP 清单已在 admission 时固定；慢速刷新只影响下一回合，不挡当前首个模型请求。
       this.commandRuntime.setUserInputRun?.(run.allowUserInput && run.source === undefined && !run.supervision

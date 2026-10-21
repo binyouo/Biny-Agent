@@ -106,9 +106,6 @@ test("tool lookup uses the tool ID index after reopening an existing database", 
     authority.appendEvent({ sessionId: "s", runId: "r", turnId: "t", eventType: "session.tool_call", payload: { toolCallId: "wanted" } });
     const databasePath = authority.databasePath;
     authority.close();
-    const old = new DatabaseSync(databasePath);
-    old.exec("DROP INDEX IF EXISTS runtime_events_toolcall_idx; PRAGMA user_version = 9");
-    old.close();
     authority = await RuntimeEventAuthority.open(root);
     let lookupSql = "";
     const connection = authority.databaseHandle();

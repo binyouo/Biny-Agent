@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mock, test } from "node:test";
@@ -292,7 +294,7 @@ await test("a new root turn discovers disconnected tools and reconnects only bef
     registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries()));
     const agent = new AgentSession({ workspaceRoot: commands.workspaceRoot, config: { ...commands.config, agent: { ...commands.config.agent, toolExecutionMode: "direct" } }, recorder: new SessionRecorder(commands.workspaceRoot),
       toolRegistry: registry, permissionManager: new PermissionManager(commands.config.permission),
-      model: { provider: "test", modelId: "offline-discovery", supportsTools: true, async stream(context) {
+      model: testModel({ provider: "test", modelId: "offline-discovery", supportsTools: true, async stream(context) {
         steps++;
         assert.ok(steps <= 3);
         if (steps === 2) assert.ok(context.tools.some(tool => tool.name === "mcp_fixture_first"));
@@ -302,7 +304,7 @@ await test("a new root turn discovers disconnected tools and reconnects only bef
           else yield { type: "text-delta", text: "Done" };
           yield { type: "finish", reason: steps < 3 ? "tool-calls" : "stop" };
         })();
-      } }
+      } })
     });
     try {
       await agent.initialize();

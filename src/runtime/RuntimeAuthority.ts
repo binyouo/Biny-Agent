@@ -14,7 +14,7 @@ import { readSessionEvents, readSessionEventsForBackfill } from "../session/even
 import type { SessionEvent } from "../session/recorder.js";
 import { assertRuntimeEventSequence, validateRuntimeEventStream, type RuntimeEventIdentity, type RuntimeEventSink } from "../session/runtimeEvent.js";
 
-const schemaVersion = 14;
+const schemaVersion = 16;
 const busyTimeoutMs = 5_000;
 const taskAttemptIndexName = "task_attempts_task_run_idx";
 const defaultPageSize = 100;
@@ -119,7 +119,7 @@ export interface RuntimeContinuationClaim {
 
 export interface RuntimeAuthorityOptions {
   workspaceId?: string;
-  backfillLegacySessions?: boolean;
+  reconcileSessions?: boolean;
 }
 
 export interface RuntimeEventAppendInput {
@@ -195,7 +195,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     try {
       authority.migrate();
       authority.ensureTaskAttemptIndex();
-      if (options.backfillLegacySessions !== false) await authority.reconcileSessionProjections();
+      if (options.reconcileSessions !== false) await authority.reconcileSessionProjections();
       return authority;
     } catch (error) {
       authority.close();
@@ -216,7 +216,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     const authority = new RuntimeEventAuthority(path.resolve(persistenceRoot), database, workspaceIdForRoot(persistenceRoot));
     try {
       const revision = authority.schemaRevision();
-      if (revision !== schemaVersion) throw new Error(`Runtime schema revision ${String(revision)} requires an explicit runtime startup before reading projections.`);
+      if (revision !== schemaVersion) throw new Error(`Runtime schema revision ${String(revision)} is unsupported; projections require the current runtime schema.`);
       return authority;
     } catch (error) {
       authority.close();
@@ -632,6 +632,26 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     };
   }
 
+  /** 可见会话的最新运行；只读查询不修复或猜测失联进程的终态。 */
+  latestSessionRuns(sessionIds: readonly string[]): Map<string, RuntimeRunRecord> {
+    this.assertOpen();
+    const result = new Map<string, RuntimeRunRecord>();
+    const query = this.database.prepare(`SELECT * FROM agent_runs
+      WHERE workspace_id = ? AND session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`);
+    for (const sessionId of new Set(sessionIds)) {
+      const row = query.get(this.workspaceId, sessionId) as unknown as RuntimeRunRow | undefined;
+      if (row) result.set(sessionId, toRuntimeRun(row));
+    }
+    return result;
+  }
+
+  static async readLatestSessionRuns(persistenceRoot: string, sessionIds: readonly string[]): Promise<Map<string, RuntimeRunRecord>> {
+    if (sessionIds.length === 0) return new Map();
+    const authority = await RuntimeEventAuthority.openReadOnly(persistenceRoot);
+    try { return authority?.latestSessionRuns(sessionIds) ?? new Map(); }
+    finally { authority?.close(); }
+  }
+
   schemaRevision(): number {
     this.assertOpen();
     const row = this.database.prepare("PRAGMA user_version").get() as Record<string, unknown> | undefined;
@@ -681,7 +701,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
         contentHash = read.contentHash;
         prefixHash = read.prefixHash;
       } catch {
-        // 坏的旧尾部仍交给 session 恢复逻辑处理；authority 不凭损坏数据伪造事实。
+        // 损坏的日志尾部仍交给 session 恢复逻辑处理；authority 不凭损坏数据伪造事实。
         continue;
       }
       try {
@@ -710,11 +730,9 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
         for (let index = unchangedPrefix ? previousCount : 0; index < events.length; index++) {
           const event = events[index]!;
           const runtime = event.runtime;
-          const runId = runtime
-            ? runtime.runId ?? `session:${sessionId}`
-            : `legacy:${sessionId}`;
+          const runId = runtime?.runId ?? `session:${sessionId}`;
           const turnId = runtime?.turnId ?? runId;
-          const eventId = runtime?.eventId ?? legacyEventId(sessionId, index + 1);
+          const eventId = runtime?.eventId ?? sessionSourceEventId(sessionId, index + 1);
           this.appendEventInTransaction({
             eventId,
             eventSeq: runtime?.eventSeq,
@@ -722,7 +740,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             invocationId: runtime?.runId ?? eventId,
             runId,
             turnId,
-            eventType: runtime ? sessionEventType(event) : `legacy.${event.type}`,
+            eventType: sessionEventType(event),
             payload: event,
             createdAt: event.time ?? new Date(0).toISOString()
           });
@@ -789,7 +807,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
   private migrate(): void {
     this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;");
     const revision = this.schemaRevision();
-    if (revision > schemaVersion) throw new Error(`Unsupported runtime schema revision ${String(revision)}.`);
+    if (revision !== 0 && revision !== schemaVersion) throw new Error(`Unsupported runtime schema revision ${String(revision)}.`);
     if (revision === 0) {
       this.transaction(() => {
         this.database.exec(`
@@ -912,8 +930,8 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             graph_id TEXT PRIMARY KEY,
             workspace_id TEXT NOT NULL,
             status TEXT NOT NULL,
-            mode TEXT NOT NULL DEFAULT 'fixed',
-            supervisor_session_id TEXT,
+            mode TEXT NOT NULL CHECK (mode = 'supervised'),
+            supervisor_session_id TEXT NOT NULL,
             max_replans INTEGER NOT NULL DEFAULT 0,
             replan_count INTEGER NOT NULL DEFAULT 0,
             revision INTEGER NOT NULL DEFAULT 0,
@@ -1024,179 +1042,6 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
         }
         this.database.exec(`PRAGMA user_version = ${String(schemaVersion)};`);
       });
-    } else {
-      let currentRevision = revision;
-      if (currentRevision < 2) {
-      this.transaction(() => {
-        if (!this.hasColumn("agent_runs", "terminal_payload_json")) {
-          this.database.exec("ALTER TABLE agent_runs ADD COLUMN terminal_payload_json TEXT");
-        }
-        this.database.exec(`
-          CREATE TABLE IF NOT EXISTS run_continuation_claims (
-            source_run_id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            child_run_id TEXT NOT NULL,
-            claim_token TEXT NOT NULL,
-            created_at TEXT NOT NULL
-          );
-        `);
-        this.database.exec("PRAGMA user_version = 2");
-      });
-        currentRevision = 2;
-      }
-      if (currentRevision < 3) {
-        this.transaction(() => {
-          this.database.exec(`
-            CREATE TABLE IF NOT EXISTS capability_invocation_chunks (
-              invocation_id TEXT NOT NULL REFERENCES capability_invocations(invocation_id) ON DELETE CASCADE,
-              chunk_index INTEGER NOT NULL,
-              data_json TEXT NOT NULL,
-              final INTEGER NOT NULL DEFAULT 0,
-              created_at TEXT NOT NULL,
-              PRIMARY KEY (invocation_id, chunk_index)
-            );
-          `);
-          this.database.exec("PRAGMA user_version = 3");
-        });
-      }
-      if (currentRevision < 4) {
-        this.transaction(() => {
-          if (!this.hasColumn("runtime_events", "event_seq")) {
-            this.database.exec("ALTER TABLE runtime_events ADD COLUMN event_seq INTEGER");
-          }
-          this.database.exec("CREATE UNIQUE INDEX IF NOT EXISTS runtime_events_session_event_seq_idx ON runtime_events (workspace_id, session_id, event_seq) WHERE event_seq IS NOT NULL");
-          this.database.exec("PRAGMA user_version = 4");
-        });
-        currentRevision = 4;
-      }
-      if (currentRevision < 5) {
-        this.transaction(() => {
-          if (!this.hasColumn("runtime_backfills", "file_size")) {
-            this.database.exec("ALTER TABLE runtime_backfills ADD COLUMN file_size INTEGER");
-          }
-          if (!this.hasColumn("runtime_backfills", "modified_at_ms")) {
-            this.database.exec("ALTER TABLE runtime_backfills ADD COLUMN modified_at_ms INTEGER");
-          }
-          this.database.exec("PRAGMA user_version = 5");
-        });
-        currentRevision = 5;
-      }
-      if (currentRevision < 6) {
-        this.transaction(() => {
-          if (!this.hasColumn("graphs", "mode")) {
-            this.database.exec("ALTER TABLE graphs ADD COLUMN mode TEXT NOT NULL DEFAULT 'fixed'");
-          }
-          if (!this.hasColumn("graphs", "supervisor_session_id")) {
-            this.database.exec("ALTER TABLE graphs ADD COLUMN supervisor_session_id TEXT");
-          }
-          if (!this.hasColumn("graphs", "max_replans")) {
-            this.database.exec("ALTER TABLE graphs ADD COLUMN max_replans INTEGER NOT NULL DEFAULT 0");
-          }
-          if (!this.hasColumn("graphs", "replan_count")) {
-            this.database.exec("ALTER TABLE graphs ADD COLUMN replan_count INTEGER NOT NULL DEFAULT 0");
-          }
-          if (!this.hasColumn("graph_nodes", "replaces_node_id")) {
-            this.database.exec("ALTER TABLE graph_nodes ADD COLUMN replaces_node_id TEXT REFERENCES graph_nodes(node_id)");
-          }
-          if (!this.hasColumn("graph_wakes", "kind")) {
-            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN kind TEXT NOT NULL DEFAULT 'dispatch'");
-          }
-          if (!this.hasColumn("graph_wakes", "graph_revision")) {
-            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN graph_revision INTEGER");
-          }
-          if (!this.hasColumn("graph_wakes", "checkpoint")) {
-            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN checkpoint TEXT");
-          }
-          if (!this.hasColumn("graph_wakes", "session_id")) {
-            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN session_id TEXT");
-          }
-          if (!this.hasColumn("graph_wakes", "run_id")) {
-            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN run_id TEXT");
-          }
-          this.database.exec(`
-            CREATE UNIQUE INDEX IF NOT EXISTS graph_supervisor_wakes_unique
-              ON graph_wakes (graph_id, graph_revision, checkpoint, session_id)
-              WHERE kind = 'supervisor'
-          `);
-          this.database.exec("PRAGMA user_version = 6");
-        });
-      }
-      if (currentRevision < 7) {
-        this.transaction(() => {
-          // 来源 run 已保存在 graph.created 事件中，无需再维护一份可变投影。
-          if (this.hasColumn("graphs", "supervisor_run_id")) {
-            this.database.exec("ALTER TABLE graphs DROP COLUMN supervisor_run_id");
-          }
-          this.database.exec("PRAGMA user_version = 7");
-        });
-        currentRevision = 7;
-      }
-      if (currentRevision < 8) {
-        this.transaction(() => {
-          if (!this.hasColumn("capability_invocations", "request_hash")) {
-            this.database.exec("ALTER TABLE capability_invocations ADD COLUMN request_hash TEXT");
-          }
-          if (!this.hasColumn("capability_invocations", "outcome_unknown_reason")) {
-            this.database.exec("ALTER TABLE capability_invocations ADD COLUMN outcome_unknown_reason TEXT");
-          }
-          this.database.exec("CREATE INDEX IF NOT EXISTS capability_invocations_offer_idx ON capability_invocations (registration_id, offer_id)");
-          this.database.exec("PRAGMA user_version = 8");
-        });
-        currentRevision = 8;
-      }
-      if (currentRevision < 9) {
-        this.transaction(() => {
-          if (!this.hasColumn("capability_invocations", "dispatch_state")) {
-            // 旧版本没有派发边界证据，沿用保守解释：在途记录可能已到达外部执行器。
-            this.database.exec("ALTER TABLE capability_invocations ADD COLUMN dispatch_state TEXT NOT NULL DEFAULT 'dispatched'");
-          }
-          this.database.exec("PRAGMA user_version = 9");
-        });
-      }
-      if (currentRevision < 10) {
-        this.transaction(() => {
-          this.database.exec(`CREATE INDEX IF NOT EXISTS runtime_events_toolcall_idx
-          ON runtime_events (workspace_id, json_extract(payload_json, '$.toolCallId'), sequence)
-          WHERE event_type IN ('session.tool_call', 'session.tool_execution', 'session.tool_result');
-            PRAGMA user_version = 10;`);
-        });
-      }
-      if (currentRevision < 11) {
-        this.transaction(() => {
-          for (const [column, type] of [
-            ["file_mtime_ms", "REAL"], ["changed_at_ms", "REAL"],
-            ["file_dev", "TEXT"], ["file_ino", "TEXT"], ["content_hash", "TEXT"]
-          ] as const) {
-            if (!this.hasColumn("runtime_backfills", column)) {
-              this.database.exec(`ALTER TABLE runtime_backfills ADD COLUMN ${column} ${type}`);
-            }
-          }
-          this.database.exec("PRAGMA user_version = 11");
-        });
-      }
-      if (currentRevision < 12) {
-        this.transaction(() => {
-          this.createSessionGoalSchema();
-          this.database.exec("PRAGMA user_version = 12");
-        });
-      }
-      if (currentRevision < 13) {
-        this.transaction(() => {
-          // 移除工作区目标记录；任务图、会话目标和审计事件保留。
-          this.database.exec("DROP TABLE IF EXISTS goals");
-          if (this.hasColumn("graphs", "goal_id")) this.database.exec("ALTER TABLE graphs DROP COLUMN goal_id");
-          this.database.exec("PRAGMA user_version = 13");
-        });
-      }
-      if (currentRevision < 14) {
-        this.transaction(() => {
-          // Legacy deferred rows keep their stored deadline; original identity is unrecoverable.
-          if (!this.hasColumn("automation_pending_fires", "retry_at")) {
-            this.database.exec("ALTER TABLE automation_pending_fires ADD COLUMN retry_at TEXT");
-          }
-          this.database.exec("PRAGMA user_version = 14");
-        });
-      }
     }
   }
 
@@ -1286,11 +1131,6 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
         PRIMARY KEY (workspace_id, goal_id, usage_id)
       );
     `);
-  }
-
-  private hasColumn(table: string, column: string): boolean {
-    const rows = this.database.prepare(`PRAGMA table_info(${table})`).all() as Array<Record<string, unknown>>;
-    return rows.some((row) => row.name === column);
   }
 
   private appendEventInTransaction(input: RuntimeEventAppendInput): RuntimeEvent {
@@ -1434,8 +1274,8 @@ function sessionEventType(event: unknown): string {
   return "session.unknown";
 }
 
-function legacyEventId(sessionId: string, sequence: number): string {
-  return `legacy-event:${createHash("sha256").update(`${sessionId}:${String(sequence)}`).digest("hex")}`;
+function sessionSourceEventId(sessionId: string, sequence: number): string {
+  return `session-source:${createHash("sha256").update(`${sessionId}:${String(sequence)}`).digest("hex")}`;
 }
 
 function assertTerminalEventMatchesRun(
@@ -1581,7 +1421,7 @@ function json(value: unknown): string {
   return JSON.stringify(canonicalJsonValue(value === undefined ? null : value));
 }
 
-/** JSONL 写入器会补上 time；旧 authority 投影可能没有该字段，不能因此拒绝回填。 */
+/** JSONL 写入器补上 time；运行事件的内容身份不包含写入时刻。 */
 function sessionPayloadJson(value: unknown): string {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return json(value);
   const payload = { ...(value as Record<string, unknown>) };

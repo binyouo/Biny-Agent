@@ -526,10 +526,9 @@ export interface AutomationSchedulerOptions {
   onActivity?(): void;
   getRuntime: () => InteractiveRuntimeHandle;
   /** 重建 runtime 后数据库连接会替换；scheduler 必须取当前 authority projection。 */
-  getStore?: () => AutomationStore;
-  store?: AutomationStore;
+  getStore: () => AutomationStore;
   /** 为某个 fire 取得专属 session runtime；不传目标时创建新的自动化 session。 */
-  createFreshRuntime?: (sessionId?: string) => Promise<InteractiveRuntimeHandle>;
+  createFreshRuntime: (sessionId?: string) => Promise<InteractiveRuntimeHandle>;
   onRuntimeReplaced?: (runtime: InteractiveRuntimeHandle) => void;
   canStartRun?: () => boolean;
   tickMs?: number;
@@ -609,8 +608,7 @@ export class AutomationScheduler {
     const automation = store.get(claimed.automationId);
     if (!automation) return;
     const targetSessionId = automation.executionTemplate.sessionId;
-    const usesDedicatedRuntime = this.options.createFreshRuntime !== undefined
-      && (automation.triggerType !== "heartbeat" || targetSessionId !== undefined);
+    const usesDedicatedRuntime = automation.triggerType !== "heartbeat" || targetSessionId !== undefined;
     if (this.options.canStartRun && !this.options.canStartRun()) {
       store.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), "Runtime Host reached its concurrent run limit; fire deferred.");
       return;
@@ -625,7 +623,7 @@ export class AutomationScheduler {
     let didSubmit = false;
     try {
       let target = current;
-      if (usesDedicatedRuntime && this.options.createFreshRuntime) {
+      if (usesDedicatedRuntime) {
         // 目标 session 由模板决定；没有目标的非 heartbeat fire 使用独立的新 session，
         // 绝不能复用当前 UI session。heartbeat 沿用 primary，避免每次心跳都创建新会话。
         target = await this.options.createFreshRuntime(targetSessionId);
@@ -638,9 +636,7 @@ export class AutomationScheduler {
         return;
       }
       if (targetSessionId !== undefined && target.getSnapshot().info.sessionId !== targetSessionId) {
-        // 没有 Host registry 的同进程 fallback 仍允许复用单 runtime；正常 Host 会在
-        // createFreshRuntime(sessionId) 中直接创建/取得目标条目，不会在这里改写 session。
-        await target.resumeSession(targetSessionId);
+        throw new Error(`Automation runtime does not own session ${targetSessionId}.`);
       }
       // Preparation may await a pause, deletion, or Store replacement. Recheck
       // this unbound claim and Host admission with no await before submission.
@@ -658,7 +654,7 @@ export class AutomationScheduler {
       );
       didSubmit = true;
       store.bindFireRun(claimed.fireId, submitted.runId);
-      const outcome = automation.triggerType !== "heartbeat" && targetSessionId === undefined && this.options.createFreshRuntime
+      const outcome = automation.triggerType !== "heartbeat" && targetSessionId === undefined
         ? await waitForIsolatedAutomationRun(target, submitted)
         : await submitted.completion;
       store = this.store();
@@ -726,9 +722,7 @@ export class AutomationScheduler {
   }
 
   private dispatchQueuedFires(): void {
-    // Without a runtime factory every fire shares the same mutable runtime,
-    // including resumeSession(), so that compatibility path remains serial.
-    const limit = this.options.createFreshRuntime ? maxConcurrentAutomationFires : 1;
+    const limit = maxConcurrentAutomationFires;
     for (let index = 0; !this.closed && this.activeFires < limit && index < this.fireQueue.length;) {
       const queued = this.fireQueue[index]!;
       const automation = this.store().get(queued.fire.automationId);
@@ -763,9 +757,7 @@ export class AutomationScheduler {
   }
 
   private store(): AutomationStore {
-    const store = this.options.getStore?.() ?? this.options.store;
-    if (!store) throw new Error("Automation store is unavailable.");
-    return store;
+    return this.options.getStore();
   }
 }
 

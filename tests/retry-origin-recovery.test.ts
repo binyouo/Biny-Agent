@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { mkdtemp, readFile, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -90,7 +91,10 @@ for (const [scenario, boundary] of cases) test(`retry origin: ${boundary.startsW
       assert.equal(report.facts.filter(event => event.type === "assistant_message" && event.messageId === "reserved-retry-final").length, 1);
       assert.equal(report.facts.filter(event => event.type === "message_version_selected" && event.messageId === "reserved-retry-final").length, 1);
     }
-    if (scenario.includes("multistep")) assert.equal(report.firstRequests[0]?.step, 4, "continuation preserves prior step accounting");
+    if (scenario.includes("multistep")) {
+      const request = report.facts.findLast(event => event.type === "model_request" && event.metrics.requestContext?.operation === "agent");
+      assert.equal(request?.type === "model_request" ? request.metrics.requestContext?.step : undefined, 4, "continuation preserves prior step accounting in durable metrics");
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 function assertPairs(messages: AgentMessage[], expected: string[]): void {

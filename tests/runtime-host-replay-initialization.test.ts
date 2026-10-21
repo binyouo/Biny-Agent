@@ -1,5 +1,7 @@
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
@@ -21,6 +23,7 @@ async function fixture(sequences: number[] | undefined) {
   let resourceChanged: () => void = () => undefined;
   let resourceRevision = 0;
   const commands = {
+    ...await createHostTestStores(root),
     agent: {
       getInfo: () => ({ sessionId: "startup-session", workspaceRoot: root }),
       getPermissionMode: () => "ask"
@@ -46,7 +49,7 @@ async function fixture(sequences: number[] | undefined) {
     token: "unused",
     pid: process.pid,
     createdAt: new Date().toISOString()
-  }, { close: async () => undefined });
+  }, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
   const internals = server as unknown as {
     journal: RuntimeHostEventJournal;
     execute(connection: unknown, frame: HostRequestFrame): Promise<unknown>;
@@ -181,7 +184,7 @@ async function initializationFailure(mode: "read" | "close" | "exhausted" | "ove
       assert.equal(f.server.info.sequence, sequence, "failed startup exhaustion must fail-stop further publication");
       assert.equal(f.server.status.journal.state, "degraded");
       await assert.rejects(f.internals.execute({}, {
-        kind: "request", requestId: "no-admission", operation: "submit", payload: { input: "must not run" }
+        kind: "request", requestId: "no-admission", operation: "run.submit", payload: { input: "must not run" }
       }), /event sequence.*exhausted/i);
     }
     if (mode === "read") {
@@ -250,7 +253,7 @@ try {
   await replayWindow([Number.MAX_SAFE_INTEGER - 2], 1, false);
   await closeDrainsRebasedJournal();
   for (const mode of ["read", "close", "exhausted", "overflow"] as const) await initializationFailure(mode);
-  assert.equal(runtimeHostProtocolVersion, 11, "startup recovery retains the current connection protocol");
+  assert.equal(runtimeHostProtocolVersion, 16, "startup recovery retains the current connection protocol");
 } finally {
   if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
   else process.env.BINY_AGENT_DIR = previousAgentDir;

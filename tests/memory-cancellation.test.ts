@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** Cancellation must reach memory models without accepting late results or counting cancelled hits. */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -207,7 +209,7 @@ async function testSessionModelPropagation(): Promise<void> {
   let started = deferred<AbortSignal>();
   let rewriteHeld = deferred<void>();
   let fetchCalls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "fixture-rewrite",
     stream: async (context, options) => {
       assert.ok(options?.signal);
@@ -220,7 +222,7 @@ async function testSessionModelPropagation(): Promise<void> {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   // Exercise the real provider wire with a fake fetcher. No external API or credentials are used.
   const runtime = new ProviderEmbeddingRuntime("fixture", { type: "openai-compatible", baseUrl: "https://fixture.invalid/v1" }, {
     type: "fixture", protocol: "openai-compatible", requiresApiKey: false, authModes: ["api-key"],
@@ -455,7 +457,7 @@ async function testSdkCleanupSessionQuarantine(): Promise<void> {
   config.context.memory.useMemories = false;
   config.context.memory.generateMemories = false;
   let execSteps = 0;
-  const mainModel: AgentModel = {
+  const mainModel: AgentModel = testModel({
     provider: "fixture", modelId: "main", supportsTools: true,
     stream: async (context) => {
       const hasExec = context.tools.some(({ name }) => name === "run_script");
@@ -469,7 +471,7 @@ async function testSdkCleanupSessionQuarantine(): Promise<void> {
         } else { yield { type: "text-delta", text: "ready" }; yield { type: "finish", reason: "stop" }; }
       })();
     }
-  };
+  });
   const agent = new AgentSession({ workspaceRoot: workspace, config, model: mainModel,
     toolRegistry: registry, permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(workspace) });
   const controller = new AbortController();

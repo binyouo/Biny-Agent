@@ -1,5 +1,9 @@
+import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
+import { MemoryMaintenance } from "../src/agent/context/MemoryMaintenance.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel } from "../src/agent/core/types.js";
@@ -14,7 +18,7 @@ process.env[BINY_AGENT_DIR_ENV] = agentRoot;
 
 const prompts: string[] = [];
 const systemPrompts: string[] = [];
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test",
   modelId: "sleep-anchors",
   async stream(context) {
@@ -28,9 +32,12 @@ const model: AgentModel = {
       yield { type: "finish" as const, reason: "stop" as const };
     })();
   }
-};
+});
 
 const memory = new LocalMemory(workspace, () => model);
+
+const memoryMaintenanceStorage = new MemoryStorage(workspace);
+const memoryMaintenance = new MemoryMaintenance(memoryMaintenanceStorage, () => model);
 try {
   const sourceAnchor = { messageId: "message-1", sentAt: "2026-08-01T09:10:00.000Z", timeZone: "Asia/Shanghai" };
   const first = await memory.writeEntry({
@@ -45,7 +52,7 @@ try {
     findSimilarPairs: async () => ({ examined: 2, pairs: [{ leftId: first.entry!.id, rightId: second.entry!.id, similarity: 0.8 }] })
   };
 
-  await memory.previewMaintenance({}, index);
+  await memoryMaintenance.previewMaintenance({}, index);
   assert.equal(prompts.length, 1);
   assert.match(memoryTimeAnchorInstruction, /time-sensitive.*original.*sent-at.*timezone.*content/iu);
   assert.match(memoryTimeAnchorInstruction, /promise.*completion/iu);
@@ -54,10 +61,11 @@ try {
   assert.ok(prompts[0]?.includes(`id: "${first.entry.id}", content: "${first.entry.content}" [Memory saved-at: 2026-08-02T01:02:03.000Z; source-message anchors: ${JSON.stringify([sourceAnchor])}; saved-at is NOT event/due/completion time.]`));
   assert.ok(prompts[0]?.includes(`id: "${second.entry.id}", content: "${second.entry.content}" [Memory saved-at: 2026-08-03T04:05:06.000Z; original message time/timezone unknown; saved-at is NOT event/due/completion time.]`));
 
-  await memory.runMemoryMaintenance({}, index);
+  await memoryMaintenance.runMemoryMaintenance({}, index);
   assert.equal(prompts.length, 2);
   assert.equal(prompts[1], prompts[0]);
 } finally {
+  memoryMaintenanceStorage.close();
   memory.close();
   if (previousAgentRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV];
   else process.env[BINY_AGENT_DIR_ENV] = previousAgentRoot;

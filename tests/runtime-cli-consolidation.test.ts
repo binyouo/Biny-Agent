@@ -1,8 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Real Host, shell CLI and persistence; the model endpoint stays local. */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -89,7 +90,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
       const entry = await createInteractiveAgentHost(root, { resourceRegistry });
       catalog = entry.commands.listTools().map((tool) => tool.name);
       return entry;
-    });
+    }, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     for (const name of removed) assert.ok(!catalog.includes(name), `${name} must be absent from the runtime catalog`);
     client = await connectRuntimeHost(root, { surface: "cli", clientId: "cli-consolidation" });
     assert.ok(client);

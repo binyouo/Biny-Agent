@@ -1,6 +1,12 @@
+import { AgentMemoryOwner } from "../src/runtime/memory/owner.js";
+import { serveMemoryOwner, canonicalMemoryRoot } from "../src/runtime/memory/transport.js";
+import { globalConfigDir } from "../src/config/paths.js";
+import { stopTestMemoryOwners } from "./helpers/memoryOwnerCleanup.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 真实 AgentSession 请求链路：Activity 只在本轮提供引用，关闭后连日报派生段也不可见。 */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -83,6 +89,9 @@ try {
   let localModelReady = false;
   LocalEmbeddingManager.prototype.isReady = () => localModelReady;
   LocalEmbeddingManager.prototype.createRuntime = async () => { coldStartCalls += 1; return fakeRuntime(); };
+  const memoryRoot = await canonicalMemoryRoot(process.env[BINY_AGENT_DIR_ENV]!);
+  await stopTestMemoryOwners(memoryRoot);
+  const owner = await serveMemoryOwner(memoryRoot, globalConfigDir(), new AgentMemoryOwner(memoryRoot, { load: async () => config, save: async () => undefined }));
   const coldRequests: ModelStreamContext[] = [];
   const coldAgent = new AgentSession({ workspaceRoot: workspace, config, model: captureModel(coldRequests),
     toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }),
@@ -94,9 +103,10 @@ try {
     assert.doesNotMatch(requestText(coldRequests.at(-1)?.messages ?? []), /登录排查完成/u);
     localModelReady = true;
     assert.equal((await coldAgent.runTask("上次登录排查结论是什么")).status, "completed");
-    assert.equal(coldStartCalls, 1, "已加载的模型仍可参与本轮 Activity 引用");
+    assert.equal(coldStartCalls, 2, "owner 分别解析模型描述和执行嵌入；已加载的模型参与本轮 Activity 引用");
   } finally {
     await coldAgent.close();
+    await owner.close();
     LocalEmbeddingManager.prototype.isReady = originalIsReady;
     LocalEmbeddingManager.prototype.createRuntime = originalCreateRuntime;
   }
@@ -135,7 +145,7 @@ function requestText(messages: readonly AgentMessage[]): string {
 }
 
 function captureModel(requests: ModelStreamContext[]): AgentModel {
-  return { provider: "fixture", modelId: "activity-chat-runtime", stream: async (context, options) => {
+  return testModel({ provider: "fixture", modelId: "activity-chat-runtime", stream: async (context, options) => {
     if (options?.requestContext?.operation === "agent") {
       requests.push({ ...context, messages: [...context.messages] });
     }
@@ -143,7 +153,7 @@ function captureModel(requests: ModelStreamContext[]): AgentModel {
       yield { type: "text-delta", text: "收到" };
       yield { type: "finish", reason: "stop" };
     })();
-  } };
+  } });
 }
 
 function fakeRuntime(): EmbeddingModelRuntime {

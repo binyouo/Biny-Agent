@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -81,7 +82,7 @@ async function hostFixture(t: TestContext) {
   }));
   resources.host = await startRuntimeHost(root, async resourceRegistry => await createInteractiveAgentHost(root, {
     configStore, attachmentRoot: attachmentRoot(root), resourceRegistry, resourceBoot: "blocking"
-  }), { configDir });
+  }), {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir });
   resources.client = await connectRuntimeHost(root, { configDir, surface: "desktop", handshakeTimeoutMs: 5_000 });
   assert.ok(resources.client);
   assert.equal(requests.length, 0, "fixture startup must not make a model request");

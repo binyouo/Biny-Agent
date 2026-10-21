@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -50,10 +52,10 @@ for (const scenario of ["opaque", "generic", "unknown", "mutated-cache"] as cons
     let actual: AgentMessage[] = [];
     const make = () => new AgentSession({ workspaceRoot: root, config, recorder: new SessionRecorder(root),
       toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission),
-      model: { provider: "synthetic", modelId: scenario, supportsTools: true, stream: async context => {
+      model: testModel({ provider: "synthetic", modelId: scenario, supportsTools: true, stream: async context => {
         requests += 1; actual = structuredClone(context.messages);
         return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "Completed from durable evidence" }; yield { type: "finish", reason: "stop" }; })();
-      } }
+      } })
     });
     const agent = make();
     try {
@@ -80,7 +82,7 @@ for (const scenario of ["opaque", "generic", "unknown", "mutated-cache"] as cons
       }
       assert.equal(status, "completed");
       assert.deepEqual(actual.find(message => message.role === "assistant"), original.messages.find(message => message.role === "assistant"));
-      assert.deepEqual(resultBody(actual.find(message => message.role === "toolResult")), resultBody(expectedResult));
+      assert.deepEqual(resultBody(actual.find(message => message.role === "toolResult"), true), resultBody(expectedResult, true));
       const physical = await readFile(agent.getInfo().sessionFile, "utf8");
       assert.doesNotMatch(physical, /NEVER_DURABLE/u);
       assert.match(physical, /fixture-signature/u);
@@ -91,14 +93,14 @@ for (const scenario of ["opaque", "generic", "unknown", "mutated-cache"] as cons
       const replay = await cold.resume("provenance");
       assert.deepEqual(resultBody(replay.messages.find(message => message.role === "toolResult")), resultBody(expectedResult));
       assert.equal((await cold.runTask("Next task", { emotionAnalysis: false })).status, "completed");
-      assert.deepEqual(resultBody(actual.find(message => message.role === "toolResult")), resultBody(expectedResult));
+      assert.deepEqual(resultBody(actual.find(message => message.role === "toolResult"), true), resultBody(expectedResult, true));
       assert.equal(requests, 2);
       assert.equal(await new TurnStore(root, "provenance").load(), undefined);
     } finally { await cold.close(); await rm(root, { recursive: true, force: true }); }
   });
 }
 
-function resultBody(message: AgentMessage | undefined) {
+function resultBody(message: AgentMessage | undefined, provider = false) {
   assert.ok(message?.role === "toolResult");
-  return { role: message.role, toolCallId: message.toolCallId, toolName: message.toolName, content: message.content, details: message.details };
+  return { role: message.role, toolCallId: message.toolCallId, toolName: message.toolName, content: message.content, details: provider ? undefined : message.details };
 }

@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 真正的 AgentSession 流式入口：跨工具步、延迟尾部及中断后重试均使用独立过滤状态。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -40,7 +42,7 @@ async function withAgent(model: AgentModel, run: (agent: AgentSession, getToolEx
 test("actual streaming resets after tool steps and releases a deferred canonical tail exactly once", async () => {
   let requests = 0;
   const tail = " ".repeat(300) + "final answer";
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "stream-projection", supportsTools: true,
     async stream() {
       requests += 1;
@@ -63,7 +65,7 @@ test("actual streaming resets after tool steps and releases a deferred canonical
       ];
       return (async function* () { yield* events; })();
     }
-  };
+  });
   await withAgent(model, async (agent, getToolExecutionCount) => {
     let visible = "";
     let outcome = "";
@@ -104,7 +106,7 @@ test("actual streaming resets after tool steps and releases a deferred canonical
 test("an interrupted hidden envelope cannot swallow or leak into the next prompt", async () => {
   const controller = new AbortController();
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "stream-interruption", supportsTools: false,
     async stream() {
       requests += 1;
@@ -120,7 +122,7 @@ test("an interrupted hidden envelope cannot swallow or leak into the next prompt
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   await withAgent(model, async (agent) => {
     let visible = "";
     let status = "";

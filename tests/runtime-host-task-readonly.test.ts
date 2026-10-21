@@ -1,3 +1,4 @@
+import { createHostTestStores } from "./helpers/hostStores.js";
 /** Task RPC facts do not need owner startup. CLI Host lifecycle/recovery stays separate. */
 import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
@@ -78,7 +79,7 @@ await test("Task reads retain ownership, workspace isolation, missing results an
       assert.deepEqual(await f.rpc("task.get", { taskRunId: "ownerless", ...target }), wire(f.tasks.get("ownerless")));
       assert.deepEqual(await f.rpc("task.events", { taskRunId: "ownerless", ...target }), wire(f.tasks.events("ownerless")));
     }
-    const foreign = await RuntimeEventAuthority.open(f.root, { workspaceId: "foreign-workspace", backfillLegacySessions: false });
+    const foreign = await RuntimeEventAuthority.open(f.root, { workspaceId: "foreign-workspace", reconcileSessions: false });
     const foreignTasks = await DurableTaskRunStore.open(f.root, foreign);
     try {
       foreignTasks.create({ taskRunId: "foreign-task", sessionId: "cold-owner", task: { prompt: "foreign" } });
@@ -182,7 +183,7 @@ async function fixture(t: TestContext, run: (f: Fixture) => Promise<void>): Prom
   const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-task-readonly-")));
   const previous = process.env.BINY_AGENT_DIR; process.env.BINY_AGENT_DIR = path.join(temporary, "agent");
   const root = path.join(temporary, "workspace"); await mkdir(root);
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   for (const status of statuses) {
     const taskRunId = `task-${status}`;
@@ -194,7 +195,7 @@ async function fixture(t: TestContext, run: (f: Fixture) => Promise<void>): Prom
       failure: { failureClass: "fixture", message: `reason-${status}` } });
   }
   tasks.create({ taskRunId: "ownerless", task: { prompt: "ownerless fixture" } });
-  const commands = { taskRuns: tasks, runtimeAuthority: authority } as CommandRuntime;
+  const commands = { ...await createHostTestStores(root, authority), taskRuns: tasks } as CommandRuntime;
   const paths = runtimeHostPaths(root); await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
   const registration = { ...paths, ...currentRuntimeHostIdentity({}), protocolVersion: runtimeHostProtocolVersion,
     persistenceRoot: root, hostEpoch: "task-read-fixture", token: "synthetic-fixture-only", pid: process.pid, createdAt: new Date().toISOString() };

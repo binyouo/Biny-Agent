@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -34,8 +36,8 @@ async function fixture(t: TestContext, attached = false) {
   const make = () => {
     const agent = new AgentSession({ workspaceRoot: root, attachmentRoot: attachmentRoot(root), recorder: new SessionRecorder(root), config, toolRegistry: new ToolRegistry(),
       permissionManager: new PermissionManager(config.permission), skillPrompt: async () => await skill(),
-      model: { provider: "synthetic", modelId: "retry-lifecycle", supportsTools: true,
-        stream: async context => { requests.push(structuredClone(context.messages)); const events = await response(); return (async function* () { yield* events; })(); } } });
+      model: testModel({ provider: "synthetic", modelId: "retry-lifecycle", supportsTools: true,
+        stream: async context => { requests.push(structuredClone(context.messages)); const events = await response(); return (async function* () { yield* events; })(); } }) });
     sessions.push(agent); return agent;
   };
   t.after(async () => { for (const session of sessions) await session.close(); await rm(root, { recursive: true, force: true }); });

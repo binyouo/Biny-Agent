@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureConfig, saveConfig, saveConfigFile } from "../../src/config/loader.js";
-import { migrateLegacyGlobalState } from "../../src/config/globalStateMigration.js";
 import { globalAgentDir, globalConfigDir } from "../../src/config/paths.js";
 import { defaultConfig } from "../../src/config/schema.js";
 import { withGlobalConfigWriteLock } from "../../src/config/versioned.js";
@@ -16,7 +15,6 @@ try {
   switch (mode) {
     case "explicit": await saveConfigFile(root, structuredClone(defaultConfig)); break;
     case "ensure": await ensureConfig(process.cwd(), { globalDir: root }); break;
-    case "migration": await migrateLegacyGlobalState(); break;
     case "lock": await withGlobalConfigWriteLock(root, async () => undefined); break;
     case "safe-storage": await new DesktopSafeStorageCredentialStore(root).set("fixture", "fixture"); break;
     case "agent-path": globalAgentDir(); break;
@@ -40,6 +38,6 @@ try {
 
 if (process.env.BINY_ISOLATION_PROBE === "all") {
   const results: Record<string, Awaited<ReturnType<typeof probe>>> = {};
-  for (const mode of ["save", "explicit", "ensure", "migration", "lock", "safe-storage", "agent-path", "config-path", "keychain", "default-keychain", "child"]) results[mode] = await probe(mode);
+  for (const mode of ["save", "explicit", "ensure", "lock", "safe-storage", "agent-path", "config-path", "keychain", "default-keychain", "child"]) results[mode] = await probe(mode);
   console.log(JSON.stringify(results));
 } else console.log(JSON.stringify(await probe(process.env.BINY_ISOLATION_PROBE ?? "save")));

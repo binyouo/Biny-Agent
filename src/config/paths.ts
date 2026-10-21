@@ -9,7 +9,7 @@
  *
  * 项目 session 目录名是 `<basename>-<hash8>`（如 `biny-a1b2c3d4`）：basename 取自工作区
  * 文件夹名（sanitize 后允许中文、≤48 字符），hash8 是工作区路径 sha256 的前 8 位，用来在
- * 同名项目之间消歧。旧版纯 24hex 目录名由 store.ts 在首次访问时惰性迁移过来。
+ * 同名项目之间消歧。
  */
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
@@ -109,8 +109,7 @@ export function workspaceAgentDir(workspaceRoot: string, options: PathEnvironmen
  * 项目 session 目录名：`<basename>-<hash8>`。
  *
  * basename 取自工作区文件夹名（sanitize 后允许中文、≤48 字符，见下方 sanitize），hash8 是
- * 规范化工作区绝对路径 sha256 的前 8 位，在同名项目之间消歧。旧版纯 24hex 目录名由
- * `legacyProjectStateDirName` 复现，供 session store 在首次访问时找到并迁移旧目录。
+ * 规范化工作区绝对路径 sha256 的前 8 位，在同名项目之间消歧。
  *
  * 这里是纯函数：不做任何 fs 访问，保证 recorder 的同步路径构造和 store 的断言拿到同一个答案。
  */
@@ -124,19 +123,14 @@ function projectStateParentDir(kind: "sessions" | "workspaces", options: PathEnv
   return path.join(canonicalRoot, kind);
 }
 
-/** 新目录名 `<basename>-<hash8>`，供 store.ts 迁移和测试断言使用。 */
+/** 工作区目录名 `<basename>-<hash8>`。 */
 export function projectStateDirName(workspaceRoot: string): string {
   const resolved = path.resolve(workspaceRoot);
   return `${sanitizeProjectBaseName(path.basename(resolved))}-${projectPathHash(resolved)}`;
 }
 
-/** 旧版目录名是纯 24hex（sha256 前 24 位）；只在迁移旧目录时用到。 */
-export function legacyProjectStateDirName(workspaceRoot: string): string {
-  return projectPathHash(path.resolve(workspaceRoot), 24);
-}
-
-function projectPathHash(resolvedWorkspaceRoot: string, length: 8 | 24 = 8): string {
-  return createHash("sha256").update(resolvedWorkspaceRoot).digest("hex").slice(0, length);
+function projectPathHash(resolvedWorkspaceRoot: string): string {
+  return createHash("sha256").update(resolvedWorkspaceRoot).digest("hex").slice(0, 8);
 }
 
 /**

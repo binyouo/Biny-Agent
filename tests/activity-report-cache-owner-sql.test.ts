@@ -1,10 +1,12 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /**
  * CI-only verification: real isolated SQLite stores and synthetic paused models.
  * Do not run in source-only review environments. No real provider is contacted.
  * The standard CI collector discovers this file without workflow changes.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -27,7 +29,7 @@ function pausedModel(output: string) {
   const started = deferred<void>();
   const release = deferred<void>();
   let calls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "report-owner-test", runtime: "builtin-llama.cpp", dataResidency: "local",
     stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       calls += 1;
@@ -36,7 +38,7 @@ function pausedModel(output: string) {
       yield { type: "text-delta", text: output };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
   return { model, started: started.promise, release: () => release.resolve(), calls: () => calls };
 }
 function seed(store: ActivityStore, hour: number, title: string): string {

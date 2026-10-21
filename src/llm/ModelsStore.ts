@@ -10,7 +10,6 @@ import path from "node:path";
 import { z } from "zod";
 import type { ModelCatalogEntry } from "../ai/types.js";
 import type { ProviderConfig } from "../config/schema.js";
-import { migrateLegacyGlobalState } from "../config/globalStateMigration.js";
 import { globalModelsStorePath } from "../config/paths.js";
 
 export interface ModelsStoreEntry {
@@ -171,11 +170,9 @@ export class InMemoryModelsStore implements ModelsStore {
 
 export class FileModelsStore implements ModelsStore {
   readonly filePath: string;
-  private readonly migrateDefaultState: boolean;
   private pending: Promise<void> = Promise.resolve();
 
   constructor(filePath?: string) {
-    this.migrateDefaultState = filePath === undefined;
     this.filePath = path.resolve(filePath ?? globalModelsStorePath());
   }
 
@@ -225,7 +222,6 @@ export class FileModelsStore implements ModelsStore {
   }
 
   private async migrateIfDefault(): Promise<void> {
-    if (this.migrateDefaultState) await migrateLegacyGlobalState();
   }
 }
 

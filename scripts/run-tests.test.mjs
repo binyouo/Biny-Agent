@@ -14,6 +14,7 @@ function fixture(context, files) {
   context.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(path.join(root, "scripts"));
   mkdirSync(path.join(root, "tests"));
+  symlinkSync(path.join(repository, "tests/helpers"), path.join(root, "tests/helpers"), "dir");
   copyFileSync(runner, path.join(root, "scripts/run-tests.mjs"));
   symlinkSync(path.join(repository, "node_modules"), path.join(root, "node_modules"), "dir");
   for (const [name, content] of Object.entries(files)) writeFileSync(path.join(root, "tests", name), content);

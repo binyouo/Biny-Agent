@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -108,7 +109,7 @@ test("foreground Task admits an Attempt and records scoped Worker reports and ex
     extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: true, maxSteps: 4 } },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   }));
-  const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }));
+  const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   cleanup(async () => { await host.close(); });
   const connected = await connectRuntimeHost(root, { surface: "cli", clientId: "parent-client" });
   assert.ok(connected);

@@ -89,7 +89,7 @@ let authority: RuntimeEventAuthority | undefined;
 let capabilities: CapabilityStore | undefined;
 try {
   await host.connectConfiguredServers(root, config);
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   capabilities = await CapabilityStore.open(root, authority);
   for (const ledger of [false, true]) for (const script of [false, true]) {
     const registry = new ToolRegistry();

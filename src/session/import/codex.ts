@@ -103,6 +103,7 @@ export function codexLinesToBinyEvents(lines: readonly unknown[]): SessionEvent[
           ? { input: rawArgs }
           : codexToolArgs(rawArgs),
         toolCallId: callId,
+        auditOnly: !callId || callCounts.get(callId) !== 1 || (resultCounts.get(callId) ?? 0) > 1,
         importSource,
         reasoningContent: consumeReasoning(),
         time
@@ -116,6 +117,7 @@ export function codexLinesToBinyEvents(lines: readonly unknown[]): SessionEvent[
         tool: (callId && toolNameByCallId.get(callId)) || "tool",
         result: codexToolOutput(payload.output),
         toolCallId: callId,
+        auditOnly: !callId || callCounts.get(callId) !== 1 || (resultCounts.get(callId) ?? 0) > 1,
         importSource,
         time
       });

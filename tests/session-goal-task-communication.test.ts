@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -65,7 +67,7 @@ test("Worker recovery preserves Goal receipt accounting and a delivered correcti
   const f = await fixture();
   let calls = 0;
   const observed: ModelRequestMetrics[] = [];
-  const model: AgentModel = { provider: "synthetic", modelId: "worker", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "worker", supportsTools: true,
     stream: async context => {
       calls += 1;
       if (calls === 1) {
@@ -76,7 +78,7 @@ test("Worker recovery preserves Goal receipt accounting and a delivered correcti
       if (calls === 2) throw new Error("synthetic provider interruption");
       return response("the corrected finding");
     }
-  };
+  });
   const options: SubagentOptions = {
     workspaceRoot: f.root, config: f.config, toolRegistry: new ToolRegistry(), getModelSettings: () => ({ model, contextWindow: undefined }),
     onRequestMetrics: metrics => { observed.push(metrics); recordSessionGoalRequestUsage(f.goals, metrics); },
@@ -100,13 +102,13 @@ test("Worker recovery preserves Goal receipt accounting and a delivered correcti
 test("a late TaskMessage cannot cause another Worker request after the Goal budget stops", async () => {
   const f = await fixture(6);
   let calls = 0;
-  const model: AgentModel = { provider: "synthetic", modelId: "worker", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "synthetic", modelId: "worker", supportsTools: true,
     stream: async () => {
       calls += 1;
       f.communication.send("child", "new context beyond the budget", "late-context");
       return response("initial candidate");
     }
-  };
+  });
   try {
     await assert.rejects(runSubagentTask({
       workspaceRoot: f.root, config: f.config, toolRegistry: new ToolRegistry(), getModelSettings: () => ({ model, contextWindow: undefined }),

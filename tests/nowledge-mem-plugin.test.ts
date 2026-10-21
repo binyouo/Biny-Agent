@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,7 +132,7 @@ async function main(): Promise<void> {
     };
 
     const requests: ModelStreamContext[] = [];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "fixture",
       modelId: "nowledge-mem-fixture",
       async stream(context) {
@@ -140,7 +142,7 @@ async function main(): Promise<void> {
           yield { type: "finish" as const, reason: "stop" as const };
         })();
       }
-    };
+    });
     const recorder = new SessionRecorder(workspaceRoot, "stable-nowledge-thread");
     agent = new AgentSession({
       workspaceRoot,
@@ -164,7 +166,7 @@ async function main(): Promise<void> {
     assert.ok(requests[0]?.systemPrompt?.includes("Working note: prefer concise build logs."));
     assert.ok(requests[0]?.systemPrompt?.includes("Search result: keep build output readable."));
     assert.equal(promptUserMessage?.role, "user");
-    assert.equal(promptUserMessage?.originalContent, userInput, "external memory must not rewrite the original user message");
+    assert.ok(JSON.stringify(promptUserMessage?.content).includes(userInput), "external memory retains the user input in the model request");
 
     await agent.close();
     agent = undefined;

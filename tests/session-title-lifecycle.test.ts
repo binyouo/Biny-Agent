@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** Same-runtime session changes use real Runtime/AgentSession methods and only synthetic model streams. */
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mock, test } from "node:test";
@@ -15,7 +17,6 @@ import { readSessionCatalogRecord, sessionCatalogDirectory, updateSessionCatalog
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { BinyTui } from "../src/tui/app.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -45,7 +46,7 @@ async function fixture() {
   const published = new Map<string, ReturnType<typeof deferred<void>>>();
   let active = 0;
   let maximumActive = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "synthetic", modelId: "title-lifecycle", supportsTools: false,
     async stream(context, options) {
       let text = "Completed.";
@@ -65,7 +66,7 @@ async function fixture() {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     defaultModel: "title-lifecycle",
@@ -139,7 +140,7 @@ async function fixture() {
   };
 }
 
-for (const route of ["runtime resume", "TUI fallback resume", "public startDraft"] as const) {
+for (const route of ["runtime resume", "public startDraft"] as const) {
 test(`${route} does not lose the current session's requested title`, { timeout: 10_000 }, async () => {
   const f = await fixture();
   try {
@@ -147,15 +148,7 @@ test(`${route} does not lose the current session's requested title`, { timeout: 
     const firstId = await f.prompt("SESSION_A");
     await f.started("SESSION_A");
     if (route === "public startDraft") secondId = (await f.runtime.startDraft()).sessionId;
-    else if (route === "TUI fallback resume") {
-      const updates: unknown[] = [];
-      // Use the real fallback method without opening a terminal or socket. Only view methods are inert.
-      const view = { runtime: f.runtime, clearSessionWriterConflict() {}, announceCurrentSession() {},
-        chatContainer: { reset() {} }, dispatch(update: unknown) { updates.push(update); },
-        refreshContextUsage: async () => undefined, refreshUsage: async () => undefined };
-      await BinyTui.prototype["resumeSession"].call(view as unknown as BinyTui, secondId);
-      assert.ok(updates.some((update) => (update as { viewingSessionId?: string }).viewingSessionId === secondId));
-    } else await f.runtime.resumeSession(secondId);
+    else await f.runtime.resumeSession(secondId);
     assert.equal(await f.prompt("Continue SESSION_B"), secondId);
     assert.equal(f.calls.length, 1, "only the first title may run while it is pending");
     f.calls[0]!.result.resolve("Title A");

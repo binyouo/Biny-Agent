@@ -37,7 +37,7 @@ async function fixture(t: TestContext) {
     }
   });
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   resources.authority = authority;
   const store = await AutomationStore.open(root, authority);
   resources.store = store;
@@ -92,7 +92,7 @@ async function fixture(t: TestContext) {
     compactConversation: unused
   };
   const scheduler = new AutomationScheduler({
-    store,
+    getStore: () => store,
     getRuntime: () => runtime,
     createFreshRuntime: async (sessionId) => {
       assert.equal(sessionId, "target");

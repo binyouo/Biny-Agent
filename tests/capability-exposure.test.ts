@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** 自动预选只能声明允许向模型暴露的目录，显式准入模式由运行时继续执行。 */
 import assert from "node:assert/strict";
 import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
@@ -28,7 +29,7 @@ const explicit = await preselectCapabilities({ ...options, models: [] });
 assert.deepEqual(explicit.tools, visibleNames, "explicit names and previous selections cannot admit hidden or script-only tools into automatic declarations");
 
 let requestedPrompt = "";
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "fixture", modelId: "capability-exposure",
   async stream(context) {
     requestedPrompt = context.systemPrompt ?? "";
@@ -37,7 +38,7 @@ const model: AgentModel = {
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 const selected = await preselectCapabilities({
   ...options, input: "Choose useful extensions", models: [{ model, failureDomain: "fixture-selection" }]
 });

@@ -59,7 +59,7 @@ await test("runtime cancellation retains the persisted candidate and verificatio
     assert.equal(commands.cancelTaskRun(task.taskRunId).revision, cancelled.revision, "repeated cancellation is idempotent");
     await commands.close();
 
-    const reopenedAuthority = await RuntimeEventAuthority.open(workspaceRoot, { backfillLegacySessions: false });
+    const reopenedAuthority = await RuntimeEventAuthority.open(workspaceRoot, { reconcileSessions: false });
     const reopened = await DurableTaskRunStore.open(workspaceRoot, reopenedAuthority);
     try {
       assert.deepEqual(reopened.get(task.taskRunId), cancelled, "facts must survive reopening SQLite");
@@ -81,7 +81,7 @@ await test("phase transitions retain omitted evidence while supplied evidence an
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-task-evidence-phases-")));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "agent");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   try {
     const task = tasks.create({ task: { prompt: "track candidate" } });

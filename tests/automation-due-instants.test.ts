@@ -10,7 +10,7 @@ async function fixture() {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-automation-instants-")));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   let store = await AutomationStore.open(root, authority);
   return {
     get authority() { return authority; },
@@ -24,7 +24,7 @@ async function fixture() {
     async reopen() {
       store.close();
       authority.close();
-      authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+      authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
       store = await AutomationStore.open(root, authority);
     },
     async close() {

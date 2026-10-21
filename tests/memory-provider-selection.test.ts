@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { providerDefinition } from "../src/ai/provider.js";
-import { migrateGlobalConfigDocument } from "../src/config/migrations.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { memoryPolicySchema } from "../src/personalization/index.js";
 import { selectMemoryEmbeddingModel } from "../src/llm/embedding/selectMemoryModel.js";
@@ -40,28 +39,10 @@ assert.deepEqual(selectMemoryEmbeddingModel({ kind: "auto" }, [
   provider("openrouter", "router", "openai/text-embedding-3-small")
 ]), { kind: "provider", provider: "router", model: "openai/text-embedding-3-small" });
 
-const migrated = migrateGlobalConfigDocument({
-  format: "biny-config", configVersion: 1,
-  context: { memory: { embeddingModel: { kind: "local", model: "multilingual-e5-small" }, cloudEmbeddingConsents: { old: { endpointHash: "old" } } } }
-}).document as { configVersion: number; context: { memory: Record<string, unknown> } };
-assert.equal(migrated.configVersion, 2);
-assert.deepEqual(migrated.context.memory.embeddingModel, localDefault);
-assert.equal(migrated.context.memory.cloudEmbeddingConsents, undefined);
-const explicit = migrateGlobalConfigDocument({
-  format: "biny-config", configVersion: 2,
-  context: { memory: { embeddingModel: { kind: "local", model: "multilingual-e5-small" } } }
-}).document as { context: { memory: Record<string, unknown> } };
-assert.deepEqual(explicit.context.memory.embeddingModel, { kind: "local", model: "multilingual-e5-small" });
-
-for (const configVersion of [1, 2]) {
-  for (const selection of [localDefault, { kind: "local", model: "all-MiniLM-L6-v2" },
-    { kind: "auto" }, { kind: "provider", provider: "google", model: "gemini-embedding-001" }]) {
-    const converted = migrateGlobalConfigDocument({
-      format: "biny-config", configVersion, context: { memory: { embeddingModel: selection } }
-    }).document as { context: { memory: unknown } };
-    assert.deepEqual(memoryPolicySchema.parse(converted.context.memory).embeddingModel, selection,
-      "migration must preserve supported explicit selections");
-  }
+for (const selection of [localDefault, { kind: "local", model: "all-MiniLM-L6-v2" },
+  { kind: "auto" }, { kind: "provider", provider: "google", model: "gemini-embedding-001" }]) {
+  const parsed = configSchema.parse({ ...defaultConfig, context: { memory: { embeddingModel: selection } } });
+  assert.deepEqual(parsed.context.memory.embeddingModel, selection);
 }
-
+assert.equal(configSchema.safeParse({ ...defaultConfig, configVersion: 1 }).success, false);
 console.log("memory provider selection passed");

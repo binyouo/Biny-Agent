@@ -1,23 +1,25 @@
+import { MemoryMaintenance } from "../src/agent/context/MemoryMaintenance.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
-import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { createStoredMemoryEntry } from "../src/agent/context/memoryFormat.js";
 import type { AgentModel } from "../src/agent/core/types.js";
 import type { MemoryEntryInput, MemoryMaintenanceStatus, MemorySleepRun } from "../src/agent/context/memoryTypes.js";
 
-const unusedModel: AgentModel = {
+const unusedModel: AgentModel = testModel({
   provider: "test",
   modelId: "unused",
   stream: async () => (async function* () {
     yield { type: "finish" as const, reason: "stop" as const };
   })()
-};
+});
 
 const agentRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-lifecycle-agent-"));
 const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-lifecycle-workspace-"));
@@ -26,7 +28,7 @@ process.env[BINY_AGENT_DIR_ENV] = agentRoot;
 
 try {
   await testEntryFieldsAndAccessCount();
-  await testCompatibleAgentDatabaseSchemaIsMigrated();
+  await testUnversionedAndOldAgentDatabaseArePreserved();
   await testUnknownAgentDatabaseSchemaIsRejected();
   await testSleepRunPersistenceAndRecovery();
 } finally {
@@ -127,8 +129,8 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
   }
 }
 
-/** 仅对结构完全可辨认的扁平事实库补版本/列，保留共库 Activity 与归档原文。 */
-async function testCompatibleAgentDatabaseSchemaIsMigrated(): Promise<void> {
+/** 不再自动升级历史库；拒绝打开时必须保留事实、归档和 Activity。 */
+async function testUnversionedAndOldAgentDatabaseArePreserved(): Promise<void> {
   for (const version of [5, 0]) {
     const root = await mkdtemp(path.join(os.tmpdir(), `biny-agent-compatible-v${String(version)}-`));
     const agentDir = path.join(root, "agent");
@@ -149,15 +151,16 @@ async function testCompatibleAgentDatabaseSchemaIsMigrated(): Promise<void> {
       } finally { database.close(); }
       const reopened = new MemoryStorage(workspaceRoot, { agentDir });
       try {
-        assert.deepEqual((await reopened.listEntries()).entries.map((entry) => entry.id), [active.entry.id]);
-        assert.equal((await reopened.listArchivedEntries()).entries.some((entry) => entry.originalId === archived.entry!.id), true);
+        await assert.rejects(reopened.listEntries(), /schema is not current/u);
       } finally { reopened.close(); }
       const verified = new DatabaseSync(databasePath, { readOnly: true });
       try {
-        assert.equal((verified.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
+        assert.deepEqual((verified.prepare("SELECT id FROM memories").all() as Array<{ id: string }>).map(row => row.id), [active.entry.id]);
+        assert.equal((verified.prepare("SELECT original_id FROM memory_archive").get() as { original_id: string }).original_id, archived.entry.id);
+        assert.equal((verified.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, version);
         assert.equal((verified.prepare("SELECT summary FROM activity_sessions WHERE id = ?").get("kept-session") as { summary: string }).summary,
           "private activity record");
-        assert.equal((verified.prepare("PRAGMA table_info(memory_sleep_runs)").all() as Array<{ name: string }>).some((column) => column.name === "synthesis_failed"), true);
+        assert.equal((verified.prepare("PRAGMA table_info(memory_sleep_runs)").all() as Array<{ name: string }>).some((column) => column.name === "synthesis_failed"), version !== 5);
       } finally { verified.close(); }
     } finally { await rm(root, { recursive: true, force: true }); }
   }
@@ -260,12 +263,13 @@ async function testSleepRunPersistenceAndRecovery(): Promise<void> {
   assert.equal(updatedHistory.find((item) => item.id === historicalRuns[0]!.id)?.inputTokens, 123);
   storage.close();
 
-  const reopened = new LocalMemory(workspaceRoot, unusedModel);
-  const recovered = await reopened.loadMaintenanceStatus();
+  const reopenedMaintenanceStorage = new MemoryStorage(workspaceRoot);
+  const reopenedMaintenance = new MemoryMaintenance(reopenedMaintenanceStorage, unusedModel);
+  const recovered = await reopenedMaintenance.loadMaintenanceStatus();
   assert.equal(recovered.state, "idle");
   assert.equal(recovered.lastRun?.status, "failed");
   assert.equal(recovered.lastRun?.error, "interrupted");
-  reopened.close();
+  reopenedMaintenanceStorage.close();
   const persisted = new MemoryStorage(workspaceRoot);
   try {
     const history = (await persisted.readMaintenanceStatus()).sleepRuns!;
@@ -283,16 +287,17 @@ async function testSleepRunPersistenceAndRecovery(): Promise<void> {
   } finally {
     persisted.close();
   }
-  const recovery = new LocalMemory(workspaceRoot, unusedModel);
+  const recoveryMaintenanceStorage = new MemoryStorage(workspaceRoot);
+  const recoveryMaintenance = new MemoryMaintenance(recoveryMaintenanceStorage, unusedModel);
   try {
-    const healed = await recovery.loadMaintenanceStatus();
+    const healed = await recoveryMaintenance.loadMaintenanceStatus();
     assert.equal(healed.sleepRuns?.find((item) => item.id === historicalRuns[1]!.id)?.status, "failed");
     assert.equal(healed.lastRun?.status, "completed");
     assert.equal(healed.lastRun?.finishedAt, "2026-09-05T12:00:00.000Z");
     assert.equal(healed.lastRun?.error, undefined);
-    const again = await recovery.loadMaintenanceStatus();
+    const again = await recoveryMaintenance.loadMaintenanceStatus();
     assert.deepEqual(again, healed);
   } finally {
-    recovery.close();
+    recoveryMaintenanceStorage.close();
   }
 }

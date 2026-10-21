@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 真实会话与文件验证重试上下文；只替换模型传输，工具副作用保留在临时目录。 */
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -63,7 +65,7 @@ async function fixture(t: TestContext, toolSteps = 0) {
       } };
     }
   });
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "retry-turn-context", runtime: "builtin-llama.cpp", dataResidency: "local", supportsTools: true,
     stream: async (context, options) => {
       assert.equal(options?.requestContext?.operation, "agent");
@@ -76,7 +78,7 @@ async function fixture(t: TestContext, toolSteps = 0) {
         : answer;
       return (async function* () { yield* response; })();
     }
-  };
+  });
   const recorder = new SessionRecorder(workspace);
   session = new AgentSession({ workspaceRoot: workspace, config, model, recorder, toolRegistry: registry,
     permissionManager: new PermissionManager({ ...config.permission, source: "test" }) });
@@ -244,7 +246,7 @@ for (const targetRole of ["assistant", "user"] as const) {
     assert.equal(userText(users[0]!), `[Message sent-at: 2026-10-07T15:59:59.000Z; original timezone: Asia/Shanghai; message time is not event/due/completion time.]\n\n${input}`, "earlier input gains only its original send-time anchor");
     assert.match(userText(users[1]!), /^\[Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai;/u, "retry keeps the source message's send time");
     assert.ok(userText(users[1]!).endsWith(input));
-    assert.deepEqual(users[1]?.originalContent, input);
+    assert.equal(users[1]?.originalContent, undefined, "internal source metadata is not sent to the provider");
     const persisted = await f.events();
     assert.deepEqual(persisted.filter(e => e.type === "user_message").map(e => e.content), [input, input]);
     assert.doesNotMatch(JSON.stringify(persisted), /LONG_NOTE_|DAY_(SIX|SEVEN|EIGHT)_|Authoritative Local DateTime/u);
@@ -270,7 +272,7 @@ test("retrying the final assistant after tool steps refreshes the source user in
   assert.doesNotMatch(f.text(), /LONG_NOTE_ORIGINAL/u);
   assert.deepEqual(retried.map(message => message.role), ["user", "assistant", "toolResult", "assistant", "toolResult"]);
   assert.equal(JSON.stringify(retried.slice(1)), JSON.stringify(originalRequest.slice(1)), "tool calls, results and intermediate assistant output retain their persisted representation");
-  assert.equal(retried[0]?.role === "user" ? retried[0].originalContent : undefined, input);
+  assert.ok(userText(retried[0] as Extract<AgentMessage, { role: "user" }>).endsWith(input));
   assert.equal(await readFile(f.effects, "utf8"), "effect-1\neffect-2\n", "retry must not replay either completed side effect");
   const persisted = await f.events();
   assert.equal(persisted.filter(e => e.type === "user_message").length, 1);

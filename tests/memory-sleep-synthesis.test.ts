@@ -1,5 +1,9 @@
+import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
+import { MemoryMaintenance } from "../src/agent/context/MemoryMaintenance.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -20,7 +24,7 @@ for (const fault of ["none", "vector-write", "stale-vector", "invalid-synthesis"
     const sourceIds: string[] = [];
     let modelCalls = 0;
     const merged = "The user builds TypeScript services with pnpm.";
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "sleep",
       async stream() { modelCalls += 1; return (async function* () {
         yield { type: "text-delta" as const, text: JSON.stringify({
@@ -31,8 +35,10 @@ for (const fault of ["none", "vector-write", "stale-vector", "invalid-synthesis"
         }) };
         yield { type: "finish" as const, reason: "stop" as const };
       })(); }
-    };
+    });
     const memory = new LocalMemory(root, () => model);
+    const memoryMaintenanceStorage = new MemoryStorage(root);
+    const memoryMaintenance = new MemoryMaintenance(memoryMaintenanceStorage, () => model);
     const ref = { kind: "provider", provider: "fixture", model: "embedding" } as const;
     const runtime: EmbeddingModelRuntime = {
       descriptor: { ref, fingerprint: "sleep-test", dimensions: 2, displayName: "test", source: "provider", recommendedThreshold: 0.1 },
@@ -66,7 +72,7 @@ for (const fault of ["none", "vector-write", "stale-vector", "invalid-synthesis"
           WHEN NEW.memory_id NOT IN (${sourceIds.map((id) => `'${id}'`).join(",")})
           BEGIN UPDATE memories SET revision = revision + 1 WHERE id = NEW.memory_id; END`);
       }
-      await memory.runMemoryMaintenance({}, {
+      await memoryMaintenance.runMemoryMaintenance({}, {
         findSimilarPairs: (entries, threshold, signal) => embedding.findSimilarPairs(entries, threshold, signal),
         prepareSynthesis: (content, signal) => embedding.prepareSynthesis(content, signal)
       });
@@ -74,9 +80,11 @@ for (const fault of ["none", "vector-write", "stale-vector", "invalid-synthesis"
         modelFingerprint: "sleep-test", minimumSimilarity: 0.1, limit: 100
       }).map((match) => match.entryId);
       const reopened = new LocalMemory(root, () => model);
+      const reopenedMaintenanceStorage = new MemoryStorage(root);
+      const reopenedMaintenance = new MemoryMaintenance(reopenedMaintenanceStorage, () => model);
       try {
         const archives = (await reopened.listArchivedEntries()).entries;
-        const run = (await reopened.loadMaintenanceStatus()).lastRun!;
+        const run = (await reopenedMaintenance.loadMaintenanceStatus()).lastRun!;
         if (fault === "none") {
           const facts = (await reopened.listMemoryEntries()).entries;
           assert.equal(facts.length, 1);
@@ -99,9 +107,13 @@ for (const fault of ["none", "vector-write", "stale-vector", "invalid-synthesis"
               "skipping an oversized cluster must leave a persisted diagnostic");
           }
         }
-      } finally { reopened.close(); }
+      } finally {
+        reopenedMaintenanceStorage.close();
+        reopened.close();
+      }
     } finally {
-      database?.close(); embedding.close(); memory.close();
+      database?.close(); embedding.close(); memoryMaintenanceStorage.close();
+      memory.close();
       if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV];
       else process.env[BINY_AGENT_DIR_ENV] = previous;
       await rm(root, { recursive: true, force: true });

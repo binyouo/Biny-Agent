@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -171,7 +172,7 @@ async function fixture(options: Partial<AutomationSchedulerOptions> = {}) {
   let activityCount = 0;
   const scheduler = new AutomationScheduler({
     getRuntime: () => runtimeFor("primary").runtime,
-    store,
+    getStore: () => store,
     createFreshRuntime: async (sessionId) => runtimeFor(sessionId ?? `fresh-${++freshId}`).runtime,
     onActivity: () => { activityCount += 1; },
     ...options
@@ -289,24 +290,6 @@ await test("heartbeat and an explicit primary-session target share the same excl
     await flush();
     assert.deepEqual(f.runtimeFor("primary").submissions, ["heartbeat", "targeted"]);
     assert.equal(f.store.listPending("targeted")[0]?.status, "completed");
-  } finally {
-    await f.close();
-  }
-});
-
-await test("the single-runtime fallback remains serial", async () => {
-  const f = await fixture({ createFreshRuntime: undefined });
-  try {
-    f.create("fallback-first");
-    f.create("fallback-second");
-    void f.tick();
-    await flush();
-    assert.deepEqual(f.runtimeFor("primary").submissions, ["fallback-first"]);
-    assert.equal(f.store.listPending("fallback-second")[0]?.status, "pending");
-    f.runtimeFor("primary").release();
-    await flush();
-    assert.deepEqual(f.runtimeFor("primary").submissions, ["fallback-first", "fallback-second"]);
-    assert.equal(f.store.listPending().every((fire) => fire.status === "completed"), true);
   } finally {
     await f.close();
   }

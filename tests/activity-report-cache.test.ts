@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 日报 REST 入口到 SQLite 的缓存契约；时钟过期通过修改持久化时间戳验证。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { startActivityHttpEndpoint } from "../src/activity/httpEndpoint.js";
@@ -16,7 +18,7 @@ let narrativeCalls = 0;
 let analysisCalls = 0;
 let modelResolutions = 0;
 let narrativeMode: "normal" | "short" | "throw" = "normal";
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test",
   modelId: "activity-report-cache-model",
   runtime: "builtin-llama.cpp",
@@ -38,7 +40,7 @@ const model: AgentModel = {
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 try {
   endpoint = await startActivityHttpEndpoint({
     agentDir,

@@ -25,7 +25,7 @@ for (const example of [
 ]) test(`flat capability recovery retains MCP ${example.name} exactly once`, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-recovered-status-"));
   await ensureAgentDirs(root);
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const capabilities = await CapabilityStore.open(root, authority);
   const sessionId = "recovery";
   const tool = "mcp_fixture_lookup";

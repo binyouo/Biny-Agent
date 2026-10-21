@@ -6,7 +6,6 @@
 import type { ModelCatalogEntry } from "../ai/types.js";
 import type { AgentConfig, ProviderConfig } from "../config/schema.js";
 import { ModelRegistry, type ModelChoice, type RegisteredModel } from "./ModelRegistry.js";
-import { ModelResolver } from "./ModelResolver.js";
 import { ProviderRegistry, type ModelSettings, type ProviderCredentialPersistence } from "./ProviderRuntime.js";
 import { AiRegistry } from "./AiRegistry.js";
 import type { ModelsStore } from "./ModelsStore.js";
@@ -36,7 +35,14 @@ export class ModelRuntime {
   }
 
   resolve(reference: string, options: { requireAvailable?: boolean } = {}): RegisteredModel {
-    return new ModelResolver(this.models).resolve(reference, options);
+    const normalized = reference.trim();
+    if (!normalized) throw new Error("Model reference cannot be empty.");
+    const resolved = this.models.resolve(normalized);
+    if (!resolved) throw new Error(`Unknown model "${normalized}". Use a configured alias or provider/model-id.`);
+    if (options.requireAvailable && !this.models.isAvailable(resolved)) {
+      throw new Error(`Model "${normalized}" is not available: configure its endpoint and credentials first.`);
+    }
+    return resolved;
   }
 
   createModelSettings(alias = this.config.defaultModel): ModelSettings {

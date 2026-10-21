@@ -98,7 +98,7 @@ test("concurrent duplicate approval preserves exact events, timestamps and newer
 
 for (const mutation of ["revision", "new-attempt", "cancel", "current-check", "duplicate"] as const) test(`transaction sees cross-connection ${mutation} after the final approval pre-read`, async t => {
   await fixture(async ({ root, tasks, authority, taskId, approve }) => {
-    const second = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const second = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const other = await DurableTaskRunStore.open(root, second);
     const commit = tasks.approveVerification.bind(tasks);
     let expected: ReturnType<typeof snapshot> | undefined;
@@ -220,7 +220,7 @@ function approvalId(tasks: DurableTaskRunStore, taskId: string): string {
 async function fixture(run: (context: { root: string; tasks: DurableTaskRunStore; authority: RuntimeEventAuthority; taskId: string; approve: (id: string) => Promise<void>; verify: () => ReturnType<typeof runTaskClosure> }) => Promise<void>): Promise<void> {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-approval-state-")));
   await writeFile(path.join(root, "artifact.txt"), "stable candidate\n"); await writeFile(path.join(root, "definition.txt"), "stable check definition\n");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   const contract = readTaskVerificationContract({ objective: "verify two checks", artifactPaths: ["artifact.txt"], allowedRepairPaths: ["artifact.txt"], maxAttempts: 1,
     checks: ["one", "two"].map(id => ({ id, command: `external check ${id}`, definitionPaths: ["definition.txt"] })) });

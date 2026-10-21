@@ -35,7 +35,7 @@ for (const mode of [
     config.agent.maxConcurrentTools = 2;
     config.agent.maxQueuedToolCalls = 1;
     const capabilityMode = mode === "capability-cancelled" || mode === "capability-before-dispatch";
-    const authority = capabilityMode ? await RuntimeEventAuthority.open(root, { backfillLegacySessions: false }) : undefined;
+    const authority = capabilityMode ? await RuntimeEventAuthority.open(root, { reconcileSessions: false }) : undefined;
     const capabilities = authority ? await CapabilityStore.open(root, authority) : undefined;
     const recorder = new SessionRecorder(root, `scheduler-${mode}`, undefined, authority?.asSink());
     recorder.setRuntimeContext({ runId: "run", turnId: "turn" });

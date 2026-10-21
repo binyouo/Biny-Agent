@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 自动记忆查询改写经过实际 Session 入口，并用确定性向量验证跨语言召回。 */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -29,7 +31,7 @@ try {
   config.context.memory.maxRecalled = 1;
   let rewritePrompt = "";
   const modelRequests: string[] = [];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "rewrite-language",
     stream: async (context) => {
       rewritePrompt = context.systemPrompt ?? "";
@@ -40,7 +42,7 @@ try {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const runtime: EmbeddingModelRuntime = {
     fingerprint: "rewrite-language-fp",
     descriptor: {

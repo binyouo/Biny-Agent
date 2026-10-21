@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 精简常驻定义后，真实 Session 仍能无辅助模型地发现工具、搜索文件、管理进程。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -26,7 +28,7 @@ for (const withPreselection of [true, false]) {
   // 直接嵌入 AgentSession 且缺少选择器时也必须走大目录的保守回退。
   for (let index = 0; index < 45; index++) registry.registerBuiltinTool({ ...registry.get("Read"), name: `optional_read_${index}` });
   const core = ["Read", "Write", "Edit", "Bash", "ToolSearch"];
-  const helpers = ["Glob", "Grep", "BashOutput", "KillShell", "AskUserQuestion"];
+  const helpers = ["Glob", "Grep", "ProcessStatus", "KillShell", "AskUserQuestion"];
   let step = 0;
   let processId: string | undefined;
   const resultFor = async (tool: string) => {
@@ -34,7 +36,7 @@ for (const withPreselection of [true, false]) {
     assert.ok(event?.type === "tool_result", `persisted ${tool} result`);
     return event.result;
   };
-  const model: AgentModel = { provider: "test", modelId: "minimal-tool-flow", supportsTools: true,
+  const model: AgentModel = testModel({ provider: "test", modelId: "minimal-tool-flow", supportsTools: true,
     async stream(context) {
       const visible = context.tools.map((tool) => tool.name);
       let call: { name: string; arguments: Record<string, unknown> } | undefined;
@@ -55,10 +57,10 @@ for (const withPreselection of [true, false]) {
         }
         case 2:
           for (const name of helpers) assert.ok(visible.includes(name), `exact discovery activates ${name} without an auxiliary model`);
-          call = { name: "BashOutput", arguments: { processId } };
+          call = { name: "ProcessStatus", arguments: { processId } };
           break;
         case 3:
-          assert.match(JSON.stringify(await resultFor("BashOutput")), /READY/u);
+          assert.match(JSON.stringify(await resultFor("ProcessStatus")), /READY/u);
           call = { name: "KillShell", arguments: { processId } };
           break;
         case 4:
@@ -84,7 +86,7 @@ for (const withPreselection of [true, false]) {
         }
       })();
     }
-  };
+  });
   const config = configSchema.parse({ ...defaultConfig,
     agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false, denyPaths: [] },
@@ -107,7 +109,7 @@ for (const withPreselection of [true, false]) {
     assert.equal(step, 7);
     const events = await readSessionEvents(recorder.filePath);
     assert.deepEqual(events.filter((event) => event.type === "tool_call").map((event) => event.tool),
-      ["Bash", "ToolSearch", "BashOutput", "KillShell", "Glob", "Grep"]);
+      ["Bash", "ToolSearch", "ProcessStatus", "KillShell", "Glob", "Grep"]);
     assert.equal(events.filter((event) => event.type === "tool_result").length, 6);
   } finally {
     await agent.close();

@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -45,7 +47,7 @@ try {
 
   let prompt = "";
   const suggestions = ["检查 Activity 建议", "继续完善本地记录", "回顾最近的项目", "整理下一步工作"];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "suggestion-window-model",
     stream: async (context) => {
       prompt = JSON.stringify(context.messages);
@@ -54,7 +56,7 @@ try {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const api = await startActivityHttpServer({
     agentDir: root,
     loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: root }),
@@ -86,7 +88,7 @@ async function testFirstTwelveBeforeFilteringAndTenPromptEntries(): Promise<void
   const suggestions = ["检查 Activity 建议", "继续完善本地记录", "回顾最近的项目", "整理下一步工作"];
   let prompt = "";
   let calls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "suggestion-first12-model",
     stream: async (context) => {
       calls += 1;
@@ -96,7 +98,7 @@ async function testFirstTwelveBeforeFilteringAndTenPromptEntries(): Promise<void
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   try {
     await store.open(root, root);
     for (let index = 0; index < 13; index += 1) {

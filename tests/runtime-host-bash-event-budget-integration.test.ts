@@ -1,6 +1,8 @@
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -35,6 +37,7 @@ test("real Host delivers large Bash terminal events live and from an unchanged r
   let server: RuntimeHostServer | undefined;
   const createServer = async () => {
     const commands = {
+      ...await createHostTestStores(root),
       agent: {
         getInfo: () => ({ sessionId, sessionFile: path.join(root, "session.jsonl"), workspaceRoot: root,
           provider: "test", modelAlias: "test", modelLabel: "Test", reasoningLabel: "Off", thinking: "off", skills: [] }),
@@ -45,7 +48,7 @@ test("real Host delivers large Bash terminal events live and from an unchanged r
       close: async () => undefined
     } as unknown as CommandRuntime;
     const runtime = new InteractiveAgentRuntime(commands);
-    server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined });
+    server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
     // Do not start schedulers/maintenance. This fixture only needs the Host kernel.
     await server.initialize();
     await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));

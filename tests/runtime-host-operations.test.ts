@@ -15,7 +15,7 @@ assert.equal(operationLane("host.info"), "query");
 assert.equal(operationLane("memory", { action: "archive-chains" }), "query");
 assert.equal(operationLane("run.cancel"), "run");
 assert.equal(operationLane("capability.fail"), "control");
-assert.equal(operationLane("graph.start"), "admission");
+assert.equal(operationLane("graph.resume"), "admission");
 
 const dispatcher = new OperationDispatcher();
 const order: string[] = [];

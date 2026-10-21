@@ -62,34 +62,6 @@ export interface TaskRunWithAttempts extends TaskRunRecord {
   attempts: TaskAttemptRecord[];
 }
 
-export interface LegacyWorkerOwnerProof {
-  taskRunId: string;
-  attemptId: string;
-  expectedRevision: number;
-  sessionId: string;
-  parentRunId: string;
-  runId: string;
-  turnId: string;
-  prompt: string;
-  workspaceRoot: string;
-  parentEventIds: string[];
-  /** Present only when exact output and completed Worker terminal evidence agree. */
-  completionDigest?: string;
-}
-
-/** Only the original ownerless slash admission or its exact restart blocker. */
-export function isLegacyWorkerOwnerBoundary(task: TaskRunWithAttempts): boolean {
-  const attempt = task.attempts.at(-1);
-  if (task.sessionId !== undefined || typeof task.task !== "string" || task.attempts.length !== 1
-    || attempt?.taskRunId !== task.taskRunId || attempt.status !== task.status
-    || task.parentRunId !== task.taskRunId
-    || attempt.runId !== `task-run:${task.taskRunId}` || attempt.turnId !== `task-turn:${task.taskRunId}`) return false;
-  if (task.status === "running") return true;
-  const failure = attempt.failure as { failureClass?: unknown; message?: unknown } | undefined;
-  return task.status === "blocked" && (failure?.failureClass === "worker_interrupted"
-    || (failure?.failureClass === "unsafe_recovery"
-      && failure.message === "Host restarted without a safe Worker checkpoint; unknown side effects were not replayed."));
-}
 
 export interface TaskRunEvent {
   eventId: string;
@@ -534,47 +506,6 @@ export class DurableTaskRunStore {
     });
   }
 
-  /** Called only after the exact legacy Worker has prepared under its recorded policy. */
-  reconcileWorkerOwner(proof: LegacyWorkerOwnerProof): TaskRunWithAttempts {
-    this.assertOpen();
-    const now = new Date().toISOString();
-    const eventId = `task:${proof.taskRunId}:revision:${String(proof.expectedRevision + 1)}`;
-    const payload = { ...proof, status: "running", communication: false };
-    return this.authority.runEventTransaction({
-      eventId, sessionId: proof.sessionId, invocationId: proof.runId,
-      runId: proof.runId, turnId: proof.turnId, eventType: "task.worker.owner_reconciled", payload, createdAt: now
-    }, () => {
-      // createAttempt does not increment task revision; latest membership is an independent guard.
-      const task = this.requireWithAttempts(proof.taskRunId);
-      const attempt = task.attempts.at(-1);
-      const calls = this.authority.readToolEvents([proof.taskRunId]);
-      if (!isLegacyWorkerOwnerBoundary(task) || task.revision !== proof.expectedRevision
-        || attempt?.attemptId !== proof.attemptId || attempt.runId !== proof.runId || attempt.turnId !== proof.turnId
-        || task.parentRunId !== proof.parentRunId || attempt.parentRunId !== proof.parentRunId || task.task !== proof.prompt
-        || !proof.sessionId.trim() || calls.length !== 1 || calls.length !== proof.parentEventIds.length
-        || calls.some((event, index) => {
-          const payload = event.payload as { tool?: unknown; toolCallId?: unknown; auditOnly?: unknown; args?: { task?: unknown } } | undefined;
-          return event.eventType !== "session.tool_call" || event.eventId !== proof.parentEventIds[index] || event.sessionId !== proof.sessionId
-            || payload?.tool !== "Task" || payload.toolCallId !== proof.taskRunId || payload.auditOnly !== true || payload.args?.task !== proof.prompt;
-        })) {
-        throw new Error("Legacy Worker Attempt changed during owner reconciliation.");
-      }
-      const update = this.database.prepare(`
-        UPDATE task_runs SET session_id = ?, status = 'running', terminal_event_id = NULL, updated_at = ?, revision = revision + 1
-        WHERE task_run_id = ? AND session_id IS NULL AND revision = ?
-      `).run(proof.sessionId, now, proof.taskRunId, proof.expectedRevision);
-      if (update.changes !== 1) throw new Error("Legacy Worker owner changed during reconciliation.");
-      this.database.prepare("UPDATE task_attempts SET status = 'running', failure_json = NULL, updated_at = ? WHERE attempt_id = ? AND task_run_id = ?")
-        .run(now, proof.attemptId, proof.taskRunId);
-      this.database.prepare(`
-        INSERT INTO task_events (event_id, task_run_id, attempt_id, event_type, payload_json, created_at)
-        VALUES (?, ?, ?, 'task.worker.owner_reconciled', ?, ?)
-      `).run(eventId, proof.taskRunId, proof.attemptId, stringify(payload), now);
-      return this.requireWithAttempts(proof.taskRunId);
-    });
-  }
-
-  /** 只有失败任务可以显式重试；新 attempt 会在执行入口创建。 */
   retry(taskRunId: string): TaskRunWithAttempts {
     const task = this.require(taskRunId);
     if (task.status !== "failed") throw new Error(`TaskRun ${taskRunId} is not failed and cannot retry.`);

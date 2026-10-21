@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** 本地 HTTP 与真实 Desktop/Runtime 装配验证回合配置隔离；不调用外部模型。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";

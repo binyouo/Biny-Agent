@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Recalled facts must fit as complete user-message envelopes, never raw-body estimates. */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -12,10 +13,10 @@ import { stripTransientTurnContext, type PromptBundle } from "../src/agent/promp
 import type { AgentAttachment } from "../src/attachments/store.js";
 
 const input = "Draft release notes";
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "context-envelope-test", modelId: "context-envelope-test",
   stream: async () => { throw new Error("Context assembly must not request a model"); }
-};
+});
 const first = match("first", "Prefer concise release notes.");
 
 function match(id: string, content: string): MemoryMatch {

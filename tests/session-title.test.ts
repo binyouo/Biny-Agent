@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 标题持久化、手动重命名竞态、无效输出和取消；模型只用脚本，不访问外网。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { generateSessionTitle } from "../src/session/title.js";
@@ -13,7 +15,7 @@ const root = await mkdtemp(path.join(os.tmpdir(), "biny-session-title-"));
 let calls = 0;
 let answer = "修复登录超时";
 let duringRequest: (() => Promise<void>) | undefined;
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test", modelId: "title-helper",
   stream: async (context) => {
     calls += 1;
@@ -25,7 +27,7 @@ const model: AgentModel = {
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 async function session(): Promise<string> {
   const recorder = new SessionRecorder(root);
   recorder.record({ type: "user_message", content: "帮我修复登录时出现的超时问题" });

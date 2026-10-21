@@ -1,10 +1,11 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { promisify } from "node:util";
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
 import { startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { defaultConfig } from "../src/config/schema.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, realpath, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -160,7 +161,7 @@ async function createFixture() {
   config.heartbeat.enabled = false;
   const host = await startRuntimeHost(workspaceRoot, async () => await createInteractiveAgentHost(workspaceRoot, {
     sessionId, configStore: { load: async () => config, save: async () => undefined }
-  }));
+  }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   return {
     store,
     todoPath: path.join(agentDir(workspaceRoot), "todos", `${sessionId}.json`),

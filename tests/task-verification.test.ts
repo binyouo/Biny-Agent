@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -89,14 +90,14 @@ async function testGraphVerificationRepairAndDownstreamUnlock(): Promise<void> {
   const fixture = await createFixture("full-access");
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "bad\n", "utf8");
-    const graph = fixture.graphs.createGraph([
+    const graph = fixture.graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [
       {
         nodeKey: "build",
         prompt: "produce artifact",
         verification: verificationContract(2)
       },
       { nodeKey: "publish", prompt: "consume verified artifact", dependencies: ["build"] }
-    ]);
+    ] });
     fixture.graphs.startGraph(graph.graphId);
     let workerCalls = 0;
     const runtime = graphRuntime(async (prompt) => {
@@ -125,7 +126,7 @@ async function testGraphVerificationRepairAndDownstreamUnlock(): Promise<void> {
 
       await tickAndSettle(supervisor);
       await waitForGraphNodeStatus(fixture.graphs, graph.graphId, "publish", "completed");
-      assert.equal(fixture.graphs.inspectGraph(graph.graphId).status, "completed");
+      assert.equal(fixture.graphs.inspectGraph(graph.graphId).status, "running", "node completion requires supervisor finalization");
       assert.equal(workerCalls, 3, "two build Attempts plus the downstream node should execute");
     } finally {
       supervisor.stop();
@@ -139,10 +140,10 @@ async function testFailedVerificationDoesNotUnlockDownstream(): Promise<void> {
   const fixture = await createFixture("full-access");
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "bad\n", "utf8");
-    const graph = fixture.graphs.createGraph([
+    const graph = fixture.graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [
       { nodeKey: "build", prompt: "leave artifact bad", verification: verificationContract(1) },
       { nodeKey: "publish", prompt: "must not run", dependencies: ["build"] }
-    ]);
+    ] });
     fixture.graphs.startGraph(graph.graphId);
     let workerCalls = 0;
     const supervisor = graphSupervisor(fixture, graphRuntime(async () => {
@@ -153,7 +154,7 @@ async function testFailedVerificationDoesNotUnlockDownstream(): Promise<void> {
       await tickAndSettle(supervisor);
       await waitForGraphNodeStatus(fixture.graphs, graph.graphId, "build", "failed");
       const inspected = fixture.graphs.inspectGraph(graph.graphId);
-      assert.equal(inspected.status, "failed");
+      assert.equal(inspected.status, "running", "failed node queues supervision instead of closing the goal");
       assert.equal(inspected.nodes[0]?.status, "failed");
       assert.equal(inspected.nodes[1]?.status, "pending");
       assert.equal(workerCalls, 1);
@@ -394,11 +395,11 @@ async function testGraphRecoveryResumesVerificationOnly(): Promise<void> {
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
     const contract = verificationContract(2);
-    const graph = fixture.graphs.createGraph([{
+    const graph = fixture.graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{
       nodeKey: "recover",
       prompt: "resume only verification",
       verification: contract
-    }]);
+    }] });
     fixture.graphs.startGraph(graph.graphId);
     const node = fixture.graphs.readyNodes(graph.graphId)[0]!;
     const taskRunId = `graph:${graph.graphId}:${node.nodeId}`;
@@ -436,7 +437,7 @@ async function testGraphRecoveryProjectsCompletedVerification(): Promise<void> {
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
     const contract = verificationContract(1);
-    const graph = fixture.graphs.createGraph([{ nodeKey: "project", prompt: "persist before projection", verification: contract }]);
+    const graph = fixture.graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "project", prompt: "persist before projection", verification: contract }] });
     fixture.graphs.startGraph(graph.graphId);
     const node = fixture.graphs.readyNodes(graph.graphId)[0]!;
     const taskRunId = `graph:${graph.graphId}:${node.nodeId}`;
@@ -697,7 +698,7 @@ async function testAttemptLimitSurvivesStoreReopen(): Promise<void> {
   await ensureAgentDirs(root);
   await writeFile(path.join(root, "artifact.txt"), "bad\n", "utf8");
   const contract = verificationContract(2);
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   let tasks = await DurableTaskRunStore.open(root, authority);
   let realExecutor = createRealTaskExecutor(root, "full-access", authority, "verification-reopen-1");
   const task = tasks.create({ taskRunId: "reopen-limit", task: { prompt: "do not exceed two total Attempts", verification: contract } });
@@ -727,7 +728,7 @@ async function testAttemptLimitSurvivesStoreReopen(): Promise<void> {
   tasks.close();
   authority.close();
 
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   tasks = await DurableTaskRunStore.open(root, authority);
   realExecutor = createRealTaskExecutor(root, "full-access", authority, "verification-reopen-2");
   try {
@@ -848,7 +849,7 @@ async function testProcessBoundaryReusesDurableToolResult(): Promise<void> {
     await runVerificationChild(root, "process-reuse", "execute");
     await runVerificationChild(root, "process-reuse", "recover");
     assert.equal((await readFile(path.join(root, ".verification-state", "verification-count"), "utf8")).trim(), "1");
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const tasks = await DurableTaskRunStore.open(root, authority);
     try {
       const task = tasks.get("process-reuse");
@@ -869,7 +870,7 @@ async function testProcessBoundaryBlocksUnknownToolOutcome(): Promise<void> {
   try {
     await runVerificationChild(root, "process-unknown", "admit");
     await runVerificationChild(root, "process-unknown", "recover");
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const tasks = await DurableTaskRunStore.open(root, authority);
     try {
       const task = tasks.get("process-unknown");
@@ -1089,16 +1090,16 @@ async function testHostRestartApprovalResumesVerificationAndUnlocksGraph(): Prom
     await mkdir(path.join(root, ".verification-state"), { recursive: true });
     await writeFile(path.join(root, "artifact.txt"), "good\n", "utf8");
     const contract = hostApprovalContract();
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const tasks = await DurableTaskRunStore.open(root, authority);
     const graphs = await GoalGraphStore.open(root, authority);
     let graphId: string;
     let taskRunId: string;
     try {
-      const graph = graphs.createGraph([
+      const graph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [
         { nodeKey: "build", prompt: "persisted candidate", verification: contract },
         { nodeKey: "publish", prompt: "consume verified candidate", dependencies: ["build"] }
-      ]);
+      ] });
       graphId = graph.graphId;
       graphs.startGraph(graphId);
       const build = graphs.inspectGraph(graphId).nodes.find((node) => node.nodeKey === "build");
@@ -1156,7 +1157,7 @@ async function testHostRestartApprovalResumesVerificationAndUnlocksGraph(): Prom
     await client.close();
     client = undefined;
     await killRegisteredHost(root, "SIGKILL");
-    const reopenedAuthority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const reopenedAuthority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const reopenedGraphs = await GoalGraphStore.open(root, reopenedAuthority);
     try {
       reopenedGraphs.resumeGraph(graphId!);
@@ -1267,7 +1268,7 @@ async function prepareProcessBoundaryTask(taskRunId: string): Promise<string> {
   await ensureAgentDirs(root);
   await mkdir(path.join(root, ".verification-state"), { recursive: true });
   await writeFile(path.join(root, "artifact.txt"), "good\n", "utf8");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   try {
     const contract = processBoundaryContract();
@@ -1324,7 +1325,7 @@ async function runVerificationChild(root: string, taskRunId: string, mode: "exec
 }
 
 async function runVerificationChildMode(mode: string, root: string, taskRunId: string): Promise<void> {
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   const task = tasks.get(taskRunId);
   assert.ok(task);
@@ -1422,7 +1423,7 @@ async function persistedCandidate(root: string, contract: TaskVerificationContra
 async function createFixture(mode: PermissionMode): Promise<Fixture> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-task-verification-"));
   await ensureAgentDirs(root);
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   const graphs = await GoalGraphStore.open(root, authority);
   const realExecutor = createRealTaskExecutor(root, mode, authority, `verification-${randomUUID()}`);
@@ -1544,7 +1545,8 @@ function createRealTaskExecutor(
 
 function graphRuntime(run: (prompt: string) => Promise<string>): InteractiveRuntimeHandle {
   return {
-    getSnapshot: () => ({ revision: 0, state: { kind: "idle" }, info: { sessionId: "verification-test" } }),
+    getSnapshot: () => ({ revision: 0, state: { kind: "idle" }, info: { sessionId: "supervisor" } }),
+    runExclusiveOperation: async (_operation: unknown, execute: (signal: AbortSignal) => Promise<unknown>) => execute(new AbortController().signal),
     submitPrompt: (prompt, _attachments, ids) => ({
       runId: ids?.runId ?? randomUUID(),
       messageId: randomUUID(),
@@ -1562,12 +1564,16 @@ function graphRuntime(run: (prompt: string) => Promise<string>): InteractiveRunt
 
 function graphSupervisor(fixture: Fixture, runtime: InteractiveRuntimeHandle): GraphSupervisor {
   return new GraphSupervisor({
-    store: fixture.graphs,
-    runtime,
-    taskRuns: fixture.tasks,
-    getTaskCommandExecutor: () => fixture.executor,
-    getWorkspaceRoot: () => fixture.root,
-    getWorkspaceIgnore: () => verificationIgnore
+    getStore: () => fixture.graphs,
+    resolveSupervisorRuntime: async () => runtime,
+    getTaskRuns: () => fixture.tasks,
+    resolveSupervisorCommands: async () => ({
+      taskRuns: fixture.tasks,
+      startTaskRun: async (taskRunId: string) => ({ completion: runTaskClosure({
+        taskRuns: fixture.tasks, taskRunId, workspaceRoot: fixture.root, ignore: verificationIgnore, executor: fixture.executor,
+        executeAttempt: async (prompt, attempt) => (await runtime.submitPrompt(prompt, [], { runId: attempt.runId, turnId: attempt.turnId }).completion).output
+      }) })
+    }) as unknown as import("../src/runtime/CommandRuntime.js").CommandRuntime
   });
 }
 

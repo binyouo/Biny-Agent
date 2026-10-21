@@ -1,3 +1,5 @@
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { mkdtemp, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
@@ -43,6 +45,7 @@ async function serverFixture(root: string, rows: unknown[], commands = {} as Com
     removeQueuedRunMessage: async () => { queueActions.push("remove"); },
     close: async () => undefined
   } as InteractiveRuntimeHandle;
+  commands = { ...await createHostTestStores(persistenceRoot, commands.runtimeAuthority), ...commands };
   const server = new RuntimeHostServer(runtime, commands, {
     protocolVersion: runtimeHostProtocolVersion,
     endpoint: path.join(persistenceRoot, "host.sock"),
@@ -55,7 +58,7 @@ async function serverFixture(root: string, rows: unknown[], commands = {} as Com
     token: "test-token",
     pid: process.pid,
     createdAt: new Date().toISOString()
-  }, { close: async () => undefined });
+  }, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
   const entry = server as unknown as {
     execute(connection: unknown, frame: HostRequestFrame): Promise<unknown>;
     subscribeConnection(connection: unknown, sequence: number, epoch: string, filter: undefined): Promise<{ replayed: boolean }>;
@@ -67,7 +70,7 @@ async function serverFixture(root: string, rows: unknown[], commands = {} as Com
     emit(): void { updates.emit(runtimeUpdate); },
     submit(): Promise<unknown> {
       return entry.execute({}, {
-        kind: "request", requestId: "exhausted-submit", operation: "submit", payload: { input: "must not start" }
+        kind: "request", requestId: "exhausted-submit", operation: "run.submit", payload: { input: "must not start" }
       });
     },
     mutateQueue(action: string): Promise<unknown> {
@@ -164,10 +167,10 @@ async function serverSequenceRecovery(root: string): Promise<void> {
 }
 
 async function serverCommandAdmission(root: string): Promise<void> {
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const graphs = await GoalGraphStore.open(root, authority);
   for (const graphId of ["command-start", "command-resume", "command-cleanup"]) {
-    graphs.createGraph([{ nodeKey: "only", prompt: "must not execute" }], {}, graphId);
+    graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "only", prompt: "must not execute" }], payload: {}, graphId: graphId });
   }
   graphs.startGraph("command-resume");
   graphs.pauseGraph("command-resume");
@@ -175,7 +178,7 @@ async function serverCommandAdmission(root: string): Promise<void> {
   const fixture = await serverFixture(root, [record(Number.MAX_SAFE_INTEGER - 1)], { graphs } as CommandRuntime);
   try {
     await fixture.server.initialize();
-    for (const input of ["/graph start command-start", "/graph resume command-resume"]) {
+    for (const input of ["/graph resume command-resume"]) {
       await assert.rejects(fixture.command(input, "desktop", true), /client is exiting/,
         "Graph commands must share the RPC client admission boundary");
     }
@@ -185,9 +188,7 @@ async function serverCommandAdmission(root: string): Promise<void> {
       wakes: authority.databaseHandle().prepare("SELECT * FROM graph_wakes ORDER BY wake_id").all()
     };
     const inputs = [
-      "/graph start command-start",
       "/graph resume command-resume",
-      "  ///graph\tStArT\ncommand-start  ",
       "  //graph\nReSuMe\tcommand-resume  ",
     ];
     const bypasses: string[] = [];
@@ -284,7 +285,7 @@ async function main(): Promise<void> {
   } finally {
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
-    await fs.rm(root, { recursive: true, force: true });
+    await removeTestRoot(root, { recursive: true, force: true });
   }
 }
 

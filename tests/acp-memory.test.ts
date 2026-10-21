@@ -1,6 +1,10 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { AgentMemoryOwner } from "../src/runtime/memory/owner.js";
+import { canonicalMemoryRoot, serveMemoryOwner } from "../src/runtime/memory/transport.js";
+import { globalAgentDir, globalConfigDir } from "../src/config/paths.js";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -29,6 +33,8 @@ test("ACP recalls persisted shared memory, excludes foreign and disabled Activit
       embeddingModel: { kind: "provider", provider: "embeddings", model: "fixture-embed" }, maxRecalled: 10 } },
     crystal: { ...defaultConfig.crystal, passiveEnabled: false } });
   await ensureAgentDirs(root);
+  const memoryRoot = await canonicalMemoryRoot(globalAgentDir());
+  const owner = await serveMemoryOwner(memoryRoot, globalConfigDir(), new AgentMemoryOwner(memoryRoot, { load: async () => config, save: async () => undefined }));
   const recorder = new SessionRecorder(root);
   const agent = new AgentSession({ workspaceRoot: root, config, recorder, permissionManager: new PermissionManager(), toolRegistry: new ToolRegistry(), model: new ModelRuntime(config).createModelSettings().model });
   try {
@@ -52,5 +58,5 @@ test("ACP recalls persisted shared memory, excludes foreign and disabled Activit
     assert.match(first, /shared-fixture/u);
     assert.doesNotMatch(first, /foreign-fixture|activity-fixture/u);
     assert.deepEqual(prompts[2].params.prompt, [{ type: "text", text: "fixture preference again" }]);
-  } finally { await agent.close(); globalThis.fetch = originalFetch; await rm(root, { recursive: true, force: true }); }
+  } finally { await agent.close(); await owner.close(); globalThis.fetch = originalFetch; await rm(root, { recursive: true, force: true }); }
 });

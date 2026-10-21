@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -67,7 +68,7 @@ for (const cancelled of [false, true]) test(`真实 Runtime/HTTP 参数流 ${can
       activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
     });
     const canonical = await realpath(workspace);
-    host = await startRuntimeHost(canonical, resourceRegistry => createInteractiveAgentHost(canonical, { resourceRegistry, configStore: { load: async () => config, save: async () => undefined } }));
+    host = await startRuntimeHost(canonical, resourceRegistry => createInteractiveAgentHost(canonical, { resourceRegistry, configStore: { load: async () => config, save: async () => undefined } }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     client = await connectRuntimeHost(canonical, { surface: "desktop", clientId: "widget-test" });
     assert.ok(client);
     const file = client.getSnapshot().info.sessionFile;

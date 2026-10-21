@@ -1,9 +1,3 @@
-/**
- * 把 Biny 仍在使用的 AgentModel 协议适配成 Vercel LanguageModelV4。
- *
- * 主 Agent 的 provider runtime 直接提供 Vercel model 时不会经过这里；这个边界
- * 只服务显式注入的测试/本地模型，避免把旧 provider 协议带回正常链路。
- */
 import {
   type LanguageModelCallEndEvent,
   type ModelMessage,
@@ -11,10 +5,7 @@ import {
 } from "ai";
 import { performance } from "node:perf_hooks";
 import type {
-  LanguageModelV4,
   LanguageModelV4CallOptions,
-  LanguageModelV4Content,
-  LanguageModelV4StreamPart
 } from "@ai-sdk/provider";
 import { boundComputerFrames } from "../../computer/modelFrames.js";
 import { stableSystemPromptForCache } from "../prompts.js";
@@ -44,27 +35,11 @@ export interface DirectCallDiagnostics {
   promptShapeBudgetExceeded?: boolean;
 }
 
-export function createLanguageModel(state: VercelLoopState): LanguageModelV4 {
-  const model: LanguageModelV4 = {
-    specificationVersion: "v4",
-    provider: state.model.provider,
-    modelId: state.model.modelId,
-    supportedUrls: {},
-    doGenerate: async (options) => await collectGenerateResult(model, options),
-    doStream: async (options) => ({
-      stream: toReadableStream(streamModel(state, options))
-    })
-  };
-  return model;
-}
-
 export async function modelMessages(state: VercelLoopState): Promise<ModelMessage[]> {
   const messages = (state.config.transformContext
     ? await state.config.transformContext(state.context.messages, state.signal)
     : state.context.messages).map(projectMessageSentAt);
-  if (state.vercelModel !== undefined) {
-    await state.config.onRequestContext?.({ systemPrompt: state.context.systemPrompt, messages, tools: state.context.tools });
-  }
+  await state.config.onRequestContext?.({ systemPrompt: state.context.systemPrompt, messages, tools: state.context.tools });
   state.directPromptMessages = messages;
   return toModelMessages(messages, state.context.tools.some((tool) => tool.providerTool === "openai-apply-patch"));
 }
@@ -188,171 +163,6 @@ export function beginDirectModelRequest(state: VercelLoopState, callId: string):
   };
 }
 
-async function* streamModel(
-  state: VercelLoopState,
-  options: LanguageModelV4CallOptions
-): AsyncGenerator<LanguageModelV4StreamPart, void, void> {
-  const signal = options.abortSignal;
-  let textStarted = false;
-  let streamStarted = false;
-  const reasoningStarted = new Set<string>();
-  let emittedOutput = false;
-  let deferredFinish: LanguageModelV4StreamPart | undefined;
-
-  while (true) {
-    signal?.throwIfAborted();
-    try {
-      const messages = boundComputerFrames(state.config.transformContext
-        ? await state.config.transformContext(state.context.messages, signal)
-        : state.context.messages).map(projectMessageSentAt);
-      if (!state.model.stream) throw new Error("Vercel model is unavailable for the injected AgentModel.");
-      const streamModel = state.model.stream.bind(state.model);
-      const streamOptions: ModelStreamOptions = {
-        ...state.modelOptions,
-        // 外层 SDK 回调统一记账，注入模型不能再报告第二份请求用量。
-        onRequestMetrics: undefined,
-        signal,
-        maxOutputTokens: options.maxOutputTokens ?? state.modelOptions?.maxOutputTokens,
-        temperature: options.temperature ?? state.modelOptions?.temperature,
-        reasoning: mapReasoning(options.reasoning) ?? state.modelOptions?.reasoning,
-        providerOptions: options.providerOptions ?? state.modelOptions?.providerOptions
-      };
-      await state.config.onRequestContext?.({ systemPrompt: state.context.systemPrompt, messages, tools: state.context.tools });
-      const stream = await streamModel(
-        {
-          systemPrompt: state.context.systemPrompt,
-          messages,
-          tools: state.context.tools
-        },
-        streamOptions
-      );
-      for await (const event of stream) {
-        signal?.throwIfAborted();
-        if (!streamStarted) {
-          streamStarted = true;
-          yield { type: "stream-start", warnings: [] };
-        }
-        if (event.type === "start") continue;
-        if (event.type === "text-delta") {
-          emittedOutput = true;
-          if (!textStarted) {
-            textStarted = true;
-            yield { type: "text-start", id: "biny-text" };
-          }
-          yield { type: "text-delta", id: "biny-text", delta: event.text };
-          continue;
-        }
-        if (event.type === "reasoning-start") {
-          emittedOutput = true;
-          reasoningStarted.add(event.id);
-          yield { type: "reasoning-start", id: event.id, providerMetadata: providerMetadata(event.providerMetadata) };
-          continue;
-        }
-        if (event.type === "reasoning-delta") {
-          emittedOutput = true;
-          if (!reasoningStarted.has(event.id)) {
-            reasoningStarted.add(event.id);
-            yield { type: "reasoning-start", id: event.id, providerMetadata: providerMetadata(event.providerMetadata) };
-          }
-          yield {
-            type: "reasoning-delta",
-            id: event.id,
-            delta: event.text,
-            providerMetadata: providerMetadata(event.providerMetadata)
-          };
-          continue;
-        }
-        if (event.type === "reasoning-end") {
-          reasoningStarted.delete(event.id);
-          yield { type: "reasoning-end", id: event.id, providerMetadata: providerMetadata(event.providerMetadata) };
-          continue;
-        }
-        if (event.type === "tool-input-start" || event.type === "tool-input-delta") {
-          yield event;
-          continue;
-        }
-        if (event.type === "tool-call") {
-          emittedOutput = true;
-          yield {
-            type: "tool-call",
-            toolCallId: event.id,
-            toolName: event.name,
-            input: JSON.stringify(event.arguments),
-            providerMetadata: undefined
-          };
-          continue;
-        }
-        if (event.type === "finish") {
-          if (textStarted) yield { type: "text-end", id: "biny-text" };
-          for (const id of reasoningStarted) yield { type: "reasoning-end", id };
-          deferredFinish = {
-            type: "finish",
-            usage: toVercelUsage(event.usage),
-            finishReason: toVercelFinishReason(event.reason),
-            providerMetadata: undefined
-          };
-          continue;
-        }
-        if (event.type === "error") throw event.error;
-      }
-      if (deferredFinish) {
-        yield deferredFinish;
-        return;
-      }
-      throw new Error("Model stream ended without a finish event.");
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      const recovery = !emittedOutput
-        ? await state.config.recoverFromModelError?.(errorMessage(error), state.context, signal)
-        : undefined;
-      if (!recovery) throw error;
-      state.displayEvents.push({ type: "model_retry", ...recovery });
-      emittedOutput = false;
-      textStarted = false;
-      streamStarted = false;
-      reasoningStarted.clear();
-      deferredFinish = undefined;
-    }
-  }
-}
-
-async function collectGenerateResult(
-  model: LanguageModelV4,
-  options: LanguageModelV4CallOptions
-): Promise<{
-  content: LanguageModelV4Content[];
-  finishReason: { unified: "stop" | "length" | "content-filter" | "tool-calls" | "error" | "other"; raw: string | undefined };
-  usage: ReturnType<typeof toVercelUsage>;
-  warnings: [];
-}> {
-  const result = await model.doStream(options);
-  const reader = result.stream.getReader();
-  const content: LanguageModelV4Content[] = [];
-  let finishReason = toVercelFinishReason("other");
-  let usage = toVercelUsage(undefined);
-  let text = "";
-  let reasoning = "";
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      const part = next.value;
-      if (part.type === "text-delta") text += part.delta;
-      else if (part.type === "reasoning-delta") reasoning += part.delta;
-      else if (part.type === "tool-call") content.push(part);
-      else if (part.type === "finish") {
-        finishReason = part.finishReason;
-        usage = part.usage;
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  if (text) content.unshift({ type: "text", text });
-  if (reasoning) content.push({ type: "reasoning", text: reasoning });
-  return { content, finishReason, usage, warnings: [] };
-}
-
 export function toModelMessages(messages: AgentMessage[], nativePatch = false): ModelMessage[] {
   return orderHistoricalPatchResults(boundComputerFrames(messages), nativePatch).map(projectMessageSentAt).map((message) => {
     if (message.role === "user") {
@@ -416,48 +226,6 @@ function orderHistoricalPatchResults(messages: AgentMessage[], nativePatch: bool
   return ordered;
 }
 
-function toReadableStream(source: AsyncIterable<LanguageModelV4StreamPart>): ReadableStream<LanguageModelV4StreamPart> {
-  const iterator = source[Symbol.asyncIterator]();
-  return new ReadableStream<LanguageModelV4StreamPart>({
-    async pull(controller) {
-      try {
-        const next = await iterator.next();
-        if (next.done) controller.close();
-        else controller.enqueue(next.value);
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-    async cancel() {
-      if (iterator.return) await iterator.return();
-    }
-  });
-}
-
-export function toVercelUsage(usage: AgentUsage | undefined): {
-  inputTokens: { total: number | undefined; noCache: number | undefined; cacheRead: number | undefined; cacheWrite: number | undefined };
-  outputTokens: { total: number | undefined; text: number | undefined; reasoning: number | undefined };
-} {
-  const inputTokens = usage?.inputTokens;
-  const cacheRead = usage?.cacheReadTokens;
-  const cacheWrite = usage?.cacheWriteTokens;
-  const outputTokens = usage?.outputTokens;
-  const reasoningTokens = usage?.reasoningTokens;
-  return {
-    inputTokens: {
-      total: inputTokens,
-      noCache: inputTokens === undefined ? undefined : Math.max(0, inputTokens - (cacheRead ?? 0) - (cacheWrite ?? 0)),
-      cacheRead,
-      cacheWrite
-    },
-    outputTokens: {
-      total: outputTokens,
-      text: outputTokens === undefined ? undefined : Math.max(0, outputTokens - (reasoningTokens ?? 0)),
-      reasoning: reasoningTokens
-    }
-  };
-}
-
 export function fromVercelUsage(usage: {
   inputTokens: number | undefined;
   inputTokenDetails: { cacheReadTokens: number | undefined; cacheWriteTokens: number | undefined };
@@ -482,30 +250,12 @@ export function fromVercelUsage(usage: {
   };
 }
 
-export function toVercelFinishReason(reason: AgentAssistantMessage["stopReason"] | undefined): {
-  unified: "stop" | "length" | "content-filter" | "tool-calls" | "error" | "other";
-  raw: string | undefined;
-} {
-  const unified = reason === "stop" ? "stop"
-    : reason === "length" ? "length"
-      : reason === "tool-calls" ? "tool-calls"
-        : reason === "error" ? "error"
-          : "other";
-  return { unified, raw: reason };
-}
-
 export function fromVercelFinishReason(reason: string): AgentAssistantMessage["stopReason"] {
   if (reason === "stop") return "stop";
   if (reason === "length") return "length";
   if (reason === "tool-calls") return "tool-calls";
   if (reason === "error") return "error";
   return "other";
-}
-
-function mapReasoning(reasoning: LanguageModelV4CallOptions["reasoning"]): ModelStreamOptions["reasoning"] {
-  if (reasoning === "none") return "off";
-  if (reasoning === "provider-default" || reasoning === undefined) return undefined;
-  return reasoning as ModelStreamOptions["reasoning"];
 }
 
 export function toVercelReasoning(reasoning: ModelStreamOptions["reasoning"]): LanguageModelV4CallOptions["reasoning"] {

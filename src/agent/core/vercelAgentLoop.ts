@@ -2,8 +2,7 @@
  * 用 Vercel AI SDK 的 streamText 执行 Biny 的单个模型步骤。
  *
  * Biny 仍然拥有上下文、权限、工具审计和 session 消息；主 Agent 的 provider/model
- * 请求与工具续环交给 AI SDK。没有直连 Vercel model 的注入场景仍通过 Biny AgentModel
- * adapter 运行，保持测试和后台模型调用的最小兼容面。
+ * 请求与工具续环交给 AI SDK；所有 API 模型使用同一协议。
  */
 import {
   stepCountIs,
@@ -32,7 +31,6 @@ import type {
 } from "./types.js";
 import {
   beginDirectModelRequest,
-  createLanguageModel,
   fromVercelFinishReason,
   fromVercelUsage,
   modelMessages,
@@ -110,7 +108,7 @@ export async function* vercelAgentLoopContinue(
     config,
     signal,
     model: config.model,
-    vercelModel: config.vercelModel,
+    vercelModel: config.vercelModel ?? config.model.vercelModel,
     maxRetries: config.maxRetries,
     modelOptions: config.modelOptions,
     tools: [...config.tools],
@@ -185,13 +183,10 @@ export async function* vercelAgentLoopContinue(
       await recordDirectModelFailure(state, providerError);
       if (signal?.aborted) throw error;
       state.streamFailure = errorMessage(providerError);
-      if (state.vercelModel === undefined) {
-        yield { type: "error", error: state.streamFailure, fatal: true };
-      }
     } finally {
       await recordDirectModelFailure(state, signal?.aborted ? signal.reason : state.directModelError ?? state.streamFailure ?? "Provider stream ended before a finish event.");
     }
-    if (state.streamFailure && state.vercelModel !== undefined && !state.outputProducedSinceStep) {
+    if (state.streamFailure && !state.outputProducedSinceStep) {
       const failure = state.streamFailure;
       state.streamFailure = undefined;
       const recovery = await recoverDirectModelError(state, failure, signal);
@@ -202,7 +197,7 @@ export async function* vercelAgentLoopContinue(
         yield { type: "model_retry", ...recovery };
       }
     }
-    if (state.streamFailure && state.vercelModel !== undefined && state.outputProducedSinceStep) {
+    if (state.streamFailure && state.outputProducedSinceStep) {
       yield { type: "error", error: state.streamFailure, fatal: true };
     }
     yield* state.displayEvents.drain();
@@ -279,7 +274,7 @@ async function recoverDirectModelError(
   error: string,
   signal: AbortSignal | undefined
 ): Promise<{ reason: string; attempt: number; compactedMessages: number } | undefined> {
-  if (state.vercelModel === undefined || state.outputProducedSinceStep) return undefined;
+  if (state.outputProducedSinceStep) return undefined;
   const recovery = await state.config.recoverFromModelError?.(error, state.context, signal);
   if (!recovery) return undefined;
   state.hasPendingMessages = true;
@@ -287,17 +282,30 @@ async function recoverDirectModelError(
 }
 
 function streamModelStep(state: VercelLoopState) {
+  if (!state.vercelModel) throw new Error("This backend does not provide an API language model.");
   const tools = createVercelTools(state);
   const callSettings = vercelCallSettings(state);
   // SDK 的 call-start 只表示逻辑调用；物理重试要在 SDK middleware 的 doStream 边界计数。
-  const model = state.vercelModel === undefined ? createLanguageModel(state) : wrapLanguageModel({
-    model: state.vercelModel,
+  const model = wrapLanguageModel({
+    model: state.vercelModel!,
     middleware: {
       specificationVersion: "v4",
       wrapStream: async ({ doStream }) => {
         const attempt: VercelLoopState["directAttempts"][number] = { startedAtMs: Date.now() };
         state.directAttempts.push(attempt);
-        try { return await doStream(); }
+        try {
+          const result = await doStream();
+          let terminal = false;
+          return { ...result, stream: result.stream.pipeThrough(new TransformStream({
+            transform(part, controller) {
+              if (part.type === "finish" || part.type === "error") terminal = true;
+              controller.enqueue(part);
+            },
+            flush() {
+              if (!terminal) throw new Error("Model stream ended without a finish event.");
+            }
+          })) };
+        }
         catch (error) {
           attempt.error = errorMessage(error);
           attempt.durationMs = Math.max(0, Date.now() - attempt.startedAtMs);
@@ -317,7 +325,7 @@ function streamModelStep(state: VercelLoopState) {
     tools,
     // 名字或参数不合法的工具调用先自愈再执行，避免可修复失败进入重试循环。
     repairToolCall: toolCallRepair,
-    maxRetries: state.vercelModel === undefined ? 0 : state.maxRetries ?? 0,
+    maxRetries: state.maxRetries ?? 0,
     // 接管 SDK 默认的 console.error，错误仍由 fullStream 进入 Biny 稳定事件链。
     onError: ({ error }) => { state.directModelError = error; },
     onAbort: ({ reason }) => {
@@ -428,7 +436,7 @@ async function prepareNextModelStep(state: VercelLoopState, record: VercelStepRe
   state.context.tools = [...state.tools];
   if (nextTurn.model) {
     state.model = nextTurn.model;
-    state.vercelModel = nextTurn.vercelModel;
+    state.vercelModel = nextTurn.vercelModel ?? nextTurn.model?.vercelModel;
   } else if (nextTurn.vercelModel) {
     state.vercelModel = nextTurn.vercelModel;
   }
@@ -576,7 +584,7 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
   if (part.type === "error") {
     const error = errorMessage(part.error);
     state.streamFailure = error;
-    return state.vercelModel === undefined ? [{ type: "error", error, fatal: true }] : [];
+    return [];
   }
   return [];
 }

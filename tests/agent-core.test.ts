@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { AgentAssistantMessage, AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentModel, AgentTool, ModelStreamContext, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -32,7 +33,7 @@ async function main(): Promise<void> {
   await testTruncatedValidToolCallDoesNotExecute();
   await testDirectProviderTruncatedValidToolCallDoesNotExecute();
   const calls: ModelStreamContext[] = [];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "test-model",
     async stream(context): Promise<AsyncIterable<ModelStreamEvent>> {
@@ -51,7 +52,7 @@ async function main(): Promise<void> {
         { type: "finish", reason: "stop", usage: { inputTokens: 20, outputTokens: 1, totalTokens: 21 } }
       ]);
     }
-  };
+  });
   const tool: AgentTool = {
     name: "read",
     label: "Read",
@@ -95,13 +96,13 @@ async function testToolProgressBeforeCompletion(): Promise<void> {
       return { content: [] };
     }
   };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "test",
     stream: async () => events([
       { type: "tool-call", id: "slow", name: "slow", arguments: {} },
       { type: "finish", reason: "tool-calls" }
     ])
-  };
+  });
   const running = (async () => {
     for await (const event of agentLoop([{ role: "user", content: "test" }], { messages: [], tools: [] }, { model, tools: [tool], maxSteps: 1 })) {
       if (event.type === "tool_execution_start") {
@@ -128,7 +129,7 @@ async function testToolProgressBeforeCompletion(): Promise<void> {
 
 async function testReasoningSignatureAndReplacedContext(): Promise<void> {
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "test",
     stream: async () => {
       requests += 1;
@@ -140,7 +141,7 @@ async function testReasoningSignatureAndReplacedContext(): Promise<void> {
         { type: "finish", reason: "tool-calls" }
       ] : [{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }]);
     }
-  };
+  });
   const tool: AgentTool = { name: "read", description: "test", parameters: { type: "object" }, execute: async () => ({ content: [] }) };
   for await (const event of agentLoop([{ role: "user", content: "test" }], { messages: [], tools: [] }, {
     model, tools: [tool], maxSteps: 2,
@@ -157,7 +158,7 @@ async function testReasoningSignatureAndReplacedContext(): Promise<void> {
 
 async function testUnknownToolCallStopsWithoutRetry(): Promise<void> {
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "malformed-tool-test",
     modelId: "malformed-tool-model",
     stream: async (): Promise<AsyncIterable<ModelStreamEvent>> => {
@@ -167,7 +168,7 @@ async function testUnknownToolCallStopsWithoutRetry(): Promise<void> {
         { type: "finish", reason: "tool-calls" }
       ]);
     }
-  };
+  });
   const received: AgentEvent[] = [];
   for await (const event of agentLoop([{ role: "user", content: "run" }], { messages: [], tools: [] }, {
     model,
@@ -198,7 +199,7 @@ async function testTruncatedInvalidToolCallPreservesLength(): Promise<void> {
       return { content: [] };
     }
   };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "truncated-tool-test",
     modelId: "truncated-tool-model",
     stream: async () => {
@@ -208,7 +209,7 @@ async function testTruncatedInvalidToolCallPreservesLength(): Promise<void> {
         { type: "finish", reason: "length" }
       ]);
     }
-  };
+  });
   const received: AgentEvent[] = [];
   for await (const event of agentLoop([{ role: "user", content: "write" }], { messages: [], tools: [tool] }, {
     model,
@@ -241,7 +242,7 @@ async function testTruncatedValidToolCallDoesNotExecute(): Promise<void> {
       return { content: [{ type: "text", text: "written" }] };
     }
   };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "truncated-valid-tool-test",
     modelId: "truncated-valid-tool-model",
     stream: async () => {
@@ -251,7 +252,7 @@ async function testTruncatedValidToolCallDoesNotExecute(): Promise<void> {
         { type: "finish", reason: "length" }
       ]);
     }
-  };
+  });
   const received: AgentEvent[] = [];
   for await (const event of agentLoop([{ role: "user", content: "write" }], { messages: [], tools: [tool] }, {
     model,
@@ -307,11 +308,11 @@ async function testDirectProviderTruncatedValidToolCallDoesNotExecute(): Promise
       })
     })
   };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: provider.provider,
     modelId: provider.modelId,
     stream: async () => events([{ type: "finish", reason: "stop" }])
-  };
+  });
   const received: AgentEvent[] = [];
   for await (const event of agentLoop([{ role: "user", content: "write" }], { messages: [], tools: [tool] }, {
     model,
@@ -332,7 +333,7 @@ async function testRemovedToolNameIsRejected(): Promise<void> {
     parameters: { type: "object", properties: {}, additionalProperties: false },
     execute: async () => ({ content: [{ type: "text", text: "written" }] })
   };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "legacy-tool-test",
     modelId: "legacy-tool-model",
     stream: async () => {
@@ -344,7 +345,7 @@ async function testRemovedToolNameIsRejected(): Promise<void> {
         ])
         : events([{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }]);
     }
-  };
+  });
   const received: AgentEvent[] = [];
   for await (const event of agentLoop([{ role: "user", content: "write" }], { messages: [], tools: [tool] }, {
     model,
@@ -358,14 +359,14 @@ async function testRemovedToolNameIsRejected(): Promise<void> {
 }
 
 async function testModelStreamWithoutFinishFails(): Promise<void> {
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "truncated-test",
     modelId: "truncated-model",
     stream: async () => events([
       { type: "start" },
       { type: "text-delta", text: "partial answer" }
     ])
-  };
+  });
   let assistant: AgentAssistantMessage | undefined;
   let errorMessage = "";
   for await (const event of agentLoop([{ role: "user", content: "answer" }], { messages: [], tools: [] }, {
@@ -382,7 +383,7 @@ async function testModelStreamWithoutFinishFails(): Promise<void> {
 
 async function testModelErrorRecoveryRetriesBeforeAnyDelta(): Promise<void> {
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "recovery-model",
     async stream(): Promise<AsyncIterable<ModelStreamEvent>> {
@@ -390,7 +391,7 @@ async function testModelErrorRecoveryRetriesBeforeAnyDelta(): Promise<void> {
       if (requests === 1) throw new Error("maximum context length exceeded");
       return events([{ type: "text-delta", text: "recovered" }, { type: "finish", reason: "stop" }]);
     }
-  };
+  });
   const received: string[] = [];
   for await (const event of agentLoop([{ role: "user", content: "recover" }], { messages: [], tools: [] }, {
     model,
@@ -413,23 +414,23 @@ async function testNextTurnRefreshesModelAndTools(): Promise<void> {
     execute: async () => ({ content: [{ type: "text", text: "first result" }] })
   };
   const nextTool: AgentTool = { ...firstTool, name: "next_tool", description: "Next tool." };
-  const firstModel: AgentModel = {
+  const firstModel: AgentModel = testModel({
     provider: "test",
     modelId: "first-model",
     stream: async () => events([
       { type: "tool-call", id: "first-call", name: "first_tool", arguments: {} },
       { type: "finish", reason: "tool-calls" }
     ])
-  };
+  });
   let refreshedContext: ModelStreamContext | undefined;
-  const nextModel: AgentModel = {
+  const nextModel: AgentModel = testModel({
     provider: "test",
     modelId: "next-model",
     stream: async (context) => {
       refreshedContext = context;
       return events([{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }]);
     }
-  };
+  });
   for await (const _event of agentLoop([{ role: "user", content: "refresh" }], { messages: [], tools: [firstTool] }, {
     model: firstModel,
     tools: [firstTool],
@@ -446,14 +447,14 @@ async function testQueuedFollowUpPreparesOnlyTheNextModelStep(): Promise<void> {
   let requests = 0;
   let preparations = 0;
   let queueRead = false;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "queued-follow-up",
     stream: async () => {
       requests += 1;
       return events([{ type: "text-delta", text: `answer-${String(requests)}` }, { type: "finish", reason: "stop" }]);
     }
-  };
+  });
   const completedRoles: AgentMessage["role"][] = [];
   for await (const event of agentLoop([{ role: "user", content: "first" }], { messages: [], tools: [] }, {
     model,
@@ -479,11 +480,11 @@ async function testQueuedFollowUpPreparesOnlyTheNextModelStep(): Promise<void> {
 
 async function testStepPersistencePrecedesMilestoneAndQueue(): Promise<void> {
   let persisted = false;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "persist-order",
     stream: async () => events([{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }])
-  };
+  });
   for await (const event of agentLoop([{ role: "user", content: "persist" }], { messages: [], tools: [] }, {
     model,
     tools: [],
@@ -502,14 +503,14 @@ async function testStepPersistencePrecedesMilestoneAndQueue(): Promise<void> {
 
 async function testStepPersistenceFailureStopsTheLoop(): Promise<void> {
   let requests = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "persist-failure",
     stream: async () => {
       requests += 1;
       return events([{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }]);
     }
-  };
+  });
   const received: AgentEvent[] = [];
   for await (const event of agentLoop([{ role: "user", content: "persist" }], { messages: [], tools: [] }, {
     model,
@@ -528,13 +529,13 @@ async function testStepPersistenceFailureStopsTheLoop(): Promise<void> {
 async function testAssistantDeltasAreForwardedBeforeProviderCompletes(): Promise<void> {
   let providerFinished = false;
   let firstDeltaForwarded = false;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "stream-test",
     modelId: "stream-test-model",
     async stream(): Promise<AsyncIterable<ModelStreamEvent>> {
       return delayedEvents();
     }
-  };
+  });
 
   for await (const event of agentLoop([{ role: "user", content: "stream" }], {
     messages: [],

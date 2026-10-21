@@ -9,8 +9,6 @@ import { constants, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { configSchema, defaultConfig, type AgentConfig } from "./schema.js";
-import { migrateGlobalConfigDocument } from "./migrations.js";
-import { migrateLegacyGlobalState } from "./globalStateMigration.js";
 import { assertTestStatePathIsolated, globalConfigDir } from "./paths.js";
 import { loadProjectSettings, type ProjectSettings } from "./projectSettings.js";
 
@@ -33,6 +31,10 @@ export interface ConfigPathOptions {
 export async function loadConfig(workspaceRoot: string, options: ConfigPathOptions = {}): Promise<AgentConfig> {
   const globalConfig = await loadGlobalConfig(options);
   const projectSettings = await loadProjectSettings(workspaceRoot);
+  return applyProjectSettings(globalConfig, projectSettings);
+}
+
+export function applyProjectSettings(globalConfig: AgentConfig, projectSettings: ProjectSettings): AgentConfig {
   if (projectSettings.defaultModel && !globalConfig.models[projectSettings.defaultModel]) {
     throw new Error(
       `Project defaultModel "${projectSettings.defaultModel}" is not configured in global ${CONFIG_FILE}.`
@@ -43,7 +45,6 @@ export async function loadConfig(workspaceRoot: string, options: ConfigPathOptio
 
 /** 只读取全局配置，不读取项目覆盖；供保存配置时保持全局字段的原始值。 */
 export async function loadGlobalConfig(options: ConfigPathOptions = {}): Promise<AgentConfig> {
-  if (options.globalDir === undefined) await migrateLegacyGlobalState();
   try {
     return await loadConfigFile(options.globalDir ?? globalConfigDir());
   } catch (error) {
@@ -66,8 +67,7 @@ export async function loadConfigFile(root: string): Promise<AgentConfig> {
     handle = await openExistingConfig(location);
     await tightenConfigMode(handle);
     const raw = await readBoundedConfig(location, handle);
-    const migration = migrateGlobalConfigDocument(JSON.parse(raw));
-    return configSchema.parse(migration.document);
+    return configSchema.parse(JSON.parse(raw));
   } catch (error) {
     if (isNotFound(error)) return configSchema.parse(defaultConfig);
     throw new Error(`Failed to load ${CONFIG_FILE}: ${error instanceof Error ? error.message : String(error)}`);
@@ -128,7 +128,6 @@ async function writeConfigDocumentFile(root: string, settings: AgentConfig): Pro
 
 export async function ensureConfig(workspaceRoot: string, options: ConfigPathOptions = {}): Promise<void> {
   void workspaceRoot;
-  if (options.globalDir === undefined) await migrateLegacyGlobalState();
   const root = options.globalDir ?? globalConfigDir();
   assertTestStatePathIsolated(root);
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
@@ -420,11 +419,7 @@ function serializeConfig(config: AgentConfig): string {
     for (const key of Object.keys(server.credentialRefs?.env ?? {})) delete server.env?.[key];
     for (const key of Object.keys(server.credentialRefs?.headers ?? {})) delete server.headers?.[key];
   }
-  // 未使用生图配置时不落盘空段，避免共享配置的旧版 Desktop 拒绝未知顶层键。
-  return `${JSON.stringify({
-    ...safe,
-    imageGen: safe.imageGen.model || safe.imageGen.localModel || safe.imageGen.aspectRatio ? safe.imageGen : undefined
-  }, null, 2)}\n`;
+  return `${JSON.stringify(safe, null, 2)}\n`;
 }
 
 function deepEqual(left: unknown, right: unknown): boolean {

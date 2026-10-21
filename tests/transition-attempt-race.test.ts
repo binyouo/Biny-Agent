@@ -134,7 +134,7 @@ for (const replace of [false, true]) test(`real dispatch failure callback ${repl
   config.context.memory.enabled = false; config.context.identity.enabled = false; config.checkpoints.enabled = false; config.heartbeat.enabled = false;
   const network = t.mock.method(globalThis, "fetch", async () => { throw new Error("No provider call is expected for disabled dispatch."); });
   const commands = await createCommandRuntime(root, { configStore: { load: async () => structuredClone(config), save: async () => undefined } });
-  const second = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const second = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const other = await DurableTaskRunStore.open(root, second);
   try {
     const taskId = commands.taskRuns.create({ sessionId: commands.agent.getInfo().sessionId, task: "test disabled dispatch" }).taskRunId;
@@ -167,9 +167,9 @@ function snapshot(tasks: DurableTaskRunStore, authority: RuntimeEventAuthority, 
 }
 async function fixture(run: (context: { tasks: DurableTaskRunStore; authority: RuntimeEventAuthority; other: DurableTaskRunStore; taskId: string }) => Promise<void>) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-transition-attempt-race-"));
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
-  const otherAuthority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const otherAuthority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const other = await DurableTaskRunStore.open(root, otherAuthority);
   try { await run({ tasks, authority, other, taskId: tasks.create({ task: "track attempt ownership" }).taskRunId }); }
   finally { tasks.close(); other.close(); authority.close(); otherAuthority.close(); await rm(root, { recursive: true, force: true }); }

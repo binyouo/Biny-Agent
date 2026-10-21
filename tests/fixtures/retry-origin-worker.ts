@@ -1,3 +1,4 @@
+import { testModel } from "../helpers/model.js";
 /** Public retry/process-crash fixture; all providers and tools are isolated local stand-ins. */
 import assert from "node:assert/strict";
 import { appendFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -72,14 +73,14 @@ for (const name of ["original_probe", "primer_probe", "fast_probe", "slow_probe"
 const answer = (text: string): ModelStreamEvent[] => [{ type: "text-delta", text }, { type: "finish", reason: "stop" }];
 const call = (id: string, name = `${id}_probe`): ModelStreamEvent[] => [{ type: "tool-call", id, name, arguments: {} }, { type: "finish", reason: "tool-calls" }];
 let responses: ModelStreamEvent[][] = scenario.includes("originaltools") ? [call("original"), answer("ORIGINAL_ANSWER")] : [answer("ORIGINAL_ANSWER")];
-const model: AgentModel = { provider: "synthetic", modelId: "retry-origin", runtime: "builtin-llama.cpp", dataResidency: "local", supportsTools: true,
+const model: AgentModel = testModel({ provider: "synthetic", modelId: "retry-origin", runtime: "builtin-llama.cpp", dataResidency: "local", supportsTools: true,
   stream: async (context, options) => {
     assert.equal(options?.requestContext?.operation, "agent");
     requests.push({ phase, messages: structuredClone(context.messages), step: options?.requestContext?.step });
     if (mode === "capture" && phase === "retry" && boundary === "dispatch") { await recorder.flush(); capture(); }
     return (async function* () { yield* responses.shift() ?? answer("RECOVERED_ANSWER"); })();
   }
-};
+});
 const recorder = new SessionRecorder(root, mode === "capture" ? sessionId : undefined, undefined, sink);
 const session = new AgentSession({ workspaceRoot: root, recorder, runtimeEventSink: sink, config, model, toolRegistry: registry,
   permissionManager: new PermissionManager(config.permission) });

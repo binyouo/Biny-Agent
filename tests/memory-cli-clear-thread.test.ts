@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { memoryClearCommand } from "../src/cli/commands/localCapabilities.js";
@@ -36,7 +37,7 @@ try {
     runExclusiveOperation: async (_name: string, execute: (signal: AbortSignal) => Promise<unknown>) => await execute(new AbortController().signal),
     close: async () => undefined
   } as unknown as InteractiveRuntimeHandle;
-  host = await startRuntimeHost(workspace, async () => ({ runtime, commands }));
+  host = await startRuntimeHost(workspace, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   console.log = () => undefined;
   await memoryClearCommand(workspace, { threadId: "thread-1", yes: true, noSpawn: true, json: true });
   const reopened = new MemoryStorage(workspace);

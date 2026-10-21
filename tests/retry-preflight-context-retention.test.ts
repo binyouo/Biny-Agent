@@ -1,3 +1,5 @@
+import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -55,16 +57,16 @@ async function fixture(t: TestContext, oldCheckpoint = false) {
       execute: async () => { tools += 1; return { marker: "PRIOR_TOOL_FACT" }; } }) });
   const agent = new AgentSession({ workspaceRoot: root, config, recorder: new SessionRecorder(root),
     permissionManager: new PermissionManager(config.permission), toolRegistry: registry,
-    model: { provider: "synthetic", modelId: "preflight-context-retention", supportsTools: true,
+    model: testModel({ provider: "synthetic", modelId: "preflight-context-retention", supportsTools: true,
       stream: async (context, options) => {
         const events = options?.requestContext?.operation === "agent"
           ? (requests.push(structuredClone(context.messages)), await response()) : answer("AUXILIARY");
         return (async function* () { yield* events; })();
-      } } });
+      } }) });
   const runtime = new InteractiveAgentRuntime({ agent, persistenceRoot: root, refreshSkills: async () => {},
     setSubagentParentRunId: () => {}, close: async () => await agent.close()
   } as unknown as ConstructorParameters<typeof InteractiveAgentRuntime>[0]);
-  t.after(async () => { await runtime.close(); await fs.rm(root, { recursive: true, force: true }); });
+  t.after(async () => { await runtime.close(); await removeTestRoot(root, { recursive: true, force: true }); });
   await agent.initialize();
   let step = 0;
   response = async () => ++step === 1
@@ -328,12 +330,12 @@ for (const kind of ["legacy-assistant", "tool-result"] as const) for (const entr
       await fs.writeFile(f.info.sessionFile, events.map(event => JSON.stringify(event)).join("\n") + "\n");
       agent = new AgentSession({ workspaceRoot: f.root, config: f.config, recorder: new SessionRecorder(f.root),
         toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(f.config.permission),
-        model: { provider: "synthetic", modelId: "legacy-preflight-retirement", supportsTools: true,
+        model: testModel({ provider: "synthetic", modelId: "legacy-preflight-retirement", supportsTools: true,
           stream: async (context, options) => {
             const output = options?.requestContext?.operation === "agent"
               ? (f.requests.push(structuredClone(context.messages)), await response()) : answer("AUXILIARY");
             return (async function* () { yield* output; })();
-          } } });
+          } }) });
       await agent.initialize(); await agent.resume(f.info.sessionId);
       runtime = new InteractiveAgentRuntime({ agent, persistenceRoot: f.root, refreshSkills: async () => {},
         setSubagentParentRunId: () => {}, close: async () => await agent.close()

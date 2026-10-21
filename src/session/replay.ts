@@ -1,8 +1,8 @@
 /**
  * Session 回放：事件流 → 模型对话历史。
  *
- * 新 session 同时记录可直接重放的 canonical AgentMessage 和用于界面/审计的扁平投影；旧 session
- * 只有扁平事件。这里优先读取 canonical 消息，并为旧格式重组 assistant/tool-call/tool-result，
+ * 会话同时记录模型消息和界面/审计事件；导入对话及尚未提交的工具批次
+ * 仍需要从审计事实重建模型消息。已提交模型消息按身份去重，
  * 同时根据工具生命周期补齐被中断的工具调用、抽出消息树、最近上下文状态和用量。
  *
  * 恢复出来的历史会直接发回模型，所以宁可丢弃可疑内容（如缺签名的思考块），也不能拼出
@@ -16,7 +16,7 @@ import type { AgentMessage, AgentReasoningContent, ModelRequestMetrics } from ".
 import { createToolOperationId, type ToolExecutionState, type ToolOutcomeUnknownReason, type ToolRetrySafety } from "../tools/types.js";
 import { readSessionEvents, readStoredSessionEvents } from "./events.js";
 import { activeSessionEventsForPath, activeSessionMessageIds, sessionMessageTree, type SessionMessageNode, type SessionMessageReference } from "./messageTree.js";
-import type { ReasoningBlock, SessionContextCheckpoint, SessionContextState, SessionContextUsage, SessionEvent, SessionUsage } from "./recorder.js";
+import type { ReasoningBlock, SessionContextCheckpoint, SessionContextState, SessionEvent, SessionUsage } from "./recorder.js";
 import { validateRuntimeEventStream, type RuntimeHighWater } from "./runtimeEvent.js";
 export { activeSessionEventsForPath, activeSessionMessageIds, sessionMessageTree, type SessionMessageNode, type SessionMessageReference } from "./messageTree.js";
 
@@ -33,7 +33,6 @@ export interface SessionReplay {
   contextStartUserMessageIndex: number;
   /** 应用 checkpoint 之前，完整 session 可以重放出的模型消息数。 */
   totalMessageCount: number;
-  contextUsage?: SessionContextUsage;
   contextState?: SessionContextState;
   contextCheckpoint?: SessionContextCheckpoint;
   usage: SessionUsage[];
@@ -74,7 +73,6 @@ export async function replayStoredSession(workspaceRoot: string, session: string
 }
 
 export function replaySessionEvents(recordedEvents: SessionEvent[], options: SessionReplayOptions = {}): SessionReplay {
-  recordedEvents = restoreRedactedExecutionTools(recordedEvents);
   const runtimeHighWater = validateRuntimeEventStream(recordedEvents);
   validateCanonicalToolPairing(recordedEvents);
   const expectedRuntimeHighWater = options.expectedRuntimeHighWater;
@@ -142,7 +140,6 @@ export function replaySessionEvents(recordedEvents: SessionEvent[], options: Ses
       .slice(0, contextStartMessageIndex)
       .filter((message) => message.role === "user").length,
     totalMessageCount: projection.messages.length,
-    contextUsage: latestContextUsage(activeEvents, acceptsContextState),
     contextState,
     contextCheckpoint,
     usage: sessionUsage(activeEvents),
@@ -155,24 +152,13 @@ export function replaySessionEvents(recordedEvents: SessionEvent[], options: Ses
   };
 }
 
-function restoreRedactedExecutionTools(events: SessionEvent[]): SessionEvent[] {
-  const calls = new Map<string, Extract<SessionEvent, { type: "tool_call" }>>();
-  return events.map((event) => {
-    if (event.type === "tool_call" && event.toolCallId) calls.set(event.toolCallId, event);
-    if (event.type !== "tool_execution" || event.tool !== "[redacted]") return event;
-    const call = calls.get(event.toolCallId);
-    // 旧写入器将 skill_lookup 等协议标识误当密钥；只修复可由原调用证明的整名脱敏。
-    if (!call || !/^(?:sk|rk|pk|ghp|github_pat|AIza|AKIA)[-_A-Za-z0-9]{8,}$/u.test(call.tool)
-      || call.sequence !== event.sequence || call.runtime?.turnId !== event.runtime?.turnId) return event;
-    return { ...event, tool: call.tool };
-  });
-}
-
-/**
- * 新事件流中的工具事实必须能沿 toolCallId/operationId 闭合。旧 session 没有
- * runtime metadata 时继续按历史事实读取，避免把旧格式迁移问题伪装成恢复失败。
- */
+/** 本地执行事件核对 operation 身份；导入记录没有本地运行 metadata。 */
 function validateCanonicalToolPairing(events: readonly SessionEvent[]): void {
+  for (const event of events) {
+    if ((event.type === "tool_call" || event.type === "tool_result") && !event.auditOnly && !event.toolCallId) {
+      throw new Error("Session tool facts require an explicit toolCallId.");
+    }
+  }
   const canonicalEvents = events.filter((event) => event.runtime !== undefined);
   if (!canonicalEvents.length) return;
   const calls = new Map<string, { tool: string; operationId?: string; canonical: boolean; turnId?: string }>();
@@ -284,7 +270,7 @@ function findRecoveryBoundary(events: SessionEvent[], callIndex: number): number
  *
  * 进程被 Ctrl+C 或崩溃打断时，session 里会留下只有 tool_call 没有 tool_result 的记录，
  * 而模型协议要求每个 tool-call 必须有对应结果，缺一个整段历史就会被拒。这里根据审计账本
- * 补一条成功、取消、失败或 unknown 的结果；旧 session 没有生命周期证据时一律保守处理为 unknown。
+ * 补一条成功、取消、失败或 unknown 的结果；未提交执行证据的调用保守处理为 unknown。
  */
 interface RecoveryLedgerEntry {
   tool: string;
@@ -296,7 +282,6 @@ interface RecoveryLedgerEntry {
   evidence?: string;
   lifecycleSeen: boolean;
   hasResult: boolean;
-  active: boolean;
   auditOnly?: boolean;
   discarded?: boolean;
   change?: CommittedFileChange;
@@ -313,55 +298,32 @@ interface RecoveryLedger {
 
 function interruptedToolResults(events: SessionEvent[], options: SessionReplayOptions): RecoveryLedger {
   const entries = new Map<string, RecoveryLedgerEntry>();
-  const activeKeys = new Set<string>();
-  const callKey = (toolCallId: string | undefined, sequence: number | undefined, index: number): string =>
-    toolCallId ?? `session-tool-${String(sequence ?? index + 1)}`;
   const ensureEntry = (
     tool: string,
     toolCallId: string | undefined,
     sequence: number | undefined,
-    index: number,
     auditOnly?: boolean
   ): RecoveryLedgerEntry => {
-    const canonicalTool = tool;
-    const key = callKey(toolCallId, sequence, index);
-    const current = entries.get(key);
+    if (!toolCallId) throw new Error("Session tool facts require an explicit toolCallId.");
+    const current = entries.get(toolCallId);
     if (current) {
       current.sequence ??= sequence;
       current.auditOnly ??= auditOnly;
-      activeKeys.add(key);
       return current;
     }
     const entry: RecoveryLedgerEntry = {
-      tool: canonicalTool,
+      tool,
       toolCallId,
       sequence,
-      operationId: createToolOperationId(options.sessionId ?? "legacy", key),
+      operationId: createToolOperationId(options.sessionId ?? "replay", toolCallId),
       lifecycleSeen: false,
       hasResult: false,
-      active: true,
       auditOnly
     };
-    entries.set(key, entry);
-    activeKeys.add(key);
+    entries.set(toolCallId, entry);
     return entry;
   };
-  const findEntry = (toolCallId: string | undefined, tool: string, sequence: number | undefined): [string, RecoveryLedgerEntry] | undefined => {
-    const canonicalTool = tool;
-    if (toolCallId) {
-      const direct = entries.get(toolCallId);
-      if (direct) return [toolCallId, direct];
-    }
-    for (const key of activeKeys) {
-      const entry = entries.get(key);
-      if (entry && entry.tool === canonicalTool && (sequence === undefined || entry.sequence === sequence)) return [key, entry];
-    }
-    for (const [key, entry] of entries) {
-      if (!entry.hasResult && entry.tool === canonicalTool) return [key, entry];
-    }
-    return undefined;
-  };
-  for (const [index, event] of events.entries()) {
+  for (const event of events) {
     if (event.type === "user_message" && !event.auditOnly) {
       continue;
     }
@@ -372,57 +334,51 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
       if (event.message.role === "assistant") {
         for (const part of event.message.content) {
           if (part.type !== "toolCall") continue;
-          const entry = ensureEntry(part.name, part.id, undefined, index);
+          const entry = ensureEntry(part.name, part.id, undefined);
           entry.request = part.arguments;
           entry.turnId = event.runtime?.turnId ?? entry.turnId;
         }
       } else {
-        const found = findEntry(event.message.toolCallId, event.message.toolName, undefined);
-        if (found) {
-          found[1].hasResult = true;
-          activeKeys.delete(found[0]);
-        }
+        const entry = entries.get(event.message.toolCallId);
+        if (entry) entry.hasResult = true;
       }
       continue;
     }
     if (event.type === "tool_call") {
-      const entry = ensureEntry(event.tool, event.toolCallId, event.sequence, index, event.auditOnly);
+      if (event.auditOnly) continue;
+      const entry = ensureEntry(event.tool, event.toolCallId, event.sequence, event.auditOnly);
       entry.request = event.args;
       entry.turnId = event.runtime?.turnId ?? entry.turnId;
       continue;
     }
     if (event.type === "tool_execution") {
       if (event.change && !entries.has(event.toolCallId)) throw new Error("File commit has no matching tool call.");
-      const found = findEntry(event.toolCallId, event.tool, event.sequence)
-        ?? [event.toolCallId ?? callKey(event.toolCallId, event.sequence, index), ensureEntry(event.tool, event.toolCallId, event.sequence, index)];
-      if (found[1].lifecycleSeen && found[1].operationId !== event.operationId) throw new Error("Conflicting operation identity in file change history.");
+      const entry = entries.get(event.toolCallId) ?? ensureEntry(event.tool, event.toolCallId, event.sequence);
+      if (entry.lifecycleSeen && entry.operationId !== event.operationId) throw new Error("Conflicting operation identity in file change history.");
       if (event.change !== undefined) {
         const change = parseFileChange(event.change);
         if (!change || event.state !== "side_effect_committed") throw new Error("Invalid file commit evidence.");
-        if (found[1].change && (JSON.stringify(found[1].change) !== JSON.stringify(change) || found[1].fileChangeIsResult !== (event.fileChangeIsResult === true))) throw new Error("Conflicting file commit evidence.");
-        found[1].change = change;
-        found[1].fileChangeIsResult = event.fileChangeIsResult === true;
+        if (entry.change && (JSON.stringify(entry.change) !== JSON.stringify(change) || entry.fileChangeIsResult !== (event.fileChangeIsResult === true))) throw new Error("Conflicting file commit evidence.");
+        entry.change = change;
+        entry.fileChangeIsResult = event.fileChangeIsResult === true;
       }
-      found[1].operationId = event.operationId;
-      found[1].state = event.state;
-      found[1].retrySafety = event.retrySafety ?? found[1].retrySafety;
-      found[1].outcomeUnknownReason = event.outcomeUnknownReason ?? found[1].outcomeUnknownReason;
-      found[1].evidence = event.evidence;
-      found[1].lifecycleSeen = true;
-      found[1].active = true;
-      activeKeys.add(found[0]);
+      entry.operationId = event.operationId;
+      entry.state = event.state;
+      entry.retrySafety = event.retrySafety ?? entry.retrySafety;
+      entry.outcomeUnknownReason = event.outcomeUnknownReason ?? entry.outcomeUnknownReason;
+      entry.evidence = event.evidence;
+      entry.lifecycleSeen = true;
       continue;
     }
     if (event.type === "tool_result") {
-      const found = findEntry(event.toolCallId, event.tool, event.sequence);
-      if (found) {
-        found[1].hasResult = true;
+      const entry = event.toolCallId ? entries.get(event.toolCallId) : undefined;
+      if (entry) {
+        entry.hasResult = true;
         if (event.executionStatus === "cancelled" && resultStatus(event.result) === "skipped") {
-          found[1].state = "not_started";
-          found[1].lifecycleSeen = true;
-          found[1].discarded = true;
+          entry.state = "not_started";
+          entry.lifecycleSeen = true;
+          entry.discarded = true;
         }
-        activeKeys.delete(found[0]);
       }
     }
   }
@@ -440,9 +396,8 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
       reason: "not_started"
     });
   }
-  for (const key of activeKeys) {
-    const call = entries.get(key);
-    if (!call || call.hasResult) continue;
+  for (const call of entries.values()) {
+    if (call.hasResult) continue;
     const state = call.lifecycleSeen ? call.state ?? "unknown" : "unknown";
     const operationId = call.operationId;
     const durableOutcome = call.lifecycleSeen && call.toolCallId && call.turnId && options.sessionId && call.request !== undefined
@@ -516,7 +471,7 @@ function resultStatus(value: unknown): string | undefined {
 
 /**
  * 有完整 canonical 身份的日志用树索引定位压缩时的活动叶子。选择约束是各节点后代区间的
- * 交集；区间内最后写入的节点与 activeSessionMessageIds 的规则一致。旧格式或不完整父链
+ * 交集；区间内最后写入的节点与 activeSessionMessageIds 的规则一致。导入记录或不完整父链
  * 不猜测身份，交给下面的原事件投影路径。索引构建 O((消息 + 选择 + checkpoint) log 消息)。
  */
 function canonicalCheckpointPath(
@@ -716,7 +671,7 @@ function canonicalCheckpointPath(
 /**
  * 手动 checkpoint 没有 runId，不能仅按运行归属筛选。保留边界仍在活动路径上时可直接
  * 使用；切换了保留段或压缩了全部消息时，从原事件位置还原被覆盖的前缀，再比较稳定 ID。
- * 只拒绝能证明属于其他分支的摘要；没有消息身份的旧日志继续使用原来的索引边界。
+ * 只拒绝能证明属于其他分支的摘要；尚未提交消息身份的审计批次使用索引边界。
  */
 function contextCheckpointPath(
   events: SessionEvent[],
@@ -758,8 +713,7 @@ function contextCheckpointPath(
       else right = middle;
     }
     const eventIndex = source.type === "context_checkpoint" ? sourceIndex : matches[left - 1];
-    // 旧的 embedded-only contextState 没有原始事件位置，不能猜测并丢弃它。
-    if (eventIndex === undefined) return { applicable: true };
+    if (eventIndex === undefined) return { applicable: false };
     const cached = cache.get(eventIndex);
     if (cached) return cached;
     const keptIndex = checkpoint.firstKeptMessageId === undefined ? -1
@@ -786,22 +740,6 @@ function contextCheckpointPath(
     cache.set(eventIndex, result);
     return result;
   };
-}
-
-/**
- * 取最近一次的上下文预算。从后往前找，`contextUsage` 是 `contextState` 之前的旧字段，
- * 放在最后兜底以兼容历史 session。
- */
-function latestContextUsage(events: SessionEvent[], accepts: (state: SessionContextState, event: SessionEvent) => boolean): SessionContextUsage | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if ((event?.type === "assistant_message" || event?.type === "user_message") && event.contextState !== undefined) {
-      if (accepts(event.contextState, event)) return event.contextState.budget;
-      continue;
-    }
-    if (event?.type === "user_message" && event.contextUsage !== undefined) return event.contextUsage;
-  }
-  return undefined;
 }
 
 function latestContextState(events: SessionEvent[], accepts: (state: SessionContextState, event: SessionEvent) => boolean): SessionContextState | undefined {
@@ -880,7 +818,7 @@ function applyContextCheckpoint(
  * 汇总所有用量记录。一次对话的开销可能挂在三处：assistant 消息本身、user 消息上的准备
  * 阶段（如上下文压缩、记忆检索），以及事件附带的 `relatedUsage`（如子 agent）。
  */
-function sessionUsage(events: SessionEvent[]): SessionUsage[] {
+export function sessionUsage(events: SessionEvent[]): SessionUsage[] {
   return events.flatMap((event) => {
     const usage = event.type === "assistant_message" && event.usage !== undefined ? [event.usage] : [];
     const preparationUsage = event.type === "user_message" && event.preparationUsage !== undefined ? event.preparationUsage : [];
@@ -918,7 +856,7 @@ interface SessionConversationProjection {
 /**
  * Canonical assistant 提交覆盖此前的工具批次，不覆盖后续尚未提交的步骤。边界必须取自
  * 筛选消息分支前的原事件；否则被隐藏的 canonical 消息会让旧审计重新成为候选。
- * toolResult 只覆盖自己的结果，不能推进整批边界。无工具的旧格式回答继续沿用原规则。
+ * toolResult 只覆盖自己的结果，不能推进整批边界。无工具的审计回答按消息边界处理。
  */
 function uncoveredCanonicalToolCalls(
   events: readonly SessionEvent[],
@@ -976,8 +914,6 @@ function projectSessionConversation(
     ? [event.message.toolCallId]
     : []));
   let pendingAssistantContent = "";
-  let pendingReasoningContent: string | undefined;
-  let pendingReasoningProviderOptions: Record<string, unknown> | undefined;
   let pendingReasoningBlocks: ReasoningBlock[] | undefined;
   let callsFlushed = false;
   let canonicalTurn = false;
@@ -994,7 +930,7 @@ function projectSessionConversation(
     appendMessage({
       role: "assistant",
       content: [
-        ...replayReasoningParts(pendingReasoningBlocks, pendingReasoningContent, pendingReasoningProviderOptions),
+        ...replayReasoningParts(pendingReasoningBlocks),
         ...(pendingAssistantContent ? [{ type: "text" as const, text: pendingAssistantContent }] : []),
         ...pendingCalls.map((call) => ({
           type: "toolCall" as const,
@@ -1011,8 +947,6 @@ function projectSessionConversation(
     pendingCalls.splice(0, pendingCalls.length);
     openCalls.clear();
     pendingAssistantContent = "";
-    pendingReasoningContent = undefined;
-    pendingReasoningProviderOptions = undefined;
     pendingReasoningBlocks = undefined;
     callsFlushed = false;
   };
@@ -1035,10 +969,8 @@ function projectSessionConversation(
   const appendRecoveredResultsForOpenCalls = (): void => {
     for (const event of recoveredResults) {
       if (consumedRecoveredResults.has(event)) continue;
-      const toolCallId = event.toolCallId && openCalls.has(event.toolCallId)
-        ? event.toolCallId
-        : findToolCallId(openCalls, event.tool);
-      if (!toolCallId) continue;
+      const toolCallId = event.toolCallId;
+      if (!toolCallId || !openCalls.has(toolCallId)) continue;
       consumedRecoveredResults.add(event);
       if (event.auditOnly || options.discardedToolCallIds?.has(toolCallId)) {
         openCalls.delete(toolCallId);
@@ -1049,7 +981,7 @@ function projectSessionConversation(
     }
   };
 
-  for (const [index, event] of events.entries()) {
+  for (const event of events) {
     // auditOnly 事件只为审计留痕（例如被拒绝的调用），不能回放给模型。
     if (
       (event.type === "user_message"
@@ -1101,12 +1033,12 @@ function projectSessionConversation(
       flushPendingCalls();
       appendRecoveredResultsForOpenCalls();
       resetPendingCalls();
-      if (!event.content && !event.reasoningContent) continue;
+      if (!event.content && !event.reasoningBlocks?.length) continue;
       const content = [
-        ...replayReasoningParts(event.reasoningBlocks, event.reasoningContent, event.reasoningProviderOptions),
+        ...replayReasoningParts(event.reasoningBlocks),
         ...(event.content ? [{ type: "text" as const, text: event.content }] : [])
       ];
-      // 无签名 reasoning 被丢弃后，旧的 assistant 事件可能不再有任何可回放内容。
+      // 无签名 reasoning 被丢弃后，assistant 审计事件可能不再有任何可回放内容。
       if (!content.length) continue;
       appendMessage({
         role: "assistant",
@@ -1120,21 +1052,18 @@ function projectSessionConversation(
       if (event.toolCallId && canonicalCallIds.has(event.toolCallId)) continue;
       // 上一批调用已经 flush 且全部收到结果，说明这是新一批调用，重新开始累积。
       if (canonicalTurn && event.importSource === undefined && !uncoveredCalls.has(event)) {
-        const id = event.toolCallId ?? `session-tool-${String(event.sequence ?? index + 1)}`;
+        const id = event.toolCallId!;
         if (!openCalls.has(id)) openCalls.set(id, { id, name: event.tool, args: event.args });
         continue;
       }
       if (uncoveredCalls.has(event) && event.toolCallId) projectedTailCallIds.add(event.toolCallId);
       if (callsFlushed && openCalls.size === 0) resetPendingCalls();
       const toolCall = {
-        // 旧 session 没记 id，用序号造一个稳定 id，保证 call 与 result 能配上。
-        id: event.toolCallId ?? `session-tool-${String(event.sequence ?? index + 1)}`,
+        id: event.toolCallId!,
         name: event.tool,
         args: event.args
       };
       pendingAssistantContent = event.assistantContent ?? pendingAssistantContent;
-      pendingReasoningContent = event.reasoningContent ?? pendingReasoningContent;
-      pendingReasoningProviderOptions = event.reasoningProviderOptions ?? pendingReasoningProviderOptions;
       pendingReasoningBlocks = event.reasoningBlocks ?? pendingReasoningBlocks;
       pendingCalls.push(toolCall);
       openCalls.set(toolCall.id, toolCall);
@@ -1149,8 +1078,7 @@ function projectSessionConversation(
       // 已提交批次继续使用 canonical；未提交尾批次的持久结果随已投影的调用一起保留。
       if (canonicalTurn && !event.recovered && event.importSource === undefined
         && !(event.toolCallId && projectedTailCallIds.has(event.toolCallId))) continue;
-      const toolCallId = event.toolCallId ?? (event.importSource !== undefined ? ""
-        : findToolCallId(openCalls, event.tool) ?? `session-tool-${String(event.sequence ?? index + 1)}`);
+      const toolCallId = event.toolCallId!;
       flushPendingCalls();
       appendToolResult(event, toolCallId);
       continue;
@@ -1190,34 +1118,17 @@ function completeCanonicalStepResults(events: SessionEvent[]): SessionEvent[] {
  * Anthropic 这类服务商的 reasoning 块必须带着它自己的签名元数据才能回放，而且签名是按块
  * 独立生成的，所以要逐块输出，缺签名的直接丢掉——拼出服务端会拒绝的历史比少一段思考更糟。
  *
- * `content` / `providerOptions` 是「按块记录」之前的单块旧格式，为兼容已有 session 保留。
  */
-function replayReasoningParts(
-  blocks: ReasoningBlock[] | undefined,
-  content: string | undefined,
-  providerOptions: Record<string, unknown> | undefined
-): AgentReasoningContent[] {
-  if (blocks?.length) {
-    return blocks
-      .filter((block) => block.text && block.providerOptions)
-      .map((block) => ({
-        type: "reasoning" as const,
-        text: block.text,
-        providerMetadata: block.providerOptions
-      }));
-  }
-  if (!content || !providerOptions) return [];
-  return [{ type: "reasoning", text: content, providerMetadata: providerOptions }];
+function replayReasoningParts(blocks: ReasoningBlock[] | undefined): AgentReasoningContent[] {
+  return (blocks ?? [])
+    .filter((block) => block.text && block.providerOptions)
+    .map((block) => ({ type: "reasoning", text: block.text, providerMetadata: block.providerOptions }));
 }
 
 function normalizeToolArguments(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : { value };
-}
-
-function findToolCallId(calls: Map<string, { id: string; name: string; args: unknown }>, toolName: string): string | undefined {
-  return [...calls.values()].find((call) => call.name === toolName)?.id;
 }
 
 function stringifyResult(result: unknown): string {

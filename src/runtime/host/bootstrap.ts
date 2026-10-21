@@ -26,7 +26,7 @@ import { RuntimeHostResourceRegistry } from "./resources.js";
 export async function startRuntimeHost(
   persistenceRoot: string,
   createInitialRuntime: (resourceRegistry: RuntimeHostResourceRegistry) => Promise<InteractiveAgentHost>,
-  options: RuntimeHostStartOptions = {}
+  options: RuntimeHostStartOptions
 ): Promise<RuntimeHostServer> {
   const paths = runtimeHostPaths(persistenceRoot);
   await ensureRuntimeHostDirectory(path.dirname(paths.registrationPath));
@@ -54,7 +54,7 @@ export async function startRuntimeHost(
     await removeSocketIfStale(paths.endpoint);
     // 拿到 workspace 独占锁后先终结上个 owner 留下的在途调用；新 Runtime 接收请求前，
     // 任何旧 offer 重放都必须看到明确的 unknown，而不能被当作一次新执行。
-    const authority = await RuntimeEventAuthority.open(persistenceRoot, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(persistenceRoot, { reconcileSessions: false });
     try {
       const capabilities = await CapabilityStore.open(persistenceRoot, authority);
       try {
@@ -79,7 +79,6 @@ export async function startRuntimeHost(
     await writeRegistration(registration);
     server.startAutomationScheduler();
     if (options.resumeInterrupted) await server.resumeInterruptedTurn();
-    server.startMemoryMaintenance();
     return server;
   } catch (error) {
     if (server) {

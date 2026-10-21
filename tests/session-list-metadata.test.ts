@@ -35,7 +35,7 @@ function history(id: string): string {
     + JSON.stringify({ type: "assistant_message", content: `answer ${id}`, time: "2026-10-06T00:01:00Z" }) + "\n";
 }
 
-test("catalog enumeration preserves flat and nested histories with bounded metadata work and no writes", { timeout: 15_000 }, async () => {
+test("catalog enumeration reads only current flat histories with bounded metadata work and no writes", { timeout: 15_000 }, async () => {
   await fixture(async (workspace, directory) => {
     const paths: string[] = [];
     const names = Array.from({ length: 24 }, (_, index) => `session-${String(index).padStart(2, "0")}.jsonl`);
@@ -48,6 +48,8 @@ test("catalog enumeration preserves flat and nested histories with bounded metad
     await fs.mkdir(path.join(directory, ".catalog", ".locks"), { recursive: true });
     await fs.writeFile(path.join(directory, "index.json"), "not a session");
     await fs.writeFile(path.join(directory, ".catalog", "unrelated.json"), "not a session");
+    const currentNames = names.filter((_, index) => index % 4 !== 0);
+    const currentPaths = paths.filter((_, index) => index % 4 !== 0);
     const originalStat = fs.lstat;
     let active = 0;
     let maximum = 0;
@@ -62,10 +64,10 @@ test("catalog enumeration preserves flat and nested histories with bounded metad
       } finally { active--; }
     } });
     try {
-      assert.deepEqual(await listSessionFiles(workspace), names);
-      assert.deepEqual(await listSessionFilePaths(workspace), paths);
+      assert.deepEqual(await listSessionFiles(workspace), currentNames);
+      assert.deepEqual(await listSessionFilePaths(workspace), currentPaths);
       const page = await querySessionCatalog(workspace, { limit: 50 });
-      assert.deepEqual(page.items.map(item => item.id), names.map(name => name.slice(0, -6)).reverse());
+      assert.deepEqual(page.items.map(item => item.id), currentNames.map(name => name.slice(0, -6)).reverse());
       for (const item of page.items) {
         assert.equal(item.summary.firstUserMessage, item.fileName);
         assert.equal(item.summary.lastAssistantMessage, `answer ${item.fileName}`);
@@ -73,7 +75,7 @@ test("catalog enumeration preserves flat and nested histories with bounded metad
         assert.equal(item.hasChildren, false);
       }
       assert.equal(page.nextCursor, undefined);
-      assert.ok(maximum > 0 && maximum <= 8, "one enumeration must not multiply its metadata worker bound when traversing nested directories");
+      assert.ok(maximum > 0 && maximum <= 8, "one enumeration must respect its metadata worker bound");
       assert.equal(active, 0, "the returned query must not leave metadata reads running");
     } finally { fs.lstat = originalStat; }
     for (const file of paths) assert.equal(await fs.readFile(file, "utf8"), history(path.basename(file)));

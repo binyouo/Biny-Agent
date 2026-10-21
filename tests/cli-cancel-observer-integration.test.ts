@@ -6,18 +6,20 @@ import path from "node:path";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import * as oneShot from "../src/runtime/oneShot.js";
 import { withCliAbortSignal } from "../src/cli/sigint.js";
 
 interface Turn { status: string; stopReason: string; steps: number; output: string }
 interface Runtime {
   ensureSession(input: unknown): Promise<{ sessionId: string }>;
-  submitPromptForSession(sessionId: string, input: string, attachments: unknown[]): { runId: string; completion: Promise<Turn> };
+  executeRun(sessionId: string, input: string, attachments: unknown[]): Promise<Turn>;
+  subscribe(listener: unknown): () => void;
   cancelRunRequest(runId: string, reason: string, sessionId: string): Promise<unknown>;
   getSnapshot(): { info: Record<string, string> };
   usage(): Promise<{ summary: Record<string, number> }>;
   close(): Promise<void>;
 }
-interface Loaded { runAttachedForTest(runtime: Runtime, input: string, options: { json: boolean }, attachments: unknown[]): Promise<Record<string, unknown>> }
+interface Loaded { runCommand(root: string, input: string, options: { json: boolean }): Promise<Record<string, unknown>> }
 function deferred<T>() {
   let resolve!: (value: T) => void; let reject!: (error: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
@@ -26,15 +28,15 @@ function deferred<T>() {
 const source = readFileSync(path.join(process.cwd(), "src/cli/commands/run.ts"), "utf8");
 // Full module, not a rewritten callback. Only the test adds access to the private
 // function; imports used by uncalled entrypoints cannot start a Host or a model.
-const compiled = ts.transpileModule(`${source}\nexport { runAttachedCommand as runAttachedForTest };`, {
+const compiled = ts.transpileModule(source, {
   fileName: "run.ts", reportDiagnostics: true,
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true }
 });
 assert.equal(compiled.diagnostics?.filter(item => item.category === ts.DiagnosticCategory.Error).length ?? 0, 0);
 const allowedImports = new Set([
-  "node:fs", "node:path", "../../runtime/taskVerification.js",
+  "node:crypto", "../../permission/confirm.js", "../../runtime/oneShot.js", "node:fs", "node:path", "../../runtime/taskVerification.js",
   "../../attachments/store.js", "../../config/store.js", "../../runtime/CommandRuntime.js",
-  "../../runtime/ExecutionService.js", "../../runtime/SessionLease.js", "../../runtime/RuntimeHost.js",
+  "../../runtime/SessionLease.js", "../../runtime/RuntimeHost.js",
   "../../workspace/resolvePath.js", "../sigint.js", "../runDeadline.js"
 ]);
 const completed: Turn = { status: "completed", stopReason: "model_stop", steps: 1, output: "finished" };
@@ -63,6 +65,10 @@ for (const rpcMode of ["accepted", "not-active", "rejected", "no-sigint"] as con
         require: (specifier: string) => {
           assert.ok(allowedImports.has(specifier), `unreviewed dependency: ${specifier}`);
           if (specifier === "node:path") return path;
+          if (specifier === "node:crypto") return { randomUUID: () => "submitted-run" };
+          if (specifier === "../../runtime/oneShot.js") return oneShot;
+          if (specifier === "../../runtime/RuntimeHost.js") return { connectOrSpawnRuntimeHost: async () => runtime };
+          if (specifier === "../../config/store.js") return { createFileConfigStore: () => ({ load: async () => ({ workspace: { ignore: [] } }) }) };
           if (specifier === "../sigint.js") return { withCliAbortSignal: <T>(execute: (signal: AbortSignal) => Promise<T>) =>
             withCliAbortSignal(async signal => {
               const remove = signal.removeEventListener.bind(signal);
@@ -71,24 +77,25 @@ for (const rpcMode of ["accepted", "not-active", "rejected", "no-sigint"] as con
             }, source) };
           return Object.freeze({});
         },
+        process: { pid: 123, env: {} },
         console: { log: (...args: unknown[]) => { outputs.push(args); }, error: () => assert.fail("no new logging contract") }
       }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as Loaded;
       let closes = 0; let usageReads = 0;
       const cancellations: unknown[][] = [];
-      const attachment = { name: "screen.png", mimeType: "image/png", path: "@attachments/screen.png", size: 3, data: "cG5n" };
       const runtime: Runtime = {
-        ensureSession: async input => { assert.deepEqual(JSON.parse(JSON.stringify(input)), { isolation: "shared", writeIntent: true }); return { sessionId: "submitted-session" }; },
-        submitPromptForSession: (sessionId, input, attachments) => {
+        ensureSession: async input => { assert.deepEqual(JSON.parse(JSON.stringify(input)), { isolation: "shared", writeIntent: true, runOptions: { json: true }, processLifetime: "runtime" }); return { sessionId: "submitted-session" }; },
+        executeRun: (sessionId, input, attachments) => {
           assert.equal(sessionId, "submitted-session"); assert.equal(input, "do work");
-          assert.equal(attachments.length, 1); assert.equal((attachments[0] as typeof attachment).path, attachment.path);
-          return { runId: "submitted-run", completion: completion.promise };
+          assert.equal(attachments.length, 0);
+          return completion.promise;
         },
+        subscribe: () => () => undefined,
         cancelRunRequest: (...args) => { cancellations.push(args); return rpc.promise; },
         getSnapshot: () => ({ info: { sessionId: "another-focused-session" } }),
         usage: async () => { usageReads++; return { summary: {} }; },
         close: async () => { closes++; }
       };
-      const run = loaded.runAttachedForTest(runtime, "do work", { json: true }, [attachment]);
+      const run = loaded.runCommand("/fixture", "do work", { json: true });
       let settlement: { result?: unknown; error?: unknown } | undefined;
       const currentSettlement = () => settlement;
       const observedRun = run.then(result => { settlement = { result }; }, error => { settlement = { error }; });
@@ -105,13 +112,13 @@ for (const rpcMode of ["accepted", "not-active", "rejected", "no-sigint"] as con
           else assert.equal((settled.result as Record<string, unknown>).status, "completed");
           assert.equal(productObservers, 0); assert.deepEqual(cancellations, []);
           assert.equal(closes, 1); assert.equal(signalRemovals, 1); assert.equal(source.listenerCount("SIGINT"), 0);
-          assert.equal(usageReads, completionMode === "resolved" ? 1 : 0);
+          assert.equal(usageReads, 0, "usage is included in the Host response");
           assert.equal(outputs.length, completionMode === "resolved" ? 1 : 0);
           return;
         }
         source.emit("SIGINT");
         const observersAtAbortReturn = productObservers;
-        assert.deepEqual(cancellations, [["submitted-run", "interrupted", "submitted-session"]]);
+        assert.deepEqual(cancellations, [["submitted-run", "cancelled", "submitted-session"]]);
         if (rpcMode === "rejected") rpc.reject(new Error("Runtime Host connection closed."));
         else rpc.resolve({ accepted: rpcMode === "accepted", reason: rpcMode === "not-active" ? "Run is not active." : undefined });
         await safety;

@@ -2,15 +2,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
-import { GoalGraphStore } from "../src/runtime/GoalGraphStore.js";
-import { agentDir } from "../src/session/store.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-session-goal-store-"));
 const previousAgentDir = process.env.BINY_AGENT_DIR;
 process.env.BINY_AGENT_DIR = path.join(root, "agent");
-let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
 try {
   // Given a new authority, When it migrates, Then session goals have their own durable domain.
   assert.ok(authority.databaseHandle().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_goals'").get(), "authority must migrate the session goal table");
@@ -119,14 +116,14 @@ try {
   const expectedPause = store.pause("no-progress", store.get("no-progress")!, stopEvidence);
   store.close();
   authority.close();
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   store = await SessionGoalStore.open(root, authority);
   assert.deepEqual(store.get("session-budget"), expectedUsage);
   assert.deepEqual(store.get("no-progress"), expectedPause, "The stop reason must survive reopening the database.");
   assert.equal(store.recordUsage("session-budget", usage)!.tokensUsed, 100, "usage deduplication survives reopen");
   assert.ok(authority.readEvents({ sessionId: "session-budget" }).events.some((event) => event.eventType === "session_goal.usage"));
 
-  const otherWorkspace = await RuntimeEventAuthority.open(root, { workspaceId: "other-workspace", backfillLegacySessions: false });
+  const otherWorkspace = await RuntimeEventAuthority.open(root, { workspaceId: "other-workspace", reconcileSessions: false });
   const otherStore = await SessionGoalStore.open(root, otherWorkspace);
   assert.equal(otherStore.get("session-budget"), undefined);
   const isolated = otherStore.set("session-budget", "An isolated workspace objective");
@@ -134,21 +131,10 @@ try {
   assert.equal(store.get("session-budget")!.goalId, expectedUsage.goalId);
   otherStore.close(); otherWorkspace.close();
 
-  // Given schema 11 data, When the authority upgrades, Then session objectives are created only explicitly.
-  const graphs = await GoalGraphStore.open(root, authority);
-  graphs.close(); store.close(); authority.close();
-  const database = new DatabaseSync(path.join(agentDir(root), "runtime.sqlite"));
-  database.exec("DROP TABLE session_goal_usage; DROP TABLE session_goals; DROP INDEX agent_runs_continuation_source_idx; PRAGMA user_version = 11;");
-  database.close();
-  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
-  store = await SessionGoalStore.open(root, authority);
-  const migratedGraphs = await GoalGraphStore.open(root, authority);
-  assert.deepEqual(store.list(), [], "schema migration must not create automatically runnable session goals");
-  const upgradedPlan = authority.databaseHandle().prepare("EXPLAIN QUERY PLAN SELECT run_id FROM agent_runs WHERE workspace_id = ? AND session_id = ? AND continuation_source = ? ORDER BY rowid DESC LIMIT 1")
+  const queryPlan = authority.databaseHandle().prepare("EXPLAIN QUERY PLAN SELECT run_id FROM agent_runs WHERE workspace_id = ? AND session_id = ? AND continuation_source = ? ORDER BY rowid DESC LIMIT 1")
     .all(authority.workspaceId, "session", "goal:identity:1") as Array<{ detail: string }>;
-  assert.ok(upgradedPlan.some(row => row.detail.includes("continuation_source=?")), "schema 11 upgrades must install the continuation source index");
-  store.set("migrated-session", "A new explicit session objective");
-  migratedGraphs.close(); store.close();
+  assert.ok(queryPlan.some(row => row.detail.includes("continuation_source=?")), "continuation lookups use the current schema index");
+  store.close();
   console.log("session goal store tests passed");
 } finally {
   authority.close();

@@ -20,7 +20,7 @@ await test("task list preserves durable pagination through the CLI and client", 
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-task-pages-")));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   const paths = runtimeHostPaths(root);
   await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));

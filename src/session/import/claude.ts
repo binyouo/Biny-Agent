@@ -40,7 +40,7 @@ export function claudeLinesToBinyEvents(lines: readonly unknown[]): SessionEvent
     }
   }
   const canonicalToolId = (id: string | undefined): id is string =>
-    typeof id === "string" && id !== "" && (callCounts.get(id) ?? 0) <= 1 && (resultCounts.get(id) ?? 0) <= 1;
+    typeof id === "string" && id !== "" && callCounts.get(id) === 1 && (resultCounts.get(id) ?? 0) <= 1;
   const identity = createImportedMessageIdentity();
   for (const [index, line] of lines.entries()) {
     if (!isRecord(line)) continue;
@@ -70,7 +70,7 @@ export function claudeLinesToBinyEvents(lines: readonly unknown[]): SessionEvent
               isError: event.executionStatus === "failed"
             } });
           }
-          events.push({ ...event, importSource });
+          events.push({ ...event, importSource, auditOnly: !canonicalToolId(event.toolCallId) });
         }
       }
     } else if (message.role === "assistant") {
@@ -94,7 +94,7 @@ export function claudeLinesToBinyEvents(lines: readonly unknown[]): SessionEvent
         // The display projection shares its canonical identity; it is not a second message.
         events.push(event.type === "assistant_message" && linked
           ? { ...event, ...linked, importSource }
-          : { ...event, importSource });
+          : event.type === "tool_call" ? { ...event, importSource, auditOnly: !canonicalToolId(event.toolCallId) } : { ...event, importSource });
       }
     }
   }

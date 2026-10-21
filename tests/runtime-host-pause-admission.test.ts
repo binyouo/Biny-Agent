@@ -31,7 +31,7 @@ function descendants(node: ts.Node, match: (node: ts.Node) => boolean): ts.Node[
   visit(node);
   return result;
 }
-const operations = ["submit", "run.submit", "queue", "run.queue", "start-interrupted", "run.continue"] as const;
+const operations = ["run.submit", "queue", "run.queue", "start-interrupted", "run.continue"] as const;
 const goals = ["session.goal.set", "session.goal.resume"] as const;
 const statements = method("execute").body!.statements;
 const switches = statements.filter((node): node is ts.SwitchStatement =>
@@ -134,7 +134,7 @@ const extracted = runInNewContext(isolated, {
   requiredString: (value: unknown) => { assert.equal(typeof value, "string"); return value; },
   optionalSafeInteger: (value: unknown) => Number.isSafeInteger(value) ? value : undefined,
   readRequestIds: (payload: RecordValue) => ({ runId: payload.runId, messageId: payload.messageId }),
-  readAttachments: () => [], readPromptContext: () => undefined, readCapabilitySelection: () => undefined,
+  readAttachments: () => [], readPromptContext: () => undefined, readCapabilitySelection: () => undefined, readModelRoute: () => undefined, readFastMode: () => undefined,
   readPermissionResult: (value: unknown) => value,
   readGoalTokenBudget: () => undefined, readGoalExpected: () => undefined,
   publicError: (error: unknown) => String(record(error).message ?? error),
@@ -169,7 +169,7 @@ function fixture() {
     resume: () => { mutation(); return { sessionId: "session-a", goalId: "goal-a" }; }
   } } };
   const state: State = Object.assign(Object.create(extracted) as State, {
-    sessionWriterOwners: new Map<string, Owner>(), sessionGoalOwners: new Map<string, unknown>(),
+    oneShotSessions: new Map(), sessionWriterOwners: new Map<string, Owner>(), sessionGoalOwners: new Map<string, unknown>(),
     registry: { get: (id: string) => id === "session-a" ? managed : undefined },
     admission: { assertAdmission: () => { if (controls.draining) throw new Error("Host draining"); } },
     businessComposition: { scheduleGoals: () => { counts.scheduled += 1; } },
@@ -225,7 +225,7 @@ for (const operation of operations) {
     f.connection.exitingForPause = true;
     if (operation.includes("queue")) f.controls.kind = "runs";
     const result = await f.request(operation, f.other);
-    assert.notEqual(record(result).accepted, false);
+    assert.notEqual(record(result).accepted, false, JSON.stringify(result));
     assert.equal(f.counts.mutations, 1);
     assert.equal(f.state.sessionWriterOwners.get("session-a")?.clientId, f.other.clientId);
   });
@@ -358,7 +358,7 @@ for (const operation of ["queue", "run.queue"]) {
     const f = fixture();
     f.controls.kind = "runs";
     const result = await f.request(operation, f.connection, { delivery: "steer" });
-    assert.notEqual(record(result).accepted, false);
+    assert.notEqual(record(result).accepted, false, JSON.stringify(result));
     assert.equal(f.counts.claim, 1);
     assert.equal(f.counts.mutations, 1);
     assert.equal(f.state.sessionWriterOwners.get("session-a")?.clientId, f.connection.clientId);

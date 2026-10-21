@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -89,7 +91,7 @@ for (const priorSteps of [0, 1, 2]) {
       agent: { ...defaultConfig.agent, maxConcurrentTools: 2 },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
     });
-    const model: AgentModel = { provider: "synthetic", modelId: "partial-step", supportsTools: true, stream: async () => {
+    const model: AgentModel = testModel({ provider: "synthetic", modelId: "partial-step", supportsTools: true, stream: async () => {
       const index = requests++;
       const events: ModelStreamEvent[] = index < priorSteps
         ? [{ type: "tool-call", id: `primer-${index}`, name: "primer_probe", arguments: {} }, { type: "finish", reason: "tool-calls" }]
@@ -98,7 +100,7 @@ for (const priorSteps of [0, 1, 2]) {
           { type: "tool-call", id: "slow", name: "slow_probe", arguments: {} }, { type: "finish", reason: "tool-calls" }
         ] : [{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }];
       return (async function* () { yield* events; })();
-    } };
+    } });
     const createSession = (nextRecorder: SessionRecorder, nextModel: AgentModel) => new AgentSession({ workspaceRoot: root, recorder: nextRecorder, config,
       model: nextModel, toolRegistry: registry, permissionManager: new PermissionManager(config.permission) });
     const session = createSession(recorder, model);
@@ -130,10 +132,10 @@ for (const priorSteps of [0, 1, 2]) {
       const replay = replaySessionEvents(facts, { sessionId, expectedRuntimeHighWater: saved.runtimeHighWater });
       const before = executions;
       let actual: AgentMessage[] = [];
-      const resumed = createSession(new SessionRecorder(root), { provider: "synthetic", modelId: "recovery", supportsTools: true, stream: async (context) => {
+      const resumed = createSession(new SessionRecorder(root), testModel({ provider: "synthetic", modelId: "recovery", supportsTools: true, stream: async (context) => {
         actual = structuredClone(context.messages);
         return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "recovered" }; yield { type: "finish", reason: "stop" }; })();
-      } });
+      } }));
       try {
         await resumed.initialize(); await resumed.resume(sessionId);
         let status: string | undefined;
@@ -277,7 +279,7 @@ test("old replay caches are rejected and rebuild retains flat failure without re
     }
     await writeSessionSnapshot(file, fingerprint, replay);
     const saved = await tryReadSessionSnapshot(file, fingerprint);
-    assert.equal(saved?.replayVersion, 4);
+    assert.equal(saved?.replayVersion, 5);
     assert.deepEqual(saved?.messages, replay.messages);
     assert.equal(await readFile(file, "utf8"), bytes);
   } finally { await rm(root, { recursive: true, force: true }); }

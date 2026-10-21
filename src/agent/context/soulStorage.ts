@@ -7,7 +7,6 @@
 import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { migrateLegacyGlobalState } from "../../config/globalStateMigration.js";
 import { globalConfigDir } from "../../config/paths.js";
 import { renderSoulPrompt, type SoulPromptSource } from "../builtinSoul.js";
 
@@ -35,11 +34,9 @@ export class SoulStorage {
   private readonly now: () => Date;
   private readonly root: string;
   private readonly filePath: string;
-  private readonly migrateDefaultState: boolean;
 
   constructor(options: SoulStorageOptions = {}) {
     this.now = options.now ?? (() => new Date());
-    this.migrateDefaultState = options.configDir === undefined;
     this.root = path.resolve(options.configDir ?? globalConfigDir());
     this.filePath = path.join(this.root, soulFileName);
   }
@@ -118,7 +115,6 @@ export class SoulStorage {
   }
 
   private async migrateIfDefault(): Promise<void> {
-    if (this.migrateDefaultState) await migrateLegacyGlobalState();
   }
 
   private async withLock<T>(work: () => Promise<T>): Promise<T> {

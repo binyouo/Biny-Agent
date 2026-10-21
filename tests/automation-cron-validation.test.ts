@@ -18,7 +18,7 @@ await test("cron creation rejects malformed fields instead of saving a different
   const previousTimezone = process.env.TZ;
   process.env.TZ = "UTC";
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const store = await AutomationStore.open(root, authority);
   try {
     const create = (cron: string, timezone?: string) => store.create(readAutomationCreateInput({
@@ -89,7 +89,7 @@ await test("automation create surfaces invalid cron input through the CLI withou
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-cron-cli-")));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const store = await AutomationStore.open(root, authority);
   const paths = runtimeHostPaths(root);
   const source = (file: string) => JSON.stringify(pathToFileURL(path.resolve(file)).href);
@@ -111,7 +111,7 @@ import { RuntimeHostClient } from ${source("src/runtime/host/client.ts")};
 import { RuntimeEventAuthority } from ${source("src/runtime/RuntimeAuthority.ts")};
 import { AutomationStore } from ${source("src/runtime/AutomationScheduler.ts")};
 import { readAutomationCreateInput } from ${source("src/runtime/host/validation.ts")};
-const authority = await RuntimeEventAuthority.open(process.cwd(), { backfillLegacySessions: false });
+const authority = await RuntimeEventAuthority.open(process.cwd(), { reconcileSessions: false });
 const store = await AutomationStore.open(process.cwd(), authority);
 let requests = 0;
 let closed = 0;

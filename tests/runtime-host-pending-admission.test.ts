@@ -186,7 +186,7 @@ function fixture(options: FixtureOptions = {}) {
   return { state, connection, records, events, request };
 }
 
-for (const operation of ["submit", "run.submit", "start-interrupted"]) {
+for (const operation of ["run.submit", "start-interrupted"]) {
   test(`${operation}: register before dispatch and inspect after admission, without waiting for completion`, async () => {
     const dispatch = gate();
     const admission = gate();
@@ -267,7 +267,7 @@ test("inspect drains new same-run tokens registered while its first snapshot is 
 for (const dispatchError of ["throw", "reject"] as const) {
   test(`dispatcher ${dispatchError} releases its token without a rejecting barrier promise`, async () => {
     const f = fixture({ dispatchError });
-    const request = f.request("submit", { runId: "failed-dispatch" });
+    const request = f.request("run.submit", { runId: "failed-dispatch" });
     const waiting = f.state.waitForPendingRunAdmissions("failed-dispatch");
     await Promise.all([request.done, waiting]);
     assert.equal(request.response()?.ok, false);
@@ -302,7 +302,7 @@ test("inspect does not await detached OperationCompletion or writer cleanup", as
   const release = gate();
   const f = fixture({ idle: true, releaseGate: release.promise, execute: async () => new FakeCompletion(model.promise) });
   f.state.sessionWriterOwners.set("session-a", { clientId: f.connection.clientId, pendingCompletions: 0 });
-  const submitted = f.request("submit", { runId: "detached" });
+  const submitted = f.request("run.submit", { runId: "detached" });
   await f.request("run.inspect", { runId: "detached" }).done;
   assert.equal(f.state.pendingRunAdmissions.size, 0);
   assert.equal(submitted.response(), undefined);
@@ -328,7 +328,7 @@ test("settled direct admission releases its barrier before idle writer cleanup",
 test("unrelated runs and snapshots stay readable while one admission is pending", async () => {
   const admission = gate();
   const f = fixture({ execute: async () => { await admission.promise; } });
-  const submitted = f.request("submit", { runId: "blocked-run" });
+  const submitted = f.request("run.submit", { runId: "blocked-run" });
   const blocked = f.request("run.inspect", { runId: "blocked-run" });
   const unrelated = f.request("run.inspect", { runId: "other-run" });
   const snapshot = f.request("snapshot");
@@ -343,7 +343,7 @@ test("unrelated runs and snapshots stay readable while one admission is pending"
 test("authentication, request shape, direct-operation scope and usable runId bound registration", async () => {
   const f = fixture();
   f.connection.authenticated = false;
-  await f.request("submit", { runId: "unauthenticated" }).done;
+  await f.request("run.submit", { runId: "unauthenticated" }).done;
   assert.equal(f.state.pendingRunAdmissions.size, 0);
   assert.equal(f.events.length, 0);
   f.connection.authenticated = true;
@@ -351,7 +351,7 @@ test("authentication, request shape, direct-operation scope and usable runId bou
   assert.equal(f.state.pendingRunAdmissions.size, 0);
   assert.equal(f.events.length, 0);
   for (const runId of [undefined, null, "", "   ", 7]) {
-    const request = f.request("submit", { runId });
+    const request = f.request("run.submit", { runId });
     assert.equal(f.state.pendingRunAdmissions.size, 0);
     await request.done;
   }

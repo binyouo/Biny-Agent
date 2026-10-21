@@ -1,8 +1,10 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 从 REST 公开入口验证 weekly 以结束日聚合、ISO 周键持久化，并拒绝旧周一键。 */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -101,7 +103,7 @@ try {
   assert.equal(cliRecord.stats.endDate, "2027-01-03");
 
   let narrativeInput = "";
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture",
     modelId: "weekly-narrative",
     stream: async (context) => {
@@ -111,7 +113,7 @@ try {
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
-  };
+  });
   const narrative = await handleActivityHttpRequest({
     method: "POST",
     pathname: "/api/activity-recorder/summary/weekly/2027-01-03",

@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -50,7 +52,7 @@ async function fixture(context: TestContext, withStore = true) {
     workspaceRoot: root, config, recorder, toolRegistry: new ToolRegistry(),
     permissionManager: new PermissionManager(config.permission),
     todoStore: withStore ? store : undefined, todoPrompt: () => fallback,
-    model: {
+    model: testModel({
       provider: "fixture", modelId: "todo-prompt", runtime: "builtin-llama.cpp", dataResidency: "local",
       stream: async (request, options) => {
         if (options?.requestContext?.operation === "agent") requests.push(request.systemPrompt ?? "");
@@ -59,7 +61,7 @@ async function fixture(context: TestContext, withStore = true) {
           yield { type: "finish", reason: "stop" };
         })();
       }
-    }
+    })
   });
   cleanup.agent = agent;
   await agent.initialize();

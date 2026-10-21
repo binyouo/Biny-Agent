@@ -14,7 +14,7 @@ await test("task get reports missing records through CLI stderr and exit status 
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-task-get-cli-")));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
   const paths = runtimeHostPaths(root);
   const source = (file: string) => JSON.stringify(pathToFileURL(path.resolve(file)).href);

@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 用真实本地日志验证长会话证据分页；耗时仅报告，不以机器速度作为测试门槛。 */
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -34,7 +36,7 @@ try {
   config.context.memory.useMemories = false;
   config.context.memory.generateMemories = false;
   agent = new AgentSession({ workspaceRoot: root, config,
-    model: { provider: "fixture", modelId: "fixture", stream: async () => { throw new Error("No model request expected"); } },
+    model: testModel({ provider: "fixture", modelId: "fixture", stream: async () => { throw new Error("No model request expected"); } }),
     permissionManager: new PermissionManager({ ...config.permission, source: "test" }), toolRegistry: new ToolRegistry(), recorder: new SessionRecorder(root) });
   await agent.initialize();
   await agent.resume("large-evidence");

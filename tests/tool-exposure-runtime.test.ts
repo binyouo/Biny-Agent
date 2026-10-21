@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -66,7 +68,7 @@ function registryWithTools(includeReports = true): ToolRegistry {
   if (includeReports) registry.registerMcpTool(reportTool());
   registry.registerMcpTool(reportTool(privateNames[0], "hidden"));
   registry.registerMcpTool(reportTool(privateNames[1], "model-only"));
-  const auxiliary: AgentModel = {
+  const auxiliary: AgentModel = testModel({
     provider: "fixture", modelId: "report-discovery", supportsTools: false,
     async stream(context) {
       semanticQueries++;
@@ -77,7 +79,7 @@ function registryWithTools(includeReports = true): ToolRegistry {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries(), () => [{ model: auxiliary, failureDomain: "fixture-reports" }]));
   return registry;
 }
@@ -103,14 +105,14 @@ async function runFixture(
     permission: { ...config.permission, mode: options.permissionMode ?? "full-access" }
   });
   let step = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: name, supportsTools: true,
     async stream(context) {
       const next = steps[step++];
       assert.ok(next, `${name} exceeded its scripted model steps`);
       return (async function* () { yield* next(context); })();
     }
-  };
+  });
   const recorder = new SessionRecorder(workspaceRoot, name);
   const agent = new AgentSession({
     workspaceRoot, config: fixtureConfig, model, toolRegistry: registry, recorder,

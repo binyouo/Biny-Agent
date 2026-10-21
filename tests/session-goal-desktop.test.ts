@@ -43,7 +43,7 @@ try {
     recorder.record({ type: "assistant_message", content: "ready" });
     await recorder.close();
   }
-  const authority = await RuntimeEventAuthority.open(dataRoot, { backfillLegacySessions: false });
+  const authority = await RuntimeEventAuthority.open(dataRoot, { reconcileSessions: false });
   const goals = await SessionGoalStore.open(dataRoot, authority);
   for (const sessionId of ["goal-session-a", "goal-session-b"]) { goals.set(sessionId, "existing goal", { tokenBudget: 1000 }); goals.pause(sessionId); }
   goals.close(); authority.close();

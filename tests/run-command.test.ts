@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
@@ -7,13 +8,13 @@ import type { AgentConfigStore } from "../src/config/store.js";
 import {
   applyRunConfig,
   createRunConfigStore,
-  loadRunAttachments,
   parseRunVerification,
   resolveRunDeadlineBudget,
   runVerificationApproval,
   validateRunOptions,
   withRunTaskGuidance
-} from "../src/cli/commands/run.js";
+} from "../src/runtime/oneShot.js";
+import { loadRunAttachments } from "../src/cli/commands/run.js";
 import { attachmentFilePath, attachmentRoot } from "../src/attachments/store.js";
 import { appendCapped } from "../src/tools/shell/runCommand.js";
 
@@ -43,11 +44,10 @@ assert.throws(
   () => validateRunOptions({ permissionMode: "safe" as never }),
   /permissionMode must be one of ask, read-only, auto, full-access/
 );
-assert.throws(
-  () => validateRunOptions({ isolated: true, model: "deepseek-v4-pro" }),
-  /--isolated.*cannot be combined with --model/
+assert.doesNotThrow(
+  () => validateRunOptions({ isolated: true, model: "deepseek-v4-pro" })
 );
-assert.throws(
+assert.doesNotThrow(
   () => validateRunOptions({ isolated: true, verification: JSON.stringify({
     version: 1,
     objective: "verify artifact",
@@ -55,12 +55,10 @@ assert.throws(
     artifactPaths: ["result.txt"],
     allowedRepairPaths: ["result.txt"],
     maxAttempts: 1
-  }) }),
-  /--isolated.*--verification/
+  }) })
 );
-assert.throws(
-  () => validateRunOptions({ isolated: true, deadlineAtMs: 10_000 }),
-  /--isolated.*deadline options/
+assert.doesNotThrow(
+  () => validateRunOptions({ isolated: true, deadlineAtMs: 10_000 })
 );
 assert.throws(
   () => validateRunOptions({ verification: "{bad json" }),

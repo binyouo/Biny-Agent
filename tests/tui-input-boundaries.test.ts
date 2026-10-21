@@ -1,12 +1,13 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { TUI, type Terminal } from "@earendil-works/pi-tui";
 import type { AgentAttachment } from "../src/agent/AgentSession.js";
-import type { InteractiveRuntimeHandle, QueuedAgentMessage } from "../src/runtime/InteractiveAgentRuntime.js";
-import { RuntimeHostClient, errorFromHostOperation, type HostOperationResult } from "../src/runtime/RuntimeHost.js";
+import type { QueuedAgentMessage } from "../src/runtime/InteractiveAgentRuntime.js";
+import { RuntimeHostClient, type HostOperationResult } from "../src/runtime/RuntimeHost.js";
 import { SessionWriterConflictError } from "../src/runtime/SessionLease.js";
 import { BinyTui } from "../src/tui/app.js";
 import { loadInputHistory } from "../src/tui/inputHistory.js";
@@ -23,7 +24,7 @@ const accepted: HostOperationResult<QueuedAgentMessage> = {
 };
 const image = (name: string): AgentAttachment => ({ name, mimeType: "image/png", data: "aW1hZ2U=" });
 
-async function fixture(t: TestContext, mode: "local" | "remote" = "local", delayWriteAccess = false) {
+async function fixture(t: TestContext, delayWriteAccess = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-tui-input-boundaries-"));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "agent");
@@ -51,10 +52,7 @@ async function fixture(t: TestContext, mode: "local" | "remote" = "local", delay
     started.resolve();
     return await admission.promise;
   };
-  const runtime = mode === "remote"
-    // Only the instance identity is reused. No RuntimeHostClient constructor,
-    // transport, reconnect loop or real request method runs in this fixture.
-    ? Object.assign(Object.create(RuntimeHostClient.prototype) as RuntimeHostClient, {
+  const runtime = Object.assign(Object.create(RuntimeHostClient.prototype) as RuntimeHostClient, {
       getSnapshot,
       ensureSession: async (options: { sessionId: string; writeIntent: boolean; focus: boolean }) => {
         assert.deepEqual(options, { sessionId: "session", writeIntent: true, focus: false });
@@ -68,17 +66,8 @@ async function fixture(t: TestContext, mode: "local" | "remote" = "local", delay
       },
       waitForIdle: async () => undefined,
       close: async () => undefined
-    })
-    : {
-      getSnapshot,
-      steer: async (input: string, attachments: AgentAttachment[]) => {
-        const result = await queue(input, attachments);
-        if (!result.accepted) throw errorFromHostOperation(result);
-        return result.result!;
-      },
-      close: async () => undefined
-    };
-  app["runtime"] = runtime as unknown as InteractiveRuntimeHandle;
+    });
+  app["runtime"] = runtime;
   t.after(async () => {
     // Successful admissions persist history asynchronously; keep all of it in
     // this fixture's temporary directory and drain it before removing the root.
@@ -97,9 +86,9 @@ async function fixture(t: TestContext, mode: "local" | "remote" = "local", delay
   return { app, editor: app["editor"], admission, started, calls, history, writeAccess };
 }
 
-for (const mode of ["local", "remote"] as const) {
-  test(`${mode}: Backspace removes the latest pending attachment when the input is empty`, async (t) => {
-    const { app, editor } = await fixture(t, mode);
+{
+  test(`Host: Backspace removes the latest pending attachment when the input is empty`, async (t) => {
+    const { app, editor } = await fixture(t);
     app["setPendingAttachments"]([image("first.png"), image("last.png")]);
     editor.setText("");
 
@@ -112,8 +101,8 @@ for (const mode of ["local", "remote"] as const) {
     assert.deepEqual(app["pendingAttachments"], [image("first.png")]);
   });
 
-  test(`${mode}: steer expands a long bracketed paste before queueing and recording history`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started, calls, history } = await fixture(t, mode);
+  test(`Host: steer expands a long bracketed paste before queueing and recording history`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started, calls, history } = await fixture(t);
     const pasted = Array.from({ length: 11 }, (_, index) => `第${index + 1}行 👩🏽‍💻 cafe\u0301`).join("\n");
     editor.handleInput(`\u001b[200~${pasted}\u001b[201~`);
     assert.match(editor.getText(), /\[paste #1 \+11 lines\]/u, "fixture must use a collapsed paste");
@@ -127,8 +116,8 @@ for (const mode of ["local", "remote"] as const) {
     assert.equal(editor.getText(), "");
   });
 
-  test(`${mode}: steer admission preserves a newer draft and newly attached image`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started, calls } = await fixture(t, mode);
+  test(`Host: steer admission preserves a newer draft and newly attached image`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started, calls } = await fixture(t);
     const originalImage = image("original.png");
     const newerImage = image("newer.png");
     editor.setText("original steer");
@@ -144,8 +133,8 @@ for (const mode of ["local", "remote"] as const) {
     assert.deepEqual(app["pendingAttachments"], [newerImage]);
   });
 
-  test(`${mode}: rejected steer restores its input alongside a newer pasted draft and attachment`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started, history } = await fixture(t, mode);
+  test(`Host: rejected steer restores its input alongside a newer pasted draft and attachment`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started, history } = await fixture(t);
     const originalImage = image("original.png");
     const newerImage = image("newer.png");
     const pasted = "newer pasted line\n".repeat(11).trimEnd();
@@ -165,8 +154,8 @@ for (const mode of ["local", "remote"] as const) {
   });
 
 
-  test(`${mode}: repeated steer cannot queue the same pending input twice`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started, calls } = await fixture(t, mode);
+  test(`Host: repeated steer cannot queue the same pending input twice`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started, calls } = await fixture(t);
     editor.setText("one steer");
     app["setPendingAttachments"]([image("one.png")]);
     const first = app["steerCurrentInput"]();
@@ -179,8 +168,8 @@ for (const mode of ["local", "remote"] as const) {
     assert.deepEqual(app["pendingAttachments"], []);
   });
 
-  test(`${mode}: unedited rejection restores whitespace and attachments exactly once`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started, calls, history } = await fixture(t, mode);
+  test(`Host: unedited rejection restores whitespace and attachments exactly once`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started, calls, history } = await fixture(t);
     const original = "  original cafe\u0301 👩🏽‍💻  ";
     const attachments = [image("one.png"), image("two.png")];
     editor.setText(original);
@@ -195,8 +184,8 @@ for (const mode of ["local", "remote"] as const) {
     assert.deepEqual(history, []);
   });
 
-  test(`${mode}: empty steer is inert and image-only steer preserves an empty user message`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started, calls } = await fixture(t, mode);
+  test(`Host: empty steer is inert and image-only steer preserves an empty user message`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started, calls } = await fixture(t);
     editor.setText("  ");
     await app["steerCurrentInput"]();
     assert.deepEqual(calls, []);
@@ -211,8 +200,8 @@ for (const mode of ["local", "remote"] as const) {
     assert.deepEqual(app["pendingAttachments"], []);
   });
 
-  test(`${mode}: text and image are submitted separately without generated attachment instructions`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started, calls } = await fixture(t, mode);
+  test(`Host: text and image are submitted separately without generated attachment instructions`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started, calls } = await fixture(t);
     const original = "看一下这张图。";
     editor.setText(original);
     app["setPendingAttachments"]([image("screen.png")]);
@@ -224,8 +213,8 @@ for (const mode of ["local", "remote"] as const) {
     assert.deepEqual(calls, [{ input: original, attachments: [image("screen.png")] }]);
   });
 
-  test(`${mode}: undo cannot resurrect a submitted paste during admission or after success`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started } = await fixture(t, mode);
+  test(`Host: undo cannot resurrect a submitted paste during admission or after success`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started } = await fixture(t);
     const pasted = "original 👩🏽‍💻 cafe\u0301\n".repeat(11).trimEnd();
     editor.handleInput(`\u001b[200~${pasted}\u001b[201~`);
     const steering = app["steerCurrentInput"]();
@@ -241,8 +230,8 @@ for (const mode of ["local", "remote"] as const) {
     assert.equal(editor.getExpandedText(), "");
   });
 
-  test(`${mode}: undo while admission is pending does not duplicate a refused input`, { timeout: 5_000 }, async (t) => {
-    const { app, editor, admission, started } = await fixture(t, mode);
+  test(`Host: undo while admission is pending does not duplicate a refused input`, { timeout: 5_000 }, async (t) => {
+    const { app, editor, admission, started } = await fixture(t);
     const pasted = "original 👩🏽‍💻 cafe\u0301\n".repeat(11).trimEnd();
     editor.handleInput(`\u001b[200~${pasted}\u001b[201~`);
     app["setPendingAttachments"]([image("original.png")]);
@@ -258,7 +247,7 @@ for (const mode of ["local", "remote"] as const) {
 }
 
 test("remote refusal restores only submitted text and images before the newer draft", { timeout: 5_000 }, async (t) => {
-  const { app, editor, admission, started, history } = await fixture(t, "remote");
+  const { app, editor, admission, started, history } = await fixture(t);
   const pasted = "👩🏽‍💻 cafe\u0301 ".repeat(110);
   editor.handleInput(`\u001b[200~${pasted}\u001b[201~`);
   assert.match(editor.getText(), /chars\]/u);
@@ -276,7 +265,7 @@ test("remote refusal restores only submitted text and images before the newer dr
 });
 
 test("write-access rejection restores input before showing a writer conflict", { timeout: 5_000 }, async (t) => {
-  const { app, editor, calls, history, writeAccess } = await fixture(t, "remote", true);
+  const { app, editor, calls, history, writeAccess } = await fixture(t, true);
   editor.setText("original");
   app["setPendingAttachments"]([image("original.png")]);
   const conflict = new SessionWriterConflictError("session", 123, "cli");

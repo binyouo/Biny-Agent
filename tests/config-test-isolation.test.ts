@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -25,7 +26,7 @@ test("direct tests and their children refuse user state and Keychain before side
     delete env.NODE_TEST_CONTEXT;
     const probes = await promisify(execFile)(process.execPath, ["--import", import.meta.resolve("tsx"), "tests/fixtures/config-user-state.test.ts"], { cwd: process.cwd(), env: { ...env, BINY_ISOLATION_PROBE: "all" }, timeout: 10_000 });
     const results = JSON.parse(probes.stdout.trim()) as Record<string, { rejected: boolean; message: string }>;
-    assert.deepEqual(Object.keys(results), ["save", "explicit", "ensure", "migration", "lock", "safe-storage", "agent-path", "config-path", "keychain", "default-keychain", "child"]);
+    assert.deepEqual(Object.keys(results), ["save", "explicit", "ensure", "lock", "safe-storage", "agent-path", "config-path", "keychain", "default-keychain", "child"]);
     for (const [mode, result] of Object.entries(results)) {
       assert.equal(result.rejected, true, `${mode} must reject before any user-state side effect`);
       assert.match(result.message, mode === "default-keychain" ? /不支持持久化/u : /Test processes/u);

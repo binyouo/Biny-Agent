@@ -14,7 +14,7 @@ async function withStore(run: (store: AutomationStore) => void | Promise<void>):
   let authority: RuntimeEventAuthority | undefined;
   let store: AutomationStore | undefined;
   try {
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     store = await AutomationStore.open(root, authority);
     await run(store);
   } finally {

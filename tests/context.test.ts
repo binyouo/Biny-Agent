@@ -1,6 +1,13 @@
+import { stopTestMemoryOwners } from "./helpers/memoryOwnerCleanup.js";
+import { AgentMemoryOwner } from "../src/runtime/memory/owner.js";
+import { serveMemoryOwner, canonicalMemoryRoot } from "../src/runtime/memory/transport.js";
+import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
@@ -18,7 +25,7 @@ import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 import { cloneAgentMessages, messageReasoning, messageText } from "../src/agent/modelMessages.js";
 import { buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext } from "../src/agent/prompts.js";
-import { BINY_AGENT_DIR_ENV, globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName } from "../src/config/paths.js";
+import { BINY_AGENT_DIR_ENV, globalConfigDir, globalAgentDir, projectSessionsDir, projectStateDirName } from "../src/config/paths.js";
 import type { AgentConfig } from "../src/config/schema.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
@@ -111,7 +118,7 @@ class ContextTestModel {
 }
 
 function createContextTestModel(provider: ContextTestModel): AgentModel {
-  return {
+  return testModel({
     provider: "context-test",
     modelId: "context-test",
     async stream(context: ModelStreamContext, options): Promise<AsyncIterable<ModelStreamEvent>> {
@@ -141,7 +148,7 @@ function createContextTestModel(provider: ContextTestModel): AgentModel {
         yield { type: "finish" as const, reason: "stop" as const, usage: provider.reportUsage ? { inputTokens: 0, outputTokens: 1, totalTokens: 1 } : undefined };
       })();
     }
-  };
+  });
 }
 
 async function main(): Promise<void> {
@@ -175,7 +182,7 @@ async function main(): Promise<void> {
     await testCheckpointIsResumeTruthSource();
     await testCheckpointPersistenceFailureStopsSession();
     await testLegacyAgentStateIsIgnored();
-    await testFlatSessionMigration();
+    await testOldSessionLayoutsAreUntouched();
     await testSessionPathBoundaries();
     await testGlobalSessionsStayProjectScoped();
     await testSessionSummariesSortByUpdatedAt();
@@ -764,7 +771,7 @@ async function testContextPreparationAbortStopsAutoCompaction(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     const started = deferred<void>();
     const aborted = deferred<void>();
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "context-test-abort",
       modelId: "context-test-abort",
       async stream(_context, options) {
@@ -781,7 +788,7 @@ async function testContextPreparationAbortStopsAutoCompaction(): Promise<void> {
           yield { type: "start" as const };
         })();
       }
-    };
+    });
     const memory = new ContextMemory(
       () => model,
       new WorkspaceContext(workspaceRoot, [], 32 * 1024),
@@ -871,7 +878,7 @@ async function testSessionReplayAndAgentResume(): Promise<void> {
       {
         type: "user_message",
         content: "inspect src/index.ts",
-        contextUsage: { maxTokens: 24_000, usedTokens: 1_234, omitted: [], autoCompacted: false }
+        contextState: { budget: { maxTokens: 24_000, usedTokens: 1_234, omitted: [], autoCompacted: false }, compactedMessages: 0 }
       },
       {
         type: "tool_call",
@@ -881,7 +888,7 @@ async function testSessionReplayAndAgentResume(): Promise<void> {
         sequence: 7,
         assistantContent: "I will inspect the entry.",
         reasoningContent: "The entry file is the first target.",
-        reasoningProviderOptions: { anthropic: { signature: "signed-entry-reasoning" } }
+        reasoningBlocks: [{ text: "The entry file is the first target.", providerOptions: { anthropic: { signature: "signed-entry-reasoning" } } }]
       },
       { type: "tool_result", tool: "Read", result: { path: "src/index.ts", content: "export {}" }, toolCallId: "call-7", sequence: 7 },
       {
@@ -892,14 +899,14 @@ async function testSessionReplayAndAgentResume(): Promise<void> {
         sequence: 8,
         assistantContent: "I will inspect the worker.",
         reasoningContent: "The worker is the second target.",
-        reasoningProviderOptions: { anthropic: { signature: "signed-worker-reasoning" } }
+        reasoningBlocks: [{ text: "The worker is the second target.", providerOptions: { anthropic: { signature: "signed-worker-reasoning" } } }]
       },
       { type: "tool_result", tool: "Read", result: { path: "src/worker.ts", content: "export class Worker {}" }, toolCallId: "call-8", sequence: 8 },
       {
         type: "assistant_message",
         content: "The files define the entry and worker.",
         reasoningContent: "Both requested files were inspected.",
-        reasoningProviderOptions: { anthropic: { signature: "signed-final-reasoning" } },
+        reasoningBlocks: [{ text: "Both requested files were inspected.", providerOptions: { anthropic: { signature: "signed-final-reasoning" } } }],
         usage: {
           operation: "agent",
           modelAlias: "deepseek-v4-flash",
@@ -1435,8 +1442,8 @@ async function testLegacyAgentStateIsIgnored(): Promise<void> {
   });
 }
 
-async function testFlatSessionMigration(): Promise<void> {
-  // 旧日期分层（YYYY/MM/DD/<id>.jsonl）在首次访问时平铺回项目 session 目录根，文件名不变。
+async function testOldSessionLayoutsAreUntouched(): Promise<void> {
+  // 历史目录保持原样，当前目录只读取平铺会话。
   await withTempWorkspace(async (workspaceRoot) => {
     await ensureAgentDirs(workspaceRoot);
     const sessionsRoot = projectSessionsDir(await fs.realpath(workspaceRoot));
@@ -1449,13 +1456,12 @@ async function testFlatSessionMigration(): Promise<void> {
 
     await ensureAgentDirs(workspaceRoot);
     const target = path.join(sessionsRoot, `${sessionId}.jsonl`);
-    await assert.rejects(fs.access(source));
-    assert.equal(await fs.readFile(target, "utf8"), content);
-    await assert.rejects(fs.access(datedDir));
-    assert.deepEqual(await listSessionFiles(workspaceRoot), [`${sessionId}.jsonl`]);
+    assert.equal(await fs.readFile(source, "utf8"), content);
+    await assert.rejects(fs.access(target));
+    assert.deepEqual(await listSessionFiles(workspaceRoot), []);
   });
 
-  // 根目录与日期目录里同名但内容不同的 session 无法猜测覆盖顺序，必须报错并两边都保留。
+  // 历史日期目录不参与当前会话索引，也不覆盖同名文件。
   await withTempWorkspace(async (workspaceRoot) => {
     await ensureAgentDirs(workspaceRoot);
     const sessionsRoot = projectSessionsDir(await fs.realpath(workspaceRoot));
@@ -1466,16 +1472,16 @@ async function testFlatSessionMigration(): Promise<void> {
     await fs.writeFile(flat, "flat\n", "utf8");
     await fs.writeFile(dated, "dated\n", "utf8");
 
-    await assert.rejects(ensureAgentDirs(workspaceRoot), /Duplicate session id exists in flat and dated storage/u);
+    await ensureAgentDirs(workspaceRoot);
     assert.equal(await fs.readFile(flat, "utf8"), "flat\n");
     assert.equal(await fs.readFile(dated, "utf8"), "dated\n");
   });
 
-  // 旧版纯 24hex 项目目录整体改名成 `<basename>-<hash8>`，目录里的文件保持原名。
+  // 旧版 24hex 目录不自动迁移或删除。
   await withTempWorkspace(async (workspaceRoot) => {
     const canonicalWorkspace = await fs.realpath(workspaceRoot);
     const globalSessionsRoot = path.join(globalAgentDir(), "sessions");
-    const legacyDir = path.join(globalSessionsRoot, legacyProjectStateDirName(canonicalWorkspace));
+    const legacyDir = path.join(globalSessionsRoot, createHash("sha256").update(canonicalWorkspace).digest("hex").slice(0, 24));
     const sessionId = "legacy-24hex-session";
     const content = `${JSON.stringify({ type: "user_message", content: "legacy 24hex session" })}\n`;
     await fs.mkdir(legacyDir, { recursive: true });
@@ -1483,11 +1489,11 @@ async function testFlatSessionMigration(): Promise<void> {
 
     await ensureAgentDirs(workspaceRoot);
     const sessionsRoot = projectSessionsDir(canonicalWorkspace);
-    assert.notEqual(path.basename(sessionsRoot), legacyProjectStateDirName(canonicalWorkspace));
+    assert.notEqual(path.basename(sessionsRoot), createHash("sha256").update(canonicalWorkspace).digest("hex").slice(0, 24));
     assert.equal(path.basename(sessionsRoot), projectStateDirName(canonicalWorkspace));
-    await assert.rejects(fs.access(legacyDir));
-    assert.equal(await fs.readFile(path.join(sessionsRoot, `${sessionId}.jsonl`), "utf8"), content);
-    assert.deepEqual(await listSessionFiles(workspaceRoot), [`${sessionId}.jsonl`]);
+    assert.equal(await fs.readFile(path.join(legacyDir, `${sessionId}.jsonl`), "utf8"), content);
+    await assert.rejects(fs.access(path.join(sessionsRoot, `${sessionId}.jsonl`)));
+    assert.deepEqual(await listSessionFiles(workspaceRoot), []);
   });
 }
 
@@ -1565,7 +1571,7 @@ async function testSessionPathBoundaries(): Promise<void> {
       );
       await pinnedRecorder.close();
       await assert.rejects(fs.access(path.join(outsideRoot, "pinned-before-parent-swap.jsonl")));
-      await fs.rm(sessionsRoot, { force: true });
+      await removeTestRoot(sessionsRoot, { force: true });
       await fs.rename(originalSessionsRoot, sessionsRoot);
 
       const config = testConfig();
@@ -1586,7 +1592,7 @@ async function testSessionPathBoundaries(): Promise<void> {
       await agent.close();
 
       const outsideSessionsDir = path.dirname(sessionFilePath(workspaceRoot, "outside"));
-      await fs.rm(outsideSessionsDir, { recursive: true, force: true });
+      await removeTestRoot(outsideSessionsDir, { recursive: true, force: true });
       await fs.symlink(outsideRoot, outsideSessionsDir);
       await assert.rejects(resolveSessionFile(workspaceRoot, "outside"), /real directory, not a symbolic link/);
       await assert.rejects(readSessionSnapshot(workspaceRoot, "outside"), /real directory, not a symbolic link/);
@@ -1596,9 +1602,9 @@ async function testSessionPathBoundaries(): Promise<void> {
       assert.throws(() => new SessionRecorder(workspaceRoot, "must-not-escape"), /real directory, not a symbolic link/);
       await assert.rejects(fs.access(path.join(outsideRoot, "must-not-escape.jsonl")));
 
-      await fs.rm(outsideSessionsDir, { force: true });
+      await removeTestRoot(outsideSessionsDir, { force: true });
       const runtimeRoot = agentDir(workspaceRoot);
-      await fs.rm(runtimeRoot, { recursive: true, force: true });
+      await removeTestRoot(runtimeRoot, { recursive: true, force: true });
       await fs.symlink(outsideRoot, runtimeRoot);
       await assert.rejects(ensureAgentDirs(workspaceRoot), /real directory, not a symbolic link/);
       await assert.rejects(fs.access(path.join(outsideRoot, "sessions")));
@@ -1850,13 +1856,13 @@ async function testCredentialAndSymlinkBoundaries(): Promise<void> {
         operation: "agent",
         relatedToolCallIds: ["call-1"]
       });
-      await fs.rm(telemetryPath);
+      await removeTestRoot(telemetryPath);
       const telemetryVictim = path.join(outsideRoot, "telemetry-victim.txt");
       await fs.writeFile(telemetryVictim, "telemetry-victim-unchanged", "utf8");
       await fs.symlink(telemetryVictim, telemetryPath);
       await recordNativeTelemetry(telemetryConfig, workspaceRoot, { type: "end", provider: "test", modelId: "test", steps: 1 });
       assert.equal(await fs.readFile(telemetryVictim, "utf8"), "telemetry-victim-unchanged");
-      await fs.rm(telemetryPath);
+      await removeTestRoot(telemetryPath);
       await fs.link(telemetryVictim, telemetryPath);
       await recordNativeTelemetry(telemetryConfig, workspaceRoot, { type: "end", provider: "test", modelId: "test", steps: 1 });
       assert.equal(await fs.readFile(telemetryVictim, "utf8"), "telemetry-victim-unchanged");
@@ -1868,11 +1874,11 @@ async function testCredentialAndSymlinkBoundaries(): Promise<void> {
       await assert.rejects(appendInputHistory(workspaceRoot, "must not escape"), /single-link regular file/);
       await assert.rejects(loadInputHistory(workspaceRoot), /single-link regular file/);
       assert.equal(await fs.readFile(historyVictim, "utf8"), "history-victim-unchanged");
-      await fs.rm(historyPath);
+      await removeTestRoot(historyPath);
       await fs.link(historyVictim, historyPath);
       await assert.rejects(appendInputHistory(workspaceRoot, "must not escape"), /single-link regular file/);
       assert.equal(await fs.readFile(historyVictim, "utf8"), "history-victim-unchanged");
-      await fs.rm(historyPath);
+      await removeTestRoot(historyPath);
       const agentPath = agentDir(workspaceRoot);
       const originalAgentPath = `${agentPath}-original`;
       await fs.rename(agentPath, originalAgentPath);
@@ -1880,7 +1886,7 @@ async function testCredentialAndSymlinkBoundaries(): Promise<void> {
       await assert.rejects(appendInputHistory(workspaceRoot, "must not escape through parent"), /real directory/);
       await assert.rejects(loadInputHistory(workspaceRoot), /real canonical directory/);
       await assert.rejects(fs.access(path.join(outsideRoot, "input-history.jsonl")));
-      await fs.rm(agentPath);
+      await removeTestRoot(agentPath);
       await fs.rename(originalAgentPath, agentPath);
     } finally {
       await rm(outsideRoot, { recursive: true, force: true });
@@ -2172,7 +2178,7 @@ async function testMemoryStorageBoundaries(): Promise<void> {
       await assert.rejects(store.writeEntry(entry), /real directory, not a symbolic link/);
       assert.equal(await fs.readFile(victim, "utf8"), victimContent);
 
-      await fs.rm(memoryDir, { force: true });
+      await removeTestRoot(memoryDir, { force: true });
       await fs.mkdir(memoryDir);
       const databasePath = path.join(memoryDir, AGENT_DATABASE_FILE);
       await fs.symlink(victim, databasePath);
@@ -2251,7 +2257,7 @@ async function testCrystalFailedAndCancelledTurnContribution(): Promise<void> {
       const config = testConfig();
       config.context.memory.useMemories = false;
       config.context.memory.generateMemories = contribute;
-      const model: AgentModel = { provider: "test", modelId: "terminal-crystal", stream: async () => { throw new Error("Terminal fixture model failure"); } };
+      const model: AgentModel = testModel({ provider: "test", modelId: "terminal-crystal", stream: async () => { throw new Error("Terminal fixture model failure"); } });
       const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(workspaceRoot) });
       await agent.initialize();
       const seen: string[] = [];
@@ -2279,7 +2285,7 @@ async function testTemporalCluesFromDurableFailedAndCancelledMessages(): Promise
       config.context.memory.useMemories = false;
       config.context.memory.generateMemories = false;
       const recorder = new SessionRecorder(workspaceRoot, `temporal-${status}`);
-      const model: AgentModel = { provider: "test", modelId: "temporal-failure", stream: async () => { throw new Error("Model unavailable"); } };
+      const model: AgentModel = testModel({ provider: "test", modelId: "temporal-failure", stream: async () => { throw new Error("Model unavailable"); } });
       const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder });
       await agent.initialize();
       const controller = new AbortController();
@@ -2351,6 +2357,9 @@ async function testCrystalSemanticDotProduct(): Promise<void> {
       }
       };
     };
+    const memoryRoot = await canonicalMemoryRoot(globalAgentDir());
+    await stopTestMemoryOwners(memoryRoot);
+    const owner = await serveMemoryOwner(memoryRoot, globalConfigDir(), new AgentMemoryOwner(memoryRoot, { load: async () => config, save: async () => undefined }));
     try {
       const crystals = agent.getCrystalService();
       const seed = crystals.createSeed("Target seed");
@@ -2411,6 +2420,7 @@ async function testCrystalSemanticDotProduct(): Promise<void> {
       assert.ok(models.length > 0 && models.every((model) => model === "multilingual-e5-small"));
       assert.ok(crystals.storage.listMaterials(seed.id).some((material) => material.ref.anchorId === "dot-candidate-recovered"));
     } finally {
+      await owner.close();
       LocalEmbeddingManager.prototype.isReady = ready;
       LocalEmbeddingManager.prototype.createRuntime = createRuntime;
       await agent.close();
@@ -2426,12 +2436,12 @@ async function testCrystalDormancyWithoutNewAnchors(): Promise<void> {
     config.context.memory.generateMemories = true;
     const recorder = new SessionRecorder(workspaceRoot, "crystal-aging");
     recorder.record({ type: "user_message", messageId: "aging-processed", content: "Already processed topic" });
-    const model: AgentModel = { provider: "test", modelId: "aging-test", stream: async () => {
+    const model: AgentModel = testModel({ provider: "test", modelId: "aging-test", stream: async () => {
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         yield { type: "text-delta", text: "Done" };
         yield { type: "finish", reason: "stop" };
       })();
-    } };
+    } });
     const agent = new AgentSession({ workspaceRoot, config, model, recorder, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }) });
     await agent.initialize();
     const crystals = agent.getCrystalService();
@@ -2468,10 +2478,10 @@ async function testCrystalCurrentRunAnchors(): Promise<void> {
     const config = testConfig();
     config.context.memory.useMemories = false;
     config.context.memory.generateMemories = true;
-    const model: AgentModel = { provider: "test", modelId: "backfill-test", stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
+    const model: AgentModel = testModel({ provider: "test", modelId: "backfill-test", stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: "Done" };
       yield { type: "finish", reason: "stop" };
-    })() };
+    })() });
     const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(workspaceRoot) });
     await agent.initialize();
     const seen: Array<{ text: string; day: string; anchorId: string }> = [];
@@ -2529,7 +2539,7 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
     config.context.memory.generateMemories = false;
     let materialPrompt = "";
     const systemPrompts: string[] = [];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test",
       modelId: "material-test",
       stream: async (context) => (async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -2571,7 +2581,7 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
         yield { type: "text-delta", text: JSON.stringify({ definition: { value: "Historical definition", sources: ["turn:historical-anchor"] } }) };
         yield { type: "finish", reason: "stop" };
       })()
-    };
+    });
     const currentRecorder = new SessionRecorder(workspaceRoot);
     const agent = new AgentSession({
       workspaceRoot, config, model,

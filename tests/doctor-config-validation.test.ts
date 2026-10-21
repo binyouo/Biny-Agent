@@ -42,13 +42,13 @@ for (const scenario of [
   },
   {
     name: "a project model alias missing from global models",
-    project: '{"defaultModel":"missing-project-model"}',
+    project: '{"format":"biny-project-settings","configVersion":2,"defaultModel":"missing-project-model"}',
     diagnostic: /Project defaultModel "missing-project-model" is not configured/u,
     safeDiagnostic: "Project .biny/settings.json defaultModel must reference a model configured in global config.json."
   },
   {
     name: "an invalid alias discovered only after merging project settings",
-    project: '{"context":{"compaction":{"summaryModel":"missing-summary-model"}}}',
+    project: '{"format":"biny-project-settings","configVersion":2,"context":{"compaction":{"summaryModel":"missing-summary-model"}}}',
     diagnostic: /Unknown compaction summary model alias: missing-summary-model/u,
     safeDiagnostic: "Invalid effective configuration. Check field values and model references in global config.json and project .biny/settings.json."
   },
@@ -116,7 +116,7 @@ for (const target of ["global", "project"] as const) {
 }
 
 test("doctor accepts valid sparse overrides without requiring a live provider or credentials", async () => {
-  await fixture({ global: JSON.stringify(testConfig()), project: '{"thinking":{"enabled":false}}' }, async ({ run }) => {
+  await fixture({ global: JSON.stringify(testConfig()), project: '{"format":"biny-project-settings","configVersion":2,"thinking":{"enabled":false}}' }, async ({ run }) => {
     const result = run();
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /^configuration: valid$/mu);

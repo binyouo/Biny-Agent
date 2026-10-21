@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -35,7 +36,7 @@ for (const phase of ["runtime", "commands"] as const) {
       const runtime = new InteractiveAgentRuntime(commands);
       let runtimeResolutions = 0;
       let commandResolutions = 0;
-      const supervisor = new GraphSupervisor({ store: commands.graphs, taskRuns: commands.taskRuns, runtime,
+      const supervisor = new GraphSupervisor({ getStore: () => commands.graphs, getTaskRuns: () => commands.taskRuns,
         resolveSupervisorRuntime: async () => {
           runtimeResolutions += 1;
           if (phase === "runtime" && runtimeResolutions === 2) {
@@ -109,16 +110,16 @@ for (const phase of ["runtime", "commands"] as const) {
 
 for (const paused of [false, true]) test(`startup recovers undispatched claim when graph is ${paused ? "paused" : "running"}`, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-paused-graph-restart-"));
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   let graphs = await GoalGraphStore.open(root, authority); let tasks = await DurableTaskRunStore.open(root, authority);
   try {
-    const graph = graphs.createGraph([{ nodeKey: "first", prompt: "inspect" }]); graphs.startGraph(graph.graphId);
+    const graph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "first", prompt: "inspect" }] }); graphs.startGraph(graph.graphId);
     const node = graphs.readyNodes(graph.graphId)[0]!;
     const taskRunId = `graph:${graph.graphId}:${node.nodeId}`;
     graphs.claimIntent(graph.graphId, node.nodeId, undefined, taskRunId);
     if (paused) graphs.pauseGraph(graph.graphId);
     graphs.close(); tasks.close(); authority.close();
-    authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     graphs = await GoalGraphStore.open(root, authority); tasks = await DurableTaskRunStore.open(root, authority);
     graphs.recoverRunningNodes(tasks);
     const recovered = graphs.inspectGraph(graph.graphId);
@@ -136,10 +137,10 @@ for (const paused of [false, true]) test(`startup recovers undispatched claim wh
 for (const evidence of ["task-created", "task-running", "task-completed", "fallback-admitted", "fallback-completed", "cancelled", "changed-token"] as const) {
   test(`paused recovery does not release ${evidence} evidence`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-graph-claim-evidence-"));
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const graphs = await GoalGraphStore.open(root, authority); const tasks = await DurableTaskRunStore.open(root, authority);
     try {
-      const graph = graphs.createGraph([{ nodeKey: "first", prompt: "inspect" }]); graphs.startGraph(graph.graphId);
+      const graph = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "first", prompt: "inspect" }] }); graphs.startGraph(graph.graphId);
       const node = graphs.readyNodes(graph.graphId)[0]!; const taskRunId = `graph:${graph.graphId}:${node.nodeId}`;
       const claim = graphs.claimIntent(graph.graphId, node.nodeId, undefined, taskRunId)!;
       assert.ok(claim);
@@ -180,14 +181,14 @@ function streamText(content: string): Response {
 }
 
 for (const fail of [false, true]) for (const action of ["pause", "stop"] as const) {
-  test(`dispatched fixed fallback ${fail ? "failure" : "success"} survives ${action} without a TaskRun`, { timeout: 15_000 }, async (t) => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "biny-fixed-fallback-result-"));
+  test(`dispatched supervised task ${fail ? "failure" : "success"} survives ${action} retains its TaskRun`, { timeout: 15_000 }, async (t) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "biny-supervised-result-"));
     const entered = deferred<void>(); const release = deferred<void>();
     const config = structuredClone(defaultConfig);
     config.defaultModel = "synthetic"; config.toolModel = "synthetic";
     config.providers = { fixture: { type: "openai-compatible", baseUrl: "https://example.test/v1", requiresApiKey: false, retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1 } } };
     config.models = { synthetic: { ...defaultConfig.models["deepseek-v4-flash"]!, provider: "fixture", model: "synthetic" } };
-    config.checkpoints.enabled = false; config.heartbeat.enabled = false;
+    config.checkpoints.enabled = false; config.heartbeat.enabled = false; config.extensions.subagent.enabled = true;
     config.context.memory.enabled = false; config.context.identity.enabled = false;
     const network = t.mock.method(globalThis, "fetch", async () => {
       entered.resolve(); await release.promise;
@@ -196,21 +197,50 @@ for (const fail of [false, true]) for (const action of ["pause", "stop"] as cons
     });
     const commands = await createCommandRuntime(root, { configStore: { load: async () => structuredClone(config), save: async () => undefined } });
     const runtime = new InteractiveAgentRuntime(commands);
-    const supervisor = new GraphSupervisor({ store: commands.graphs, runtime });
+    const supervisor = new GraphSupervisor({ getStore: () => commands.graphs, getTaskRuns: () => commands.taskRuns, resolveSupervisorRuntime: async () => runtime, resolveSupervisorCommands: async () => commands });
     try {
-      const graph = commands.graphs.createGraph([{ nodeKey: "first", prompt: "inspect evidence" }]);
+      const graph = commands.graphs.createSupervisedGraph({ supervisorSessionId: commands.agent.getInfo().sessionId, nodes: [{ nodeKey: "first", prompt: "inspect evidence" }] });
       commands.graphs.startGraph(graph.graphId);
       await supervisor.tick(); await entered.promise;
-      assert.equal(commands.taskRuns.list().tasks.length, 0);
+      assert.equal(commands.taskRuns.list().tasks.length, 1);
       assert.equal(commands.graphs.inspectGraph(graph.graphId).nodes[0]?.status, "running");
       if (action === "pause") commands.graphs.pauseGraph(graph.graphId); else supervisor.stop();
       release.resolve(); await settle(() => !supervisor.hasActiveWork());
       const current = commands.graphs.inspectGraph(graph.graphId);
       assert.equal(current.nodes[0]?.status, fail ? "failed" : "completed");
-      assert.equal(current.status, fail ? "failed" : "completed");
-      assert.equal(commands.taskRuns.list().tasks.length, 0);
-      if (fail) assert.match(String((current.nodes[0]?.artifact as { error?: string } | undefined)?.error), /fallback provider failure/u);
+      assert.equal(current.status, action === "pause" ? "paused" : "running", "only the supervisor may finish the goal");
+      assert.equal(commands.taskRuns.list().tasks.length, 1);
+      if (fail) assert.match(JSON.stringify(commands.taskRuns.get(current.nodes[0]!.taskRunId!)), /fallback provider failure/u);
       assert.ok(network.mock.callCount() > 0);
     } finally { release.resolve(); supervisor.stop(); await runtime.close(); network.mock.restore(); await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+for (const busy of [false, true]) {
+  test(`predispatch ${busy ? "busy race defers" : "failure terminalizes"} its durable task`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "biny-plan-predispatch-"));
+    const authority = await RuntimeEventAuthority.open(root);
+    const store = await GoalGraphStore.open(root, authority);
+    const tasks = await DurableTaskRunStore.open(root, authority);
+    const runtime = {
+      getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "owner" } }),
+      runExclusiveOperation: async () => { throw new Error(busy ? "Cannot start while the runtime is busy" : "Writer lease unavailable"); }
+    } as unknown as import("../src/runtime/InteractiveAgentRuntime.js").InteractiveRuntimeHandle;
+    const supervisor = new GraphSupervisor({ getStore: () => store, getTaskRuns: () => tasks, resolveSupervisorRuntime: async () => runtime,
+      resolveSupervisorCommands: async () => ({ taskRuns: tasks, startTaskRun: () => assert.fail("no dispatch before admission") }) as unknown as import("../src/runtime/CommandRuntime.js").CommandRuntime });
+    try {
+      const graph = store.createSupervisedGraph({ supervisorSessionId: "owner", nodes: [{ nodeKey: "work", prompt: "Inspect local evidence" }] });
+      store.startGraph(graph.graphId);
+      await supervisor.tick();
+      await settle(() => !supervisor.hasActiveWork());
+      const node = store.inspectGraph(graph.graphId).nodes[0]!;
+      assert.equal(node.status, busy ? "ready" : "failed");
+      const task = tasks.list().tasks[0]!;
+      assert.equal(task.status, busy ? "created" : "failed");
+      assert.equal(task.attempts.length, 0);
+    } finally {
+      supervisor.stop(); tasks.close(); store.close(); authority.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 }

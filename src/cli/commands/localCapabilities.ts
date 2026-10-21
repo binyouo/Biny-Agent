@@ -9,7 +9,6 @@ import { readConversationDay, searchConversationHistory } from "../../session/se
 import { hasReflectionDate, readReflectionDiary } from "../../agent/context/reflectionDates.js";
 import { connectOrSpawnRuntimeHost, connectRuntimeHost, type RuntimeHostClient } from "../../runtime/RuntimeHost.js";
 import { archiveConversationMarkdown } from "../../session/markdownArchive.js";
-import { startMemoryHttpServer } from "../../runtime/host/memory-http.js";
 import { SessionSearchIndex } from "../../session/searchIndex.js";
 import { TemporalMemoryIndex, type TemporalQuery } from "../../session/temporalMemory.js";
 import { createDateReference, type DateReferenceRange } from "../../session/dateReference.js";
@@ -34,22 +33,6 @@ export interface LocalCapabilityOutputOptions {
 
 export async function memoryExportCommand(): Promise<void> {
   console.log(JSON.stringify(await archiveConversationMarkdown()));
-}
-
-export async function memoryServeCommand(workspaceRoot: string, port: number): Promise<void> {
-  const token = process.env.BINY_MEMORY_API_TOKEN;
-  if (!token?.trim()) throw new Error("请先设置 BINY_MEMORY_API_TOKEN；不会自动开放无认证的记忆接口。");
-  await withHost(workspaceRoot, {}, async (client) => {
-    const api = await startMemoryHttpServer(client, { token, port });
-    console.log(`Memory API: http://127.0.0.1:${String(api.port)} (Bearer token required)`);
-    try {
-      await new Promise<void>((resolve) => {
-        const stop = (): void => { process.off("SIGINT", stop); process.off("SIGTERM", stop); resolve(); };
-        process.once("SIGINT", stop);
-        process.once("SIGTERM", stop);
-      });
-    } finally { await api.close(); }
-  });
 }
 
 export async function memoryListCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {

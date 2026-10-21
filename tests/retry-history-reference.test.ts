@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 真实预算丢弃历史后，重试仍须把当前用户与其持久消息身份绑定。 */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -79,7 +81,7 @@ async function fixture(t: TestContext) {
   config.crystal.semanticScanEnabled = false;
   config.activity.enabled = false;
   const requests: AgentMessage[][] = [];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "retry-history-reference", runtime: "builtin-llama.cpp", dataResidency: "local",
     async stream(context, options) {
       let text: string;
@@ -104,7 +106,7 @@ async function fixture(t: TestContext) {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const recorder = new SessionRecorder(workspace);
   agent = new AgentSession({ workspaceRoot: workspace, config, model, recorder,
     toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission) });

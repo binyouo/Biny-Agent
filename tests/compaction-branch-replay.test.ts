@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -225,7 +227,7 @@ test("legacy index checkpoints and summary-only or embedded-only states remain r
   for (const saved of [state, { ...state, checkpoint }]) {
     const embedded = replaySessionEvents([...legacy, { type: "assistant_message", content: "", contextState: saved }, ...branches]);
     assert.deepEqual(embedded.contextState, saved);
-    assert.equal(embedded.contextUsage, budget);
+    assert.equal(embedded.contextState?.budget, budget);
     assert.equal(embedded.messages.length, 4);
   }
 });
@@ -318,7 +320,7 @@ async function fixture() {
   config.context.compaction.keepRecentTokens = 2_000;
   config.heartbeat.enabled = false;
   let replies = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "compact-branch",
     async stream(context) {
       const summary = context.systemPrompt?.includes("durable context checkpoint") === true;
@@ -329,7 +331,7 @@ async function fixture() {
         yield { type: "finish", reason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } };
       })();
     }
-  };
+  });
   const createAgent = () => new AgentSession({ workspaceRoot: root, config, model, toolRegistry: new ToolRegistry(),
     permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(root) });
   const initial = createAgent();

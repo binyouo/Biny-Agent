@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -24,8 +26,8 @@ test("automatic workers choose executable Claude before native, persist that cho
     await mkdir(path.join(root, ".biny/agents"), { recursive: true });
     const definition = path.join(root, ".biny/agents/coder.md");
     await writeFile(definition, "---\nname: coder\ndescription: Code worker\nruntime: auto\n---\nDo the task.");
-    const model: AgentModel = { provider: "fixture", modelId: "native", supportsTools: true,
-      async stream() { nativeCalls++; return (async function* () { yield { type: "text-delta" as const, text: "native result" }; yield { type: "finish" as const, reason: "stop" as const }; })(); } };
+    const model: AgentModel = testModel({ provider: "fixture", modelId: "native", supportsTools: true,
+      async stream() { nativeCalls++; return (async function* () { yield { type: "text-delta" as const, text: "native result" }; yield { type: "finish" as const, reason: "stop" as const }; })(); } });
     const options = { workspaceRoot: root, config, toolRegistry: new ToolRegistry(), loadAgentDefinitions: () => loadSubagentDefinitions({ workspaceRoot: root, projectPaths: [".biny/agents"], globalRoot: path.join(root, "empty") }), getModelSettings: () => ({ model, contextWindow: undefined }) };
     const run = async (id: string, task = "task") => {
       const worker = await prepareSubagentTask(options, task, "workspace", "coder", { taskId: id, persistenceRoot: root });

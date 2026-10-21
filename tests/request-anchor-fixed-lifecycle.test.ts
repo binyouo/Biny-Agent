@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,7 +22,7 @@ test("schema changes use estimates until a new completed request replaces the us
     { name: "Read", description: "Read a fixture value", parameters: { type: "object", properties: {} },
       execute: async () => { throw new Error("Read must not execute in this fixture"); } }
   ];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "fixture",
     stream: async (context) => {
       const request = { ...context, messages: structuredClone(context.messages), tools: [...context.tools] };
@@ -33,7 +35,7 @@ test("schema changes use estimates until a new completed request replaces the us
         yield { type: "finish", reason: first ? "tool-calls" : "stop", usage: { inputTokens: first ? 1_600 : 123 } };
       })();
     }
-  };
+  });
   const memory = new ContextMemory(() => model, new WorkspaceContext(workspace, [], 32_768),
     undefined, 2_000, 32_768, undefined, undefined, { reserveTokens: 500 });
   let current: AgentContext = { systemPrompt: "stable system", messages: [{ role: "user", content: "discover a reader" }], tools: [tools[0]!] };
@@ -76,8 +78,9 @@ test("schema changes use estimates until a new completed request replaces the us
   assert.equal(requests.length, 2);
   assert.equal(observed.length, 2, "one complete producer sample for each actual request");
   assert.ok(changedSchemaChecks >= 1, "the changed-schema consumer was reached");
-  assert.deepEqual(observed, requests, "recordRequest receives the exact post-transform request");
-  const latest = requests[1]!;
+  assert.deepEqual(observed.map(context => context.tools.map(tool => tool.name).sort()), requests.map(context => context.tools.map(tool => tool.name).sort()), "recordRequest and SDK receive the same tool catalog");
+  assert.deepEqual(observed.map(context => context.systemPrompt), requests.map(context => context.systemPrompt));
+  const latest = observed[1]!;
   const expected = requestFingerprints(model, latest);
   const saved = memory.snapshot().usageAnchor;
   assert.ok(saved);

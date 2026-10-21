@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Provider 在首个输出前失败时，用户和请求审计都必须保留原始错误。 */
 import assert from "node:assert/strict";
 import { APICallError, type LanguageModelV4 } from "@ai-sdk/provider";
@@ -5,11 +6,11 @@ import { vercelAgentLoopContinue } from "../src/agent/core/vercelAgentLoop.js";
 import { createVercelLanguageModel } from "../src/llm/vercelModel.js";
 import type { AgentEvent, AgentModel, ModelRequestMetrics } from "../src/agent/core/types.js";
 
-const fallbackModel: AgentModel = {
+const fallbackModel: AgentModel = testModel({
   provider: "synthetic",
   modelId: "synthetic",
   stream: async () => { throw new Error("unexpected legacy stream"); }
-};
+});
 const apiError = (message: string, statusCode?: number): APICallError => new APICallError({
   message, statusCode, url: "https://example.test/private-url-sentinel", requestBodyValues: { prompt: "private-request-sentinel" },
   responseBody: "private-response-sentinel", responseHeaders: { authorization: "private-header-sentinel" }

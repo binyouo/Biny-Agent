@@ -1,8 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -111,7 +112,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
         models: { fixture: { provider: "local", model: "fixture", contextWindow: 128000, capabilities: { tools: true, reasoning: false, streaming: true } } },
         context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
       }));
-      host = await startRuntimeHost(root, async resourceRegistry => await createInteractiveAgentHost(root, { resourceRegistry }));
+      host = await startRuntimeHost(root, async resourceRegistry => await createInteractiveAgentHost(root, { resourceRegistry }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
       client = await connectRuntimeHost(root, { surface: "desktop", clientId: "cli-question-test" });
       assert.ok(client);
       const connected = client;

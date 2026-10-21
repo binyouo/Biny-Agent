@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** HTTP 显式分析在提交会话结果后响应；投影及其资源由服务关闭流程收齐。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { startActivityHttpServer } from "../src/activity/httpServer.js";
@@ -17,7 +19,7 @@ try {
   const id = store.startSession("2026-09-10T09:00:00.000Z");
   store.recordEvent({ sessionId: id, occurredAt: "2026-09-10T09:01:00.000Z", eventType: "focus_changed", application: "Editor" });
   store.endSession(id, "2026-09-10T10:00:00.000Z");
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "activity-http-projection", runtime: "provider", dataResidency: "local",
     stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: JSON.stringify({
@@ -26,7 +28,7 @@ try {
       }) };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
   const started = Promise.withResolvers<void>();
   let completed = false;
   endpoint = await startActivityHttpServer({
@@ -82,13 +84,13 @@ async function testShutdownWaitsForInFlightAnalysis(): Promise<void> {
     store.recordEvent({ sessionId: id, occurredAt: "2026-09-10T09:01:00.000Z", eventType: "focus_changed", application: "Editor" });
     store.endSession(id, "2026-09-10T10:00:00.000Z");
     const modelStarted = Promise.withResolvers<void>();
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "activity-shutdown-test", runtime: "provider", dataResidency: "local",
       stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
         yield { type: "text-delta", text: JSON.stringify({ worth: true, summary: "工作活动" }) };
         yield { type: "finish", reason: "stop" };
       })()
-    };
+    });
     endpoint = await startActivityHttpServer({
       agentDir: root,
       loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: root }),

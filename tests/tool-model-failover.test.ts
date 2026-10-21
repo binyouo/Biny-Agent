@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
@@ -7,13 +8,13 @@ import { resolveToolModelCandidates, type ToolModelCandidate } from "../src/llm/
 import { type ToolModelSelectionState, generateToolModelText, toolModelFailureScope, ToolModelCandidatesExhaustedError } from "../src/llm/toolModelRequest.js";
 
 function candidate(id: string, domain: string, operation: () => Promise<string>): ToolModelCandidate {
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", providerAlias: `${id}-connection`, modelId: id,
     async stream() {
       const text = await operation();
       return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text }; })();
     }
-  };
+  });
   return { model, failureDomain: domain };
 }
 
@@ -44,7 +45,7 @@ test("401 鉴权失败跳过相同凭据连接", async () => {
     candidate("unauthorized", "shared", async () => { calls.push("unauthorized"); throw failure(401); }),
     candidate("same", "shared", async () => { calls.push("same"); return "wrong"; }),
     candidate("valid", "valid", async () => { calls.push("valid"); return "ok"; })
-  ], []);
+  ], [{ role: "user", content: "select" }]);
   assert.equal(result.text, "ok");
   assert.deepEqual(calls, ["unauthorized", "valid"]);
 });
@@ -53,7 +54,7 @@ test("额度错误码即使使用 429 也触发连接切换", async () => {
   const result = await generateToolModelText([
     candidate("quota", "quota", async () => { throw failure(429, "request rejected", { error: { code: "insufficient_quota" } }); }),
     candidate("valid", "valid", async () => "ok")
-  ], []);
+  ], [{ role: "user", content: "select" }]);
   assert.equal(result.text, "ok");
 });
 
@@ -61,7 +62,7 @@ test("普通 403 只跳当前模型，仍可使用同连接的其他型号", asy
   const result = await generateToolModelText([
     candidate("forbidden", "shared", async () => { throw failure(403, "model access denied"); }),
     candidate("allowed", "shared", async () => "ok")
-  ], []);
+  ], [{ role: "user", content: "select" }]);
   assert.equal(result.model.modelId, "allowed");
 });
 
@@ -71,7 +72,7 @@ test("403 的鉴权错误码归属连接，而不是当前型号", async () => {
     candidate("invalid-key", "shared", async () => { throw failure(403, "request rejected", { error: { type: "invalid_api_key" } }); }),
     candidate("same", "shared", async () => { sameCalls++; return "wrong"; }),
     candidate("other", "other", async () => "ok")
-  ], []);
+  ], [{ role: "user", content: "select" }]);
   assert.equal(result.model.modelId, "other");
   assert.equal(sameCalls, 0);
 });
@@ -91,7 +92,7 @@ test("已有永久鉴权和余额错误码仍触发连接切换", async () => {
     const result = await generateToolModelText([
       candidate("failed", "failed", async () => { throw Object.assign(new Error("request rejected"), { code }); }),
       candidate("valid", "valid", async () => "ok")
-    ], []);
+    ], [{ role: "user", content: "select" }]);
     assert.equal(result.text, "ok", code);
   }
 });
@@ -104,7 +105,7 @@ test("Google 数字错误码保留明确的无效凭据和 UNAUTHENTICATED 语�
     const result = await generateToolModelText([
       candidate("invalid", "invalid", async () => { throw failure(400, "request rejected", data); }),
       candidate("valid", "valid", async () => "ok")
-    ], []);
+    ], [{ role: "user", content: "select" }]);
     assert.equal(result.text, "ok");
   }
 });
@@ -116,7 +117,7 @@ test("Google RESOURCE_EXHAUSTED 分钟限流不表示账户余额永久失效", 
   await assert.rejects(generateToolModelText([
     candidate("limited", "limited", async () => { throw error; }),
     candidate("other", "other", async () => { fallbackCalls++; return "wrong"; })
-  ], []), (actual) => actual === error);
+  ], [{ role: "user", content: "select" }]), (actual) => actual === error);
   assert.equal(fallbackCalls, 0);
   assert.equal(toolModelFailureScope(failure(429, "request rate limited", { error: { code: 429, message: "request rate limited", status: "RESOURCE_EXHAUSTED" } })), undefined);
 });
@@ -127,14 +128,14 @@ test("普通 429、网络错误和 5xx 不扩大到其他连接", async () => {
     await assert.rejects(generateToolModelText([
       candidate("transient", "first", async () => { throw error; }),
       candidate("other", "other", async () => { nextCalls++; return "wrong"; })
-    ], []), (actual) => actual === error);
+    ], [{ role: "user", content: "select" }]), (actual) => actual === error);
     assert.equal(nextCalls, 0);
   }
 });
 
 test("单个显式候选不会改用其他模型，耗尽错误保留原因", async () => {
   const reason = failure(402, "Insufficient Balance");
-  await assert.rejects(generateToolModelText([candidate("pinned", "pinned", async () => { throw reason; })], []), (error) => {
+  await assert.rejects(generateToolModelText([candidate("pinned", "pinned", async () => { throw reason; })], [{ role: "user", content: "select" }]), (error) => {
     assert.equal(error instanceof ToolModelCandidatesExhaustedError, true);
     assert.equal((error as ToolModelCandidatesExhaustedError).cause, reason);
     assert.deepEqual((error as ToolModelCandidatesExhaustedError).attempts, [
@@ -150,7 +151,7 @@ test("所有永久失败至多尝试一次，聚合元数据不包含错误正�
   await assert.rejects(generateToolModelText([
     candidate("first", "first", async () => { calls++; throw failure(402, secret); }),
     candidate("second", "second", async () => { calls++; throw failure(401, secret); })
-  ], []), (error) => {
+  ], [{ role: "user", content: "select" }]), (error) => {
     assert.equal(error instanceof ToolModelCandidatesExhaustedError, true);
     const exhausted = error as ToolModelCandidatesExhaustedError;
     assert.equal(exhausted.attempts.length, 2);
@@ -162,7 +163,7 @@ test("所有永久失败至多尝试一次，聚合元数据不包含错误正�
 });
 
 test("无候选返回明确且永久的失败", async () => {
-  await assert.rejects(generateToolModelText([], []), (error) => {
+  await assert.rejects(generateToolModelText([], [{ role: "user", content: "select" }]), (error) => {
     assert.equal(error instanceof ToolModelCandidatesExhaustedError, true);
     assert.match((error as Error).message, /No available tool model/u);
     assert.equal((error as ToolModelCandidatesExhaustedError).retryable, false);
@@ -178,7 +179,7 @@ test("取消立即停止候选链，不接收忽略取消的迟到失败", async
   const result = generateToolModelText([
     candidate("pending", "first", async () => { await pending; throw failure(402); }),
     candidate("other", "other", async () => { nextCalls++; return "wrong"; })
-  ], [], { signal: controller.signal });
+  ], [{ role: "user", content: "select" }], { signal: controller.signal });
   controller.abort();
   await assert.rejects(result, { name: "AbortError" });
   release();
@@ -190,7 +191,7 @@ test("预先取消不开始任何模型请求", async () => {
   const controller = new AbortController();
   controller.abort();
   let calls = 0;
-  await assert.rejects(generateToolModelText([candidate("first", "first", async () => { calls++; return "wrong"; })], [], { signal: controller.signal }), { name: "AbortError" });
+  await assert.rejects(generateToolModelText([candidate("first", "first", async () => { calls++; return "wrong"; })], [{ role: "user", content: "select" }], { signal: controller.signal }), { name: "AbortError" });
   assert.equal(calls, 0);
 });
 
@@ -205,7 +206,7 @@ test("候选切换共用总期限，不为第二个请求重置 deadline", async
   const result = generateToolModelText([
     candidate("first", "first", async () => first),
     candidate("second", "second", async () => { startedSecond(); return second; })
-  ], [], { timeoutMs: 100 });
+  ], [{ role: "user", content: "select" }], { timeoutMs: 100 });
   const rejected = assert.rejects(result, { name: "TimeoutError" });
   t.mock.timers.tick(40);
   rejectFirst(failure(402));
@@ -219,14 +220,14 @@ test("成功后释放总期限计时器与外部取消监听", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const controller = new AbortController();
   let observedSignal: AbortSignal | undefined;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "success",
     async stream(_context, options) {
       observedSignal = options?.signal;
       return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "ok" }; })();
     }
-  };
-  await generateToolModelText([{ model, failureDomain: "success" }], [], { timeoutMs: 100, signal: controller.signal });
+  });
+  await generateToolModelText([{ model, failureDomain: "success" }], [{ role: "user", content: "select" }], { timeoutMs: 100, signal: controller.signal });
   t.mock.timers.tick(100);
   controller.abort();
   assert.equal(observedSignal?.aborted, false, "完成后请求链不再响应计时器或外部取消");
@@ -313,13 +314,13 @@ test("automatic selection retains the successful candidate after the failed conn
     candidate("exhausted", "empty", async () => { failedCalls++; throw failure(402, "Insufficient Balance"); }),
     candidate("healthy", "healthy", async () => "ok")
   ];
-  await generateToolModelText(models, [], { selectionState });
+  await generateToolModelText(models, [{ role: "user", content: "select" }], { selectionState });
   assert.equal(failedCalls, 1);
   t.mock.timers.tick(120_000);
-  const next = await generateToolModelText(models, [], { selectionState });
+  const next = await generateToolModelText(models, [{ role: "user", content: "select" }], { selectionState });
   assert.equal(next.model.modelId, "healthy");
   assert.equal(failedCalls, 1, "Healthy automatic choice must remain first even after the original candidate cooldown expires");
-  const changed = await generateToolModelText(models, [], { selectionState: { unavailableConnections: new Map() } });
+  const changed = await generateToolModelText(models, [{ role: "user", content: "select" }], { selectionState: { unavailableConnections: new Map() } });
   assert.equal(changed.model.modelId, "healthy");
   assert.equal(failedCalls, 2, "A different runtime or changed configuration starts its own selection");
 });
@@ -329,7 +330,7 @@ test("repeated permanent failures back off instead of probing every minute", asy
   const selectionState: ToolModelSelectionState = { unavailableConnections: new Map() };
   let calls = 0;
   const models = [candidate("exhausted", "empty", async () => { calls++; throw failure(402, "Insufficient Balance"); })];
-  const attempt = async () => { await assert.rejects(generateToolModelText(models, [], { selectionState }), ToolModelCandidatesExhaustedError); };
+  const attempt = async () => { await assert.rejects(generateToolModelText(models, [{ role: "user", content: "select" }], { selectionState }), ToolModelCandidatesExhaustedError); };
   await attempt();
   t.mock.timers.tick(60_000);
   await attempt();
@@ -353,9 +354,9 @@ test("preferred automatic candidate cannot override an explicitly supplied model
   const selectionState: ToolModelSelectionState = { unavailableConnections: new Map(), preferredCandidate: "healthy:healthy" };
   let otherCalls = 0;
   const healthy = candidate("healthy", "healthy", async () => { otherCalls++; return "ok"; });
-  await generateToolModelText([healthy], [], { selectionState });
+  await generateToolModelText([healthy], [{ role: "user", content: "select" }], { selectionState });
   const explicit = candidate("explicit", "explicit", async () => { throw failure(402, "Insufficient Balance"); });
-  await assert.rejects(generateToolModelText([explicit], [], { selectionState }), ToolModelCandidatesExhaustedError);
+  await assert.rejects(generateToolModelText([explicit], [{ role: "user", content: "select" }], { selectionState }), ToolModelCandidatesExhaustedError);
   assert.equal(otherCalls, 1, "The preferred candidate must belong to the current supplied candidate list");
 });
 
@@ -369,6 +370,6 @@ test("parallel analyses count one connection failure round for backoff", async (
     await bothStarted;
     throw failure(402, "Insufficient Balance");
   })];
-  await Promise.all([1, 2].map(async () => { await assert.rejects(generateToolModelText(models, [], { selectionState }), ToolModelCandidatesExhaustedError); }));
+  await Promise.all([1, 2].map(async () => { await assert.rejects(generateToolModelText(models, [{ role: "user", content: "select" }], { selectionState }), ToolModelCandidatesExhaustedError); }));
   assert.equal(selectionState.unavailableConnections.get("empty")?.failures, 1, "Concurrent tool and skill selection must not double the cooldown");
 });

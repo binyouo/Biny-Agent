@@ -159,8 +159,8 @@ test("mixed assistant tool blocks and user result blocks have independent parent
     assert.equal(sessionMessageTree(unknownEvents).filter((node) => node.message.role === "toolResult").length, 0,
       "missing call identity never creates a fabricated association");
     const unknownResult = replaySessionEvents(unknownEvents).messages.find((message) => message.role === "toolResult" && message.details === "unknown origin");
-    assert.equal(unknownResult?.role === "toolResult" && unknownResult.toolCallId, "",
-      "the generic tool name cannot associate an ID-less result with the known invocation");
+    assert.equal(unknownResult, undefined, "unidentified results remain audit-only");
+    assert.ok(unknownEvents.some(event => event.type === "tool_result" && event.auditOnly));
   });
 });
 
@@ -230,12 +230,10 @@ test("repeated invocation or result IDs retain every source fact without inventi
       assert.equal(events.filter((event) => event.type === "agent_message").length, 0,
         "ambiguous call and result IDs cannot become canonical associations");
       const replay = replaySessionEvents(events);
-      const sourceResults = replay.messages.filter((message) => message.role === "toolResult" && typeof message.details === "string");
-      assert.deepEqual(sourceResults.map((message) => message.details),
-        expectedResults.map((block) => "content" in block ? block.content : undefined));
-      assert.equal(replay.messages.filter((message) => message.role === "assistant")
-        .flatMap((message) => message.content.filter((part) => part.type === "toolCall")).length, expectedCalls.length,
-      "reused source IDs cannot remove a second invocation");
+      assert.ok(events.filter(event => event.type === "tool_call" || event.type === "tool_result").every(event => event.auditOnly));
+      assert.deepEqual(replay.messages, [], "ambiguous imported facts cannot become executable model associations");
+      assert.deepEqual(replay.recoveredToolResults, []);
+
     }
   });
 });
