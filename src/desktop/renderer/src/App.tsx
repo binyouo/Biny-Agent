@@ -1950,6 +1950,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     <Composer
       key={`${workspace?.project.id ?? "none"}:${selectedSessionId ?? "draft"}`}
       draftKey={`${workspace?.project.id ?? "none"}:${selectedSessionId ?? "draft"}`}
+      isSubmissionCurrent={() => projectRef.current === workspace?.project.id && selectedRef.current === selectedSessionId}
       drafts={composerDrafts}
       onInspectReference={inspector.previewReference}
       ref={composerRef}
