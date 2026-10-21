@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentModel } from "../core/types.js";
 import { generateNativeText } from "../../llm/nativeJson.js";
 import { redactSecrets } from "../../utils/secrets.js";
-import { CrystalStorage } from "./crystalStorage.js";
+import { CrystalStorage, crystalMaterialReferenceKey } from "./crystalStorage.js";
 import { validateCrystal, type CrystalValidation } from "./crystalValidation.js";
 export { validateCrystal, type CrystalValidation } from "./crystalValidation.js";
 import {
@@ -268,10 +268,11 @@ export class CrystalService {
     if (!crystal) return undefined;
     const term = crystal.termId === undefined ? undefined : this.storage.getTerm(crystal.termId);
     const materials = this.storage.listMaterials(id);
-    const references = new Set(materials.map((material) => `${material.kind}:${JSON.stringify(material.ref)}`));
+    const references = new Set(materials.map((material) => `${material.kind}:${crystalMaterialReferenceKey(material.ref)}`));
     const related = this.storage.listCrystals().filter((candidate) => candidate.id !== id).map((candidate) => ({
       id: candidate.id, name: candidate.name, stage: candidate.stage, origin: candidate.origin,
-      shared: this.storage.listMaterials(candidate.id).filter((material) => references.has(`${material.kind}:${JSON.stringify(material.ref)}`)).length
+      shared: [...new Set(this.storage.listMaterials(candidate.id).map((material) => `${material.kind}:${crystalMaterialReferenceKey(material.ref)}`))]
+        .filter((reference) => references.has(reference)).length
     })).filter((candidate) => candidate.shared > 0).sort((left, right) => right.shared - left.shared).slice(0, 8);
     return {
       crystal, materials, term, validation: validateCrystal(crystal), related,
