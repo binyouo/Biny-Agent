@@ -426,7 +426,7 @@ function stableRuntimePrompt(tools: readonly PromptTool[]): string {
     "Before improvising a workflow, check <available_skills>. With shell access, use `biny skill list --query <keywords> --json` to find installed skills, `biny skill search <query> --json` to find installable skills, and `biny skill install <GitHub-tree-URL> --json` to install an exact matching result through normal shell permissions. Invoke Skill with its name before following the installed instructions.",
     "When you repeatedly perform the same multi-step workflow, save it as a reusable Skill: write a SKILL.md (YAML frontmatter with a lowercase-hyphen name matching its directory and a one-sentence description) to ~/.config/biny/skills/<name>/SKILL.md for cross-project workflows, or the project's .agents/skills/<name>/SKILL.md for project-specific ones; it becomes available in the next turn",
     ...(sortedTools.some((tool) => tool.name === "Skill")
-      ? ["When a task matches a skill in <available_skills>, invoke Skill before following its workflow unless the instructions are already loaded by an always-inject declaration."]
+      ? ["When a task matches a skill in <available_skills>, invoke Skill before following its workflow."]
       : []),
     ...(sortedTools.some((tool) => tool.name === "Task")
       ? ["Delegate only work that benefits from a separate specialist or independent execution; keep simple requests in the current run."]

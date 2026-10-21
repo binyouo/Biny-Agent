@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 普通发送必须累计预选并从持久会话恢复；只测选择器不能发现跨轮历史丢失。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -23,22 +25,27 @@ for (const name of ["old_topic_tool", "unused_tool"]) registry.registerBuiltinTo
   resolveExecution: () => ({ approvalRule: name, execute: async () => ({ ok: true }) })
 });
 const requests: string[][] = [];
-const model: AgentModel = { provider: "test", modelId: "history", supportsTools: true, async stream(context) {
+const model: AgentModel = testModel({ provider: "test", modelId: "history", supportsTools: true, async stream(context) {
   requests.push(context.tools.map((tool) => tool.name));
   return (async function* (): AsyncGenerator<ModelStreamEvent> {
     yield { type: "text-delta", text: "answer" };
     yield { type: "finish", reason: "stop" };
   })();
-} };
+} });
 let selection = ["old_topic_tool"];
-const selector: AgentModel = { provider: "test", modelId: "selector", async stream() {
-  const tools = selection;
-  selection = [];
+let skillSelection: string[] = [];
+let availableSkills = [{ id: "review", name: "review", description: "Review the current task" }, { id: "manual", name: "manual", description: "Explicit workflow" }];
+const selector: AgentModel = testModel({ provider: "test", modelId: "selector", async stream(context) {
+  const selectingSkills = context.systemPrompt.includes("技能目录：");
+  const tools = selectingSkills ? [] : selection;
+  const skillIds = selectingSkills ? skillSelection : [];
+  if (selectingSkills) skillSelection = [];
+  else selection = [];
   return (async function* (): AsyncGenerator<ModelStreamEvent> {
-    yield { type: "text-delta", text: JSON.stringify({ tools }) };
+    yield { type: "text-delta", text: JSON.stringify({ tools, skillIds }) };
     yield { type: "finish", reason: "stop" };
   })();
-} };
+} });
 const config = configSchema.parse({ ...defaultConfig,
   agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
   crystal: { ...defaultConfig.crystal, passiveEnabled: false },
@@ -46,11 +53,11 @@ const config = configSchema.parse({ ...defaultConfig,
 });
 const agent = new AgentSession({ workspaceRoot: root, config, recorder, model, toolRegistry: registry,
   permissionManager: new PermissionManager(config.permission),
-  selectCapabilities: (input) => preselectCapabilities({ ...input, tools: registry.list(), skills: [],
+  selectCapabilities: (input) => preselectCapabilities({ ...input, tools: registry.list(), skills: availableSkills,
     models: [{ model: selector, failureDomain: "test-selector" }] })
 });
-const run = async (tools: "auto" | "none" | string[] = "auto") => {
-  const outcome = await agent.runTask("Continue this task", { emotionAnalysis: false, capabilitySelection: { tools, skills: "none" } });
+const run = async (tools: "auto" | "none" | string[] = "auto", skills: "auto" | "none" | string[] = "none") => {
+  const outcome = await agent.runTask("Continue this task", { emotionAnalysis: false, capabilitySelection: { tools, skills } });
   assert.equal(outcome.status, "completed", outcome.error);
   return requests.at(-1);
 };
@@ -80,12 +87,41 @@ try {
     name, description: name, risk: "read", exposure: "deferred", parameters: { type: "object", properties: {} }, schema: z.object({}),
     resolveExecution: () => ({ approvalRule: name, execute: async () => ({ ok: true }) })
   });
-  for (let start = 0; start < cumulativeTools.length; start += 32) {
-    selection = cumulativeTools.slice(start, start + 32);
-    assert.deepEqual(await run(), cumulativeTools.slice(0, start + 32), "each turn appends only newly selected tools within its budget");
+  for (let start = 0; start < cumulativeTools.length; start += 260) {
+    selection = cumulativeTools.slice(start, start + 260);
+    assert.deepEqual((await run()).sort(), cumulativeTools.slice(0, start + 260).sort(), "each turn retains all newly selected tools without a separate count budget");
   }
   await agent.startNewSession();
   await agent.resume(cumulativeSessionId);
-  assert.deepEqual(await run(), cumulativeTools, "replay must retain accumulated selections larger than the per-message input limit of 512");
+  assert.deepEqual((await run()).sort(), [...cumulativeTools].sort(), "replay must retain accumulated selections larger than the per-message input limit of 512");
+  await agent.startNewSession();
+  const skillSessionId = agent.getSessionRecorder().sessionId;
+  const selectedSkills = async (mode: "auto" | "none" | string[] = "auto") => {
+    await run("none", mode);
+    const events = await readSessionEvents(agent.getSessionRecorder().filePath);
+    const saved = events.findLast((event) => event.type === "message_metadata" && event.metadata.capabilitySelection !== undefined);
+    assert.ok(saved?.type === "message_metadata");
+    return (saved.metadata.capabilitySelection as { skills: unknown }).skills;
+  };
+  skillSelection = ["review"];
+  assert.deepEqual(await selectedSkills(), ["review"]);
+  assert.deepEqual(await selectedSkills(), ["review"], "automatic skills survive an empty selector result in later turns");
+  await agent.startNewSession();
+  assert.deepEqual(await selectedSkills(), [], "a new session cannot inherit selected skills");
+  await agent.resume(skillSessionId);
+  assert.deepEqual(await selectedSkills(), ["review"], "resume reconstructs selected skills from the session");
+  assert.deepEqual(await selectedSkills(["manual"]), ["manual"], "manual skill lists do not inherit automatic choices");
+  assert.equal(await selectedSkills("none"), "none", "explicitly disabling skills stays disabled");
+  assert.deepEqual(await selectedSkills(), ["review"], "manual skills do not enter automatic history");
+  availableSkills = availableSkills.filter((skill) => skill.id !== "review");
+  assert.deepEqual(await selectedSkills(), [], "removed or disabled skills cannot be restored from history");
+  await agent.startNewSession();
+  const largeSkillSessionId = agent.getSessionRecorder().sessionId;
+  availableSkills = Array.from({ length: 520 }, (_, index) => ({ id: `retained-skill-${index}`, name: `retained-skill-${index}`, description: "Retained workflow" }));
+  skillSelection = availableSkills.map((skill) => skill.id);
+  assert.deepEqual(await selectedSkills(), availableSkills.map((skill) => skill.id));
+  await agent.startNewSession();
+  await agent.resume(largeSkillSessionId);
+  assert.deepEqual(await selectedSkills(), availableSkills.map((skill) => skill.id), "session replay retains automatic skill lists larger than manual input limits");
   console.log("capability session history tests passed");
 } finally { await agent.close(); await rm(root, { recursive: true, force: true }); }

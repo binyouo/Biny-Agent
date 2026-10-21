@@ -126,6 +126,10 @@ async function readDefinition(rootPath: string, filePath: string, scope: Subagen
     // 单个异常定义（软链/硬链/越界/超限）直接跳过，不拖垮其余定义。
     return undefined;
   }
+  return parseDefinition(content, rootPath, filePath, scope);
+}
+
+function parseDefinition(content: string, rootPath: string, filePath: string, scope: SubagentDefinitionScope): SubagentDefinition | undefined {
   const { frontmatter, body } = splitAgentFrontmatter(content);
   const name = normalizeAgentName(frontmatter.name ?? path.basename(filePath, path.extname(filePath)));
   const description = (frontmatter.description ?? "").trim();
@@ -145,6 +149,38 @@ async function readDefinition(rootPath: string, filePath: string, scope: Subagen
     path: scope === "global" ? globalDisplayPath(rootPath, relative) : relative,
     filePath
   };
+}
+
+export async function createSubagentDefinition(options: LoadSubagentDefinitionsOptions, name: string, content: string, scope: SubagentDefinitionScope): Promise<SubagentDefinition> {
+  if (!name || normalizeAgentName(name) !== name) throw new Error("Agent name must use lowercase letters, digits, underscores or hyphens (1-64 characters).");
+  if (Buffer.byteLength(content) > maxAgentFileBytes) throw new Error(`Subagent definition exceeds ${String(maxAgentFileBytes)} bytes.`);
+  const workspace = await fs.realpath(options.workspaceRoot);
+  const configured = options.projectPaths[0];
+  if (scope === "project" && configured === undefined) throw new Error("No project agent directory configured.");
+  const directory = scope === "global" ? options.globalRoot ?? path.join(globalConfigDir(), "agents") : path.resolve(workspace, configured!);
+  if (scope === "project") {
+    if (escapes(workspace, directory)) throw new Error("Subagent definition path must stay inside workspace.");
+    let parent = directory;
+    while (!await resolveProjectAgentDirectory(workspace, path.relative(workspace, parent))) parent = path.dirname(parent);
+  }
+  await fs.mkdir(directory, { recursive: true });
+  const root = scope === "global" ? (await resolveGlobalAgentRoot(directory))! : (await resolveProjectAgentDirectory(workspace, configured!))!;
+  const filePath = path.join(root, `${name}.md`);
+  const definition = parseDefinition(content, scope === "project" ? workspace : root, filePath, scope);
+  if (!definition || definition.name !== name) throw new Error("Agent definition requires a matching name, description and prompt body.");
+  const existing = await loadSubagentDefinitions({ ...options, projectPaths: scope === "global" ? [] : options.projectPaths });
+  if (existing.some(agent => agent.scope === scope && agent.name === name)) throw new Error(`Agent already exists: ${name}`);
+  if (existing.length >= maxAgentCount && !existing.some(agent => agent.name === name)) throw new Error(`At most ${String(maxAgentCount)} agent definitions can be loaded.`);
+  await fs.writeFile(filePath, content, { flag: "wx", mode: 0o600 });
+  return definition;
+}
+
+export async function deleteSubagentDefinition(options: LoadSubagentDefinitionsOptions, name: string, global = false): Promise<SubagentDefinition> {
+  const definitions = await loadSubagentDefinitions({ ...options, projectPaths: global ? [] : options.projectPaths });
+  const definition = findSubagentDefinition(definitions, name);
+  if (!definition) throw new Error(`Unknown agent: ${name}`);
+  await fs.unlink(definition.filePath);
+  return definition;
 }
 
 function parseRuntime(value?: string): SubagentDefinition["runtime"] {

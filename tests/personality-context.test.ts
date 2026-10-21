@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import { IdentityStorage } from "../src/agent/context/identityStorage.js";
 import { TravelStorage } from "../src/agent/context/travel.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -33,7 +35,7 @@ test("model requests retain complete personality and both mood causes when a cus
     config.activity.enabled = false;
     config.checkpoints.enabled = false;
     const requests: ModelStreamContext[] = [];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "personality",
       async stream(context) {
         requests.push(structuredClone({ ...context, tools: [] }));
@@ -42,7 +44,7 @@ test("model requests retain complete personality and both mood causes when a cus
           yield { type: "finish" as const, reason: "stop" as const };
         })();
       }
-    };
+    });
     recorder = new SessionRecorder(root, "personality");
     agent = new AgentSession({ workspaceRoot: root, config, model, recorder,
       toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission) });

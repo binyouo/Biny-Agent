@@ -69,10 +69,9 @@ try {
 
       for (const [relative, kind] of resources) {
         const content = `Exact resource ${JSON.stringify(relative)}`;
-        for (const output of [instructions, selected]) {
-          assert.ok(output.includes(`- ${path.normalize(relative)} (${kind})`), "Both instruction entry points must list the exact filename");
-          assert.ok(!output.includes(content), "Resource contents must stay lazy");
-        }
+        assert.ok(instructions.includes(`- ${path.normalize(relative)} (${kind})`), "Skill must list the exact filename");
+        assert.ok(!instructions.includes(content), "Resource contents must stay lazy");
+        assert.ok(!selected.includes(relative) && !selected.includes(content), "Metadata disclosure must not list or read resources");
         assert.equal((await readSkillCatalogFile(catalogEntry, relative)).content, content, "The editor already reads the exact listed path");
         const execution = await resourceTool.resolveExecution({ skill: ` ${name} `, path: relative });
         assert.ok(!("isError" in execution));

@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** 自动筛选的能力边界、配套工具、累计历史、显式选择和失败处理。 */
 import assert from "node:assert/strict";
 import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
@@ -6,7 +7,7 @@ import { defaultConfig } from "../src/config/schema.js";
 
 let calls = 0;
 let answer = JSON.stringify({ tools: ["WebSearch", "Task", "mcp_docs_read", "unavailable"], skillIds: ["review"] });
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "test", modelId: "selector",
   stream: async (context) => {
     calls += 1;
@@ -16,7 +17,7 @@ const model: AgentModel = {
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 const tools = ["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "Skill", "read_skill_resource"].map((name) => ({ name, description: name, source: "builtin" as const }));
 const options = {
   input: "查看文档并评审", config: { ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" as const } }, history: [], previousTools: ["Read", "removed"], models: candidates(model),
@@ -54,7 +55,7 @@ assert.equal(calls, before + 4, "预先取消不能发起额外请求");
 let concurrentCalls = 0;
 let release!: () => void;
 const bothStarted = new Promise<void>((resolve) => { release = resolve; });
-const parallelModel: AgentModel = {
+const parallelModel: AgentModel = testModel({
   provider: "test", modelId: "parallel-selector",
   stream: async (context) => {
     concurrentCalls++;
@@ -71,17 +72,17 @@ const parallelModel: AgentModel = {
       yield { type: "finish", reason: "stop" };
     })();
   }
-};
+});
 assert.deepEqual(await preselectCapabilities({ ...options, models: candidates(parallelModel), signal: AbortSignal.timeout(1_000) }), {
   tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource"], skills: ["review-id"]
 }, "工具解析失败不影响并发成功的技能选择");
 let isolatedCalls = 0;
-const isolatedModel: AgentModel = { ...parallelModel, stream: async () => {
+const isolatedModel: AgentModel = testModel({ ...parallelModel, stream: async () => {
   isolatedCalls++;
   return (async function* (): AsyncGenerator<ModelStreamEvent> {
     yield { type: "text-delta", text: '{"tools":["Write"],"skillIds":["review"]}' };
   })();
-} };
+} });
 await preselectCapabilities({ ...options, models: candidates(isolatedModel), selection: { tools: "auto", skills: "none" } });
 assert.equal(isolatedCalls, 1, "显式关闭技能时只分析工具");
 await preselectCapabilities({ ...options, models: candidates(isolatedModel), tools: tools.filter((tool) => ["Read", "Write"].includes(tool.name)), skills: [] });
@@ -95,13 +96,13 @@ const querySelection = await preselectCapabilities({ ...queryOptions, input: "�
 assert.equal(Array.isArray(querySelection.tools) && querySelection.tools.includes("WebSearch") && querySelection.tools.includes("WebFetch"), true, "按需选择仍能启用查询工具");
 const computerTools = ["ComputerList", "ComputerLaunch", "ComputerObserve", "ComputerAction", "ComputerSequence", "ComputerMirror"].map((name) => ({ name, description: name, source: "mcp" as const }));
 let unavailableCalls = 0;
-const unavailableModel: AgentModel = {
+const unavailableModel: AgentModel = testModel({
   provider: "test", modelId: "unavailable-selector",
   stream: async () => { unavailableCalls += 1; throw new Error("Insufficient Balance"); }
-};
+});
 const computerOptions = { ...options, tools: [...tools, ...computerTools], skills: [], previousTools: [], models: candidates(unavailableModel) };
 for (const input of ["使用 computeruse", "Use computer use", "使用 Computer-Use", "使用 CUA", "请调用 ComputerObserve"]) {
-  const selection = await preselectCapabilities({ ...computerOptions, input, automaticToolBudget: { maxTools: 0, maxSchemaCharacters: 0 } });
+  const selection = await preselectCapabilities({ ...computerOptions, input });
   assert.ok(Array.isArray(selection.tools));
   const selectedTools = selection.tools;
   assert.equal(computerTools.every((tool) => selectedTools.includes(tool.name)), true, input);
@@ -116,21 +117,21 @@ const ordinary = await preselectCapabilities({ ...computerOptions, input: "修�
 assert.equal(Array.isArray(ordinary.tools) && ordinary.tools.some((name) => computerTools.some((tool) => tool.name === name)), false, "Ordinary coding requests keep Computer tools optional.");
 const denied = await preselectCapabilities({ ...computerOptions, input: "使用 computeruse", selection: { tools: "none", skills: "none" } });
 assert.equal(denied.tools, "none", "Explicitly disabled tools remain disabled.");
-const named = await preselectCapabilities({ ...options, input: "调用 mcp_docs_read", models: [], previousTools: [], automaticToolBudget: { maxTools: 0, maxSchemaCharacters: 0 }, skills: [] });
+const named = await preselectCapabilities({ ...options, input: "调用 mcp_docs_read", models: [], previousTools: [], skills: [] });
 assert.equal(Array.isArray(named.tools) && named.tools.includes("mcp_docs_read"), true, "Explicit registered tools are not dependent on automatic selection budgets.");
 assert.ok(unavailableCalls > 0, "The selector failure cases must exercise an actual injected model failure.");
 
-const failedSelector: AgentModel = {
+const failedSelector: AgentModel = testModel({
   provider: "test", modelId: "no-credit",
   stream: async () => { throw Object.assign(new Error("Insufficient Balance"), { statusCode: 402 }); }
-};
-const backupSelector: AgentModel = {
+});
+const backupSelector: AgentModel = testModel({
   provider: "backup", modelId: "backup-selector",
   stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
     yield { type: "text-delta", text: '{"tools":["WebSearch"],"skillIds":["review"]}' };
     yield { type: "finish", reason: "stop" };
   })()
-};
+});
 const failoverOptions = {
   ...options,
   models: [
@@ -144,7 +145,7 @@ assert.deepEqual(fallbackSelection.skills, ["review-id"], "Skill selection must 
 
 // 既有目录省略了常驻辅助工具，无法发现普通请求仍携带这些无关定义。
 const coreNames = ["Read", "Write", "Edit", "Bash", "ToolSearch"];
-const optionalNames = ["Glob", "Grep", "BashOutput", "KillShell", "AskUserQuestion", "read_checkpoint_evidence"];
+const optionalNames = ["Glob", "Grep", "ProcessStatus", "KillShell", "AskUserQuestion", "read_checkpoint_evidence"];
 const completeCatalog = [...coreNames, ...optionalNames].map((name) => ({ name, description: name }));
 const minimalOptions = { ...options, tools: completeCatalog, skills: [], previousTools: [], input: "你好", models: [] };
 assert.deepEqual(new Set((await preselectCapabilities(minimalOptions)).tools), new Set(coreNames),
@@ -154,7 +155,7 @@ const selectedHelpers = await preselectCapabilities({ ...minimalOptions, models:
 assert.deepEqual(new Set(selectedHelpers.tools), new Set([...coreNames, ...optionalNames]),
   "removed helpers must enter the optional catalog so automatic selection can still activate them");
 for (const name of optionalNames) {
-  const explicitHelper = await preselectCapabilities({ ...minimalOptions, input: `调用 ${name}`, automaticToolBudget: { maxTools: 0, maxSchemaCharacters: 0 } });
+  const explicitHelper = await preselectCapabilities({ ...minimalOptions, input: `调用 ${name}` });
   assert.deepEqual(new Set(explicitHelper.tools), new Set([...coreNames, name]),
     `explicit ${name} remains available without a selector or automatic budget`);
 }
@@ -167,3 +168,21 @@ function candidates(model: AgentModel) {
 const scriptSelection = await preselectCapabilities({ ...minimalOptions,
   config: { ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "code_mode" } }, input: "ToolSearch", previousTools: ["ToolSearch"] });
 assert.deepEqual(new Set(scriptSelection.tools), new Set(["Read", "Write", "Edit", "Bash"]), "script discovery removes the standalone search schema even when named or retained");
+
+// Skill history and declared dependencies survive an empty selection result.
+const skillHistoryOptions = { ...options, models: [], input: "continue", previousTools: [],
+  previousSkills: ["review-id", "disabled-id"],
+  skills: [{ id: "review-id", name: "review", description: "Review changes", allowedTools: ["Task", "unregistered"] }]
+};
+const retainedSkills = await preselectCapabilities(skillHistoryOptions);
+assert.deepEqual(retainedSkills.skills, ["review-id"]);
+assert.ok(Array.isArray(retainedSkills.tools));
+assert.ok(retainedSkills.tools.includes("Task"), "selected skills supply their declared dependencies");
+assert.ok(retainedSkills.tools.includes("Skill"));
+assert.equal(retainedSkills.tools.includes("unregistered"), false);
+assert.deepEqual((await preselectCapabilities({ ...skillHistoryOptions, selection: { tools: "auto", skills: "none" } })).skills, "none");
+assert.deepEqual((await preselectCapabilities({ ...skillHistoryOptions, selection: { tools: "auto", skills: [] } })).skills, []);
+const manualSkill = await preselectCapabilities({ ...skillHistoryOptions, selection: { tools: "auto", skills: ["review-id"] } });
+assert.ok(Array.isArray(manualSkill.tools) && manualSkill.tools.includes("Task"));
+const explicitTools = await preselectCapabilities({ ...skillHistoryOptions, selection: { tools: ["Read"], skills: ["review-id"] } });
+assert.deepEqual(explicitTools.tools, ["Read"], "skill declarations cannot widen an explicit tool allowlist");

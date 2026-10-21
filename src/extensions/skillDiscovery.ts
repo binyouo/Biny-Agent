@@ -9,7 +9,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { globalConfigDir } from "../config/paths.js";
 import { getSharedProxyAwareFetch } from "../network/proxyFetch.js";
-import { parseSkillDocument } from "./skillDocument.js";
+import { maxSkillFileBytes, parseSkillDocument } from "./skillDocument.js";
 import { defaultManagedSkillRoot } from "./managedSkillSources.js";
 import { diagnoseSkill, type SkillDiagnosticReport } from "./skillDiagnostics.js";
 import { publishSkillVersion, readManagedSkillVersion, type ManagedSkillVersion } from "./skillVersions.js";
@@ -17,7 +17,6 @@ import { publishSkillVersion, readManagedSkillVersion, type ManagedSkillVersion 
 const githubApiBase = "https://api.github.com";
 const skillsShApi = "https://skills.sh/api/search";
 const maxRepositories = 32;
-const maxDiscoveredSkills = 256;
 const maxTreeEntries = 4_096;
 const maxSkillFiles = 512;
 const maxSkillBytes = 32 * 1024 * 1024;
@@ -171,7 +170,7 @@ export async function discoverSkillRepositories(options: {
       return { skills: [], warning: `无法读取仓库 ${repository.owner}/${repository.name}：${errorMessage(error)}` };
     }
   });
-  const skills = deduplicateSkills(results.flatMap((result) => result.skills)).slice(0, maxDiscoveredSkills);
+  const skills = deduplicateSkills(results.flatMap((result) => result.skills));
   return {
     skills,
     warnings: results.flatMap((result) => result.warning === undefined ? [] : [result.warning])
@@ -251,7 +250,7 @@ export async function installDiscoveredSkill(options: {
     await mapWithConcurrency(files, 6, async (entry) => {
       const relative = sourceDirectory === "." ? entry.path : entry.path.slice(`${sourceDirectory}/`.length);
       if (!isSafeSkillPath(relative)) throw new Error(`仓库文件路径无效：${entry.path}`);
-      const content = await fetchBytes(fetcher, githubRawUrl({ ...repository, branch: revision }, entry.path), Math.min(entry.size ?? maxSkillBytes, maxSkillBytes));
+      const content = await fetchBytes(fetcher, githubRawUrl({ ...repository, branch: revision }, entry.path), Math.min(entry.size ?? maxSkillBytes, relative.toLowerCase() === "skill.md" ? maxSkillFileBytes : maxSkillBytes));
       totalBytes += content.byteLength;
       if (totalBytes > maxSkillBytes) throw new Error(`Skill 总大小超过 ${String(maxSkillBytes)} 字节。`);
       const targetFile = path.join(temporary, ...(relative.toLowerCase() === "skill.md" ? "SKILL.md" : relative).split("/"));
@@ -260,11 +259,12 @@ export async function installDiscoveredSkill(options: {
       return true;
     });
     const documentPath = path.join(temporary, "SKILL.md");
-    if ((await fs.stat(documentPath)).size > 64 * 1024) throw new Error("SKILL.md 超过运行时支持的 64 KiB；请把长文档放入 references。");
-    const document = parseSkillDocument(await fs.readFile(documentPath, "utf8"));
-    const name = document.frontmatter.name;
-    if (typeof name !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name) || name.length > 64) throw new Error("Skill name 无效。");
-    if (name !== skill.name) throw new Error("下载的 Skill 名称与所选 Skill 不一致，请刷新目录。");
+    const content = await fs.readFile(documentPath, "utf8");
+    const document = parseSkillDocument(content);
+    if (document.frontmatter.name !== skill.name) {
+      throw new Error("下载的 Skill 名称与所选 Skill 不一致，请刷新目录。");
+    }
+    const name = skill.name;
     const diagnostic = await diagnoseSkill({ name, frontmatter: document.frontmatter });
     if (diagnostic.checks.some((check) => check.kind === "format" && check.status === "missing")) throw new Error(diagnostic.checks.filter((check) => check.kind === "format" && check.status === "missing").map((check) => check.message).join(" "));
     const version = await publishSkillVersion({ root: managedRoot, name, preparedDirectory: temporary, revision,
@@ -282,7 +282,7 @@ export async function updateDiscoveredSkill(options: { name: string; expectedVer
 
 async function discoverRepository(repository: SkillRepository, fetcher: typeof globalThis.fetch, installedNames: ReadonlySet<string>): Promise<{ skills: DiscoverableSkill[]; warning?: string }> {
   const tree = await fetchRepositoryTree(repository, fetcher);
-  const skillDocuments = tree.filter((entry) => entry.type === "blob" && entry.mode !== "120000" && path.posix.basename(entry.path).toLowerCase() === "skill.md").slice(0, maxDiscoveredSkills);
+  const skillDocuments = tree.filter((entry) => entry.type === "blob" && entry.mode !== "120000" && path.posix.basename(entry.path).toLowerCase() === "skill.md");
   const skills = await mapWithConcurrency(skillDocuments, 8, async (entry) => {
     try {
       const raw = await fetchText(fetcher, githubRawUrl(repository, entry.path), maxMetadataBytes);

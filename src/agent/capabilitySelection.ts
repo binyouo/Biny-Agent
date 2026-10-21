@@ -15,7 +15,8 @@ export const agentCapabilitySelectionSchema = z.object({
 
 /** 会话累计结果可超过单次手选上限，名称与模式校验仍保持一致。 */
 export const resolvedCapabilitySelectionSchema = agentCapabilitySelectionSchema.extend({
-  tools: z.union([capabilitySelectionModeSchema, capabilityNamesSchema])
+  tools: z.union([capabilitySelectionModeSchema, capabilityNamesSchema]),
+  skills: z.union([capabilitySelectionModeSchema, capabilityNamesSchema])
 });
 
 export type CapabilitySelectionMode = z.infer<typeof capabilitySelectionModeSchema>;

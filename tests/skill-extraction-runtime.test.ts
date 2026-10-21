@@ -1,10 +1,11 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /**
  * 技能提取的运行时端到端：真实 CommandRuntime/AgentSession/InteractiveAgentRuntime
  * 跑一个多工具调用的成功回合，仅替换模型协议边界（fake fetch），验证
  * skill_extraction.updated 事件从公开订阅出口发出、技能落盘受管根、session 记录审计 metadata。
  */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultConfig, type AgentConfig } from "../src/config/schema.js";

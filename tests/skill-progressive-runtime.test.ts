@@ -8,12 +8,12 @@ import { createCommandRuntime, type CommandRuntime } from "../src/runtime/Comman
 import { readSessionEvents } from "../src/session/events.js";
 import { buildSessionTimeline } from "../src/desktop/renderer/src/sessionTimeline.js";
 
-for (const executionMode of ["direct", "code_mode"] as const) {
+for (const alwaysInject of [false, true]) for (const executionMode of ["direct", "code_mode"] as const) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-progressive-skill-")));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "agent");
   let runtime: CommandRuntime | undefined;
-  let phase: "activate" | "explicit" | "all" | "none" = "activate";
+  let phase: "activate" | "continue" | "explicit" | "manual" | "all" | "none" = "activate";
   let mainSteps = 0;
   let selectionRequests = 0;
   const failures: unknown[] = [];
@@ -31,13 +31,13 @@ for (const executionMode of ["direct", "code_mode"] as const) {
           assert.match(system, /Progressive routing fixture/u);
           assert.doesNotMatch(system, /PRIVATE_SKILL_BODY|PRIVATE_REFERENCE_BODY/u);
         }
-        delta = { content: '{"skillIds":["progressive-demo"],"tools":[]}' };
+        delta = { content: alwaysInject || phase === "continue" ? '{"skillIds":[],"tools":[]}' : '{"skillIds":["progressive-demo"],"tools":[]}' };
       } else if (body.model !== "chat" || !Array.isArray(body.tools)) {
         delta = { content: "Done" };
       } else {
         assert.doesNotMatch(system, /PRIVATE_SKILL_BODY|UNSELECTED_SKILL_BODY|PRIVATE_REFERENCE_BODY/u,
-          "ordinary Skill bodies and resources must stay out of the system prompt even when selected");
-        if (phase === "none") {
+          "all Skill bodies and resources must stay out of the system prompt even when always selected");
+        if (phase === "none" || (phase === "manual" && !alwaysInject)) {
           assert.doesNotMatch(system, /Progressive routing fixture|Other routing fixture/u);
         } else {
           assert.match(system, /<available_skills>[\s\S]*progressive-demo[\s\S]*Progressive routing fixture/u);
@@ -52,6 +52,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
         else if (mainSteps === 0) {
           assert.doesNotMatch(JSON.stringify(body.messages), /PRIVATE_SKILL_BODY|PRIVATE_REFERENCE_BODY/u);
           assert.ok(body.tools.some((tool: { function: { name: string } }) => tool.function.name === "Skill"));
+          if (executionMode === "direct") assert.ok(body.tools.some((tool: { function: { name: string } }) => tool.function.name === "KillShell"), "skill declaration supplies the tool without selector help");
           delta = toolCall("Skill", { skill: "progressive-demo" });
         } else if (mainSteps === 1) {
           const result = JSON.stringify(body.messages.findLast((message: { role: string }) => message.role === "tool"));
@@ -84,7 +85,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
     ]) {
       const directory = path.join(root, ".agents", "skills", name!);
       await mkdir(path.join(directory, "references"), { recursive: true });
-      await writeFile(path.join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\nallowed-tools: [Bash]\n---\n${instruction}\n`);
+      await writeFile(path.join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\nallowed-tools: [Bash, KillShell]\nalways-inject: ${alwaysInject && name === "progressive-demo"}\n---\n${instruction}\n`);
       await writeFile(path.join(directory, "references", "guide.md"), "PRIVATE_REFERENCE_BODY");
     }
     await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
@@ -108,36 +109,44 @@ for (const executionMode of ["direct", "code_mode"] as const) {
       activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
     });
     runtime = await createCommandRuntime(root, { configStore: { load: async () => config, save: async () => undefined } });
+    const fixtureSkillId = runtime.extensionStatus().skills.find((skill) => skill.name === "progressive-demo")?.id;
+    assert.ok(fixtureSkillId);
     const sessionFile = runtime.agent.getInfo().sessionFile;
-    for (const current of ["activate", "explicit", "all", "none"] as const) {
+    await writeFile(path.join(root, ".agents", "skills", "progressive-demo", "SKILL.md"),
+      `---\nname: progressive-demo\ndescription: Progressive routing fixture\nallowed-tools: [Bash, KillShell]\nalways-inject: ${alwaysInject}\n---\nNEW_INSTRUCTIONS_AFTER_SCAN\n`);
+    for (const current of ["activate", "continue", "explicit", "manual", "all", "none"] as const) {
       phase = current;
       let status: string | undefined;
       let contextUpdates = 0;
+      let selectionUpdates = 0;
+      const expectsSelection = current === "activate" || current === "continue" || current === "explicit" || (current === "manual" && alwaysInject);
       for await (const event of runtime.agent.prompt(current === "explicit" ? "/skill:progressive-demo inspect the workflow" : "Inspect the workflow", {
         emotionAnalysis: false, abortSignal: AbortSignal.timeout(15_000),
-        capabilitySelection: { tools: "auto", skills: current === "activate" || current === "explicit" ? "auto" : current }
+        capabilitySelection: { tools: "auto", skills: current === "activate" || current === "continue" || current === "explicit" ? "auto" : current === "manual" ? [] : current }
       })) {
         if (event.type === "done") status = event.outcome.status;
         if (event.type === "context.updated") {
           contextUpdates++;
           assert.ok(!event.context.loadedSkills?.includes("progressive-demo"), "metadata disclosure is not a loaded instruction body");
+          if (expectsSelection && event.context.capabilitySelection) {
+            const selection = event.context.capabilitySelection?.skills;
+            assert.ok(Array.isArray(selection) && selection.includes(fixtureSkillId), "selected skill names must remain visible, including always-selected skills when the selector returns no matches");
+            selectionUpdates++;
+          }
         }
       }
       assert.deepEqual(failures, [], `${executionMode}: model-facing prompt assertions`);
       assert.equal(status, "completed");
       assert.ok(contextUpdates >= 1);
+      if (expectsSelection) assert.ok(selectionUpdates >= 1);
     }
     assert.ok(selectionRequests >= 1, "automatic selection must exercise the real auxiliary model path");
-    assert.equal(mainSteps, 6);
+    assert.equal(mainSteps, 8);
     await runtime.close();
     runtime = undefined;
     const events = await readSessionEvents(sessionFile);
     const preparation = events.filter((event) => event.type === "message_metadata" && Array.isArray(event.metadata.loadedSkills));
-    assert.ok(preparation.length >= 3, "turns with always-inject instructions persist their loaded names; none may omit empty metadata");
-    for (const event of preparation) {
-      if (event.type === "message_metadata") assert.ok(!(event.metadata.loadedSkills as string[]).includes("progressive-demo"),
-        "metadata selection must not claim that an ordinary Skill was already loaded");
-    }
+    assert.deepEqual(preparation, [], "metadata-only preparation must not persist any loaded instruction names");
     assert.equal(events.filter((event) => event.type === "tool_call" && event.tool === "Skill").length, 1);
     const turns = buildSessionTimeline(events, []);
     assert.ok(turns[0]?.skills?.includes("progressive-demo"), "successful Skill results remain visible as loaded instructions");

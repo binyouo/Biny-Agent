@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runSkillExtraction } from "../src/agent/skillExtraction.js";
@@ -9,14 +11,14 @@ import type { SessionEvent } from "../src/session/recorder.js";
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-extraction-incremental-"));
 let calls = 0;
 let material = "";
-const model: AgentModel = { provider: "test", modelId: "analyst", async stream(context) {
+const model: AgentModel = testModel({ provider: "test", modelId: "analyst", async stream(context) {
   calls++;
   material = JSON.stringify(context.messages);
   return (async function* (): AsyncGenerator<ModelStreamEvent> {
     yield { type: "text-delta", text: '{"worthy":false,"skillName":"","skillDescription":""}' };
     yield { type: "finish", reason: "stop" };
   })();
-} };
+} });
 const user = (id: string): SessionEvent => ({ type: "user_message", messageId: id, content: id });
 const tool = (id: string, parentToolCallId?: string): SessionEvent => ({ type: "tool_call", toolCallId: id, tool: "Read", args: {}, parentToolCallId });
 try {
@@ -45,7 +47,7 @@ try {
     onNotice: notice => notices.push(notice.stage) });
   assert.deepEqual(analyzedCounts, [3], "negative analysis still advances progress");
   assert.deepEqual(notices, ["analyzing", "skipped"]);
-  const failingModel: AgentModel = { provider: "test", modelId: "failure", async stream() { throw new Error("analyst unavailable"); } };
+  const failingModel: AgentModel = testModel({ provider: "test", modelId: "failure", async stream() { throw new Error("analyst unavailable"); } });
   notices.length = 0;
   await assert.rejects(runSkillExtraction({ messageId: "two", events, installedSkills: [], model: failingModel, minToolCalls: 3, homeDir: root,
     onAnalyzed: async count => { analyzedCounts.push(count); },

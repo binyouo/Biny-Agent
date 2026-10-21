@@ -1,8 +1,8 @@
 /**
  * Agent Skills 扩展模块（渐进式披露，对齐 Agent Skills 范式）。
  *
- * 启动时只读取 YAML frontmatter；根回合能力分析完成后，选中 Skill 的名称和描述
- * 进入首轮 system prompt。普通正文由 Skill 按需读取，常驻声明允许提前加载；
+ * 目录扫描时缓存 SKILL.md 正文，仅将 YAML frontmatter 用于选择；根回合能力分析完成后，选中 Skill 的名称和描述
+ * 进入首轮 system prompt。正文由 Skill 按需返回，常驻声明只保证元数据入选；
  * 未选中的 Skill 仍可由 Skill 或 biny skill list 动态发现，
  * references/scripts/assets 继续由 read_skill_resource 按需读取。
  * 默认发现 Biny 受管目录和各 Agent 的标准全局 Skill 根；全局入口中的已有软链会被保留，
@@ -12,7 +12,7 @@ import { constants, promises as fs, type BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { maxSkillMetadataBytes, parseSkillDocument, readSkillMetadataFields, type SkillMetadata } from "./skillDocument.js";
+import { maxSkillFileBytes, parseSkillDocument, readSkillMetadataFields, type SkillMetadata } from "./skillDocument.js";
 import { z } from "zod";
 import { ToolAccesses } from "../tools/access.js";
 import type { Tool } from "../tools/types.js";
@@ -24,12 +24,8 @@ import type { CapabilitySelectionValue } from "../agent/capabilitySelection.js";
 import { builtinSkillRoot } from "./builtinSkills.js";
 import { isManagedSkillVersionPath, readManagedSkillVersion } from "./skillVersions.js";
 
-const maxDiscoveredSkillCount = 256;
-const maxSkillInstructionBytes = 512 * 1024;
 const maxSkillResourceBytes = 512 * 1024;
 const maxSkillDescriptionChars = 1024;
-const maxInitialSkillPromptChars = 8_000;
-const maxListedSkillResources = 100;
 
 export type SkillScope = "builtin" | "project" | "global";
 
@@ -42,17 +38,19 @@ export interface SkillDefinition extends SkillMetadata {
   path: string;
   /** Canonical absolute path of the skill markdown file. */
   filePath: string;
-  /** Root the file must stay inside when it is re-read at invoke time. */
+  /** Root used for file validation during scanning and invocation. */
   rootPath: string;
   scope: SkillScope;
   source: SkillRootSource;
-  /** `always-inject: true` 的 skill 不依赖能力分析，正文每轮进入系统提示。 */
+  /** `always-inject: true` 的 skill 不依赖能力分析，名称和简介每轮进入系统提示。 */
   alwaysInject: boolean;
 }
 
 export interface SkillBundle {
   skills: SkillDefinition[];
   paths: string[];
+  /** 与目录快照绑定的正文，不进入可用技能列表。 */
+  instructions: Record<string, string>;
   prompt: string;
   warnings: string[];
   conflicts: SkillConflict[];
@@ -95,6 +93,7 @@ interface SkillFileCandidate {
 
 interface SkillCandidate {
   skill: SkillDefinition;
+  content: string;
   precedence: number;
 }
 
@@ -106,7 +105,6 @@ export async function loadSkills(options: LoadSkillsOptions): Promise<SkillBundl
   const seen = new Set<string>();
   // 先收集所有合法候选，再按跨 scope 的统一优先级选胜者。
   for (const configuredPath of [...new Set([...DEFAULT_PROJECT_SKILL_PATHS, ...options.projectPaths])]) {
-    if (candidates.length >= maxDiscoveredSkillCount) break;
     if (isOfficialProjectSkillPath(configuredPath)) {
       const repositoryRoot = await findRepositoryRoot(canonicalWorkspace);
       for (const target of officialProjectSkillTargets(canonicalWorkspace, repositoryRoot)) {
@@ -146,7 +144,6 @@ export async function loadSkills(options: LoadSkillsOptions): Promise<SkillBundl
   const allowedGlobalDirectories = [...new Set(resolvedGlobalRoots.map(({ canonicalPath }) => canonicalPath))];
   const globalSeen = new Set<string>();
   for (const { configuredPath, canonicalPath } of resolvedGlobalRoots) {
-    if (candidates.length >= maxDiscoveredSkillCount) break;
     try {
       const globalFiles: SkillFileCandidate[] = [];
       await collectSkillFiles(canonicalPath, canonicalPath, globalFiles, globalSeen, true, allowedGlobalDirectories);
@@ -163,15 +160,11 @@ export async function loadSkills(options: LoadSkillsOptions): Promise<SkillBundl
   await collectSkillFiles(bundledRoot, bundledRoot, bundledFiles, new Set<string>());
   await appendSkillDefinitions(candidates, warnings, errors, canonicalWorkspace, bundledFiles, "builtin", skillRootPrecedence("builtin", bundledRoot), "builtin");
 
-  if (candidates.length >= maxDiscoveredSkillCount) {
-    const message = `Only the first ${String(maxDiscoveredSkillCount)} skills were discovered.`;
-    warnings.push(message);
-    errors.push(message);
-  }
   const { skills, conflicts } = selectSkillCandidates(candidates, options, warnings);
   return {
     skills,
     paths: skills.map((skill) => skill.path),
+    instructions: Object.fromEntries(candidates.filter((candidate) => skills.includes(candidate.skill)).map(({ skill, content }) => [skill.filePath, content])),
     prompt: buildSkillPrompt(skills),
     warnings,
     conflicts,
@@ -222,13 +215,13 @@ async function appendSkillDefinitions(
   source: SkillRootSource
 ): Promise<void> {
   const sorted = files.sort((left, right) => left.path.localeCompare(right.path));
-  // 独立文件的绑定校验与元数据读取可以并行；有界批次保留确定顺序和发现上限。
-  for (let offset = 0; offset < sorted.length && candidates.length < maxDiscoveredSkillCount;) {
-    const batch = sorted.slice(offset, offset + Math.min(16, maxDiscoveredSkillCount - candidates.length));
+  // 独立文件的绑定校验与元数据读取可以并行；有界批次保留确定顺序。
+  for (let offset = 0; offset < sorted.length;) {
+    const batch = sorted.slice(offset, offset + 16);
     offset += batch.length;
     const results = await Promise.allSettled(batch.map((candidate) => readSkillMetadata(projectRoot, candidate, scope, source)));
     for (const [index, result] of results.entries()) {
-      if (result.status === "fulfilled") candidates.push({ skill: result.value, precedence });
+      if (result.status === "fulfilled") candidates.push({ ...result.value, precedence });
       else {
         const message = `Skipped ${batch[index]!.path}: ${errorMessage(result.reason)}`;
         warnings.push(message);
@@ -279,70 +272,18 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
   if (!skills.length) return "";
   const guidance = [
     "Skills use progressive disclosure: the list above holds metadata only, and the Skill tool loads a skill's full instructions on demand.",
-    "When a task matches a listed skill, invoke Skill before following its workflow unless its always-inject instructions are already loaded.",
-    "A /skill:name or $skill-name mention in the user's message is an explicit request: load that skill before replying about the task.",
-    "A skill marked [always injected] has its instructions in the system prompt already; do not call the Skill tool for it."
+    "When a task matches a listed skill, invoke Skill before following its workflow.",
+    "A /skill:name or $skill-name mention in the user's message is an explicit request: load that skill before replying about the task."
   ].join(" ");
-  const render = (descriptionLimit: number, limit = skills.length): string => {
-    const lines = skills.slice(0, limit).map((skill) => {
-      const description = truncateChars(skill.description, descriptionLimit);
-      const marker = skill.alwaysInject ? " [always injected]" : "";
-      return `- "${skill.name}"${marker}: ${description}`;
-    });
-    const omitted = skills.length - limit;
-    if (omitted > 0) lines.push(`(${String(omitted)} additional skills were omitted from this list. Use biny skill list --query <keywords> --json to discover them.)`);
-    return ["<available_skills>", ...lines, "</available_skills>", guidance].join("\n");
-  };
-  for (const descriptionLimit of [maxSkillDescriptionChars, 300, 160, 80]) {
-    const prompt = render(descriptionLimit);
-    if (prompt.length <= maxInitialSkillPromptChars) return prompt;
-  }
-  let visible = skills.length;
-  while (visible > 0 && render(80, visible).length > maxInitialSkillPromptChars) visible -= 1;
-  return render(80, visible);
+  return ["<available_skills>", ...skills.map((skill) => `- "${skill.name}": ${skill.description}`), "</available_skills>", guidance].join("\n");
 }
 
-/** 选中项只披露元数据；仅显式常驻项预读正文，装配不等同于工具调用。 */
 export async function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): Promise<string> {
-  const selected = selectSkills(bundle, selection);
-  if (!selected.length) return "";
-  const metadataPrompt = buildSkillPrompt(selected);
-  const sections = await Promise.all(selected.filter((skill) => skill.alwaysInject).map(async (definition) => {
-    const content = await readSkillFileFresh(definition.rootPath, definition.filePath, maxSkillInstructionBytes);
-    let body = content;
-    let metadata: SkillMetadata | undefined;
-    try {
-      const parsed = splitFrontmatter(content);
-      metadata = parsed.frontmatter;
-      if (path.basename(definition.filePath) === "SKILL.md" || parsed.frontmatter.name || parsed.frontmatter.description) {
-        body = parsed.body;
-      }
-    } catch (error) {
-      if (path.basename(definition.filePath) === "SKILL.md") throw error;
-    }
-    return renderSkillInstructions(
-      definition,
-      body.trim() || content.trim(),
-      metadata,
-      await listSkillResources(definition.filePath, metadata)
-    );
-  }));
-  if (!sections.length) return metadataPrompt;
-  return [
-    metadataPrompt,
-    "<selected_skills>",
-    "The following always-inject Skill instructions are already loaded. Do not invoke Skill to load them again. This preparation is not a Skill tool invocation.",
-    ...sections,
-    "</selected_skills>"
-  ].join("\n\n");
+  return buildSkillPrompt(selectSkills(bundle, selection));
 }
 
 export function skillPathsForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
   return selectSkills(bundle, selection).map((skill) => skill.path);
-}
-
-export function loadedSkillNamesForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
-  return selectSkills(bundle, selection).filter((skill) => skill.alwaysInject).map((skill) => skill.name);
 }
 
 function selectSkills(bundle: SkillBundle, selection?: CapabilitySelectionValue): SkillDefinition[] {
@@ -358,10 +299,10 @@ const invokeSkillArgsSchema = z.object({
 
 type SkillBundleSource = SkillBundle | (() => SkillBundle);
 
-export function createSkillTool(source: SkillBundleSource, refresh?: () => Promise<void>): Tool {
+export function createSkillTool(source: SkillBundleSource, refresh?: (force?: boolean) => Promise<void>): Tool {
   return {
     name: "Skill",
-    description: "Load the full instructions of an installed skill by name through progressive disclosure. The available skill list contains names and descriptions only. Invoke before following a skill's workflow, unless its always-inject instructions are already in the system prompt. A real invocation is recorded as Skill usage and remains subject to normal permissions.",
+    description: "Load the full instructions of an installed skill by name through progressive disclosure. The available skill list contains names and descriptions only. Invoke before following a skill's workflow. A real invocation is recorded as Skill usage and remains subject to normal permissions.",
     promptSnippet: "Load the full instructions for an available skill",
     parameters: {
       type: "object",
@@ -382,8 +323,13 @@ export function createSkillTool(source: SkillBundleSource, refresh?: () => Promi
       }
       const requested = parsed.data.skill;
       await refresh?.();
-      const bundle = currentBundle(source);
-      const resolved = resolveSkill(bundle, requested);
+      let bundle = currentBundle(source);
+      let resolved = resolveSkill(bundle, requested);
+      if (typeof resolved === "string" && refresh) {
+        await refresh(true);
+        bundle = currentBundle(source);
+        resolved = resolveSkill(bundle, requested);
+      }
       if (typeof resolved === "string") {
         const message = resolved;
         return { isError: true as const, result: message, errorMessage: message };
@@ -395,7 +341,8 @@ export function createSkillTool(source: SkillBundleSource, refresh?: () => Promi
         description: `Load skill instructions from ${definition.path}`,
         approvalRule: `Skill:${definition.name}`,
         async execute(): Promise<unknown> {
-          const content = await readSkillFileFresh(definition.rootPath, definition.filePath, maxSkillInstructionBytes);
+          await assertReadableSkillFile(definition.rootPath, definition.filePath);
+          const content = bundle.instructions[definition.filePath]!;
           let body = content;
           let metadata: SkillMetadata | undefined;
           try {
@@ -569,10 +516,10 @@ function resolveSkill(bundle: SkillBundle, requested: string): SkillDefinition |
   return selected;
 }
 
-async function readSkillMetadata(projectRoot: string, candidate: SkillFileCandidate, scope: SkillScope, source: SkillRootSource): Promise<SkillDefinition> {
+async function readSkillMetadata(projectRoot: string, candidate: SkillFileCandidate, scope: SkillScope, source: SkillRootSource): Promise<{ skill: SkillDefinition; content: string }> {
   // 绑定校验与展示路径都按候选自己的根计算，兼容全局根第一层软链指向其他受支持根的场景。
   const rootPath = candidate.rootPath;
-  const content = await readBoundedSkillFile(rootPath, candidate, maxSkillMetadataBytes);
+  const content = await readBoundedSkillFile(rootPath, candidate, maxSkillFileBytes);
   const standardSkill = path.basename(candidate.path) === "SKILL.md";
   let frontmatter: SkillMetadata = {};
   let body = content;
@@ -600,7 +547,7 @@ async function readSkillMetadata(projectRoot: string, candidate: SkillFileCandid
   if (!description) throw new Error("Skill description cannot be empty.");
   const relative = path.relative(rootPath, candidate.path);
   const ref = createSkillRef({ scope, name, projectRoot: scope === "project" ? projectRoot : undefined, source });
-  return {
+  return { content, skill: {
     ref,
     id: createSkillId(ref),
     name,
@@ -615,7 +562,7 @@ async function readSkillMetadata(projectRoot: string, candidate: SkillFileCandid
     scope,
     source,
     alwaysInject: frontmatter.alwaysInject === true
-  };
+  } };
 }
 
 /** 全局技能展示路径：在 home 下时用 "~" 缩写，否则用实际绝对路径。 */
@@ -677,7 +624,6 @@ async function listSkillResources(skillFilePath: string, metadata: SkillMetadata
   const skillRoot = path.dirname(skillFilePath);
   const resources: SkillResourceEntry[] = [];
   const visit = async (directory: string): Promise<void> => {
-    if (resources.length >= maxListedSkillResources) return;
     let entries;
     try {
       entries = await fs.readdir(directory, { withFileTypes: true });
@@ -685,7 +631,6 @@ async function listSkillResources(skillFilePath: string, metadata: SkillMetadata
       return;
     }
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      if (resources.length >= maxListedSkillResources) return;
       const target = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
@@ -743,21 +688,18 @@ async function readSkillResourceFresh(skill: SkillDefinition, resourcePath: stri
     path.dirname(skill.filePath),
     { path: resourcePath, rootPath: path.dirname(skill.filePath), snapshot },
     maxSkillResourceBytes,
-    true,
     signal
   );
   if (content.includes("\0")) throw new Error(`Skill resource is binary and cannot be read as text: ${resourcePath}`);
   return content;
 }
 
-/** invoke 时重新校验并读取，允许文件在会话期间被正常编辑，但保持符号链接/硬链接/越界防御。 */
-async function readSkillFileFresh(rootPath: string, filePath: string, maxBytes: number): Promise<string> {
+async function assertReadableSkillFile(rootPath: string, filePath: string): Promise<void> {
   const stat = await fs.lstat(filePath, { bigint: true });
   if (stat.isSymbolicLink()) throw new Error(`Skill file cannot be a symbolic link: ${filePath}`);
   if (!stat.isFile()) throw new Error(`Skill path is not a file: ${filePath}`);
   if (stat.nlink !== 1n) throw new Error(`Skill files cannot be hardlinks: ${filePath}`);
   if (await escapesRoot(rootPath, filePath)) throw new Error(`Skill file escapes its root: ${filePath}`);
-  return await readBoundedSkillFile(rootPath, { path: filePath, rootPath, snapshot: skillSnapshot(stat) }, maxBytes, true);
 }
 
 async function collectSkillFiles(
@@ -768,7 +710,6 @@ async function collectSkillFiles(
   allowDirectDirectorySymlink = false,
   allowedDirectorySymlinks: readonly string[] = []
 ): Promise<void> {
-  if (files.length >= maxDiscoveredSkillCount) return;
   let stat;
   try {
     stat = await fs.lstat(target, { bigint: true });
@@ -820,7 +761,6 @@ async function collectSkillFiles(
     if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === ".git") continue;
     // 软链许可继续下传：是否放行由目标是否根的第一层（dirname 校验）决定。
     await collectSkillFiles(rootPath, path.join(target, entry.name), files, seen, allowDirectDirectorySymlink, allowedDirectorySymlinks);
-    if (files.length >= maxDiscoveredSkillCount) return;
   }
 }
 
@@ -873,18 +813,10 @@ function isPathInside(root: string, target: string): boolean {
   return relative === "" || !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
 }
 
-function truncateUtf8(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-  let end = Math.min(value.length, maxBytes);
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) end -= 1;
-  return value.slice(0, end);
-}
-
 async function readBoundedSkillFile(
   rootPath: string,
   candidate: SkillFileCandidate,
   maxBytes: number,
-  rejectOverflow = false,
   signal?: AbortSignal
 ): Promise<string> {
   signal?.throwIfAborted();
@@ -899,7 +831,7 @@ async function readBoundedSkillFile(
   try {
     const initial = await assertSkillFileBinding(rootPath, candidate, handle);
     const chunks: Buffer[] = [];
-    const readLimit = maxBytes + 4;
+    const readLimit = maxBytes + 1;
     let bytesRead = 0;
     while (bytesRead < readLimit) {
       signal?.throwIfAborted();
@@ -912,10 +844,10 @@ async function readBoundedSkillFile(
     }
     const current = await assertSkillFileBinding(rootPath, candidate, handle);
     if (!sameSkillSnapshot(initial, current)) throw new Error(`Skill file changed while it was being read: ${candidate.path}`);
-    if (rejectOverflow && bytesRead > maxBytes) {
+    if (bytesRead > maxBytes) {
       throw new Error(`Skill file exceeds ${String(maxBytes)} bytes: ${candidate.path}`);
     }
-    return truncateUtf8(Buffer.concat(chunks, bytesRead).toString("utf8"), maxBytes);
+    return Buffer.concat(chunks, bytesRead).toString("utf8");
   } finally {
     await handle.close();
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { accumulatedAutomaticToolNames } from "../src/agent/automaticToolHistory.js";
+import { accumulatedAutomaticSkillIds, accumulatedAutomaticToolNames } from "../src/agent/automaticToolHistory.js";
 import type { SessionEvent } from "../src/session/recorder.js";
 
 const events: SessionEvent[] = Array.from({ length: 6 }, (_, index) => ({
@@ -20,4 +20,16 @@ events.push({ type: "user_message", messageId: "audit", content: "internal", aud
   metadata: { automaticToolSelection: true, capabilitySelection: { tools: ["internal"], skills: [] } } });
 active.add("audit");
 assert.deepEqual(accumulatedAutomaticToolNames(events, active, "m5"), ["tool0", "tool2", "tool3"], "audit-only rows do not contribute automatic selections");
+const skillEvents: SessionEvent[] = [
+  { type: "user_message", messageId: "selected", content: "review" },
+  { type: "message_metadata", messageId: "selected", metadata: { automaticSkillSelection: true, capabilitySelection: { tools: [], skills: ["review"] } } },
+  { type: "message_metadata", messageId: "selected", metadata: { emotionAnalyzed: true } },
+  { type: "user_message", messageId: "inactive", content: "old branch", metadata: { automaticSkillSelection: true, capabilitySelection: { tools: [], skills: ["inactive"] } } },
+  { type: "user_message", messageId: "audit", content: "internal", auditOnly: true, metadata: { automaticSkillSelection: true, capabilitySelection: { tools: [], skills: ["internal"] } } },
+  { type: "user_message", messageId: "current", content: "retry", metadata: { automaticSkillSelection: true, capabilitySelection: { tools: [], skills: ["current"] } } }
+];
+const skillActive = new Set(["selected", "audit", "current"]);
+assert.deepEqual(accumulatedAutomaticSkillIds(skillEvents, skillActive, "current"), ["review"], "only prior active user turns contribute skill history, with later metadata merged");
+skillEvents.push({ type: "message_metadata", messageId: "selected", metadata: { automaticSkillSelection: false } });
+assert.deepEqual(accumulatedAutomaticSkillIds(skillEvents, skillActive, "current"), [], "an explicit override cannot resurrect the previous automatic skill choice");
 console.log("capability history tests passed");

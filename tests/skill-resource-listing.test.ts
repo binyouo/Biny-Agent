@@ -18,7 +18,6 @@ try {
       const name = `${scope}-${filename === "SKILL.md" ? "upper" : "lower"}`;
       const directory = path.join(scope === "project" ? path.join(workspaceRoot, ".biny", "skills") : globalRoot, name);
       await mkdir(directory, { recursive: true });
-      // Both instruction entrypoints apply to explicitly always-inject skills.
       await writeFile(path.join(directory, filename), `---\nname: ${name}\ndescription: Test resource discovery\nalways-inject: true\n---\nFollow the bundled resources.\n`);
       for (const [relative, , content] of resources) {
         const target = path.join(directory, relative);
@@ -43,14 +42,15 @@ try {
       const invoked = await execution.execute({ toolCallId: name });
       assert.equal(typeof invoked, "string");
       const selected = await skillPromptForSelection(bundle, [skill.ref]);
-      for (const [entryPoint, output] of [["Skill", invoked as string], ["selected prompt", selected]]) {
-        assert.match(output, /Follow the bundled resources/u);
-        for (const [relative, kind, content] of resources) {
-          assert.ok(output.includes(`- ${path.normalize(relative)} (${kind})`), `${entryPoint} must list ${name}/${relative}`);
-          assert.ok(!output.includes(content), "Listing a resource must not eagerly read its contents");
-        }
-        assert.ok(!output.includes(`- ${casing === "upper" ? "SKILL.md" : "skill.md"} (file)`), "The primary instruction file is not an auxiliary resource");
+      assert.ok(selected.includes(`"${name}": Test resource discovery`));
+      assert.doesNotMatch(selected, /Follow the bundled resources/u);
+      assert.match(invoked as string, /Follow the bundled resources/u);
+      for (const [relative, kind, content] of resources) {
+        assert.ok((invoked as string).includes(`- ${path.normalize(relative)} (${kind})`), `Skill must list ${name}/${relative}`);
+        assert.ok(!(invoked as string).includes(content), "Listing a resource must not eagerly read its contents");
+        assert.ok(!selected.includes(relative) && !selected.includes(content), "Metadata disclosure must not list or read resources");
       }
+      assert.ok(!(invoked as string).includes(`- ${casing === "upper" ? "SKILL.md" : "skill.md"} (file)`), "The primary instruction file is not an auxiliary resource");
       const read = await createSkillResourceTool(bundle).resolveExecution({ skill: name, path: resources[0][0] });
       assert.ok(!("isError" in read));
       assert.equal((await read.execute({ toolCallId: `${name}-resource` }) as { content: string }).content, resources[0][2]);

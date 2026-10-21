@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createSkillTool, loadSkills, skillPromptForSelection, loadedSkillNamesForSelection, skillPathsForSelection } from "../src/extensions/skills.js";
+import { createSkillTool, loadSkills, skillPromptForSelection, skillPathsForSelection } from "../src/extensions/skills.js";
 import { resolveSkillActivation, setSkillActivation } from "../src/extensions/skillActivation.js";
 import { createSkillRef } from "../src/extensions/skillRef.js";
 
@@ -95,7 +95,6 @@ async function main(): Promise<void> {
   }
 }
 
-/** always-inject 的 skill 不依赖能力分析选中，正文每轮进入系统提示。 */
 async function alwaysInjectedSkillScope(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-skill-always-inject-"));
   try {
@@ -109,16 +108,13 @@ async function alwaysInjectedSkillScope(): Promise<void> {
     const alwaysOn = bundle.skills.find((skill) => skill.name === "always-on");
     assert.equal(alwaysOn?.alwaysInject, true);
 
-    // selection 为空数组时其他 skill 不注入，always-inject 仍然注入。
     const injected = await skillPromptForSelection(bundle, []);
-    assert.match(injected, /Always-on body/u, "always-inject 正文必须进入系统提示");
-    assert.doesNotMatch(injected, /Optional body/u, "普通 skill 不得在空 selection 下注入");
-    // 列表里标注常驻状态，避免模型重复调用 Skill 工具加载。
-    assert.match(bundle.prompt, /"always-on" \[always injected\]/u);
-    assert.match(bundle.prompt, /do not call the Skill tool for it/u);
+    assert.match(injected, /"always-on": Always injected skill\./u);
+    assert.doesNotMatch(injected, /Always-on body|Optional instructions|Optional body/u);
+    assert.doesNotMatch(bundle.prompt, /\[always injected\]|do not call the Skill tool for it/u);
+    assert.match(injected, /invoke Skill before following its workflow/u);
 
     assert.equal(await skillPromptForSelection(bundle, "none"), "", "明确关闭本回合技能时不能由常驻声明重新启用");
-    assert.deepEqual(loadedSkillNamesForSelection(bundle, "none"), []);
     assert.deepEqual(skillPathsForSelection(bundle, "none"), []);
 
     // 关闭后不再常驻。
@@ -130,7 +126,7 @@ async function alwaysInjectedSkillScope(): Promise<void> {
     });
     assert.equal(disabled.skills.some((skill) => skill.name === "always-on"), false);
     const disabledInjected = await skillPromptForSelection(disabled, []);
-    assert.doesNotMatch(disabledInjected, /Always-on body/u);
+    assert.doesNotMatch(disabledInjected, /Always injected skill|Always-on body/u);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }

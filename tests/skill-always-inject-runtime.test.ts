@@ -1,18 +1,20 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel } from "../src/agent/core/types.js";
 import { defaultConfig } from "../src/config/schema.js";
-import { loadSkills, skillPromptForSelection, loadedSkillNamesForSelection } from "../src/extensions/skills.js";
+import { loadSkills, skillPromptForSelection } from "../src/extensions/skills.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
-await test("常驻技能进入真实回合提示和已加载清单，明确全关与单项禁用优先", async () => {
+await test("常驻技能只将元数据放入真实回合提示，明确全关与单项禁用优先", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-always-skill-runtime-"));
   const previous = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "agent-state");
@@ -25,10 +27,10 @@ await test("常驻技能进入真实回合提示和已加载清单，明确全�
     let bundle = await loadSkills(options);
     const definition = bundle.skills.find(skill => skill.name === "always-on")!;
     const prompts: string[] = [];
-    const model: AgentModel = { provider: "test", modelId: "test", async stream(context) {
+    const model: AgentModel = testModel({ provider: "test", modelId: "test", async stream(context) {
       prompts.push(context.systemPrompt ?? "");
       return (async function* () { yield { type: "text-delta" as const, text: "Done" }; yield { type: "finish" as const, reason: "stop" as const }; })();
-    } };
+    } });
     const config = structuredClone(defaultConfig);
     config.context.memory.enabled = false;
     config.context.memory.generateMemories = false;
@@ -36,7 +38,7 @@ await test("常驻技能进入真实回合提示和已加载清单，明确全�
     await ensureAgentDirs(root);
     agent = new AgentSession({ workspaceRoot: root, config, model, recorder: new SessionRecorder(root, "always-skill"),
       permissionManager: new PermissionManager(config.permission), toolRegistry: new ToolRegistry(),
-      skillPrompt: selection => skillPromptForSelection(bundle, selection), skillNames: selection => loadedSkillNamesForSelection(bundle, selection)
+      skillPrompt: selection => skillPromptForSelection(bundle, selection)
     });
     await agent.initialize();
     const loaded: string[][] = [];
@@ -45,13 +47,14 @@ await test("常驻技能进入真实回合提示和已加载清单，明确全�
         if (event.type === "context.updated") loaded.push(event.context.loadedSkills ?? []);
       }
     }
-    assert.match(prompts[0]!, /Always-on runtime instruction/u);
-    assert.doesNotMatch(prompts[1]!, /Always-on runtime instruction/u);
-    assert.ok(loaded.some(names => names.includes("always-on")));
-    assert.deepEqual(loaded.at(-1), []);
+    assert.match(prompts[0]!, /"always-on": Runtime fixture\./u);
+    for (const prompt of prompts) assert.doesNotMatch(prompt, /Always-on runtime instruction|<selected_skills>/u);
+    assert.doesNotMatch(prompts[1]!, /Runtime fixture/u);
+    assert.ok(loaded.length >= 2);
+    assert.ok(loaded.every(names => names.length === 0));
     bundle = await loadSkills({ ...options, globalDefaults: { [definition.ref]: false } });
     for await (const _event of agent.prompt("Reply again", { capabilitySelection: { tools: "none", skills: [] }, emotionAnalysis: false })) { /* Drain the real turn. */ }
-    assert.doesNotMatch(prompts.at(-1)!, /Always-on runtime instruction/u);
+    assert.doesNotMatch(prompts.at(-1)!, /Runtime fixture|Always-on runtime instruction/u);
   } finally {
     await agent?.close();
     if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;

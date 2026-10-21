@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 回合后技能提取管线：阈值跳过、两步辅助模型、校验落盘与进度通知。 */
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -26,7 +28,7 @@ const skillMarkdown = [
 /** 按调用顺序回放回答：第一次 analyst JSON，第二次 author SKILL.md。 */
 function replayModel(answers: string[]): { model: AgentModel; calls: string[] } {
   const calls: string[] = [];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "extraction",
     stream: async (context) => {
       const answer = answers[calls.length] ?? "";
@@ -36,7 +38,7 @@ function replayModel(answers: string[]): { model: AgentModel; calls: string[] } 
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   return { model, calls };
 }
 

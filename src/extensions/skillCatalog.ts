@@ -24,8 +24,6 @@ import { isManagedSkillVersionPath } from "./skillVersions.js";
 
 const maxMetadataBytes = 64 * 1024;
 const maxEditorBytes = 512 * 1024;
-const maxSkillCount = 512;
-const maxFileCount = 512;
 const maxSkillDescriptionChars = 1_024;
 
 export type SkillCatalogScope = "builtin" | "global" | "project";
@@ -180,10 +178,6 @@ export async function scanSkillCatalog(options: { homeDir?: string; projectRoots
       if (left.scope !== right.scope) return scopeOrder(left.scope) - scopeOrder(right.scope);
       return left.name.localeCompare(right.name);
     });
-  if (skills.length > maxSkillCount) {
-    skills.length = maxSkillCount;
-    warnings.push(`只展示前 ${String(maxSkillCount)} 个 Skill。`);
-  }
   const metadataDiagnostics = inventory
     .filter((entry) => entry.parseError !== undefined)
     .map((entry): SkillCatalogDiagnostic => ({
@@ -362,7 +356,6 @@ async function scanSkillRoot(root: SkillRoot, allowedDirectories: readonly strin
   const items: DiscoveredSkill[] = [];
   const diagnostics: SkillCatalogDiagnostic[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (items.length >= maxSkillCount) break;
     if (entry.name.startsWith(".") || entry.name.match(/\.bak\.\d+$/u)) continue;
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     try {
@@ -501,7 +494,6 @@ async function findSkillMarkdown(directory: string): Promise<string | undefined>
 async function listSkillFiles(skillRoot: string): Promise<SkillCatalogFile[]> {
   const files: SkillCatalogFile[] = [];
   const visit = async (directory: string): Promise<void> => {
-    if (files.length >= maxFileCount) return;
     let entries;
     try {
       entries = await fs.readdir(directory, { withFileTypes: true });
@@ -513,7 +505,7 @@ async function listSkillFiles(skillRoot: string): Promise<SkillCatalogFile[]> {
       const rightPrimary = right.name.toLowerCase() === "skill.md" ? 0 : 1;
       return leftPrimary - rightPrimary || left.name.localeCompare(right.name);
     })) {
-      if (files.length >= maxFileCount || entry.name === ".git" || entry.name === "node_modules") continue;
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
       if (entry.name.startsWith(".") || entry.isSymbolicLink()) continue;
       const target = path.join(directory, entry.name);
       if (entry.isDirectory()) {

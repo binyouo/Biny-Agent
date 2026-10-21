@@ -3,6 +3,27 @@ import type { SessionEvent } from "../session/recorder.js";
 import { resolvedCapabilitySelectionSchema } from "./capabilitySelection.js";
 
 export function accumulatedAutomaticToolNames(events: readonly SessionEvent[], active: ReadonlySet<string>, messageId?: string): string[] {
+  const selections = selectionMetadata(events, active, messageId);
+  const tools = new Set<string>();
+  for (const metadata of selections.values()) {
+    if (metadata.automaticToolSelection !== true) continue;
+    const saved = resolvedCapabilitySelectionSchema.safeParse(metadata.capabilitySelection);
+    if (saved.success && Array.isArray(saved.data.tools)) for (const name of saved.data.tools) tools.add(name);
+  }
+  return [...tools];
+}
+
+export function accumulatedAutomaticSkillIds(events: readonly SessionEvent[], active: ReadonlySet<string>, messageId?: string): string[] {
+  const skills = new Set<string>();
+  for (const metadata of selectionMetadata(events, active, messageId).values()) {
+    if (metadata.automaticSkillSelection !== true) continue;
+    const saved = resolvedCapabilitySelectionSchema.safeParse(metadata.capabilitySelection);
+    if (saved.success && Array.isArray(saved.data.skills)) for (const id of saved.data.skills) skills.add(id);
+  }
+  return [...skills];
+}
+
+function selectionMetadata(events: readonly SessionEvent[], active: ReadonlySet<string>, messageId?: string): Map<string, Record<string, unknown>> {
   const selections = new Map<string, Record<string, unknown>>();
   for (const event of events) {
     if (event.type === "user_message" && !event.auditOnly && event.messageId && event.messageId !== messageId && active.has(event.messageId)) {
@@ -16,11 +37,5 @@ export function accumulatedAutomaticToolNames(events: readonly SessionEvent[], a
     const metadata = selections.get(event.messageId);
     if (metadata) Object.assign(metadata, event.metadata);
   }
-  const tools = new Set<string>();
-  for (const metadata of selections.values()) {
-    if (metadata.automaticToolSelection !== true) continue;
-    const saved = resolvedCapabilitySelectionSchema.safeParse(metadata.capabilitySelection);
-    if (saved.success && Array.isArray(saved.data.tools)) for (const name of saved.data.tools) tools.add(name);
-  }
-  return [...tools];
+  return selections;
 }
