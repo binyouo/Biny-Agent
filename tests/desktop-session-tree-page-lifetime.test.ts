@@ -74,7 +74,7 @@ async function appModule() {
       if (bindings && ts.isNamedImports(bindings)) imports.set(`${file}:${statement.moduleSpecifier.text}`, bindings.elements.filter((item) => !item.isTypeOnly).map((item) => item.name.text));
     }
   }
-  const actual = new Set(["react", "./app/desktopState.js", "./app/desktopApi.js", "./app/sessionTreePageLifetime.js", "./app/useDesktopEventBridge.js", "./navigationHistory.js", "../../../runtime/agentEvents.js"]);
+  const actual = new Set(["react", "./app/desktopState.js", "./app/desktopApi.js", "./app/sessionTreePageLifetime.js", "./app/useSessionRootPages.js", "./app/useDesktopEventBridge.js", "./navigationHistory.js", "../../../runtime/agentEvents.js"]);
   const implementations: Record<string, string> = {
     ChatResponseContext: "createContext(undefined)", RenderingPreviewContext: "createContext(undefined)", SubagentNavigationContext: "createContext(undefined)",
     AppearanceProvider: "({children}) => children",

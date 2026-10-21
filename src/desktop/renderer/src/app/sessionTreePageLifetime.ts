@@ -21,12 +21,12 @@ export function createSessionTreePageLifetime() {
   };
   return {
     observe,
-    capture(projectId: string, parentSessionId: string): () => boolean {
+    capture(projectId: string, parentSessionId?: string): () => boolean {
       const capturedLifetime = lifetime;
       const project = projects.get(projectId);
-      const page = pages.get(projectId)?.get(parentSessionId);
+      const page = parentSessionId === undefined ? undefined : pages.get(projectId)?.get(parentSessionId);
       return () => capturedLifetime === lifetime && project === projects.get(projectId)
-        && page === pages.get(projectId)?.get(parentSessionId);
+        && page === (parentSessionId === undefined ? undefined : pages.get(projectId)?.get(parentSessionId));
     },
     replaceProject(projectId: string, sessions: readonly DesktopSessionSummary[]): void {
       projects.set(projectId, {});

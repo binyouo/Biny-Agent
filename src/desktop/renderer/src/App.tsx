@@ -67,6 +67,7 @@ import {
   syntheticSession
 } from "./app/desktopState.js";
 import { createSessionTreePageLifetime, type LoadedSessionTreePage } from "./app/sessionTreePageLifetime.js";
+import { useSessionRootPages } from "./app/useSessionRootPages.js";
 import { useDesktopEventBridge } from "./app/useDesktopEventBridge.js";
 import { useCompactionCommand } from "./app/useCompactionCommand.js";
 import type { RecipeNotice, SkillExtractionCardState } from "./app/useDesktopEventBridge.js";
@@ -118,6 +119,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [sidebarSessions, setSidebarSessions] = useState<DesktopSessionSummary[]>([]);
   const [workspace, setWorkspace] = useState<DesktopWorkspaceSnapshot>();
   const [sessionTreePages] = useState(createSessionTreePageLifetime);
+  const { states: sessionRootPages, adopt: adoptSessionRootPage, reset: resetSessionRootPages, invalidate: invalidateSessionRootPage, load: loadProjectSessions, loadedIds: loadedRootIds } = useSessionRootPages(sessionTreePages, sidebarSessions, setSidebarSessions);
   useEffect(() => () => sessionTreePages.replaceAll(), [sessionTreePages]);
   const [composerSkillWarnings, setComposerSkillWarnings] = useState<string[]>([]);
   const [composerSkills, setComposerSkills] = useState<DesktopSkillCatalogEntry[]>([]);
@@ -339,21 +341,23 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   const mergeWorkspaceProject = useCallback((snapshot: DesktopWorkspaceSnapshot): void => {
     sessionTreePages.replaceProject(snapshot.project.id, snapshot.sessions);
+    adoptSessionRootPage(snapshot);
     setProjects((current) => mergeProject(current, snapshot.project));
     setSidebarSessions((current) => snapshot.sessionPage
-      ? replaceProjectSessionRoots(current, snapshot.project.id, snapshot.sessionPage.sessions, snapshot.sessions)
+      ? replaceProjectSessionRoots(current, snapshot.project.id, snapshot.sessionPage.sessions, snapshot.sessions, loadedRootIds(snapshot.project.id))
       : replaceProjectSessions(current, snapshot.project.id, snapshot.sessions));
     setWorkspace(snapshot);
-  }, [sessionTreePages]);
+  }, [adoptSessionRootPage, loadedRootIds, sessionTreePages]);
 
   const mergeProjectSnapshot = useCallback((snapshot: DesktopWorkspaceSnapshot): void => {
     sessionTreePages.replaceProject(snapshot.project.id, snapshot.sessions);
+    adoptSessionRootPage(snapshot);
     setProjects((current) => mergeProject(current, snapshot.project));
     setSidebarSessions((current) => snapshot.sessionPage
-      ? replaceProjectSessionRoots(current, snapshot.project.id, snapshot.sessionPage.sessions, snapshot.sessions)
+      ? replaceProjectSessionRoots(current, snapshot.project.id, snapshot.sessionPage.sessions, snapshot.sessions, loadedRootIds(snapshot.project.id))
       : replaceProjectSessions(current, snapshot.project.id, snapshot.sessions));
     if (projectRef.current === snapshot.project.id) setWorkspace(snapshot);
-  }, [sessionTreePages]);
+  }, [adoptSessionRootPage, loadedRootIds, sessionTreePages]);
 
   const changeFastMode = useCallback(async (fastMode: boolean): Promise<void> => {
     setLastFastMode(fastMode);
@@ -386,12 +390,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         if (!active || request !== generation) return;
         setProjects(bootstrap.projects);
         sessionTreePages.replaceAll(bootstrap.sidebarSessions);
+        resetSessionRootPages(bootstrap.workspace);
         setSidebarSessions(bootstrap.sidebarSessions);
         if (bootstrap.workspace && projectRef.current === bootstrap.workspace.project.id) setWorkspace(bootstrap.workspace);
       }).catch(error => { if (active && request === generation) setWarning(errorMessage(error)); });
     });
     return () => { active = false; unsubscribe(); };
-  }, [sessionTreePages]);
+  }, [resetSessionRootPages, sessionTreePages]);
 
   const threadBriefState = useThreadBrief();
   const briefProjectIds = threadBriefState?.snapshot?.projects.map((project) => project.projectId).sort().join("\0") ?? "";
@@ -693,6 +698,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setVersion(bootstrap.version);
       setProjects(bootstrap.projects);
       sessionTreePages.replaceAll(bootstrap.sidebarSessions);
+      resetSessionRootPages(bootstrap.workspace);
       setSidebarSessions(bootstrap.sidebarSessions);
       setSidebarExpandedWidth(bootstrap.sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH);
       setFilePanelWidth(bootstrap.filePanelWidth ?? DEFAULT_FILE_PANEL_WIDTH);
@@ -729,7 +735,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       if (active) setStarting(false);
     });
     return () => { active = false; };
-  }, [bootstrapAppearance, commitNavigation, mergeWorkspaceProject, openSession, sessionTreePages, setSidebarExpandedWidth]);
+  }, [bootstrapAppearance, commitNavigation, mergeWorkspaceProject, openSession, resetSessionRootPages, sessionTreePages, setSidebarExpandedWidth]);
 
   // 生成错误横幅（会话瞬态）：由事件桥在 live 失败事件到达时置位、新一轮开始（run.started）
   // 时清除，与 document 的重放/终态刷新完全解耦——历史重放永不弹，横幅也不会被刷新闪退掉。
@@ -980,6 +986,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
     for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
       sessionTreePages.replaceProject(projectId, []);
+      invalidateSessionRootPage(projectId);
       void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
     }
     setSidebarSessions(current => current.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)));
@@ -990,7 +997,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       return `${title}：${failure.error}`;
     }).join("\n"));
     return result;
-  }, [commitNavigation, mergeProjectSnapshot, sessionTreePages]);
+  }, [commitNavigation, invalidateSessionRootPage, mergeProjectSnapshot, sessionTreePages]);
 
   const runSessionAction = useCallback(async (session: DesktopSessionSummary, action: DesktopSessionMenuAction): Promise<void> => {
     try {
@@ -1410,6 +1417,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       }
       setProjects(bootstrap.projects);
       sessionTreePages.replaceAll(bootstrap.sidebarSessions);
+      resetSessionRootPages(bootstrap.workspace);
       setSidebarSessions(bootstrap.sidebarSessions);
       setWorkspace(bootstrap.workspace);
       setDocument(undefined);
@@ -1420,7 +1428,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [commitNavigation, sessionTreePages]);
+  }, [commitNavigation, resetSessionRootPages, sessionTreePages]);
 
   // 聊天区状态变化很频繁；侧栏已经 memo，这些桥接回调必须保持引用稳定，避免每次输入/流式更新
   // 都把整棵项目树重新渲染一遍，触发 macOS 玻璃侧栏的重绘闪烁。
@@ -2155,6 +2163,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
           projects={projects}
           selectedSessionId={pendingNavigation ? pendingNavigation.sessionId : selectedSessionId}
           sessions={sidebarSessions}
+          sessionRootPages={sessionRootPages}
+          onLoadProjectSessions={loadProjectSessions}
           peekDrawerHandlers={sidebarPeekDrawerHandlers}
           peekDrawerRef={sidebarPeekDrawerRef}
           peekTriggerHandlers={sidebarPeekTriggerHandlers}
