@@ -443,7 +443,7 @@ export class CrystalService {
       const fieldSources = Array.isArray(record.sources)
         ? record.sources.map(String).filter((source) => allowedSources.has(source))
         : [];
-      if (text && fieldSources.length) latest.checklist[field] = { value: text, sources: fieldSources };
+      if (text && fieldSources.length) latest.checklist[field] = { ...latest.checklist[field], value: text, sources: fieldSources };
     }
     latest.updatedAt = this.now().toISOString();
     this.storage.putCrystal(latest);
