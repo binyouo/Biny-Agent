@@ -481,14 +481,15 @@ export class CrystalService {
   }
 
   addMaterial(id: string, kind: CrystalMaterialKind, ref: unknown, source: CrystalMaterialSource = "user"): boolean {
-    const crystal = this.requireCrystal(id);
-    const added = this.storage.addMaterial(crystal.id, kind, ref, source);
-    if (added) {
+    const added = this.storage.transaction(() => {
+      const crystal = this.requireCrystal(id);
+      if (!this.storage.addMaterial(crystal.id, kind, ref, source)) return false;
       crystal.notified = false;
       crystal.updatedAt = this.now().toISOString();
       this.storage.putCrystal(crystal);
-      this.onEvent({ type: "material_added", crystalId: crystal.id });
-    }
+      return true;
+    });
+    if (added) this.onEvent({ type: "material_added", crystalId: id });
     return added;
   }
 
@@ -574,10 +575,15 @@ export class CrystalService {
     let count = 0;
     for (const crystal of seeds) {
       if (!crystal.name || !text.toLowerCase().includes(crystal.name.toLowerCase())) continue;
-      if (this.storage.addMaterial(crystal.id, "turn", anchorRef(anchor), "auto")) {
-        crystal.notified = false;
-        crystal.updatedAt = this.now().toISOString();
-        this.storage.putCrystal(crystal);
+      const added = this.storage.transaction(() => {
+        const current = this.requireCrystal(crystal.id);
+        if (!this.storage.addMaterial(current.id, "turn", anchorRef(anchor), "auto")) return false;
+        current.notified = false;
+        current.updatedAt = this.now().toISOString();
+        this.storage.putCrystal(current);
+        return true;
+      });
+      if (added) {
         count += 1;
         this.onEvent({ type: "material_added", crystalId: crystal.id });
       }
