@@ -29,7 +29,10 @@ test("appearance preview and owner close preserve transparent window backgrounds
           process.on("uncaughtException", error => { console.error(error); app.exit(1); });
           app.setPath("userData", ${JSON.stringify(path.join(root, "user-data"))});
           app.on("window-all-closed", () => {});
+          const stage = name => console.log("window-close-stage: " + name);
+          stage("waiting-for-app-ready");
           app.whenReady().then(async () => {
+            stage("creating-windows");
             if (process.platform === "darwin") app.setActivationPolicy("prohibited");
             const owner = new BrowserWindow({ show: false, transparent: process.platform === "darwin", backgroundColor: "#00000000" });
             const survivor = new BrowserWindow({ show: false, title: "Biny Quick Chat", transparent: process.platform === "darwin", backgroundColor: "#00000000", webPreferences: { preload: ${JSON.stringify(preload)} } });
@@ -40,8 +43,11 @@ test("appearance preview and owner close preserve transparent window backgrounds
               window.setBackgroundColor = color => { appliedBackgrounds.set(window, color); setBackgroundColor(color); };
             }
             const survivorContents = survivor.webContents;
+            stage("loading-owner");
             await owner.loadURL("about:blank");
+            stage("loading-survivor");
             await survivor.loadURL("about:blank");
+            stage("checking-appearance-preview");
             const saved = { themePreference: "system", appearancePreference: DEFAULT_APPEARANCE, fontPreference: { family: "system", size: 14 } };
             const coordinator = new AppearancePreviewCoordinator({
               read: () => saved,
@@ -81,6 +87,7 @@ test("appearance preview and owner close preserve transparent window backgrounds
               });
             });
             const ownerId = owner.webContents.id;
+            stage("closing-owner");
             await new Promise(resolve => {
               owner.webContents.once("destroyed", () => {
                 assert.equal(owner.isDestroyed(), false, "renderer destruction precedes window destruction");
@@ -92,12 +99,15 @@ test("appearance preview and owner close preserve transparent window backgrounds
               owner.close();
             });
             assert.deepEqual(coordinator.snapshot(), saved);
+            stage("awaiting-restored-appearance");
             assert.deepEqual(await received, saved);
+            stage("checking-closed-window");
             assert.equal(owner.isDestroyed(), true);
             checkBackgrounds();
             sendToDesktopWindow(owner, "appearance", saved);
             sendToDesktopWindow(undefined, "appearance", saved);
             survivor.destroy();
+            stage("exiting");
             console.log("window-close-restored");
             app.exit(0);
           }).catch(error => { console.error(error); app.exit(1); });
@@ -115,7 +125,16 @@ test("appearance preview and owner close preserve transparent window backgrounds
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
     const args = process.platform === "linux" && process.env.CI ? ["--no-sandbox", entry] : [entry];
-    const result = await promisify(execFile)(createRequire(import.meta.url)("electron") as string, args, { env, timeout: 15_000, killSignal: "SIGKILL" });
+    const result = await promisify(execFile)(createRequire(import.meta.url)("electron") as string, args, { env, timeout: 15_000, killSignal: "SIGKILL" }).catch((error: unknown) => {
+      const failure = error as { code?: unknown; signal?: unknown; killed?: unknown; stdout?: string; stderr?: string };
+      // execFile captures child output, so successful runs stay quiet. On failure,
+      // retain the last reached stage and native errors instead of only "Command failed".
+      throw new Error([
+        `Electron window-close fixture failed: ${JSON.stringify({ code: failure.code, signal: failure.signal, killed: failure.killed })}`,
+        `stdout:\n${failure.stdout ?? ""}`,
+        `stderr:\n${failure.stderr ?? ""}`
+      ].join("\n"), { cause: error });
+    });
     assert.match(result.stdout, /window-close-restored/u);
   } finally {
     await rm(root, { recursive: true, force: true });

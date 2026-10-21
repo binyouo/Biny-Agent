@@ -235,7 +235,7 @@ export class AutomationStore {
     return this.requireFire(fireId);
   }
 
-  claimDue(now = new Date(), limit = 32): AutomationPendingFire[] {
+  claimDue(now = new Date(), limit = 32, knownFireIds: ReadonlySet<string> = new Set()): AutomationPendingFire[] {
     this.assertOpen();
     const nowMs = now.getTime();
     if (!Number.isFinite(nowMs)) throw new Error("Automation discovery now must be a valid timestamp.");
@@ -272,6 +272,9 @@ export class AutomationStore {
       else if (expiry <= Math.max(nowMs, Date.now())) this.updateStatus(automation.automation_id, "expired");
     }
     const fires: AutomationPendingFire[] = [];
+    let newFireCount = 0;
+    // 当前 owner 的内存队列仍返回给 tick 等待，但不占用新发现预算；重启后集合为空。
+    const scanLimit = Math.min(Number.MAX_SAFE_INTEGER, limit + knownFireIds.size);
     // 暂停或已耗尽预算的定义保留自己的 pending fire，但不能占满其他任务的恢复窗口。
     // 这里只筛选候选；领取时仍由 canClaimFire 和事务内条件重新验证执行权。
     const recoverable = this.database.prepare(
@@ -287,9 +290,11 @@ export class AutomationStore {
              AND (max_fires IS NULL OR fire_count < max_fires)
          )
        ORDER BY automation_time_ms(CASE WHEN status = 'deferred' THEN COALESCE(retry_at, scheduled_at) ELSE scheduled_at END) ASC, fire_id ASC LIMIT ?`
-    ).all(nowMs, this.authority.workspaceId, limit) as unknown as PendingRow[];
+    ).all(nowMs, this.authority.workspaceId, scanLimit) as unknown as PendingRow[];
     for (const row of recoverable) {
       const fireId = stringValue(row.fire_id);
+      const known = knownFireIds.has(fireId);
+      if (!known && newFireCount >= limit) continue;
       const automation = this.require(stringValue(row.automation_id));
       if (!canClaimFire(automation, toFire(row))) continue;
       const status = pendingStatus(row.status);
@@ -300,12 +305,15 @@ export class AutomationStore {
         });
       }
       const recovered = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, retry_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE fire_id = ? AND status = 'pending'").get(fireId) as unknown as PendingRow | undefined;
-      if (recovered) fires.push(toFire(recovered));
+      if (recovered) {
+        fires.push(toFire(recovered));
+        if (!known) newFireCount += 1;
+      }
     }
-    if (fires.length >= limit) return fires;
+    if (newFireCount >= limit) return fires;
     const candidates = this.database.prepare(
       "SELECT automation_id, next_fire_at FROM automations WHERE workspace_id = ? AND status = 'active' AND next_fire_at IS NOT NULL AND automation_time_ms(next_fire_at) <= ? ORDER BY automation_time_ms(next_fire_at) ASC, rowid ASC LIMIT ?"
-    ).all(this.authority.workspaceId, nowMs, limit - fires.length) as Array<Record<string, unknown>>;
+    ).all(this.authority.workspaceId, nowMs, limit - newFireCount) as Array<Record<string, unknown>>;
     for (const candidate of candidates) {
       const automationId = stringValue(candidate.automation_id);
       const automation = this.require(automationId);
@@ -710,7 +718,7 @@ export class AutomationScheduler {
   private queueDueFires(): Promise<void>[] {
     if (this.closed) return [];
     this.ensureRecovered();
-    return this.store().claimDue(new Date()).map((fire) => this.enqueueFire(fire));
+    return this.store().claimDue(new Date(), undefined, new Set(this.pendingFires.keys())).map((fire) => this.enqueueFire(fire));
   }
 
   private ensureRecovered(): void {
