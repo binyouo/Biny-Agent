@@ -232,9 +232,9 @@ export function createTaskCancelTool(options: SubagentOptions): Tool {
     resolveExecution(args: { taskRunId: string; message?: string }) {
       return { accesses: ToolAccesses.none(), display: { kind: "generic", summary: "TaskCancel", detail: args.taskRunId },
         description: "TaskCancel", approvalRule: "TaskCancel",
-        async execute(): Promise<unknown> {
+        async execute(context): Promise<unknown> {
           if (!options.communication) throw new Error("Task communication is unavailable.");
-          options.communication.read(args.taskRunId);
+          options.communication.assertOwnership(args.taskRunId, context?.sessionId);
           if (!options.cancelTask) throw new Error("Task cancellation is unavailable.");
           return options.cancelTask(args.taskRunId, args.message);
         }

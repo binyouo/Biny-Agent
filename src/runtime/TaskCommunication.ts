@@ -81,9 +81,18 @@ export class TaskCommunication {
   constructor(private readonly tasks: DurableTaskRunStore, private readonly sessionId: string) {}
 
   read(taskRunId: string): TaskRunWithAttempts {
+    return this.readForSession(taskRunId, this.sessionId);
+  }
+
+  /** Validate a trusted execution owner without rebinding this channel or its workers. */
+  assertOwnership(taskRunId: string, sessionId = this.sessionId): void {
+    this.readForSession(taskRunId, sessionId);
+  }
+
+  private readForSession(taskRunId: string, sessionId: string): TaskRunWithAttempts {
     const task = this.tasks.get(taskRunId);
     if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-    if (task.sessionId !== this.sessionId) throw new Error(`TaskRun ${taskRunId} belongs to another session.`);
+    if (task.sessionId !== sessionId) throw new Error(`TaskRun ${taskRunId} belongs to another session.`);
     return task;
   }
 
