@@ -11,6 +11,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { SidebarLayoutSnapshot } from "../../../sidebarLayout.js";
 import { clampSidebarWidth, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "../../../sidebarSizing.js";
 import type { DesktopSessionDeleteResult, DesktopProject, DesktopSessionMenuAction, DesktopSessionSummary } from "../../../protocol.js";
+import type { SessionRootPageState } from "../app/useSessionRootPages.js";
 import type { LoadedSessionTreePage } from "../app/sessionTreePageLifetime.js";
 import type { SidebarPeekHandlers, SidebarResizeHandlers } from "../app/useSidebarLayout.js";
 import { useClosingPresence } from "../useClosingPresence.js";
@@ -62,6 +63,8 @@ interface SidebarProps {
   resizeHandlers: SidebarResizeHandlers;
   projects: DesktopProject[];
   sessions: DesktopSessionSummary[];
+  sessionRootPages?: ReadonlyMap<string, SessionRootPageState>;
+  onLoadProjectSessions?(projectId: string): Promise<LoadedSessionTreePage | undefined>;
   activeProjectId?: string;
   selectedSessionId?: string;
   onOpenProject(): void;
@@ -96,6 +99,8 @@ export const Sidebar = memo(function Sidebar({
   resizeHandlers,
   projects,
   sessions: storedSessions,
+  sessionRootPages,
+  onLoadProjectSessions,
   activeProjectId,
   selectedSessionId,
   onOpenProject,
@@ -396,25 +401,26 @@ export const Sidebar = memo(function Sidebar({
   const showPinnedSection = Boolean(pinnedProjects.length || pinnedSessions.length);
 
   const loadSessionChildren = async (session: DesktopSessionSummary, cursor?: string): Promise<void> => {
-    if (!session.hasChildren || sessionPageRequests.current.has(session.id)) return;
+    const key = sessionKey(session);
+    if (!session.hasChildren || sessionPageRequests.current.has(key)) return;
     const request = {};
-    sessionPageRequests.current.set(session.id, request);
-    setLoadingSessionIds((current) => new Set(current).add(session.id));
+    sessionPageRequests.current.set(key, request);
+    setLoadingSessionIds((current) => new Set(current).add(key));
     try {
       const page = await onLoadSessionChildren(session.projectId, session.id, cursor);
-      if (sessionPageRequests.current.get(session.id) !== request) return;
-      const resetIds = new Set(page.resetSessionIds);
+      if (sessionPageRequests.current.get(key) !== request) return;
+      const resetIds = new Set(page.resetSessionIds?.map(id => `${session.projectId}\0${id}`));
       if (page.resetSessionIds) {
         for (const id of resetIds) sessionPageRequests.current.delete(id);
         setExpandedSessionIds((current) => new Set([...current].filter((id) => !resetIds.has(id))));
         setLoadingSessionIds((current) => new Set([...current].filter((id) => !resetIds.has(id))));
       }
-      setLoadedSessionParents((current) => new Set([...current].filter((id) => !resetIds.has(id))).add(session.id));
+      setLoadedSessionParents((current) => new Set([...current].filter((id) => !resetIds.has(id))).add(key));
       setSessionNextCursors((current) => {
         const next = new Map(current);
         for (const id of resetIds) next.delete(id);
-        if (page.nextCursor) next.set(session.id, page.nextCursor);
-        else next.delete(session.id);
+        if (page.nextCursor) next.set(key, page.nextCursor);
+        else next.delete(key);
         return next;
       });
     } catch {
@@ -422,11 +428,11 @@ export const Sidebar = memo(function Sidebar({
       // 不写入 loadedSessionParents，用户重新展开时自然会重试。
     } finally {
       // A subtree reset may already have allowed a newer request for this same ID.
-      if (sessionPageRequests.current.get(session.id) === request) {
-        sessionPageRequests.current.delete(session.id);
+      if (sessionPageRequests.current.get(key) === request) {
+        sessionPageRequests.current.delete(key);
         setLoadingSessionIds((current) => {
           const next = new Set(current);
-          next.delete(session.id);
+          next.delete(key);
           return next;
         });
       }
@@ -435,18 +441,30 @@ export const Sidebar = memo(function Sidebar({
 
   const toggleSession = (session: DesktopSessionSummary): void => {
     if (!session.hasChildren) return;
+    const key = sessionKey(session);
     setExpandedSessionIds((current) => {
       const next = new Set(current);
-      if (next.has(session.id)) next.delete(session.id);
-      else next.add(session.id);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
-    if (!expandedSessionIds.has(session.id) && !loadedSessionParents.has(session.id)) void loadSessionChildren(session);
+    if (!expandedSessionIds.has(key) && !loadedSessionParents.has(key)) void loadSessionChildren(session);
   };
 
   const loadMoreSessionChildren = (session: DesktopSessionSummary): void => {
-    const cursor = sessionNextCursors.get(session.id);
+    const cursor = sessionNextCursors.get(sessionKey(session));
     if (cursor) void loadSessionChildren(session, cursor);
+  };
+
+  const loadProjectSessions = async (projectId: string): Promise<void> => {
+    const page = await onLoadProjectSessions?.(projectId);
+    if (!mounted.current || !page?.resetSessionIds) return;
+    const resetIds = new Set(page.resetSessionIds.map(id => `${projectId}\0${id}`));
+    for (const id of resetIds) sessionPageRequests.current.delete(id);
+    setExpandedSessionIds(current => new Set([...current].filter(id => !resetIds.has(id))));
+    setLoadedSessionParents(current => new Set([...current].filter(id => !resetIds.has(id))));
+    setLoadingSessionIds(current => new Set([...current].filter(id => !resetIds.has(id))));
+    setSessionNextCursors(current => new Map([...current].filter(([id]) => !resetIds.has(id))));
   };
 
   const renderProject = (project: DesktopProject, section: "pinned" | "projects"): React.JSX.Element => {
@@ -501,6 +519,11 @@ export const Sidebar = memo(function Sidebar({
             projectId={project.id}
             selectedSessionId={selectedSessionId}
             sessions={projectSessions}
+            rootPage={sessionRootPages?.get(project.id)}
+            canLoadRoots={Boolean(onLoadProjectSessions) && !project.missing && (sessionRootPages?.has(project.id)
+              ? !sessionRootPages.get(project.id)!.initialized || Boolean(sessionRootPages.get(project.id)!.nextCursor)
+              : projectSessions.length >= 32)}
+            onLoadRoots={() => { void loadProjectSessions(project.id); }}
             expandedSessionIds={expandedSessionIds}
             loadingSessionIds={loadingSessionIds}
             sessionNextCursors={sessionNextCursors}
@@ -784,12 +807,15 @@ function SidebarSection({ label, icon, expanded, actions, onToggle, children }: 
   );
 }
 
-function ProjectSessions({ actions, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, flat = false, limit = PROJECT_SESSION_COLLAPSE_LIMIT, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren }: { actions: SessionRowActions; projectId: string; sessions: DesktopSessionSummary[]; selectedSessionId?: string; onSelectSession(projectId: string, sessionId: string): void; onSessionContextMenu(session: DesktopSessionSummary, point: { x: number; y: number }): void; flat?: boolean; limit?: number; expandedSessionIds: Set<string>; loadingSessionIds: Set<string>; sessionNextCursors: Map<string, string>; onToggleSession(session: DesktopSessionSummary): void; onLoadMoreSessionChildren(session: DesktopSessionSummary): void }): React.JSX.Element | null {
-  if (!sessions.length) return <div className="biny-sidebar-empty-row biny-sidebar-project-empty">没有聊天</div>;
+function ProjectSessions({ actions, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, flat = false, limit = PROJECT_SESSION_COLLAPSE_LIMIT, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren, rootPage, canLoadRoots, onLoadRoots }: { rootPage?: SessionRootPageState; canLoadRoots?: boolean; onLoadRoots?(): void; actions: SessionRowActions; projectId: string; sessions: DesktopSessionSummary[]; selectedSessionId?: string; onSelectSession(projectId: string, sessionId: string): void; onSessionContextMenu(session: DesktopSessionSummary, point: { x: number; y: number }): void; flat?: boolean; limit?: number; expandedSessionIds: Set<string>; loadingSessionIds: Set<string>; sessionNextCursors: Map<string, string>; onToggleSession(session: DesktopSessionSummary): void; onLoadMoreSessionChildren(session: DesktopSessionSummary): void }): React.JSX.Element | null {
+  if (!sessions.length && !canLoadRoots) return <div className="biny-sidebar-empty-row biny-sidebar-project-empty">没有聊天</div>;
   return (
     <CollapsibleSessionList
       actions={actions}
       limit={limit}
+      rootPage={rootPage}
+      canLoadRoots={canLoadRoots}
+      onLoadRoots={onLoadRoots}
       flat={flat}
       onSelectSession={onSelectSession}
       onSessionContextMenu={onSessionContextMenu}
@@ -820,7 +846,7 @@ interface SessionListProps {
   onLoadMoreSessionChildren(session: DesktopSessionSummary): void;
 }
 
-function CollapsibleSessionList({ limit, ...props }: SessionListProps & { limit: number }): React.JSX.Element {
+function CollapsibleSessionList({ limit, rootPage, canLoadRoots, onLoadRoots, ...props }: SessionListProps & { limit: number; rootPage?: SessionRootPageState; canLoadRoots?: boolean; onLoadRoots?(): void }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const shouldCollapse = props.sessions.length > limit;
   useEffect(() => {
@@ -830,6 +856,12 @@ function CollapsibleSessionList({ limit, ...props }: SessionListProps & { limit:
   return (
     <>
       <SessionList {...props} sessions={visibleSessions} />
+      {(expanded || !shouldCollapse) && canLoadRoots ? <>
+        {rootPage?.error ? <div className="biny-sidebar-empty-row" role="alert">{rootPage.error}</div> : null}
+        <button className="biny-sidebar-session-expand" disabled={rootPage?.loading} onClick={onLoadRoots} type="button">
+          {rootPage?.loading ? "加载中…" : "加载更早会话"}
+        </button>
+      </> : null}
       {shouldCollapse ? (
         <button className="biny-sidebar-session-expand" onClick={() => setExpanded((current) => !current)} type="button">
           {expanded ? "收起" : "显示更多"}
@@ -862,12 +894,12 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
     if (ancestors.has(session.id)) return [];
     const nextAncestors = new Set(ancestors).add(session.id);
     const expandable = !flat && Boolean(session.hasChildren);
-    const expanded = expandable && expandedSessionIds.has(session.id);
-    const loading = expandable && loadingSessionIds.has(session.id);
+    const expanded = expandable && expandedSessionIds.has(sessionKey(session));
+    const loading = expandable && loadingSessionIds.has(sessionKey(session));
     // 子树常驻挂在 Collapse 里，收起是收放高度而不是卸载；未懒加载过的父节点
     // 没有子行，首次展开时 Collapse 已在（open 从一开始就过渡），内容随数据到位撑开。
     const children = (byParent.get(session.id) ?? []).flatMap((child) => renderNode(child, nextAncestors));
-    const nextCursor = sessionNextCursors.get(session.id);
+    const nextCursor = sessionNextCursors.get(sessionKey(session));
     return [
       <SessionTreeRow
         actions={actions}

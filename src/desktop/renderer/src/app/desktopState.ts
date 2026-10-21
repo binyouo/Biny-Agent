@@ -144,12 +144,13 @@ export function mergeProjectSessionPage(
   ];
 }
 
-/** 快照刷新根页时替换根节点，保留已经展开的子树与独立于分页的置顶会话。 */
+/** 用新快照更新已加载会话，移除已删除项；仅置顶快捷入口在取消置顶后退出。 */
 export function replaceProjectSessionRoots(
   sessions: DesktopSessionSummary[],
   projectId: string,
   rootSessions: DesktopSessionSummary[],
-  allProjectSessions: DesktopSessionSummary[]
+  allProjectSessions: DesktopSessionSummary[],
+  loadedRootIds: ReadonlySet<string> = new Set()
 ): DesktopSessionSummary[] {
   const firstProjectIndex = sessions.findIndex((session) => session.projectId === projectId);
   const currentProjectSessions = new Map(
@@ -157,14 +158,14 @@ export function replaceProjectSessionRoots(
       .filter((session) => session.projectId === projectId)
       .map((session) => [session.id, session])
   );
-  const childSessions = sessions.filter((session) => (
+  const loadedSessions = sessions.filter((session) => (
     session.projectId === projectId
-    && session.parentSessionId !== undefined
+    && (!session.pinned || session.parentSessionId !== undefined || loadedRootIds.has(session.id))
     && currentProjectSessions.has(session.id)
   )).map((session) => currentProjectSessions.get(session.id)!);
   const otherSessions = sessions.filter((session) => session.projectId !== projectId);
   const pinnedSessions = [...currentProjectSessions.values()].filter((session) => session.pinned);
-  const merged = new Map([...rootSessions, ...childSessions, ...pinnedSessions].map((session) => [session.id, session]));
+  const merged = new Map([...rootSessions, ...loadedSessions, ...pinnedSessions].map((session) => [session.id, session]));
   const insertAt = firstProjectIndex < 0 ? otherSessions.length : Math.min(firstProjectIndex, otherSessions.length);
   return [
     ...otherSessions.slice(0, insertAt),
