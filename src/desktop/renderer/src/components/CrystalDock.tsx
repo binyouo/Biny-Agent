@@ -27,6 +27,11 @@ export function CrystalDock({ sessionId, onInsert }: { sessionId?: string; onIns
   const [attachThread, setAttachThread] = useState(false);
   const operation = useRef(false);
   const generation = useRef(0);
+  const seedDraftRevision = useRef(0);
+  const changeOpen = (value: boolean): void => {
+    if (!value) seedDraftRevision.current += 1;
+    setOpen(value);
+  };
   useEffect(() => {
     if (!open) return;
     const current = ++generation.current;
@@ -66,13 +71,13 @@ export function CrystalDock({ sessionId, onInsert }: { sessionId?: string; onIns
   );
   return <>
     <Tooltip content="结晶" delay={150} placement="above">
-      <button aria-label="结晶" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-crystal-button" onClick={() => setOpen(true)} type="button">
+      <button aria-label="结晶" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-crystal-button" onClick={() => changeOpen(true)} type="button">
         <Icon name="cube" size={16} />
       </button>
     </Tooltip>
-    <Dialog isOpen={open} onOpenChange={setOpen} padding={0} width={880} purpose="form">
+    <Dialog isOpen={open} onOpenChange={changeOpen} padding={0} width={880} purpose="form">
       <div className="crystal-window">
-        <div className="crystal-window-title"><DialogHeader onOpenChange={setOpen} title="结晶" /></div>
+        <div className="crystal-window-title"><DialogHeader onOpenChange={changeOpen} title="结晶" /></div>
         {error ? <p className="crystal-error" role="alert">{error}</p> : null}
         <div className="crystal-layout" aria-busy={busy}>
           <aside className="crystal-library" aria-label="结晶列表">
@@ -85,10 +90,15 @@ export function CrystalDock({ sessionId, onInsert }: { sessionId?: string; onIns
             })}
             <form className="crystal-seed-form" onSubmit={(event) => {
               event.preventDefault();
-              void request({ action: "seed", name: name.trim(), sessionId: attachThread ? sessionId : undefined }).then((ok) => { if (ok) setName(""); });
+              const revision = seedDraftRevision.current;
+              const pending = request({ action: "seed", name: name.trim(), sessionId: attachThread ? sessionId : undefined });
+              const current = generation.current;
+              void pending.then((ok) => {
+                if (ok && current === generation.current && revision === seedDraftRevision.current) setName("");
+              });
             }}>
               <label htmlFor="crystal-seed-name">想持续了解什么？</label>
-              <input id="crystal-seed-name" maxLength={120} onChange={(event) => setName(event.target.value)} placeholder="一个项目、概念或问题" value={name} />
+              <input id="crystal-seed-name" maxLength={120} onChange={(event) => { seedDraftRevision.current += 1; setName(event.target.value); }} placeholder="一个项目、概念或问题" value={name} />
               {sessionId ? <label className="crystal-checkbox"><input checked={attachThread} onChange={(event) => setAttachThread(event.target.checked)} type="checkbox" />附上当前会话的材料</label> : null}
               <button disabled={busy || !name.trim() || (snapshot?.overview.slots.length ?? 3) >= 3} type="submit">开始观察</button>
             </form>
@@ -100,7 +110,7 @@ export function CrystalDock({ sessionId, onInsert }: { sessionId?: string; onIns
           </aside>
           {snapshot?.detail ? <CrystalDetailPane busy={busy} detail={snapshot.detail} key={`${snapshot.detail.crystal.id}:${snapshot.detail.crystal.updatedAt}`}
             freeSlot={[1, 2, 3].find((slot) => !snapshot.overview.slots.some((entry) => entry.slot === slot))}
-            onInsert={() => { onInsert(`@[${snapshot.detail!.crystal.name.replace(/[[\]\r\n]/gu, " ")}](biny://crystal/${snapshot.detail!.crystal.id})`); setOpen(false); }} onRequest={request} />
+            onInsert={() => { onInsert(`@[${snapshot.detail!.crystal.name.replace(/[[\]\r\n]/gu, " ")}](biny://crystal/${snapshot.detail!.crystal.id})`); changeOpen(false); }} onRequest={request} />
             : <div className="crystal-welcome"><Icon name="cube" size={36} /><h2>让值得留下的内容慢慢成形</h2>
               <p>为关心的主题开启观察，或从自然形成的候选中挑选。材料积累后，补全清单并确认成正式结晶。</p>
               <p>结晶是有来源的参考内容。你决定何时确认、何时引用。</p>
