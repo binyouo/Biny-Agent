@@ -10,7 +10,12 @@ import { useEffect, useState } from "react";
 const cacheLimit = 32;
 const cache = new Map<string, Promise<string | undefined>>();
 
-export function useInlineImageState(projectId: string, path: string, thumbnail = false): { source?: string; loading: boolean } {
+/** 显式刷新只淘汰当前文件的完整图片，不影响消息缩略图或其他文件。 */
+export function invalidateInlineImage(projectId: string, path: string): void {
+  cache.delete(`${projectId}:${path}:full`);
+}
+
+export function useInlineImageState(projectId: string, path: string, thumbnail = false, revision?: number): { source?: string; loading: boolean } {
   const [state, setState] = useState<{ source?: string; loading: boolean }>({ loading: Boolean(path) });
   useEffect(() => {
     setState({ loading: Boolean(path) });
@@ -30,7 +35,7 @@ export function useInlineImageState(projectId: string, path: string, thumbnail =
     return () => {
       active = false;
     };
-  }, [projectId, path, thumbnail]);
+  }, [projectId, path, thumbnail, revision]);
   return state;
 }
 

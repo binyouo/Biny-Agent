@@ -9,6 +9,7 @@ import {
 } from "../../../../filePanelSizing.js";
 import type { TimelineTool } from "../../sessionTimeline.js";
 import type { SessionFileChange } from "../../sessionChanges.js";
+import { invalidateInlineImage } from "../../inlineImage.js";
 import type { LocalReferenceResult } from "../../../../../session/localReferences.js";
 import { WorkspaceBrowserPanel } from "./WorkspaceBrowserPanel.js";
 import { WorkspaceCommitPanel } from "./WorkspaceCommitPanel.js";
@@ -273,6 +274,7 @@ export function useWorkspaceInspector({
     const change = changes.find(entry => entry.path === path);
     const sameChange = previous?.change?.changeCount === change?.changeCount && previous?.change?.diff === change?.diff && previous?.change?.status === change?.status;
     if (previous?.source === source && previous.projectId === projectId && previous.path === path && !previous.failed && sameChange && (previous.pending || !refresh)) return;
+    if (refresh && projectId) invalidateInlineImage(projectId, path);
     const selection = { source, projectId, path, failed: false, pending: true, change };
     previewSelectionRef.current = selection;
     const request = ++previewRequestRef.current;

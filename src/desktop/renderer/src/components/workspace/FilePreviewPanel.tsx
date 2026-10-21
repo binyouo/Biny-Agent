@@ -153,7 +153,7 @@ const FilePreviewContent = memo(function FilePreviewContent({ preview, projectId
   if (!file) return <PreviewState icon="file" text="无法读取文件" />;
   const path = file.path;
   const extension = extensionOf(path);
-  if (imageExtensions.has(extension)) return <ImagePreview path={path} projectId={projectId} onOpenFile={onOpenFile} />;
+  if (imageExtensions.has(extension)) return <ImagePreview path={path} projectId={projectId} revision={preview.revision} onOpenFile={onOpenFile} />;
   if (workspaceMediaKind(path)) return <FileMediaPreview path={path} projectId={projectId} onOpenFile={onOpenFile} />;
   if (file.binary) {
     return <PreviewState icon="file" text="这是二进制文件，请使用系统应用打开。">
@@ -202,8 +202,8 @@ function CodeFilePreview({ file, onRunHtml }: { file: DesktopWorkspaceFilePrevie
 }
 
 /** 图片预览：主进程转 data URL 内联显示；读不到或超限时退回二进制兜底。 */
-function ImagePreview({ path, projectId, onOpenFile }: { path: string; projectId: string; onOpenFile(path: string): void }): React.JSX.Element {
-  const { source, loading } = useInlineImageState(projectId, path);
+function ImagePreview({ path, projectId, revision, onOpenFile }: { path: string; projectId: string; revision?: number; onOpenFile(path: string): void }): React.JSX.Element {
+  const { source, loading } = useInlineImageState(projectId, path, false, revision);
   const [dimensions, setDimensions] = useState<{ width: number; height: number }>();
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
