@@ -12,7 +12,7 @@
  * 步起就带着一个从未发生过的失败。
  */
 import { randomUUID } from "node:crypto";
-import { createSessionFile, resolveSessionFile, sessionIdFromFile } from "./store.js";
+import { createSessionFile, sessionIdFromFile } from "./store.js";
 import { createSessionId } from "./recorder.js";
 import { readStoredSessionEvents } from "./events.js";
 import type { SessionEvent } from "./recorder.js";
@@ -72,8 +72,7 @@ export async function forkSession(
   sourceSession: string | undefined,
   options: ForkSessionOptions = {}
 ): Promise<ForkedSession> {
-  const sourcePath = await resolveSessionFile(persistenceRoot, sourceSession);
-  const { events } = await readStoredSessionEvents(persistenceRoot, sourceSession);
+  const { events, filePath: sourcePath } = await readStoredSessionEvents(persistenceRoot, sourceSession);
   if (!events.length) throw new Error("Cannot fork an empty session.");
 
   const requested = options.upToEvent ?? events.length;
