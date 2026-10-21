@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
@@ -49,6 +49,8 @@ test("script helpers execute real Shell and HTTP tools and preserve admission bo
     registry.registerBuiltinTool(createWebFetchTool({ ...defaultConfig.web.fetch, allowPrivateNetwork: true }, { enabled: false }));
     const config = structuredClone(defaultConfig);
     config.permission.mode = "full-access";
+    // This isolated fixture exercises unrestricted helper execution; restrictions are tested below.
+    config.permission.denyPaths = [];
     const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry }, new PermissionManager(config.permission), () => {}, () => ({}), new Set(["Bash", "WebFetch"]));
     const result = await coordinator.createCodeModeTool().execute("helpers", { language: "typescript",
       code: `const body: {answer:number} = await (await fetch(${JSON.stringify(url)})).json(); const out = await sh("printf hello"); console.log(body.answer); return {answer:body.answer,out};` });
@@ -69,6 +71,19 @@ test("script helpers execute real Shell and HTTP tools and preserve admission bo
     const shellFailure = await coordinator.createCodeModeTool().execute("shell-failure", { code: 'return await sh("exit 7");' });
     assert.equal(shellFailure.isError, true);
     assert.match(JSON.stringify(shellFailure.details), /7/);
+    const restrictedConfig = structuredClone(config);
+    restrictedConfig.permission.denyPaths = ["restricted-marker"];
+    const sandboxed = new ToolExecutionCoordinator({ workspaceRoot: root, config: restrictedConfig, recorder, toolRegistry: registry },
+      new PermissionManager(restrictedConfig.permission), () => {}, () => ({}), new Set(["Bash"]));
+    const sandboxDenied = await sandboxed.createCodeModeTool().execute("sandbox-denied-shell", {
+      code: 'return await sh("echo forbidden > restricted-marker");'
+    });
+    assert.equal(sandboxDenied.isError, true, "nested helpers must retain explicit path restrictions");
+    const sandboxDetails = JSON.stringify(sandboxDenied.details);
+    if (process.platform === "darwin") assert.match(sandboxDetails, /Operation not permitted|Permission denied/i);
+    else assert.match(sandboxDetails, /Cannot enforce command sandbox restrictions.*command was not started/u);
+    await assert.rejects(access(path.join(root, "restricted-marker")), { code: "ENOENT" });
+    assert.equal(requests, 2, "restricted shell must not cause extra HTTP requests");
   } finally {
     await recorder?.close();
     server.closeAllConnections();

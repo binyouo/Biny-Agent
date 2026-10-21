@@ -75,7 +75,15 @@ const selected = [...operations, ...goals, "permission"].map((operation) => {
   return clauses[0]!.getText(parsed);
 });
 const methods = ["assertRequestAdmission", "executeAdmission", "ensureSessionWriter", "claimSessionWriter"];
-const isolated = stripTypeScriptTypes(`class PauseAdmissionHarness {
+const validationSource = readFileSync(new URL("../src/runtime/host/validation.ts", import.meta.url), "utf8");
+const validationParsed = ts.createSourceFile("validation.ts", validationSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const validationHelpers = ["readModelRoute", "readFastMode"].map((name) => {
+  const matches = validationParsed.statements.filter((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.equal(matches.length, 1, `Expected actual validation helper ${name}`);
+  return matches[0]!.getText(validationParsed).replace(/^export /u, "");
+}).join("\n");
+const isolated = stripTypeScriptTypes(`${validationHelpers}\nclass PauseAdmissionHarness {
 ${methods.map((name) => method(name).getText(parsed)).join("\n")}
 async execute(connection, frame) {
 ${statements.slice(0, initialFenceIndex + 1).map((node) => node.getText(parsed)).join("\n")}
@@ -84,6 +92,18 @@ switch (frame.operation) { ${selected.join("\n")} default: throw new Error("Unex
 }
 }
 PauseAdmissionHarness.prototype;`, { mode: "strip" });
+
+test("actual optional model-route and fast-mode parsers retain validation", () => {
+  const helpers = runInNewContext(stripTypeScriptTypes(`${validationHelpers}\n({ readModelRoute, readFastMode });`, { mode: "strip" })) as {
+    readModelRoute(value: unknown): "tool" | undefined;
+    readFastMode(value: unknown): boolean | undefined;
+  };
+  assert.equal(helpers.readModelRoute(undefined), undefined);
+  assert.equal(helpers.readModelRoute("tool"), "tool");
+  for (const value of [null, false, "other", 1, {}]) assert.throws(() => helpers.readModelRoute(value), /modelRoute must be tool/u);
+  for (const value of [undefined, true, false]) assert.equal(helpers.readFastMode(value), value);
+  for (const value of [null, "true", 1, {}]) assert.throws(() => helpers.readFastMode(value), /fastMode must be a boolean/u);
+});
 
 type RecordValue = Record<string, unknown>;
 interface Connection { clientId: string; surface: string; exitingForPause: boolean }

@@ -1,3 +1,4 @@
+import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -842,7 +843,9 @@ async function testDesktopHostVersionConflict(): Promise<void> {
     await writeFile(paths.lockPath, `${process.pid}\n`, { mode: 0o600 });
     const agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     try {
-      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []), /protocol 2 is incompatible with 11/);
+      assert.notEqual(registration.protocolVersion, runtimeHostProtocolVersion, "fixture must represent an incompatible live owner");
+      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []),
+        new RegExp(`protocol 2 is incompatible with ${runtimeHostProtocolVersion}`, "u"));
       assert.deepEqual(JSON.parse(await readFile(paths.registrationPath, "utf8")), registration);
       assert.equal(await readFile(paths.lockPath, "utf8"), `${process.pid}\n`, "a failed client must not disturb the live owner");
     } finally {
