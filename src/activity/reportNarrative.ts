@@ -1,7 +1,7 @@
 /** 把可追溯的 Activity 报告骨架改写为第一人称日志，失败时保留骨架。 */
 import type { AgentModel } from "../agent/core/types.js";
 import { generateNativeText, nativeJsonMessages } from "../llm/nativeJson.js";
-import { persistActivityReport, type ActivityReportResult } from "./analyzer.js";
+import { isActivityReportCurrent, persistActivityReport, type ActivityReportResult } from "./analyzer.js";
 import type { ActivityStore } from "./store.js";
 
 export interface ActivityReportNarrativeOptions {
@@ -29,6 +29,7 @@ export async function narrateActivityReport(
   options.signal?.throwIfAborted();
   if (report.cached || options.skeleton || !options.model || report.sessionCount === 0) return report;
   const fallback = { ...report, narrativeModel: options.model.modelId };
+  let useFallback = false;
   try {
     const generated = await generateNativeText(
       options.model,
@@ -38,15 +39,20 @@ export async function narrateActivityReport(
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
     const markdown = generated.text.trim();
-    if (!validNarrative(markdown, report.markdown)) return fallback;
-    const narrated = { ...report, markdown, narrativeModel: options.model.modelId };
-    if (!options.store || persistActivityReport(options.store, narrated, new Date(), report)) return narrated;
+    if (!validNarrative(markdown, report.markdown)) {
+      useFallback = true;
+    } else {
+      const narrated = { ...report, markdown, narrativeModel: options.model.modelId };
+      if (!options.store || persistActivityReport(options.store, narrated, new Date(), report)) return narrated;
+    }
     // CAS 拒写不是模型失败；离开 catch 后显式取消，不把旧报告配上最新缓存的生成时间。
   } catch {
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
-    return fallback;
+    useFallback = true;
   }
+  // 模型失败也不能把旧骨架交给响应或文件导出；只读检查放在 catch 外，避免吞掉取消。
+  if (useFallback && (!options.store || isActivityReportCurrent(options.store, report))) return fallback;
   throw new DOMException("Activity 日报缓存已刷新，请重新生成。", "AbortError");
 }
 

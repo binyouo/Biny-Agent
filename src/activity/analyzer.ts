@@ -561,6 +561,13 @@ export async function buildActivityReport(
   return result;
 }
 
+/** 失败退回原骨架前只核对所有权，不刷新缓存、时间戳或 generation。 */
+export function isActivityReportCurrent(store: ActivityStore, source: ActivityReportResult): boolean {
+  const expectedGeneration = reportCacheGenerations.get(source);
+  return expectedGeneration !== undefined
+    && store.getSummary("daily", source.date)?.stats.reportState?.generation === expectedGeneration;
+}
+
 /** 日报和日结保存在同一 SQLite 行；迟到叙事不得撤销日结刷新或覆盖较新的日报。 */
 export function persistActivityReport(
   store: ActivityStore,
