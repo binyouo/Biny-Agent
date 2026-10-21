@@ -22,10 +22,11 @@ interface PopoverBox {
   width: number;
 }
 
-export function ProviderIconPicker({ value, onChange, className, defaultIcon, triggerId }: {
+export function ProviderIconPicker({ value, onChange, className, defaultIcon, disabled = false, triggerId }: {
   value?: string | null;
   onChange(iconId: string | null): void;
   className?: string;
+  disabled?: boolean;
   defaultIcon?: React.ReactNode;
   /** 触发按钮的 id，供外层 <label htmlFor> 关联；不传就没有关联。 */
   triggerId?: string;
@@ -37,7 +38,9 @@ export function ProviderIconPicker({ value, onChange, className, defaultIcon, tr
   const [box, setBox] = useState<PopoverBox>();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const presence = useClosingPresence(open);
+  const interactive = open && !disabled;
+  const presence = useClosingPresence(interactive);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   const popoverId = useId();
 
   // 数据只在第一次打开时拉；已加载过就直接用缓存，避免重复解析 480KB。
@@ -130,9 +133,10 @@ export function ProviderIconPicker({ value, onChange, className, defaultIcon, tr
     <div className={className ? "provider-icon-picker " + className : "provider-icon-picker"}>
       <button
         aria-controls={presence.present ? popoverId : undefined}
-        aria-expanded={open}
+        aria-expanded={interactive}
         aria-haspopup="dialog"
         className="provider-icon-trigger"
+        disabled={disabled}
         id={triggerId}
         onClick={() => setOpen((current) => !current)}
         ref={triggerRef}
@@ -150,6 +154,7 @@ export function ProviderIconPicker({ value, onChange, className, defaultIcon, tr
           className="provider-icon-popover"
           data-popover-phase={presence.phase}
           id={popoverId}
+          inert={!interactive}
           ref={surfaceRef}
           role="dialog"
           style={{
@@ -164,6 +169,7 @@ export function ProviderIconPicker({ value, onChange, className, defaultIcon, tr
             <input
               aria-label="搜索图标…"
               autoFocus
+              disabled={!interactive}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="搜索图标…"
               value={search}
@@ -179,6 +185,7 @@ export function ProviderIconPicker({ value, onChange, className, defaultIcon, tr
               <div className="provider-icon-grid">
                 <button
                   aria-pressed={!value}
+                  disabled={!interactive}
                   className={"provider-icon-cell is-default" + (!value ? " is-selected" : "")}
                   onClick={() => { onChange(null); setOpen(false); }}
                   title="默认图标"
@@ -189,6 +196,7 @@ export function ProviderIconPicker({ value, onChange, className, defaultIcon, tr
                 {filtered.map((item) => (
                   <button
                     aria-pressed={value === item.id}
+                    disabled={!interactive}
                     className={"provider-icon-cell" + (value === item.id ? " is-selected" : "")}
                     key={item.id}
                     onClick={() => { onChange(item.id); setOpen(false); }}
