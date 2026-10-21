@@ -477,10 +477,10 @@ async function findInstructionFile(workspaceRoot: string, directory: string, ign
 function truncateUtf8(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return "";
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-  const suffix = "\n[truncated]";
+  let suffix = "\n[truncated]";
   const suffixBytes = Buffer.byteLength(suffix, "utf8");
-  if (maxBytes <= suffixBytes) return Buffer.from(value, "utf8").subarray(0, maxBytes).toString("utf8");
-  const targetBytes = maxBytes - suffixBytes;
+  if (maxBytes <= suffixBytes) suffix = "";
+  const targetBytes = maxBytes - (suffix ? suffixBytes : 0);
   let low = 0;
   let high = value.length;
   while (low < high) {
@@ -488,6 +488,10 @@ function truncateUtf8(value: string, maxBytes: number): string {
     if (Buffer.byteLength(value.slice(0, middle), "utf8") <= targetBytes) low = middle;
     else high = middle - 1;
   }
+  // Keep the original text intact at the boundary, without normalizing existing lone surrogates.
+  if (low > 0 && low < value.length
+    && value.charCodeAt(low - 1) >= 0xD800 && value.charCodeAt(low - 1) <= 0xDBFF
+    && value.charCodeAt(low) >= 0xDC00 && value.charCodeAt(low) <= 0xDFFF) low -= 1;
   return `${value.slice(0, low)}${suffix}`;
 }
 
