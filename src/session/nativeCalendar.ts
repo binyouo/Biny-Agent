@@ -36,12 +36,37 @@ function localMidnight(day: string, timeZone: string): number {
   const target = Date.parse(`${day}T00:00:00.000Z`);
   const formatter = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  let instant = target;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  const wallTime = (instant: number): number => {
     const parts = formatter.formatToParts(new Date(instant));
     const part = (type: string): number => Number(parts.find((item) => item.type === type)?.value);
-    const displayed = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
-    instant += target - displayed;
+    return Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
+  };
+  let before: number | undefined;
+  let within: number | undefined;
+  let foundMidnight = false;
+  const observe = (instant: number): number => {
+    const displayed = wallTime(instant);
+    foundMidnight ||= displayed === target;
+    if (displayed < target) before = Math.max(before ?? instant, instant);
+    else if (displayed < target + 86_400_000) within = Math.min(within ?? instant, instant);
+    return displayed;
+  };
+  let instant = target;
+  for (let attempt = 0; attempt < 4; attempt += 1) instant += target - observe(instant);
+  observe(instant);
+  // 缺失的午夜会让迭代在前一日和当日之间摆动；只收紧已观察到的跨日区间。
+  // 保留普通/重复午夜以及整日缺失时原有的解析行为，不假设跳时正好为一小时。
+  if (!foundMidnight && before !== undefined && within !== undefined && before < within) {
+    let low = before;
+    let high = within;
+    for (let attempt = 0; attempt < 53 && high - low > 1; attempt += 1) {
+      const middle = low + Math.floor((high - low) / 2);
+      const displayed = wallTime(middle);
+      if (displayed < target) low = middle;
+      else if (displayed < target + 86_400_000) high = middle;
+      else return instant;
+    }
+    if (high - low === 1) return high;
   }
   return instant;
 }
