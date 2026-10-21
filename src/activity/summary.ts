@@ -104,6 +104,8 @@ export interface ActivitySummarySourceSession {
   snapshotCount: number;
   ocrCharCount: number;
   appNames: string[];
+  /** 起点真实点击的应用；仅补足首个 focus 之前的已知归属。 */
+  initialClickApplication?: string;
   /** 只包含 event_type = app_focus 的切换事件，顺序与 perAppDurationsForSession 一致。 */
   applicationEvents: Array<{ occurredAt: string; application?: string }>;
   analysis?: ActivitySessionAnalysis;
@@ -398,7 +400,9 @@ function perAppDurationsForSession(
   }
 
   let cursor = startedAt;
-  let currentApp = focusEvents[0]?.app;
+  let currentApp = focusEvents[0]!.at > startedAt
+    ? session.initialClickApplication ?? focusEvents[0]?.app
+    : focusEvents[0]?.app;
   for (const event of focusEvents) {
     if (currentApp) {
       const duration = Math.max(0, event.at - cursor);

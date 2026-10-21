@@ -1082,6 +1082,7 @@ export class ActivityStore {
       snapshotCount: Number(row.snapshot_count ?? 0),
       ocrCharCount: 0,
       appNames: parseJsonArray<string>(row.app_names),
+      initialClickApplication: undefined as string | undefined,
       applicationEvents: [] as Array<{ occurredAt: string; application?: string }>,
       analysis: undefined as ActivitySummarySource["sessions"][number]["analysis"]
     }));
@@ -1104,16 +1105,29 @@ export class ActivityStore {
       });
     }
     const appRows = database.prepare(`
-      SELECT session_id, application
+      SELECT session_id, occurred_at, event_type, application, fallback_reason
       FROM ${activityEventProjection}
       WHERE application IS NOT NULL AND application <> '' AND session_id IN (${sessionPlaceholders})
       ORDER BY occurred_at ASC, id ASC
     `).all(...sessionIds) as Array<Record<string, unknown>>;
+    const initialClickApps = new Map<string, Set<string>>();
     for (const row of appRows) {
       const session = byId.get(String(row.session_id));
       const application = nullableString(row.application)?.trim();
-      if (!session || !application || session.appNames.includes(application)) continue;
-      session.appNames.push(application);
+      if (!session || !application) continue;
+      // idle 后同一应用的点击可创建新会话；首次 focus 之前的归属必须来自起点证据。
+      if (row.event_type === "click" && String(row.occurred_at) === session.startedAt
+        && row.fallback_reason !== "sensitive_app") {
+        const apps = initialClickApps.get(session.id) ?? new Set<string>();
+        apps.add(application);
+        initialClickApps.set(session.id, apps);
+      }
+      if (!session.appNames.includes(application)) session.appNames.push(application);
+    }
+    for (const session of sessions) {
+      const apps = initialClickApps.get(session.id);
+      // 同一毫秒有相互冲突的起点证据时保留旧 fallback，不依赖随机事件 ID 猜顺序。
+      if (apps?.size === 1) session.initialClickApplication = [...apps][0];
     }
     const ocrRows = database.prepare(`
       SELECT session_id, text
