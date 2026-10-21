@@ -7,7 +7,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { nextCron } from "./AutomationCron.js";
+import { nextCron, nextCronOccurrence } from "./AutomationCron.js";
 import type { RuntimeEventAuthority } from "./RuntimeAuthority.js";
 import type { AgentRunOutcome, InteractiveRuntimeHandle, SubmittedAgentRun } from "./InteractiveAgentRuntime.js";
 
@@ -196,9 +196,20 @@ export class AutomationStore {
     const automation = this.require(automationId);
     const now = new Date().toISOString();
     // Discovery consumes a once schedule's cursor; resume must not create another fire.
-    const next = automation.triggerType === "once"
-      ? automation.nextFireAt
-      : automation.nextFireAt ?? initialFireAt(automation.triggerType, automation.schedule, now);
+    let next = automation.nextFireAt;
+    if (next === undefined && automation.triggerType !== "once") {
+      if (automation.triggerType === "cron") {
+        // Keep the legacy missing-cursor fallback, but do not rewind past durable
+        // fire/discovery instants and resurrect an exhausted finite schedule.
+        const latest = this.database.prepare(
+          "SELECT MAX(automation_time_ms(scheduled_at)) AS scheduled_ms, MAX(automation_time_ms(created_at)) AS created_ms FROM automation_pending_fires WHERE automation_id = ?"
+        ).get(automationId) as { scheduled_ms: number | null; created_ms: number | null };
+        const after = new Date(Math.max(Date.parse(now), latest.scheduled_ms ?? -Infinity, latest.created_ms ?? -Infinity));
+        next = nextCronOccurrence(automation.schedule.cron ?? "* * * * *", after, automation.schedule.timezone)?.toISOString();
+      } else {
+        next = initialFireAt(automation.triggerType, automation.schedule, now);
+      }
+    }
     if (automation.status === "active") return automation;
     return this.withAutomationEvent(automation, "automation.status", { status: "active" }, now, () => {
       this.database.prepare("UPDATE automations SET status = 'active', next_fire_at = ?, consecutive_failures = 0, revision = revision + 1, updated_at = ? WHERE automation_id = ?").run(next ?? null, now, automationId);
@@ -338,7 +349,7 @@ export class AutomationStore {
           this.updateStatus(automationId, "expired");
           continue;
         }
-        // 单个 automation 推进失败（如只在闰日命中的 cron 触发后 366 天内没有下一次）不能
+        // 单个 automation 推进失败（如持久化的 cron 表达式或时区无效）不能
         // 中断整轮 claim，否则它按 next_fire_at 永远排在最前，让后面的 automation 全部停摆。
         this.updateStatus(automationId, "paused", error instanceof Error ? error.message : String(error));
         continue;
@@ -818,7 +829,7 @@ function advanceFireAt(automation: AutomationRecord, scheduledAt: Date): string 
   if (automation.triggerType === "interval" || automation.triggerType === "heartbeat") {
     return new Date(scheduledAt.getTime() + (automation.schedule.intervalMs ?? 60_000) + jitter(automation.schedule.jitterMs)).toISOString();
   }
-  return nextCron(automation.schedule.cron ?? "* * * * *", scheduledAt, automation.schedule.timezone).toISOString();
+  return nextCronOccurrence(automation.schedule.cron ?? "* * * * *", scheduledAt, automation.schedule.timezone)?.toISOString();
 }
 
 function jitter(maximum = 0): number {
