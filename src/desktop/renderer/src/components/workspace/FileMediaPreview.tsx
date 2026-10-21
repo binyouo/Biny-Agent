@@ -141,6 +141,11 @@ function formatMediaTime(value: number): string {
 
 interface AudioGraph { context: AudioContext; analyser: AnalyserNode; source: MediaElementAudioSourceNode }
 
+function observeAudioState(context: AudioContext, onChange: () => void): () => void {
+  context.onstatechange = onChange;
+  return () => { context.onstatechange = null; };
+}
+
 function useAudioSpectrum(media: React.RefObject<HTMLMediaElement | null>, canvas: React.RefObject<HTMLCanvasElement | null>, container: React.RefObject<HTMLDivElement | null>, playing: boolean, pending: boolean): () => AudioContext {
   const graph = useRef<AudioGraph | undefined>(undefined);
   const dimensions = useRef({ width: 0, height: 0 });
@@ -206,12 +211,21 @@ function useAudioSpectrum(media: React.RefObject<HTMLMediaElement | null>, canva
     preference.addEventListener("change", update);
     return () => { theme.disconnect(); preference.removeEventListener("change", update); };
   }, [canvas]);
+  const suspendIdle = useEffectEvent(() => {
+    const context = graph.current?.context;
+    if (!playing && !pending && context?.state === "running") void context.suspend().catch(() => undefined);
+  });
+  useEffect(() => {
+    const context = graph.current?.context;
+    if (!context) return;
+    return observeAudioState(context, () => suspendIdle());
+  }, [ready]);
   useEffect(() => {
     stopFrame();
     if (playing && ready && !reducedMotion) {
       const animate = () => { draw(true); frame.current = window.requestAnimationFrame(animate); };
       animate();
-    } else { draw(false); if (!playing && !pending && graph.current?.context.state === "running") void graph.current.context.suspend().catch(() => undefined); }
+    } else { draw(false); suspendIdle(); }
     return stopFrame;
   }, [playing, pending, ready, reducedMotion, stopFrame, themeRevision]);
   useEffect(() => () => {
