@@ -213,9 +213,9 @@ try {
     executionTemplate: { prompt: "must not execute", mode: "plan" } as unknown as AutomationExecutionTemplate
   }), /unsupported field: mode/u);
 
-  // 闰日 cron 触发后 366 天内找不到下一次：推进失败只能暂停自己，不能阻塞同一轮其他 automation。
-  const leapDay = new Date(2024, 1, 29, 0, 0, 0).toISOString();
-  const afterLeapDay = new Date(2024, 2, 1, 0, 0, 0);
+  // 有效闰日 cron 必须继续到 2028；损坏的存储表达式推进失败只能暂停自己，不能阻塞其他 automation。
+  const leapDay = "2024-02-29T00:00:00.000Z";
+  const afterLeapDay = new Date("2024-03-01T00:00:00.000Z");
   const leapCron = automations.create({
     automationId: "automation-leap-day",
     name: "leap-day",
@@ -225,7 +225,17 @@ try {
   });
   authority.databaseHandle()
     .prepare("UPDATE automations SET schedule_json = ?, next_fire_at = ? WHERE automation_id = ?")
-    .run(JSON.stringify({ cron: "0 0 29 2 *" }), leapDay, leapCron.automationId);
+    .run(JSON.stringify({ cron: "0 0 29 2 *", timezone: "UTC" }), leapDay, leapCron.automationId);
+  const malformedCron = automations.create({
+    automationId: "automation-malformed-cron",
+    name: "malformed-cron",
+    triggerType: "cron",
+    schedule: { cron: "0 0 * * *", timezone: "UTC" },
+    executionTemplate: { prompt: "must not execute" }
+  });
+  authority.databaseHandle()
+    .prepare("UPDATE automations SET schedule_json = ?, next_fire_at = ? WHERE automation_id = ?")
+    .run(JSON.stringify({ cron: "61 * * * *", timezone: "UTC" }), leapDay, malformedCron.automationId);
   const healthyAutomation = automations.create({
     automationId: "automation-healthy",
     name: "healthy",
@@ -242,7 +252,13 @@ try {
     true,
     "unschedulable cron must not block the automations queued behind it"
   );
-  assert.equal(automations.get(leapCron.automationId)?.status, "paused");
+  assert.equal(automations.get(leapCron.automationId)?.status, "active");
+  assert.equal(automations.get(leapCron.automationId)?.nextFireAt, "2028-02-29T00:00:00.000Z");
+  assert.equal(dueFires.filter((fire) => fire.automationId === leapCron.automationId).length, 1);
+  assert.equal(dueFires.find((fire) => fire.automationId === leapCron.automationId)?.scheduledAt, leapDay);
+  assert.equal(automations.get(malformedCron.automationId)?.status, "paused");
+  assert.equal(dueFires.some((fire) => fire.automationId === malformedCron.automationId), false,
+    "malformed stored cron must not publish a pending fire");
 
   const graph = graphs.createGraph([
     { nodeKey: "first", prompt: "first" },
