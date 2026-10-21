@@ -21,7 +21,7 @@ import path from "node:path";
 import { globalConfigDir } from "../../config/paths.js";
 import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
 import { HeartbeatFileStore } from "../../agent/context/heartbeat.js";
-import { TodoStore, validateTodoItems } from "../../session/todoStore.js";
+import { TodoStore, validateTodoItems, type TodoItem } from "../../session/todoStore.js";
 import { resolveSessionFile, sessionIdFromFile } from "../../session/store.js";
 
 import { resolveDateKey } from "../dateKey.js";
@@ -234,7 +234,7 @@ export async function heartbeatShowCommand(_workspaceRoot: string, options: Loca
 export async function todoShowCommand(workspaceRoot: string, sessionInput: string | undefined, options: LocalCapabilityOutputOptions = {}): Promise<void> {
   const result = process.env.BINY_AGENT_CONTEXT
     ? await executeSessionCommand(workspaceRoot, "TodoShow", {}, sessionInput)
-    : { sessionId: sessionInput ?? "latest", todos: (await openTodoStore(workspaceRoot, sessionInput)).list() };
+    : await readTodoSnapshot(workspaceRoot, sessionInput);
   printResult(result, options.json, (value) => {
     const todos = asRecord(value).todos;
     return Array.isArray(todos) && todos.length ? JSON.stringify(todos, null, 2) : "当前 session 没有 Todo。";
@@ -255,11 +255,12 @@ export async function todoClearCommand(workspaceRoot: string, sessionInput: stri
   printResult({ todos: asRecord(result).todos }, options.json, () => "当前 session Todo 已清空。");
 }
 
-async function openTodoStore(workspaceRoot: string, sessionInput: string | undefined): Promise<TodoStore> {
+async function readTodoSnapshot(workspaceRoot: string, sessionInput: string | undefined): Promise<{ sessionId: string; todos: TodoItem[] }> {
   const file = await resolveSessionFile(workspaceRoot, sessionInput ?? "latest");
-  const store = new TodoStore(workspaceRoot, sessionIdFromFile(file));
+  const sessionId = sessionIdFromFile(file);
+  const store = new TodoStore(workspaceRoot, sessionId);
   await store.initialize();
-  return store;
+  return { sessionId, todos: store.list() };
 }
 
 async function withHost<T>(workspaceRoot: string, options: LocalCapabilityOutputOptions, action: (client: RuntimeHostClient) => Promise<T>): Promise<void> {

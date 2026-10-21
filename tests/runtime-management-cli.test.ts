@@ -118,6 +118,10 @@ for (const executionMode of ["direct", "code_mode"] as const) {
           delta = { tool_calls: [{ index: 0, id: "manage-cli", type: "function", function: { name, arguments: JSON.stringify(args) } }] };
           reason = "tool_calls";
         } else {
+          const result = shellResult(body);
+          assert.equal(result.exitCode, 0, result.stderr);
+          const shown: unknown = JSON.parse(result.stdout.trim().split(/\r?\n/u).at(-1) ?? "null");
+          assert.deepEqual(shown, { sessionId: runtime!.commands.agent.getInfo().sessionId, todos });
           const output = JSON.stringify(body.messages.findLast((message: { role: string }) => message.role === "tool"));
           assert.match(output, /Finish CLI management/u);
           assert.doesNotMatch(output, /Session is busy|isError.*true|error:/iu);
