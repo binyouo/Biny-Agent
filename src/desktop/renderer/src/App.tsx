@@ -1256,6 +1256,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = projectRef.current;
     if (!projectId) throw new Error("请先打开一个项目。");
     if (selectedRef.current !== sessionId) throw new Error("请回到原消息所在的会话后再提交编辑。");
+    const navigationRequest = loadRequestRef.current;
+    const isCurrentScope = (): boolean => loadRequestRef.current === navigationRequest
+      && projectRef.current === projectId && selectedRef.current === sessionId;
     const previousNavigation = navigationRef.current;
     const previousDocument = documentRef.current;
     const edit = window.biny.editPrompt;
@@ -1270,12 +1273,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     try {
       receipt = await edit(projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey);
     } catch (error) {
-      if (projectRef.current === projectId && selectedRef.current === sessionId && previousDocument) setDocument(previousDocument);
-      if (projectRef.current === projectId && selectedRef.current === sessionId) {
+      if (isCurrentScope()) {
+        if (previousDocument) setDocument(previousDocument);
         await refreshRuntimeFailure(projectId, sessionId).catch(() => undefined);
       }
       throw error;
     }
+    if (!isCurrentScope()) return;
     setSelectedSessionId(receipt.sessionId);
     if (receipt.sessionId !== sessionId) {
       const target: DesktopNavigationTarget = { projectId, sessionId: receipt.sessionId };
@@ -1324,13 +1328,21 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const submitEditedMessage = useCallback(async (value: string): Promise<void> => {
     const current = editingMessage;
     if (!current) return;
+    const navigationRequest = loadRequestRef.current;
+    const projectId = projectRef.current;
+    const sessionId = selectedRef.current;
+    const isCurrentScope = (): boolean => loadRequestRef.current === navigationRequest
+      && projectRef.current === projectId && selectedRef.current === sessionId;
+    const pending = { turnId: current.turnId, user: value, userMessageIndex: current.userMessageIndex };
     setGenerationError(undefined);
-    setEditInFlight({ turnId: current.turnId, user: value, userMessageIndex: current.userMessageIndex });
+    setEditInFlight(pending);
     try {
       await editUserMessage(value, current.userMessageIndex, globalThis.crypto.randomUUID());
-      setEditingMessage(undefined);
+      if (!isCurrentScope()) return;
+      setEditingMessage((active) => active === current ? undefined : active);
     } catch (error) {
-      setEditInFlight(undefined);
+      setEditInFlight((active) => active === pending ? undefined : active);
+      if (!isCurrentScope()) return;
       throw error;
     }
   }, [editingMessage, editUserMessage]);

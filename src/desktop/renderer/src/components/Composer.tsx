@@ -171,6 +171,8 @@ export const Composer = memo(function Composer({
   const snapshot = useSyncExternalStore(draftState.subscribe, draftState.getSnapshot, draftState.getSnapshot);
   const [editDraft, setEditDraft] = useState<ReferenceDraft>({ value: "", tokens: [] });
   const editDraftRef = useRef(editDraft);
+  const editingMessageRef = useRef(editingMessage);
+  useLayoutEffect(() => { editingMessageRef.current = editingMessage; }, [editingMessage]);
   const editHistory = useRef<ReferenceDraftTransition[]>([]);
   const editing = editingMessage !== undefined;
   const input = editing ? editDraft.value : snapshot.draft.value;
@@ -370,8 +372,10 @@ export const Composer = memo(function Composer({
         setDraft({ value: "", tokens: [] });
         await onSubmitEdit(value);
       } catch (submitError) {
-        setDraft(draft);
-        if (mounted.current) onSubmitError(errorMessage(submitError));
+        if (mounted.current && editingMessageRef.current === editingMessage) {
+          setDraft(draft);
+          onSubmitError(errorMessage(submitError));
+        }
       } finally {
         setBusy(false);
         submitFlightRef.current = false;
