@@ -278,7 +278,7 @@ biny task message <taskRunId> "补充上下文" --session <sessionId> --message-
 biny task continue <taskRunId> "新的有限任务" --session <sessionId> --message-id <id>
 ```
 
-`task list --newest-first` 按新到旧查询任务。`inspect` 支持 `--attempt-id` 查询旧执行、`--after-sequence` 分页；消息与后续任务的 ID 用于失败重试去重，重试必须保留原 ID 和内容。
+`task list --newest-first` 按新到旧查询任务。`inspect` 支持 `--attempt-id` 查询旧执行、`--after-sequence` 分页；旧执行没有消息记录时返回空消息列表，不借用后续执行的消息；消息与后续任务的 ID 用于失败重试去重，重试必须保留原 ID 和内容。
 
 恢复会核对原工具与权限契约；旧断点与当前策略不匹配时保持阻塞。先查明既有副作用，再明确创建新的有限任务，不能把重试当作自动恢复。
 
