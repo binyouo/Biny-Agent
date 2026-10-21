@@ -921,6 +921,7 @@ async function initializeCommandRuntime(
     taskOptions: { retrySafety?: TaskRetrySafety } = {},
     workerContinuation?: PreparedSubagentTask
   ): Promise<{ task: TaskRunWithAttempts; completion: Promise<TaskClosureResult> }> => {
+    if (closing) throw new Error("Task runtime is closing.");
     const task = taskRuns.get(taskRunId);
     if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
     assertTaskOwner(task);
@@ -1520,6 +1521,7 @@ async function initializeCommandRuntime(
       for (const lease of commandScopes.values()) lease.controller.abort(new Error("Runtime is closing."));
       commandScopes.clear();
       for (const pending of workerResumeAdmissions.values()) pending.controller.abort(new Error("Task runtime is closing."));
+      for (const controller of durableTaskControllers.values()) controller.abort(new Error("Task runtime is closing."));
       userInput.setRun();
       try {
         const wasOwner = backgroundOwners.values().next().value === backgroundOwner;
@@ -1528,6 +1530,9 @@ async function initializeCommandRuntime(
         if (wasOwner) backgroundOwners.values().next().value?.start();
         await Promise.allSettled([...workerResumeAdmissions.values()].map(pending => pending.promise));
         await subagentTaskManager?.close();
+        // Task closures also own snapshot and verification writes outside the
+        // child scheduler. Keep their recorder and stores open until they settle.
+        await Promise.allSettled([...durableTaskPromises.values()]);
         await heartbeatAgent?.close();
         heartbeatCommunication.close();
         await agent.close();
