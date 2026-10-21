@@ -391,11 +391,12 @@ export class DesktopProjectService {
       if (project.missing) { incompleteSessions++; continue; }
       try {
         const dataRoot = await this.storage.ensureProjectData(project);
-        const sessionIds = sessionId ? [sessionId] : days === "all"
-          ? (await listSessionFiles(dataRoot)).map(file => file.replace(/\.jsonl$/u, ""))
-          : (await listSessionSummaries(dataRoot)).filter(summary => Date.parse(summary.updatedAt) >= start.getTime())
-            .map(summary => summary.fileName.replace(/\.jsonl$/u, ""));
-        for (const id of sessionIds) {
+        // The recovery catalog omits unreadable or message-less histories; statistics
+        // must inspect every stored session to report incomplete reads honestly.
+        const files = await listSessionFiles(dataRoot);
+        for (const file of files) {
+          const id = file.replace(/\.jsonl$/u, "");
+          if (sessionId && id !== sessionId) continue;
           try {
             const stored = await this.optimizationIndex.read(dataRoot, id);
             for (const entry of stored) {
