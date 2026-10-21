@@ -38,7 +38,7 @@ interface Managed {
 }
 interface Opened { client: FakeClient; tools: Tool[]; activateToolNotifications?: () => void }
 interface Host {
-  closing: boolean; servers: Map<string, Managed>; openingClients: Set<FakeClient>; workspaceRoot: string;
+  closing: boolean; servers: Map<string, Managed>; openingClients: Set<FakeClient>; closingClients: Set<FakeClient>; workspaceRoot: string;
   catalogCache: Cache; registry: { unregister(name: string): void };
   startServer(managed: Managed): Promise<void>; tryConnect(managed: Managed, transport: object, signal: AbortSignal): Promise<Opened>;
   listAllTools(managed: Managed, client: FakeClient, signal?: AbortSignal): Promise<Tool[]>;
@@ -145,7 +145,7 @@ function fixture() {
   const publications: string[][] = [];
   const cache = new Cache();
   const host: Host = Object.assign(Object.create(prototype) as Host, {
-    closing: false, servers: new Map([[managed.name, managed]]), openingClients: new Set<FakeClient>(), workspaceRoot: "/fixture",
+    closing: false, servers: new Map([[managed.name, managed]]), openingClients: new Set<FakeClient>(), closingClients: new Set<FakeClient>(), workspaceRoot: "/fixture",
     catalogCache: cache, registry: { unregister: (name: string) => { registry.delete(name); } },
     openClient: async (target: Managed, signal: AbortSignal) => await host.tryConnect(target, {}, signal),
     registerServerTools: (target: Managed, tools: Tool[]) => {
