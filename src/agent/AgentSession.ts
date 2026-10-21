@@ -3431,7 +3431,12 @@ export class AgentSession {
         notification
       };
       await commitTerminalRetryReply(outcome, finalMessages, recordAssistantAudit);
-      this.contextMessageReferences = finalMessages.map((message, index) => referenceByMessage.get(message) ?? finalReferences[index]);
+      this.contextMessageReferences = finalMessages.map((message, index) => {
+        const reference = referenceByMessage.get(message) ?? finalReferences[index];
+        // Completed history is cloned; retain this turn's sources for detached extraction.
+        if (reference) referenceByMessage.set(message, reference);
+        return reference;
+      });
       if (!retryCommitStarted) recordAssistantAudit();
       if (outcome.status === "completed" && runPluginLifecycle && pluginToolSelectionAllowsCalls && pluginLifecycle?.hasAfterTurn) {
         await this.recorder.flush();
