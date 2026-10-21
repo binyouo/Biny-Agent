@@ -6,7 +6,7 @@ Biny 的扩展入口承担不同职责：MCP 连接外部服务，Skill 提供�
 
 `agent.toolExecutionMode` 默认是 `code_mode`：普通工具调用与 JavaScript / TypeScript `run_script` 共存。设置界面不提供启停开关。排障时可将配置 `agent.toolExecutionMode` 设为 `direct`，后续回合使用普通调用与独立的 `ToolSearch` 发现入口。模型自行选择是否编排，不保证每次使用；开启不会强制所有工具通过脚本调用。脚本通过 `tools.<name>(args)` 调用当前准入的工具，使用 `searchTools` 搜索、`describeTool` 查询参数和调用要求，最后用 `return` 返回需要的结果。
 
-`run_script` 默认执行 JavaScript，设置 `language: "typescript"` 可先编译，再在同一 QuickJS 沙箱执行；不提供 Node 模块或宿主全局。`sh(command, {cwd, timeoutMs})` 经 Bash 权限链执行并返回 stdout，非零退出抛错。`fetch(url)` 通过 WebFetch 读取原始 GET 响应，支持 `status`、`ok`、`text()` 和 `json()`，保留私网、重定向与输出边界；超限响应报错，可改用 WebFetch 分页。其他 HTTP 方法或自定义头通过 `sh` 调用 curl，仍需 Shell 权限。`console.log/info/debug/warn/error` 在执行时通过独立通道持续交给宿主收集，不占工具调用额度，也不直接写入终端。每段脚本最多捕获 1 MiB、4,096 个输出片段，达到上限后省略后续输出并标注截断；脚本继续执行。stdout 超过 16,000 字符时，已捕获内容经脱敏保存到项目隔离的结果归档，模型只接收预览与 Read 引用；归档失败明确报错，不重跑脚本。超时、取消或 VM 异常退出后，宿主已收到的内容仍进入结果和归档；尚未送达的数据及宿主进程崩溃不保证恢复。返回值仍受现有结果预算约束。
+`run_script` 默认执行 JavaScript，设置 `language: "typescript"` 可先编译，再在同一 QuickJS 沙箱执行；不提供 Node 模块或宿主全局。`sh(command, {cwd, timeoutMs})` 经 Bash 权限链执行并返回 stdout，非零退出抛错。`fetch(url)` 通过 WebFetch 读取原始 GET 响应，支持 `status`、`ok`、`text()` 和 `json()`，保留私网、重定向与输出边界；超限响应报错，可改用 WebFetch 分页。其他 HTTP 方法或自定义头通过 `sh` 调用 curl，仍需 Shell 权限。`console.log/info/debug/warn/error` 在执行时通过独立通道持续交给宿主收集，不占工具调用额度，也不直接写入终端。每段脚本最多捕获 1 MiB、4,096 个输出片段，达到上限后省略后续输出并标注截断；脚本继续执行。stdout 超过 16,000 个 UTF-16 代码单元时，已捕获内容经脱敏保存到项目隔离的结果归档，模型只接收不超过 16,000 个代码单元且不拆开有效代理对的正文预览，另附截断说明与 Read 引用；归档失败明确报错，不重跑脚本。超时、取消或 VM 异常退出后，宿主已收到的内容仍进入结果和归档；尚未送达的数据及宿主进程崩溃不保证恢复。返回值仍受现有结果预算约束。
 
 脚本提供简短的 `description`，作为 Desktop 和 TUI 的任务标题。`timeout_ms` 默认 120,000，范围 1–600,000 毫秒；不会放宽同步计算、单次宿主调用及其他资源上限。单次普通工具调用直接执行，脚本用于循环、筛选、聚合或串联多个调用；只打印最终所需数据。
 
