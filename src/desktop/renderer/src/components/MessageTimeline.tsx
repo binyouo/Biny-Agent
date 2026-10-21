@@ -98,6 +98,18 @@ function christmasSeasonActive(now = new Date()): boolean {
     || now.getDate() === 24 && (now.getHours() > 18 || now.getHours() === 18 && now.getMinutes() >= 30));
 }
 
+/** A delivered user step owns its quote source even inside an assistant article. */
+function messageQuoteSource(markdown: Element | null | undefined): { element: HTMLElement; messageId: string } | undefined {
+  const userSource = markdown?.closest<HTMLElement>('.execution-user-step[data-quote-source="user"]');
+  if (userSource) {
+    const messageId = userSource.dataset.quoteMessageId;
+    return messageId ? { element: userSource, messageId } : undefined;
+  }
+  const article = markdown?.closest<HTMLElement>("article[data-message-id]");
+  const messageId = article?.dataset.messageId;
+  return article && messageId ? { element: article, messageId } : undefined;
+}
+
 export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, externalAgent = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, compacting = false, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
@@ -142,18 +154,18 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
     const element = (node: Node): Element | null => node instanceof Element ? node : node.parentElement;
     const start = element(range.startContainer)?.closest(".markdown-body");
     const end = element(range.endContainer)?.closest(".markdown-body");
-    const message = start?.closest<HTMLElement>("article[data-message-id]");
+    const source = messageQuoteSource(start);
     const quote = selection.toString().trim();
-    if (!start || start.closest(".subagent-card") || start !== end || !message?.dataset.messageId || !timeline.contains(message)
+    if (!start || start.closest(".subagent-card") || start !== end || !source || !timeline.contains(source.element)
       || !quote || quote.length > 4_000) {
       quoteSelectionOwnerRef.current = undefined;
       return;
     }
     const current = quoteSelectionOwnerRef.current;
-    const owner = current?.messageId === message.dataset.messageId && current.quote === quote
+    const owner = current?.messageId === source.messageId && current.quote === quote
       && current.startContainer === range.startContainer && current.startOffset === range.startOffset
       && current.endContainer === range.endContainer && current.endOffset === range.endOffset ? current : {
-        messageId: message.dataset.messageId, quote,
+        messageId: source.messageId, quote,
         startContainer: range.startContainer, startOffset: range.startOffset,
         endContainer: range.endContainer, endOffset: range.endOffset
       };
@@ -673,7 +685,7 @@ export function ExecutionTimeline({ readOnly, keepActivitiesOpen = false,
         }
         if (step.kind === "user") {
           return (
-            <div className="execution-step execution-user-step user-message" key={step.id}>
+            <div className="execution-step execution-user-step user-message" data-quote-source="user" data-quote-message-id={step.messageId} key={step.id}>
               <div className="user-bubble">
                 <MarkdownContent breaks content={step.content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} />
                 {step.attachments?.length ? <MessageAttachments attachments={step.attachments} projectId={projectId} /> : null}

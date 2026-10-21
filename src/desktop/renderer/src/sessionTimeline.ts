@@ -115,6 +115,8 @@ export interface TimelineToolStep {
 export interface TimelineUserStep {
   kind: "user";
   id: string;
+  /** Canonical delivered user identity; legacy UI steps may lack one. */
+  messageId?: string;
   content: string;
   attachments?: AttachmentReference[];
   delivery: "steer" | "queue";
@@ -907,6 +909,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
         turn.steps.push({
           kind: "user",
           id: `${event.runId}:user:${event.messageId}`,
+          messageId: event.messageId,
           content,
           attachments: event.attachments,
           delivery: event.delivery
