@@ -798,7 +798,7 @@ async function initializeCommandRuntime(
       timezone: config.heartbeat.timezone
     },
     run: async (prompt, signal) => {
-      const taskReview = await buildHeartbeatTaskReview(persistenceRoot, recorder.sessionId, sessionGoals, graphs, taskRuns);
+      const taskReview = await buildHeartbeatTaskReview(persistenceRoot, agent.getSessionRecorder().sessionId, sessionGoals, graphs, taskRuns);
       const heartbeatPrompt = taskReview ? `${prompt}\n\n${taskReview}` : prompt;
       const diary = /(?:DAILY DIARY TIME|MISSED DIARY CATCH-UP)/u.test(heartbeatPrompt);
       const primaryModel = modelManager.getModel();
