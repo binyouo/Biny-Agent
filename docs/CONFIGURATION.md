@@ -15,6 +15,10 @@ Biny 将服务商连接与模型选择分开管理。一个服务商连接可以
 
 项目覆盖只接受已支持的运行字段，例如 `defaultModel`、`thinking`、`agent`、`context`、`sandbox`、`checkpoints` 和 `diagnostics`。服务商连接与凭据在全局配置中管理；项目文件中的模型别名必须已存在于全局 `models`。
 
+### 工作区指令预算
+
+`context.instructionsMaxBytes` 限制全局与项目各级指令正文的累计 UTF-8 字节数，不包含后续装配的路径和提示词标签。截断不会拆开有效 Unicode 代理对；剩余预算大于 12 字节时包含换行及 `[truncated]` 标记，否则只保留能容纳的正文前缀。边界无法容纳的字符不会变成替换字符，未用字节仍可供后续目录的指令使用。读取和计数由 [WorkspaceContext](../src/agent/context/WorkspaceContext.ts) 负责，回归入口为 `tests/workspace-instruction-unicode-budget.test.ts`。
+
 ## 第一次配置
 
 在源码仓库执行：
