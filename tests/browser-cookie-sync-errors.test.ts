@@ -22,7 +22,7 @@ function descendants(node: ts.Node): ts.Node[] {
   visit(node);
   return result;
 }
-const closedRegistrations = descendants(method("open")).filter((node): node is ts.CallExpression => ts.isCallExpression(node)
+const closedRegistrations = descendants(method("openPage")).filter((node): node is ts.CallExpression => ts.isCallExpression(node)
   && node.expression.getText(source) === "window.on" && ts.isStringLiteral(node.arguments[0]!) && node.arguments[0]!.text === "closed");
 assert.equal(closedRegistrations.length, 1);
 const closedCallback = closedRegistrations[0]!.arguments[1];

@@ -197,8 +197,8 @@ test("browser environment navigation keeps explicit CLI targets separate from th
           assert.deepEqual(await requestBrowser(endpoint, "read_dom", {}), result, "subsequent automation must stay on the explicitly selected default page");
           assert.deepEqual(work.navigations, ["https://example.invalid/original"]);
           assert.equal(work.isDestroyed(), false);
-          assert.equal(EnvironmentWindow.instances.length, 1);
-          assert.equal(EnvironmentWindow.instances[0]!.webContents.partition, "persist:biny-browser");
+          assert.equal(EnvironmentWindow.instances.length, 0);
+          assert.equal(EnvironmentView.instances.at(-1)!.webContents.partition, "persist:biny-browser");
         });
       });
     }
@@ -245,13 +245,14 @@ test("browser environment navigation keeps explicit CLI targets separate from th
       });
     });
 
-    await t.test("explicit custom environment still uses its isolated window", async () => {
+    await t.test("explicit custom environment opens an isolated tab in the current project", async () => {
       await withBrowser(async ({ workId, show, goto }) => {
         const current = show("default");
         const result = await goto("https://example.invalid/work", "Work");
         assert.equal(result.title, browserPartitionForEnvironment(workId));
         assert.deepEqual(current.navigations, ["https://example.invalid/original"]);
-        assert.equal(EnvironmentWindow.instances.length, 1);
+        assert.equal(EnvironmentWindow.instances.length, 0);
+        assert.equal(EnvironmentView.instances.at(-1)!.webContents.partition, browserPartitionForEnvironment(workId));
       });
     });
 

@@ -558,24 +558,29 @@ export class DesktopBrowserService {
    * `url` 省略时打开首页。
    */
   async open(url?: string, requiredEnvironment?: "default"): Promise<void> {
+    await this.openPage(url, requiredEnvironment);
+  }
+
+  private async openPage(url?: string, requiredEnvironment?: "default"): Promise<WebContents> {
     const target = url ?? homeUrl;
     if (!isHttpUrl(target)) throw new Error("Browser navigation only supports HTTP and HTTPS URLs.");
     const shown = this.shownBrowser;
     const embedded = shown && this.embeddedProjects.get(shown.projectId)?.tabs.get(shown.tabId);
     if (embedded && !embedded.view.webContents.isDestroyed() && (!requiredEnvironment || embedded.state.environmentId === requiredEnvironment)) {
-      await embedded.view.webContents.loadURL(target);
       this.automationContents = embedded.view.webContents;
+      await embedded.view.webContents.loadURL(target);
       this.browserSessionManaged = true;
-      return;
+      return embedded.view.webContents;
     }
     this.attachCookieListener();
     if (this.window && !this.window.isDestroyed()) {
-      this.window.show();
-      this.window.focus();
-      await this.window.loadURL(target);
-      this.automationContents = this.window.webContents;
+      const window = this.window;
+      window.show();
+      window.focus();
+      this.automationContents = window.webContents;
+      await window.loadURL(target);
       this.browserSessionManaged = true;
-      return;
+      return window.webContents;
     }
     const window = new BrowserWindow({
       width: 1180,
@@ -613,6 +618,7 @@ export class DesktopBrowserService {
     window.once("ready-to-show", () => window.show());
     await window.loadURL(target);
     this.browserSessionManaged = true;
+    return window.webContents;
   }
 
   /** 小红书凭据仅在主进程与系统剪贴板之间流动，不进入 renderer 快照。 */
@@ -942,6 +948,7 @@ export class DesktopBrowserService {
         : active?.state.environmentId ? this.browserEnvironments.get(active.state.environmentId) : this.browserEnvironments.get("default");
       if (!environment) throw new Error("指定的浏览器环境不存在。");
       await this.prepareBrowserEnvironment(environment.id);
+      let contents: WebContents;
       if (projectId && this.desktopWindow && !this.desktopWindow.isDestroyed()) {
         let tab = active?.state.environmentId === environment.id ? active : undefined;
         if (!tab) {
@@ -949,15 +956,18 @@ export class DesktopBrowserService {
           tab = this.embeddedProjects.get(projectId)?.tabs.get(snapshot.activeId ?? "");
         }
         if (!tab || tab.view.webContents.isDestroyed()) throw new Error("浏览器标签不可用。");
-        this.automationContents = tab.view.webContents;
+        contents = tab.view.webContents;
+        this.automationContents = contents;
         await tab.view.webContents.loadURL(url);
         this.browserSessionManaged ||= environment.id === "default";
       } else if (environment.id === "default") {
-        await this.open(url, requestedEnvironment ? "default" : undefined);
+        contents = await this.openPage(url, requestedEnvironment ? "default" : undefined);
       } else {
-        await this.openInEnvironmentWindow(url, environment.id);
+        contents = await this.openInEnvironmentWindow(url, environment.id);
       }
-      return await this.pageState();
+      // Selection may change through UI IPC while loadURL is pending. Report
+      // the page we actually navigated without restoring an older selection.
+      return await this.pageState(contents);
     }
     const contents = await this.ensureContents();
     if (method === "evaluate") return await this.evaluate(readString(args.code, "code"), signal);
@@ -1109,7 +1119,7 @@ export class DesktopBrowserService {
     return { watching: watcher !== undefined, dialog: watcher?.dialog ?? null };
   }
 
-  private async openInEnvironmentWindow(url: string, environmentId: string): Promise<void> {
+  private async openInEnvironmentWindow(url: string, environmentId: string): Promise<WebContents> {
     this.requireBrowserEnvironment(environmentId);
     const partition = browserPartitionForEnvironment(environmentId);
     let window = this.environmentWindows.get(environmentId);
@@ -1127,6 +1137,7 @@ export class DesktopBrowserService {
     }
     this.automationContents = window.webContents;
     await window.loadURL(url);
+    return window.webContents;
   }
 
   private async pageState(contents?: WebContents): Promise<{ url: string; title: string }> {

@@ -95,6 +95,8 @@ Agent 使用 `BrowserOpen` 打开页面，通过 `BrowserReadDom` 读取文字�
 
 一次 `BrowserPress` 固定使用开始执行时选中的页面：定位、按下、释放与返回的页面状态不会因等待期间切换标签或环境而转移。页面关闭后不会改向其他标签；新的独立请求仍使用用户最新选择的页面。取消会阻止尚未派发的按下动作，已成功派发的按下仍尝试在原页面释放；这不保证撤销已经发生的网页效果，也不固定同一标签内导航前的文档。实现与回归入口为 `DesktopBrowserService.press` 和 `tests/browser-press-cancellation.test.ts`。
 
+`BrowserOpen` 返回本次实际导航页面的 URL 与标题。等待加载期间切换标签或环境，不会把返回结果改成新选中的页面，也不会在加载结束后把后续操作切回旧页面；新的独立请求仍使用最新选择。导航页面关闭或加载失败时报告失败，不借其他标签代替结果。这个约束固定页面身份，不固定同一标签内的文档版本，也不改变监督预览的归属。实现与回归入口为 `DesktopBrowserService.executeAutomation` 和 `tests/browser-environments.test.ts`。
+
 内置 `Browser*` 使用同一个浏览器界面中的多个隔离环境，不提供独立浏览器窗口池，也不具备 Chrome Relay 的全部文件、截图和高级定位能力。Desktop 浏览器执行端不可用时，不能把网页搜索或 Chrome Relay 声称为同一个页面。
 
 ## 排查
