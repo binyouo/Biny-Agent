@@ -31,7 +31,7 @@ function descendants(node: ts.Node, match: (node: ts.Node) => boolean): ts.Node[
   visit(node);
   return result;
 }
-const operations = ["submit", "run.submit", "queue", "run.queue", "start-interrupted", "run.continue"] as const;
+const operations = ["run.submit", "queue", "run.queue", "start-interrupted", "run.continue"] as const;
 const goals = ["session.goal.set", "session.goal.resume"] as const;
 const statements = method("execute").body!.statements;
 const switches = statements.filter((node): node is ts.SwitchStatement =>
@@ -83,7 +83,7 @@ const validationHelpers = ["readModelRoute", "readFastMode"].map((name) => {
   assert.equal(matches.length, 1, `Expected actual validation helper ${name}`);
   return matches[0]!.getText(validationParsed).replace(/^export /u, "");
 }).join("\n");
-const isolated = stripTypeScriptTypes(`${validationHelpers}\nclass PauseAdmissionHarness {
+const isolated = stripTypeScriptTypes(`(() => { ${validationHelpers}\nclass PauseAdmissionHarness {
 ${methods.map((name) => method(name).getText(parsed)).join("\n")}
 async execute(connection, frame) {
 ${statements.slice(0, initialFenceIndex + 1).map((node) => node.getText(parsed)).join("\n")}
@@ -91,7 +91,7 @@ ${route.map((node) => node.getText(parsed)).join("\n")}
 switch (frame.operation) { ${selected.join("\n")} default: throw new Error("Unextracted operation"); }
 }
 }
-PauseAdmissionHarness.prototype;`, { mode: "strip" });
+return PauseAdmissionHarness.prototype; })();`, { mode: "strip" });
 
 test("actual optional model-route and fast-mode parsers retain validation", () => {
   const helpers = runInNewContext(stripTypeScriptTypes(`${validationHelpers}\n({ readModelRoute, readFastMode });`, { mode: "strip" })) as {
@@ -146,7 +146,7 @@ class FakeCompletion {
     this.completion = completion;
   }
 }
-const extracted = runInNewContext(isolated, {
+const extract = (overrides: Record<string, unknown> = {}) => runInNewContext(isolated, {
   asRecord: record,
   isRuntimeHostAdmissionOperation: (operation: string) => [...operations, ...goals].includes(operation as typeof operations[number]),
   OperationCompletion: FakeCompletion,
@@ -154,18 +154,20 @@ const extracted = runInNewContext(isolated, {
   requiredString: (value: unknown) => { assert.equal(typeof value, "string"); return value; },
   optionalSafeInteger: (value: unknown) => Number.isSafeInteger(value) ? value : undefined,
   readRequestIds: (payload: RecordValue) => ({ runId: payload.runId, messageId: payload.messageId }),
-  readAttachments: () => [], readPromptContext: () => undefined, readCapabilitySelection: () => undefined,
+  readAttachments: () => [], readPromptContext: () => undefined, readCapabilitySelection: () => undefined, readModelRoute: () => undefined, readFastMode: () => undefined,
   readPermissionResult: (value: unknown) => value,
   readGoalTokenBudget: () => undefined, readGoalExpected: () => undefined,
   publicError: (error: unknown) => String(record(error).message ?? error),
-  publicErrorCode: () => undefined, publicErrorData: () => undefined
+  publicErrorCode: () => undefined, publicErrorData: () => undefined,
+  ...overrides
 }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as State;
 function gate() {
   let release!: () => void;
   const promise = new Promise<void>((resolve) => { release = resolve; });
   return { promise, release };
 }
-function fixture() {
+function fixture(overrides: Record<string, unknown> = {}) {
+  const extracted = extract(overrides);
   const counts = { claim: 0, mutations: 0, tracked: 0, scheduled: 0, permission: 0 };
   const connection: Connection = { clientId: "client-a", surface: "desktop", exitingForPause: false };
   const other: Connection = { clientId: "client-b", surface: "tui", exitingForPause: false };
@@ -189,7 +191,7 @@ function fixture() {
     resume: () => { mutation(); return { sessionId: "session-a", goalId: "goal-a" }; }
   } } };
   const state: State = Object.assign(Object.create(extracted) as State, {
-    sessionWriterOwners: new Map<string, Owner>(), sessionGoalOwners: new Map<string, unknown>(),
+    oneShotSessions: new Map(), sessionWriterOwners: new Map<string, Owner>(), sessionGoalOwners: new Map<string, unknown>(),
     registry: { get: (id: string) => id === "session-a" ? managed : undefined },
     admission: { assertAdmission: () => { if (controls.draining) throw new Error("Host draining"); } },
     businessComposition: { scheduleGoals: () => { counts.scheduled += 1; } },
@@ -209,6 +211,17 @@ function fixture() {
   });
   return { state, managed, runtime, connection, other, controls, counts, request };
 }
+test("extracted admission uses lexical validators instead of ambient stubs", async () => {
+  const forbidden = () => { assert.fail("ambient validator must not run"); };
+  const f = fixture({ readModelRoute: forbidden, readFastMode: forbidden });
+  const result = await f.request("run.submit", f.connection, { modelRoute: "tool", fastMode: false });
+  assert.notEqual(record(result).accepted, false);
+  assert.equal(f.counts.mutations, 1);
+  await expectRejected(f.request("run.submit", f.connection, { modelRoute: "other" }), "run.submit", /modelRoute must be tool/u);
+  await expectRejected(f.request("run.submit", f.connection, { fastMode: "true" }), "run.submit", /fastMode must be a boolean/u);
+  assert.equal(f.counts.mutations, 1, "invalid options must not mutate the runtime");
+});
+
 const pauseError = /exiting and cannot start new work/u;
 const innerEnvelope = new Set(["run.submit", "run.queue", "run.continue"]);
 async function expectRejected(promise: Promise<unknown>, operation: string, reason = pauseError): Promise<void> {
@@ -245,7 +258,7 @@ for (const operation of operations) {
     f.connection.exitingForPause = true;
     if (operation.includes("queue")) f.controls.kind = "runs";
     const result = await f.request(operation, f.other);
-    assert.notEqual(record(result).accepted, false);
+    assert.notEqual(record(result).accepted, false, JSON.stringify(result));
     assert.equal(f.counts.mutations, 1);
     assert.equal(f.state.sessionWriterOwners.get("session-a")?.clientId, f.other.clientId);
   });
@@ -378,7 +391,7 @@ for (const operation of ["queue", "run.queue"]) {
     const f = fixture();
     f.controls.kind = "runs";
     const result = await f.request(operation, f.connection, { delivery: "steer" });
-    assert.notEqual(record(result).accepted, false);
+    assert.notEqual(record(result).accepted, false, JSON.stringify(result));
     assert.equal(f.counts.claim, 1);
     assert.equal(f.counts.mutations, 1);
     assert.equal(f.state.sessionWriterOwners.get("session-a")?.clientId, f.connection.clientId);

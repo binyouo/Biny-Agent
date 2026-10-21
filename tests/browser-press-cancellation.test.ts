@@ -1,63 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
+import { registerHooks } from "node:module";
 
-// Read product code as text only; no product imports or original constructor run.
-// These tests exercise selected real methods against in-memory socket/CDP fakes.
-const file = ts.createSourceFile("DesktopBrowserService.ts", readFileSync(new URL("../src/desktop/electron/main/DesktopBrowserService.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const owners = file.statements.filter((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "DesktopBrowserService");
-assert.equal(owners.length, 1);
-const names = ["handleAutomationRequest", "enqueueAutomation", "executeAutomation", "ensureContents", "press", "evaluate", "sendDebuggerCommand", "pageState"];
-const methods = names.map((name) => {
-  const matches = owners[0]!.members.filter((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && node.name.getText(file) === name);
-  assert.equal(matches.length, 1, name);
-  assert.ok(matches[0]!.body);
-  return matches[0]!;
-});
-const helpers = ["asRecord", "readString"].map((name) => {
-  const matches = file.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name);
-  assert.equal(matches.length, 1, name);
-  assert.ok(matches[0]!.body);
-  return matches[0]!;
-});
-// Closed, receiver-specific call inventory. No computed calls or dynamic imports.
-const callees = new Set([
-  "asRecord", "JSON.parse", "readString", "controller.abort", "socket.once",
-  "method.startsWith", "this.computerUse", "this.enqueueAutomation", "controller.signal.throwIfAborted",
-  "this.readWebPage", "this.executeAutomation", "this.ensureContents", "this.previewActivity",
-  "contents.getTitle", "contents.isDestroyed", "contents.capturePage",
-  "(await contents.capturePage()).resize", "(await contents.capturePage()).resize({ width: 1024 }).toJPEG",
-  "image.toString", "console.error", "socket.off", "socket.write", "JSON.stringify", "String",
-  "this.automationTail.then", "run.then", "isHttpUrl", "this.open", "this.pageState",
-  "this.readDom", "readNumber", "this.click", "this.fill", "this.press",
-  "this.embeddedProjects.get", "this.embeddedProjects.get(shown.projectId)?.tabs.get",
-  "this.browserEnvironments.list", "this.browserEnvironments.list().map", "this.browserEnvironments.get",
-  "this.embeddedProjects.get(projectId)?.tabs.get", "this.prepareBrowserEnvironment",
-  "this.desktopWindow.isDestroyed", "this.browserAction", "tab.view.webContents.isDestroyed",
-  "tab.view.webContents.loadURL", "this.openInEnvironmentWindow", "this.automationContents.isDestroyed",
-  "this.environmentWindows.values", "[...this.environmentWindows.values()].find", "window.isDestroyed",
-  "embedded.view.webContents.isDestroyed", "this.window.isDestroyed", "this.evaluate",
-  "this.sendDebuggerCommand", "Object.keys", "signal?.throwIfAborted",
-  "debuggerSession.isAttached", "debuggerSession.attach", "debuggerSession.sendCommand", "value.trim"
-]);
-function audit(node: ts.Node): void {
-  assert.notEqual(node.kind, ts.SyntaxKind.ImportKeyword, "No dynamic imports in extracted code");
-  if (ts.isNewExpression(node)) assert.ok(["Error", "AbortController"].includes(node.expression.getText(file)), "Unexpected construction");
-  if (ts.isCallExpression(node)) {
-    const callee = node.expression.getText(file);
-    const literalIncludes = ts.isPropertyAccessExpression(node.expression)
-      && node.expression.name.text === "includes" && ts.isArrayLiteralExpression(node.expression.expression)
-      && node.expression.expression.elements.every(ts.isStringLiteral);
-    assert.ok(callees.has(callee) || literalIncludes, `Unexpected extracted call: ${callee}`);
-  }
-  ts.forEachChild(node, audit);
-}
-for (const node of [...methods, ...helpers]) audit(node);
-const code = `class Subject {\n${methods.map(node => node.getText(file)).join("\n")}\n}\n${helpers.map(node => node.getText(file)).join("\n")}\nSubject;`;
-const compiled = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, isolatedModules: true }, reportDiagnostics: true });
-assert.equal((compiled.diagnostics ?? []).filter(item => item.category === ts.DiagnosticCategory.Error).length, 0);
+// Exercise the real service; Electron, socket and CDP are external boundaries.
+const hooks = registerHooks({ load(url, context, next) {
+  if (/\/electron\/index\.js$/u.test(url)) return { format: "module", shortCircuit: true,
+    source: "export class BrowserWindow {} export class WebContentsView {} export const clipboard = {}; export const session = {};" };
+  return next(url, context);
+} });
+const { DesktopBrowserService } = await import("../src/desktop/electron/main/DesktopBrowserService.js");
+hooks.deregister();
 
 interface Command { method: string; params: Record<string, unknown> }
 interface Contents { isDestroyed(): boolean; debugger: { isAttached(): boolean; attach(version: string): void; sendCommand(method: string, params: Record<string, unknown>): Promise<unknown> } }
@@ -75,7 +27,6 @@ interface Subject {
   handleAutomationRequest(line: string, token: string, socket: Socket): Promise<void>;
   press(selector: string | undefined, key: string, signal?: AbortSignal): Promise<unknown>;
 }
-interface SubjectConstructor { new(): Subject }
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>(done => { resolve = done; });
@@ -83,10 +34,7 @@ function deferred() {
 }
 interface Options { pause?: "focus" | "keyDown"; pauseEnsureCall?: number; focusException?: boolean; key?: string; closeOnAttach?: boolean; target?: "automation" | "environment" }
 function fixture(options: Options = {}) {
-  const SubjectClass = runInNewContext(compiled.outputText, {
-    AbortController, ToolOutcomeUnknownError: class ToolOutcomeUnknownError extends Error {}
-  }, { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }) as SubjectConstructor;
-  const subject = new SubjectClass();
+  const subject = new DesktopBrowserService(async () => "unused-cookie-jar.json") as unknown as Subject;
   const events: string[] = [], commands: Command[] = [], responses: Response[] = [];
   const reached = deferred(), release = deferred();
   const listeners = new Map<string, Set<() => void>>();

@@ -101,9 +101,9 @@ function fixture(scenario: Scenario) {
   let reconnects = 0;
   const requests: Array<{ operation: string; payload: unknown }> = [];
   const state: Fixture = {
-    ownerNotificationListeners: new Set(), ownerNotificationsSubscribed: false,
-    options: { surface: "desktop" }, completions: new Map(), pending: new Map(), idleWaiters: new Set(), closed: false, retired: false,
+    options: { surface: "desktop" }, completions: new Map(), pending: new Map(), idleWaiters: new Set(), ownerNotificationListeners: new Set(), closed: false, retired: false,
     socket: { destroyed: false }, hostEpoch: "epoch", focusedSessionId: "session-a",
+    ownerNotificationsSubscribed: false,
     snapshots: new Map([["session-a", { state: scenario === "active" ? { kind: "runs", activeRun: { runId: ids.runId } } : { kind: "idle" } }]]),
     request: async (operation, payload, _timeout, onDispatch) => {
       onDispatch?.(state.socket);

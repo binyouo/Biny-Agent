@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
+import { buildToolOptimizationOverview } from "../src/session/toolOptimizationOverview.js";
+import type { DesktopToolOptimizationStats } from "../src/desktop/protocol.js";
 
 async function harness() {
   const imports = registerHooks({ load(url, context, next) {
@@ -15,7 +17,9 @@ async function harness() {
     biny: { updateSettingsDraftState: async () => {}, previewAppearance: async () => {}, activitySettings: async () => { throw new Error("offline"); },
       quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }),
       applicationImports: async () => ({ sources: [], history: [], sync: { enabled: false, hasSelection: false } }),
-      toolOptimizationStats: async () => ({ entries: [], incompleteSessions: 0, rtk: {} }),
+      toolOptimizationStats: async (): Promise<DesktopToolOptimizationStats> => ({
+        ...buildToolOptimizationOverview([], new Date("2026-01-01T00:00:00.000Z")), incompleteSessions: 0
+      }),
       bootstrap: async () => ({ projects: [], sidebarSessions: [] }), onApplicationImportsChanged: () => () => {},
       onActivityEvent: () => () => {}, activitySnapshot: async () => { throw new Error("offline"); }, activityPermissions: async () => { throw new Error("offline"); } } });
   dom.window.HTMLElement.prototype.scrollTo = () => {};

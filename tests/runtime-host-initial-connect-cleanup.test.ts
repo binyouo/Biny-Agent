@@ -26,7 +26,7 @@ const protocolHelpers = ["asRecord", "isOwnerNotificationFrame"].map((name) => {
   assert.equal(matches.length, 1, `Expected actual protocol helper ${name}`);
   return matches[0]!.getText(protocolParsed).replace(/^export /u, "");
 }).join("\n");
-const compiled = ts.transpileModule(`${protocolHelpers}\nclass Isolated { ${methods.join("\n")} }\nIsolated.prototype;`, {
+const compiled = ts.transpileModule(`(() => { ${protocolHelpers}\nclass Isolated { ${methods.join("\n")} }\nreturn Isolated.prototype; })();`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }
 }).outputText;
 
@@ -38,6 +38,24 @@ test("actual owner-notification discriminator distinguishes replies from notific
   for (const value of [null, undefined, {}, { kind: "response", requestId: "hello", ok: false },
     { kind: "owner-notification", notificationId: 1, text: "ready" },
     { kind: "owner-notification", notificationId: "notice" }]) assert.equal(discriminate(value), false);
+});
+
+test("extracted frame handler uses lexical discriminator instead of ambient stub", () => {
+  const prototype = runInNewContext(compiled, {
+    isRetiredFrame: () => false,
+    isOwnerNotificationFrame: () => { assert.fail("ambient discriminator must not run"); },
+    isResponseFrame: (value: { kind?: string }) => value.kind === "response"
+  }) as { handleClientFrame(frame: unknown): void };
+  let notifications = 0;
+  let replies = 0;
+  const state = Object.assign(Object.create(prototype) as typeof prototype, {
+    ownerNotificationListeners: new Set([() => { notifications += 1; }]),
+    pending: new Map([["reply", { resolve: () => { replies += 1; } }]])
+  });
+  state.handleClientFrame({ kind: "owner-notification", notificationId: "notice", text: "ready" });
+  state.handleClientFrame({ kind: "response", requestId: "reply", ok: true });
+  assert.equal(notifications, 1);
+  assert.equal(replies, 1);
 });
 
 interface Timer { due: number; callback(): void; unref(): void }
@@ -166,7 +184,7 @@ function fixture(scenario: Scenario, synchronousClose = false) {
     decodeHostFrame: (line: string) => JSON.parse(line) as unknown,
     isResponseFrame: (value: Frame) => value.kind === "response",
     isRetiredFrame: () => false, isEventFrame: () => false, isCompletionFrame: () => false,
-    isCapabilityOfferFrame: () => false, isGapFrame: () => false,
+    isCapabilityOfferFrame: () => false, isGapFrame: () => false, isOwnerNotificationFrame: () => false,
     errorFromHostFrame: (frame: Frame) => { const error = new Error(frame.error); failures.push(error); return error; },
     asError: (error: unknown) => error instanceof Error ? error : new Error(String(error)),
     protocolVersion: 5, runtimeHostCapabilities: [],
@@ -183,11 +201,11 @@ function fixture(scenario: Scenario, synchronousClose = false) {
   }, { timeout: 1_000 }) as State;
   const state = Object.assign(Object.create(prototype) as State, {
     options: { registration, surface: "desktop", keepAlive: true }, persistenceRoot: "/inert", clientId: "fixture",
-    ownerNotificationListeners: new Set<() => void>(), ownerNotificationsSubscribed: false,
+    ownerNotificationsSubscribed: false,
     closed: false, retired: false, reconnectInProgress: false, reconnectAttempts: 0,
     handshakeTimeoutMs: 10_000, environmentTakeoverHandshake: false,
     pending: new Map<string, Pending>(), completions: new Map<string, Pending>(), idleWaiters: new Set<() => void>(),
-    capabilities: [], consumedSequence: 0, browserAutomationConfigured: false,
+    capabilities: [], consumedSequence: 0, browserAutomationConfigured: false, ownerNotificationListeners: new Set(),
     applySnapshot: (value: Snapshot, _sequence: number, epoch?: string) => { state.snapshot = value; snapshots.push(value); if (epoch) state.hostEpoch = epoch; },
     applySessionSummaries: () => undefined,
     applyHostEpoch: (epoch: string) => { state.hostEpoch = epoch; }, acknowledgeEvents: () => undefined,

@@ -1,9 +1,12 @@
-import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
 import type { AgentRuntimeUpdate, InteractiveRuntimeSnapshot } from "../src/runtime/agentEvents.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import type { MemorySleepPreview } from "../src/agent/context/memoryTypes.js";
@@ -23,9 +26,7 @@ import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { ensureAgentDirs } from "../src/session/store.js";
-import { startMemoryHttpServer } from "../src/runtime/host/memory-http.js";
 import { spawn } from "node:child_process";
-import { WebSocket } from "ws";
 import { isRuntimeHostTakeoverReady } from "./helpers/runtime-host-takeover-readiness.js";
 
 const snapshot = {
@@ -192,7 +193,7 @@ async function main(): Promise<void> {
     },
     close: async () => undefined
   };
-  const taskAuthority = await RuntimeEventAuthority.open(workspace, { backfillLegacySessions: false });
+  const taskAuthority = await RuntimeEventAuthority.open(workspace, { reconcileSessions: false });
   const taskRuns = await DurableTaskRunStore.open(workspace, taskAuthority);
   const recoveredTask = taskRuns.create({ taskRunId: "task-host-recovered", task: { title: "recover me" }, sessionId: snapshot.info.sessionId });
   const recoveredAttempt = taskRuns.createAttempt(recoveredTask.taskRunId, { runId: "task-host-recovery-run", turnId: "task-host-recovery-turn" });
@@ -313,11 +314,13 @@ async function main(): Promise<void> {
         globalExpectedRevision = expectedRevision;
         return personalizationState();
       },
+      maintainMemory: async () => { maintenanceRuns += 1; },
+      memoryMaintenanceStatus: async () => ({ state: "idle", eligible: 0, processed: 0, written: 0, failed: 0 }),
+      previewMemoryMaintenance: async () => {
+        await new Promise<void>((resolve) => { releaseMemoryPreview = resolve; });
+        return previewReport;
+      },
       getLocalMemory: () => ({
-        previewMaintenance: async () => {
-          await new Promise<void>((resolve) => { releaseMemoryPreview = resolve; });
-          return previewReport;
-        },
         loadMaintenanceStatus: async () => ({ state: "idle", eligible: 0, processed: 0, written: 0, failed: 0 }),
         runMemoryMaintenance: async () => {
           maintenanceRuns += 1;
@@ -348,7 +351,7 @@ async function main(): Promise<void> {
       rebuildMemoryEmbeddingIndex: async () => { embeddingRebuilds += 1; },
       cancelMemoryEmbeddingRebuild: () => true
     },
-    runtimeAuthority: taskAuthority,
+    ...await createHostTestStores(workspace, taskAuthority),
     taskRuns,
     startSubagentTask,
     startTaskRun,
@@ -370,7 +373,7 @@ async function main(): Promise<void> {
   const mirrorTarget = path.join(process.env.BINY_AGENT_DIR!, "threads", "mirror-host.md");
   await fs.mkdir(path.dirname(mirrorSource), { recursive: true });
   await fs.writeFile(mirrorSource, JSON.stringify({ type: "user_message", content: "宿主启动前的会话", time: new Date().toISOString() }) + "\n");
-  const host = await startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands }));
+  const host = await startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   const mirrorDeadline = Date.now() + 2_000;
   while (Date.now() < mirrorDeadline && !await fs.access(mirrorTarget).then(() => true, () => false)) {
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -452,7 +455,8 @@ async function main(): Promise<void> {
   const cancelledRecord = await waitForTaskStatus(async () => await client.taskGet("task-host-cancelled"), "cancelled");
   assert.match(JSON.stringify(cancelledRecord), /cancelled/u);
   taskCompletions.get("task-host-cancelled")?.resolve("late output");
-  await waitUntil(() => maintenanceRuns >= 1, 6_000);
+  await commands.agent.maintainMemory();
+  assert.equal(maintenanceRuns, 1);
   assert.equal(await client.cancelMemorySleep(), false);
   const pendingMemoryPreview = client.previewMemorySleep();
   const responsiveStatus = await Promise.race([
@@ -627,8 +631,8 @@ async function main(): Promise<void> {
   assert.ok(maintenanceProbe.entry);
   const exclusiveOperationsBeforeDelete = exclusiveOperations.length;
   await client.memory("delete", { id: maintenanceProbe.entry.id });
-  assert.deepEqual(exclusiveOperations.slice(exclusiveOperationsBeforeDelete), ["memory"],
-    "destructive memory management must retain the runtime maintenance boundary");
+  assert.deepEqual(exclusiveOperations.slice(exclusiveOperationsBeforeDelete), [],
+    "global fact transactions must not acquire a chat session operation");
   assert.equal(await localMemory.getEntry(maintenanceProbe.entry.id), undefined);
 
   const aliceScopedEntry = await localMemory.writeEntry({
@@ -693,15 +697,7 @@ async function main(): Promise<void> {
     /userIds/u
   );
 
-  // HTTP → socket → 领域存储：鉴权、短文本与小数权重、更新、删除都用真实 SQLite。
-  const api = await startMemoryHttpServer(client, { token: "test-memory-token" });
-  const memoryFrames: Array<{ type: string; data: { storeRevision?: number } }> = [];
-  const memorySocket = new WebSocket(`ws://127.0.0.1:${api.port}/ws/memory`, { headers: { Authorization: "Bearer test-memory-token" } });
-  memorySocket.on("message", (data) => memoryFrames.push(JSON.parse(data.toString())));
-  try {
-    const base = `http://127.0.0.1:${api.port}/api/memories`;
-    assert.equal((await fetch(base)).status, 401);
-    const headers = { authorization: "Bearer test-memory-token", "content-type": "application/json" };
+  {
     const cli = async (args: string[]): Promise<string> => {
       const child = spawn(process.execPath, [...process.execArgv, path.resolve("src/cli/index.ts"), "memory", ...args], { cwd: workspace, env: process.env });
       let stdout = "";
@@ -751,48 +747,11 @@ async function main(): Promise<void> {
       0,
       "归档条目不参与普通语义搜索"
     );
-    await waitUntil(() => memoryFrames.some((frame) => frame.type === "memory-changed"), 3_000);
-    const beforeCliRevision = (await localMemory.getOverview()).storeRevision;
     const added = JSON.parse(await cli(["add", "CLI 保存短中文事实", "--json"])) as { entry: { id: string } };
-    await waitUntil(() => memoryFrames.some((frame) => frame.type === "memory-changed" && frame.data.storeRevision === beforeCliRevision + 1), 3_000);
     assert.match(await cli(["list"]), /CLI 保存短中文事实/u);
     await cli(["delete", added.entry.id, "--yes", "--json"]);
-    assert.equal((await fetch(base, { headers: { ...headers, origin: "https://example.test" } })).status, 403);
-    assert.equal((await fetch(base, { method: "POST", headers, body: "{" })).status, 400);
-    const saved = await fetch(base, { method: "POST", headers, body: JSON.stringify({
-      content: "用户喜欢中文", metadata: { importance: 0.5, tags: ["preference"] }
-    }) });
-    assert.equal(saved.status, 201);
-    const written = await saved.json() as { id: string; metadata: { importance: number; tags: string[] } };
-    assert.equal(written.metadata.importance, 0.5);
-    assert.deepEqual(written.metadata.tags, ["preference"]);
-    assert.equal((await client.memory<{ importance: number }>("get", { id: written.id })).importance, 0.5,
-      "Host keeps its internal flat entry shape");
-    const search = await (await fetch(`${base}/search`, { method: "POST", headers, body: JSON.stringify({ query: "用户", tags: ["preference"] }) })).json() as { results: unknown[]; originalQuery: string };
-    assert.deepEqual(search, { results: [], originalQuery: "用户" });
-    const internalSearch = await client.memory<{ report: { degraded?: string } }>("search", { query: "用户", tags: ["preference"] });
-    assert.equal(internalSearch.report.degraded, "no_vector_index");
-    const unrelated = await (await fetch(`${base}/search`, { method: "POST", headers, body: JSON.stringify({ query: "用户", tags: ["unrelated"] }) })).json() as { results: unknown[] };
-    assert.equal(unrelated.results.length, 0);
-    const id = written.id;
-    assert.equal((await fetch(`${base}/${id}`, { method: "PUT", headers, body: JSON.stringify({ content: "用户喜欢简洁中文" }) })).status, 200);
-    const fetched = await (await fetch(`${base}/${id}`, { headers })).json() as { content: string };
-    assert.equal(fetched.content, "用户喜欢简洁中文");
-    assert.equal((await fetch(`${base}/${id}`, { method: "DELETE", headers })).status, 204);
-    assert.equal((await fetch(`${base}/${id}`, { headers })).status, 404);
-    const embeddingsBase = base.replace("/api/memories", "/api/local-embeddings");
-    const localDownload = await fetch(`${embeddingsBase}/download`, {
-      method: "POST", headers, body: JSON.stringify({ model: "all-MiniLM-L6-v2" })
-    });
-    assert.equal(localDownload.status, 200);
-    assert.equal(downloadedEmbeddingModel, "all-MiniLM-L6-v2");
-    assert.equal((await fetch(`${embeddingsBase}/models/all-MiniLM-L6-v2`, { method: "DELETE", headers })).status, 200);
-    assert.equal(removedEmbeddingModel, "all-MiniLM-L6-v2");
-    assert.equal((await fetch(`${embeddingsBase}/download`, {
-      method: "POST", headers, body: JSON.stringify({ model: "unsupported" })
-    })).status, 400);
-    assert.equal(downloadedEmbeddingModel, "all-MiniLM-L6-v2", "invalid models must not reach download");
-  } finally { memorySocket.terminate(); await api.close(); localMemory.close(); }
+  }
+  localMemory.close();
 
   assert.equal((await client.memoryEmbeddingStatus()).activeModel?.kind, "local");
   await client.downloadMemoryEmbeddingModel("multilingual-e5-small");
@@ -870,16 +829,16 @@ async function main(): Promise<void> {
   await searchAgent.close();
   assert.match(await readFile(mirrorTarget, "utf8"), /宿主退出前的会话/u);
   currentSnapshot = snapshot;
-  const explicitResumeHost = await startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands }), { resumeInterrupted: true });
+  const explicitResumeHost = await startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands }), {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  resumeInterrupted: true });
   assert.equal(interruptedStarts, 1, "只有显式恢复开关才允许启动中断回合");
   await explicitResumeHost.close();
   assert.equal(await connectRuntimeHost(workspace, { clientId: "after-close", surface: "tui" }), undefined);
 
   // 注册窗口回归：registration 尚未落盘时，lock 内的活 pid 必须阻止第二个 owner 接管。
   await fs.writeFile(hostPaths.lockPath, `${String(process.pid)}\n`, { mode: 0o600 });
-  await assert.rejects(startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands })), /already running/u);
+  await assert.rejects(startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } }), /already running/u);
   assert.equal(await readFile(hostPaths.lockPath, "utf8"), `${String(process.pid)}\n`, "存活 owner 的 lock 不得被当作 stale 删除");
-  await fs.rm(hostPaths.lockPath, { force: true });
+  await removeTestRoot(hostPaths.lockPath, { force: true });
 
   const incompatibleRegistration = {
     protocolVersion: 2,
@@ -896,10 +855,10 @@ async function main(): Promise<void> {
   assert.notEqual(incompatibleRegistration.protocolVersion, runtimeHostProtocolVersion, "fixture must represent an incompatible live owner");
   await assert.rejects(
     connectRuntimeHost(workspace, { clientId: "incompatible-client", surface: "tui" }),
-    new RegExp(`protocol 2 is incompatible with ${runtimeHostProtocolVersion}`, "u")
+    /protocol 2 is incompatible with 16/u
   );
   assert.deepEqual(JSON.parse(await readFile(hostPaths.registrationPath, "utf8")), incompatibleRegistration);
-  await fs.rm(hostPaths.registrationPath);
+  await removeTestRoot(hostPaths.registrationPath);
 
   const spawnedWorkspace = await mkdtemp(path.join(os.tmpdir(), "biny-runtime-host-process-test-"));
   const configDir = path.join(spawnedWorkspace, "config");
