@@ -1,4 +1,5 @@
 import { ToolOptimizationIndex } from "../../../session/toolOptimizationIndex.js";
+import { buildToolOptimizationOverview } from "../../../session/toolOptimizationOverview.js";
 import type { ToolOptimizationEntry } from "../../../session/toolOptimization.js";
 /**
  * 桌面端项目与会话服务。
@@ -25,7 +26,7 @@ import {
   type AgentHostEvent,
   type InteractiveRuntimeSnapshot
 } from "../../../runtime/agentEvents.js";
-import { readStoredSessionEvents } from "../../../session/events.js";
+import { listSessionSummaries, readStoredSessionEvents } from "../../../session/events.js";
 import { isSessionNearLimit, maxSessionEvents, maxSessionFileBytes } from "../../../session/limits.js";
 import {
   listSessionCatalog,
@@ -42,8 +43,8 @@ import {
 import { deleteSessionArtifacts } from "../../../session/cleanup.js";
 import { rebaseForkedSessionEvents } from "../../../session/fork.js";
 import { createSessionId, type SessionTurnStatus } from "../../../session/recorder.js";
-import { SessionRunLedger, type SessionRunRecord } from "../../../session/runLedger.js";
-import { createSessionFile, ensureAgentDirs } from "../../../session/store.js";
+import { RuntimeEventAuthority, type RuntimeRunRecord } from "../../../runtime/RuntimeAuthority.js";
+import { createSessionFile, ensureAgentDirs, listSessionFiles } from "../../../session/store.js";
 import { TurnStore } from "../../../session/turnStore.js";
 import { replaySessionEvents } from "../../../session/replay.js";
 import { pausedTurnAvailable, resolveContinuationPlan } from "../../../session/recoveryPlan.js";
@@ -390,23 +391,30 @@ export class DesktopProjectService {
       if (project.missing) { incompleteSessions++; continue; }
       try {
         const dataRoot = await this.storage.ensureProjectData(project);
-        const catalog = await listSessionCatalog(dataRoot);
-        for (const item of catalog) {
-          if (sessionId ? item.id !== sessionId : days !== "all" && Date.parse(item.summary.updatedAt) < start.getTime()) continue;
+        const sessionIds = sessionId ? [sessionId] : days === "all"
+          ? (await listSessionFiles(dataRoot)).map(file => file.replace(/\.jsonl$/u, ""))
+          : (await listSessionSummaries(dataRoot)).filter(summary => Date.parse(summary.updatedAt) >= start.getTime())
+            .map(summary => summary.fileName.replace(/\.jsonl$/u, ""));
+        for (const id of sessionIds) {
           try {
-            const stored = await this.optimizationIndex.read(dataRoot, item.id);
+            const stored = await this.optimizationIndex.read(dataRoot, id);
             for (const entry of stored) {
               if (seen.has(entry.optimization.id)) continue;
               if (days !== "all" && Date.parse(entry.time) < start.getTime()) continue;
               seen.add(entry.optimization.id);
               entries.push({ optimization: entry.optimization, time: entry.time,
-                origin: entry.toolCallId ? { projectId: project.id, sessionId: item.id, toolCallId: entry.toolCallId } : undefined });
+                origin: entry.toolCallId ? { projectId: project.id, sessionId: id, toolCallId: entry.toolCallId } : undefined });
             }
           } catch { incompleteSessions++; }
         }
       } catch { incompleteSessions++; }
     }
     return { entries, incompleteSessions };
+  }
+
+  async toolOptimizationOverview(days: number | "all", projectId?: string, sessionId?: string) {
+    const { entries, incompleteSessions } = await this.toolOptimizationStats(days, projectId, sessionId);
+    return { ...buildToolOptimizationOverview(entries), incompleteSessions };
   }
 
   async toolOptimizationDetail(projectId: string, sessionId: string, toolCallId: string): Promise<{ events: import("../../../session/recorder.js").SessionEvent[] }> {
@@ -431,9 +439,8 @@ export class DesktopProjectService {
     const dataRoot = await this.storage.ensureProjectData(project);
     await ensureAgentDirs(dataRoot);
     const catalog = await listSessionCatalog(dataRoot);
-    const runLedger = new SessionRunLedger(dataRoot);
-    const latestRunBySession = await runLedger.latestSessionRuns(catalog.map((item) => item.id));
-    return await this.buildSessionSummaries(project, catalog, runtime, liveEvents, latestRunBySession, runLedger);
+    const latestRunBySession = await RuntimeEventAuthority.readLatestSessionRuns(dataRoot, [...catalog.map((item) => item.id), ...runtimeSnapshotList(runtime).map(item => item.info.sessionId)]);
+    return await this.buildSessionSummaries(project, catalog, runtime, liveEvents, latestRunBySession);
   }
 
   /** 置顶区域独立于最近会话分页；只投影可见条目，避免处理隐藏会话的运行记录。 */
@@ -447,11 +454,11 @@ export class DesktopProjectService {
     const catalog = await listSessionCatalog(dataRoot);
     const pageIds = new Set(querySessionCatalogItems(catalog).items.map((item) => item.id));
     const visible = catalog.filter((item) => item.pinned || pageIds.has(item.id));
-    const latestRuns = await new SessionRunLedger(dataRoot).latestSessionRuns(visible.map((item) => item.id));
+    const latestRuns = await RuntimeEventAuthority.readLatestSessionRuns(dataRoot, visible.map((item) => item.id));
     return visible.map((item) => desktopSessionSummary(project.id, item, runtime, liveEvents, latestRuns.get(item.id)));
   }
 
-  /** workspace 首屏同时需要完整摘要和分页页，复用同一份 catalog/ledger 读取结果。 */
+  /** workspace 首屏同时需要完整摘要和分页页，复用同一份 catalog/SQLite 读取结果。 */
   async listWorkspaceSessions(
     project: DesktopProject,
     runtime: RuntimeSnapshotsInput,
@@ -473,9 +480,8 @@ export class DesktopProjectService {
     const dataRoot = await this.storage.ensureProjectData(project);
     await ensureAgentDirs(dataRoot);
     const catalog = await listSessionCatalog(dataRoot);
-    const runLedger = new SessionRunLedger(dataRoot);
-    const latestRunBySession = await runLedger.latestSessionRuns(catalog.map((item) => item.id));
-    const sessions = await this.buildSessionSummaries(project, catalog, runtime, liveEvents, latestRunBySession, runLedger);
+    const latestRunBySession = await RuntimeEventAuthority.readLatestSessionRuns(dataRoot, [...catalog.map((item) => item.id), ...runtimeSnapshotList(runtime).map(item => item.info.sessionId)]);
+    const sessions = await this.buildSessionSummaries(project, catalog, runtime, liveEvents, latestRunBySession);
     const page = querySessionCatalogItems(catalog);
     const pageSessions = page.items.map((item) => desktopSessionSummary(
       project.id,
@@ -522,8 +528,7 @@ export class DesktopProjectService {
       ? catalog.filter((item) => item.pinned)
       : undefined;
     const visible = new Map([...page.items, ...(pinnedItems ?? [])].map((item) => [item.id, item]));
-    const runLedger = new SessionRunLedger(dataRoot);
-    const latestRuns = await runLedger.latestSessionRuns([...visible.keys()]);
+    const latestRuns = await RuntimeEventAuthority.readLatestSessionRuns(dataRoot, [...visible.keys()]);
     const summaries = new Map([...visible].map(([id, item]) => [id, desktopSessionSummary(
       project.id, item, runtime, liveEvents, latestRuns.get(id)
     )]));
@@ -545,8 +550,7 @@ export class DesktopProjectService {
     catalog: SessionCatalogItem[],
     runtime: RuntimeSnapshotsInput,
     liveEvents: ReadonlyMap<string, AgentHostEvent[]>,
-    latestRunBySession: ReadonlyMap<string, SessionRunRecord>,
-    runLedger: SessionRunLedger
+    latestRunBySession: ReadonlyMap<string, RuntimeRunRecord>
   ): Promise<DesktopSessionSummary[]> {
     const runtimes = runtimeSnapshotList(runtime);
     const sessions = catalog.map((item) => desktopSessionSummary(
@@ -561,7 +565,7 @@ export class DesktopProjectService {
       const runtimeInfo = snapshot.info;
       const runtimeEvents = liveEvents.get(runtimeInfo.sessionId);
       if (!runtimeEvents?.some((event) => event.type === "message.user") || sessions.some((session) => session.id === runtimeInfo.sessionId)) continue;
-      const runtimeLatestRun = latestRunBySession.get(runtimeInfo.sessionId) ?? await runLedger.latestSessionRun(runtimeInfo.sessionId);
+      const runtimeLatestRun = latestRunBySession.get(runtimeInfo.sessionId);
       const now = new Date().toISOString();
       sessions.push({
         id: runtimeInfo.sessionId,
@@ -986,7 +990,7 @@ function desktopSessionSummary(
   item: SessionCatalogItem,
   runtime: RuntimeSnapshotsInput,
   liveEvents: ReadonlyMap<string, AgentHostEvent[]>,
-  latestRun: SessionRunRecord | undefined
+  latestRun: RuntimeRunRecord | undefined
 ): DesktopSessionSummary {
   const summary = item.summary;
   return {
@@ -1020,7 +1024,7 @@ function desktopSessionSummary(
       liveEvents.get(item.id),
       latestRun?.status
     ),
-    resumable: sessionResumable(summary.lastTurnStatus?.resumable, liveEvents.get(item.id), latestRun?.resumable)
+    resumable: sessionResumable(summary.lastTurnStatus?.resumable, liveEvents.get(item.id), latestRun ? desktopRunSummary(latestRun).resumable : undefined)
   } satisfies DesktopSessionSummary;
 }
 
@@ -1111,7 +1115,7 @@ function sessionStatus(
   persistedStatus: SessionTurnStatus | undefined,
   runtime: RuntimeSnapshotsInput,
   events: AgentHostEvent[] | undefined,
-  latestRunStatus: SessionRunRecord["status"] | undefined
+  latestRunStatus: RuntimeRunRecord["status"] | undefined
 ): DesktopSessionStatus {
   // 并行池化后同一项目可能有多个 runtime 各自忙自己的 session。
   const runtimes = runtimeSnapshotList(runtime);
@@ -1125,6 +1129,8 @@ function sessionStatus(
   if (finalEvent?.type === "run.aborted") return "aborted";
   if (finalEvent?.type === "run.completed") return "completed";
   if (persistedStatus) return persistedStatus;
+  if (latestRunStatus === "admitted") return "running";
+  if (latestRunStatus === "unknown") return "aborted";
   if (latestRunStatus) return latestRunStatus;
   return lastAssistantMessage ? "completed" : "idle";
 }
@@ -1132,25 +1138,29 @@ function sessionStatus(
 function sessionResumable(
   persisted: boolean | undefined,
   events: AgentHostEvent[] | undefined,
-  ledgerResumable: boolean | undefined
+  runResumable: boolean | undefined
 ): boolean | undefined {
   const finalEvent = events ? [...events].reverse().find(isTerminalRunEvent) : undefined;
-  if (!finalEvent) return persisted ?? ledgerResumable;
+  if (!finalEvent) return persisted ?? runResumable;
   return finalEvent.type === "run.blocked" || finalEvent.type === "run.incomplete"
     ? finalEvent.resumable
     : undefined;
 }
 
-function desktopRunSummary(run: SessionRunRecord): NonNullable<DesktopSessionSummary["latestRun"]> {
+function desktopRunSummary(run: RuntimeRunRecord): NonNullable<DesktopSessionSummary["latestRun"]> {
+  const terminal = run.terminalPayload && typeof run.terminalPayload === "object"
+    ? run.terminalPayload as Record<string, unknown> : {};
+  const projection = terminal.projection && typeof terminal.projection === "object"
+    ? terminal.projection as Record<string, unknown> : terminal;
   return {
     runId: run.runId,
     status: run.status,
-    startedAt: run.startedAt,
+    startedAt: run.createdAt,
     updatedAt: run.updatedAt,
-    endedAt: run.endedAt,
-    durationMs: run.durationMs,
-    stopReason: run.stopReason,
-    resumable: run.resumable
+    endedAt: run.terminalStatus ? run.updatedAt : undefined,
+    durationMs: typeof projection.durationMs === "number" ? projection.durationMs : undefined,
+    stopReason: typeof projection.stopReason === "string" ? projection.stopReason : undefined,
+    resumable: typeof projection.resumable === "boolean" ? projection.resumable : undefined
   };
 }
 

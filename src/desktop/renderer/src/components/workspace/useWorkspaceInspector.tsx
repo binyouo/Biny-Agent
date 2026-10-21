@@ -18,7 +18,8 @@ import { Icon, type IconName } from "../Icon.js";
 import { TerminalView } from "../TerminalView.js";
 import { FilePreviewPanel, type FileDirectoryState, type FilePreviewState } from "./FilePreviewPanel.js";
 import { SessionChangesPanel } from "./SessionChangesPanel.js";
-import { WorkspaceToolsPanel } from "./WorkspaceUtilityPanels.js";
+import { WorkspaceToolsPanel } from "./WorkspaceToolsPanel.js";
+import type { SkillActivity } from "../../skillActivity.js";
 import { RenderingPreviewPanel } from "./RenderingPreviewPanel.js";
 import type { RenderingPreview } from "../RenderingPreviewContext.js";
 
@@ -26,6 +27,7 @@ interface UseWorkspaceInspectorOptions {
   /** 当前会话 Agent 改过的文件（「变更」视图数据 + tab/rail 徽标计数）。 */
   changes: SessionFileChange[];
   tools: TimelineTool[];
+  skills: SkillActivity[];
   filePanelResizing: boolean;
   filePanelWidth: number;
   /** 左栏目标占位宽度；动画中的每帧宽度不得回传为 React 状态。 */
@@ -67,6 +69,7 @@ const defaultInspectorViews = (Object.keys(inspectorViewMetadata) as InspectorVi
 export function useWorkspaceInspector({
   changes,
   tools,
+  skills,
   filePanelResizing,
   filePanelWidth,
   sidebarFlowWidth = 0,
@@ -405,7 +408,7 @@ export function useWorkspaceInspector({
         : view === "commit" ? <WorkspaceCommitPanel projectId={projectId} active={effectiveOpen && inspectorView === "commit"} onCount={setGitChangeCount} onSwitchBranch={onSwitchBranch} onPreviewFile={previewFile} />
           : view === "browser" ? <WorkspaceBrowserPanel projectId={projectId} active={effectiveOpen && inspectorView === "browser"} expanded={focused} onToggleExpanded={() => setBrowserExpanded((value) => !value)} onAttachReference={onAttachBrowserReference ? (value) => { setBrowserExpanded(false); onAttachBrowserReference(value); } : undefined} onWarning={onWarning} onOpenTerminal={() => openInspector("terminal")} onFixPreview={onFixPreview} />
             : view === "references" ? <WorkspaceReferencesPanel projectId={projectId} reference={reference} onSelect={setReference} />
-              : <WorkspaceToolsPanel tools={tools} />;
+              : <WorkspaceToolsPanel tools={tools} skills={skills} />;
   const changeCount = changes.length;
   // 以真正可用的标签宽度决定折叠；留出滞回空间，避免拖动临界宽度时来回闪动。
   useLayoutEffect(() => {

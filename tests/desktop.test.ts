@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { createHostTestStores } from "./helpers/hostStores.js";
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -11,7 +13,7 @@ import type { ContextStatus } from "../src/agent/context/types.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { createInteractiveAgentHost, InteractiveAgentRuntime } from "../src/runtime/InteractiveAgentRuntime.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
-import { startRuntimeHost } from "../src/runtime/RuntimeHost.js";
+import { connectRuntimeHost, RuntimeHostClient, startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { ensureRuntimeHostDirectory, runtimeHostPaths, writeRegistration } from "../src/runtime/host/lifecycle.js";
 import { executeRuntimeCommand } from "../src/runtime/commands.js";
 import { SessionLeaseStore } from "../src/runtime/SessionLease.js";
@@ -842,7 +844,7 @@ async function testDesktopHostVersionConflict(): Promise<void> {
     await writeFile(paths.lockPath, `${process.pid}\n`, { mode: 0o600 });
     const agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     try {
-      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []), /protocol 2 is incompatible with 11/);
+      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []), /protocol 2 is incompatible with 16/);
       assert.deepEqual(JSON.parse(await readFile(paths.registrationPath, "utf8")), registration);
       assert.equal(await readFile(paths.lockPath, "utf8"), `${process.pid}\n`, "a failed client must not disturb the live owner");
     } finally {
@@ -905,24 +907,47 @@ async function testDesktopPromptIdempotency(): Promise<void> {
 
 async function testDesktopClearsTerminalLiveEvents(): Promise<void> {
   const desktopRoot = await mkdtemp(path.join(os.tmpdir(), "biny-terminal-live-events-data-"));
-  let runtime: InteractiveAgentRuntime | undefined;
+  let host: Awaited<ReturnType<typeof startRuntimeHost>> | undefined;
+  let client: RuntimeHostClient | undefined;
   let unsubscribe: (() => void) | undefined;
+  let agents: DesktopAgentManager | undefined;
   try {
     const { configStore, projects, state } = await createDesktopTestServices(desktopRoot);
-    const agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
-    runtime = new InteractiveAgentRuntime(fakeCommandRuntime());
+    const project = await projects.createProject(desktopRoot);
+    await state.setSelectedSession(project.id, "session-1");
+    agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
+    const commands = fakeCommandRuntime();
+    Object.assign(commands, await createHostTestStores(desktopRoot));
+    const runtime = new InteractiveAgentRuntime(commands);
+    host = await startRuntimeHost(desktopRoot, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
+    client = await connectRuntimeHost(desktopRoot);
+    assert.ok(client);
     const internals = agents as unknown as {
-      wireRuntimeEvents(projectId: string, runtime: InteractiveAgentRuntime, primary: boolean): () => void;
+      wireRuntimeEvents(projectId: string, runtime: RuntimeHostClient): () => void;
       projectEvents(projectId: string): Map<string, AgentHostEvent[]>;
     };
-    unsubscribe = internals.wireRuntimeEvents("project-1", runtime, true);
-    const submitted = runtime.submitPrompt("status-snapshot");
-    await submitted.completion;
-    assert.equal(internals.projectEvents("project-1").has("session-1"), false, "终态后不能继续保留已落盘的 live events");
-    await agents.closeAll();
+    unsubscribe = internals.wireRuntimeEvents(project.id, client);
+    let timer: ReturnType<typeof setTimeout>;
+    let stopObserving: (() => void) | undefined;
+    const terminal = new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Host did not deliver the terminal event.")), 5_000);
+      stopObserving = client!.subscribeAllRuntimeEvents(update => {
+        if (update.event && isTerminalRunEvent(update.event)) resolve();
+      });
+    });
+    try {
+      await runtime.submitPrompt("status-snapshot").completion;
+      await terminal;
+    } finally {
+      clearTimeout(timer!);
+      stopObserving?.();
+    }
+    assert.equal(internals.projectEvents(project.id).has("session-1"), false, "终态后不能继续保留已落盘的 live events");
   } finally {
     unsubscribe?.();
-    await runtime?.close();
+    await client?.close();
+    await host?.close();
+    await agents?.closeAll();
     await rm(desktopRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
@@ -2682,7 +2707,7 @@ async function testDesktopPermissionModePersistsThroughExistingHost(): Promise<v
       configStore,
       attachmentRoot: projects.attachmentsRoot(project)
     });
-    host = await startRuntimeHost(dataRoot, async () => ({ runtime: localHost.runtime, commands: localHost.commands }), { configDir: desktopRoot });
+    host = await startRuntimeHost(dataRoot, async () => ({ runtime: localHost.runtime, commands: localHost.commands }), {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir: desktopRoot });
 
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     await agents.setPermissionMode(project.id, "full-access");
@@ -2724,7 +2749,7 @@ async function testDesktopReconcilesPersistedPermissionWithExistingHost(): Promi
     await configStore.save({ ...beforeAttach, permission: { ...beforeAttach.permission, mode: "ask" } }, project.path);
     const { runtime, commands } = await createInteractiveAgentHost(project.path, { persistenceRoot: dataRoot, configStore });
     configStore.supportsDetachedRuntimeHost = true;
-    host = await startRuntimeHost(dataRoot, async () => ({ runtime: runtime, commands: commands }), { configDir: desktopRoot });
+    host = await startRuntimeHost(dataRoot, async () => ({ runtime: runtime, commands: commands }), {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir: desktopRoot });
 
     const persisted = await configStore.load(project.path);
     persisted.permission.mode = "full-access";
@@ -3577,17 +3602,10 @@ function testSettingsModelThinkingProjection(): void {
     available: true,
     source: "configured" as const
   };
-  const healed = stagedModelChoices([saved], [], [], {})[0];
-  assert.deepEqual(healed?.thinkingLevelMap, {
-    off: "none",
-    minimal: "high",
-    low: "high",
-    medium: "high",
-    high: "high",
-    xhigh: "max",
-    max: "max"
-  });
-  assert.deepEqual(healed?.efforts, ["minimal", "low", "medium", "high", "xhigh", "max"]);
+  const projected = stagedModelChoices([saved], [], [], {})[0];
+  assert.deepEqual(projected?.thinkingLevelMap, { off: "none", high: "high", max: "max" });
+  assert.deepEqual(projected?.efforts, ["high", "max"]);
+  assert.deepEqual(projected?.capabilities, saved.capabilities);
 
   const explicit = stagedModelChoices([saved], [], [], {
     deepseek: {
@@ -4052,8 +4070,8 @@ function testLiveAssistantCompletionDoesNotDuplicateDelta(): void {
   const timeline = buildSessionTimeline([], [
     { ...base, type: "message.user", messageId: "message", content: "停止进程" },
     { ...base, type: "assistant.delta", content: "正文" },
-    { ...base, type: "tool.started", toolCallId: "tool", tool: "BashOutput", args: {} },
-    { ...base, type: "tool.completed", toolCallId: "tool", tool: "BashOutput", result: {}, durationMs: 10 },
+    { ...base, type: "tool.started", toolCallId: "tool", tool: "ProcessStatus", args: {} },
+    { ...base, type: "tool.completed", toolCallId: "tool", tool: "ProcessStatus", result: {}, durationMs: 10 },
     { ...base, type: "assistant.completed", content: "正文" },
     { ...base, type: "run.completed", durationMs: 20 }
   ]);
@@ -4464,6 +4482,7 @@ function fakeCommandRuntime(requireFullYes = false, statusGate?: Promise<void>):
       };
     },
     contextStatus: async () => context,
+    ensureTerminalOutcome: async (runId: string, turnId: string) => ({ eventId: `terminal-${runId}`, eventSeq: 1, runId, turnId }),
     recordError: () => undefined,
     close: async () => undefined
   };

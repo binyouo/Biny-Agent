@@ -58,6 +58,7 @@ CLI 帮助：`pnpm dev -- --help`。
 
 完整阅读入口见 [文档索引](docs/README.md)。
 
+- [CLI 使用指南](docs/CLI_USAGE.md) — 命令地图、配置、会话、项目、预览与终端操作。
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — 服务商、模型别名、凭据与项目设置。
 - [docs/SESSIONS.md](docs/SESSIONS.md) — 对话入口、会话恢复、分支与导入导出。
 - [docs/IMPORTS.md](docs/IMPORTS.md) — 从其他应用导入模型、MCP 与会话，管理同步和历史。

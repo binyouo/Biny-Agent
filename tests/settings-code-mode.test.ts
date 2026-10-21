@@ -1,7 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import { buildSessionTimeline } from "../src/desktop/renderer/src/sessionTimeline.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -67,14 +69,14 @@ test("Code Mode settings commit through real transactions to disk and the next m
       assert.equal(stale.status, "rolled_back");
       assert.equal((await loadConfigFile(configRoot)).agent.toolExecutionMode, mode);
       let modelCalls = 0;
-      const model: AgentModel = { provider: "fixture", modelId: "settings-code-mode", supportsTools: true,
+      const model: AgentModel = testModel({ provider: "fixture", modelId: "settings-code-mode", supportsTools: true,
         async stream(context) {
           modelCalls++;
           assert.equal(context.tools.some((tool) => tool.name === "run_script"), mode === "code_mode");
           assert.ok(context.tools.some((tool) => tool.name === "Write"));
           return (async function* () { yield { type: "text-delta" as const, text: "mode inspected" }; yield { type: "finish" as const, reason: "stop" as const }; })();
         }
-      };
+      });
       const recorder = new SessionRecorder(workspace, `settings-${mode}`);
       const agent = new AgentSession({ workspaceRoot: workspace, config: await store.load(workspace), model, recorder,
         permissionManager: new PermissionManager(stored.permission), toolRegistry: createToolRegistry({ workspaceRoot: workspace, ignore: [] }) });

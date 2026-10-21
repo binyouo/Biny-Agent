@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -13,7 +14,7 @@ import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStor
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import { replaceProjectSessionRoots } from "../src/desktop/renderer/src/app/desktopState.js";
 import { readSessionCatalogRecord, refreshSessionIndex, type SessionCatalogPage } from "../src/session/catalog.js";
-import { SessionRunLedger } from "../src/session/runLedger.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { createSessionFile } from "../src/session/store.js";
 
 async function fixture(context: TestContext) {
@@ -144,19 +145,20 @@ test("pin summaries do not replace same-ID sessions in another project or duplic
   assert.equal(sidebar.filter((session) => session.id === "older-pin" && session.pinned).length, 2);
 });
 
-// Selecting page + pins must happen before ledger projection: hidden unpinned runs are unrelated.
-test("cold sidebar refresh does not reconcile a hidden unpinned session ledger", async (context) => {
+// Selecting page + pins must happen before SQLite projection: hidden unpinned runs are unrelated.
+test("cold sidebar refresh does not reconcile a hidden unpinned session projection", async (context) => {
   const { project, manager } = await fixture(context);
   await createSessionFile(project.path, "hidden-unpinned", Buffer.from(`${JSON.stringify({
     type: "user_message", content: "hidden history", time: "2025-12-31T00:00:00.000Z"
   })}\n`));
-  const ledger = new SessionRunLedger(project.path);
-  await ledger.start({ runId: "hidden-stale-run", sessionId: "hidden-unpinned", pid: 2_147_483_647 });
-  const before = await ledger.read("hidden-stale-run");
-  assert.equal(before?.status, "running");
+  const authority = await RuntimeEventAuthority.open(project.path);
+  context.after(() => authority.close());
+  authority.startRun({ runId: "hidden-stale-run", sessionId: "hidden-unpinned", turnId: "hidden-turn" });
+  const before = authority.getRun("hidden-stale-run");
+  assert.equal(before?.status, "admitted");
   const sidebar = await manager.sidebarSessions();
   assert.equal(sidebar.some((session) => session.id === "hidden-unpinned"), false);
   assert.equal(sidebar.find((session) => session.id === "older-pin")?.pinned, true);
-  assert.deepEqual(await ledger.read("hidden-stale-run"), before,
+  assert.deepEqual(authority.getRun("hidden-stale-run"), before,
     "showing an older pin must not reconcile an unrelated hidden run");
 });

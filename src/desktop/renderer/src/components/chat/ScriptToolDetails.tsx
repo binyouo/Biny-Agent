@@ -1,25 +1,67 @@
-import { useState } from "react";
+import React, { useId, useRef, useState } from "react";
+import { formatDuration } from "../../chatModel.js";
 import type { TimelineTool } from "../../sessionTimeline.js";
-import { ToolActivityDetail } from "../ToolActivity.js";
-import { IoCard } from "./IoCard.js";
+import { Icon } from "../Icon.js";
+import { ToolCodeBlock } from "./ToolCodeBlock.js";
+import { ToolExecutionStatus } from "./ToolExecutionStatus.js";
+import { ToolParameters } from "./ToolParameters.js";
 
-export function ScriptToolDetails({ tool, projectId, onPreviewFile, onOpenExternal }: {
-  tool: TimelineTool; projectId: string; onPreviewFile(path: string): void; onOpenExternal(url: string): void;
-}): React.JSX.Element {
-  const [tab, setTab] = useState("返回结果");
-  const args = tool.args as { code?: string } | undefined;
-  return <section className="tool-section">
-    <div className="tool-optimization-tabs" role="group" aria-label="脚本详情">
-      {["返回结果", "内部调用", "脚本"].map(name => <button type="button" key={name} aria-pressed={tab === name} onClick={() => setTab(name)}>{name}</button>)}
-    </div>
-    {tab === "返回结果" ? <IoCard input={null} output={tool.result === undefined ? "等待脚本返回结果" : JSON.stringify(tool.modelResult ?? tool.result, null, 2)} outputError={tool.status === "failed"} /> : null}
-    {tab === "脚本" ? <IoCard input={args?.code ?? "此记录未保存脚本正文"} output={null} /> : null}
-    {tab === "内部调用" ? <>
-      <p className="tool-optimization-note">展开结果只在本地显示，不会自动加入模型上下文。</p>
-      {tool.children?.length ? tool.children.map(child => <details key={child.id}>
-        <summary>{child.tool} · {({ success: "完成", running: "运行中", waiting: "等待中", failed: "失败", denied: "已拒绝", aborted: "已中止", cancelled: "已取消", skipped: "已跳过", unknown: "结果未知" })[child.status]}</summary>
-        <ToolActivityDetail tool={child} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
-      </details>) : <p>尚无内部调用记录</p>}
-    </> : null}
+export function ScriptToolDetails({ tool }: { tool: TimelineTool }): React.JSX.Element {
+  const [showCalls, setShowCalls] = useState(false);
+  const callsId = useId();
+  const result = tool.modelResult ?? tool.result;
+  const envelope = result !== null && typeof result === "object" && "ok" in result && typeof result.ok === "boolean" && "childCalls" in result && Array.isArray(result.childCalls) ? result : undefined;
+  const children = tool.children ?? [];
+  const count = children.length || (envelope && Array.isArray(envelope.childCalls) ? envelope.childCalls.length : 0);
+  const progress = tool.updates.filter(update => update.text).map(update => update.text).join("\n");
+  const stdout = envelope && "stdout" in envelope && typeof envelope.stdout === "string" ? envelope.stdout : result === undefined && progress ? progress : undefined;
+  const error = envelope && "error" in envelope && typeof envelope.error === "string" ? envelope.error : undefined;
+  const value = envelope ? "value" in envelope ? envelope.value : undefined : result;
+  return <section className="script-tool-details">
+    <ToolParameters args={tool.args} toolName={tool.tool} />
+    <section className="script-result" aria-label="脚本结果">
+      <div className="script-result-summary">
+        <h4 className="tool-section-label">结果</h4>
+        <ToolExecutionStatus status={tool.status} />
+        {count > 0 ? <button type="button" className="script-calls-toggle" aria-expanded={showCalls} aria-controls={callsId} onClick={() => setShowCalls(current => !current)}>
+          <Icon name="chevron" size={12} />{count} tool {count === 1 ? "call" : "calls"}
+        </button> : null}
+        {tool.optimization ? <span className={tool.optimization.savedTokens < 0 ? "script-token-increase" : undefined} title="工具结果估算，不代表账单节省">{tool.optimization.savedTokens >= 0 ? `~${tool.optimization.savedTokens.toLocaleString()} tokens saved` : `~${Math.abs(tool.optimization.savedTokens).toLocaleString()} extra tokens`}</span> : null}
+      </div>
+      {showCalls ? <ul className="script-child-calls" id={callsId} aria-label="内部工具调用">
+        {children.map(child => <ScriptChildCall key={child.id} tool={child} />)}
+        {!children.length ? <li className="script-output-empty">当前记录未保存内部调用详情</li> : null}
+      </ul> : null}
+      {stdout !== undefined && stdout !== "" ? <ToolCodeBlock text={stdout} label="工具结果" copyLabel="复制输出" /> : null}
+      {value !== undefined ? <>
+        {stdout ? <h4 className="tool-section-label">返回值</h4> : null}
+        <ToolCodeBlock text={typeof value === "string" ? value : JSON.stringify(value, null, 2)} language={typeof value === "string" ? "text" : "json"} label="工具结果" copyLabel="复制返回值" />
+      </> : null}
+      {error && error !== tool.error ? <div className="script-output-error"><ToolCodeBlock text={error} label="脚本错误" copyLabel="复制错误" /></div> : null}
+      {!stdout && value === undefined && !error && !tool.error ? <p className="script-output-empty">{tool.status === "success" ? "已完成，无输出" : "暂无输出"}</p> : null}
+    </section>
   </section>;
+}
+
+function ScriptChildCall({ tool }: { tool: TimelineTool }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const detailId = useId();
+  const button = useRef<HTMLButtonElement>(null);
+  const result = tool.result;
+  return <li className="script-child-call" data-tool-call-id={tool.id} onKeyDown={event => {
+    if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); button.current?.focus(); }
+  }}>
+    <button type="button" ref={button} aria-expanded={open} aria-controls={detailId} onClick={() => setOpen(value => !value)}>
+      <ToolExecutionStatus status={tool.status} compact />
+      <span className="script-child-name">{tool.tool}</span>
+      {tool.durationMs !== undefined ? <span>{tool.durationMs < 1000 ? `${tool.durationMs}ms` : formatDuration(tool.durationMs)}</span> : null}
+      {!open && tool.error ? <span className="script-child-error-preview">{tool.error}</span> : null}
+      <span className="script-child-chevron"><Icon name="chevron" size={12} /></span>
+    </button>
+    {open ? <div className="script-child-detail" id={detailId}>
+      {tool.args !== undefined ? <div><h5>ARGS</h5><ToolCodeBlock text={typeof tool.args === "string" ? tool.args : JSON.stringify(tool.args, null, 2)} language={typeof tool.args === "string" ? "text" : "json"} label="调用参数" copyLabel="复制调用参数" /></div> : null}
+      {result !== undefined ? <div><h5>RESULT</h5><ToolCodeBlock text={typeof result === "string" ? result : JSON.stringify(result, null, 2)} language={typeof result === "string" ? "text" : "json"} label="调用结果" copyLabel="复制调用结果" /></div> : null}
+      {tool.error ? <p role="alert" className="script-output-error">{tool.error}</p> : null}
+    </div> : null}
+  </li>;
 }

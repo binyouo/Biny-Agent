@@ -10,6 +10,7 @@ import type { ChatResponseSettings } from "../../../config/schema.js";
  */
 import { useThreadBrief } from "./threadBrief/context.js";
 import { hasSubmittedUserMessage } from "./chatModel.js";
+import { skillActivities } from "./skillActivity.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type { ContextBudgetStatus } from "../../../agent/context/types.js";
@@ -536,7 +537,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     testModelConfiguration,
     updateMemoryEntry
   } = useDesktopSettingsActions({
-    mergeProjectSnapshot,
     projectIdRef: projectRef,
     setWorkspace
   });
@@ -1489,10 +1489,12 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const turns = useSessionTimeline(document);
   // 「变更」视图数据：从时间线收集 Agent 改过的文件；轮次引用稳定时 useMemo 不重算。
   const sessionChanges = useMemo(() => collectSessionChanges(turns), [turns]);
+  const sessionSkills = useMemo(() => [...new Map(turns.flatMap((turn) => skillActivities(turn.skills, turn.capabilitySelection?.skills, turn.tools, skillLabels)).map((skill) => [skill.name, skill])).values()], [turns, skillLabels]);
   const inspector = useWorkspaceInspector({
     changes: sessionChanges,
     sidebarFlowWidth: sidebarLayout.flowWidth,
     tools: turns.flatMap((turn) => turn.tools),
+    skills: sessionSkills,
     filePanelResizing,
     filePanelWidth,
     onFilePanelResizeEnd: (width) => {

@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentManager.js";
@@ -49,7 +51,7 @@ test("cold chat memory toggle persists without model credentials or Runtime; sta
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     const document = await agents.openSession(project.id, recorder.sessionId);
     const requests: string[] = [];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "test",
       async stream(context) {
         requests.push(context.systemPrompt ?? "");
@@ -58,7 +60,7 @@ test("cold chat memory toggle persists without model credentials or Runtime; sta
           yield { type: "finish" as const, reason: "stop" as const };
         })();
       }
-    };
+    });
     conversation = new AgentSession({
       workspaceRoot: project.path, persistenceRoot: dataRoot, config: initialConfig, configStore, model,
       recorder: new SessionRecorder(dataRoot, recorder.sessionId), toolRegistry: new ToolRegistry(),
@@ -110,7 +112,7 @@ test("re-enabling memory contributes only opted-in turns; a disabled-only turn d
     await ensureAgentDirs(root);
     const config = structuredClone(defaultConfig);
     const extracted: string[] = [];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "test",
       async stream(context) {
         const extracting = context.systemPrompt?.startsWith("你是一个称呼抽取器") === true;
@@ -122,7 +124,7 @@ test("re-enabling memory contributes only opted-in turns; a disabled-only turn d
           yield { type: "finish" as const, reason: "stop" as const };
         })();
       }
-    };
+    });
     conversation = new AgentSession({
       workspaceRoot: root, config, model, recorder: new SessionRecorder(root, "memory-opt-in"),
       toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission)
@@ -244,9 +246,11 @@ for (const storeState of ["populated", "empty"] as const) test(`cold memory sett
       sourceArchiveId = sourceArchive.entries[0].id;
       manualArchiveId = manualArchive.entries[0].id;
     }
-    // 配置快照仍能只读；只有 Runtime 初始化使用的公开 load 边界被拒绝。
-    configStore.load = async () => { throw new Error("Cold settings reads must not initialize a Runtime Host."); };
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
+    // 配置读取是冷态状态查询的一部分；直接阻断 Runtime 初始化边界。
+    (agents as unknown as { ensureRuntime(): Promise<never> }).ensureRuntime = async () => {
+      throw new Error("Cold settings reads must not initialize a Runtime Host.");
+    };
     const [stats, entries, sleep, runs, archive, embedding] = await Promise.all([
       agents.memoryStats(project.id),
       agents.memoryEntries(project.id, 0, 20),

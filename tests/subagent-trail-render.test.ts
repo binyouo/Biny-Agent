@@ -20,7 +20,7 @@ import { TaskInspectionView } from "../src/desktop/renderer/src/components/chat/
 import { SubagentActivity } from "../src/desktop/renderer/src/components/chat/SubagentActivity.js";
 import { subagentTaskRunId } from "../src/desktop/renderer/src/subagentPresentation.js";
 import { createSubagentTimelineProjector } from "../src/desktop/renderer/src/subagentTimeline.js";
-import { ActivityToolRow } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
+import { ToolCallCard } from "../src/desktop/renderer/src/components/chat/ToolCallCard.js";
 import type { TaskInspection, WorkerActivity } from "../src/runtime/TaskCommunication.js";
 
 test("legacy failed tool events retain the deterministic TaskRun identity when the result contains only an error", () => {
@@ -72,7 +72,7 @@ test("child details show real call inputs, results and message receipts independ
   assert.match(running, /src\/a.ts/);
   assert.doesNotMatch(running, /actual file content/);
   const projected = createSubagentTimelineProjector().update(inspection, activity);
-  const expanded = renderToStaticMarkup(React.createElement(ActivityToolRow, {
+  const expanded = renderToStaticMarkup(React.createElement(ToolCallCard, {
     projectId: "project", tool: projected[0]!.tools[0]!, open: true, onPreviewFile() {}, onOpenExternal() {}
   }));
   assert.match(expanded, /src\/a.ts/);

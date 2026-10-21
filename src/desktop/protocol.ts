@@ -1,4 +1,4 @@
-import type { ToolOptimizationEntry } from "../session/toolOptimization.js";
+import type { ToolOptimizationOverview } from "../session/toolOptimizationOverview.js";
 import type { TaskInspection, TaskInspectionOptions } from "../runtime/TaskCommunication.js";
 import type { ApplicationImportSource, ApplicationImportSnapshot, ApplicationImportPreview, ApplicationImportHistory } from "../imports/types.js";
 /**
@@ -50,7 +50,7 @@ import type { AgentHostEvent, AgentRuntimeUpdate, InteractiveRuntimeSnapshot } f
 import { slashCommandsForSurface, type SlashCommandDefinition } from "../runtime/commandRegistry.js";
 import type { SessionBranchPoint, SessionIsolation } from "../session/catalog.js";
 import type { SessionEvent } from "../session/recorder.js";
-import type { SessionRunStatus } from "../session/runLedger.js";
+import type { RuntimeRunStatus } from "../runtime/RuntimeAuthority.js";
 import type { DesktopTemporalPage, DesktopTemporalQuery } from "./temporalMemoryService.js";
 import type { LocalReferenceKind, LocalReferenceResult } from "../session/localReferences.js";
 import type { LocalReferenceLink } from "../session/referenceGraph.js";
@@ -501,7 +501,7 @@ export interface DesktopSessionSummary {
 
 export interface DesktopSessionRunSummary {
   runId: string;
-  status: SessionRunStatus;
+  status: RuntimeRunStatus;
   startedAt: string;
   updatedAt: string;
   endedAt?: string;
@@ -1557,8 +1557,6 @@ export type DesktopRuntimeMutation =
   | "automation.resume"
   | "automation.run"
   | "automation.delete"
-  | "graph.create"
-  | "graph.start"
   | "graph.pause"
   | "graph.resume"
   | "graph.cancel"
@@ -1623,14 +1621,12 @@ export type DesktopTerminalEvent =
  * 大部分方法返回更新后的 `DesktopWorkspaceSnapshot`，渲染层直接整体替换状态即可，
  * 不需要自己推算改动结果。`on*` 系列返回取消订阅函数。
  */
-export interface DesktopToolOptimizationStats {
-  entries: ToolOptimizationEntry[];
+export interface DesktopToolOptimizationStats extends ToolOptimizationOverview {
   incompleteSessions: number;
-  rtk: { path?: string; version?: string; reason?: string };
 }
 
 export interface DesktopApi {
-  rtkStatus(): Promise<DesktopToolOptimizationStats["rtk"]>;
+  rtkStatus(): Promise<{ path?: string; version?: string; reason?: string }>;
   toolOptimizationDetail(projectId: string, sessionId: string, toolCallId: string): Promise<{ events: SessionEvent[] }>;
   toolOptimizationStats(days: 1 | 7 | 30 | "all", projectId?: string, sessionId?: string): Promise<DesktopToolOptimizationStats>;
   applicationImports(): Promise<ApplicationImportSnapshot>;

@@ -36,6 +36,8 @@ import { DesktopSettingsCloseCoordinator } from "./DesktopSettingsCloseCoordinat
 import { DesktopSettingsTransaction } from "./DesktopSettingsTransaction.js";
 import { handleDesktopActivation, waitForDesktopQuitCleanup } from "./DesktopQuitLifecycle.js";
 import { DesktopTerminalManager } from "./DesktopTerminalManager.js";
+import { DesktopPreviewService } from "./DesktopPreviewService.js";
+import { DesktopCommandService } from "./DesktopCommandService.js";
 import { DesktopUserDataStore } from "./DesktopUserDataStore.js";
 import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
 import { registerDesktopRuntimeHost } from "../../../runtime/host/lifecycle.js";
@@ -69,7 +71,17 @@ const initialHandoff = parseDesktopLaunchHandoff(process.argv);
 let pendingReferenceOpen = parseDesktopReferenceLaunch(process.argv);
 const runtimeHostLaunchIndex = process.argv.indexOf("--biny-runtime-host");
 
-if (runtimeHostLaunchIndex >= 0) {
+const memoryOwnerLaunchIndex = process.argv.indexOf("--biny-memory-owner");
+if (memoryOwnerLaunchIndex >= 0) {
+  void startRuntimeHostApp(app, async () => {
+    const { runMemoryOwnerProcess } = await import("../../../runtime/memoryProcess.js");
+    await runMemoryOwnerProcess(process.argv.slice(memoryOwnerLaunchIndex + 1),
+      (_root, configRoot) => new DesktopConfigStore(configRoot));
+  }).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    app.exit(1);
+  });
+} else if (runtimeHostLaunchIndex >= 0) {
   // Host 是独立 Electron 主进程，不创建窗口或启动桌面服务；safeStorage 可直接读取同一凭据文件。
   void startRuntimeHostApp(app, async () => {
     const { runRuntimeHostProcess } = await import("../../../runtime/hostProcess.js");
@@ -290,6 +302,9 @@ async function startDesktopApplication(): Promise<void> {
     sendToDesktopWindow(mainWindow, desktopIpc.terminalEvent, event);
   });
   const staticPreview = new StaticPreviewServer();
+  const preview = new DesktopPreviewService(projects, terminals, staticPreview);
+  const desktopCommands = new DesktopCommandService({ state, projects, agents, terminals, preview, appearance, configStore, browser });
+  browser.attachDesktopCommands(async args => await desktopCommands.execute(args));
   await activity.initialize();
   // REST 与设置页 IPC 共用同一实时系统读取器；采集门禁仍由采集器独立判断。
   const getActivityPermissions = () => process.platform === "darwin" ? {
@@ -427,6 +442,7 @@ async function startDesktopApplication(): Promise<void> {
   applicationImports.start(async () => { broadcastToWindows(desktopIpc.applicationImportsChanged, undefined); });
 
   registerDesktopIpc({
+    preview,
     applicationImports,
     appearance,
     temporalMemory,

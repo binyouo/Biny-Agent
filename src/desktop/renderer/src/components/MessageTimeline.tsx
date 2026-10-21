@@ -921,6 +921,8 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
           <MessageContextMenu
             tools={turn.tools.map((tool) => tool.tool)}
             skills={turn.skills}
+            selectedSkills={turn.capabilitySelection?.skills}
+            skillCalls={turn.tools}
             skillLabels={skillLabels}
             descriptions={skillDescriptions}
             memoryRecallDegraded={turn.memoryRecallDegraded}

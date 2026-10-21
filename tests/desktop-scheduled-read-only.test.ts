@@ -18,7 +18,7 @@ import { runtimeHostPaths } from "../src/runtime/RuntimeHost.js";
 import { agentDir, ensureAgentDirs } from "../src/session/store.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 
-test("日期任务查询不创建数据库、不启动 Host，旧 schema 必须显式启动后迁移", async () => {
+test("日期任务查询不创建数据库、不启动 Host，旧 schema 明确拒绝且不改写", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-scheduled-read-only-"));
   const previous = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = path.join(root, "agent");
@@ -36,12 +36,11 @@ test("日期任务查询不创建数据库、不启动 Host，旧 schema 必须�
     assert.deepEqual(await manager.scheduledAutomations(project.id), []);
     await assert.rejects(access(databasePath), { code: "ENOENT" });
 
-    const writer = await RuntimeEventAuthority.open(project.path, { backfillLegacySessions: false });
-    let record;
+    const writer = await RuntimeEventAuthority.open(project.path, { reconcileSessions: false });
     try {
       const store = await AutomationStore.open(project.path, writer);
       try {
-        record = store.create({ name: "已保存的提醒", triggerType: "interval", schedule: { intervalMs: 60_000 }, executionTemplate: { prompt: "提醒" } });
+        store.create({ name: "已保存的提醒", triggerType: "interval", schedule: { intervalMs: 60_000 }, executionTemplate: { prompt: "提醒" } });
       } finally { store.close(); }
       // v12 只新增会话目标表和索引；还原真实 v11 schema，保留已有任务事实。
       writer.databaseHandle().exec(`
@@ -52,7 +51,7 @@ test("日期任务查询不创建数据库、不启动 Host，旧 schema 必须�
       `);
     } finally { writer.close(); }
     const before = await readFile(databasePath);
-    await assert.rejects(manager.scheduledAutomations(project.id), /requires an explicit runtime startup/u);
+    await assert.rejects(manager.scheduledAutomations(project.id), /unsupported/u);
     assert.deepEqual(await readFile(databasePath), before, "日期浏览不得迁移旧数据库");
     const legacy = new DatabaseSync(databasePath, { readOnly: true });
     try {
@@ -69,7 +68,7 @@ test("日期任务查询不创建数据库、不启动 Host，旧 schema 必须�
     const corruptPath = path.join(agentDir(corrupt.path), "runtime.sqlite");
     await writeFile(corruptPath, "not a SQLite database");
     const corruptBefore = await readFile(corruptPath);
-    const healthyWriter = await RuntimeEventAuthority.open(healthy.path, { backfillLegacySessions: false });
+    const healthyWriter = await RuntimeEventAuthority.open(healthy.path, { reconcileSessions: false });
     let reminder;
     try {
       const store = await AutomationStore.open(healthy.path, healthyWriter);
@@ -111,14 +110,8 @@ test("日期任务查询不创建数据库、不启动 Host，旧 schema 必须�
       }), { sources: [], warnings: [] });
     }
 
-    // 显式运行路径仍可迁移；之后重复浏览保持任务与数据库原样。
-    const upgraded = await RuntimeEventAuthority.open(project.path, { backfillLegacySessions: false });
-    upgraded.close();
-    const current = await readFile(databasePath);
-    for (let index = 0; index < 2; index += 1) {
-      assert.deepEqual(await manager.scheduledAutomations(project.id), [record]);
-      assert.deepEqual(await readFile(databasePath), current);
-    }
+    await assert.rejects(RuntimeEventAuthority.open(project.path, { reconcileSessions: false }), /Unsupported runtime schema/u);
+    assert.deepEqual(await readFile(databasePath), before, "显式启动也不改写旧库");
     assert.equal(manager.hasRunningTasks(), false);
     await assert.rejects(access(runtimeHostPaths(project.path).registrationPath), { code: "ENOENT" });
     await assert.rejects(access(runtimeHostPaths(project.path).lockPath), { code: "ENOENT" });

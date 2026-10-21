@@ -12,37 +12,52 @@ export const transferSchemas = {
   download: relaySchemas.download.extend({ path: z.string().min(1) }),
   upload: relaySchemas.upload.omit({ files: true }).extend({ paths: z.array(z.string().min(1)).min(1).max(10) })
 };
-export async function transferBrowserFile(method: keyof typeof transferSchemas, input: unknown, options: {
+export interface BrowserFileOptions {
   workspaceRoot: string; ignore: string[]; deniedPaths?: readonly string[]; signal?: AbortSignal; file?: string; sessionId?: string;
   onDispatched?(): void; onCommit?(evidence: string): void;
-}): Promise<unknown> {
-  const resolve = (requested: string, write: boolean): string => {
-    const resolved = resolveWorkspacePath(options.workspaceRoot, requested, options.ignore);
-    if (matchingDeniedPath(resolved, options.deniedPaths ?? [], options.workspaceRoot, write)) throw new Error("文件路径被项目权限禁止。");
-    return resolved;
+}
+
+function resolveBrowserFile(requested: string, write: boolean, options: BrowserFileOptions): string {
+  const resolved = resolveWorkspacePath(options.workspaceRoot, requested, options.ignore);
+  if (matchingDeniedPath(resolved, options.deniedPaths ?? [], options.workspaceRoot, write)) throw new Error("文件路径被项目权限禁止。");
+  return resolved;
+}
+
+export async function readBrowserUploadFiles(paths: string[], options: BrowserFileOptions) {
+  const files = []; let total = 0;
+  for (const requested of transferSchemas.upload.shape.paths.parse(paths)) {
+    const data = await readBoundedBinaryFile(resolveBrowserFile(requested, false, options), 8 * 1024 * 1024 - total, options.signal);
+    total += data.length;
+    const types: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".pdf": "application/pdf", ".txt": "text/plain", ".csv": "text/csv", ".json": "application/json", ".zip": "application/zip" };
+    files.push({ name: path.basename(requested), mimeType: types[path.extname(requested).toLowerCase()] ?? "application/octet-stream", data: data.toString("base64") });
+  }
+  return files;
+}
+
+export function prepareBrowserFile(requested: string, options: BrowserFileOptions, png = false) {
+  const destination = resolveBrowserFile(requested, true, options);
+  return async (value: unknown) => {
+    const result = relayBinarySchema.parse(value);
+    options.signal?.throwIfAborted();
+    if (resolveBrowserFile(requested, true, options) !== destination) throw new Error("文件保存位置已变化。");
+    const data = Buffer.from(result.data, "base64");
+    if (data.length > 8 * 1024 * 1024) throw new Error("浏览器文件超过 8 MiB 限制。");
+    if (png && !data.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) throw new Error("截图不是有效 PNG 数据。");
+    const bytes = await atomicWriteBinaryFile(destination, data, options.signal, options.onCommit);
+    return { path: requested, bytes, mimeType: result.mimeType };
   };
+}
+
+export async function transferBrowserFile(method: keyof typeof transferSchemas, input: unknown, options: BrowserFileOptions): Promise<unknown> {
   options.signal?.throwIfAborted();
   if (method === "upload") {
     const { paths, ...args } = transferSchemas.upload.parse(input);
-    const files = []; let total = 0;
-    for (const requested of paths) {
-      const data = await readBoundedBinaryFile(resolve(requested, false), 8 * 1024 * 1024 - total, options.signal);
-      total += data.length;
-      const types: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".pdf": "application/pdf", ".txt": "text/plain", ".csv": "text/csv", ".json": "application/json", ".zip": "application/zip" };
-      files.push({ name: path.basename(requested), mimeType: types[path.extname(requested).toLowerCase()] ?? "application/octet-stream", data: data.toString("base64") });
-    }
+    const files = await readBrowserUploadFiles(paths, options);
     options.signal?.throwIfAborted(); options.onDispatched?.();
     return requestBrowserRelay("upload", { ...args, files }, options);
   }
   const { path: requested, ...args } = transferSchemas[method].parse(input);
-  const destination = resolve(requested, true);
+  const save = prepareBrowserFile(requested, options, method === "screenshot");
   options.onDispatched?.();
-  const result = relayBinarySchema.parse(await requestBrowserRelay(method, args, options));
-  options.signal?.throwIfAborted();
-  if (resolve(requested, true) !== destination) throw new Error("文件保存位置已变化。");
-  const data = Buffer.from(result.data, "base64");
-  if (data.length > 8 * 1024 * 1024) throw new Error("浏览器文件超过 8 MiB 限制。");
-  if (method === "screenshot" && !data.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) throw new Error("截图不是有效 PNG 数据。");
-  const bytes = await atomicWriteBinaryFile(destination, data, options.signal, options.onCommit);
-  return { path: requested, bytes, mimeType: result.mimeType };
+  return await save(await requestBrowserRelay(method, args, options));
 }

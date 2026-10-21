@@ -1058,8 +1058,6 @@ function testRuntimeMutationRecoveryClassification(): void {
     "automation.create",
     "automation.resume",
     "automation.run",
-    "graph.create",
-    "graph.start",
     "graph.resume",
     "capability.invoke",
     "capability.accept",

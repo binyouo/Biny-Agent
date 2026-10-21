@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import { registerSessionManagementCommands } from "./commands/sessionManagement.js";
+import { registerConfigurationCommands } from "./commands/configuration.js";
+import { registerDocumentCommands } from "./commands/documents.js";
+import { registerDesktopCommands } from "./commands/desktop.js";
+import { registerSessionInspectionCommands } from "./commands/sessionInspection.js";
+import { registerSessionReadingCommands } from "./commands/sessionReading.js";
 /**
  * Biny 的命令行入口模块。
  *
@@ -26,7 +31,8 @@ import { registerUserInputCommands } from "./commands/userInput.js";
 import { registerPersonaCommands } from "./commands/persona.js";
 import { registerSoulCommands } from "./commands/soul.js";
 import { doctorCommand } from "./commands/doctor.js";
-import { runCommand, type RunCommandOptions } from "./commands/run.js";
+import { runCommand } from "./commands/run.js";
+import type { RunCommandOptions } from "../runtime/oneShot.js";
 import { chatCommand } from "./commands/chat.js";
 import { evalCompareCommand, evalRunCommand } from "./commands/evals.js";
 import { resumeCommand } from "./commands/resume.js";
@@ -69,7 +75,6 @@ import {
   sessionGoalActionCommand,
   sessionGoalSetCommand,
   graphActionCommand,
-  graphCreateCommand,
   graphListCommand,
   taskActionCommand,
   taskCreateCommand,
@@ -91,7 +96,6 @@ import {
   memoryArchiveCommand,
   memoryManageCommand,
   memoryExportCommand,
-  memoryServeCommand,
   memoryClearCommand,
   memoryListCommand,
   memorySearchCommand,
@@ -331,7 +335,6 @@ memory.command("calendar").requiredOption("--from <day>", "inclusive YYYY-MM-DD"
   .action((options: { from: string; to: string; timeZone: string; allowCalendar?: boolean; json?: boolean }) => wrap(() => temporalCalendarCommand(options))());
 memory.command("seen-clue").argument("<id>").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => temporalClueActionCommand("seen", id, options))());
 memory.command("index-facts").argument("<session-id>").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => temporalIndexFactsCommand(workspaceRoot, sessionId, options))());
-memory.command("serve").description("Serve authenticated loopback memory REST API").option("--port <number>", "listen port", parsePositiveInteger, 23001).action((options: { port: number }) => wrap(() => memoryServeCommand(workspaceRoot, options.port))());
 memory.command("clear").requiredOption("--yes", "confirm clear").option("--thread-id <id>", "clear active memories for one thread only").option("--json", "print JSON").action((options: { yes?: boolean; threadId?: string; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
 const history = program.command("history").description("Search past conversation transcripts");
 history.command("day").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--json", "print JSON")
@@ -376,8 +379,7 @@ for (const action of ["pause", "resume"] as const) {
 
 const graph = program.command("graph").description("Manage durable Agent Graphs");
 graph.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => graphListCommand(workspaceRoot, options))());
-graph.command("create").requiredOption("--nodes <json>", "JSON node array").option("--graph-id <id>", "explicit graph id").option("--payload <json>", "JSON payload").option("--json", "print JSON").action((options: { nodes: string; graphId?: string; payload?: string; json?: boolean }) => wrap(() => graphCreateCommand(workspaceRoot, options))());
-for (const [name, action] of [["start", "start"], ["pause", "pause"], ["resume", "resume"], ["cancel", "cancel"], ["inspect", "inspect"]] as const) {
+for (const [name, action] of [["pause", "pause"], ["resume", "resume"], ["cancel", "cancel"], ["inspect", "inspect"]] as const) {
   graph.command(name).argument("<graphId>", "graph id").option("--json", "print JSON").action((graphId: string, options: { json?: boolean }) => wrap(() => graphActionCommand(workspaceRoot, action, graphId, options))());
 }
 graph.command("events").argument("<graphId>", "graph id")
@@ -394,7 +396,12 @@ program
   .option("--json", "print the page as JSON")
   .action((options: SessionsCommandOptions) => wrap(() => sessionsCommand(workspaceRoot, options))());
 registerApplicationImportCommands(program, workspaceRoot);
-const session = program.command("session").description("Export and import sessions");
+const session = program.command("session").description("Manage sessions, usage and context");
+registerConfigurationCommands(program, wrap);
+registerDocumentCommands(program, workspaceRoot, wrap);
+registerDesktopCommands(program, session, workspaceRoot, wrap);
+registerSessionInspectionCommands(program, session, workspaceRoot, wrap);
+registerSessionReadingCommands(program, session, workspaceRoot, wrap);
 session
   .command("export")
   .description("Export a session to a Biny bundle (.json) or Claude Code (.jsonl) file")

@@ -184,6 +184,12 @@ export class DesktopTerminalManager {
     this.sessions.get(terminalId)?.pty.write(data);
   }
 
+  read(terminalId: string): DesktopTerminalCreation {
+    const session = this.sessions.get(terminalId);
+    if (!session) throw new Error("Terminal is no longer running.");
+    return { terminalId, replay: session.replay, sequence: session.sequence };
+  }
+
   resize(terminalId: string, cols: number, rows: number): void {
     this.sessions.get(terminalId)?.pty.resize(sanitizeSize(cols, 80), sanitizeSize(rows, 24));
   }

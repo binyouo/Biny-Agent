@@ -16,6 +16,7 @@ import { CopyButton } from "./CopyButton.js";
 import { Icon } from "./Icon.js";
 import { CodeView } from "./chat/CodeView.js";
 import { IoCard } from "./chat/IoCard.js";
+import { ToolParameters } from "./chat/ToolParameters.js";
 import { toolResultImages } from "../toolImagePresentation.js";
 import { commandOutputPreview, commandOutputText } from "../commandOutput.js";
 
@@ -37,8 +38,9 @@ export const ToolActivityDetail = memo(function ToolActivityDetail({ projectId, 
 
   return (
     <div className="tool-details" data-project-id={projectId}>
-      {tool.optimization ? <p className="tool-optimization-note">{tool.optimization.kind === "ptc" ? "脚本筛选与聚合" : "RTK 命令输出压缩"} · ≈{tool.optimization.beforeTokens.toLocaleString()} → ≈{tool.optimization.afterTokens.toLocaleString()} tokens。工具结果估算，不代表账单节省。</p> : null}
-      {script ? <ScriptToolDetails tool={tool} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} /> : null}
+      {tool.optimization && !script ? <p className="tool-optimization-note">{tool.optimization.kind === "ptc" ? "脚本筛选与聚合" : "RTK 命令输出压缩"} · ≈{tool.optimization.beforeTokens.toLocaleString()} → ≈{tool.optimization.afterTokens.toLocaleString()} tokens。工具结果估算，不代表账单节省。</p> : null}
+      {!script && !command ? <ToolParameters args={tool.args} toolName={tool.tool} /> : null}
+      {script ? <ScriptToolDetails tool={tool} /> : null}
       {command ? <CommandLog command={command} error={errorText} status={tool.permission && !tool.permission.resolved ? "waiting" : tool.status} running={tool.status === "running" && (!tool.permission || tool.permission.resolved)} /> : null}
       {typeof commandMetadata?.executedCommand === "string" ? <details><summary>实际执行命令</summary><IoCard input={commandMetadata.executedCommand} output={null} /></details> : null}
       {typeof commandMetadata?.optimizationWarning === "string" ? <p className="tool-optimization-note">{commandMetadata.optimizationWarning}</p> : null}
@@ -341,31 +343,28 @@ function ToolPayload({ tool, onPreviewFile }: { tool: TimelineTool; onPreviewFil
   const progress = tool.updates.filter((update) => update.text).map((update) => update.text).join("\n");
   const display = tool.display;
   if (display?.kind === "file_io") {
-    // 操作和路径在折叠行的名称与摘要里已经表达过，这里只补充结果本身；
-    // 读文件的内容按扩展名做语法高亮（带行号）。
+    // 文件正文保留按扩展名的语法高亮与行号。
     const resultPreview = fileToolResult(tool.result);
-    if (!resultPreview?.text && resultPreview?.count === undefined) return <></>;
     const path = display.path ?? tool.path;
     return (
       <section className="tool-section">
-        {resultPreview.count !== undefined ? (
+        {resultPreview?.count !== undefined ? (
           <h4 className="tool-section-label">结果<span className="tool-section-meta">{resultPreview.count}</span></h4>
         ) : null}
-        {resultPreview.text ? (
+        {resultPreview?.text ? (
           <CodeView code={resultPreview.text} filePath={path} onPreviewFile={path ? onPreviewFile : undefined} />
         ) : null}
       </section>
     );
   }
   // 参数与结果分区，运行时在结果区展示进度。
-  const input = friendlyResult(tool.args);
   const images = toolResultImages(tool.result);
-  const output = (images ? images.caption : friendlyResult(tool.result)) ?? (progress || undefined);
-  if (input === undefined && output === undefined) return <></>;
+  const output = (images ? images.caption : toolResultText(tool.result)) ?? (progress || undefined);
+  if (output === undefined) return <></>;
   return (
     <IoCard
-      input={input ?? null}
-      output={output ?? null}
+      input={null}
+      output={output}
       outputError={tool.status === "failed" || tool.status === "denied" || tool.status === "unknown" || tool.status === "cancelled"}
     />
   );
@@ -450,16 +449,11 @@ function fileToolResult(value: unknown): { count?: string; text?: string } | und
   return undefined;
 }
 
-function friendlyResult(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
+function toolResultText(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (typeof value !== "object") return String(value);
-  const record = value as Record<string, unknown>;
-  for (const key of ["output", "content", "message", "summary", "results"]) {
-    const field = record[key];
-    if (typeof field === "string") return field;
-  }
   try {
     return JSON.stringify(value, null, 2);
   } catch {

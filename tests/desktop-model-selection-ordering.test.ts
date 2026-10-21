@@ -124,8 +124,7 @@ async function fixture(autoIpc = false) {
   function Harness({ sessionId }: { sessionId: string }) {
     const [workspace, setWorkspace] = React.useState<DesktopWorkspaceSnapshot | undefined>(initial);
     setExternal = setWorkspace; latestWorkspace = workspace!;
-    const merge = React.useCallback((snapshot: DesktopWorkspaceSnapshot) => { if (projectIdRef.current === snapshot.project.id) setWorkspace(snapshot); }, []);
-    const actions = useDesktopSettingsActions({ projectIdRef, setWorkspace, mergeProjectSnapshot: merge });
+    const actions = useDesktopSettingsActions({ projectIdRef, setWorkspace });
     const key = `${workspace!.project.id}:${sessionId}`;
     return React.createElement(Composer, { ...props, project: workspace!.project, key, draftKey: key,
       models: workspace!.pickerModels, runtimeInfo: workspace!.selectedModel, onSwitchModel: actions.switchModel });
@@ -138,7 +137,6 @@ async function fixture(autoIpc = false) {
   const think = async (thinking: ThinkingSelection) => { await React.act(async () => picker().onSelectThinking(thinking)); };
   const commit = async (index: number) => { const call = calls[index]!; return await agents.switchModel(call.projectId, call.alias, call.thinking); };
   const receipt = async (index: number, info: ModelRuntimeInfo) => { await React.act(async () => calls[index]!.result.resolve(info)); };
-  const refresh = async (index: number) => { const entry = refreshes[index]!; const snapshot = await agents.workspaceSnapshot(entry.projectId, false); await React.act(async () => entry.result.resolve(snapshot)); };
   async function actualNextPrompt(targetWorkspacePath = workspacePath) {
     const originalFetch = globalThis.fetch;
     const requests: Array<{ model: string; reasoning_effort?: string; messages?: unknown[] }> = [];
@@ -158,8 +156,8 @@ async function fixture(autoIpc = false) {
       return requests;
     } finally { await runtime?.close(); globalThis.fetch = originalFetch; }
   }
-  return { React, calls, warnings, errors, sends, picker, choose, think, commit, receipt, refresh, render, project, projects, agents, configStore,
-    ref, drafts, actualNextPrompt, modelsStore, selected: () => latestWorkspace.selectedModel,
+  return { React, calls, warnings, errors, sends, picker, choose, think, commit, receipt, refreshes, render, project, projects, agents, configStore,
+    ref, drafts, actualNextPrompt, modelsStore, workspace: () => latestWorkspace, selected: () => latestWorkspace.selectedModel,
     async navigateProject(snapshot: DesktopWorkspaceSnapshot) { projectIdRef.current = snapshot.project.id; await React.act(async () => setExternal(snapshot)); },
     async close() {
       await React.act(() => root.unmount()); dom.window.close();
@@ -185,6 +183,11 @@ test("same Composer serializes model then thinking and holds submission until th
     assert.equal(h.picker().currentThinking, "max");
     await h.receipt(1, await h.commit(1)); await h.React.act(async () => submitted);
     assert.deepEqual(h.sends, ["next"]); assert.equal(h.picker().currentThinking, "max");
+    assert.equal(h.refreshes.length, 0, "model selection must not query unrelated workspace data");
+    assert.equal(h.workspace().pickerModels[0]?.alias, "beta");
+    assert.equal(h.workspace().pickerModels[0]?.defaultThinking, "max");
+    assert.equal(h.workspace().requiresModelConfiguration, false);
+    assert.equal(h.workspace().runtime, undefined, "selection must not initialize a Runtime");
     const requests = await h.actualNextPrompt();
     assert.ok(requests.every(body => body.model === "chat-beta"));
     assert.equal(requests[0]!.reasoning_effort, "xhigh", "the existing OpenAI-compatible adapter serializes max as xhigh");
@@ -227,7 +230,8 @@ test("a remounted Composer holds a new model choice behind the previous session'
     assert.equal(h.calls.length, 1, "both Composers must share selection ordering until beta's receipt arrives");
     await h.receipt(0, oldInfo); assert.equal(h.calls.length, 2);
     assert.equal(h.picker().currentAlias, "gamma", "the older success must preserve the newer optimistic choice");
-    await h.receipt(1, await h.commit(1)); await h.refresh(1); await h.refresh(0);
+    await h.receipt(1, await h.commit(1));
+    assert.equal(h.refreshes.length, 0, "selection receipts must not trigger workspace reloads");
     assert.equal(h.picker().currentAlias, "gamma");
     assert.equal((await h.configStore.load()).defaultModel, "gamma");
   } finally { await h.close(); }
@@ -246,7 +250,8 @@ test("queued model intent retains its original project and its overrides after n
     const firstInfo = await h.commit(0);
     await h.navigateProject(await h.agents.workspaceSnapshot(other.id, false));
     await h.receipt(0, firstInfo); assert.equal(h.calls.length, 2);
-    await h.receipt(1, await h.commit(1)); await h.refresh(1); await h.refresh(0);
+    await h.receipt(1, await h.commit(1));
+    assert.equal(h.refreshes.length, 0, "selection receipts must not trigger workspace reloads");
     const globalDefault = (await loadConfigFile(path.dirname(h.configStore.configPath!()))).defaultModel;
     const originalEffective = (await h.configStore.load(h.project.path)).defaultModel;
     const otherEffective = (await h.configStore.load(other.path)).defaultModel;

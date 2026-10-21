@@ -2,12 +2,10 @@
  * 模型设置页的投影辅助：把「已保存 + 草稿未提交」的模型配置合并成设置页可见的
  * ModelChoice 列表，并把列表按连接分组。纯函数，不触碰 IPC 与运行时。
  */
-import type { ModelProfile, ReasoningEffort, ThinkingLevelMap } from "../../../../../config/schema.js";
+import type { ModelProfile, ThinkingLevelMap } from "../../../../../config/schema.js";
 import type { ModelChoice } from "../../../../../llm/ModelManager.js";
-import { completeThinkingLevelMap, isKimiAlwaysThinkingModel, modelCapabilities, thinkingLevelMapForModel } from "../../../../../ai/capabilities.js";
+import { modelCapabilities, thinkingLevelMapForModel } from "../../../../../ai/capabilities.js";
 import type { DesktopModelConnection, DesktopModelConfigurationInput } from "../../../../protocol.js";
-
-const localThinkingLevels: readonly ReasoningEffort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 export interface ConnectionGroup {
   provider: string;
@@ -46,7 +44,7 @@ export function connectionLabel(models: ModelChoice[], connections: DesktopModel
 
 /**
  * 把尚未提交的模型变更投影到设置页列表。这里不重新请求目录；已存在的条目保留后端返回
- * 的能力，但会补全旧缓存中的部分思考映射。新条目优先使用表单声明，只有明确支持思考但
+ * 的能力。新条目优先使用表单声明，只有明确支持思考但
  * 没有映射时才复用本地模型推导。
  */
 export function stagedModelChoices(
@@ -61,11 +59,6 @@ export function stagedModelChoices(
     const profile = modelProfiles[model.provider]?.[model.model];
     if (profile !== undefined) {
       choices.set(alias, applyModelProfileToChoice(model, profile));
-      continue;
-    }
-    const automaticThinkingLevelMap = completeLegacyThinkingLevelMap(model);
-    if (automaticThinkingLevelMap !== undefined) {
-      choices.set(alias, applyThinkingLevelMapToChoice(model, automaticThinkingLevelMap));
     }
   }
   for (const input of upserts) {
@@ -158,16 +151,6 @@ function applyModelProfileToChoice(choice: ModelChoice, profile: ModelProfile): 
     maxInputTokens: profile.maxInputTokens ?? choice.maxInputTokens,
     maxOutputTokens: profile.maxOutputTokens ?? choice.maxOutputTokens
   };
-}
-
-/** 仅修复旧的自动推导结果；带 null 的显式映射交给模型 profile 保持原意。 */
-function completeLegacyThinkingLevelMap(choice: ModelChoice): ThinkingLevelMap | undefined {
-  const map = choice.thinkingLevelMap;
-  const configuredLevels = Object.keys(map).filter((level) => level !== "off");
-  if (!configuredLevels.length || configuredLevels.length >= localThinkingLevels.length) return undefined;
-  if (!configuredLevels.every((level) => localThinkingLevels.includes(level as ReasoningEffort))) return undefined;
-  if (Object.values(map).some((value) => value === null)) return undefined;
-  return completeThinkingLevelMap(map, !isKimiAlwaysThinkingModel(choice.model));
 }
 
 function applyThinkingLevelMapToChoice(choice: ModelChoice, thinkingLevelMap: ThinkingLevelMap): ModelChoice {

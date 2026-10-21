@@ -9,7 +9,7 @@ import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentMa
 import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProjectService.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
-import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
+import { RuntimeHostClient } from "../src/runtime/RuntimeHost.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { createSessionFile, sessionFilePath } from "../src/session/store.js";
 
@@ -41,7 +41,7 @@ async function fixture(t: TestContext) {
       "data: [DONE]\n\n"
     ].join(""), { headers: { "content-type": "text/event-stream" } });
   });
-  const configStore = createFileConfigStore(root, { globalDir: path.join(root, "config") });
+  const configStore = createFileConfigStore(root, { globalDir: path.join(root, "config"), credentialStore: { persistent: true, get: async () => undefined, set: async () => undefined, delete: async () => undefined } });
   await configStore.save(configSchema.parse({
     ...structuredClone(defaultConfig),
     defaultModel: "attachment-fixture",
@@ -72,19 +72,28 @@ async function fixture(t: TestContext) {
   const attachment = importedEvents.find(event => event.type === "user_message")?.attachments?.[0];
   assert.ok(attachment);
   assert.match(attachment.path, /^@attachments\/import-[a-f0-9]{32}\/[^/]+$/u);
-  const local = await createInteractiveAgentHost(project.path, { configStore, attachmentRoot: projects.attachmentsRoot(project) });
   manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
-  // 仅测试装配跳过 socket 传输；Desktop、Runtime、Agent 和持久化仍使用真实实现。
-  (manager as unknown as { runtimes: Map<string, unknown> }).runtimes.set(project.id, { ...local, unsubscribe: () => undefined });
-  return { root, project, projects, manager, runtime: local.runtime, requests, original, document,
-    attachment: { ...attachment, size: attachment.size ?? png.length }, sessionId: local.runtime.getSnapshot().info.sessionId };
+  const managed = await (manager as unknown as {
+    ensureRuntime(projectId: string): Promise<{ runtime: RuntimeHostClient; commands?: unknown }>;
+  }).ensureRuntime(project.id);
+  assert.ok(managed.runtime instanceof RuntimeHostClient);
+  assert.equal(managed.commands, undefined, "Desktop exposes only its Host client");
+  return { root, project, projects, manager, runtime: managed.runtime, requests, original, document,
+    attachment: { ...attachment, size: attachment.size ?? png.length }, sessionId: managed.runtime.getSnapshot().info.sessionId };
 }
 
 test("Desktop keeps user text exact and sends media and Read-only file refs as separate parts", { timeout: 20_000 }, async (t) => {
   const f = await fixture(t);
   const attachments = [f.original, f.attachment, f.document];
   let requestStart = 0;
-  const verify = async (input: string) => {
+  const verify = async (input: string, runId: string) => {
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const events = await readSessionEvents(sessionFilePath(f.project.path, f.sessionId));
+      if (events.some(event => event.type === "turn_status" && event.runtime?.runId === runId)) break;
+      assert.ok(Date.now() < deadline, "the submitted run must persist its own terminal event");
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     await f.runtime.waitForIdle();
     const events = await readSessionEvents(sessionFilePath(f.project.path, f.sessionId));
     const user = events.filter(event => event.type === "user_message" && event.content.includes(input)).at(-1);
@@ -108,10 +117,10 @@ test("Desktop keeps user text exact and sends media and Read-only file refs as s
     requestStart = f.requests.length;
     return user;
   };
-  await f.manager.sendPrompt(f.project.id, f.sessionId, "Inspect imported picture", attachments);
-  await verify("Inspect imported picture");
-  await f.manager.editPrompt(f.project.id, f.sessionId, 0, "Inspect edited picture", attachments);
-  await verify("Inspect edited picture");
+  const sent = await f.manager.sendPrompt(f.project.id, f.sessionId, "Inspect imported picture", attachments);
+  await verify("Inspect imported picture", sent.runId);
+  const edited = await f.manager.editPrompt(f.project.id, f.sessionId, 0, "Inspect edited picture", attachments);
+  await verify("Inspect edited picture", edited.runId);
 });
 
 for (const [failure, label] of [["missing", "文件缺失"], ["symlink", "被符号链接替换"]] as const) {

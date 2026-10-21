@@ -3,10 +3,9 @@ import { readAttachment } from "../../../attachments/store.js";
 /**
  * 桌面端 agent 运行时管理。
  *
- * 每个项目一个主 runtime handle，按需懒创建并缓存在 `runtimes` 里。
- * 根据凭据存储能力，主 runtime 可以在当前 Electron 进程内运行、成为 Runtime Host owner，
- * 或 attach 到其它 Desktop/TUI owner。多 session 的 runtime 注册、创建、回收和事件路由
- * 统一由 Runtime Host 负责；Desktop 进程只保留一个 Host client 或同进程 owner。
+ * 每个项目一个 Host client，按需创建并缓存在 runtimes 中。
+ * 根据凭据存储能力，Host 可在当前 Electron 进程内运行、独立启动，或复用其他客户端的 owner。
+ * 多 session 的注册、创建、回收和事件路由统一由 Runtime Host 负责。
  *
  * 几处需要注意的状态：
  * - `runtimeInitializations` 缓存正在创建中的 promise，避免并发请求把同一个项目初始化两次；
@@ -32,7 +31,7 @@ import type {
   MemorySearchResult
 } from "../../../agent/context/memoryTypes.js";
 import { MemoryStorage } from "../../../agent/context/memoryStorage.js";
-import { DesktopActivityMemoryIndex } from "./DesktopActivityMemoryIndex.js";
+import { AgentMemoryClient } from "../../../runtime/memory/client.js";
 import { resolveToolModelAlias } from "../../../llm/toolModel.js";
 import { IdentityStorage } from "../../../agent/context/identityStorage.js";
 import { randomUUID } from "node:crypto";
@@ -63,14 +62,9 @@ import type { PermissionMode, PermissionResult } from "../../../permission/Permi
 import type { UserInputResponse } from "../../../runtime/userInput.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
 import { createToolRegistry } from "../../../tools/registry.js";
-import { executeRuntimeCommand, runtimeCommandOperation } from "../../../runtime/commands.js";
+import { runtimeCommandOperation } from "../../../runtime/commands.js";
 import { SessionGoalStore, type SessionGoalExpected } from "../../../runtime/SessionGoalStore.js";
-import {
-  createInteractiveAgentHost,
-  type AgentRunOutcome,
-  type InteractiveRuntimeHandle
-} from "../../../runtime/InteractiveAgentRuntime.js";
-import type { CommandRuntime } from "../../../runtime/CommandRuntime.js";
+import type { AgentRunOutcome } from "../../../runtime/InteractiveAgentRuntime.js";
 import { SubagentTaskManager } from "../../../runtime/SubagentTaskManager.js";
 import { buildInspectorTask, type InspectorMessage } from "../../inspectorTask.js";
 import {
@@ -80,9 +74,9 @@ import {
   startRuntimeHost,
   RuntimeHostClient,
   type HostOperationResult,
-  type RuntimeHostFactory,
   type RuntimeHostServer
 } from "../../../runtime/RuntimeHost.js";
+import { createRuntimeHostFactory } from "../../../runtime/host/runtimeFactory.js";
 import { isSessionWriterConflictError } from "../../../runtime/SessionLease.js";
 import { RuntimeHostProtocolMismatchError, RuntimeHostStartupError, RuntimeHostUnavailableError } from "../../../runtime/host/errors.js";
 import { runtimeHostSpawnCircuitFor } from "../../../runtime/host/reconnect.js";
@@ -106,8 +100,7 @@ import {
   type GlobalPersonalizationUpdate
 } from "../../../personalization/index.js";
 import { activeRun, isTerminalRunEvent, pendingPermission, runtimeIsBusy, type AgentHostEvent, type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../../../runtime/agentEvents.js";
-import { evaluateTaskRetry } from "../../../runtime/TaskRetryPolicy.js";
-import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "../../../runtime/TaskRunStore.js";
+import { DurableTaskRunStore } from "../../../runtime/TaskRunStore.js";
 import { splitAttachmentReferences } from "../../attachmentReferences.js";
 import type {
   DesktopAttachment,
@@ -169,19 +162,16 @@ import type {
 import { McpToolHost, type McpServerDetails, type McpServerStatus } from "../../../extensions/mcp.js";
 import { attachDesktopComputerMcp } from "../../../computer/desktopMcp.js";
 import type { AutomationCreateInput } from "../../../runtime/AutomationScheduler.js";
-import { GoalGraphStore, type GraphNodeInput } from "../../../runtime/GoalGraphStore.js";
+import { GoalGraphStore } from "../../../runtime/GoalGraphStore.js";
 import { CapabilityStore } from "../../../runtime/CapabilityStore.js";
 import { WorktreeManager, type WorktreeStatusView } from "../../../runtime/host/worktree.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopModelLoginService, type AuthenticatedModelLogin } from "./DesktopModelLoginService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import { perfNow, recordPerfPhase } from "../../../observability/perfTiming.js";
-import { approveTaskVerification, type TaskClosureResult } from "../../../runtime/TaskClosure.js";
-import { readTaskDefinition } from "../../../runtime/taskVerification.js";
 
 interface ManagedRuntime {
-  runtime: InteractiveRuntimeHandle;
-  commands?: CommandRuntime;
+  runtime: RuntimeHostClient;
   host?: RuntimeHostServer;
   unsubscribe(): void;
 }
@@ -269,7 +259,6 @@ export class DesktopAgentManager {
   private readonly stagedSettingsCredentials = new Map<string, StagedSettingsCredential>();
   private readonly modelLogin: DesktopModelLoginService;
   private readonly identityStorage = new IdentityStorage();
-  private activityMemoryIndex?: Promise<DesktopActivityMemoryIndex>;
   private closing = false;
 
   constructor(
@@ -293,22 +282,17 @@ export class DesktopAgentManager {
     query: string,
     options: MemorySimilarSearchOptions
   ): Promise<MemoryEntry[] | undefined> {
-    return await (await this.getActivityMemoryIndex()).findSimilarEntries(query, options);
+    return await this.memoryOwner().findSimilarInScope(query, options);
   }
 
   /** Activity 事实已经写入 SQLite 后，尽力把它投影进现有的全局向量索引。 */
   async indexActivityMemoryEntry(entry: MemoryEntry): Promise<void> {
-    await (await this.getActivityMemoryIndex()).indexEntry(entry);
+    await this.memoryOwner().indexEntry(entry);
   }
 
-  private async getActivityMemoryIndex(): Promise<DesktopActivityMemoryIndex> {
-    this.activityMemoryIndex ??= this.projects.globalDataRoot().then((workspaceRoot) => new DesktopActivityMemoryIndex({
-      workspaceRoot,
-      agentDir: globalAgentDir(),
-      loadConfig: async () => await this.configStore.load(workspaceRoot),
-      fetcher: this.fetcher
-    }));
-    return await this.activityMemoryIndex;
+  private memoryOwner(): AgentMemoryClient {
+    return new AgentMemoryClient(globalAgentDir(), this.configStore.configPath
+      ? path.dirname(this.configStore.configPath()) : undefined);
   }
 
   async prepareWorkspace(projectId: string): Promise<DesktopWorkspaceSnapshot> {
@@ -316,7 +300,7 @@ export class DesktopAgentManager {
     const previous = previousProjectId === projectId ? undefined : this.residentRuntime(previousProjectId ?? "");
     this.activeProjectId = projectId;
     try {
-      if (previous?.runtime instanceof RuntimeHostClient) {
+      if (previous !== undefined) {
         const previousLifetime = this.runtimeLifetimes.get(previousProjectId!);
         void previous.runtime.setKeepAlive(false).catch((error) => {
           if (previousLifetime !== undefined && this.isRuntimeLifetimeCurrent(previousProjectId!, previousLifetime)
@@ -338,7 +322,7 @@ export class DesktopAgentManager {
       warmed = managed;
       if (!this.isRuntimeLifetimeCurrent(projectId, lifetime) || !managed
         || this.runtimes.get(projectId) !== managed) return;
-      if (managed.runtime instanceof RuntimeHostClient) await managed.runtime.setKeepAlive(this.activeProjectId === projectId);
+      await managed.runtime.setKeepAlive(this.activeProjectId === projectId);
     }).catch((error: unknown) => {
       if (this.isRuntimeLifetimeCurrent(projectId, lifetime)
         && (warmed === undefined || this.runtimes.get(projectId) === warmed)) this.recordRuntimeFailure(projectId, error);
@@ -361,7 +345,7 @@ export class DesktopAgentManager {
         ? await this.ensureRuntime(projectId)
         : await this.resolveSessionRuntime(projectId, sessionId, false);
       // 连接成功不代表旧 owner 能加载当前配置；在真正重建成功之前保留故障。
-      if (hadRuntimeFailure && managed.runtime instanceof RuntimeHostClient) {
+      if (hadRuntimeFailure) {
         await managed.runtime.restartRuntime(sessionId);
       }
       if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.runtimeErrors.delete(projectId);
@@ -411,7 +395,7 @@ export class DesktopAgentManager {
       try {
         runtimeProjection = await this.readRuntimeProjection(managed);
       } catch (error) {
-        if (!(managed.runtime instanceof RuntimeHostClient && managed.runtime.isRetired)) throw error;
+        if (!managed.runtime.isRetired) throw error;
       }
     }
     const runtime = this.residentRuntime(projectId)?.runtime;
@@ -448,8 +432,7 @@ export class DesktopAgentManager {
   async mcpStatuses(projectId: string): Promise<McpServerStatus[] | undefined> {
     const managed = this.residentRuntime(projectId);
     if (!managed) return undefined;
-    if (managed.commands) return managed.commands.mcp.listServers();
-    return await requireRemoteRuntime(managed.runtime).mcpStatus();
+    return await managed.runtime.mcpStatus();
   }
 
   async toolCatalog(projectId: string): Promise<DesktopToolCatalogEntry[]> {
@@ -472,23 +455,19 @@ export class DesktopAgentManager {
       return registry.listEntries().map(({ source, tool }) => ({ name: tool.name, description: tool.description, source, risk: tool.risk, exposure: tool.exposure,
         namespace: tool.namespace ? { name: tool.namespace.name } : undefined }));
     }
-    const entries = managed.commands
-      ? managed.commands.listTools()
-      : await requireRemoteRuntime(managed.runtime).listTools();
+    const entries = await managed.runtime.listTools();
     return entries.map(({ name, description, source, risk, exposure, namespace }) => ({ name, description, source, risk, exposure,
       namespace: namespace ? { name: namespace.name } : undefined }));
   }
 
   async mcpDetails(projectId: string, serverName: string): Promise<McpServerDetails> {
     const managed = await this.ensureRuntime(projectId);
-    if (managed.commands) return await managed.commands.mcp.describeServer(serverName);
-    return await requireRemoteRuntime(managed.runtime).mcpDetails(serverName);
+    return await managed.runtime.mcpDetails(serverName);
   }
 
   async mcpReconnect(projectId: string, serverName: string): Promise<McpServerStatus> {
     const managed = await this.ensureRuntime(projectId);
-    if (managed.commands) return await managed.commands.mcp.reconnectServer(serverName);
-    return await requireRemoteRuntime(managed.runtime).mcpReconnect(serverName);
+    return await managed.runtime.mcpReconnect(serverName);
   }
 
   /** MCP 配置保存后的统一刷新入口；调用方先检查全局运行态。 */
@@ -537,28 +516,20 @@ export class DesktopAgentManager {
     }
     const existingDraftSessionId = this.draftSessionIds.get(projectId);
     if (existingDraftSessionId !== undefined) {
-      const existingDraft = managed.runtime instanceof RuntimeHostClient
-        ? managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === existingDraftSessionId)
-        : managed.runtime.getSnapshot().info.sessionId === existingDraftSessionId
-          ? { snapshot: managed.runtime.getSnapshot() }
-          : undefined;
+      const existingDraft = managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === existingDraftSessionId);
       if (existingDraft && !runtimeIsBusy(existingDraft.snapshot)) {
-        if (managed.runtime instanceof RuntimeHostClient) await managed.runtime.focusSession(existingDraftSessionId);
+        await managed.runtime.focusSession(existingDraftSessionId);
         return;
       }
       this.draftSessionIds.delete(projectId);
     }
-    if (!(managed.runtime instanceof RuntimeHostClient) && runtimeIsBusy(managed.runtime.getSnapshot())) {
-      throw new Error("当前项目仍有任务运行。请先停止它，或稍后再开始新任务。");
-    }
-    const previousSessionId = managed.runtime instanceof RuntimeHostClient
-      ? managed.runtime.getFocusedSessionId()
-      : undefined;
-    const previousSnapshot = previousSessionId === undefined || !(managed.runtime instanceof RuntimeHostClient)
+
+    const previousSessionId = managed.runtime.getFocusedSessionId();
+    const previousSnapshot = previousSessionId === undefined
       ? undefined
       : managed.runtime.getSnapshot(previousSessionId);
     const info = await managed.runtime.startDraft();
-    if (managed.runtime instanceof RuntimeHostClient && previousSessionId !== undefined
+    if (previousSessionId !== undefined
       && previousSessionId !== info.sessionId && previousSnapshot?.state.kind === "idle") {
       await managed.runtime.releaseSessionClaim(previousSessionId);
     }
@@ -567,10 +538,10 @@ export class DesktopAgentManager {
 
   private residentRuntime(projectId: string): ManagedRuntime | undefined {
     const managed = this.runtimes.get(projectId);
-    return managed?.runtime instanceof RuntimeHostClient && managed.runtime.isRetired ? undefined : managed;
+    return managed !== undefined && managed.runtime.isRetired ? undefined : managed;
   }
 
-  /** Runtime Host 注册表是并行 session 的唯一 owner；Desktop 只管理一个 client/fallback。 */
+  /** Runtime Host 注册表是并行 session 的唯一 owner；Desktop 只管理一个 client 及自己拥有的 Host。 */
   private runtimeEntries(projectId: string): ManagedRuntime[] {
     const managed = this.residentRuntime(projectId);
     return managed === undefined ? [] : [managed];
@@ -579,18 +550,12 @@ export class DesktopAgentManager {
   private runtimeSnapshots(projectId: string): InteractiveRuntimeSnapshot[] {
     const managed = this.residentRuntime(projectId);
     if (managed === undefined) return [];
-    if (managed.runtime instanceof RuntimeHostClient) {
-      return managed.runtime.runtimeSnapshots().map(({ snapshot }) => snapshot);
-    }
-    return [managed.runtime.getSnapshot()];
+    return managed.runtime.runtimeSnapshots().map(({ snapshot }) => snapshot);
   }
 
   /** 事件订阅统一出口：所有 runtime 的事件按 sessionId 分桶后广播，meta 标记来源实例。 */
-  private wireRuntimeEvents(projectId: string, runtime: InteractiveRuntimeHandle, primary: boolean): () => void {
-    const subscribe = runtime instanceof RuntimeHostClient
-      ? runtime.subscribeAllRuntimeEvents.bind(runtime)
-      : runtime.subscribe.bind(runtime);
-    return subscribe((update) => {
+  private wireRuntimeEvents(projectId: string, runtime: RuntimeHostClient): () => void {
+    return runtime.subscribeAllRuntimeEvents((update) => {
       const event = update.event;
       if (event) {
         const projectEvents = this.projectEvents(projectId);
@@ -610,15 +575,13 @@ export class DesktopAgentManager {
         }
         if (isTerminalRunEvent(event) && this.state.selectedSessionId(projectId) !== event.sessionId) {
           void this.projects.updateSessionMetadata(this.projects.requireProject(projectId), event.sessionId, { unread: true }).catch(() => undefined);
-          if (runtime instanceof RuntimeHostClient && update.snapshot.state.kind === "idle") {
+          if (update.snapshot.state.kind === "idle") {
             void runtime.releaseSessionClaim(event.sessionId).catch(() => undefined);
           }
         }
       }
       const sessionId = event?.sessionId ?? update.snapshot.info.sessionId;
-      const isPrimary = runtime instanceof RuntimeHostClient
-        ? runtime.runtimeSnapshots().find((entry) => entry.sessionId === sessionId)?.primary === true
-        : primary;
+      const isPrimary = runtime.runtimeSnapshots().find((entry) => entry.sessionId === sessionId)?.primary === true;
       this.emit(projectId, update, { sessionId, primary: isPrimary });
     });
   }
@@ -647,6 +610,12 @@ export class DesktopAgentManager {
   async renameProject(projectId: string, name: string): Promise<DesktopWorkspaceSnapshot> {
     await this.state.setProjectName(projectId, name);
     return await this.workspaceSnapshot(projectId);
+  }
+
+  async removeProject(projectId: string): Promise<void> {
+    if (this.isProjectRunning(projectId)) throw new Error("Stop the running task before removing this project from the sidebar.");
+    await this.disposeProject(projectId);
+    await this.state.removeProject(projectId);
   }
 
   async openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument> {
@@ -792,13 +761,7 @@ export class DesktopAgentManager {
     // 前端发送占位与持久用户消息共用身份，重复文本、事件先于回执到达也不会误合并。
     const requestIds = { messageId };
     if (runtimeIsBusy(snapshot)) {
-      const queued: HostOperationResult<import("../../../runtime/InteractiveAgentRuntime.js").QueuedAgentMessage> = runtime instanceof RuntimeHostClient
-        ? await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", agentAttachments, requestIds)
-        : {
-            accepted: true,
-            revision: snapshot.revision,
-            result: delivery === "steer" ? await runtime.steer(prompt, agentAttachments, requestIds) : await runtime.enqueue(prompt, agentAttachments, requestIds)
-          };
+      const queued: HostOperationResult<import("../../../runtime/InteractiveAgentRuntime.js").QueuedAgentMessage> = await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", agentAttachments, requestIds);
       if (!queued.accepted || queued.result === undefined) {
         throw errorFromHostOperation(queued);
       }
@@ -812,35 +775,23 @@ export class DesktopAgentManager {
       };
     }
     const info = snapshot.info;
-    if (runtime instanceof RuntimeHostClient) {
-      const accepted = await runtime.submitRunForSession(
-        targetSessionId,
-        prompt,
-        agentAttachments,
-        requestIds,
-        promptContext,
-        capabilitySelection,
-        fastMode
-      );
-      if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
-      if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
-      if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
-      recordPerfPhase("desktop.sendPrompt", sendPerfStartedAt, { projectId, queued: false }, project.path);
-      return {
-        sessionId: info.sessionId,
-        runId: accepted.result.runId,
-        messageId: accepted.result.messageId
-      };
-    }
-    const submitted = runtime.submitPrompt(prompt, agentAttachments, { ...requestIds, allowUserInput: true }, promptContext, capabilitySelection, undefined, fastMode);
+    const accepted = await runtime.submitRunForSession(
+      targetSessionId,
+      prompt,
+      agentAttachments,
+      requestIds,
+      promptContext,
+      capabilitySelection,
+      fastMode
+    );
+    if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
     if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
     if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
-    this.observeRunCompletion(projectId, submitted.completion);
     recordPerfPhase("desktop.sendPrompt", sendPerfStartedAt, { projectId, queued: false }, project.path);
     return {
       sessionId: info.sessionId,
-      runId: submitted.runId,
-      messageId: submitted.messageId
+      runId: accepted.result.runId,
+      messageId: accepted.result.messageId
     };
   }
 
@@ -851,35 +802,8 @@ export class DesktopAgentManager {
     mutation: import("../../protocol.js").DesktopQueuedMessageMutation = {}
   ): Promise<void> {
     const managed = await this.resolveSessionRuntime(projectId, sessionId);
-    if (managed.runtime instanceof RuntimeHostClient) {
-      await managed.runtime.mutateQueuedRunMessageForSession(sessionId, action, mutation);
-      return;
-    }
-    const runtime = managed.runtime;
-    if (action === "send-all") {
-      if (!runtime.sendQueuedRunMessagesNow) throw new Error("追加消息控制不可用。");
-      await runtime.sendQueuedRunMessagesNow();
-      return;
-    }
-    const messageId = mutation.messageId;
-    if (!messageId) throw new Error("缺少待发送消息 ID。");
-    if (action === "update" && runtime.updateQueuedRunMessage && mutation.input !== undefined) {
-      await runtime.updateQueuedRunMessage(messageId, mutation.input);
-      return;
-    }
-    if (action === "remove" && runtime.removeQueuedRunMessage) {
-      await runtime.removeQueuedRunMessage(messageId);
-      return;
-    }
-    if (action === "move" && runtime.moveQueuedRunMessage && mutation.targetMessageId) {
-      await runtime.moveQueuedRunMessage(messageId, mutation.targetMessageId, mutation.placeAfter === true);
-      return;
-    }
-    if (action === "steer" && runtime.steerQueuedRunMessage) {
-      await runtime.steerQueuedRunMessage(messageId);
-      return;
-    }
-    throw new Error("追加消息操作参数不完整。");
+    await managed.runtime.mutateQueuedRunMessageForSession(sessionId, action, mutation);
+    return;
   }
 
   /**
@@ -894,25 +818,13 @@ export class DesktopAgentManager {
     const lifetime = this.runtimeLifetime(projectId);
     try {
       const primary = await this.ensureRuntime(projectId);
-      if (primary.runtime instanceof RuntimeHostClient) {
-        const target = await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus: false });
-        this.writerConflicts.delete(`${projectId}\0${target.sessionId}`);
-        if (personalization !== undefined) {
-          const state = await primary.runtime.getPersonalizationState(target.sessionId);
-          await primary.runtime.updateChatPersonalization(personalization, state.catalogRevision, target.sessionId);
-        }
-        return { managed: primary, snapshot: primary.runtime.getSnapshot(target.sessionId) };
+      const target = await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus: false });
+      this.writerConflicts.delete(`${projectId}\0${target.sessionId}`);
+      if (personalization !== undefined) {
+        const state = await primary.runtime.getPersonalizationState(target.sessionId);
+        await primary.runtime.updateChatPersonalization(personalization, state.catalogRevision, target.sessionId);
       }
-      if (sessionId !== undefined && primary.runtime.getSnapshot().info.sessionId !== sessionId) {
-        if (runtimeIsBusy(primary.runtime.getSnapshot())) {
-          throw new Error("当前项目的 Runtime Host 正在运行，无法在同进程 fallback 中并行打开另一个会话。");
-        }
-        await primary.runtime.resumeSession(sessionId);
-      } else if (sessionId === undefined) {
-        await this.ensureDraftRuntime(projectId);
-      }
-      if (personalization !== undefined) await this.updateManagedChatPersonalization(primary, personalization);
-      return { managed: primary, snapshot: primary.runtime.getSnapshot() };
+      return { managed: primary, snapshot: primary.runtime.getSnapshot(target.sessionId) };
     } catch (error) {
       if (this.isRuntimeLifetimeCurrent(projectId, lifetime)) this.recordRuntimeFailure(projectId, error);
       throw error;
@@ -924,14 +836,7 @@ export class DesktopAgentManager {
     const lifetime = this.runtimeLifetime(projectId);
     try {
       const primary = await this.ensureRuntime(projectId);
-      if (primary.runtime instanceof RuntimeHostClient) {
-        await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus });
-      } else if (primary.runtime.getSnapshot().info.sessionId !== sessionId) {
-        if (runtimeIsBusy(primary.runtime.getSnapshot())) {
-          throw new Error("当前项目的 Runtime Host 正在运行，无法在同进程 fallback 中并行打开另一个会话。");
-        }
-        await primary.runtime.resumeSession(sessionId);
-      }
+      await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus });
       this.writerConflicts.delete(`${projectId}\0${sessionId}`);
       return primary;
     } catch (error) {
@@ -942,9 +847,7 @@ export class DesktopAgentManager {
 
   async resumeInterruptedTurn(projectId: string, sessionId: string): Promise<DesktopRunReceipt | undefined> {
     const { runtime } = await this.resolveSessionRuntime(projectId, sessionId);
-    const submitted = runtime instanceof RuntimeHostClient
-      ? await runtime.startInterruptedTurnForSession(sessionId, undefined, "newTurn")
-      : await runtime.startInterruptedTurn(undefined, "newTurn");
+    const submitted = await runtime.startInterruptedTurnForSession(sessionId, undefined, "newTurn");
     if (!submitted) return undefined;
     await this.state.setSelectedSession(projectId, sessionId);
     this.observeRunCompletion(projectId, submitted.completion);
@@ -985,7 +888,7 @@ export class DesktopAgentManager {
     return await this.runIdempotently(projectId, "retry", idempotencyKey, async () => {
       const managed = await this.resolveSessionRuntime(projectId, sessionId);
       const { runtime } = managed;
-      const snapshot = runtime instanceof RuntimeHostClient ? runtime.getSnapshot(sessionId) : runtime.getSnapshot();
+      const snapshot = runtime.getSnapshot(sessionId);
       if (snapshot.state.kind === "runs") {
         throw new Error("当前会话正在生成，请等待本轮完成后再重新生成。");
       } else if (snapshot.state.kind === "maintenance") {
@@ -1004,16 +907,10 @@ export class DesktopAgentManager {
       const prompt = splitAttachmentReferences(input).text;
       const agentAttachments = await loadAgentAttachments(project.path, retryAttachments);
       const requestIds = { retryOfMessageId: targetMessageId };
-      if (runtime instanceof RuntimeHostClient) {
-        const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
-        if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
-        await this.state.setSelectedSession(projectId, sessionId);
-        return { sessionId, runId: accepted.result.runId, messageId: accepted.result.messageId };
-      }
-      const submitted = runtime.submitPrompt(prompt, agentAttachments, { ...requestIds, allowUserInput: true });
+      const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
+      if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
       await this.state.setSelectedSession(projectId, sessionId);
-      this.observeRunCompletion(projectId, submitted.completion);
-      return { sessionId, runId: submitted.runId, messageId: submitted.messageId };
+      return { sessionId, runId: accepted.result.runId, messageId: accepted.result.messageId };
     });
   }
 
@@ -1024,8 +921,7 @@ export class DesktopAgentManager {
     direction: "prev" | "next"
   ): Promise<DesktopSessionDocument> {
     const managed = await this.resolveSessionRuntime(projectId, sessionId);
-    if (managed.runtime instanceof RuntimeHostClient) await managed.runtime.switchMessageVersion(messageId, direction, sessionId);
-    else await managed.runtime.switchMessageVersion(messageId, direction);
+    await managed.runtime.switchMessageVersion(messageId, direction, sessionId);
     return await this.openSession(projectId, sessionId);
   }
 
@@ -1038,12 +934,10 @@ export class DesktopAgentManager {
   ): Promise<DesktopRunReceipt> {
     const managed = await this.resolveSessionRuntime(projectId, sessionId);
     const { runtime } = managed;
-    const snapshot = runtime instanceof RuntimeHostClient ? runtime.getSnapshot(sessionId) : runtime.getSnapshot();
+    const snapshot = runtime.getSnapshot(sessionId);
     if (snapshot.state.kind === "runs") {
-      if (runtime instanceof RuntimeHostClient) await runtime.cancelRunRequest(snapshot.state.activeRun.runId, "replaced", sessionId);
-      else runtime.cancelCurrentRun("replaced");
-      if (runtime instanceof RuntimeHostClient) await runtime.waitForIdle(sessionId);
-      else await runtime.waitForIdle();
+      await runtime.cancelRunRequest(snapshot.state.activeRun.runId, "replaced", sessionId);
+      await runtime.waitForIdle(sessionId);
     } else if (snapshot.state.kind === "maintenance") {
       throw new Error("Runtime 正在处理其他操作，请稍候再编辑消息。");
     }
@@ -1056,23 +950,13 @@ export class DesktopAgentManager {
       retryOfMessageId: targetMessageId,
       replaceUserMessageId: targetMessageId
     };
-    if (runtime instanceof RuntimeHostClient) {
-      const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
-      if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
-      await this.state.setSelectedSession(projectId, sessionId);
-      return {
-        sessionId,
-        runId: accepted.result.runId,
-        messageId: accepted.result.messageId
-      };
-    }
-    const submitted = runtime.submitPrompt(prompt, agentAttachments, { ...requestIds, allowUserInput: true });
+    const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
+    if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
     await this.state.setSelectedSession(projectId, sessionId);
-    this.observeRunCompletion(projectId, submitted.completion);
     return {
       sessionId,
-      runId: submitted.runId,
-      messageId: submitted.messageId
+      runId: accepted.result.runId,
+      messageId: accepted.result.messageId
     };
   }
 
@@ -1102,60 +986,51 @@ export class DesktopAgentManager {
     const owner = entries.find((entry) => activeRun(entry.runtime.getSnapshot())?.runId === runId) ?? entries[0];
     if (!owner) throw new Error("Project runtime is not active.");
     const runtime = owner.runtime;
-    if (runtime instanceof RuntimeHostClient) {
-      const targetSessionId = runtime.runtimeSnapshots()
-        .find((entry) => activeRun(entry.snapshot)?.runId === runId)?.sessionId;
-      const result = await runtime.cancelRunRequest(runId, "paused", targetSessionId);
-      if (!result.accepted) throw new Error(result.reason ?? "Runtime Host did not accept cancellation.");
-      return;
-    }
-    if (!runtime.cancelRun(runId, "paused")) throw new Error(`Run ${runId} is not active.`);
+    const targetSessionId = runtime.runtimeSnapshots()
+      .find((entry) => activeRun(entry.snapshot)?.runId === runId)?.sessionId;
+    const result = await runtime.cancelRunRequest(runId, "paused", targetSessionId);
+    if (!result.accepted) throw new Error(result.reason ?? "Runtime Host did not accept cancellation.");
+    return;
   }
 
   async resolvePermission(projectId: string, requestId: string, result: PermissionResult): Promise<void> {
     const entries = this.runtimeEntries(projectId);
     const owner = entries.find((entry) => pendingPermission(entry.runtime.getSnapshot())?.requestId === requestId) ?? entries[0];
     if (!owner) throw new Error("Project runtime is not active.");
-    if (owner.runtime instanceof RuntimeHostClient) {
-      const targetSessionId = owner.runtime.runtimeSnapshots()
-        .find((entry) => pendingPermission(entry.snapshot)?.requestId === requestId)?.sessionId;
-      const response = await owner.runtime.answerPermissionRequest(requestId, result, targetSessionId);
-      if (!response.accepted) throw new Error(response.reason ?? "Runtime Host did not accept the permission response.");
-      return;
-    }
-    owner.runtime.answerPermission(requestId, result);
+    const targetSessionId = owner.runtime.runtimeSnapshots()
+      .find((entry) => pendingPermission(entry.snapshot)?.requestId === requestId)?.sessionId;
+    const response = await owner.runtime.answerPermissionRequest(requestId, result, targetSessionId);
+    if (!response.accepted) throw new Error(response.reason ?? "Runtime Host did not accept the permission response.");
+    return;
   }
 
   async answerUserInput(projectId: string, sessionId: string, runId: string, toolCallId: string, response: UserInputResponse): Promise<void> {
-    const owner = this.runtimeEntries(projectId).find((entry) => entry.runtime instanceof RuntimeHostClient
-      || entry.runtime.getSnapshot().info.sessionId === sessionId);
+    const owner = this.residentRuntime(projectId);
     if (!owner) throw new Error("Project runtime is not active.");
-    if (owner.runtime instanceof RuntimeHostClient) {
-      await owner.runtime.answerUserInput(sessionId, runId, toolCallId, response);
-    } else {
-      if (!owner.commands?.userInput) throw new Error("User input is unavailable in this runtime.");
-      owner.commands.userInput.answer(sessionId, runId, toolCallId, response);
-    }
+    await owner.runtime.answerUserInput(sessionId, runId, toolCallId, response);
   }
 
   async setPermissionMode(projectId: string, mode: PermissionMode): Promise<DesktopWorkspaceSnapshot> {
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    if (commands) {
-      await runtime.runExclusiveOperation(
-        "permission",
-        async () => await commands.agent.setPermissionMode(mode)
-      );
-    } else {
-      await requireRemoteRuntime(runtime).setPermissionMode(mode);
-    }
+    const { runtime } = await this.ensureRuntime(projectId);
+    await runtime.setPermissionMode(mode);
     return await this.workspaceSnapshot(projectId);
   }
 
   async switchModel(projectId: string, alias: string, thinking: ThinkingSelection): Promise<ModelRuntimeInfo> {
     const project = this.projects.requireProject(projectId);
     const config = await this.configStore.load(project.path);
-    const catalogs = await restoreProviderCatalogs(Object.keys(config.providers), this.modelsStore, config.providers);
+    const reference = alias.trim();
+    const slash = reference.indexOf("/");
+    const selectedProvider = (config.models[reference] ?? config.models[reference.toLowerCase()])?.provider
+      ?? (slash > 0 ? reference.slice(0, slash) : undefined);
+    const catalogs = selectedProvider && config.providers[selectedProvider]
+      ? await restoreProviderCatalogs([selectedProvider], this.modelsStore, config.providers) : [];
     const effective = await saveModelSelection(project.path, this.configStore, alias, thinking, catalogs);
+    // 项目覆盖可能使保存后的有效模型仍属于另一连接，只补读该连接的目录。
+    const effectiveProvider = effective.models[effective.defaultModel]?.provider;
+    if (effectiveProvider && effectiveProvider !== selectedProvider) {
+      catalogs.push(...await restoreProviderCatalogs([effectiveProvider], this.modelsStore, effective.providers));
+    }
     this.runtimeErrors.delete(projectId);
     return modelRuntimeInfo(effective, catalogs);
   }
@@ -1778,13 +1653,8 @@ export class DesktopAgentManager {
 
   async memoryEmbeddingStatus(projectId: string): Promise<DesktopMemoryEmbeddingStatus> {
     const project = this.projects.requireProject(projectId);
-    const managed = this.residentRuntime(projectId);
-    if (managed) {
-      const status = managed.commands
-        ? await managed.commands.agent.memoryEmbeddingStatus()
-        : await requireRemoteRuntime(managed.runtime).memoryEmbeddingStatus();
-      return describeMemoryEmbeddingStatus(status);
-    }
+    const existing = await this.memoryOwner().existingStatus();
+    if (existing) return describeMemoryEmbeddingStatus(existing);
     // 冷态读取同一持久化投影，不启动模型或为状态查询建立索引。
     return describeMemoryEmbeddingStatus(await this.readEmbeddingStatusFromDisk(project.path));
   }
@@ -1794,75 +1664,34 @@ export class DesktopAgentManager {
     model: LocalEmbeddingModelId
   ): Promise<DesktopMemoryEmbeddingStatus> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(
-      projectId,
-      "任务运行期间不能下载 Embedding 模型。"
-    );
-    if (!commands) return describeMemoryEmbeddingStatus(await requireRemoteRuntime(runtime).downloadMemoryEmbeddingModel(model));
-    const status = await runtime.runExclusiveOperation("memory", async (signal) => {
-      await commands.agent.downloadMemoryEmbeddingModel(model, signal);
-      return await commands.agent.memoryEmbeddingStatus();
-    });
-    return describeMemoryEmbeddingStatus(status);
+    const owner = this.memoryOwner();
+    await owner.download(model);
+    return describeMemoryEmbeddingStatus(await owner.status());
   }
 
-  async cancelMemoryEmbeddingDownload(
-    projectId: string,
-    model: LocalEmbeddingModelId
-  ): Promise<DesktopMemoryEmbeddingCancellationResult> {
+  async cancelMemoryEmbeddingDownload(projectId: string, model: LocalEmbeddingModelId): Promise<DesktopMemoryEmbeddingCancellationResult> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    if (!commands) {
-      const result = await requireRemoteRuntime(runtime).cancelMemoryEmbeddingDownload(model);
-      return { cancelled: result.cancelled, status: describeMemoryEmbeddingStatus(result.status) };
-    }
-    const cancelled = commands.agent.cancelMemoryEmbeddingDownload(model);
-    return { cancelled, status: describeMemoryEmbeddingStatus(await commands.agent.memoryEmbeddingStatus()) };
+    const owner = this.memoryOwner();
+    return { cancelled: await owner.cancelDownload(model), status: describeMemoryEmbeddingStatus(await owner.status()) };
   }
 
-  async deleteMemoryEmbeddingModel(
-    projectId: string,
-    model: LocalEmbeddingModelId
-  ): Promise<DesktopMemoryEmbeddingDeleteResult> {
+  async deleteMemoryEmbeddingModel(projectId: string, model: LocalEmbeddingModelId): Promise<DesktopMemoryEmbeddingDeleteResult> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(
-      projectId,
-      "任务运行期间不能删除 Embedding 模型。"
-    );
-    if (!commands) {
-      const result = await requireRemoteRuntime(runtime).deleteMemoryEmbeddingModel(model);
-      return { ...result, status: describeMemoryEmbeddingStatus(result.status) };
-    }
-    const result = await runtime.runExclusiveOperation("memory", async () => ({
-      ...(await commands.agent.removeMemoryEmbeddingModel(model)),
-      status: await commands.agent.memoryEmbeddingStatus()
-    }));
-    return { ...result, status: describeMemoryEmbeddingStatus(result.status) };
+    const owner = this.memoryOwner();
+    return { ...(await owner.removeLocalModel(model)), status: describeMemoryEmbeddingStatus(await owner.status()) };
   }
 
   async rebuildMemoryEmbeddingIndex(projectId: string): Promise<DesktopMemoryEmbeddingStatus> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(
-      projectId,
-      "任务运行期间不能重建记忆索引。"
-    );
-    if (!commands) return describeMemoryEmbeddingStatus(await requireRemoteRuntime(runtime).rebuildMemoryEmbeddingIndex());
-    const status = await runtime.runExclusiveOperation("memory", async (signal) => {
-      await commands.agent.rebuildMemoryEmbeddingIndex(signal);
-      return await commands.agent.memoryEmbeddingStatus();
-    });
-    return describeMemoryEmbeddingStatus(status);
+    const owner = this.memoryOwner();
+    await owner.rebuild();
+    return describeMemoryEmbeddingStatus(await owner.status());
   }
 
   async cancelMemoryEmbeddingRebuild(projectId: string): Promise<DesktopMemoryEmbeddingCancellationResult> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    if (!commands) {
-      const result = await requireRemoteRuntime(runtime).cancelMemoryEmbeddingRebuild();
-      return { cancelled: result.cancelled, status: describeMemoryEmbeddingStatus(result.status) };
-    }
-    const cancelled = commands.agent.cancelMemoryEmbeddingRebuild();
-    return { cancelled, status: describeMemoryEmbeddingStatus(await commands.agent.memoryEmbeddingStatus()) };
+    const owner = this.memoryOwner();
+    return { cancelled: await owner.cancelRebuild(), status: describeMemoryEmbeddingStatus(await owner.status()) };
   }
 
   async saveMemorySettings(projectId: string, input: DesktopMemorySettingsInput): Promise<DesktopMemorySettingsSnapshot> {
@@ -1894,10 +1723,8 @@ export class DesktopAgentManager {
 
   async searchMemory(projectId: string, query: string): Promise<DesktopMemorySearchMatch[]> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    const result = commands
-      ? await commands.agent.searchMemory(query, [], { limit: 8 })
-      : await requireRemoteRuntime(runtime).memory<MemorySearchResult>("search", { query, limit: 8 });
+    const { runtime } = await this.ensureRuntime(projectId);
+    const result = await runtime.memory<MemorySearchResult>("search", { query, limit: 8 });
     if (result.report.degraded) throw new Error(`记忆语义搜索暂不可用：${result.report.degraded}`);
     return result.matches.map((match) => ({
       id: match.entry.id,
@@ -1927,7 +1754,7 @@ export class DesktopAgentManager {
     input: DesktopMemoryEntryInput
   ): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(
+    const { runtime } = await this.runtimeForGlobalWrite(
       projectId,
       "任务运行期间不能新增记忆。"
     );
@@ -1939,15 +1766,7 @@ export class DesktopAgentManager {
       durability: input.durability,
       rationale: input.rationale
     };
-    const result = commands
-      ? await runtime.runExclusiveOperation(
-        "memory",
-        async () => {
-          const written = await requireLocalMemory(commands).writeEntry(entry);
-          return written;
-        }
-      )
-      : await requireRemoteRuntime(runtime).memory<{ written: boolean; path?: string }>("write", { entry });
+    const result = await runtime.memory<{ written: boolean; path?: string }>("write", { entry });
     if (!result.written) {
       throw new Error(result.path ? "已存在等价的记忆条目，未重复保存。" : "记忆正文不能为空。");
     }
@@ -1960,22 +1779,14 @@ export class DesktopAgentManager {
     patch: DesktopMemoryEntryPatch
   ): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(
+    const { runtime } = await this.runtimeForGlobalWrite(
       projectId,
       "任务运行期间不能编辑记忆。"
     );
-    const result = commands
-      ? await runtime.runExclusiveOperation(
-        "memory",
-        async () => {
-          const written = await requireLocalMemory(commands).updateEntry(entryId, patch);
-          return written;
-        }
-      )
-      : await requireRemoteRuntime(runtime).memory<{ written: boolean }>("update", {
+    const result = await runtime.memory<{ written: boolean }>("update", {
         id: entryId,
-        patch
-      });
+      patch
+    });
     if (!result.written) throw new Error("未找到该记忆条目，或修改后的正文为空。");
     return await this.memoryStats(projectId);
   }
@@ -1983,8 +1794,7 @@ export class DesktopAgentManager {
   async memorySleepStatus(projectId: string): Promise<MemoryMaintenanceStatus> {
     const project = this.projects.requireProject(projectId);
     const managed = this.residentRuntime(projectId);
-    if (managed?.commands) return await managed.commands.agent.getLocalMemory().loadMaintenanceStatus();
-    if (managed) return await requireRemoteRuntime(managed.runtime).memory<MemoryMaintenanceStatus>("sleep-status", {});
+    if (managed) return await managed.runtime.memory<MemoryMaintenanceStatus>("sleep-status", {});
     const storage = new MemoryStorage(project.path);
     try { return await storage.readMaintenanceStatus(); }
     finally { storage.close(); }
@@ -1997,57 +1807,17 @@ export class DesktopAgentManager {
 
   async previewMemorySleep(projectId: string): Promise<import("../../protocol.js").DesktopMemorySleepPreview> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    if (commands) {
-      const policy = (await commands.agent.getPersonalizationState()).memory;
-      return await commands.agent.getLocalMemory().previewMaintenance(policy, {
-        findSimilarPairs: async (entries, threshold, signal) => commands.agent.findMemorySimilarityPairs(entries, threshold, signal)
-      });
-    }
-    return await requireRemoteRuntime(runtime).memory("sleep-preview", {});
+    return await this.memoryOwner().previewSleep();
   }
 
   async cancelMemorySleep(projectId: string): Promise<{ cancelled: boolean }> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    if (commands) return { cancelled: commands.agent.cancelMemoryMaintenance() };
-    return { cancelled: await requireRemoteRuntime(runtime).cancelMemorySleep() };
+    return { cancelled: await this.memoryOwner().cancelSleep() };
   }
 
   async runMemorySleep(projectId: string): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(projectId, "任务运行期间不能立即整理记忆。");
-    const memoryPolicy = (await this.currentPersonalizationState(projectId)).memory;
-    const maintenanceOptions = {
-      trigger: "manual" as const,
-      archiveRetentionDays: memoryPolicy.archiveRetentionDays,
-      temporaryTtl: memoryPolicy.temporaryTtl,
-      similarityMergeThreshold: memoryPolicy.similarityMergeThreshold,
-      useLlm: memoryPolicy.useLlm,
-      llmMergeLow: memoryPolicy.llmMergeLow,
-      llmBatchSize: memoryPolicy.llmBatchSize
-    };
-    if (commands) {
-      let rebuildRequested = false;
-      await runtime.runExclusiveOperation("memory", async (signal) => {
-        try {
-          await commands.agent.getLocalMemory().runMemoryMaintenance({ ...maintenanceOptions, signal }, {
-            indexEntry: async (entry) => await commands.agent.indexMemoryEntry(entry),
-            prepareSynthesis: (content, signal) => commands.agent.prepareMemorySynthesis(content, signal),
-            requestRebuild: () => { rebuildRequested = true; },
-            findSimilarPairs: async (entries, minimumSimilarity, pairSignal) => (
-              await commands.agent.findMemorySimilarityPairs(entries, minimumSimilarity, pairSignal)
-            )
-          });
-        } finally {
-          // Sleep 的归档发生在 SQLite 提交之后；批次结束再重建一次派生索引，避免
-          // 每个条目单独重建，也不把“重建 Runtime”误当成“重建 Embedding”。
-          if (rebuildRequested) await commands.agent.rebuildMemoryEmbeddingIndex(signal).catch(() => undefined);
-        }
-      });
-    } else {
-      await requireRemoteRuntime(runtime).memory("sleep-run-now", maintenanceOptions);
-    }
+    await this.memoryOwner().runSleep();
     return await this.memoryStats(projectId);
   }
 
@@ -2066,14 +1836,10 @@ export class DesktopAgentManager {
         storage.close();
       }
     }
-    const { runtime, commands } = managed;
-    const result = commands
-      ? await commands.agent.getLocalMemory().listArchivedEntries({ offset, limit })
-      : await requireRemoteRuntime(runtime).memory<MemoryArchiveEntriesResult>("archive-list", { offset, limit });
+    const { runtime } = managed;
+    const result = await runtime.memory<MemoryArchiveEntriesResult>("archive-list", { offset, limit });
     const entryIds = result.entries.filter((entry) => entry.mergedInto).map((entry) => entry.id);
-    const chains = !includeChains || entryIds.length === 0 ? undefined : commands
-      ? await commands.agent.getLocalMemory().resolveArchiveChains(entryIds)
-      : await requireRemoteRuntime(runtime).memory<Record<string, { finalId: string; depth: number }>>("archive-chains", { entryIds });
+    const chains = !includeChains || entryIds.length === 0 ? undefined : await runtime.memory<Record<string, { finalId: string; depth: number }>>("archive-chains", { entryIds });
     return { revision: result.storeRevision, entries: result.entries as DesktopMemoryEntry[], chains, total: result.total, offset, limit };
   }
 
@@ -2083,26 +1849,13 @@ export class DesktopAgentManager {
     archived: boolean
   ): Promise<DesktopMemoryArchiveMutationResult> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(projectId, archived ? "任务运行期间不能归档记忆。" : "任务运行期间不能恢复记忆。");
+    const { runtime } = await this.runtimeForGlobalWrite(projectId, archived ? "任务运行期间不能归档记忆。" : "任务运行期间不能恢复记忆。");
     // 恢复会消耗归档行。与 HTTP 入口一致，写入前读取合并指向；只向界面报告仍为活动事实的目标。
-    const readAndArchive = async (get: (id: string) => Promise<MemoryEntry | null>,
-      mutate: () => Promise<{ archived: boolean; entry?: MemoryEntry }>) => {
-      const source = archived ? null : await get(entryId);
-      const target = source?.archivedAt && (source.archivedReason === "llm_merge" || source.archivedReason === "updated") && source.mergedInto
-        ? await get(source.mergedInto) : null;
-      const result = await mutate();
-      return { result, mergedTarget: target && !target.archivedAt ? { id: target.id, content: target.content } : null };
-    };
-    const { result, mergedTarget } = commands
-      ? await runtime.runExclusiveOperation("memory", async () => {
-        const memory = requireLocalMemory(commands);
-        const get = async (id: string) => await memory.getEntry(id) ?? null;
-        return await readAndArchive(get, async () => await memory.archiveEntry(entryId, archived));
-      })
-      : await readAndArchive(
-        async (id) => await requireRemoteRuntime(runtime).memory<MemoryEntry | null>("get", { id }),
-        async () => await requireRemoteRuntime(runtime).memory<{ archived: boolean; entry?: MemoryEntry }>("archive", { id: entryId, archived })
-      );
+    const source = archived ? null : await runtime.memory<MemoryEntry | null>("get", { id: entryId });
+    const target = source?.archivedAt && (source.archivedReason === "llm_merge" || source.archivedReason === "updated") && source.mergedInto
+      ? await runtime.memory<MemoryEntry | null>("get", { id: source.mergedInto }) : null;
+    const result = await runtime.memory<{ archived: boolean; entry?: MemoryEntry }>("archive", { id: entryId, archived });
+    const mergedTarget = target && !target.archivedAt ? { id: target.id, content: target.content } : null;
     // `archived` is the resulting state, so a successful restore legitimately
     // returns false. Presence of the returned entry is the mutation/no-op
     // success signal; absence means the id was not found.
@@ -2115,34 +1868,22 @@ export class DesktopAgentManager {
     entryId: string
   ): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(
+    const { runtime } = await this.runtimeForGlobalWrite(
       projectId,
       "任务运行期间不能删除记忆。"
     );
-    const result = commands
-      ? await runtime.runExclusiveOperation(
-        "memory",
-        async () => {
-          const deleted = await requireLocalMemory(commands).deleteEntryById(entryId);
-          return deleted;
-        }
-      )
-      : await requireRemoteRuntime(runtime).memory<{ deleted: boolean }>("delete", { id: entryId });
+    const result = await runtime.memory<{ deleted: boolean }>("delete", { id: entryId });
     if (!result.deleted) throw new Error("未找到该记忆条目，可能已被删除。");
     return await this.memoryStats(projectId);
   }
 
   async clearMemory(projectId: string): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.runtimeForGlobalWrite(
+    const { runtime } = await this.runtimeForGlobalWrite(
       projectId,
       "任务运行期间不能清空记忆。"
     );
-    if (commands) {
-      await runtime.runExclusiveOperation("memory", () => requireLocalMemory(commands).clearAllEntries());
-    } else {
-      await requireRemoteRuntime(runtime).memory("clear", {});
-    }
+    await runtime.memory("clear", {});
     return await this.memoryStats(projectId);
   }
 
@@ -2534,30 +2275,17 @@ export class DesktopAgentManager {
     }
     if (!["session.goal.get", "session.goal.pause", "session.goal.clear"].includes(operation ?? "")) await this.requireConfiguredModel(projectId);
     const managed = await this.ensureRuntime(projectId);
-    if (managed.runtime instanceof RuntimeHostClient) {
-      if (operation === "session.goal.set" && sessionId === undefined) sessionId = (await managed.runtime.ensureSession({ writeIntent: true })).sessionId;
-      if (sessionId !== undefined) await managed.runtime.focusSession(sessionId);
-      const result = await managed.runtime.executeCommand(input, "desktop", sessionId);
-      if (!result) throw new Error(`未知命令：${input.trim().split(/\s+/, 1)[0] ?? input}`);
-      return operation?.startsWith("session.goal.") ? { ...result, sessionId: sessionId ?? managed.runtime.getSnapshot().info.sessionId } : result;
-    }
-    const { runtime, commands } = managed;
-    if (operation === "session.goal.set" && sessionId === undefined) sessionId = (await runtime.startDraft()).sessionId;
-    if (sessionId !== undefined && runtime.getSnapshot().info.sessionId !== sessionId) {
-      if (runtimeIsBusy(runtime.getSnapshot())) throw new Error("当前项目的 Runtime Host 正在运行，无法在同进程 fallback 中切换会话。");
-      await runtime.resumeSession(sessionId);
-    }
-    const result = commands
-      ? await executeRuntimeCommand(runtime, commands, input, "desktop")
-      : undefined;
+    if (operation === "session.goal.set" && sessionId === undefined) sessionId = (await managed.runtime.ensureSession({ writeIntent: true })).sessionId;
+    if (sessionId !== undefined) await managed.runtime.focusSession(sessionId);
+    const result = await managed.runtime.executeCommand(input, "desktop", sessionId);
     if (!result) throw new Error(`未知命令：${input.trim().split(/\s+/, 1)[0] ?? input}`);
-    return operation?.startsWith("session.goal.") ? { ...result, sessionId: runtime.getSnapshot().info.sessionId } : result;
+    return operation?.startsWith("session.goal.") ? { ...result, sessionId: sessionId ?? managed.runtime.getSnapshot().info.sessionId } : result;
   }
 
   async runInspectorCommand(projectId: string, owner: string, kind: "review" | "side-chat", input: string, history: InspectorMessage[]): Promise<DesktopSlashResult> {
     await this.requireConfiguredModel(projectId);
     const managed = await this.ensureRuntime(projectId);
-    const runtime = requireRemoteRuntime(managed.runtime);
+    const runtime = managed.runtime;
     const key = JSON.stringify([projectId, owner, kind]);
     let session = this.inspectorSessions.get(key);
     if (!session) {
@@ -2614,14 +2342,11 @@ export class DesktopAgentManager {
 
   async taskInspection(projectId: string, sessionId: string, taskRunId: string, options: TaskInspectionOptions = {}): Promise<TaskInspection> {
     const managed = await this.getRuntime(projectId, false);
-    if (managed?.runtime instanceof RuntimeHostClient) {
+    if (managed !== undefined) {
       try { return await managed.runtime.taskInspect(taskRunId, sessionId, { ...options, waitMs: 0 }); }
       catch (error) { if (!managed.runtime.isRetired) throw error; }
     }
-    if (managed?.commands) {
-      const channel = new TaskCommunication(managed.commands.taskRuns, sessionId);
-      try { return await channel.inspect(taskRunId, { ...options, waitMs: 0 }); } finally { channel.close(); }
-    }
+
     const project = this.projects.requireProject(projectId);
     const root = await this.projects.dataRoot(project);
     const authority = await RuntimeEventAuthority.openReadOnly(root);
@@ -2638,7 +2363,7 @@ export class DesktopAgentManager {
       try {
         return await this.readRuntimeProjection(managed);
       } catch (error) {
-        if (!(managed.runtime instanceof RuntimeHostClient && managed.runtime.isRetired)) throw error;
+        if (!managed.runtime.isRetired) throw error;
       }
     }
     const project = this.projects.requireProject(projectId);
@@ -2665,170 +2390,26 @@ export class DesktopAgentManager {
     }
   }
 
-  private async readRuntimeProjection({ runtime, commands }: ManagedRuntime): Promise<DesktopRuntimeProjection> {
-    if (commands) {
-      return {
-        tasks: commands.taskRuns.list({ order: "desc" }),
-        automations: commands.automationStore.list(),
-        pendingFires: commands.automationStore.listPending(),
-        graphs: commands.graphs.listGraphs(),
-        capabilities: commands.capabilities.list(),
-        worktrees: []
-      };
-    }
-    const remote = requireRemoteRuntime(runtime);
+  private async readRuntimeProjection({ runtime }: ManagedRuntime): Promise<DesktopRuntimeProjection> {
     const [tasks, automations, pendingFires, graphs, capabilities, worktrees] = await Promise.all([
-      remote.taskList({ order: "desc" }),
-      remote.automationList(),
-      remote.automationPending(),
-      remote.graphList(),
-      remote.capabilityList(),
-      remote.worktreeStatus()
+      runtime.taskList({ order: "desc" }),
+      runtime.automationList(),
+      runtime.automationPending(),
+      runtime.graphList(),
+      runtime.capabilityList(),
+      runtime.worktreeStatus()
     ]);
     return { tasks, automations, pendingFires, graphs, capabilities, worktrees: worktrees.map(toDesktopWorktreeStatus) };
   }
 
   async runtimeEvents(projectId: string, afterSequence?: number, limit?: number): Promise<unknown> {
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    if (commands) return commands.runtimeAuthority.readEvents({ afterSequence, limit });
-    return await requireRemoteRuntime(runtime).subscribeRuntimeEvents({ afterSequence, limit });
+    const { runtime } = await this.ensureRuntime(projectId);
+    return await runtime.subscribeRuntimeEvents({ afterSequence, limit });
   }
 
   async runtimeMutation(projectId: string, operation: DesktopRuntimeMutation, payload: Record<string, unknown> = {}): Promise<unknown> {
-    const { runtime, commands, host } = await this.ensureRuntime(projectId);
-    if (!commands) return await executeRemoteRuntimeMutation(requireRemoteRuntime(runtime), operation, payload);
-    if (operation === "task.message" || operation === "task.continue") {
-      if (requiredPayloadString(payload.sessionId, "sessionId") !== commands.agent.getInfo().sessionId) throw new Error("子任务操作必须在原会话执行。");
-      const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
-      if (operation === "task.continue") return await commands.continueTaskRun(taskRunId, requiredPayloadString(payload.message, "message"), optionalPayloadString(payload.messageId));
-      if (!commands.taskCommunication) throw new Error("子任务消息暂不可用。");
-      return commands.taskCommunication.send(taskRunId, requiredPayloadString(payload.message, "message"), optionalPayloadString(payload.messageId));
-    }
-    if (operation.startsWith("session.goal.")) {
-      const sessionId = requiredPayloadString(payload.sessionId, "sessionId");
-      if (sessionId !== runtime.getSnapshot().info.sessionId) throw new Error("会话目标操作必须在原会话执行。");
-      const expected = sessionGoalExpected(payload.expected);
-      if (operation === "session.goal.set") return commands.sessionGoals.set(sessionId, requiredPayloadString(payload.objective, "objective"), { tokenBudget: sessionGoalTokenBudget(payload.tokenBudget), expected });
-      if (operation === "session.goal.pause") return commands.sessionGoals.pause(sessionId, expected);
-      if (operation === "session.goal.resume") return commands.sessionGoals.resume(sessionId, expected);
-      commands.sessionGoals.clear(sessionId, expected);
-      return undefined;
-    }
-    if (operation === "plan.start") {
-      if (payload.sessionId !== runtime.getSnapshot().info.sessionId) throw new Error("计划操作必须在原会话执行。");
-      return await runtime.runExclusiveOperation("plan", async (signal) => {
-        if (!Number.isSafeInteger(payload.revision)) throw new Error("缺少草稿版本。");
-        return await commands.startPlanDraft(requiredPayloadString(payload.graphId, "graphId"), payload.revision as number, signal);
-      });
-    }
-    if (operation === "worktree.merge" || operation === "worktree.remove") {
-      throw new Error("工作树操作需要 Runtime Host；当前项目正在使用同进程 fallback。请重启 Biny 后重试。");
-    }
-    if (operation === "task.create") {
-      readTaskDefinition(payload.task);
-      return commands.taskRuns.create({ task: payload.task, sessionId: optionalPayloadString(payload.sessionId), parentRunId: optionalPayloadString(payload.parentRunId) });
-    }
-    if (operation === "task.start") {
-      const started = await this.startFallbackTaskRun(commands, requiredPayloadString(payload.taskRunId, "taskRunId"), optionalTaskRetrySafety(payload.retrySafety));
-      return commands.taskRuns.get(started.task.taskRunId);
-    }
-    if (operation === "task.run") {
-      const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
-      const started = await this.startFallbackTaskRun(commands, taskRunId, optionalTaskRetrySafety(payload.retrySafety));
-      await started.completion;
-      return commands.taskRuns.get(taskRunId);
-    }
-    if (operation === "task.cancel") {
-      const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
-      const reason = optionalPayloadString(payload.reason) ?? "TaskRun cancelled.";
-      return commands.cancelTaskRun(taskRunId, reason);
-    }
-    if (operation === "task.approve") {
-      const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
-      await approveTaskVerification({
-        taskRuns: commands.taskRuns,
-        taskRunId,
-        approvalId: requiredPayloadString(payload.approvalId, "approvalId"),
-        workspaceRoot: commands.workspaceRoot,
-        ignore: commands.config.workspace.ignore
-      });
-      const started = await this.startFallbackTaskRun(commands, taskRunId, undefined);
-      const result = await started.completion;
-      commands.graphs.projectTaskClosure(taskRunId, result);
-      return commands.taskRuns.get(taskRunId);
-    }
-    if (operation === "task.retry") {
-      const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
-      const decision = evaluateTaskRetry(commands.taskRuns.get(taskRunId));
-      if (!decision.allowed) throw new Error(`Task retry rejected (${decision.code}): ${decision.reason}`);
-      commands.taskRuns.retry(taskRunId);
-      const started = await this.startFallbackTaskRun(commands, taskRunId, decision.attempt.retrySafety);
-      return commands.taskRuns.get(started.task.taskRunId);
-    }
-    if (operation === "task.resume") {
-      const started = await commands.resumeTaskRun(requiredPayloadString(payload.taskRunId, "taskRunId"));
-      return commands.taskRuns.get(started.task.taskRunId);
-    }
-    if (operation === "automation.create") return commands.automationStore.create(payload as unknown as AutomationCreateInput);
-    if (operation === "automation.pause") return commands.automationStore.pause(requiredPayloadString(payload.automationId, "automationId"));
-    if (operation === "automation.resume") return commands.automationStore.resume(requiredPayloadString(payload.automationId, "automationId"));
-    if (operation === "automation.delete") {
-      commands.automationStore.delete(requiredPayloadString(payload.automationId, "automationId"));
-      return undefined;
-    }
-    if (operation === "automation.run") {
-      if (!host) throw new Error("Automation scheduler is unavailable.");
-      return await host.runAutomation(requiredPayloadString(payload.automationId, "automationId"));
-    }
-    if (operation === "graph.create") return commands.graphs.createGraph((payload.nodes ?? []) as GraphNodeInput[], payload.payload, optionalPayloadString(payload.graphId));
-    if (operation === "graph.start") {
-      const graphId = requiredPayloadString(payload.graphId, "graphId");
-      if (commands.graphs.inspectGraph(graphId).mode === "supervised") throw new Error("请通过计划卡片确认当前草稿版本。");
-      const graph = commands.graphs.startGraph(graphId);
-      commands.graphs.createWake(graph.graphId, "graph_started");
-      return graph;
-    }
-    if (operation === "graph.pause") return commands.graphs.pauseGraph(requiredPayloadString(payload.graphId, "graphId"));
-    if (operation === "graph.resume") {
-      const graph = commands.graphs.resumeGraph(requiredPayloadString(payload.graphId, "graphId"));
-      commands.graphs.createWake(graph.graphId, "graph_resumed");
-      return graph;
-    }
-    if (operation === "graph.cancel") {
-      const graphId = requiredPayloadString(payload.graphId, "graphId");
-      const graph = commands.graphs.inspectGraph(graphId);
-      const activeRuns = graph.nodes
-        .filter((node) => node.status === "running" && node.taskRunId !== undefined)
-        .map((node) => ({
-          taskRunId: node.taskRunId!,
-          runId: commands.taskRuns.get(node.taskRunId!)?.attempts.at(-1)?.runId
-        }));
-      const result = commands.graphs.cancelGraph(graphId);
-      for (const active of activeRuns) {
-        commands.subagents?.cancelTask(active.taskRunId, "Graph cancelled.");
-        if (active.runId !== undefined) runtime.cancelRun(active.runId, "cancelled");
-        try {
-          const task = commands.taskRuns.get(active.taskRunId);
-          if (task && !isTaskRunTerminal(task.status)) commands.taskRuns.transition(active.taskRunId, "cancelled");
-        } catch {
-          // Graph cancellation is already durable; late AgentRun results are ignored by the store.
-        }
-      }
-      return result;
-    }
-    if (operation === "capability.register") return commands.capabilities.register({ ...(payload as { ownerType: "host" | "client"; ownerId: string; capabilityName: string; schema: unknown }), ownerId: optionalPayloadString(payload.ownerId) ?? "desktop-" + process.pid });
-    if (operation === "capability.replace") return commands.capabilities.replace(requiredPayloadString(payload.registrationId, "registrationId"), payload.schema, optionalPayloadString(payload.expiresAt));
-    if (operation === "capability.admit") return commands.capabilities.admit(requiredPayloadString(payload.registrationId, "registrationId"));
-    if (operation === "capability.reject") return commands.capabilities.reject(requiredPayloadString(payload.registrationId, "registrationId"), optionalPayloadString(payload.reason) ?? "rejected");
-    if (operation === "capability.release") return commands.capabilities.release(requiredPayloadString(payload.registrationId, "registrationId"), optionalPayloadString(payload.reason) ?? "released");
-    if (operation === "capability.invoke") return commands.capabilities.invoke(payload as never);
-    if (operation === "capability.accept") return commands.capabilities.accept(requiredPayloadString(payload.invocationId, "invocationId"));
-    if (operation === "capability.start") return commands.capabilities.start(requiredPayloadString(payload.invocationId, "invocationId"));
-    if (operation === "capability.result") return commands.capabilities.result(requiredPayloadString(payload.invocationId, "invocationId"), payload.result);
-    if (operation === "capability.chunk") return commands.capabilities.chunk(requiredPayloadString(payload.invocationId, "invocationId"), Number(payload.chunkIndex), payload.data, payload.final === true);
-    if (operation === "capability.fail") return commands.capabilities.fail(requiredPayloadString(payload.invocationId, "invocationId"), optionalPayloadString(payload.error) ?? "capability failed");
-    if (operation === "capability.cancel") return commands.capabilities.cancel(requiredPayloadString(payload.invocationId, "invocationId"), optionalPayloadString(payload.reason) ?? "capability cancelled");
-    throw new Error(`Unsupported desktop runtime mutation: ${operation}`);
+    const { runtime } = await this.ensureRuntime(projectId);
+    return await executeRemoteRuntimeMutation(runtime, operation, payload);
   }
 
   async duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot> {
@@ -2886,21 +2467,14 @@ export class DesktopAgentManager {
   private async deleteSessionData(projectId: string, sessionId: string): Promise<void> {
     const managed = await this.getRuntime(projectId, false);
     if (managed) {
-      if (managed.runtime instanceof RuntimeHostClient) {
-        const target = managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === sessionId);
-        if (target && runtimeIsBusy(target.snapshot)) throw new Error("Stop the running task before deleting this session.");
-        if (target?.primary || managed.runtime.getSnapshot().info.sessionId === sessionId) {
-          // 先轮换 primary 并关闭旧 runtime，再删除旧文件；普通 restart 会保留
-          // sessionId，不能拿来承担删除语义。
-          await managed.runtime.rotatePrimarySession();
-        } else if (target) {
-          await managed.runtime.closeSession(sessionId);
-        }
-      } else if (managed.runtime.getSnapshot().info.sessionId === sessionId) {
-        const snapshot = managed.runtime.getSnapshot();
-        if (runtimeIsBusy(snapshot)) throw new Error("Stop the running task before deleting this session.");
-        await this.closeManagedRuntime(managed);
-        this.runtimes.delete(projectId);
+      const target = managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === sessionId);
+      if (target && runtimeIsBusy(target.snapshot)) throw new Error("Stop the running task before deleting this session.");
+      if (target?.primary || managed.runtime.getSnapshot().info.sessionId === sessionId) {
+        // 先轮换 primary 并关闭旧 runtime，再删除旧文件；普通 restart 会保留
+        // sessionId，不能拿来承担删除语义。
+        await managed.runtime.rotatePrimarySession();
+      } else if (target) {
+        await managed.runtime.closeSession(sessionId);
       }
     }
     await this.projects.deleteSession(this.projects.requireProject(projectId), sessionId);
@@ -2955,9 +2529,7 @@ export class DesktopAgentManager {
   }
 
   isProjectRunning(projectId: string): boolean {
-    return this.runtimeEntries(projectId).some(({ runtime }) => runtime instanceof RuntimeHostClient
-      ? runtime.runtimeSnapshots().some(({ snapshot }) => runtimeIsBusy(snapshot))
-      : runtimeIsBusy(runtime.getSnapshot()));
+    return this.runtimeEntries(projectId).some(({ runtime }) => runtime.runtimeSnapshots().some(({ snapshot }) => runtimeIsBusy(snapshot)));
   }
 
   private assertProjectGitMutationIdle(projectId: string): void {
@@ -2970,13 +2542,9 @@ export class DesktopAgentManager {
   cancelAll(): void {
     for (const projectId of this.runtimes.keys()) {
       for (const { runtime } of this.runtimeEntries(projectId)) {
-        if (runtime instanceof RuntimeHostClient) {
-          for (const { sessionId, snapshot } of runtime.runtimeSnapshots()) {
-            const run = activeRun(snapshot);
-            if (run) void runtime.cancelRunRequest(run.runId, "cancelled", sessionId).catch(() => undefined);
-          }
-        } else {
-          runtime.cancelCurrentRun("cancelled");
+        for (const { sessionId, snapshot } of runtime.runtimeSnapshots()) {
+          const run = activeRun(snapshot);
+          if (run) void runtime.cancelRunRequest(run.runId, "cancelled", sessionId).catch(() => undefined);
         }
       }
     }
@@ -2990,16 +2558,10 @@ export class DesktopAgentManager {
     const projectIds = new Set(this.runtimes.keys());
     await Promise.all([...projectIds].flatMap((projectId) => this.runtimeEntries(projectId).map(async ({ runtime }) => {
       const deadline = Date.now() + timeoutMs;
-      if (runtime instanceof RuntimeHostClient) {
-        const runs = await waitForRuntimeOperation(runtime.pauseOwnedRunsForExit(), remainingTimeout(deadline));
-        await Promise.all((runs ?? []).map(async ({ sessionId }) => {
-          await waitForRuntimeIdle(runtime, remainingTimeout(deadline), sessionId);
-        }));
-      } else {
-        const run = activeRun(runtime.getSnapshot());
-        if (run) runtime.cancelRun(run.runId, "paused");
-        await waitForRuntimeIdle(runtime, remainingTimeout(deadline));
-      }
+      const runs = await waitForRuntimeOperation(runtime.pauseOwnedRunsForExit(), remainingTimeout(deadline));
+      await Promise.all((runs ?? []).map(async ({ sessionId }) => {
+        await waitForRuntimeIdle(runtime, remainingTimeout(deadline), sessionId);
+      }));
     })));
   }
 
@@ -3008,7 +2570,7 @@ export class DesktopAgentManager {
     const targets = new Set<RuntimeHostClient | RuntimeHostServer>();
     for (const managed of this.runtimes.values()) {
       if (managed.host) targets.add(managed.host);
-      else if (managed.runtime instanceof RuntimeHostClient) targets.add(managed.runtime);
+      else targets.add(managed.runtime);
     }
     await Promise.all([...targets].map(async (target) => await target.setBrowserAutomation(undefined)));
   }
@@ -3029,7 +2591,6 @@ export class DesktopAgentManager {
     await Promise.allSettled(this.projectDisposals.values());
     this.runtimeLifetimes.clear();
     await this.idleRuntimeRebuildTail.catch(() => undefined);
-    await this.activityMemoryIndex?.then(async (index) => await index.close()).catch(() => undefined);
     const managedRuntimes = [...this.runtimes.values()];
     this.runtimes.clear();
     this.draftSessionIds.clear();
@@ -3045,25 +2606,21 @@ export class DesktopAgentManager {
 
   /** 配置变更需要 owner 重建 CommandRuntime；远端 client 通过 Host RPC 完成同一件事。 */
   private async rebuildManagedRuntime(projectId: string, managed: ManagedRuntime): Promise<void> {
-    if (managed.runtime instanceof RuntimeHostClient) {
-      if (managed.runtime.isRetired) {
-        await this.disposeRuntime(projectId);
-        return;
-      }
-      const focusedSessionId = managed.runtime.getFocusedSessionId();
-      for (const entry of managed.runtime.runtimeSnapshots()) {
-        await managed.runtime.restartRuntime(entry.sessionId);
-      }
-      // 配置重载覆盖所有驻留 Session，不能把用户正在查看的
-      // 非主 session 偷偷切回 primary。
-      if (focusedSessionId !== undefined && focusedSessionId !== managed.runtime.getFocusedSessionId()) {
-        const stillResident = managed.runtime.runtimeSnapshots().some((entry) => entry.sessionId === focusedSessionId);
-        if (stillResident) await managed.runtime.focusSession(focusedSessionId);
-      }
+    if (managed.runtime.isRetired) {
+      await this.disposeRuntime(projectId);
       return;
     }
-    await this.closeManagedRuntime(managed);
-    this.runtimes.delete(projectId);
+    const focusedSessionId = managed.runtime.getFocusedSessionId();
+    for (const entry of managed.runtime.runtimeSnapshots()) {
+      await managed.runtime.restartRuntime(entry.sessionId);
+    }
+    // 配置重载覆盖所有驻留 Session，不能把用户正在查看的
+    // 非主 session 偷偷切回 primary。
+    if (focusedSessionId !== undefined && focusedSessionId !== managed.runtime.getFocusedSessionId()) {
+      const stillResident = managed.runtime.runtimeSnapshots().some((entry) => entry.sessionId === focusedSessionId);
+      if (stillResident) await managed.runtime.focusSession(focusedSessionId);
+    }
+    return;
   }
 
   /** 全局 config 对每个项目 Runtime 生效；显式事务提交与补偿会等待空闲实例刷新。 */
@@ -3147,7 +2704,7 @@ export class DesktopAgentManager {
     if (this.closing) throw new Error("Desktop runtime is shutting down.");
     if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
     const current = this.runtimes.get(projectId);
-    if (current && !(current.runtime instanceof RuntimeHostClient && current.runtime.isRetired)) return current;
+    if (current && !(current.runtime.isRetired)) return current;
     const pending = this.runtimeInitializations.get(projectId);
     if (pending && !allowSpawn) return undefined;
     if (pending) {
@@ -3158,7 +2715,7 @@ export class DesktopAgentManager {
     }
     const initialization = (async () => {
       if (current) {
-        await (current.runtime as RuntimeHostClient).waitForRetirement();
+        await current.runtime.waitForRetirement();
         await this.closeManagedRuntime(current);
         if (this.runtimes.get(projectId) === current) this.runtimes.delete(projectId);
       }
@@ -3198,8 +2755,7 @@ export class DesktopAgentManager {
     // session 和附件都走全局按项目隔离的目录；三端通过同一个 workspace 定位同一份历史。
     const persistenceRoot = await this.projects.dataRoot(project);
     if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
-    let runtime: InteractiveRuntimeHandle | undefined;
-    const commands = undefined;
+    let runtime: RuntimeHostClient | undefined;
     let host: RuntimeHostServer | undefined;
     let attached: RuntimeHostClient | undefined;
     const supportsDetachedRuntimeHost = this.configStore.supportsDetachedRuntimeHost !== false
@@ -3242,25 +2798,12 @@ export class DesktopAgentManager {
           ? { ...this.browserAutomation, projectId }
           : undefined);
       } else {
-        const createLocalRuntime: RuntimeHostFactory = async (sessionId, factoryOptions) => {
-          const fresh = factoryOptions?.fresh === true;
-          const local = await createInteractiveAgentHost(factoryOptions?.workspaceRoot ?? project.path, {
-            persistenceRoot,
-            configStore: this.configStore,
-            attachmentRoot: this.projects.attachmentsRoot(project),
-            sessionId: fresh ? sessionId : undefined,
-            browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined,
-            resourceRegistry: factoryOptions?.resourceRegistry,
-            resourceBoot: factoryOptions?.resourceBoot ?? (factoryOptions?.resourceRegistry === undefined ? "blocking" : "background")
-          });
-          try {
-            if (sessionId !== undefined && !fresh) await local.runtime.resumeSession(sessionId);
-            return local;
-          } catch (error) {
-            await local.runtime.close();
-            throw error;
-          }
-        };
+        const createLocalRuntime = createRuntimeHostFactory(project.path, () => ({
+          persistenceRoot,
+          configStore: this.configStore,
+          attachmentRoot: this.projects.attachmentsRoot(project),
+          browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined
+        }));
         // safeStorage 留在 Electron；仍通过统一 Host 注册表承载每个 Session。
         // 先取得 owner lock，再打开 Runtime 的 store，避免失败候选提前执行恢复。
         host = await startRuntimeHost(persistenceRoot, (resourceRegistry) => createLocalRuntime(undefined, {
@@ -3272,6 +2815,7 @@ export class DesktopAgentManager {
           resumeInterrupted: false,
           configDir
         });
+        void this.memoryOwner().sleepStatus().catch(() => undefined);
         if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
         const client = await connectRuntimeHost(persistenceRoot, {
           configDir,
@@ -3285,19 +2829,14 @@ export class DesktopAgentManager {
       if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
       // Desktop 可能 attach 到上一次启动后仍存活的 Runtime Host。先把 owner 的内存策略
       // 对齐到磁盘，再订阅历史事件，避免旧快照在首轮回放时覆盖刚恢复的权限模式。
-      await this.synchronizePersistedPermissionMode(project.path, runtime, commands);
+      await this.synchronizePersistedPermissionMode(project.path, runtime);
       if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
-      const unsubscribe = this.wireRuntimeEvents(projectId, runtime, true);
-      const managed: ManagedRuntime = { runtime, commands, host, unsubscribe };
+      const unsubscribe = this.wireRuntimeEvents(projectId, runtime);
+      const managed: ManagedRuntime = { runtime, host, unsubscribe };
       this.runtimes.set(projectId, managed);
       published = true;
-      if (runtime instanceof RuntimeHostClient) {
-        for (const entry of runtime.runtimeSnapshots()) {
-          this.emit(projectId, { snapshot: entry.snapshot }, { sessionId: entry.sessionId, primary: entry.primary });
-        }
-      } else {
-        const snapshot = runtime.getSnapshot();
-        this.emit(projectId, { snapshot }, { sessionId: snapshot.info.sessionId, primary: true });
+      for (const entry of runtime.runtimeSnapshots()) {
+        this.emit(projectId, { snapshot: entry.snapshot }, { sessionId: entry.sessionId, primary: entry.primary });
       }
       this.runtimeErrors.delete(projectId);
       return managed;
@@ -3316,20 +2855,13 @@ export class DesktopAgentManager {
 
   private async synchronizePersistedPermissionMode(
     workspaceRoot: string,
-    runtime: InteractiveRuntimeHandle,
-    commands: CommandRuntime | undefined
+    runtime: RuntimeHostClient
   ): Promise<void> {
     const persistedMode = (await this.configStore.load(workspaceRoot)).permission.mode;
     const snapshot = runtime.getSnapshot();
     if (snapshot.permissionMode === persistedMode || runtimeIsBusy(snapshot)) return;
-    if (commands) {
-      await runtime.runExclusiveOperation(
-        "permission",
-        async () => await commands.agent.setPermissionMode(persistedMode)
-      );
-      return;
-    }
-    await requireRemoteRuntime(runtime).setPermissionMode(persistedMode);
+
+    await runtime.setPermissionMode(persistedMode);
   }
 
   private async requireConfiguredModel(projectId: string): Promise<void> {
@@ -3341,18 +2873,8 @@ export class DesktopAgentManager {
 
   private async personalizationState(projectId: string, sessionId: string): Promise<AgentPersonalizationState> {
     const managed = await this.ensureRuntime(projectId);
-    if (managed.runtime instanceof RuntimeHostClient) {
-      await managed.runtime.ensureSession({ sessionId, focus: false });
-      return await managed.runtime.getPersonalizationState(sessionId);
-    }
-    const snapshot = managed.runtime.getSnapshot();
-    if (snapshot.info.sessionId !== sessionId) {
-      if (runtimeIsBusy(snapshot)) {
-        throw new Error("当前项目有其他聊天正在运行，暂时无法读取所选聊天的个性化覆盖。");
-      }
-      await managed.runtime.resumeSession(sessionId);
-    }
-    return await this.readManagedPersonalizationState(managed);
+    await managed.runtime.ensureSession({ sessionId, focus: false });
+    return await managed.runtime.getPersonalizationState(sessionId);
   }
 
   private async currentPersonalizationState(projectId: string): Promise<AgentPersonalizationState> {
@@ -3363,9 +2885,7 @@ export class DesktopAgentManager {
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return managed.commands
-          ? await managed.commands.agent.getPersonalizationState()
-          : await requireRemoteRuntime(managed.runtime).getPersonalizationState();
+        return await managed.runtime.getPersonalizationState();
       } catch (error) {
         lastError = error;
         // Host 启动时的记忆维护也会读取 config；loader 在校正文件权限时可能改变 ctime，
@@ -3379,18 +2899,6 @@ export class DesktopAgentManager {
     throw lastError;
   }
 
-  private async updateManagedChatPersonalization(
-    managed: ManagedRuntime,
-    personalization: DesktopChatPersonalizationOverride
-  ): Promise<void> {
-    const state = await this.readManagedPersonalizationState(managed);
-    if (managed.commands) {
-      await managed.commands.agent.updateChatPersonalization(personalization, state.catalogRevision);
-    } else {
-      await requireRemoteRuntime(managed.runtime).updateChatPersonalization(personalization, state.catalogRevision);
-    }
-  }
-
   private async updateGlobalPersonalization(
     projectId: string,
     update: GlobalPersonalizationUpdate,
@@ -3402,13 +2910,7 @@ export class DesktopAgentManager {
     this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
     const managed = await this.ensureRuntime(projectId);
     this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
-    const commands = managed.commands;
-    const state = commands
-      ? await managed.runtime.runExclusiveOperation(
-        "personalization",
-        async () => await commands.agent.updateGlobalPersonalization(update, expectedRevision)
-      )
-      : await requireRemoteRuntime(managed.runtime).updateGlobalPersonalization(update, expectedRevision);
+    const state = await managed.runtime.updateGlobalPersonalization(update, expectedRevision);
     this.scheduleIdleManagedRuntimeRebuild();
     return state;
   }
@@ -3425,18 +2927,8 @@ export class DesktopAgentManager {
   private async readMemoryStoreFromRuntime(
     managed: ManagedRuntime
   ): Promise<{ overview: MemoryOverview; entries: MemoryEntriesResult; allEntries: MemoryEntriesResult; maintenance: MemoryMaintenanceStatus }> {
-    const { runtime, commands } = managed;
-    if (commands) {
-      const memory = requireLocalMemory(commands);
-      const [overview, allEntries, maintenance] = await Promise.all([
-        memory.getOverview(),
-        memory.listMemoryEntries(),
-        memory.loadMaintenanceStatus().catch(() => ({ state: "idle" as const, eligible: 0, processed: 0, written: 0, failed: 0 }))
-      ]);
-      return { overview, entries: allEntries, allEntries, maintenance };
-    }
-    const remote = requireRemoteRuntime(runtime);
-    return await remote.memory<{
+    const { runtime } = managed;
+    return await runtime.memory<{
       overview: MemoryOverview;
       entries: MemoryEntriesResult;
       allEntries: MemoryEntriesResult;
@@ -3478,13 +2970,8 @@ export class DesktopAgentManager {
     includeArchived = false
   ): Promise<{ entries: MemoryEntriesResult["entries"]; total: number; storeRevision: number }> {
     const managed = this.residentRuntime(projectId);
-    if (managed?.commands) {
-      const memory = requireLocalMemory(managed.commands);
-      const result = await memory.listMemoryEntries({ offset, limit, includeArchived });
-      return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
-    }
     if (managed) {
-      const result = await requireRemoteRuntime(managed.runtime).memory<MemoryEntriesResult>("list", { offset, limit, includeArchived });
+      const result = await managed.runtime.memory<MemoryEntriesResult>("list", { offset, limit, includeArchived });
       return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
     }
     const project = this.projects.requireProject(projectId);
@@ -3642,14 +3129,6 @@ export class DesktopAgentManager {
       : expectedRevision;
   }
 
-  private async startFallbackTaskRun(
-    commands: CommandRuntime,
-    taskRunId: string,
-    retrySafety: TaskRetrySafety | undefined
-  ): Promise<{ task: TaskRunWithAttempts; completion: Promise<TaskClosureResult> }> {
-    return await commands.startTaskRun(taskRunId, { retrySafety });
-  }
-
   private projectEvents(projectId: string): Map<string, AgentHostEvent[]> {
     const current = this.liveEvents.get(projectId);
     if (current) return current;
@@ -3661,10 +3140,6 @@ export class DesktopAgentManager {
 
 function sessionReadKey(projectId: string, sessionId: string): string {
   return `${projectId}\u0000${sessionId}`;
-}
-
-function optionalTaskRetrySafety(value: unknown): TaskRetrySafety | undefined {
-  return value === "safe" || value === "idempotent" || value === "unsafe" || value === "unknown" ? value : undefined;
 }
 
 function memoryStats(entries: MemoryEntriesResult): { total: number; autoGenerated: number; manualAdded: number } {
@@ -3762,7 +3237,6 @@ function describeEmbeddingModels(config: AgentConfig): DesktopEmbeddingModelDesc
   ].map(describeDesktopEmbeddingModel);
 }
 
-
 function describeMemoryEmbeddingStatus(status: MemoryEmbeddingRuntimeStatus): DesktopMemoryEmbeddingStatus {
   return {
     ...status,
@@ -3833,17 +3307,8 @@ function describeCredentialSource(provider: ProviderConfig, apiKeyEnv: string | 
   return undefined;
 }
 
-function requireLocalMemory(services: CommandRuntime) {
-  return services.agent.getLocalMemory();
-}
-
-function requireRemoteRuntime(runtime: InteractiveRuntimeHandle): RuntimeHostClient {
-  if (!(runtime instanceof RuntimeHostClient)) throw new Error("Remote runtime client is unavailable.");
-  return runtime;
-}
-
-async function waitForRuntimeIdle(runtime: InteractiveRuntimeHandle, timeoutMs: number, sessionId?: string): Promise<void> {
-  const idle = runtime instanceof RuntimeHostClient ? runtime.waitForIdle(sessionId) : runtime.waitForIdle();
+async function waitForRuntimeIdle(runtime: RuntimeHostClient, timeoutMs: number, sessionId?: string): Promise<void> {
+  const idle = runtime.waitForIdle(sessionId);
   await waitForRuntimeOperation(idle, timeoutMs);
 }
 
@@ -3910,8 +3375,6 @@ async function executeRemoteRuntimeMutation(runtime: RuntimeHostClient, operatio
   if (operation === "automation.resume") return await unwrapHostOperationResult(runtime.automationResume(requiredPayloadString(payload.automationId, "automationId")));
   if (operation === "automation.run") return await unwrapHostOperationResult(runtime.automationRun(requiredPayloadString(payload.automationId, "automationId")));
   if (operation === "automation.delete") return await unwrapHostOperationResult(runtime.automationDelete(requiredPayloadString(payload.automationId, "automationId")));
-  if (operation === "graph.create") return await unwrapHostOperationResult(runtime.graphCreate({ graphId: optionalPayloadString(payload.graphId), nodes: (payload.nodes ?? []) as GraphNodeInput[], payload: payload.payload }));
-  if (operation === "graph.start") return await unwrapHostOperationResult(runtime.graphStart(requiredPayloadString(payload.graphId, "graphId")));
   if (operation === "graph.pause") return await unwrapHostOperationResult(runtime.graphPause(requiredPayloadString(payload.graphId, "graphId")));
   if (operation === "graph.resume") return await unwrapHostOperationResult(runtime.graphResume(requiredPayloadString(payload.graphId, "graphId")));
   if (operation === "graph.cancel") return await unwrapHostOperationResult(runtime.graphCancel(requiredPayloadString(payload.graphId, "graphId")));

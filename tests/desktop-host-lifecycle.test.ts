@@ -1,6 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** 浏览与执行分离；使用真实配置、目录、历史和 Host，外部模型不参与此测试。 */
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -67,7 +68,7 @@ test("被动读取不创建 Runtime Host；打开历史会话后预热项目 own
       await assert.rejects(access(path.join(agentDir(dataRoot), "runtime.sqlite")), { code: "ENOENT" });
 
       // Given 已落盘的目标和计划，When 冷态查询，Then 返回原事实且不创建执行者或改写数据库。
-      const authority = await RuntimeEventAuthority.open(dataRoot, { backfillLegacySessions: false });
+      const authority = await RuntimeEventAuthority.open(dataRoot, { reconcileSessions: false });
       const graphs = await GoalGraphStore.open(dataRoot, authority);
       const goals = await SessionGoalStore.open(dataRoot, authority);
       const tasks = await DurableTaskRunStore.open(dataRoot, authority);
@@ -175,7 +176,7 @@ test("工作区快照读取途中 Host 回收，不得由后续投影查询重�
   const dataRoot = await projects.dataRoot(project);
   const server = await startRuntimeHost(dataRoot, async () => await createInteractiveAgentHost(project.path, {
     configStore, persistenceRoot: dataRoot
-  }), { configDir });
+  }), {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir });
   const manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
   const loadConfig = configStore.load.bind(configStore);
   let releaseRead!: () => void;

@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, } from "node:fs/promises";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
@@ -335,7 +336,7 @@ test("disposing a pending attachment preserves an existing Host and its retainin
   const configDir = path.join(root, "config");
   const host = await startRuntimeHost(dataRoot, async () => await createInteractiveAgentHost(project.path, {
     configStore, persistenceRoot: dataRoot
-  }), { configDir });
+  }), {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir });
   let retaining: RuntimeHostClient | undefined;
   const acquired: { client?: RuntimeHostClient } = {};
   let initialization: Promise<unknown> | undefined;

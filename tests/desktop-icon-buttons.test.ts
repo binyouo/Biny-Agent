@@ -79,7 +79,6 @@ test("圆形反馈覆盖工具栏、设置和资源预览的图标入口，文�
       <button data-round class="markdown-download"><svg></svg></button><button data-text class="markdown-download">下载原图</button>
       <div class="markdown-image-lightbox-controls"><button data-round><svg></svg></button></div>
     </div>
-    <div class="navigation-controls"><button data-round><span><svg></svg></span></button></div>
     <div class="biny-sidebar is-compact"><button data-round class="biny-sidebar-section-trigger"><svg></svg></button><footer class="biny-sidebar-footer"><button data-round class="biny-sidebar-settings-item"><svg></svg></button></footer></div>
     <button data-round class="biny-sidebar-session-toggle" aria-expanded="true"><svg></svg></button>
     <button data-round class="biny-inspector-tab is-compact is-active"><svg></svg></button>

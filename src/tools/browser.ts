@@ -14,7 +14,7 @@ import { ToolOutcomeUnknownError, type Tool, type ToolExecutionContext, type Too
 import { redactSensitiveValue } from "../utils/secrets.js";
 
 const requestTimeoutMs = 20_000;
-const maxResponseBytes = 4 * 1024 * 1024;
+const maxResponseBytes = 12 * 1024 * 1024;
 
 export interface BrowserAutomationEndpoint {
   projectId?: string;
@@ -224,7 +224,9 @@ export async function requestBrowser(
     let buffer = "";
     let settled = false;
     let dispatched = false;
-    const mutation = ["navigate", "click", "fill", "press"].includes(method);
+    const mutation = ["navigate", "click", "fill", "press", "back", "forward", "reload", "scroll", "upload", "evaluate", "cdp", "viewport"].includes(method)
+      || method === "dialog" && ["accept", "dismiss"].includes(String(args.action))
+      || method === "clipboard" && args.action === "write";
     const timer = setTimeout(() => finish(new Error("Browser automation timed out."), undefined, "timeout"), method === "web_read" && typeof args.timeoutMs === "number" ? args.timeoutMs + 5_000 : requestTimeoutMs);
     const abort = (): void => finish(new Error("Browser action cancelled."), undefined, "cancelled");
     const finish = (error?: Error, value?: unknown, reason: ToolOutcomeUnknownReason = "transport_error"): void => {

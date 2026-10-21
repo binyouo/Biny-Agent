@@ -4,7 +4,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JSDOM } from "jsdom";
 import { ToolActivityDetail } from "../src/desktop/renderer/src/components/ToolActivity.js";
-import { ActivitySegment, ActivityToolRow } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
+import { ActivitySegment } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
+import { ToolCallCard } from "../src/desktop/renderer/src/components/chat/ToolCallCard.js";
 import { createSessionTimelineProjector, type TimelineTool } from "../src/desktop/renderer/src/sessionTimeline.js";
 import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
 import type { SessionEvent } from "../src/session/recorder.js";
@@ -17,7 +18,7 @@ const tool: TimelineTool = {
 };
 
 test("工具摘要默认收起，命令详情使用紧凑命令行并保留完整输出", () => {
-  const dom = new JSDOM(renderToStaticMarkup(React.createElement(ActivityToolRow, { ...callbacks, tool })));
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(ToolCallCard, { ...callbacks, tool })));
   try { assert.equal(dom.window.document.querySelector(".chat-tool-row")?.getAttribute("aria-expanded"), "false"); }
   finally { dom.window.close(); }
   const html = renderToStaticMarkup(React.createElement(ToolActivityDetail, { ...callbacks, tool }));
@@ -28,7 +29,7 @@ test("工具摘要默认收起，命令详情使用紧凑命令行并保留完�
 
 test("收起工具或整个活动段时不生成隐藏的详情和日志", () => {
   for (const element of [
-    React.createElement(ActivityToolRow, { ...callbacks, tool }),
+    React.createElement(ToolCallCard, { ...callbacks, tool }),
     React.createElement(ActivitySegment, { ...callbacks, running: false, steps: [{ kind: "tool", id: tool.id, tool }] })
   ]) {
     const dom = new JSDOM(renderToStaticMarkup(element));
@@ -37,14 +38,14 @@ test("收起工具或整个活动段时不生成隐藏的详情和日志", () =>
       assert.equal(dom.window.document.querySelector(".chat-command-result"), null);
     } finally { dom.window.close(); }
   }
-  const open = renderToStaticMarkup(React.createElement(ActivityToolRow, { ...callbacks, tool, open: true }));
+  const open = renderToStaticMarkup(React.createElement(ToolCallCard, { ...callbacks, tool, open: true }));
   assert.match(open, /line 29/);
 });
 
 test("展开长命令日志仅展示两个输出流的有界末尾并提供复制全文", () => {
   const stdout = `stdout beginning\n${"output line\n".repeat(60_000)}stdout ending`;
   const stderr = `stderr beginning\n${"error line\n".repeat(60_000)}stderr ending`;
-  const dom = new JSDOM(renderToStaticMarkup(React.createElement(ActivityToolRow, {
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(ToolCallCard, {
     ...callbacks, open: true, tool: { ...tool, command: { command: "task", stdout, stderr, exitCode: 0 } }
   })));
   try {
@@ -141,7 +142,7 @@ test("运行日志尊重向上阅读，工具行 Escape 收起后焦点返回摘
     output.dispatchEvent(new dom.window.Event("scroll"));
     await render("first\nsecond\nthird");
     assert.equal(output.scrollTop, 1000, "回到底部后恢复跟随");
-    await React.act(() => root.render(React.createElement(ActivityToolRow, { ...callbacks, tool })));
+    await React.act(() => root.render(React.createElement(ToolCallCard, { ...callbacks, tool })));
     const row = document.querySelector('.chat-tool-row') as HTMLButtonElement;
     await React.act(() => row.click());
     assert.equal(row.getAttribute('aria-expanded'), 'true');

@@ -508,136 +508,22 @@ button.chat-think-chip:focus-visible {
 
 /* ---- 轨道里的工具动宾行 ---- */
 
-.chat-tool-row-wrap {
-  min-width: 0;
-}
-
-.chat-tool-row {
-  min-height: 28px;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  width: 100%;
-  max-width: calc(100% + 12px);
-  margin-inline: -6px;
-  padding: 2px 6px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: calc(13px * var(--font-scale, 1));
-  text-align: left;
-  cursor: pointer;
-  transition: background 150ms ease;
-}
-
-.chat-tool-row:hover {
-  background: color-mix(in srgb, var(--biny-surface-hover) 72%, transparent);
-}
-
-/* 运行中的琥珀脉冲点（自回中，不随 baseline）。 */
-.chat-tool-run-dot {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  align-self: center;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--biny-warning) 80%, transparent);
-  animation: chat-tool-run-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-@keyframes chat-tool-run-pulse { 50% { opacity: 0.5; } }
-
-.chat-tool-row-error {
-  display: inline-flex;
-  width: 12px;
-  height: 12px;
-  flex: none;
-  align-self: center;
-  align-items: center;
-  justify-content: center;
-  color: color-mix(in srgb, var(--biny-danger) 80%, transparent);
-}
-
-/* 动词：85% 前景加重；失败染红。 */
-.chat-tool-row-verb {
-  flex: none;
-  overflow: hidden;
-  font-weight: 500;
-  white-space: nowrap;
-  color: color-mix(in srgb, var(--biny-text) 85%, transparent);
-}
-
-.chat-tool-row-verb.is-error {
-  color: var(--biny-danger);
-}
-
-/* 宾语：弱化、截断。 */
-.chat-tool-row-object {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  color: var(--biny-text-tertiary);
-}
-
-/* ± 行数：等宽、表格数字；绿增红删。 */
-.chat-tool-row-diff {
-  flex: none;
-  align-self: center;
-  font-family: var(--font-mono);
-  font-size: calc(12px * var(--font-scale, 1));
-  font-variant-numeric: tabular-nums;
-}
-
-.chat-tool-row-diff.is-add { color: color-mix(in srgb, var(--biny-success) 75%, transparent); }
-.chat-tool-row-diff.is-del { color: color-mix(in srgb, var(--biny-danger) 75%, transparent); }
-
-/* 耗时：等宽表格数字、弱化，落定后出现。 */
-.chat-tool-row-duration {
-  display: inline-flex;
-  flex: none;
-  align-self: center;
-  align-items: center;
-  gap: 3px;
-  font-family: var(--font-mono);
-  font-size: calc(11px * var(--font-scale, 1));
-  font-variant-numeric: tabular-nums;
-  color: color-mix(in srgb, var(--biny-text-tertiary) 85%, transparent);
-}
-
-.chat-tool-row-chevron {
-  opacity: 0;
-  display: inline-flex;
-  flex: none;
-  align-self: center;
-  color: color-mix(in srgb, var(--biny-text-tertiary) 50%, transparent);
-  transition: transform 150ms ease;
-}
-
-.chat-tool-row:hover .chat-tool-row-chevron,
-.chat-tool-row:focus-visible .chat-tool-row-chevron,
-.chat-tool-row.is-open .chat-tool-row-chevron {
-  opacity: 1;
-}
-
-.chat-tool-row.is-open .chat-tool-row-chevron {
-  transform: rotate(180deg);
-}
-
-.chat-tool-row-detail { min-width: 0; padding: 2px 0 6px; }
+.chat-tool-row-wrap { min-width: 0; border-radius: 8px; }
+.chat-tool-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 36px; margin: 0; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--biny-text); font: inherit; font-size: calc(14px * var(--font-scale, 1)); text-align: left; cursor: pointer; }
+.chat-tool-row:hover { background: color-mix(in srgb, var(--biny-surface-hover) 50%, transparent); }
+.chat-tool-icon { display: inline-flex; flex: none; color: var(--biny-text-secondary); }
+.chat-tool-row-verb { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.chat-tool-row-object { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--biny-text-tertiary); font: calc(12px * var(--font-scale, 1))/1.5 var(--font-mono); }
+.chat-tool-row-diff { flex: none; font: calc(12px * var(--font-scale, 1))/1.5 var(--font-mono); }
+.chat-tool-row-diff.is-add { color: var(--biny-success); }
+.chat-tool-row-diff.is-del { color: var(--biny-danger); }
+.chat-tool-row-duration { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--biny-text-tertiary); font: calc(12px * var(--font-scale, 1))/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
+.chat-tool-row-chevron { display: inline-flex; flex: none; color: var(--biny-text-tertiary); transition: transform 150ms ease; }
+.chat-tool-row.is-open .chat-tool-row-chevron { transform: rotate(180deg); }
+.chat-tool-row-detail { min-width: 0; padding: 16px; }
 .chat-tool-row:focus-visible,
 .chat-command-input pre:focus-visible,
-.chat-command-result pre:focus-visible {
-  outline: 2px solid var(--biny-control-active);
-  outline-offset: -2px;
-}
-
-
-
+.chat-command-result pre:focus-visible { outline: 2px solid var(--biny-control-active); outline-offset: -2px; }
 
 /* ============ 结果落定入场（指标/技能指示器出现时的一次轻沉降） ============ */
 
@@ -1888,6 +1774,50 @@ button.chat-think-chip:focus-visible {
   color: var(--biny-text-tertiary);
 }
 
+/* ============ 工具参数与脚本结果 ============ */
+
+.tool-parameters { display: grid; gap: 12px; min-width: 0; margin-bottom: 20px; }
+.tool-parameter-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; }
+.tool-parameter { display: contents; }
+.tool-parameter.is-block { display: grid; gap: 6px; min-width: 0; }
+.tool-parameter-name { color: color-mix(in srgb, var(--biny-text-tertiary) 70%, transparent); font: calc(12px * var(--font-scale, 1))/1.6 var(--font-mono); overflow-wrap: anywhere; }
+.tool-parameter-value { min-width: 0; margin: 0; color: var(--biny-text); font: calc(12px * var(--font-scale, 1))/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-code-block { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--biny-border); border-radius: 6px; background: color-mix(in srgb, var(--biny-surface-soft) 40%, transparent); }
+.tool-code-block.is-parameter { border-style: dashed; border-color: color-mix(in srgb, var(--biny-border) 60%, transparent); }
+.tool-code-block > pre { margin: 0; padding: 12px 36px 12px 14px; max-height: 60vh; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; white-space: pre; overflow-wrap: normal; font: calc(12px * var(--font-scale, 1))/1.65 var(--font-mono); }
+.tool-code-block > .copy-button { position: absolute; z-index: 1; top: 6px; right: 6px; }
+.biny-chat-scroll .tool-code-block:hover > .copy-button,
+.biny-chat-scroll .tool-code-block:focus-within > .copy-button { opacity: 1; }
+.tool-code-block > pre:focus-visible { outline: 2px solid var(--biny-control-active); outline-offset: -2px; }
+.tool-parameters-empty, .script-output-empty { margin: 0; color: var(--biny-text-tertiary); font-size: calc(12px * var(--font-scale, 1)); }
+.script-tool-details, .script-result { min-width: 0; }
+.script-result { display: grid; gap: 8px; }
+.script-result-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--biny-text-tertiary); font-size: calc(12px * var(--font-scale, 1)); }
+.script-result-summary .tool-section-label { margin: 0; }
+.script-token-increase { color: var(--biny-danger); }
+.tool-execution-status { display: inline-flex; align-items: center; gap: 4px; flex: none; border-radius: 999px; padding: 2px 8px; color: var(--biny-text-tertiary); background: var(--biny-surface-soft); font-size: calc(11px * var(--font-scale, 1)); }
+.tool-execution-status[data-status="success"] { color: var(--biny-success); background: color-mix(in srgb, var(--biny-success) 10%, transparent); }
+.tool-execution-status[data-status="failed"], .tool-execution-status[data-status="denied"] { color: var(--biny-danger); background: color-mix(in srgb, var(--biny-danger) 10%, transparent); }
+.tool-execution-status[data-status="running"], .tool-execution-status[data-status="waiting"], .tool-execution-status[data-status="unknown"] { color: var(--biny-warning); }
+.tool-execution-status.is-compact { padding: 0; background: transparent; }
+.script-calls-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--biny-text-tertiary); font: inherit; cursor: pointer; }
+.script-calls-toggle:hover { color: var(--biny-text); }
+.script-calls-toggle > svg { transform: rotate(-90deg); }
+.script-calls-toggle[aria-expanded="true"] > svg { transform: rotate(0); }
+.script-child-calls { list-style: none; margin: 0; padding: 0; min-width: 0; overflow: hidden; border: 1px solid var(--biny-border); border-radius: 6px; background: color-mix(in srgb, var(--biny-surface-soft) 30%, transparent); }
+.script-child-call + .script-child-call { border-top: 1px solid var(--biny-border); }
+.script-child-call > button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 12px; border: 0; background: transparent; color: var(--biny-text-tertiary); font: calc(11px * var(--font-scale, 1))/1.5 var(--font-mono); text-align: left; cursor: pointer; }
+.script-child-call > button:hover { background: var(--biny-surface-hover); }
+.script-child-name { min-width: 0; overflow-wrap: anywhere; color: var(--biny-text); }
+.script-child-chevron { display: inline-flex; margin-left: auto; flex: none; transform: rotate(-90deg); }
+.script-child-call > button[aria-expanded="true"] .script-child-chevron { transform: rotate(0); }
+.script-child-error-preview { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--biny-danger); }
+.script-child-detail { display: grid; gap: 6px; padding: 0 12px 8px; }
+.script-child-detail h5 { margin: 0 0 4px; font-size: calc(10px * var(--font-scale, 1)); font-weight: 500; color: var(--biny-text-tertiary); }
+.script-child-detail .tool-code-block > pre { max-height: 192px; padding: 8px 36px 8px 10px; }
+.script-output-error { color: var(--biny-danger); }
+.script-calls-toggle:focus-visible, .script-child-call > button:focus-visible { outline: 2px solid var(--biny-control-active); outline-offset: -2px; }
+
 /* ============ 工具展开体：IN/OUT 与负载 ============ */
 
 .chat-io-card {
@@ -2831,6 +2761,9 @@ button.chat-think-chip:focus-visible {
 .message-menu-item > small { margin-left: auto; color: var(--biny-text-secondary); font-size: 11px; white-space: nowrap; }
 .message-context-submenu { position: fixed; z-index: 2100; width: min(280px, calc(100vw - 16px)); max-height: min(480px, calc(100vh - 16px)); overflow: auto; border: 1px solid var(--biny-border); border-radius: 12px; background: var(--biny-surface-elevated); color: var(--biny-text); box-shadow: 0 8px 24px var(--biny-shadow-heavy); }
 .message-context-submenu section { padding: 12px 16px; }
+.skill-activity-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.skill-activity-row > span { min-width: 0; overflow-wrap: anywhere; }
+.skill-activity-row > small { flex-shrink: 0; color: var(--biny-text-secondary); font-size: 11px; }
 .message-context-submenu section + section { border-top: 1px solid var(--biny-border); }
 .message-context-submenu h4 { margin: 0 0 10px; color: var(--biny-text-secondary); font-size: 12px; }
 .message-context-submenu p { margin: 4px 0; font-size: 13px; overflow-wrap: anywhere; }

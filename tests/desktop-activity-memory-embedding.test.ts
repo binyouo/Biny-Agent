@@ -1,6 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { AgentMemoryOwner } from "../src/runtime/memory/owner.js";
+import { canonicalMemoryRoot, serveMemoryOwner } from "../src/runtime/memory/transport.js";
 /** Activity 长期事实在没有聊天 Session 时仍复用当前记忆向量空间。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
@@ -20,6 +23,8 @@ const previousTestApiKey = process.env[testApiKeyEnv];
 process.env[BINY_AGENT_DIR_ENV] = path.join(root, "agent");
 process.env[testApiKeyEnv] = "test-key";
 let manager: DesktopAgentManager | undefined;
+let owner: Awaited<ReturnType<typeof serveMemoryOwner>> | undefined;
+const originalFetch = globalThis.fetch;
 try {
   const storage = new DesktopUserDataStore(root);
   await storage.initialize();
@@ -41,6 +46,9 @@ try {
     const body = JSON.parse(String(init?.body)) as { input: string[] };
     return Response.json({ data: body.input.map((_, index) => ({ index, embedding: [1, 0, 0] })) });
   };
+  globalThis.fetch = fetcher;
+  const memoryRoot = await canonicalMemoryRoot(process.env[BINY_AGENT_DIR_ENV]!);
+  owner = await serveMemoryOwner(memoryRoot, root, new AgentMemoryOwner(memoryRoot, configStore));
   manager = new DesktopAgentManager(state, projects, configStore, () => undefined, undefined, undefined, fetcher);
   const memory = new LocalMemory(root, () => { throw new Error("Extraction model must not be used."); });
   const saved = await memory.writeEntry({ content: "The user's Activity release notes use concise updates." });
@@ -57,6 +65,8 @@ try {
     "unavailable embedding fails closed");
 } finally {
   await manager?.closeAll();
+  await owner?.close();
+  globalThis.fetch = originalFetch;
   if (previousAgentDir === undefined) delete process.env[BINY_AGENT_DIR_ENV];
   else process.env[BINY_AGENT_DIR_ENV] = previousAgentDir;
   if (previousTestApiKey === undefined) delete process.env[testApiKeyEnv];

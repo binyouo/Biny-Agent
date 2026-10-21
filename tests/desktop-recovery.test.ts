@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** 真实 Desktop Manager → Host → Agent → 磁盘，模型由本地 HTTP 屏障控制。 */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -53,7 +54,7 @@ try {
     thinking: { ...defaultConfig.thinking, enabled: false },
     crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context,
-      emotion: { ...defaultConfig.context.emotion, enabled: false },
+
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
     }
   }));

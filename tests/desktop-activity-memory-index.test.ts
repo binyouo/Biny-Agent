@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createActivityMemoryPipeline } from "../src/activity/memoryPipeline.js";
@@ -8,7 +10,9 @@ import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
-import { DesktopActivityMemoryIndex } from "../src/desktop/electron/main/DesktopActivityMemoryIndex.js";
+import { AgentMemoryClient } from "../src/runtime/memory/client.js";
+import { AgentMemoryOwner } from "../src/runtime/memory/owner.js";
+import { canonicalMemoryRoot, serveMemoryOwner } from "../src/runtime/memory/transport.js";
 import { ProviderRegistry } from "../src/llm/ProviderRuntime.js";
 import type { AgentModel } from "../src/agent/core/types.js";
 
@@ -26,9 +30,9 @@ const server = createServer(async (request, response) => {
   response.end(JSON.stringify({ data: payload.input.map((_, index) => ({ index, embedding: [1, 0] })) }));
 });
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-const model: AgentModel = { provider: "test", modelId: "activity-test", stream: async () => (async function* () {
+const model: AgentModel = testModel({ provider: "test", modelId: "activity-test", stream: async () => (async function* () {
   yield { type: "finish" as const, reason: "stop" as const };
-})() };
+})() });
 
 try {
   const address = server.address();
@@ -44,11 +48,14 @@ try {
     } }
   };
   const descriptor = new ProviderRegistry(config).listEmbeddingModels()[0]!;
-  const memoryIndex = new DesktopActivityMemoryIndex({ workspaceRoot: root, agentDir, loadConfig: async () => config });
+  const canonical = await canonicalMemoryRoot(agentDir);
+  const owner = new AgentMemoryOwner(canonical, { load: async () => config, save: async () => { throw new Error("Unexpected save"); } });
+  const memoryServer = await serveMemoryOwner(canonical, canonical, owner);
+  const memoryIndex = new AgentMemoryClient(canonical, canonical);
   const pipeline = await createActivityMemoryPipeline({
     workspaceRoot: root,
     agentDir,
-    findSimilarEntries: async (query, options) => await memoryIndex.findSimilarEntries(query, options),
+    findSimilarEntries: async (query, options) => await memoryIndex.findSimilarInScope(query, options),
     indexEntry: async (entry) => await memoryIndex.indexEntry(entry)
   });
   try {
@@ -71,7 +78,7 @@ try {
     assert.ok(requests >= 1);
   } finally {
     pipeline.close();
-    await memoryIndex.close();
+    await memoryServer.close();
   }
 } finally {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

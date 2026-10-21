@@ -50,7 +50,7 @@ interface Options {
   empty?: boolean;
   read?(name: ReadName, owned: Owned): Promise<void>;
   closeError?: Error;
-  resident?: "local" | "remote";
+  resident?: "remote";
 }
 function fixture(options: Options = {}) {
   const records: Entry[] = options.empty ? [] : [{ id: "fact", content: "A durable fact" }];
@@ -61,7 +61,6 @@ function fixture(options: Options = {}) {
   const instances: Owned[] = [];
   const events: string[] = [];
   const projectCalls: string[] = [];
-  const localCalls: string[] = [];
   const remoteCalls: Array<{ name: string; args: PageOptions }> = [];
   let residentClosed = 0;
   class InertStorage implements Owned {
@@ -83,12 +82,6 @@ function fixture(options: Options = {}) {
     async readMaintenanceStatus(): Promise<Maintenance> { await this.read("maintenance"); return maintenance; }
     close(): void { this.closeCalls++; events.push("close"); if (options.closeError) throw options.closeError; }
   }
-  const local = {
-    async getOverview() { localCalls.push("overview"); return overview; },
-    async listMemoryEntries(page?: PageOptions) { localCalls.push(page ? "page" : "entries"); return entries; },
-    async loadMaintenanceStatus() { localCalls.push("maintenance"); return maintenance; },
-    close() { residentClosed++; }
-  };
   const remote = {
     async memory(name: string, args: PageOptions): Promise<Entries | Store> {
       remoteCalls.push({ name, args });
@@ -96,12 +89,9 @@ function fixture(options: Options = {}) {
     },
     close() { residentClosed++; }
   };
-  const managed = options.resident === "local" ? { commands: {}, runtime: {} }
-    : options.resident === "remote" ? { runtime: remote } : undefined;
+  const managed = options.resident === "remote" ? { runtime: remote } : undefined;
   const context = createContext({
     MemoryStorage: InertStorage,
-    requireLocalMemory: () => local,
-    requireRemoteRuntime: (runtime: unknown) => { assert.equal(runtime, remote); return remote; },
     requireConfigRevision: () => "config-revision",
     memoryStats: (result: Entries) => ({ total: result.total })
   }, { codeGeneration: { strings: false, wasm: false } });
@@ -114,7 +104,7 @@ function fixture(options: Options = {}) {
     assert.ok(options.resident, "cold reads must not initialize a runtime");
     return { memory: {} };
   };
-  return { receiver, instances, events, projectCalls, localCalls, remoteCalls, entries, overview, maintenance,
+  return { receiver, instances, events, projectCalls, remoteCalls, entries, overview, maintenance,
     get residentClosed() { return residentClosed; } };
 }
 function deferred() {
@@ -235,15 +225,14 @@ test("repeated and concurrent requests have independent owned instances", async 
   assert.deepEqual(f.instances.map(instance => instance.root), ["/inert/one", "/inert/two", "/inert/one", "/inert/two"]);
 });
 
-for (const resident of ["local", "remote"] as const) test(`resident ${resident} overview/page never close borrowed storage`, async () => {
-  const f = fixture({ resident });
+test("resident Host client overview/page never close borrowed storage", async () => {
+  const f = fixture({ resident: "remote" });
   const stats = await f.receiver.memoryOverview("project");
   const page = await f.receiver.memoryEntries("project", 20, 10, true);
   assert.equal(stats.revision, 41); assert.equal(page.revision, 41);
   assert.equal(f.instances.length, 0);
   assert.equal(f.residentClosed, 0);
-  if (resident === "local") assert.deepEqual(f.localCalls, ["overview", "entries", "maintenance", "page"]);
-  else assert.equal(JSON.stringify(f.remoteCalls), JSON.stringify([
+  assert.equal(JSON.stringify(f.remoteCalls), JSON.stringify([
     { name: "overview", args: {} }, { name: "list", args: { offset: 20, limit: 10, includeArchived: true } }
   ]));
 });
@@ -259,7 +248,7 @@ for (const kind of ["overview", "page"] as const) for (const readFails of [false
 }
 
 
-for (const resident of [undefined, "local", "remote"] as const) test(`stats ${resident ?? "cold"} reads aggregate using owned storage and leaves Runtime untouched`, async () => {
+for (const resident of [undefined, "remote"] as const) test(`stats ${resident ?? "cold"} reads aggregate using owned storage and leaves Runtime untouched`, async () => {
   const f = fixture({ resident });
   const stats = await f.receiver.memoryStats("project");
   assert.equal(stats.revision, 41);
@@ -267,7 +256,6 @@ for (const resident of [undefined, "local", "remote"] as const) test(`stats ${re
   assert.equal(stats.memoryStats.total, 1);
   assert.equal(stats.entries, undefined);
   assert.deepEqual(f.instances[0]!.calls, ["stats", "maintenance"]);
-  assert.deepEqual(f.localCalls, []);
   assert.deepEqual(f.remoteCalls, []);
   assert.equal(f.residentClosed, 0);
   closedOnce(f, 1);

@@ -32,6 +32,21 @@ test("iab envs lists built-in browser environments as JSON", async () => {
   assert.deepEqual(JSON.parse(output), [{ id: "default", name: "默认" }]);
 });
 
+test("iab actions use the existing browser interaction protocol", async () => {
+  for (const [args, method, expected] of [
+    [["iab", "click", "#save", "--json"], "click", { selector: "#save" }],
+    [["iab", "fill", "#query", "项目 CLI", "--json"], "fill", { selector: "#query", value: "项目 CLI" }],
+    [["iab", "press", "Enter", "--selector", "#query", "--json"], "press", { key: "Enter", selector: "#query" }]
+  ] as const) {
+    const output = await runCli([...args], async (actual, parameters) => {
+      assert.equal(actual, method);
+      assert.deepEqual(parameters, expected);
+      return { url: "https://example.org/saved" };
+    });
+    assert.deepEqual(JSON.parse(output), { url: "https://example.org/saved" });
+  }
+});
+
 test("iab goto selects the named environment and normalizes the URL", async () => {
   const output = await runCli(["iab", "goto", "https://example.org/docs", "--env", "Work", "--json"], async (method, args) => {
     assert.equal(method, "navigate");
@@ -39,6 +54,15 @@ test("iab goto selects the named environment and normalizes the URL", async () =
     return { url: "https://example.org/docs", title: "Docs" };
   });
   assert.deepEqual(JSON.parse(output), { url: "https://example.org/docs", title: "Docs" });
+});
+
+test("iab eval returns JSON null for a successful expression without a value", async () => {
+  const output = await runCli(["iab", "eval", "void 0", "--json"], async (method, args) => {
+    assert.equal(method, "evaluate");
+    assert.deepEqual(args, { code: "void 0" });
+    return undefined;
+  });
+  assert.equal(JSON.parse(output), null);
 });
 
 test("iab fetch extracts readable text and preserves the selected environment", async () => {

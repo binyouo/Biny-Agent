@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -16,7 +17,7 @@ import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProje
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import { deleteSessionArtifacts } from "../src/session/cleanup.js";
-import { SessionRunLedger } from "../src/session/runLedger.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { readSessionCatalogRecord, updateSessionCatalogMetadata } from "../src/session/catalog.js";
 import type { LoadedSessionTreePage } from "../src/desktop/renderer/src/app/sessionTreePageLifetime.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
@@ -668,9 +669,10 @@ async function persistedPinResetFixture(context: TestContext) {
 test("persisted child pin survives cursor reset outside the fresh page with current metadata", async (context) => {
   const { root, view, resolveStored, second } = await persistedPinResetFixture(context);
   await updateSessionCatalogMetadata(root, "child-20", { title: "Updated pinned child", archived: true });
-  const ledger = new SessionRunLedger(root);
-  await ledger.start({ runId: "hidden-run", sessionId: "child-00", pid: 2_147_483_647 });
-  const hiddenRun = await ledger.read("hidden-run");
+  const authority = await RuntimeEventAuthority.open(root);
+  context.after(() => authority.close());
+  authority.startRun({ runId: "hidden-run", sessionId: "child-00", turnId: "hidden-turn" });
+  const hiddenRun = authority.getRun("hidden-run");
   const restart = view.load("project", "parent", second.nextCursor);
   const invalid = await resolveStored(2);
   assert.equal(invalid.revisionChanged, true);
@@ -679,7 +681,7 @@ test("persisted child pin survives cursor reset outside the fresh page with curr
   const fresh = await resolveStored(3);
   const result = await restart;
   assert.equal(fresh.sessions.length, 32);
-  assert.deepEqual(await ledger.read("hidden-run"), hiddenRun, "reset pin projection must not reconcile hidden runs");
+  assert.deepEqual(authority.getRun("hidden-run"), hiddenRun, "reset pin projection must not reconcile hidden runs");
   assert.equal(fresh.sessions.some((row) => row.id === "child-20"), false);
   assert.ok(result.page?.resetSessionIds?.includes("child-20"), "pinned shortcuts still discard old child expansion state");
   const pinned = view.props().sessions.find((row) => row.id === "child-20");

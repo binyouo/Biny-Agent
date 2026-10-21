@@ -47,6 +47,11 @@ const storedEnvironmentSchema = z.object({
   proxy: proxySchema
 }).strict();
 
+export const browserEnvironmentInputSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  proxy: proxySchema
+}).strict();
+
 const defaultEnvironment: BrowserEnvironment = {
   id: "default",
   name: "默认",
@@ -166,10 +171,7 @@ export class BrowserEnvironmentStore {
 }
 
 function validateEnvironmentInput(input: BrowserEnvironmentInput): BrowserEnvironmentInput {
-  return {
-    name: z.string().trim().min(1).max(60).parse(input.name),
-    proxy: proxySchema.parse(input.proxy)
-  };
+  return browserEnvironmentInputSchema.parse({ name: input.name, proxy: input.proxy });
 }
 
 function copyEnvironment(environment: BrowserEnvironment): BrowserEnvironment {

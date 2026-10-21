@@ -48,15 +48,20 @@ test("逐次确认的请求不展示会话授权，普通请求保留会话授�
 });
 
 test("工具详情收起时授权卡片位于折叠容器之外", async () => {
-  const { ActivitySegment, ActivityToolRow } = await import("../src/desktop/renderer/src/components/chat/ActivitySegment.js");
+  const { ActivitySegment } = await import("../src/desktop/renderer/src/components/chat/ActivitySegment.js");
+  const { ToolCallCard } = await import("../src/desktop/renderer/src/components/chat/ToolCallCard.js");
   const pendingTool: TimelineTool = { ...tool, tool: "skill_install", args: { name: "demo" }, command: undefined };
   const callbacks = {
     projectId: "project",
     onPreviewFile: () => undefined, onOpenExternal: () => undefined, onResolvePermission: async () => undefined
   };
   for (const element of [
-    createElement(ActivityToolRow, { ...callbacks, tool: pendingTool }),
-    createElement(ActivitySegment, { ...callbacks, running: false, steps: [{ kind: "tool", id: tool.id, tool: pendingTool }] })
+    createElement(ToolCallCard, { ...callbacks, tool: pendingTool }),
+    createElement(ActivitySegment, { ...callbacks, running: false, steps: [{ kind: "tool", id: tool.id, tool: pendingTool }] }),
+    createElement(ActivitySegment, { ...callbacks, running: false, steps: [
+      { kind: "tool", id: "script", tool: { id: "script", tool: "run_script", status: "waiting", args: { code: "await tools.install()" }, updates: [] } },
+      { kind: "tool", id: pendingTool.id, tool: { ...pendingTool, parentToolCallId: "script" } }
+    ] })
   ]) {
     const dom = new JSDOM(renderToStaticMarkup(element));
     try {

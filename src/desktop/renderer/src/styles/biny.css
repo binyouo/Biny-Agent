@@ -4180,23 +4180,6 @@ button.capability-check[aria-checked="true"] {
   box-shadow: 0 2px 8px var(--biny-shadow-color);
 }
 
-.biny-chat-navigation {
-  display: flex;
-  align-items: center;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-}
-
-.biny-chat-navigation .navigation-controls {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.biny-chat-navigation .navigation-controls button {
-  color: var(--biny-text-secondary);
-}
-
 .biny-chat-drag-region {
   display: flex;
   min-width: 0;
@@ -4323,126 +4306,6 @@ button.capability-check[aria-checked="true"] {
 
 .biny-artifacts-button.is-active {
   background: var(--biny-surface-selected);
-  color: var(--biny-text);
-}
-
-
-
-.biny-usage-control {
-  position: relative;
-  display: inline-flex;
-}
-
-.biny-usage-popover {
-  position: absolute;
-  z-index: 6;
-  top: calc(100% + 8px);
-  right: 0;
-  width: min(320px, calc(100vw - 32px));
-  padding: 14px;
-  border: 1px solid var(--biny-border);
-  border-radius: 14px;
-  background: var(--biny-surface-elevated);
-  box-shadow: 0 10px 28px var(--biny-shadow-soft);
-  color: var(--biny-text);
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-4px) scale(0.98);
-  transform-origin: bottom right;
-  transition: opacity var(--biny-motion-quick) ease, transform var(--biny-motion-base) var(--biny-ease-emphasized);
-  will-change: opacity, transform;
-}
-
-.biny-usage-popover[data-popover-phase="open"] {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0) scale(1);
-}
-
-.biny-usage-popover-header,
-.biny-usage-total,
-.biny-usage-stat {
-  display: flex;
-  align-items: center;
-}
-
-.biny-usage-popover-header {
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.biny-usage-popover-header > div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.biny-usage-popover-header strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.biny-usage-popover-header span,
-.biny-usage-note,
-.biny-usage-warning,
-.biny-usage-stat span,
-.biny-usage-total span {
-  color: var(--biny-text-secondary);
-  font-size: 11px;
-}
-
-.biny-usage-total {
-  justify-content: space-between;
-  margin-top: 12px;
-  padding: 12px;
-  border: 1px solid var(--biny-border);
-  border-radius: 10px;
-  background: var(--biny-surface);
-}
-
-.biny-usage-total strong {
-  color: var(--biny-text);
-  font-size: 18px;
-  font-variant-numeric: tabular-nums;
-}
-
-.biny-usage-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.biny-usage-stat {
-  min-width: 0;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: var(--biny-surface-soft);
-}
-
-.biny-usage-stat strong {
-  max-width: 100%;
-  overflow: hidden;
-  color: var(--biny-text);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.biny-usage-warning,
-.biny-usage-note {
-  margin: 10px 0 0;
-  line-height: 1.45;
-}
-
-.biny-usage-warning {
   color: var(--biny-text);
 }
 
@@ -5390,12 +5253,6 @@ button.capability-check[aria-checked="true"] {
   opacity: 0.52;
 }
 
-.biny-composer-status .biny-usage-popover {
-  top: auto;
-  right: 0;
-  bottom: calc(100% + 8px);
-}
-
 .biny-chat-composer .biny-composer {
   min-height: 128px;
 }
@@ -5653,7 +5510,6 @@ button.capability-check[aria-checked="true"] {
 
   .biny-sidebar-menu,
   .biny-composer-popover,
-  .biny-usage-popover,
   .biny-runtime-panel,
   .biny-workspace-context-trigger,
   .desktop-inspector-resizer::after,
@@ -10780,9 +10636,6 @@ button.capability-check[aria-checked="true"] {
 
 /* 工具结果统计与脚本详情沿用当前界面颜色。 */
 .tool-optimization-note { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
-.tool-optimization-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
-.tool-optimization-tabs button { font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 6px; padding: 5px 9px; }
-.tool-optimization-tabs button[aria-pressed="true"] { font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
 
 .tool-optimization-page { display: flex; flex-direction: column; gap: 24px; container-type: inline-size; }
 .tool-optimization-page .savings-card { display: flex; flex-direction: column; gap: 24px; padding: 24px 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: 0 1px 2px rgb(0 0 0 / 5%); }

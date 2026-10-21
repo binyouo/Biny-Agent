@@ -33,7 +33,13 @@ Relay 管理配对连接与请求，扩展在目标 Chrome 配置中读取或操
 
 两种浏览器有各自的标签和登录态。导入 Cookie 不等于连接已有标签，内置浏览器也不能用来报告用户日常 Chrome 的当前状态。
 
-终端中的 `biny iab` 操作 Biny 内置浏览器，依赖正在运行的 Desktop；`biny browser` 仍用于 Chrome Relay。`iab envs` 列出登录环境，`iab goto <url> --env <name>` 在指定环境打开页面，`iab info` 读取当前页面，`iab fetch <url...> --env <name>` 抓取登录态页面。抓取默认返回可读正文，传 `--html` 返回 HTML，传 `--json` 返回结构化结果。直接调用 CLI 由用户发起，不经过模型工具审批。
+终端中的 `biny iab` 操作 Biny 内置浏览器，依赖正在运行的 Desktop；`biny browser` 仍用于 Chrome Relay。`iab envs` 列出登录环境，`iab goto <url> --env <name>` 在指定环境打开页面，`iab info` 读取当前页面，`iab fetch <url...> --env <name>` 抓取登录态页面。`iab click <selector>` 点击控件，`iab fill <selector> <value>` 替换输入值，`iab press <key> --selector <selector>` 聚焦控件并发送按键，省略 selector 时向当前焦点发送按键。抓取默认返回可读正文，传 `--html` 返回 HTML，传 `--json` 返回结构化结果。直接调用 CLI 由用户发起，不经过模型工具审批。命令示例见 [CLI 使用指南](CLI_USAGE.md#内置浏览器)。
+
+`iab status` 查看页面状态且不创建首页；`back/forward/reload` 等待导航结果，失败不会当作成功页面返回。`history` 读取当前导航栈，`scroll` 按像素滚动，`screenshot` 将可见视口保存为 PNG。`tab list/new/select/close/stop/float` 使用登记项目的同一标签集合；默认按当前目录匹配项目，也可传 `--project`，选中标签后页面操作使用该标签。
+
+`eval/cdp` 提供当前页面的 JavaScript 与原始 CDP 操作；`viewport set/reset` 控制视口模拟。`upload/download/export` 与 Chrome Relay 共享工作区文件读写边界和 8 MiB 传输限制，不建立另一套文件权限规则；导出支持 PDF、HTML、MHTML 和正文 Markdown。`dialog watch/get/accept/dismiss/stop` 在 Desktop 中维护每页的弹窗监听，弹窗控制可在等待中的页面执行之外响应；页面关闭或停止监听后移除自身事件监听器。`clipboard read/write` 操作系统剪贴板文本。参数与文件保存方式见使用指南。
+
+`iab env create/update/delete/clear/import-cookies` 复用 Desktop 环境与 Cookie 服务；默认环境的限制、代理校验和运行门禁继续生效。`iab profile list/import` 使用已有的本机浏览器配置导入路径，导入目标为默认环境。环境文件、数据清理范围和命令示例统一见使用指南。
 
 内置浏览器的“环境”用于并排使用不同账号。每个环境单独保存 Cookie 和网页存储，标签会显示环境颜色；默认环境继续使用现有的内置浏览器登录态。用户可在浏览器环境菜单中新建、改名、设置代理、导入默认环境 Cookie、清空或删除自定义环境。默认环境不能通过环境菜单清空或删除。环境设置保存在本机 Desktop 用户数据中。
 

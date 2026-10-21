@@ -216,7 +216,7 @@ const EXPLORING_TOOLS = new Set([
 const MAKING_TOOLS = new Set(["Write", "Edit", "TodoWrite", "save_memory", "skill_install"]);
 
 /** 命令类工具：归入「运行」相位。 */
-const RUNNING_TOOLS = new Set(["Bash", "BashOutput", "KillShell"]);
+const RUNNING_TOOLS = new Set(["Bash", "ProcessStatus", "KillShell"]);
 
 /** 步骤的相位语义：思考步骤 → thinking；工具按工具名分箱；其余 → generic。 */
 export function activityPhaseKindOf(step: TimelineToolStep | TimelineReasoningStep): ActivityPhaseKind {
@@ -395,9 +395,9 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       row.verb = "终止";
       row.object = stringArg(tool, "processId") ?? stringArg(tool, "id") ?? "进程";
       return row;
-    case "BashOutput":
+    case "ProcessStatus":
       row.verb = "查看";
-      row.object = stringArg(tool, "processId") ?? stringArg(tool, "id") ?? "进程输出";
+      row.object = stringArg(tool, "processId") ?? "后台进程状态";
       return row;
     case "Skill":
     case "skill_call":

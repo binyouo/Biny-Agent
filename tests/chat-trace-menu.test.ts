@@ -19,7 +19,12 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
   const { MessageContextMenu } = await import("../src/desktop/renderer/src/components/chat/MessageContextMenu.js");
   const root = createRoot(document.getElementById("root")!);
   try {
-    await React.act(async () => root.render(React.createElement(MessageContextMenu, { tools: ["Bash", "Bash", "Skill"], skills: ["references"], memoryRecallDegraded: "no_vector_index" })));
+    await React.act(async () => root.render(React.createElement(MessageContextMenu, {
+      tools: ["Bash", "Bash", "Skill"], skills: ["references"], selectedSkills: ["review-id", "references"],
+      skillLabels: new Map([["review-id", "review"]]),
+      skillCalls: [{ id: "failed", tool: "Skill", args: { skill: "broken" }, result: "Unknown skill: broken", status: "failed", updates: [] }],
+      memoryRecallDegraded: "no_vector_index"
+    })));
     const button = document.querySelector<HTMLButtonElement>("button")!;
     await React.act(async () => button.focus());
     assert.equal(button.getAttribute("aria-expanded"), "true");
@@ -27,8 +32,9 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
     assert.equal(panel.parentElement, document.body, "浮层脱离菜单动画的 transform 包含块");
     assert.equal(panel.querySelector("section h4")!.textContent, "1 个工具");
     assert.deepEqual([...panel.querySelectorAll("section:first-child p")].map(item => item.textContent), ["执行命令"]);
-    assert.match(panel.textContent!, /1 个技能/u);
-    assert.match(panel.textContent!, /references/u);
+    assert.match(button.textContent!, /3 个技能/u);
+    assert.deepEqual([...panel.querySelectorAll('[data-skill-name]')].map(item => item.textContent), ["review已选中", "references已加载", "broken加载失败"]);
+    assert.equal(panel.querySelector('[data-skill-name="broken"]')?.getAttribute("title"), "Unknown skill: broken");
     assert.doesNotMatch(panel.textContent!, /技能调用/u);
     assert.match(panel.textContent!, /记忆召回/u);
     assert.match(panel.textContent!, /向量索引尚未建立/u);

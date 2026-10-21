@@ -24,8 +24,6 @@ const startsWork: Record<DesktopRuntimeMutation, boolean> = {
   "automation.resume": true,
   "automation.run": true,
   "automation.delete": false,
-  "graph.create": true,
-  "graph.start": true,
   "graph.pause": false,
   "graph.resume": true,
   "graph.cancel": false,

@@ -116,7 +116,7 @@ test("时间线索读取一次性任务不加载模型、工具或启动 Runtime
   try {
     await state.load(); await storage.initialize();
     const project = await projects.createProject(root);
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const store = await AutomationStore.open(root, authority);
     const record = store.create({ name: "本地提醒", triggerType: "once", schedule: { at: "2026-10-01T01:00:00Z" }, executionTemplate: { prompt: "提醒" } });
     store.close(); authority.close();

@@ -48,6 +48,7 @@ import { DesktopAgentManager } from "./DesktopAgentManager.js";
 import { ActivityRecorderService } from "./ActivityRecorderService.js";
 import type { ActivityPermissionStatus } from "../../../activity/httpServer.js";
 import { DesktopBrowserService } from "./DesktopBrowserService.js";
+import { browserEnvironmentInputSchema } from "../../browserEnvironments.js";
 import { openChromeExtensionManager, prepareBrowserExtension } from "../../../browser/extensionAssets.js";
 import { DesktopMcpService } from "./DesktopMcpService.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
@@ -57,6 +58,7 @@ import type { AppearancePreviewCoordinator } from "../../appearanceCoordinator.j
 import { appearancePreferenceSchema } from "../../../appearance/preferences.js";
 import { DesktopSettingsTransaction } from "./DesktopSettingsTransaction.js";
 import { DesktopTerminalManager } from "./DesktopTerminalManager.js";
+import type { DesktopPreviewService } from "./DesktopPreviewService.js";
 import { StaticPreviewServer } from "./StaticPreviewServer.js";
 import { fetchSiteIconDataUrl } from "./siteIcon.js";
 import { QuickChatContextService } from "./QuickChatContextService.js";
@@ -92,6 +94,7 @@ interface IpcContext {
   activity: ActivityRecorderService;
   getActivityPermissions(): ActivityPermissionStatus;
   terminals: DesktopTerminalManager;
+  preview: DesktopPreviewService;
   staticPreview: StaticPreviewServer;
   browser: DesktopBrowserService;
   skills: DesktopSkillService;
@@ -131,14 +134,6 @@ const sessionTreePageOptionsSchema = z.object({
 const permissionModeSchema = z.enum(["ask", "read-only", "auto", "full-access"]);
 const activeViewSchema = z.enum(["chat", "runtime"]);
 const systemSettingsPaneSchema = z.enum(["screen-recording", "accessibility"]);
-const browserEnvironmentInputSchema = z.object({
-  name: z.string().trim().min(1).max(60),
-  proxy: z.object({
-    mode: z.enum(["system", "direct", "fixed_servers"]),
-    proxyRules: z.string().trim().max(1_000).optional(),
-    proxyBypassRules: z.string().trim().max(1_000).optional()
-  }).strict()
-}).strict();
 /** QuickChat 三开关的入参边界：逐字段布尔，额外字段拒绝，与 DesktopStateStore 归一化逻辑对齐。 */
 const quickChatSettingsSchema = z.object({
   autoHideOnBlur: z.boolean(),
@@ -209,7 +204,7 @@ const runtimeMutationSchema = z.enum([
   "session.goal.set", "session.goal.pause", "session.goal.resume", "session.goal.clear",
   "task.create", "task.start", "task.run", "task.message", "task.continue", "task.cancel", "task.approve", "task.resume", "task.retry",
   "automation.create", "automation.pause", "automation.resume", "automation.run", "automation.delete",
-  "graph.create", "graph.start", "graph.pause", "graph.resume", "graph.cancel",
+  "graph.pause", "graph.resume", "graph.cancel",
   "capability.register", "capability.replace", "capability.admit", "capability.reject", "capability.release",
   "capability.invoke", "capability.accept", "capability.start", "capability.result", "capability.chunk", "capability.fail", "capability.cancel",
   "worktree.merge", "worktree.remove"
@@ -332,8 +327,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     const project = idSchema.optional().parse(projectId);
     const session = idSchema.optional().parse(sessionId);
     if (session && !project) throw new Error("Session statistics require a project.");
-    const stats = await context.projects.toolOptimizationStats(range, project, session);
-    return { ...stats, rtk: await findRtk() };
+    return await context.projects.toolOptimizationOverview(range, project, session);
   });
 
   handle(desktopIpc.selectProject, async (_event, projectId: unknown) => {
@@ -370,9 +364,7 @@ export function registerDesktopIpc(context: IpcContext): void {
 
   handle(desktopIpc.removeProject, async (_event, projectId: unknown) => {
     const id = idSchema.parse(projectId);
-    if (context.agents.isProjectRunning(id)) throw new Error("Stop the running task before removing this project from the sidebar.");
-    await context.agents.disposeProject(id);
-    await context.state.removeProject(id);
+    await context.agents.removeProject(id);
     return await context.bootstrap();
   });
 
@@ -761,19 +753,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   };
   handle(desktopIpc.startProjectPreview, async (event, projectId: unknown, entry: unknown) => {
     assertBrowserSender(event);
-    const project = context.projects.requireProject(idSchema.parse(projectId));
-    const runningStatic = context.staticPreview.status(project.id);
-    if (runningStatic) return { kind: "static" as const, url: runningStatic.url };
-    const availability = await context.projects.projectPreviewAvailability(project.id);
-    if (!availability.available) throw new Error(availability.reason);
-    if ("kind" in availability) {
-      const selected = entry === undefined ? availability.entry : z.string().min(1).max(2_000).parse(entry);
-      if (!availability.entries.includes(selected)) throw new Error("所选 HTML 入口已失效，请重新选择。");
-      const result = await context.staticPreview.start(project.id, project.path, selected);
-      context.terminals.clearPreviewFailure(project.id);
-      return { kind: "static" as const, ...result };
-    }
-    return { kind: "script" as const, ...(await context.terminals.startPreview(project.id, project.path, availability.command)), command: availability.command };
+    return await context.preview.start(idSchema.parse(projectId), z.string().min(1).max(2_000).optional().parse(entry));
   });
   handle(desktopIpc.projectPreviewAvailability, async (event, projectId: unknown) => {
     assertBrowserSender(event);
@@ -781,19 +761,11 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
   handle(desktopIpc.projectPreviewStatus, (event, projectId: unknown) => {
     assertBrowserSender(event);
-    const project = context.projects.requireProject(idSchema.parse(projectId));
-    const runningStatic = context.staticPreview.status(project.id);
-    if (runningStatic) return { kind: "static" as const, url: runningStatic.url };
-    const status = context.terminals.previewStatus(project.id);
-    return status.kind === "running" ? { kind: "script" as const, terminalId: status.terminalId, url: status.url } : status;
+    return context.preview.status(idSchema.parse(projectId));
   });
   handle(desktopIpc.stopProjectPreview, async (event, projectId: unknown) => {
     assertBrowserSender(event);
-    const project = context.projects.requireProject(idSchema.parse(projectId));
-    const terminalId = context.terminals.list(project.id).find((entry) => entry.slotId === "preview")?.terminalId;
-    if (terminalId) context.terminals.dispose(terminalId);
-    context.terminals.clearPreviewFailure(project.id);
-    await context.staticPreview.stop(project.id);
+    await context.preview.stop(idSchema.parse(projectId));
   });
   handle(desktopIpc.browserSnapshot, (event, projectId: unknown) => {
     assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
@@ -848,17 +820,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
   handle(desktopIpc.browserAction, async (event, projectId: unknown, action: unknown) => {
     assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
-    const parsed = z.discriminatedUnion("type", [
-      z.object({ type: z.literal("new"), url: externalUrlSchema.optional(), environmentId: z.string().min(1).max(64).optional() }).strict(),
-      z.object({ type: z.literal("navigate"), tabId: idSchema, url: externalUrlSchema }).strict(),
-      z.object({ type: z.enum(["close", "select", "back", "forward", "reload", "stop", "float"]), tabId: idSchema }).strict()
-    ]).parse(action);
-    if (parsed.type === "new") {
-      const snapshot = context.browser.browserSnapshot(project.id);
-      const active = snapshot.tabs.find((tab) => tab.id === snapshot.activeId);
-      await context.browser.prepareBrowserEnvironment(parsed.environmentId ?? active?.environmentId ?? "default");
-    }
-    return context.browser.browserAction(project.id, parsed);
+    return await context.browser.applyBrowserAction(project.id, action);
   });
   handle(desktopIpc.browserInspect, async (event, projectId: unknown, tabId: unknown, enabled: unknown) => {
     assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));

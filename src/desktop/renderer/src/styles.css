@@ -72,8 +72,6 @@ button:disabled { opacity: 0.42; }
 .icon-button:hover { color: var(--text); background: var(--surface-hover); }
 .icon-button:disabled { color: var(--text-tertiary); cursor: default; opacity: 0.5; }
 .icon-button:disabled:hover { background: transparent; }
-
-.navigation-controls { display: flex; align-items: center; gap: 5px; -webkit-app-region: no-drag; app-region: no-drag; }
 .navigation-button { display: grid; width: 25px; height: 25px; place-items: center; padding: 0; border-radius: 6px; color: var(--text-secondary); transition: background 150ms ease, color 150ms ease; -webkit-app-region: no-drag; app-region: no-drag; }
 .navigation-button:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
 .navigation-button:disabled { color: var(--text-tertiary); opacity: 0.42; }

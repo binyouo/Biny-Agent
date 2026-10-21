@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Desktop 的真实配置、Host/socket、Agent 和 JSONL 链路；模型响应由本地服务设置屏障。 */
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -77,7 +78,7 @@ try {
   await assert.rejects(startRuntimeHost(root, async () => {
     factoryCalled = true;
     throw new Error("must not initialize");
-  }), /already running/u);
+  }, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } }), /already running/u);
   assert.equal(factoryCalled, false, "竞争 owner 失败不能先创建 Runtime");
 
   const [a, b] = await Promise.all([

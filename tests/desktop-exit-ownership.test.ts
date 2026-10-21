@@ -1,7 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Desktop 全进程退出只断开客户端；常驻 Host 上的任务继续运行。 */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -70,7 +71,7 @@ try {
     thinking: { ...defaultConfig.thinking, enabled: false },
     crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context,
-      emotion: { ...defaultConfig.context.emotion, enabled: false },
+
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
     }
   }));

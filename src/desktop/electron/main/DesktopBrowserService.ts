@@ -16,6 +16,7 @@ import { promises as fs } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import net from "node:net";
+import { z } from "zod";
 import { setTimeout as delay } from "node:timers/promises";
 import { assertFetchableUrl, type HostnameResolver } from "../../../tools/web/addressPolicy.js";
 import { promisify } from "node:util";
@@ -24,6 +25,8 @@ import { desktopIpc, type DesktopCookieJarStatus, type DesktopBrowserSnapshot, t
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
 import { BrowserRelay } from "../../../browser/BrowserRelay.js";
 import { browserRelayFile } from "../../../browser/relayClient.js";
+import { relaySchemas } from "../../../browser/relayProtocol.js";
+import { extractReadableHtml } from "../../../tools/web/html.js";
 import { prepareBrowserExtension } from "../../../browser/extensionAssets.js";
 import type { RelayStatus } from "../../../browser/relayProtocol.js";
 import {
@@ -47,10 +50,19 @@ const homeUrl = "https://www.google.com";
 /** 一次登录会连续触发大量 cookie 变化，攒一下再落盘。 */
 const syncDebounceMs = 800;
 
+const browserActionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("new"), url: z.string().url().refine(isHttpUrl).optional(), environmentId: z.string().min(1).max(64).optional() }).strict(),
+  z.object({ type: z.literal("navigate"), tabId: z.string().min(1).max(240), url: z.string().url().refine(isHttpUrl) }).strict(),
+  z.object({ type: z.enum(["close", "select", "back", "forward", "reload", "stop", "float"]), tabId: z.string().min(1).max(240) }).strict()
+]);
+
 interface EmbeddedTab { view: WebContentsView; state: DesktopBrowserTab; navigation: number; inspection: number; popup?: BrowserWindow }
 interface EmbeddedProject { revision: number; tabs: Map<string, EmbeddedTab>; activeId?: string }
 
 export class DesktopBrowserService {
+  private desktopCommand?: (args: Record<string, unknown>) => Promise<unknown>;
+
+  attachDesktopCommands(handler: (args: Record<string, unknown>) => Promise<unknown>): void { this.desktopCommand = handler; }
   private previewActivity?: (source: { id: string; label: string; projectId?: string; sessionId?: string; capture: () => Promise<import("../../../computer/protocol.js").ComputerImage> }) => void;
   attachPreviewActivity(listener: typeof this.previewActivity): void { this.previewActivity = listener; }
   private computerUse?: (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
@@ -113,6 +125,7 @@ export class DesktopBrowserService {
   private automationCredentials: BrowserAutomationEndpoint | undefined;
   /** 一个可见 BrowserWindow 对应一个上下文；来自不同 Runtime Host 的请求也必须在这里串行。 */
   private automationTail: Promise<void> = Promise.resolve();
+  private readonly dialogWatchers = new Map<number, { close(): void; dialog?: Record<string, unknown> }>();
   private syncTimer: ReturnType<typeof setTimeout> | undefined;
   private syncTail = Promise.resolve();
   private cookieListenerAttached = false;
@@ -262,6 +275,16 @@ export class DesktopBrowserService {
   browserSnapshot(projectId: string): DesktopBrowserSnapshot {
     const group = this.embeddedProjects.get(projectId);
     return { projectId, revision: group?.revision ?? 0, activeId: group?.activeId, tabs: [...(group?.tabs.values() ?? [])].map((tab) => ({ ...tab.state })) };
+  }
+
+  async applyBrowserAction(projectId: string, input: unknown): Promise<DesktopBrowserSnapshot> {
+    const action = browserActionSchema.parse(input);
+    if (action.type === "new") {
+      const snapshot = this.browserSnapshot(projectId);
+      const active = snapshot.tabs.find(tab => tab.id === snapshot.activeId);
+      await this.prepareBrowserEnvironment(action.environmentId ?? active?.environmentId ?? "default");
+    }
+    return this.browserAction(projectId, action);
   }
 
   browserAction(projectId: string, action: DesktopBrowserAction, partition?: string): DesktopBrowserSnapshot {
@@ -685,6 +708,7 @@ export class DesktopBrowserService {
 
   /** 退出前先把内存里的最新登录态落盘，再销毁浏览器窗口。 */
   async dispose(): Promise<void> {
+    for (const watcher of this.dialogWatchers.values()) watcher.close();
     await this.relayStarting?.catch(() => undefined);
     await this.relay?.close();
     this.relay = undefined;
@@ -716,7 +740,7 @@ export class DesktopBrowserService {
     let buffer = "";
     socket.on("data", (chunk: string) => {
       buffer += chunk;
-      if (Buffer.byteLength(buffer, "utf8") > 256 * 1024) {
+      if (Buffer.byteLength(buffer, "utf8") > 12 * 1024 * 1024) {
         socket.destroy(new Error("Browser automation request is too large."));
         return;
       }
@@ -743,7 +767,9 @@ export class DesktopBrowserService {
       socket.once("close", abort);
       let result: unknown;
       try {
-        result = method.startsWith("computer_") && this.computerUse ? await this.computerUse(method, args, controller.signal) : await this.enqueueAutomation(() => {
+        result = method === "desktop_command" && this.desktopCommand ? await this.desktopCommand(args)
+          : method === "dialog" ? await this.controlDialog(args, controller.signal)
+          : method.startsWith("computer_") && this.computerUse ? await this.computerUse(method, args, controller.signal) : await this.enqueueAutomation(() => {
           controller.signal.throwIfAborted();
           return method === "web_read" ? this.readWebPage(args, controller.signal) : this.executeAutomation(method, args, controller.signal);
         });
@@ -878,11 +904,22 @@ export class DesktopBrowserService {
 
   private async executeAutomation(method: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (method === "list_environments") return this.browserEnvironments.list().map(({ id, name, color }) => ({ id, name, color }));
+    if (method === "status") {
+      const contents = this.automationContents;
+      return { running: true, page: contents && !contents.isDestroyed() ? { url: contents.getURL(), title: contents.getTitle() } : null };
+    }
+    if (method === "clipboard") {
+      if (args.action === "read") return { text: clipboard.readText() };
+      if (args.action !== "write") throw new Error("Unknown clipboard action.");
+      clipboard.writeText(z.string().parse(args.text));
+      return { written: true };
+    }
     if (method === "navigate") {
       const url = readString(args.url, "url");
       if (!isHttpUrl(url)) throw new Error("Browser navigation only supports HTTP and HTTPS URLs.");
       const requestedEnvironment = typeof args.environment === "string" ? args.environment : undefined;
-      const projectId = typeof args.projectId === "string" ? args.projectId : undefined;
+      const selectedProject = [...this.embeddedProjects].find(([, group]) => [...group.tabs.values()].some(tab => tab.view.webContents === this.automationContents));
+      const projectId = typeof args.projectId === "string" ? args.projectId : selectedProject?.[0];
       const active = projectId ? this.embeddedProjects.get(projectId)?.tabs.get(this.embeddedProjects.get(projectId)?.activeId ?? "") : undefined;
       const environment = requestedEnvironment
         ? this.browserEnvironments.get(requestedEnvironment)
@@ -907,6 +944,81 @@ export class DesktopBrowserService {
       return await this.pageState();
     }
     await this.ensureContents();
+    if (method === "evaluate") return await this.evaluate(readString(args.code, "code"), signal);
+    if (method === "cdp") return await this.sendDebuggerCommand(readString(args.method, "method"), z.record(z.unknown()).parse(args.params), signal);
+    if (method === "viewport") {
+      if (args.action === "reset") return await this.sendDebuggerCommand("Emulation.clearDeviceMetricsOverride", {}, signal);
+      const size = z.object({ width: z.number().int().positive(), height: z.number().int().positive(), mobile: z.boolean() }).parse(args);
+      return await this.sendDebuggerCommand("Emulation.setDeviceMetricsOverride", { ...size, deviceScaleFactor: 1 }, signal);
+    }
+    if (method === "upload") {
+      const files = relaySchemas.upload.shape.files.parse(args.files);
+      const selector = readString(args.selector, "selector");
+      return await this.evaluate(`(() => {
+        const input = document.querySelector(${JSON.stringify(selector)});
+        if (!(input instanceof HTMLInputElement) || input.type !== 'file') throw new Error('Selector must match a file input.');
+        const transfer = new DataTransfer();
+        for (const file of ${JSON.stringify(files)}) {
+          const bytes = Uint8Array.from(atob(file.data), character => character.charCodeAt(0));
+          transfer.items.add(new File([bytes], file.name, { type: file.mimeType }));
+        }
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return { count: input.files.length, names: Array.from(input.files, file => file.name) };
+      })()`, signal);
+    }
+    if (method === "download") return await this.downloadFile(relaySchemas.download.shape.url.parse(args.url), signal);
+    if (method === "export") {
+      const format = z.enum(["pdf", "html", "mhtml", "md"]).parse(args.format);
+      const contents = await this.ensureContents();
+      let data: Buffer;
+      if (format === "pdf") data = await contents.printToPDF({});
+      else if (format === "mhtml") data = Buffer.from((await this.sendDebuggerCommand("Page.captureSnapshot", { format: "mhtml" }, signal) as { data: string }).data);
+      else {
+        const html = String(await this.evaluate("document.documentElement.outerHTML", signal));
+        data = Buffer.from(format === "md" ? (await extractReadableHtml(html, contents.getURL())).text : html);
+      }
+      const mimeTypes = { pdf: "application/pdf", html: "text/html", mhtml: "multipart/related", md: "text/markdown" };
+      return { data: data.toString("base64"), mimeType: mimeTypes[format] };
+    }
+    if (method === "back" || method === "forward" || method === "reload") {
+      const contents = await this.ensureContents();
+      const history = contents.navigationHistory;
+      if (method === "back" && !history.canGoBack() || method === "forward" && !history.canGoForward()) return await this.pageState();
+      signal?.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = (): void => {
+          contents.off("did-stop-loading", stopped);
+          contents.off("did-fail-load", failed);
+          signal?.removeEventListener("abort", aborted);
+        };
+        const stopped = (): void => { cleanup(); resolve(); };
+        const failed = (_event: unknown, code: number, description: string, _url: string, mainFrame: boolean): void => {
+          if (!mainFrame || code === -3) return;
+          cleanup(); reject(new Error(description));
+        };
+        const aborted = (): void => { cleanup(); reject(signal?.reason); };
+        contents.on("did-stop-loading", stopped);
+        contents.on("did-fail-load", failed);
+        signal?.addEventListener("abort", aborted, { once: true });
+        try {
+          if (method === "reload") contents.reload();
+          else if (method === "back") history.goBack();
+          else history.goForward();
+        } catch (error) { cleanup(); reject(error); }
+      });
+      return await this.pageState();
+    }
+    if (method === "history") return (await this.ensureContents()).navigationHistory.getAllEntries();
+    if (method === "screenshot") {
+      const image = await (await this.ensureContents()).capturePage();
+      return { mimeType: "image/png", data: image.toPNG().toString("base64") };
+    }
+    if (method === "scroll") {
+      const delta = z.object({ x: z.number().finite(), y: z.number().finite() }).parse(args);
+      return await this.evaluate(`(() => { window.scrollBy(${delta.x}, ${delta.y}); return { x: scrollX, y: scrollY }; })()`, signal);
+    }
     if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000));
     if (method === "click") return await this.click(readString(args.selector, "selector"));
     if (method === "fill") return await this.fill(readString(args.selector, "selector"), readString(args.value, "value"));
@@ -923,6 +1035,58 @@ export class DesktopBrowserService {
     const environmentWindow = [...this.environmentWindows.values()].find((window) => !window.isDestroyed());
     if (environmentWindow) return environmentWindow.webContents;
     throw new Error("Biny 内置浏览器未打开页面。读取日常浏览器请使用 ChromeRelayListTabs；不会自动打开首页。");
+  }
+
+  private async downloadFile(url: string, signal?: AbortSignal): Promise<unknown> {
+    const contents = await this.ensureContents();
+    const response = await contents.session.fetch(url, { credentials: "include", signal });
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      if (!response.ok) throw new Error(`Download returned HTTP ${String(response.status)}.`);
+      if (reader) while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > 8 * 1024 * 1024) throw new Error("浏览器文件超过 8 MiB 限制。");
+        chunks.push(value);
+      }
+      return { data: Buffer.concat(chunks, total).toString("base64"), mimeType: response.headers.get("content-type") ?? "application/octet-stream" };
+    } finally {
+      if (reader) await reader.cancel().finally(() => reader.releaseLock());
+    }
+  }
+
+  private async controlDialog(args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const action = z.enum(["watch", "get", "accept", "dismiss", "stop"]).parse(args.action);
+    const contents = await this.ensureContents();
+    let watcher = this.dialogWatchers.get(contents.id);
+    if (action === "watch" && !watcher) {
+      const onMessage = (_event: unknown, method: string, params: unknown): void => {
+        const current = this.dialogWatchers.get(contents.id);
+        if (!current) return;
+        if (method === "Page.javascriptDialogOpening") current.dialog = asRecord(params);
+        else if (method === "Page.javascriptDialogClosed") current.dialog = undefined;
+      };
+      const close = (): void => {
+        contents.debugger.off("message", onMessage);
+        contents.off("destroyed", close);
+        this.dialogWatchers.delete(contents.id);
+      };
+      watcher = { close };
+      this.dialogWatchers.set(contents.id, watcher);
+      contents.debugger.on("message", onMessage);
+      contents.once("destroyed", close);
+      try { await this.sendDebuggerCommand("Page.enable", {}, signal); }
+      catch (error) { close(); throw error; }
+    }
+    if (action === "stop") { watcher?.close(); watcher = undefined; }
+    if (action === "accept" || action === "dismiss") {
+      await this.sendDebuggerCommand("Page.handleJavaScriptDialog", { accept: action === "accept", promptText: z.string().optional().parse(args.text) }, signal);
+      if (watcher) watcher.dialog = undefined;
+    }
+    return { watching: watcher !== undefined, dialog: watcher?.dialog ?? null };
   }
 
   private async openInEnvironmentWindow(url: string, environmentId: string): Promise<void> {

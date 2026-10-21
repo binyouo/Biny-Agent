@@ -273,8 +273,11 @@ export function updateRuntimeInfo(
   return {
     ...workspace,
     selectedModel: info,
+    requiresModelConfiguration: false,
+    runtimeError: undefined,
     models: moveModelToFront(workspace.models, info.modelAlias),
     pickerModels: moveModelToFront(workspace.pickerModels, info.modelAlias)
+      .map(model => model.alias === info.modelAlias ? { ...model, defaultThinking: info.thinking } : model)
   };
 }
 

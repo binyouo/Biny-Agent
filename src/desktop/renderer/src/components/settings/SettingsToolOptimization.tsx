@@ -1,8 +1,7 @@
 import { OptimizationCallDetail } from "./OptimizationCallDetail.js";
 import type { ToolOptimizationEntry } from "../../../../../session/toolOptimization.js";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { DesktopToolOptimizationStats } from "../../../../protocol.js";
-import { summarizeToolOptimizations } from "../../../../../session/toolOptimization.js";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { toolOptimizationState } from "./toolOptimizationState.js";
 
 type MetricIcon = "code" | "zap" | "sparkles" | "layers" | "down" | "input" | "output" | "clock" | "terminal";
 function SavingsIcon({ name, size = 16 }: { name: MetricIcon; size?: number }): React.JSX.Element {
@@ -32,47 +31,11 @@ const tier = (value: number): string => value < 0 ? "rose" : value >= 70 ? "emer
 
 export function SettingsToolOptimization(): React.JSX.Element {
   const [detail, setDetail] = useState<ToolOptimizationEntry["origin"]>();
-  const [revision, setRevision] = useState(0);
-  const [data, setData] = useState<DesktopToolOptimizationStats>();
-  const [error, setError] = useState<string>();
-  useEffect(() => {
-    let current = true;
-    setError(undefined);
-    void window.biny.toolOptimizationStats("all").then(value => {
-      if (current) setData(value);
-    }, failure => { if (current) setError(String(failure)); });
-    return () => { current = false; };
-  }, [revision]);
-  const stats = useMemo(() => {
-    const entries = [...new Map((data?.entries ?? []).map(entry => [entry.optimization.id, entry])).values()];
-    const ptc = entries.filter(entry => entry.optimization.kind === "ptc");
-    const rtk = entries.filter(entry => entry.optimization.kind === "rtk");
-    const days = new Map<string, typeof rtk>();
-    const commands = new Map<string, typeof rtk>();
-    for (let offset = 29; offset >= 0; offset--) {
-      const date = new Date();
-      date.setDate(date.getDate() - offset);
-      days.set(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`, []);
-    }
-    for (const entry of rtk) {
-      const date = new Date(entry.time);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-      if (days.has(key)) days.get(key)!.push(entry);
-      const command = entry.optimization.command ?? "未知命令";
-      commands.set(command, [...(commands.get(command) ?? []), entry]);
-    }
-    return {
-      ptc: summarizeToolOptimizations(ptc), rtk: summarizeToolOptimizations(rtk),
-      durations: rtk.flatMap(entry => entry.optimization.durationMs === undefined ? [] : [entry.optimization.durationMs]),
-      toolCalls: ptc.reduce((sum, entry) => sum + entry.optimization.toolCalls, 0),
-      average: rtk.length ? rtk.reduce((sum, entry) => sum + rate(entry.optimization.beforeTokens, entry.optimization.savedTokens), 0) / rtk.length : 0,
-      daily: [...days].sort(([a], [b]) => a.localeCompare(b)).map(([date, items]) => ({ date, ...summarizeToolOptimizations(items) })),
-      commands: [...commands].map(([command, items]) => ({ command, ...summarizeToolOptimizations(items) })).sort((a, b) => b.savedTokens - a.savedTokens).slice(0, 10),
-      recent: rtk.sort((a, b) => Date.parse(b.time) - Date.parse(a.time)).slice(0, 20)
-    };
-  }, [data]);
-  if (!data && !error) return <div className="savings-loading" role="status"><span className="savings-spinner" />加载中…</div>;
-  if (!data) return <div className="savings-loading" role="alert"><p>统计读取失败：{error}</p><button type="button" onClick={() => setRevision(value => value + 1)}>重试</button></div>;
+  const state = toolOptimizationState(window.biny);
+  const { data: stats, error } = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
+  useEffect(() => { void state.refresh(); }, [state]);
+  if (!stats && !error) return <div className="savings-loading" role="status"><span className="savings-spinner" />加载中…</div>;
+  if (!stats) return <div className="savings-loading" role="alert"><p>统计读取失败：{error}</p><button type="button" onClick={() => { void state.refresh(true); }}>重试</button></div>;
   const compression = rate(stats.rtk.beforeTokens, stats.rtk.savedTokens);
   const maxCommand = Math.max(1, ...stats.commands.map(command => Math.abs(command.savedTokens)));
   const colors = ["emerald", "cyan", "blue", "violet", "fuchsia", "amber", "rose", "teal"];
@@ -103,7 +66,7 @@ export function SettingsToolOptimization(): React.JSX.Element {
             <Metric icon="down" color="cyan" label="平均节省" value={percent(stats.average)} />
             <Metric icon="input" color="violet" label="输入 Token" value={number(stats.rtk.beforeTokens)} />
             <Metric icon="output" color="fuchsia" label="输出 Token" value={number(stats.rtk.afterTokens)} />
-            <Metric icon="clock" color="amber" label="平均耗时" value={stats.durations.length ? `${Math.round(stats.durations.reduce((sum, value) => sum + value, 0) / stats.durations.length).toLocaleString()} ms` : "—"} title={`已采集 ${stats.durations.length} / ${stats.rtk.runs} 次命令耗时；旧记录不补造`} />
+            <Metric icon="clock" color="amber" label="平均耗时" value={stats.durationCount ? `${Math.round(stats.totalDurationMs / stats.durationCount).toLocaleString()} ms` : "—"} title={`已采集 ${stats.durationCount} / ${stats.rtk.runs} 次命令耗时；旧记录不补造`} />
           </div>
         </div>
       </SavingsCard>
@@ -124,9 +87,9 @@ export function SettingsToolOptimization(): React.JSX.Element {
           <td>{new Date(time).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>{origin ? <button type="button" className="savings-command-link" onClick={() => setDetail(origin)} title="查看原调用参数和结果"><code title={item.originalCommand ?? item.command}>{item.originalCommand ?? item.command ?? "未知命令"}</code></button> : <code title={item.originalCommand ?? item.command}>{item.originalCommand ?? item.command ?? "未知命令"}</code>}</td><td>{number(item.savedTokens)}</td><td className={`savings-${tier(rate(item.beforeTokens, item.savedTokens))}`}>{percent(rate(item.beforeTokens, item.savedTokens))}</td>
         </tr>)}</tbody></table></div>
       </SavingsCard>
-    </> : <section className="savings-card savings-empty"><SavingsIcon name="zap" size={48} /><h3>暂无节省数据</h3><p>{data.rtk.path ? "执行支持的命令后显示统计。" : data.rtk.reason}</p></section>}
-    {data.incompleteSessions ? <p className="savings-notice" role="status">有 {data.incompleteSessions} 个会话或项目无法读取，当前显示部分统计。</p> : null}
-    <p className="savings-notice">全部项目累计估算；负数表示上下文增加。不含脚本生成、缓存和原文回查，不代表账单节省。<button type="button" onClick={() => setRevision(value => value + 1)}>刷新</button></p>
+    </> : <section className="savings-card savings-empty"><SavingsIcon name="zap" size={48} /><h3>暂无节省数据</h3><p>执行支持的命令后显示统计。</p></section>}
+    {stats.incompleteSessions ? <p className="savings-notice" role="status">有 {stats.incompleteSessions} 个会话或项目无法读取，当前显示部分统计。</p> : null}
+    <p className="savings-notice">全部项目累计估算；负数表示上下文增加。不含脚本生成、缓存和原文回查，不代表账单节省。<button type="button" onClick={() => { void state.refresh(true); }}>刷新</button></p>
     {error ? <p className="savings-notice" role="alert">刷新失败：{error}</p> : null}
   </div>;
 }
