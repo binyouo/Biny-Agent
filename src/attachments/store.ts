@@ -50,10 +50,9 @@ export async function saveAttachment(
 ): Promise<AttachmentReference> {
   const directory = await ensureAttachmentRoot(persistenceRoot);
   const safeName = sanitizeAttachmentName(name);
-  const internalName = safeName.replace(/\.{2,}/g, ".");
   const maxAttempts = 10;
   for (let attempt = 1; ; attempt += 1) {
-    const fileName = `${String(Date.now())}-${randomBytes(3).toString("hex")}-${internalName}`;
+    const fileName = attachmentStorageName(safeName);
     try {
       await fs.writeFile(path.join(directory, fileName), bytes, { mode: 0o600, flag: "wx" });
     } catch (error) {
@@ -68,6 +67,29 @@ export async function saveAttachment(
       size: bytes.byteLength
     };
   }
+}
+
+/** Keep both the file and its optional .context sidecar within NAME_MAX bytes. */
+function attachmentStorageName(safeName: string): string {
+  const prefix = `${String(Date.now())}-${randomBytes(3).toString("hex")}-`;
+  const budget = 255 - Buffer.byteLength(".context") - Buffer.byteLength(prefix);
+  const name = safeName.replace(/\.{2,}/g, ".");
+  if (Buffer.byteLength(name) <= budget) return prefix + name;
+  // Retain the extension when possible; an unusually long extension must also fit.
+  const extension = truncateUtf8(path.extname(name), budget - 1);
+  const stem = name.slice(0, name.length - path.extname(name).length);
+  return prefix + truncateUtf8(stem, budget - Buffer.byteLength(extension)).replace(/\.+$/u, "") + extension;
+}
+
+function truncateUtf8(value: string, budget: number): string {
+  let bytes = 0;
+  let result = "";
+  for (const character of value) {
+    bytes += Buffer.byteLength(character);
+    if (bytes > budget) break;
+    result += character;
+  }
+  return result;
 }
 
 export class AttachmentImportCleanupError extends Error {
@@ -119,7 +141,7 @@ export async function createAttachmentImportBatch(persistenceRoot: string): Prom
       if (!active || !await isOwnedDirectory()) throw new Error("attachment_import_batch_unavailable");
       const safeName = sanitizeAttachmentName(name);
       for (let attempt = 1; ; attempt += 1) {
-        const leaf = `${String(Date.now())}-${randomBytes(3).toString("hex")}-${safeName.replace(/\.{2,}/g, ".")}`;
+        const leaf = attachmentStorageName(safeName);
         const file = path.join(directory, leaf);
         let handle: FileHandle;
         try { handle = await fs.open(file, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); }

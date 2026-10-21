@@ -42,7 +42,7 @@ async function hasUtf8NameLimit(t: TestContext, directory: string): Promise<bool
   return false;
 }
 
-test("Desktop and CLI attachments remain readable when only the optional context name exceeds NAME_MAX", async (t) => {
+test("historical Desktop and CLI attachments remain readable when only the optional context name exceeds NAME_MAX", async (t) => {
   const f = await fixture(t);
   if (!await hasUtf8NameLimit(t, f.workspace)) return;
   const storage = new DesktopUserDataStore(path.join(f.root, "desktop"));
@@ -59,6 +59,10 @@ test("Desktop and CLI attachments remain readable when only the optional context
     const [cli] = await loadRunAttachments(f.workspace, f.workspace, [], [name]);
     assert.ok(cli);
     for (const reference of [desktop, cli]) {
+      // Recreate a historical writer's name, independent of the current writer budget.
+      const legacyPath = reference.path!.replace(/(^@attachments\/\d+-[a-f0-9]{6}-).+$/u, `$1${name}`);
+      await fs.rename(attachmentFilePath(attachmentRoot(f.workspace), reference.path!)!, attachmentFilePath(attachmentRoot(f.workspace), legacyPath)!);
+      reference.path = legacyPath;
       const stored = attachmentFilePath(attachmentRoot(f.workspace), reference.path!);
       assert.ok(stored);
       assert.ok(Buffer.byteLength(path.basename(stored)) <= 255);
