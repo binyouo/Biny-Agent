@@ -12,18 +12,35 @@ import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { createEditFileTool } from "../src/tools/file/editFile.js";
 import { createApplyPatchTool } from "../src/tools/file/applyPatch.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
+import { createWriteFileTool } from "../src/tools/file/writeFile.js";
+import { createProcessStatusTool } from "../src/tools/process/managedProcesses.js";
+import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
+import { archiveToolResult } from "../src/session/toolResultArchive.js";
 import { normalizeToolParameters, validateJsonSchema } from "../src/tools/schema.js";
 
 const context = { workspaceRoot: process.cwd(), ignore: [] };
 const cases = [
+  { tool: createReadFileTool(context), valid: [{ path: "index.ts" }, { path: "index.ts", startLine: 2, lineCount: 8 }], invalid: [
+    {}, { path: "index.ts", lineCount: 2001 }, { path: "index.ts", startLine: 0 }, { path: "index.ts", unknown: true }
+  ] },
+  { tool: createWriteFileTool(context), valid: [{ path: "index.ts", content: "" }], invalid: [
+    { path: "index.ts" }, { path: "index.ts", content: "text", append: true }
+  ] },
+  { tool: createProcessStatusTool(new ManagedProcessService({ workspaceRoot: context.workspaceRoot })), valid: [
+    {}, { includeExited: false }, { processId: "00000000-0000-4000-8000-000000000083", offset: 1 }
+  ], invalid: [
+    { offset: 1 }, { maxBytes: 2 }, { processId: "00000000-0000-4000-8000-000000000083", includeExited: true }
+  ] },
   { tool: createEditFileTool(context), valid: [
-    { path: "index.ts", old_string: "before" },
+    { path: "index.ts", old_string: "before", new_string: "" },
     { operation: "update", path: "index.ts", old_string: "before", new_string: "after", replace_all: true },
     { operation: "delete", path: "index.ts" },
     { operation: "move", path: "index.ts", to: "renamed.ts" }
   ], invalid: [
     { path: "index.ts" }, { operation: "update", path: "index.ts" },
-    { operation: "update", path: "index.ts", old_string: "" },
+    { path: "index.ts", old_string: "before" },
+    { operation: "update", path: "index.ts", old_string: "", new_string: "after" },
     { operation: "move", path: "index.ts" }, { operation: "move", path: "index.ts", to: "" },
     { operation: "delete", path: "index.ts", old_string: "extra" },
     { operation: "other", path: "index.ts" }
@@ -65,6 +82,37 @@ for (const [index, { tool, valid, invalid }] of cases.entries()) {
   });
 }
 
+test("file tools publish output schemas that accept real committed changes and both Read page formats", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-file-output-contract-"));
+  const local = { workspaceRoot: root, ignore: [] };
+  try {
+    for (const [tool, args] of [
+      [createWriteFileTool(local), { path: "sample.txt", content: "first\nsecond" }],
+      [createReadFileTool(local), { path: "sample.txt", lineCount: 1 }],
+      [createEditFileTool(local), { operation: "update", path: "sample.txt", old_string: "first", new_string: "changed", replace_all: false }],
+      [createApplyPatchTool(local), { callId: "output-contract", operation: { type: "update_file", path: "sample.txt", diff: "@@\n-changed\n+patched\n second\n" } }]
+    ] as const) {
+      const execution = await tool.resolveExecution(tool.schema.parse(args) as never);
+      assert.ok(!("isError" in execution));
+      const result = await execution.execute({ toolCallId: "output-contract" });
+      assert.ok(tool.outputSchema);
+      assert.deepEqual(validateJsonSchema(tool.outputSchema, result), { ok: true, errors: [] });
+    }
+    assert.equal(await readFile(path.join(root, "sample.txt"), "utf8"), "patched\nsecond");
+    const archive = await archiveToolResult({ workspaceRoot: root, sessionId: "output-contract", toolCallId: "archive", sequence: 1, tool: "Bash", result: "archived text" });
+    const read = createReadFileTool(local);
+    const execution = read.resolveExecution({ path: archive.archivePath });
+    assert.ok(!("isError" in execution));
+    const page = await execution.execute({ toolCallId: "read-archive" });
+    assert.equal(page.content, "archived text");
+    assert.equal("nextOffset" in page && page.nextOffset, 13);
+    assert.ok(read.outputSchema);
+    assert.deepEqual(validateJsonSchema(read.outputSchema, page), { ok: true, errors: [] });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("malformed file operations fail before permission or execution and leave files intact", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-file-tool-input-"));
   await ensureAgentDirs(root);
@@ -83,6 +131,7 @@ test("malformed file operations fail before permission or execution and leave fi
   try {
     for (const [index, [name, args]] of ([
       ["Edit", { operation: "update", path: "index.ts" }],
+      ["Edit", { path: "index.ts", old_string: "original" }],
       ["Edit", { operation: "move", path: "index.ts" }],
       ["apply_patch", { callId: "missing-diff", operation: { type: "update_file", path: "index.ts" } }]
     ] as const).entries()) {
@@ -95,7 +144,7 @@ test("malformed file operations fail before permission or execution and leave fi
     assert.equal(await readFile(path.join(root, "index.ts"), "utf8"), "original");
     const events = await readSessionEvents(recorder.filePath);
     const results = events.filter(event => event.type === "tool_result");
-    assert.equal(results.length, 3);
+    assert.equal(results.length, 4);
     assert.equal(results.every(event => event.executionStatus === "failed"), true);
     assert.equal(events.some(event => event.type === "tool_execution" && event.state === "admitted"), false);
   } finally {

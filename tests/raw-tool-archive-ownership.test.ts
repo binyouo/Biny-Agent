@@ -135,7 +135,7 @@ for (const fixture of fixtures) {
   });
 }
 
-for (const tool of ["Grep", "Write", "Edit", "Read", "Bash", "BashOutput"]) {
+for (const tool of ["Grep", "Write", "Edit", "Read", "Bash", "ProcessStatus"]) {
   test(`${tool} reuses an actual archived envelope without another write`, async () => {
     const envelope = Object.freeze({ archived: true, archivePath: quoted, preview: longText, resultBytes: 11_000 });
     const actual = await projectSingleToolResultForModel(tool, {}, envelope, {

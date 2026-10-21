@@ -9,7 +9,7 @@ import { analyzePermissionRequest } from "../src/permission/policy.js";
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-query-permission-policy-"));
 try {
   const targetPath = path.join(root, "blocked-fixture.txt");
-  for (const toolName of ["read_skill_resource", "BashOutput"]) {
+  for (const toolName of ["read_skill_resource", "ProcessStatus"]) {
     const request = analyzePermissionRequest({ toolName, args: { path: targetPath }, sessionId: "fixture", projectRoot: root, toolRisk: "read" });
     assert.equal(request.targetPath, targetPath, `${toolName} must carry its resolved file target to denyPaths`);
     assert.equal(request.actionType, "read");
@@ -19,6 +19,6 @@ try {
       assert.equal(new PermissionManager({ mode, allowTools: [], denyPaths: [] }).evaluate(request).decision, "allow");
     }
   }
-  assert.equal(analyzePermissionRequest({ toolName: "BashOutput", args: {}, sessionId: "fixture", projectRoot: root }).targetPath, undefined);
+  assert.equal(analyzePermissionRequest({ toolName: "ProcessStatus", args: {}, sessionId: "fixture", projectRoot: root }).targetPath, undefined);
 } finally { await rm(root, { recursive: true, force: true }); }
 console.log("query read permission policy tests passed");

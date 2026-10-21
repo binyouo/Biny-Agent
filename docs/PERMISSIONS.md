@@ -45,7 +45,11 @@ biny run "检查项目结构" --permission-mode read-only --json
 
 ## 参数校验与调用结果
 
-`Edit` 的字符串替换、Hashline 及结构化 `apply_patch` 各操作的参数定义，同时用于生成发给模型的 JSON Schema 和本地解析。更新需要 `old_string` 或非空 `edits`，移动需要 `to`，补丁创建和更新需要 `diff`；缺少参数会在权限确认和执行前被拒绝。字符串替换继续允许省略 `operation`（默认更新）、`new_string`（默认空字符串）和 `replace_all`（默认 false）。
+`Read`、`Write`、`Edit`、`ProcessStatus` 及结构化 `apply_patch` 的参数由 Zod 定义，同时生成发给模型的 JSON Schema。`Edit` 每次只处理一个源文件：字符串更新必须提供 `old_string` 和 `new_string`，删除匹配文本时显式传 `new_string: ""`；Hashline 更新提供非空 `edits`；删除整文件用 `operation: "delete"`；移动用 `operation: "move"` 并提供 `to`，目标不得已存在。字符串替换允许省略 `operation`（默认更新）和 `replace_all`（默认 false）。缺少参数或分支带有无关参数，在权限确认和执行前拒绝。
+
+`Write` 使用完整内容创建或覆盖文件，`Edit` 更新要求先读取当前内容。结构化 `apply_patch` 每次接收一个文件操作：创建和更新必须提供 `diff`，删除只提供路径。创建 diff 的内容行以 `+` 开头；更新使用 `@@` 段落标记及空格、`-`、`+` 行前缀，不添加文件头或整份补丁包装。文件变更工具返回 `{change}`，包含实际操作、路径、提交标记和 diff；`Read` 返回对象，正文位于 `content`，普通文件用返回的 `nextStartLine` 续读。
+
+后台进程通过 `ProcessStatus` 查询：省略 `processId` 返回进程列表，指定 ID 返回 `process` 状态及 `output` 日志页。使用 `output.nextOffset` 按字节续读；`hasMore: false` 只表示当前没有更多日志，不代表进程已退出。停止进程使用 `KillShell`。新工具目录及权限规则只使用 `ProcessStatus`，不提供旧名称别名或自动转换；已有会话记录保持原样。
 
 MCP 工具已返回回执时，执行失败依据协议外层的 `isError` 判定。查询得到的 `approved: false`、业务 `status: "failed"` 或业务 `error` 字段仍可属于成功查询；它们不会自动变成调用失败。权限拒绝、传输中断及副作用未知继续按各自执行状态处理，未知操作不会自动重试。
 

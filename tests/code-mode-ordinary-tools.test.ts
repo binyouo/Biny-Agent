@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -41,7 +43,7 @@ function fixture(options: { selected?: string[]; ask?: () => Promise<{ approved:
     const id = `${mode}-${name}-${recorders.length}`;
     return mode === "direct"
       ? await coordinator.createAgentTools({ mode: editing }).find((tool) => tool.name === name)!.execute(id, args, signal)
-      : await coordinator.createCodeModeTool({ mode: editing }).execute(id, { code: `return await tools.${name}(${JSON.stringify(args)});` }, signal);
+      : await coordinator.createCodeModeTool({ mode: editing }).execute(id, { description: "执行测试脚本", code: `return await tools.${name}(${JSON.stringify(args)});` }, signal);
   };
   return { config, registry, recorder, coordinator, call };
 }
@@ -85,7 +87,7 @@ try {
   });
   await test("script Patch discovery presents the routed schema without a model-supplied dispatch id", { timeout: 15_000 }, async () => {
     const current = fixture();
-    const result = await current.coordinator.createCodeModeTool({ mode: "patch" }).execute("patch-discovery", { code:
+    const result = await current.coordinator.createCodeModeTool({ mode: "patch" }).execute("patch-discovery", { description: "patch-discovery", code:
       "return {matches:await searchTools('apply_patch'),schema:await describeTool('apply_patch')};" });
     assert.equal(result.isError, false, JSON.stringify(result.details));
     const value = (result.details as { value: { matches: { name: string }[]; schema: { promptGuidelines?: string[]; parameters: { required: string[]; properties: Record<string, unknown> } } } }).value;
@@ -125,7 +127,7 @@ try {
   });
   await test("script discovery exposes ordinary query schemas and executes WidgetReadme", { timeout: 15_000 }, async () => {
     const current = fixture({ selected: ["WebFetch", "WidgetReadme", "ChromeRelayListTabs"] });
-    const result = await current.coordinator.createCodeModeTool().execute("ordinary-queries", { code: `
+    const result = await current.coordinator.createCodeModeTool().execute("ordinary-queries", { description: "ordinary-queries", code: `
       const names = ['WebFetch', 'WidgetReadme', 'ChromeRelayListTabs'];
       const schemas = await Promise.all(names.map(name => describeTool(name)));
       const readme = await tools.WidgetReadme({});
@@ -138,12 +140,12 @@ try {
   });
   await test("script background Bash chains its real process id into output and process-group cleanup", { timeout: 15_000 }, async () => {
     const processes = new ManagedProcessService({ workspaceRoot: root });
-    const current = fixture({ processes, selected: ["Bash", "BashOutput", "KillShell"] });
+    const current = fixture({ processes, selected: ["Bash", "ProcessStatus", "KillShell"] });
     try {
-      const result = await current.coordinator.createCodeModeTool().execute("background-chain", { code: `
+      const result = await current.coordinator.createCodeModeTool().execute("background-chain", { description: "background-chain", code: `
         const started = await tools.Bash({command:'printf BACKGROUND_READY; exec sleep 30',background:true,readiness:{type:'log',pattern:'BACKGROUND_READY',timeoutMs:5000}});
         const processId = started.process.processId;
-        const output = await tools.BashOutput({processId});
+        const output = await tools.ProcessStatus({processId});
         const stopped = await tools.KillShell({processId});
         return {pid:started.process.pid,output:output.output.content,state:stopped.state,cleanup:stopped.cleanup.status};
       ` });
@@ -158,7 +160,7 @@ try {
   await test("script Read and Edit retain Hashline anchors and reject a reused stale anchor", { timeout: 15_000 }, async () => {
     const current = fixture();
     await writeFile(path.join(root, "hashline.txt"), "original\nuntouched\n");
-    const result = await current.coordinator.createCodeModeTool({ mode: "hashline" }).execute("hashline-edit", { code: `
+    const result = await current.coordinator.createCodeModeTool({ mode: "hashline" }).execute("hashline-edit", { description: "hashline-edit", code: `
       const read = await tools.Read({path:'hashline.txt'});
       const pos = read.content.split(':')[0];
       await tools.Edit({operation:'update',path:'hashline.txt',edits:[{op:'replace',pos,lines:['changed']}]});
@@ -173,10 +175,10 @@ try {
     const command = `'${process.execPath.replaceAll("'", "'\\''")}' stdout.cjs`;
     const current = fixture();
     const code = `const result = await tools.Bash(${JSON.stringify({ command })}); return result.stdout.length;`;
-    const reduced = await current.coordinator.createCodeModeTool().execute("shell-reduced", { code });
+    const reduced = await current.coordinator.createCodeModeTool().execute("shell-reduced", { description: "shell-reduced", code });
     assert.equal(reduced.isError, false, JSON.stringify(reduced.details));
     assert.equal((reduced.details as { value: number }).value, 20_000);
-    const limited = await fixture().coordinator.createCodeModeTool(undefined, { ...codeModePolicy, maxToolOutputBytes: 1024 }).execute("shell-limited", { code });
+    const limited = await fixture().coordinator.createCodeModeTool(undefined, { ...codeModePolicy, maxToolOutputBytes: 1024 }).execute("shell-limited", { description: "shell-limited", code });
     assert.equal(limited.isError, true);
     assert.match((limited.details as { error: string }).error, /size|byte|limit|large/iu);
   });
@@ -231,7 +233,7 @@ try {
     }
     await writeFile(path.join(root, "conflict.txt"), "base");
     const current = fixture({ concurrency: 4 });
-    await current.coordinator.createCodeModeTool().execute("conflicting-edits", { code: `
+    await current.coordinator.createCodeModeTool().execute("conflicting-edits", { description: "conflicting-edits", code: `
       return await Promise.allSettled(['first', 'second'].map(new_string => tools.Edit({path:'conflict.txt',old_string:'base',new_string})));
     ` });
     const events = await readSessionEvents(current.recorder.filePath);
@@ -242,7 +244,7 @@ try {
   await test("AgentSession keeps ordinary tools alongside exec and persists a partial write once without replaying it", { timeout: 20_000 }, async () => {
     const current = fixture();
     let steps = 0;
-    const model: AgentModel = { provider: "fixture", modelId: "ordinary-code-mode", supportsTools: true,
+    const model: AgentModel = testModel({ provider: "fixture", modelId: "ordinary-code-mode", supportsTools: true,
       async stream(context) {
         steps++;
         assert.ok(context.tools.some((tool) => tool.name === "Write"));
@@ -261,7 +263,7 @@ try {
         }
         return (async function* () { yield* response; })();
       }
-    };
+    });
     const agent = new AgentSession({ workspaceRoot: root, config: current.config, model, toolRegistry: current.registry,
       permissionManager: new PermissionManager(current.config.permission), recorder: current.recorder });
     try {

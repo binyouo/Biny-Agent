@@ -349,7 +349,7 @@ async function archiveEntry(
   requireOwnArchive = false
 ): Promise<{ archivePath?: string; error?: string }> {
   // Shell output, file text, search context and diffs may quote unrelated archive paths.
-  const requiresEnvelope = ["bash", "bashoutput", "read", "grep", "write", "edit"].includes(normalizedToolName(entry.message.toolName));
+  const requiresEnvelope = ["bash", "processstatus", "read", "grep", "write", "edit"].includes(normalizedToolName(entry.message.toolName));
   const direct = stringField(asRecord(entry.value), "archivePath");
   const existing = requiresEnvelope
     ? isArchivedValue(entry.value) && /^\.biny\/tool-results\/tool-result-[0-9a-f]{64}\.json$/u.test(direct) ? direct : undefined
@@ -371,7 +371,7 @@ async function archiveEntry(
 
 /** Restore the same captured value for projection, archiving and fingerprinting. */
 function shellResultForProjection(tool: string, value: unknown): unknown {
-  if (!["bash", "bashoutput"].includes(normalizedToolName(tool))) return value;
+  if (!["bash", "processstatus"].includes(normalizedToolName(tool))) return value;
   const seen = new Set<unknown>();
   while (!seen.has(value)) {
     seen.add(value);
@@ -399,7 +399,7 @@ function projectValue(
   if (tool === "read" && isToolResultArchiveReference(asRecord(entry.call?.args).path)) return undefined;
   if (isArchivedValue(entry.value)) return { value: entry.value, archive: false };
 
-  if ((tool === "bash" || tool === "bashoutput") && asRecord(entry.value).modelProjection === "shell_excerpt") {
+  if ((tool === "bash" || tool === "processstatus") && asRecord(entry.value).modelProjection === "shell_excerpt") {
     return { value: entry.value, archive: false };
   }
 
@@ -411,8 +411,8 @@ function projectValue(
     const value = projectRunCommand(entry);
     return { value, archive: large || value.stdoutProjectionTruncated === true || value.stderrProjectionTruncated === true };
   }
-  if (tool === "bashoutput") {
-    const value = projectBashOutput(entry);
+  if (tool === "processstatus") {
+    const value = projectProcessStatus(entry);
     if (!large && asRecord(value.output).contentTruncated !== true) return undefined;
     return { value, archive: true };
   }
@@ -516,7 +516,7 @@ function projectReadFile(entry: ToolResultEntry): Record<string, unknown> {
   });
 }
 
-function projectBashOutput(entry: ToolResultEntry): Record<string, unknown> {
+function projectProcessStatus(entry: ToolResultEntry): Record<string, unknown> {
   const record = asRecord(entry.value);
   const output = asRecord(record.output);
   const content = redactSecrets(stringField(output, "content"));
@@ -637,7 +637,7 @@ function attachProjectionMetadata(
   const record = asRecord(value);
   const base = Object.keys(record).length ? record : { result: value };
   const compactSummary = stringField(record, "summary");
-  const shell = ["bash", "bashoutput"].includes(normalizedToolName(metadata.tool));
+  const shell = ["bash", "processstatus"].includes(normalizedToolName(metadata.tool));
   const availability = metadata.archivePath
     ? `${shell ? "Complete captured result" : "Full result"}: Read ${metadata.archivePath}.`
     : metadata.archiveError
@@ -820,7 +820,7 @@ function isKnownSemanticTool(entry: ToolResultEntry): boolean {
   return tool === "write"
     || tool === "edit"
     || tool === "bash"
-    || tool === "bashoutput"
+    || tool === "processstatus"
     || tool === "killshell"
     || tool === "read"
     || tool === "grep";

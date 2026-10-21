@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -30,7 +32,7 @@ try {
     registry.registerBuiltinTool(createAskUserQuestionTool(requests));
     const recorder = new SessionRecorder(root);
     let step = 0;
-    const model: AgentModel = { provider: "fixture", modelId: "control-discovery", supportsTools: true,
+    const model: AgentModel = testModel({ provider: "fixture", modelId: "control-discovery", supportsTools: true,
       async stream(context) {
         assert.ok(!context.tools.some((tool) => tool.name === "ToolSearch"));
         const current = step++;
@@ -53,7 +55,7 @@ try {
           yield { type: "finish", reason: "stop" };
         })();
       }
-    };
+    });
     const agent = new AgentSession({ workspaceRoot: root, config, recorder, model, toolRegistry: registry,
       permissionManager: new PermissionManager(config.permission), selectCapabilities: async () => ({ tools: ["Read"], skills: [] }) });
     try {
@@ -80,7 +82,7 @@ try {
   const resumeRegistry = createToolRegistry({ workspaceRoot: root, ignore: [] });
   resumeRegistry.registerBuiltinTool(createAskUserQuestionTool(new UserInputRequests()));
   let resumedSteps = 0;
-  const resumeModel: AgentModel = { provider: "fixture", modelId: "control-resume", supportsTools: true,
+  const resumeModel: AgentModel = testModel({ provider: "fixture", modelId: "control-resume", supportsTools: true,
     async stream(context) {
       assert.ok(!context.tools.some((tool) => tool.name === "ToolSearch"));
       const first = resumedSteps++ === 0;
@@ -95,7 +97,7 @@ try {
         }
       })();
     }
-  };
+  });
   const createResumeAgent = () => new AgentSession({ workspaceRoot: root, config, model: resumeModel, toolRegistry: resumeRegistry,
     recorder: new SessionRecorder(root), permissionManager: new PermissionManager(config.permission),
     selectCapabilities: async () => ({ tools: ["Read"], skills: [] }) });
@@ -127,7 +129,7 @@ try {
     const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry,
       prepareToolDiscovery: async () => { unrelatedDiscovery++; return { pending: ["unrelated-server"], timedOut: true }; } },
       new PermissionManager(config.permission), () => undefined, undefined, new Set(["Read"]));
-    const result = await coordinator.createCodeModeTool().execute("illegal-control", {
+    const result = await coordinator.createCodeModeTool().execute("illegal-control", { description: "illegal-control",
       code: "await searchTools('AskUserQuestion'); return await tools.AskUserQuestion({questions:[{id:'q',question:'Must stay outside the VM'}]});"
     });
     assert.equal(result.isError, true);

@@ -41,7 +41,7 @@ for (const returnOnly of [true, false]) {
       prepareToolDiscovery: async () => { preparations++; throw new Error(""); } },
       new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["Read"]));
     try {
-      const result = await coordinator.createCodeModeTool().execute("empty-discovery", {
+      const result = await coordinator.createCodeModeTool().execute("empty-discovery", { description: "empty-discovery",
         code: `try { await tools.mcp__missing__read({}); } catch {} ${returnOnly ? "return 'caught';" : "return await tools.Read({});"}`
       });
       assert.equal(result.isError, true, "the existence of a bridge failure cannot depend on message truthiness");
@@ -59,7 +59,7 @@ for (const returnOnly of [true, false]) {
       assert.equal(results.length, 1);
       assert.equal(results[0].executionStatus, "failed");
       assert.doesNotThrow(() => coordinator.assertCanContinue(), "a settled known failure is not an unknown side effect");
-      const later = await coordinator.createCodeModeTool().execute("fresh-cell", { code: "return (await tools.Read({})).data;" });
+      const later = await coordinator.createCodeModeTool().execute("fresh-cell", { description: "fresh-cell", code: "return (await tools.Read({})).data;" });
       assert.equal(later.isError, false, JSON.stringify(later.details));
       assert.equal((later.details as { value: unknown }).value, "later");
       assert.equal(calls, 1, "the latch belongs only to the failed cell");

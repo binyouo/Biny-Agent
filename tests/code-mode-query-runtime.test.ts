@@ -1,9 +1,11 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** Real CommandRuntime host query wiring; all fixtures and model streams are local. */
 import { createRequire } from "node:module";
 import { startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { InteractiveAgentRuntime } from "../src/runtime/InteractiveAgentRuntime.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -52,8 +54,8 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
   let plan: ModelPlan | undefined;
   let commands: CommandRuntime | undefined;
   let resources: RuntimeHostResourceScope | undefined;
-  const selectedTools = ["TaskStatus", "BashOutput", "read_skill_resource", "Task", "Skill"];
-  const model: AgentModel = {
+  const selectedTools = ["TaskStatus", "ProcessStatus", "read_skill_resource", "Task", "Skill"];
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "query-runtime-fixture", supportsTools: true,
     async stream(context) {
       modelCalls += 1;
@@ -80,7 +82,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
       }
       return (async function* (): AsyncGenerator<ModelStreamEvent> { yield* response; })();
     }
-  };
+  });
   globalThis.fetch = async () => { networkCalls += 1; throw new Error("This test must not make network requests."); };
   ModelManager.prototype.getModel = function () { return model; };
   ModelManager.prototype.getModelSettings = function () {
@@ -169,7 +171,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
         const result = results[0];
         assert.ok(result);
         assert.equal(result.isError, false, JSON.stringify(result.details));
-        const details = record(result.details);
+        const details = record(toolPayload(result));
         assert.equal(details.ok, true);
         inspect(details.value);
       }
@@ -214,8 +216,8 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
           const result = results[0];
           assert.ok(result);
           assert.equal(result.isError, true);
-          assert.equal(record(result.details).ok, false);
-          assert.match(String(record(result.details).error), error);
+          assert.equal(record(toolPayload(result)).ok, false);
+          assert.match(String(record(toolPayload(result)).error), error);
         }
       });
     }
@@ -223,7 +225,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
       assert.equal(record(value).content, "Local resource fixture");
       assert.equal(record(value).path, "reference.txt");
     });
-    await nested("empty-managed-output", "return await tools.BashOutput({});", (value) => {
+    await nested("empty-managed-output", "return await tools.ProcessStatus({});", (value) => {
       assert.deepEqual(record(value).processes, []);
     });
     const updatedSkill = skillMarkdown("query-fixture", "sapphire metadata after refresh");
@@ -237,7 +239,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
       ["skill-excluded", "return await tools.Skill({name:'query-fixture'});"]
     ] as const) await run({ mode: "code_mode", calls: [{ id, name: "run_script", arguments: { description: "Exercise script tool flow", code } }], inspect(results) {
       assert.equal(results[0]?.isError, true);
-      const details = record(results[0]?.details);
+      const details = record(toolPayload(results[0]));
       assert.equal(details.ok, false);
       assert.deepEqual(details.childCalls, [], "excluded activation/dispatch must never enter the host coordinator");
       assert.match(String(details.error), /Task|Skill/u);
@@ -246,7 +248,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
     for (const catalog of catalogs) {
       assert.match(catalog, /TaskStatus:/u);
       assert.doesNotMatch(catalog, /skill_lookup:/u);
-      assert.match(catalog, /BashOutput:/u);
+      assert.match(catalog, /ProcessStatus:/u);
       assert.match(catalog, /read_skill_resource:/u);
       assert.doesNotMatch(catalog, /(?:^|\n)Task:|(?:^|\n)Skill:/u);
     }
@@ -261,16 +263,16 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
     await run({ mode: "direct", calls: [
       { id: "direct-status", name: "TaskStatus", arguments: { taskRunId: "fixture-completed" } },
       { id: "direct-resource", name: "read_skill_resource", arguments: { skill: "query-fixture", path: "reference.txt" } },
-      { id: "direct-output", name: "BashOutput", arguments: {} }
+      { id: "direct-output", name: "ProcessStatus", arguments: {} }
     ], inspect(results) {
       const status = results.find((result) => result.toolName === "TaskStatus");
       assert.ok(status);
       assert.equal(status.isError, false);
-      assert.equal(record(status.details).status, "completed");
-      assert.equal(record(record(status.details).verification).status, "passed");
-      assert.equal(Object.hasOwn(record(record(status.details).verification), "checks"), false);
-      assert.equal(record(results.find((result) => result.toolName === "read_skill_resource")?.details).content, "Local resource fixture");
-      assert.deepEqual(record(results.find((result) => result.toolName === "BashOutput")?.details).processes, []);
+      assert.equal(record(toolPayload(status)).status, "completed");
+      assert.equal(record(record(toolPayload(status)).verification).status, "passed");
+      assert.equal(Object.hasOwn(record(record(toolPayload(status)).verification), "checks"), false);
+      assert.equal(record(toolPayload(results.find((result) => result.toolName === "read_skill_resource"))).content, "Local resource fixture");
+      assert.deepEqual(record(toolPayload(results.find((result) => result.toolName === "ProcessStatus"))).processes, []);
     } });
     assert.equal(catalogs.length, catalogsBeforeDirect, "direct mode must retain its existing tools without a Code Mode envelope");
     assert.deepEqual(taskSnapshot(commands), durableBefore);
@@ -280,7 +282,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
     assert.equal(permissions.filter(({ request }) => request.toolName === "TaskStatus").length, 14, "each status read must pass normal admission and the serialized permission gate");
     assert.equal(permissions.filter(({ request }) => request.toolName === "skill_lookup").length, 0, "removed metadata helpers never enter tool admission");
     for (const { request, evaluation } of permissions) {
-      assert.ok(["TaskStatus", "BashOutput", "read_skill_resource"].includes(request.toolName));
+      assert.ok(["TaskStatus", "ProcessStatus", "read_skill_resource"].includes(request.toolName));
       assert.equal(request.actionType, "read");
       const metadataQuery = request.toolName === "TaskStatus";
       assert.equal(request.riskLevel, metadataQuery ? "medium" : "low");
@@ -326,7 +328,7 @@ await test("CommandRuntime scripts inspect plans through CLI without exposing na
   let host: Awaited<ReturnType<typeof startRuntimeHost>> | undefined;
   let graphId = "";
   let steps = 0;
-  const model: AgentModel = { provider: "fixture", modelId: "query-runtime-fixture", supportsTools: true, async stream(context) {
+  const model: AgentModel = testModel({ provider: "fixture", modelId: "query-runtime-fixture", supportsTools: true, async stream(context) {
     const response: ModelStreamEvent[] = steps++ === 0 ? [
       { type: "tool-call", id: "plan-query", name: "run_script", arguments: { description: "Exercise script tool flow", code: `return await tools.Bash(${JSON.stringify({ command: `${biny} plan status ${quote(graphId)} --json` })});` } },
       { type: "finish", reason: "tool-calls" }
@@ -338,7 +340,7 @@ await test("CommandRuntime scripts inspect plans through CLI without exposing na
       const result = context.messages.find((message) => message.role === "toolResult" && message.toolCallId === "plan-query");
       assert.ok(result && result.role === "toolResult");
       assert.equal(result.isError, false, JSON.stringify(result.details));
-      const value = record(record(result.details).value);
+      const value = record(record(toolPayload(result)).value);
       assert.equal(value.exitCode, 0, String(value.stderr));
       assert.equal(JSON.parse(String(value.stdout)).status, "draft");
     }
@@ -346,10 +348,10 @@ await test("CommandRuntime scripts inspect plans through CLI without exposing na
       const denied = context.messages.find((message) => message.role === "toolResult" && message.toolCallId === "forbidden-plan-update");
       assert.ok(denied && denied.role === "toolResult");
       assert.equal(denied.isError, true);
-      assert.match(JSON.stringify(denied.details), /not available in this cell/u);
+      assert.match(JSON.stringify(toolPayload(denied)), /not available in this cell/u);
     }
     return (async function* () { yield* response; })();
-  } };
+  } });
   ModelManager.prototype.getModel = () => model;
   ModelManager.prototype.getModelSettings = function () { return { ...originalGetSettings.call(this), model, vercelModel: undefined }; };
   let commands: CommandRuntime | undefined;
@@ -365,7 +367,7 @@ await test("CommandRuntime scripts inspect plans through CLI without exposing na
     ] });
     graphId = graph.graphId;
     const before = commands.graphs.inspectGraph(graphId);
-    host = await startRuntimeHost(root, async () => ({ commands: commands!, runtime: new InteractiveAgentRuntime(commands!) }));
+    host = await startRuntimeHost(root, async () => ({ commands: commands!, runtime: new InteractiveAgentRuntime(commands!) }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     const outcome = await commands.agent.runTask("Read the fixture plan", { capabilitySelection: { tools: ["Bash"], skills: "none" }, emotionAnalysis: false });
     assert.equal(outcome.status, "completed", outcome.error);
     assert.equal(steps, 3);
@@ -408,7 +410,7 @@ function isolatedConfig(): AgentConfig {
 }
 
 function assertQueryCatalog(commands: CommandRuntime): void {
-  for (const [name, source] of [["TaskStatus", "subagent"], ["BashOutput", "builtin"], ["read_skill_resource", "skill"]] as const) {
+  for (const [name, source] of [["TaskStatus", "subagent"], ["ProcessStatus", "builtin"], ["read_skill_resource", "skill"]] as const) {
     const entries = commands.listTools().filter((entry) => entry.name === name);
     assert.equal(entries.length, 1);
     assert.equal(entries[0]?.source, source, "host query admission must preserve existing extension provenance");
@@ -443,4 +445,9 @@ function verificationEvidence(taskRunId: string, attemptId: string, status: "blo
 function record(value: unknown): Record<string, unknown> {
   assert.ok(typeof value === "object" && value !== null && !Array.isArray(value), `Expected a record: ${JSON.stringify(value)}`);
   return value as Record<string, unknown>;
+}
+
+function toolPayload(result: AgentToolResultMessage | undefined): unknown {
+  assert.ok(result);
+  return JSON.parse(result.content.filter(part => part.type === "text").map(part => part.text).join("\n"));
 }

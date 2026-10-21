@@ -9,7 +9,7 @@ import { resolveWorkspacePath, toWorkspaceRelative } from "../../workspace/resol
 import { ToolAccesses } from "../access.js";
 import type { Tool, ToolContext } from "../types.js";
 import { zodToolInput } from "../zodToolInput.js";
-import type { FileChangeResult } from "./fileChange.js";
+import { fileChangeOutputSchema, type FileChangeResult } from "./fileChange.js";
 import { applyHashlineEdits, type HashlineEdit } from "./hashline.js";
 import { applyStringEdit } from "./stringEdit.js";
 import {
@@ -35,22 +35,40 @@ const hashlineEditsSchema = z.array(z.discriminatedUnion("op", [
   z.object({ op: z.literal("prepend"), pos: z.string().min(1).describe("LINE#HASH anchor from Read").optional(), lines: z.array(z.string()) }).strict()
 ])).min(1);
 
+const deleteFileArgsSchema = z.object({
+  operation: z.literal("delete").describe("Remove one regular file"),
+  path: z.string().min(1).describe("Workspace-relative file path to delete")
+}).strict();
+const moveFileArgsSchema = z.object({
+  operation: z.literal("move").describe("Move one regular file without overwriting the destination"),
+  path: z.string().min(1).describe("Workspace-relative source file path"),
+  to: z.string().min(1).describe("Workspace-relative destination path; must not exist and its parent directory must exist")
+}).strict();
 const hashlineEditArgsSchema = z.discriminatedUnion("operation", [
-  z.object({ operation: z.literal("update"), path: z.string().min(1), edits: hashlineEditsSchema }).strict(),
-  z.object({ operation: z.literal("delete"), path: z.string().min(1) }).strict(),
-  z.object({ operation: z.literal("move"), path: z.string().min(1), to: z.string().min(1) }).strict()
+  z.object({ operation: z.literal("update").describe("Change file contents using anchors from Read"), path: z.string().min(1).describe("Workspace-relative source file path"), edits: hashlineEditsSchema.describe("Edits using the exact LINE#HASH anchors from the latest Read") }).strict(),
+  deleteFileArgsSchema,
+  moveFileArgsSchema
 ]);
 const stringEditArgsSchema = z.union([
-  z.object({ operation: z.literal("update").default("update"), path: z.string().min(1), old_string: z.string().min(1), new_string: z.string().default(""), replace_all: z.boolean().default(false).describe("Replace every occurrence; defaults to false") }).strict(),
-  z.object({ operation: z.literal("delete"), path: z.string().min(1) }).strict(),
-  z.object({ operation: z.literal("move"), path: z.string().min(1), to: z.string().min(1) }).strict()
+  z.object({ operation: z.literal("update").default("update").describe("Replace text in an existing file; the default operation"), path: z.string().min(1).describe("Workspace-relative file path to update"), old_string: z.string().min(1).describe("Text copied from Read, including whitespace; must identify one occurrence unless replace_all is true"), new_string: z.string().describe("Replacement text; pass an empty string explicitly to remove the matched text"), replace_all: z.boolean().default(false).describe("Replace every occurrence only when all matches should change; defaults to false") }).strict(),
+  deleteFileArgsSchema,
+  moveFileArgsSchema
 ]);
 export const editArgsSchema = z.union([hashlineEditArgsSchema, stringEditArgsSchema]);
 
 export function createEditFileTool(context: ToolContext, hashline = false): Tool<EditArgs, FileChangeResult> {
   return {
     name: "Edit",
-    description: `Update, delete, or move one UTF-8 workspace file. ${hashline ? "update uses Hashline anchors from Read; stale anchors fail without writing." : "Replace old_string with new_string. Read first; ambiguous matches require more context or replace_all. operation defaults to update."} delete and move reject symbolic links. Files are limited to ${String(maxEditFileBytes)} bytes.`,
+    description: [
+      "Change one existing workspace file with operation update, delete, or move. Each call acts on one source file.",
+      hashline
+        ? "update: Read first, then supply nonempty edits with exact LINE#HASH anchors. Stale anchors fail without writing."
+        : "update (default): Read first, then supply old_string and new_string. Include enough context for one match; use replace_all only when every occurrence should change. Pass new_string: \"\" explicitly to remove text.",
+      "delete: Supply path only with operation delete to remove the entire file.",
+      "move: Supply path and to with operation move. The destination must not exist and its parent directory must already exist. delete and move reject symbolic links.",
+      `Updates require UTF-8 text. Source files are limited to ${String(maxEditFileBytes)} bytes. Use Write for new files or intentional full replacement.`,
+      "Returns {change} with operation, path, committed, diff, and operation-specific details; a move also includes destinationPath."
+    ].join("\n\n"),
     promptSnippet: "Update, delete, or move one workspace file",
     promptGuidelines: [
       hashline ? "Use operation update after Read and copy LINE#HASH anchors exactly" : "Read first and copy old_string exactly, including whitespace; new_string is the final replacement text",
@@ -58,6 +76,7 @@ export function createEditFileTool(context: ToolContext, hashline = false): Tool
       "Use operation delete to remove a file, operation move to rename it, and Write only for new files or intentional full rewrites"
     ],
     ...zodToolInput<EditArgs>(hashline ? hashlineEditArgsSchema : stringEditArgsSchema),
+    outputSchema: fileChangeOutputSchema,
     capability: "filesystem.edit",
     risk: "write",
     async resolveExecution(args) {

@@ -1,5 +1,7 @@
 /** 文件变更在工具准备、权限判断、执行结果和界面投影之间共用的稳定语义。 */
 import { z } from "zod";
+import { zodSchema } from "ai";
+import type { JsonSchema } from "../schema.js";
 export type FileChangeOperation = "create" | "update" | "delete" | "move";
 export type PreparedFileChangeOperation = "write" | FileChangeOperation;
 
@@ -38,6 +40,10 @@ export const committedFileChangeSchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Only move requires destinationPath." });
   }
 });
+
+export const fileChangeOutputSchema = zodSchema(z.object({
+  change: committedFileChangeSchema.describe("Committed file change: operation, workspace-relative paths, diff, and operation-specific details.")
+}).strict()).jsonSchema as JsonSchema;
 
 export function parseFileChange(value: unknown): CommittedFileChange | undefined {
   const parsed = committedFileChangeSchema.safeParse(value);

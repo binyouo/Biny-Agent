@@ -8,8 +8,7 @@ import { computerListSchema, computerActionSchema, computerImageSchema, computer
 import type { DriverReply } from "../computer/controller.js";
 import { computerSequenceSchema } from "../computer/protocol.js";
 import { renderElementTree, type ElementLike } from "../computer/elementTree.js";
-
-const commonProperties = { pid: { type: "integer" as const, minimum: 1 }, windowId: { type: "string" as const, pattern: "^[1-9][0-9]{0,19}$", description: "Exact window ID from ComputerList; preserve as decimal string." } };
+import { zodToolInput } from "./zodToolInput.js";
 export type ComputerToolCaller = (method: string, args: Record<string, unknown>, context: ToolExecutionContext, mutation: boolean) => Promise<DriverReply>;
 export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
   const tools: Tool[] = [
@@ -21,24 +20,17 @@ export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
     },
     {
       name: "ComputerMirror", description: "Open a live mirror of an approved native window without raising the application. Choose an exact pid/windowId from ComputerList. onMinimize arms presentation when the user minimizes the window. List mirrors and frame age, or close this session's mirrors. Does not restore or activate the source window.", risk: "execute", capability: "computer.mirror",
-      parameters: { type: "object", properties: { operation: { type: "string", enum: ["open", "close", "list"] }, ...commonProperties, onMinimize: { type: "boolean" }, all: { type: "boolean" } }, required: ["operation"], additionalProperties: false }, schema: computerMirrorSchema,
+      parameters: zodToolInput(computerMirrorSchema).parameters, schema: computerMirrorSchema,
       resolveExecution: args => execution(call, "mirror", computerMirrorSchema.parse(args), true)
     },
     {
       name: "ComputerList", description: "List native apps, or exact windows of a pid. Requires user-enabled desktop control in Biny settings. Browser tasks should prefer Browser/ChromeRelay tools.", risk: "read", capability: "computer.list",
-      parameters: { type: "object", properties: { pid: commonProperties.pid, days: { type: "integer", minimum: 0, maximum: 90 } }, additionalProperties: false }, schema: computerListSchema,
+      parameters: zodToolInput(computerListSchema).parameters, schema: computerListSchema,
       resolveExecution: args => execution(call, "list", computerListSchema.parse(args), false)
     },
     {
       name: "ComputerObserve", description: "Observe one exact native window, returning an image, fresh capture_id and element tokens. This screenshot is sent to the current model only after the execution service checks the target application approval; it is not saved to Activity memory.", risk: "read", capability: "computer.observe",
-      parameters: { type: "object", properties: { ...commonProperties,
-        content: { type: "string", enum: ["full", "image"], description: "默认完整观察；image 仅截图并刷新凭据，不提供或沿用控件引用。" },
-        waitFor: { type: "object", properties: { text: { type: "string", minLength: 1, maxLength: 1000 }, timeoutMs: { type: "integer", minimum: 250, maximum: 10000 } }, required: ["text"], additionalProperties: false, description: "等待控件文字包含指定文本，默认最多 5 秒，每次检查至少间隔 250 毫秒；超时后不要重复等待相同条件。条件满足只证明文字出现。" },
-        maxElements: { type: "integer", minimum: 1, maximum: 1000 },
-        depth: { type: "integer", minimum: 1, maximum: 20, description: "AX tree depth, from 1 to 20." },
-        screenshotMaxWidth: { type: "integer", minimum: 1, description: "Downsample width of the screenshot, default 1280." },
-        interactiveOnly: { type: "boolean", description: "Limit the element list to interactive elements. Default true; set false for the full tree." },
-      }, required: ["pid", "windowId"], additionalProperties: false }, schema: windowObserveSchema,
+      parameters: zodToolInput(windowObserveSchema).parameters, schema: windowObserveSchema,
       resolveExecution: args => execution(call, "observe", windowObserveSchema.parse(args), false)
     },
     {
@@ -53,26 +45,14 @@ export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
         "Scroll directions describe content navigation (up decreases vertical offset; right increases horizontal offset). Amount is in pages, default 1. Native scroll areas use measured scrollbar ratios; web content uses estimated wheel notches. Check the reply's unit field if the distance matters.",
         "The live preview is for supervision; its frames do not refresh capture_id or element tokens. Verify the requested UI postcondition, not merely a changed picture."
       ],
-      parameters: { type: "object", properties: { ...commonProperties, action: { type: "string", enum: ["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"], description: "click/type_text/press_key/scroll are the common four. drag moves the mouse between two screenshot points. perform_secondary_action opens the element context menu. set_value writes an accessibility value directly (sliders, steppers, fields) without keystrokes. select_text uses location/length to select a range or move the cursor; supplying text replaces the current selection, it does not search for matching text." }, captureId: { type: "string" }, delivery: { type: "string", enum: ["background", "foreground"] },
-        button: { type: "string", enum: ["left", "right", "middle"] }, clickCount: { type: "integer", minimum: 1, maximum: 3 }, strategy: { type: "string", enum: ["auto", "physical", "ax"] }, coordinateSpace: { type: "string", enum: ["screenshot", "screen"] }, showCursor: { type: "boolean", description: "Set false to hide the action indicator for this one action." },
-        inputMethod: { type: "string", enum: ["auto", "physical", "unicode", "ax"], description: "How to deliver text: physical uses the selected keyboard layout and rejects unrepresentable text before input; auto chooses writable AX with a ref, then a complete physical key plan, then Unicode; unicode uses keyboard focus; ax writes the element directly." }, x: { type: "number" }, y: { type: "number" }, text: { type: "string", maxLength: 4000 }, key: { type: "string", maxLength: 40 }, elementToken: { type: "string" }, direction: { type: "string", enum: ["up", "down", "left", "right"], description: "Content navigation: up/left decrease the corresponding scroll offset; down/right increase it." }, pages: { type: "integer", minimum: 1, maximum: 20, description: "How many pages to scroll, default 1. A page is the viewport, measured from the scroll area rather than guessed; the reply says whether it was measured or estimated. Zero is rejected before dispatch." },
-        x1: { type: "number", description: "drag: start point in screenshot pixels." }, y1: { type: "number" },
-        x2: { type: "number", description: "drag: end point in screenshot pixels." }, y2: { type: "number" },
-        value: { anyOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }], description: "set_value: the value to write, matching the control's own type." },
-        location: { type: "integer", minimum: 0, description: "select_text 的 UTF-16 起始偏移；长度为零时移动光标。" },
-        matchText: { type: "string", minLength: 1, maxLength: 4000, description: "select_text 按文字匹配选区，不修改正文；不得与 text/location/length 混用。" },
-        prefix: { type: "string", maxLength: 1000, description: "匹配文字紧邻的前文，用于消除歧义。" },
-        suffix: { type: "string", maxLength: 1000, description: "匹配文字紧邻的后文，用于消除歧义。" },
-        length: { type: "integer", minimum: 0, description: "select_text 从起始位置选择的 UTF-16 长度，默认零。" } }, required: ["pid", "windowId", "action", "captureId"], additionalProperties: false }, schema: computerActionSchema,
+      parameters: zodToolInput(computerActionSchema).parameters, schema: computerActionSchema,
       resolveExecution: args => execution(call, "action", computerActionSchema.parse(args), true)
     }
   ];
-  const stepProperties = Object.fromEntries(Object.entries(tools.find(tool => tool.name === "ComputerAction")!.parameters.properties ?? {}).filter(([name]) => !["pid", "windowId", "captureId", "delivery"].includes(name)));
   tools.push({
     name: "ComputerSequence", description: "在同一窗口连续执行已确定的 1 至 5 步，最多 15 秒。首步可定位控件，之后只能向当前焦点输入或按键；需要看画面才能决定的步骤必须拆开。每步更新观察凭据，中间仅截图，最终返回画面和逐步回执。拒绝、回图失败、暂停或中断立即停止，禁止重放整个序列。", risk: "execute", capability: "computer.action",
     schema: computerSequenceSchema,
-    parameters: { type: "object", properties: { ...commonProperties, captureId: { type: "string" }, delivery: { type: "string", enum: ["background", "foreground"] }, actions: { type: "array", minItems: 1, maxItems: 5, items: { type: "object", properties: stepProperties, required: ["action"], additionalProperties: false } } }, required: ["pid", "windowId", "captureId", "actions"], additionalProperties: false },
-    resolveExecution: args => execution(call, "sequence", computerSequenceSchema.parse(args), true)
+    parameters: zodToolInput(computerSequenceSchema).parameters, resolveExecution: args => execution(call, "sequence", computerSequenceSchema.parse(args), true)
   });
   return tools.map(tool => ({ ...tool, source: "mcp", exposure: "direct", namespace: { name: "computer-use", description: "Approved Desktop windows" } }));
 }

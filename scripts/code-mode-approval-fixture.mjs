@@ -46,6 +46,7 @@ export async function exerciseCodeModeApprovalGate({ workspace, policy, idPrefix
     const approved = coordinator(async () => { await delay(250); return { approved: true, scope: "once" }; });
     const approvedId = `${idPrefix}-approved`;
     const result = await approved.createCodeModeTool(undefined, policy).execute(approvedId, {
+      description: "查询授权后的数据",
       code: "return (await tools.mcp__fixture__query({query:'fixture'})).hits.length;" });
     assert.equal(result.isError, false, JSON.stringify(result.details));
     assert.equal(result.details.value, 0);
@@ -68,6 +69,7 @@ export async function exerciseCodeModeApprovalGate({ workspace, policy, idPrefix
       preparation = beforePermission ? { entered, release } : undefined;
       mock.timers.enable({ apis: ["setTimeout"] });
       const pending = late.createCodeModeTool(undefined, { ...policy, hostCallTimeoutMs: 150 }).execute(id, {
+        description: "检查授权等待超时",
         code: "try { await tools.mcp__fixture__query({query:'late'}); } catch {} return await tools.mcp__fixture__query({query:'replay'});" });
       try {
         await bounded(Promise.race([entered.promise, pending.then(value => {

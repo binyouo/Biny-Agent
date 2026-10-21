@@ -12,7 +12,7 @@ export const computerSettingsSchema = z.object({
 }).strict().refine(value => new Set(value.apps.map(app => app.bundleId)).size === value.apps.length, "Duplicate computer application identity");
 
 export const maxComputerImageBytes = 1024 * 1024;
-export const windowTargetSchema = z.object({ pid: z.number().int().positive().max(2147483647), windowId: z.string().regex(/^[1-9][0-9]{0,19}$/) }).strict();
+export const windowTargetSchema = z.object({ pid: z.number().int().positive().max(2147483647), windowId: z.string().regex(/^[1-9][0-9]{0,19}$/).describe("Exact window ID from ComputerList; preserve as decimal string.") }).strict();
 export type WindowTarget = z.infer<typeof windowTargetSchema>;
 export const computerListSchema = z.object({ pid: windowTargetSchema.shape.pid.optional(), days: z.number().int().min(0).max(90).optional() }).strict();
 
@@ -31,27 +31,24 @@ export type ComputerMirrorRequest = z.infer<typeof computerMirrorSchema>;
 
 /** 观察选项不属于窗口身份；审批与动作目标只使用 pid/windowId。 */
 export const computerWaitSchema = z.object({ text: z.string().min(1).max(1000), timeoutMs: z.number().int().min(250).max(10_000).default(5_000) }).strict();
-export const windowObserveSchema = windowTargetSchema.extend({
-  content: z.enum(["full", "image"]).optional(),
-  waitFor: computerWaitSchema.optional(),
+export const computerObservationOptions = z.object({
+  content: z.enum(["full", "image"]).optional().describe("默认完整观察；image 仅截图并刷新凭据，不提供或沿用控件引用。"),
+  waitFor: computerWaitSchema.optional().describe("等待指定文字，默认最多 5 秒；超时后停止，不重复等待相同条件。条件满足只证明文字出现。"),
   maxElements: z.number().int().positive().max(1000).optional(),
-  depth: z.number().int().min(1).max(20).optional(),
-  screenshotMaxWidth: z.number().int().positive().optional(),
-  interactiveOnly: z.boolean().optional(),
-}).refine(value => !value.waitFor || value.content !== "image", "文字等待需要完整观察，不能使用仅截图模式");
+  depth: z.number().int().min(1).max(20).optional().describe("AX tree depth, from 1 to 20."),
+  screenshotMaxWidth: z.number().int().positive().optional().describe("Downsample width of the screenshot, default 1280."),
+  interactiveOnly: z.boolean().optional().describe("Limit to interactive elements. Default true; set false for the full tree."),
+}).strict();
+export function validateObservationOptions(value: z.infer<typeof computerObservationOptions>, context: z.RefinementCtx): void {
+  if (value.waitFor && value.content === "image") context.addIssue({ code: "custom", message: "文字等待需要完整观察，不能使用仅截图模式" });
+}
+export const windowObserveSchema = windowTargetSchema.extend(computerObservationOptions.shape).superRefine(validateObservationOptions);
 export type WindowObserve = z.infer<typeof windowObserveSchema>;
-export const computerActionSchema = windowTargetSchema.extend({
+export const computerActionPayload = z.object({
   action: z.enum(["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"]),
-  captureId: z.string().min(1).max(256),
-  delivery: z.enum(["background", "foreground"]).default("background"),
-  /**
-   * 这一次不要动作指示器。对应参照 CLI 的 `--no-cursor`（"hides the lens for one action"）。
-   * 守护进程侧的字段名就是 `show_cursor`；早先只有守护进程认识它，四个调用层都没接 ——
-   * 能力在、路不通。
-   */
-  showCursor: z.boolean().optional(),
+  showCursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action."),
   /** physical 先验证整段文本可由当前键盘布局表达；ax 按元素写入。 */
-  inputMethod: z.enum(["auto", "physical", "unicode", "ax"]).optional(),
+  inputMethod: z.enum(["auto", "physical", "unicode", "ax"]).optional().describe("auto chooses writable AX with a ref, then a complete physical key plan, then Unicode. physical rejects unrepresentable text before input; unicode uses keyboard focus; ax requires an element token."),
   button: z.enum(["left", "right", "middle"]).optional(),
   clickCount: z.number().int().min(1).max(3).optional(),
   strategy: z.enum(["auto", "physical", "ax"]).optional(),
@@ -61,15 +58,15 @@ export const computerActionSchema = windowTargetSchema.extend({
   direction: z.enum(["up", "down", "left", "right"]).optional(),
   // 单位是**页**，不是行。一页 = 视口/内容，由守护进程从滚动区量出来（原生目标）；
   // 网页内容量不出页大小，那里会换算成行数并在回执里标注是估算。
-  // 参照的 MCP 契约是 number().int().max(20) —— 页是整数，别让它接受 1.5。
-  pages: z.number().int().min(1).max(20).optional(),
+  pages: z.number().int().min(1).max(20).optional().describe("Pages to scroll, default 1. Native areas use measured viewport ratios; web areas use estimated wheel notches."),
   x1: z.number().finite().optional(), y1: z.number().finite().optional(),
   x2: z.number().finite().optional(), y2: z.number().finite().optional(),
   value: z.union([z.string().max(4000), z.number(), z.boolean()]).optional(),
-  location: z.number().int().nonnegative().optional(), length: z.number().int().nonnegative().optional(),
-  matchText: z.string().min(1).max(4000).optional(), prefix: z.string().max(1000).optional(), suffix: z.string().max(1000).optional(),
+  location: z.number().int().nonnegative().optional().describe("select_text 的 UTF-16 起始偏移。"), length: z.number().int().nonnegative().optional().describe("UTF-16 选区长度，默认零；零表示移动光标。"),
+  matchText: z.string().min(1).max(4000).optional().describe("按文字匹配选区，不修改正文；不得与 text/location/length 混用。"), prefix: z.string().max(1000).optional(), suffix: z.string().max(1000).optional(),
   elementToken: z.string().min(1).max(256).optional()
-}).strict().superRefine((value, context) => {
+}).strict();
+export function validateComputerAction(value: z.infer<typeof computerActionPayload>, context: z.RefinementCtx): void {
   if (value.action === "click") {
     if (!value.elementToken && (value.x === undefined || value.y === undefined)) context.addIssue({ code: "custom", message: "click requires elementToken or screenshot coordinates" });
     if ((value.x === undefined) !== (value.y === undefined)) context.addIssue({ code: "custom", message: "click coordinates require both x and y" });
@@ -84,7 +81,14 @@ export const computerActionSchema = windowTargetSchema.extend({
   if (value.action === "select_text" && (!value.elementToken || (value.text === undefined && value.location === undefined && value.matchText === undefined))) context.addIssue({ code: "custom", message: "select_text requires elementToken and text, location or matchText" });
   if (value.matchText !== undefined && (value.action !== "select_text" || value.text !== undefined || value.location !== undefined || value.length !== undefined)) context.addIssue({ code: "custom", message: "文字匹配选区不能与写入文本或位置选区混用" });
   if ((value.prefix !== undefined || value.suffix !== undefined) && value.matchText === undefined) context.addIssue({ code: "custom", message: "前后文只能用于文字匹配选区" });
-});
+}
+export const computerActionPayloadSchema = computerActionPayload.superRefine(validateComputerAction);
+export const computerActionSchema = computerActionPayload.extend({
+  ...windowTargetSchema.shape,
+  captureId: z.string().min(1).max(256),
+  delivery: z.enum(["background", "foreground"]).default("background")
+}).superRefine(validateComputerAction);
+
 export type ComputerAction = z.infer<typeof computerActionSchema>;
 export const computerSequenceSchema = windowTargetSchema.extend({
   captureId: z.string().min(1).max(256),

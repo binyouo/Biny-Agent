@@ -1,4 +1,4 @@
-/** Host-registered BashOutput and archive pages remain full programmatic Code Mode values. */
+/** Host-registered ProcessStatus and archive pages remain full programmatic Code Mode values. */
 import assert from "node:assert/strict";
 import { mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -43,7 +43,7 @@ service.readOutput = async (id, options, signal) => {
 const record = (value: unknown): Record<string, any> => value as Record<string, any>;
 const details = (result: AgentToolResult) => record(result.details);
 const args = { processId, maxBytes: 256 * 1024 };
-const logCode = `return await tools.BashOutput(${JSON.stringify(args)});`;
+const logCode = `return await tools.ProcessStatus(${JSON.stringify(args)});`;
 class AskReads extends PermissionManager {
   override evaluate(request: PermissionRequestContext) {
     const evaluation = super.evaluate(request);
@@ -63,18 +63,18 @@ function coordinator(name: string, options?: { denyPaths?: string[]; ask?: () =>
   recorders.push(recorder);
   const instance = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: options?.ask },
     options?.ask ? new AskReads(config.permission) : new PermissionManager(config.permission), () => undefined, () => ({}),
-    new Set(["Bash", "BashOutput", "Read"]));
+    new Set(["Bash", "ProcessStatus", "Read"]));
   return { instance, registry, recorder };
 }
 let archivePath: string;
 let archivedOutput: string;
 
 try {
-  await test("actual host registry exposes BashOutput with bounded direct output and full nested Code Mode pages", async () => {
+  await test("actual host registry exposes ProcessStatus with bounded direct output and full nested Code Mode pages", async () => {
     const { instance, registry, recorder } = coordinator("full-shell-page");
-    assert.equal(registry.listEntries().some((entry) => entry.tool.name === "BashOutput" && isCodeModeReadTool(entry)), true);
+    assert.equal(registry.listEntries().some((entry) => entry.tool.name === "ProcessStatus" && isCodeModeReadTool(entry)), true);
     assert.equal(registry.listEntries().some((entry) => entry.tool.name === "Bash" && isCodeModeReadTool(entry)), false);
-    const directTool = instance.createAgentTools().find((tool) => tool.name === "BashOutput")!;
+    const directTool = instance.createAgentTools().find((tool) => tool.name === "ProcessStatus")!;
     const direct = await directTool.execute("direct-shell-page", args);
     assert.equal(direct.isError, false, JSON.stringify(direct.details));
     const excerpt = details(direct);
@@ -91,14 +91,14 @@ try {
     assert.equal(JSON.parse(archivedOutput).output.content, logText);
 
     const exec = instance.createCodeModeTool();
-    assert.match(exec.promptSnippet ?? "", /BashOutput:/u);
+    assert.match(exec.promptSnippet ?? "", /ProcessStatus:/u);
     assert.match(exec.promptSnippet ?? "", /(?:^|\n)Bash:/u);
-    const nested = await exec.execute("nested-shell-page", { code: logCode });
+    const nested = await exec.execute("nested-shell-page", { description: "nested-shell-page", code: logCode });
     assert.equal(nested.isError, false, JSON.stringify(nested.details));
     assert.equal(details(nested).value.output.content, logText, "nested host query must bypass model-only excerpts");
     assert.equal(details(nested).value.output.nextOffset, Buffer.byteLength(logText));
     assert.equal(details(nested).value.modelProjection, undefined);
-    assert.deepEqual(details(nested).childCalls, [{ tool: "BashOutput", toolCallId: "nested-shell-page:nested:1" }]);
+    assert.deepEqual(details(nested).childCalls, [{ tool: "ProcessStatus", toolCallId: "nested-shell-page:nested:1" }]);
     const audit = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
       .find((event) => event.type === "tool_result" && event.toolCallId === "nested-shell-page:nested:1");
     assert.equal(audit.auditOnly, true);
@@ -109,7 +109,7 @@ try {
   await test("Read nested pages preserve exact requested content and pagination metadata", async () => {
     const { instance } = coordinator("full-archive-page");
     const code = `return await tools.Read({path:${JSON.stringify(archivePath)},offset:0,length:200000});`;
-    const result = await instance.createCodeModeTool().execute("nested-archive-page", { code });
+    const result = await instance.createCodeModeTool().execute("nested-archive-page", { description: "nested-archive-page", code });
     assert.equal(result.isError, false, JSON.stringify(result.details));
     const page = details(result).value;
     assert.equal(page.content, archivedOutput);
@@ -128,19 +128,19 @@ try {
     ] as const) {
       const { instance } = coordinator(`host-byte-limit-${name}`);
       const limited = await instance.createCodeModeTool(undefined, { ...codeModePolicy, maxToolOutputBytes: 16 * 1024 })
-        .execute(`host-byte-limit-${name}`, { code });
+        .execute(`host-byte-limit-${name}`, { description: "执行测试脚本", code });
       assert.equal(limited.isError, true, "a full programmatic page must still hit the Code Mode bridge byte limit");
       assert.match(details(limited).error, /size|byte|limit|large/iu);
       assert.equal(details(limited).childCalls.length, 1);
     }
     const { instance } = coordinator("final-byte-limit");
     const limited = await instance.createCodeModeTool(undefined, { ...codeModePolicy, maxResultBytes: 1_024 })
-      .execute("final-byte-limit", { code: logCode });
+      .execute("final-byte-limit", { description: "final-byte-limit", code: logCode });
     assert.equal(limited.isError, true);
     assert.match(details(limited).error, /size|byte|limit|large/iu);
     assert.equal(details(limited).childCalls.length, 1, "host read fits its own independent output budget");
     const reduced = await instance.createCodeModeTool(undefined, { ...codeModePolicy, maxResultBytes: 1_024 })
-      .execute("reduced-byte-result", { code: `const page=await tools.BashOutput(${JSON.stringify(args)});return {characters:page.output.content.length};` });
+      .execute("reduced-byte-result", { description: "reduced-byte-result", code: `const page=await tools.ProcessStatus(${JSON.stringify(args)});return {characters:page.output.content.length};` });
     assert.equal(reduced.isError, false, JSON.stringify(reduced.details));
     assert.deepEqual(details(reduced).value, { characters: logText.length });
   });
@@ -149,16 +149,16 @@ try {
     let asks = 0;
     const before = outputReads;
     const denied = coordinator("denied-shell-page", { denyPaths: [logPath] });
-    const deniedResult = await denied.instance.createCodeModeTool().execute("denied-shell-page", { code: logCode });
+    const deniedResult = await denied.instance.createCodeModeTool().execute("denied-shell-page", { description: "denied-shell-page", code: logCode });
     assert.equal(deniedResult.isError, true);
     assert.match(details(deniedResult).error, /denied by project policy/u);
     assert.equal(outputReads, before, "denied logs must never reach the reader");
     const unapproved = coordinator("unapproved-shell-page", { ask: async () => { asks++; return { approved: false, scope: "once" }; } });
-    assert.equal((await unapproved.instance.createCodeModeTool().execute("unapproved-shell-page", { code: logCode })).isError, true);
+    assert.equal((await unapproved.instance.createCodeModeTool().execute("unapproved-shell-page", { description: "unapproved-shell-page", code: logCode })).isError, true);
     assert.equal(asks, 1);
     assert.equal(outputReads, before);
     const unapprovedArchive = coordinator("unapproved-archive-page", { ask: async () => { asks++; return { approved: false, scope: "once" }; } });
-    const archiveRefused = await unapprovedArchive.instance.createCodeModeTool().execute("unapproved-archive-page", {
+    const archiveRefused = await unapprovedArchive.instance.createCodeModeTool().execute("unapproved-archive-page", { description: "unapproved-archive-page",
       code: `return await tools.Read({path:${JSON.stringify(archivePath)}});`
     });
     assert.equal(archiveRefused.isError, true);
@@ -166,18 +166,18 @@ try {
     const { instance } = coordinator("restricted-archive-paths");
     const exec = instance.createCodeModeTool();
     for (const [index, escape] of ["../../outside.txt", ".biny/tool-results/../sessions/private.jsonl"].entries()) {
-      const result = await exec.execute(`archive-escape-${index}`, { code: `return await tools.Read({path:${JSON.stringify(escape)}});` });
+      const result = await exec.execute(`archive-escape-${index}`, { description: "执行测试脚本", code: `return await tools.Read({path:${JSON.stringify(escape)}});` });
       assert.equal(result.isError, true);
       assert.match(details(result).error, /outside|ignored|protected|relative/iu);
     }
-    const workspaceRead = await exec.execute("ordinary-workspace-read", { code: 'return await tools.Read({path:"managed-output.log",lineCount:1});' });
+    const workspaceRead = await exec.execute("ordinary-workspace-read", { description: "ordinary-workspace-read", code: 'return await tools.Read({path:"managed-output.log",lineCount:1});' });
     assert.equal(workspaceRead.isError, false);
     assert.equal(details(workspaceRead).value.content, "LOG_HEAD");
     const external = path.join(root, "unrelated.txt");
     await writeFile(external, "not an archived tool result");
     const symlinkReference = `.biny/tool-results/tool-result-${"f".repeat(64)}.json`;
     await symlink(external, resolveToolResultArchivePath(root, symlinkReference));
-    const symlinkRead = await exec.execute("archive-symlink", { code: `return await tools.Read({path:${JSON.stringify(symlinkReference)}});` });
+    const symlinkRead = await exec.execute("archive-symlink", { description: "archive-symlink", code: `return await tools.Read({path:${JSON.stringify(symlinkReference)}});` });
     assert.equal(symlinkRead.isError, true);
     assert.equal(details(symlinkRead).value, undefined);
     assert.equal(await readFile(external, "utf8"), "not an archived tool result");

@@ -82,8 +82,9 @@ test("受控命令行与外部 MCP 共用连续动作和等待链路，原有直
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   try {
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
-    await client.callTool({ name: "get_app_state", arguments: { pid: 42, window_id: 900, waitFor: { text: "Fixture" } } });
-    const captureId = f.service.controller.currentCapture()!.id;
+    const observation = await client.callTool({ name: "get_app_state", arguments: { pid: 42, window_id: 900, waitFor: { text: "Fixture" } } });
+    const text = (observation.content as { type: string; text?: string }[]).find(part => part.type === "text")!.text!;
+    const captureId = (JSON.parse(text.split("\n")[0]!) as { capture_id: string }).capture_id;
     const result = await client.callTool({ name: "sequence", arguments: { ...target, captureId, actions: [{ action: "press_key", key: "Return" }] } });
     assert.equal(result.isError, false);
     assert.equal((result.content as { type: string }[]).some(part => part.type === "image"), true);
@@ -248,6 +249,7 @@ server.listen(process.argv[process.argv.indexOf('--socket') + 1], () => console.
   const invoke = async (name: string, args: Record<string, unknown>) => {
     const tool = tools.find(entry => entry.name === name)!;
     const execution = await tool.resolveExecution(args);
+    assert.ok("execute" in execution);
     return await execution.execute({ toolCallId: "fixture-call", operationId: "fixture-operation", sessionId: "fixture-session", onImage: image => { images.push(image); return true; } }) as Record<string, unknown>;
   };
   const entries = async (): Promise<JournalEntry[]> => (await readFile(journal, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
@@ -274,6 +276,7 @@ test("MCP session metadata preserves Desktop ownership and closing releases the 
   assert.equal(f.service.controller.status().owner, "fixture-session");
   const list = f.mcp.createTools().find(tool => tool.name === "ComputerList")!;
   const prepared = await list.resolveExecution({});
+  assert.ok("execute" in prepared);
   await assert.rejects(prepared.execute({ toolCallId: "other", operationId: "other", sessionId: "another-session" }), /computer_owner_conflict/);
   await assert.rejects(f.mcp.callServerTool("computer-use", "ComputerList", {}, undefined, true), /invalid_type|Required/);
   await f.mcp.close();
@@ -286,6 +289,7 @@ test("cancelling an MCP action after native dispatch keeps its effect unknown an
   const observed = await f.invoke("ComputerObserve", target);
   const action = f.mcp.createTools().find(tool => tool.name === "ComputerAction")!;
   const execution = await action.resolveExecution({ ...target, action: "click", captureId: observed.capture_id, x: 1, y: 2 });
+  assert.ok("execute" in execution);
   const cancelled = new AbortController();
   const result = execution.execute({ toolCallId: "cancelled-input", operationId: "cancelled-input", sessionId: "fixture-session", signal: cancelled.signal });
   const rejection = assert.rejects(result, error => error instanceof ToolOutcomeUnknownError && error.reason === "cancelled");
@@ -671,3 +675,62 @@ test("外部客户端接入桌面后保留列表期限和观察数量选项，�
     assert.equal((await f.entries()).filter(entry => entry.cmd === "scroll").length, 1);
   } finally { await policy.close(); }
 });
+
+for (const route of ["builtin", "standalone", "desktop-mcp"] as const) {
+  test(`shared Computer Use input reaches native transport: ${route}`, { timeout: 20_000 }, async t => {
+    const f = await fixture(t);
+    const client = new Client({ name: "input-contract", version: "1" });
+    const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => route === "desktop-mcp" ? f.endpoint : undefined);
+    const server = createComputerUseMcpServer(f.driver, policy);
+    const [left, right] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([client.connect(left), server.connect(right)]);
+      const invoke = async (action: string, fields: Record<string, unknown>, ref: string, captureId: unknown) => {
+        if (route === "builtin") {
+          const aliases: Record<string, string> = { ref: "elementToken", show_cursor: "showCursor", click_count: "clickCount", coord_space: "coordinateSpace" };
+          return await f.invoke("ComputerAction", { ...target, action, captureId, ...Object.fromEntries(Object.entries(fields).map(([key, value]) => [aliases[key] ?? key, value === "REF" ? ref : value])) });
+        }
+        const result = await client.callTool({ name: action, arguments: { pid: 42, window_id: 900, ...Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value === "REF" ? ref : value])) } });
+        if (result.isError) throw new Error(JSON.stringify(result.content));
+        return result;
+      };
+      const cases: [string, Record<string, unknown>, Record<string, unknown>][] = [
+        ["click", { ref: "REF", button: "right", click_count: 2, strategy: "ax", coord_space: "screen" }, { ref: "REF", button: "right", clicks: 2, strategy: "ax", coord_space: "screen" }],
+        ["type_text", { ref: "REF", text: "中文", inputMethod: "ax" }, { ref: "REF", text: "中文", input_method: "ax" }],
+        ["press_key", { key: "Return" }, { key: "Return" }],
+        ["scroll", { ref: "REF", direction: "left" }, { ref: "REF", direction: "left", pages: 1 }],
+        ["drag", { x1: 1, y1: 2, x2: 30, y2: 40, coord_space: "screenshot" }, { x1: 1, y1: 2, x2: 30, y2: 40, coord_space: "screenshot" }],
+        ["perform_secondary_action", { ref: "REF" }, { ref: "REF" }],
+        ["set_value", { ref: "REF", value: false }, { ref: "REF", value: false }],
+        ["select_text", { ref: "REF", location: 0, length: 2 }, { ref: "REF", location: 0, length: 2 }],
+        ["select_text", { ref: "REF", matchText: "目标", prefix: "前", suffix: "后" }, { ref: "REF", match_text: "目标", prefix: "前", suffix: "后" }]
+      ];
+      for (const [action, fields, expected] of cases) {
+        const options = { maxElements: 20, depth: 3, screenshotMaxWidth: 320, interactiveOnly: false };
+        const observation = route === "builtin" ? await f.invoke("ComputerObserve", { ...target, ...options }) : await client.callTool({ name: "get_app_state", arguments: { pid: 42, window_id: 900, ...options } });
+        assert.notEqual(observation.isError, true);
+        const entries = await f.entries();
+        const reads = entries.filter(entry => entry.cmd === "get_app_state");
+        assert.equal(reads.at(-1)!.args.max_elements, 20);
+        assert.equal(reads.at(-1)!.args.max_depth, 3);
+        assert.equal(reads.at(-1)!.args.max_width, 320);
+        assert.equal(reads.at(-1)!.args.interactive_only, false);
+        const ref = `e${reads.length}`;
+        const captureId = (observation as Record<string, unknown>).capture_id;
+        // Invalid payloads must not dispatch or consume this valid observation.
+        for (const invalid of [{ ref: "REF", value: "x".repeat(4001) }, { ref: "e".repeat(257), value: 0 }]) {
+          await assert.rejects(invoke("set_value", invalid, ref, captureId));
+        }
+        await assert.rejects(invoke("click", { ref: "REF", x: 1 }, ref, captureId));
+        await invoke(action, { ...fields, show_cursor: false }, ref, captureId);
+        const dispatched = (await f.entries()).slice(entries.length).filter(entry => entry.cmd === action);
+        assert.equal(dispatched.length, 1);
+        const { client_id, capture_id, delivery, ...actual } = dispatched[0]!.args;
+        assert.equal(typeof client_id, "string");
+        assert.equal(delivery, route === "standalone" ? undefined : "background");
+        if (route !== "standalone") assert.equal(typeof capture_id, "string");
+        assert.deepEqual(actual, { pid: 42, window_id: 900, show_cursor: false, ...Object.fromEntries(Object.entries(expected).map(([key, value]) => [key, value === "REF" ? ref : value])) });
+      }
+    } finally { await client.close(); await server.close(); }
+  });
+}

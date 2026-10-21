@@ -82,7 +82,7 @@ export function createToolSearchTool(
   return {
     name: toolSearchToolName,
     exposure: "model-only",
-    description: "Search currently registered built-in, MCP, Skill, plugin, and subagent tools. Exact tool names resolve locally; other queries use semantic selection. Matching tools become available on the next model step; call this when the current tool set cannot complete the request.",
+    description: "Discover additional registered built-in, MCP, Skill, plugin, and subagent tools when the current tool set cannot complete the request. Exact tool names resolve locally; other queries use semantic selection. Returns a search-result object with status, query, found, and tools (the match array); failed searches include error details. Matching tools become available on the next model step. This discovers definitions without executing the matched tools. Inside run_script, use searchTools(query, {limit, namespace}) instead; that helper returns the match array directly.",
     promptSnippet: "Discover additional registered tools when the current tool set is insufficient",
     promptGuidelines: ["Use ToolSearch only when the current tools cannot complete the request; describe the missing capability precisely"],
     parameters: {

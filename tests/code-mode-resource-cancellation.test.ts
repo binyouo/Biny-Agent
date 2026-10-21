@@ -64,7 +64,7 @@ try {
       });
       try {
         const id = `mid-read-${mode}-${String(cooperative)}`;
-        const pending = tool.execute(id, mode === "direct" ? args : { code }, controller.signal);
+        const pending = tool.execute(id, mode === "direct" ? args : { description: "读取技能资源", code }, controller.signal);
         await entered.promise;
         if (!cooperative) controller.abort();
         const result = await pending;
@@ -79,12 +79,12 @@ try {
           assert.equal(quarantines, 0);
           assert.doesNotThrow(() => coordinator.assertCanContinue());
           mock.restoreAll();
-          const later = await tool.execute(`later-${mode}`, mode === "direct" ? args : { code });
+          const later = await tool.execute(`later-${mode}`, mode === "direct" ? args : { description: "读取技能资源", code });
           assert.equal(later.isError, false, JSON.stringify(later.details));
         } else {
           assert.ok(quarantines > 0, "a descriptor still held by an unresolved read must be quarantined");
           assert.throws(() => coordinator.assertCanContinue(), /unknown side effect/u);
-          const blocked = await tool.execute(`blocked-replay-${mode}`, mode === "direct" ? args : { code });
+          const blocked = await tool.execute(`blocked-replay-${mode}`, mode === "direct" ? args : { description: "读取技能资源", code });
           assert.equal(blocked.isError, true);
           assert.equal(reads, 1, "no replay or overlapping read may start while the previous result is unknown");
           release.resolve(); await closed.promise;

@@ -104,7 +104,7 @@ for (const example of examples) {
       const emitted: Array<AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>> = [];
       coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry },
         new PermissionManager(config.permission), (event) => emitted.push(event));
-      const result = await coordinator.createCodeModeTool().execute("lookup", { code: "return await tools.mcp_fixture_lookup({});" });
+      const result = await coordinator.createCodeModeTool().execute("lookup", { description: "lookup", code: "return await tools.mcp_fixture_lookup({});" });
       const failed = example.response.isError === true;
       assert.equal(result.isError, failed);
       const value = result.details as { ok: boolean; error?: string; value?: unknown; executionStatus: string; childCalls: unknown[] };
@@ -157,7 +157,7 @@ for (const example of examples) {
       assert.deepEqual(JSON.parse(restoredText.text), serializedValue);
       assert.doesNotThrow(() => coordinator!.assertCanContinue(), "a settled remote failure has no unknown side effect");
       if (!failed) {
-        const caught = await coordinator.createCodeModeTool().execute("caught-script", {
+        const caught = await coordinator.createCodeModeTool().execute("caught-script", { description: "caught-script",
           code: "try { throw new Error('Handled validation error'); } catch { return { error: 'handled' }; }"
         });
         assert.equal(caught.isError, false, "a caught guest error does not become a failed cell");

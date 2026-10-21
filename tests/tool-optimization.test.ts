@@ -114,7 +114,7 @@ console.log('x'.repeat(2000));
     try {
       const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry },
         new PermissionManager(config.permission), () => {}, () => ({}), new Set(["Bash"]));
-      const outer = await coordinator.createCodeModeTool().execute("combined", { code: "const r = await tools.Bash({command:'pnpm build'}); return r.stdout.length;" });
+      const outer = await coordinator.createCodeModeTool().execute("combined", { description: "combined", code: "const r = await tools.Bash({command:'pnpm build'}); return r.stdout.length;" });
       assert.equal(outer.isError, false);
       assert.equal((outer.details as { value: number }).value, 2001);
       const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));

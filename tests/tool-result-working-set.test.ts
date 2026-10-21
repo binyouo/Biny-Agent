@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,7 +34,7 @@ test("a large model window still bounds retained file output without losing rece
     const bodies = Array.from({ length: 10 }, (_, i) => `EVIDENCE_${i}:` + String(i).repeat(2_000));
     await Promise.all(bodies.map((body, i) => writeFile(path.join(root, `${i}.txt`), body)));
     const requests: ModelStreamContext[] = [];
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "working-set",
       async stream(context) {
         requests.push(structuredClone({ ...context, tools: [] }));
@@ -43,7 +45,7 @@ test("a large model window still bounds retained file output without losing rece
           yield { type: "finish", reason: index < bodies.length ? "tool-calls" : "stop" };
         })();
       }
-    };
+    });
     const registry = new ToolRegistry();
     registry.registerBuiltinTool(createReadFileTool({ workspaceRoot: root, ignore: [] }));
     recorder = new SessionRecorder(root, "working-set");
@@ -58,7 +60,7 @@ test("a large model window still bounds retained file output without losing rece
     assert.ok(JSON.stringify(final.at(-1)!.content).includes(bodies[9]!));
     assert.ok(JSON.stringify(final.at(-2)!.content).includes(bodies[8]!));
     assert.ok(Buffer.byteLength(JSON.stringify(final.map(message => message.content))) <= 16_384);
-    const archived = final[0]!.details?.archivePath;
+    const archived = JSON.stringify(final[0]!.content).match(/\.biny\/tool-results\/tool-result-[a-f0-9]+\.json/u)?.[0];
     assert.equal(typeof archived, "string");
     assert.ok((await readToolResultArchive(root, String(archived))).output.includes(bodies[0]!));
     const events = await readSessionEvents(recorder.filePath);

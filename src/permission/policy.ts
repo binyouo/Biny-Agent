@@ -18,7 +18,7 @@ export type ToolName =
   | "Glob"
   | "Grep"
   | "Bash"
-  | "BashOutput"
+  | "ProcessStatus"
   | "KillShell"
   | "WebSearch"
   | "WebFetch"
@@ -93,7 +93,7 @@ export function analyzePermissionRequest(input: AnalyzePermissionInput): Permiss
     return analyzeCommand(input, getStringField(input.args, "command"));
   }
 
-  if (input.toolName === "BashOutput") {
+  if (input.toolName === "ProcessStatus") {
     return {
       ...base(input),
       actionType: "read",

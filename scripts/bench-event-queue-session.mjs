@@ -101,8 +101,7 @@ try {
       } }) };
     }
   };
-  const model = { provider: "synthetic", modelId: "synthetic", vercelModel,
-    stream: async () => { throw new Error("The compatibility adapter must not be used."); } };
+  const model = { provider: "synthetic", modelId: "synthetic", vercelModel };
   agent = new AgentSession({ workspaceRoot: temporary, config, model, toolRegistry: new ToolRegistry(),
     permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(temporary) });
   await agent.initialize();

@@ -68,7 +68,7 @@ const toolPresentations: Record<string, ToolPresentation> = {
   Write: { group: "workspace", label: "写入文件", detail: "用提供的内容覆盖文件。" },
   Edit: { group: "workspace", label: "编辑文件", detail: "精确替换文件中的文本片段。" },
   Bash: { group: "shell", label: "执行命令", detail: "执行有限命令或启动托管的后台命令。" },
-  BashOutput: { group: "shell", label: "后台输出", detail: "列出后台命令或分页读取状态和输出。" },
+  ProcessStatus: { group: "shell", label: "进程状态", detail: "列出后台进程，查看状态并分页读取输出。" },
   KillShell: { group: "shell", label: "停止命令", detail: "停止后台命令的整个进程组。" },
   TodoWrite: { group: "planning", label: "待办同步", selectable: false, detail: "更新当前多步任务清单并展示进度。" },
   Task: { group: "planning", label: "任务委派", detail: "启动子代理处理多步骤任务。" },

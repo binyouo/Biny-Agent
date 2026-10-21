@@ -7,9 +7,12 @@ import { z } from "zod";
 import { applicationPlaybook } from "./playbooks.js";
 import { NativeProcessDriver } from "./nativeDriver.js";
 import type { DriverReply } from "./controller.js";
-import { computerActionSchema, computerSequenceSchema, computerWaitSchema } from "./protocol.js";
+import { computerActionPayload, computerObservationOptions, computerSequenceSchema } from "./protocol.js";
 
-const appSchema = { pid: z.number().int().positive().optional(), bundle: z.string().min(1).optional(), window_id: z.number().int().positive().max(4294967295).optional() };
+import { legacyActionPayload, legacyActionShape, legacyComputerTarget, legacyObservationOptions } from "./input.js";
+import { toNativeActionArgs, toNativeObservationArgs } from "./nativeArgs.js";
+
+const appSchema = legacyComputerTarget;
 
 export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: ComputerMcpPolicy = new LocalComputerMcpPolicy(driver)): McpServer {
   const server = new McpServer(
@@ -41,10 +44,14 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
 
   function registerTool<Shape extends z.ZodRawShape>(name: string, config: { title?: string; description?: string; inputSchema: Shape }, callback: ToolCallback<Shape>) {
     const guarded: ToolCallback<z.ZodRawShape> = async (args, extra) => {
-      try { return await policy.run(name, args as Record<string, unknown>, async () => await (callback as ToolCallback<z.ZodRawShape>)(args, extra), extra.signal); }
+      try {
+        if (computerActionPayload.shape.action.safeParse(name).success) legacyActionPayload(name, args);
+        if (name === "get_app_state") legacyObservationOptions(args);
+        return await policy.run(name, args as Record<string, unknown>, async () => await (callback as ToolCallback<z.ZodRawShape>)(args, extra), extra.signal); }
       catch (error) { return fail(error); }
     };
-    return server.registerTool<z.ZodRawShape, z.ZodRawShape>(name, config, guarded);
+    const inputSchema = z.object(config.inputSchema).strict();
+    return server.registerTool<z.ZodRawShape, typeof inputSchema>(name, { ...config, inputSchema }, guarded as ToolCallback<typeof inputSchema>);
   }
 
   registerTool("pip_open", {
@@ -107,30 +114,17 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
         "Snapshot one app window: returns the accessibility tree (role, title, value, frame, and a stable ref per element) plus a screenshot. Call this once per turn before acting. On apps with no AX tree (Qt / custom-drawn) the elements list is empty but the screenshot is still captured, so you can click by pixel. AUTO-LAUNCH: if the app is not running it is launched in the BACKGROUND — the user's frontmost app stays put.",
       inputSchema: {
         ...appSchema,
-        maxElements: z.number().int().positive().max(1000).optional(),
-        content: z.enum(["full", "image"]).optional().describe("image 仅截图并更新凭据，不提供旧控件引用。"),
-        waitFor: computerWaitSchema.optional().describe("通过 Desktop 等待指定文字出现，超时后停止等待。"),
-        depth: z.number().int().min(1).max(20).optional().describe("AX tree depth, from 1 to 20."),
-        screenshotMaxWidth: z.number().int().positive().optional()
-          .describe("Downsample width for the screenshot (default 1280)."),
-        interactiveOnly: z.boolean().optional().describe("Limit to interactive elements. Default true."),
+        ...computerObservationOptions.shape,
         autoLaunch: z.boolean().optional()
           .describe("Auto-launch the app in the background if not running. Default true.")
       }
     },
-    async ({ pid, bundle, window_id, maxElements, depth, screenshotMaxWidth, interactiveOnly, autoLaunch, content: observationContent }, extra) => {
+    async (input, extra) => {
       try {
-        const args: Record<string, unknown> = {};
-        if (pid !== undefined) args.pid = pid;
-        if (bundle !== undefined) args.bundle = bundle;
-        if (maxElements !== undefined) args.max_elements = maxElements;
-        if (depth !== undefined) args.max_depth = depth;
-        if (observationContent === "image") args.max_depth = 0;
-        if (window_id !== undefined) args.window_id = window_id;
-        if (screenshotMaxWidth !== undefined) args.max_width = screenshotMaxWidth;
-        if (interactiveOnly !== undefined) args.interactive_only = interactiveOnly;
-        if (autoLaunch !== undefined) args.auto_launch = autoLaunch;
-        const reply = await driver.observeRaw(args, extra.signal);
+        const reply = await driver.observeRaw({
+          ...toNativeObservationArgs({ ...legacyObservationOptions(input), pid: input.pid, windowId: input.window_id === undefined ? undefined : String(input.window_id) }),
+          bundle: input.bundle, auto_launch: input.autoLaunch
+        }, extra.signal);
         const { elements, playbook, ...rest } = reply.data as { elements?: ElementLike[] } & Record<string, unknown>;
         const tree = renderElementTree(elements);
         const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
@@ -143,28 +137,25 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     }
   );
 
+  const actionHandler = (action: import("./protocol.js").ComputerAction["action"]): ToolCallback<z.ZodRawShape> => async (args, extra) => {
+    const payload = legacyActionPayload(action, args);
+    const pid = args.pid as number | undefined;
+    const windowId = args.window_id as number | undefined;
+    const reply = await driver.actRaw(action, {
+      ...toNativeActionArgs({ ...payload, pid, windowId: windowId === undefined ? undefined : String(windowId) }), bundle: args.bundle
+    }, pid, extra.signal);
+    return await withPostShot(pid, reply, windowId);
+  };
+
   registerTool(
     "click",
     {
       title: "Click",
       description:
         "使用最新观察中的控件引用或截图坐标点击。优先控件引用；坐标点击默认后台投递，不自动切换到前台。返回动作后截图；投递不等于业务目标已完成。",
-      inputSchema: {
-        ref: z.string().min(1).optional().describe("Element ref from the latest snapshot"),
-        x: z.number().finite().optional(), y: z.number().finite().optional(),
-        button: z.enum(["left", "right", "middle"]).optional(), click_count: z.number().int().min(1).max(3).optional(),
-        strategy: z.enum(["auto", "physical", "ax"]).optional(), coord_space: z.enum(["screenshot", "screen"]).optional(),
-        ...appSchema,
-        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
-      }
+      inputSchema: legacyActionShape("click")
     },
-    async ({ ref, x, y, pid, bundle, window_id, button, click_count, strategy, coord_space, show_cursor }, extra) => {
-      try {
-        if (!ref && (x === undefined || y === undefined)) throw new Error("click requires either ref or x/y");
-        const reply = await driver.actRaw("click", { ref, x, y, bundle, window_id, button, clicks: click_count, strategy, coord_space, show_cursor }, pid, extra.signal);
-        return await withPostShot(pid, reply, window_id);
-      } catch (error) { return fail(error); }
-    }
+    actionHandler("click")
   );
 
   registerTool(
@@ -172,24 +163,9 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     {
       title: "Type text",
       description: "Type text into the target app. Focus the destination first with click, or pass inputMethod=ax with a ref to write the element directly without needing focus. Multi-byte text is delivered character by character. If the reply carries verification_note, the text was sent but landing could not be confirmed — verify before assuming it was written. Do NOT bring the app to the front to make typing land; that costs the user their focus. Returns the post-action screenshot.",
-      inputSchema: {
-        text: z.string().min(1).max(4000),
-        ...appSchema,
-        inputMethod: z.enum(["auto", "physical", "unicode", "ax"]).optional()
-          .describe("physical uses the selected keyboard layout and rejects unrepresentable text before input. auto chooses writable AX with a ref, then a complete physical key plan, then Unicode; ax needs ref."),
-        ref: z.string().min(1).optional().describe("Required when inputMethod is ax"),
-        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
-      }
+      inputSchema: legacyActionShape("type_text")
     },
-    async ({ text, pid, bundle, window_id, inputMethod, ref, show_cursor }, extra) => {
-      try {
-        const reply = await driver.actRaw("type_text", {
-          text, show_cursor, bundle, window_id,
-          input_method: inputMethod, ref
-        }, pid, extra.signal);
-        return await withPostShot(pid, reply, window_id);
-      } catch (error) { return fail(error); }
-    }
+    actionHandler("type_text")
   );
 
   registerTool(
@@ -197,36 +173,19 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     {
       title: "Press key",
       description: "Press a key or chord in xdotool syntax: cmd+s, ctrl+shift+t, Return, Escape, F1. A keystrokes_may_be_dropped warning means the app had nothing focused to receive it. Returns the post-action screenshot.",
-      inputSchema: { key: z.string().min(1).max(40), ...appSchema, show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action") }
+      inputSchema: legacyActionShape("press_key")
     },
-    async ({ key, pid, bundle, window_id, show_cursor }, extra) => {
-      try {
-        const reply = await driver.actRaw("press_key", { key, bundle, window_id, show_cursor }, pid, extra.signal);
-        return await withPostShot(pid, reply, window_id);
-      } catch (error) { return fail(error); }
-    }
+    actionHandler("press_key")
   );
 
   registerTool(
     "scroll",
     {
       title: "Scroll",
-      description: "Scroll the target app up, down, left or right by a number of lines. Returns the post-action screenshot.",
-      inputSchema: {
-        ref: z.string().min(1).optional(), x: z.number().finite().optional(), y: z.number().finite().optional(),
-        direction: z.enum(["up", "down", "left", "right"]),
-        pages: z.number().int().min(1).max(20).optional(),
-        ...appSchema,
-        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
-      }
+      description: "Scroll the target app up, down, left or right by a number of pages (default 1). Returns the post-action screenshot.",
+      inputSchema: legacyActionShape("scroll")
     },
-    async ({ ref, x, y, direction, pages, pid, bundle, window_id, show_cursor }, extra) => {
-      try {
-        if (!ref && (x === undefined || y === undefined)) throw new Error("scroll requires ref or x/y");
-        const reply = await driver.actRaw("scroll", { ref, x, y, direction, pages: pages ?? 1, bundle, window_id, show_cursor }, pid, extra.signal);
-        return await withPostShot(pid, reply, window_id);
-      } catch (error) { return fail(error); }
-    }
+    actionHandler("scroll")
   );
 
   registerTool(
@@ -234,18 +193,9 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     {
       title: "Drag",
       description: "Mouse drag from one screenshot point to another. The accessibility API has no drag action, so this synthesises a press-move-release sequence. Returns the post-action screenshot.",
-      inputSchema: {
-        x1: z.number(), y1: z.number(), x2: z.number(), y2: z.number(), coord_space: z.enum(["screenshot", "screen"]).optional(),
-        ...appSchema,
-        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
-      }
+      inputSchema: legacyActionShape("drag")
     },
-    async ({ x1, y1, x2, y2, coord_space, pid, bundle, window_id, show_cursor }, extra) => {
-      try {
-        const reply = await driver.actRaw("drag", { x1, y1, x2, y2, bundle, window_id, coord_space, show_cursor }, pid, extra.signal);
-        return await withPostShot(pid, reply, window_id);
-      } catch (error) { return fail(error); }
-    }
+    actionHandler("drag")
   );
 
   registerTool(
@@ -253,19 +203,9 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     {
       title: "Open context menu",
       description: "Right-click, or open the context menu of an element by ref. Tries the accessibility ShowMenu action first and falls back to a synthesised right-click. Returns the post-action screenshot.",
-      inputSchema: {
-        ref: z.string().min(1).optional(), x: z.number().optional(), y: z.number().optional(),
-        ...appSchema,
-        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
-      }
+      inputSchema: legacyActionShape("perform_secondary_action")
     },
-    async ({ ref, x, y, pid, bundle, window_id, show_cursor }, extra) => {
-      try {
-        if (!ref && (x === undefined || y === undefined)) throw new Error("perform_secondary_action requires either ref or x/y");
-        const reply = await driver.actRaw("perform_secondary_action", { ref, x, y, bundle, window_id, show_cursor }, pid, extra.signal);
-        return await withPostShot(pid, reply, window_id);
-      } catch (error) { return fail(error); }
-    }
+    actionHandler("perform_secondary_action")
   );
 
   registerTool(
@@ -273,19 +213,9 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     {
       title: "Set value",
       description: "Write an element's value directly through the accessibility API, for sliders, steppers and text fields. Skips keystroke simulation. Returns the post-action screenshot.",
-      inputSchema: {
-        ref: z.string().min(1).describe("Element ref from the latest snapshot"),
-        value: z.union([z.string(), z.number(), z.boolean()]),
-        ...appSchema,
-        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
-      }
+      inputSchema: legacyActionShape("set_value")
     },
-    async ({ ref, value, pid, bundle, window_id, show_cursor }, extra) => {
-      try {
-        const reply = await driver.actRaw("set_value", { ref, value, bundle, window_id, show_cursor }, pid, extra.signal);
-        return await withPostShot(pid, reply, window_id);
-      } catch (error) { return fail(error); }
-    }
+    actionHandler("set_value")
   );
 
   registerTool(
@@ -293,25 +223,9 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     {
       title: "Select text",
       description: "按位置选择文本，或使用 matchText 和可选前后文唯一匹配选区。重复匹配时拒绝，不默认选第一处。text 用于替换当前选区，不能与 matchText 混用。返回动作后截图。",
-      inputSchema: {
-        ref: z.string().min(1).describe("Element ref from the latest snapshot"),
-        text: z.string().min(1).optional(),
-        matchText: z.string().min(1).max(4000).optional(),
-        prefix: z.string().max(1000).optional(),
-        suffix: z.string().max(1000).optional(),
-        location: z.number().int().nonnegative().optional(),
-        length: z.number().int().nonnegative().optional(),
-        ...appSchema,
-        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
-      }
+      inputSchema: legacyActionShape("select_text")
     },
-    async ({ ref, text, location, length, matchText, prefix, suffix, pid, bundle, window_id, show_cursor }, extra) => {
-      try {
-        computerActionSchema.parse({ action: "select_text", pid, windowId: String(window_id), captureId: "external", elementToken: ref, text, location, length, matchText, prefix, suffix });
-        const reply = await driver.actRaw("select_text", { ref, text, location, length: matchText === undefined ? length ?? 0 : undefined, match_text: matchText, prefix, suffix, bundle, window_id, show_cursor }, pid, extra.signal);
-        return await withPostShot(pid, reply, window_id);
-      } catch (error) { return fail(error); }
-    }
+    actionHandler("select_text")
   );
 
   registerTool("sequence", {

@@ -6,7 +6,7 @@ import path from "node:path";
 import { mock, test } from "node:test";
 import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
 import { bindManagedProcessLog, readManagedProcessLog, type ManagedProcessLogBinding } from "../src/runtime/managedProcessLog.js";
-import { createBashOutputTool } from "../src/tools/process/managedProcesses.js";
+import { createProcessStatusTool } from "../src/tools/process/managedProcesses.js";
 
 function publicRead(binding: ManagedProcessLogBinding, signal?: AbortSignal) {
   const processId = "00000000-0000-4000-8000-000000000082";
@@ -23,7 +23,7 @@ function publicRead(binding: ManagedProcessLogBinding, signal?: AbortSignal) {
     assert.equal(readSignal, signal);
     return { processId, ...await readManagedProcessLog(binding, options, readSignal) };
   };
-  const execution = createBashOutputTool(service).resolveExecution({ processId });
+  const execution = createProcessStatusTool(service).resolveExecution({ processId });
   assert.ok(!("isError" in execution));
   return execution.execute({ toolCallId: "retained-output-cancellation", signal });
 }

@@ -122,7 +122,7 @@ test("TaskStatus also rejects non-JSON numeric values in direct coordinator call
 test("Code Mode describes the same TaskStatus contract and preserves its boundaries", async () => {
   const f = await fixture();
   try {
-    const result = await f.coordinator.createCodeModeTool().execute("describe-status", {
+    const result = await f.coordinator.createCodeModeTool().execute("describe-status", { description: "describe-status",
       code: "return { definition: await describeTool('TaskStatus'), result: await tools.TaskStatus({ taskRunId: 'task-1', waitMs: 0, afterRevision: 0 }) };"
     });
     assert.equal(result.isError, false, JSON.stringify(result.details));
@@ -131,7 +131,7 @@ test("Code Mode describes the same TaskStatus contract and preserves its boundar
     assert.deepEqual(details.value.definition.parameters, f.status.parameters);
     assert.equal(details.value.result.status, "completed");
     assert.deepEqual(details.value.result.args, { taskRunId: "task-1", waitMs: 0, afterRevision: 0 });
-    const rejected = await f.coordinator.createCodeModeTool().execute("reject-fractional-revision", {
+    const rejected = await f.coordinator.createCodeModeTool().execute("reject-fractional-revision", { description: "reject-fractional-revision",
       code: "return await tools.TaskStatus({ taskRunId: 'task-1', afterRevision: 0.5 });"
     });
     assert.equal(rejected.isError, true);

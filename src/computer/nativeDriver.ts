@@ -1,6 +1,7 @@
 // 自研 macOS 原生 driver：spawn native/computer-use daemon 并通过 unix socket 通信。
 // 协议：换行分隔 JSON，{"id","cmd","args"} → {"id","ok","data"|"error"}。
 // daemon 是独立的 Swift 可执行文件（native/computer-use），不依赖任何第三方 SDK。
+import { toNativeActionArgs, toNativeObservationArgs } from "./nativeArgs.js";
 import { applicationPlaybook } from "./playbooks.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
@@ -526,22 +527,8 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   async observe(_session: string, target: WindowObserve, signal?: AbortSignal): Promise<DriverReply> {
-    const args: Record<string, unknown> = {};
-    if (typeof target.pid === "number") { args.pid = target.pid; this.lastPid = target.pid; }
-    if (typeof (target as { bundleId?: string }).bundleId === "string") args.bundle = (target as { bundleId?: string }).bundleId;
-    // windowId 以前被丢在这里，从没到过守护进程 —— 而 ComputerObserve 把它列为必填。
-    // 结果是模型必须编一个字符串，守护进程则拍它自己挑的窗口。现在它真的用于定位。
-    const windowId = Number(target.windowId);
-    if (Number.isSafeInteger(windowId) && windowId > 0) args.window_id = windowId;
-    // ⚠️ 这里是**逐字段拼**的，所以"没拼进去"等于"这一层不存在"。
-    // 观察参数以前一个都没拼 —— 于是守护进程明明支持，产品内这条路却够不到。
-    // （和动作那条一样：加参数时要跟一遍每一层，而不是只改你正在测的那层。）
-    const observe = target as WindowObserve;
-    if (observe.maxElements !== undefined) args.max_elements = observe.maxElements;
-    if (observe.depth !== undefined) args.max_depth = observe.depth;
-    if (observe.content === "image") args.max_depth = 0;
-    if (observe.screenshotMaxWidth !== undefined) args.max_width = observe.screenshotMaxWidth;
-    if (observe.interactiveOnly !== undefined) args.interactive_only = observe.interactiveOnly;
+    this.lastPid = target.pid;
+    const args = toNativeObservationArgs(target);
     const reply = await this.call("get_app_state", { ...args, client_id: this.clientId }, signal);
     return { ...reply, data: { ...reply.data, playbook: applicationPlaybook(reply.data.bundleId ?? reply.data.bundle) || undefined } };
   }
@@ -563,41 +550,8 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   async act(_session: string, action: ComputerAction, signal?: AbortSignal): Promise<DriverReply> {
-    // 产品内动作已有校验过的精确目标，不能被共享 driver 的最近观察覆盖。
-    const pid = action.pid;
-    // `show_cursor` 挂在这里：它是**每个动作都适用**的（参照 CLI 的 `--no-cursor`
-    // 写在 "Action flags" 里，不挑动词）。放在 withPid 旁边一次覆盖全部 8 个动作，
-    // 好过在每个 case 里各写一遍 —— 那种写法漏一个就静默失效。
-    const withPid = (params: Record<string, unknown>): Record<string, unknown> => ({
-      pid, window_id: Number(action.windowId), client_id: this.clientId, capture_id: action.captureId, show_cursor: action.showCursor, coord_space: action.coordinateSpace,
-      delivery: action.delivery,
-      ...params
-    });
-    switch (action.action) {
-      case "click":
-        return await this.input("click", withPid({ ref: action.elementToken, x: action.x, y: action.y, button: action.button, clicks: action.clickCount, strategy: action.strategy }), signal);
-      case "type_text":
-        return await this.input("type_text", withPid({ text: action.text, input_method: action.inputMethod, ref: action.elementToken }), signal);
-      case "press_key":
-        return await this.input("press_key", withPid({ key: action.key }), signal);
-      case "scroll":
-        return await this.input("scroll", withPid({ ref: action.elementToken, x: action.x, y: action.y, direction: action.direction, pages: action.pages }), signal);
-      case "drag":
-        return await this.input("drag", withPid({ x1: action.x1, y1: action.y1, x2: action.x2, y2: action.y2 }), signal);
-      case "perform_secondary_action":
-        return await this.input("perform_secondary_action", withPid(action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }), signal);
-      case "set_value":
-        return await this.input("set_value", withPid({ ref: action.elementToken, value: action.value }), signal);
-      case "select_text":
-        return await this.input("select_text", withPid(
-          action.matchText !== undefined
-            ? { ref: action.elementToken, match_text: action.matchText, prefix: action.prefix, suffix: action.suffix }
-            : action.text !== undefined
-            ? { ref: action.elementToken, text: action.text }
-            : { ref: action.elementToken, location: action.location, length: action.length ?? 0 }
-        ), signal);
-      default:
-        throw new Error(`action_unsupported: ${String((action as { action: string }).action)}`);
-    }
+    return await this.input(action.action, {
+      ...toNativeActionArgs(action), client_id: this.clientId, capture_id: action.captureId, delivery: action.delivery
+    }, signal);
   }
 }

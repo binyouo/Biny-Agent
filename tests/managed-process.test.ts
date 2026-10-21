@@ -6,7 +6,7 @@ import path from "node:path";
 import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
 import { agentDir } from "../src/session/store.js";
 import {
-  createBashOutputTool,
+  createProcessStatusTool,
   createKillShellTool
 } from "../src/tools/process/managedProcesses.js";
 import { createRunCommandTool, runShellCommand } from "../src/tools/shell/runCommand.js";
@@ -142,24 +142,24 @@ async function testManagedHttpProcessOutlivesFiniteCommandTimeout(workspaceRoot:
     assert.equal(finiteCommand.exitCode, 124);
     await delay(120);
 
-    const status = await runnable(createBashOutputTool(service).resolveExecution({ processId: started.processId, maxBytes: 8_192 }))
+    const status = await runnable(createProcessStatusTool(service).resolveExecution({ processId: started.processId, maxBytes: 8_192 }))
       .execute({ toolCallId: "status-http" });
     assert.equal(status.process?.state, "running", "managed servers must not inherit Bash's deadline");
     assert.equal((await fetch(url)).status, 200);
 
-    const firstPage = await runnable(createBashOutputTool(service).resolveExecution({ processId: started.processId, maxBytes: 16 }))
+    const firstPage = await runnable(createProcessStatusTool(service).resolveExecution({ processId: started.processId, maxBytes: 16 }))
       .execute({ toolCallId: "page-http-1" });
     assert.equal(firstPage.output?.startOffset, 0);
     assert.equal(firstPage.output?.nextOffset, 16);
     assert.equal(firstPage.output?.hasMore, true);
-    const nextPage = await runnable(createBashOutputTool(service).resolveExecution({
+    const nextPage = await runnable(createProcessStatusTool(service).resolveExecution({
       processId: started.processId,
       offset: firstPage.output?.nextOffset,
       maxBytes: 16
     })).execute({ toolCallId: "page-http-2" });
     assert.equal(nextPage.output?.startOffset, 16);
 
-    const outputResult = await runnable(createBashOutputTool(service).resolveExecution({
+    const outputResult = await runnable(createProcessStatusTool(service).resolveExecution({
       processId: started.processId,
       fromEnd: true,
       maxBytes: 8_192
@@ -170,7 +170,7 @@ async function testManagedHttpProcessOutlivesFiniteCommandTimeout(workspaceRoot:
     assert.equal(output.nextOffset, output.totalBytes);
     assert.equal(output.hasMore, false);
 
-    const listed = await runnable(createBashOutputTool(service).resolveExecution({ includeExited: false }))
+    const listed = await runnable(createProcessStatusTool(service).resolveExecution({ includeExited: false }))
       .execute({ toolCallId: "list-http" });
     assert.equal(listed.processes?.some((process) => process.processId === started.processId), true);
 

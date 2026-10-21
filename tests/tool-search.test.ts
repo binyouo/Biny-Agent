@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** 工具发现只返回匹配注册项，并由协调器显式扩展下一步工具白名单。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -27,7 +29,7 @@ const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-search-"))
 await ensureAgentDirs(workspaceRoot);
 let modelCalls = 0;
 const searchPrompts: string[] = [];
-const model: AgentModel = {
+const model: AgentModel = testModel({
   provider: "tool-search-test",
   modelId: "semantic-selector",
   stream: async (context) => {
@@ -38,7 +40,7 @@ const model: AgentModel = {
       { type: "finish", reason: "stop" }
     ]);
   }
-};
+});
 const registry = new ToolRegistry();
 registry.register(createToolSearchTool(() => registry.listEntries(), () => modelCandidates(model)));
 registry.register({
@@ -101,14 +103,14 @@ console.log("tool search tests passed");
 
 async function testCandidateFailoverAndCache(): Promise<void> {
   const calls: string[] = [];
-  const selector = (modelId: string, selected: string, fail = false): AgentModel => ({
+  const selector = (modelId: string, selected: string, fail = false): AgentModel => (testModel({
     provider: "test", providerAlias: modelId, modelId,
     async stream() {
       calls.push(modelId);
       if (fail) throw Object.assign(new Error("Insufficient Balance"), { statusCode: 402 });
       return events([{ type: "text-delta", text: JSON.stringify({ tools: [selected] }) }, { type: "finish", reason: "stop" }]);
     }
-  });
+  }));
   const exhausted = selector("empty", "", true);
   const sameAccount = selector("same-account", "tool_a");
   const backupA = selector("backup-a", "tool_a");
@@ -141,7 +143,7 @@ async function testCandidateFailoverAndCache(): Promise<void> {
   models = [...models.slice(0, 2), { model: backupB, failureDomain: "account-b" }];
   assert.deepEqual(toolSearchResultNames(await run()), ["tool_b"], "Changing the backup while retaining the primary must invalidate the cache.");
   assert.deepEqual(calls, ["empty", "backup-a", "empty", "backup-b"]);
-  models = [...models.slice(0, 2), { model: { ...backupB, stream: backupA.stream }, failureDomain: "account-b-new-key" }];
+  models = [...models.slice(0, 2), { model: testModel({ ...backupB, stream: backupA.stream }), failureDomain: "account-b-new-key" }];
   assert.deepEqual(toolSearchResultNames(await run()), ["tool_a"], "Changing the effective connection must invalidate the cache even for the same model identity.");
 
   models = [{ model: exhausted, failureDomain: "account-empty" }];
@@ -155,10 +157,10 @@ async function testExplicitRegisteredNamesWithoutModel(): Promise<void> {
   const testRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-search-explicit-"));
   await ensureAgentDirs(testRoot);
   let modelCalls = 0;
-  const unavailableModel: AgentModel = {
+  const unavailableModel: AgentModel = testModel({
     provider: "tool-search-test", modelId: "unavailable-selector",
     stream: async () => { modelCalls += 1; throw new Error("Insufficient Balance"); }
-  };
+  });
   let model: AgentModel | undefined = unavailableModel;
   const registry = new ToolRegistry();
   registry.register(createToolSearchTool(() => registry.listEntries(), () => modelCandidates(model)));
@@ -212,7 +214,7 @@ async function testCacheBoundaries(): Promise<void> {
   const testRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-search-cache-"));
   await ensureAgentDirs(testRoot);
   const calls = new Map<string, number>();
-  const modelFor = (modelId: string, selected: string): AgentModel => ({
+  const modelFor = (modelId: string, selected: string): AgentModel => (testModel({
     provider: "tool-search-cache-test",
     providerAlias: `alias-${modelId}`,
     modelId,
@@ -223,7 +225,7 @@ async function testCacheBoundaries(): Promise<void> {
         { type: "finish", reason: "stop" }
       ]);
     }
-  });
+  }));
   let activeModel = modelFor("model-a", "tool_a");
   const registry = new ToolRegistry();
   registry.register(createToolSearchTool(() => registry.listEntries(), () => modelCandidates(activeModel)));
@@ -289,14 +291,14 @@ async function testFailureClassification(): Promise<void> {
         name: "invalid-response",
         code: "tool_search_invalid_response",
         retryable: true,
-        model: {
+        model: testModel({
           provider: "tool-search-failure-test",
           modelId: "invalid-response",
           stream: async () => events([
             { type: "text-delta", text: "not json" },
             { type: "finish", reason: "stop" }
           ])
-        }
+        })
       },
       {
         name: "request-failed",
@@ -383,14 +385,14 @@ async function testFailureClassification(): Promise<void> {
 
     const abort = new AbortController();
     const abortRegistry = new ToolRegistry();
-    const abortModel: AgentModel = {
+    const abortModel: AgentModel = testModel({
       provider: "tool-search-failure-test",
       modelId: "abort",
       stream: async () => {
         abort.abort(new DOMException("synthetic abort", "AbortError"));
         throw abort.signal.reason;
       }
-    };
+    });
     const rawSearch = createToolSearchTool(() => abortRegistry.listEntries(), () => modelCandidates(abortModel));
     abortRegistry.register(rawSearch);
     abortRegistry.register(candidateTool("candidate", "Candidate", "test"));
@@ -440,14 +442,14 @@ async function testTolerantResponseParsing(): Promise<void> {
       let response = scenario.text;
       let calls = 0;
       const registry = new ToolRegistry();
-      registry.register(createToolSearchTool(() => registry.listEntries(), () => modelCandidates({
+      registry.register(createToolSearchTool(() => registry.listEntries(), () => modelCandidates(testModel({
         provider: "tool-search-tolerant-test",
         modelId: scenario.name,
         stream: async () => { calls += 1; return events([
           { type: "text-delta", text: response },
           { type: "finish", reason: "stop" }
         ]); }
-      })));
+      }))));
       registry.register(candidateTool("candidate", "Candidate", "test"));
       const recorder = new SessionRecorder(testRoot, `tolerant-${scenario.name}`);
       try {
@@ -485,7 +487,7 @@ async function testConcurrentSearchesDeduplicate(): Promise<void> {
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let started!: () => void;
   const modelStarted = new Promise<void>((resolve) => { started = resolve; });
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "tool-search-concurrent-test",
     modelId: "shared-request",
     stream: async () => {
@@ -497,7 +499,7 @@ async function testConcurrentSearchesDeduplicate(): Promise<void> {
         { type: "finish", reason: "stop" }
       ]);
     }
-  };
+  });
   const registry = new ToolRegistry();
   registry.register(createToolSearchTool(() => registry.listEntries(), () => modelCandidates(model)));
   registry.register(candidateTool("candidate", "Candidate", "test"));
@@ -665,7 +667,7 @@ async function testCodeModeDiscoveryScope(): Promise<void> {
   const testRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-search-code-mode-"));
   await ensureAgentDirs(testRoot);
   const prompts: string[] = [];
-  const selector: AgentModel = {
+  const selector: AgentModel = testModel({
     provider: "tool-search-test", modelId: "code-mode-discovery",
     stream: async (context) => {
       prompts.push(context.systemPrompt ?? "");
@@ -674,7 +676,7 @@ async function testCodeModeDiscoveryScope(): Promise<void> {
         { type: "finish", reason: "stop" }
       ]);
     }
-  };
+  });
   const registry = new ToolRegistry();
   registry.register(createToolSearchTool(() => registry.listEntries(), () => modelCandidates(selector)));
   registry.registerBuiltinTool(candidateTool("Read", "Read local file", "filesystem.read"));
@@ -692,7 +694,7 @@ async function testCodeModeDiscoveryScope(): Promise<void> {
     assert.ok(!coordinator.createAgentTools().some((tool) => tool.name === "ToolSearch"));
     const exec = coordinator.createCodeModeTool();
     const search = async (id: string, query: string) => {
-      const result = await exec.execute(id, { code: `return await searchTools(${JSON.stringify(query)});` });
+      const result = await exec.execute(id, { description: "执行测试脚本", code: `return await searchTools(${JSON.stringify(query)});` });
       assert.equal(result.isError, false, JSON.stringify(result.details));
       return (result.details as { value: Array<{ name: string; invocation?: string }> }).value;
     };
@@ -706,7 +708,7 @@ async function testCodeModeDiscoveryScope(): Promise<void> {
     const explicit = await search("code-mode-explicit", "Read Write mcp_read");
     assert.deepEqual(explicit.map((tool) => tool.name), ["Read", "Write", "mcp_read"]);
     assert.equal(prompts.length, 1, "Exact-name script discovery must not request an auxiliary model.");
-    const denied = await exec.execute("code-mode-unreviewed", { code: "return await tools.unrelated({});" });
+    const denied = await exec.execute("code-mode-unreviewed", { description: "code-mode-unreviewed", code: "return await tools.unrelated({});" });
     assert.equal(denied.isError, true, "ordinary metadata discovery does not grant VM invocation");
     assert.match(JSON.stringify(denied.details), /not available in this cell/u);
 
@@ -754,22 +756,22 @@ function candidateTool(
 }
 
 function jsonModel(modelId: string, tools: string[]): AgentModel {
-  return {
+  return testModel({
     provider: "tool-search-test",
     modelId,
     stream: async () => events([
       { type: "text-delta", text: JSON.stringify({ tools }) },
       { type: "finish", reason: "stop" }
     ])
-  };
+  });
 }
 
 function failingModel(modelId: string, error: Error): AgentModel {
-  return {
+  return testModel({
     provider: "tool-search-failure-test",
     modelId,
     stream: async () => { throw error; }
-  };
+  });
 }
 
 function modelCandidates(model: AgentModel | undefined) {

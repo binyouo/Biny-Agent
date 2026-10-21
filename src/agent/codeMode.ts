@@ -1,10 +1,12 @@
 import { CodeModeToolError, experimental_runCodeMode } from "@ai-sdk/code-mode";
 import { jsonSchema, tool } from "ai";
+import { z } from "zod";
+import { zodToolInput } from "../tools/zodToolInput.js";
 import type { AgentTool, AgentToolResult } from "./core/types.js";
 
 /** Names are a VM surface bound; host registration provenance is checked separately. */
 export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep",
-  "TaskStatus", "BashOutput", "read_skill_resource", "Write", "Edit", "apply_patch", "Bash", "KillShell",
+  "TaskStatus", "ProcessStatus", "read_skill_resource", "Write", "Edit", "apply_patch", "Bash", "KillShell",
   "WebSearch", "WebFetch", "BrowserReadDom", "BrowserListEnvironments", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
   "WidgetReadme", "read_checkpoint_evidence"]);
 
@@ -26,6 +28,31 @@ export const codeModePolicy = Object.freeze({
   maxInFlightBridgeRequests: 8
 });
 export type CodeModeLimits = Readonly<{ [Limit in keyof typeof codeModePolicy]: number }>;
+export const codeModeInput = zodToolInput(z.object({
+  description: z.string().min(1).max(120).regex(/\S/u).describe("Required short task title in the user's language, at most 8 words. Shown in the tool-call header; do not put code here."),
+  code: z.string().min(1).max(codeModePolicy.maxSourceBytes).describe("Self-contained JS/TS program, at most 64 KiB UTF-8. Call admitted tools with await tools.ToolName({...}); return a JSON-serializable value or console.log only selected final data. Discover unfamiliar tool schemas before writing execution code. Use scripts for multiple calls, loops, filtering, or aggregation."),
+  language: z.enum(["javascript", "typescript"]).optional().describe("Defaults to javascript. Set typescript to compile TypeScript syntax before execution."),
+  timeout_ms: z.number().int().min(1).max(600_000).optional().describe("Whole-script deadline in milliseconds including tool waits. Defaults to 120000; maximum 600000.")
+}).strict());
+
+export const codeModeDescription = [
+  "Run isolated JavaScript or TypeScript to loop, filter, aggregate, or chain tool calls. Call a single ordinary tool directly instead.",
+  "Discovery API (use a discovery step before composing execution code):\n"
+    + "- await searchTools(query, {limit: 8}) -> ToolDefinition[]. The options object is optional; namespace restricts matches to one namespace. limit defaults to 8, maximum 20. The result is an array.\n"
+    + "- await describeTool(name) -> ToolDefinition | null.\n"
+    + "- await describeNamespace(name) -> namespace metadata with tools: ToolDefinition[], or null.\n"
+    + "ToolDefinition includes name, description, namespace, parameters, and outputSchema/promptGuidelines when supplied. Read the complete parameters; do not guess field names or truncate schemas.\n"
+    + "Use searchTools inside scripts; ToolSearch is for direct model calls. Matches with invocation: direct become available for direct model calls on the next step and cannot be invoked inside the script.",
+  "Execution API:\n"
+    + "- await tools.ToolName({...}) -> the tool's data result, as described by outputSchema; do not use tools.invoke. Read returns an object with content.\n"
+    + "- await sh(command) -> stdout string, through Bash. An optional second object accepts cwd and timeoutMs.\n"
+    + "- await fetch(url) -> bounded GET response with async text()/json(), through WebFetch. Non-GET requests use sh with curl under Shell permissions.",
+  "Discovery example (return the complete schemas, inspect them, then compose a separate execution call):\n```javascript\nreturn await searchTools(\"Read\", {limit: 1});\n```",
+  "Execution example after inspecting Read:\n```javascript\nconst results = [];\nfor (const path of [\"README.md\", \"package.json\"]) {\n  const page = await tools.Read({path, startLine: 1, lineCount: 8});\n  results.push({path, content: page.content, hasMore: page.hasMore});\n}\nreturn results;\n```",
+  "Output: return a JSON-serializable value or console.log selected final data. The result has ok, value when returned, stdout when printed, and childCalls; failures include error. Intermediate tool results stay in the script. Stdout beyond 16000 characters is archived for Read; console capture is capped at 1 MiB / 4096 chunks and omitted output is marked.",
+  "Errors: catch parameter-validation errors and safe built-in read failures for local recovery. Uncaught errors fail the script. Permission, budget, cancellation, deadline, uncertain-outcome, and other tool failures stop subsequent calls even when caught. Never retry an entire script after partial failure; inspect child outcomes first.",
+  "All nested calls use normal permissions and budgets. No direct filesystem, process, module imports, or unrestricted network access. Supply a short description in the user's language. timeout_ms defaults to 120000, maximum 600000."
+].join("\n\n");
 const hostDrainTimeoutMs = 500;
 
 class RecoverableCodeModeToolError extends CodeModeToolError {}

@@ -17,8 +17,9 @@ import {
 } from "../../runtime/ManagedProcessService.js";
 import { ToolAccesses } from "../access.js";
 import type { Tool } from "../types.js";
+import { zodToolInput } from "../zodToolInput.js";
 
-export interface BashOutputArgs {
+export interface ProcessStatusArgs {
   /** 省略时列出当前 runtime 记录的后台 Shell。 */
   processId?: string;
   includeExited?: boolean;
@@ -27,7 +28,7 @@ export interface BashOutputArgs {
   fromEnd?: boolean;
 }
 
-export interface BashOutputResult {
+export interface ProcessStatusResult {
   processes?: ManagedProcessSnapshot[];
   process?: ManagedProcessSnapshot;
   output?: ManagedProcessOutput;
@@ -91,47 +92,43 @@ export const managedProcessReadinessParameters = {
 };
 
 export function createManagedProcessTools(service: ManagedProcessService): Array<Tool<unknown, unknown>> {
-  return [createBashOutputTool(service), createKillShellTool(service)] as Array<Tool<unknown, unknown>>;
+  return [createProcessStatusTool(service), createKillShellTool(service)] as Array<Tool<unknown, unknown>>;
 }
 
-export function createBashOutputTool(service: ManagedProcessService): Tool<BashOutputArgs, BashOutputResult> {
-  const schema = z.object({
-    processId: z.string().uuid().optional(),
-    includeExited: z.boolean().optional(),
-    offset: z.number().int().min(0).optional(),
-    maxBytes: z.number().int().min(1).max(256 * 1024).optional(),
-    fromEnd: z.boolean().optional()
-  }) satisfies z.ZodType<BashOutputArgs>;
+export function createProcessStatusTool(service: ManagedProcessService): Tool<ProcessStatusArgs, ProcessStatusResult> {
+  const schema = z.union([
+    z.object({ includeExited: z.boolean().optional().describe("List mode only: include exited processes; defaults to true.") }).strict(),
+    z.object({
+      processId: z.string().uuid().describe("Process ID from background Bash or ProcessStatus. Required to inspect status and output."),
+      offset: z.number().int().min(0).optional().describe("Log byte offset, default 0. Pass output.nextOffset unchanged to continue."),
+      maxBytes: z.number().int().min(1).max(256 * 1024).optional().describe("Maximum log bytes consumed per page, default 65536."),
+      fromEnd: z.boolean().optional().describe("Read the latest bounded tail instead of using offset.")
+    }).strict()
+  ]) satisfies z.ZodType<ProcessStatusArgs>;
   return {
-    name: "BashOutput",
-    description: "List background Bash processes, or return one process status together with a bounded page of its durable merged output log. Continue with output.nextOffset while output.hasMore is true. If output.pendingUtf8Bytes is present, wait for new output or process exit and retry the same output.nextOffset.",
+    name: "ProcessStatus",
+    description: [
+      "Inspect background processes started by Bash: list their IDs, or retrieve one process's lifecycle state and output. This reads status; use KillShell to stop a process.",
+      "List: omit processId; optionally set includeExited (default true). Returns {processes: [...]}, including each processId and state.",
+      "Inspect: pass processId; optionally set offset, maxBytes, or fromEnd. Returns {process, output}; process includes state, command, and available exitCode/readiness/cleanup evidence. output.content is a bounded page of the merged stdout/stderr log.",
+      "Continue with offset: output.nextOffset while output.hasMore is true. Offsets count bytes. If output.pendingUtf8Bytes is present, wait for more output or process exit, then retry the same nextOffset. hasMore=false means no further log bytes now; it does not mean the process has exited."
+    ].join("\n\n"),
     promptSnippet: "List background Bash processes or read paginated process output",
     promptGuidelines: ["Omit processId to recover recent process IDs; use fromEnd for a tail or nextOffset for incremental reads"],
-    parameters: {
-      type: "object",
-      properties: {
-        processId: { type: "string", description: "Opaque process ID returned by a background Bash call. Omit to list processes." },
-        includeExited: { type: "boolean", description: "When listing, include exited processes; defaults to true." },
-        offset: { type: "integer", minimum: 0, description: "Byte offset for output pagination; defaults to 0." },
-        maxBytes: { type: "integer", minimum: 1, maximum: 256 * 1024, description: "Maximum source log bytes consumed per page; defaults to 65536." },
-        fromEnd: { type: "boolean", description: "Read a bounded tail instead of using offset." }
-      },
-      additionalProperties: false
-    },
-    schema,
+    ...zodToolInput(schema),
     capability: "shell.output",
     risk: "read",
     resolveExecution(args) {
       const inspecting = args.processId !== undefined;
       if (!inspecting && (args.offset !== undefined || args.maxBytes !== undefined || args.fromEnd !== undefined)) {
-        throw new Error("BashOutput pagination options require processId.");
+        throw new Error("ProcessStatus pagination options require processId.");
       }
       const logPath = args.processId === undefined ? undefined : service.outputPath(args.processId);
       return {
         accesses: logPath === undefined ? ToolAccesses.none() : ToolAccesses.readFile(logPath),
         display: { kind: "generic", summary: inspecting ? `Read background Bash output ${args.processId}` : "List background Bash processes" },
         description: inspecting ? `Read background Bash output ${args.processId}` : "List background Bash processes",
-        approvalRule: inspecting ? `BashOutput(${args.processId})` : "BashOutput",
+        approvalRule: inspecting ? `ProcessStatus(${args.processId})` : "ProcessStatus",
         async execute({ signal }) {
           signal?.throwIfAborted();
           if (args.processId === undefined) {

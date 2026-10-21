@@ -46,3 +46,40 @@ test("product action accepts complete click routing and screen coordinates", () 
   assert.equal(parsed.success, true);
   assert.equal(computerActionSchema.safeParse({ pid: 12, windowId: "42", captureId: "c", action: "click", elementToken: "e", clickCount: 4 }).success, false);
 });
+
+for (const [name, args] of [
+  ["set_value", { ref: "e", value: "x".repeat(4001) }],
+  ["set_value", { ref: "e".repeat(257), value: false }],
+  ["click", { ref: "e", x: 1 }],
+  ["select_text", { ref: "e", matchText: "match", text: "replace" }],
+  ["press_key", { key: "Return", typo: true }],
+  ["get_app_state", { content: "image", waitFor: { text: "ready" } }]
+] as const) test(`MCP rejects invalid shared input before dispatch: ${name} ${Object.keys(args)}`, async () => fixture(async (client, calls) => {
+  const result = await client.callTool({ name, arguments: { pid: 12, window_id: 42, ...args } });
+  assert.equal(result.isError, true);
+  assert.equal(calls.length, 0);
+}));
+
+test("MCP tools/list and built-in tools expose bounded shared fields", async () => fixture(async (client) => {
+  const { createComputerUseTools } = await import("../src/tools/computerUse.js");
+  const tools = (await client.listTools()).tools;
+  const value = tools.find(tool => tool.name === "set_value")!.inputSchema.properties!.value as { anyOf: { maxLength?: number }[] };
+  assert.equal(value.anyOf[0]!.maxLength, 4000);
+  const ref = tools.find(tool => tool.name === "click")!.inputSchema.properties!.ref as { maxLength: number };
+  assert.equal(ref.maxLength, 256);
+  const action = createComputerUseTools(async () => ({ data: {}, images: [] })).find(tool => tool.name === "ComputerAction")!;
+  assert.equal((action.parameters.properties!.elementToken as { maxLength?: number }).maxLength, 256);
+  assert.equal((action.parameters.properties!.value as { anyOf: { maxLength?: number }[] }).anyOf[0]!.maxLength, 4000);
+}));
+
+test("MCP accepts the value/ref limits and preserves false/zero/empty text", async () => fixture(async (client, calls) => {
+  for (const value of ["x".repeat(4000), false, 0, ""]) {
+    const reply = await client.callTool({ name: "set_value", arguments: { ref: "e".repeat(256), value } });
+    assert.notEqual(reply.isError, true);
+    assert.equal(calls.at(-1)!.args.value, value);
+    assert.equal(calls.at(-1)!.args.ref, "e".repeat(256));
+  }
+  const reply = await client.callTool({ name: "type_text", arguments: { text: "" } });
+  assert.notEqual(reply.isError, true);
+  assert.equal(calls.at(-1)!.args.text, "");
+}));

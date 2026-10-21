@@ -13,7 +13,7 @@ import { bindManagedProcessLog, readManagedProcessLog, type ManagedProcessLogBin
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { createBashOutputTool } from "../src/tools/process/managedProcesses.js";
+import { createProcessStatusTool } from "../src/tools/process/managedProcesses.js";
 import type { RunnableToolExecution, ToolExecution } from "../src/tools/types.js";
 
 const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-query-read-boundaries-")));
@@ -167,7 +167,7 @@ try {
   fixtureService.status = async () => ({ processId, pid: 1, command: "fixture-never-launched", cwd: root, state: "exited", logPath: log.path,
     startedAt: "2026-10-02T00:00:00Z", cleanup: { status: "not_needed" } });
   fixtureService.readOutput = async (id, options, signal) => { outputReads++; return { processId: id, ...await readManagedProcessLog(log, options, signal) }; };
-  const logRegistry = new ToolRegistry(); logRegistry.registerBuiltinTool(createBashOutputTool(fixtureService));
+  const logRegistry = new ToolRegistry(); logRegistry.registerBuiltinTool(createProcessStatusTool(fixtureService));
   const deniedLog = await makeCoordinator(logRegistry, [log.path]).createAgentTools()[0]!.execute("denied-log", { processId });
   assert.equal((deniedLog.details as { status: string }).status, "denied");
   assert.equal(outputReads, 0, "denial must precede reading log bytes");

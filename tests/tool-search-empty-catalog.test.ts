@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 /** An empty eligible inventory has a deterministic no-match result. */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel } from "../src/agent/core/types.js";
@@ -97,7 +99,7 @@ async function testConfiguredSelector(): Promise<void> {
   let modelLookups = 0;
   let modelCalls = 0;
   let text = JSON.stringify({ tools: ["remote_inspection"] });
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "empty-catalog-selector",
     async stream() {
       modelCalls++;
@@ -106,7 +108,7 @@ async function testConfiguredSelector(): Promise<void> {
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
-  };
+  });
   const search = createToolSearchTool(() => registry.listEntries(), () => {
     modelLookups++;
     return [{ model, failureDomain: "empty-catalog-fixture" }];
@@ -151,7 +153,7 @@ async function testCodeModeWrapper(): Promise<void> {
     config.permission.mode = "full-access";
     const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry },
       new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["ToolSearch"]));
-    const result = await coordinator.createCodeModeTool().execute("empty-namespace-cell", {
+    const result = await coordinator.createCodeModeTool().execute("empty-namespace-cell", { description: "empty-namespace-cell",
       code: "const hits = await searchTools('inspect task records', {namespace:'missing'}); return {hits, continued:true};"
     });
     try {

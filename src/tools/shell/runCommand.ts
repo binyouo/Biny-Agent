@@ -140,7 +140,7 @@ export function createRunCommandTool(
   }) satisfies z.ZodType<RunCommandArgs>;
   return {
     name: "Bash",
-    description: "Run a shell command in the workspace. Foreground commands have a bounded timeout; set background for servers and other long-running commands, then use BashOutput or KillShell with the returned process ID." + shellGuidance(shell),
+    description: "Run a shell command in the workspace. Foreground commands have a bounded timeout; set background for servers and other long-running commands, then use ProcessStatus or KillShell with the returned process ID." + shellGuidance(shell),
     promptSnippet: "Run a finite command or start a managed background process",
     promptGuidelines: ["Provide a brief description of the command purpose in the user's language", "Use background instead of &, nohup, or disown for long-running commands; pass a workspace-relative cwd for commands in a subdirectory", "Native desktop actions must use the Computer Use MCP tools. Never substitute biny cu, another native daemon, AppleScript, Quartz, clipboard paste, or app activation when an action is unavailable, paused, denied or unverified. Ask for the missing permission or inspect a fresh observation."],
     parameters: {

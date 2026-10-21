@@ -127,7 +127,7 @@ export function summarizeToolArgs(tool: string, args: unknown): string {
   if (tool === "WebSearch" && query) return query;
   if (tool === "Glob") return "workspace files";
   if (tool === "Bash" && command) return command;
-  if ((tool === "BashOutput" || tool === "KillShell") && typeof record.processId === "string") return record.processId;
+  if ((tool === "ProcessStatus" || tool === "KillShell") && typeof record.processId === "string") return record.processId;
   return summarizeValue(args, 800);
 }
 
@@ -152,7 +152,7 @@ export function semanticToolTitle(
   if (tool === "WebSearch") {
     return `${running ? "Searching the web" : "Searched the web"}${argsSummary ? ` for “${argsSummary}”` : ""}`;
   }
-  if (tool === "BashOutput") return `${running ? "Reading" : "Read"} background process${argsSummary ? ` ${argsSummary}` : "es"}`;
+  if (tool === "ProcessStatus") return `${running ? "Reading" : "Read"} background process${argsSummary ? ` ${argsSummary}` : "es"}`;
   if (tool === "KillShell") return `${running ? "Stopping" : "Stopped"} background process${argsSummary ? ` ${argsSummary}` : ""}`;
   if (tool === "run_script" && description?.trim() && description.length <= 120) return description.trim();
   if (toolPresentation(tool)) return `${running ? "正在" : "已"}${toolDisplayName(tool)}`;
@@ -191,7 +191,7 @@ function projectToolResult(item: ToolTranscriptItem, result: unknown, status: To
     };
   }
 
-  if (item.tool === "BashOutput") {
+  if (item.tool === "ProcessStatus") {
     const process = typeof record?.process === "object" && record.process !== null ? record.process as Record<string, unknown> : undefined;
     const outputRecord = typeof record?.output === "object" && record.output !== null ? record.output as Record<string, unknown> : undefined;
     const content = typeof outputRecord?.content === "string" ? outputRecord.content.trimEnd() : "";

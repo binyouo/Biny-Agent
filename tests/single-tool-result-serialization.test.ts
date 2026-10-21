@@ -20,7 +20,7 @@ const selections: Record<string, Selection> = {
     path: "src/agent/toolResultProjection.ts",
     functions: [
       "projectSingleToolResultForModel", "shellResultForProjection", "projectValue", "archiveEntry",
-      "projectFileChange", "projectRunCommand", "projectReadFile", "projectBashOutput", "projectSearchResult",
+      "projectFileChange", "projectRunCommand", "projectReadFile", "projectProcessStatus", "projectSearchResult",
       "searchMatchSignature", "boundSearchMatchContext", "projectSearchContext", "attachProjectionMetadata",
       "isArchivedValue", "archivePath", "normalizedToolName", "stringField", "numberField", "asRecord",
       "removeUndefined", "copyFields", "diffLineCounts", "fileChangeSummary", "stripCommandEcho", "commandSummary",
@@ -268,7 +268,7 @@ test("semantics: circular plain data remains serializable and is not mutated", a
   assert.strictEqual(original.self, original);
 });
 
-for (const tool of ["Read", "Grep", "Write", "Edit", "BashOutput"] as const) {
+for (const tool of ["Read", "Grep", "Write", "Edit", "ProcessStatus"] as const) {
   for (const mode of ["success", "failure", "none"] as const) {
     test("semantics: actual " + tool + " projection with " + mode + " archive", async () => {
       const original = tool === "Read"
@@ -287,7 +287,7 @@ for (const tool of ["Read", "Grep", "Write", "Edit", "BashOutput"] as const) {
       assert.equal(result.archived, mode === "success");
       assert.equal(result.archivePath, mode === "success" ? archivePath : undefined);
       assert.equal(result.archiveError, mode === "failure" ? "inert archive failure" : undefined);
-      assert.strictEqual(result.result, mode === "failure" && tool !== "BashOutput" ? original : undefined);
+      assert.strictEqual(result.result, mode === "failure" && tool !== "ProcessStatus" ? original : undefined);
       assert.equal(c.requests.length, mode === "none" ? 0 : 1);
       if (mode !== "none") checkArchive(c.requests[0], original, raw, tool);
       if (tool === "Read") {

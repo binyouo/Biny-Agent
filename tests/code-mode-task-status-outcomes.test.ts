@@ -74,6 +74,7 @@ async function fixture(options: {
         const id = `query-${String(++sequence)}`;
         const tool = mode === "direct" ? coordinator.createAgentTools()[0]! : coordinator.createCodeModeTool();
         return await tool.execute(id, mode === "direct" ? args : {
+          description: "检查子任务状态",
           code: `const row = await tools.${name}(${JSON.stringify(args)}); return {handled: row.status === "failed" ? "failed-child-inspected" : "other-child-inspected", row};`
         }, signal);
       },

@@ -1,5 +1,7 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { createRuntimeHostFactory } from "../src/runtime/host/runtimeFactory.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -41,8 +43,12 @@ test("TUI command results stay in the transcript and goal controls show only mea
   const host = await createInteractiveAgentHost(root, { configStore: createFileConfigStore(root, { globalDir: configDir }) });
   const terminalUi = ui();
   const app = new BinyTui(terminalUi, root);
-  app["runtime"] = host.runtime;
-  app["commands"] = host.commands;
+  const factory = createRuntimeHostFactory(root, () => ({ configStore: createFileConfigStore(root, { globalDir: configDir }) }));
+  const server = await startRuntimeHost(root, async () => host, { configDir, createRuntime: factory });
+  server["businessComposition"].stop();
+  const transport = await connectRuntimeHost(root, { configDir, surface: "tui" });
+  assert.ok(transport);
+  app["runtime"] = transport;
   app["runtimeSnapshot"] = host.runtime.getSnapshot();
   try {
     app["setAutocompleteProvider"]([{ name: "review", description: "Review code changes" }], root);
@@ -96,7 +102,7 @@ test("TUI command results stay in the transcript and goal controls show only mea
       executionTemplate: { prompt: "Review the workspace" }
     });
     host.commands.automationStore.pause(automation.automationId);
-    const graph = host.commands.graphs.createGraph([{ nodeKey: "inspect", prompt: "Inspect command behavior" }]);
+    const graph = host.commands.graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "inspect", prompt: "Inspect command behavior" }] });
     for (const entry of [
       { command: "/tasks", text: "Inspect command behavior", id: task.taskRunId },
       { command: "/automation", text: "Daily review", id: automation.automationId },
@@ -135,8 +141,8 @@ test("TUI command results stay in the transcript and goal controls show only mea
         otherStore.set("unrelated-session", "Unrelated goal");
         await new Promise<void>((resolve) => setImmediate(resolve));
         assert.equal(reads.mock.callCount(), 2, "other sessions must not invalidate this session's projection");
-        await host.runtime.startDraft();
-        assert.equal(host.runtime.getSnapshot().sessionGoal, undefined, "new chats must not inherit a previous goal");
+        await transport.startDraft();
+        assert.equal(transport.getSnapshot().sessionGoal, undefined, "new chats must not inherit a previous goal");
       } finally {
         unsubscribe();
         reads.mock.restore();
@@ -146,7 +152,6 @@ test("TUI command results stay in the transcript and goal controls show only mea
       otherStore.set(currentSession, "Goal delivered through Host");
       otherStore.pause(currentSession);
       await new Promise<void>((resolve) => setImmediate(resolve));
-      const server = await startRuntimeHost(root, async () => host, { configDir });
       try {
         const client = await connectRuntimeHost(root, { configDir, surface: "tui", handshakeTimeoutMs: 5_000 });
         assert.ok(client);
@@ -186,7 +191,8 @@ test("TUI command results stay in the transcript and goal controls show only mea
   } finally {
     app["closeOverlay"]();
     app["status"].dispose();
-    await host.runtime.close();
+    await transport.close();
+    await server.close();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -5,10 +5,13 @@
  * `@attachments/` 虚拟路径。工具结果归档使用受限的虚拟引用和字符分页。
  */
 import { z } from "zod";
+import { zodSchema } from "ai";
 import { isToolResultArchiveReference, readToolResultArchive, resolveToolResultArchivePath } from "../../session/toolResultArchive.js";
 import { resolveWorkspacePath } from "../../workspace/resolvePath.js";
 import { ToolAccesses } from "../access.js";
 import type { Tool, ToolContext } from "../types.js";
+import type { JsonSchema } from "../schema.js";
+import { zodToolInput } from "../zodToolInput.js";
 import { formatHashlineLine } from "./hashline.js";
 import { visitBoundUtf8Lines } from "./safeFileIo.js";
 
@@ -51,28 +54,26 @@ export function createReadFileTool(context: ToolContext, hashline = false): Tool
   // 实验模式才附加编辑锚点；原始路径仍用于展示和后续 Edit。
   return {
     name: "Read",
-    description: `Read a page of a UTF-8 workspace file, supplied attachment, or archived tool result.${hashline ? " Lines are returned as LINE#HASH:text for use by Edit." : " Returns the original text without edit tags."} Use startLine and lineCount for files. For .biny/tool-results references, Read returns the original archived output without edit tags; use offset and length (UTF-16 code units, default 16000, max 200000), then nextOffset to continue. Surrogate pairs are preserved.`,
+    description: [
+      "Read a page of UTF-8 text from a workspace file, supplied attachment, or archived tool result. Returns an object; the text is in content.",
+      `Files and attachments: pass path, optionally startLine (one-based) and lineCount (default ${String(defaultLineCount)}, maximum ${String(maxLineCount)}). Returns path, content, startLine, endLine, hasMore, and nextStartLine when more lines remain. Continue with startLine: nextStartLine. Pages exceeding ${String(maxPageBytes)} bytes fail; request fewer lines.`,
+      hashline ? "File lines use LINE#HASH:text for Edit; copy anchors unchanged." : "File text is returned without edit tags.",
+      `Archived results: pass the .biny/tool-results reference as path and page with offset and length (default ${String(defaultArchiveLength)}, maximum ${String(maxArchiveLength)}). Returns content, offset, nextOffset, hasMore, and archive metadata. Continue with offset: nextOffset. Do not use file-line parameters for archives.`,
+      "Archive offsets and lengths count UTF-16 code units. Surrogate pairs are preserved; pass the returned nextOffset unchanged. Archived text never receives edit tags."
+    ].join("\n\n"),
     promptSnippet: hashline ? "Read UTF-8 file contents with LINE#HASH edit anchors" : "Read UTF-8 file contents",
     promptGuidelines: ["When a result reports archivePath, pass it as Read.path and page with offset and length", hashline ? "Use Read before Edit and pass its LINE#HASH anchors unchanged; read again when an anchor is stale" : "Read before editing and copy the exact text including whitespace"],
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", minLength: 1, description: "Workspace-relative UTF-8 file path, supplied attachment path, or .biny/tool-results reference." },
-        startLine: { type: "integer", minimum: 1, description: "First one-based file line to return. Defaults to 1." },
-        lineCount: { type: "integer", minimum: 1, maximum: maxLineCount, description: `Maximum lines to return. Defaults to ${String(defaultLineCount)}.` },
-        offset: { type: "integer", minimum: 0, description: "Archived results only: UTF-16 code-unit offset, default 0; rounds back when inside a surrogate pair." },
-        length: { type: "integer", minimum: 1, maximum: maxArchiveLength, description: "Archived results only: maximum UTF-16 code units, default 16000; length 1 may return a whole surrogate pair." }
-      },
-      required: ["path"],
-      additionalProperties: false
-    },
-    schema: z.object({
-      path: z.string().min(1),
-      startLine: z.number().int().min(1).optional(),
-      lineCount: z.number().int().min(1).max(maxLineCount).optional(),
-      offset: z.number().int().min(0).optional(),
-      length: z.number().int().min(1).max(maxArchiveLength).optional()
-    }),
+    ...zodToolInput(z.object({
+      path: z.string().min(1).describe("Required workspace-relative UTF-8 file path, @attachments/ path, or .biny/tool-results reference."),
+      startLine: z.number().int().min(1).optional().describe("Files and attachments only: one-based first line. Defaults to 1; use nextStartLine to continue."),
+      lineCount: z.number().int().min(1).max(maxLineCount).optional().describe(`Files and attachments only: maximum lines, default ${String(defaultLineCount)}.`),
+      offset: z.number().int().min(0).optional().describe("Archives only: UTF-16 code-unit offset, default 0; use nextOffset to continue."),
+      length: z.number().int().min(1).max(maxArchiveLength).optional().describe(`Archives only: maximum UTF-16 code units, default ${String(defaultArchiveLength)}. A surrogate pair may require two units.`)
+    }).strict()),
+    outputSchema: zodSchema(z.union([
+      z.object({ path: z.string(), content: z.string(), startLine: z.number().int(), endLine: z.number().int(), hasMore: z.boolean(), nextStartLine: z.number().int().optional() }),
+      z.object({ path: z.string(), content: z.string(), tool: z.string(), archivedAt: z.string(), totalCharacters: z.number().int(), offset: z.number().int(), nextOffset: z.number().int(), hasMore: z.boolean() })
+    ])).jsonSchema as JsonSchema,
     capability: "filesystem.read",
     risk: "read",
     resolveExecution(args) {

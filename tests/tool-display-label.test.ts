@@ -5,7 +5,7 @@ assert.equal(executionToolLabel("mcp_Context7_resolve-library-id"), "MCP 工具"
 assert.equal(executionToolLabel("mcp_Context7_get-library-docs"), "MCP 工具");
 assert.equal(executionToolLabel("mcp_my_server_find_items"), "MCP 工具");
 assert.equal(executionToolLabel("Read"), "读取文件");
-assert.equal(executionToolLabel("BashOutput"), "后台输出");
+assert.equal(executionToolLabel("ProcessStatus"), "进程状态");
 assert.equal(executionToolLabel("mcp_"), "mcp_");
 console.log("tool display label tests passed");
 

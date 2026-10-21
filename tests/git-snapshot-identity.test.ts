@@ -31,7 +31,7 @@ const methodCalls = new Set([
 // These receivers are syntactically fixed expressions in this exact closure.
 const expressionCalls = new Set([
   'message.content\n    .filter',
-  '["bash", "bashoutput"].includes',
+  '["bash", "processstatus"].includes',
   'message.content\n    .filter((part): part is Extract<AgentToolResultMessage["content"][number], { type: "text" }> => part.type === "text")\n    .map',
   'message.content\n    .filter((part): part is Extract<AgentToolResultMessage["content"][number], { type: "text" }> => part.type === "text")\n    .map((part) => part.text)\n    .join',
   'stringField(args, "command").trim',

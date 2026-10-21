@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { mock, test } from "node:test";
 import { ManagedProcessService, type ManagedProcessSnapshot } from "../src/runtime/ManagedProcessService.js";
-import { createBashOutputTool } from "../src/tools/process/managedProcesses.js";
+import { createProcessStatusTool } from "../src/tools/process/managedProcesses.js";
 import { projectSingleToolResultForModel } from "../src/agent/toolResultProjection.js";
 
-await test("BashOutput freezes live state before stat and preserves pending metadata in projection", async () => {
+await test("ProcessStatus freezes live state before stat and preserves pending metadata in projection", async () => {
   const processId = "00000000-0000-4000-8000-000000000083";
   const logPath = "/inert-managed-log";
   const snapshot: ManagedProcessSnapshot = { processId, pid: 83, command: "inert", cwd: "/", state: "running",
@@ -37,7 +37,7 @@ await test("BashOutput freezes live state before stat and preserves pending meta
     close: async () => undefined
   }));
   try {
-    const execution = await createBashOutputTool(service).resolveExecution({ processId, maxBytes: 2 });
+    const execution = await createProcessStatusTool(service).resolveExecution({ processId, maxBytes: 2 });
     assert.ok(!("isError" in execution));
     const result = await execution.execute({ toolCallId: "inert-live-log", operationId: "inert-operation" });
     assert.ok(result.output);
@@ -48,7 +48,7 @@ await test("BashOutput freezes live state before stat and preserves pending meta
     assert.equal(result.output.hasMore, false);
     assert.equal(order[0], "refresh");
     assert.equal(order.slice(order.indexOf("log")).includes("refresh"), false);
-    const projected = await projectSingleToolResultForModel("BashOutput", { processId }, result, { thresholdBytes: 1 }) as typeof result;
+    const projected = await projectSingleToolResultForModel("ProcessStatus", { processId }, result, { thresholdBytes: 1 }) as typeof result;
     assert.equal(projected.output?.pendingUtf8Bytes, 2);
     assert.equal(projected.output?.nextOffset, 1);
     assert.equal(projected.output?.hasMore, false);

@@ -1,6 +1,8 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -17,10 +19,10 @@ test("chat screenshot context reaches the model on first input and replay but st
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-shot-session-")), previous = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = path.join(root, "global");
   const requests: AgentMessage[][] = [];
-  const model: AgentModel = { provider: "test", modelId: "shot-model", stream: async context => {
+  const model: AgentModel = testModel({ provider: "test", modelId: "shot-model", stream: async context => {
     requests.push(structuredClone(context.messages));
     return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "Done" }; yield { type: "finish", reason: "stop" }; })();
-  } };
+  } });
   const config = configSchema.parse({ ...structuredClone(defaultConfig),
     providers: { sample: { type: "openai-compatible", baseUrl: "https://example.invalid/", apiKeyEnv: "BINY_TEST_UNCONFIGURED_KEY", modelProfiles: { "shot-model": { capabilities: { vision: true } } } } },
     models: { selected: { provider: "sample", model: "shot-model", capabilities: { vision: true } } }, defaultModel: "selected" });

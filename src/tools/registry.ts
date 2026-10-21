@@ -17,7 +17,7 @@ import { createEditFileTool } from "./file/editFile.js";
 import { createListFilesTool } from "./file/listFiles.js";
 import { createSearchFilesTool } from "./search/searchFiles.js";
 import { createRunCommandTool } from "./shell/runCommand.js";
-import { createBashOutputTool, createKillShellTool } from "./process/managedProcesses.js";
+import { createProcessStatusTool, createKillShellTool } from "./process/managedProcesses.js";
 import { createWebFetchTool } from "./web/fetch.js";
 import { createWebSearchTool } from "./web/search.js";
 import { createToolSearchTool } from "./toolSearch.js";
@@ -28,11 +28,11 @@ import type { ToolModelCandidate } from "../llm/toolModel.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
 
 /** Explicit host-owned read contracts, never inferred from extension metadata. */
-export type HostReadQuery = "TaskStatus" | "PlanStatus" | "BashOutput" | "read_skill_resource";
+export type HostReadQuery = "TaskStatus" | "PlanStatus" | "ProcessStatus" | "read_skill_resource";
 const hostReadQueryContracts: Record<HostReadQuery, { source: ToolSource; capability: string }> = {
   TaskStatus: { source: "subagent", capability: "subagent.workspace" },
   PlanStatus: { source: "subagent", capability: "subagent.workspace" },
-  BashOutput: { source: "builtin", capability: "shell.output" },
+  ProcessStatus: { source: "builtin", capability: "shell.output" },
   read_skill_resource: { source: "skill", capability: "skills" }
 };
 const hostReadQueryRegistrations = new WeakMap<RegisteredTool, {
@@ -188,7 +188,7 @@ export function createToolRegistry(
   registry.register(createEditFileTool(context));
   registry.register(createRunCommandTool(context, sandboxConfig, { controlledComputerUse: true, executionScope, rtkEnabled }, managedProcessService));
   if (managedProcessService) {
-    registry.registerHostReadQuery(createBashOutputTool(managedProcessService), "BashOutput");
+    registry.registerHostReadQuery(createProcessStatusTool(managedProcessService), "ProcessStatus");
     registry.register(createKillShellTool(managedProcessService));
   }
   // WebSearch 的实现依赖 Desktop 浏览器；没有执行端时不注册一个调用必然失败的工具。

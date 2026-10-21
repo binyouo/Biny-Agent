@@ -10,7 +10,7 @@ await testSemanticReplacementAndParallelIsolation();
 await testUnknownFailureIsNotMerged();
 await testArchiveFailureKeepsOriginal();
 await testRunCommandTruncationMetadata();
-await testBashOutputProjectionKeepsPagination();
+await testProcessStatusProjectionKeepsPagination();
 await testBashProjectionBoundsBothStreams();
 await testRecentBashProjectionIsBounded();
 
@@ -237,7 +237,7 @@ async function testRunCommandTruncationMetadata(): Promise<void> {
   assert.equal(captured.stderr.length, 400_000);
 }
 
-async function testBashOutputProjectionKeepsPagination(): Promise<void> {
+async function testProcessStatusProjectionKeepsPagination(): Promise<void> {
   const original = {
     process: { processId: "process-1", state: "running" },
     output: {
@@ -251,7 +251,7 @@ async function testBashOutputProjectionKeepsPagination(): Promise<void> {
       hasMore: true
     }
   };
-  const projected = await projectSingleToolResultForModel("BashOutput", { processId: "process-1" }, original, {
+  const projected = await projectSingleToolResultForModel("ProcessStatus", { processId: "process-1" }, original, {
     toolCallId: "bash-output",
     archiveResult: async ({ output }) => ({
       archivePath: `.biny/tool-results/tool-result-${"a".repeat(64)}.json`,

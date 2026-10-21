@@ -110,7 +110,7 @@ const replacements = await projectToolResultsForModel(replacementMessages, optio
 assert.equal(archives, 1, "superseding a host-archived Git result must reuse the original archive");
 assert.equal(replacements[2]?.role === "toolResult" ? replacements[2].details?.archivePath : undefined, first.archivePath);
 
-const pageRegardlessOfThreshold = await projectSingleToolResultForModel("BashOutput", {}, {
+const pageRegardlessOfThreshold = await projectSingleToolResultForModel("ProcessStatus", {}, {
   output: { content: "HEAD" + "字".repeat(50_000) + "TAIL", nextOffset: 150_008, hasMore: true }
 }, { thresholdBytes: 1_000_000 }) as { output: { content: string; nextOffset: number; hasMore: boolean } };
 assert.ok(Buffer.byteLength(pageRegardlessOfThreshold.output.content) <= budget);

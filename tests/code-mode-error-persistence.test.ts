@@ -27,7 +27,7 @@ for (const bytes of [128 * 1024, 17 * 1024 * 1024]) {
     const previousAgentDir = process.env.BINY_AGENT_DIR;
     process.env.BINY_AGENT_DIR = path.join(root, "agent");
     await ensureAgentDirs(root);
-    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
     const capabilities = await CapabilityStore.open(root, authority);
     const recorder = new SessionRecorder(root, "code-mode-error-persistence", undefined, authority.asSink());
     const config = structuredClone(defaultConfig);
@@ -42,7 +42,7 @@ for (const bytes of [128 * 1024, 17 * 1024 * 1024]) {
       prepareToolDiscovery: async () => { discoveries += 1; throw new Error(message); }
     }, new PermissionManager(config.permission), (event) => emitted.push(event));
     try {
-      const result = await coordinator.createCodeModeTool().execute("outer", { code: "return await tools.mcp_missing_tool({});" });
+      const result = await coordinator.createCodeModeTool().execute("outer", { description: "outer", code: "return await tools.mcp_missing_tool({});" });
       assert.equal(result.isError, true);
       assert.equal(discoveries, 1);
       await coordinator.waitForIdle();
@@ -85,7 +85,7 @@ for (const bytes of [128 * 1024, 17 * 1024 * 1024]) {
       assert.equal(replay.length, 1);
       assert.deepEqual(replay[0]!.details, savedResult.result);
       assert.doesNotThrow(() => coordinator.assertCanContinue(), "failed discovery never dispatched a side effect");
-      const next = await coordinator.createCodeModeTool().execute("fresh", { code: "return 7;" });
+      const next = await coordinator.createCodeModeTool().execute("fresh", { description: "fresh", code: "return 7;" });
       assert.equal(next.isError, false);
       assert.equal(discoveries, 1, "a fresh cell must not replay failed discovery");
       t.diagnostic(JSON.stringify({ errorBytes: Buffer.byteLength(message), evidenceBytes: Buffer.byteLength(terminal.evidence),

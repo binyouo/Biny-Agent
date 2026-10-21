@@ -1,3 +1,4 @@
+import { legacyActionPayload, legacyObservationOptions } from "./input.js";
 import { renderElementTree, type ElementLike } from "./elementTree.js";
 import type { DriverReply } from "./controller.js";
 import type { BrowserAutomationEndpoint } from "../tools/browser.js";
@@ -131,7 +132,7 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
         if (windows.length !== 1) throw new Error("computer_window_selection_required: 请列出并指定准确窗口");
         windowId = String(windows[0]!.window_id);
       }
-      reply = await call("observe", { pid, windowId, content: args.content, waitFor: args.waitFor, maxElements: args.maxElements, depth: args.depth, screenshotMaxWidth: args.screenshotMaxWidth, interactiveOnly: args.interactiveOnly });
+      reply = await call("observe", { pid, windowId, ...legacyObservationOptions(args) });
     } else if (inputs.has(tool)) {
       const capture = this.desktopCapture;
       if (!capture || args.pid !== undefined && args.pid !== capture.pid || args.window_id !== undefined && String(args.window_id) !== capture.windowId) throw new Error("computer_observation_required: 请先观察同一窗口");
@@ -141,11 +142,7 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
         if (!apps.some(app => app.pid === capture.pid && app.bundleId === args.bundle)) throw new Error("computer_app_identity_unavailable: 应用与当前观察不一致");
       }
       this.desktopCapture = undefined;
-      reply = await call("action", { ...capture, action: tool, elementToken: args.ref, x: args.x, y: args.y,
-        x1: args.x1, y1: args.y1, x2: args.x2, y2: args.y2, text: args.text, key: args.key, value: args.value,
-        location: args.location, length: args.length, matchText: args.matchText, prefix: args.prefix, suffix: args.suffix, direction: args.direction, pages: args.pages,
-        button: args.button, clickCount: args.click_count, strategy: args.strategy, coordinateSpace: args.coord_space,
-        inputMethod: args.inputMethod, showCursor: args.show_cursor }, true);
+      reply = await call("action", { ...capture, ...legacyActionPayload(tool, args) }, true);
     } else throw new Error("computer_tool_unsupported");
     if (typeof reply.data.capture_id === "string") this.desktopCapture = { pid: Number(reply.data.pid), windowId: String(reply.data.window_id), captureId: reply.data.capture_id };
     const { elements, ...data } = reply.data;

@@ -6,7 +6,7 @@ import path from "node:path";
 import { mock, test } from "node:test";
 import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
 import { bindManagedProcessLog, readManagedProcessLog, type ManagedProcessLogBinding } from "../src/runtime/managedProcessLog.js";
-import { createBashOutputTool, type BashOutputArgs } from "../src/tools/process/managedProcesses.js";
+import { createProcessStatusTool, type ProcessStatusArgs } from "../src/tools/process/managedProcesses.js";
 
 const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-managed-output-boundaries-")));
 let count = 0;
@@ -31,8 +31,8 @@ function publicReader(binding: ManagedProcessLogBinding) {
     assert.equal(id, processId);
     return { processId, ...await readManagedProcessLog(binding, options, signal) };
   };
-  const tool = createBashOutputTool(service);
-  return async (args: Omit<BashOutputArgs, "processId"> = {}, signal?: AbortSignal) => {
+  const tool = createProcessStatusTool(service);
+  return async (args: Omit<ProcessStatusArgs, "processId"> = {}, signal?: AbortSignal) => {
     const execution = tool.resolveExecution({ processId, ...args });
     assert.ok(!("isError" in execution));
     const result = await execution.execute({ toolCallId: `fixture-${String(++count)}`, signal });
@@ -42,7 +42,7 @@ function publicReader(binding: ManagedProcessLogBinding) {
 }
 
 try {
-  await test("public BashOutput continuation preserves UTF-8 across its default page boundary", async () => {
+  await test("public ProcessStatus continuation preserves UTF-8 across its default page boundary", async () => {
     const text = `${"a".repeat(64 * 1024 - 1)}你🙂 tail`;
     const read = publicReader(await fixture(text));
     const first = await read();

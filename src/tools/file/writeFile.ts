@@ -9,7 +9,8 @@ import { createUnifiedDiff } from "../../utils/diff.js";
 import { resolveWorkspacePath, toWorkspaceRelative } from "../../workspace/resolvePath.js";
 import { ToolAccesses } from "../access.js";
 import type { Tool, ToolContext } from "../types.js";
-import type { FileChangeResult } from "./fileChange.js";
+import { zodToolInput } from "../zodToolInput.js";
+import { fileChangeOutputSchema, type FileChangeResult } from "./fileChange.js";
 import { atomicWriteWorkspaceUtf8File, readUtf8FileForEdit } from "./safeFileIo.js";
 
 export interface WriteFileArgs {
@@ -22,19 +23,14 @@ export function createWriteFileTool(context: ToolContext): Tool<WriteFileArgs, F
   // Write 的权限确认在 agent loop 完成；这里保持纯粹的文件写入实现。
   return {
     name: "Write",
-    description: "Atomically write a UTF-8 file in the workspace, safely creating missing parent directories.",
+    description: "Create a new workspace file or overwrite an existing file with the complete UTF-8 content supplied. Missing parent directories are created safely. Use Edit for localized changes; Write replaces the entire file. Returns {change} with operation create or update, path, committed, diff, and bytes written.",
     promptSnippet: "Create a new file or replace a file with complete UTF-8 content",
     promptGuidelines: ["Use Write for new files or intentional full rewrites; use Edit for localized changes"],
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", minLength: 1, description: "Workspace-relative file path to create or overwrite." },
-        content: { type: "string", description: "Complete UTF-8 file content to write." }
-      },
-      required: ["path", "content"],
-      additionalProperties: false
-    },
-    schema: z.object({ path: z.string().min(1), content: z.string() }),
+    ...zodToolInput(z.object({
+      path: z.string().min(1).describe("Workspace-relative file path to create or overwrite."),
+      content: z.string().describe("Complete UTF-8 file content. Replaces all existing content; an empty string writes an empty file.")
+    }).strict()),
+    outputSchema: fileChangeOutputSchema,
     capability: "filesystem.write",
     risk: "write",
     resolveExecution(args) {
