@@ -383,7 +383,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       void window.biny.bootstrap().then(bootstrap => {
         if (!active || request !== generation) return;
         setProjects(bootstrap.projects);
-        sessionTreePages.replaceAll(bootstrap.sidebarSessions);
+        sessionTreePages.replaceAll(bootstrap.sidebarSessions, bootstrap.projects.map(project => project.id));
         setSidebarSessions(bootstrap.sidebarSessions);
         if (bootstrap.workspace && projectRef.current === bootstrap.workspace.project.id) setWorkspace(bootstrap.workspace);
       }).catch(error => { if (active && request === generation) setWarning(errorMessage(error)); });
@@ -691,7 +691,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       if (!active) return;
       setVersion(bootstrap.version);
       setProjects(bootstrap.projects);
-      sessionTreePages.replaceAll(bootstrap.sidebarSessions);
+      sessionTreePages.replaceAll(bootstrap.sidebarSessions, bootstrap.projects.map(project => project.id));
       setSidebarSessions(bootstrap.sidebarSessions);
       setSidebarExpandedWidth(bootstrap.sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH);
       setFilePanelWidth(bootstrap.filePanelWidth ?? DEFAULT_FILE_PANEL_WIDTH);
@@ -988,7 +988,16 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         return;
       }
       if (action === "archive" || action === "unarchive") {
-        mergeProjectSnapshot(await window.biny.archiveSession(session.projectId, session.id, action === "archive", session.metadataRevision));
+        const ownsProject = sessionTreePages.captureCatalogProject(session.projectId);
+        await window.biny.archiveSession(session.projectId, session.id, action === "archive", session.metadataRevision);
+        if (ownsProject()) {
+          sessionTreePages.refreshCatalog(
+            session.projectId,
+            () => window.biny.refreshProject(session.projectId),
+            mergeProjectSnapshot,
+            error => setWarning(`归档状态已保存，但会话列表刷新失败：${errorMessage(error)}`)
+          );
+        }
         return;
       }
       if (action === "export-bundle" || action === "export-claude") {
@@ -1014,7 +1023,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, mergeProjectSnapshot, toggleSessionPinned]);
+  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, mergeProjectSnapshot, sessionTreePages, toggleSessionPinned]);
 
   const importSessionIntoProject = useCallback(async (projectId: string): Promise<void> => {
     try {
@@ -1394,7 +1403,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         setMemoryToggleBusy(false);
       }
       setProjects(bootstrap.projects);
-      sessionTreePages.replaceAll(bootstrap.sidebarSessions);
+      sessionTreePages.replaceAll(bootstrap.sidebarSessions, bootstrap.projects.map(project => project.id));
       setSidebarSessions(bootstrap.sidebarSessions);
       setWorkspace(bootstrap.workspace);
       setDocument(undefined);
