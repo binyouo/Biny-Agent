@@ -65,7 +65,11 @@ export function CrystalDock({ sessionId, onInsert }: { sessionId?: string; onIns
   );
   return <>
     <Tooltip content="结晶" delay={150} placement="above">
-      <button aria-label="结晶" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-crystal-button" onClick={() => setOpen(true)} type="button">
+      <button aria-label="结晶" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-crystal-button" onClick={() => {
+        // 新概览会清空详情；重开时先收起旧编辑器，避免接受随后被丢弃的输入。
+        setSnapshot((current) => current ? { overview: current.overview } : undefined);
+        setOpen(true);
+      }} type="button">
         <Icon name="cube" size={16} />
       </button>
     </Tooltip>
