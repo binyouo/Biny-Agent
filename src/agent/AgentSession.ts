@@ -554,6 +554,16 @@ export class AgentSession {
       getConfig: () => this.activeConfig.crystal,
       allowActivity: () => this.activeConfig.activity.enabled,
       readAnchorText: async ({ threadId, anchorId }) => {
+        if (threadId?.startsWith("activity:") && anchorId.startsWith("activity:")) {
+          const store = new ActivityStore();
+          try {
+            await store.open(this.activeConfig.activity.outputDirectory, globalAgentDir());
+            const analysis = store.getAnalysis(anchorId.slice("activity:".length));
+            return analysis ? [analysis.title, analysis.summary, ...analysis.highlights, ...analysis.decisions].filter(Boolean).join("\n") : undefined;
+          } finally {
+            await store.close();
+          }
+        }
         if (!threadId || !/^[A-Za-z0-9_-]+$/u.test(threadId)) return undefined;
         const filePath = threadId === this.recorder.sessionId
           ? this.recorder.filePath
