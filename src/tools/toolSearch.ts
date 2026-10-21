@@ -17,7 +17,7 @@ import type { Tool, ToolSource } from "./types.js";
 
 export const toolSearchToolName = "ToolSearch";
 /** 修改目录披露格式、选择 prompt 或验证语义时同步递增。 */
-const toolSearchProtocolVersion = "7";
+const toolSearchProtocolVersion = "8";
 const defaultMaxResults = 8;
 const maxResults = 20;
 const cacheTtlMs = 30 * 60 * 1000;
@@ -230,6 +230,9 @@ async function searchWithModels(
       seen.add(name);
       selected.push(candidate);
       if (selected.length >= limit) break;
+    }
+    if (parsed.tools.length > 0 && selected.length === 0) {
+      throw new SyntaxError("Tool search returned no valid registered tool names.");
     }
     return {
       status: "completed",
