@@ -30,7 +30,7 @@ const rate = (before: number, saved: number): number => before ? saved / before 
 const tier = (value: number): string => value < 0 ? "rose" : value >= 70 ? "emerald" : value >= 40 ? "cyan" : "blue";
 
 export function SettingsToolOptimization(): React.JSX.Element {
-  const [detail, setDetail] = useState<ToolOptimizationEntry["origin"]>();
+  const [detail, setDetail] = useState<{ origin: NonNullable<ToolOptimizationEntry["origin"]>; optimizationId: string }>();
   const state = toolOptimizationState(window.biny);
   const { data: stats, error } = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
   useEffect(() => { void state.refresh(); }, [state]);
@@ -44,7 +44,7 @@ export function SettingsToolOptimization(): React.JSX.Element {
   const chartRange = Math.max(1, positiveMax + negativeMax);
   const baseline = negativeMax === 0 ? 160 : positiveMax / chartRange * 160;
   return <div className="tool-optimization-page">
-    {detail ? <OptimizationCallDetail origin={detail} onClose={() => setDetail(undefined)} /> : null}
+    {detail ? <OptimizationCallDetail origin={detail.origin} optimizationId={detail.optimizationId} onClose={() => setDetail(undefined)} /> : null}
     <SavingsCard title="编程式工具调用" description="在沙箱内筛选工具结果，减少上下文占用。" icon="code">
       <div className="savings-ptc-metrics">
         <Metric icon="zap" color="emerald" label="节省 Token" value={number(stats.ptc.savedTokens)} />
@@ -84,7 +84,7 @@ export function SettingsToolOptimization(): React.JSX.Element {
       </SavingsCard>
       <SavingsCard title="最近命令" description="最近 20 条">
         <div className="savings-table-scroll"><table><thead><tr><th>时间</th><th>命令</th><th>已节省</th><th>压缩率</th></tr></thead><tbody>{stats.recent.map(({ optimization: item, time, origin }) => <tr key={item.id}>
-          <td>{new Date(time).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>{origin ? <button type="button" className="savings-command-link" onClick={() => setDetail(origin)} title="查看原调用参数和结果"><code title={item.originalCommand ?? item.command}>{item.originalCommand ?? item.command ?? "未知命令"}</code></button> : <code title={item.originalCommand ?? item.command}>{item.originalCommand ?? item.command ?? "未知命令"}</code>}</td><td>{number(item.savedTokens)}</td><td className={`savings-${tier(rate(item.beforeTokens, item.savedTokens))}`}>{percent(rate(item.beforeTokens, item.savedTokens))}</td>
+          <td>{new Date(time).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>{origin ? <button type="button" className="savings-command-link" onClick={() => setDetail({ origin, optimizationId: item.id })} title="查看原调用参数和结果"><code title={item.originalCommand ?? item.command}>{item.originalCommand ?? item.command ?? "未知命令"}</code></button> : <code title={item.originalCommand ?? item.command}>{item.originalCommand ?? item.command ?? "未知命令"}</code>}</td><td>{number(item.savedTokens)}</td><td className={`savings-${tier(rate(item.beforeTokens, item.savedTokens))}`}>{percent(rate(item.beforeTokens, item.savedTokens))}</td>
         </tr>)}</tbody></table></div>
       </SavingsCard>
     </> : <section className="savings-card savings-empty"><SavingsIcon name="zap" size={48} /><h3>暂无节省数据</h3><p>执行支持的命令后显示统计。</p></section>}
