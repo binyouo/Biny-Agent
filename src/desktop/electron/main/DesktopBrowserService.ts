@@ -117,6 +117,7 @@ export class DesktopBrowserService {
   private readonly embeddedProjects = new Map<string, EmbeddedProject>();
   private readonly environmentWindows = new Map<string, BrowserWindow>();
   private readonly proxyReady = new Map<string, Promise<void>>();
+  private readonly deletingBrowserEnvironments = new Set<string>();
   private automationContents: WebContents | undefined;
   private shownBrowser: { projectId: string; tabId: string } | undefined;
   private readonly guardedPages = new Map<number, { allowPrivateNetwork: boolean; reject(error: Error): void }>();
@@ -173,33 +174,39 @@ export class DesktopBrowserService {
   async deleteBrowserEnvironment(id: string): Promise<void> {
     this.assertCookieMutationAllowed();
     if (id === "default" || !this.browserEnvironments.get(id)) throw new Error("默认环境不可删除或浏览器环境不存在。");
-    const partition = browserPartitionForEnvironment(id);
-    for (const [projectId, group] of this.embeddedProjects) {
-      for (const [tabId, tab] of group.tabs) {
-        if (tab.state.environmentId !== id) continue;
-        tab.popup?.close();
-        group.tabs.delete(tabId);
-        if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
-        this.desktopWindow?.contentView.removeChildView(tab.view);
-        if (group.activeId === tabId) group.activeId = group.tabs.keys().next().value;
-        if (this.shownBrowser?.tabId === tabId) this.shownBrowser = undefined;
-        if (this.automationContents === tab.view.webContents) this.automationContents = undefined;
+    if (this.deletingBrowserEnvironments.has(id)) throw new Error("浏览器环境正在删除。");
+    this.deletingBrowserEnvironments.add(id);
+    try {
+      const partition = browserPartitionForEnvironment(id);
+      for (const [projectId, group] of this.embeddedProjects) {
+        for (const [tabId, tab] of group.tabs) {
+          if (tab.state.environmentId !== id) continue;
+          tab.popup?.close();
+          group.tabs.delete(tabId);
+          if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+          this.desktopWindow?.contentView.removeChildView(tab.view);
+          if (group.activeId === tabId) group.activeId = group.tabs.keys().next().value;
+          if (this.shownBrowser?.tabId === tabId) this.shownBrowser = undefined;
+          if (this.automationContents === tab.view.webContents) this.automationContents = undefined;
+        }
+        this.emitBrowserState(projectId);
       }
-      this.emitBrowserState(projectId);
+      const window = this.environmentWindows.get(id);
+      if (window && !window.isDestroyed()) window.destroy();
+      this.environmentWindows.delete(id);
+      const environmentSession = session.fromPartition(partition);
+      const getAllWindows = (BrowserWindow as unknown as { getAllWindows?: () => BrowserWindow[] }).getAllWindows;
+      for (const candidate of getAllWindows?.() ?? []) {
+        if (candidate.webContents.session === environmentSession && !candidate.isDestroyed()) candidate.destroy();
+      }
+      await environmentSession.clearStorageData();
+      await environmentSession.clearAuthCache();
+      await environmentSession.clearCache();
+      await this.browserEnvironments.delete(id);
+      this.proxyReady.delete(id);
+    } finally {
+      this.deletingBrowserEnvironments.delete(id);
     }
-    const window = this.environmentWindows.get(id);
-    if (window && !window.isDestroyed()) window.destroy();
-    this.environmentWindows.delete(id);
-    const environmentSession = session.fromPartition(partition);
-    const getAllWindows = (BrowserWindow as unknown as { getAllWindows?: () => BrowserWindow[] }).getAllWindows;
-    for (const candidate of getAllWindows?.() ?? []) {
-      if (candidate.webContents.session === environmentSession && !candidate.isDestroyed()) candidate.destroy();
-    }
-    await environmentSession.clearStorageData();
-    await environmentSession.clearAuthCache();
-    await environmentSession.clearCache();
-    await this.browserEnvironments.delete(id);
-    this.proxyReady.delete(id);
   }
 
   async clearBrowserEnvironment(id: string): Promise<void> {
@@ -233,9 +240,15 @@ export class DesktopBrowserService {
     return { imported };
   }
 
-  async prepareBrowserEnvironment(id: string): Promise<void> {
+  private requireBrowserEnvironment(id: string) {
     const environment = this.browserEnvironments.get(id);
     if (!environment) throw new Error("浏览器环境不存在。");
+    if (this.deletingBrowserEnvironments.has(environment.id)) throw new Error("浏览器环境正在删除。");
+    return environment;
+  }
+
+  async prepareBrowserEnvironment(id: string): Promise<void> {
+    this.requireBrowserEnvironment(id);
     if (id === "default") return;
     let pending = this.proxyReady.get(id);
     if (!pending) {
@@ -244,6 +257,7 @@ export class DesktopBrowserService {
       void pending.catch(() => { if (this.proxyReady.get(id) === pending) this.proxyReady.delete(id); });
     }
     await pending;
+    this.requireBrowserEnvironment(id);
   }
 
   private async applyBrowserEnvironmentProxy(id: string): Promise<void> {
@@ -297,8 +311,7 @@ export class DesktopBrowserService {
       if (group.tabs.size >= 20) throw new Error("最多打开 20 个浏览器标签，请先关闭部分标签。");
       const current = group.activeId ? group.tabs.get(group.activeId) : undefined;
       const environmentId = action.environmentId ?? current?.state.environmentId ?? "default";
-      const environment = this.browserEnvironments.get(environmentId);
-      if (!environment) throw new Error("浏览器环境不存在。");
+      const environment = this.requireBrowserEnvironment(environmentId);
       const targetPartition = partition ?? browserPartitionForEnvironment(environmentId);
       const managedEnvironmentPartition = targetPartition === browserPartitionForEnvironment(environmentId);
       this.hideEmbeddedBrowser();
@@ -822,7 +835,10 @@ export class DesktopBrowserService {
       const environmentId = requestedEnvironment?.id ?? "default";
       const xiaohongshu = args.engine === "xiaohongshu" && !requestedEnvironment;
       const partition = xiaohongshu ? xiaohongshuPartition : browserPartitionForEnvironment(environmentId);
-      if (!xiaohongshu) await this.prepareBrowserEnvironment(environmentId);
+      if (!xiaohongshu) {
+        await this.prepareBrowserEnvironment(environmentId);
+        this.requireBrowserEnvironment(environmentId);
+      }
       this.guardWebPartition(partition);
       const visible = args.visible === true && typeof args.projectId === "string" && this.shownBrowser?.projectId === args.projectId;
       if (visible) {
@@ -1090,6 +1106,7 @@ export class DesktopBrowserService {
   }
 
   private async openInEnvironmentWindow(url: string, environmentId: string): Promise<void> {
+    this.requireBrowserEnvironment(environmentId);
     const partition = browserPartitionForEnvironment(environmentId);
     let window = this.environmentWindows.get(environmentId);
     if (!window || window.isDestroyed()) {
