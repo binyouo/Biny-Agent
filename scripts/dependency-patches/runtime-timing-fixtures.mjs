@@ -13,12 +13,24 @@ const delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms));
 const limits = { timeoutMs: 3_000, executionTimeoutMs: 80 };
 const results = [];
 
-async function fixture(name, operation) {
+async function fixture(name, operation, diagnostics) {
   const started = performance.now();
   try {
     await operation();
   } catch (error) {
-    console.error(`[runtime-timing-fixtures] Failed fixture: ${name}`);
+    try {
+      console.error(`[runtime-timing-fixtures] Failed fixture: ${name}`);
+      console.error(JSON.stringify({
+        fixture: name,
+        elapsedMs: Math.round(performance.now() - started),
+        previousFixtures: results,
+        observation: diagnostics?.(),
+        error: {
+          code: typeof error?.code === 'string' ? error.code : undefined,
+          timeoutMs: Number.isFinite(error?.details?.timeoutMs) ? error.details.timeoutMs : undefined,
+        },
+      }));
+    } catch { /* Diagnostic failure must not replace the original error. */ }
     throw error;
   }
   results.push({ name, elapsedMs: Math.round(performance.now() - started) });
@@ -65,18 +77,21 @@ await fixture('CPU remains bounded with a pending bridge', async () => {
   assert.equal(calls, 1);
 });
 
+let cumulativeSlicePhase = 'single-slice completion control';
+let cumulativeSliceCalls = 0;
 await fixture('multiple individually small slices accumulate', async () => {
   // 单段留足调度余量；更多短段累积同一预算，异步让出不引入固定墙钟等待。
   const slice = 'let sum = 0; for (let i = 0; i < 5000; i++) sum += i;';
   assert.deepEqual(await run({ source: `${slice} return sum;`, limits }), { status: 'completed', value: 12_497_500 });
-  let calls = 0;
+  cumulativeSlicePhase = 'cumulative timeout assertion';
   await expectCode(() => run({
     source: `for (let j = 0; j < 1000; j++) { ${slice} await tools.tick(sum); } return 1;`,
-    hostFunctions: { tools: { tick: async () => { calls += 1; await new Promise(resolveTick => setImmediate(resolveTick)); } } },
+    hostFunctions: { tools: { tick: async () => { cumulativeSliceCalls += 1; await new Promise(resolveTick => setImmediate(resolveTick)); } } },
     limits: { ...limits, maxBridgeRequests: 1000 },
   }), 'RUN_TIMEOUT', limits.executionTimeoutMs);
-  assert.ok(calls >= 2 && calls < 1000, `Expected cumulative expiration across slices; observed ${calls}`);
-});
+  cumulativeSlicePhase = 'bridge count assertion';
+  assert.ok(cumulativeSliceCalls >= 2 && cumulativeSliceCalls < 1000, `Expected cumulative expiration across slices; observed ${cumulativeSliceCalls}`);
+}, () => ({ phase: cumulativeSlicePhase, calls: cumulativeSliceCalls }));
 
 await fixture('parallel awaits retain normal Promise ordering', async () => {
   const result = await run({
