@@ -266,6 +266,8 @@ biny task message <taskRunId> "补充上下文" --session <sessionId> --message-
 biny task continue <taskRunId> "新的有限任务" --session <sessionId> --message-id <id>
 ```
 
+任务详情的 `inputOpen` 表示当前最新执行已获准通信、处于排队或运行状态且消息入口未关闭；尚无执行记录或未获准通信时为 false。该字段不替代发送时的内容、消息数量及身份去重校验。
+
 `task list --newest-first` 按新到旧查询任务。`inspect` 支持 `--attempt-id` 查询旧执行、`--after-sequence` 分页；消息与后续任务的 ID 用于失败重试去重，重试必须保留原 ID 和内容。
 
 恢复会核对原工具与权限契约；旧断点与当前策略不匹配时保持阻塞。先查明既有副作用，再明确创建新的有限任务，不能把重试当作自动恢复。

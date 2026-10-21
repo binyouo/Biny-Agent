@@ -89,9 +89,7 @@ export class TaskCommunication {
 
   send(taskRunId: string, content: string, id: string = randomUUID()): TaskMessage {
     const task = this.read(taskRunId);
-    const definition = task.task as { communication?: unknown } | undefined;
-    const checkpoint = artifacts(task).workerExecution as { communication?: unknown } | undefined;
-    if (definition?.communication !== true && checkpoint?.communication !== true) {
+    if (!hasCommunicationAdmission(task)) {
       throw new Error("Worker has no communication admission; start a new bounded task.");
     }
     return this.append(task, "parent", content, id);
@@ -190,7 +188,7 @@ export class TaskCommunication {
       reason: typeof failure?.message === "string" ? redactSecrets(failure.message).slice(0, 2000) : undefined,
       stopReason: typeof failure?.failureClass === "string" ? redactSecrets(failure.failureClass).slice(0, 128) : undefined,
       verification: options.summary ? undefined : boundedValue(attempt?.verification),
-      inputOpen: attempt?.attemptId === task.attempts.at(-1)?.attemptId && ["queued", "running"].includes(task.status) && !state.inputClosed,
+      inputOpen: attempt !== undefined && attempt.attemptId === task.attempts.at(-1)?.attemptId && hasCommunicationAdmission(task) && ["queued", "running"].includes(task.status) && !state.inputClosed,
       resumable: task.status === "blocked" && failure?.failureClass === "worker_interrupted",
       approval: options.summary || !approval ? undefined : { approvalId: approval.approvalId, command: check?.command, cwd: check?.cwd, reason: check?.reason },
       messages: options.summary ? [] : state.messages.map((message) => message.direction === "worker" && this.tasks.hasMessageReceipt(taskRunId, message.id) ? { ...message, delivered: true } : message), activity: page.events.flatMap(workerActivity),
@@ -329,6 +327,12 @@ function workerActivity(event: RuntimeEvent): WorkerActivity[] {
   return message.content.flatMap((part: { type?: unknown; text?: unknown }, index) =>
     part && (part.type === "text" || part.type === "reasoning") && typeof part.text === "string"
       ? [{ ...base, id: `${base.id}:${index}`, kind: part.type === "text" ? "assistant" as const : "reasoning" as const, content: text(part.text) }] : []);
+}
+
+function hasCommunicationAdmission(task: TaskRunWithAttempts): boolean {
+  const definition = task.task as { communication?: unknown } | undefined;
+  const checkpoint = artifacts(task).workerExecution as { communication?: unknown } | undefined;
+  return definition?.communication === true || checkpoint?.communication === true;
 }
 
 function artifacts(task: TaskRunWithAttempts): Record<string, unknown> {
