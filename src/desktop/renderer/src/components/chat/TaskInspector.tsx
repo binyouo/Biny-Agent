@@ -89,6 +89,10 @@ export function TaskInspector({ selection, initialStatus = "running", onPreviewF
   const description = typeof rawDescription === "string" ? rawDescription.replace(/\s+/gu, " ").trim().slice(0, 120) : "";
   const title = description || (workerName === "子代理" ? workerName : `子代理 · ${workerName}`);
   const recorded = typeof tool?.result === "string" ? tool.result : (tool?.result as { output?: string; error?: string } | undefined)?.output;
+  const recordedAttemptId = (tool?.result as { attemptId?: unknown } | undefined)?.attemptId;
+  // A saved Task result can predate the inspected attempt. Legacy results have no identity.
+  const inspectedRecorded = inspection && (typeof recordedAttemptId === "string" && recordedAttemptId.length > 0
+    ? recordedAttemptId === inspection.attemptId : inspection.attempts.length <= 1) ? recorded : undefined;
   const recordedError = tool?.error ?? (tool?.result as { error?: string } | undefined)?.error;
   const failure = subagentFailurePresentation(inspection?.reason ?? recordedError);
   const scroll = useRef<HTMLDivElement>(null);
@@ -130,7 +134,7 @@ export function TaskInspector({ selection, initialStatus = "running", onPreviewF
         following.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48;
         setBehind(!following.current);
       }}><div ref={content}>
-        {inspection ? <TaskInspectionView inspection={inspection} activity={activity} projectId={projectId} recordedOutput={recorded} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
+        {inspection ? <TaskInspectionView inspection={inspection} activity={activity} projectId={projectId} recordedOutput={inspectedRecorded} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
           : (recorded ?? failure.output) ? <MarkdownContent content={recorded ?? failure.output ?? ""} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
             : <p className="subagent-card-empty">{error ? "暂时无法读取执行记录。" : !sessionId || !taskRunId ? "此历史记录没有可关联的执行身份。" : !admitted ? "等待子代理启动…" : "正在读取子代理记录…"}</p>}
       </div></div>
