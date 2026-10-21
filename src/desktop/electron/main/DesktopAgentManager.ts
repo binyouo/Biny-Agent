@@ -341,6 +341,9 @@ export class DesktopAgentManager {
     runtimeHostSpawnCircuitFor(runtimeHostPaths(persistenceRoot).endpoint).reset();
     try {
       await this.configStore.load();
+      const resident = this.residentRuntime(projectId);
+      if (resident?.runtime instanceof RuntimeHostClient) await resident.runtime.retryConnection();
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) throw new Error("Project runtime was disposed.");
       const managed = sessionId === undefined
         ? await this.ensureRuntime(projectId)
         : await this.resolveSessionRuntime(projectId, sessionId, false);
