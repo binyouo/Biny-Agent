@@ -671,7 +671,9 @@ export class ActivityRecorderService {
   }
 
   private async applySettings(nextSettings: ActivitySettings): Promise<void> {
-    if (isDeepStrictEqual(this.settings, nextSettings) && this.child && this.state === "running" && this.recordingRevision === this.store.clearRevision()) return;
+    // 相同配置也可能已由 refresh/settings save 撤销旧任务，必须完成新一代重启。
+    if (!this.analysisAbort.signal.aborted && isDeepStrictEqual(this.settings, nextSettings)
+      && this.child && this.state === "running" && this.recordingRevision === this.store.clearRevision()) return;
     // 完整重启路径：让配置边界可观察，也会重置 截图去重、输入聚合和浏览器状态。
     this.analysisScheduler.stop();
     this.embeddingScheduler.stop();
