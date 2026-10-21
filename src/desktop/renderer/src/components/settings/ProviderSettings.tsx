@@ -1958,6 +1958,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
               <label className="provider-row-label" htmlFor="custom-provider-create-name">名称</label>
               <input
                 autoFocus
+                disabled={creating}
                 id="custom-provider-create-name"
                 onChange={(event) => setDisplayName(event.target.value)}
                 placeholder="例如 我的中转站"
@@ -1966,12 +1967,13 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
             </div>
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-icon">图标</label>
-              <ProviderIconPicker onChange={(iconId) => setIcon(iconId)} triggerId="custom-provider-create-icon" value={icon} />
+              <ProviderIconPicker disabled={creating} onChange={(iconId) => setIcon(iconId)} triggerId="custom-provider-create-icon" value={icon} />
               <div className="provider-row-hint">为该服务商选择品牌图标。</div>
             </div>
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-url">服务地址</label>
               <input
+                disabled={creating}
                 id="custom-provider-create-url"
                 onChange={(event) => setBaseUrl(event.target.value)}
                 placeholder="https://api.example.com/v1"
@@ -1986,18 +1988,19 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
               <div className="secret-input-row">
                 <input
                   autoComplete="off"
+                  disabled={creating}
                   id="custom-provider-create-key"
                   onChange={(event) => setApiKey(event.target.value)}
                   placeholder="留空，稍后在面板中填写"
                   type={showKey ? "text" : "password"}
                   value={apiKey}
                 />
-                <button className="icon-button" type="button" aria-label={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((value) => !value)}><Icon name={showKey ? "eye-off" : "eye"} size={16} /></button>
+                <button className="icon-button" disabled={creating} type="button" aria-label={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((value) => !value)}><Icon name={showKey ? "eye-off" : "eye"} size={16} /></button>
               </div>
             </div>
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-format">API 格式</label>
-              <NativeSelect className="connection-select" id="custom-provider-create-format" onChange={(event) => setFormat(event.target.value as ApiFormatId)} value={format}>
+              <NativeSelect disabled={creating} className="connection-select" id="custom-provider-create-format" onChange={(event) => setFormat(event.target.value as ApiFormatId)} value={format}>
                 {formatOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
               </NativeSelect>
               <div className="provider-row-hint">{apiFormatOption(format).description}</div>
@@ -2183,18 +2186,19 @@ function ModelOptionsDialog({
             <div className="provider-cap-grid">
               <div className="provider-cap-card">
                 <label className="provider-cap-label" htmlFor="model-vision"><Icon name="eye" size={13} />图片输入</label>
-                <NativeSelect aria-label="图片输入" id="model-vision" onChange={(event) => setVision(event.target.value as typeof vision)} value={vision}>
+                <NativeSelect disabled={saving} aria-label="图片输入" id="model-vision" onChange={(event) => setVision(event.target.value as typeof vision)} value={vision}>
                   <option value="auto">自动</option>
                   <option value="enabled">启用</option>
                   <option value="disabled">禁用</option>
                 </NativeSelect>
               </div>
-              <CapabilityOption icon="wrench" label="工具调用" onChange={(value) => setCapabilities((current) => ({ ...current, tools: value }))} value={capabilities.tools} />
-              <CapabilityOption icon="brain-spark" label="深度思考" onChange={(value) => setCapabilities((current) => ({ ...current, reasoning: value }))} value={capabilities.reasoning} />
+              <CapabilityOption disabled={saving} icon="wrench" label="工具调用" onChange={(value) => setCapabilities((current) => ({ ...current, tools: value }))} value={capabilities.tools} />
+              <CapabilityOption disabled={saving} icon="brain-spark" label="深度思考" onChange={(value) => setCapabilities((current) => ({ ...current, reasoning: value }))} value={capabilities.reasoning} />
             </div>
           </section>
 
           <ModelProfileEditorFields
+            disabled={saving}
             apiFormat={apiFormat}
             formatOptions={formatOptions}
             formatOverride={formatOverride}
@@ -2210,6 +2214,7 @@ function ModelOptionsDialog({
                 <p className="provider-dialog-hint">按服务商要求填写 JSON，仅用于当前模型。</p>
                 <textarea
                   aria-label="自定义请求头（JSON）"
+                  disabled={saving}
                   className="provider-json-editor"
                   onChange={(event) => { setHeadersText(event.target.value); setHeadersError(undefined); }}
                   placeholder={'{\n  "X-Custom-Header": "value"\n}'}
@@ -2228,6 +2233,7 @@ function ModelOptionsDialog({
           {hasOverrides ? (
             <button
               className="text-button provider-reset-button"
+              disabled={saving}
               onClick={(event) => {
                 resetToDefault();
                 // 重置后按钮会消失，把焦点交给保存，避免退回设置页背景。
@@ -2245,7 +2251,8 @@ function ModelOptionsDialog({
 }
 
 /** 能力开关仅展示功能名，推荐值由对话框统一恢复。 */
-function CapabilityOption({ icon, label, onChange, value }: {
+function CapabilityOption({ disabled, icon, label, onChange, value }: {
+  disabled?: boolean;
   icon: "brain-spark" | "database" | "eye" | "wand" | "wrench";
   label: string;
   onChange(value: boolean): void;
@@ -2261,6 +2268,7 @@ function CapabilityOption({ icon, label, onChange, value }: {
         aria-checked={value}
         aria-label={label}
         className={`model-toggle${value ? " is-on" : ""}`}
+        disabled={disabled}
         onClick={() => onChange(!value)}
         role="switch"
         type="button"
@@ -2323,10 +2331,11 @@ const modelProfileThinkingLevels: Array<{ level: "off" | "minimal" | "low" | "me
 
 type ModelProfileThinkingLevel = (typeof modelProfileThinkingLevels)[number]["level"];
 
-function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, draft, model, onApiFormat, onDraft }: {
+function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, disabled, draft, model, onApiFormat, onDraft }: {
   apiFormat: ApiFormatId;
   formatOptions: ApiFormatOption[];
   formatOverride: ApiFormatId | "provider_default";
+  disabled?: boolean;
   draft: ModelProfileFieldDraft;
   model?: ModelChoice;
   onApiFormat(value: ApiFormatId | "provider_default"): void;
@@ -2349,6 +2358,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, dr
           <label>
             <span>上下文容量</span>
             <input
+              disabled={disabled}
               min={4096}
               onChange={(event) => updateField("contextWindow", event.target.value)}
               placeholder={!model?.contextWindowIsFallback && model?.contextWindow ? `自动：${model.contextWindow.toLocaleString("zh-CN")}` : "自动"}
@@ -2360,6 +2370,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, dr
           <label>
             <span>单次回复上限</span>
             <input
+              disabled={disabled}
               min={1}
               onChange={(event) => updateField("maxOutputTokens", event.target.value)}
               placeholder={model?.maxOutputTokens ? `自动：${model.maxOutputTokens.toLocaleString("zh-CN")}` : "自动"}
@@ -2371,6 +2382,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, dr
           <label>
             <span>单次输入上限</span>
             <input
+              disabled={disabled}
               min={2048}
               onChange={(event) => updateField("maxInputTokens", event.target.value)}
               placeholder="自动"
@@ -2386,7 +2398,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, dr
           <h5>请求格式</h5>
           <p>连接当前使用 {apiFormatOption(apiFormat).label}，通常保持跟随即可。</p>
         </div>
-        <NativeSelect aria-label="当前模型的请求格式" onChange={(event) => onApiFormat(event.target.value as ApiFormatId | "provider_default")} value={formatOverride}>
+        <NativeSelect disabled={disabled} aria-label="当前模型的请求格式" onChange={(event) => onApiFormat(event.target.value as ApiFormatId | "provider_default")} value={formatOverride}>
           <option value="provider_default">跟随连接设置</option>
           {formatOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
         </NativeSelect>
@@ -2401,6 +2413,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, dr
             <label key={level}>
               <span>{label}</span>
               <input
+                disabled={disabled}
                 onChange={(event) => updateThinkingLevel(level, event.target.value)}
                 placeholder={automaticThinkingPlaceholder(model, level)}
                 type="text"
