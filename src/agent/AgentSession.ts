@@ -2648,13 +2648,15 @@ export class AgentSession {
       && runOptions.retryOfMessageId === undefined
       && runOptions.recordSessionUserMessage !== false
       && runOptions.emotionAnalysis !== false;
+    // Notice ownership follows this turn's recorder, not the runtime's initial session.
+    const taskNotificationSessionId = this.recorder.sessionId;
     let noticeCharacters = 0;
     let noticeCount = 0;
     let receivedNotices: Set<string> | undefined;
     const takeTaskNotifications = async (): Promise<AgentUserMessage[]> => {
       const channel = this.options.taskCommunication;
       if (!channel || noticeCount >= 4 || noticeCharacters >= 6000) return [];
-      const notices = channel.notifications(6000 - noticeCharacters).slice(0, 4 - noticeCount);
+      const notices = channel.notifications(6000 - noticeCharacters, taskNotificationSessionId).slice(0, 4 - noticeCount);
       if (!notices.length) return [];
       if (!receivedNotices) {
         await this.recorder.flush();
@@ -2663,7 +2665,7 @@ export class AgentSession {
       }
       const next: AgentUserMessage[] = [];
       for (const notice of notices) {
-        if (receivedNotices.has(notice.id)) { channel.acknowledge(notice); continue; }
+        if (receivedNotices.has(notice.id)) { channel.acknowledge(notice, taskNotificationSessionId); continue; }
         await flushIntermediateRetryReply();
         const message: AgentUserMessage = { role: "user", content: notice.content };
         const reference = this.recordCanonicalMessage({ type: "user_message", content: notice.content, messageId: notice.id,
@@ -2671,7 +2673,7 @@ export class AgentSession {
         referenceByMessage.set(message, reference);
         if (runOptions.retryOrigin) retryCursor = reference.id;
         await this.recorder.flush();
-        channel.acknowledge(notice);
+        channel.acknowledge(notice, taskNotificationSessionId);
         receivedNotices.add(notice.id);
         noticeCount += 1; noticeCharacters += notice.content.length;
         next.push(message);

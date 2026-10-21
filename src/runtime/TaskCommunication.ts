@@ -81,9 +81,13 @@ export class TaskCommunication {
   constructor(private readonly tasks: DurableTaskRunStore, private readonly sessionId: string) {}
 
   read(taskRunId: string): TaskRunWithAttempts {
+    return this.readForSession(taskRunId, this.sessionId);
+  }
+
+  private readForSession(taskRunId: string, sessionId: string): TaskRunWithAttempts {
     const task = this.tasks.get(taskRunId);
     if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-    if (task.sessionId !== this.sessionId) throw new Error(`TaskRun ${taskRunId} belongs to another session.`);
+    if (task.sessionId !== sessionId) throw new Error(`TaskRun ${taskRunId} belongs to another session.`);
     return task;
   }
 
@@ -101,14 +105,14 @@ export class TaskCommunication {
     return mailbox(this.read(taskRunId)).messages.map((message) => message.direction === "worker" && this.tasks.hasMessageReceipt(taskRunId, message.id) ? { ...message, delivered: true } : message);
   }
 
-  notifications(maxCharacters = 6000): TaskNotification[] {
+  notifications(maxCharacters = 6000, receivingSessionId = this.sessionId): TaskNotification[] {
     const notices: TaskNotification[] = [];
     let remaining = Math.max(0, Math.min(6000, maxCharacters));
     let cursor: number | undefined;
     do {
       const page = this.tasks.list({ cursor, limit: 100 });
       for (const task of page.tasks) {
-        if (task.sessionId !== this.sessionId || notices.length >= 4 || remaining < 512) continue;
+        if (task.sessionId !== receivingSessionId || notices.length >= 4 || remaining < 512) continue;
         const definition = task.task as { communication?: unknown; notifyParent?: unknown } | undefined;
         if (definition?.communication !== true) continue;
         const attempt = task.attempts.at(-1);
@@ -145,9 +149,9 @@ export class TaskCommunication {
     return notices;
   }
 
-  acknowledge(notice: TaskNotification): void {
+  acknowledge(notice: TaskNotification, receivingSessionId = this.sessionId): void {
     if (this.closed) throw new Error("Task communication is closed.");
-    const task = this.read(notice.taskRunId);
+    const task = this.readForSession(notice.taskRunId, receivingSessionId);
     if (task.attempts.at(-1)?.attemptId !== notice.attemptId) return;
     for (const id of [...notice.messageIds, ...(notice.terminal ? [notice.id] : [])]) {
       this.tasks.recordMessageReceipt(task.taskRunId, notice.attemptId, id);
