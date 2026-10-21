@@ -1,5 +1,6 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { memoryAddCommand, memoryClearCommand, memoryListCommand, memorySearchCommand } from "../src/cli/commands/localCapabilities.js";
@@ -7,6 +8,8 @@ import { connectRuntimeHost, startRuntimeHost } from "../src/runtime/RuntimeHost
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
 import type { MemoryEntryInput } from "../src/agent/context/memoryTypes.js";
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-cli-entry-"));
 const originalAgentDir = process.env.BINY_AGENT_DIR;
@@ -17,7 +20,7 @@ const clearedThreads: string[] = [];
 const listLimits: number[] = [];
 let clearedAll = 0;
 let busy = false;
-const commands = {
+let commands = {
   agent: {
     searchMemory: async (query: string, paths: string[], options: unknown) => { searches.push({ query, paths, options }); return { matches: [], storeRevision: 0, report: { omitted: [] } }; },
     getLocalMemory: () => ({
@@ -45,10 +48,28 @@ const runtime = {
   },
   close: async () => undefined
 } as unknown as InteractiveRuntimeHandle;
+let authority: RuntimeEventAuthority | undefined;
+let stores: Awaited<ReturnType<typeof createHostTestStores>> | undefined;
+try {
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
+  stores = await createHostTestStores(root, authority);
+  commands = { ...stores, ...commands };
+} catch (error) {
+  stores?.heartbeat.stop();
+  try {
+    await stores?.managedProcesses.close();
+  } finally {
+    authority?.close();
+    if (originalAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = originalAgentDir;
+    await rm(root, { recursive: true, force: true });
+  }
+  throw error;
+}
 let host: Awaited<ReturnType<typeof startRuntimeHost>> | undefined;
 const originalLog = console.log;
 try {
-  host = await startRuntimeHost(root, async () => ({ runtime, commands }));
+  host = await startRuntimeHost(root, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   console.log = () => undefined;
   await memoryListCommand(root, { noSpawn: true, json: true });
   assert.deepEqual(listLimits, [100], "CLI list forwards the public default page size");
@@ -82,10 +103,8 @@ try {
     memoryAddCommand(root, undefined, { entry: '[]', noSpawn: true }),
     /JSON 对象/u
   );
-  await assert.rejects(memoryClearCommand(root, { threadId: "thread-1", yes: true, noSpawn: true }), /Session is busy/u);
-  assert.deepEqual(clearedThreads, [], "maintenance remains exclusive while the model is running");
-  busy = false;
   await memoryClearCommand(root, { threadId: "thread-1", yes: true, noSpawn: true });
+  assert.equal(busy, true, "global memory writes do not replace the active chat operation");
   assert.deepEqual(clearedThreads, ["thread-1"]);
   assert.equal(clearedAll, 0, "按 thread 清理不能落到全库清理");
   await assert.rejects(memoryClearCommand(root, { threadId: " ", yes: true, noSpawn: true }), /threadId/u);
@@ -103,10 +122,19 @@ try {
   assert.equal(clearedAll, 1, "缺省路径仍执行显式确认后的全库清理");
 } finally {
   console.log = originalLog;
-  await host?.close();
-  if (originalAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
-  else process.env.BINY_AGENT_DIR = originalAgentDir;
-  await rm(root, { recursive: true, force: true });
+  try {
+    await host?.close();
+  } finally {
+    stores?.heartbeat.stop();
+    try {
+      await stores?.managedProcesses.close();
+    } finally {
+      authority?.close();
+      if (originalAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+      else process.env.BINY_AGENT_DIR = originalAgentDir;
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 }
 
 console.log("memory CLI structured entry tests passed");
