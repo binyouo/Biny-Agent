@@ -198,7 +198,14 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const navigationRef = useRef<DesktopNavigationState>(createNavigationState());
   const [_navigationState, setNavigationState] = useState<DesktopNavigationState>(() => createNavigationState());
   const loadRequestRef = useRef(0);
-  const [pendingNavigation, setPendingNavigation] = useState<DesktopNavigationTarget>();
+  const [pendingNavigation, setPendingNavigationState] = useState<DesktopNavigationTarget>();
+  const pendingNavigationRef = useRef<DesktopNavigationTarget | undefined>(undefined);
+  const setPendingNavigation = useCallback((target: DesktopNavigationTarget | undefined): void => {
+    pendingNavigationRef.current = target;
+    setPendingNavigationState(target);
+  }, []);
+  // Removing one project must retire its reads/receipts without cancelling another project's intent.
+  const projectRemovalRef = useRef(new Map<string, object>());
   const branchRequestRef = useRef(0);
   const menuActionRef = useRef<(action: DesktopMenuAction) => void>(() => undefined);
 
@@ -555,18 +562,19 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     nextWorkspace?: DesktopWorkspaceSnapshot | Promise<DesktopWorkspaceSnapshot>,
     activeView: DesktopActiveView = "chat"
   ): Promise<boolean> => {
+    const projectLifetime = projectRemovalRef.current.get(projectId);
     const request = activeRequest ?? loadRequestRef.current + 1;
     if (activeRequest === undefined) {
       loadRequestRef.current = request;
       setPendingNavigation(undefined);
     }
-    if (loadRequestRef.current !== request) return false;
+    if (loadRequestRef.current !== request || projectRemovalRef.current.get(projectId) !== projectLifetime) return false;
     memoryToggleRequestRef.current += 1;
     setMemoryToggleBusy(false);
     if (showLoader) setLoading(true);
     try {
       const { document: nextDocument, workspace: resolvedWorkspace } = await readDesktopSession(window.biny, projectId, sessionId, nextWorkspace);
-      if (loadRequestRef.current !== request) return false;
+      if (loadRequestRef.current !== request || projectRemovalRef.current.get(projectId) !== projectLifetime) return false;
       if (resolvedWorkspace) {
         if (projectRef.current !== resolvedWorkspace.project.id) {
           permissionModeRequestRef.current += 1;
@@ -600,12 +608,12 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       void window.biny.commitSelection(projectId, sessionId, activeView).catch((error) => setWarning(errorMessage(error)));
       return true;
     } catch (error) {
-      if (loadRequestRef.current !== request) return false;
+      if (loadRequestRef.current !== request || projectRemovalRef.current.get(projectId) !== projectLifetime) return false;
       throw error;
     } finally {
       if (showLoader && loadRequestRef.current === request) setLoading(false);
     }
-  }, [mergeWorkspaceProject, sessionTreePages]);
+  }, [mergeWorkspaceProject, sessionTreePages, setPendingNavigation]);
 
   const adoptWorkspace = useCallback(async (
     snapshot: DesktopWorkspaceSnapshot,
@@ -639,10 +647,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setLoading(false);
     void window.biny.commitSelection(snapshot.project.id, undefined, "chat").catch((error) => setWarning(errorMessage(error)));
     return true;
-  }, [mergeWorkspaceProject, openSession]);
+  }, [mergeWorkspaceProject, openSession, setPendingNavigation]);
 
   const openNavigationTarget = useCallback(async (target: DesktopNavigationTarget): Promise<boolean> => {
     // 从项目选择到会话读取共用同一个请求号，较早的跨项目请求不能在较新的点击后重新取得提交权。
+    const projectLifetime = projectRemovalRef.current.get(target.projectId);
     const request = loadRequestRef.current + 1;
     loadRequestRef.current = request;
     setPendingNavigation(target);
@@ -671,7 +680,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     try {
       if (target.sessionId === undefined) {
         const snapshot = await window.biny.startDraft(target.projectId);
-        if (loadRequestRef.current !== request) return false;
+        if (loadRequestRef.current !== request || projectRemovalRef.current.get(target.projectId) !== projectLifetime) return false;
         const adopted = await adoptWorkspace(snapshot, undefined, request);
         if (adopted) setFocusToken((value) => value + 1);
         return adopted;
@@ -681,7 +690,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       }
       return await openSession(target.projectId, target.sessionId, false, request, window.biny.selectProject(target.projectId));
     } catch (error) {
-      if (loadRequestRef.current !== request) return false;
+      if (loadRequestRef.current !== request || projectRemovalRef.current.get(target.projectId) !== projectLifetime) return false;
       throw error;
     } finally {
       if (loadRequestRef.current === request) {
@@ -689,7 +698,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         setPendingNavigation(undefined);
       }
     }
-  }, [adoptWorkspace, openSession]);
+  }, [adoptWorkspace, openSession, setPendingNavigation]);
 
   useEffect(() => {
     let active = true;
@@ -840,6 +849,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     setComposerDraft(undefined);
     setDraftProjectId(undefined);
+    const projectLifetime = projectRemovalRef.current.get(projectId);
     const request = loadRequestRef.current + 1;
     loadRequestRef.current = request;
     setPendingNavigation({ projectId });
@@ -848,16 +858,16 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (!projectRef.current) setLoading(true);
     try {
       const snapshot = await window.biny.selectProject(projectId);
-      if (loadRequestRef.current === request) await adoptWorkspace(snapshot, undefined, request);
+      if (loadRequestRef.current === request && projectRemovalRef.current.get(projectId) === projectLifetime) await adoptWorkspace(snapshot, undefined, request);
     } catch (error) {
-      if (loadRequestRef.current === request) setWarning(errorMessage(error));
+      if (loadRequestRef.current === request && projectRemovalRef.current.get(projectId) === projectLifetime) setWarning(errorMessage(error));
     } finally {
       if (loadRequestRef.current === request) {
         setLoading(false);
         setPendingNavigation(undefined);
       }
     }
-  }, [adoptWorkspace]);
+  }, [adoptWorkspace, setPendingNavigation]);
 
   const selectComposerProject = useCallback((projectId: string): void => {
     // 新消息尚未生成 session 时，文件夹只是消息归属，不应触发工作区和左侧栏切换。
@@ -920,7 +930,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setLoading(false);
     setRuntimePanelOpen(true);
     void window.biny.setActiveView("runtime").catch((error) => setWarning(errorMessage(error)));
-  }, []);
+  }, [setPendingNavigation]);
 
   const changeRuntimePanelOpen = useCallback((open: boolean): void => {
     setRuntimePanelOpen(open);
@@ -943,7 +953,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [commitNavigation, openNavigationTarget, runtimePanelOpen]);
+  }, [commitNavigation, openNavigationTarget, runtimePanelOpen, setPendingNavigation]);
 
   useEffect(() => {
     if (!temporalSourceTarget || document?.session.id !== temporalSourceTarget.sessionId) return;
@@ -986,6 +996,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
     for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
       sessionTreePages.replaceProject(projectId, []);
+      invalidateSessionRootPage(projectId);
       invalidateSessionRootPage(projectId);
       void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
     }
@@ -1039,20 +1050,21 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, mergeProjectSnapshot, toggleSessionPinned]);
 
   const importSessionIntoProject = useCallback(async (projectId: string): Promise<void> => {
+    const projectLifetime = projectRemovalRef.current.get(projectId);
     let request = ++loadRequestRef.current;
     setPendingNavigation(undefined);
     setLoading(false);
     try {
       if (projectRef.current !== projectId) {
         const snapshot = await window.biny.selectProject(projectId);
-        if (loadRequestRef.current !== request) return;
+        if (loadRequestRef.current !== request || projectRemovalRef.current.get(projectId) !== projectLifetime) return;
         // 提交使用新请求号，隔离等待期间旧工作区发出的发送与命令回执。
         request = ++loadRequestRef.current;
         if (!await adoptWorkspace(snapshot, undefined, request)) return;
       }
-      if (loadRequestRef.current === request) openSettings("导入");
+      if (loadRequestRef.current === request && projectRemovalRef.current.get(projectId) === projectLifetime) openSettings("导入");
     } catch (error) {
-      if (loadRequestRef.current === request) setWarning(errorMessage(error));
+      if (loadRequestRef.current === request && projectRemovalRef.current.get(projectId) === projectLifetime) setWarning(errorMessage(error));
     }
   }, [adoptWorkspace, openSettings]);
 
@@ -1076,6 +1088,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (!projectId) throw new Error("请先打开一个项目。");
     const switchingDraftProject = projectId !== activeProjectId;
     const navigationRequest = loadRequestRef.current;
+    const projectLifetime = projectRemovalRef.current.get(projectId);
+    const isCurrent = (): boolean => loadRequestRef.current === navigationRequest
+      && projectRemovalRef.current.get(projectId) === projectLifetime;
     const previousSessionId = selectedRef.current;
     const previousNavigation = navigationRef.current;
     const draftPersonalization: DesktopChatPersonalizationOverride = {
@@ -1100,15 +1115,16 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       ? { ...current, recovery: undefined }
       : current);
     // 发送途中切换会话时，不让迟到回执把用户拉回原聊天。
-    if (loadRequestRef.current !== navigationRequest) return receipt;
+    if (!isCurrent()) return receipt;
     if (switchingDraftProject) {
       // 消息已在目标项目创建后再切换界面；这样切换前不会重绘左侧栏，也不会丢掉目标运行产生的首批事件。
       try {
         const snapshot = await window.biny.selectProject(projectId);
-        if (loadRequestRef.current !== navigationRequest) return receipt;
+        if (!isCurrent()) return receipt;
         const opened = await openSession(projectId, receipt.sessionId, false, navigationRequest, snapshot);
-        if (!opened || loadRequestRef.current !== navigationRequest) return receipt;
+        if (!opened || !isCurrent()) return receipt;
       } catch (error) {
+        if (!isCurrent()) return receipt;
         setWarning(`消息已发送，但无法切换到目标文件夹：${errorMessage(error)}`);
         return receipt;
       }
@@ -1227,16 +1243,19 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     const previousSessionId = selectedRef.current;
     const navigationRequest = loadRequestRef.current;
+    const projectLifetime = projectRemovalRef.current.get(projectId);
+    const isCurrent = (): boolean => loadRequestRef.current === navigationRequest
+      && projectRemovalRef.current.get(projectId) === projectLifetime;
     const previousNavigation = navigationRef.current;
     try {
       const result = await window.biny.runSlashCommand(projectId, previousSessionId, command);
-      if (loadRequestRef.current !== navigationRequest) return;
+      if (!isCurrent()) return;
       if (result.sessionGoal) {
         if (previousSessionId === undefined && result.sessionId !== undefined) {
           const snapshot = await window.biny.refreshProject(projectId);
-          if (loadRequestRef.current !== navigationRequest) return;
+          if (!isCurrent()) return;
           const opened = await openSession(projectId, result.sessionId, false, navigationRequest, snapshot);
-          if (!opened || loadRequestRef.current !== navigationRequest) return;
+          if (!opened || !isCurrent()) return;
           const target: DesktopNavigationTarget = { projectId, sessionId: result.sessionId };
           const currentTarget = previousNavigation.entries[previousNavigation.index];
           commitNavigation(currentTarget?.projectId === projectId && currentTarget.sessionId === undefined
@@ -1245,14 +1264,14 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         }
         await refreshPlans();
       }
-      const feedback = sessionGoalSlashFeedback(result, loadRequestRef.current === navigationRequest);
+      const feedback = sessionGoalSlashFeedback(result, isCurrent());
       if (feedback.result) setSlashResult(feedback.result);
       if (feedback.notice) {
         setSlashResult(undefined);
         setToast(feedback.notice);
       }
     } catch (error) {
-      if (loadRequestRef.current !== navigationRequest) return;
+      if (!isCurrent()) return;
       throw error;
     }
   }, [draftProjectId, refreshPlans, openSession, commitNavigation, runCompaction]);
@@ -1431,27 +1450,57 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [projects]);
 
   const removeProject = useCallback(async (projectId: string): Promise<void> => {
+    const request = loadRequestRef.current;
+    const lifetimes = new Map(projectRemovalRef.current);
     try {
       const bootstrap = await window.biny.removeProject(projectId);
-      if (projectRef.current === projectId) {
-        permissionModeRequestRef.current += 1;
-        memoryToggleRequestRef.current += 1;
-        setMemoryToggleBusy(false);
+      projectRemovalRef.current.set(projectId, {});
+      // This receipt confirms only this removal, not a replacement of newer catalog/view state.
+      setProjects((current) => current.filter((project) => project.id !== projectId));
+      sessionTreePages.replaceProject(projectId, []);
+      invalidateSessionRootPage(projectId);
+      setSidebarSessions((current) => current.filter((session) => session.projectId !== projectId));
+      setDraftProjectId((current) => current === projectId ? undefined : current);
+      const pending = pendingNavigationRef.current;
+      if (pending?.projectId === projectId) {
+        setPendingNavigation(undefined);
+        setLoading(false);
       }
-      setProjects(bootstrap.projects);
-      sessionTreePages.replaceAll(bootstrap.sidebarSessions);
-      resetSessionRootPages(bootstrap.workspace);
-      setSidebarSessions(bootstrap.sidebarSessions);
-      setWorkspace(bootstrap.workspace);
+      if (projectRef.current !== projectId) return;
+      const ownsFallback = loadRequestRef.current === request && (!pending || pending.projectId === projectId);
+      const candidate = bootstrap.workspace;
+      const fallback = ownsFallback && candidate && candidate.project.id !== projectId
+        && projectRemovalRef.current.get(candidate.project.id) === lifetimes.get(candidate.project.id)
+        ? { ...candidate, selectedSessionId: undefined }
+        : undefined;
+      if (ownsFallback) {
+        // A real view change retires receipts issued while removal was pending.
+        loadRequestRef.current += 1;
+        setPendingNavigation(undefined);
+        setLoading(false);
+      }
+      permissionModeRequestRef.current += 1;
+      memoryToggleRequestRef.current += 1;
+      setMemoryToggleBusy(false);
+      projectRef.current = fallback?.project.id;
+      selectedRef.current = undefined;
+      documentRef.current = undefined;
+      if (fallback) adoptSessionRootPage(fallback);
+      setWorkspace(fallback);
       setDocument(undefined);
       setSelectedSessionId(undefined);
-      setDraftProjectId(undefined);
-      setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(bootstrap.workspace));
+      setDraftMemoryOverride(undefined);
+      setWriterConflict(undefined);
+      setContextBudget(undefined);
+      setComposerDraft(undefined);
+      setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(fallback));
       commitNavigation(createNavigationState());
     } catch (error) {
-      setWarning(errorMessage(error));
+      if (loadRequestRef.current === request && projectRemovalRef.current.get(projectId) === lifetimes.get(projectId)) {
+        setWarning(errorMessage(error));
+      }
     }
-  }, [commitNavigation, resetSessionRootPages, sessionTreePages]);
+  }, [adoptSessionRootPage, commitNavigation, invalidateSessionRootPage, sessionTreePages, setPendingNavigation]);
 
   // 聊天区状态变化很频繁；侧栏已经 memo，这些桥接回调必须保持引用稳定，避免每次输入/流式更新
   // 都把整棵项目树重新渲染一遍，触发 macOS 玻璃侧栏的重绘闪烁。
