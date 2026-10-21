@@ -4,7 +4,7 @@
  * 主进程为所有项目共用一条事件通道。本 hook 负责有界批处理、按项目/会话过滤、刷新终态快照，
  * 并把结果写回 React 状态；组件无需理解事件时序或处理流式输出的高频更新。
  */
-import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { ContextBudgetStatus } from "../../../../agent/context/types.js";
 import { isTerminalRunEvent, type AgentHostEvent } from "../../../../runtime/agentEvents.js";
 import type {
@@ -78,7 +78,11 @@ export function useDesktopEventBridge({
   onGenerationError,
   onCompactionStarted,
   onCompactionFailed
-}: DesktopEventBridgeOptions): void {
+}: DesktopEventBridgeOptions): (projectId: string) => void {
+  const projectRefreshEpochs = useRef(new Map<string, number>());
+  const invalidateProjectRefresh = useCallback((projectId: string): void => {
+    projectRefreshEpochs.current.set(projectId, (projectRefreshEpochs.current.get(projectId) ?? 0) + 1);
+  }, []);
   const [pendingRefresh, setPendingRefresh] = useState<{
     document: DesktopSessionDocument;
     isCurrent(): boolean;
@@ -96,8 +100,15 @@ export function useDesktopEventBridge({
       if (existing) clearTimeout(existing);
       const timer = setTimeout(() => {
         refreshTimers.delete(scope);
+        const epoch = projectRefreshEpochs.current.get(projectId) ?? 0;
         void window.biny.refreshProject(projectId).then(async (snapshot) => {
           if (!active) return;
+          // A confirmed metadata change supplies a newer complete snapshot. Re-read after the
+          // existing debounce instead of combining its metadata with this older read.
+          if ((projectRefreshEpochs.current.get(projectId) ?? 0) !== epoch) {
+            scheduleRefresh(projectId, sessionId);
+            return;
+          }
           mergeProjectSnapshot(snapshot);
           if (activeProjectIdRef.current === projectId && selectedSessionIdRef.current === sessionId) {
             const generation = ++documentRefreshGeneration;
@@ -236,4 +247,6 @@ export function useDesktopEventBridge({
     }
     setPendingRefresh(undefined);
   }, [pendingRefresh, setDocument, setWriterConflict]);
+
+  return invalidateProjectRefresh;
 }

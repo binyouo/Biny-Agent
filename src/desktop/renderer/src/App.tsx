@@ -757,7 +757,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   useEffect(() => { void refreshPlans().catch(reportEventError); }, [selectedSessionId, workspace?.project.id, refreshPlans, reportEventError]);
 
-  useDesktopEventBridge({
+  const invalidateProjectRefresh = useDesktopEventBridge({
     onRuntimeProjectionChanged: refreshPlans,
     activeProjectIdRef: projectRef,
     selectedSessionIdRef: selectedRef,
@@ -939,11 +939,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   const toggleSessionPinned = useCallback(async (session: DesktopSessionSummary, pinned = !session.pinned): Promise<void> => {
     try {
-      mergeProjectSnapshot(await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision));
+      const snapshot = await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision);
+      invalidateProjectRefresh(session.projectId);
+      mergeProjectSnapshot(snapshot);
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [mergeProjectSnapshot]);
+  }, [invalidateProjectRefresh, mergeProjectSnapshot]);
 
   const deleteSidebarSessions = useCallback(async (sessions: DesktopSessionSummary[], confirm = true, onStarted?: () => void) => {
     const targets = sessions.map(session => ({ projectId: session.projectId, sessionId: session.id }));
@@ -2088,7 +2090,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
               if (renameTarget.kind === "project") {
                 mergeProjectSnapshot(await window.biny.renameProject(renameTarget.projectId, title));
               } else if (renameTarget.sessionId) {
-                mergeProjectSnapshot(await window.biny.renameSession(renameTarget.projectId, renameTarget.sessionId, title, renameTarget.metadataRevision));
+                const snapshot = await window.biny.renameSession(renameTarget.projectId, renameTarget.sessionId, title, renameTarget.metadataRevision);
+                invalidateProjectRefresh(renameTarget.projectId);
+                mergeProjectSnapshot(snapshot);
                 setDocument((current) => {
                   if (!current || current.session.id !== renameTarget.sessionId) return current;
                   return { events: current.events, liveEvents: current.liveEvents, session: { ...current.session, title } };
