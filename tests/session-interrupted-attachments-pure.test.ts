@@ -21,7 +21,7 @@ const extract = (file: ts.SourceFile, names: string[]) => names.map(name => {
 }).join("\n");
 const treeFunctions = extract(tree, ["sessionMessageTree", "activeSessionMessageIds", "compatibleSessionSelections", "activeSessionEventsForPath"]);
 const replayFunctions = extract(replaySource, ["uncoveredCanonicalToolCalls", "projectSessionConversation", "completeCanonicalStepResults",
-  "replayReasoningParts", "normalizeToolArguments", "findToolCallId", "stringifyResult", "applyContextCheckpoint"]);
+  "replayReasoningParts", "normalizeToolArguments", "stringifyResult", "applyContextCheckpoint"]);
 const script = `${treeFunctions}\n${replayFunctions}\nclass Hydrator { ${hydrateMethod.getText(source).replace(/^private /u, "")} }
 ({ Hydrator, activeSessionEventsForPath, prepare(events, start) {
   const projection = projectSessionConversation(activeSessionEventsForPath(events), {}, events);
