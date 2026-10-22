@@ -32,6 +32,7 @@ for (const vision of [undefined, true, false]) {
     assert.equal(manager.getCapabilities().vision, vision, "未知能力不能伪装成明确不支持");
     const session: AgentSession = Object.create(AgentSession.prototype);
     Object.defineProperty(session, "options", { value: { config, modelManager: manager } });
+    Object.defineProperty(session, "activeConfig", { value: config });
     if (vision === false) assert.throws(() => session.assertAttachmentsSupported([image]), /图片/u);
     else assert.doesNotThrow(() => session.assertAttachmentsSupported([image]));
   });
@@ -52,6 +53,7 @@ for (const managed of [false, true]) {
         config,
         modelManager: managed ? new ModelManager(process.cwd(), config) : undefined
       } });
+      Object.defineProperty(session, "activeConfig", { value: config });
       if (vision === false) {
         assert.throws(() => session.assertAttachmentsSupported([image]), /图片/u);
       } else {

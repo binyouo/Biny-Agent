@@ -1080,7 +1080,8 @@ async function testSequentialCheckApprovalsReuseCompletedChecks(): Promise<void>
 
 async function testHostRestartApprovalResumesVerificationAndUnlocksGraph(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-task-approval-host-"));
-  const configDir = path.join(root, "config");
+  // Runtime-owned config writes must not count as candidate workspace changes.
+  const configDir = await mkdtemp(path.join(os.tmpdir(), "biny-task-approval-config-"));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "agent");
   let client: RuntimeHostClient | undefined;
@@ -1170,7 +1171,10 @@ async function testHostRestartApprovalResumesVerificationAndUnlocksGraph(): Prom
     await killRegisteredHost(root, "SIGKILL").catch(() => undefined);
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
-    await rm(root, { recursive: true, force: true });
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(configDir, { recursive: true, force: true })
+    ]);
   }
 }
 
