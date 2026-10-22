@@ -2980,6 +2980,13 @@ export class AgentSession {
     let reasoningActive = false;
     let lastStepReasoningOutput = "";
     const stepUsageRecords: SessionUsage[] = [];
+    // Foreground steps are serial, but auxiliary requests may finish between
+    // their metrics and usage. Keep this request's diagnostics out of that log.
+    let foregroundRequest: Pick<ModelRequestMetrics, "requestId" | "promptShape"> | undefined;
+    const onForegroundRequest = async (metrics: ModelRequestMetrics): Promise<void> => {
+      foregroundRequest = { requestId: metrics.requestId, promptShape: metrics.promptShape };
+      await this.recordModelRequest(metrics);
+    };
     let usageAuditStarted = false;
     let streamFailure: string | undefined;
     let streamFailureReported = false;
@@ -3060,11 +3067,13 @@ export class AgentSession {
           serviceTier: runOptions.fastMode && activeModelSettings.model.serviceTiers?.includes("priority") ? "priority" : undefined,
           cacheMarkers: activeModelSettings.cacheMarkers,
           timeoutMs: activeModelSettings.timeoutMs,
-          onRequestMetrics: (metrics) => this.recordModelRequest(metrics),
+          onRequestMetrics: onForegroundRequest,
           requestContext: modelRequestContext(completedStepsBeforeRun + 1)
         },
         maxSteps: runBudget.hardStepLimit - completedStepsBeforeRun,
-        persistStep: async ({ message, toolResults, context }) => {
+        persistStep: async ({ requestId, message, toolResults, context }) => {
+          const promptShape = requestId !== undefined && foregroundRequest?.requestId === requestId
+            ? foregroundRequest.promptShape : undefined;
           const finalMessage = !message.content.some((part) => part.type === "toolCall");
           currentStepContext = context;
           if (runOptions.retryOrigin && finalMessage) pendingRetryReply = message;
@@ -3118,7 +3127,7 @@ export class AgentSession {
           lastAssistant = message;
           const usage = message.usage;
           // 未回报 usage 的步骤也要保留“未知”，否则恢复后会把部分缓存数据当作完整平均值。
-          stepUsageRecords.push(this.recordModelUsage(usage ?? {}, "agent"));
+          stepUsageRecords.push(this.recordModelUsage(usage ?? {}, "agent", undefined, promptShape));
           this.contextMemory.recordProviderUsage(
             usage ?? {},
             summarizeUsage(this.usageRecords.filter((record) => record.operation === "agent" || record.operation === "plan")).reportedCacheUsage?.sessionCacheHitRate
@@ -3199,7 +3208,7 @@ export class AgentSession {
               serviceTier: runOptions.fastMode && settings.model.serviceTiers?.includes("priority") ? "priority" : undefined,
               cacheMarkers: settings.cacheMarkers,
               timeoutMs: settings.timeoutMs,
-              onRequestMetrics: (metrics) => this.recordModelRequest(metrics),
+              onRequestMetrics: onForegroundRequest,
               requestContext: modelRequestContext(completedStepsBeforeRun + observedSteps + 1)
             }
           };
@@ -4562,7 +4571,8 @@ export class AgentSession {
   private recordModelUsage(
     usage: AgentUsage,
     operation: UsageOperation,
-    modelAlias?: string
+    modelAlias?: string,
+    promptShape?: ModelRequestMetrics["promptShape"]
   ): SessionUsage {
     const model = this.options.modelManager?.getModel() ?? this.options.model;
     const info = this.options.modelManager?.getInfo() ?? modelRuntimeInfo(this.options.config);
@@ -4576,7 +4586,8 @@ export class AgentSession {
       model: resolved?.model ?? (model ? modelIdentifier(model) : info.modelLabel),
       pricing: resolved?.pricing ?? catalogPricing ?? info.pricing
     };
-    const record = createSessionUsage(usage, operation, modelInfo, new Date().toISOString(), this.modelRequestRecords.at(-1)?.promptShape);
+    // Auxiliary/aggregate usage has no request-owned shape unless supplied explicitly.
+    const record = createSessionUsage(usage, operation, modelInfo, new Date().toISOString(), promptShape);
     this.usageRecords.push(record);
     if (operation === "subagent" || operation === "memory" || operation === "vision"
       || (operation === "compaction" && this.activeOperation === "agent turn")) this.unpersistedRelatedUsage.push(record);
