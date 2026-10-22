@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { changedFilesBetween, checkResults, createPlan, resolveComparison } from "./ci-test-plan.mjs";
 
 function fixture(t, extra = {}) {
@@ -226,17 +227,52 @@ test("Validate accepts only planned skips and rejects failed, cancelled, missing
   assert.throws(() => checkResults(plan, { ...needs, test: { result: "failure" } }), /test/u);
 });
 
-test("workflow routes conditional lanes through the plan and retains full-run and packaging gates", async () => {
+test("Validate rejects static-gated skips and fail-fast cancellations in a full plan", async t => {
+  const plan = await createPlan(fixture(t), [], { full: true });
+  const needs = Object.fromEntries(["plan", "static", "test", "e2e", "build", "renderer", "windows"].map(lane => [lane, { result: "success" }]));
+  assert.doesNotThrow(() => checkResults(plan, needs));
+  const blocked = Object.fromEntries(Object.keys(needs).map(lane => [lane, {
+    result: lane === "plan" ? "success" : lane === "static" ? "failure" : "skipped"
+  }]));
+  assert.throws(() => checkResults(plan, blocked), /static/u);
+  for (const lane of ["test", "e2e", "build", "renderer", "windows"]) {
+    for (const result of ["failure", "cancelled", "skipped", undefined]) {
+      assert.throws(() => checkResults(plan, { ...needs, [lane]: { result } }), new RegExp(lane, "u"));
+    }
+  }
+});
+
+test("Validate command fails for a static-blocked run or cancelled test matrix", t => {
+  const root = fixture(t);
+  const planFile = path.join(root, "plan.json");
+  writeFileSync(planFile, JSON.stringify({ standard: ["view.test.ts"], e2e: ["process-e2e.test.ts"], build: true, renderer: true, windows: true }));
+  const needs = Object.fromEntries(["plan", "static", "test", "e2e", "build", "renderer", "windows"].map(lane => [lane, { result: "success" }]));
+  const validate = results => execFileSync(process.execPath, [fileURLToPath(new URL("./ci-test-plan.mjs", import.meta.url)),
+    "--check-results", "--output", planFile], { env: { ...process.env, NEEDS_JSON: JSON.stringify(results) }, stdio: "pipe" });
+  assert.match(validate(needs).toString(), /All selected validation lanes passed/u);
+  for (const [lane, result] of [["static", "failure"], ["test", "cancelled"]]) {
+    const results = { ...needs, [lane]: { result } };
+    if (lane === "static") for (const dependent of ["test", "e2e", "build", "renderer", "windows"]) results[dependent] = { result: "skipped" };
+    assert.throws(() => validate(results), error => error.status === 1 && error.stderr.toString().includes(`${lane}: expected success, received ${result}`));
+  }
+});
+
+test("workflow gates selected lanes on static checks and retains full-run and packaging gates", async () => {
   const { parse } = await import("yaml");
   const workflow = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
   assert.ok("workflow_dispatch" in workflow.on);
   assert.ok(workflow.on.schedule.length);
   const outputs = { test: "standard", e2e: "e2e", build: "build", renderer: "renderer", windows: "windows" };
   for (const [lane, output] of Object.entries(outputs)) {
-    assert.equal(workflow.jobs[lane].needs, "plan");
+    assert.deepEqual(workflow.jobs[lane].needs, ["plan", "static"]);
     assert.equal(workflow.jobs[lane].if, `needs.plan.outputs.${output} == 'true'`);
     assert.ok(workflow.jobs.validate.needs.includes(lane));
   }
+  assert.equal(workflow.jobs.plan.needs, undefined);
+  assert.equal(workflow.jobs.static.needs, undefined);
+  assert.equal(workflow.jobs.test.strategy["fail-fast"], "${{ github.event_name == 'pull_request' }}");
+  assert.equal(workflow.jobs.validate.if, "${{ always() }}");
+  assert.ok(workflow.jobs.validate.needs.includes("static"));
   const windows = workflow.jobs.windows.steps;
   assert.equal(windows.find(step => step.name === "Package Windows application").if, "needs.plan.outputs.windows_package == 'true'");
   assert.equal(windows.find(step => step.with?.name === "windows-x64").if, "needs.plan.outputs.windows_package == 'true'");

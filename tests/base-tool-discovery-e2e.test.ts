@@ -27,8 +27,8 @@ for (const withPreselection of [true, false]) {
   registry.registerBuiltinTool(createAskUserQuestionTool(new UserInputRequests()));
   // 直接嵌入 AgentSession 且缺少选择器时也必须走大目录的保守回退。
   for (let index = 0; index < 45; index++) registry.registerBuiltinTool({ ...registry.get("Read"), name: `optional_read_${index}` });
-  const core = ["Read", "Write", "Edit", "Bash", "ToolSearch"];
-  const helpers = ["Glob", "Grep", "ProcessStatus", "KillShell", "AskUserQuestion"];
+  const core = ["Read", "Write", "Edit", "Bash", "ToolSearch", "ProcessStatus", "KillShell"];
+  const helpers = ["Glob", "Grep", "AskUserQuestion"];
   let step = 0;
   let processId: string | undefined;
   const resultFor = async (tool: string) => {
@@ -51,7 +51,7 @@ for (const withPreselection of [true, false]) {
           assert.ok(result.process, `background Bash must start: ${JSON.stringify(result)}`);
           assert.equal(result.process.state, "running");
           processId = result.process.processId;
-          assert.ok(!visible.includes("KillShell"), "starting a process does not eagerly expose unrelated helper schemas");
+          assert.ok(visible.includes("ProcessStatus") && visible.includes("KillShell"), "background process controls are available without discovery");
           call = { name: "ToolSearch", arguments: { query: helpers.join(" "), maxResults: helpers.length } };
           break;
         }

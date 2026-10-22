@@ -272,7 +272,7 @@
   },
   "thirdPartyNotice": {
     "path": "THIRD_PARTY_NOTICES.txt",
-    "sha256": "b6155a0c26474e1efa7bfc720a61d5640e8fadfdd88924337c56c4e8f6f3281b",
+    "sha256": "1340ff379f574181471508567a5ec966ee698a0a2d2c4083c101fdd82f38b9ed",
     "retainsExistingAppearanceNotices": true
   }
 }
