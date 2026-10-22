@@ -7,7 +7,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { saveConfig } from "../src/config/loader.js";
 import { connectRuntimeHost, spawnRuntimeHost } from "../src/runtime/host/connection.js";
 import { RuntimeHostClient } from "../src/runtime/host/client.js";
-import { acquireHostLock, isProcessAlive, readRegistration, removeStaleRegistration, runtimeHostPaths, terminateSpawnedHost } from "../src/runtime/host/lifecycle.js";
+import { acquireHostLock, ensureRuntimeHostDirectory, isProcessAlive, readRegistration, removeStaleRegistration, runtimeHostPaths, terminateSpawnedHost } from "../src/runtime/host/lifecycle.js";
 import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
 import { runShellCommand } from "../src/tools/shell/runCommand.js";
 import { defaultShell } from "../src/tools/shell/shell.js";
@@ -44,6 +44,8 @@ test("Desktop and TUI connect to one real Host, authenticate, retire, and restar
   const paths = runtimeHostPaths(root);
   let phase = "initial Desktop spawn";
   try {
+    // Match discovery startup: finish directory security before the short idle window starts.
+    await ensureRuntimeHostDirectory(path.dirname(paths.registrationPath));
     launched = await spawnRuntimeHost(root, { workspaceRoot: root, configDir, clientId: "desktop-smoke", surface: "desktop", idleGraceMs: 250 });
     const registration = await readRegistration(paths);
     assert.ok(registration);
