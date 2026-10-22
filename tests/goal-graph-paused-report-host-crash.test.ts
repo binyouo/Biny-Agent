@@ -88,7 +88,7 @@ if (process.argv[2] === "paused-report-crash-child") {
         const runtime = new InteractiveAgentRuntime(commands);
         await runtime.resumeSession(boundary.sessionId);
         return { commands, runtime };
-      });
+      }, { workspaceRoot: root });
       client = await connectRuntimeHost(root, { clientId: "paused-report-recovered", surface: "cli" });
       const paused = await client.graphInspect(boundary.graphId) as GraphRecord;
       assert.equal(paused.status, "paused");
@@ -216,7 +216,7 @@ async function crashChild(root: string, marker: string): Promise<void> {
       return result;
     };
     return { commands, runtime: new InteractiveAgentRuntime(commands) };
-  });
+  }, { workspaceRoot: root });
   const client = await connectRuntimeHost(root, { clientId: "paused-report-original", surface: "cli" });
   assert.equal((await client.submitPrompt("请规划一个先读取 source.txt 再综合上游报告的后台只读分析任务，先保存草稿。").completion).status, "completed");
   const draft = (await client.planList(sessionId!))[0]!;

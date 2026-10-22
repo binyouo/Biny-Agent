@@ -896,14 +896,16 @@ async function initializeCommandRuntime(
     }
 
     const completion = submitted.completion.then(
-      (result) => {
+      async (result) => {
         agent.recordHostedToolResult("Task", result, auditCallId, sequence);
         agent.recordHostedAssistantMessage(result);
+        await agent.getSessionRecorder().flush();
         return result;
       },
-      (error: unknown) => {
+      async (error: unknown) => {
         const failure = error instanceof Error ? error : new Error(String(error));
         agent.recordHostedToolResult("Task", { error: failure.message }, auditCallId, sequence);
+        await agent.getSessionRecorder().flush();
         throw failure;
       }
     ).finally(() => {
