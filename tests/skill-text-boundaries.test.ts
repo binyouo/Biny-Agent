@@ -17,7 +17,7 @@ function skill(description: string, index = 0): SkillDefinition {
 }
 
 function bundle(descriptions: string[]): SkillBundle {
-  return { skills: descriptions.map(skill), paths: [], prompt: "", warnings: [], errors: [], conflicts: [] };
+  return { skills: descriptions.map(skill), paths: [], instructions: {}, prompt: "", warnings: [], errors: [], conflicts: [] };
 }
 
 function cases(limit: number): Array<{ name: string; input: string; expected: string; valid?: boolean }> {
@@ -54,32 +54,31 @@ for (const item of cases(200)) {
   });
 }
 
+// Former truncation boundaries remain regression vectors, not selection budgets.
 for (const [limit, count] of [[1024, 1], [300, 10], [160, 30], [80, 60]] as const) {
   for (const item of cases(limit)) {
-    test(`selection prompt tier ${limit}: ${item.name}`, async () => {
+    test(`complete selection catalog at ${limit} boundary: ${item.name}`, async () => {
       const descriptions = [item.input, ...Array<string>(count - 1).fill("z".repeat(1200))];
       const prompt = await skillPromptForSelection(bundle(descriptions), "all");
-      const line = prompt.split("\n").find((value) => value.startsWith('- "sample-000": '));
-      assert.notEqual(line, undefined);
-      check(line!.slice('- "sample-000": '.length), item, limit);
-      assert.ok(prompt.length <= 8000);
+      const lines = prompt.split("\n").filter((value) => value.startsWith('- "sample-'));
+      assert.deepEqual(lines, descriptions.map((description, index) =>
+        `- "sample-${String(index).padStart(3, "0")}": ${description}`), "every selected description remains complete and ordered");
       assert.ok(!prompt.includes("additional skills were omitted"));
-      if (count > 1) {
-        assert.ok(prompt.includes(`- "sample-001": ${"z".repeat(limit - 1)}…\n`), "fixture reaches the intended description tier");
-      }
+      if (item.valid) assert.equal(Buffer.from(prompt, "utf8").toString("utf8"), prompt, "valid input stays well-formed");
+      if (count > 1) assert.ok(prompt.length > 8000, "the catalog is not constrained by the former prompt budget");
     });
   }
 }
 
-test("selection prompt omission stays bounded and keeps whole pairs", async () => {
+test("selection prompt retains all entries and whole pairs beyond the former budget", async () => {
   const description = "a".repeat(78) + "😀" + "z".repeat(1200);
   const prompt = await skillPromptForSelection(bundle(Array<string>(100).fill(description)), "all");
-  assert.ok(prompt.length <= 8000);
+  assert.ok(prompt.length > 8000);
   assert.equal(Buffer.from(prompt, "utf8").toString("utf8"), prompt);
   const lines = prompt.split("\n").filter((line) => line.startsWith('- "sample-'));
-  assert.ok(lines.length > 0 && lines.length < 100);
-  for (const line of lines) assert.ok(line.endsWith(`: ${"a".repeat(78)}…`));
-  assert.ok(prompt.includes(`(${100 - lines.length} additional skills were omitted from this list.`));
+  assert.deepEqual(lines, Array.from({ length: 100 }, (_, index) =>
+    `- "sample-${String(index).padStart(3, "0")}": ${description}`));
+  assert.ok(!prompt.includes("additional skills were omitted"));
 });
 
 test("empty and excluded selections stay empty", async () => {
