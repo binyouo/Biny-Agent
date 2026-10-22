@@ -67,7 +67,22 @@ test("one-shot Host runs isolate overrides, persist one terminal and support ver
     const verifiedOptions = { headless: true, verification };
     const next = await client.ensureSession({ runOptions: verifiedOptions, writeIntent: true });
     const verified = await client.executeRun(next.sessionId, "finish", [], verifiedOptions, "verified-shot");
-    assert.equal(verified.verificationStatus, "completed");
+    assert.equal(verified.verificationStatus, "completed", JSON.stringify({
+      status: verified.status,
+      stopReason: verified.stopReason,
+      error: verified.error?.slice(0, 2_000),
+      verificationReason: verified.verificationReason?.slice(0, 2_000),
+      verification: verified.verification && {
+        status: verified.verification.status,
+        reason: verified.verification.reason?.slice(0, 2_000),
+        checks: verified.verification.checks.slice(0, 3).map(check => ({
+          status: check.status,
+          exitCode: check.exitCode,
+          reason: check.reason?.slice(0, 2_000),
+          stderr: check.stderr?.slice(0, 2_000)
+        }))
+      }
+    }));
     assert.equal(verified.deliveryStatus, "verified"); assert.ok(verified.taskRunId);
     for (const mode of ["cancel", "deadline"] as const) {
       const runOptions = mode === "deadline" ? { headless: true, deadlineAtMs: Date.now() + 2_000 } : { headless: true };
