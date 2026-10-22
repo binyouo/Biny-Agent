@@ -5,7 +5,7 @@
  * （用量浮层、设置页、能力菜单），纯展示类命令不进入补全列表，只保留对动作类命令的
  * 入口，并把当前有效 Skill 作为同一份补全数据源。
  */
-import type { DesktopSkillCatalogEntry, DesktopSlashCommand } from "../../../../protocol.js";
+import type { DesktopSkillCatalogEntry } from "../../../../protocol.js";
 import { DESKTOP_SLASH_COMMANDS } from "../../../../protocol.js";
 import type { IconName } from "../Icon.js";
 
@@ -137,10 +137,6 @@ export function buildDesktopComposerItems(skills: readonly DesktopSkillCatalogEn
     } satisfies DesktopComposerItem));
 
   return [...commandItems, ...skillItems];
-}
-
-export function desktopCommandForName(name: string): DesktopSlashCommand | undefined {
-  return DESKTOP_SLASH_COMMANDS.find((command) => command.name === name);
 }
 
 export function desktopGoalCommandAllowsNoModel(input: string): boolean {
