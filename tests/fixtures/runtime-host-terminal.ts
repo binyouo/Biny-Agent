@@ -89,6 +89,10 @@ export async function terminalFixture(t: TestContext) {
   await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
   t.mock.timers.enable({ apis: ["setTimeout"] });
   for (const method of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"] as const) t.mock.method(childProcess, method, forbidden);
+  t.mock.method(childProcess, "execFileSync", (file: string, args: readonly string[]) => {
+    if (file === "scutil" && args.length === 1 && args[0] === "--proxy") return "<dictionary> {}";
+    return forbidden();
+  });
   t.mock.method(globalThis, "fetch", forbidden);
   t.mock.method(net, "createServer", forbidden);
   syncBuiltinESMExports();
@@ -115,7 +119,9 @@ export async function terminalFixture(t: TestContext) {
           transport.deliver({ kind: "response", requestId: frame.requestId, ok: false, error: "fixture subscribe rejected" });
         } else if (frame.operation === "subscribe" && state.subscribe === "hold") held.push(respond);
         else respond();
-      } else if (frame.operation === "submit" || frame.operation === "start-interrupted") reply(ids);
+      } else if (frame.operation === "run.submit") reply({ accepted: true, ...ids });
+      else if (frame.operation === "start-interrupted") reply(ids);
+      else if (frame.operation === "runtime.restart") reply({ snapshot: snapshots.get((frame.payload as { sessionId?: string }).sessionId ?? "a"), sequence: state.sequence });
       else if (frame.operation === "run.inspect") reply({ runId: ids.runId, sessionId: "a" });
       else assert.fail(`Unexpected wire operation: ${frame.operation}`);
     });
@@ -152,7 +158,7 @@ export async function terminalFixture(t: TestContext) {
     // harness. Assert its observable mutation boundary; do not claim a synthetic
     // file proves the behavior of a real ledger implementation.
     assert.equal(forbiddenCalls, 0);
-    assert.deepEqual(requests.filter(frame => !["subscribe", "snapshot", "session.ensure", "submit", "start-interrupted", "run.inspect"].includes(frame.operation)), [],
+    assert.deepEqual(requests.filter(frame => !["subscribe", "snapshot", "session.ensure", "run.submit", "start-interrupted", "run.inspect", "runtime.restart"].includes(frame.operation)), [],
       "no cancellation, terminal mutation or other unrequested wire operation");
   }
   return { client, connect, sockets, requests, circuit, failures, state, held, snapshots, root, terminal, ownerAvailable, idle, unchanged };

@@ -31,7 +31,7 @@ for (const branch of ["entry", "queued"] as const) {
     assert.throws(() => f.client.submitPromptForSession("a", "must not dispatch"), candidate => candidate === error);
     const interrupted = observe(f.client.startInterruptedTurnForSession("a")); await flush();
     assert.deepEqual(interrupted(), { error });
-    assert.equal(f.requests.filter(frame => frame.operation === "submit").length, 1);
+    assert.equal(f.requests.filter(frame => frame.operation === "run.submit").length, 1);
     assert.equal(f.requests.filter(frame => frame.operation === "start-interrupted").length, 0);
     await f.unchanged();
   });
@@ -50,7 +50,7 @@ test("transient disconnect keeps observations pending and resumes real JSONL com
   f.sockets.at(-1)!.deliver({ kind: "completion", runId: ids.runId, outcome });
   f.idle("a"); await flush();
   assert.deepEqual(completed(), { value: outcome }); assert.deepEqual(idle(), { value: undefined });
-  assert.equal(f.requests.filter(frame => frame.operation === "submit").length, 1);
+  assert.equal(f.requests.filter(frame => frame.operation === "run.submit").length, 1);
   await f.unchanged();
 });
 

@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
+import { defaultConfig } from "../src/config/schema.js";
 import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentManager.js";
 import { flush, observe, terminalFixture, until } from "./fixtures/runtime-host-terminal.js";
 
@@ -29,7 +30,7 @@ for (const sessionId of [undefined, "b"] as const) {
     } as unknown as Args[1];
     // Explicit missing configuration prevents provider/model/catalog work. Resident
     // retry and cached workspace projection do not require rebuilding configuration.
-    const config = { load: async () => { throw new Error("fixture has no provider configuration"); } } as unknown as Args[2];
+    const config = { configPath: () => path.join(f.root, "config", "config.json"), load: async () => ({ ...structuredClone(defaultConfig), providers: {}, models: {} }) } as unknown as Args[2];
     const manager = new DesktopAgentManager(state, projects, config, () => undefined);
     const internals = manager as unknown as {
       runtimes: Map<string, { runtime: typeof f.client; unsubscribe(): void }>;
@@ -65,7 +66,7 @@ for (const sessionId of [undefined, "b"] as const) {
       const ready = recovered(); assert.ok(ready && "value" in ready);
       assert.equal(ready.value.workspace.runtimeError, undefined);
       assert.equal(internals.runtimes.get(project.id), managed, "retain same managed client and subscriptions");
-      assert.equal(f.client.getFocusedSessionId(), "a", "explicit retry must not switch focus");
+      assert.equal(f.client.getFocusedSessionId(), sessionId ?? "a", "configuration restart keeps the requested session focused");
       if (sessionId === undefined) {
         assert.equal(ready.value.document, undefined); assert.deepEqual(storageReads, []);
         assert.equal(f.requests.some(frame => frame.operation === "session.ensure"), false);
@@ -76,7 +77,7 @@ for (const sessionId of [undefined, "b"] as const) {
       }
       const newIdle = observe(f.client.waitForIdle("a")); f.idle("a"); await flush();
       assert.deepEqual(newIdle(), { value: undefined }); assert.equal(updates, 1);
-      assert.equal(f.requests.filter(frame => frame.operation === "submit" || frame.operation === "start-interrupted" || frame.operation === "cancel").length, 0);
+      assert.equal(f.requests.filter(frame => frame.operation === "run.submit" || frame.operation === "start-interrupted" || frame.operation === "cancel").length, 0);
       await f.unchanged();
     } finally { await manager.closeAll(); }
   });
@@ -100,12 +101,10 @@ test("Desktop retry replaces a retired resident through actual discovery instead
     refreshStoredProject: async () => project,
     listWorkspaceSessions: async () => ({ sessions: [], sessionPage: { total: 0 } })
   } as unknown as Args[1];
-  let loads = 0;
   const config = {
     configPath: () => path.join(f.root, "config", "config.json"),
     load: async () => {
-      if (loads++ === 0) return { permission: { mode: "ask" } };
-      throw new Error("fixture omits optional catalog projection");
+      return { ...structuredClone(defaultConfig), providers: {}, models: {} };
     }
   } as unknown as Args[2];
   const manager = new DesktopAgentManager(state, projects, config, () => undefined);
@@ -119,7 +118,7 @@ test("Desktop retry replaces a retired resident through actual discovery instead
     assert.ok(replacement); assert.notEqual(replacement, retired);
     assert.equal(replacement.hostInfo?.hostEpoch, "epoch-b");
     assert.equal(unsubscribed, 1); assert.equal(f.sockets.length, 3);
-    assert.equal(f.requests.filter(frame => frame.operation === "submit" || frame.operation === "start-interrupted").length, 0);
+    assert.equal(f.requests.filter(frame => frame.operation === "run.submit" || frame.operation === "start-interrupted").length, 0);
     await f.unchanged();
   } finally { await manager.closeAll(); }
 });
@@ -160,7 +159,7 @@ async function residentDesktopFixture(t: TestContext) {
   } as unknown as Args[1];
   const config = {
     configPath: () => path.join(f.root, "config", "config.json"),
-    load: async () => { counts.configLoads++; throw new Error("fixture has no provider configuration"); }
+    load: async () => { counts.configLoads++; return { ...structuredClone(defaultConfig), providers: {}, models: {} }; }
   } as unknown as Args[2];
   const manager = new DesktopAgentManager(state, projects, config, () => { counts.updates++; });
   owned.manager = manager;
@@ -204,7 +203,7 @@ for (const action of ["disposeProject", "closeAll"] as const) {
     assert.equal(f.sockets.length, socketCount);
     assert.equal(f.requests.length, requestCount);
     assert.equal(f.counts.dataRoots, dataRoots);
-    assert.equal(f.counts.configLoads, 0);
+    assert.equal(f.counts.configLoads, 1, "configuration reload precedes held reconnect");
     assert.deepEqual(f.storageReads, ["b"], "no post-disposal history projection");
     await f.unchanged();
   });
@@ -309,6 +308,6 @@ test("Desktop interrupted-run consumer projects terminal recovery failure before
   assert.equal(result.value.document?.runtimeError, undefined);
   assert.deepEqual(result.value.document?.events, f.history);
   assert.equal(f.requests.filter(frame => frame.operation === "start-interrupted").length, 1, "retry must not restart the interrupted turn again");
-  assert.equal(f.requests.filter(frame => frame.operation === "submit" || frame.operation === "cancel").length, 0);
+  assert.equal(f.requests.filter(frame => frame.operation === "run.submit" || frame.operation === "cancel").length, 0);
   await f.unchanged();
 });

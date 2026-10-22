@@ -92,7 +92,7 @@ test("hello alone cannot clear terminal error; failed subscribe stays terminal; 
   f.idle("a"); await flush();
   assert.deepEqual(fresh(), { value: outcome }); assert.deepEqual(idle(), { value: undefined });
   assert.deepEqual(oldCompletion(), { error: original }); assert.deepEqual(oldIdle(), { error: original });
-  assert.equal(f.requests.filter(frame => frame.operation === "submit").length, 2, "only original and explicitly requested new work");
+  assert.equal(f.requests.filter(frame => frame.operation === "run.submit").length, 2, "only original and explicitly requested new work");
   assert.equal(f.requests.filter(frame => frame.operation === "subscribe").length, 3, "one subscribe per retry flight");
   await f.unchanged();
 });
@@ -179,7 +179,7 @@ test("explicit retry waits for the required browser lease and keeps failed obser
   f.idle("a"); await flush();
   assert.deepEqual(freshIdle(), { value: undefined });
   assert.deepEqual(completion(), { error: original }); assert.deepEqual(idle(), { error: original });
-  assert.equal(f.requests.filter(frame => frame.operation === "submit").length, 1, "lease recovery never replays the original run");
+  assert.equal(f.requests.filter(frame => frame.operation === "run.submit").length, 1, "lease recovery never replays the original run");
   assert.equal(f.requests.filter(frame => frame.operation === "start-interrupted").length, 0);
   assert.deepEqual(lease.requests.map(request => request.frame.payload), Array.from({ length: 3 }, () => ({ browserAutomation: endpoint })));
   await f.unchanged();
@@ -227,7 +227,7 @@ test("disconnect after a browser lease reply cannot commit stale recovery or com
   await client.waitForIdle("idle");
   assert.equal(client.getSnapshot("a").revision, 8);
   assert.deepEqual(lease.requests.map(request => request.frame.payload), Array.from({ length: 3 }, () => ({ browserAutomation: null })));
-  assert.equal(f.requests.filter(frame => frame.operation === "submit" || frame.operation === "start-interrupted").length, 0);
+  assert.equal(f.requests.filter(frame => frame.operation === "run.submit" || frame.operation === "start-interrupted").length, 0);
   await f.unchanged();
 });
 
@@ -277,7 +277,7 @@ test(`stale automatic discovery stays superseded after ${explicitlyRetry ? "expl
     }
     assert.equal(idle(), undefined);
     f.idle("a"); await flush(); assert.deepEqual(idle(), { value: undefined });
-    assert.equal(f.requests.filter(frame => frame.operation === "submit" || frame.operation === "start-interrupted").length, 0);
+    assert.equal(f.requests.filter(frame => frame.operation === "run.submit" || frame.operation === "start-interrupted").length, 0);
     await f.unchanged();
   } finally { release(); await flush(); }
 });

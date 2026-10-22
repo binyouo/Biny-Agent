@@ -1455,7 +1455,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private stopConnectionRecovery(error: RuntimeHostSpawnCircuitOpenError): void {
-    if (this.closed || this.retired || (this.socket !== undefined && !this.socket.destroyed && this.synchronizedSocket === this.socket)) return;
+    if (this.closed || this.retired || this.connectionRecoveryError || (this.socket !== undefined && !this.socket.destroyed && this.synchronizedSocket === this.socket)) return;
     this.connectionRecoveryAttempt = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
