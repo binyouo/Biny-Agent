@@ -58,7 +58,7 @@ interface Runtime {
 interface Entry {
   sessionId: string;
   runtime: Runtime;
-  commands: { managedProcesses?: { list(): Promise<unknown[]> } };
+  commands: Partial<RetirementCommands>;
   primary: boolean;
   lastActiveAt: number;
 }
@@ -126,13 +126,49 @@ function registryFixture(target?: number) {
   });
   return { registry, primary, runtimes };
 }
-function retirementFixture(queuedIndex: number | undefined) {
+const retainingSignals = ["process", "background", "heartbeat-running", "heartbeat-enabled",
+  "automation-running", "automation-active", "task-queued", "task-running", "task-verifying", "graph", "goal"] as const;
+type RetainingSignal = typeof retainingSignals[number];
+interface RetirementCommands {
+  managedProcesses: { list(options: { includeExited: boolean }): Promise<unknown[]> };
+  heartbeat: { status(): { running: boolean; enabled: boolean } };
+  hasBackgroundWork(): boolean;
+  automationStore: { listPending(): { status: string }[]; list(): { status: string }[] };
+  taskRuns: { list(options: { status: string; limit: number }): { tasks: unknown[] } };
+  graphs: { listGraphs(): { status: string }[] };
+  sessionGoals: { list(options: { status: string }): unknown[] };
+}
+function retirementCommands(signal?: RetainingSignal): RetirementCommands {
+  return {
+    managedProcesses: { list: async (options) => {
+      assert.equal(options.includeExited, false);
+      return signal === "process" ? [{}] : [];
+    } },
+    heartbeat: { status: () => ({ running: signal === "heartbeat-running", enabled: signal === "heartbeat-enabled" }) },
+    hasBackgroundWork: () => signal === "background",
+    automationStore: {
+      listPending: () => signal === "automation-running" ? [{ status: "running" }] : [],
+      list: () => signal === "automation-active" ? [{ status: "active" }] : []
+    },
+    taskRuns: { list: (options) => {
+      assert.ok(["queued", "running", "verifying"].includes(options.status));
+      assert.equal(options.limit, 1);
+      return { tasks: signal === `task-${options.status}` ? [{}] : [] };
+    } },
+    graphs: { listGraphs: () => signal === "graph" ? [{ status: "running" }] : [] },
+    sessionGoals: { list: (options) => {
+      assert.equal(options.status, "active");
+      return signal === "goal" ? [{}] : [];
+    } }
+  };
+}
+function retirementFixture(queuedIndex: number | undefined, signal?: RetainingSignal) {
   const loaded = subject();
   const runtimes = [runtime("primary"), runtime("secondary")];
   if (queuedIndex !== undefined) enqueue(runtimes[queuedIndex]!);
   let closes = 0;
   const entries: Entry[] = runtimes.map((item, index) => ({
-    sessionId: item.snapshot.info.sessionId, runtime: item, commands: {}, primary: index === 0, lastActiveAt: 0
+    sessionId: item.snapshot.info.sessionId, runtime: item, commands: retirementCommands(index === 0 ? signal : undefined), primary: index === 0, lastActiveAt: 0
   }));
   const host: RetiringHost = {
     pendingRequests: 0, activityRevision: 0, retiring: false,
@@ -239,3 +275,13 @@ test("a queue arriving during the asynchronous retirement scan retains the Host"
   assert.equal(await f.retire.call(f.host, 0), false);
   assert.equal(f.closes(), 0);
 });
+
+for (const signal of retainingSignals) {
+  test(`${signal} service work prevents automatic retirement`, async () => {
+    const f = retirementFixture(undefined, signal);
+    assert.equal(await f.retire.call(f.host, 0), false);
+    assert.equal(f.closes(), 0);
+    assert.equal(f.host.idleSince, undefined);
+    assert.equal(f.host.retiring, false);
+  });
+}
