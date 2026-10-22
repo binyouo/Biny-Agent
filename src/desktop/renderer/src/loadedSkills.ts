@@ -35,9 +35,9 @@ function canonicalBodyName(body: string | undefined): string | undefined {
   return canonicalName(match?.[1]);
 }
 
-function legacyArchivedSkill(result: Record<string, unknown>): string | undefined {
+function legacyArchivedSkill(result: Record<string, unknown>, args: unknown): string | undefined {
   if (result.archived !== true || typeof result.resultBytes !== "number" || !Number.isFinite(result.resultBytes) || result.resultBytes <= 0) return undefined;
-  if (typeof result.archiveError === "string") return canonicalBodyName(skillBody(result.result));
+  if (typeof result.archiveError === "string") return canonicalBodyName(skillBody(result.result)) ?? legacyStructuredSkill(result.result, args);
   if (typeof result.archivePath !== "string" || !/^\.biny\/tool-results\/tool-result-[0-9a-f]{64}\.json$/u.test(result.archivePath) || typeof result.preview !== "string") return undefined;
   const rawName = canonicalBodyName(result.preview);
   if (rawName) return rawName;
@@ -52,6 +52,28 @@ function legacyArchivedSkill(result: Record<string, unknown>): string | undefine
   }
 }
 
+/** September's Skill producer returned this complete instruction/resource record instead of Markdown. */
+function legacyStructuredSkill(value: unknown, args: unknown): string | undefined {
+  const result = record(value);
+  if (!result) return undefined;
+  if (typeof result.error === "string" || ["failed", "denied", "aborted", "cancelled", "skipped", "unknown", "blocked_by_hook", "timed_out"].includes(String(result.status))) return undefined;
+  if (result.executionStatus !== undefined && result.executionStatus !== "succeeded") return undefined;
+  const name = canonicalName(result.skill);
+  if (!name || typeof result.scope !== "string" || !["builtin", "project", "global"].includes(result.scope)) return undefined;
+  if (![result.path, result.instructions, result.resourceRoot].every(field => typeof field === "string" && Boolean(field.trim()))) return undefined;
+  if (!Array.isArray(result.resources) || !result.resources.every(value => {
+    const resource = record(value);
+    return resource && typeof resource.path === "string" && Boolean(resource.path.trim())
+      && typeof resource.kind === "string" && ["script", "reference", "asset", "file"].includes(resource.kind)
+      && typeof resource.size === "number" && Number.isSafeInteger(resource.size) && resource.size >= 0;
+  })) return undefined;
+  if (result.durationMs !== undefined && (typeof result.durationMs !== "number" || !Number.isFinite(result.durationMs))) return undefined;
+  if (result.hooks !== undefined && !Array.isArray(result.hooks)) return undefined;
+  const requested = record(args)?.skill;
+  if (requested !== undefined && (typeof requested !== "string" || requested.trim().toLowerCase() !== name)) return undefined;
+  return name;
+}
+
 /** Only completed body reads count; availability, selections and generic file paths are not evidence. */
 export function confirmedLoadedSkill(call: SkillLoadCall): string | undefined {
   if (call.status !== "success" || call.executionStatus !== undefined && call.executionStatus !== "succeeded") return undefined;
@@ -62,7 +84,9 @@ export function confirmedLoadedSkill(call: SkillLoadCall): string | undefined {
   if (call.executionStatus === "succeeded" && marker && (result?.archived === true
     || call.tool === "read_skill_resource" && result?.skill === marker && typeof result.content === "string" && Boolean(result.content.trim()))) return marker;
   if (call.tool === "read_skill_resource") return undefined;
-  if (call.executionStatus === "succeeded" && result?.archived === true) return legacyArchivedSkill(result);
+  if (call.executionStatus === "succeeded" && result?.archived === true) return legacyArchivedSkill(result, call.args);
+  const structured = legacyStructuredSkill(call.result, call.args);
+  if (structured) return structured;
   const body = skillBody(call.result);
   if (!body?.trim()) return undefined;
   if (call.executionStatus === "succeeded") {

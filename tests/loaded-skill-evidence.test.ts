@@ -224,3 +224,66 @@ test("intermediate assistant tool-call steps do not invent a second legacy answe
   ];
   assert.deepEqual(buildSessionTimeline(withRetry, [])[0]?.skills, [], "true runless answer-version ambiguity remains unknown");
 });
+
+
+test("the historical complete Skill instruction record remains load evidence, not bare instructions", () => {
+  // Exact September producer shape; the coordinator adds summary fields by spreading objects.
+  const historical = { skill: "image-gen", scope: "builtin", path: "bundled-skills/image-gen/SKILL.md", instructions: "Generate the requested image.",
+    resourceRoot: "/app/bundled-skills/image-gen", resources: [{ path: "scripts/generate.py", kind: "script", size: 123 }, { path: "references/guide.md", kind: "reference", size: 0 }, { path: "assets/sample.png", kind: "asset", size: 10 }, { path: "notes.txt", kind: "file", size: 4 }] };
+  for (const tool of ["Skill", "skill_call"]) {
+    for (const result of [historical, { ...historical, durationMs: 4, hooks: [], truncated: false }]) {
+      for (const executionStatus of [undefined, "succeeded"] as const) {
+        assert.equal(confirmedLoadedSkill({ ...call, tool, result, executionStatus, args: { skill: " IMAGE-GEN " } }), "image-gen");
+      }
+    }
+  }
+  assert.equal(confirmedLoadedSkill({ ...call, result: historical, executionStatus: undefined, args: {} }), "image-gen");
+  const partials: unknown[] = [{ instructions: "Use tools." }, { ...historical, skill: "../image-gen" }, { ...historical, scope: "remote" },
+    { ...historical, path: "" }, { ...historical, instructions: " " }, { ...historical, resourceRoot: null }, { ...historical, resources: undefined },
+    { ...historical, resources: [{ path: "a", kind: "invalid", size: 2 }] }, { ...historical, resources: [{ path: "a", kind: "file", size: -1 }] },
+    { ...historical, resources: [{ path: "a", kind: "file", size: Number.NaN }] }, { ...historical, resources: [{ path: "a", kind: "file", size: 1.5 }] },
+    { ...historical, resources: [{ path: " ", kind: "file", size: 1 }] }, { ...historical, resources: [null] }, { result: historical, durationMs: 4 },
+    { ...historical, durationMs: Number.NaN }, { ...historical, hooks: "invalid" }, { ...historical, error: "failed" }, { ...historical, status: "skipped" }, { ...historical, executionStatus: "unknown" }, { ...historical, executionStatus: "failed" }, { ...historical, executionStatus: "cancelled" }];
+  for (const result of partials) {
+    assert.equal(confirmedLoadedSkill({ ...call, result }), undefined);
+    assert.equal(confirmedLoadedSkill({ ...call, result, executionStatus: undefined }), undefined);
+  }
+  assert.equal(confirmedLoadedSkill({ ...call, result: historical, args: { skill: "different" } }), undefined);
+  for (const tool of ["Read", "Bash", "read_skill_resource"]) assert.equal(confirmedLoadedSkill({ ...call, tool, result: historical }), undefined);
+  for (const executionStatus of ["failed", "unknown", "cancelled"] as const) assert.equal(confirmedLoadedSkill({ ...call, executionStatus, result: historical }), undefined);
+  const history: SessionEvent[] = [
+    { type: "user_message", messageId: "legacy-user", content: "draw" },
+    { type: "tool_call", tool: "Skill", toolCallId: "legacy", args: { skill: "image-gen" } },
+    { type: "tool_result", tool: "Skill", toolCallId: "legacy", result: historical }
+  ];
+  assert.deepEqual(buildSessionTimeline(history, [])[0]?.skills, ["image-gen"]);
+});
+
+
+test("the known old archive failure envelope preserves one complete retained Skill record", () => {
+  const retained = { skill: "image-gen", scope: "builtin", path: "bundled-skills/image-gen/SKILL.md", instructions: "x".repeat(40000),
+    resourceRoot: "/app/bundled-skills/image-gen", resources: [], durationMs: 3, truncated: false, hooks: [] };
+  const envelope = { archived: true, resultBytes: 40500, archiveError: "disk full", result: retained };
+  assert.equal(confirmedLoadedSkill({ ...call, result: envelope }), "image-gen");
+  for (const result of [{ instructions: "x".repeat(40000) }, { ...retained, error: "failed" }, { ...retained, status: "failed" },
+    { ...retained, status: "unknown" }, { ...retained, executionStatus: "unknown" }, { ...retained, executionStatus: "failed" },
+    { ...retained, executionStatus: "cancelled" }, { ...retained, resources: [{ path: "a", kind: "file", size: -1 }] }, envelope]) {
+    assert.equal(confirmedLoadedSkill({ ...call, result: { ...envelope, result } }), undefined);
+  }
+  for (const executionStatus of [undefined, "failed", "unknown", "cancelled"] as const) {
+    assert.equal(confirmedLoadedSkill({ ...call, executionStatus, result: envelope }), undefined);
+  }
+  for (const result of [{ result: retained }, { ...envelope, archived: false }, { ...envelope, resultBytes: 0 },
+    { ...envelope, resultBytes: Number.NaN }, { ...envelope, archiveError: undefined },
+    { archived: true, resultBytes: 40500, archivePath: `.biny/tool-results/tool-result-${"a".repeat(64)}.json`, preview: JSON.stringify(retained) }]) {
+    assert.equal(confirmedLoadedSkill({ ...call, result }), undefined);
+  }
+  assert.equal(confirmedLoadedSkill({ ...call, result: envelope, args: { skill: "other" } }), undefined);
+  assert.equal(confirmedLoadedSkill({ ...call, result: envelope, tool: "Read" }), undefined);
+  const events: SessionEvent[] = [
+    { type: "user_message", messageId: "user", content: "draw" },
+    { type: "tool_call", tool: "Skill", toolCallId: "skill", args: { skill: "image-gen" } },
+    { type: "tool_result", tool: "Skill", toolCallId: "skill", executionStatus: "succeeded", result: envelope }
+  ];
+  assert.deepEqual(buildSessionTimeline(events, [])[0]?.skills, ["image-gen"]);
+});

@@ -295,16 +295,15 @@ function appendSavedMessageRecovery(turns: TimelineTurn[], saved: SavedQueuedMes
 }
 
 /** 旧 session 和旧 Host 事件里可能残留内部通知块，时间线只投影公开正文。 */
-function publicTimelineTurn(turn: TimelineTurn): TimelineTurn {
+function publicTimelineStep(step: TimelineStep): TimelineStep {
+  if (step.kind !== "assistant") return step;
+  const content = publicAssistantMessage(step.content).trimEnd();
+  return content === step.content ? step : { ...step, content };
+}
+
+function publicTimelineTurn(turn: TimelineTurn, steps = turn.steps.map(publicTimelineStep)): TimelineTurn {
   const assistant = publicAssistantMessage(turn.assistant).trimEnd();
-  let changed = assistant !== turn.assistant;
-  const steps = turn.steps.map((step) => {
-    if (step.kind !== "assistant") return step;
-    const content = publicAssistantMessage(step.content).trimEnd();
-    if (content === step.content) return step;
-    changed = true;
-    return { ...step, content };
-  });
+  let changed = assistant !== turn.assistant || steps.some((step, index) => step !== turn.steps[index]);
   // 工具前说明与最终答复完全相同时只保留答复；不同的进度说明和真实工具事件不受影响。
   const visibleSteps = turn.status === "completed" && assistant
     ? steps.filter((step) => !(step.kind === "assistant" && step.summary && step.content.trim() === assistant.trim()))
@@ -774,9 +773,11 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
   /** 自上次 snapshot 以来被事件触及的轮次/工具；决定哪些对象需要发布新引用。 */
   const dirtyTurns = new Set<string>();
   const dirtyTools = new Set<string>();
+  const dirtySteps = new Set<TimelineStep>();
   /** 上次 snapshot 对外发布的对象；未变化的轮次/工具原样复用，保持引用稳定。 */
   const publishedTurns = new Map<string, TimelineTurn>();
   const publishedTools = new Map<string, TimelineTool>();
+  const publishedSteps = new WeakMap<TimelineStep, TimelineStep>();
   const turnFor = (event: AgentHostEvent): TimelineTurn => {
     const current = turns.get(event.runId);
     if (current) return current;
@@ -816,6 +817,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const step = activeReasoning.get(runId);
     const turn = turns.get(runId);
     if (!step || !turn) return;
+    dirtySteps.add(step);
     step.completed = true;
     step.durationMs = elapsedMs(step.startedAt, timestamp);
     turn.reasoningDurationMs = addReasoningDuration(turn.reasoningDurationMs, turn.reasoningStartedAt, timestamp);
@@ -869,6 +871,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     if (!content) return;
     const active = activeAssistant.get(turn.id);
     if (active) {
+      dirtySteps.add(active);
       active.content += content;
       return;
     }
@@ -884,6 +887,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
   const finishAssistantBeforeTool = (turn: TimelineTurn, runId: string): void => {
     const step = activeAssistant.get(runId);
     if (!step) return;
+    dirtySteps.add(step);
     const content = redactSecrets(publicAssistantMessage(step.content)).trimEnd();
     const index = turn.steps.indexOf(step);
     if (!content) {
@@ -954,6 +958,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       finishReasoning(event.runId, event.timestamp);
       const active = activeAssistant.get(event.runId);
       if (active) {
+        dirtySteps.add(active);
         if (event.content) active.content = event.content;
         active.completed = true;
         activeAssistant.delete(event.runId);
@@ -968,6 +973,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       startReasoning(event);
     } else if (event.type === "reasoning.delta") {
       const step = reasoningStepFor(event);
+      dirtySteps.add(step);
       noteFirstToken(turn, event.timestamp);
       step.content = appendLiveReasoning(step.content, event.content);
       turn.reasoning = appendLiveReasoning(turn.reasoning, event.content);
@@ -1137,29 +1143,34 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
         result.push(previous);
         continue;
       }
-      let tools = working.tools;
-      let steps = working.steps;
-      if (working.tools.length > 0) {
-        // 发布引用必须始终经过 publishedTools：干净工具复用旧引用、脏工具克隆新引用，不能在
-        // 两者间来回切换，否则 ToolActivity 的 memo 会因引用抖动失效。步骤里的 tool 引用同步刷新。
-        const publishedById = new Map<string, TimelineTool>();
-        tools = working.tools.map((tool) => {
+      const tools = previous && previous.tools.length === working.tools.length && !working.tools.some(tool => dirtyTools.has(tool.id))
+        ? previous.tools
+        : working.tools.map((tool) => {
           const publishedTool = publishedTools.get(tool.id);
-          const next = publishedTool && !dirtyTools.has(tool.id) ? publishedTool : { ...tool };
+          const next = publishedTool && !dirtyTools.has(tool.id) ? publishedTool
+            : { ...tool, updates: [...tool.updates], command: tool.command ? { ...tool.command } : undefined };
           publishedTools.set(tool.id, next);
-          publishedById.set(tool.id, next);
           return next;
         });
-        steps = working.steps.map((step) => step.kind === "tool"
-          ? { ...step, tool: publishedById.get(step.tool.id) ?? step.tool }
-          : step);
-      }
-      const published = publicTimelineTurn({ ...working, assistant: liveAssistantText(working), tools, steps });
+      // 工作对象继续吸收增量；公开步骤只在内容变化时重新投影，历史正文不随每个 token 再解析。
+      const nextSteps = working.steps.map((step) => {
+        const previousStep = publishedSteps.get(step);
+        const tool = step.kind === "tool" ? publishedTools.get(step.tool.id)! : undefined;
+        if (previousStep && !dirtySteps.has(step)
+          && (previousStep.kind !== "tool" || previousStep.tool === tool)) return previousStep;
+        const next = publicTimelineStep(step.kind === "tool" ? { ...step, tool: tool! } : { ...step });
+        publishedSteps.set(step, next);
+        return next;
+      });
+      const steps = previous && previous.steps.length === nextSteps.length && nextSteps.every((step, index) => step === previous.steps[index])
+        ? previous.steps : nextSteps;
+      const published = publicTimelineTurn({ ...working, assistant: liveAssistantText(working), tools, steps, skills: [...working.skills] }, steps);
       publishedTurns.set(runId, published);
       result.push(published);
     }
     dirtyTurns.clear();
     dirtyTools.clear();
+    dirtySteps.clear();
     return result;
   };
 
@@ -1249,6 +1260,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
   let processedTail: AgentHostEvent | undefined;
   let attachRequests = attachLiveRequestMetrics([]);
   let savedMessages: SavedQueuedMessage[] = [];
+  let published: TimelineTurn[] = [];
   const activityFold = createHistoricalTimelineFold([]);
   const publishedActivity = new WeakMap<object, object>();
   let activityTurns: TimelineTurn[] = [];
@@ -1310,6 +1322,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
         || liveEvents.length < processedLive
         || firstUser !== firstLiveUser
         || (changedTail && tailSuffix === undefined && widgetTail === undefined);
+      if (!mustReset && !changedTail && liveEvents.length === processedLive) return published;
       if (mustReset) {
         sessionId = nextSessionId;
         eventsRef = events;
@@ -1326,7 +1339,8 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
         processedTail = liveEvents.at(-1);
       }
       const liveTurns = (fold ? fold.snapshot() : []).filter(isVisibleTimelineTurn);
-      return appendSavedMessageRecovery(mergeLiveRetryTurns(historyTurns, liveTurns.map(attachRequests), activeIds), savedMessages, liveTurns).filter(isVisibleTimelineTurn);
+      published = appendSavedMessageRecovery(mergeLiveRetryTurns(historyTurns, liveTurns.map(attachRequests), activeIds), savedMessages, liveTurns).filter(isVisibleTimelineTurn);
+      return published;
     }
   };
 }

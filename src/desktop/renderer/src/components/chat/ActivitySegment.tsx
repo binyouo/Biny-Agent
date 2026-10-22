@@ -271,7 +271,15 @@ export const ActivitySegment = memo(function ActivitySegment({
       {toolSteps.filter(({ tool }) => tool.tool === "WidgetRenderer").map(({ tool }) => <WidgetRenderer key={`widget-${tool.id}`} tool={tool} running={running} onOpenExternal={onOpenExternal} />)}
     </section>
   );
-});
+}, (previous, next) => previous.running === next.running
+  && previous.thinkingSeconds === next.thinkingSeconds
+  && previous.projectId === next.projectId
+  && previous.onOpenExternal === next.onOpenExternal
+  && previous.onPreviewFile === next.onPreviewFile
+  && previous.onResolvePermission === next.onResolvePermission
+  // 父时间线重新分组时数组会改变；未变的步骤快照不应重建已完成的活动段。
+  && previous.steps.length === next.steps.length
+  && previous.steps.every((step, index) => step === next.steps[index]));
 
 /**
  * 一个相位的展开体。时间线视图里的思考相位收成一行 chip（可展开全文）；
@@ -341,7 +349,7 @@ const PhaseBody = memo(function PhaseBody({
             projectId={projectId}
             tool={step.tool}
             open={openTools.has(step.tool.id)}
-            onToggle={() => onToggleTool(step.tool.id)}
+            onToggle={onToggleTool}
           />
         );
       })}

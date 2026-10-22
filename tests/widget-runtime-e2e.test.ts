@@ -12,6 +12,8 @@ import { readSessionEvents } from "../src/session/events.js";
 import { agentDir } from "../src/session/store.js";
 import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
 import { buildSessionTimeline } from "../src/desktop/renderer/src/sessionTimeline.js";
+import { RuntimeHostEventJournal } from "../src/runtime/host/journal.js";
+import { runtimeHostEventHistoryLimit, runtimeHostJournalFile } from "../src/runtime/host/protocol.js";
 
 for (const cancelled of [false, true]) test(`真实 Runtime/HTTP 参数流 ${cancelled ? "取消" : "完成"} 保留执行与持久化边界`, { timeout: 20_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-widget-runtime-"));
@@ -92,10 +94,18 @@ for (const cancelled of [false, true]) test(`真实 Runtime/HTTP 参数流 ${can
     await client.close(); client = undefined;
     await host.close(); host = undefined;
     if (!cancelled) {
-      const journal = (await readFile(path.join(agentDir(canonical), "runs", "runtime-host-events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-      const previews = journal.filter(record => record.update.event?.type === "tool.input");
+      const journalPath = path.join(agentDir(canonical), "runs", runtimeHostJournalFile);
+      const journal = new RuntimeHostEventJournal(journalPath, runtimeHostEventHistoryLimit);
+      const restored = await journal.initialize();
+      await journal.close();
+      const previews = restored.records.flatMap(record => record.update.event?.type === "tool.input" ? [record.update.event] : []);
       assert.ok(previews.length >= 2);
-      assert.equal(previews.filter(record => record.update.event.args.html).length, 1, "Host journal 只保存最新的完整预览快照，保留传输序号");
+      assert.ok(previews.slice(0, -1).every(event => Object.keys(event.args as object).length === 0), "旧预览只保留序号与身份");
+      const observedPreviews = observed.filter((event): event is Extract<AgentHostEvent, { type: "tool.input" }> => event.type === "tool.input");
+      assert.deepEqual(previews.at(-1)?.args, observedPreviews.at(-1)?.args, "journal 解码恢复最新完整预览");
+      assert.deepEqual(restored.records.map(record => record.sequence), Array.from({ length: restored.records.length }, (_, index) => index + 1));
+      const raw = await readFile(journalPath, "utf8");
+      assert.ok(raw.split("\n").filter(Boolean).length >= restored.records.length, "预览增量不丢失传输序号");
     }
     const persisted = await readSessionEvents(file);
     assert.equal(persisted.some(event => String(event.type) === "tool.input"), false, "预览不是持久化执行事实");
