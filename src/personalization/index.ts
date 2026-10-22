@@ -178,14 +178,6 @@ export function mergeChatPersonalizationOverride(
   });
 }
 
-export function personalizationMetadata(): PersonalizationMetadata {
-  return {};
-}
-
-export function metadataForPersonalization(): PersonalizationMetadata {
-  return {};
-}
-
 export function cloneChatPersonalizationOverride(
   override: ChatPersonalizationOverride
 ): ChatPersonalizationOverride {
