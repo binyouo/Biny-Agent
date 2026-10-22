@@ -5,12 +5,13 @@ test("settings navigation uses distinct implemented icons and matches the Appsho
   const { readFile } = await import("node:fs/promises");
   const overlay = await readFile(new URL("../src/desktop/renderer/src/components/settings/SettingsOverlay.tsx", import.meta.url), "utf8");
   const nav = [...overlay.matchAll(/icon: "([a-z-]+)", tab: "([^"]+)"/gu)].map(m => ({ icon: m[1], tab: m[2] }));
-  assert.equal(nav.length, 16, "导航项数量变了，先确认不是漏读");
+  assert.equal(nav.length, 17, "导航项数量变了，先确认不是漏读");
   const icons = nav.map(n => n.icon);
   const dupes = icons.filter((v, i) => icons.indexOf(v) !== i);
   assert.deepEqual(dupes, [], `导航图标重复：${dupes.join(", ")}`);
   // 保留导航目的地的图标语义；现有页面徽标与导航一致。
   const byTab = new Map(nav.map(n => [n.tab, n.icon]));
+  assert.equal(byTab.get("Token 节省"), "terminal");
   assert.equal(byTab.get("导入"), "download");
   assert.equal(byTab.get("Computer Use"), "monitor");
   assert.equal(byTab.get("Appshots"), "camera");
