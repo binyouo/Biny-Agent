@@ -22,6 +22,8 @@ test("one-shot Host runs isolate overrides, persist one terminal and support ver
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-one-shot-")));
   const config = structuredClone(defaultConfig);
   config.defaultModel = "normal";
+  // This positive verification fixture permits its Node command; sandbox denial has separate coverage.
+  config.permission.denyPaths = [];
   config.providers = { fixture: { type: "openai-compatible", baseUrl: "https://fixture.invalid/v1", requiresApiKey: false } };
   config.models = { normal: { provider: "fixture", model: "normal" }, alternate: { provider: "fixture", model: "alternate" } };
   config.context.memory.enabled = false; config.context.identity.enabled = false; config.heartbeat.enabled = false;
