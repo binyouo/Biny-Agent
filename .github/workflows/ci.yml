@@ -118,13 +118,13 @@ jobs:
         run: pnpm test:code-mode-runtime
 
   test:
-    needs: plan
+    needs: [plan, static]
     if: needs.plan.outputs.standard == 'true'
     name: Tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       max-parallel: 4
       matrix:
         shard: [1, 2, 3, 4]
@@ -159,7 +159,7 @@ jobs:
           retention-days: 7
 
   e2e:
-    needs: plan
+    needs: [plan, static]
     if: needs.plan.outputs.e2e == 'true'
     name: Runtime E2E
     runs-on: ubuntu-latest
@@ -189,7 +189,7 @@ jobs:
         run: xvfb-run -a node scripts/run-tests.mjs --e2e --plan=.ci/plan.json
 
   build:
-    needs: plan
+    needs: [plan, static]
     if: needs.plan.outputs.build == 'true'
     name: Build
     runs-on: ubuntu-latest
@@ -216,7 +216,7 @@ jobs:
         run: pnpm test:code-mode-package
 
   renderer:
-    needs: plan
+    needs: [plan, static]
     if: needs.plan.outputs.renderer == 'true'
     name: Renderer UI
     runs-on: ubuntu-latest
@@ -261,7 +261,7 @@ jobs:
           retention-days: 7
 
   windows:
-    needs: plan
+    needs: [plan, static]
     if: needs.plan.outputs.windows == 'true'
     name: Windows compatibility
     runs-on: windows-2025
