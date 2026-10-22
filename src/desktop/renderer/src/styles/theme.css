@@ -61,6 +61,20 @@
   --code: light-dark(#f0f0f0, #1f1f1f);
   --user-bubble: light-dark(#ededed, #2b2b2b);
   --text-selection: light-dark(#cfe3f6, #294968);
+  /* Token savings charts retain their categorical palette in the shared theme. */
+  --savings-emerald: #10b981;
+  --savings-cyan: #06b6d4;
+  --savings-blue: #3b82f6;
+  --savings-violet: #8b5cf6;
+  --savings-fuchsia: #d946ef;
+  --savings-amber: #f59e0b;
+  --savings-rose: #f43f5e;
+  --savings-teal: #14b8a6;
+  --savings-card-shadow: rgb(0 0 0 / 5%);
+  --savings-tooltip-shadow: rgb(0 0 0 / 10%);
+  --christmas-snow-near: rgb(255 255 255 / 78%);
+  --christmas-snow-middle: rgb(255 255 255 / 65%);
+  --christmas-snow-far: rgb(255 255 255 / 55%);
   --shadow: light-dark(rgb(0 0 0 / 6%), rgb(0 0 0 / 24%));
   --shadow-soft: light-dark(rgb(0 0 0 / 8%), rgb(0 0 0 / 20%));
   --shadow-heavy: light-dark(rgb(0 0 0 / 16%), rgb(0 0 0 / 42%));

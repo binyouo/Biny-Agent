@@ -1,19 +1,26 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Host 的归档分页契约：无参数 CLI 保持全量，带参数只传输请求页。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import { connectRuntimeHost, startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-archive-page-"));
 const previousAgentDir = process.env.BINY_AGENT_DIR;
 process.env.BINY_AGENT_DIR = path.join(root, "agent");
 const memory = new LocalMemory(root);
+let authority: RuntimeEventAuthority | undefined;
+let stores: Awaited<ReturnType<typeof createHostTestStores>> | undefined;
 let host: Awaited<ReturnType<typeof startRuntimeHost>> | undefined;
 try {
+  authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
+  stores = await createHostTestStores(root, authority);
   for (let index = 0; index < 3; index += 1) {
     const written = await memory.writeEntry({
       content: `Archive Host item ${index + 1}`,
@@ -28,7 +35,7 @@ try {
   assert.ok(target.entry && mergedSource.entry);
   const mergedArchive = await memory.archiveEntries([mergedSource.entry.id], "llm_merge", { mergedInto: target.entry.id });
   assert.ok(mergedArchive.entries[0]);
-  const commands = { agent: { getLocalMemory: () => memory } } as unknown as CommandRuntime;
+  const commands = { ...stores, agent: { getLocalMemory: () => memory } } as unknown as CommandRuntime;
   const runtime = {
     getSnapshot: () => ({ state: { kind: "idle" }, revision: 0,
       info: { sessionId: "archive-page", sessionFile: path.join(root, "session.jsonl"), workspaceRoot: root } }),
@@ -36,7 +43,7 @@ try {
     runExclusiveOperation: async (_name: string, execute: (signal: AbortSignal) => Promise<unknown>) => await execute(new AbortController().signal),
     close: async () => undefined
   } as unknown as InteractiveRuntimeHandle;
-  host = await startRuntimeHost(root, async () => ({ runtime, commands }));
+  host = await startRuntimeHost(root, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   const client = await connectRuntimeHost(root, { surface: "cli", clientId: "archive-page" });
   assert.ok(client);
   try {
@@ -68,9 +75,18 @@ try {
     await client.close();
   }
 } finally {
-  await host?.close();
-  memory.close();
-  if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
-  else process.env.BINY_AGENT_DIR = previousAgentDir;
-  await rm(root, { recursive: true, force: true });
+  try {
+    await host?.close();
+  } finally {
+    stores?.heartbeat.stop();
+    try {
+      await stores?.managedProcesses.close();
+    } finally {
+      authority?.close();
+      memory.close();
+      if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+      else process.env.BINY_AGENT_DIR = previousAgentDir;
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 }
