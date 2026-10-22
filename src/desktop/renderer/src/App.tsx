@@ -1003,8 +1003,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (result.cancelled) return result;
     const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
     for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
-      sessionTreePages.removeProject(projectId);
-      invalidateSessionRootPage(projectId);
+      sessionTreePages.replaceProject(projectId, []);
       invalidateSessionRootPage(projectId);
       void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
     }
