@@ -226,7 +226,7 @@ interface Harness {
   toolModel(): AgentModel | undefined;
   takeRelatedUsage(): SessionUsage[] | undefined;
   usageSummary(): ReturnType<typeof summarizeUsage>;
-  recordModelUsage(usage: AgentUsage, operation: "memory", alias?: string): SessionUsage;
+  recordModelUsage(usage: AgentUsage, operation: "memory" | "agent", alias?: string): SessionUsage;
 }
 const usage: AgentUsage = { inputTokens: 100, outputTokens: 10, totalTokens: 110 };
 function fixture(options: { alias?: string; sameId?: boolean; unpriced?: boolean; unavailable?: boolean; sameAdapter?: boolean; catalogPrice?: boolean; noManager?: boolean; emptyConfig?: boolean } = {}) {
@@ -466,4 +466,52 @@ test("managerless current summary retains exact default catalog pricing", async 
   const f = fixture({ noManager: true, sameId: true, catalogPrice: true });
   f.config.defaultModel = "memory";
   await f.agent.summary(); assertBill(f, "memory", 0.00012, "compaction");
+});
+
+
+test("priced failed-step fixture uses production-shaped injected model identity", () => {
+  // Read metadata only. Never import or execute the lifecycle fixture itself.
+  const source = parse("tests/failed-step-usage.test.ts");
+  const initializer = (name: string) => {
+    const declaration = one(nested(source, source, name).declarationList.declarations
+      .filter(node => node.name.getText(source) === name), name);
+    assert.ok(declaration.initializer && ts.isCallExpression(declaration.initializer));
+    return declaration.initializer;
+  };
+  const configCall = initializer("config"), modelCall = initializer("model");
+  assert.equal(configCall.expression.getText(source), "configSchema.parse");
+  assert.equal(modelCall.expression.getText(source), "testModel");
+  const declaredConfig = one(configCall.arguments, "fixture config"), declaredModel = one(modelCall.arguments, "fixture model");
+  const field = (node: ts.Node, name: string) => property(node, source, name).initializer;
+  const string = (node: ts.Node) => { assert.ok(ts.isStringLiteral(node)); return node.text; };
+  const number = (node: ts.Node) => { assert.ok(ts.isNumericLiteral(node)); return Number(node.text); };
+  const alias = string(field(declaredConfig, "defaultModel"));
+  const configuredModel = field(field(declaredConfig, "models"), alias);
+  const connection = string(field(configuredModel, "provider"));
+  const configuredProvider = field(field(declaredConfig, "providers"), connection);
+  const pricing = field(configuredModel, "pricing"), reported = field(declaredModel, "usage");
+  const f = fixture({ noManager: true });
+  f.config.defaultModel = alias;
+  f.config.providers = { [connection]: { type: string(field(configuredProvider, "type")) } };
+  f.config.models = { [alias]: { provider: connection, model: string(field(configuredModel, "model")), pricing: {
+    inputPerMillionTokens: number(field(pricing, "inputPerMillionTokens")),
+    outputPerMillionTokens: number(field(pricing, "outputPerMillionTokens")),
+    cacheReadPerMillionTokens: number(field(pricing, "cacheReadPerMillionTokens"))
+  } } };
+  f.chat.provider = string(field(declaredModel, "provider"));
+  f.chat.modelId = string(field(declaredModel, "modelId"));
+  assert.ok(ts.isObjectLiteralExpression(declaredModel));
+  const declaredConnection = declaredModel.properties.filter(ts.isPropertyAssignment).find(node => node.name.getText(source) === "providerAlias");
+  f.chat.providerAlias = declaredConnection ? string(declaredConnection.initializer) : undefined;
+  const record = f.agent.recordModelUsage({
+    inputTokens: number(field(reported, "inputTokens")), outputTokens: number(field(reported, "outputTokens")),
+    totalTokens: number(field(reported, "totalTokens")), cacheReadTokens: number(field(reported, "cacheReadTokens"))
+  }, "agent");
+  assert.equal(record.costUsd, 0.00016, "synthetic configured pricing survives the real fixture's declared identity");
+  assert.equal(record.pricingKnown, true);
+  assert.equal(record.provider, "openai"); assert.equal(record.modelAlias, "fixture"); assert.equal(record.model, "fixture");
+  assert.equal(f.agent.usageSummary().costUsd, 0.00016);
+  assert.equal(f.agent.takeRelatedUsage(), undefined, "agent usage keeps its existing owner");
+  const restored = f.replay(JSON.parse(JSON.stringify([{ type: "assistant_message", content: "", usage: record }])) as SessionEvent[]);
+  assert.equal(restored.length, 1); assert.equal(summarizeUsage(restored).costUsd, 0.00016);
 });
