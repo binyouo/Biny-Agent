@@ -27,7 +27,7 @@ async function fixture(t: TestContext, now = last - 1_000) {
     }
   });
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let authority = await RuntimeEventAuthority.open(root);
   resources.authority = authority;
   let store = await AutomationStore.open(root, authority);
   resources.store = store;
@@ -53,16 +53,16 @@ async function fixture(t: TestContext, now = last - 1_000) {
     waitForIdle: unused, cancelCurrentRun: unused, cancelRun: unused, answerPermission: unused,
     claimSession: unused, releaseSessionClaim: unused, resumeSession: unused, startDraft: unused,
     switchMessageVersion: unused, runExclusiveOperation: unused, startBackgroundOperation: unused,
-    compactConversation: unused
+    executeOneShot: unused, compactConversation: unused
   };
-  const scheduler = new AutomationScheduler({ getStore: () => store, getRuntime: () => runtime, canStartRun: () => accepting });
+  const scheduler = new AutomationScheduler({ getStore: () => store, getRuntime: () => runtime, createFreshRuntime: async () => runtime, canStartRun: () => accepting });
   resources.scheduler = scheduler;
   return {
     get store() { return store; }, get authority() { return authority; }, scheduler, submissions,
     async reopen() {
       store.close();
       authority.close();
-      authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+      authority = await RuntimeEventAuthority.open(root);
       resources.authority = authority;
       store = await AutomationStore.open(root, authority);
       resources.store = store;

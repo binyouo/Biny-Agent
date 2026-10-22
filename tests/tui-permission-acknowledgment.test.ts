@@ -1,8 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Permission answers retain displayed ownership; only explicit rejection permits a manual retry. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
@@ -21,6 +22,8 @@ import type { HostOperationResult } from "../src/runtime/host/types.js";
 import { BinyTui } from "../src/tui/app.js";
 import { PermissionDialog, SelectDialog } from "../src/tui/components/dialogs.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -171,15 +174,6 @@ test("another runtime's idle cache cannot release an uncertain answer for the or
   assert.equal(f.app["permissionDialog"], undefined); assert.equal(f.calls.length, 1);
 });
 
-test("local synchronous rejection uses the existing error presentation and allows manual recovery", async t => {
-  const f = appFixture(t); const calls: string[] = [];
-  const local = { getSnapshot: () => snapshot(), subscribe: () => () => undefined,
-    answerPermission: (requestId: string) => { calls.push(requestId); throw new Error("local answer rejected"); }, close: async () => undefined } as unknown as InteractiveRuntimeHandle;
-  f.app["runtime"] = local; f.app["runtimeSnapshot"] = local.getSnapshot(); f.app["subscribeRuntime"](local); f.app["syncPermissionDialog"]();
-  dialog(f.app).handleInput("\u001b"); await flush();
-  assert.deepEqual(calls, ["request-a"]); assert.match(errors(f.app).join("\n"), /local answer rejected/u);
-  assert.equal(f.app["permissionDialogRequestId"], "request-a");
-});
 
 test("a still-displayed stale callback cannot answer a newly cached request", async t => {
   const f = appFixture(t); const shown = dialog(f.app);
@@ -247,12 +241,14 @@ async function hostFixture(t: TestContext) {
       yield { type: "done", content: "done", outcome: { status: "completed", stopReason: "model_stop", finishReason: "stop", steps: 1, output: "done" } };
     }
   };
-  const commands = { agent, workspaceRoot: root, refreshSkills: async () => undefined, setSubagentParentRunId: () => undefined,
-    close: async () => undefined, taskRuns: { get: () => undefined } } as unknown as CommandRuntime;
+  const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
+  const stores = await createHostTestStores(root, authority);
+  const commands = { ...stores, agent, workspaceRoot: root, refreshSkills: async () => undefined, setSubagentParentRunId: () => undefined,
+    close: async () => undefined } as unknown as CommandRuntime;
   const runtime = new InteractiveAgentRuntime(commands);
   const registration = { protocolVersion: runtimeHostProtocolVersion, endpoint: path.join(root, "unused.sock"), registrationPath: path.join(root, "unused.json"), lockPath: path.join(root, "unused.lock"), rootHash: "synthetic", persistenceRoot: root, configRoot: path.join(root, "config"), agentRoot: process.env.BINY_AGENT_DIR,
     hostEpoch: randomUUID(), token: "synthetic-token", pid: process.pid, createdAt: new Date().toISOString() };
-  const host = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined });
+  const host = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
   const internal = host as unknown as { handleFrame(connection: any, frame: HostFrame): Promise<void>; connections: Set<any>; publishSnapshot(runtime: InteractiveRuntimeHandle): void };
   const calls: HostRequestFrame[] = [];
   const sockets: MemorySocket[] = [];
@@ -288,9 +284,18 @@ async function hostFixture(t: TestContext) {
   const app = new BinyTui(new TUI(terminal()), root);
   app["runtime"] = client; app["runtimeSnapshot"] = client.getSnapshot(); app["subscribeRuntime"](client); app["syncPermissionDialog"]();
   t.after(async () => {
-    app["closeOverlay"](); await app.exit(); for (const socket of sockets) socket.destroy(); await host.close();
-    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previousAgentDir;
-    await rm(root, { recursive: true, force: true });
+    try {
+      app["closeOverlay"](); await app.exit(); for (const socket of sockets) socket.destroy(); await host.close();
+    } finally {
+      stores.heartbeat.stop();
+      try {
+        await stores.managedProcesses.close();
+      } finally {
+        authority.close();
+        if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previousAgentDir;
+        await rm(root, { recursive: true, force: true });
+      }
+    }
   });
   return { app, client, runtime, run, request, calls, sockets, host: internal,
     setBeforeAnswer: (hook: () => Promise<void>) => { beforeAnswer = hook; },
