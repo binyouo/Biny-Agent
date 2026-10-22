@@ -346,3 +346,30 @@ test("terminal UI palettes share the neutral surfaces and emphasis family", () =
     assert.equal(terminal.color("selectedBg"), selected);
   }
 });
+
+test("project creation keeps a focus border and shared primary foreground without a halo", () => {
+  assert.equal(declaration(desktop, ".biny-project-create-dialog input:focus-visible", "border-color"), "var(--biny-accent)");
+  assert.equal(declaration(desktop, ".biny-project-create-dialog input:focus-visible", "box-shadow"), "none");
+  assert.equal(declaration(desktop, ".biny-project-create-dialog footer button.is-primary", "color"), "var(--accent-foreground)");
+  assert.doesNotMatch(read("styles/biny.css"), /--biny-on-accent/u);
+});
+
+test("savings colors and shadow tokens preserve the existing visual palette", () => {
+  for (const [name, expected] of Object.entries({ emerald: "#10b981", cyan: "#06b6d4", blue: "#3b82f6", violet: "#8b5cf6",
+    fuchsia: "#d946ef", amber: "#f59e0b", rose: "#f43f5e", teal: "#14b8a6" })) {
+    assert.equal(declaration(desktop, `.savings-${name}`, "color"), `var(--savings-${name})`);
+    for (const mode of ["light", "dark"] as const) assert.equal(color(`--savings-${name}`, mode), expected);
+  }
+  for (const mode of ["light", "dark"] as const) {
+    assert.equal(color("--savings-card-shadow", mode), "rgb(0 0 0 / 5%)");
+    assert.equal(color("--savings-tooltip-shadow", mode), "rgb(0 0 0 / 10%)");
+  }
+});
+
+test("seasonal snow colors retain exact alpha through the shared palette", () => {
+  const background = declaration(desktop, '.message-timeline[data-christmas="true"]::before', "background-image");
+  for (const [name, alpha] of [["near", 78], ["middle", 65], ["far", 55]] as const) {
+    assert.ok(background?.includes(`var(--christmas-snow-${name})`));
+    for (const mode of ["light", "dark"] as const) assert.equal(color(`--christmas-snow-${name}`, mode), `rgb(255 255 255 / ${alpha}%)`);
+  }
+});
