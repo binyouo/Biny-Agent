@@ -2,6 +2,12 @@
 
 Biny 的扩展入口承担不同职责：MCP 连接外部服务，Skill 提供任务说明与资源，Plugin 加载程序能力。连接、发现与启用是准备阶段，实际执行仍以工具结果和持久状态为准。
 
+## 文件搜索
+
+工具菜单的“查找文件”（Glob）按文件名或路径匹配，例如 `src/**/*.ts`；“ripgrep 搜索”（Grep）搜索文件内容。Grep 内置随应用提供的 ripgrep，无需另行安装。默认按字面文本搜索；`mode: "regex"` 使用 ripgrep 的 Rust 正则语法，不支持 JavaScript 的前后查找和反向引用。忽略大小写使用与系统语言无关的 Unicode 匹配。
+
+Grep 继续遵循 Biny 工作区的路径、忽略与凭据保护规则，不直接采用终端 rg 的默认文件筛选范围。结果保留分页、上下文、UTF-16 列号和 Edit 锚点；输出前复核命中文件的版本与文本。查询限单行、64 KiB；每批原生搜索最长 10 秒、输出最多 8 MiB，超限会报错并要求缩小范围，不静默换用其他引擎。
+
 ## Code Mode 工具编排
 
 `agent.toolExecutionMode` 默认是 `code_mode`：普通工具调用与 JavaScript / TypeScript `run_script` 共存。设置界面不提供启停开关。排障时可将配置 `agent.toolExecutionMode` 设为 `direct`，后续回合使用普通调用与独立的 `ToolSearch` 发现入口。模型自行选择是否编排，不保证每次使用；开启不会强制所有工具通过脚本调用。脚本通过 `tools.<name>(args)` 调用当前准入的工具，使用 `searchTools` 搜索、`describeTool` 查询参数和调用要求，最后用 `return` 返回需要的结果。
