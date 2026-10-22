@@ -54,7 +54,7 @@ interface InertHost {
   requireServer(name: string): object;
   reconnect(): Promise<void>;
   requestOptions(managed: object, signal?: Signal): { signal?: Signal };
-  requestWithCredentials(managed: object, request: () => Promise<Prompt>): Promise<Prompt>;
+  requestWithCredentials(managed: object, request: (options: { signal?: Signal }) => Promise<Prompt>, signal?: Signal): Promise<Prompt>;
 }
 const project = runInNewContext(compiled.outputText, {
   Buffer: Object.freeze({ byteLength: (value: string, encoding?: BufferEncoding) => Buffer.byteLength(value, encoding) }),
@@ -87,7 +87,7 @@ function fixture(prompt: Prompt, failure?: Error) {
     requireServer: name => { assert.equal(name, "fixture"); calls.push("requireServer"); return managed; },
     reconnect: async () => { throw new Error("unexpected reconnect"); },
     requestOptions: (value, signal) => { assert.equal(value, managed); return { signal }; },
-    requestWithCredentials: async (value, request) => { assert.equal(value, managed); return await request(); }
+    requestWithCredentials: async (value, request, signal) => { assert.equal(value, managed); return await request(host.requestOptions(value, signal)); }
   };
   return { calls, run: (signal?: Signal) => { suppliedSignal = signal; return project.call(host, "fixture", "review", args, signal); } };
 }

@@ -106,7 +106,7 @@ for (const scenario of [
       const tool = scenario.script ? coordinator.createCodeModeTool()
         : coordinator.createAgentTools().find((entry) => entry.name === "mcp_fixture_lookup");
       assert.ok(tool);
-      const result = await tool.execute("lookup", scenario.script ? { code: "return await tools.mcp_fixture_lookup({});" } : {});
+      const result = await tool.execute("lookup", scenario.script ? { description: "Check MCP error persistence", code: "return await tools.mcp_fixture_lookup({});" } : {});
       assert.equal(result.isError, true);
       assert.equal(fake.calls(), 1, "persisting feedback must never replay a dispatched call");
       await coordinator.waitForIdle();
