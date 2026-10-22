@@ -1246,6 +1246,27 @@ export class ToolExecutionCoordinator {
     if (resultBytes <= inlineResultPersistMaxBytes) return modelResult;
     const preview = toolResultPreview(output, maxArchivedPreviewCharacters);
     const readRange = call.name === "Read" ? readResultLineRange(modelResult) : undefined;
+    let loadedSkill: string | undefined;
+    if (source === "skill" && call.name === "read_skill_resource") {
+      const name = readStringField(modelResult, "loadedSkill");
+      if (name.length <= 64 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)
+        && readStringField(modelResult, "skill") === name) loadedSkill = name;
+    } else if (source === "skill" && call.name === "Skill") {
+      const wrapper = typeof modelResult === "object" && modelResult !== null && !Array.isArray(modelResult)
+        ? modelResult as Record<string, unknown> : undefined;
+      // Skill returns a string; attachToolSummary wraps it once before optional hooks.
+      const body = typeof modelResult === "string" ? modelResult
+        : wrapper && Object.hasOwn(wrapper, "result") && typeof wrapper.result === "string"
+          && typeof wrapper.durationMs === "number" && Number.isFinite(wrapper.durationMs)
+          && (wrapper.hooks === undefined || Array.isArray(wrapper.hooks)) ? wrapper.result : "";
+      const name = /^# Skill: ([a-z0-9]+(?:-[a-z0-9]+)*)\n\n\*\*Skill Directory:\*\* `/u.exec(body)?.[1];
+      if (name && name.length <= 64 && body.endsWith("Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory.")) {
+        loadedSkill = name;
+      }
+    }
+    // Keep actual instruction-read evidence, not discovery or selected metadata.
+    // The result's execution status still decides whether the UI counts the load.
+    const skillLoad = loadedSkill ? { loadedSkill } : {};
     try {
       const archived = await archiveToolResult({
         workspaceRoot: this.context.workspaceRoot,
@@ -1258,6 +1279,7 @@ export class ToolExecutionCoordinator {
       });
       return {
         ...readRange,
+        ...skillLoad,
         goalControlOnly,
         archived: true,
         archivePath: archived.archivePath,
@@ -1269,6 +1291,7 @@ export class ToolExecutionCoordinator {
       // 归档失败不能把工具调用变成失败：留预览和错误说明，模型仍能继续。
       return {
         ...readRange,
+        ...skillLoad,
         goalControlOnly,
         archived: true,
         resultBytes,
