@@ -34,8 +34,9 @@ const allowedCalls = new Set([
   "this.getJarPath", "this.readSessionCookies", "run.catch", "clearTimeout", "setTimeout",
   "this.syncToJar", "this.syncToJar().catch", "this.relayStarting?.catch", "this.relay?.close",
   "this.stopAutomationServer", "this.window.isDestroyed", "this.window.destroy", "this.hideEmbeddedBrowser",
+  "this.environmentWindows.values", "window.isDestroyed", "window.destroy", "this.environmentWindows.clear",
   "this.embeddedProjects.values", "group.tabs.values", "tab.popup?.close", "tab.view.webContents.isDestroyed",
-  "tab.view.webContents.close", "this.embeddedProjects.clear"
+  "tab.view.webContents.close", "this.embeddedProjects.clear", "this.dialogWatchers.values", "watcher.close"
 ]);
 const extractedNodes: ts.Node[] = [method("syncToJar"), method("scheduleSyncToJar"), method("dispose"), closedCallback];
 for (const node of extractedNodes.flatMap(descendants)) {
@@ -73,6 +74,9 @@ interface Fixture {
   relay?: { close(): Promise<void> };
   stopAutomationServer(): Promise<void>;
   window?: { isDestroyed(): boolean; destroy(): void };
+  dialogWatchers: Map<number, { close(): void }>;
+  environmentWindows: Map<string, { isDestroyed(): boolean; destroy(): void }>;
+  automationContents?: object;
   hideEmbeddedBrowser(): void;
   embeddedProjects: Map<string, { tabs: Map<string, { popup?: { close(): void }; view: { webContents: { isDestroyed(): boolean; close(): void } } }> }>;
 }
@@ -88,6 +92,12 @@ function harness(write: () => Promise<void> = async () => {}): { fixture: Fixtur
     relayStarting: Promise.resolve(), relay: { close: async () => { cleanup.push("relay"); } },
     stopAutomationServer: async () => { cleanup.push("server"); },
     window: { isDestroyed: () => false, destroy: () => { cleanup.push("window"); } },
+    dialogWatchers: new Map([[1, { close: () => { cleanup.push("watcher"); } }]]),
+    environmentWindows: new Map([
+      ["live", { isDestroyed: () => false, destroy: () => { cleanup.push("environment"); } }],
+      ["closed", { isDestroyed: () => true, destroy: () => { assert.fail("already-destroyed environment window"); } }]
+    ]),
+    automationContents: {},
     hideEmbeddedBrowser: () => { cleanup.push("hidden"); },
     embeddedProjects: new Map([["fixture", { tabs: new Map([["tab", {
       popup: { close: () => { cleanup.push("popup"); } },
@@ -172,9 +182,11 @@ test("dispose completes resource cleanup even when cookie persistence fails", { 
   assert.equal(timers.size, 0);
   assert.equal(fixture.syncTimer, undefined);
   assert.equal(fixture.window, undefined);
+  assert.equal(fixture.environmentWindows.size, 0);
+  assert.equal(fixture.automationContents, undefined);
   assert.equal(fixture.relay, undefined);
   assert.equal(fixture.embeddedProjects.size, 0);
-  assert.deepEqual(cleanup, ["relay", "server", "window", "hidden", "popup", "tab"]);
+  assert.deepEqual(cleanup, ["watcher", "relay", "server", "window", "environment", "hidden", "popup", "tab"]);
 });
 
 test("busy mutation guard still defers without writing or rejecting", { timeout: 5000 }, async () => {

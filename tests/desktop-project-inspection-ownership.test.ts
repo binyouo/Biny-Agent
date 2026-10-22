@@ -48,7 +48,11 @@ async function fixture(run: (value: Fixture) => Promise<void>): Promise<void> {
       assert.equal(raw.activeProjectId, state.activeProjectId());
       const restored = new DesktopStateStore(stateFile);
       await restored.load();
-      assert.deepEqual(restored.projects(), JSON.parse(JSON.stringify(state.projects())));
+      // Loading materializes the optional icon key even when JSON omits its undefined value.
+      assert.deepEqual(restored.projects(), JSON.parse(JSON.stringify(state.projects())).map((project: DesktopProject) => ({
+        ...project,
+        iconDataUrl: project.iconDataUrl
+      })));
     } });
   } finally {
     await agents?.closeAll();
