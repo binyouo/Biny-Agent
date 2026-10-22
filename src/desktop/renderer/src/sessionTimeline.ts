@@ -115,8 +115,8 @@ export interface TimelineToolStep {
 export interface TimelineUserStep {
   kind: "user";
   id: string;
-  /** Canonical delivered user identity; legacy UI steps may lack one. */
-  messageId?: string;
+  /** Canonical delivered user identity. */
+  messageId: string;
   content: string;
   attachments?: AttachmentReference[];
   delivery: "steer" | "queue";
