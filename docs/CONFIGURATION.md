@@ -141,7 +141,7 @@ Desktop 的模型菜单支持点击和键盘操作：上下键选择入口，右
 
 `imageGen.model` 指定 `biny image generate` / `biny image edit` 使用的默认模型，格式为 `providerAlias:modelId`（例如 `gem:gemini-2.5-flash-image`）或纯 Gemini 模型 ID。留空时按内置优先级从已配置的 Gemini 服务商中自动挑选；显式指定的连接失效、停用或未满足服务商的凭据要求时直接报错，不改用其他模型。自动选择只考虑启用且有凭据的 Gemini 连接。OpenAI 兼容服务商也可指向实现 `/images/generations` 与 `/images/edits` 的本地生图服务；服务商配置 `requiresApiKey: false` 时不发送 Bearer 凭据。`imageGen.localModel` 单独指定 `biny selfie take --nsfw` 使用的模型，必须是 OpenAI 兼容 Provider 且 `baseUrl` 为 `localhost`、`127.0.0.0/8` 或 `::1` 的 HTTP(S) 地址。该命令拒绝远程地址、重定向和远程图片 URL，不会回退到普通生图模型；Agent 代执行时还要求当前 Session 映射到已验证主人的 Telegram 私聊。直接运行本机 CLI 时可使用本地路由。`imageGen.aspectRatio` 指定默认宽高比（如 `16:9`），留空由模型自行决定。
 
-初始化或保存配置时，未设置模型和宽高比的 `imageGen` 空段不会写入文件，读取时仍使用默认值。旧版 Desktop 不认识该字段；与新版 CLI 共用配置时，显式保存生图设置需要使用支持它的 Desktop 版本，或通过命令行参数临时指定。
+初始化或保存配置时，未显式设置生图选项的 `imageGen` 仍以 `{}` 写入当前格式配置，重新读取时也为空对象。与 CLI 共用配置的 Desktop 需要支持当前配置格式；命令行参数仍可临时覆盖生图设置。
 
 命令行 `--model` 显式覆盖配置。`--aspect`（别名 `--size`）与配置的宽高比同义，显式传入时优先生效；OpenAI 兼容图片 API 会将正方形、横图和竖图分别映射到其标准尺寸。`--reference <路径>` 可重复传入参考图，仅在生成时生效，改图模式忽略；相对路径从当前工作区解析，缺失、空文件或不支持的格式会报错，输入总量限制为 20 MiB。
 
