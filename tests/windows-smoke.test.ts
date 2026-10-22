@@ -11,6 +11,7 @@ import { acquireHostLock, isProcessAlive, readRegistration, removeStaleRegistrat
 import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
 import { runShellCommand } from "../src/tools/shell/runCommand.js";
 import { defaultShell } from "../src/tools/shell/shell.js";
+import { redactSecrets } from "../src/utils/redaction.js";
 
 async function until(predicate: () => boolean | Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -41,12 +42,15 @@ test("Desktop and TUI connect to one real Host, authenticate, retire, and restar
   let launched: Awaited<ReturnType<typeof spawnRuntimeHost>> | undefined;
   let tui: Awaited<ReturnType<typeof connectRuntimeHost>>;
   const paths = runtimeHostPaths(root);
+  let phase = "initial Desktop spawn";
   try {
     launched = await spawnRuntimeHost(root, { workspaceRoot: root, configDir, clientId: "desktop-smoke", surface: "desktop", idleGraceMs: 250 });
     const registration = await readRegistration(paths);
     assert.ok(registration);
     assert.equal(registration.pid, launched.process.pid);
+    phase = "TUI attach";
     tui = await connectRuntimeHost(root, { configDir, clientId: "tui-smoke", surface: "tui" });
+    phase = "connected-client authentication and retirement";
     assert.ok(tui, "TUI must attach to the owner elected by Desktop");
     assert.equal(tui.getSnapshot().info.sessionId, launched.client.getSnapshot().info.sessionId);
     assert.equal((await tui.getHostStatus()).hostEpoch, registration.hostEpoch);
@@ -60,11 +64,27 @@ test("Desktop and TUI connect to one real Host, authenticate, retire, and restar
     assert.equal(launched.process.exitCode, 0);
     await assert.rejects(access(paths.registrationPath), { code: "ENOENT" });
     await assert.rejects(access(paths.lockPath), { code: "ENOENT" });
+    phase = "restarted Host spawn";
     launched = await spawnRuntimeHost(root, { workspaceRoot: root, configDir, clientId: "restarted-smoke", surface: "tui", idleGraceMs: 250 });
+    phase = "restarted Host retirement";
     assert.notEqual((await launched.client.getHostStatus()).hostEpoch, registration.hostEpoch);
     await launched.client.close();
     await until(() => launched!.process.exitCode !== null || launched!.process.signalCode !== null);
     assert.equal(launched.process.exitCode, 0);
+  } catch (error) {
+    // Report only selected public process fields, never registration or configuration.
+    throw new Error(`Windows Host smoke failed: ${JSON.stringify({
+      phase,
+      lastCompletedSpawn: launched === undefined ? undefined : {
+        pid: launched.process.pid,
+        exitCode: launched.process.exitCode,
+        signalCode: launched.process.signalCode
+      },
+      cause: {
+        name: error instanceof Error ? redactSecrets(error.name).slice(0, 100) : "UnknownError",
+        message: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 2_000)
+      }
+    })}`);
   } finally {
     await tui?.close();
     await launched?.client.close();
