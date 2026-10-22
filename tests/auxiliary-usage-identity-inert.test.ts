@@ -21,6 +21,8 @@ const parse = (file: string) => ts.createSourceFile(file, readFileSync(path.join
 const session = parse("src/agent/AgentSession.ts");
 const memory = parse("src/agent/context/LocalMemory.ts");
 const registry = parse("src/llm/ModelRegistry.ts");
+const runtime = parse("src/llm/ModelRuntime.ts");
+const manager = parse("src/llm/ModelManager.ts");
 const providers = parse("src/llm/ProviderRuntime.ts");
 const factory = parse("src/llm/modelFactory.ts");
 const selection = parse("src/llm/toolModel.ts");
@@ -85,6 +87,8 @@ const summaryIdentity = summaryFunction.body!.statements.find(statement => ts.is
 const summaryIdentityHook = cls(context, "ContextMemory").members.some(member => member.name?.getText(context) === "createSummary")
   && compaction.getText(session).includes("getUsageModelInfo:") ? property(compaction, session, "getUsageModelInfo").initializer : undefined;
 const declarations: Array<{ source: ts.SourceFile; node: ts.Node }> = [
+  { source: runtime, node: method(runtime, "ModelRuntime", "resolve") },
+  ...["modelRuntimeInfo", "modelRuntimeInfoFromRuntime", "formatModelLabel", "formatReasoningLabel"].map(name => ({ source: manager, node: fn(manager, name) })),
   ...wiring.map(node => ({ source: session, node })),
   ...summaryWiring.map(node => ({ source: session, node })),
   { source: session, node: rewrite }, { source: context, node: generateSummary },
@@ -108,7 +112,9 @@ const declarations: Array<{ source: ts.SourceFile; node: ts.Node }> = [
   { source: replay, node: fn(replay, "sessionUsage") }
 ];
 const allowedCalls = new Set([
-  "onUsage", "now().toISOString", "this.require", "this.get", "provider.resolveModel",
+  "modelRuntimeInfoFromRuntime", "runtime.resolve", "this.models.resolve", "this.models.isAvailable", "reference.trim",
+  "effectiveThinkingSelection", "formatModelLabel", "formatReasoningLabel", "model.startsWith", "thinking[0]?.toUpperCase", "thinking.slice",
+  "new ModelRuntime(config).resolve", "onUsage", "now().toISOString", "this.require", "this.get", "provider.resolveModel",
   "createHash", 'createHash("sha256").update', 'createHash("sha256").update(source).digest',
   'createHash("sha256").update(JSON.stringify([alias, this.activeConfig.providers, this.activeConfig.models, this.activeConfig.context.maxInputTokens])).digest',
   'createHash("sha256").update(`${options.model.provider}\\0${options.model.modelId}`).digest',
@@ -142,7 +148,7 @@ const allowedCalls = new Set([
   "options.onRequestMetrics", "randomUUID", "new Date(startedAtMs).toISOString", "Math.max", "Date.now", "String",
   "response.trim", "text.match", "parse", "operations.push", "text.includes", "events.flatMap"
 ]);
-const allowedNew = new Set(["Error", "LocalMemory", "MemoryStorage", "Date", "Set", "Map", "WeakMap", "ModelRegistry", "ProviderRegistry"]);
+const allowedNew = new Set(["Error", "LocalMemory", "MemoryStorage", "Date", "Set", "Map", "WeakMap", "ModelRegistry", "ProviderRegistry", "ModelRuntime"]);
 const unexpectedCalls = new Set<string>();
 for (const { source, node } of declarations) {
   const audit = (current: ts.Node): void => {
@@ -163,6 +169,10 @@ class ModelRegistry {
   catalogs = new Map();
   constructor(config) { this.config = config; this.providers = new ProviderRegistry(config); }
   ${["resolve", "isAvailable"].map(name => text(registry, method(registry, "ModelRegistry", name))).join("\n")}
+}
+class ModelRuntime {
+  constructor(config) { this.models = new ModelRegistry(config); }
+  ${text(runtime, method(runtime, "ModelRuntime", "resolve"))}
 }
 class ProviderRegistry {
   constructor(config) { this.config = config; }
@@ -213,12 +223,13 @@ interface Harness {
   analyzeContextEmotion(sessionId: string, signal: AbortSignal): Promise<unknown>;
   refreshDailyDiary(dateKey: string): Promise<unknown>;
   memoryModelFor(field: string): AgentModel;
+  toolModel(): AgentModel | undefined;
   takeRelatedUsage(): SessionUsage[] | undefined;
   usageSummary(): ReturnType<typeof summarizeUsage>;
   recordModelUsage(usage: AgentUsage, operation: "memory", alias?: string): SessionUsage;
 }
 const usage: AgentUsage = { inputTokens: 100, outputTokens: 10, totalTokens: 110 };
-function fixture(options: { alias?: string; sameId?: boolean; unpriced?: boolean; unavailable?: boolean; sameAdapter?: boolean; catalogPrice?: boolean } = {}) {
+function fixture(options: { alias?: string; sameId?: boolean; unpriced?: boolean; unavailable?: boolean; sameAdapter?: boolean; catalogPrice?: boolean; noManager?: boolean; emptyConfig?: boolean } = {}) {
   const chat: AgentModel = { provider: "chat-provider", modelId: "chat-wire" };
   const auxiliary: AgentModel = options.sameAdapter ? chat : { provider: "memory-provider", modelId: options.sameId ? "chat-wire" : "memory-wire" };
   if (options.sameId || options.sameAdapter) auxiliary.provider = chat.provider;
@@ -233,6 +244,9 @@ function fixture(options: { alias?: string; sameId?: boolean; unpriced?: boolean
     activity: { enabled: false },
     context: { compaction: { summaryModel: options.alias }, memory: { memoryModel: options.alias, maxRecalled: 3 } }
   } as unknown as AgentConfig;
+  if (options.emptyConfig) {
+    config.defaultModel = "unconfigured-default"; config.providers = {}; config.models = {};
+  }
   let currentAlias = "chat";
   let release: (() => void) | undefined;
   let pending: Promise<void> | undefined;
@@ -251,7 +265,7 @@ function fixture(options: { alias?: string; sameId?: boolean; unpriced?: boolean
     id
   });
   const bindings = runInNewContext(code, {
-    providerAdapter, createHash, createSessionUsage,
+    providerAdapter, createHash, createSessionUsage, effectiveThinkingSelection: () => "off",
     modelContextBudget: () => ({ contextWindow: 8192, maxInputTokens: 4096 }), errorMessage: String,
     console: { warn: () => undefined },
     recentMessageLimit: 10, recentMessageMaxChars: 150, autoEmotionSystemPrompt: "Analyze.",
@@ -280,16 +294,17 @@ function fixture(options: { alias?: string; sameId?: boolean; unpriced?: boolean
     reportVercelMetrics: Metrics;
   };
   const metrics = bindings.reportVercelMetrics;
-  const agent = new bindings.InertSession({ config, model: chat, modelManager: {
+  const modelManager = {
     getModel: () => currentAlias === "chat" ? chat : auxiliary,
     getInfo: () => ({ modelAlias: currentAlias, provider: currentAlias === "chat" ? chat.provider : auxiliary.provider,
       modelLabel: config.models[currentAlias]!.model, pricing: config.models[currentAlias]!.pricing }),
     listModels: () => []
-  } });
+  };
+  const agent = new bindings.InertSession({ config, model: chat, ...(options.noManager ? {} : { modelManager }) });
   agent.recorder = { sessionId: "session-a", filePath: "/inert/session", flush: async () => undefined,
     runtimeContextSnapshot: () => ({ runId: "run-a", turnId: "turn-a" }) };
   agent.recentEmotionMessages = async () => [{ role: "user", text: "Synthetic emotion." }];
-  return { agent, called, config, auxiliary, modelSelected, replay: bindings.sessionUsage,
+  return { agent, called, config, chat, auxiliary, modelSelected, replay: bindings.sessionUsage,
     defer() { pending = new Promise<void>(resolve => { release = resolve; }); },
     release() { release?.(); },
     switchChat() { currentAlias = "memory"; },
@@ -420,4 +435,35 @@ test("cached summary selection restores its own identity after a shared adapter 
   assert.equal(f.agent.usageSummary().costUsd, 0.00024);
   const related = f.agent.takeRelatedUsage();
   assert.equal(related?.length, 2); assert.equal(f.agent.takeRelatedUsage(), undefined);
+});
+
+test("managerless injected fallback remains usable without a configured default", async () => {
+  const f = fixture({ noManager: true, emptyConfig: true });
+  assert.equal(f.agent.toolModel(), f.chat, "the selection-only crystal consumer must remain usable");
+  assert.equal(f.called.length, 0);
+  await f.extract(); assertBill(f, "chat-provider/chat-wire", undefined);
+});
+test("managerless injected fallback retains matching configured metadata", async () => {
+  const f = fixture({ alias: "chat", noManager: true });
+  await f.extract(); assertBill(f, "chat", 0.012);
+});
+test("managerless injected fallback never borrows a different default model's price", async () => {
+  const f = fixture({ alias: "chat", noManager: true });
+  f.config.models.chat!.model = "different-default-wire";
+  await f.extract(); assertBill(f, "chat-provider/chat-wire", undefined);
+});
+test("managerless injected fallback keeps provider connections distinct", async () => {
+  const f = fixture({ alias: "chat", noManager: true });
+  f.chat.providerAlias = "other-connection";
+  await f.extract(); assertBill(f, "other-connection/chat-wire", undefined);
+});
+test("exact auxiliary selection does not need managerless default metadata", async () => {
+  const f = fixture({ alias: "memory", noManager: true });
+  f.config.defaultModel = "unconfigured-default";
+  await f.extract(); assertBill(f, "memory", 0.00012);
+});
+test("managerless current summary retains exact default catalog pricing", async () => {
+  const f = fixture({ noManager: true, sameId: true, catalogPrice: true });
+  f.config.defaultModel = "memory";
+  await f.agent.summary(); assertBill(f, "memory", 0.00012, "compaction");
 });

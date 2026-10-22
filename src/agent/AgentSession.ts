@@ -141,6 +141,7 @@ import type { ModelSettings } from "../llm/modelFactory.js";
 import { isModelContextOverflowError } from "../llm/modelErrors.js";
 import { generateNativeText } from "../llm/nativeJson.js";
 import { ProviderRegistry } from "../llm/ProviderRuntime.js";
+import { ModelRuntime } from "../llm/ModelRuntime.js";
 import { AgentMemoryClient } from "../runtime/memory/client.js";
 import type { EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
 import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
@@ -4592,7 +4593,31 @@ export class AgentSession {
     model = this.options.modelManager?.getModel() ?? this.options.model,
     resolvedModel?: ModelAliasConfig
   ): UsageModelInfo {
-    const info = this.options.modelManager?.getInfo() ?? modelRuntimeInfo(config);
+    if (resolvedModel && model) {
+      return {
+        modelAlias: modelAlias ?? config.defaultModel,
+        provider: model.provider,
+        model: modelIdentifier(model),
+        pricing: resolvedModel.pricing === undefined ? undefined : { ...resolvedModel.pricing }
+      };
+    }
+    const managedInfo = this.options.modelManager?.getInfo();
+    if (!managedInfo && modelAlias === undefined && model) {
+      // Injected adapters can be usable without any configured default. Optional metadata
+      // resolution must not gate the request or borrow prices from a different adapter.
+      let resolved: ReturnType<ModelRuntime["resolve"]> | undefined;
+      try { resolved = new ModelRuntime(config).resolve(config.defaultModel); } catch { /* no matching metadata */ }
+      const matching = resolved && config.providers[resolved.providerAlias]?.type === model.provider
+        && resolved.model.model === modelIdentifier(model)
+        && (model.providerAlias === undefined || model.providerAlias === resolved.providerAlias) ? resolved : undefined;
+      return {
+        modelAlias: matching?.alias ?? `${model.providerAlias ?? model.provider}/${modelIdentifier(model)}`,
+        provider: model.provider,
+        model: modelIdentifier(model),
+        pricing: matching?.model.pricing === undefined ? undefined : { ...matching.model.pricing }
+      };
+    }
+    const info = managedInfo ?? modelRuntimeInfo(config);
     if (modelAlias === undefined && model) {
       return {
         modelAlias: info.modelAlias,
