@@ -29,6 +29,8 @@ test("inspection CLI targets the existing session and preserves Host compaction 
     await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
     const address = provider.address(); assert.ok(address && typeof address !== "string");
     const config = configSchema.parse({ ...defaultConfig,
+      // Permit the fixture's Bash lifecycle commands; sandbox denial has separate coverage.
+      permission: { ...defaultConfig.permission, denyPaths: [] },
       defaultModel: "fixture", toolModel: "fixture",
       providers: { fixture: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
       models: { fixture: { provider: "fixture", model: "fixture", contextWindow: 128000, capabilities: { tools: true, reasoning: false, streaming: true } } },
