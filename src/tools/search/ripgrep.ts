@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { rgPath } from "@vscode/ripgrep";
 
 export const maxSearchQueryBytes = 64 * 1024;
@@ -16,6 +17,16 @@ export interface RipgrepMatch {
   line: number;
   column: number;
   text: string;
+}
+
+// Only the configured Electron application archive has an unpacked binary tree.
+// Ordinary CLI/development directories ending in .asar are not archives.
+function resolveRipgrepExecutable(): string {
+  const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  if (!process.versions.electron || !resources || !path.isAbsolute(resources) || !path.isAbsolute(rgPath)) return rgPath;
+  const relative = path.relative(path.join(resources, "app.asar"), rgPath);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return rgPath;
+  return path.join(resources, "app.asar.unpacked", relative);
 }
 
 export async function searchRipgrepFiles(options: {
@@ -36,7 +47,7 @@ export async function searchRipgrepFiles(options: {
     "--max-count", String(options.maxMatches),
     ...(options.mode === "literal" ? ["--fixed-strings"] : []), ...(options.caseSensitive ? ["--case-sensitive"] : ["--ignore-case"]),
     "--file", "-", "--", ...nativeFiles.keys()];
-  const child = spawn(rgPath.replace(/\.asar([/\\])/u, ".asar.unpacked$1"), args, { cwd: options.workspaceRoot, env: {}, windowsHide: true });
+  const child = spawn(resolveRipgrepExecutable(), args, { cwd: options.workspaceRoot, env: {}, windowsHide: true });
   activeProcesses += 1;
   let failure: unknown;
   let inputFailure: RipgrepError | undefined;

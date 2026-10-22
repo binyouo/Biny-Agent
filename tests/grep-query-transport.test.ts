@@ -55,12 +55,14 @@ function fixture(onEnd?: (child: InertChild) => void) {
   const exports = {} as { searchRipgrepFiles: (args: Options) => Promise<Map<string, unknown>> };
   runInNewContext(compiled.outputText, {
     exports, Buffer, DOMException,
+    process: { versions: {} },
     require: (id: string) => {
       if (id === "node:child_process") return { spawn: (file: string, args: string[], spawnOptions: unknown) => {
         const child = new InertChild(file, args, spawnOptions, onEnd);
         children.push(child);
         return child;
       } };
+      if (id === "node:path") return { default: path.win32 };
       if (id === "@vscode/ripgrep") return { rgPath: "C:\\Biny\\rg.exe" };
       throw new Error(`Unexpected production dependency: ${id}`);
     },
