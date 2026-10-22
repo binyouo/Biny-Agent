@@ -47,7 +47,7 @@ const pureHelpers = [
 ].join("\n");
 const code = `
   ${pureHelpers}
-  ${sessionUsage.getText(replay)}
+  ${sessionUsage.getText(replay).replace(/^export /u, "")}
   class Accounting {
     ${["recordModelUsage", "takeRelatedUsage", "recordError", "recordHostedToolResult"].map(name => method(name).getText(agent)).join("\n")}
     async settle(mode, stepUsageRecords) {
