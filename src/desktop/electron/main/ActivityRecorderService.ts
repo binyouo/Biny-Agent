@@ -761,7 +761,7 @@ export class ActivityRecorderService {
       // 主动 stop 时，stopInternal 会先冲刷主进程的按键聚合并直接落盘；这里
       // 不能提前结束 session，否则 flush 出来的 keypress 可能被重新归到一个新 session。
       // 非预期退出才在这里兜底收口。
-      if (this.state === "stopped") return;
+      if (this.inputMonitorStopping || this.state === "stopped") return;
       this.output?.close();
       this.output = undefined;
       this.child = undefined;
@@ -982,6 +982,8 @@ export class ActivityRecorderService {
       this.fallbackAvailable = message.fallbackAvailable ?? message.screenRecordingGranted;
       // 状态报文可在 Electron 锁屏通知之后晚到；只有明确的 unlock/resume 事件才能放行截图。
       if (message.screenLocked === true) this.screenLocked = true;
+      // stop owns lifecycle state until final input is drained; keep late lock privacy above.
+      if (this.inputMonitorStopping) return;
       // 已知前台身份由输入事件维护，状态消息中的应用名不单独覆盖它。
       if (!this.foregroundBundle) this.currentApplication = message.currentApplication ?? this.currentApplication;
       if (message.status === "paused") this.setState("paused", message.error);
