@@ -33,6 +33,8 @@ test("inspection CLI targets the existing session and preserves Host compaction 
       providers: { fixture: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
       models: { fixture: { provider: "fixture", model: "fixture", contextWindow: 128000, capabilities: { tools: true, reasoning: false, streaming: true } } },
       thinking: { ...defaultConfig.thinking, enabled: false },
+      // This lifecycle fixture permits its Node child; read-only and busy admission are asserted below.
+      permission: { ...defaultConfig.permission, denyPaths: [] },
       chat: { ...defaultConfig.chat, defaultToolSelection: "all" },
       crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: false }, skills: [] },
