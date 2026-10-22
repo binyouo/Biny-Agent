@@ -6,11 +6,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
-import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
+import { BINY_AGENT_DIR_ENV, globalAgentDir, globalConfigDir } from "../src/config/paths.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { createInteractiveAgentHost, type InteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
 import { RuntimeHostServer } from "../src/runtime/host/server.js";
 import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
+import { AgentMemoryOwner } from "../src/runtime/memory/owner.js";
+import { canonicalMemoryRoot, serveMemoryOwner } from "../src/runtime/memory/transport.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionMessageMetadata } from "../src/session/messageTree.js";
 
@@ -55,13 +57,14 @@ async function fixture() {
   const release = deferred();
   const calls = { conversation: 0, extraction: 0, reconciliation: 0 };
   const transportFailures: unknown[] = [];
-  const resources: { local?: InteractiveAgentHost; host?: RuntimeHostServer } = {};
+  const resources: { local?: InteractiveAgentHost; host?: RuntimeHostServer; memoryOwner?: Awaited<ReturnType<typeof serveMemoryOwner>> } = {};
   const close = async () => {
     release.resolve();
     try {
       if (resources.host) await resources.host.close();
       else await resources.local?.runtime.close();
     } finally {
+      await resources.memoryOwner?.close();
       globalThis.fetch = originalFetch;
       if (previousAgentDir === undefined) delete process.env[BINY_AGENT_DIR_ENV];
       else process.env[BINY_AGENT_DIR_ENV] = previousAgentDir;
@@ -131,9 +134,12 @@ async function fixture() {
         }
       }
     });
+    const memoryRoot = await canonicalMemoryRoot(globalAgentDir());
+    const configStore = { configPath: () => path.join(globalConfigDir(), "config.json"), load: async () => structuredClone(config), save: async () => undefined };
+    resources.memoryOwner = await serveMemoryOwner(memoryRoot, globalConfigDir(), new AgentMemoryOwner(memoryRoot, configStore));
     const local = await createInteractiveAgentHost(root, {
       sessionId: "memory-retirement",
-      configStore: { load: async () => structuredClone(config), save: async () => undefined }
+      configStore
     });
     resources.local = local;
     // The public callback controls title generation; omit unrelated title notifications in this fixture.

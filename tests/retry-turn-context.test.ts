@@ -366,7 +366,7 @@ for (const action of ["retry", "edit"] as const) {
     assert.equal(text.split("DAY_BOUNDARY_WITNESS").length - 1, 1);
     assert.match(text, /<biny_reminder>USER_LITERAL<\/biny_reminder>/u);
     assert.ok(text.endsWith(action === "edit" ? replacement : input));
-    assert.equal(user.originalContent, action === "edit" ? replacement : input);
+    assert.equal((await readSessionEvents(f.recorder.filePath)).findLast(event => event.type === "user_message" && !event.auditOnly)?.content, action === "edit" ? replacement : input);
     assert.match(text, action === "edit"
       ? /Message sent-at: 2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai/u
       : /Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);

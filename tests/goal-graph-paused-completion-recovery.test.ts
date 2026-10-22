@@ -9,6 +9,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { createPlanTools } from "../src/extensions/plan.js";
 import { GoalGraphStore, GraphSupervisor } from "../src/runtime/GoalGraphStore.js";
+import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { runTaskClosure } from "../src/runtime/TaskClosure.js";
@@ -66,7 +67,8 @@ for (const control of ["complete", "missing-output", "pause-before-projection"] 
     graphs = await GoalGraphStore.open(root, authority);
     tasks = await DurableTaskRunStore.open(root, authority);
     const runtime = {
-      getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "reports" } }),
+      runExclusiveOperation: async (_name: string, execute: (signal: AbortSignal) => Promise<unknown>) => await execute(new AbortController().signal),
+    getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "reports" } }),
       submitPrompt: () => {
         downstreamWorkerCalls += 1;
         return { completion: Promise.resolve({ status: "completed", output: "synthesis of source evidence" }) };
@@ -77,7 +79,7 @@ for (const control of ["complete", "missing-output", "pause-before-projection"] 
       }
     } as unknown as InteractiveRuntimeHandle;
     supervisor = new GraphSupervisor({ getStore: () => graphs, getTaskRuns: () => tasks,
-      runtime, getTaskCommandExecutor: () => executor, getWorkspaceRoot: () => root });
+      resolveSupervisorRuntime: async () => runtime, resolveSupervisorCommands: async () => fixtureCommands(tasks, runtime, root, executor) });
     supervisor.start();
     await supervisor.tick();
     assert.equal(graphs.inspectGraph(graph.graphId).status, "paused");
@@ -137,6 +139,7 @@ test("ordinary pause/resume does not reconcile a still-active report Worker", { 
   const started = new Promise<void>((resolve) => { entered = resolve; });
   let calls = 0;
   const runtime = {
+    runExclusiveOperation: async (_name: string, execute: (signal: AbortSignal) => Promise<unknown>) => await execute(new AbortController().signal),
     getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "reports" } }),
     submitPrompt: () => {
       calls += 1;
@@ -145,9 +148,8 @@ test("ordinary pause/resume does not reconcile a still-active report Worker", { 
     },
     submitSupervisionTurn: () => ({ completion: Promise.resolve({ status: "completed" }) })
   } as unknown as InteractiveRuntimeHandle;
-  const supervisor = new GraphSupervisor({ store: graphs, taskRuns: tasks, runtime,
-    getWorkspaceRoot: () => root,
-    getTaskCommandExecutor: () => ({ executeTaskCheck: async () => { throw new Error("Report checks forbidden."); } }) });
+  const supervisor = new GraphSupervisor({ getStore: () => graphs, getTaskRuns: () => tasks, resolveSupervisorRuntime: async () => runtime,
+    resolveSupervisorCommands: async () => fixtureCommands(tasks, runtime, root, { executeTaskCheck: async () => { throw new Error("Report checks forbidden."); } }) });
   try {
     const start = createPlanTools({ graphs, taskRuns: tasks }).find((tool) => tool.name === "PlanStart")!;
     const execution = await start.resolveExecution(start.schema!.parse({
@@ -190,3 +192,10 @@ test("ordinary pause/resume does not reconcile a still-active report Worker", { 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function fixtureCommands(taskRuns: DurableTaskRunStore, runtime: InteractiveRuntimeHandle, root: string, executor: Parameters<typeof runTaskClosure>[0]["executor"]): CommandRuntime {
+  return { taskRuns, cancelTaskRun: () => false, startTaskRun: async (taskRunId: string) => ({ task: taskRuns.get(taskRunId)!,
+    completion: runTaskClosure({ taskRuns, taskRunId, workspaceRoot: root, ignore: [], executor,
+      executeAttempt: async () => { const result = await runtime.submitPrompt("Read fixture evidence").completion; assert.equal(result.status, "completed"); return result.output!; } })
+  }) } as unknown as CommandRuntime;
+}

@@ -169,7 +169,7 @@ test("fresh writable open installs the optional index in its sole schema transac
       }
     }, false);
     const authority = await f.open();
-    assert.equal(authority.schemaRevision(), 15);
+    assert.equal(authority.schemaRevision(), 16);
     assertIndex(authority.databaseHandle());
     assert.deepEqual(authority.readEvents().events, []);
     assert.deepEqual(prepare(authority.databaseHandle(), "PRAGMA foreign_key_check").all(), []);
@@ -261,14 +261,14 @@ test("partial revision 0 rejects an inherited NOCASE index before committing any
   }, false);
 });
 
-test("current schema 15 installs once, preserves every row and rowid, and restores the actual timeout", async t => {
+test("current schema 16 installs once, preserves every row and rowid, and restores the actual timeout", async t => {
   await fixture(async f => {
     const observer = f.connect();
     const before = snapshot(observer);
     const observed = instrument(t);
     const authority = await f.open();
     assertIndex(authority.databaseHandle());
-    assert.equal(authority.schemaRevision(), 15);
+    assert.equal(authority.schemaRevision(), 16);
     assert.equal(timeout(authority.databaseHandle()), currentTimeout);
     assert.deepEqual(snapshot(observer), before);
     assert.deepEqual(begins(observed.statements), ["BEGIN IMMEDIATE"]);
@@ -306,7 +306,7 @@ test("read-only absence creates no store or directory", async () => {
   }, false);
 });
 
-for (const indexed of [false, true]) test(`read-only current schema 15 ${indexed ? "with" : "without"} optional index preserves file bytes`, async t => {
+for (const indexed of [false, true]) test(`read-only current schema 16 ${indexed ? "with" : "without"} optional index preserves file bytes`, async t => {
   await fixture(async f => {
     const setup = f.connect();
     if (indexed) exec(setup, createIndex);
@@ -315,7 +315,7 @@ for (const indexed of [false, true]) test(`read-only current schema 15 ${indexed
     const observed = instrument(t);
     const authority = await RuntimeEventAuthority.openReadOnly(f.root);
     assert.ok(authority);
-    assert.equal(authority.schemaRevision(), 15);
+    assert.equal(authority.schemaRevision(), 16);
     assert.equal(Boolean(schemaObject(authority.databaseHandle())), indexed);
     assert.equal(timeout(authority.databaseHandle()), 5_000);
     assert.equal(authority.readEvents({ limit: 1000 }).events.length, 12);
@@ -328,7 +328,7 @@ for (const indexed of [false, true]) test(`read-only current schema 15 ${indexed
   });
 });
 
-for (const revision of [0, 1, 12, 13, 16]) test(`read-only revision ${revision} preserves the existing version guard and bytes`, async () => {
+for (const revision of [0, 1, 12, 13, 17]) test(`read-only revision ${revision} preserves the existing version guard and bytes`, async () => {
   await fixture(async f => {
     const setup = f.connect();
     exec(setup, `PRAGMA user_version = ${revision}`);
@@ -425,7 +425,7 @@ test("a second writer installing between missing pre-read and BEGIN converges wi
   });
 });
 
-for (const revision of [12, 13, 16]) test(`schema revision changing to ${revision} before optional BEGIN is rejected without optional DDL`, async t => {
+for (const revision of [12, 13, 17]) test(`schema revision changing to ${revision} before optional BEGIN is rejected without optional DDL`, async t => {
   await fixture(async f => {
     const changer = f.connect();
     const before = snapshot(changer);
@@ -658,7 +658,7 @@ test("native optional busy deferral continues backfill after restoring the timeo
       assert.equal(schemaObject(authority.databaseHandle()), undefined);
       const events = authority.readEvents({ sessionId: "backfill-after-busy" }).events;
       assert.equal(events.length, 1);
-      assert.equal(events[0]?.eventType, "legacy.user_message");
+      assert.equal(events[0]?.eventType, "session.user_message");
       assert.equal(timeout(authority.databaseHandle()), currentTimeout);
     } finally { authority.close(); observed.restore(); }
   });
@@ -667,10 +667,10 @@ test("native optional busy deferral continues backfill after restoring the timeo
 test("future writable schema stays rejected before optional work", async t => {
   await fixture(async f => {
     const observer = f.connect();
-    exec(observer, "PRAGMA user_version = 16");
+    exec(observer, "PRAGMA user_version = 17");
     const before = snapshot(observer);
     const observed = instrument(t);
-    await assert.rejects(f.open(), /Unsupported runtime schema revision 16/u);
+    await assert.rejects(f.open(), /Unsupported runtime schema revision 17/u);
     assert.deepEqual(begins(observed.statements), []);
     assert.deepEqual(creates(observed.statements), []);
     assert.equal(schemaObject(observer), undefined);
@@ -723,7 +723,7 @@ test("equivalent case-insensitive index identifier is recognized without creatin
     exec(observer, 'CREATE INDEX "TASK_ATTEMPTS_TASK_RUN_IDX" ON "TASK_ATTEMPTS" ("TASK_RUN_ID" ASC)');
     const observed = instrument(t);
     const authority = await f.open();
-    assert.equal(authority.schemaRevision(), 15);
+    assert.equal(authority.schemaRevision(), 16);
     assert.deepEqual(begins(observed.statements), []);
     assert.deepEqual(creates(observed.statements), []);
     assert.equal(prepare(observer, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = ? COLLATE NOCASE").get(indexName)?.count, 1);

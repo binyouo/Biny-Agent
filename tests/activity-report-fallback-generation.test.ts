@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /**
  * Natural-CI regression: public HTTP and CLI/Desktop export paths, isolated real
  * SQLite and Markdown files. Only model/provider I/O is controlled. Do not run
@@ -312,7 +313,7 @@ function pausedModel(failure: Failure) {
   const started = deferred();
   const release = deferred();
   let calls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "fallback-fixture-model", runtime: "builtin-llama.cpp", dataResidency: "local",
     stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       calls += 1;
@@ -322,18 +323,18 @@ function pausedModel(failure: Failure) {
       yield { type: "text-delta", text: "# Incomplete report" };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
   return { model, started: started.promise, release: release.resolve, calls: () => calls };
 }
 
 function immediateModel(output: string): AgentModel {
-  return {
+  return testModel({
     provider: "test", modelId: "fallback-fixture-model", runtime: "builtin-llama.cpp", dataResidency: "local",
     stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: output };
       yield { type: "finish", reason: "stop" };
     })()
-  };
+  });
 }
 
 function newerText(): string {

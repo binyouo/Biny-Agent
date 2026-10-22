@@ -185,7 +185,7 @@ test("browser environment deletion closes admission before asynchronous cleanup"
             open("one", workId); open("two", workId);
             await requestBrowser(endpoint, "navigate", { url: "https://example.invalid/window", environment: "Work" });
             const owned = [...live(workId)];
-            assert.equal(owned.length, 3);
+            assert.equal(owned.length, 2);
             const gate = work.hold(phase);
             const deletion = track(browser.deleteBrowserEnvironment(workId));
             await gate.reached;

@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Real same-runtime transitions with one controlled background memory-model request. */
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -70,7 +71,7 @@ async function fixture(t: TestContext) {
   });
 
   await ensureAgentDirs(root);
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "synthetic", modelId: "memory-handoff", supportsTools: false,
     async stream(context) {
       const memory = context.systemPrompt?.startsWith("You are a memory management assistant.") === true;
@@ -89,7 +90,7 @@ async function fixture(t: TestContext) {
           : { inputTokens: 3, outputTokens: 1, totalTokens: 4 } };
       })();
     }
-  };
+  });
   const config = configSchema.parse({
     ...defaultConfig,
     defaultModel: "memory-handoff",

@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { Socket } from "node:net";
@@ -121,12 +122,19 @@ async function withFixture(t: TestContext, body: (fixture: Fixture) => Promise<v
     await mkdir(workspaceRoot);
     await ensureAgentDirs(workspaceRoot);
     const config = structuredClone(defaultConfig);
+    config.activity.enabled = false;
+    config.crystal.passiveEnabled = false;
+    config.crystal.semanticScanEnabled = false;
+    config.chat.skillExtraction.enabled = false;
+    config.models = { [config.defaultModel]: config.models[config.defaultModel]! };
+    config.toolModel = config.defaultModel;
+    config.providers.deepseek = { ...config.providers.deepseek!, apiKey: "fixture-key", apiKeyEnv: undefined };
     config.providers.deepseek = { ...config.providers.deepseek!, apiKeyEnv: "BINY_ORIGIN_ANCHOR_TEST_UNCONFIGURED_KEY" };
     config.context.memory.enabled = true;
     config.context.memory.useMemories = false;
     config.context.memory.generateMemories = true;
     config.context.memory.excludeExternalContext = false;
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "origin-anchor-fixture",
       modelId: "origin-anchor-fixture",
       async stream() {
@@ -135,7 +143,7 @@ async function withFixture(t: TestContext, body: (fixture: Fixture) => Promise<v
           yield { type: "finish" as const, reason: "stop" as const };
         })();
       }
-    };
+    });
     const recorder = new SessionRecorder(workspaceRoot, "origin-anchor-session");
     agent = new AgentSession({
       workspaceRoot,
@@ -146,6 +154,7 @@ async function withFixture(t: TestContext, body: (fixture: Fixture) => Promise<v
       permissionManager: new PermissionManager({ ...config.permission, source: "test" })
     });
     await agent.initialize();
+    agent.setOnTitleGenerated(undefined);
     t.signal.throwIfAborted();
     agent.getEmbeddingRuntime = async () => {
       const gate = nextEmbeddingGate;

@@ -26,7 +26,7 @@ import {
   type AgentHostEvent,
   type InteractiveRuntimeSnapshot
 } from "../../../runtime/agentEvents.js";
-import { listSessionSummaries, readStoredSessionEvents } from "../../../session/events.js";
+import { readStoredSessionEvents } from "../../../session/events.js";
 import { isSessionNearLimit, maxSessionEvents, maxSessionFileBytes } from "../../../session/limits.js";
 import {
   listSessionCatalog,

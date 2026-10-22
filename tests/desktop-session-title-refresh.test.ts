@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Real App metadata DOM and manager snapshots; only presentation and transport boundaries are isolated. */
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
@@ -44,7 +45,7 @@ async function appModule() {
       }
     }
   }
-  const actual = new Set(["react", "./app/desktopState.js", "./app/desktopApi.js", "./app/sessionTreePageLifetime.js",
+  const actual = new Set(["react", "./app/desktopState.js", "./app/desktopApi.js", "./app/sessionTreePageLifetime.js", "./app/useSessionRootPages.js",
     "./app/useDesktopEventBridge.js", "./navigationHistory.js", "../../../runtime/agentEvents.js",
     "./components/overlays/RenameOverlay.js"]);
   const implementations: Record<string, string> = {
@@ -207,12 +208,12 @@ async function fixture(context: TestContext) {
     const recorder = new SessionRecorder(targetRoot);
     try { await recorder.recordAndFlush({ type: "user_message", content: label }); }
     finally { await recorder.close(); }
-    const model: AgentModel = { provider: "synthetic", modelId: "title-refresh", async stream() {
+    const model: AgentModel = testModel({ provider: "synthetic", modelId: "title-refresh", async stream() {
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         yield { type: "text-delta", text: label };
         yield { type: "finish", reason: "stop" };
       })();
-    } };
+    } });
     assert.equal(await generateSessionTitle(targetRoot, recorder.sessionId, model), label);
     return recorder.sessionId;
   };
@@ -229,6 +230,12 @@ async function fixture(context: TestContext) {
     selectedSessionId: sessionId, activeView: "chat"
   } as DesktopBootstrap;
   const refreshes: Array<{ projectId: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
+  const catalogRefreshes: Array<{ projectId: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
+  const pendingMetadataReads = new Map<string, number>();
+  const metadataCommitted = (projectId: string) => (snapshot: DesktopWorkspaceSnapshot) => {
+    pendingMetadataReads.set(projectId, (pendingMetadataReads.get(projectId) ?? 0) + 1);
+    return snapshot;
+  };
   const renames: Array<{ projectId: string; sessionId: string; title: string; expectedRevision?: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
   const pins: Array<{ projectId: string; sessionId: string; pinned: boolean; expectedRevision?: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
   const opens: Promise<DesktopSessionDocument>[] = [];
@@ -241,18 +248,22 @@ async function fixture(context: TestContext) {
     bootstrap: async () => bootstrap,
     refreshProject(projectId: string) {
       const result = manager.workspaceSnapshot(projectId, true);
-      refreshes.push({ projectId, result });
+      const pending = pendingMetadataReads.get(projectId) ?? 0;
+      if (pending > 0) {
+        pendingMetadataReads.set(projectId, pending - 1);
+        catalogRefreshes.push({ projectId, result });
+      } else refreshes.push({ projectId, result });
       void result.catch(noop);
       return result;
     },
     renameSession(projectId: string, targetId: string, title: string, expectedRevision?: string) {
-      const result = manager.renameSession(projectId, targetId, title, expectedRevision);
+      const result = manager.renameSession(projectId, targetId, title, expectedRevision).then(metadataCommitted(projectId));
       renames.push({ projectId, sessionId: targetId, title, expectedRevision, result });
       void result.catch(noop);
       return result;
     },
     pinSession(projectId: string, targetId: string, pinned: boolean, expectedRevision?: string) {
-      const result = manager.pinSession(projectId, targetId, pinned, expectedRevision);
+      const result = manager.pinSession(projectId, targetId, pinned, expectedRevision).then(metadataCommitted(projectId));
       pins.push({ projectId, sessionId: targetId, pinned, expectedRevision, result });
       void result.catch(noop);
       return result;
@@ -357,6 +368,8 @@ async function fixture(context: TestContext) {
     assert.equal(pins.length, before + 1, "the DOM action must reach the real pin API exactly once");
     const request = pins[before]!;
     await React.act(async () => { await request.result.catch(noop); });
+    await tick(260);
+    await React.act(async () => { await Promise.allSettled(catalogRefreshes.map(read => read.result)); });
     return request;
   };
   const enterTitle = async (title: string) => {
@@ -383,6 +396,8 @@ async function fixture(context: TestContext) {
     assert.equal(renames.length, before + 1, "DOM submission must reach the real rename API exactly once");
     const request = renames[before]!;
     await React.act(async () => { await request.result.catch(noop); });
+    await tick(260);
+    await React.act(async () => { await Promise.allSettled(catalogRefreshes.map(read => read.result)); });
     return request;
   };
   return {

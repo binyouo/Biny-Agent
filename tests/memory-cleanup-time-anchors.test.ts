@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -205,7 +206,7 @@ async function fixture() {
     reconciliationResponse: JSON.stringify({ operation: "ADD" }),
     cleanupResponse: () => "[]"
   };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test", modelId: "cleanup-time-anchors-fixture",
     async stream(context, options) {
       const prompt = context.messages.map((message) => typeof message.content === "string" ? message.content : "").join("\n");
@@ -219,7 +220,7 @@ async function fixture() {
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
-  };
+  });
   const memory = new LocalMemory(root, () => model, undefined, 3, undefined, undefined, undefined,
     async (query, options) => { searches.push({ query, options }); return candidates; });
   return {

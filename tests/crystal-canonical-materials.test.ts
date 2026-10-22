@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Real completed conversations supply the material; only model and local tool I/O are fixtures. */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
@@ -83,7 +84,7 @@ async function fixture(t: TestContext, text = middleText) {
   let agentCalls = 0;
   let reply: Record<string, { value: string; sources: string[] }> = {};
   const prefills: string[] = [];
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "crystal-canonical", runtime: "builtin-llama.cpp", dataResidency: "local", supportsTools: true,
     stream: async (request, options) => {
       let events: ModelStreamEvent[];
@@ -104,7 +105,7 @@ async function fixture(t: TestContext, text = middleText) {
       }
       return (async function* (): AsyncGenerator<ModelStreamEvent> { yield* events; })();
     }
-  };
+  });
   const recorder = new SessionRecorder(workspace);
   const session = new AgentSession({ workspaceRoot: workspace, config, model, recorder, toolRegistry: registry,
     permissionManager: new PermissionManager(config.permission) });

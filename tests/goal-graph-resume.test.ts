@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { GoalGraphStore, GraphSupervisor, type SupervisorCheckpoint } from "../src/runtime/GoalGraphStore.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
+import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 
 for (const checkpoint of ["needs_attention", "settled"] as const) {
@@ -20,6 +21,7 @@ async function testResumeCheckpoint(checkpoint: SupervisorCheckpoint, finishWhil
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-graph-resume-"));
   let authority = await RuntimeEventAuthority.open(root);
   let graphs = await GoalGraphStore.open(root, authority);
+  let taskRuns = await DurableTaskRunStore.open(root, authority);
   const prompts: string[] = [];
   const runtime = {
     getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "owner" } }),
@@ -29,7 +31,7 @@ async function testResumeCheckpoint(checkpoint: SupervisorCheckpoint, finishWhil
     },
     submitPrompt: () => { throw new Error("Resume must not rerun completed or failed work."); }
   } as unknown as InteractiveRuntimeHandle;
-  const supervisor = new GraphSupervisor({ getStore: () => graphs, resolveSupervisorRuntime: async () => runtime, getTaskRuns: () => { throw new Error("Unexpected startup recovery"); }, resolveSupervisorCommands: async () => { throw new Error("Unexpected node dispatch"); } });
+  const supervisor = new GraphSupervisor({ getStore: () => graphs, resolveSupervisorRuntime: async () => runtime, getTaskRuns: () => taskRuns, resolveSupervisorCommands: async () => { throw new Error("Unexpected node dispatch"); } });
   try {
     const graph = graphs.createSupervisedGraph({
       supervisorSessionId: "owner",
@@ -56,10 +58,12 @@ async function testResumeCheckpoint(checkpoint: SupervisorCheckpoint, finishWhil
     assert.deepEqual(graphs.listSupervisorWakes(), [], "pre-pause revision wakes are discarded");
 
     // 重新打开持久状态，覆盖暂停期间重启后再恢复的同一入口。
+    taskRuns.close();
     graphs.close();
     authority.close();
     authority = await RuntimeEventAuthority.open(root);
     graphs = await GoalGraphStore.open(root, authority);
+    taskRuns = await DurableTaskRunStore.open(root, authority);
     const resumed = graphs.resumeGraph(graph.graphId);
     graphs.createWake(graph.graphId, "graph_resumed");
     assert.equal(resumed.status, "running");
@@ -85,6 +89,7 @@ async function testResumeCheckpoint(checkpoint: SupervisorCheckpoint, finishWhil
     assert.equal(graphs.inspectGraph(graph.graphId).status, "running", "the supervisor still owns final graph disposition");
   } finally {
     supervisor.stop();
+    taskRuns.close();
     graphs.close();
     authority.close();
     await rm(root, { recursive: true, force: true });

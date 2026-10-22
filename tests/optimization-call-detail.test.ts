@@ -1,4 +1,6 @@
 /** Actual stats/detail/layer/timeline components, isolated storage, and inert external boundaries. */
+import { testModel } from './helpers/model.js';
+import { buildToolOptimizationOverview } from '../src/session/toolOptimizationOverview.js';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { Socket } from 'node:net';
@@ -35,7 +37,7 @@ type Origin = NonNullable<ToolOptimizationEntry['origin']>;
 const origin = (projectId: string, sessionId = `session-${projectId}`, toolCallId = 'same-call'): Origin => ({ projectId, sessionId, toolCallId });
 const row = (id: string, source = origin(id)): ToolOptimizationEntry => ({ time: new Date().toISOString(), origin: source,
   optimization: { id, kind: 'rtk', estimator: 'rtk', beforeTokens: 100, afterTokens: 10, savedTokens: 90, toolCalls: 1, command: 'git status', originalCommand: `git status -- ${id}` } });
-const stats = (...entries: ToolOptimizationEntry[]): DesktopToolOptimizationStats => ({ entries, incompleteSessions: 0, rtk: { path: '/inert/rtk' } });
+const stats = (...entries: ToolOptimizationEntry[]): DesktopToolOptimizationStats => buildToolOptimizationOverview(entries);
 const events = (source: Origin, tag: string): SessionEvent[] => [
   { type: 'tool_call', tool: 'Bash', toolCallId: source.toolCallId, args: { command: `git status -- ${tag}` }, time: '2026-10-20T12:00:00.000Z' },
   { type: 'tool_result', tool: 'Bash', toolCallId: source.toolCallId, result: { command: `git status -- ${tag}`, stdout: `${tag}-result`, stderr: '', exitCode: 0, executedCommand: `rtk git status -- ${tag}` }, optimization: row(tag).optimization, time: '2026-10-20T12:00:01.000Z' }
@@ -133,7 +135,7 @@ test('refresh begun before opening detail does not rebind the open source snapsh
 
 for (const failure of [false, true]) test(`whole settings unmount/reopen ignores prior detail ${failure ? 'failure' : 'success'}`, async t => {
   const h = await harness(t); await h.render(); await h.settleStats(0, stats(row('alpha'))); await h.click('git status -- alpha');
-  await h.leave(); await h.render(); await h.settleStats(1, stats(row('beta'))); await h.click('git status -- beta');
+  await h.leave(); await h.render(); await h.click('刷新'); await h.settleStats(1, stats(row('beta'))); await h.click('git status -- beta');
   await h.settleDetail(1, events(origin('beta'), 'beta')); await h.settleDetail(0, failure ? new Error('old-unmounted-error') : events(origin('alpha'), 'alpha'));
   assert.match(h.detailText(), /beta-result/); assert.doesNotMatch(h.detailText(), /alpha-result|old-unmounted-error/);
 });
@@ -196,7 +198,7 @@ async function createRtkIdentityFixture() {
     assert.equal(coordinator.observeToolCall('call_0'), undefined);
     const codeTool = coordinator.createCodeModeTool();
     let requests = 0;
-    const model = {provider:'inert-provider', modelId:'turn-local-call-ids', stream: async () => {
+    const model = testModel({provider:'inert-provider', modelId:'turn-local-call-ids', stream: async () => {
       const invocation = requests++;
       return (async function*() {
         yield {type:'start' as const};
@@ -205,7 +207,7 @@ async function createRtkIdentityFixture() {
           yield {type:'finish' as const,reason:'tool-calls' as const};
         } else {yield {type:'text-delta' as const,text:'done'}; yield {type:'finish' as const,reason:'stop' as const};}
       })();
-    }};
+    }});
     const historical = replaySessionEvents((await readStoredSessionEvents(projectRoot,rec.sessionId)).events).messages;
     const completed = [];
     try {
@@ -236,9 +238,9 @@ async function createRtkIdentityFixture() {
     const project = {id:'fixture-project',path:projectRoot,name:'project',dirty:false,missing:false,pinned:false,addedAt:new Date().toISOString(),lastOpenedAt:new Date().toISOString()};
     await state.upsertProject(project);
     const service = new DesktopProjectService(state,new DesktopUserDataStore(path.join(root,'desktop')),{load:async()=>{throw new Error('Unexpected config read')}} as any);
-    const stats = await service.toolOptimizationStats('all');
+    const stats = await service.toolOptimizationOverview('all');
     assert.equal(stats.incompleteSessions,0);
-    const receipts = stats.entries.filter(e=>e.optimization.kind === 'rtk');
+    const receipts = stats.recent.filter(e=>e.optimization.kind === 'rtk');
     assert.equal(receipts.length,2);
     const oldEntry = receipts.find(e=>e.optimization.originalCommand === 'git status')!;
     const newEntry = receipts.find(e=>e.optimization.originalCommand === 'git diff')!;
@@ -254,7 +256,7 @@ test('clicking a fork RTK receipt with a reused tool call ID renders that operat
   const data = await createRtkIdentityFixture();
   t.after(data.close);
   const h = await harness(t); await h.render();
-  await h.settleStats(0, { ...data.stats, rtk: { path: '/inert/rtk' } });
+  await h.settleStats(0, data.stats);
   await h.click('git diff');
   const source = data.newEntry.origin!;
   assert.deepEqual(h.detailReads[0]!.args, [source.projectId, source.sessionId, source.toolCallId]);

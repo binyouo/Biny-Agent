@@ -17,7 +17,7 @@ const credentials: CredentialStore = {
 };
 
 for (const operation of ["initialize", "save", "file update", "desktop update"] as const) {
-  test(`${operation} omits unused image generation settings for older Desktop readers`, async () => {
+  test(`${operation} persists current image generation defaults`, async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-image-config-")));
     try {
       if (operation === "initialize") {
@@ -25,7 +25,7 @@ for (const operation of ["initialize", "save", "file update", "desktop update"] 
       } else {
         await saveConfigFile(root, configSchema.parse(defaultConfig));
         if (operation !== "save") {
-          // A newer client previously materialized an empty imageGen section.
+          // Exercise updates with an explicitly persisted default section.
           const file = path.join(root, "config.json");
           const document = JSON.parse(await fs.readFile(file, "utf8"));
           document.imageGen = {};
@@ -38,9 +38,8 @@ for (const operation of ["initialize", "save", "file update", "desktop update"] 
         }
       }
       const document = JSON.parse(await fs.readFile(path.join(root, "config.json"), "utf8"));
-      assert.equal(Object.hasOwn(document, "imageGen"), false,
-        "an unused feature must not add a root key rejected by released Desktop builds");
-      assert.deepEqual((await loadConfigFile(root)).imageGen, { model: undefined, localModel: undefined, aspectRatio: undefined });
+      assert.deepEqual(document.imageGen, {}, "the current schema persists the default section");
+      assert.deepEqual((await loadConfigFile(root)).imageGen, {});
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

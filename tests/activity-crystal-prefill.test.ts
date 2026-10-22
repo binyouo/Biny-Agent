@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Activity material references reach the same real AgentSession service used by CLI crystal prefill. */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -196,7 +197,7 @@ async function withFixture(
     config.context.memory.generateMemories = false;
     config.activity.enabled = options.enabled ?? true;
     config.activity.outputDirectory = activityDirectory;
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "fixture",
       modelId: "activity-crystal-prefill-fixture",
       stream: async (context) => {
@@ -206,7 +207,7 @@ async function withFixture(
           yield { type: "finish", reason: "stop" };
         })();
       }
-    };
+    });
     agent = new AgentSession({
       workspaceRoot, config, model, toolRegistry: new ToolRegistry(),
       permissionManager: new PermissionManager({ ...config.permission, source: "test" }),

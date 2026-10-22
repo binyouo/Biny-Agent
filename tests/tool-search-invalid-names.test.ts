@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** A nonempty invalid selector answer must not poison the semantic no-match cache. */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -128,7 +129,7 @@ function createFixture(initialAnswer: string, beforeResponse?: () => Promise<voi
     })
   };
   registry.registerBuiltinTool(candidate);
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "invalid-selection",
     async stream() {
       modelCalls++;
@@ -139,7 +140,7 @@ function createFixture(initialAnswer: string, beforeResponse?: () => Promise<voi
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   const search = createToolSearchTool(() => registry.listEntries(), () => [{ model, failureDomain: "invalid-selection-fixture" }]);
   registry.registerBuiltinTool(search);
   let sequence = 0;

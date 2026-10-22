@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Public diary APIs with a synthetic model boundary; no Host, provider or live user data. */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -30,7 +31,7 @@ function controlledModel(summary: string) {
   const entered = deferred<string>();
   const release = deferred<void>();
   let calls = 0;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "public-diary-publication",
     stream: async (context) => {
@@ -45,7 +46,7 @@ function controlledModel(summary: string) {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   return { model, entered, release, calls: () => calls };
 }
 

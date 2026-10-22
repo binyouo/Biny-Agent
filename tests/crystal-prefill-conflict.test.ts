@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** Real Crystal HTTP/service/storage regressions; model replies are deterministic and never leave this process. */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -174,7 +175,7 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>, deferred = 
   let calls = 0;
   let tag = "";
   let pending: Promise<CrystalHttpResponse> | undefined;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "crystal-prefill-conflict",
     stream: async (request) => {
@@ -197,7 +198,7 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>, deferred = 
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   let clockTick = 0;
   const service = new CrystalService({
     storage: new CrystalStorage({ agentDir: directory }),

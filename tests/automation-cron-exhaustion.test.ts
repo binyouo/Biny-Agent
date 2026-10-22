@@ -55,7 +55,7 @@ async function fixture(t: TestContext, now = last - 1_000) {
     switchMessageVersion: unused, runExclusiveOperation: unused, startBackgroundOperation: unused,
     compactConversation: unused
   };
-  const scheduler = new AutomationScheduler({ getStore: () => store, getRuntime: () => runtime, canStartRun: () => accepting });
+  const scheduler = new AutomationScheduler({ getStore: () => store, getRuntime: () => runtime, createFreshRuntime: async () => runtime, canStartRun: () => accepting });
   resources.scheduler = scheduler;
   return {
     get store() { return store; }, get authority() { return authority; }, scheduler, submissions,

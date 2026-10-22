@@ -1,3 +1,5 @@
+import { createHostTestStores } from "./helpers/hostStores.js";
+import { testModel } from "./helpers/model.js";
 /** Archive-row deletion must not invalidate the separately active version of the fact. */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -108,23 +110,6 @@ await test("deleting a normal archive or a missing id leaves unrelated current v
   } finally { await f.close(); }
 });
 
-await test("the HTTP active-only delete route continues to reject an archive id", async () => {
-  const f = await fixture();
-  try {
-    const { current, history, unrelated } = await seedUpdated(f);
-    const api = await f.startHttp();
-    const response = await fetch(`http://127.0.0.1:${api.port}/api/memories/${history.id}`, {
-      method: "DELETE", headers: { authorization: "Bearer archive-delete-test-token" }
-    });
-    assert.equal(response.status, 404);
-    assert.deepEqual(await response.json(), { error: "Memory not found" });
-    assert.equal((await f.memory.getEntry(history.id))?.content, oldFact);
-    assert.equal((await f.memory.getEntry(current.id))?.content, currentFact);
-    assert.deepEqual(await f.recallIds(), [current.id]);
-    assert.deepEqual(f.vectorIds(), new Set([current.id, unrelated.id]));
-  } finally { await f.close(); }
-});
-
 async function seedUpdated(f: Awaited<ReturnType<typeof fixture>>): Promise<{
   current: MemoryEntry; history: MemoryEntry; unrelated: MemoryEntry;
 }> {
@@ -161,14 +146,10 @@ async function fixture() {
   let retriever: import("../src/agent/context/SemanticMemoryRetriever.js").SemanticMemoryRetriever | undefined;
   let host: Awaited<ReturnType<typeof import("../src/runtime/RuntimeHost.js").startRuntimeHost>> | undefined;
   let client: Awaited<ReturnType<typeof import("../src/runtime/RuntimeHost.js").connectRuntimeHost>> | undefined;
-  let http: Awaited<ReturnType<typeof import("../src/runtime/host/memory-http.js").startMemoryHttpServer>> | undefined;
   const close = async (): Promise<void> => {
     try {
-      try { await http?.close(); }
-      finally {
-        try { await client?.close(); }
-        finally { await host?.close(); }
-      }
+      try { await client?.close(); }
+      finally { await host?.close(); }
     } finally {
       try {
         try { retriever?.close(); }
@@ -194,9 +175,8 @@ async function fixture() {
     const { LocalEmbeddingManager } = await import("../src/llm/embedding/LocalEmbeddingRuntime.js");
     const { connectRuntimeHost, startRuntimeHost } = await import("../src/runtime/RuntimeHost.js");
     const { memoryManageCommand } = await import("../src/cli/commands/localCapabilities.js");
-    const { startMemoryHttpServer } = await import("../src/runtime/host/memory-http.js");
     const state = { passageCalls: 0, respond: (): string => { throw new Error("Unexpected memory model call"); } };
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test", modelId: "archive-delete",
       async stream(_context, options) {
         options?.signal?.throwIfAborted();
@@ -206,7 +186,7 @@ async function fixture() {
           yield { type: "finish" as const, reason: "stop" as const };
         })();
       }
-    };
+    });
     const ref = { kind: "provider", provider: "test", model: "archive-delete" } as const;
     const runtime: EmbeddingModelRuntime = {
       descriptor: { ref, fingerprint: "archive-delete", displayName: "fixture", dimensions: 2, recommendedThreshold: 0.8, source: "provider" },
@@ -240,7 +220,7 @@ async function fixture() {
     // The unrelated interactive-runtime boundary stays idle. Domain mutation, storage,
     // projection, CLI routing and authenticated Host transport are all real implementations.
     // Background repair is deliberately outside this immediate post-mutation contract.
-    const commands = { agent: {
+    const commands = { ...await createHostTestStores(root), agent: {
       getLocalMemory: () => localMemory,
       getPersonalizationState: async () => ({ memory: { enabled: false, sleepEnabled: false } })
     } } as unknown as CommandRuntime;
@@ -252,7 +232,7 @@ async function fixture() {
         await execute(new AbortController().signal),
       close: async () => undefined
     } as unknown as InteractiveRuntimeHandle;
-    host = await startRuntimeHost(root, async () => ({ runtime: interactive, commands }));
+    host = await startRuntimeHost(root, async () => ({ runtime: interactive, commands }), { workspaceRoot: root });
     client = await connectRuntimeHost(root, { clientId: "archive-delete", surface: "cli" });
     assert.ok(client);
     assert.equal((await localMemory.listMemoryEntries()).total, 0, "each case starts with an empty isolated active store");
@@ -295,11 +275,7 @@ async function fixture() {
         assert.equal(output.length, 1);
         return JSON.parse(output[0]!) as MemoryDeleteResult;
       },
-      startHttp: async () => {
-        http = await startMemoryHttpServer(connected, { token: "archive-delete-test-token" });
-        allowedOrigins.add(`http://127.0.0.1:${http.port}`);
-        return http;
-      }
+
     });
   } catch (error) {
     await close();

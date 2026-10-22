@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /** CI-only: real Activity HTTP handlers and isolated shared SQLite storage.
  * Product imports happen only after fixture isolation. Never run in a source-only review environment.
  */
@@ -84,7 +85,7 @@ async function main(): Promise<void> {
       let calls = 0;
       const release = () => gate.resolve();
       releases.push(release);
-      const value: Model = {
+      const value: Model = testModel({
         provider: "test", modelId: "summary-stale-test", runtime: "builtin-llama.cpp", dataResidency: "local",
         stream: async () => (async function* (): AsyncGenerator<Event> {
           modelSettlements.push(finished.promise);
@@ -99,7 +100,7 @@ async function main(): Promise<void> {
             finished.resolve();
           }
         })()
-      };
+      });
       return { value, started: started.promise, release, calls: () => calls };
     };
     const track = <T>(result: Promise<T>) => {

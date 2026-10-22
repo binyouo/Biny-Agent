@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
@@ -284,7 +285,7 @@ async function fixture(t: TestContext) {
   config.chat.defaultSkillSelection = "none";
   configSchema.parse(config);
   const state = { requests: [] as AgentMessage[][], summaries: 0 };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "retry-precompaction-checkpoint", supportsTools: false,
     vercelOptions: { maxRetries: 0 },
     async stream(context, options) {
@@ -304,7 +305,7 @@ async function fixture(t: TestContext) {
         yield { type: "finish", reason: "stop" };
       })();
     }
-  };
+  });
   await ensureAgentDirs(root);
   const create = () => new AgentSession({
     workspaceRoot: root, config, model, recorder: new SessionRecorder(root),

@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -102,7 +103,7 @@ async function fixture() {
   const previous = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = root;
   const state = { operations: [] as MemoryOperation[], requests: [] as string[], temporaryId: "" };
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "test",
     modelId: "empty-add-regression",
     async stream(context, options) {
@@ -131,7 +132,7 @@ async function fixture() {
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
-  };
+  });
   const ref = { kind: "provider", provider: "test", model: "embedding" } as const;
   const runtime: EmbeddingModelRuntime = {
     descriptor: {

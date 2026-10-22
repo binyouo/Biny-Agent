@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /**
  * Public Runtime steering must survive Claude export/import as one delivered input.
  * These are real AgentSession/Recorder/Runtime, transfer, persistence, replay and
@@ -130,7 +131,7 @@ async function fixture(t: TestContext, steer = true) {
   config.chat.skillExtraction.enabled = false;
   const requests: AgentMessage[][] = [];
   let acceptedSteering: Awaited<ReturnType<Runtime["steer"]>> | undefined;
-  const model: AgentModel = {
+  const model: AgentModel = testModel({
     provider: "fixture", modelId: "export-steering", runtime: "builtin-llama.cpp",
     dataResidency: "local", supportsTools: true,
     async stream(context, options) {
@@ -148,7 +149,7 @@ async function fixture(t: TestContext, steer = true) {
       ];
       return (async function* () { yield* response; })();
     }
-  };
+  });
   const recorder = new SessionRecorder(workspace);
   const agent = new AgentSession({ workspaceRoot: workspace, config, model, recorder,
     toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission) });

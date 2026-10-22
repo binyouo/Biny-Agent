@@ -3,8 +3,9 @@ import { lstat, readdir, readFile, realpath, rm as remove } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { memoryOwnerPaths } from "../../src/runtime/memory/transport.js";
-import { isProcessAlive } from "../../src/runtime/host/lifecycle.js";
+import { runtimeHostPaths, isProcessAlive } from "../../src/runtime/host/lifecycle.js";
+
+const memoryOwnerPaths = (root: string) => runtimeHostPaths(path.join(root, ".memory-owner"), { platform: process.platform, temporaryDirectory: os.tmpdir(), agentRoot: root });
 
 /** Detached owners belong to the test's temporary data root, not its session. */
 export async function stopTestMemoryOwners(root: string): Promise<void> {

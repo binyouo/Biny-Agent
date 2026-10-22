@@ -54,32 +54,14 @@ for (const item of cases(200)) {
   });
 }
 
-for (const [limit, count] of [[1024, 1], [300, 10], [160, 30], [80, 60]] as const) {
-  for (const item of cases(limit)) {
-    test(`selection prompt tier ${limit}: ${item.name}`, async () => {
-      const descriptions = [item.input, ...Array<string>(count - 1).fill("z".repeat(1200))];
-      const prompt = await skillPromptForSelection(bundle(descriptions), "all");
-      const line = prompt.split("\n").find((value) => value.startsWith('- "sample-000": '));
-      assert.notEqual(line, undefined);
-      check(line!.slice('- "sample-000": '.length), item, limit);
-      assert.ok(prompt.length <= 8000);
-      assert.ok(!prompt.includes("additional skills were omitted"));
-      if (count > 1) {
-        assert.ok(prompt.includes(`- "sample-001": ${"z".repeat(limit - 1)}…\n`), "fixture reaches the intended description tier");
-      }
-    });
-  }
-}
-
-test("selection prompt omission stays bounded and keeps whole pairs", async () => {
+test("selected skill metadata preserves descriptions and Unicode for every selection", async () => {
   const description = "a".repeat(78) + "😀" + "z".repeat(1200);
   const prompt = await skillPromptForSelection(bundle(Array<string>(100).fill(description)), "all");
-  assert.ok(prompt.length <= 8000);
   assert.equal(Buffer.from(prompt, "utf8").toString("utf8"), prompt);
-  const lines = prompt.split("\n").filter((line) => line.startsWith('- "sample-'));
-  assert.ok(lines.length > 0 && lines.length < 100);
-  for (const line of lines) assert.ok(line.endsWith(`: ${"a".repeat(78)}…`));
-  assert.ok(prompt.includes(`(${100 - lines.length} additional skills were omitted from this list.`));
+  const lines = prompt.split("\n").filter(line => line.startsWith('- "sample-'));
+  assert.equal(lines.length, 100);
+  for (const line of lines) assert.ok(line.endsWith(`: ${description}`));
+  assert.ok(!prompt.includes("additional skills were omitted"));
 });
 
 test("empty and excluded selections stay empty", async () => {

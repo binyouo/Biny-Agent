@@ -1,3 +1,4 @@
+import { testModel } from "./helpers/model.js";
 /**
  * Repeated diary refreshes must advance beyond previously written
  * turns without removing the existing 500-new-turn per-refresh budget.
@@ -98,7 +99,7 @@ async function createFixture(root: string) {
     config.checkpoints.enabled = false;
     config.agent.toolExecutionMode = "direct";
     const validatedConfig = configModule.configSchema.parse(config);
-    const model: AgentModel = {
+    const model: AgentModel = testModel({
       provider: "test",
       modelId: "diary-new-completed-turn",
       async stream() {
@@ -107,7 +108,7 @@ async function createFixture(root: string) {
           yield { type: "finish", reason: "stop" };
         })();
       }
-    };
+    });
     const recorder = new recorderModule.SessionRecorder(workspaceRoot, "z-diary-ordinary-tail");
     let agent: InstanceType<typeof agentModule.AgentSession> | undefined;
     try {

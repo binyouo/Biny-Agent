@@ -1,3 +1,5 @@
+import { AgentMemoryClient } from "../src/runtime/memory/client.js";
+import { testModel } from "./helpers/model.js";
 /** Extraction consumes canonical conversation text, not host-injected reference material. */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -68,6 +70,9 @@ try {
       await upsertDailyMemorySection("2026-10-18", "聊天摘要", "YESTERDAY_REFERENCE_ONLY_7461", { configDir: agentDir });
       t.signal.throwIfAborted();
       const config = structuredClone(defaultConfig);
+      config.models = { [config.defaultModel]: config.models[config.defaultModel]! };
+      config.toolModel = config.defaultModel;
+      config.providers.deepseek = { ...config.providers.deepseek!, apiKey: "fixture-key", apiKeyEnv: undefined };
       config.providers.deepseek = { ...config.providers.deepseek!, apiKeyEnv: "BINY_CANONICAL_SOURCE_UNCONFIGURED_KEY" };
       config.agent.toolExecutionMode = "direct";
       config.context.maxInputTokens = 1_000_000;
@@ -86,7 +91,7 @@ try {
       const requests: Array<{ operation?: string; text: string; messages: AgentMessage[] }> = [];
       const input = "Tell me a brief joke.";
       const answer = "A short, ordinary answer.";
-      const model: AgentModel = {
+      const model: AgentModel = testModel({
         provider: "memory-source-fixture", modelId: "memory-source-fixture",
         async stream(context, options) {
           const text = messageTexts(context.messages);
@@ -98,12 +103,14 @@ try {
             yield { type: "finish" as const, reason: "stop" as const };
           })();
         }
-      };
+      });
       // Substitute only the model-loading boundary. Both AgentSession availability
       // and the real MemoryEmbeddingService cleanup lookup use this same runtime.
       let embedCalls = 0;
       const runtime = availableEmbedding(() => { embedCalls += 1; });
-      const runtimeFactory = t.mock.method(LocalEmbeddingManager.prototype, "createRuntime", async () => runtime);
+      const runtimeFactory = t.mock.method(AgentMemoryClient.prototype, "embeddingRuntime", async () => runtime);
+      t.mock.method(AgentMemoryClient.prototype, "findSimilarInScope", async () => []);
+      t.mock.method(LocalEmbeddingManager.prototype, "createRuntime", async () => runtime);
       recorder = new SessionRecorder(workspace, "canonical-source-session");
       agent = new AgentSession({ workspaceRoot: workspace, config, model, recorder,
         toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }) });
@@ -119,13 +126,13 @@ try {
       const extraction = requests.filter((request) => request.text.startsWith("Extract memories from this conversation:"));
       assert.equal(foreground.length, 1);
       assert.equal(extraction.length, 1, "the real completed-turn path must request actual LocalMemory extraction");
-      assert.equal(runtimeFactory.mock.callCount(), 2, "availability and cleanup each resolve the local runtime");
+      assert.equal(runtimeFactory.mock.callCount(), 1, "the session resolves the global embedding runtime");
       assert.equal(embedCalls, 0, "an empty fact store does not need embedding inference");
       for (const sentinel of ["LONG_REFERENCE_ONLY_7461", "TODAY_REFERENCE_ONLY_7461", "YESTERDAY_REFERENCE_ONLY_7461"]) {
         assert.ok(foreground[0]!.text.includes(sentinel), `foreground injection must contain ${sentinel}`);
       }
       const user = foreground[0]!.messages.find((message) => message.role === "user");
-      assert.equal(user?.role === "user" ? user.originalContent : undefined, input);
+      assert.ok(user?.role === "user" && typeof user.content === "string" && user.content.endsWith(input));
       const events = await readSessionEvents(recorder.filePath);
       const source = events.find((event) => event.type === "user_message" && !event.auditOnly);
       assert.ok(source?.type === "user_message" && source.messageId && source.time);
@@ -158,7 +165,7 @@ try {
       const prompts: string[] = [];
       const queries: string[] = [];
       let temporary: MemoryEntry | undefined;
-      const model: AgentModel = {
+      const model: AgentModel = testModel({
         provider: "memory-source-fixture", modelId: "memory-source-fixture",
         async stream(context, options) {
           const prompt = messageTexts(context.messages);
@@ -170,7 +177,7 @@ try {
             yield { type: "finish" as const, reason: "stop" as const };
           })();
         }
-      };
+      });
       let memory: LocalMemoryType | undefined;
       let pending: Promise<unknown> | undefined;
       let closePromise: Promise<void> | undefined;

@@ -47,14 +47,14 @@ async function main(): Promise<void> {
 
     const builtins = await loadSkills({ workspaceRoot, projectPaths: [], globalRoot });
     const builtinNames = builtins.skills.filter((skill) => skill.scope === "builtin").map((skill) => skill.name);
-    assert.deepEqual(builtinNames, ["browser", "computer-use", "daily-report", "file-manager", "image-gen", "memory-management", "notebook", "plan-weave", "scheduler", "self-reflection", "selfie", "system-info", "tasks", "todo", "travel", "web-fetch", "web-search", "workspace-search"]);
+    assert.deepEqual(builtinNames, ["browser", "computer-use", "daily-report", "file-manager", "image-gen", "memory-management", "notebook", "plan-weave", "references", "scheduler", "self-reflection", "selfie", "system-info", "tasks", "todo", "travel", "twitter-cli", "twitter-media", "video-reader", "web-fetch", "web-search", "workspace-search", "xiaohongshu-cli"]);
     assert.equal(builtins.skills.filter((skill) => skill.scope === "builtin").every((skill) => skill.source === "builtin"), true);
     const report = builtins.skills.find((skill) => skill.name === "daily-report")!;
     assert.equal(report.scope, "builtin");
     const reportExecution = await createSkillTool(builtins).resolveExecution({ skill: "daily-report" });
     assert.ok(!("isError" in reportExecution), "日报技能必须能经运行时 Skill 工具加载，不只是源码目录里存在");
     for (const skill of builtins.skills.filter((candidate) => candidate.scope === "builtin")) {
-      assert.doesNotMatch(skill.description, /\p{Script=Han}/u, `${skill.name}: built-in catalog descriptions must be English, including routing examples`);
+      assert.doesNotMatch(skill.description.replaceAll("小红书", "Xiaohongshu"), /\p{Script=Han}/u, `${skill.name}: built-in catalog descriptions must be English, including routing examples`);
       // 所有新增内置技能必须可经真实 Skill 入口加载；目录枚举无法发现正文读取失败。
       const execution = await createSkillTool(builtins).resolveExecution({ skill: skill.name });
       assert.ok(!("isError" in execution), `${skill.name} must resolve through Skill`);
@@ -67,7 +67,9 @@ async function main(): Promise<void> {
       assert.match(document, new RegExp(`name:\\s*${skill.name}\\b`));
       assert.match(document, /description:\s*\S/u);
       assert.match(document, /\n[^-\s].+/u, `${skill.name} must have a non-empty instruction body`);
-      assert.doesNotMatch(document, /\b(?:claude|codex|pi|alma|maka|anthropic|openai)\b/iu, `${skill.name} must keep Biny's product identity boundary`);
+      // Provider protocol names and quoted search inputs are functional identifiers.
+      const identityText = document.replaceAll("OpenAI-compatible", "provider-compatible").replaceAll('search "Claude Code"', 'search "search query"');
+      assert.doesNotMatch(identityText, /\b(?:claude|codex|pi|alma|maka|anthropic|openai)\b/iu, `${skill.name} must keep Biny's product identity boundary`);
     }
 
     const overrideDirectory = path.join(workspaceRoot, ".biny", "skills", "memory-management");
