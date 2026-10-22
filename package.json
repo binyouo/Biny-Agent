@@ -48,7 +48,7 @@
     "check:project": "node --test scripts/project-checks.test.mjs && pnpm check:boundaries && pnpm check:docs",
     "test:models": "node --test scripts/sync-model-metadata.test.mjs",
     "test:runtime-host": "node scripts/run-tests.mjs runtime-host",
-    "test:runner": "node --test scripts/run-tests.test.mjs",
+    "test:runner": "node --test scripts/run-tests.test.mjs scripts/ci-test-plan.test.mjs",
     "test:standard": "pnpm test:runner && pnpm test:models && pnpm test:code-mode-runtime && node scripts/run-tests.mjs --standard",
     "test:e2e": "pnpm build:cli && node scripts/run-tests.mjs --e2e",
     "test": "pnpm test:standard && pnpm test:e2e",

@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 19 * * *"
   pull_request:
   push:
     branches:
@@ -8,13 +11,53 @@ on:
       - master
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.run_id || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Test impact plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      standard: ${{ steps.plan.outputs.standard }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      build: ${{ steps.plan.outputs.build }}
+      renderer: ${{ steps.plan.outputs.renderer }}
+      windows: ${{ steps.plan.outputs.windows }}
+      windows_package: ${{ steps.plan.outputs.windows_package }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.6.5
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - id: plan
+        name: Select tests since the last successful ancestor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci-test-plan.mjs --ci
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ci-plan
+          path: .ci/plan.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   static:
     name: Static checks
     runs-on: ubuntu-latest
@@ -68,10 +111,15 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test release policy
-        run: node --test scripts/release-desktop.test.mjs
+      - name: Test CI selection, runner, model metadata and release policy
+        run: node --test scripts/ci-test-plan.test.mjs scripts/run-tests.test.mjs scripts/sync-model-metadata.test.mjs scripts/release-desktop.test.mjs
+
+      - name: Test Code Mode runtime
+        run: pnpm test:code-mode-runtime
 
   test:
+    needs: plan
+    if: needs.plan.outputs.standard == 'true'
     name: Tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -95,8 +143,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: ci-plan
+          path: .ci
       - name: Test
-        run: pnpm test:standard --shard=${{ matrix.shard }}/4 --report=test-timings.json
+        run: node scripts/run-tests.mjs --standard --plan=.ci/plan.json --shard=${{ matrix.shard }}/4 --report=test-timings.json
 
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
@@ -107,6 +159,8 @@ jobs:
           retention-days: 7
 
   e2e:
+    needs: plan
+    if: needs.plan.outputs.e2e == 'true'
     name: Runtime E2E
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -125,10 +179,18 @@ jobs:
       - name: Install dependencies and Electron
         run: pnpm install --frozen-lockfile && pnpm exec install-electron --no
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: ci-plan
+          path: .ci
+      - name: Build CLI
+        run: pnpm build:cli
       - name: Test built runtime end to end
-        run: xvfb-run -a pnpm test:e2e
+        run: xvfb-run -a node scripts/run-tests.mjs --e2e --plan=.ci/plan.json
 
   build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     name: Build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -147,9 +209,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build CLI
-        run: pnpm build:cli
-
       - name: Build desktop
         run: pnpm build:desktop
 
@@ -157,6 +216,8 @@ jobs:
         run: pnpm test:code-mode-package
 
   renderer:
+    needs: plan
+    if: needs.plan.outputs.renderer == 'true'
     name: Renderer UI
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -200,8 +261,9 @@ jobs:
           retention-days: 7
 
   windows:
+    needs: plan
+    if: needs.plan.outputs.windows == 'true'
     name: Windows compatibility
-    needs: static
     runs-on: windows-2025
     timeout-minutes: 40
     steps:
@@ -233,10 +295,12 @@ jobs:
       - name: Validate built Electron Host
         run: node scripts/run-tests.mjs desktop-host-startup-e2e
       - name: Package Windows application
+        if: needs.plan.outputs.windows_package == 'true'
         run: pnpm exec electron-builder --config config/electron-builder.yml --win nsis zip --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
       - uses: actions/upload-artifact@v7
+        if: needs.plan.outputs.windows_package == 'true'
         with:
           name: windows-x64
           path: |
@@ -247,26 +311,19 @@ jobs:
   validate:
     name: Validate
     if: ${{ always() }}
-    needs: [static, test, e2e, build, renderer, windows]
+    needs: [plan, static, test, e2e, build, renderer, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require all validation lanes to pass
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8
+        with:
+          name: ci-plan
+          path: .ci
+      - name: Require exactly the selected validation lanes to pass
         env:
-          STATIC_RESULT: ${{ needs.static.result }}
-          TEST_RESULT: ${{ needs.test.result }}
-          E2E_RESULT: ${{ needs.e2e.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          RENDERER_RESULT: ${{ needs.renderer.result }}
-          WINDOWS_RESULT: ${{ needs.windows.result }}
-        run: |
-          if [[ "$STATIC_RESULT" != "success" || "$TEST_RESULT" != "success" || "$E2E_RESULT" != "success" || "$BUILD_RESULT" != "success" || "$RENDERER_RESULT" != "success" || "$WINDOWS_RESULT" != "success" ]]; then
-            echo "Static checks: $STATIC_RESULT"
-            echo "Tests: $TEST_RESULT"
-            echo "Runtime E2E: $E2E_RESULT"
-            echo "Build: $BUILD_RESULT"
-            echo "Renderer UI: $RENDERER_RESULT"
-            echo "Windows compatibility: $WINDOWS_RESULT"
-            exit 1
-          fi
-          echo "Static checks, tests, runtime E2E, builds, and renderer UI all passed."
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/ci-test-plan.mjs --check-results
