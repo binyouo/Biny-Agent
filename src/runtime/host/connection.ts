@@ -113,6 +113,7 @@ export async function spawnRuntimeHost(
   persistenceRoot: string,
   options: SpawnRuntimeHostOptions
 ): Promise<SpawnedRuntimeHost> {
+  await ensureRuntimeHostDirectory(path.dirname(runtimeHostPaths(persistenceRoot).registrationPath));
   const child = spawnRuntimeHostProcess(persistenceRoot, options);
   try {
     const client = await waitForSpawnedRuntimeHost(persistenceRoot, options, child);
