@@ -246,3 +246,25 @@ test("workflow routes conditional lanes through the plan and retains full-run an
     assert.ok(workflow.jobs[lane].steps.some(step => step.with?.name === "ci-plan"));
   }
 });
+
+test("Vite SSR consumers stay selected when an ordinary import already proves coverage", async t => {
+  const root = fixture(t, {
+    "tests/vite-view.test.ts": "import { createServer } from 'vite'; const server = await createServer(); await server.ssrLoadModule('/src/desktop/view.ts');",
+    "tests/helpers/vite-loader.ts": "import { createServer } from 'vite'; export const load = async (file: string) => (await createServer()).ssrLoadModule(file);",
+    "tests/vite-helper.test.ts": "import { load } from './helpers/vite-loader.js'; await load('/src/desktop/view.ts');",
+    "tests/vite-dynamic.test.ts": "const { createServer } = await import('vite'); await (await createServer()).ssrLoadModule('/src/desktop/view.ts');"
+  });
+  const plan = await createPlan(root, ["src/desktop/view.ts"]);
+  assert.equal(plan.full, false, "exercise selective planning rather than the no-consumer fallback");
+  assert.ok(plan.standard.includes("view.test.ts"), "ordinary static consumer remains selected");
+  assert.ok(plan.standard.includes("vite-view.test.ts"), "Vite SSR reads the same changed source and must remain selected");
+  assert.ok(plan.standard.includes("vite-helper.test.ts"), "Vite opacity propagates through shared helpers");
+  assert.ok(plan.standard.includes("vite-dynamic.test.ts"), "literal dynamic Vite imports also load source outside the import graph");
+  assert.ok(!plan.standard.includes("other.test.ts"), "unrelated pure tests remain unselected");
+  const testOnly = await createPlan(root, ["tests/other.test.ts"]);
+  assert.equal(testOnly.full, false);
+  assert.deepEqual(testOnly.standard, ["other.test.ts"], "test-only changes do not select unrelated Vite consumers");
+  const docsOnly = await createPlan(root, ["README.md"]);
+  assert.equal(docsOnly.full, false);
+  assert.deepEqual(docsOnly.standard, [], "documentation-only changes remain static-only");
+});
