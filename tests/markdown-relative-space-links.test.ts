@@ -93,8 +93,8 @@ for (const [name, syntax, encoded, expected] of [
   ["existing line suffix", "./notes.md:12:3", "./notes.md:12:3", "./notes.md"],
   ["parent-relative ordinary control", "../images/photo.png", "../images/photo.png", "../images/photo.png"],
   ["parent-relative space control", "../images/team%20photo.png", "../images/team%20photo.png", undefined],
-  ["Windows file URI unchanged", "file:///C:/Users/Alice/photo.png", "file:///C:/Users/Alice/photo.png", "/C:/Users/Alice/photo.png"],
-  ["localhost file URI unchanged", "file://localhost/Users/alice/photo.png", "file://localhost/Users/alice/photo.png", "localhost/Users/alice/photo.png"],
+  ["Windows file URI drive path", "file:///C:/Users/Alice/photo.png", "file:///C:/Users/Alice/photo.png", "C:/Users/Alice/photo.png"],
+  ["localhost file URI absolute path", "file://localhost/Users/alice/photo.png", "file://localhost/Users/alice/photo.png", "/Users/alice/photo.png"],
   ["space plus existing line suffix", "./notes%20draft.md:12:3", "./notes%20draft.md:12:3", "./notes draft.md"]
 ] as const) {
   test(name, () => {
