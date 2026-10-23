@@ -227,4 +227,54 @@ for (const kind of ["array", "set"] as const) {
   assert.equal(result.success, false);
   assert.equal(elementCalls, 0, "Patched Zod must reject oversized collections before element parsing");
 }
+// TaskStatus publishes a manual integer schema. Preserve its existing tool-boundary
+// acceptance separately from TaskCommunication's stricter safe-revision policy.
+const statusAst = source("extensions/subagent.ts");
+const statusFactory = statusAst.statements.find((entry) => ts.isFunctionDeclaration(entry) && entry.name?.text === "createTaskStatusTool");
+assert.ok(statusFactory && ts.isFunctionDeclaration(statusFactory) && statusFactory.body);
+const statusReturn = statusFactory.body.statements.find(ts.isReturnStatement)?.expression;
+assert.ok(statusReturn && ts.isObjectLiteralExpression(statusReturn));
+function statusField(name: string): string {
+  assert.ok(statusReturn && ts.isObjectLiteralExpression(statusReturn));
+  const field = statusReturn.properties.find((entry) => ts.isPropertyAssignment(entry) && entry.name.getText(statusAst) === name);
+  assert.ok(field && ts.isPropertyAssignment(field));
+  return field.initializer.getText(statusAst);
+}
+const statusBundle = compile(`const statusSchema = ${statusField("schema")}; const statusParameters = ${statusField("parameters")};`, ["statusSchema", "statusParameters"]);
+const statusSchema = schema(statusBundle, "statusSchema");
+const statusParameters = statusBundle.statusParameters;
+assert.ok(isRecord(statusParameters) && isRecord(statusParameters.properties));
+assert.deepEqual(statusParameters.properties.afterRevision, { type: "integer", minimum: 0, description: "The last task revision observed." });
+assert.deepEqual(statusParameters.properties.waitMs, { type: "integer", minimum: 0, maximum: 60_000, description: "Wait for an update for at most 60000ms; defaults to zero." });
+for (const afterRevision of [undefined, 0, 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 1e100]) {
+  assert.deepEqual(statusSchema.parse({ taskRunId: " task-1 ", afterRevision }), { taskRunId: "task-1", afterRevision });
+}
+assert.deepEqual(statusSchema.parse({ taskRunId: "task-1" }), { taskRunId: "task-1" });
+for (const afterRevision of [-1, 0.5, "0", null, NaN, Infinity, -Infinity]) {
+  const result = statusSchema.safeParse({ taskRunId: "task-1", afterRevision });
+  assert.equal(result.success, false);
+  if (!result.success) assert.deepEqual(result.error.issues[0]?.path, ["afterRevision"]);
+}
+for (const waitMs of [undefined, 0, 60_000]) assert.equal(statusSchema.safeParse({ taskRunId: "task-1", waitMs }).success, true);
+for (const waitMs of [-1, 0.5, 60_001, null, "0", NaN, Infinity, -Infinity]) assert.equal(statusSchema.safeParse({ taskRunId: "task-1", waitMs }).success, false);
+for (const input of [{ taskRunId: "" }, { taskRunId: "   " }, { taskRunId: "task-1", extra: true }, {}]) assert.equal(statusSchema.safeParse(input).success, false);
+const normalizedStatus = call(tools, "normalizeToolParameters", "TaskStatus", statusParameters);
+const statusWire = call(tools, "openAiCompatibleToolParameters", "TaskStatus", normalizedStatus);
+for (const parameters of [statusParameters, normalizedStatus, statusWire]) {
+  for (const afterRevision of [undefined, 0, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 1e100, -1, 0.5, "0", null, NaN, Infinity, -Infinity]) {
+    const input = afterRevision === undefined ? { taskRunId: "task-1" } : { taskRunId: "task-1", afterRevision };
+    const result = call(tools, "validateJsonSchema", parameters, input);
+    assert.ok(isRecord(result));
+    assert.equal(result.ok, statusSchema.safeParse(input).success);
+  }
+  for (const waitMs of [0, 60_000, -1, 0.5, 60_001, null, "0", NaN, Infinity, -Infinity]) {
+    const input = { taskRunId: "task-1", waitMs };
+    const result = call(tools, "validateJsonSchema", parameters, input);
+    assert.ok(isRecord(result));
+    assert.equal(result.ok, statusSchema.safeParse(input).success);
+  }
+}
+// Source-only wiring check: do not execute the downstream Host communication class.
+const communicationSource = source("runtime/TaskCommunication.ts").text;
+assert.ok(communicationSource.includes('if (afterRevision !== undefined && (!Number.isSafeInteger(afterRevision) || afterRevision < 0)) throw new Error("Invalid task revision.");'));
 console.log("Zod 4 migration pure regression fixtures passed");
