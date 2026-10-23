@@ -80,10 +80,11 @@ const functions = runInNewContext(`${select(library, names, ["labels"])}\n({${na
 const commandSource = select("src/cli/commands/references.ts", ["referenceTokenCommand"]);
 
 function commandFixture(result: Result, rejection?: Error): {
-  invoke(label?: string): Promise<void>; output: string[]; calls: string[][];
+  invoke(label?: string): Promise<void>; output: string[]; calls: string[][]; formatCalls: string[][];
 } {
   const output: string[] = [];
   const calls: string[][] = [];
+  const formatCalls: string[][] = [];
   const command = runInNewContext(`${commandSource}\nreferenceTokenCommand`, {
     service: (workspace: string) => {
       assert.equal(workspace, "/inert/project");
@@ -92,9 +93,12 @@ function commandFixture(result: Result, rejection?: Error): {
         if (rejection) throw rejection;
         return result;
       } } };
-    }, formatLocalReference: functions.formatLocalReference, console: { log: (value: string) => output.push(value) }
+    }, formatLocalReference: (label: string, uri: string) => {
+      formatCalls.push([label, uri]);
+      return functions.formatLocalReference(label, uri);
+    }, console: { log: (value: string) => output.push(value) }
   }, options) as (workspace: string, uri: string, label?: string) => Promise<void>;
-  return { invoke: label => command("/inert/project", result.uri, label), output, calls };
+  return { invoke: label => command("/inert/project", result.uri, label), output, calls, formatCalls };
 }
 
 function fileResult(id: string): Result {
@@ -165,10 +169,21 @@ test("resolution failure remains authoritative even with an explicit safe label"
   assert.equal(fixture.calls.length, 1);
 });
 
-test("default-label formatting preserves resolved URI percent spelling", async () => {
+test("default-label command passes resolved URI percent spelling unchanged to the formatter", async () => {
   const result = { ...fileResult("notes].txt"), uri: "biny://file/%6eotes%5d.txt" };
   const fixture = commandFixture(result);
   await fixture.invoke();
-  assert.deepEqual(fixture.output, ["@[notes .txt](biny://file/%6eotes%5d.txt)"]);
+  assert.deepEqual(fixture.formatCalls, [["notes .txt", result.uri]]);
+  assert.deepEqual(fixture.output, [functions.formatLocalReference("notes .txt", result.uri)]);
   assert.deepEqual(fixture.calls, [[result.uri, "inert-project"]]);
+});
+
+
+test("default-label formatting preserves non-file URI percent spelling", async () => {
+  const result = { kind: "model", uri: "biny://model/%6dodel(final)", label: "Model] label", content: "Inert" };
+  const fixture = commandFixture(result);
+  await fixture.invoke();
+  assert.deepEqual(fixture.calls, [[result.uri, "inert-project"]]);
+  assert.deepEqual(fixture.formatCalls, [["Model  label", result.uri]]);
+  assert.deepEqual(fixture.output, ["@[Model  label](biny://model/%6dodel(final))"]);
 });
