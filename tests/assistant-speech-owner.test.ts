@@ -6,6 +6,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import ts from "typescript";
+import { markdownPlainText } from "../src/desktop/renderer/src/markdownPlainText.ts";
 
 // Execute only the audited action component and its local UI helpers. No application
 // imports, native speech implementation, resource loading, or scripts are enabled.
@@ -71,7 +72,7 @@ async function harness() {
     React, useState: React.useState, useRef: React.useRef, useEffect: React.useEffect,
     useMemo: React.useMemo, useCallback: React.useCallback,
     window: dom.window, document: dom.window.document, Node: dom.window.Node, Element: dom.window.Element,
-    speak, speechSupported: () => true,
+    markdownPlainText, speak, speechSupported: () => true,
     useChatResponseSettings: () => ({ showTokenUsage: false }),
     summarizeToolOptimizations: () => ({ runs: 0 }), buildUsageDetailRows: fail,
     finishReasonTone: fail, formatMessageClock: fail, formatDuration: fail, copyToClipboard: fail,
