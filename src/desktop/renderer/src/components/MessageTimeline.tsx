@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import type { PermissionResult } from "../../../../permission/PermissionManager.js";
 import type { SessionUsage } from "../../../../session/metadata.js";
 import { splitAttachmentReferences, type AttachmentReference } from "../../../attachmentReferences.js";
+import { markdownPlainText } from "../markdownPlainText.js";
 import { copyToClipboard } from "../copyToClipboard.js";
 import { AttachmentCard } from "./AttachmentCard.js";
 import { listChangedFiles, type TimelineStep, type TimelineTurn } from "../sessionTimeline.js";
@@ -805,13 +806,7 @@ function copyText(content: string): void {
 }
 
 function plainTextFromMarkdown(content: string): string {
-  return content
-    .replace(/```[^\n]*\n?([\s\S]*?)```/g, "$1")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/[*_~`]/g, "")
-    .trim();
+  return markdownPlainText(content);
 }
 
 /** 助手回复下方的操作条：
