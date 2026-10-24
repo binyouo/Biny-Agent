@@ -39,13 +39,16 @@ function checkCalls(nodes: readonly ts.Node[], source: ts.SourceFile): void {
           || member === "slice" && (name === "prompt" || ts.isCallExpression(receiver) && receiver.expression.getText(source) === "JSON.stringify")
           || member === "toISOString" && ts.isNewExpression(receiver) && receiver.expression.getText(source) === "Date"
           || member === "catch" && ts.isCallExpression(receiver) && receiver.expression.getText(source) === "appendSecureTelemetry"
+          || member === "exec" && ["beginPattern", "endPattern"].includes(name)
+          || member === "slice" && name === "value"
+          || ["push", "join"].includes(member) && name === "parts"
           || member === "replace" && replaceRoot(receiver);
         assert.ok(permitted, `unreviewed member call: ${expression.getText(source)}`);
       }
     }
     ts.forEachChild(node, visit);
   };
-  // redactSecrets is a fixed chain of String.replace calls rooted at its value.
+  // The remaining redactSecrets chain contains String.replace calls rooted at value.
   const replaceRoot = (node: ts.Expression): boolean => ts.isIdentifier(node) && node.text === "value"
     || ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
       && node.expression.name.text === "replace" && replaceRoot(node.expression.expression);
