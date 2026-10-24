@@ -1,4 +1,4 @@
-import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { removeTestRoot as rm, type CapturedTestFailure } from "./helpers/memoryOwnerCleanup.js";
 import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
@@ -479,6 +479,7 @@ async function testAgentSessionFatigue(): Promise<void> {
     recorder: new SessionRecorder(workspaceRoot)
   });
   await agent.initialize();
+  let primaryFailure: CapturedTestFailure | undefined;
   try {
     const outcome = await agent.runTask("完成一轮情绪测试");
     assert.equal(outcome.status, "completed");
@@ -490,11 +491,14 @@ async function testAgentSessionFatigue(): Promise<void> {
     assert.ok(agent.getFatigue() >= 1);
     const persistedAfterNewSession = JSON.parse(await fs.readFile(path.join(workspaceRoot, "agent", "fatigue.json"), "utf8")) as { messageCount: number };
     assert.equal(persistedAfterNewSession.messageCount, 1);
+  } catch (error) {
+    primaryFailure = { present: true, error };
+    throw error;
   } finally {
     await agent.close();
     if (previousAgentDir === undefined) delete process.env[BINY_AGENT_DIR_ENV];
     else process.env[BINY_AGENT_DIR_ENV] = previousAgentDir;
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true }, { diagnostic: true, primary: primaryFailure });
   }
 }
 
