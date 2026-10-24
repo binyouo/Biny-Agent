@@ -176,22 +176,35 @@ export async function runTelegramBridge(options: TelegramBridgeOptions): Promise
   try {
     while (!options.signal.aborted) {
       let updates: TelegramUpdate[];
-      try {
-        updates = await options.api.getUpdates(state.nextUpdateId, options.signal);
-      } catch (error) {
-        if (options.signal.aborted) break;
-        options.onStatus?.(error instanceof Error ? error.message : String(error));
-        await waitBeforeRetry(options.signal);
-        continue;
+      if (state.pendingUpdates?.length) {
+        updates = [...state.pendingUpdates];
+      } else {
+        try {
+          updates = await options.api.getUpdates(state.nextUpdateId, options.signal);
+        } catch (error) {
+          if (options.signal.aborted) break;
+          options.onStatus?.(error instanceof Error ? error.message : String(error));
+          await waitBeforeRetry(options.signal);
+          continue;
+        }
+        if (updates.length) {
+          // Advancing a Telegram polling offset confirms all earlier updates.
+          // Save the payload before album look-ahead can acknowledge it.
+          state.pendingUpdates = updates;
+          await options.store.write(state);
+        }
       }
 
-      updates = await collectTelegramMediaGroupUpdates(updates, options);
+      updates = await collectTelegramMediaGroupUpdates(updates, state, options);
 
       for (const updateGroup of groupTelegramMediaUpdates(updates)) {
         if (options.signal.aborted) break;
         await processTelegramUpdate(updateGroup, bot.id, bot.username, state, recentGroupMedia, options);
         const lastUpdate = updateGroup.at(-1);
         if (lastUpdate) state.nextUpdateId = lastUpdate.update_id + 1;
+        const consumedIds = new Set(updateGroup.map(update => update.update_id));
+        state.pendingUpdates = state.pendingUpdates?.filter(update => !consumedIds.has(update.update_id));
+        if (!state.pendingUpdates?.length) delete state.pendingUpdates;
         await options.store.write(state);
       }
       await patrolTelegramGroups(state, options);
@@ -585,6 +598,7 @@ function groupTelegramMediaUpdates(updates: TelegramUpdate[]): TelegramUpdate[][
 
 async function collectTelegramMediaGroupUpdates(
   updates: TelegramUpdate[],
+  state: TelegramChannelState,
   options: TelegramBridgeOptions
 ): Promise<TelegramUpdate[]> {
   const lastUpdate = updates.at(-1);
@@ -597,15 +611,26 @@ async function collectTelegramMediaGroupUpdates(
     const latestMessage = latest.message!;
     if (`${latestMessage.chat.id}:${latestMessage.message_thread_id ?? ""}:${latestMessage.from?.id ?? ""}:${latestMessage.media_group_id}` !== lastKey) break;
     const nextOffset = latest.update_id + 1;
+    let next: TelegramUpdate[];
     try {
-      const next = await options.api.getUpdates(nextOffset, options.signal, Math.ceil(telegramMediaGroupDebounceMs / 1_000));
-      if (!next.length) break;
-      collected.push(...next);
+      next = await options.api.getUpdates(nextOffset, options.signal, Math.ceil(telegramMediaGroupDebounceMs / 1_000));
     } catch (error) {
       if (options.signal.aborted) return collected;
       options.onStatus?.(`media group collection failed: ${error instanceof Error ? error.message : String(error)}`);
       break;
     }
+    if (!next.length) break;
+    const collectedIds = new Set(collected.map(update => update.update_id));
+    for (const update of next) {
+      if (!collectedIds.has(update.update_id)) {
+        collected.push(update);
+        collectedIds.add(update.update_id);
+      }
+    }
+    state.pendingUpdates = collected;
+    // Do not swallow a staging failure as a polling failure: the next offset
+    // must never acknowledge a response whose payload was not saved.
+    await options.store.write(state);
   }
   return collected;
 }
