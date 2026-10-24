@@ -36,7 +36,7 @@ function checkCalls(nodes: readonly ts.Node[], source: ts.SourceFile): void {
           || member === "join" && name === "path"
           || member === "map" && ["messages", "metrics.attempts"].includes(name)
           || member === "indexOf" && name === "prompt"
-          || member === "slice" && (name === "prompt" || ts.isCallExpression(receiver) && receiver.expression.getText(source) === "JSON.stringify")
+          || member === "slice" && (name === "prompt" || ts.isCallExpression(receiver) && ["JSON.stringify", "redactSecrets"].includes(receiver.expression.getText(source)))
           || member === "toISOString" && ts.isNewExpression(receiver) && receiver.expression.getText(source) === "Date"
           || member === "catch" && ts.isCallExpression(receiver) && receiver.expression.getText(source) === "appendSecureTelemetry"
           || member === "exec" && ["beginPattern", "endPattern"].includes(name)
