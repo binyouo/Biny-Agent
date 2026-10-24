@@ -816,6 +816,7 @@ export function ProviderSettings({
   useEffect(() => {
     cancelLoginRef.current = () => resetLogin(true);
   }, [resetLogin]);
+  useLayoutEffect(() => () => resetLogin(true), [resetLogin]);
   useLayoutEffect(() => {
     if (loginViewKeyRef.current === loginViewKey) return;
     loginViewKeyRef.current = loginViewKey;
