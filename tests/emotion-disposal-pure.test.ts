@@ -112,6 +112,7 @@ function fixture(gate: Gate = "rename", activityPending = false) {
     session.sessionSearchIndex = {close: async () => undefined}; session.titleAbort = new AbortController();
     session.pendingMemoryTasks = new Set(); session.pendingCrystalTasks = new Set(); session.closed = false;
     session.memoryRetriever = session.localMemory = session.crystalService = {close() {}};
+    session.drainRecipeSuggestions = async () => undefined;
     session.takeRelatedUsage = () => undefined; session.toolModel = () => ({});
     session.recentEmotionMessages = async () => [{role:'user', text:'hello'}];
     session.recordModelUsage = () => undefined; session.recordModelRequest = async () => undefined;
