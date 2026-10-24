@@ -44,12 +44,21 @@ const exportToken = helper.modifiers?.find(modifier => modifier.kind === ts.Synt
 assert.ok(exportToken);
 const helperCode = stripTypeScriptTypes(helperSource.slice(0, exportToken.getStart(helperAst)) + helperSource.slice(exportToken.end), { mode: "strip" });
 
+// Phase tagging below relies on the reviewed fallback remaining synchronous.
+const fallbackStart = helperSource.indexOf('document.createElement("textarea")');
+assert.ok(fallbackStart >= 0);
+function checkFallbackSync(node: ts.Node): void {
+  if (ts.isAwaitExpression(node)) assert.ok(node.getStart(helperAst) < fallbackStart, "fallback must stay synchronous for phase attribution");
+  ts.forEachChild(node, checkFallbackSync);
+}
+checkFallbackSync(helper);
+
 const setup = `"use strict";
 let href = "https://example.test/doc";
 const children = "Doc", internalByDefault = false;
 const linkText = () => "Doc", parseWebUrl = () => undefined;
 let cursor = 0, slots = [], stateSlots = [], layoutQueue = [], passiveQueue = [], unmounted = false;
-let focus = "none", focusCalls = [], afterUnmount = 0, selectedText = false, writes = [], fallbackCalls = 0, opened = [];
+let focus = "none", focusCalls = [], focusEvents = [], fallbackPhases = [], fallbackPhase, afterUnmount = 0, selectedText = false, writes = [], fallbackCalls = 0, opened = [];
 const sameDeps = (a, b) => a && b && a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
 function useState(initial) {
   const index = cursor++;
@@ -75,11 +84,32 @@ const listeners = new Map();
 function add(prefix, kind, callback) { const key = prefix + kind; if (!listeners.has(key)) listeners.set(key, new Set()); listeners.get(key).add(callback); }
 function remove(prefix, kind, callback) { listeners.get(prefix + kind)?.delete(callback); }
 function dispatch(prefix, kind, event = {}) { for (const callback of [...(listeners.get(prefix + kind) ?? [])]) callback(event); }
-const node = name => ({ name, focus() { focus = name; focusCalls.push(name); document.activeElement = this; }, contains(target) { return target === this; }, getBoundingClientRect() { return { left: 20, bottom: 40 }; } });
+// Abstract connected nodes remain stable across overlay changes; this is not mounted-menu DOM fidelity.
+// The original complete focus trace remains available; helper-phase tagging isolates component authority.
+const node = name => ({ name, isConnected: true, focus() {
+  if (!this.isConnected) return;
+  focus = name; focusCalls.push(name); focusEvents.push({ name, phase: fallbackPhase ? "helper" : "component-or-fixture" });
+  if (fallbackPhase) fallbackPhase.events.push(name);
+  document.activeElement = this;
+}, contains(target) { return target === this; }, getBoundingClientRect() { return { left: 20, bottom: 40 }; } });
 const document = {
   activeElement: null, addEventListener: (kind, callback) => add("d", kind, callback), removeEventListener: (kind, callback) => remove("d", kind, callback),
-  createElement(tag) { if (tag !== "textarea") throw new Error("unexpected element"); return { ...node("fallback"), value: "", style: {}, setAttribute() {}, select() {}, setSelectionRange() {} }; },
-  body: { appendChild() {}, removeChild() {} }, execCommand(command) { if (command !== "copy") throw new Error("unexpected command"); fallbackCalls++; return false; }
+  createElement(tag) { if (tag !== "textarea") throw new Error("unexpected element"); return { ...node("fallback"), isConnected: false, value: "", style: {}, setAttribute() {}, select() {}, setSelectionRange() {} }; },
+  body: { name: "body", isConnected: true,
+    appendChild(element) {
+      element.isConnected = true;
+      const phase = { entryFocus: document.activeElement?.name ?? null, events: [], removed: false };
+      fallbackPhases.push(phase); fallbackPhase = phase;
+      // Fallback is synchronous. This queued boundary runs before the helper promise's await continuation,
+      // even when execCommand/removeChild throws and the temporary node remains connected.
+      Promise.resolve().then(() => { fallbackPhase = undefined; });
+    },
+    removeChild(element) {
+      element.isConnected = false;
+      if (document.activeElement === element) { document.activeElement = this; focus = "body"; }
+      fallbackPhase.removed = true;
+    }
+  }, execCommand(command) { if (command !== "copy") throw new Error("unexpected command"); fallbackCalls++; return false; }
 };
 const window = {
   innerWidth: 1000, innerHeight: 800, addEventListener: (kind, callback) => add("w", kind, callback), removeEventListener: (kind, callback) => remove("w", kind, callback),
@@ -102,7 +132,7 @@ function contextMenu() { api.showContextMenu({ preventDefault() {}, clientX: 60,
 function start() { render(); contextMenu(); render(); api.copyClick(); }
 function settle(index, success) { if (success) writes[index].resolve(); else writes[index].reject(new Error("synthetic clipboard failure")); }
 function unmount() { for (const slot of slots) if (slot.kind === "effect") slot.cleanup?.(); api.anchor.current = null; unmounted = true; }
-function snapshot() { return JSON.stringify({ overlay: stateSlots[0].value ?? null, feedback: stateSlots[1].value ?? null, focus, focusCalls, writes: writes.map(entry => entry.value), fallbackCalls, afterUnmount, opened }); }
+function snapshot() { return JSON.stringify({ overlay: stateSlots[0].value ?? null, feedback: stateSlots[1].value ?? null, focus, focusCalls, focusEvents, fallbackPhases, writes: writes.map(entry => entry.value), fallbackCalls, afterUnmount, opened }); }
 start();
 `;
 interface Snapshot {
@@ -110,6 +140,8 @@ interface Snapshot {
   feedback: { message: string } | null;
   focus: string;
   focusCalls: string[];
+  focusEvents: Array<{ name: string; phase: "helper" | "component-or-fixture" }>;
+  fallbackPhases: Array<{ entryFocus: string | null; events: string[]; removed: boolean }>;
   writes: string[];
   fallbackCalls: number;
   afterUnmount: number;
@@ -119,7 +151,14 @@ function harness() {
   const context = vm.createContext({}, { codeGeneration: { strings: false, wasm: false }, microtaskMode: "afterEvaluate" });
   const run = (code: string): unknown => new vm.Script(code).runInContext(context, { timeout: 1_000 });
   run(setup);
-  return { run, read: (): Snapshot => JSON.parse(run("snapshot()") as string) as Snapshot };
+  return { run, read: (): Snapshot => {
+    const result = JSON.parse(run("snapshot()") as string) as Snapshot;
+    for (const phase of result.fallbackPhases) {
+      assert.deepEqual(phase.events, phase.entryFocus ? ["fallback", phase.entryFocus] : ["fallback"], "helper must restore its fallback-entry focus only");
+      assert.equal(phase.removed, true, "these original cases use non-throwing false fallback");
+    }
+    return result;
+  } };
 }
 function currentResult(result: Snapshot, success: boolean): void {
   assert.equal(result.overlay, null);
@@ -161,8 +200,8 @@ for (const [name, action] of Object.entries(dismissals)) for (const success of [
     const before = h.read(); h.run(`settle(0, ${success});`); const after = h.read();
     assert.deepEqual(after.overlay, before.overlay, "old completion must not close the newer overlay");
     assert.deepEqual(after.feedback, before.feedback, "old completion must not announce");
-    assert.equal(after.focusCalls.filter(value => value === "anchor").length, before.focusCalls.filter(value => value === "anchor").length, "component must not refocus the old anchor");
-    assert.equal(after.focus, success ? before.focus : "fallback", "failure may still focus the helper fallback textarea");
+    assert.equal(after.focusEvents.filter(event => event.name === "anchor" && event.phase !== "helper").length, before.focusEvents.filter(event => event.name === "anchor" && event.phase !== "helper").length, "component must not refocus the old anchor");
+    assert.equal(after.focus, before.focus, "helper restores fallback-entry focus; stale component must not change it");
     assert.equal(after.writes.length, 1, "the existing write is allowed to settle, not cancelled or duplicated");
   });
 }
@@ -171,20 +210,20 @@ for (const success of [true, false]) {
     const h = harness(); h.run(dismissals.outside); const before = h.read();
     h.run(`settle(0, ${success});`); const after = h.read();
     assert.deepEqual(after.feedback, before.feedback);
-    assert.equal(after.focusCalls.filter(value => value === "anchor").length, 0);
-    assert.equal(after.focus, success ? "composer" : "fallback");
+    assert.equal(after.focusEvents.filter(event => event.name === "anchor" && event.phase !== "helper").length, 0);
+    assert.equal(after.focus, "composer");
   });
   test(`href layout cleanup retires old ${success ? "success" : "failure"} before passive effects`, () => {
     const h = harness(); h.run('href = "https://example.test/other"; render(true, false); composerNode.focus();'); const before = h.read();
     h.run(`settle(0, ${success});`); const after = h.read();
     assert.deepEqual(after.overlay, before.overlay);
     assert.equal(after.feedback, null);
-    assert.equal(after.focusCalls.filter(value => value === "anchor").length, 0);
+    assert.equal(after.focusEvents.filter(event => event.name === "anchor" && event.phase !== "helper").length, 0);
   });
   test(`unmount retires old ${success ? "success" : "failure"} UI updates`, () => {
     const h = harness(); h.run(`unmount(); composerNode.focus(); settle(0, ${success});`); const after = h.read();
     assert.equal(after.afterUnmount, 0);
-    assert.equal(after.focusCalls.filter(value => value === "anchor").length, 0);
+    assert.equal(after.focusEvents.filter(event => event.name === "anchor" && event.phase !== "helper").length, 0);
   });
 }
 for (const olderFirst of [true, false]) for (const success of [true, false]) {
@@ -195,14 +234,14 @@ for (const olderFirst of [true, false]) for (const success of [true, false]) {
       const before = h.read(); h.run(`settle(0, ${success});`); const after = h.read();
       assert.deepEqual(after.overlay, before.overlay);
       assert.equal(after.feedback, null);
-      assert.equal(after.focusCalls.filter(value => value === "anchor").length, 0);
+      assert.equal(after.focusEvents.filter(event => event.name === "anchor" && event.phase !== "helper").length, 0);
       h.run("settle(1, true);");
       assert.equal(h.read().feedback?.message, "已复制链接");
-      assert.equal(h.read().focusCalls.filter(value => value === "anchor").length, 1);
+      assert.equal(h.read().focusEvents.filter(event => event.name === "anchor" && event.phase !== "helper").length, 1);
     } else {
       h.run("settle(1, true);"); const before = h.read(); h.run(`settle(0, ${success});`); const after = h.read();
       assert.deepEqual(after.feedback, before.feedback);
-      assert.equal(after.focusCalls.filter(value => value === "anchor").length, 1);
+      assert.equal(after.focusEvents.filter(event => event.name === "anchor" && event.phase !== "helper").length, 1);
     }
   });
 }
