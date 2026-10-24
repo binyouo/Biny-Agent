@@ -115,6 +115,7 @@ function fixture(options: { delayedOpen?: boolean; delayedDiscovery?: boolean; d
     acpClient = undefined;
     sessionSearchIndex = {close: async () => undefined};
     emotionAnalysisScheduler = {close: async () => undefined};
+    drainRecipeSuggestions = async () => undefined;
     titleAbort = new AbortController(); titleTask = undefined;
     pendingMemoryTasks = new Set(); pendingSkillExtraction = undefined;
     closed = false; pendingCrystalTasks = new Set();

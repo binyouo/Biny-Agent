@@ -406,6 +406,8 @@ export class AgentSession {
   private readonly pendingActivityContextTasks = new Set<Promise<unknown>>();
   private activityContextClose: Promise<void> | undefined;
   private readonly emotionAnalysisScheduler: EmotionAnalysisScheduler;
+  private readonly pendingRecipeTasks = new Set<Promise<void>>();
+  private recipeSuggestionsClosed = false;
   private readonly memoryModelFor: (field: MemoryModelField) => AgentModel;
   private readonly toolModel: () => AgentModel | undefined;
   private titleTask?: Promise<void>;
@@ -3703,6 +3705,7 @@ export class AgentSession {
     const previousFilePath = await fs.realpath(previousRecorder.filePath).catch(() => path.resolve(previousRecorder.filePath));
     const resumingCurrent = filePath === previousFilePath;
     await this.emotionAnalysisScheduler.cancelAndDrain();
+    await this.drainRecipeSuggestions();
     let previousClosed = false;
     let replacementRecorder: SessionRecorder | undefined;
     try {
@@ -3826,6 +3829,7 @@ export class AgentSession {
     let nextRecorder: SessionRecorder | undefined;
     try {
       await this.emotionAnalysisScheduler.cancelAndDrain();
+      await this.drainRecipeSuggestions();
       await ensureAgentDirs(this.persistenceRoot());
       // 先打开新会话的 recorder，再收尾旧会话；若这里失败，当前会话保持原样。
       nextRecorder = new SessionRecorder(this.persistenceRoot(), undefined, undefined, this.options.runtimeEventSink);
@@ -3979,15 +3983,31 @@ export class AgentSession {
 
   /** 回合终态后的旁路检测；它读取 canonical session，不增加模型请求或改变回合结果。 */
   private async enqueueRecipeSuggestions(runOptions: AgentRunOptions): Promise<void> {
-    await this.recorder.flush();
-    const events = await readSessionEvents(this.recorder.filePath);
-    const store = new RecipeStateStore(this.persistenceRoot());
-    const states = await store.read(this.recorder.sessionId);
-    const recipes = freshRecipeSuggestions(events, this.recorder.sessionId, states);
+    if (this.recipeSuggestionsClosed) return;
+    const recorder = this.recorder;
+    const sessionId = recorder.sessionId;
+    const persistenceRoot = this.persistenceRoot();
+    const runId = runOptions.runId;
+    const task = this.collectRecipeSuggestions(recorder, sessionId, persistenceRoot, runId)
+      .catch(() => undefined).finally(() => this.pendingRecipeTasks.delete(task));
+    this.pendingRecipeTasks.add(task);
+    await task;
+  }
+
+  private async drainRecipeSuggestions(): Promise<void> {
+    await Promise.allSettled([...this.pendingRecipeTasks]);
+  }
+
+  private async collectRecipeSuggestions(recorder: SessionRecorder, sessionId: string, persistenceRoot: string, runId?: string): Promise<void> {
+    await recorder.flush();
+    const events = await readSessionEvents(recorder.filePath);
+    const store = new RecipeStateStore(persistenceRoot);
+    const states = await store.read(sessionId);
+    const recipes = freshRecipeSuggestions(events, sessionId, states);
     for (const recipe of recipes) {
-      await store.set(this.recorder.sessionId, recipe.id, "notified");
+      await store.set(sessionId, recipe.id, "notified");
       try {
-        this.options.onRecipeReady?.({ recipe, runId: runOptions.runId });
+        this.options.onRecipeReady?.({ recipe, runId });
       } catch {
         // 界面通知失败不影响已完成的会话和已记录的提示状态。
       }
@@ -4538,11 +4558,14 @@ export class AgentSession {
   }
 
   async close(): Promise<void> {
+    this.recipeSuggestionsClosed = true;
+    const recipeClose = this.drainRecipeSuggestions();
     const emotionClose = this.emotionAnalysisScheduler.close();
     await this.closeActivityContext();
     await this.acpClient?.close();
     await this.sessionSearchIndex.close();
     await emotionClose;
+    await recipeClose;
     this.titleAbort.abort();
     await this.titleTask;
     await Promise.allSettled([...this.pendingMemoryTasks]);
