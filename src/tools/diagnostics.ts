@@ -13,6 +13,7 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { DiagnosticsConfig } from "../config/schema.js";
 import { runShellCommand } from "./shell/runCommand.js";
 
@@ -81,7 +82,7 @@ export class DiagnosticsRunner {
       command,
       exitCode: result.exitCode,
       // 编译器把最有用的信息放在前面，超限时留头部。
-      output: truncated ? `${Buffer.from(merged, "utf8").subarray(0, limit).toString("utf8")}\n[diagnostics output truncated]` : merged,
+      output: truncated ? `${new StringDecoder("utf8").write(Buffer.from(merged, "utf8").subarray(0, limit))}\n[diagnostics output truncated]` : merged,
       truncated,
       timedOut: result.status === "timed_out"
     };
