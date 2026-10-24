@@ -5,7 +5,7 @@
  * 回退展示也复用这一块。`dashed` 是命令执行详情里的命令卡变体（
  * 虚线边框 + 更弱底色 + terminal 角标），与普通围栏共用一套卡壳。
  */
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useHighlightedCode } from "../useHighlightedCode.js";
 import { copyToClipboard } from "../copyToClipboard.js";
@@ -19,7 +19,15 @@ export function MarkdownCodeBlock({ code, language, dashed, isStreaming = false 
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const copyTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
+  const copyRequest = useRef<object | undefined>(undefined);
+  useLayoutEffect(() => {
+    setCopied(false);
+    setCopyFailed(false);
+    return () => {
+      copyRequest.current = undefined;
+      window.clearTimeout(copyTimer.current);
+    };
+  }, [code]);
   useEffect(() => {
     const block = container.current;
     const scroll = block?.closest(".biny-chat-scroll, .inspector-result-scroll, .rendering-preview-source");
@@ -48,16 +56,20 @@ export function MarkdownCodeBlock({ code, language, dashed, isStreaming = false 
   }, []);
   const label = copied ? "已复制" : copyFailed ? "复制失败，点击重试" : "复制代码";
   const copy = <button className={`copy-button markdown-code-copy${copied ? " is-copied" : ""}`} type="button" aria-label={label} title={label} onClick={async () => {
+    const request = {};
+    copyRequest.current = request;
     window.clearTimeout(copyTimer.current);
-    if (!await copyToClipboard(code)) {
-      setCopyFailed(true);
-      copyTimer.current = window.setTimeout(() => setCopyFailed(false), 2_000);
-      return;
-    }
+    setCopied(false);
     setCopyFailed(false);
-    setCopied(true);
-    window.clearTimeout(copyTimer.current);
-    copyTimer.current = window.setTimeout(() => setCopied(false), 2_000);
+    const ok = await copyToClipboard(code);
+    if (copyRequest.current !== request) return;
+    setCopied(ok);
+    setCopyFailed(!ok);
+    copyTimer.current = window.setTimeout(() => {
+      if (copyRequest.current !== request) return;
+      setCopied(false);
+      setCopyFailed(false);
+    }, 2_000);
   }}><Icon name={copied ? "check" : "copy"} size={14} /></button>;
   return (
     <div ref={container} className={`markdown-code-block${dashed ? " is-dashed" : ""}${!language && !dashed ? " is-plain" : ""}`} data-language={language}>
