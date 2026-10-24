@@ -30,10 +30,23 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     el.style.border = "0";
     el.style.opacity = "0";
     document.body.appendChild(el);
-    el.focus();
-    el.select();
-    el.setSelectionRange(0, value.length);
-    const ok = document.execCommand("copy");
+    const previousFocus = document.activeElement as HTMLElement | null;
+    let ok: boolean;
+    try {
+      el.focus();
+      el.select();
+      el.setSelectionRange(0, value.length);
+      ok = document.execCommand("copy");
+    } finally {
+      // 只归还回退临时借用的焦点，不覆盖复制过程中主动转移的焦点。
+      try {
+        if (document.activeElement === el && previousFocus?.isConnected && typeof previousFocus.focus === "function") {
+          previousFocus.focus({ preventScroll: true });
+        }
+      } catch {
+        // 恢复焦点失败不改变原有复制结果或 textarea 清理行为。
+      }
+    }
     document.body.removeChild(el);
     return ok;
   } catch {
