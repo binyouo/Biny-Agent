@@ -79,7 +79,7 @@ test("real redactor bounds repeated complete and unmatched PEM markers", () => {
     import { redactSecrets } from "./src/utils/redaction.ts";
     const begin = "-----BEGIN PRIVATE KEY-----";
     const end = "-----END PRIVATE KEY-----";
-    const input = (begin + "FAKE_ONLY_").repeat(24000);
+    const input = (begin + "FAKE_ONLY_").repeat(120000);
     assert.equal(redactSecrets(input), input);
     assert.equal(redactSecrets((begin + "FAKE" + end).repeat(24000)), "[redacted private key]".repeat(24000));
     const ordinary = "x".repeat(24000 * 37);
