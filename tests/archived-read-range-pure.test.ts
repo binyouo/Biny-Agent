@@ -38,7 +38,7 @@ function check(node: ts.Node): void {
     assert.ok(ts.isIdentifier(callee) && directCalls.has(callee.text)
       || ts.isPropertyAccessExpression(callee) && (methods.has(callee.name.text)
         || callee.name.text === "exec" && ts.isIdentifier(callee.expression)
-          && ["beginPattern", "endPattern"].includes(callee.expression.text)), "Unreviewed call: " + callee.getText());
+          && ["beginPattern", "endPattern", "legacyQuotedPattern", "completeQuotedPattern"].includes(callee.expression.text)), "Unreviewed call: " + callee.getText());
   }
   if (ts.isNewExpression(node)) {
     assert.ok(ts.isIdentifier(node.expression) && ["Map", "Set", "WeakSet"].includes(node.expression.text), "Unreviewed constructor");

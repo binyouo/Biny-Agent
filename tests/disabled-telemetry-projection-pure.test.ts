@@ -39,9 +39,10 @@ function checkCalls(nodes: readonly ts.Node[], source: ts.SourceFile): void {
           || member === "slice" && (name === "prompt" || ts.isCallExpression(receiver) && ["JSON.stringify", "redactSecrets"].includes(receiver.expression.getText(source)))
           || member === "toISOString" && ts.isNewExpression(receiver) && receiver.expression.getText(source) === "Date"
           || member === "catch" && ts.isCallExpression(receiver) && receiver.expression.getText(source) === "appendSecureTelemetry"
-          || member === "exec" && ["beginPattern", "endPattern"].includes(name)
+          || member === "exec" && ["beginPattern", "endPattern", "legacyQuotedPattern", "completeQuotedPattern"].includes(name)
           || member === "slice" && name === "value"
-          || ["push", "join"].includes(member) && name === "parts"
+          || member === "push" && ["parts", "legacySpans", "completeSpans", "quotedParts"].includes(name)
+          || member === "join" && ["parts", "quotedParts"].includes(name)
           || member === "replace" && replaceRoot(receiver);
         assert.ok(permitted, `unreviewed member call: ${expression.getText(source)}`);
       }

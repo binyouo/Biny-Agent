@@ -23,9 +23,10 @@ function extract(file: string, name: string): string {
         || ts.isPropertyAccessExpression(expression) && (
           expression.name.text === "stringify" && expression.expression.getText(source) === "JSON"
           || expression.name.text === "replace" && replaceRoot(expression.expression)
-          || expression.name.text === "exec" && ["beginPattern", "endPattern"].includes(expression.expression.getText(source))
+          || expression.name.text === "exec" && ["beginPattern", "endPattern", "legacyQuotedPattern", "completeQuotedPattern"].includes(expression.expression.getText(source))
           || expression.name.text === "slice" && expression.expression.getText(source) === "value"
-          || ["push", "join"].includes(expression.name.text) && expression.expression.getText(source) === "parts"
+          || expression.name.text === "push" && ["parts", "legacySpans", "completeSpans", "quotedParts"].includes(expression.expression.getText(source))
+          || expression.name.text === "join" && ["parts", "quotedParts"].includes(expression.expression.getText(source))
           || expression.name.text === "slice" && ts.isCallExpression(expression.expression)
             && ["JSON.stringify", "redactSecrets"].includes(expression.expression.expression.getText(source)));
       assert.ok(allowed, `unreviewed call: ${expression.getText(source)}`);
