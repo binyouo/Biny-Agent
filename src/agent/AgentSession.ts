@@ -200,7 +200,7 @@ export interface AgentSessionOptions {
   config: AgentConfig;
   model?: AgentModel;
   /** Activity 本地嵌入边界；宿主可共享已加载运行时，测试可注入协议 fake。 */
-  getActivityEmbeddingRuntime?: () => Promise<EmbeddingModelRuntime | undefined>;
+  getActivityEmbeddingRuntime?: (signal?: AbortSignal) => Promise<EmbeddingModelRuntime | undefined>;
   toolRegistry: ToolRegistry;
   permissionManager: PermissionManager;
   recorder: SessionRecorder;
@@ -402,6 +402,9 @@ export class AgentSession {
   private readonly soulStorage: SoulStorage;
   private readonly emotionStorage: EmotionStorage;
   private readonly fatigueService: FatigueService;
+  private readonly activityContextAbort = new AbortController();
+  private readonly pendingActivityContextTasks = new Set<Promise<unknown>>();
+  private activityContextClose: Promise<void> | undefined;
   private readonly emotionAnalysisScheduler: EmotionAnalysisScheduler;
   private readonly memoryModelFor: (field: MemoryModelField) => AgentModel;
   private readonly toolModel: () => AgentModel | undefined;
@@ -704,7 +707,25 @@ export class AgentSession {
     }
   }
 
-  private async activityContextPrompt(input: string, now: Date, signal?: AbortSignal): Promise<ActivityChatContext | undefined> {
+  private trackActivityContextTask<T>(task: Promise<T>): Promise<T> {
+    this.pendingActivityContextTasks.add(task);
+    void task.finally(() => this.pendingActivityContextTasks.delete(task)).catch(() => undefined);
+    return task;
+  }
+
+  private closeActivityContext(): Promise<void> {
+    // Seal admission before yielding; a timed-out prompt may still be starting its owner.
+    this.activityContextAbort.abort();
+    return this.activityContextClose ??= Promise.allSettled([...this.pendingActivityContextTasks]).then(() => undefined);
+  }
+
+  private activityContextPrompt(input: string, now: Date, signal?: AbortSignal): Promise<ActivityChatContext | undefined> {
+    if (this.activityContextAbort.signal.aborted) return Promise.resolve(undefined);
+    const combined = signal ? AbortSignal.any([signal, this.activityContextAbort.signal]) : this.activityContextAbort.signal;
+    return this.trackActivityContextTask(this.readActivityContextPrompt(input, now, combined));
+  }
+
+  private async readActivityContextPrompt(input: string, now: Date, signal: AbortSignal): Promise<ActivityChatContext | undefined> {
     if (!this.activeConfig.activity.enabled) return undefined;
     const agentDir = globalAgentDir();
     try {
@@ -715,10 +736,12 @@ export class AgentSession {
     const store = new ActivityStore();
     try {
       await store.open(this.activeConfig.activity.outputDirectory, agentDir);
+      if (signal.aborted) return undefined;
       return await activityContextForTurn({
         store, input, now, enabled: this.activeConfig.activity.enabled,
         getEmbeddingRuntime: this.options.getActivityEmbeddingRuntime
-          ?? (() => this.memoryEmbeddingService.embeddingRuntime(true)),
+          ?? ((runtimeSignal) => this.memoryEmbeddingService.embeddingRuntime(true, runtimeSignal)),
+        onPendingTask: (task) => { this.trackActivityContextTask(task); },
         signal
       });
     } catch {
@@ -4515,6 +4538,7 @@ export class AgentSession {
   }
 
   async close(): Promise<void> {
+    await this.closeActivityContext();
     await this.acpClient?.close();
     await this.sessionSearchIndex.close();
     this.emotionAnalysisScheduler.cancel();
