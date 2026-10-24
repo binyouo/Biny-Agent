@@ -147,11 +147,14 @@ test("带通知的工具步经过真实 Agent 入口后，工具审计及最终�
     const call = rows.find((row) => row.type === "tool_call");
     assert.ok(call && call.type === "tool_call");
     assert.doesNotMatch(call.assistantContent ?? "", /biny_notification|内部通知/);
-    recorder.record({ type: "tool_call", tool: "Write", args: {}, assistantContent: `写入文件${block}` });
+    recorder.record({ type: "tool_call", tool: "Write", toolCallId: "notification-redaction-probe", args: {}, assistantContent: `写入文件${block}` });
+    // 后台事件可以继续落盘，脱敏断言应定位本次写入而不是假定它在文件末尾。
+    recorder.record({ type: "message_metadata", messageId: "background-probe", metadata: {} });
     await recorder.flush();
-    const last = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as SessionEvent).at(-1);
-    assert.ok(last?.type === "tool_call");
-    assert.equal(last.assistantContent, "写入文件");
+    const probe = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as SessionEvent)
+      .find(row => row.type === "tool_call" && row.toolCallId === "notification-redaction-probe");
+    assert.ok(probe?.type === "tool_call");
+    assert.equal(probe.assistantContent, "写入文件");
     assert.equal(requests, 2);
   } finally {
     await agent.close();
