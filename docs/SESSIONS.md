@@ -24,6 +24,8 @@
 
 命令行的 `session rename/pin/unpin/archive/unarchive/duplicate/delete` 通过 Desktop 管理同一份会话元数据与记录；`session create/usage/compact` 连接已有 Host。`session messages/search` 从本地记录读取当前消息分支或查找会话，`usage` 汇总已落盘的全局用量。`tool list/call` 查询目录或经所属 Host 执行工具，沿用权限、审计和空闲会话准入。分页、去重依据与使用条件见 [CLI 使用指南](CLI_USAGE.md#会话用量与工具)。
 
+Desktop 新任务顶栏选择项目时，工作区和侧栏保持原位置，输入区切换到目标项目自己的未发送草稿。文本、引用、已保存及处理中附件留在原项目草稿中，切回后继续使用，不自动搬移或删除附件。附件打开、发送和 `@` 搜索使用草稿所属项目；所选引用的详情按结果携带的来源项目解析。已有会话仍使用其工作区项目。回归入口为 [`new-task-attachment-project.test.ts`](../tests/new-task-attachment-project.test.ts)。
+
 | 入口 | 用途 |
 | --- | --- |
 | Desktop | 查看项目和聊天，处理附件、工具审批与交互内容。 |
