@@ -484,7 +484,7 @@ function projectReadFile(entry: ToolResultEntry): Record<string, unknown> {
   const path = stringField(record, "path") || stringField(args, "path");
   const content = stringField(record, "content");
   const displayed = tailTextWithHead(content, maxReadContentCharacters);
-  const truncated = displayed.length < content.length;
+  const truncated = content.length > maxReadContentCharacters;
   return removeUndefined({
     path: path || undefined,
     content: displayed,
