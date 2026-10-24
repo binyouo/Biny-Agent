@@ -1777,7 +1777,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
           if (!active) return;
           const key = `${target.projectId}:${target.sessionId ?? "draft"}`;
           let draft = composerDrafts.get(key); if (!draft) { draft = new ComposerDraftState(); composerDrafts.set(key, draft); }
-          if (draft.getSnapshot().attachments.length >= 8) { setWarning("聊天附件已满，请移除一个附件后重新截图。"); return; }
+          const snapshot = draft.getSnapshot();
+          if (snapshot.attachments.length + snapshot.pendingAttachments.length >= 8) { setWarning("聊天附件已满，请移除一个附件后重新截图。"); return; }
           draft.update(current => ({ attachments: [...current.attachments, attachment] }));
           setSettingsOpen(false);
           await appshotNavigation.current(target);
