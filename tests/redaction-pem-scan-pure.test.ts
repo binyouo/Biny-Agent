@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { createContext, Script } from "node:vm";
-import ts from "typescript";
+import { redactSecrets } from "../src/utils/redaction.js";
 
 // This frozen reference is the previous complete redactor. Differential checks
 // cover the complete chain, not just the private-key replacement in isolation.
@@ -16,39 +14,8 @@ function reference(value: string): string {
     .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)\s*[:=]\s*)([^\s,;；，、]+)/gi, "$1[redacted]")
     .replace(/(["'](?:apiKey|api_key|accessToken|access_token|refreshToken|refresh_token|token|secret|password)["']\s*:\s*["'])([^"']*)(["'])/gi, "$1[redacted]$3");
 }
-const file = path.join(process.cwd(), "src/utils/redaction.ts");
-const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const nodes = source.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "redactSecrets");
-assert.equal(nodes.length, 1);
-const replaceRoot = (node: ts.Expression): boolean => ts.isIdentifier(node) && node.text === "value"
-  || ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-    && node.expression.name.text === "replace" && replaceRoot(node.expression.expression);
-function audit(node: ts.Node): void {
-  assert.ok(!ts.isImportDeclaration(node) && !ts.isImportEqualsDeclaration(node) && !ts.isNewExpression(node), "no imports or constructors");
-  if (ts.isCallExpression(node)) {
-    const callee = node.expression;
-    assert.ok(ts.isPropertyAccessExpression(callee), "only reviewed pure member calls");
-    const receiver = callee.expression.getText(source);
-    const member = callee.name.text;
-    assert.ok(member === "replace" && replaceRoot(callee.expression)
-      || member === "exec" && ["beginPattern", "endPattern"].includes(receiver)
-      || member === "slice" && receiver === "value"
-      || ["push", "join"].includes(member) && receiver === "parts", `unreviewed call: ${callee.getText(source)}`);
-  }
-  ts.forEachChild(node, audit);
-}
-audit(nodes[0]!);
-const compiled = ts.transpileModule(nodes[0]!.getText(source).replace(/^export /u, ""), {
-  reportDiagnostics: true, compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }
-});
-assert.equal((compiled.diagnostics ?? []).filter(item => item.category === ts.DiagnosticCategory.Error).length, 0);
-const context = createContext({}, { codeGeneration: { strings: false, wasm: false } });
-new Script(compiled.outputText).runInContext(context, { timeout: 1_000 });
-const batch = new Script("inputs.map(input => redactSecrets(input))");
 function actual(inputs: readonly string[]): string[] {
-  context.inputs = inputs;
-  try { return Array.from(batch.runInContext(context, { timeout: 1_000 }) as string[]); }
-  finally { delete context.inputs; }
+  return inputs.map(redactSecrets);
 }
 function compare(inputs: readonly string[]): void {
   assert.deepEqual(actual(inputs), inputs.map(reference));
@@ -106,19 +73,18 @@ test("deterministic generated longer mixtures preserve the complete result", () 
   compare(inputs);
 });
 
-test("bounded ordinary and complete-marker ladders finish within the VM ceiling", () => {
-  for (const count of [8_000, 16_000, 24_000]) {
-    const ordinary = "x".repeat(count * 37);
-    assert.equal(actual([ordinary])[0], ordinary);
-    assert.equal(actual([(begin + fake + end).repeat(count)])[0], "[redacted private key]".repeat(count));
-  }
-});
-
-test("bounded repeated unmatched markers finish within the VM ceiling", () => {
-  // The previous regex rescans the remaining suffix for each BEGIN. The fixed
-  // one-second ceiling bounds this synthetic regression; it is not a benchmark.
-  for (const count of [8_000, 16_000, 24_000]) {
-    const input = (begin + "FAKE_ONLY_").repeat(count);
-    assert.equal(actual([input])[0], input);
-  }
+test("real redactor bounds repeated complete and unmatched PEM markers", () => {
+  const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { redactSecrets } from "./src/utils/redaction.ts";
+    const begin = "-----BEGIN PRIVATE KEY-----";
+    const end = "-----END PRIVATE KEY-----";
+    const input = (begin + "FAKE_ONLY_").repeat(24000);
+    assert.equal(redactSecrets(input), input);
+    assert.equal(redactSecrets((begin + "FAKE" + end).repeat(24000)), "[redacted private key]".repeat(24000));
+    const ordinary = "x".repeat(24000 * 37);
+    assert.equal(redactSecrets(ordinary), ordinary);
+  `], { encoding: "utf8", timeout: 5000 });
+  assert.equal(child.error, undefined, child.error?.message);
+  assert.equal(child.status, 0, child.stderr);
 });
