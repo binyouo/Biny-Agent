@@ -248,7 +248,8 @@ function localPathFromHref(href?: string): string | undefined {
     // Keep malformed local paths usable instead of breaking the whole message.
   }
   // file:// 已明确表达本地路径意图；路径可以含空格，不再套 looksLikePath 启发式。
-  if (isFileUrl) return stripLineSuffix(decoded);
+  // 显式 ./ 目标同样是路径；解码后的文件名空格不能把它误判为外链。
+  if (isFileUrl || encoded.startsWith("./")) return stripLineSuffix(decoded);
   return looksLikePath(decoded) ? stripLineSuffix(decoded) : undefined;
 }
 
