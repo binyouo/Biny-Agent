@@ -835,7 +835,10 @@ export function ProviderSettings({
     try {
       const result = await onCompleteLogin(entryCatalog.loginProvider, request.authRequestId,
         request.method === "paste-code" ? pastedAuthorization : undefined);
-      if (generation !== loginGenerationRef.current) return;
+      if (generation !== loginGenerationRef.current) {
+        await settingsDraft.releaseCredential(result.handle);
+        return;
+      }
       // 一次性登录凭据只随本次模型增量提交；失败不伪报连接成功。
       const alias = providerAliasFor(entryCatalog, entryCatalog.baseUrl);
       settingsDraft.addOauthCredentialHandle(result.handle);
