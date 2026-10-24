@@ -114,7 +114,7 @@ function fixture(options: { delayedOpen?: boolean; delayedDiscovery?: boolean; d
     memoryEmbeddingService = new AgentMemoryClient();
     acpClient = undefined;
     sessionSearchIndex = {close: async () => undefined};
-    emotionAnalysisScheduler = {cancel: () => undefined};
+    emotionAnalysisScheduler = {close: async () => undefined};
     titleAbort = new AbortController(); titleTask = undefined;
     pendingMemoryTasks = new Set(); pendingSkillExtraction = undefined;
     closed = false; pendingCrystalTasks = new Set();
