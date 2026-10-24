@@ -75,3 +75,12 @@ test("undefined and unserializable values retain existing fallback semantics", a
   }
   assert.equal((await payload({ omitted: undefined })), "{}");
 });
+
+for (const key of ["apiKey", "api_key", "accessToken", "access_token", "refreshToken", "refresh_token", "token", "secret", "password"]) {
+  test(`persisted ${key} is fully masked across opposite and escaped quotes`, async () => {
+    for (const secret of ["SYNTH_A'SYNTH_B", 'SYNTH_A"SYNTH_B', 'SYNTH_A\\"SYNTH_B']) {
+      const recorded = await payload({ [key]: secret, public: "VISIBLE" });
+      assert.deepEqual(JSON.parse(recorded!), { [key]: "[redacted]", public: "VISIBLE" });
+    }
+  });
+}

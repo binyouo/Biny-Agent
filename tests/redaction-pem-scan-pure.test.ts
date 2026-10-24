@@ -46,8 +46,19 @@ test("malformed markers, header line breaks, case, and unfinished tails remain u
 test("the remaining redaction rules retain their order around PEM blocks", () => {
   const controls = ["Bearer FAKE_PLACEHOLDER_ONLY", "token=FAKE_PLACEHOLDER_ONLY；public", '"password":"FAKE_PLACEHOLDER_ONLY"',
     "aws_secret_access_key=FAKE_PLACEHOLDER_ONLY", "_authToken=FAKE_PLACEHOLDER_ONLY", "sk_FAKEPLACEHOLDERONLY"];
-  compare(controls.flatMap(value => [value, begin + value + end, value + begin + fake + end + value,
-    begin + fake + end + value + begin + fake, JSON.stringify({ password: value, content: begin + fake + end })]));
+  const inputs = controls.flatMap(value => [value, begin + value + end, value + begin + fake + end + value,
+    begin + fake + end + value + begin + fake, JSON.stringify({ password: value, content: begin + fake + end })]);
+  const correctedInput = JSON.stringify({ password: '"password":"FAKE_PLACEHOLDER_ONLY"', content: begin + fake + end });
+  const unchanged = inputs.filter(input => input !== correctedInput);
+  assert.equal(inputs.length, 30);
+  assert.equal(unchanged.length, 29);
+  compare(unchanged);
+});
+
+test("quoted-value correction fully masks the existing escaped-password PEM interaction", () => {
+  // Preserve the original input, but do not preserve its formerly leaked suffix.
+  const input = JSON.stringify({ password: '"password":"FAKE_PLACEHOLDER_ONLY"', content: begin + fake + end });
+  assert.equal(actual([input])[0], '{"password":"[redacted]","content":"[redacted private key]"}');
 });
 
 test("bounded exhaustive delimiter combinations preserve the complete result", () => {
