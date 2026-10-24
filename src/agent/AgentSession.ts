@@ -3702,6 +3702,7 @@ export class AgentSession {
     const previousRecorder = this.recorder;
     const previousFilePath = await fs.realpath(previousRecorder.filePath).catch(() => path.resolve(previousRecorder.filePath));
     const resumingCurrent = filePath === previousFilePath;
+    await this.emotionAnalysisScheduler.cancelAndDrain();
     let previousClosed = false;
     let replacementRecorder: SessionRecorder | undefined;
     try {
@@ -3752,7 +3753,6 @@ export class AgentSession {
       );
 
       if (!resumingCurrent) {
-        this.emotionAnalysisScheduler.cancel();
         await this.settleSessionMemory(previousRecorder);
         previousClosed = true;
         await this.closeReplacedSession(previousRecorder);
@@ -3825,7 +3825,7 @@ export class AgentSession {
     const previousRecorder = this.recorder;
     let nextRecorder: SessionRecorder | undefined;
     try {
-      this.emotionAnalysisScheduler.cancel();
+      await this.emotionAnalysisScheduler.cancelAndDrain();
       await ensureAgentDirs(this.persistenceRoot());
       // 先打开新会话的 recorder，再收尾旧会话；若这里失败，当前会话保持原样。
       nextRecorder = new SessionRecorder(this.persistenceRoot(), undefined, undefined, this.options.runtimeEventSink);
@@ -4538,10 +4538,11 @@ export class AgentSession {
   }
 
   async close(): Promise<void> {
+    const emotionClose = this.emotionAnalysisScheduler.close();
     await this.closeActivityContext();
     await this.acpClient?.close();
     await this.sessionSearchIndex.close();
-    this.emotionAnalysisScheduler.cancel();
+    await emotionClose;
     this.titleAbort.abort();
     await this.titleTask;
     await Promise.allSettled([...this.pendingMemoryTasks]);

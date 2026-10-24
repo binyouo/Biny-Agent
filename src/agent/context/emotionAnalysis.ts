@@ -123,6 +123,8 @@ export class EmotionAnalysisScheduler {
   private readonly timers: NonNullable<EmotionAnalysisSchedulerOptions["timers"]>;
   private timer?: ReturnType<typeof setTimeout>;
   private controller?: AbortController;
+  private readonly pending = new Set<Promise<void>>();
+  private closed = false;
 
   constructor(options: EmotionAnalysisSchedulerOptions) {
     this.delayMs = options.delayMs ?? analysisDelayMs;
@@ -131,15 +133,18 @@ export class EmotionAnalysisScheduler {
   }
 
   schedule(sessionId: string, messageId?: string): void {
+    if (this.closed) return;
     this.cancel();
     const controller = new AbortController();
     this.controller = controller;
     const timer = this.timers.setTimeout(() => {
       if (this.timer !== timer) return;
       this.timer = undefined;
-      void Promise.resolve(this.analyze(sessionId, controller.signal, messageId)).catch(() => undefined).finally(() => {
+      const task = Promise.resolve().then(() => this.analyze(sessionId, controller.signal, messageId)).catch(() => undefined).finally(() => {
         if (this.controller === controller) this.controller = undefined;
+        this.pending.delete(task);
       });
+      this.pending.add(task);
     }, this.delayMs);
     this.timer = timer;
     timer.unref?.();
@@ -152,6 +157,17 @@ export class EmotionAnalysisScheduler {
     this.controller = undefined;
   }
 
+  /** Cancel promptly, then join every admitted analysis, including superseded work. */
+  async cancelAndDrain(): Promise<void> {
+    this.cancel();
+    await Promise.allSettled([...this.pending]);
+  }
+
+  /** Terminal disposal seals timer admission synchronously before joining active work. */
+  close(): Promise<void> {
+    this.closed = true;
+    return this.cancelAndDrain();
+  }
 }
 
 function normalizeMessages(messages: readonly EmotionAnalysisMessage[]): EmotionAnalysisMessage[] {
