@@ -882,6 +882,7 @@ export function ProviderSettings({
         setLoginStage("waiting");
       }
     } catch (error) {
+      if (generation !== loginGenerationRef.current) return;
       loginActionRef.current = false;
       setLoginStage("idle");
       setLoginError(error instanceof Error ? error.message : String(error));
