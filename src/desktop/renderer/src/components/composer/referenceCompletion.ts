@@ -69,11 +69,16 @@ function validToken(value: string, token: DraftReferenceToken): boolean {
 
 function uniqueLabel(label: string, uri: string, tokens: readonly DraftReferenceToken[]): string {
   if (!tokens.some((token) => token.label === label && token.uri !== uri)) return label;
-  for (let suffix = 2; suffix < 100; suffix += 1) {
-    const candidate = `${label} ${String(suffix)}`;
-    if (!tokens.some((token) => token.label === candidate)) return candidate;
+  const usedLabels = new Set(tokens.map((token) => token.label));
+  // Distinct suffixes guarantee a free label within usedLabels.size + 1 attempts.
+  for (let suffix = 2; ; suffix += 1) {
+    const ending = ` ${String(suffix)}`;
+    let end = Math.min(label.length, 80 - ending.length);
+    // Keep the existing UTF-16 budget without splitting a complete surrogate pair.
+    if (end > 0 && /[\uD800-\uDBFF]/u.test(label[end - 1]!) && /[\uDC00-\uDFFF]/u.test(label[end] ?? "")) end -= 1;
+    const candidate = `${label.slice(0, end)}${ending}`;
+    if (!usedLabels.has(candidate)) return candidate;
   }
-  return `${label} ${uri.slice(-6)}`;
 }
 
 /** 草稿只保留短标签和独立身份；发送正文由 materializeDraftReferences 生成。 */
