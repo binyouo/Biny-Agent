@@ -46,3 +46,9 @@ export interface ApplicationImportSnapshot {
   sync: { enabled: boolean; hasSelection: boolean; lastError?: string;
     selections?: Array<{ source: ApplicationImportSource; label: string; workspaceRoot: string; itemIds: string[] }> };
 }
+
+/** Effects confirmed during this invocation, independent of retained display history. */
+export interface ApplicationImportSyncOutcome {
+  snapshot: ApplicationImportSnapshot;
+  effects: { mcpImported: boolean };
+}
