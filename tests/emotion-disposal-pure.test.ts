@@ -114,6 +114,7 @@ function fixture(gate: Gate = "rename", activityPending = false) {
     session.memoryRetriever = session.localMemory = session.crystalService = {close() {}};
     session.drainRecipeSuggestions = async () => undefined;
     session.takeRelatedUsage = () => undefined; session.toolModel = () => ({});
+    session.auxiliaryUsageModels = new WeakMap();
     session.recentEmotionMessages = async () => [{role:'user', text:'hello'}];
     session.recordModelUsage = () => undefined; session.recordModelRequest = async () => undefined;
     session.activeConfig = {context: {memory: {}}};
