@@ -192,7 +192,7 @@ test("completed tool-step usage survives a later provider failure, disk replay a
   });
   let requests = 0;
   const model: AgentModel = testModel({
-    provider: "fixture", modelId: "fixture", supportsTools: true, vercelOptions: { maxRetries: 0 },
+    provider: "openai", providerAlias: "fixture", modelId: "fixture", supportsTools: true, vercelOptions: { maxRetries: 0 },
     async stream() {
       requests++;
       if (requests !== 1) throw new Error("fixture provider unavailable");

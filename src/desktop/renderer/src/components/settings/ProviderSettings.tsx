@@ -1,7 +1,7 @@
 /** 模型供应商连接、模型选择和凭据独立保存；失败保留当前编辑供重试。 */
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { NativeSelect } from "../NativeSelect.js";
-import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ModelProfile, ThinkingLevelMap } from "../../../../../config/schema.js";
 import type { ModelChoice } from "../../../../../llm/ModelManager.js";
 import { useFluidHoverItems } from "../../useFluidHoverItems.js";
@@ -786,6 +786,8 @@ export function ProviderSettings({
   }, [connectionInfos, creating, onNotify, projectId, settingsDraft]);
 
   // ── 订阅登录 ──
+  const loginViewKey = catalog?.loginProvider ? JSON.stringify([catalog.loginProvider, providerAlias]) : undefined;
+  const loginViewKeyRef = useRef(loginViewKey);
   const [loginStage, setLoginStage] = useState<"idle" | "opening" | "waiting" | "submitted">("idle");
   const [loginRequest, setLoginRequest] = useState<DesktopModelLoginStartResult>();
   const [loginError, setLoginError] = useState<string>();
@@ -814,6 +816,13 @@ export function ProviderSettings({
   useEffect(() => {
     cancelLoginRef.current = () => resetLogin(true);
   }, [resetLogin]);
+  useLayoutEffect(() => () => resetLogin(true), [resetLogin]);
+  useLayoutEffect(() => {
+    if (loginViewKeyRef.current === loginViewKey) return;
+    loginViewKeyRef.current = loginViewKey;
+    // 只在新卡片提交后放弃旧登录，避免旧请求或输入先显示到另一家服务商。
+    resetLogin(true);
+  }, [loginViewKey, resetLogin]);
 
   const completeLoginRequest = useCallback(async (
     entryCatalog: ProviderCatalogItem,
@@ -827,7 +836,10 @@ export function ProviderSettings({
     try {
       const result = await onCompleteLogin(entryCatalog.loginProvider, request.authRequestId,
         request.method === "paste-code" ? pastedAuthorization : undefined);
-      if (generation !== loginGenerationRef.current) return;
+      if (generation !== loginGenerationRef.current) {
+        await settingsDraft.releaseCredential(result.handle);
+        return;
+      }
       // 一次性登录凭据只随本次模型增量提交；失败不伪报连接成功。
       const alias = providerAliasFor(entryCatalog, entryCatalog.baseUrl);
       settingsDraft.addOauthCredentialHandle(result.handle);
@@ -882,6 +894,7 @@ export function ProviderSettings({
         setLoginStage("waiting");
       }
     } catch (error) {
+      if (generation !== loginGenerationRef.current) return;
       loginActionRef.current = false;
       setLoginStage("idle");
       setLoginError(error instanceof Error ? error.message : String(error));
@@ -889,7 +902,9 @@ export function ProviderSettings({
   }, [completeLoginRequest, onStartLogin]);
 
   const submitLogin = useCallback(async (entryCatalog: ProviderCatalogItem): Promise<void> => {
-    if (!entryCatalog.loginProvider || !loginRequest) return;
+    if (!entryCatalog.loginProvider || !loginRequest
+      || loginProviderRef.current !== entryCatalog.loginProvider
+      || loginRequestRef.current !== loginRequest) return;
     await completeLoginRequest(entryCatalog, loginRequest, authorizationCode);
   }, [authorizationCode, completeLoginRequest, loginRequest]);
 
