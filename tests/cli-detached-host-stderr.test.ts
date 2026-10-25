@@ -1,8 +1,9 @@
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -164,6 +165,6 @@ for (const closeReader of [false, true]) {
         try { console.error("Host stderr regression cleanup errors:", cleanupErrors); } catch { /* Keep original failure. */ }
       }
     }
-    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Host stderr regression cleanup failed");
+    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, `Host stderr regression cleanup failed: ${cleanupErrors.map(error => error instanceof Error ? error.message : String(error)).join("; ")}`);
   });
 }

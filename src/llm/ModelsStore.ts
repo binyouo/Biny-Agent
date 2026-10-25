@@ -119,7 +119,7 @@ const modelSchema = z.object({
   thinkingLevelMap: z.record(z.string(), z.string().nullable()).optional(),
   apiBackend: z.string().optional(),
   baseUrl: z.string().url().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   compatibility: z.object({
     supportsDeveloperRole: z.boolean().optional(),
     supportsReasoning: z.boolean().optional(),
@@ -139,7 +139,7 @@ const entrySchema = z.object({
 const fileSchema = z.object({
   // v1 没有档位来源，曾把 ID 推断持久化成权威 map；直接失效可避免旧缓存继续覆盖模型事实。
   version: z.literal(2),
-  providers: z.record(entrySchema)
+  providers: z.record(z.string(), entrySchema)
 });
 
 type ModelsStoreFile = z.infer<typeof fileSchema>;

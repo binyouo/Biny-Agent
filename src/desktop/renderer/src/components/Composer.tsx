@@ -48,6 +48,8 @@ interface ComposerProps {
   externalAgent?: boolean;
   ref?: React.Ref<ComposerHandle>;
   project?: DesktopProject;
+  /** 未发送草稿的附件与引用目标；能力目录和模型仍使用工作区项目。 */
+  draftProjectId?: string;
   drafts: Map<string, ComposerDraftState>;
   draftKey: string;
   /** 导航引用可早于 React 卸载更新，派发前同步确认提交仍属于当前聊天。 */
@@ -117,6 +119,7 @@ function selectionFromDefaults(defaults: DesktopCapabilityDefaults): AgentCapabi
 export const Composer = memo(function Composer({
   ref,
   project,
+  draftProjectId = project?.id,
   drafts,
   draftKey,
   isSubmissionCurrent,
@@ -680,7 +683,7 @@ export const Composer = memo(function Composer({
         {attachmentCount ? (
           <div className="biny-prompt-attachments">
             <AttachmentList
-              projectId={project?.id ?? ""}
+              projectId={draftProjectId ?? ""}
               attachments={attachments}
               onRemove={(index) => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
               onRemovePending={(id) => {
@@ -692,7 +695,7 @@ export const Composer = memo(function Composer({
         ) : null}
         <PromptInput
           inputRef={inputRef}
-          projectId={project?.id}
+          projectId={draftProjectId}
           value={input}
           onChange={changeDraft}
           onReferenceChange={(value, tokens) => rememberDraft({ value, tokens })}
