@@ -139,6 +139,7 @@ const telegramStateSchema = z.object({
   version: z.literal(1),
   ownerId: z.string().regex(/^[1-9]\d*$/u).optional(),
   nextUpdateId: z.number().int().nonnegative().optional(),
+  pendingUpdates: z.array(telegramUpdateSchema).optional(),
   sessions: z.record(z.string(), z.string()),
   groups: z.record(z.string(), telegramGroupStateSchema)
 }).strict();

@@ -138,7 +138,7 @@ export interface Tool<TArgs = unknown, TResult = unknown> {
   promptGuidelines?: string[];
   parameters: JsonObjectSchema;
   outputSchema?: JsonSchema;
-  schema: z.ZodType<TArgs, z.ZodTypeDef, unknown>;
+  schema: z.ZodType<TArgs, unknown>;
   /** 暴露控制声明与发现入口，不替代权限或脚本准入检查；省略时为 direct。 */
   exposure?: ToolExposure;
   namespace?: ToolNamespace;
