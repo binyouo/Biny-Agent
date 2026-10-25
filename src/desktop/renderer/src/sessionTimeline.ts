@@ -1,3 +1,4 @@
+import { confirmedLoadedSkill, scopeHistoricalLoadedSkills } from "./loadedSkills.js";
 import type { ToolOptimization } from "../../../session/toolOptimization.js";
 import { toolDisplayName } from "../../../tools/presentation.js";
 /**
@@ -369,7 +370,7 @@ function historicalPrefix(events: SessionEvent[], liveEvents: AgentHostEvent[]):
 }
 
 function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
-  return createHistoricalTimelineFold(events).append(events);
+  return scopeHistoricalLoadedSkills(events, createHistoricalTimelineFold(events).append(events));
 }
 
 function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(events: SessionEvent[]): TimelineTurn[] } {
@@ -490,7 +491,7 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
             tool.recovered = event.recovered;
             tool.operationId = event.operationId;
             tool.evidence = event.evidence;
-            if (tool.status === "success") appendLoadedSkill(turn, toolName, tool.args);
+            appendLoadedSkill(turn, tool);
           }
           continue;
         }
@@ -699,7 +700,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
         tool.recovered = event.recovered;
         tool.operationId = event.operationId;
         tool.evidence = event.evidence;
-        if (tool.status === "success") appendLoadedSkill(turn, toolName, tool.args);
+        appendLoadedSkill(turn, tool);
       }
       continue;
     }
@@ -743,7 +744,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     turn.versionIndex = index;
     turn.versionCount = records.length;
   }
-  return turns;
+  return scopeHistoricalLoadedSkills(events, turns);
 }
 
 /**
@@ -939,7 +940,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       turn.memoryInjectedSummaries = event.context.memoryInjectedSummaries.length ? [...event.context.memoryInjectedSummaries] : undefined;
       turn.memoryRecallDegraded = event.context.memoryRecallDegraded;
       if (event.context.capabilitySelection) turn.capabilitySelection = event.context.capabilitySelection;
-      if (event.context.loadedSkills !== undefined) turn.skills = loadedSkillNamesFromValue(event.context.loadedSkills);
+      if (event.context.loadedSkills !== undefined) turn.skills = [...new Set([...turn.skills, ...loadedSkillNamesFromValue(event.context.loadedSkills)])];
     } else if (event.type === "context.retrying") {
       turn.steps.push({
         kind: "reasoning",
@@ -1021,7 +1022,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       tool.operationId = event.operationId;
       tool.evidence = event.evidence;
       tool.durationMs = event.durationMs;
-      if (tool.status === "success") appendLoadedSkill(turn, event.tool, tool.args);
+      appendLoadedSkill(turn, tool);
     } else if (event.type === "tool.failed") {
       const tool = toolFor(event, event.tool);
       if (event.result !== undefined) applyToolResult(tool, event.result);
@@ -1409,10 +1410,9 @@ function appendReasoning(existing: string, next: string | undefined): string {
 }
 
 /** Skill 工具结果已成功，或 prompt 加载元数据已确认后，才计入本轮已加载列表。 */
-function appendLoadedSkill(turn: TimelineTurn, tool: string, args: unknown): void {
-  if ((tool !== "Skill" && tool !== "skill_call") || typeof args !== "object" || args === null || !("skill" in args)) return;
-  const skill = (args as { skill?: unknown }).skill;
-  if (typeof skill === "string" && skill.trim() && !turn.skills.includes(skill.trim())) turn.skills.push(skill.trim());
+function appendLoadedSkill(turn: TimelineTurn, tool: TimelineTool): void {
+  const skill = confirmedLoadedSkill(tool);
+  if (skill && !turn.skills.includes(skill)) turn.skills = [...turn.skills, skill];
 }
 
 function addReasoningDuration(total: number | undefined, startedAt: string | undefined, endedAt: string): number | undefined {

@@ -1,5 +1,5 @@
 /** 侧栏时间线索弹层；只显示原始用户消息索引，来源操作交给 App 导航。 */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Calendar, type DateRange, type ISODateString } from "@astryxdesign/core/Calendar";
 import { Icon } from "../Icon.js";
 import { usePopover } from "@astryxdesign/core/Popover";
@@ -32,6 +32,7 @@ export function TimeCluesDialog({ open, currentSessionId, refreshKey, onClose, o
   const { triggerRef, triggerProps, toggle: toggleCalendar, hide: hideCalendar, isOpen: calendarOpen, render: renderCalendar } = usePopover({ hasSurface: false, dialogLabel: "选择日期范围", closeButtonLabel: "关闭日历" });
   const [calendarError, setCalendarError] = useState<string>();
   const requestRef = useRef(0);
+  const viewOwner = useRef<{ offset: number } | undefined>(undefined);
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const ranges = naturalTemporalRanges(now, timeZone);
   const today = ranges.today.startDate;
@@ -39,6 +40,9 @@ export function TimeCluesDialog({ open, currentSessionId, refreshKey, onClose, o
   const { startDate, endDate } = range;
 
   const load = useCallback(async (nextOffset: number): Promise<void> => {
+    if (!viewOwner.current) return;
+    // Admit page navigation immediately, without retiring same-page refreshes.
+    if (viewOwner.current.offset !== nextOffset) viewOwner.current = { offset: nextOffset };
     const request = ++requestRef.current;
     setBusy(true);
     setError(undefined);
@@ -54,6 +58,11 @@ export function TimeCluesDialog({ open, currentSessionId, refreshKey, onClose, o
       if (request === requestRef.current) setBusy(false);
     }
   }, [startDate, endDate, today, currentSessionId, rangeKind, timeZone]);
+
+  useLayoutEffect(() => {
+    viewOwner.current = open ? { offset: 0 } : undefined;
+    return () => { viewOwner.current = undefined; requestRef.current += 1; };
+  }, [open, load]);
 
   useEffect(() => {
     if (!open) { requestRef.current += 1; setPage(undefined); return; }
@@ -77,12 +86,22 @@ export function TimeCluesDialog({ open, currentSessionId, refreshKey, onClose, o
   }, [open, load]);
 
   const ignore = async (id: string): Promise<void> => {
-    try { await window.biny.temporalIgnoreClue(id); await load(offset); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    const owner = viewOwner.current;
+    try {
+      await window.biny.temporalIgnoreClue(id);
+      if (owner && owner === viewOwner.current) await load(offset);
+    } catch (cause) {
+      if (owner && owner === viewOwner.current) setError(cause instanceof Error ? cause.message : String(cause));
+    }
   };
   const markSeen = async (): Promise<void> => {
-    try { await window.biny.temporalMarkTodaySeen(today, timeZone); await load(offset); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    const owner = viewOwner.current;
+    try {
+      await window.biny.temporalMarkTodaySeen(today, timeZone);
+      if (owner && owner === viewOwner.current) await load(offset);
+    } catch (cause) {
+      if (owner && owner === viewOwner.current) setError(cause instanceof Error ? cause.message : String(cause));
+    }
   };
   const groups = new Map<string, NonNullable<DesktopTemporalPage>["clues"]>();
   for (const clue of page?.clues ?? []) {

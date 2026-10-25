@@ -240,7 +240,9 @@ function fencedCode(children: React.ReactNode): { code: string; language?: strin
 function localPathFromHref(href?: string): string | undefined {
   if (!href || href.startsWith("#") || (/^[A-Za-z][A-Za-z\d+.-]*:/.test(href) && !href.startsWith("file://"))) return undefined;
   const isFileUrl = href.startsWith("file://");
-  const encoded = isFileUrl ? href.slice("file://".length) : href;
+  // 仅规范本机 file URL 的前缀，保留原有查询、片段和百分号解码行为。
+  const encoded = isFileUrl ? href.slice("file://".length)
+    .replace(/^localhost(?=\/(?!\/))/i, "").replace(/^\/([A-Za-z]:\/)/, "$1") : href;
   let decoded = encoded;
   try {
     decoded = decodeURIComponent(encoded);
@@ -248,7 +250,8 @@ function localPathFromHref(href?: string): string | undefined {
     // Keep malformed local paths usable instead of breaking the whole message.
   }
   // file:// 已明确表达本地路径意图；路径可以含空格，不再套 looksLikePath 启发式。
-  if (isFileUrl) return stripLineSuffix(decoded);
+  // 显式 ./ 目标同样是路径；解码后的文件名空格不能把它误判为外链。
+  if (isFileUrl || encoded.startsWith("./")) return stripLineSuffix(decoded);
   return looksLikePath(decoded) ? stripLineSuffix(decoded) : undefined;
 }
 
