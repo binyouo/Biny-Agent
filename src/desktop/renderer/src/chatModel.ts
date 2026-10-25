@@ -6,7 +6,7 @@ import { toolDisplayName } from "../../../tools/presentation.js";
  */
 import type { TimelineReasoningStep, TimelineTool, TimelineToolStep, TimelineTurn } from "./sessionTimeline.js";
 import { readReportedCacheUsage, reportedCacheTokenValue, type SessionUsage } from "../../../session/metadata.js";
-import { countDiffStats } from "./sessionChanges.js";
+import { countToolDiffStats } from "./sessionChanges.js";
 
 /** 实时与历史消息共用同一身份判断，已接收的消息不再保留发送占位或驱动忙碌状态。 */
 export function hasSubmittedUserMessage(turns: TimelineTurn[], messageId: string | undefined): boolean {
@@ -361,7 +361,7 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       row.object = display?.operation === "move"
         ? `${filePath || "…"} → ${display.destinationPath ?? stringArg(tool, "to") ?? "…"}`
         : filePath || "…";
-      const stats = tool.diff ? countDiffStats(tool.diff) : undefined;
+      const stats = tool.diff ? countToolDiffStats(tool) : undefined;
       row.minus = stats?.del;
       row.plus = stats?.add;
       return row;
