@@ -713,7 +713,8 @@ async function initializeCommandRuntime(
     skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
     selectCapabilities: async (input, runId) => {
       return await preselectCapabilities({
-        ...input, models: resolveToolModelCandidates(input.config, providerCredentials), tools: toolRegistry.list().filter(isToolModelVisible), skills: skillsForRun(runId).skills,
+        ...input, models: resolveToolModelCandidates(input.config, providerCredentials),
+        tools: toolRegistry.listEntries().map(({ source, tool }) => ({ ...tool, source })).filter(isToolModelVisible), skills: skillsForRun(runId).skills,
         selectionState: selectionStateForConfig(input.config)
       });
     },
@@ -763,7 +764,7 @@ async function initializeCommandRuntime(
     selectCapabilities: async (input, runId) => await preselectCapabilities({
       ...input,
       models: resolveToolModelCandidates(input.config, providerCredentials),
-      tools: toolRegistry.list().filter(isToolModelVisible),
+      tools: toolRegistry.listEntries().map(({ source, tool }) => ({ ...tool, source })).filter(isToolModelVisible),
       skills: skillsForRun(runId).skills,
       selectionState: selectionStateForConfig(input.config)
     }),

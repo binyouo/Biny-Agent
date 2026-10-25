@@ -28,7 +28,7 @@ for (const request of requests) {
   assert.match(messages, /TASK_AT_END/u, "the selector must receive the end of the current task");
   assert.match(messages, /HISTORY_AT_END/u, "recent messages must not lose their final constraints");
 }
-assert.match(requests.find((request) => request.systemPrompt.includes("扩展工具目录："))!.systemPrompt, /TOOL_ROUTE_AT_END/u);
+assert.match(requests.find((request) => request.systemPrompt.includes("可选工具目录："))!.systemPrompt, /TOOL_ROUTE_AT_END/u);
 assert.match(requests.find((request) => request.systemPrompt.includes("技能目录："))!.systemPrompt, /SKILL_ROUTE_AT_END/u);
 assert.deepEqual(result.tools, names, "retain every registered model-selected tool even with large schemas");
 assert.deepEqual(result.skills, skillIds, "skill selection is not capped below the available catalog");

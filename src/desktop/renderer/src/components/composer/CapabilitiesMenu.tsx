@@ -29,6 +29,9 @@ const TOOL_GROUPS: Array<{ id: ToolGroupId; label: string; icon: IconName }> = [
   { id: "workspace", label: "项目与文件", icon: "folder-open" },
   { id: "shell", label: "Shell 与进程", icon: "terminal" },
   { id: "web", label: "网络与搜索", icon: "site" },
+  { id: "browser", label: "内置浏览器", icon: "site" },
+  { id: "chrome", label: "Chrome 浏览器", icon: "globe" },
+  { id: "computer", label: "电脑操作", icon: "monitor" },
   { id: "planning", label: "规划与指令", icon: "list-tree" }
 ];
 
@@ -186,11 +189,14 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
           <div aria-label="选择方式" className="capabilities-mode-row" role="group">
             <button aria-pressed={isAuto} className="capability-mode-button" onClick={() => setMode("auto")} type="button">自动选择</button>
             <button aria-pressed={value === "all"} className="capability-mode-button" onClick={() => setMode("all")} type="button">全部</button>
-            <button aria-pressed={explicit !== undefined && explicit.length === 0} className="capability-mode-button" onClick={() => setMode([])} type="button">不使用</button>
+            <button aria-pressed={value === "none" || explicit !== undefined && explicit.length === 0} className="capability-mode-button" onClick={() => setMode([])} type="button">不使用</button>
           </div>
           {tab === "tools" && !toolsSupported ? (
             <p className="capabilities-mode-desc is-warning">当前模型不支持工具调用，切换模型后生效</p>
-          ) : null}
+          ) : <p className="capabilities-mode-desc">{isAuto ? "按任务自动选择，勾选可改为手动指定"
+            : value === "all" ? "本条消息使用全部可用能力"
+              : value === "none" || explicit?.length === 0 ? "本条消息不使用这些能力"
+                : `本条消息手动指定 ${explicit?.length ?? 0} 项能力`}</p>}
         </div>
         <div aria-label={tab === "tools" ? "工具列表" : "技能列表"} className="capabilities-scroll" ref={listRef} role="group" {...listHover.handlers}>
           <FluidHoverHighlight hover={listHover} className="has-option-radius" />

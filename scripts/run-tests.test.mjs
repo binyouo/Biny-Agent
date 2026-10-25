@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -156,4 +156,87 @@ test("a valid empty shard succeeds and records zero executions", context => {
   assert.deepEqual(report.shard, { index: 4, total: 4 });
   assert.deepEqual(report.selectedFiles, []);
   assert.deepEqual(report.results, []);
+});
+
+test("an impact plan executes only selected files and balances long suites first", context => {
+  const root = fixture(context, Object.fromEntries(["a", "b", "c", "d", "e"].map(name => [
+    `${name}.test.ts`, `require('node:fs').appendFileSync('ran', '${name}\\n')`
+  ])));
+  writeFileSync(path.join(root, "plan.json"), JSON.stringify({
+    standard: ["a.test.ts", "b.test.ts", "c.test.ts", "d.test.ts"], e2e: [],
+    timings: { "a.test.ts": 100, "b.test.ts": 80, "c.test.ts": 20, "d.test.ts": 10 }
+  }));
+  const first = run(root, "--standard", "--plan=plan.json", "--shard=1/2", "--report=timings.json");
+  assert.equal(first.status, 0, first.output);
+  assert.equal(readFileSync(path.join(root, "ran"), "utf8"), "a\nd\n");
+  const second = run(root, "--standard", "--plan=plan.json", "--shard=2/2", "--list");
+  assert.equal(second.status, 0, second.output);
+  assert.deepEqual(JSON.parse(second.stdout), ["b.test.ts", "c.test.ts"]);
+  const report = JSON.parse(readFileSync(path.join(root, "timings.json"), "utf8"));
+  for (const result of report.results) {
+    assert.ok(result.cleanupMs >= 0);
+    assert.ok(result.testMs >= 0);
+    assert.ok(result.durationMs >= result.testMs + result.cleanupMs);
+  }
+});
+
+test("new files remain covered when timings are partial or unusable", context => {
+  const root = fixture(context, files);
+  const standard = ["a", "b", "c", "d", "e", "f", "g", "h", "i"].map(name => `${name}.test.ts`);
+  for (const timings of [{ "a.test.ts": 100 }, { "a.test.ts": -1, "b.test.ts": "bad" }, {}]) {
+    writeFileSync(path.join(root, "plan.json"), JSON.stringify({ standard, e2e: [], timings }));
+    const shards = [1, 2, 3, 4].flatMap(index => {
+      const result = run(root, "--standard", "--plan=plan.json", `--shard=${index}/4`, "--list");
+      assert.equal(result.status, 0, result.output);
+      return JSON.parse(result.stdout);
+    });
+    assert.deepEqual(shards.sort(), standard);
+    assert.equal(new Set(shards).size, standard.length);
+  }
+});
+
+test("empty plans run nothing, while missing or mismatched selected files fail", context => {
+  const root = fixture(context, { "a.test.ts": "throw new Error('unselected')" });
+  writeFileSync(path.join(root, "plan.json"), JSON.stringify({ standard: [], e2e: [] }));
+  assert.equal(run(root, "--standard", "--plan=plan.json").status, 0);
+  for (const standard of [["gone.test.ts"], ["../escape.test.ts"], ["a.test.ts", "a.test.ts"], ["a-e2e.test.ts"]]) {
+    writeFileSync(path.join(root, "plan.json"), JSON.stringify({ standard, e2e: [] }));
+    const result = run(root, "--standard", "--plan=plan.json");
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.output, /\[1\//u);
+  }
+  assert.notEqual(run(root, "--plan=plan.json").status, 0);
+  assert.notEqual(run(root, "--standard", "--plan=plan.json", "a").status, 0);
+});
+
+test("cleanup failure is reported as failure and stops subsequent suites", context => {
+  const root = fixture(context, {
+    "a.test.ts": "require('node:fs').writeFileSync('agent-dir', process.env.BINY_AGENT_DIR)",
+    "b.test.ts": "require('node:fs').writeFileSync('unexpected', '')"
+  });
+  unlinkSync(path.join(root, "tests/helpers"));
+  mkdirSync(path.join(root, "tests/helpers"));
+  writeFileSync(path.join(root, "tests/helpers/memoryOwnerCleanup.ts"), "process.exit(4)");
+  const result = run(root, "--report=timings.json");
+  const agentDir = readFileSync(path.join(root, "agent-dir"), "utf8");
+  context.after(() => rmSync(agentDir, { recursive: true, force: true }));
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /cleanup failed/u);
+  assert.equal(existsSync(path.join(root, "unexpected")), false);
+  const report = JSON.parse(readFileSync(path.join(root, "timings.json"), "utf8"));
+  assert.equal(report.results.length, 1);
+  assert.equal(report.results[0].exitCode, 1);
+});
+
+test("a plan from another checkout commit is rejected before tests execute", context => {
+  const root = fixture(context, { "a.test.ts": "throw new Error('must not execute')" });
+  for (const args of [["init"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"]]) {
+    const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  writeFileSync(path.join(root, "plan.json"), JSON.stringify({ head: "0".repeat(40), standard: ["a.test.ts"], e2e: [] }));
+  const result = run(root, "--standard", "--plan=plan.json");
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /different checkout commit/u);
+  assert.doesNotMatch(result.output, /\[1\//u);
 });

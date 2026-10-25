@@ -28,7 +28,7 @@ pnpm build
 
 Windows 使用相同的 `pnpm desktop:dev` 开发入口，`pnpm desktop:pack` 生成应用目录，`pnpm desktop:dist` 生成 NSIS 安装程序与 ZIP；安装包尚未配置 Windows 代码签名。这些命令先准备 Electron 与 PTY 原生依赖。macOS 的 `desktop:pack` 生成应用目录，`desktop:dist` 生成 DMG 安装包。
 
-`node scripts/run-tests.mjs windows` 验证平台选择、真实 Host 多客户端连接、认证、退出重启与进程树清理；真实 DACL 用例仅在 Windows 运行。CI 的 Windows lane 另检查构建后的 Electron headless Host 并生成安装包，不执行模型 API 或替代人工界面验收。Windows 上还需人工检查中文输入法、粘贴、快捷键、窗口与终端缩放、会话交接、终端关闭和安装卸载。
+`node scripts/run-tests.mjs windows` 验证平台选择、真实 Host 多客户端连接、认证、退出重启与进程树清理；真实 DACL 用例仅在 Windows 运行。CI 的 Windows lane 另检查构建后的 Electron headless Host；打包输入变更或全量验证时生成安装包，不执行模型 API 或替代人工界面验收。Windows 上还需人工检查中文输入法、粘贴、快捷键、窗口与终端缩放、会话交接、终端关闭和安装卸载。
 
 代码入口与数据职责见 [架构](docs/ARCHITECTURE.md)。终端展示使用 `@earendil-works/pi-tui`，Desktop 使用 Electron；界面层负责适配，运行与持久化逻辑在核心模块中维护。
 
@@ -54,14 +54,35 @@ pnpm build
 
 单文件检查也可以通过 `node scripts/run-tests.mjs config-test-isolation` 运行；入口为每个测试进程创建并清理独立的 `BINY_AGENT_DIR`。直接运行测试时，配置、会话和凭据目录必须显式指向临时目录。测试及其派生进程会拒绝访问日常 Biny 数据目录，包括指向这些目录的符号链接；系统 Keychain 调用也被拒绝，持久凭据测试须注入独立的存储或命令替身。
 
-标准测试在 CI 中分为 4 个并行任务：测试文件按名称排序后轮流分配，每个任务内仍逐文件执行。`pnpm test` 默认运行完整测试集。可以列出或执行一个标准测试分片：
+CI 根据 Git 改动及源码反向依赖选择标准测试。比较基准是对应分支最近成功 CI 的祖先提交，连续 push 中被取消或失败的改动仍会包含在下一次验证；PR 使用实际合并结果，并包含 base 尚未验证的改动。纯测试文件变更选择该文件及其消费者；源码变更额外选择无法靠静态导入确定依赖的文件读取、进程、动态加载测试，并保留完整 Runtime E2E。
+
+权限、Agent、Runtime、Session、配置、Provider/扩展等公共边界变更，以及依赖、工作流、构建/测试脚本、共享测试夹具、删除/重命名、未知路径、无法解析的依赖或没有测试依赖的源码变更，运行全量。无法取得成功祖先时也运行全量。纯 README、贡献指南和 Markdown 文档变更只保留静态门禁。每日北京时间 03:17 的定时 CI 和手动 `workflow_dispatch` 均运行全量（包含 Windows 打包）；GitHub 调度实际启动时间可能延迟。发布前可手动运行完整 CI，不用局部验证代替发布检查。
+
+测试计划与静态检查并行生成；标准测试、Runtime E2E、Linux 构建、Renderer 和 Windows 验证仅在两者均成功且计划选中后启动。静态检查失败或取消时，不启动这些高成本任务，最终 Validate 仍须报告失败。
+
+标准测试最多分为 4 个任务，每个任务内逐文件执行并保留独立进程和数据目录。CI 从成功祖先的产物继承历史耗时，按长任务优先、当前累计耗时最少的分片分配；新测试使用已知测试耗时中位数。没有可用耗时则按名称排序轮流分配，不会因此减少测试。所有任务下载同一份计划，避免各自读取不同历史而造成漏项或重复。计划绑定 checkout 提交，提交变化后须重新生成。
+
+`pnpm test` 仍默认运行完整测试集。可以检查或执行一个分片：
 
 ```bash
 node scripts/run-tests.mjs --standard --shard=1/4 --list
 pnpm test:standard --shard=1/4 --report=test-timings.json
 ```
 
-`--shard` 使用从 1 开始的编号；四个分片覆盖完整标准测试集且没有重复。`--report` 记录所选文件、已执行文件的耗时与退出码；测试失败时保留已执行结果并停止该分片。CI 会上传各分片的耗时报告，其他分片继续执行，最终检查要求所有分片通过。`pnpm test:runner` 验证分片覆盖、失败传播和进程目录隔离。
+本地也可以针对已提交的变更生成计划；`--base` 是已验证的祖先提交，依赖图读取当前工作区，先完成或另行验证未提交改动，不把它们当成该提交区间的验证结果：
+
+```bash
+node scripts/ci-test-plan.mjs --base <verified-commit>
+node scripts/run-tests.mjs --standard --plan=.ci/plan.json --list
+node scripts/run-tests.mjs --standard --plan=.ci/plan.json --shard=1/4 --report=test-timings.json
+node scripts/ci-test-plan.mjs --full
+```
+
+计划记录基准、head、选择原因、测试文件和历史耗时；运行器只执行标准测试或 E2E，计划中要求的其他检查仍需单独运行。`--shard` 从 1 开始；所有分片覆盖计划选择的完整标准测试集且没有重复。`--report` 记录测试执行、清理和总耗时及退出码；失败时保留已执行结果并停止该分片，清理失败不能报告成功。PR 中一个分片失败后，取消尚未完成的其他标准测试分片；push、定时和手动运行保留其他分片继续诊断。已启动分片通过 `always()` 尝试上传已有报告，取消的分片不视为通过。最终 Validate 要求所有选中的任务通过，仅接受计划明确不需要的任务为 skipped；失败、取消、缺失均不算通过。
+
+Windows 兼容测试和构建后的 Host 验证在代码/测试变更时保留，通过静态门禁后执行；完整 NSIS/ZIP 打包只在全量验证时运行，所有打包配置、依赖、资源和脚本变更都属于全量触发范围。Linux 构建由 Desktop 构建统一包含 CLI。测试运行器、计划器、模型元数据及 Code Mode runtime 的前置回归在静态任务运行一次，不在四个分片重复。
+
+`pnpm test:runner` 验证影响选择、累计比较基准、全量回退、门禁、分片覆盖、失败传播和进程目录隔离。当前选择器对动态读取采取保守范围；受影响测试通过不等于所有未运行的行为都已验证。
 
 项目依赖和文档检查的范围与限制见[开发规范](docs/DEVELOPMENT.md#可执行检查)。纯文档修改运行 `pnpm check:docs`；维护本地规格时再运行 `pnpm check:docs:local`，不需要运行无关模型任务或构建。Desktop、Web 与 TUI 的视觉和交互由人工验收，交付时提供操作步骤、预期表现与关键边界。
 
