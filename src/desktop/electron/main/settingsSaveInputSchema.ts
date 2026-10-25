@@ -99,9 +99,10 @@ export const settingsSaveInputSchema = z.object({
   appearancePreference: appearancePreferenceSchema.optional(),
   activity: activitySettingsInputSchema.optional(),
   identity: identitySettingsSchema.optional(),
-  memory: memorySettingsSchema.optional(),
-  compaction: compactionSchema.optional(),
-  chatParams: chatParamsSchema.optional(),
+  // Keep absent settings absent instead of applying Zod 4 inner defaults.
+  memory: memorySettingsSchema.nonoptional().optional(),
+  compaction: compactionSchema.nonoptional().optional(),
+  chatParams: chatParamsSchema.nonoptional().optional(),
   rtkEnabled: z.boolean().optional(),
   toolExecutionMode: z.enum(["direct", "code_mode"]).optional(),
   subagent: z.object({
@@ -145,8 +146,8 @@ export const settingsSaveInputSchema = z.object({
     modelProfiles: z.record(idSchema, z.record(z.string().trim().min(1).max(240), modelProfileSchema)).optional()
   }).strict().optional(),
   skills: z.object({
-    globalDefaults: z.record(z.boolean()).refine((value) => Object.keys(value).length <= 512, "技能全局开关不能超过 512 项。"),
-    projectOverrides: z.record(z.boolean()).refine((value) => Object.keys(value).length <= 512, "技能项目开关不能超过 512 项。")
+    globalDefaults: z.record(z.string(), z.boolean()).refine((value) => Object.keys(value).length <= 512, "技能全局开关不能超过 512 项。"),
+    projectOverrides: z.record(z.string(), z.boolean()).refine((value) => Object.keys(value).length <= 512, "技能项目开关不能超过 512 项。")
   }).strict().optional(),
   chat: z.object({
     sessionId: idSchema,

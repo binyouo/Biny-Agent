@@ -159,6 +159,7 @@ export class ToolExecutionComponent extends Container implements TranscriptItemC
   private item: ToolTranscriptItem;
   private detailsExpanded = false;
   private leadingSpace = true;
+  private rendered: { width: number; lines: string[] } | undefined;
 
   constructor(item: ToolTranscriptItem) {
     super();
@@ -167,20 +168,32 @@ export class ToolExecutionComponent extends Container implements TranscriptItemC
   }
 
   update(item: TranscriptItem): void {
-    if (item.kind === "tool") this.item = item;
+    if (item.kind === "tool") {
+      this.item = item;
+      this.rendered = undefined;
+    }
+  }
+
+  override invalidate(): void {
+    this.rendered = undefined;
+    super.invalidate();
   }
 
   setLeadingSpace(value: boolean): void {
+    if (this.leadingSpace !== value) this.rendered = undefined;
     this.leadingSpace = value;
   }
 
   toggleDetails(): void {
     this.detailsExpanded = !this.detailsExpanded;
+    this.rendered = undefined;
   }
 
   override render(width: number): string[] {
     const safeWidth = Math.max(1, Math.floor(width));
     const item = this.item;
+    // 运行中的耗时随时钟变化；其余行只在内容、布局或主题改变时重算。
+    if (item.status !== "running" && this.rendered?.width === safeWidth) return this.rendered.lines;
     const marker = toolStatusMarker(item.status);
     const { verb, rest } = splitToolTitle(item.title);
     const elapsed = item.status === "running" && item.startedAtMs !== undefined
@@ -206,6 +219,7 @@ export class ToolExecutionComponent extends Container implements TranscriptItemC
     } else if (failed) {
       lines.push(...toolDetailLines(source, safeWidth, 3, toolStatusToken(item.status)));
     }
+    if (item.status !== "running") this.rendered = { width: safeWidth, lines };
     return lines;
   }
 }

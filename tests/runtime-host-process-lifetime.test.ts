@@ -27,6 +27,8 @@ for (const crash of [false, true]) {
     models: { "local-test": { ...defaultConfig.models["deepseek-v4-flash"]!, provider: "local", model: "local-test" } }
   }, { globalDir: configDir });
   const launcher = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("./fixtures/runtime-host-launcher.ts", import.meta.url)), root, configDir], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  let launcherStderr = "";
+  launcher.stderr.on("data", chunk => { launcherStderr += String(chunk); });
   let hostPid: number | undefined;
   let client: Awaited<ReturnType<typeof connectRuntimeHost>>;
   try {
@@ -34,7 +36,7 @@ for (const crash of [false, true]) {
       const deadline = setTimeout(() => reject(new Error("launcher did not report readiness")), 15_000);
       launcher.once("message", (message) => { clearTimeout(deadline); resolve((message as { pid: number }).pid); });
       launcher.once("error", (error) => { clearTimeout(deadline); reject(error); });
-      launcher.once("exit", (code) => { clearTimeout(deadline); reject(new Error(`launcher exited early: ${String(code)}`)); });
+      launcher.once("close", (code) => { clearTimeout(deadline); reject(new Error(`launcher exited early: ${String(code)}\n${launcherStderr}`)); });
     });
     client = await connectRuntimeHost(root, { clientId: "second-client", surface: "tui", spawnOptions: { workspaceRoot: root, configDir } });
     assert.ok(client);

@@ -51,7 +51,7 @@ export const memoryPolicySchema = rawMemoryPolicySchema.transform((policy): Memo
   enabled: policy.enabled ?? (policy.useMemories || policy.generateMemories),
   // 历史配置可能已经有 context.memory，但没有 embeddingModel；默认仍必须是本地 E5。
   embeddingModel: policy.embeddingModel ?? { ...defaultEmbeddingModelRef }
-})).default({
+})).prefault({
   enabled: true,
   useMemories: true,
   generateMemories: true,
@@ -133,7 +133,8 @@ export interface AgentPersonalizationState {
 }
 
 export const globalPersonalizationUpdateSchema = z.object({
-  memory: memoryPolicySchema.optional()
+  // Omitted updates must not apply the full policy default.
+  memory: memoryPolicySchema.nonoptional().optional()
 }).strict();
 
 export type GlobalPersonalizationUpdate = z.infer<typeof globalPersonalizationUpdateSchema>;
@@ -176,14 +177,6 @@ export function mergeChatPersonalizationOverride(
       ? current.contributeMemories
       : parsedPatch.contributeMemories
   });
-}
-
-export function personalizationMetadata(): PersonalizationMetadata {
-  return {};
-}
-
-export function metadataForPersonalization(): PersonalizationMetadata {
-  return {};
 }
 
 export function cloneChatPersonalizationOverride(

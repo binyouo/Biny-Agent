@@ -169,7 +169,7 @@ test("部分回复后失败：保留已收到的正文、真实思考和工具�
   assert.equal(turns[0]?.reasoning, "先检查项目入口。");
   assert.doesNotMatch(markup, /Connection timed out|chat-run-notice/u);
   assert.match(markup, /复制回复/u);
-  assert.doesNotMatch(markup, /chat-meta-indicator|1 条记忆|1 个工具|1 个技能/u);
+  assert.doesNotMatch(markup, /chat-meta-indicator|1 条记忆|1 个技能/u);
 });
 
 test("实时思考只显示最新一行，代码块等全文在落定并展开后才渲染", () => {
@@ -206,10 +206,10 @@ test("只有工具产出的成功轮次保留活动记录，清单移入更多�
     { ...base, type: "tool.completed", toolCallId: "read", tool: "Read", result: { content: "{}" } },
     { ...base, type: "run.completed", durationMs: 20 }
   ]));
-  assert.doesNotMatch(markup, /chat-meta-indicator|1 个工具/u);
+  assert.doesNotMatch(markup, /chat-meta-indicator/u);
   assert.match(markup, /更多回复操作/u);
   assert.match(markup, /chat-activity/u);
-  assert.match(markup, /工具调用 1 次/u);
+  assert.match(markup, /用了 1 个工具/u);
   assert.doesNotMatch(markup, /条记忆|个技能/u);
 });
 

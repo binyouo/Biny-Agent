@@ -4,6 +4,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { ZodError } from "zod";
 import { createToolPermissionRequest } from "../src/tools/display/ToolDisplay.js";
 import { createEditFileTool } from "../src/tools/file/editFile.js";
 import type { FileChangeResult } from "../src/tools/file/fileChange.js";
@@ -100,7 +101,14 @@ test("disjoint ambiguity and invalid replacements still fail without writing", a
       ["old", "new", /matches 2 locations/u],
       ["missing", "new", /not found/u],
       ["old", "old", /identical/u],
-      ["", "new", /at least 1 character/u]
+      ["", "new", (error: unknown) => {
+        assert.ok(error instanceof ZodError);
+        assert.deepEqual(error.issues, [{
+          origin: "string", code: "too_small", minimum: 1, inclusive: true,
+          path: ["old_string"], message: "Too small: expected string to have >=1 characters"
+        }]);
+        return true;
+      }]
     ] as const) {
       await assert.rejects(edit(root, { path: "target.txt", old_string: old, new_string: replacement }), message);
       assert.equal(await readFile(path.join(root, "target.txt"), "utf8"), content);
