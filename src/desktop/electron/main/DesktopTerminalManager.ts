@@ -91,12 +91,16 @@ export class DesktopTerminalManager {
       this.previewFailures.set(projectId, "开发服务器在 60 秒内未提供可访问的本地地址，请检查终端输出。");
       return;
     }
-    if (launch.candidate) {
+    const candidate = launch.candidate;
+    if (candidate) {
       try {
         // 仅探测日志声明的环回地址；HTTP 有响应才代表服务实际可访问。
-        await fetch(launch.candidate, { redirect: "manual", signal: AbortSignal.timeout(1_000) });
-        if (this.previews.get(projectId) === launch) { launch.url = launch.candidate; launch.status = "running"; }
-        return;
+        await fetch(candidate, { redirect: "manual", signal: AbortSignal.timeout(1_000) });
+        if (this.previews.get(projectId) === launch && launch.candidate === candidate) {
+          launch.url = candidate;
+          launch.status = "running";
+          return;
+        }
       } catch { /* 启动过程中的连接拒绝可继续等待，直到有界超时。 */ }
     }
     if (this.previews.get(projectId) === launch) this.schedulePreviewProbe(projectId, launch);
