@@ -26,7 +26,7 @@ function functions(file: string, names: string[]): string {
 }
 
 const commands = functions("src/cli/commands/configuration.ts", ["registerConfigurationCommands", "desktopPreferencePath"]);
-const dispatch = functions("src/config/commands.ts", ["executeConfigurationCommand"]);
+const dispatch = functions("src/config/commands.ts", ["executeConfigurationCommand", "redactConfigurationOutput"]);
 const setting = functions("src/config/settingPath.ts", ["readSetting"]);
 const redaction = functions("src/utils/secrets.ts", ["redactSensitiveValue", "redactSensitiveValueInternal", "isSensitiveFieldName"]);
 const wrapper = functions("src/cli/index.ts", ["wrap"]);
@@ -51,7 +51,7 @@ function fixture(config: Record<string, unknown>, encrypted = false, failure?: E
     assert.equal(root, "/synthetic-agent");
     calls.push("load");
     if (failure) throw failure;
-    return structuredClone(config);
+    return structuredClone({ extensions: { mcp: {} }, ...config });
   } };
   const sandbox = vm.createContext({
     z, Error, structuredClone, process: processState,
@@ -133,7 +133,7 @@ test("pretty output renders absent optional values as JSON null and retains inde
 test("omitted path returns the whole redacted configuration with nested absence omitted", async () => {
   const state = fixture({ optional: undefined, providers: { fixture: { apiKey: "synthetic-only" } }, enabled: false });
   await state.get();
-  assert.deepEqual(state.stdout, ['{"providers":{"fixture":{"apiKey":"[redacted]"}},"enabled":false}']);
+  assert.deepEqual(state.stdout, ['{"extensions":{"mcp":{}},"providers":{"fixture":{"apiKey":"[redacted]"}},"enabled":false}']);
 });
 
 for (const encrypted of [false, true]) {
