@@ -67,6 +67,19 @@ export function countDiffStats(diff: string): { add: number; del: number } {
   return { add, del };
 }
 
+const toolDiffStats = new WeakMap<TimelineTool, { diff: string; stats: { add: number; del: number } }>();
+
+/** 聊天行与变更面板共享统计；工具快照释放后不再保留对应 diff。 */
+export function countToolDiffStats(tool: TimelineTool): { add: number; del: number } {
+  const diff = typeof tool.diff === "string" ? tool.diff : "";
+  let cached = toolDiffStats.get(tool);
+  if (!cached || cached.diff !== diff) {
+    cached = { diff, stats: countDiffStats(diff) };
+    toolDiffStats.set(tool, cached);
+  }
+  return cached.stats;
+}
+
 export interface SessionFileChange {
   path: string;
   sourcePath?: string;
@@ -106,7 +119,7 @@ export function collectSessionChanges(turns: TimelineTurn[]): SessionFileChange[
       const path = tool.fileChange?.destinationPath ?? tool.fileChange?.path ?? display?.destinationPath ?? display?.path;
       if (!operation || !path || !tool.fileChange && IGNORED_STATUSES.has(tool.status)) continue;
       const diff = typeof tool.diff === "string" ? tool.diff : "";
-      const stats = countDiffStats(diff);
+      const stats = countToolDiffStats(tool);
       const existing = changes.get(path);
       if (existing) {
         changes.delete(path);
