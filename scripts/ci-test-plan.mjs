@@ -88,7 +88,8 @@ async function dependencyGraph(root) {
     const source = ts.createSourceFile(absolute, readFileSync(absolute, "utf8"), ts.ScriptTarget.Latest, true);
     if (source.parseDiagnostics.length) throw new Error(`Cannot parse ${file}`);
     const addImport = specifier => {
-      if (/^(?:node:)?module$/u.test(specifier)
+      // Vite 的 SSR loader 在导入图之外读取源码；其消费者也必须保守保留。
+      if (specifier === "vite" || /^(?:node:)?module$/u.test(specifier)
         || (file.startsWith("tests/") && /^(?:node:)?(?:fs(?:\/promises)?|child_process|vm)$/u.test(specifier))) opaque.add(file);
       if (!specifier.startsWith(".")) return;
       const modulePath = specifier.split("?")[0];

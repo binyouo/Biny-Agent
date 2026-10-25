@@ -404,6 +404,7 @@ async function testAgentSessionAutoAnalysis(): Promise<void> {
     defaultModel: "emotion-auto-test",
     providers: { test: { type: "openai", apiKey: "test-key", baseUrl: "https://example.test/v1" } },
     models: { "emotion-auto-test": { provider: "test", model: "emotion-auto-test" } },
+    activity: { ...defaultConfig.activity, enabled: false },
     context: {
       ...defaultConfig.context,
       memory: {
@@ -465,6 +466,7 @@ async function testAgentSessionFatigue(): Promise<void> {
     defaultModel: "emotion-test",
     providers: { test: { type: "openai", apiKey: "test-key", baseUrl: "https://example.test/v1" } },
     models: { "emotion-test": { provider: "test", model: "emotion-test" } },
+    activity: { ...defaultConfig.activity, enabled: false },
     context: {
       ...defaultConfig.context,
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
