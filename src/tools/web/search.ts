@@ -169,7 +169,8 @@ function resolveGoogleUrl(rawUrl: string): string | undefined {
   let candidate: URL;
   try {
     const parsed = new URL(decoded, "https://www.google.com");
-    const redirected = parsed.pathname === "/url" ? parsed.searchParams.get("q") ?? parsed.searchParams.get("url") : undefined;
+    const redirected = parsed.pathname === "/url" && /(^|\.)google(\.[a-z]{2,3})+$/.test(parsed.hostname)
+      ? parsed.searchParams.get("q") ?? parsed.searchParams.get("url") : undefined;
     candidate = redirected ? new URL(redirected) : parsed;
   } catch {
     return undefined;
