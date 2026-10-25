@@ -20,7 +20,7 @@ export function WorkspaceReferencesPanel({ projectId, reference, onSelect }: {
     const id = ++request.current;
     setDetail(undefined); setError(undefined); setResults(undefined); setBusy(Boolean(reference));
     // @ 搜索结果可能只有文件路径或摘要，详情必须重新解析，不能把摘要冒充正文。
-    if (reference) void window.biny.referenceResolve(projectId, reference.uri).then((resolved) => {
+    if (reference) void window.biny.referenceResolve(reference.projectId ?? projectId, reference.uri).then((resolved) => {
       if (id === request.current) setDetail(resolved);
     }).catch((reason: unknown) => { if (id === request.current) setError(String(reason)); })
       .finally(() => { if (id === request.current) setBusy(false); });

@@ -233,10 +233,13 @@ async function testSkillsAndPlugins(workspaceRoot: string): Promise<void> {
   ]);
   assert.deepEqual(extensionDefaults.plugins, []);
   assert.deepEqual(extensionDefaults.globalPlugins, []);
-  assert.throws(
-    () => configSchema.parse({ ...defaultConfig, extensions: { ...defaultConfig.extensions, plugins: [" "] } }),
-    /at least 1 character/
-  );
+  const blankPlugin = configSchema.safeParse({ ...defaultConfig, extensions: { ...defaultConfig.extensions, plugins: [" "] } });
+  assert.equal(blankPlugin.success, false);
+  assert.ok(!blankPlugin.success);
+  assert.deepEqual(blankPlugin.error.issues, [{
+    origin: "string", code: "too_small", minimum: 1, inclusive: true,
+    path: ["extensions", "plugins", 0], message: "Too small: expected string to have >=1 characters"
+  }]);
   assert.throws(
     () => configSchema.parse({ ...defaultConfig, extensions: { ...defaultConfig.extensions, mcp: { remote: { type: "http" } } } }),
     /http MCP server requires a url/

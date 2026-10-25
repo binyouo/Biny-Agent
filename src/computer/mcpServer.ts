@@ -233,7 +233,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
 
   registerTool("sequence", {
     title: "连续动作", description: "通过 Desktop 在同一窗口连续执行最多 5 步。首步之后只允许输入或按键；发生拒绝、回图失败或中断立即停止，不自动重放。使用最近观察的 capture_id 作为 captureId。",
-    inputSchema: computerSequenceSchema.innerType().shape
+    inputSchema: computerSequenceSchema.shape
   }, async () => fail(new Error("computer_desktop_required: 连续动作需要正在运行的 Desktop 控制器")));
 
   registerTool(
