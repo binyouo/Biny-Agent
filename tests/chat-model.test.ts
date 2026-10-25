@@ -541,7 +541,7 @@ test("ActivitySegment 长活动只渲染最近八枚头像，避免隐藏阶段�
   assert.equal(avatars.length, 9, "八枚阶段头像和一枚计数，不为隐藏阶段保留零宽按钮");
   assert.match(markup, /aria-label="112 个更早阶段"/u);
   assert.match(markup, />\+112<\/button>/u);
-  assert.match(markup, /工具调用 60 次/u);
+  assert.match(markup, /用了 60 个工具/u);
 });
 
 test("ActivitySegment 工具次数不包含思考相位", () => {
@@ -561,7 +561,7 @@ test("ActivitySegment 工具次数不包含思考相位", () => {
   }));
   assert.match(markup, /chat-activity/u);
   // 1 个思考相位不能算作工具调用。
-  assert.match(markup, /工具调用 3 次/u);
+  assert.match(markup, /用了 3 个工具/u);
   assert.match(markup, /chat-phase-avatar/u);
   // 多相位段提供时间线视图切换；默认收起。
   assert.match(markup, /时间线视图/u);

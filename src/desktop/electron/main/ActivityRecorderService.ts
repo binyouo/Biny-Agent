@@ -748,7 +748,10 @@ export class ActivityRecorderService {
     //输入进程可能在系统权限变化或自身异常时先关闭 stdin；Writable 的错误事件若无人接收
     // 会升级成主进程的 uncaught exception，进而弹出 Electron 的 JavaScript 警告。
     child.stdin.on("error", (error) => {
-      if (this.child === child) this.setState("error", safeError(error));
+      if (this.child !== child) return;
+      // 主动停止时子进程可能先关闭读端；预期的断管不应覆盖 stopped。
+      if (this.inputMonitorStopping && (error as NodeJS.ErrnoException).code === "EPIPE") return;
+      this.setState("error", safeError(error));
     });
     child.once("error", (error) => {
       if (this.child !== child) return;

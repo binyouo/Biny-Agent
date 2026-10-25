@@ -112,13 +112,15 @@ export const activitySettingsInputSchema = z.preprocess(
 /** 设置页即时更新只接受局部字段；完整归一化在与当前配置合并后再执行。 */
 export const activitySettingsPatchSchema = z.preprocess(
   stripDeprecatedActivitySettings,
-  activitySettingsObjectSchema.partial()
+  // Zod 4 partial() alone applies omitted defaults. These fields never output
+  // undefined; nonoptional wrappers restore sparse patch behavior before optional.
+  activitySettingsObjectSchema.required().partial()
 );
 
 export const activitySettingsSchema = z.preprocess(
   stripDeprecatedActivitySettings,
   activitySettingsObjectSchema
-).transform(normalizeActivitySettingsValue).default(defaultActivitySettings);
+).transform(normalizeActivitySettingsValue).prefault(defaultActivitySettings);
 
 export type ActivityDataResidency = z.infer<typeof activityDataResidencySchema>;
 export type ActivitySettings = z.infer<typeof activitySettingsSchema>;

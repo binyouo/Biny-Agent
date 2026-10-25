@@ -51,7 +51,7 @@ const storageNames = ["baseFileName", "contextDirectoryName"].map((name) => {
   return `const ${found[0]!.getText(storageSource)};`;
 });
 const calls = new Set([
-  "options.getModel", "normalizeMessages", "options.getMessages", "generateNativeText",
+  "options.getModel", "options.getUsageModelInfo", "normalizeMessages", "options.getMessages", "generateNativeText",
   "result.text.trim", "JSON.parse", "autoEmotionResultSchema.safeParse",
   "messages.map", "options.onUsage", "options.signal?.throwIfAborted",
   "options.storage.readBase",
