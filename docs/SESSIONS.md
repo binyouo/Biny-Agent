@@ -24,6 +24,8 @@
 
 命令行的 `session rename/pin/unpin/archive/unarchive/duplicate/delete` 通过 Desktop 管理同一份会话元数据与记录；`session create/usage/compact` 连接已有 Host。`session messages/search` 从本地记录读取当前消息分支或查找会话，`usage` 汇总已落盘的全局用量。`tool list/call` 查询目录或经所属 Host 执行工具，沿用权限、审计和空闲会话准入。分页、去重依据与使用条件见 [CLI 使用指南](CLI_USAGE.md#会话用量与工具)。
 
+Desktop 新任务顶栏选择项目时，工作区和侧栏保持原位置，输入区切换到目标项目自己的未发送草稿。文本、引用、已保存及处理中附件留在原项目草稿中，切回后继续使用，不自动搬移或删除附件。附件打开、发送和 `@` 搜索使用草稿所属项目；所选引用的详情按结果携带的来源项目解析。已有会话仍使用其工作区项目。回归入口为 [`new-task-attachment-project.test.ts`](../tests/new-task-attachment-project.test.ts)。
+
 | 入口 | 用途 |
 | --- | --- |
 | Desktop | 查看项目和聊天，处理附件、工具审批与交互内容。 |
@@ -36,6 +38,8 @@ CLI 以启动时的当前目录作为工作区。在目标项目中运行命令�
 `biny history search "关键词"` 跨项目检索原始对话，结果带来源文件路径，区分不同项目的同名会话。全文缓存保存在 agent 目录的 `search/sessions-v2.sqlite`；首次使用需从 JSONL 建立索引，历史较多时仍需等待。索引写入在工作线程分批执行，可取消；升级不修改原始会话或旧 `sessions.sqlite` 文件。
 
 Desktop 连续选择会话时以最后一次选择为准，无需等待前一次读取或转场动画完成；切换项目保留已展开的文件夹，加载失败保留最后打开的会话。加载期间输入区暂不可操作，防止把消息发给旧会话。跨项目的 Runtime Host 在后台准备，不创建窗口或显示额外 Dock 图标；项目内的会话共用 Host，离开后仍在运行的任务继续执行。
+
+输入区的 `@` 引用候选仅用于当前项目、引用种类和补全文本；输入改变后，上一查询的候选与错误立即退出展示，不会在新查询等待期间被 Enter、Tab 或鼠标选入草稿。只有当前候选被确认后才保存其 URI，发送时再物化为引用正文。回归入口为 [`composer-reference-results.test.ts`](../tests/composer-reference-results.test.ts)。
 
 消息菜单的“查看引用来源”只接受当前导航内最近一次查询的结果。已打开的来源弹窗保留原项目归属；关闭后较早查询不会重新打开它，点击来源仍返回来源项目。
 

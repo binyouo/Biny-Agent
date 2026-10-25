@@ -5,7 +5,7 @@
  * 保存时通过一次性 IPC 传入并落到 Keychain，渲染层不会把凭据写入配置或快照。
  */
 import { NativeSelect } from "./NativeSelect.js";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   DesktopMcpCatalogEntry,
   DesktopMcpCatalogInstallation,
@@ -22,6 +22,7 @@ import { McpOAuthControls } from "./McpOAuthControls.js";
 import { Icon } from "./Icon.js";
 import { TopToast } from "./overlays/TopToast.js";
 import { SettingsDetailLayer } from "./settings/SettingsDetailLayer.js";
+import { SettingsDetailHostContext } from "./settings/SettingsDetailHostContext.js";
 
 type McpTab = "market" | "installed";
 
@@ -61,6 +62,14 @@ export function McpServersView({ projectId, onError, onSuccess }: McpServersView
   const [dismissedCatalogNotice, setDismissedCatalogNotice] = useState<string>();
   const snapshotRequestRef = useRef(0);
   const catalogRequestRef = useRef(0);
+  const testRequestRef = useRef(0);
+  const detailHostAvailable = useContext(SettingsDetailHostContext) !== null;
+
+  useLayoutEffect(() => {
+    setTestResult(undefined);
+    // 测试结果只属于当前编辑草稿；关闭、改值或离开页面只撤销展示权，不取消后端测试。
+    return () => { testRequestRef.current += 1; };
+  }, [detailHostAvailable, draft, formOpen, projectId]);
 
   const applySnapshot = useCallback((next: DesktopMcpSnapshot): void => {
     setSnapshot(next);
@@ -234,13 +243,15 @@ export function McpServersView({ projectId, onError, onSuccess }: McpServersView
   }, [draft, editingName, onError, onSuccess, projectId, snapshot, updateSnapshot]);
 
   const testDraft = useCallback(async (): Promise<void> => {
+    const requestId = ++testRequestRef.current;
     try {
       setTestResult(undefined);
       const result = await window.biny.mcpTestServer(projectId, toProtocolDraft(draft));
+      if (requestId !== testRequestRef.current) return;
       setTestResult(result);
       if (result.success) onSuccess(result.message ?? "MCP 服务器连接成功。");
     } catch (error) {
-      onError(errorMessage(error));
+      if (requestId === testRequestRef.current) onError(errorMessage(error));
     }
   }, [draft, onError, onSuccess, projectId]);
 
