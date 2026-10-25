@@ -58,7 +58,7 @@ test("successful Skill tool results enter the loaded list", () => {
   assert.match(renderContextMenu(turns[0]?.skills ?? []), /0 个工具 · 1 个技能/u, "successful Skill reads remain visible in the context menu");
 });
 
-test("selected, injected and failed skills remain distinguishable after replay and live updates", () => {
+test("only loaded skills appear after replay and live updates while failed calls remain diagnostic", () => {
   const history: SessionEvent[] = [
     { type: "user_message", messageId: "user", content: "Review", time },
     { type: "message_metadata", messageId: "user", metadata: { capabilitySelection: { tools: ["Skill"], skills: ["review-id", "broken"] }, loadedSkills: ["image-gen"] } },
@@ -76,34 +76,26 @@ test("selected, injected and failed skills remain distinguishable after replay a
   for (const turn of [buildSessionTimeline(history, [])[0]!, buildSessionTimeline([], live)[0]!]) {
     assert.deepEqual(turn.skills, ["image-gen"]);
     const activities = skillActivities(turn.skills, turn.capabilitySelection?.skills, turn.tools, labels);
-    assert.deepEqual(activities, [
-      { name: "review", status: "selected" },
-      { name: "broken", status: "failed", error: "Skill file changed" },
-      { name: "image-gen", status: "loaded" }
-    ]);
+    assert.deepEqual(activities, [{ name: "image-gen", status: "loaded" }]);
     const panel = renderToStaticMarkup(createElement(WorkspaceToolsPanel, { tools: turn.tools, skills: activities }));
-    assert.match(panel, /review<\/span><small>已选中/u);
-    assert.match(panel, /broken<\/span><small>加载失败/u);
+    assert.doesNotMatch(panel, /已选中|data-skill-name="broken"/u);
     assert.match(panel, /image-gen<\/span><small>已加载/u);
-    assert.match(panel, /Skill file changed/u);
     assert.equal((panel.match(/data-tool-call-id=/gu) ?? []).length, 1, "injected and selected skills do not create tool calls");
     assert.match(renderToStaticMarkup(createElement(MessageContextMenu, {
       tools: ["Skill"], skills: turn.skills, selectedSkills: turn.capabilitySelection?.skills, skillCalls: turn.tools, skillLabels: labels
-    })), /0 个工具 · 3 个技能/u);
+    })), /0 个工具 · 1 个技能/u);
   }
 });
 
-test("skill activity follows loading and retry outcomes without expanding automatic selections", () => {
-  for (const selection of ["auto", "all", "none"] as const) assert.deepEqual(skillActivities([], selection, []), []);
-  const call = { id: "skill", tool: "Skill", args: { skill: "review" }, updates: [] };
-  for (const [status, expected] of [["running", "running"], ["waiting", "waiting"], ["denied", "denied"], ["cancelled", "cancelled"], ["unknown", "unknown"], ["success", "loaded"]] as const) {
-    assert.equal(skillActivities([], ["review"], [{ ...call, status }])[0]?.status, expected);
+test("the skill summary formats only confirmed loads, never selections or tool status", () => {
+  for (const selection of ["auto", "all", "none", ["review"]] as const) {
+    const selected = typeof selection === "string" ? selection : [...selection];
+    assert.deepEqual(skillActivities([], selected, []), []);
   }
-  const failed = { ...call, id: "failed", status: "failed" as const, error: "Read failed" };
-  const succeeded = { ...call, status: "success" as const };
-  const script = { ...call, id: "script", tool: "run_script", status: "failed" as const, children: [succeeded] };
-  assert.deepEqual(skillActivities([], ["review"], [failed, script, succeeded]), [{ name: "review", status: "loaded", error: undefined }]);
-  assert.deepEqual(skillActivities(["review"], ["review"], [failed]), [{ name: "review", status: "loaded" }]);
+  for (const status of ["running", "waiting", "denied", "cancelled", "unknown", "success"] as const) {
+    assert.deepEqual(skillActivities([], ["review"], [{ id: "skill", tool: "Skill", args: { skill: "review" }, status, updates: [] }]), []);
+  }
+  assert.deepEqual(skillActivities(["review", "review"], ["unloaded"], []), [{ name: "review", status: "loaded" }]);
 });
 
 function renderTimeline(turns: TimelineTurn[]): string {

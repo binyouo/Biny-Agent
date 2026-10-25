@@ -58,7 +58,8 @@ export async function referenceResolveCommand(workspaceRoot: string, uri: string
 export async function referenceTokenCommand(workspaceRoot: string, uri: string, label?: string): Promise<void> {
   const { instance, projectId } = service(workspaceRoot);
   const result = await instance.resolve(uri, projectId);
-  console.log(formatLocalReference(label ?? result.label, result.uri));
+  const tokenLabel = label ?? (result.label.replace(/[\]\n\r]/gu, " ").trim().slice(0, 80) || "引用");
+  console.log(formatLocalReference(tokenLabel, result.uri));
 }
 
 export async function referenceContextCommand(workspaceRoot: string, input: string | undefined,
