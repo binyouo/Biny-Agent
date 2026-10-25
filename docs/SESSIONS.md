@@ -39,6 +39,8 @@ CLI 以启动时的当前目录作为工作区。在目标项目中运行命令�
 
 Desktop 连续选择会话时以最后一次选择为准，无需等待前一次读取或转场动画完成；切换项目保留已展开的文件夹，加载失败保留最后打开的会话。加载期间输入区暂不可操作，防止把消息发给旧会话。跨项目的 Runtime Host 在后台准备，不创建窗口或显示额外 Dock 图标；项目内的会话共用 Host，离开后仍在运行的任务继续执行。
 
+输入区的 `@` 引用候选仅用于当前项目、引用种类和补全文本；输入改变后，上一查询的候选与错误立即退出展示，不会在新查询等待期间被 Enter、Tab 或鼠标选入草稿。只有当前候选被确认后才保存其 URI，发送时再物化为引用正文。回归入口为 [`composer-reference-results.test.ts`](../tests/composer-reference-results.test.ts)。
+
 消息菜单的“查看引用来源”只接受当前导航内最近一次查询的结果。已打开的来源弹窗保留原项目归属；关闭后较早查询不会重新打开它，点击来源仍返回来源项目。
 
 Desktop 的历史消息编辑与普通待发送草稿分开保留；提交期间输入区暂时禁用。当前编辑失败后保留该次编辑文本，成功后退出该次编辑并恢复普通草稿。等待回执时切换会话或改为编辑另一条历史消息，旧请求不能切回原聊天、关闭新的编辑框或把旧文本恢复到另一条消息。取消编辑只退出编辑界面，不撤销已经提交的 Runtime 请求。界面归属由 [`App.tsx`](../src/desktop/renderer/src/App.tsx) 的编辑提交路径与 [`Composer.tsx`](../src/desktop/renderer/src/components/Composer.tsx) 的编辑草稿恢复共同检查；回归入口为 [`message-edit-navigation-scope.test.ts`](../tests/message-edit-navigation-scope.test.ts)。

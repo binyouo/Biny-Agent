@@ -96,13 +96,14 @@ test("authenticated HTTP MCP rejects small over-budget arguments while preservin
     // Element count does not replace schema validation for a small invalid call.
     const invalid = await client.callTool({ name: "sequence", arguments: { ...target, actions: Array(6).fill({ action: "press_key", key: "Return" }) } });
     assert.equal(invalid.isError, true);
-    assert.match(textOf(invalid), /Array must contain at most 5 element/u);
+    assert.match(textOf(invalid), /Too big: expected array to have <=5 items at actions/u);
     assert.doesNotMatch(textOf(invalid), budgetError);
     assert.deepEqual(policyCalls, []);
+    assert.deepEqual(nativeCalls, [], "invalid sequence must not reach native dispatch");
 
     // All declared sequence fields fit: 5 root keys + 5 array entries +
     // 5 * 24 scalar action fields = 130, including mutually exclusive fields.
-    const shape = computerSequenceSchema.innerType().shape;
+    const shape = computerSequenceSchema.shape;
     assert.equal(Object.keys(shape).length + 5 + 5 * Object.keys(shape.actions.element.shape).length, 130);
     const step = {
       action: "type_text", showCursor: false, inputMethod: "physical", button: "left", clickCount: 1,
