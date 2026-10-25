@@ -19,6 +19,7 @@ import { IoCard } from "./chat/IoCard.js";
 import { ToolParameters } from "./chat/ToolParameters.js";
 import { toolResultImages } from "../toolImagePresentation.js";
 import { commandOutputPreview, commandOutputText } from "../commandOutput.js";
+import { classifyDiffLines } from "../../../../utils/diffLines.js";
 
 interface ToolActivityDetailProps {
   projectId: string;
@@ -333,10 +334,11 @@ function DiffView({ diff, info, onPreviewFile }: { diff: string; info: DiffInfo;
 
 interface DiffLineData {
   text: string;
+  kind: "add" | "del" | "hunk" | "meta" | "ctx";
 }
 
 function DiffLine({ line }: { line: DiffLineData }): React.JSX.Element {
-  return <span className="diff-line" data-line={diffLineKind(line.text)}>{line.text}{"\n"}</span>;
+  return <span className="diff-line" data-line={line.kind}>{line.text}{"\n"}</span>;
 }
 
 function ToolPayload({ tool, onPreviewFile }: { tool: TimelineTool; onPreviewFile(path: string): void }): React.JSX.Element {
@@ -395,9 +397,11 @@ function analyzeDiff(diff: string): DiffInfo {
   const files: DiffInfo["files"] = [];
   let additions = 0;
   let deletions = 0;
+  for (const { kind } of classifyDiffLines(diff.replace(/\r\n/gu, "\n"))) {
+    if (kind === "add") additions += 1;
+    if (kind === "delete") deletions += 1;
+  }
   for (const line of diff.split("\n")) {
-    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
-    if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
     if (!line.startsWith("diff --git ")) continue;
     const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
     if (!match?.[2]) continue;
@@ -417,7 +421,17 @@ function analyzeDiff(diff: string): DiffInfo {
 }
 
 function diffLines(diff: string): DiffLineData[] {
-  return diff.split("\n").map((text) => ({ text }));
+  // Classify before display truncation, retaining the original text (including CR).
+  const rawLines = diff.split("\n");
+  return Array.from(classifyDiffLines(diff.replace(/\r\n/gu, "\n")), (entry, index) => {
+    const text = rawLines[index]!;
+    const kind = entry.kind === "delete" ? "del"
+      : entry.kind === "context" ? "ctx"
+      : entry.kind === "old-header" || entry.kind === "new-header" ? "meta"
+      : entry.kind === "meta" ? diffLineKind(text)
+      : entry.kind;
+    return { text, kind };
+  });
 }
 
 function diffLineKind(text: string): "add" | "del" | "hunk" | "meta" | "ctx" {
