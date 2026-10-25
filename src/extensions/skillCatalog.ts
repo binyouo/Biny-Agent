@@ -110,10 +110,12 @@ export async function scanSkillCatalog(options: { homeDir?: string; projectRoots
   const homeDir = options.homeDir ?? os.homedir();
   const projectRoots = await canonicalProjectRoots(options.projectRoots ?? []);
   const roots = buildSkillRoots(homeDir, projectRoots, options.homeDir === undefined);
-  const allowedDirectories = (await Promise.all(roots.map(async ({ directory }) => {
+  const allowedDirectories = (await Promise.all(roots.map(async ({ directory, scope }) => {
     try {
       const stat = await fs.lstat(directory);
       if (stat.isSymbolicLink() || !stat.isDirectory()) return undefined;
+      // Project roots append only .agents/skills or .biny/skills to a canonical project.
+      if (scope === "project" && (await fs.lstat(path.dirname(directory))).isSymbolicLink()) return undefined;
       return await fs.realpath(directory);
     } catch {
       return undefined;
@@ -305,8 +307,13 @@ async function canonicalProjectRoots(projectRoots: string[]): Promise<string[]> 
 
 async function scanSkillRoot(root: SkillRoot, allowedDirectories: readonly string[]): Promise<{ items: DiscoveredSkill[]; diagnostics: SkillCatalogDiagnostic[] }> {
   let rootStat;
+  let projectParentIsSymlink = false;
   try {
     rootStat = await fs.lstat(root.directory);
+    // Check the sole ancestor below canonical projectRoot before enumerating skills.
+    if (root.scope === "project" && rootStat.isDirectory()) {
+      projectParentIsSymlink = (await fs.lstat(path.dirname(root.directory))).isSymbolicLink();
+    }
   } catch (error) {
     if (isNotFound(error)) return { items: [], diagnostics: [] };
     return {
@@ -318,7 +325,7 @@ async function scanSkillRoot(root: SkillRoot, allowedDirectories: readonly strin
       }]
     };
   }
-  if (rootStat.isSymbolicLink()) {
+  if (rootStat.isSymbolicLink() || projectParentIsSymlink) {
     return {
       items: [],
       diagnostics: [{
