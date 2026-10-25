@@ -47,8 +47,8 @@ export async function extractReadableHtml(html: string, url: string): Promise<Re
     const dom = new JSDOM(html, { url });
     closeDom = () => dom.window.close();
     const article = new Readability(dom.window.document, { serializer: readableNodeText }).parse();
-    const text = normalizeReadableText(article?.content ?? "");
-    if (text) {
+    const text = article?.content ?? "";
+    if (text.trim()) {
       const title = article?.title?.replace(/\s+/g, " ").trim() || fallbackTitle;
       return { title, text };
     }
@@ -60,16 +60,58 @@ export async function extractReadableHtml(html: string, url: string): Promise<Re
   return { title: fallbackTitle, text: htmlToText(html) };
 }
 
-/** DOM textContent 会拼接相邻段落、列表和单元格；仅在块边界补分隔，保留行内文字的连接。 */
+interface ReadableTextPart {
+  text: string;
+  preformatted: boolean;
+}
+
+/** 在根节点统一格式化：正文保持原有空白规则，PRE 内的文字不再经过正文归一化。 */
 function readableNodeText(node: Node): string {
+  const parts: ReadableTextPart[] = [];
+  collectReadableText(node, parts);
+  // PRE 是独立段落。边界添加两个换行，但不消费 PRE 自身的首尾空白。
+  return parts
+    .map((part) => part.preformatted ? part.text : normalizeReadableText(part.text))
+    .filter((text) => text.length > 0)
+    .join("\n\n");
+}
+
+function appendReadableProse(parts: ReadableTextPart[], text: string): void {
+  const last = parts.at(-1);
+  if (last && !last.preformatted) last.text += text;
+  else parts.push({ text, preformatted: false });
+}
+
+/** DOM textContent 会拼接相邻段落、列表和单元格；仅在块边界补分隔，保留行内文字的连接。 */
+function collectReadableText(node: Node, parts: ReadableTextPart[]): void {
+  if (node.nodeType === 3) {
+    appendReadableProse(parts, node.textContent ?? "");
+    return;
+  }
+  const tag = node.nodeName.toLowerCase();
+  if (unreadableTags.has(tag)) return;
+  if (tag === "pre") {
+    parts.push({ text: preformattedNodeText(node), preformatted: true });
+    return;
+  }
+  if (tag === "br") {
+    appendReadableProse(parts, "\n");
+    return;
+  }
+  if (tag === "li") appendReadableProse(parts, "\n- ");
+  else if (readableBlockTags.has(tag)) appendReadableProse(parts, "\n");
+  for (const child of Array.from(node.childNodes)) collectReadableText(child, parts);
+  if (tag === "td" || tag === "th") appendReadableProse(parts, "\t");
+  else if (readableBlockTags.has(tag)) appendReadableProse(parts, "\n");
+}
+
+/** PRE 的高亮 span/code 只连接文字，BR 保留换行；仍然排除不可读节点。 */
+function preformattedNodeText(node: Node): string {
   if (node.nodeType === 3) return node.textContent ?? "";
   const tag = node.nodeName.toLowerCase();
   if (unreadableTags.has(tag)) return "";
   if (tag === "br") return "\n";
-  const text = Array.from(node.childNodes, readableNodeText).join("");
-  if (tag === "td" || tag === "th") return `${text}\t`;
-  if (tag === "li") return `\n- ${text}\n`;
-  return readableBlockTags.has(tag) ? `\n${text}\n` : text;
+  return Array.from(node.childNodes, preformattedNodeText).join("");
 }
 
 function normalizeReadableText(text: string): string {
@@ -84,8 +126,16 @@ function normalizeReadableText(text: string): string {
 }
 
 export function htmlTitle(html: string): string | undefined {
-  const match = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html);
-  const title = match?.[1] === undefined ? "" : decodeHtmlEntities(match[1]).replace(/\s+/g, " ").trim();
+  const opening = /<title\b/i.exec(html);
+  if (!opening) return undefined;
+  const openingEnd = html.indexOf(">", opening.index + opening[0].length);
+  if (openingEnd < 0) return undefined;
+  const closingPattern = /<\/title\s*>/gi;
+  closingPattern.lastIndex = openingEnd + 1;
+  const closing = closingPattern.exec(html);
+  // A later opening cannot have a closing when this earliest opening has none.
+  if (!closing) return undefined;
+  const title = decodeHtmlEntities(html.slice(openingEnd + 1, closing.index)).replace(/\s+/g, " ").trim();
   return title || undefined;
 }
 

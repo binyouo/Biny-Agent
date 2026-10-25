@@ -134,13 +134,10 @@ export function cookieHeaderFor(cookies: StoredCookie[], url: URL, now: number =
     return domainMatches(host, cookie) && pathMatches(url.pathname, cookie.path);
   });
   if (!matched.length) return undefined;
-  // RFC 6265 要求路径更具体的排在前面；服务端读到同名 cookie 时取第一个。
+  // 按 RFC 6265 建议将更长路径排在前面；逐条发送匹配项，保留不同路径或域名的同名 cookie。
   const ordered = [...matched].sort((left, right) => right.path.length - left.path.length);
-  const seen = new Set<string>();
   const parts: string[] = [];
   for (const cookie of ordered) {
-    if (seen.has(cookie.name)) continue;
-    seen.add(cookie.name);
     parts.push(`${cookie.name}=${cookie.value}`);
   }
   return parts.join("; ");
