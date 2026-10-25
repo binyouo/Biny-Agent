@@ -61,7 +61,7 @@ export function MarkdownCodeBlock({ code, language, dashed, isStreaming = false 
     window.clearTimeout(copyTimer.current);
     setCopied(false);
     setCopyFailed(false);
-    const ok = await copyToClipboard(code);
+    const ok = await copyToClipboard(code, { preserveNonBreakingSpaces: true });
     if (copyRequest.current !== request) return;
     setCopied(ok);
     setCopyFailed(!ok);
