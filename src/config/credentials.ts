@@ -235,32 +235,6 @@ function applyReferencedCredentials(
   }
 }
 
-export async function saveStoredCredentials(config: AgentConfig, store: CredentialStore, previous?: AgentConfig): Promise<void> {
-  const values: Array<{ account: string; value: string | undefined }> = [
-    ...mcpCredentialValues(config, previous ?? config)
-  ];
-  for (const [alias, provider] of Object.entries(config.providers)) {
-    values.push({ account: providerCredentialAccount(alias, "apiKey"), value: provider.apiKey });
-    values.push({ account: providerCredentialAccount(alias, "refreshToken"), value: provider.oauth?.refreshToken });
-  }
-  for (const { account, value } of values) {
-    if (value) await store.set(account, value);
-  }
-  if (previous) {
-    const aliases = new Set([...Object.keys(previous.providers), ...Object.keys(config.providers)]);
-    for (const alias of aliases) {
-      const current = config.providers[alias];
-      const old = previous.providers[alias];
-      if (old?.apiKey && !current?.apiKey) await store.delete(providerCredentialAccount(alias, "apiKey"));
-      if (old?.oauth?.refreshToken && !current?.oauth?.refreshToken) await store.delete(providerCredentialAccount(alias, "refreshToken"));
-    }
-    const currentMcpAccounts = new Set(mcpCredentialAccounts(config));
-    for (const account of mcpCredentialAccounts(previous)) {
-      if (!currentMcpAccounts.has(account)) await store.delete(account);
-    }
-  }
-}
-
 /**
  * Keychain 与 config.json 的补偿事务。
  *
@@ -342,16 +316,6 @@ export function synchronizeCredentialRevisions(config: AgentConfig, previous: Ag
     }
   }
   config.credentialRevisions = revisions;
-}
-
-/**
- * 检查当前是否存在待恢复/待清理的凭据事务。
- *
- * 这只是瞬时状态，不能证明后续读取安全：writer 可在检查之后创建并清理整个 journal。
- * 配置文档读取、事务恢复和凭据水合仍须在同一个全局配置锁内完成。
- */
-export async function hasPendingCredentialTransaction(journalPath: string): Promise<boolean> {
-  return (await readCredentialJournal(journalPath)) !== undefined;
 }
 
 /** load 边界先恢复未完成的凭据事务；无法证明方向时 fail closed，不返回混合状态。 */

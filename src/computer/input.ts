@@ -27,7 +27,7 @@ const requiredFields: Partial<Record<ActionPayload["action"], string[]>> = {
 };
 
 export function legacyActionShape(action: ActionPayload["action"]): z.ZodRawShape {
-  const shape: z.ZodRawShape = { ...legacyComputerTarget };
+  const shape: Record<string, z.ZodType> = { ...legacyComputerTarget };
   for (const name of [...actionFields[action], "show_cursor"]) {
     const field = computerActionPayload.shape[aliases[name] ?? name as keyof ActionPayload];
     shape[name] = requiredFields[action]?.includes(name) && field instanceof z.ZodOptional ? field.unwrap() : field;

@@ -11,6 +11,7 @@ import { hashlineAnchor } from "../src/tools/file/hashline.js";
 import { visitBoundUtf8Lines } from "../src/tools/file/safeFileIo.js";
 import { CancellableRegexMatcher, maxRegexBatchLines, RegexExecutionError } from "../src/tools/search/regexMatcher.js";
 import { createSearchFilesTool, type SearchFilesArgs, type SearchFilesResult } from "../src/tools/search/searchFiles.js";
+import { RipgrepError } from "../src/tools/search/ripgrep.js";
 
 const window = { skipMatches: 0, remainingMatches: 200, contextLines: 0, remainingContext: 0, hasMore: false };
 
@@ -49,7 +50,7 @@ test("Grep retains context, cross-batch pagination, CRLF/EOF, filters and anchor
     await writeFile(path.join(root, "scope", "a.txt"), lines.join("\r\n"));
     await writeFile(path.join(root, "scope", "b.md"), "😀wordword excluded\n");
     await writeFile(path.join(root, "ignored.txt"), "😀wordword ignored\n");
-    const first = await search(root, { query: "(?<=😀)(word)\\1", mode: "regex", path: "scope", glob: "scope/**/*.txt", offset: 25, limit: 2, contextLines: 2 });
+    const first = await search(root, { query: "(?:word){2}", mode: "regex", path: "scope", glob: "scope/**/*.txt", offset: 25, limit: 2, contextLines: 2 });
     assert.deepEqual(first.matches.map((match) => [match.path, match.line, match.column]), [["scope/a.txt", 126, 3], ["scope/a.txt", 131, 3]]);
     assert.deepEqual(first.matches[0]?.before, [{ line: 124, text: lines[123] }, { line: 125, text: lines[124] }]);
     assert.deepEqual(first.matches[1]?.after, [{ line: 132, text: lines[131] }, { line: 133, text: lines[132] }]);
@@ -61,8 +62,8 @@ test("Grep retains context, cross-batch pagination, CRLF/EOF, filters and anchor
     assert.equal(final.matches[0]?.line, 310);
     assert.equal(final.hasMore, false);
     assert.equal((await search(root, { query: "(word)\\1", path: "scope" })).matches.length, 0, "literal default stays literal");
-    assert.throws(() => createSearchFilesTool({ workspaceRoot: root, ignore: [] }).resolveExecution({ query: "[", mode: "regex" }), SyntaxError);
-    assert.throws(() => createSearchFilesTool({ workspaceRoot: root, ignore: [] }).resolveExecution({ query: "a".repeat(65537), mode: "regex" }), RegexExecutionError);
+    await assert.rejects(search(root, { query: "[", mode: "regex" }), RipgrepError);
+    assert.throws(() => createSearchFilesTool({ workspaceRoot: root, ignore: [] }).resolveExecution({ query: "a".repeat(65537), mode: "regex" }), RipgrepError);
   });
 });
 
@@ -273,20 +274,24 @@ test("host stays responsive; abort/error/exit/deadline settle once and release w
       FakeWorker.termination = new Promise<number>((resolve) => { finishTermination = resolve; });
       const reserved = await Promise.all(Array.from({ length: 7 }, () => CancellableRegexMatcher.create("x", "u")));
       const delayedAbort = new AbortController();
-      const delayedSearch = search(root, { query: "x", mode: "regex" }, delayedAbort.signal);
+      const delayedSearch = (async () => {
+        const matcher = await CancellableRegexMatcher.create("x", "u", delayedAbort.signal);
+        try { return await matcher.match(["x"], window); }
+        finally { await matcher.close(); }
+      })();
       let settled = false;
       void delayedSearch.then(() => { settled = true; }, () => { settled = true; });
       const cancelled = assert.rejects(delayedSearch, { name: "AbortError" });
       try {
         const deadline = Date.now() + 1000;
         while (!FakeWorker.instances.at(-1)?.sent.length) {
-          assert.ok(Date.now() < deadline, "Grep should dispatch its bounded batch");
+          assert.ok(Date.now() < deadline, "the JavaScript matcher should dispatch its bounded batch");
           await new Promise<void>((resolve) => setImmediate(resolve));
         }
         const delayedWorker = FakeWorker.instances.at(-1)!;
         delayedAbort.abort();
         await new Promise<void>((resolve) => setImmediate(resolve));
-        assert.equal(settled, false, "Grep cancellation waits for underlying thread termination");
+        assert.equal(settled, false, "JavaScript matcher cancellation waits for underlying thread termination");
         await assert.rejects(CancellableRegexMatcher.create("x", "u"), /worker limit reached/u);
         assert.equal(delayedWorker.terminateCalls, 1);
         finishTermination(0);
