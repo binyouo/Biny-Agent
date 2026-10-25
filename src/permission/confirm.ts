@@ -7,27 +7,8 @@
 import { permissionPresentation } from "./presentation.js";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { isFullYesConfirmation, permissionResultFromAnswer } from "./confirmation.js";
+import { permissionResultFromAnswer } from "./confirmation.js";
 import type { PermissionPrompt, PermissionResult } from "./PermissionManager.js";
-
-export interface ConfirmOptions {
-  // 高风险操作可以要求完整输入 yes，避免用户误按 y。
-  requireFullYes?: boolean;
-}
-
-export async function confirmAction(title: string, details: string, options: ConfirmOptions = {}): Promise<boolean> {
-  // 这是非 TUI 场景的同步式确认入口；TUI 会通过 confirmPermission 注入自己的 UI。
-  output.write(`\n${title}\n${details}\nAllow? ${options.requireFullYes ? "type yes to confirm" : "yes/no"}\n`);
-  const rl = createInterface({ input, output });
-  try {
-    const answer = await rl.question("> ");
-    if (options.requireFullYes) return isFullYesConfirmation(answer);
-    const normalized = answer.trim().toLowerCase();
-    return normalized === "y" || normalized === "yes";
-  } finally {
-    rl.close();
-  }
-}
 
 export async function confirmPermissionRequest(
   request: PermissionPrompt,

@@ -127,7 +127,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private readyPromise: Promise<void> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempts = 0;
-  private connectionEstablishedAt: number | undefined;
   private stableResetTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly pending = new Map<string, PendingRequest<unknown>>();
   private readonly completions = new Map<string, PendingCompletion>();
@@ -1334,9 +1333,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return this.readyPromise;
   }
 
-  /** 握手成功后记录连接建立时间并启动稳定计时：稳定运行满 stableConnectionMs 才把退避计数清零。 */
+  /** 握手成功后启动稳定计时：稳定运行满 stableConnectionMs 才把退避计数清零。 */
   private noteConnectionEstablished(): void {
-    this.connectionEstablishedAt = Date.now();
     // 连接刚建立不算稳定；只有在它之上连续存活满 stableConnectionMs 才重置退避计数。
     if (this.stableResetTimer) clearTimeout(this.stableResetTimer);
     this.stableResetTimer = setTimeout(() => {
@@ -1349,7 +1347,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private noteConnectionDropped(): void {
-    this.connectionEstablishedAt = undefined;
     if (this.stableResetTimer) clearTimeout(this.stableResetTimer);
     this.stableResetTimer = undefined;
   }

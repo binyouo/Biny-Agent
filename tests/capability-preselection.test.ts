@@ -18,7 +18,7 @@ const model: AgentModel = testModel({
     })();
   }
 });
-const tools = ["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "Skill", "read_skill_resource"].map((name) => ({ name, description: name, source: "builtin" as const }));
+const tools = ["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "TaskStatus", "Skill", "read_skill_resource"].map((name) => ({ name, description: name, source: "builtin" as const }));
 const options = {
   input: "查看文档并评审", config: { ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "direct" as const } }, history: [], previousTools: ["Read", "removed"], models: candidates(model),
   tools: [...tools, { name: "mcp_docs_read", description: "Read docs", source: "mcp" as const, capability: "mcp:docs" },
@@ -28,7 +28,7 @@ const options = {
 };
 const result = await preselectCapabilities(options);
 assert.equal(calls, 2, "工具与技能分别调用同一辅助模型");
-assert.deepEqual(new Set(result.tools), new Set(["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "mcp_docs_read", "Skill", "read_skill_resource"]));
+assert.deepEqual(new Set(result.tools), new Set(["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "TaskStatus", "mcp_docs_read", "Skill", "read_skill_resource"]));
 assert.deepEqual(result.skills, ["review-id"]);
 const before = calls;
 assert.deepEqual(await preselectCapabilities({ ...options, selection: { tools: ["Write"], skills: "none" } }), { tools: ["Write"], skills: "none" });
@@ -62,8 +62,11 @@ const parallelModel: AgentModel = testModel({
     if (concurrentCalls === 2) release();
     await bothStarted;
     const skillRequest = context.systemPrompt?.includes("技能目录：");
-    assert.equal(context.systemPrompt?.includes("扩展工具目录："), !skillRequest, "只发送本次分析需要的目录");
+    assert.equal(context.systemPrompt?.includes("可选工具目录："), !skillRequest, "只发送本次分析需要的目录");
     if (!skillRequest) {
+      const catalog = JSON.parse(context.systemPrompt!.split("可选工具目录：")[1]!) as { name: string; source: string }[];
+      assert.equal(catalog.find((tool) => tool.name === "WebSearch")?.source, "builtin");
+      assert.equal(catalog.find((tool) => tool.name === "mcp_docs_read")?.source, "mcp");
       assert.equal(context.systemPrompt?.includes('"Read"'), false, "基础工具不进入扩展筛选目录");
       assert.equal(context.systemPrompt?.includes('"Write"'), false, "基础工具不进入扩展筛选目录");
     }
@@ -144,12 +147,12 @@ assert.ok(Array.isArray(fallbackSelection.tools) && fallbackSelection.tools.incl
 assert.deepEqual(fallbackSelection.skills, ["review-id"], "Skill selection must use the same bounded fallback policy.");
 
 // 既有目录省略了常驻辅助工具，无法发现普通请求仍携带这些无关定义。
-const coreNames = ["Read", "Write", "Edit", "Bash", "ToolSearch"];
-const optionalNames = ["Glob", "Grep", "ProcessStatus", "KillShell", "AskUserQuestion", "read_checkpoint_evidence"];
+const coreNames = ["Read", "Write", "Edit", "Bash", "ToolSearch", "ProcessStatus", "KillShell"];
+const optionalNames = ["Glob", "Grep", "AskUserQuestion", "read_checkpoint_evidence"];
 const completeCatalog = [...coreNames, ...optionalNames].map((name) => ({ name, description: name }));
 const minimalOptions = { ...options, tools: completeCatalog, skills: [], previousTools: [], input: "你好", models: [] };
 assert.deepEqual(new Set((await preselectCapabilities(minimalOptions)).tools), new Set(coreNames),
-  "a fresh automatic turn retains only coding, discovery and archived-result retrieval even without a selector");
+  "a fresh automatic turn retains coding tools and their process controls even without a selector");
 answer = JSON.stringify({ tools: optionalNames });
 const selectedHelpers = await preselectCapabilities({ ...minimalOptions, models: candidates(model) });
 assert.deepEqual(new Set(selectedHelpers.tools), new Set([...coreNames, ...optionalNames]),
@@ -167,7 +170,7 @@ function candidates(model: AgentModel) {
 
 const scriptSelection = await preselectCapabilities({ ...minimalOptions,
   config: { ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "code_mode" } }, input: "ToolSearch", previousTools: ["ToolSearch"] });
-assert.deepEqual(new Set(scriptSelection.tools), new Set(["Read", "Write", "Edit", "Bash"]), "script discovery removes the standalone search schema even when named or retained");
+assert.deepEqual(new Set(scriptSelection.tools), new Set(["Read", "Write", "Edit", "Bash", "ProcessStatus", "KillShell"]), "script discovery removes the standalone search schema even when named or retained");
 
 // Skill history and declared dependencies survive an empty selection result.
 const skillHistoryOptions = { ...options, models: [], input: "continue", previousTools: [],
@@ -178,6 +181,7 @@ const retainedSkills = await preselectCapabilities(skillHistoryOptions);
 assert.deepEqual(retainedSkills.skills, ["review-id"]);
 assert.ok(Array.isArray(retainedSkills.tools));
 assert.ok(retainedSkills.tools.includes("Task"), "selected skills supply their declared dependencies");
+assert.ok(retainedSkills.tools.includes("TaskStatus"), "skill dependencies include task lifecycle tools");
 assert.ok(retainedSkills.tools.includes("Skill"));
 assert.equal(retainedSkills.tools.includes("unregistered"), false);
 assert.deepEqual((await preselectCapabilities({ ...skillHistoryOptions, selection: { tools: "auto", skills: "none" } })).skills, "none");
@@ -186,3 +190,21 @@ const manualSkill = await preselectCapabilities({ ...skillHistoryOptions, select
 assert.ok(Array.isArray(manualSkill.tools) && manualSkill.tools.includes("Task"));
 const explicitTools = await preselectCapabilities({ ...skillHistoryOptions, selection: { tools: ["Read"], skills: ["review-id"] } });
 assert.deepEqual(explicitTools.tools, ["Read"], "skill declarations cannot widen an explicit tool allowlist");
+
+for (const selection of [{ input: "调用 WebFetch", previousTools: [] }, { input: "continue", previousTools: ["WebFetch"] }]) {
+  const selected = await preselectCapabilities({ ...queryOptions, ...selection, models: [] });
+  assert.ok(Array.isArray(selected.tools) && selected.tools.includes("WebSearch"), "explicit and retained web tools keep their companion");
+}
+assert.deepEqual((await preselectCapabilities({ ...options, selection: { tools: ["Task"], skills: "auto" }, models: [] })).tools, ["Task"], "manual tool selection never adds companions");
+for (const exposure of ["hidden", "codemode"] as const) {
+  const selected = await preselectCapabilities({ ...minimalOptions,
+    tools: completeCatalog.map((tool) => tool.name === "ProcessStatus" || tool.name === "KillShell" ? { ...tool, exposure } : tool)
+  });
+  assert.deepEqual(new Set(selected.tools), new Set(["Read", "Write", "Edit", "Bash", "ToolSearch"]), "companions must be model-visible");
+}
+const widgetSelection = await preselectCapabilities({ ...minimalOptions,
+  tools: [...completeCatalog, ...["WidgetRenderer", "WidgetReadme"].map((name) => ({ name, description: name }))],
+  selection: { tools: "auto", skills: ["visualize"] },
+  skills: [{ id: "visualize", name: "visualize", description: "Visualize", allowedTools: ["WidgetRenderer"] }]
+});
+assert.deepEqual(new Set(widgetSelection.tools), new Set([...coreNames, "WidgetRenderer", "WidgetReadme"]));
