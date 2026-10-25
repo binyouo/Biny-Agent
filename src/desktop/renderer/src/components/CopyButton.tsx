@@ -17,6 +17,8 @@ interface CopyButtonProps {
   resolveValue?: () => string;
   /** 参数等原始文本需要保留末尾换行。 */
   preserveTrailingNewline?: boolean;
+  /** 源码和文件内容需要保留字面的不换行空格。 */
+  preserveNonBreakingSpaces?: boolean;
   /** 图标旁展示文字标签（复制成功变为「已复制」）。 */
   showLabel?: boolean;
   showTooltip?: boolean;
@@ -30,6 +32,7 @@ export function CopyButton({
   size = 12,
   resolveValue,
   preserveTrailingNewline = false,
+  preserveNonBreakingSpaces = false,
   showLabel = false,
   showTooltip = true
 }: CopyButtonProps): React.JSX.Element {
@@ -61,7 +64,7 @@ export function CopyButton({
         // 去掉结尾换行：代码块渲染时会带一个，复制到别处会多出一空行。
         const original = resolveValue?.() ?? value;
         const text = preserveTrailingNewline ? original : original.replace(/\n$/, "");
-        void copyToClipboard(text).then((ok) => {
+        void copyToClipboard(text, { preserveNonBreakingSpaces }).then((ok) => {
           if (requestRef.current !== request) return;
           requestRef.current = undefined;
           if (!ok) { setFailed(true); return; }

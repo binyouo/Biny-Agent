@@ -10,7 +10,7 @@ import { importSessionFile, parseSessionImport, parsePreparedChatGptImport, pers
 import { ensureAgentDirs } from "../session/store.js";
 import { prepareChatGptSource, type PreparedChatGptSource } from "../session/import/chatgpt.js";
 import { discoverConfigurationImports, type ConfigurationImportCandidate } from "./configuration.js";
-import { applicationImportSources, type ApplicationImportHistory, type ApplicationImportPreview, type ApplicationImportResult, type ApplicationImportSnapshot, type ApplicationImportSource } from "./types.js";
+import { applicationImportSources, type ApplicationImportHistory, type ApplicationImportPreview, type ApplicationImportResult, type ApplicationImportSnapshot, type ApplicationImportSource, type ApplicationImportSyncOutcome } from "./types.js";
 
 const maxSourceBytes = 64 * 1024 * 1024;
 const maxStateBytes = 32 * 1024 * 1024;
@@ -103,7 +103,12 @@ export class ApplicationImportService {
   }
 
   async sync(): Promise<ApplicationImportSnapshot> {
-    return await this.withState(async (state) => {
+    return (await this.syncWithEffects()).snapshot;
+  }
+
+  async syncWithEffects(): Promise<ApplicationImportSyncOutcome> {
+    const effects: ApplicationImportSyncOutcome["effects"] = { mcpImported: false };
+    const snapshot = await this.withState(async (state) => {
       if (!state.sync.enabled) return await this.toSnapshot(state);
       state.sync.lastError = undefined;
       for (const selection of state.sync.selections) {
@@ -114,15 +119,17 @@ export class ApplicationImportService {
           const items = scanned.preview.items.filter((item) => selection.itemIds.includes(item.id));
           if (!items.length) { state.sync.lastError = "已选择的来源项目不可用，请重新预览。"; continue; }
           scanned.preview.items = items;
-          const history = await this.execute(state, scanned.preview, items.map((item) => item.id), workspaceRoot, scanned);
+          const history = await this.execute(state, scanned.preview, items.map((item) => item.id), workspaceRoot, scanned, effects);
           if (history.results.some((result) => result.status === "unknown" || result.status === "failed")) state.sync.lastError = "部分同步项目未完成，请查看导入历史。";
         } catch { state.sync.lastError = "同步来源或目标不可用，请重新预览并检查导入历史。"; }
       }
       return await this.toSnapshot(state);
     });
+    // The enclosing state publication and lock release must succeed before effects escape.
+    return { snapshot, effects };
   }
 
-  private async execute(state: ImportState, preview: StoredPreview, ids: string[], workspaceRoot: string, scannedSource?: ScannedSource): Promise<ApplicationImportHistory> {
+  private async execute(state: ImportState, preview: StoredPreview, ids: string[], workspaceRoot: string, scannedSource?: ScannedSource, effects?: ApplicationImportSyncOutcome["effects"]): Promise<ApplicationImportHistory> {
     const history: ApplicationImportHistory = { id: randomUUID(), source: preview.source, label: preview.label, time: new Date().toISOString(), workspaceRoot, results: [] };
     state.history = [history, ...state.history].slice(0, 50);
     let scanned: ScannedSource | undefined;
@@ -188,6 +195,8 @@ export class ApplicationImportService {
         if (current.category === "sessions") result.status = "imported";
         receipt.status = result.status === "skipped" ? "skipped" : "imported";
         await this.writeState(state);
+        // Preserve confirmed effects even if a later item's admission write throws.
+        if (effects && result.category === "mcp" && result.status === "imported") effects.mcpImported = true;
       } catch (error) {
         receipt.status = "unknown";
         result.status = "unknown";

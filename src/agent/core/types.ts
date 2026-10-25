@@ -257,6 +257,8 @@ export type AgentEvent =
   | { type: "error"; error: string; fatal: boolean; reason?: "step_limit" };
 
 export interface AgentLoopTurnContext {
+  /** Transient logical provider-call identity for request-owned diagnostics. */
+  requestId?: string;
   message: AgentAssistantMessage;
   toolResults: AgentToolResultMessage[];
   context: AgentContext;
