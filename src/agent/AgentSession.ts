@@ -9,7 +9,7 @@ import { promises as fs } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { configSchema, type AgentConfig } from "../config/schema.js";
+import { configSchema, type AgentConfig, type ModelAliasConfig } from "../config/schema.js";
 import { createFileConfigStore, updateConfig, type AgentConfigStore } from "../config/store.js";
 import { AGENT_DATABASE_FILE, globalAgentDir } from "../config/paths.js";
 import type { SkillExtractionNotice, SkillExtractionOutcome } from "./skillExtraction.js";
@@ -128,12 +128,12 @@ import { WorkspaceContext } from "./context/WorkspaceContext.js";
 import type { CompactionResult, ContextStatus } from "./context/types.js";
 import { recordNativeTelemetry } from "../observability/telemetry.js";
 import { summarizeModelRequests, type ModelRequestSummary } from "../observability/modelRequests.js";
-import { createSessionUsage, formatUsageSummary, sumSessionUsage, summarizeUsage, type UsageModelInfo } from "../observability/usage.js";
+import { createSessionUsage, formatUsageSummary, sumSessionUsage, summarizeUsage, type UsageModelInfo, type ModelUsageIdentity } from "../observability/usage.js";
 import type { SessionContextCheckpoint, SessionContextCheckpointState, SessionUsage, UsageOperation, UsageSummary } from "../session/metadata.js";
 import { sessionContextCheckpointFields } from "../session/metadata.js";
 import { defaultModelContextWindow } from "../ai/capabilities.js";
 import { modelCapabilities, modelContextBudget } from "../ai/capabilities.js";
-import { createModelForConfig, createProviderCredentialPersistence } from "../llm/modelFactory.js";
+import { createProviderCredentialPersistence } from "../llm/modelFactory.js";
 import { resolveEditingMode } from "../tools/file/editingMode.js";
 import { resolveMemoryModelAlias, resolveToolModelAlias, type MemoryModelField } from "../llm/toolModel.js";
 import { generateSessionTitle } from "../session/title.js";
@@ -141,12 +141,13 @@ import type { ModelSettings } from "../llm/modelFactory.js";
 import { isModelContextOverflowError } from "../llm/modelErrors.js";
 import { generateNativeText } from "../llm/nativeJson.js";
 import { ProviderRegistry } from "../llm/ProviderRuntime.js";
+import { ModelRuntime } from "../llm/ModelRuntime.js";
 import { AgentMemoryClient } from "../runtime/memory/client.js";
 import type { EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
 import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import { messageText, withMessageSentAt } from "./modelMessages.js";
-import { PluginLifecycleRegistry, type PluginMcpToolCaller } from "../extensions/pluginLifecycle.js";
+import { PluginLifecycleRegistry, type PluginMcpToolCaller, type PluginTurnMessage } from "../extensions/pluginLifecycle.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
 import { archiveToolResult } from "../session/toolResultArchive.js";
 import { TodoStore } from "../session/todoStore.js";
@@ -200,7 +201,7 @@ export interface AgentSessionOptions {
   config: AgentConfig;
   model?: AgentModel;
   /** Activity 本地嵌入边界；宿主可共享已加载运行时，测试可注入协议 fake。 */
-  getActivityEmbeddingRuntime?: () => Promise<EmbeddingModelRuntime | undefined>;
+  getActivityEmbeddingRuntime?: (signal?: AbortSignal) => Promise<EmbeddingModelRuntime | undefined>;
   toolRegistry: ToolRegistry;
   permissionManager: PermissionManager;
   recorder: SessionRecorder;
@@ -402,7 +403,12 @@ export class AgentSession {
   private readonly soulStorage: SoulStorage;
   private readonly emotionStorage: EmotionStorage;
   private readonly fatigueService: FatigueService;
+  private readonly activityContextAbort = new AbortController();
+  private readonly pendingActivityContextTasks = new Set<Promise<unknown>>();
+  private activityContextClose: Promise<void> | undefined;
   private readonly emotionAnalysisScheduler: EmotionAnalysisScheduler;
+  private readonly pendingRecipeTasks = new Set<Promise<void>>();
+  private recipeSuggestionsClosed = false;
   private readonly memoryModelFor: (field: MemoryModelField) => AgentModel;
   private readonly toolModel: () => AgentModel | undefined;
   private titleTask?: Promise<void>;
@@ -413,6 +419,8 @@ export class AgentSession {
   private readonly memoryEmbeddingService: AgentMemoryClient;
   private readonly crystalService: CrystalService;
   private usageRecords: SessionUsage[] = [];
+  // Selection-time handoff only: callers capture before awaiting, even when adapters are shared.
+  private readonly auxiliaryUsageModels = new WeakMap<AgentModel, Readonly<UsageModelInfo>>();
   private sessionGoalRequest?: SessionGoalExpectation & { runId: string; generation: number };
   private runSessionGoalId?: string;
   private sessionGoalUsageFailure?: Error;
@@ -462,10 +470,12 @@ export class AgentSession {
     };
     const currentModel = (): AgentModel | undefined => {
       const model = options.modelManager?.getModel() ?? options.model;
-      return model?.provider === "acp" ? undefined : model;
+      if (model?.provider === "acp") return undefined;
+      if (model) this.auxiliaryUsageModels.set(model, this.usageModelInfo(undefined, this.options.config, model));
+      return model;
     };
-    const onUsage = async (usage: AgentUsage, operation: UsageOperation): Promise<void> => {
-      this.recordModelUsage(usage, operation);
+    const onUsage = async (usage: AgentUsage, operation: UsageOperation, model?: ModelUsageIdentity): Promise<void> => {
+      this.recordModelUsage(usage, operation, model);
     };
     const onModelRequest = async (metrics: ModelRequestMetrics): Promise<void> => {
       await this.recordModelRequest(metrics);
@@ -476,7 +486,15 @@ export class AgentSession {
     const auxiliaryModel = (alias: string | undefined): AgentModel | undefined => {
       if (!alias) return undefined;
       const activeAlias = options.modelManager?.getInfo().modelAlias ?? this.activeConfig.defaultModel;
-      return alias === activeAlias ? getModel() : createModelForConfig(this.activeConfig, alias, providerCredentials);
+      if (alias === activeAlias) {
+        const model = getModel();
+        this.auxiliaryUsageModels.set(model, this.usageModelInfo(undefined, this.options.config, model));
+        return model;
+      }
+      const registry = new ProviderRegistry(this.activeConfig, [], undefined, undefined, undefined, providerCredentials);
+      const model = registry.createModelSettings(alias).model;
+      this.auxiliaryUsageModels.set(model, this.usageModelInfo(alias, this.activeConfig, model, registry.forModel(alias).model));
+      return model;
     };
     this.toolModel = () => {
       const alias = resolveToolModelAlias(this.activeConfig);
@@ -508,7 +526,8 @@ export class AgentSession {
       {
         indexEntry: async (entry) => await this.indexMemoryEntry(entry),
         removeEntries: (entryIds) => this.removeMemoryEmbeddingEntries(entryIds)
-      }, (query, searchOptions) => this.memoryEmbeddingService.findSimilarInScope(query, searchOptions));
+      }, (query, searchOptions) => this.memoryEmbeddingService.findSimilarInScope(query, searchOptions), {},
+      (model) => this.auxiliaryUsageModels.get(model));
     this.identityStorage = new IdentityStorage();
     this.soulStorage = new SoulStorage();
     this.emotionStorage = new EmotionStorage();
@@ -527,7 +546,9 @@ export class AgentSession {
       getThreshold: () => this.activeConfig.context.memory.similarityThreshold,
       queryRewriteEnabled: () => this.activePersonalization.queryRewrite,
       rewriteQuery: async (query, signal, rewriteOptions) => {
-        const result = await generateNativeText(this.memoryModelFor("rewriteModel"), [{
+        const model = this.memoryModelFor("rewriteModel");
+        const usageModel = this.auxiliaryUsageModels.get(model);
+        const result = await generateNativeText(model, [{
           role: "user",
           content: query
         }], {
@@ -545,7 +566,7 @@ export class AgentSession {
           onRequestMetrics: onModelRequest,
           requestContext: { ...(this.sideModelRequestContext() ?? {}), operation: "memory" }
         });
-        if (result.usage) await onUsage(result.usage, "memory");
+        if (result.usage) await onUsage(result.usage, "memory", usageModel);
         return result.text;
       }
     });
@@ -594,31 +615,42 @@ export class AgentSession {
     });
     // 压缩摘要可切换到更便宜的模型。与 memoryModel 一样读取 root-turn 快照；解析失败只
     // 打 warning 并回退当前对话模型。模型和容量来自同一配置快照，避免 endpoint 更新后复用旧模型。
-    const summaryModels = new Map<string, AgentModel>();
+    const summaryModels = new Map<string, { model: AgentModel; usage: UsageModelInfo }>();
+    const currentSummaryModel = (): AgentModel => {
+      const model = getModel();
+      this.auxiliaryUsageModels.set(model, this.usageModelInfo(undefined, this.options.config, model));
+      return model;
+    };
     const summaryBudgets = new WeakMap<AgentModel, ReturnType<typeof modelContextBudget>>();
     const resolveSummaryModel = (): AgentModel => {
       const alias = this.activeConfig.context.compaction.summaryModel;
-      if (!alias) return getModel();
+      if (!alias) return currentSummaryModel();
       const cacheKey = createHash("sha256").update(JSON.stringify([alias, this.activeConfig.providers, this.activeConfig.models, this.activeConfig.context.maxInputTokens])).digest("hex");
       const cached = summaryModels.get(cacheKey);
-      if (cached) return cached;
+      if (cached) {
+        this.auxiliaryUsageModels.set(cached.model, cached.usage);
+        return cached.model;
+      }
       try {
         const registry = new ProviderRegistry(this.activeConfig);
         const created = registry.createModelSettings(alias).model;
         const resolved = registry.forModel(alias).model;
+        const usage = this.usageModelInfo(alias, this.activeConfig, created, resolved);
+        this.auxiliaryUsageModels.set(created, usage);
         summaryBudgets.set(created, modelContextBudget(resolved, this.activeConfig.context.maxInputTokens, alias, { reasoning: "off", toolSchemaTokens: 0 }));
         summaryModels.clear();
-        summaryModels.set(cacheKey, created);
+        summaryModels.set(cacheKey, { model: created, usage });
         return created;
       } catch (error) {
         console.warn(`[biny] 压缩摘要模型 ${alias} 解析失败，回退当前对话模型：${errorMessage(error)}`);
-        return getModel();
+        return currentSummaryModel();
       }
     };
     const contextCompactionOptions: ContextCompactionOptions = {
         ...options.config.context.compaction,
         canRequestSummary: () => this.activeOperation !== "agent turn" || !this.sessionGoalBudgetStopped(),
         resolveSummaryModel,
+        getUsageModelInfo: (model) => this.auxiliaryUsageModels.get(model),
         resolveSummaryBudget: (model) => summaryBudgets.get(model),
         configurationIdentity: () => createHash("sha256").update(JSON.stringify([
           this.activeConfig.providers, this.activeConfig.models, this.activeConfig.thinking, this.activeConfig.chat.maxOutputTokens
@@ -704,7 +736,25 @@ export class AgentSession {
     }
   }
 
-  private async activityContextPrompt(input: string, now: Date, signal?: AbortSignal): Promise<ActivityChatContext | undefined> {
+  private trackActivityContextTask<T>(task: Promise<T>): Promise<T> {
+    this.pendingActivityContextTasks.add(task);
+    void task.finally(() => this.pendingActivityContextTasks.delete(task)).catch(() => undefined);
+    return task;
+  }
+
+  private closeActivityContext(): Promise<void> {
+    // Seal admission before yielding; a timed-out prompt may still be starting its owner.
+    this.activityContextAbort.abort();
+    return this.activityContextClose ??= Promise.allSettled([...this.pendingActivityContextTasks]).then(() => undefined);
+  }
+
+  private activityContextPrompt(input: string, now: Date, signal?: AbortSignal): Promise<ActivityChatContext | undefined> {
+    if (this.activityContextAbort.signal.aborted) return Promise.resolve(undefined);
+    const combined = signal ? AbortSignal.any([signal, this.activityContextAbort.signal]) : this.activityContextAbort.signal;
+    return this.trackActivityContextTask(this.readActivityContextPrompt(input, now, combined));
+  }
+
+  private async readActivityContextPrompt(input: string, now: Date, signal: AbortSignal): Promise<ActivityChatContext | undefined> {
     if (!this.activeConfig.activity.enabled) return undefined;
     const agentDir = globalAgentDir();
     try {
@@ -715,10 +765,12 @@ export class AgentSession {
     const store = new ActivityStore();
     try {
       await store.open(this.activeConfig.activity.outputDirectory, agentDir);
+      if (signal.aborted) return undefined;
       return await activityContextForTurn({
         store, input, now, enabled: this.activeConfig.activity.enabled,
         getEmbeddingRuntime: this.options.getActivityEmbeddingRuntime
-          ?? (() => this.memoryEmbeddingService.embeddingRuntime(true)),
+          ?? ((runtimeSignal) => this.memoryEmbeddingService.embeddingRuntime(true, runtimeSignal)),
+        onPendingTask: (task) => { this.trackActivityContextTask(task); },
         signal
       });
     } catch {
@@ -968,7 +1020,8 @@ export class AgentSession {
         },
         getMessages: async () => await this.recentEmotionMessages(recorder.filePath),
         signal,
-        onUsage: async (usage) => { this.recordModelUsage(usage, "memory"); },
+        getUsageModelInfo: (model) => this.auxiliaryUsageModels.get(model),
+        onUsage: async (usage, model) => { this.recordModelUsage(usage, "memory", model); },
         onRequestMetrics: async (metrics) => await this.recordModelRequest(metrics),
         requestContext: {
           sessionId,
@@ -1326,12 +1379,13 @@ export class AgentSession {
     } catch {
       // 没有可用模型时由 diary 模块写确定性 fallback，避免日报依赖聊天模型配置。
     }
+    const usageModel = model ? this.auxiliaryUsageModels.get(model) : undefined;
     return await refreshChatDailyDiary(dateKey, {
       model,
       allowActivity: this.activeConfig.activity.enabled,
       signal: options.signal,
       force: options.force,
-      onUsage: (usage, operation, modelAlias) => { this.recordModelUsage(usage, operation, modelAlias); },
+      onUsage: (usage, operation) => { this.recordModelUsage(usage, operation, usageModel); },
       onModelRequest: async (metrics) => await this.recordModelRequest(metrics),
       requestContext: { operation: "memory" }
     });
@@ -2980,6 +3034,13 @@ export class AgentSession {
     let reasoningActive = false;
     let lastStepReasoningOutput = "";
     const stepUsageRecords: SessionUsage[] = [];
+    // Foreground steps are serial, but auxiliary requests may finish between
+    // their metrics and usage. Keep this request's diagnostics out of that log.
+    let foregroundRequest: Pick<ModelRequestMetrics, "requestId" | "promptShape"> | undefined;
+    const onForegroundRequest = async (metrics: ModelRequestMetrics): Promise<void> => {
+      foregroundRequest = { requestId: metrics.requestId, promptShape: metrics.promptShape };
+      await this.recordModelRequest(metrics);
+    };
     let usageAuditStarted = false;
     let streamFailure: string | undefined;
     let streamFailureReported = false;
@@ -3060,11 +3121,13 @@ export class AgentSession {
           serviceTier: runOptions.fastMode && activeModelSettings.model.serviceTiers?.includes("priority") ? "priority" : undefined,
           cacheMarkers: activeModelSettings.cacheMarkers,
           timeoutMs: activeModelSettings.timeoutMs,
-          onRequestMetrics: (metrics) => this.recordModelRequest(metrics),
+          onRequestMetrics: onForegroundRequest,
           requestContext: modelRequestContext(completedStepsBeforeRun + 1)
         },
         maxSteps: runBudget.hardStepLimit - completedStepsBeforeRun,
-        persistStep: async ({ message, toolResults, context }) => {
+        persistStep: async ({ requestId, message, toolResults, context }) => {
+          const promptShape = requestId !== undefined && foregroundRequest?.requestId === requestId
+            ? foregroundRequest.promptShape : undefined;
           const finalMessage = !message.content.some((part) => part.type === "toolCall");
           currentStepContext = context;
           if (runOptions.retryOrigin && finalMessage) pendingRetryReply = message;
@@ -3118,7 +3181,7 @@ export class AgentSession {
           lastAssistant = message;
           const usage = message.usage;
           // 未回报 usage 的步骤也要保留“未知”，否则恢复后会把部分缓存数据当作完整平均值。
-          stepUsageRecords.push(this.recordModelUsage(usage ?? {}, "agent"));
+          stepUsageRecords.push(this.recordModelUsage(usage ?? {}, "agent", undefined, promptShape));
           this.contextMemory.recordProviderUsage(
             usage ?? {},
             summarizeUsage(this.usageRecords.filter((record) => record.operation === "agent" || record.operation === "plan")).reportedCacheUsage?.sessionCacheHitRate
@@ -3199,7 +3262,7 @@ export class AgentSession {
               serviceTier: runOptions.fastMode && settings.model.serviceTiers?.includes("priority") ? "priority" : undefined,
               cacheMarkers: settings.cacheMarkers,
               timeoutMs: settings.timeoutMs,
-              onRequestMetrics: (metrics) => this.recordModelRequest(metrics),
+              onRequestMetrics: onForegroundRequest,
               requestContext: modelRequestContext(completedStepsBeforeRun + observedSteps + 1)
             }
           };
@@ -3460,29 +3523,38 @@ export class AgentSession {
       if (!retryCommitStarted) recordAssistantAudit();
       if (outcome.status === "completed" && runPluginLifecycle && pluginToolSelectionAllowsCalls && pluginLifecycle?.hasAfterTurn) {
         await this.recorder.flush();
-        const events = await readSessionEvents(this.recorder.filePath);
-        const replay = replaySessionEvents(events, { sessionId: this.recorder.sessionId, includeCompactedMessages: true });
-        const nodes = new Map(replay.messageTree.map((node) => [node.id, node]));
-        const pluginMessages = replay.messages.flatMap((message, index) => {
-          if (message.role !== "user" && message.role !== "assistant") return [];
-          const id = replay.messageReferences[index]?.id;
-          const messageContent = messageText(message);
-          if (!id || !messageContent.trim()) return [];
-          const node = nodes.get(id);
-          const event = node ? events[node.eventIndex] : undefined;
-          return [{ id, role: message.role, content: messageContent,
-            timestamp: event && "time" in event ? event.time : undefined }];
-        });
-        yield* waitForPluginLifecycle(pluginLifecycle.afterTurn({
-          workspaceRoot: this.options.workspaceRoot,
-          sessionId: this.recorder.sessionId,
-          userMessage: input,
-          useMemories: turnPersonalization.useMemories,
-          contributeMemories: turnPersonalization.contributeMemories,
-          outcome,
-          messages: pluginMessages,
-          signal: AbortSignal.timeout(10_000)
-        }, callPluginMcpTool));
+        let pluginMessages: PluginTurnMessage[] | undefined;
+        try {
+          const events = await readSessionEvents(this.recorder.filePath);
+          const replay = replaySessionEvents(events, { sessionId: this.recorder.sessionId, includeCompactedMessages: true });
+          const nodes = new Map(replay.messageTree.map((node) => [node.id, node]));
+          pluginMessages = replay.messages.flatMap((message, index) => {
+            if (message.role !== "user" && message.role !== "assistant") return [];
+            const id = replay.messageReferences[index]?.id;
+            const messageContent = messageText(message);
+            if (!id || !messageContent.trim()) return [];
+            const node = nodes.get(id);
+            const event = node ? events[node.eventIndex] : undefined;
+            return [{ id, role: message.role, content: messageContent,
+              timestamp: event && "time" in event ? event.time : undefined }];
+          });
+        } catch {
+          try {
+            console.warn("[biny] Plugin afterTurn history preparation failed; skipping optional sync.");
+          } catch { /* Optional diagnostics must not change the turn outcome. */ }
+        }
+        if (pluginMessages !== undefined) {
+          yield* waitForPluginLifecycle(pluginLifecycle.afterTurn({
+            workspaceRoot: this.options.workspaceRoot,
+            sessionId: this.recorder.sessionId,
+            userMessage: input,
+            useMemories: turnPersonalization.useMemories,
+            contributeMemories: turnPersonalization.contributeMemories,
+            outcome,
+            messages: pluginMessages,
+            signal: AbortSignal.timeout(10_000)
+          }, callPluginMcpTool));
+        }
       }
       if (content && (outcome.status === "completed" || outcome.status === "incomplete" || outcome.status === "blocked")) {
         yield { type: "assistant.completed", content, notification };
@@ -3679,6 +3751,8 @@ export class AgentSession {
     const previousRecorder = this.recorder;
     const previousFilePath = await fs.realpath(previousRecorder.filePath).catch(() => path.resolve(previousRecorder.filePath));
     const resumingCurrent = filePath === previousFilePath;
+    await this.emotionAnalysisScheduler.cancelAndDrain();
+    await this.drainRecipeSuggestions();
     let previousClosed = false;
     let replacementRecorder: SessionRecorder | undefined;
     try {
@@ -3729,7 +3803,6 @@ export class AgentSession {
       );
 
       if (!resumingCurrent) {
-        this.emotionAnalysisScheduler.cancel();
         await this.settleSessionMemory(previousRecorder);
         previousClosed = true;
         await this.closeReplacedSession(previousRecorder);
@@ -3802,7 +3875,8 @@ export class AgentSession {
     const previousRecorder = this.recorder;
     let nextRecorder: SessionRecorder | undefined;
     try {
-      this.emotionAnalysisScheduler.cancel();
+      await this.emotionAnalysisScheduler.cancelAndDrain();
+      await this.drainRecipeSuggestions();
       await ensureAgentDirs(this.persistenceRoot());
       // 先打开新会话的 recorder，再收尾旧会话；若这里失败，当前会话保持原样。
       nextRecorder = new SessionRecorder(this.persistenceRoot(), undefined, undefined, this.options.runtimeEventSink);
@@ -3936,9 +4010,9 @@ export class AgentSession {
   observeModelUsage(
     usage: AgentUsage,
     operation: UsageOperation,
-    modelAlias?: string
+    model?: ModelUsageIdentity
   ): void {
-    this.recordModelUsage(usage, operation, modelAlias);
+    this.recordModelUsage(usage, operation, model);
   }
 
   private usedExternalContext(messages: readonly AgentMessage[]): boolean {
@@ -3956,15 +4030,31 @@ export class AgentSession {
 
   /** 回合终态后的旁路检测；它读取 canonical session，不增加模型请求或改变回合结果。 */
   private async enqueueRecipeSuggestions(runOptions: AgentRunOptions): Promise<void> {
-    await this.recorder.flush();
-    const events = await readSessionEvents(this.recorder.filePath);
-    const store = new RecipeStateStore(this.persistenceRoot());
-    const states = await store.read(this.recorder.sessionId);
-    const recipes = freshRecipeSuggestions(events, this.recorder.sessionId, states);
+    if (this.recipeSuggestionsClosed) return;
+    const recorder = this.recorder;
+    const sessionId = recorder.sessionId;
+    const persistenceRoot = this.persistenceRoot();
+    const runId = runOptions.runId;
+    const task = this.collectRecipeSuggestions(recorder, sessionId, persistenceRoot, runId)
+      .catch(() => undefined).finally(() => this.pendingRecipeTasks.delete(task));
+    this.pendingRecipeTasks.add(task);
+    await task;
+  }
+
+  private async drainRecipeSuggestions(): Promise<void> {
+    await Promise.allSettled([...this.pendingRecipeTasks]);
+  }
+
+  private async collectRecipeSuggestions(recorder: SessionRecorder, sessionId: string, persistenceRoot: string, runId?: string): Promise<void> {
+    await recorder.flush();
+    const events = await readSessionEvents(recorder.filePath);
+    const store = new RecipeStateStore(persistenceRoot);
+    const states = await store.read(sessionId);
+    const recipes = freshRecipeSuggestions(events, sessionId, states);
     for (const recipe of recipes) {
-      await store.set(this.recorder.sessionId, recipe.id, "notified");
+      await store.set(sessionId, recipe.id, "notified");
       try {
-        this.options.onRecipeReady?.({ recipe, runId: runOptions.runId });
+        this.options.onRecipeReady?.({ recipe, runId });
       } catch {
         // 界面通知失败不影响已完成的会话和已记录的提示状态。
       }
@@ -4515,9 +4605,14 @@ export class AgentSession {
   }
 
   async close(): Promise<void> {
+    this.recipeSuggestionsClosed = true;
+    const recipeClose = this.drainRecipeSuggestions();
+    const emotionClose = this.emotionAnalysisScheduler.close();
+    await this.closeActivityContext();
     await this.acpClient?.close();
     await this.sessionSearchIndex.close();
-    this.emotionAnalysisScheduler.cancel();
+    await emotionClose;
+    await recipeClose;
     this.titleAbort.abort();
     await this.titleTask;
     await Promise.allSettled([...this.pendingMemoryTasks]);
@@ -4559,24 +4654,70 @@ export class AgentSession {
     }
   }
 
+  private usageModelInfo(
+    modelAlias?: string,
+    config = this.options.config,
+    model = this.options.modelManager?.getModel() ?? this.options.model,
+    resolvedModel?: ModelAliasConfig
+  ): UsageModelInfo {
+    if (resolvedModel && model) {
+      return {
+        modelAlias: modelAlias ?? config.defaultModel,
+        provider: model.provider,
+        model: modelIdentifier(model),
+        pricing: resolvedModel.pricing === undefined ? undefined : { ...resolvedModel.pricing }
+      };
+    }
+    const managedInfo = this.options.modelManager?.getInfo();
+    if (!managedInfo && modelAlias === undefined && model) {
+      // Injected adapters can be usable without any configured default. Optional metadata
+      // resolution must not gate the request or borrow prices from a different adapter.
+      let resolved: ReturnType<ModelRuntime["resolve"]> | undefined;
+      try { resolved = new ModelRuntime(config).resolve(config.defaultModel); } catch { /* no matching metadata */ }
+      const matching = resolved && config.providers[resolved.providerAlias]?.type === model.provider
+        && resolved.model.model === modelIdentifier(model)
+        && (model.providerAlias === undefined || model.providerAlias === resolved.providerAlias) ? resolved : undefined;
+      return {
+        modelAlias: matching?.alias ?? `${model.providerAlias ?? model.provider}/${modelIdentifier(model)}`,
+        provider: model.provider,
+        model: modelIdentifier(model),
+        pricing: matching?.model.pricing === undefined ? undefined : { ...matching.model.pricing }
+      };
+    }
+    const info = managedInfo ?? modelRuntimeInfo(config);
+    if (modelAlias === undefined && model) {
+      return {
+        modelAlias: info.modelAlias,
+        provider: model.provider,
+        model: modelIdentifier(model),
+        pricing: info.pricing === undefined ? undefined : { ...info.pricing }
+      };
+    }
+    const resolvedAlias = modelAlias ?? info.modelAlias;
+    const resolved = resolvedModel ?? config.models[resolvedAlias];
+    const catalogPricing = this.options.modelManager?.listModels().find((choice) => choice.alias === resolvedAlias
+      && (!resolved || choice.provider === resolved.provider && choice.model === resolved.model))?.pricing;
+    const provider = resolved ? config.providers[resolved.provider] : undefined;
+    // A different, unpriced auxiliary alias cannot inherit the chat model's price.
+    const pricing = resolvedModel ? resolvedModel.pricing
+      : resolved?.pricing ?? catalogPricing ?? (resolvedAlias === info.modelAlias ? info.pricing : undefined);
+    return {
+      modelAlias: resolvedAlias,
+      provider: resolvedModel && model ? model.provider : provider?.type ?? info.provider,
+      model: resolvedModel && model ? modelIdentifier(model) : resolved?.model ?? (model ? modelIdentifier(model) : info.modelLabel),
+      pricing: pricing === undefined ? undefined : { ...pricing }
+    };
+  }
+
   private recordModelUsage(
     usage: AgentUsage,
     operation: UsageOperation,
-    modelAlias?: string
+    model?: ModelUsageIdentity,
+    promptShape?: ModelRequestMetrics["promptShape"]
   ): SessionUsage {
-    const model = this.options.modelManager?.getModel() ?? this.options.model;
-    const info = this.options.modelManager?.getInfo() ?? modelRuntimeInfo(this.options.config);
-    const resolvedAlias = modelAlias ?? info.modelAlias;
-    const resolved = this.options.config.models[resolvedAlias];
-    const catalogPricing = this.options.modelManager?.listModels().find((choice) => choice.alias === resolvedAlias)?.pricing;
-    const provider = resolved ? this.options.config.providers[resolved.provider] : undefined;
-    const modelInfo: UsageModelInfo = {
-      modelAlias: resolvedAlias,
-      provider: provider?.type ?? info.provider,
-      model: resolved?.model ?? (model ? modelIdentifier(model) : info.modelLabel),
-      pricing: resolved?.pricing ?? catalogPricing ?? info.pricing
-    };
-    const record = createSessionUsage(usage, operation, modelInfo, new Date().toISOString(), this.modelRequestRecords.at(-1)?.promptShape);
+    const modelInfo = typeof model === "object" ? model : this.usageModelInfo(model);
+    // Auxiliary/aggregate usage has no request-owned shape unless supplied explicitly.
+    const record = createSessionUsage(usage, operation, modelInfo, new Date().toISOString(), promptShape);
     this.usageRecords.push(record);
     if (operation === "subagent" || operation === "memory" || operation === "vision"
       || (operation === "compaction" && this.activeOperation === "agent turn")) this.unpersistedRelatedUsage.push(record);

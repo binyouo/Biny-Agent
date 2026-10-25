@@ -22,13 +22,13 @@ const serializerFunctions = ["serializeToolResult", "jsonReplacer", "toolResultP
 const secretFunctions = ["redactSensitiveValue", "redactSensitiveValueInternal", "isSensitiveFieldName"];
 const directCalls = new Set([
   ...projectionFunctions, ...serializerFunctions, ...secretFunctions, "readResultLineRange",
-  "redactSecrets", "archiveToolResult", "formatToolError", "String", "Boolean", "createHash"
+  "redactSecrets", "archiveToolResult", "formatToolError", "readStringField", "String", "Boolean", "createHash"
 ]);
 const methods = new Set([
   "entries", "filter", "map", "join", "set", "get", "push", "has", "add", "delete",
   "keys", "isArray", "isFinite", "isSafeInteger", "parse", "stringify", "includes",
   "test", "trim", "replace", "match", "toLowerCase", "sort", "fromEntries", "endsWith",
-  "slice", "floor", "max", "min", "charCodeAt", "byteLength", "update", "digest", "archiveResult", "toString"
+  "slice", "exec", "hasOwn", "floor", "max", "min", "charCodeAt", "byteLength", "update", "digest", "archiveResult", "toString"
 ]);
 
 function check(node: ts.Node): void {
@@ -115,7 +115,7 @@ function harness(root: string, failArchive = false): Api {
   }).join(",\n");
   const declarations = redaction + secrets + serialization + projection
     + constants(coordinatorFile, ["maxArchivedPreviewCharacters", "inlineResultPersistMaxBytes"])
-    + functions(coordinatorFile, ["formatToolError"]);
+    + functions(coordinatorFile, ["formatToolError", "readStringField"]);
   // Only the two source methods are placed in this inert object; the product
   // class constructor, imports and every other lifecycle method are absent.
   const code = declarations + "\n({ projection: {collectToolResults,findReplacements,replacementMessage,readRange}, serialize:serializeToolResult, producer: {" + producerMethods + "} });";

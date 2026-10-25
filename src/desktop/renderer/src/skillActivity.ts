@@ -14,8 +14,8 @@ export const skillActivityLabels: Record<SkillActivity["status"], string> = {
 
 export function skillActivities(
   loaded: readonly string[],
-  selection: CapabilitySelectionValue | undefined,
-  tools: readonly TimelineTool[],
+  _selection: CapabilitySelectionValue | undefined,
+  _tools: readonly TimelineTool[],
   labels?: ReadonlyMap<string, string>
 ): SkillActivity[] {
   const activities = new Map<string, SkillActivity>();
@@ -25,27 +25,9 @@ export function skillActivities(
     if (/^[a-f\d]{32}$/iu.test(value)) return undefined;
     return (value.includes(":") ? value.slice(value.lastIndexOf(":") + 1) : value).trim() || undefined;
   };
-  if (Array.isArray(selection)) for (const value of selection) {
-    const name = nameFor(value);
-    if (name) activities.set(name, { name, status: "selected" });
-  }
   for (const value of loaded) {
     const name = nameFor(value);
     if (name) activities.set(name, { name, status: "loaded" });
   }
-  const visit = (calls: readonly TimelineTool[]): void => {
-    for (const call of calls) {
-      if ((call.tool === "Skill" || call.tool === "skill_call") && typeof call.args === "object" && call.args !== null && "skill" in call.args && typeof call.args.skill === "string") {
-        const name = nameFor(call.args.skill);
-        if (name && activities.get(name)?.status !== "loaded") activities.set(name, {
-          name,
-          status: call.status === "success" ? "loaded" : call.status,
-          error: call.status === "success" ? undefined : call.error ?? (typeof call.result === "string" ? call.result : undefined)
-        });
-      }
-      if (call.children) visit(call.children);
-    }
-  };
-  visit(tools);
   return [...activities.values()];
 }

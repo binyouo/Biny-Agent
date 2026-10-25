@@ -63,6 +63,7 @@ export async function writeRuntimeHostJournalAtomically(filePath: string, conten
 export class RuntimeHostEventJournal {
   private persistedSequence = 0;
   private lastError: string | undefined;
+  private needsRewrite = false;
   private tail: Promise<void> = Promise.resolve();
   /** 只持有已成功落盘且仍在窗口内的 HTML 基线；不引用 Server 会清空的旧预览参数。 */
   private readonly widgetPreviews = new Map<string, { sequence: number; html: string }>();
@@ -88,6 +89,8 @@ export class RuntimeHostEventJournal {
       throw error;
     }
 
+    // A complete final JSON record is recoverable without LF, but unsafe to append to.
+    this.needsRewrite = text.length > 0 && !text.endsWith("\n");
     const records: RuntimeHostJournalRecord[] = [];
     const latestPreviews = new Map<string, number>();
     this.widgetPreviews.clear();
@@ -141,7 +144,7 @@ export class RuntimeHostEventJournal {
       const history = readHistory();
       const record = history[sequence - (history[0]?.sequence ?? sequence)];
       if (record?.sequence !== sequence) throw new Error("Runtime Host event is missing from the in-memory replay history.");
-      const replaceJournal = rewrite || this.lastError !== undefined
+      const replaceJournal = rewrite || this.needsRewrite || this.lastError !== undefined
         || sequence % this.historyLimit === 0
         || sequence !== this.persistedSequence + 1;
       if (replaceJournal) {
@@ -159,6 +162,7 @@ export class RuntimeHostEventJournal {
         this.persistedSequence = sequence;
         this.rememberWidgetPreview(record);
       }
+      this.needsRewrite = false;
       this.lastError = undefined;
     }).catch(() => {
       this.lastError = journalFailureMessage;

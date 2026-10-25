@@ -9,7 +9,7 @@ import { z } from "zod";
 import type { AgentMessage, AgentModel, ModelRequestContext, ModelRequestObserver } from "../core/types.js";
 import { globalConfigDir } from "../../config/paths.js";
 import { generateNativeText } from "../../llm/nativeJson.js";
-import type { ModelUsageObserver } from "../../observability/usage.js";
+import type { ModelUsageObserver, UsageModelInfoResolver } from "../../observability/usage.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
   maxMemoryContentChars,
@@ -69,7 +69,8 @@ export class LocalMemory {
     private readonly getModelRequestContext: () => ModelRequestContext | undefined = () => undefined,
     private readonly derivedIndex?: Pick<MemoryDerivedIndexSink, "indexEntry" | "removeEntries">,
     private readonly findSimilarEntries?: MemorySimilarEntrySearch,
-    storageOptions: { agentDir?: string } = {}
+    storageOptions: { agentDir?: string } = {},
+    private readonly getUsageModelInfo?: UsageModelInfoResolver
   ) {
     this.recallLimitSource = recallLimit;
     this.storage = new MemoryStorage(workspaceRoot, storageOptions);
@@ -277,7 +278,9 @@ export class LocalMemory {
     const originAnchors = normalizeMemoryOriginAnchors(options.originAnchors);
     let operations: MemoryOperation[];
     try {
-      const response = await generateNativeText(this.getToolModel(), [{
+      const model = this.getToolModel();
+      const usageModel = this.getUsageModelInfo?.(model);
+      const response = await generateNativeText(model, [{
         role: "user",
         content: "Extract memories from this conversation:\n\n" + formatMemoryExtractionMessages(recentMessages)
           + (originAnchors?.length ? "\n\nOriginal user message source anchors:\n" + originAnchors.map((anchor) =>
@@ -290,7 +293,7 @@ export class LocalMemory {
         onRequestMetrics: this.onModelRequest,
         requestContext: { ...(this.getModelRequestContext() ?? {}), operation: "memory" }
       });
-      if (response.usage) await this.onUsage(response.usage, "memory");
+      if (response.usage) await this.onUsage(response.usage, "memory", usageModel);
       operations = parseMemoryOperations(response.text);
     } catch (error) {
       options.signal?.throwIfAborted();
@@ -391,14 +394,16 @@ export class LocalMemory {
       }))
     });
     try {
-      const response = await generateNativeText(this.getToolModel(), [{ role: "user", content: prompt }], {
+      const model = this.getToolModel();
+      const usageModel = this.getUsageModelInfo?.(model);
+      const response = await generateNativeText(model, [{ role: "user", content: prompt }], {
         systemPrompt: memoryReconciliationPrompt + "\n\n" + memoryTimeAnchorInstruction,
         signal,
         timeoutMs: memoryModelTimeoutMs,
         onRequestMetrics: this.onModelRequest,
         requestContext: { ...(this.getModelRequestContext() ?? {}), operation: "memory" }
       });
-      if (response.usage) await this.onUsage(response.usage, "memory");
+      if (response.usage) await this.onUsage(response.usage, "memory", usageModel);
       signal?.throwIfAborted();
       const object = response.text.match(/\{[\s\S]*\}/u);
       if (!object) return undefined;
@@ -441,13 +446,15 @@ export class LocalMemory {
   ): Promise<number[]> {
     const prompt = `The user wants to delete memories about: "${description}"\n\nHere are the candidate memories from the database:\n${candidates.map((entry, index) => `${index + 1}. ${entry.durability === "temporary" ? "[temporary]" : "[permanent]"} ${entry.content}`).join("\n")}\n\nWhich memories should be deleted? Respond with ONLY a JSON array of the numbers (1-indexed) of memories that should be deleted.\nIf none should be deleted, respond with [].\nExample response: [1, 3, 5] or []\n\nBe precise - only select memories that truly match what the user wants to delete.`;
     try {
-      const response = await generateNativeText(this.getToolModel(), [{ role: "user", content: prompt }], {
+      const model = this.getToolModel();
+      const usageModel = this.getUsageModelInfo?.(model);
+      const response = await generateNativeText(model, [{ role: "user", content: prompt }], {
         signal,
         timeoutMs: memoryModelTimeoutMs,
         onRequestMetrics: this.onModelRequest,
         requestContext: { ...(this.getModelRequestContext() ?? {}), operation: "memory" }
       });
-      if (response.usage) await this.onUsage(response.usage, "memory");
+      if (response.usage) await this.onUsage(response.usage, "memory", usageModel);
       signal?.throwIfAborted();
       const array = response.text.match(/\[[\d,\s]*\]/u);
       if (!array) return [];
@@ -488,14 +495,16 @@ export class LocalMemory {
     const prompt = `Current date and time: ${formatDate(now)}\n\nCurrent conversation context:\n${conversation}\n\nCurrent conversation source: ${conversationSource}\n\nTemporary memories related to this conversation:\n${memories}`;
     let selected: unknown[];
     try {
-      const response = await generateNativeText(this.getToolModel(), [{ role: "user", content: prompt }], {
+      const model = this.getToolModel();
+      const usageModel = this.getUsageModelInfo?.(model);
+      const response = await generateNativeText(model, [{ role: "user", content: prompt }], {
         systemPrompt: temporaryMemoryCleanupPrompt + "\n\n" + memoryTimeAnchorInstruction,
         signal,
         timeoutMs: memoryModelTimeoutMs,
         onRequestMetrics: this.onModelRequest,
         requestContext: { ...(this.getModelRequestContext() ?? {}), operation: "memory" }
       });
-      if (response.usage) await this.onUsage(response.usage, "memory");
+      if (response.usage) await this.onUsage(response.usage, "memory", usageModel);
       signal?.throwIfAborted();
       const array = response.text.match(/\[[\s\S]*?\]/u);
       if (!array) return [];
