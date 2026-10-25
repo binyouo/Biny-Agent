@@ -461,11 +461,15 @@ export function createSkillResourceTool(source: SkillBundleSource): Tool {
         description: `Read ${resource} from skill ${resolved.name}`,
         approvalRule: `read_skill_resource:${resolved.name}:${resource}`,
         async execute({ signal }): Promise<unknown> {
+          const content = await readSkillResourceFresh(resolved, resourcePath, resourceSnapshot, signal);
           return {
             skill: resolved.name,
             skillPath: resolved.path,
             path: resource,
-            content: await readSkillResourceFresh(resolved, resourcePath, resourceSnapshot, signal)
+            content,
+            // Only a completed read of the canonical instruction file is a skill load.
+            // Resource reads, discovery and selected metadata are not load evidence.
+            ...(resourcePath === resolved.filePath && content.trim() ? { loadedSkill: resolved.name } : {})
           };
         }
       };

@@ -62,8 +62,9 @@ function isGeminiProvider(provider: ProviderConfig): boolean {
 }
 
 function providerApiKey(provider: ProviderConfig): string | undefined {
+  const envName = provider.apiKeyEnv ?? providerDefinition(provider.type).apiKeyEnv;
   return provider.apiKey?.trim()
-    || (provider.apiKeyEnv ? process.env[provider.apiKeyEnv]?.trim() : undefined);
+    || (envName ? process.env[envName]?.trim() : undefined);
 }
 
 function normalizeGeminiBaseUrl(provider: ProviderConfig): string {

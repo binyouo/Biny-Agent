@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import type { PermissionResult } from "../../../../permission/PermissionManager.js";
 import type { SessionUsage } from "../../../../session/metadata.js";
 import { splitAttachmentReferences, type AttachmentReference } from "../../../attachmentReferences.js";
+import { markdownPlainText } from "../markdownPlainText.js";
 import { copyToClipboard } from "../copyToClipboard.js";
 import { AttachmentCard } from "./AttachmentCard.js";
 import { listChangedFiles, type TimelineStep, type TimelineTurn } from "../sessionTimeline.js";
@@ -805,13 +806,7 @@ function copyText(content: string): void {
 }
 
 function plainTextFromMarkdown(content: string): string {
-  return content
-    .replace(/```[^\n]*\n?([\s\S]*?)```/g, "$1")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/[*_~`]/g, "")
-    .trim();
+  return markdownPlainText(content);
 }
 
 /** 助手回复下方的操作条：
@@ -875,9 +870,14 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
     };
   }, [menuOpen, content, projectId, sessionId, turn.assistantMessageId]);
 
-  // 组件卸载（切会话、消息被折叠）时朗读与悬浮卡定时器都要跟着停。
+  // 同一用户回合切换回复版本时操作条不会卸载，朗读必须跟随原回复结束。
   useEffect(() => () => {
     stopSpeechRef.current?.();
+    stopSpeechRef.current = undefined;
+  }, [content, projectId, sessionId, turn.assistantMessageId]);
+
+  // 悬浮卡定时器只在操作条卸载时清理，不随回复切换重置菜单交互。
+  useEffect(() => () => {
     if (usageHideTimerRef.current !== undefined) window.clearTimeout(usageHideTimerRef.current);
   }, []);
 
