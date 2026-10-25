@@ -20,7 +20,10 @@ export function speak(text: string, onDone: () => void): () => void {
   const utterance = new SpeechSynthesisUtterance(text);
   // 中英文用不同的系统语音，选错了中文会被逐字母念出来。
   utterance.lang = /[一-鿿]/.test(text) ? "zh-CN" : "en-US";
+  let finished = false;
   const finish = (): void => {
+    if (finished) return;
+    finished = true;
     if (finishActive === finish) finishActive = undefined;
     onDone();
   };

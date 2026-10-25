@@ -19,7 +19,8 @@ export async function activityContextForTurn(options: {
   input: string;
   now: Date;
   enabled: boolean;
-  getEmbeddingRuntime: () => Promise<EmbeddingModelRuntime | undefined>;
+  getEmbeddingRuntime: (signal?: AbortSignal) => Promise<EmbeddingModelRuntime | undefined>;
+  onPendingTask?: (task: Promise<unknown>) => void;
   signal?: AbortSignal;
 }): Promise<ActivityChatContext | undefined> {
   if (!options.enabled) return undefined;
@@ -33,6 +34,7 @@ export async function activityContextForTurn(options: {
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<undefined>((resolve) => {
     timer = setTimeout(() => { controller.abort(); resolve(undefined); }, relevantTimeoutMs);
@@ -40,6 +42,8 @@ export async function activityContextForTurn(options: {
   try {
     const candidate = relevantActivityForChat(options.store, options.input, options.now,
       options.getEmbeddingRuntime, controller.signal).catch(() => undefined);
+    // The prompt timeout is not completion of side-effecting owner discovery.
+    options.onPendingTask?.(candidate);
     const text = await Promise.race([candidate, timeout]);
     return text && !controller.signal.aborted ? { kind: "relevant", text } : undefined;
   } finally {
@@ -52,11 +56,11 @@ async function relevantActivityForChat(
   store: ActivityStore,
   input: string,
   now: Date,
-  getEmbeddingRuntime: () => Promise<EmbeddingModelRuntime | undefined>,
+  getEmbeddingRuntime: (signal?: AbortSignal) => Promise<EmbeddingModelRuntime | undefined>,
   signal: AbortSignal
 ): Promise<string | undefined> {
   signal.throwIfAborted();
-  const runtime = await getEmbeddingRuntime();
+  const runtime = await getEmbeddingRuntime(signal);
   signal.throwIfAborted();
   if (runtime?.descriptor.source !== "local" || runtime.descriptor.ref.kind !== "local"
     || runtime.descriptor.ref.model !== "multilingual-e5-small") return undefined;

@@ -9,7 +9,7 @@ import { LocalMemory, formatMemoryMatches, redactSecrets } from "./LocalMemory.j
 import { formatRepoMapCandidates, WorkspaceContext } from "./WorkspaceContext.js";
 import { perfNow, recordPerfPhase } from "../../observability/perfTiming.js";
 import type { CompactionClaimEvidenceDraft, CompactionEvidenceDraft, CompactionResult, CompactionStatus, ContextBudgetStatus, ContextStatus, LoadedInstruction, MemoryMatch, RecentWorkspaceActivity, WorkspaceTurnData } from "./types.js";
-import type { ModelUsageObserver } from "../../observability/usage.js";
+import type { ModelUsageObserver, UsageModelInfoResolver } from "../../observability/usage.js";
 import type { ContextComponentUsage, SessionContextCheckpoint, SessionContextCheckpointField, SessionContextCheckpointState, SessionContextState } from "../../session/metadata.js";
 import { sessionContextCheckpointFields } from "../../session/metadata.js";
 import type { ModelContextBudget } from "../../ai/types.js";
@@ -60,6 +60,8 @@ export interface ContextCompactionOptions {
    * 解析失败由注入方负责降级，这里不做额外校验。
    */
   resolveSummaryModel?: () => AgentModel;
+  /** Request-owned alias/pricing, captured before summary generation can yield. */
+  getUsageModelInfo?: UsageModelInfoResolver;
   /** 与已解析摘要模型配套的容量；直接注入的宿主可显式提供。 */
   resolveSummaryBudget?: (model: AgentModel) => ModelContextBudget | undefined;
 }
@@ -750,6 +752,7 @@ export class ContextMemory {
       state: SessionContextCheckpointState;
       evidence: CompactionClaimEvidenceDraft[];
     } | undefined> {
+    const usageModel = this.compactionOptions.getUsageModelInfo?.(summaryModel);
     const previousSummary = this.summary;
     const systemPrompt = buildCompactionSystemPrompt(previousSummary !== undefined, plan.splitTurn);
     const repairPrompts = {
@@ -790,7 +793,7 @@ export class ContextMemory {
             operation: "compaction"
           }
         });
-        if (result.usage) await this.onUsage(result.usage, "compaction");
+        if (result.usage) await this.onUsage(result.usage, "compaction", usageModel);
         return result;
       };
       let instructions = systemPrompt;
