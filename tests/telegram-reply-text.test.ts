@@ -185,4 +185,3 @@ for (const owner of [false, true]) {
     assert.deepEqual(f.messages, [shortText]);
   });
 }
-
