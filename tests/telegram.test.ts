@@ -16,6 +16,7 @@ await testTelegramLongPollingAndTokenRedaction();
 await testTelegramMediaDownloadAndPhotoInput();
 await testTelegramStaticAndAnimatedStickerInput();
 await testTelegramMediaGroupAcrossPollsIsSubmittedTogether();
+await testTelegramMediaGroupAcrossPollsIsSubmittedTogether(true);
 await testTelegramVoiceTranscriptionInput();
 await testTelegramVoiceWithoutTranscriptionDoesNotFailTheTurn();
 await testTelegramCallbackQueryIsAcknowledged();
@@ -207,11 +208,11 @@ async function testTelegramStaticAndAnimatedStickerInput(): Promise<void> {
   }
 }
 
-async function testTelegramMediaGroupAcrossPollsIsSubmittedTogether(): Promise<void> {
+async function testTelegramMediaGroupAcrossPollsIsSubmittedTogether(restartDuringCollection = false): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-telegram-album-input-"));
   const workspace = path.join(root, "workspace");
   const previousAgentDir = process.env.BINY_AGENT_DIR;
-  const controller = new AbortController();
+  let controller = new AbortController();
   const imageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
   const submittedAttachments: Array<{ mimeType: string; data: string }> = [];
   const updateOffsets: number[] = [];
@@ -227,6 +228,10 @@ async function testTelegramMediaGroupAcrossPollsIsSubmittedTogether(): Promise<v
         const body = JSON.parse(String(init?.body)) as { offset?: number; timeout: number };
         updateOffsets.push(body.offset ?? 0);
         poll++;
+        if (restartDuringCollection && poll === 2) {
+          controller.abort();
+          throw new Error("synthetic shutdown during album collection");
+        }
         const message = (id: number, fileId: string, caption?: string) => ({
           ...privateMessage(id),
           text: undefined,
@@ -236,7 +241,7 @@ async function testTelegramMediaGroupAcrossPollsIsSubmittedTogether(): Promise<v
         });
         return jsonResponse({ ok: true, result: poll === 1
           ? [{ update_id: 70, message: message(70, "album-photo-1", "请看这组照片") }]
-          : poll === 2 ? [{ update_id: 71, message: message(71, "album-photo-2") }]
+          : poll === (restartDuringCollection ? 3 : 2) ? [{ update_id: 71, message: message(71, "album-photo-2") }]
             : [] });
       }
       if (url.endsWith("/getFile")) {
@@ -264,11 +269,22 @@ async function testTelegramMediaGroupAcrossPollsIsSubmittedTogether(): Promise<v
       }
     } as unknown as TelegramTestClient;
 
-    await runTelegramBridge({ ownerId: "42", allowedGroupIds: new Set(), api, client, store: new TelegramChannelStore(workspace), signal: controller.signal });
+    const store = new TelegramChannelStore(workspace);
+    await runTelegramBridge({ ownerId: "42", allowedGroupIds: new Set(), api, client, store, signal: controller.signal });
+    if (restartDuringCollection) {
+      assert.equal(submittedAttachments.length, 0);
+      assert.deepEqual((await store.read()).pendingUpdates?.map(update => update.update_id), [70]);
+      controller = new AbortController();
+      await runTelegramBridge({ ownerId: "42", allowedGroupIds: new Set(), api, client,
+        store: new TelegramChannelStore(workspace), signal: controller.signal });
+      const recovered = await new TelegramChannelStore(workspace).read();
+      assert.equal(recovered.pendingUpdates, undefined);
+      assert.equal(recovered.nextUpdateId, 72);
+    }
     assert.equal(submittedInput, "请看这组照片");
     assert.equal(submittedAttachments.length, 2, "album updates returned by separate polls are combined into one turn");
     assert.ok(submittedAttachments.every(attachment => attachment.mimeType === "image/png" && attachment.data === imageBytes.toString("base64")));
-    assert.deepEqual(updateOffsets, [0, 71, 72], "the bridge advances the offset after collecting every album item");
+    assert.deepEqual(updateOffsets, restartDuringCollection ? [0, 71, 71, 72] : [0, 71, 72], "the bridge advances the offset after collecting every album item");
   } finally {
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
