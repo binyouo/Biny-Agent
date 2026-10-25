@@ -219,7 +219,9 @@ function testConversationBoundaryPrompt(): void {
   assert.match(prompt, /only the latest user message as the active task/u);
   assert.match(prompt, /smallest sequence that reaches the outcome/u);
   assert.match(prompt, /Before the first tool call for a task, output a brief, natural acknowledgment/u);
-  assert.match(prompt, /encounter an obstacle or error, or a multi-step task reaches a significant milestone/u);
+  assert.match(prompt, /Do not wait for the user to ask about progress/u);
+  assert.match(prompt, /When a Task\/subagent completes \(success or failure\), report the result in the same turn/u);
+  assert.match(prompt, /When a multi-step task reaches a significant milestone, give a brief update/u);
   assert.match(prompt, /reach for it, don't guess/u);
   assert.match(prompt, /biny memory search/u);
   assert.match(prompt, /text-only promise is not action/u);

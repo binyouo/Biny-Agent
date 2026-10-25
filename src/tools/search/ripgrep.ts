@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { rgPath } from "@vscode/ripgrep";
 
 export const maxSearchQueryBytes = 64 * 1024;
@@ -18,6 +19,16 @@ export interface RipgrepMatch {
   text: string;
 }
 
+// Only the configured Electron application archive has an unpacked binary tree.
+// Ordinary CLI/development directories ending in .asar are not archives.
+function resolveRipgrepExecutable(): string {
+  const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  if (!process.versions.electron || !resources || !path.isAbsolute(resources) || !path.isAbsolute(rgPath)) return rgPath;
+  const relative = path.relative(path.join(resources, "app.asar"), rgPath);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return rgPath;
+  return path.join(resources, "app.asar.unpacked", relative);
+}
+
 export async function searchRipgrepFiles(options: {
   query: string;
   mode: "literal" | "regex";
@@ -29,15 +40,17 @@ export async function searchRipgrepFiles(options: {
 }): Promise<Map<string, RipgrepMatch[]>> {
   const { signal } = options;
   signal?.throwIfAborted();
+  if (!options.files.length) return new Map();
   if (activeProcesses >= 8) throw new RipgrepError("Search process limit reached; retry after another search finishes.");
   const nativeFiles = new Map(options.files.map((file) => [`./${file}`, file]));
   const args = ["--no-config", "--json", "--no-ignore", "--hidden", "--no-follow", "--text", "--crlf", "--color", "never",
     "--max-count", String(options.maxMatches),
     ...(options.mode === "literal" ? ["--fixed-strings"] : []), ...(options.caseSensitive ? ["--case-sensitive"] : ["--ignore-case"]),
-    "--regexp", options.query, "--", ...(nativeFiles.size ? nativeFiles.keys() : ["-"])];
-  const child = spawn(rgPath.replace(/\.asar([/\\])/u, ".asar.unpacked$1"), args, { cwd: options.workspaceRoot, env: {}, windowsHide: true });
+    "--file", "-", "--", ...nativeFiles.keys()];
+  const child = spawn(resolveRipgrepExecutable(), args, { cwd: options.workspaceRoot, env: {}, windowsHide: true });
   activeProcesses += 1;
   let failure: unknown;
+  let inputFailure: RipgrepError | undefined;
   let stdout = "";
   let stderr = "";
   let bytes = 0;
@@ -55,15 +68,25 @@ export async function searchRipgrepFiles(options: {
   });
   child.stderr.setEncoding("utf8").on("data", (data: string) => { stderr = (stderr + data).slice(0, 16_384); });
   child.on("error", (error) => fail(new RipgrepError("Bundled ripgrep could not start.", { cause: error })));
-  child.stdin.end();
+  // A child can reject its arguments before consuming stdin. Keep its diagnostic
+  // ahead of EPIPE, but never accept a successful exit after a failed transfer.
+  child.stdin.on("error", (error) => { inputFailure ??= new RipgrepError("Could not send the ripgrep query.", { cause: error }); });
   try {
-    const code = await new Promise<number | null>((resolve) => {
-      child.once("close", resolve);
-      if (signal?.aborted) onAbort();
-    });
+    const closed = new Promise<number | null>((resolve) => { child.once("close", resolve); });
+    try {
+      // Keep patterns out of Windows' bounded command line. EOF terminates the
+      // single UTF-8 pattern without stripping an allowed trailing carriage return.
+      // The public tool rejects empty queries; preserve the helper's empty pattern.
+      child.stdin.end(options.query === "" ? "\n" : options.query, "utf8");
+    } catch (error) {
+      fail(new RipgrepError("Could not send the ripgrep query.", { cause: error }));
+    }
+    if (signal?.aborted) onAbort();
+    const code = await closed;
     if (failure) throw failure;
     signal?.throwIfAborted();
     if (code !== 0 && code !== 1) throw new RipgrepError(stderr.trim() || `ripgrep exited with code ${String(code)}.`);
+    if (inputFailure) throw inputFailure;
     const matches = new Map<string, RipgrepMatch[]>();
     for (const row of stdout.split("\n")) {
       if (!row) continue;

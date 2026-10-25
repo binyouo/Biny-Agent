@@ -129,7 +129,7 @@ for (const failure of ["startup", "timeout", "output"] as const) {
     syncBuiltinESMExports();
     if (failure === "timeout") context.mock.timers.enable({ apis: ["setTimeout"] });
     try {
-      const pending = searchRipgrepFiles({ query: "x", mode: "literal", caseSensitive: true, files: [], workspaceRoot: os.tmpdir(), maxMatches: 1 });
+      const pending = searchRipgrepFiles({ query: "x", mode: "literal", caseSensitive: true, files: ["input.txt"], workspaceRoot: os.tmpdir(), maxMatches: 1 });
       const rejected = assert.rejects(pending, failure === "startup" ? /could not start/u : failure === "timeout" ? /timed out/u : /8 MiB/u);
       if (failure === "timeout") { await ready; context.mock.timers.tick(10_000); }
       await rejected;
