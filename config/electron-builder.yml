@@ -9,6 +9,7 @@ asarUnpack:
   - node_modules/@huggingface/transformers/**/*.wasm
   - node_modules/sharp/**/*
   - node_modules/@img/**/*
+  - node_modules/@vscode/ripgrep*/**/*
 directories:
   output: release
   buildResources: build

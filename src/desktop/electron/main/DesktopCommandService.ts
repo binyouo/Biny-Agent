@@ -35,7 +35,7 @@ export class DesktopCommandService {
     const { state, projects, agents, terminals, preview, appearance, browser } = this.services;
     const action = z.string().parse(args.action);
     if (action === "configuration") {
-      return await executeConfigurationCommand(this.services.configStore, z.string().parse(args.operation), z.record(z.unknown()).parse(args.input));
+      return await executeConfigurationCommand(this.services.configStore, z.string().parse(args.operation), z.record(z.string(), z.unknown()).parse(args.input));
     }
     if (action === "project.list") return { projects: await projects.refreshAllProjects() };
     if (action === "browser.profile.list") return await browser.listProfiles();

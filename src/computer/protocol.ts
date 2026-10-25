@@ -83,17 +83,18 @@ export function validateComputerAction(value: z.infer<typeof computerActionPaylo
   if ((value.prefix !== undefined || value.suffix !== undefined) && value.matchText === undefined) context.addIssue({ code: "custom", message: "前后文只能用于文字匹配选区" });
 }
 export const computerActionPayloadSchema = computerActionPayload.superRefine(validateComputerAction);
-export const computerActionSchema = computerActionPayload.extend({
+const computerActionObjectSchema = computerActionPayload.extend({
   ...windowTargetSchema.shape,
   captureId: z.string().min(1).max(256),
   delivery: z.enum(["background", "foreground"]).default("background")
-}).superRefine(validateComputerAction);
+});
+export const computerActionSchema = computerActionObjectSchema.superRefine(validateComputerAction);
 
 export type ComputerAction = z.infer<typeof computerActionSchema>;
 export const computerSequenceSchema = windowTargetSchema.extend({
   captureId: z.string().min(1).max(256),
   delivery: z.enum(["background", "foreground"]).default("background"),
-  actions: z.array(computerActionSchema.innerType().omit({ pid: true, windowId: true, captureId: true, delivery: true })).min(1).max(5),
+  actions: z.array(computerActionObjectSchema.omit({ pid: true, windowId: true, captureId: true, delivery: true })).min(1).max(5),
 }).strict().superRefine((value, context) => {
   for (const [index, step] of value.actions.entries()) {
     const parsed = computerActionSchema.safeParse({ ...step, pid: value.pid, windowId: value.windowId, captureId: value.captureId, delivery: value.delivery });

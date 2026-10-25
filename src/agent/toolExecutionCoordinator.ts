@@ -1,4 +1,5 @@
 import { estimateTokens } from "./context/tokenUsage.js";
+import { completeToolSelection } from "./capabilitySelection.js";
 import type { ToolOptimization } from "../session/toolOptimization.js";
 /**
  * Native tool execution coordinator.
@@ -15,7 +16,7 @@ import { PermissionManager } from "../permission/PermissionManager.js";
 import { analyzePermissionRequest, permissionApprovalFingerprint } from "../permission/policy.js";
 import { createToolPermissionRequest } from "../tools/display/ToolDisplay.js";
 import { ToolAccesses } from "../tools/access.js";
-import { getToolExposure, isToolModelVisible, isToolModelVisibleInMode, isToolScriptCallable } from "../tools/exposure.js";
+import { getToolExposure, isToolModelVisibleInMode, isToolScriptCallable } from "../tools/exposure.js";
 import { toolSearchResultNames, toolSearchToolName, type ToolSearchResult } from "../tools/toolSearch.js";
 import { assertMatchingFileChange, FileChangeUncertainError, parseFileChange, type CommittedFileChange } from "../tools/file/fileChange.js";
 import {
@@ -256,9 +257,10 @@ export class ToolExecutionCoordinator {
   /** 只扩展到当前注册表中真实存在的工具；权限、预算和审计不会随 schema 扩展而放宽。 */
   allowTools(names: readonly string[]): string[] {
     if (!this.allowedToolNames) return [];
-    const registered = new Set(this.context.toolRegistry.list().filter(isToolModelVisible).map((tool) => tool.name));
+    const registered = new Set(this.context.toolRegistry.list()
+      .filter((tool) => isToolModelVisibleInMode(tool, this.context.config.agent.toolExecutionMode)).map((tool) => tool.name));
     const added: string[] = [];
-    for (const name of names) {
+    for (const name of this.executionToolNames ? names : completeToolSelection(names, registered)) {
       if (!registered.has(name) || this.allowedToolNames.has(name)) continue;
       this.allowedToolNames.add(name);
       this.executionToolNames?.add(name);
