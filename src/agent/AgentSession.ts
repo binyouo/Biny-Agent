@@ -174,8 +174,8 @@ import type {
   MemorySearchResult,
   MemorySimilarityScan
 } from "./context/memoryTypes.js";
-import { resolvedCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, type AgentCapabilitySelection } from "./capabilitySelection.js";
-import { getToolExposure, isToolModelVisible } from "../tools/exposure.js";
+import { resolvedCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, completeToolSelection, type AgentCapabilitySelection } from "./capabilitySelection.js";
+import { getToolExposure, isToolModelVisible, isToolModelVisibleInMode } from "../tools/exposure.js";
 import { checkpointClaims } from "../session/checkpointClaims.js";
 import type { CheckpointEvidenceArgs } from "../extensions/checkpointEvidence.js";
 import type { CapabilityPreselectionInput } from "./capabilityPreselection.js";
@@ -868,7 +868,8 @@ export class AgentSession {
     }
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
     const fallback = new Set([...stableCodingToolNames, ...(this.activeConfig.agent.toolExecutionMode === "direct" ? [toolSearchToolName] : []), ...goalTools]);
-    return new Set(this.options.toolRegistry.list().map((tool) => tool.name).filter((name) => fallback.has(name)));
+    return completeToolSelection(fallback, new Set(this.options.toolRegistry.list()
+      .filter((tool) => isToolModelVisibleInMode(tool, this.activeConfig.agent.toolExecutionMode)).map((tool) => tool.name)));
   }
 
   private async prepareCapabilities(options: {

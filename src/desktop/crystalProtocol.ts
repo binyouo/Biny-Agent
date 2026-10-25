@@ -12,7 +12,7 @@ export const desktopCrystalRequestSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("type"), id, type: z.enum(["entity", "concept", "claim", "process", "rule", "project"]) }).strict(),
   z.object({ action: z.literal("slot"), id, slot: z.number().int().min(1).max(3).nullable() }).strict(),
   z.object({ action: z.literal("dormant"), id, dormant: z.boolean() }).strict(),
-  z.object({ action: z.literal("checklist"), id, fields: z.record(z.object({ value: z.string().max(4000), conflict: z.boolean() }).strict()).refine((fields) => Object.keys(fields).length <= 6) }).strict(),
+  z.object({ action: z.literal("checklist"), id, fields: z.record(z.string(), z.object({ value: z.string().max(4000), conflict: z.boolean() }).strict()).refine((fields) => Object.keys(fields).length <= 6) }).strict(),
   z.object({ action: z.literal("note"), id, text: z.string().trim().min(1).max(8000) }).strict(),
   z.object({ action: z.literal("prefill"), id }).strict(),
   z.object({ action: z.literal("confirm"), id, name: name.optional() }).strict()

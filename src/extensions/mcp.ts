@@ -389,6 +389,7 @@ export class McpToolHost {
           cursor = nextCursor;
           if (!cursor) break;
         }
+        if (cursor) resources.push({ server: managed.name, error: `MCP resource listing is incomplete after ${maxResourceListPages} pages.` });
       } catch (error) {
         signal?.throwIfAborted();
         resources.push({ server: managed.name, error: errorText(error) });
@@ -429,6 +430,7 @@ export class McpToolHost {
         if (!client?.getServerCapabilities()?.prompts) return { server: managed.name, prompts: [] };
         const prompts: Prompt[] = [];
         let cursor: string | undefined;
+        let clipped = false;
         const seen = new Set<string>();
         for (let page = 0; page < maxResourceListPages; page += 1) {
           let nextCursor: string | undefined;
@@ -438,11 +440,14 @@ export class McpToolHost {
             nextCursor = listed.nextCursor;
             return listed;
           }, signal);
+          clipped ||= result.prompts.length > 128 - prompts.length;
           prompts.push(...result.prompts.slice(0, 128 - prompts.length));
           cursor = nextCursor;
           if (!cursor || seen.has(cursor) || prompts.length >= 128) break;
           seen.add(cursor);
         }
+        if (cursor || clipped) return { server: managed.name, prompts,
+          error: "MCP prompt listing is incomplete because a discovery limit or repeated continuation was reached." };
         return { server: managed.name, prompts };
       } catch (error) {
         signal?.throwIfAborted();
