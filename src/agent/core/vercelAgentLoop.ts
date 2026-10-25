@@ -82,6 +82,7 @@ export interface VercelLoopState {
 }
 
 interface VercelStepRecord {
+  requestId: string;
   message: AgentAssistantMessage;
   toolResults: AgentToolResultMessage[];
   messages: AgentMessage[];
@@ -390,7 +391,7 @@ function completeStep(state: VercelLoopState, step: StepResult<ToolSet>): Vercel
   state.context.messages.push(message, ...toolResults);
   state.newMessages.push(message, ...toolResults);
   state.completedSteps += 1;
-  const record: VercelStepRecord = { message, toolResults, messages, hadToolCalls: step.toolCalls.length > 0 };
+  const record: VercelStepRecord = { requestId: step.callId, message, toolResults, messages, hadToolCalls: step.toolCalls.length > 0 };
   state.lastStep = record;
   updateStepReasoningMetadata(state, record);
   const invalidToolCall = step.toolCalls.find((call) => call.invalid);
@@ -421,6 +422,7 @@ function completeStep(state: VercelLoopState, step: StepResult<ToolSet>): Vercel
 
 function turnContext(state: VercelLoopState, record: VercelStepRecord): AgentLoopTurnContext {
   return {
+    requestId: record.requestId,
     message: record.message,
     toolResults: record.toolResults,
     context: state.context,

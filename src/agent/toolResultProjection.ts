@@ -15,6 +15,7 @@ import type {
 } from "./core/types.js";
 import { isToolResultArchiveReference, serializeToolResult } from "../session/toolResultArchive.js";
 import { redactSecrets } from "../utils/secrets.js";
+import { classifyDiffLines } from "../utils/diffLines.js";
 import { projectShellStreams, shellOutputExcerpt } from "./shellOutputProjection.js";
 
 const defaultProjectionThresholdBytes = 8 * 1024;
@@ -484,7 +485,7 @@ function projectReadFile(entry: ToolResultEntry): Record<string, unknown> {
   const path = stringField(record, "path") || stringField(args, "path");
   const content = stringField(record, "content");
   const displayed = tailTextWithHead(content, maxReadContentCharacters);
-  const truncated = displayed.length < content.length;
+  const truncated = content.length > maxReadContentCharacters;
   return removeUndefined({
     path: path || undefined,
     content: displayed,
@@ -831,10 +832,9 @@ function diffLineCounts(diff: string): { added?: number; deleted?: number } {
   let added = 0;
   let deleted = 0;
   let found = false;
-  for (const line of diff.split(/\r?\n/u)) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+")) { added += 1; found = true; }
-    if (line.startsWith("-")) { deleted += 1; found = true; }
+  for (const { kind } of classifyDiffLines(diff.replace(/\r\n/gu, "\n"))) {
+    if (kind === "add") { added += 1; found = true; }
+    if (kind === "delete") { deleted += 1; found = true; }
   }
   return found ? { added, deleted } : {};
 }

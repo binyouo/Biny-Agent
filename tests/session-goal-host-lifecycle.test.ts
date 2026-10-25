@@ -1,4 +1,4 @@
-import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
+import { removeTestRoot as rm, type CapturedTestFailure } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp } from "node:fs/promises";
@@ -71,6 +71,7 @@ let client: Awaited<ReturnType<typeof connectRuntimeHost>> | undefined;
 let ownerClient: Awaited<ReturnType<typeof connectRuntimeHost>> | undefined;
 let restarting: Promise<unknown> | undefined;
 process.on("uncaughtException", captureUncaught);
+let primaryFailure: CapturedTestFailure | undefined;
 try {
   let primaryCreations = 0;
   const createRuntime: RuntimeHostFactory = async (sessionId, options) => {
@@ -126,6 +127,9 @@ try {
   await client.request("session.goal.pause", { sessionId: "other-session" });
   await bounded(client.waitForIdle("other-session"), "the paused Goal run");
   assert.equal((await client.request<{ status: string }>("session.goal.get", { sessionId: "other-session" })).status, "paused");
+} catch (error) {
+  primaryFailure = { present: true, error };
+  throw error;
 } finally {
   factoryGate.resolve();
   await restarting?.catch(() => undefined);
@@ -137,6 +141,6 @@ try {
   provider.closeAllConnections();
   await new Promise<void>(resolve => provider.close(() => resolve()));
   if (oldAgentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = oldAgentDir;
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true }, { diagnostic: true, primary: primaryFailure });
 }
 console.log("session goal Host lifecycle tests passed");
