@@ -566,7 +566,21 @@ async function existingSessionFileAt(location: SessionStorageLocation, filePath:
     throw unsafeSessionError(fileName);
   }
 
-  const canonicalFile = await fs.realpath(filePath);
+  let canonicalFile: string;
+  try {
+    canonicalFile = await fs.realpath(filePath);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      // realpath 的 ENOENT 也可能来自失效链接，只忽略确已删除的目录项。
+      try {
+        await fs.lstat(filePath);
+      } catch (statError) {
+        if (hasErrorCode(statError, "ENOENT")) return undefined;
+        throw statError;
+      }
+    }
+    throw error;
+  }
   const relativeFile = path.relative(location.sessions.path, canonicalFile);
   if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile) || path.basename(canonicalFile) !== fileName) {
     throw new Error(`Session resolves outside the current project's global session directory: ${fileName}`);

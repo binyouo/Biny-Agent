@@ -140,6 +140,46 @@ test("enumeration reports the first traversal error and drains started metadata 
   });
 });
 
+for (const [name, enumerate] of [["names", listSessionFiles], ["paths", listSessionFilePaths]] as const) {
+  test(`enumerating session ${name} tolerates deletion between metadata and path resolution`, async (context) => {
+    await fixture(async (workspace, directory) => {
+      const deleted = path.join(directory, "deleted.jsonl");
+      const kept = path.join(directory, "kept.jsonl");
+      await fs.writeFile(deleted, history("deleted"));
+      await fs.writeFile(kept, history("kept"));
+      const realpath = fs.realpath;
+      let removed = false;
+      context.mock.method(fs, "realpath", async (...args: Parameters<typeof fs.realpath>) => {
+        if (String(args[0]) === deleted && !removed) {
+          removed = true;
+          await fs.unlink(deleted);
+        }
+        return await Reflect.apply(realpath, fs, args);
+      });
+      assert.deepEqual(await enumerate(workspace), [name === "names" ? "kept.jsonl" : kept]);
+      assert.equal(removed, true);
+      assert.equal(await fs.readFile(kept, "utf8"), history("kept"));
+    });
+  });
+}
+
+for (const code of ["EACCES", "ENOENT"]) {
+  test(`enumeration reports ${code} path resolution errors when the entry still exists`, async (context) => {
+    await fixture(async (workspace, directory) => {
+      const file = path.join(directory, "denied.jsonl");
+      await fs.writeFile(file, history("denied"));
+      const failure = Object.assign(new Error("path resolution failed"), { code });
+      const realpath = fs.realpath;
+      context.mock.method(fs, "realpath", async (...args: Parameters<typeof fs.realpath>) => {
+        if (String(args[0]) === file) throw failure;
+        return await Reflect.apply(realpath, fs, args);
+      });
+      await assert.rejects(listSessionFiles(workspace), (error: unknown) => error === failure);
+      assert.equal(await fs.readFile(file, "utf8"), history("denied"));
+    });
+  });
+}
+
 test("enumeration still rejects hardlinks and root replacement instead of publishing an unsafe partial list", { timeout: 15_000 }, async () => {
   await fixture(async (workspace, directory) => {
     const first = path.join(directory, "first.jsonl");
