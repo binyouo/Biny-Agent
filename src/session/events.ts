@@ -29,10 +29,10 @@ import { contextCheckpointSchema, contextStateSchema } from "./contextSchema.js"
 
 const sessionListReadConcurrency = 8;
 const maxSummaryCacheBytes = 8 * 1024 * 1024;
-const sessionUsageSchema = z.record(z.unknown());
+const sessionUsageSchema = z.record(z.string(), z.unknown());
 const reasoningBlockSchema = z.object({
   text: z.string(),
-  providerOptions: z.record(z.unknown()).optional()
+  providerOptions: z.record(z.string(), z.unknown()).optional()
 });
 const attachmentReferenceSchema = z.object({
   name: z.string(),
@@ -94,13 +94,13 @@ const agentImageContentSchema = z.object({ type: z.literal("image"), data: z.str
 const agentReasoningContentSchema = z.object({
   type: z.literal("reasoning"),
   text: z.string(),
-  providerMetadata: z.record(z.unknown()).optional()
+  providerMetadata: z.record(z.string(), z.unknown()).optional()
 }).passthrough();
 const agentToolCallContentSchema = z.object({
   type: z.literal("toolCall"),
   id: z.string(),
   name: z.string(),
-  arguments: z.record(z.unknown()),
+  arguments: z.record(z.string(), z.unknown()),
   invalid: z.boolean().optional()
 }).passthrough();
 const persistedAgentMessageSchema = z.discriminatedUnion("role", [
@@ -133,7 +133,7 @@ const sessionImportSourceSchema = z.object({
 const sessionEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("user_message"),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
     content: z.string(),
     attachments: z.array(attachmentReferenceSchema).optional(),
     skills: z.array(z.string()).optional(),
@@ -147,7 +147,7 @@ const sessionEventSchema = z.discriminatedUnion("type", [
   }).passthrough(),
   z.object({
     type: z.literal("assistant_message"),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
     content: z.string(),
     reasoningContent: z.string().optional(),
     reasoningBlocks: z.array(reasoningBlockSchema).optional(),
@@ -208,7 +208,7 @@ const sessionEventSchema = z.discriminatedUnion("type", [
   }).passthrough(),
   z.object({
     type: z.literal("agent_message"),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
     message: persistedAgentMessageSchema,
     messageId: z.string().optional(),
     parentMessageId: z.string().optional(),
@@ -236,7 +236,7 @@ const sessionEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("message_metadata"),
     messageId: z.string().min(1),
-    metadata: z.record(z.unknown()),
+    metadata: z.record(z.string(), z.unknown()),
     time: z.string().optional()
   }).passthrough(),
   z.object({

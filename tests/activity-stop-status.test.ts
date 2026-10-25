@@ -19,12 +19,14 @@ class InputChild extends EventEmitter {
   readonly commands: string[] = [];
   killed = false;
   tail: unknown[] = [];
+  stopPipeError?: NodeJS.ErrnoException;
   readonly stdin = new Writable({ write: (chunk: Buffer, _encoding, callback) => {
     const command = JSON.parse(chunk.toString("utf8")) as { type: string };
     this.commands.push(command.type);
     if (command.type === "stop") {
       // Deterministic ordering: stop owns cleanup before old stdout/exit arrive.
       queueMicrotask(() => {
+        if (this.stopPipeError) this.stdin.emit("error", this.stopPipeError);
         for (const message of this.tail) this.receive(message);
         this.finish(0);
       });
@@ -139,3 +141,28 @@ await test("unexpected input process exit remains an error", async t => {
   assert.equal(service.snapshot().state, "error");
   assert.match(service.snapshot().error ?? "", /code=7/);
 });
+
+for (const [code, stopping, expected] of [
+  ["EPIPE", true, "stopped"],
+  ["EPIPE", false, "error"],
+  ["EIO", true, "error"]
+] as const) {
+  await test(`stdin ${code} while ${stopping ? "stopping" : "running"} reports ${expected}`, async t => {
+    const { service, child, rows } = await fixture(t);
+    const error = Object.assign(new Error(`fixture ${code}`), { code });
+    if (stopping) {
+      child.stopPipeError = error;
+      child.tail = [event("keypress", "Pipe tail")];
+      await service.stop();
+    } else {
+      child.stdin.emit("error", error);
+    }
+    assert.equal(service.snapshot().state, expected);
+    assert.equal(service.snapshot().error, expected === "error" ? `fixture ${code}` : undefined);
+    if (stopping) {
+      assert.equal(service.httpCaptureStatus().running, false);
+      assert.deepEqual(child.commands, ["start", "stop"]);
+      assert.equal(rows().filter(row => row.app_name === "Pipe tail").length, 1);
+    }
+  });
+}

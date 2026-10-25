@@ -6,21 +6,11 @@ import { toolDisplayName } from "../../../tools/presentation.js";
  */
 import type { TimelineReasoningStep, TimelineTool, TimelineToolStep, TimelineTurn } from "./sessionTimeline.js";
 import { readReportedCacheUsage, reportedCacheTokenValue, type SessionUsage } from "../../../session/metadata.js";
-import { countDiffStats } from "./sessionChanges.js";
+import { countToolDiffStats } from "./sessionChanges.js";
 
 /** 实时与历史消息共用同一身份判断，已接收的消息不再保留发送占位或驱动忙碌状态。 */
 export function hasSubmittedUserMessage(turns: TimelineTurn[], messageId: string | undefined): boolean {
   return messageId !== undefined && turns.some((turn) => turn.userMessageId === messageId);
-}
-
-/**
- * 运行中可以展示正在使用的上下文；结束后只保留成功轮次里有实际产出的清单。
- * 这样失败或空回复不会因为预选能力、预先检索记忆而留下误导性的标识。
- */
-export function shouldShowResponseContext(turn: Pick<TimelineTurn, "assistant" | "skills" | "status" | "tools">): boolean {
-  if (turn.status === "running" || turn.status === "waiting_permission") return true;
-  if (turn.status !== "completed") return false;
-  return Boolean(turn.assistant.trim() || turn.tools.length || turn.skills.length);
 }
 
 /** 错误行的折叠摘要 = 失败文本首行（DSH：错误摘要替换摘要槽）。 */
@@ -371,7 +361,7 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       row.object = display?.operation === "move"
         ? `${filePath || "…"} → ${display.destinationPath ?? stringArg(tool, "to") ?? "…"}`
         : filePath || "…";
-      const stats = tool.diff ? countDiffStats(tool.diff) : undefined;
+      const stats = tool.diff ? countToolDiffStats(tool) : undefined;
       row.minus = stats?.del;
       row.plus = stats?.add;
       return row;

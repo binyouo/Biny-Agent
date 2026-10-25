@@ -10,9 +10,9 @@ import { scanWorkspaceFiles } from "../../workspace/scanner.js";
 import { resolveWorkspaceDirectory, resolveWorkspacePath, toWorkspaceRelative } from "../../workspace/resolvePath.js";
 import { ToolAccesses } from "../access.js";
 import { hashlineAnchor } from "../file/hashline.js";
-import { visitBoundUtf8Lines } from "../file/safeFileIo.js";
+import { readBoundedUtf8File, sameFileSnapshot, visitBoundUtf8Lines, type FileSnapshot } from "../file/safeFileIo.js";
 import type { Tool, ToolContext } from "../types.js";
-import { CancellableRegexMatcher, maxRegexBatchLines, maxRegexQueryBytes, RegexExecutionError, regexBatchTargetBytes } from "./regexMatcher.js";
+import { searchRipgrepFiles, maxSearchQueryBytes, RipgrepError, type RipgrepMatch } from "./ripgrep.js";
 
 export interface SearchFilesArgs {
   query: string;
@@ -71,7 +71,7 @@ const searchSchema = z.object({
 export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArgs, SearchFilesResult> {
   return {
     name: "Grep",
-    description: "Search complete UTF-8 workspace files with a literal or regular expression. Supports workspace-relative path and glob filters, case control, context lines, and offset/limit pagination. Every match includes a Hashline anchor for Edit.",
+    description: "Search complete UTF-8 workspace files using ripgrep. Supports literal text or ripgrep regular expressions, workspace-relative path and glob filters, case control, context lines, and offset/limit pagination. Every match includes a Hashline anchor for Edit.",
     promptSnippet: "Search workspace text with filters, context, pagination, and Edit anchors",
     promptGuidelines: [
       "Use literal mode for exact text and regex mode only when pattern syntax is needed",
@@ -82,7 +82,7 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", minLength: 1, description: "Literal text or JavaScript regular expression (up to 64 KiB) to search for." },
+        query: { type: "string", minLength: 1, description: "Single-line literal text or ripgrep regular expression (up to 64 KiB). Regex uses Rust syntax, without lookaround or backreferences." },
         mode: { type: "string", enum: ["literal", "regex"], description: "Search interpretation. Defaults to literal." },
         path: { type: "string", minLength: 1, description: "Workspace-relative directory to search. Defaults to the workspace root." },
         glob: { type: "string", minLength: 1, description: "Optional glob matched against workspace-relative file paths." },
@@ -102,12 +102,8 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
       const relativeRoot = toWorkspaceRelative(context.workspaceRoot, searchRoot).split(path.sep).join("/");
       const mode = args.mode ?? "literal";
       const caseSensitive = args.caseSensitive ?? true;
-      // Preserve preparation-time syntax validation, but never execute regex on the Host.
-      if (mode === "regex") {
-        if (Buffer.byteLength(args.query, "utf8") > maxRegexQueryBytes) throw new RegexExecutionError("Grep regex exceeds its 64 KiB pattern limit.");
-        new RegExp(args.query, caseSensitive ? "u" : "iu");
-      }
-      const literalMatcher = mode === "literal" ? createLiteralMatcher(args.query, caseSensitive) : undefined;
+      if (Buffer.byteLength(args.query, "utf8") > maxSearchQueryBytes) throw new RipgrepError("Grep query exceeds its 64 KiB limit.");
+      if (args.query.includes("\n") || args.query.includes("\0")) throw new RipgrepError("Grep queries must be a single line without NUL bytes.");
       const glob = args.glob?.trim();
       if (args.glob !== undefined && !glob) throw new Error("Grep requires a non-empty glob.");
       if (glob) path.matchesGlob("validation-path", glob);
@@ -141,13 +137,33 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
           let hasMore = false;
           let stopSearch = false;
 
-          const regexMatcher = mode === "regex"
-            ? await CancellableRegexMatcher.create(args.query, caseSensitive ? "u" : "iu", signal)
-            : undefined;
-          try {
-            for (const file of candidates.slice(0, maxScannedFiles)) {
+          const eligible = candidates.slice(0, maxScannedFiles);
+          for (let batchStart = 0; batchStart < eligible.length && !stopSearch;) {
+            const snapshots = new Map<string, FileSnapshot>();
+            const batch: string[] = [];
+            let pathBytes = 0;
+            while (batchStart < eligible.length && batch.length < 64 && pathBytes < 16_384) {
+              const file = eligible[batchStart++]!;
+              pathBytes += Buffer.byteLength(file);
+              batch.push(file);
+              try {
+                snapshots.set(file, (await readBoundedUtf8File(resolveWorkspacePath(context.workspaceRoot, file, context.ignore), 0, "truncate", signal)).snapshot);
+              } catch {
+                signal?.throwIfAborted();
+              }
+            }
+            const nativeMatches = snapshots.size ? await searchRipgrepFiles({
+              query: args.query, mode, caseSensitive, workspaceRoot: context.workspaceRoot,
+              files: [...snapshots.keys()], maxMatches: offset + limit - matchedLines + 1, signal
+            }) : new Map<string, RipgrepMatch[]>();
+            for (const file of batch) {
               signal?.throwIfAborted();
               scannedFiles += 1;
+              const initial = snapshots.get(file);
+              if (!initial) { unreadableFiles.push(file); continue; }
+              const found = nativeMatches.get(file);
+              if (!found?.length) continue;
+              const hits = new Map(found.map((hit) => [hit.line, hit]));
               const before: SearchContextLine[] = [];
               const pending: Array<{ match: SearchFilesMatch; remaining: number }> = [];
               const matchesBeforeFile = matches.length;
@@ -185,33 +201,14 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
                     return false;
                   }
                 };
-                const batch: Array<{ text: string; line: number }> = [];
-                let batchBytes = 0;
-                const flushBatch = async (): Promise<boolean | void> => {
-                  if (!regexMatcher || !batch.length) return;
-                  const lines = batch.splice(0);
-                  batchBytes = 0;
-                  const indexes = await regexMatcher.match(lines.map((line) => line.text), {
-                    skipMatches: Math.max(0, offset - matchedLines),
-                    remainingMatches: Math.max(0, offset + limit - Math.max(offset, matchedLines)),
-                    contextLines,
-                    remainingContext: Math.max(0, ...pending.map((item) => item.remaining)),
-                    hasMore
-                  });
-                  for (const [index, hit] of indexes.entries()) {
-                    const line = lines[index]!;
-                    if (visitLine(line.text, line.line, hit) === false) return false;
-                  }
-                  if (indexes.length !== lines.length) throw new RegexExecutionError("Grep regex worker stopped before the pagination boundary.");
-                };
-                await visitBoundUtf8Lines(resolveWorkspacePath(context.workspaceRoot, file, context.ignore), (line, lineNumber) => {
-                  if (literalMatcher) return visitLine(line, lineNumber, literalMatcher(line));
-                  batch.push({ text: line, line: lineNumber });
-                  batchBytes += Buffer.byteLength(line, "utf8");
-                  if (batch.length >= maxRegexBatchLines || batchBytes >= regexBatchTargetBytes) return flushBatch();
-                }, signal, regexMatcher ? flushBatch : undefined);
+                const verified = await visitBoundUtf8Lines(resolveWorkspacePath(context.workspaceRoot, file, context.ignore), (line, lineNumber) => {
+                  const hit = hits.get(lineNumber);
+                  if (hit && hit.text !== line) throw new Error("File changed after the native search.");
+                  return visitLine(line, lineNumber, hit ? hit.column - 1 : undefined);
+                }, signal);
+                if (!sameFileSnapshot(initial, verified.snapshot)) throw new Error("File changed after the search was prepared.");
               } catch (error) {
-                if (signal?.aborted || error instanceof RegexExecutionError) throw error;
+                if (signal?.aborted || error instanceof RipgrepError) throw error;
                 matches.length = matchesBeforeFile;
                 matchedLines = matchedLinesBeforeFile;
                 hasMore = hasMoreBeforeFile;
@@ -220,77 +217,25 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
               }
               if (stopSearch) break;
             }
-
-            const result: SearchFilesResult = {
-              matches,
-              offset,
-              limit,
-              hasMore,
-              nextOffset: hasMore ? offset + matches.length : undefined,
-              scannedFiles,
-              unreadableFiles: unreadableFiles.length > 0 ? unreadableFiles : undefined,
-              fileLimitReached: fileLimitReached || undefined
-            };
-            if (unreadableDirectories.length) result.unreadableDirectories = unreadableDirectories;
-            return result;
-          } finally {
-            await regexMatcher?.close();
           }
+          const result: SearchFilesResult = {
+            matches,
+            offset,
+            limit,
+            hasMore,
+            nextOffset: hasMore ? offset + matches.length : undefined,
+            scannedFiles,
+            unreadableFiles: unreadableFiles.length > 0 ? unreadableFiles : undefined,
+            fileLimitReached: fileLimitReached || undefined
+          };
+          if (unreadableDirectories.length) result.unreadableDirectories = unreadableDirectories;
+          return result;
         }
       };
     }
   };
 }
 
-function createLiteralMatcher(query: string, caseSensitive: boolean): (line: string) => number | undefined {
-  const needle = caseSensitive ? query : query.toLocaleLowerCase();
-  let casing: { turkic: boolean; lithuanian: boolean } | undefined;
-  return (line) => {
-    const folded = caseSensitive ? line : line.toLocaleLowerCase();
-    const index = folded.indexOf(needle);
-    if (index < 0) return undefined;
-    // Native lowercasing only expands outside Turkic locales, which only contract.
-    // Equal lengths therefore cannot hide cancelling source-offset changes.
-    if (caseSensitive || folded.length === line.length || index === 0) return index;
-    casing ??= {
-      turkic: "I\u0307".toLocaleLowerCase() === "i",
-      lithuanian: "I\u0301".toLocaleLowerCase() === "i\u0307\u0301"
-    };
-    return originalLiteralIndex(line, folded, index, casing);
-  };
-}
-
-/**
- * Map the authoritative whole-line transform, never independently folded fragments.
- * Unicode SpecialCasing length changes are dotted I, Lithuanian I/J accents, and
- * Turkic dot removal. All other UTF-16 units keep their offsets, including surrogates.
- * Reading the actual folded output also preserves native Latin-1 casing fast paths.
- * https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt
- * This bounded scan is O(line prefix), O(1) space. Existing marks keep their owner;
- * every unit inserted by a letter's expansion maps back to that original letter.
- */
-function originalLiteralIndex(line: string, folded: string, index: number, casing: { turkic: boolean; lithuanian: boolean }): number {
-  let foldedOffset = 0;
-  let removeDot = false;
-  for (let sourceOffset = 0; sourceOffset < line.length; sourceOffset += 1) {
-    const code = line.charCodeAt(sourceOffset);
-    let width = 1;
-    if (code === 0x0130) width = casing.turkic ? 1 : 2;
-    else if (casing.lithuanian) {
-      if ((code === 0x0049 || code === 0x004a || code === 0x012e) && folded.charCodeAt(foldedOffset + 1) === 0x0307) width = 2;
-      else if ((code === 0x00cc || code === 0x00cd || code === 0x0128) && folded.charCodeAt(foldedOffset) === 0x0069) width = 3;
-    } else if (casing.turkic) {
-      // An I producing i identifies the next source dot as deleted, even when
-      // another preserved dot follows it. A Latin-1 fast path contains no dots.
-      if (code === 0x0049 && folded.charCodeAt(foldedOffset) === 0x0069) removeDot = true;
-      else if (code === 0x0307 && removeDot) { width = 0; removeDot = false; }
-    }
-    if (index < foldedOffset + width) return sourceOffset;
-    foldedOffset += width;
-  }
-  // Future unsupported casing rules must not turn a valid match into an unreadable file.
-  return index;
-}
 
 function fileInScope(relativePath: string, relativeRoot: string, glob: string | undefined): boolean {
   const normalized = relativePath.split(path.sep).join("/");
