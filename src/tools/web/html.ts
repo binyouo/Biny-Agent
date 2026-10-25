@@ -84,8 +84,16 @@ function normalizeReadableText(text: string): string {
 }
 
 export function htmlTitle(html: string): string | undefined {
-  const match = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html);
-  const title = match?.[1] === undefined ? "" : decodeHtmlEntities(match[1]).replace(/\s+/g, " ").trim();
+  const opening = /<title\b/i.exec(html);
+  if (!opening) return undefined;
+  const openingEnd = html.indexOf(">", opening.index + opening[0].length);
+  if (openingEnd < 0) return undefined;
+  const closingPattern = /<\/title\s*>/gi;
+  closingPattern.lastIndex = openingEnd + 1;
+  const closing = closingPattern.exec(html);
+  // A later opening cannot have a closing when this earliest opening has none.
+  if (!closing) return undefined;
+  const title = decodeHtmlEntities(html.slice(openingEnd + 1, closing.index)).replace(/\s+/g, " ").trim();
   return title || undefined;
 }
 

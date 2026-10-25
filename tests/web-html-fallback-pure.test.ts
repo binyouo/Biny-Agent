@@ -35,7 +35,7 @@ const allowedCalls = new Set([
   "decodeHtmlEntities", "Promise.all", "import", "normalizeReadableText", "closeDom",
   "htmlTitle", "htmlToText", "Array.from", "Number.parseInt", "Number.isInteger", "String.fromCodePoint"
 ]);
-const allowedMethods = new Set(["replace", "split", "map", "join", "trim", "parse", "close", "toLowerCase", "has", "exec", "startsWith", "slice"]);
+const allowedMethods = new Set(["replace", "split", "map", "join", "trim", "parse", "close", "toLowerCase", "has", "exec", "startsWith", "slice", "indexOf"]);
 const declarations: ts.Statement[] = [];
 const foundFunctions: string[] = [];
 const foundConstants: string[] = [];
