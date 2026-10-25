@@ -89,6 +89,7 @@ export interface TaskAttemptCreateInput {
 export interface TaskRunListOptions {
   order?: "asc" | "desc";
   status?: TaskRunStatus;
+  sessionId?: string;
   limit?: number;
   cursor?: number;
 }
@@ -590,11 +591,13 @@ export class DurableTaskRunStore {
              task_json, created_at, updated_at, terminal_event_id, revision
       FROM task_runs
       WHERE workspace_id = ? AND rowid ${descending ? "<" : ">"} ? ${options.status === undefined ? "" : "AND status = ?"}
+        ${options.sessionId === undefined ? "" : "AND session_id = ?"}
       ORDER BY rowid ${descending ? "DESC" : "ASC"} LIMIT ?
     `).all(
       this.authority.workspaceId,
       options.cursor ?? (descending ? Number.MAX_SAFE_INTEGER : 0),
       ...(options.status === undefined ? [] : [options.status]),
+      ...(options.sessionId === undefined ? [] : [options.sessionId]),
       limit + 1
     ) as unknown as Array<TaskRunRow & { rowid: unknown }>;
     const hasMore = rows.length > limit;
