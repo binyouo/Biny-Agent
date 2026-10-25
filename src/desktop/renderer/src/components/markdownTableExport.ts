@@ -4,7 +4,7 @@ export function serializeMarkdownTable(table: HTMLTableElement, format: "csv" | 
   const rows = Array.from(table.querySelectorAll("tbody tr"), row => Array.from(row.querySelectorAll("td"), cell => cellText(cell)));
   if (format === "markdown") {
     if (!headers.length) return "";
-    const escape = (cell: string) => cell.replaceAll("\\", "\\\\").replaceAll("|", "\\|").replace(/\r\n?|\n/gu, "<br>");
+    const escape = (cell: string) => cell.replace(/[\\|`*_~[\]]/gu, "\\$&").replace(/\r\n?|\n/gu, "<br>");
     const line = (cells: string[]) => `| ${cells.map(escape).join(" | ")} |`;
     return [line(headers), line(headers.map(() => "---")), ...rows.map(row => line(row.length < headers.length ? [...row, ...Array<string>(headers.length - row.length).fill("")] : row))].join("\n");
   }
