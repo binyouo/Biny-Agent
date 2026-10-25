@@ -158,8 +158,9 @@ async function harness(options: {
       await act(async () => { button.click(); });
     },
     selectProvider: async (label: string) => {
-      const row = [...document.querySelectorAll<HTMLButtonElement>('.provider-row')].find(item => item.textContent?.includes(label));
+      const row = [...document.querySelectorAll<HTMLButtonElement>('.provider-row')].find(item => item.querySelector('.provider-row-copy strong')?.textContent?.trim() === label);
       assert.ok(row, label);
+      assert.equal(row.querySelector('.provider-row-copy strong')?.textContent?.trim(), label);
       await act(async () => { row.click(); });
     },
     editInput: async (selector: string, value: string) => {
