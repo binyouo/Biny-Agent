@@ -125,7 +125,13 @@ export function parseXiaohongshuResults(html: string, maxResults: number): WebSe
     const card = match[1] ?? "";
     const href = /href=["']([^"']*\/(?:explore|search_result)\/[a-z0-9]+[^"']*)["']/i.exec(card)?.[1];
     if (!href) continue;
-    const url = new URL(decodeHtmlEntities(href), "https://www.xiaohongshu.com");
+    const decodedHref = decodeHtmlEntities(href);
+    let url: URL;
+    try {
+      url = new URL(decodedHref, "https://www.xiaohongshu.com");
+    } catch {
+      continue;
+    }
     if (url.hostname !== "www.xiaohongshu.com" || url.protocol !== "https:" || seen.has(url.href)) continue;
     const title = cleanHtmlText(/class=["'][^"']*title[^"']*["'][^>]*>([\s\S]*?)<\/a>/i.exec(card)?.[1] ?? card);
     if (!title) continue;
