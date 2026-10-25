@@ -21,13 +21,13 @@ const outcomeSchema = z.object({
   status: z.enum(outcomeStatuses),
   stopReason: z.enum(outcomeStopReasons),
   finishReason: z.string().optional(), steps: z.number().int().nonnegative(), output: z.string(),
-  usage: z.record(z.unknown()).optional(), error: z.string().optional(), resumable: z.boolean().optional(),
+  usage: z.record(z.string(), z.unknown()).optional(), error: z.string().optional(), resumable: z.boolean().optional(),
   blockedReason: z.string().optional(), requiredAction: z.string().optional(), affectedTodoIds: z.array(z.string()).optional(),
   notification: z.string().optional()
 }).strict();
 const messageSchema = z.object({ role: z.literal("assistant"), content: z.array(z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string() }).strict(),
-  z.object({ type: z.literal("reasoning"), text: z.string(), providerMetadata: z.record(z.unknown()).optional() }).strict()
+  z.object({ type: z.literal("reasoning"), text: z.string(), providerMetadata: z.record(z.string(), z.unknown()).optional() }).strict()
 ])), stopReason: z.enum(messageStopReasons).optional(),
 usage: z.object({ inputTokens: z.number().finite().nonnegative().optional(), outputTokens: z.number().finite().nonnegative().optional(),
   totalTokens: z.number().finite().nonnegative().optional(), reasoningTokens: z.number().finite().nonnegative().optional(),

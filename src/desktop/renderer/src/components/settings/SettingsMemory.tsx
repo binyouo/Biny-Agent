@@ -140,6 +140,19 @@ export function SettingsMemory({
   const [memoryRevision, setMemoryRevision] = useState(0);
   const [modelTesting, setModelTesting] = useState(false);
   const [modelTestResult, setModelTestResult] = useState<DesktopModelConnectionTestResult>();
+  const modelTestRequestRef = useRef(0);
+  const selectedMemoryModel = models.find((model) => model.alias === (draft?.memory.memoryModel ?? snapshot?.models.resolvedToolModel));
+  const memoryModelConfiguration: DesktopModelConfigurationInput | undefined = selectedMemoryModel ? {
+    alias: selectedMemoryModel.alias,
+    displayName: selectedMemoryModel.displayName,
+    providerAlias: selectedMemoryModel.provider,
+    providerType: selectedMemoryModel.providerType as DesktopModelConfigurationInput["providerType"],
+    model: selectedMemoryModel.model,
+    baseUrl: selectedMemoryModel.baseUrl,
+    supportsTools: selectedMemoryModel.supportsTools === true,
+    supportsThinking: selectedMemoryModel.efforts.length > 0
+  } : undefined;
+  const memoryModelTestKey = JSON.stringify(memoryModelConfiguration);
   const [exporting, setExporting] = useState(false);
   const [editor, setEditor] = useState<{ id?: string; value: string }>();
   const [error, setError] = useState<string>();
@@ -163,6 +176,13 @@ export function SettingsMemory({
   const searchRequestRef = useRef(0);
   const pendingSearchRef = useRef<string | undefined>(undefined);
   const [pendingEmbeddingModel, setPendingEmbeddingModel] = useState<EmbeddingModelRef>();
+
+  useEffect(() => {
+    setModelTesting(false);
+    setModelTestResult(undefined);
+    // 结果只属于发起测试时的配置；选择变化后，迟到回执不能覆盖新测试。
+    return () => { modelTestRequestRef.current += 1; };
+  }, [memoryModelTestKey]);
 
   const refreshEmbeddingStatus = useCallback(async (): Promise<void> => {
     if (!workspaceAvailable) return;
@@ -524,27 +544,18 @@ export function SettingsMemory({
   };
 
   const testMemoryModel = async (): Promise<void> => {
-    const selected = models.find((model) => model.alias === (policy?.memoryModel ?? snapshot?.models.resolvedToolModel));
-    if (!selected || modelTesting) return;
+    if (!memoryModelConfiguration || modelTesting) return;
+    const request = ++modelTestRequestRef.current;
     setModelTesting(true);
     setModelTestResult(undefined);
     try {
-      const result = await onTestModelConfiguration({
-        alias: selected.alias,
-        displayName: selected.displayName,
-        providerAlias: selected.provider,
-        providerType: selected.providerType as DesktopModelConfigurationInput["providerType"],
-        model: selected.model,
-        baseUrl: selected.baseUrl,
-        supportsTools: selected.supportsTools === true,
-        supportsThinking: selected.efforts.length > 0
-      });
-      setModelTestResult(result);
+      const result = await onTestModelConfiguration(memoryModelConfiguration);
+      if (request === modelTestRequestRef.current) setModelTestResult(result);
     } catch (cause) {
       // 结果（含失败原因）统一由按钮下方的结果卡片展示，不再弹 toast。
-      setModelTestResult({ ok: false, message: errorMessage(cause) });
+      if (request === modelTestRequestRef.current) setModelTestResult({ ok: false, message: errorMessage(cause) });
     } finally {
-      setModelTesting(false);
+      if (request === modelTestRequestRef.current) setModelTesting(false);
     }
   };
 

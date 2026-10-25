@@ -37,7 +37,20 @@ for (const scenario of [
   {
     name: "invalid project field types",
     project: '{"thinking":{"enabled":"yes"}}',
-    diagnostic: /Invalid project \.biny\/settings\.json:[\s\S]*Expected boolean/u,
+    diagnostic: (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const prefix = "Invalid project .biny/settings.json: ";
+      assert.ok(error.message.startsWith(prefix));
+      const issues: unknown = JSON.parse(error.message.slice(prefix.length));
+      assert.ok(Array.isArray(issues));
+      const invalidBoolean = issues.find((issue: unknown) => typeof issue === "object" && issue !== null
+        && "code" in issue && issue.code === "invalid_type" && "expected" in issue && issue.expected === "boolean");
+      assert.deepEqual(invalidBoolean, {
+        expected: "boolean", code: "invalid_type", path: ["thinking", "enabled"],
+        message: "Invalid input: expected boolean, received string"
+      });
+      return true;
+    },
     safeDiagnostic: "Invalid project .biny/settings.json. Check JSON syntax and supported field values."
   },
   {

@@ -51,7 +51,7 @@ const permissionSchema = z.object({
   allowPaths: z.array(z.string()).default([]),
   denyPaths: z.array(z.string()).default([".env", ".ssh/"]),
   criticalAlwaysAsk: z.boolean().default(true)
-}).default({
+}).prefault({
   mode: "full-access",
   allowTools: ["Read", "Glob", "Grep", "WebSearch"],
   allowPaths: [],
@@ -126,7 +126,7 @@ export const chatParamsSchema = z.object({
   /** 默认把哪些 Skill 元数据暴露给模型；单条消息可在 Composer 中覆盖。 */
   defaultSkillSelection: capabilityDefaultSelectionSchema.default("auto"),
   skillExtraction: skillExtractionSchema
-}).default({
+}).prefault({
   cacheMarkers: true,
   temperature: undefined,
   maxOutputTokens: undefined,
@@ -156,7 +156,7 @@ export const crystalSettingsSchema = z.object({
   contour: crystalThresholdSchema.default({ count: 4, turns: 3, spread: 2 }),
   nucleus: crystalThresholdSchema.default({ count: 8, turns: 5, spread: 2 }),
   dormantDays: z.number().int().min(1).max(3_650).default(14)
-}).strict().default({
+}).strict().prefault({
   passiveEnabled: true,
   semanticScanEnabled: true,
   contour: { count: 4, turns: 3, spread: 2 },
@@ -200,7 +200,7 @@ const contextSchema = z.object({
   compaction: compactionSchema,
   identity: identityPolicySchema,
   memory: memoryPolicySchema
-}).strict().default({
+}).strict().prefault({
   maxTurnToolResultBytes: 128 * 1024,
   instructionsMaxBytes: 32 * 1024,
   compaction: { enabled: true, reserveTokens: undefined, triggerPercent: undefined, keepRecentTokens: undefined, keepRecentMessages: undefined, maxSummaryTokens: 4_096, summaryModel: undefined },
@@ -326,7 +326,7 @@ const providerConfigSchema = z.object({
     maxDelayMs: z.number().int().min(0).max(120_000).default(4_000)
   }).optional(),
   modelsEndpoint: z.string().url().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   apiBackend: modelApiBackendSchema.optional(),
   compatibility: modelCompatibilitySchema.optional(),
   /** 自定义 Responses 端点须明确声明，不根据模型名称推断协议支持。 */
@@ -390,7 +390,7 @@ const mcpServerSchema = z.object({
   exposure: z.enum(["direct", "codemode", "deferred", "hidden"]).optional(),
   toolExposure: z.record(z.string().min(1).regex(/^[^*]+\*?$|^\*$/u), z.enum(["direct", "codemode", "deferred", "hidden"])).optional(),
   /** 按服务端原始工具名显式启用固定契约，不依据远端 annotations 自动启用。 */
-  toolContracts: z.record(z.literal("file-change-v1")).optional(),
+  toolContracts: z.record(z.string(), z.literal("file-change-v1")).optional(),
   /** 用于凭据 account 稳定关联；旧配置没有该字段时在下一次桌面保存时补齐。 */
   id: z.string().uuid().optional(),
   description: z.string().trim().max(2_000).optional(),
@@ -399,16 +399,16 @@ const mcpServerSchema = z.object({
   transportProtocol: z.enum(["streamable-http", "sse"]).optional(),
   command: z.string().min(1).optional(),
   args: z.array(z.string()).default([]),
-  env: z.record(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
   /** env/header 的值保存在 Keychain；这里仅保存 account 引用。 */
   credentialRefs: z.object({
-    env: z.record(z.string().min(1).max(512)).optional(),
-    headers: z.record(z.string().min(1).max(512)).optional()
+    env: z.record(z.string(), z.string().min(1).max(512)).optional(),
+    headers: z.record(z.string(), z.string().min(1).max(512)).optional()
   }).optional(),
   cwd: z.string().min(1).optional(),
   stderr: z.enum(["ignore", "inherit", "pipe"]).default("ignore"),
   url: z.string().url().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   oauth: z.object({
     clientId: z.string().trim().min(1).max(2_000).optional(),
     scopes: z.array(z.string().trim().min(1).max(200)).max(32).optional(),
@@ -441,20 +441,20 @@ export const defaultSubagentAllowedTools = [
 
 const subagentToolNameSchema = z.enum(defaultSubagentAllowedTools);
 
-const skillActivationMapSchema = z.record(z.boolean()).superRefine((value, context) => {
+const skillActivationMapSchema = z.record(z.string(), z.boolean()).superRefine((value, context) => {
   if (Object.keys(value).length > 512) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Skill 开关数量不能超过 512。" });
   }
 });
 
-const skillProjectOverridesSchema = z.record(skillActivationMapSchema).superRefine((value, context) => {
+const skillProjectOverridesSchema = z.record(z.string(), skillActivationMapSchema).superRefine((value, context) => {
   if (Object.keys(value).length > 64) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Skill 项目覆盖数量不能超过 64。" });
   }
 });
 
 const extensionsSchema = z.object({
-  mcp: z.record(mcpServerSchema).default({}),
+  mcp: z.record(z.string(), mcpServerSchema).default({}),
   skills: z.array(z.string().trim().min(1)).max(32).default([...DEFAULT_PROJECT_SKILL_PATHS]),
   skillDefaults: skillActivationMapSchema.default({}),
   skillProjectOverrides: skillProjectOverridesSchema.default({}),
@@ -477,7 +477,7 @@ const extensionsSchema = z.object({
     allowedTools: z.array(subagentToolNameSchema).min(1).default([...defaultSubagentAllowedTools]),
     // 具名子代理定义目录（workspace 相对路径）；全局 ~/.config/biny/agents 始终生效。
     agentPaths: z.array(z.string().trim().min(1)).max(32).default([".biny/agents"])
-  }).default({
+  }).prefault({
     enabled: false,
     maxSteps: undefined,
     maxOutputTokens: 8_000,
@@ -490,7 +490,7 @@ const extensionsSchema = z.object({
     allowedTools: [...defaultSubagentAllowedTools],
     agentPaths: [".biny/agents"]
   })
-}).default({
+}).prefault({
   mcp: {},
   skills: [".agents/skills", ".biny/skills"],
   skillDefaults: {},
@@ -575,7 +575,7 @@ const hooksSchema = z.object({
   beforeTool: z.array(hookSchema).max(16).default([]),
   /** 工具执行后触发；输出附在结果上，退出码不影响调用结果。 */
   afterTool: z.array(hookSchema).max(16).default([])
-}).default({ beforeTool: [], afterTool: [] });
+}).prefault({ beforeTool: [], afterTool: [] });
 
 const sandboxSchema = z.object({
   /**
@@ -603,7 +603,7 @@ const diagnosticsSchema = z.object({
     command: z.string().min(1),
     timeoutMs: z.number().int().min(1_000).max(600_000).default(120_000)
   })).max(8).default([])
-}).default({
+}).prefault({
   enabled: false,
   autoDetect: false,
   autoDetectTimeoutMs: 120_000,
@@ -615,7 +615,7 @@ const webSchema = z.object({
   search: webSearchSchema,
   fetch: webFetchSchema,
   cookies: webCookiesSchema
-}).default({
+}).prefault({
   search: {
     provider: "google",
     visibleBrowsing: false,
@@ -635,8 +635,8 @@ const webSchema = z.object({
 const modelThinkingSchema = z.object({
   efforts: z.array(reasoningEffortSchema).min(1).default(["high", "max"]),
   defaultEffort: reasoningEffortSchema.default("high"),
-  mapping: z.record(reasoningEffortSchema, z.string().min(1)).optional(),
-  budgetTokens: z.record(reasoningEffortSchema, z.number().int().min(256).max(131_072)).optional()
+  mapping: z.partialRecord(reasoningEffortSchema, z.string().min(1)).optional(),
+  budgetTokens: z.partialRecord(reasoningEffortSchema, z.number().int().min(256).max(131_072)).optional()
 }).superRefine((thinking, context) => {
   if (!thinking.efforts.includes(thinking.defaultEffort)) {
     context.addIssue({
@@ -672,7 +672,7 @@ const modelAliasSchema = z.object({
   /** Model-level API and compatibility override the provider defaults. */
   apiBackend: modelApiBackendSchema.optional(),
   baseUrl: z.string().url().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   compatibility: modelCompatibilitySchema.optional(),
   /** Canonical capability map. Missing/null levels are unsupported. */
   thinkingLevelMap: thinkingLevelMapSchema.optional(),
@@ -688,10 +688,10 @@ const canonicalConfigSchema = z.object({
   /** 活动分析、摘要与建议共用的工具模型；省略时从可用配置自动选择。 */
   toolModel: z.string().trim().min(1).max(240).optional(),
   visionModel: z.string().trim().min(1).max(240).optional(),
-  providers: z.record(providerConfigSchema),
+  providers: z.record(z.string(), providerConfigSchema),
   /** 凭据正文保存在 Keychain；这里仅保存并发 CAS 使用的非机密版本 nonce。 */
-  credentialRevisions: z.record(z.string().min(1).max(128)).optional(),
-  models: z.record(modelAliasSchema),
+  credentialRevisions: z.record(z.string(), z.string().min(1).max(128)).optional(),
+  models: z.record(z.string(), modelAliasSchema),
   thinking: thinkingSchema,
   agent: agentSchema,
   heartbeat: heartbeatConfigSchema,
@@ -701,7 +701,7 @@ const canonicalConfigSchema = z.object({
   }),
   activity: activitySettingsSchema,
   appshots: appshotsSettingsSchema.default({ hotkey: "", target: "current" }),
-  computer: computerSettingsSchema.default({ enabled: true, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] }),
+  computer: computerSettingsSchema.prefault({ enabled: true, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] }),
   crystal: crystalSettingsSchema,
   context: contextSchema,
   chat: chatParamsSchema,
