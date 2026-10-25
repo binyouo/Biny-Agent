@@ -116,7 +116,8 @@ export class ContextMemory {
     private readonly onModelRequest: ModelRequestObserver = () => undefined,
     private readonly getModelRequestContext: () => ModelRequestContext | undefined = () => undefined,
     private readonly memoryRetriever?: SemanticMemoryRetriever,
-    private readonly allowActivity: () => boolean = () => true
+    private readonly allowActivity: () => boolean = () => true,
+    private readonly perfTimingRoot?: string
   ) {
     this.resolveBudget = getBudgetLimits ?? (() => ({
       contextWindow: maxTokens,
@@ -192,7 +193,7 @@ export class ContextMemory {
         await this.workspace.initialize(signal);
         signal?.throwIfAborted();
         const workspace = await this.workspace.prepareTurn(input, signal);
-        recordPerfPhase("context.workspace", workspacePerfStartedAt);
+        recordPerfPhase("context.workspace", workspacePerfStartedAt, undefined, this.perfTimingRoot);
         return workspace;
       })();
       preparing.push(workspacePromise);
@@ -202,7 +203,7 @@ export class ContextMemory {
       // 自动召回不依赖工作区路径；先发布进度，再与已经启动的扫描并行。
       const recallPerfStartedAt = perfNow();
       const recallPromise = (useMemories ? this.findRelevantMemory(input, signal) : Promise.resolve({ matches: [], report: emptyMemoryRecallReport(), entries: [] })).then((recalled) => {
-        recordPerfPhase("context.memoryRecall", recallPerfStartedAt, { matches: recalled.matches.length });
+        recordPerfPhase("context.memoryRecall", recallPerfStartedAt, { matches: recalled.matches.length }, this.perfTimingRoot);
         return recalled;
       });
       preparing.push(recallPromise);
@@ -245,7 +246,7 @@ export class ContextMemory {
           "automatic",
           assembly.budget.requestedTokens
         );
-        recordPerfPhase("context.compact", compactPerfStartedAt, { compacted: compaction.compacted });
+        recordPerfPhase("context.compact", compactPerfStartedAt, { compacted: compaction.compacted }, this.perfTimingRoot);
         if (compaction.compacted) {
           assembly = assembleContext(
             systemPrompt,

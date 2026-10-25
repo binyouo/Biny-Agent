@@ -83,7 +83,7 @@ import {
   stripTransientTurnContext,
   systemPromptForTelemetry
 } from "./prompts.js";
-import { perfNow, recordPerfPhase, setPerfTimingRoot } from "../observability/perfTiming.js";
+import { perfNow, recordPerfPhase } from "../observability/perfTiming.js";
 import type {
   AgentPermissionRequest,
   AgentPermissionResult,
@@ -451,7 +451,6 @@ export class AgentSession {
   private activeConfig: AgentConfig;
   private activePersonalization: ResolvedChatPersonalization;
   constructor(private readonly options: AgentSessionOptions) {
-    setPerfTimingRoot(options.workspaceRoot);
     this.activeConfig = options.config;
     this.activePersonalization = resolveChatPersonalization(
       options.config.context.memory,
@@ -540,6 +539,7 @@ export class AgentSession {
     this.memoryEmbeddingService = new AgentMemoryClient(memoryIndexRoot,
       options.configStore?.configPath ? path.dirname(options.configStore.configPath()) : undefined);
     this.memoryRetriever = new SemanticMemoryRetriever({
+      workspaceRoot: options.workspaceRoot,
       localMemory: this.localMemory,
       getEmbeddingRuntime: async () => await this.memoryEmbeddingService.embeddingRuntime(),
       getReadOnlyVectorIndex: openReadOnlyMemoryIndex,
@@ -676,7 +676,8 @@ export class AgentSession {
       onModelRequest,
       () => this.sideModelRequestContext(),
       this.memoryRetriever,
-      () => this.activeConfig.activity.enabled
+      () => this.activeConfig.activity.enabled,
+      options.workspaceRoot
     );
     this.contextMemory = makeContextMemory(workspace);
     this.createStagingContextMemory = () => makeContextMemory(new WorkspaceContext(
@@ -978,7 +979,7 @@ export class AgentSession {
         }
       }, options.runId);
       selectionController.signal.throwIfAborted();
-      recordPerfPhase("turn.capabilities", startedAt, { runId: this.recorder.runtimeContextSnapshot()?.runId });
+      recordPerfPhase("turn.capabilities", startedAt, { runId: this.recorder.runtimeContextSnapshot()?.runId }, this.options.workspaceRoot);
       if (options.messageId) {
         await this.recorder.recordAndFlush({ type: "message_metadata", messageId: options.messageId, metadata: {
           capabilitySelection: selected,
@@ -2332,7 +2333,7 @@ export class AgentSession {
       yield doneEvent(outcome);
       return;
     }
-    recordPerfPhase("turn.preparePrompt", preparePromptPerfStartedAt, { runId: runtimeRunId });
+    recordPerfPhase("turn.preparePrompt", preparePromptPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
     const model = runOptions.modelOverride ?? this.options.modelManager?.getModel() ?? this.options.model;
     if (!model) {
       recordUserMessage();
@@ -2397,7 +2398,7 @@ export class AgentSession {
       const snapshot = await this.readPersonalizationState(this.options.modelManager
         ? { config: structuredClone(this.options.config) }
         : undefined);
-      recordPerfPhase("turn.personalization", personalizationPerfStartedAt, { runId: runtimeRunId });
+      recordPerfPhase("turn.personalization", personalizationPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
       this.activeConfig = snapshot.config;
       this.activePersonalization = snapshot.state.resolved;
       turnPersonalization = snapshot.state.resolved;
@@ -2434,7 +2435,7 @@ export class AgentSession {
       const systemPromptPerfStartedAt = perfNow();
       const basePrompt = this.baseSystemPrompt(input, turnPersonalization, selection, abortSignal, referenceHistory, runtimeRunId)
         .then((prompt) => {
-          recordPerfPhase("turn.baseSystemPrompt", systemPromptPerfStartedAt, { runId: runtimeRunId });
+          recordPerfPhase("turn.baseSystemPrompt", systemPromptPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
           return appendExternalTurnContext(prompt, runOptions.promptContext);
         });
       const prepareTurnPerfStartedAt = perfNow();
@@ -2457,7 +2458,7 @@ export class AgentSession {
       }
       runOptions.capabilitySelection = await selection;
       await this.recordLoadedSkills(userMessageReference?.id, prepared.loadedSkills ?? []);
-      recordPerfPhase("turn.prepareTurn", prepareTurnPerfStartedAt, { runId: runtimeRunId, compacted: prepared.compaction !== undefined });
+      recordPerfPhase("turn.prepareTurn", prepareTurnPerfStartedAt, { runId: runtimeRunId, compacted: prepared.compaction !== undefined }, this.options.workspaceRoot);
       yield { type: "preparation.updated", stage: "waiting" };
       // 压缩边界持久化成功后才发布上下文状态，不向外暴露未确认的 checkpoint。
       yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection, loadedSkills: prepared.loadedSkills ?? [] } };
@@ -2528,7 +2529,7 @@ export class AgentSession {
           runOptions.retryOrigin,
           runOptions.retryWindow
         );
-        recordPerfPhase("turn.persistCheckpoint", persistPerfStartedAt, { runId: runtimeRunId });
+        recordPerfPhase("turn.persistCheckpoint", persistPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
       } catch (error) {
         // 没有可恢复断点就不能发出首个模型请求，更不能让后续工具产生副作用。
         const message = `初始检查点持久化失败：${errorMessage(error)}`;
@@ -2559,7 +2560,7 @@ export class AgentSession {
       softStepLimit: Math.min(configuredBudget.softStepLimit, completedStepsBeforeRun + requestedSteps),
       hardStepLimit: completedStepsBeforeRun + requestedSteps
     };
-    recordPerfPhase("turn.prepareTotal", turnPerfStartedAt, { runId: runtimeRunId });
+    recordPerfPhase("turn.prepareTotal", turnPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
     yield* this.runTurnLoop({
       input,
       systemPrompt,
@@ -3095,7 +3096,7 @@ export class AgentSession {
       return projectVision ? await projectVision(pruned) : pruned;
     };
 
-    recordPerfPhase("turn.loopPre", loopPerfStartedAt, { runId: runOptions.runId });
+    recordPerfPhase("turn.loopPre", loopPerfStartedAt, { runId: runOptions.runId }, this.options.workspaceRoot);
     yield { type: "status", status: "thinking" };
     await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
       type: "start",

@@ -8,15 +8,9 @@
  */
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { agentDir } from "../session/store.js";
+import { workspaceAgentDir } from "../config/paths.js";
 
-let defaultWorkspaceRoot: string | undefined;
 let ensuredDir: string | undefined;
-
-/** 进程级默认 workspace：Runtime Host / AgentSession 装配时设置一次，之后的打点可省略 root。 */
-export function setPerfTimingRoot(workspaceRoot: string): void {
-  defaultWorkspaceRoot = workspaceRoot;
-}
 
 export function perfTimingEnabled(): boolean {
   const value = process.env.BINY_PERF_TIMING;
@@ -35,10 +29,10 @@ export function recordPerfPhase(
   workspaceRoot?: string
 ): void {
   if (!perfTimingEnabled()) return;
-  const root = workspaceRoot ?? defaultWorkspaceRoot;
-  if (!root) return;
+  // A Host can retain sessions from different worktrees; never borrow another session's root.
+  if (!workspaceRoot) return;
   try {
-    const dir = agentDir(root);
+    const dir = workspaceAgentDir(workspaceRoot);
     if (ensuredDir !== dir) {
       mkdirSync(dir, { recursive: true });
       ensuredDir = dir;
