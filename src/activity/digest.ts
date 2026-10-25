@@ -20,12 +20,16 @@ export interface ActivityDigestDeps {
   now?: () => Date;
 }
 
+function normalizeDigestLookback(lookbackMin: number): number {
+  return Math.max(5, Math.min(ACTIVITY_DIGEST_MAX_LOOKBACK_MIN, Math.trunc(lookbackMin)));
+}
+
 export function resolveDigestWindow(lookbackMin: number, now: Date = new Date()): string {
-  const clamped = Math.max(5, Math.min(ACTIVITY_DIGEST_MAX_LOOKBACK_MIN, Math.trunc(lookbackMin)));
-  return new Date(now.getTime() - clamped * 60_000).toISOString();
+  return new Date(now.getTime() - normalizeDigestLookback(lookbackMin) * 60_000).toISOString();
 }
 
 export async function buildActivityDigest(deps: ActivityDigestDeps, lookbackMin = ACTIVITY_DIGEST_DEFAULT_LOOKBACK_MIN): Promise<ActivityDigestResult> {
+  lookbackMin = normalizeDigestLookback(lookbackMin);
   const now = deps.now?.() ?? new Date();
   const sinceIso = resolveDigestWindow(lookbackMin, now);
   const recent = deps.store.listHttpSessions({

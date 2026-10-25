@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
@@ -29,13 +30,13 @@ const sourceRoot = process.env.BINY_HTML_SOURCE_ROOT ?? process.cwd();
 const sourcePath = process.env.BINY_HTML_SOURCE ?? path.join(sourceRoot, "src/tools/web/html.ts");
 const source = readFileSync(sourcePath, "utf8");
 const parsed = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const functionNames = ["htmlToText", "extractReadableHtml", "readableNodeText", "normalizeReadableText", "htmlTitle", "decodeHtmlEntities"];
+const functionNames = ["htmlToText", "extractReadableHtml", "readableNodeText", "appendReadableProse", "collectReadableText", "preformattedNodeText", "normalizeReadableText", "htmlTitle", "decodeHtmlEntities"];
 const constantNames = ["strippedBlocks", "lineBreakTags", "listItemTags", "readableBlockTags", "unreadableTags"];
 const allowedCalls = new Set([
   "decodeHtmlEntities", "Promise.all", "import", "normalizeReadableText", "closeDom",
-  "htmlTitle", "htmlToText", "Array.from", "Number.parseInt", "Number.isInteger", "String.fromCodePoint"
+  "htmlTitle", "htmlToText", "collectReadableText", "appendReadableProse", "preformattedNodeText", "Array.from", "Number.parseInt", "Number.isInteger", "String.fromCodePoint"
 ]);
-const allowedMethods = new Set(["replace", "split", "map", "join", "trim", "parse", "close", "toLowerCase", "has", "exec", "startsWith", "slice", "indexOf"]);
+const allowedMethods = new Set(["replace", "split", "map", "join", "trim", "parse", "close", "toLowerCase", "has", "exec", "startsWith", "slice", "indexOf", "at", "push", "filter"]);
 const declarations: ts.Statement[] = [];
 const foundFunctions: string[] = [];
 const foundConstants: string[] = [];
@@ -50,7 +51,7 @@ for (const statement of parsed.statements) {
     }
     declarations.push(statement);
   } else {
-    assert.ok(ts.isInterfaceDeclaration(statement) && statement.name.text === "ReadableHtmlDocument", "unexpected top-level executable declaration");
+    assert.ok(ts.isInterfaceDeclaration(statement) && ["ReadableHtmlDocument", "ReadableTextPart"].includes(statement.name.text), "unexpected top-level executable declaration");
   }
 }
 assert.deepEqual(foundFunctions, functionNames);
@@ -85,11 +86,7 @@ const printer = ts.createPrinter();
 const closure = transformedFile.statements.filter((statement) => ts.isFunctionDeclaration(statement) || ts.isVariableStatement(statement));
 const closureSource = closure.map((statement) => printer.printNode(ts.EmitHint.Unspecified, statement, transformedFile)).join("\n");
 transformed.dispose();
-const transpiled = ts.transpileModule(closureSource, {
-  reportDiagnostics: true,
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }
-});
-assert.equal((transpiled.diagnostics ?? []).filter((item) => item.category === ts.DiagnosticCategory.Error).length, 0);
+const stripped = stripTypeScriptTypes(closureSource.replace(/^export /gm, ""), { mode: "strip" });
 
 function fixture(scenario: Scenario = {}): { api: Extracted; counts: Counts; failure: Error; lastInput: () => unknown } {
   const counts: Counts = { fallback: 0, title: 0, close: 0, dom: 0, parse: 0, imports: [] };
@@ -111,11 +108,12 @@ function fixture(scenario: Scenario = {}): { api: Extracted; counts: Counts; fai
       if (scenario.throwAt === "readability") throw failure;
       this.options = options;
     }
+    // Readability content is the root serializer result, never an unrelated raw text string.
     parse(): { title?: string; content?: string } | null {
       counts.parse++;
       if (scenario.throwAt === "parse") throw failure;
       if (scenario.nullArticle) return null;
-      return { title: scenario.title, content: scenario.node ? this.options.serializer(scenario.node) : scenario.content };
+      return { title: scenario.title, content: scenario.node ? this.options.serializer(scenario.node) : scenario.content === undefined ? undefined : this.options.serializer(text(scenario.content)) };
     }
   }
   const __inertImport = async (specifier: string): Promise<unknown> => {
@@ -129,8 +127,7 @@ function fixture(scenario: Scenario = {}): { api: Extracted; counts: Counts; fai
 htmlToText = (html) => { __counts.fallback++; return originalText(html); };
 htmlTitle = (html) => { __counts.title++; return originalTitle(html); };
 ({ extractReadableHtml, htmlToText: originalText, htmlTitle: originalTitle, readableNodeText, normalizeReadableText, decodeHtmlEntities });`;
-  const exports = {};
-  const api = vm.runInNewContext(transpiled.outputText + instrument, { exports, __inertImport, __counts: counts }, {
+  const api = vm.runInNewContext("\"use strict\";\n" + stripped + instrument, { __inertImport, __counts: counts }, {
     timeout: 1000, contextCodeGeneration: { strings: false, wasm: false }
   }) as Extracted;
   return { api, counts, failure, lastInput: () => input };
@@ -221,4 +218,14 @@ test("actual serializer preserves inline, blocks, lists and cells without mutati
   const { api, counts } = fixture({ title: "Title", node: document });
   same(await api.extractReadableHtml(html, url), { title: "Title", text: "Title\n\nTypeScript\nNext\n\n- One\n\n- Two\n\nA 10" });
   assert.equal(JSON.stringify(document), before); assert.equal(counts.close, 1);
+});
+
+test("whitespace-only PRE still selects fallback, while mixed content preserves its whitespace", async () => {
+  const whitespace = " \t\n ";
+  const only = fixture({ node: node("pre", text(whitespace)) });
+  same(await only.api.extractReadableHtml(html, url), { title: only.api.htmlTitle(html), text: only.api.htmlToText(html) });
+  assert.equal(only.counts.fallback, 1); assert.equal(only.counts.close, 1);
+  const mixed = fixture({ node: node("article", node("p", text("Before")), node("pre", text(whitespace)), node("p", text("After"))) });
+  same(await mixed.api.extractReadableHtml(html, url), { title: "Fallback & guide", text: `Before\n\n${whitespace}\n\nAfter` });
+  assert.equal(mixed.counts.fallback, 0); assert.equal(mixed.counts.close, 1);
 });

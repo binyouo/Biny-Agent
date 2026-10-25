@@ -274,6 +274,7 @@ export function computePromptShapeDiagnostic(
   const prefixChangeReason = prefixReason(input, stableSystemHash, toolSchemaHash, previous);
   const requestShapeChangeReason = requestReason(
     prefixChangeReason,
+    systemPromptHash,
     providerOptionsHash,
     historyProjectionHash,
     previous
@@ -402,12 +403,14 @@ function prefixReason(
 
 function requestReason(
   prefixChangeReason: PromptPrefixChangeReason,
+  systemPromptHash: string,
   providerOptionsHash: string,
   historyProjectionHash: string,
   previous: PromptShapeDiagnostic | undefined
 ): PromptRequestShapeChangeReason {
   if (!previous) return "initial";
   if (prefixChangeReason !== "unchanged") return prefixChangeReason;
+  if (previous.systemPromptHash !== systemPromptHash) return "system_changed";
   if (previous.providerOptionsHash !== providerOptionsHash) return "provider_options_changed";
   if (previous.historyProjectionHash !== historyProjectionHash) return "history_projection_changed";
   return "unchanged";
