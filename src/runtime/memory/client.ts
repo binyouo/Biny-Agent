@@ -11,6 +11,7 @@ export class AgentMemoryClient {
   async call<T>(action: string, payload: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     const owner = await discoverMemoryOwner(this.root, this.configRoot);
+    signal?.throwIfAborted();
     return memoryRequest<T>(owner!, action, payload, signal);
   }
 
@@ -34,8 +35,8 @@ export class AgentMemoryClient {
   cancelSleep(): Promise<boolean> { return this.call("sleep.cancel"); }
   maintain(): Promise<void> { return this.call("maintain"); }
 
-  async embeddingRuntime(localReadyOnly = false): Promise<EmbeddingModelRuntime | undefined> {
-    const descriptor = await this.call<EmbeddingModelDescriptor | null>("embedding.runtime", { localReadyOnly });
+  async embeddingRuntime(localReadyOnly = false, signal?: AbortSignal): Promise<EmbeddingModelRuntime | undefined> {
+    const descriptor = await this.call<EmbeddingModelDescriptor | null>("embedding.runtime", { localReadyOnly }, signal);
     if (!descriptor) return undefined;
     return {
       descriptor,

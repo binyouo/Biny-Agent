@@ -872,6 +872,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const selectComposerProject = useCallback((projectId: string): void => {
     // 新消息尚未生成 session 时，文件夹只是消息归属，不应触发工作区和左侧栏切换。
     if (selectedRef.current === undefined) {
+      // 回填已进入所属草稿；目标切换时不能再次覆盖另一项目保留的输入。
+      setComposerDraft(undefined);
       setDraftProjectId(projectId === projectRef.current ? undefined : projectId);
       return;
     }
@@ -1777,7 +1779,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
           if (!active) return;
           const key = `${target.projectId}:${target.sessionId ?? "draft"}`;
           let draft = composerDrafts.get(key); if (!draft) { draft = new ComposerDraftState(); composerDrafts.set(key, draft); }
-          if (draft.getSnapshot().attachments.length >= 8) { setWarning("聊天附件已满，请移除一个附件后重新截图。"); return; }
+          const snapshot = draft.getSnapshot();
+          if (snapshot.attachments.length + snapshot.pendingAttachments.length >= 8) { setWarning("聊天附件已满，请移除一个附件后重新截图。"); return; }
           draft.update(current => ({ attachments: [...current.attachments, attachment] }));
           setSettingsOpen(false);
           await appshotNavigation.current(target);
@@ -2061,8 +2064,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const composer = (
     <>
     <Composer
-      key={`${workspace?.project.id ?? "none"}:${selectedSessionId ?? "draft"}`}
-      draftKey={`${workspace?.project.id ?? "none"}:${selectedSessionId ?? "draft"}`}
+      key={`${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`}
+      draftKey={`${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`}
+      draftProjectId={composerProject?.id}
       isSubmissionCurrent={() => projectRef.current === workspace?.project.id && selectedRef.current === selectedSessionId}
       drafts={composerDrafts}
       onInspectReference={inspector.previewReference}

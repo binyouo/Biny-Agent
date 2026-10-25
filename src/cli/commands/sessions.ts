@@ -62,8 +62,8 @@ function printSessionSummary(
   branchPoint?: { kind: "event" | "user_message"; index: number }
 ): void {
   // 摘要压成单行，避免长对话内容把 session 列表冲散。
-  const firstMessage = session.firstUserMessage.replace(/\s+/g, " ").slice(0, 80) || "(no user_message)";
-  const lastAssistant = session.lastAssistantMessage.replace(/\s+/g, " ").slice(0, 80) || "(no assistant_message)";
+  const firstMessage = sessionSummaryPreview(session.firstUserMessage) || "(no user_message)";
+  const lastAssistant = sessionSummaryPreview(session.lastAssistantMessage) || "(no assistant_message)";
   const terminalStatus = session.lastTurnStatus ? `\t${session.lastTurnStatus.status}` : "";
   console.log(`${session.fileName}\t${session.createdAt}\t${relativeTime(session.updatedAt)}\t${session.eventCount} events${terminalStatus}`);
   console.log(`  user: ${firstMessage}`);
@@ -71,6 +71,15 @@ function printSessionSummary(
   if (parentSessionId && branchPoint) {
     console.log(`  branch: ${parentSessionId} @ ${branchPoint.kind}:${String(branchPoint.index)}`);
   }
+}
+
+function sessionSummaryPreview(content: string): string {
+  const text = content.replace(/\s+/g, " ");
+  let end = Math.min(80, text.length);
+  const before = text.charCodeAt(end - 1);
+  const after = text.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end -= 1;
+  return text.slice(0, end);
 }
 
 function relativeTime(value: string): string {

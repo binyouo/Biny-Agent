@@ -11,6 +11,7 @@ import { isToolResultArchiveReference } from "../src/session/toolResultArchive.j
 const root = new URL("../", import.meta.url);
 interface Selection { path: string; functions: readonly string[]; constants?: readonly string[] }
 const selections: Record<string, Selection> = {
+  diff: { path: "src/utils/diffLines.ts", functions: ["classifyDiffLines"] },
   redaction: { path: "src/utils/redaction.ts", functions: ["redactSecrets"] },
   secrets: { path: "src/utils/secrets.ts", functions: ["redactSensitiveValue", "redactSensitiveValueInternal", "isSensitiveFieldName"] },
   serializer: { path: "src/session/toolResultArchive.ts", functions: ["serializeToolResult", "jsonReplacer"] },
@@ -31,7 +32,11 @@ const selections: Record<string, Selection> = {
 };
 const directCalls = new Set([
   ...Object.values(selections).flatMap(selection => selection.functions),
-  "String", "createHash", "projectShellStreams", "shellOutputExcerpt", "commandStreamFields", "isToolResultArchiveReference"
+  "String", "Number", "createHash", "projectShellStreams", "shellOutputExcerpt", "commandStreamFields", "isToolResultArchiveReference"
+]);
+// Only the reviewed hunk-regex literal may add an exec call to the extraction.
+const literalExecPatterns = new Set([
+  "/^@@(?:\\s+-(\\d+)(?:,(\\d+))?\\s+\\+(\\d+)(?:,(\\d+))?\\s+@@.*)?$/u"
 ]);
 const methodCalls = new Set([
   "replace", "map", "has", "add", "delete", "entries", "fromEntries", "toLowerCase", "endsWith",
@@ -44,8 +49,9 @@ function checkCalls(node: ts.Node): void {
     const callee = node.expression;
     assert.ok(ts.isIdentifier(callee) && directCalls.has(callee.text)
       || ts.isPropertyAccessExpression(callee) && (methodCalls.has(callee.name.text)
-        || callee.name.text === "exec" && ts.isIdentifier(callee.expression)
-          && ["beginPattern", "endPattern", "legacyQuotedPattern", "completeQuotedPattern"].includes(callee.expression.text)),
+        || callee.name.text === "exec" && (ts.isIdentifier(callee.expression)
+          && ["beginPattern", "endPattern", "legacyQuotedPattern", "completeQuotedPattern"].includes(callee.expression.text)
+          || ts.isRegularExpressionLiteral(callee.expression) && literalExecPatterns.has(callee.expression.getText()))),
     "Unreviewed production call: " + callee.getText());
   }
   if (ts.isNewExpression(node)) {
@@ -101,6 +107,8 @@ const shell = evaluate<Record<string, unknown>>(
   compile(selections.shell!, ["projectShellStreams", "shellOutputExcerpt"]), { Buffer });
 const fields = evaluate<Record<string, unknown>>(
   compile(selections.fields!, ["commandStreamFields"]), { Buffer });
+const diff = evaluate<Record<string, unknown>>(
+  compile(selections.diff!, ["classifyDiffLines"]), {});
 const projectionSource = compile(selections.projection!, ["projectSingleToolResultForModel"]);
 
 interface ArchiveRequest {
@@ -122,7 +130,7 @@ const archivePath = ".biny/tool-results/tool-result-" + "a".repeat(64) + ".json"
 function harness(original: unknown) {
   const calls: unknown[] = [];
   const api = evaluate<Api>(projectionSource, {
-    ...redaction, ...shell, ...fields, Buffer, createHash, Error, isToolResultArchiveReference,
+    ...redaction, ...shell, ...fields, ...diff, Buffer, createHash, Error, isToolResultArchiveReference,
     serializeToolResult: (value: unknown, options?: { context?: "mcp-result" }): string => {
       calls.push(value);
       return serializer.serializeToolResult(value, options);

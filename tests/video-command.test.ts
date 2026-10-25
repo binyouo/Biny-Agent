@@ -41,7 +41,7 @@ async function startVideoServer(): Promise<VideoServer> {
         response.end(JSON.stringify({ file: { name: "files/one", uri: "https://generativelanguage.googleapis.com/v1beta/files/one", mimeType: "video/mp4", state: "PROCESSING" } }));
       } else if (request.method === "GET" && request.url === "/v1beta/files/one") {
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({ file: { name: "files/one", state: "ACTIVE" } }));
+        response.end(JSON.stringify({ name: "files/one", state: "ACTIVE" }));
       } else if (request.method === "POST" && request.url === "/v1beta/models/gemini-2.5-flash:generateContent") {
         let parsed: Record<string, unknown> = {};
         try { parsed = JSON.parse(body.toString("utf8")) as Record<string, unknown>; } catch { /* assertion catches malformed request */ }
