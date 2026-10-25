@@ -45,9 +45,17 @@ export async function readManagedProcessLog(
     if (!Number.isSafeInteger(totalBytes)) throw new Error("Managed process log is too large to paginate safely.");
     const startOffset = options.fromEnd === true ? Math.max(0, totalBytes - maxBytes) : Math.min(requestedOffset, totalBytes);
     const buffer = Buffer.alloc(Math.min(maxBytes, totalBytes - startOffset));
-    const { bytesRead } = await file.read(buffer, 0, buffer.length, startOffset);
-    signal?.throwIfAborted();
-    const page = buffer.subarray(0, bytesRead);
+    // A successful read may be short even before EOF. Fill only this size snapshot
+    // so a short read cannot masquerade as an undersized UTF-8 page.
+    let filled = 0;
+    while (filled < buffer.length) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await file.read(buffer, filled, buffer.length - filled, startOffset + filled);
+      signal?.throwIfAborted();
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    const page = buffer.subarray(0, filled);
     const { consumedBytes, pendingUtf8Bytes } = await completeUtf8PageBytes(binding, file, page, startOffset, totalBytes, context.final, signal);
     await assertLogBinding(binding, file);
     const nextOffset = startOffset + consumedBytes;

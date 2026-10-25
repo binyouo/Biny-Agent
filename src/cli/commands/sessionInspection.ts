@@ -1,7 +1,6 @@
 import type { Command } from "commander";
 import { connectRuntimeHost, type RuntimeHostClient } from "../../runtime/RuntimeHost.js";
 import { resolveSessionFile } from "../../session/store.js";
-import { unwrapHostOperationResult } from "./sessionManagement.js";
 
 export function registerSessionInspectionCommands(program: Command, session: Command, workspaceRoot: string, wrap: (action: () => Promise<void>) => () => Promise<void>): void {
   session.command("create").description("Create a new empty session in the current workspace Host").option("--json", "print JSON")
@@ -24,7 +23,7 @@ export function registerSessionInspectionCommands(program: Command, session: Com
       if (!client) throw new Error("The workspace Runtime Host is not running.");
       try {
         await focusExistingSession(client, sessionId);
-        const result = unwrapHostOperationResult(await client.sessionCommand("ToolCall", { name, input }, sessionId, process.env.BINY_AGENT_CONTEXT || undefined));
+        const result = await client.sessionCommand("ToolCall", { name, input }, sessionId, process.env.BINY_AGENT_CONTEXT || undefined);
         console.log(JSON.stringify(result ?? null, null, options.json ? undefined : 2));
       } finally { await client.close(); }
     })());
