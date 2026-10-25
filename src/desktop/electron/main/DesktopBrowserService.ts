@@ -857,6 +857,7 @@ export class DesktopBrowserService {
         await this.prepareBrowserEnvironment(environmentId);
         this.requireBrowserEnvironment(environmentId);
       }
+      controller.signal.throwIfAborted();
       this.guardWebPartition(partition);
       const visible = args.visible === true && typeof args.projectId === "string" && this.shownBrowser?.projectId === args.projectId;
       if (visible) {
