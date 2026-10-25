@@ -294,6 +294,12 @@ export class ToolExecutionCoordinator {
           && (options?.discovery ? isToolModelVisibleInMode(entry.tool, this.context.config.agent.toolExecutionMode) : isCodeModeTool(entry))
           && (!this.executionToolNames || this.executionToolNames.has(entry.tool.name))
           && (options?.discovery || isToolScriptCallable(entry.tool, !this.executionToolNames || !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name))));
+        // A direct model step may finish after its browser/extension registration
+        // was revoked. Keep its schema snapshot, but recheck the original authority.
+        const isCurrentDirect = () => origins.every((entry) => this.context.toolRegistry.listEntries().includes(entry)
+          && isToolModelVisibleInMode(entry.tool, this.context.config.agent.toolExecutionMode)
+          && (options?.discovery ? !this.executionToolNames || this.executionToolNames.has(entry.tool.name)
+            : !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
         const tool: AgentTool = {
           name: registered.name,
           providerTool: registered.providerTool,
@@ -319,11 +325,11 @@ export class ToolExecutionCoordinator {
               { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly, script: options?.script,
                 onResultStatus: (status, recoverable) => { resultStatus = status; recoverableError = recoverable; },
                 toolDiscoveryNames: options?.toolDiscoveryNames, toolDiscoveryModelNames: options?.toolDiscoveryModelNames, toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
-                assertCurrentRegistration: options?.script ? () => {
-                  if (!isCurrent()) {
-                    throw new Error(`Tool ${registered.name} is no longer available in this cell.`);
+                assertCurrentRegistration: () => {
+                  if (!(options?.script ? isCurrent() : isCurrentDirect())) {
+                    throw new Error(`Tool ${registered.name} is no longer available in this ${options?.script ? "cell" : "step"}.`);
                   }
-                } : undefined },
+                } },
               source
             ), toolCallId);
             const isError = resultStatus !== "succeeded";

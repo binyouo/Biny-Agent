@@ -7,6 +7,8 @@ import { TaskCommunication } from "../src/runtime/TaskCommunication.js";
 import { test } from "node:test";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { createInteractiveAgentHost, type InteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
+import { ProviderRegistry } from "../src/llm/ProviderRuntime.js";
+import { generateNativeText } from "../src/llm/nativeJson.js";
 for (const mode of ["unchanged", "draft-owned", "draft-foreign", "resume-owned", "resume-foreign", "cold-resume-owned", "failed-resume", "return-original", "wait-timeout", "wait-update", "wait-cancel", "wait-switch", "draft-wait-timeout", "draft-wait-update", "draft-wait-cancel", "draft-wait-switch"] as const) {
   test(`TaskStatus current session ownership: ${mode}`, { timeout: 30000 }, async context => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-task-status-"));
@@ -27,11 +29,16 @@ for (const mode of ["unchanged", "draft-owned", "draft-foreign", "resume-owned",
     context.mock.method(globalThis, "fetch", async (input: unknown, init?: RequestInit) => {
       assert.equal(input instanceof Request ? input.url : String(input), "http://notice-fixture.invalid/v1/chat/completions");
       const body = JSON.parse(String(init?.body));
-      const call = taskId !== undefined && !toolSent;
+      const call = taskId !== undefined && !toolSent
+        && body.tools?.some((tool: {function: {name: string}}) => tool.function.name === "TaskStatus");
       if (call) {
         assert.ok(body.tools.some((tool: {function: {name: string}}) => tool.function.name === "TaskStatus"), "TaskStatus actually declared to model");
         toolSent = true;
-      } else if (taskId !== undefined) observed = body.messages.findLast((message: {role: string}) => message.role === "tool");
+      } else if (taskId !== undefined) {
+        const result = body.messages.findLast((message: {role: string; tool_call_id?: string}) =>
+          message.role === "tool" && message.tool_call_id === "status-fixture");
+        if (result) observed = result;
+      }
       const delta = call ? { tool_calls: [{ index: 0, id: "status-fixture", type: "function", function: { name: "TaskStatus", arguments: JSON.stringify({ taskRunId: taskId, ...waitArgs }) } }] } : { content: "Fixture complete" };
       return new Response([{ choices: [{ index: 0, delta, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: call ? "tool_calls" : "stop" }] }, "[DONE]"].map(chunk => `data: ${typeof chunk === "string" ? chunk : JSON.stringify(chunk)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
     });
@@ -105,6 +112,11 @@ for (const mode of ["unchanged", "draft-owned", "draft-foreign", "resume-owned",
       assert.equal(outcome.status, waitMode === "wait-cancel" ? "cancelled" : "completed", JSON.stringify(outcome));
       if (waitMode === "wait-cancel") { assert.equal(host.commands.taskRuns.get(taskId)!.status, "running"); return; }
     } else await run();
+    if (mode === "draft-foreign") {
+      // 后台模型请求不携带工具结果，不能清空前台请求已捕获的证据。
+      await generateNativeText(new ProviderRegistry(config).createModelSettings("fixture").model,
+        [{ role: "user", content: "Summarize the fixture conversation." }]);
+    }
     assert.ok(toolSent);
     assert.ok(observed, "model received actual TaskStatus result");
     const text = JSON.stringify(observed);

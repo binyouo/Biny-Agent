@@ -2282,7 +2282,6 @@ export class RuntimeHostServer {
     this.sequence += 1;
     const sequence = this.sequence;
     if (sequence === Number.MAX_SAFE_INTEGER) this.markEventSequenceExhausted();
-    let rewriteJournal = false;
     if (update.event?.type === "tool.input") {
       const preview = update.event;
       let index = -1;
@@ -2295,12 +2294,11 @@ export class RuntimeHostServer {
       if (previous?.update.event?.type === "tool.input") {
         // 保留连续传输序号；旧预览不是执行事实，不重复保存整份增长中的 HTML。
         this.history[index] = { ...previous, update: { ...previous.update, event: { ...previous.update.event, args: {} } } };
-        rewriteJournal = true;
       }
     }
     this.history.push({ sequence, update });
     if (this.history.length > eventHistoryLimit) this.history.splice(0, this.history.length - eventHistoryLimit);
-    if (this.journalReady) void this.journal.persist(sequence, () => this.history, rewriteJournal);
+    if (this.journalReady) void this.journal.persist(sequence, () => this.history);
     for (const connection of this.connections) {
       if (connection.authenticated && connection.subscribed && !connection.eventReplay && this.matchesSessionFilter(connection, update)) {
         this.sendEvent(connection, sequence, update);
