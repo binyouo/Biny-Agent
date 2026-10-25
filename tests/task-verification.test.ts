@@ -18,6 +18,7 @@ import { GoalGraphStore, GraphSupervisor } from "../src/runtime/GoalGraphStore.j
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { runtimeHostPaths, spawnRuntimeHost, type RuntimeHostClient } from "../src/runtime/RuntimeHost.js";
+import { isProcessAlive } from "../src/runtime/host/lifecycle.js";
 import { approveTaskVerification, runTaskClosure } from "../src/runtime/TaskClosure.js";
 import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import { TaskCommunication } from "../src/runtime/TaskCommunication.js";
@@ -1264,6 +1265,11 @@ async function killRegisteredHost(root: string, signal: NodeJS.Signals): Promise
     process.kill(pid, signal);
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+  }
+  const deadline = Date.now() + 10_000;
+  while (isProcessAlive(pid)) {
+    if (Date.now() >= deadline) throw new Error(`Verification Host ${pid} did not stop after ${signal}.`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
   }
 }
 
