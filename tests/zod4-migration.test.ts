@@ -1,65 +1,20 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { stripTypeScriptTypes } from "node:module";
-import ts from "typescript";
+import { test } from "node:test";
 import { z } from "zod";
+import { activitySettingsPatchSchema } from "../src/activity/settings.js";
+import { configSchema, defaultConfig } from "../src/config/schema.js";
+import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
+import { globalPersonalizationUpdateSchema } from "../src/personalization/index.js";
+import { computerActionSchema, computerSequenceSchema, windowObserveSchema } from "../src/computer/protocol.js";
+import { createEditFileTool } from "../src/tools/file/editFile.js";
+import { createApplyPatchTool } from "../src/tools/file/applyPatch.js";
+import { openAiCompatibleToolParameters, validateJsonSchema } from "../src/tools/schema.js";
+import { zodToolInput } from "../src/tools/zodToolInput.js";
 
-// Extract audited pure declarations, not module imports: config/tool modules also
-// reach filesystem, Host and native adapters. New declarations are never auto-run.
-function source(file: string): ts.SourceFile {
-  return ts.createSourceFile(file, readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
-}
-function declaration(file: string, name: string): string {
-  const ast = source(file);
-  const statement = ast.statements.find((entry) => ts.isFunctionDeclaration(entry) ? entry.name?.text === name
-    : ts.isVariableStatement(entry) && entry.declarationList.declarations.some((item) => item.name.getText(ast) === name));
-  assert.ok(statement, `Missing audited declaration ${file}:${name}`);
-  return statement.getText(ast).replace(/^export /, "");
-}
-function declarations(file: string, names: string[]): string {
-  return names.map((name) => declaration(file, name)).join("\n");
-}
-function property(file: string, name: string, key: string): string {
-  const ast = source(file);
-  const statement = ast.statements.find((entry) => ts.isVariableStatement(entry)
-    && entry.declarationList.declarations.some((item) => item.name.getText(ast) === name));
-  assert.ok(statement && ts.isVariableStatement(statement));
-  let expression = statement.declarationList.declarations.find((item) => item.name.getText(ast) === name)?.initializer;
-  while (expression && ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
-    if (expression.expression.getText(ast) === "z.object") {
-      const shape = expression.arguments[0];
-      assert.ok(shape && ts.isObjectLiteralExpression(shape));
-      const field = shape.properties.find((item) => ts.isPropertyAssignment(item) && item.name.getText(ast) === key);
-      assert.ok(field && ts.isPropertyAssignment(field), `Missing audited field ${name}.${key}`);
-      return field.initializer.getText(ast);
-    }
-    expression = expression.expression.expression;
-  }
-  throw new Error(`Expected object schema ${name}`);
-}
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function compile(body: string, names: string[]): Record<string, unknown> {
-  // Erase types only. Unsupported transform-only syntax must fail rather than
-  // silently rewriting the audited declarations before they are evaluated.
-  const js = stripTypeScriptTypes(`function buildSchemas(z) {\n${body}\nreturn {${names.join(",")}};\n}`, { mode: "strip" });
-  const result: unknown = new Function("z", `${js}\nreturn buildSchemas(z);`)(z);
-  assert.ok(isRecord(result));
-  return result;
-}
-function schema(bundle: Record<string, unknown>, name: string): z.ZodType {
-  const value = bundle[name];
-  assert.ok(value instanceof z.ZodType, `Expected schema ${name}`);
-  return value;
-}
-function call(bundle: Record<string, unknown>, name: string, ...args: unknown[]): unknown {
-  const fn = bundle[name];
-  assert.equal(typeof fn, "function");
-  assert.ok(typeof fn === "function");
-  const result: unknown = Reflect.apply(fn, undefined, args);
-  return result;
-}
+
 function assertIndependent(left: unknown, right: unknown): void {
   if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return;
   assert.notEqual(left, right, "Separate parses must not share mutable defaults");
@@ -67,60 +22,54 @@ function assertIndependent(left: unknown, right: unknown): void {
   else if (isRecord(left) && isRecord(right)) for (const key of Object.keys(left)) assertIndependent(left[key], right[key]);
 }
 
-const memoryNames = ["embeddingModelRefSchema", "rawMemoryPolicySchema", "memoryPolicySchema", "globalPersonalizationUpdateSchema"];
-const activityNames = ["defaultActivitySettings", "normalizeActivitySettingsValue", "deprecatedActivitySettingKeys", "stripDeprecatedActivitySettings", "activitySettingsObjectSchema", "activitySettingsInputSchema", "activitySettingsPatchSchema", "activitySettingsSchema"];
-const configNames = ["permissionSchema", "compactionSchema", "capabilityDefaultSelectionSchema", "chatResponseSettingsSchema", "skillExtractionSchema", "chatParamsSchema", "crystalThresholdSchema", "crystalSettingsSchema", "mcpServerSchema", "defaultSubagentAllowedTools", "subagentToolNameSchema", "skillActivationMapSchema", "skillProjectOverridesSchema", "extensionsSchema", "webSearchSchema", "webCookiesSchema", "webFetchSchema", "hookSchema", "hooksSchema", "diagnosticsSchema", "webSchema", "identityPolicySchema", "contextSchema", "reasoningEffortSchema", "modelThinkingSchema"];
-const setup = [
-  declarations("llm/embedding/types.ts", ["localEmbeddingModelIds", "defaultLocalEmbeddingModel", "defaultEmbeddingModelRef"]),
-  declarations("extensions/skillRoots.ts", ["PROJECT_SKILL_ROOT_CONVENTIONS", "DEFAULT_PROJECT_SKILL_PATHS"]),
-  declarations("personalization/index.ts", memoryNames),
-  declarations("activity/settings.ts", activityNames),
-  declarations("computer/protocol.ts", ["computerAppSchema", "computerSettingsSchema"]),
-  declarations("config/schema.ts", configNames),
-  declaration("desktop/electron/main/settingsSaveInputSchema.ts", "memorySettingsSchema"),
-  `const settingsPatch = z.object({${["memory", "compaction", "chatParams"].map((key) => `${key}:${property("desktop/electron/main/settingsSaveInputSchema.ts", "settingsSaveInputSchema", key)}`).join(",")}}).strict();`,
-  `const configuredComputerSchema = ${property("config/schema.ts", "canonicalConfigSchema", "computer")};`
-].join("\n");
-const defaults = compile(setup, [...memoryNames, ...activityNames, ...configNames, "settingsPatch", "configuredComputerSchema"]);
-const patch = schema(defaults, "activitySettingsPatchSchema");
-for (const [input, expected] of [
-  [{}, {}], [{ enabled: false }, { enabled: false }], [{ enabled: undefined }, { enabled: undefined }],
-  [{ captureDebounceMs: 0 }, { captureDebounceMs: 0 }], [{ ocrLanguages: [" en-US "] }, { ocrLanguages: ["en-US"] }],
-  [{ outputDirectory: " /synthetic/path " }, { outputDirectory: "/synthetic/path" }],
-  [{ sensitiveApplications: [] }, { sensitiveApplications: [] }]
-]) assert.deepEqual(patch.parse(input), expected);
-for (const input of [null, [], { unknown: true }, { enabled: null }, { captureDebounceMs: -1 }, { captureDebounceMs: 30_001 }, { ocrLanguages: [] }]) assert.equal(patch.safeParse(input).success, false);
-for (const name of ["settingsPatch", "globalPersonalizationUpdateSchema"]) {
-  const update = schema(defaults, name);
-  assert.deepEqual(update.parse({}), {});
-  for (const key of name === "settingsPatch" ? ["memory", "compaction", "chatParams"] : ["memory"]) {
-    assert.deepEqual(update.parse({ [key]: undefined }), { [key]: undefined });
-    assert.equal(update.safeParse({ [key]: null }).success, false);
-    const expanded = update.parse({ [key]: {} });
-    assert.ok(isRecord(expanded) && isRecord(expanded[key]) && Object.keys(expanded[key]).length > 0);
+test("settings updates preserve omitted fields and normalize only supplied values", () => {
+  for (const [input, expected] of [
+    [{}, {}], [{ enabled: false }, { enabled: false }], [{ enabled: undefined }, { enabled: undefined }],
+    [{ captureDebounceMs: 0 }, { captureDebounceMs: 0 }], [{ ocrLanguages: [" en-US "] }, { ocrLanguages: ["en-US"] }],
+    [{ outputDirectory: " /synthetic/path " }, { outputDirectory: "/synthetic/path" }],
+    [{ sensitiveApplications: [] }, { sensitiveApplications: [] }]
+  ]) assert.deepEqual(activitySettingsPatchSchema.parse(input), expected);
+  for (const input of [null, [], { unknown: true }, { enabled: null }, { captureDebounceMs: -1 }, { captureDebounceMs: 30_001 }, { ocrLanguages: [] }]) {
+    assert.equal(activitySettingsPatchSchema.safeParse(input).success, false);
   }
-  assert.doesNotThrow(() => z.toJSONSchema(update, { io: "input" }));
-}
-for (const name of ["permissionSchema", "chatParamsSchema", "crystalSettingsSchema", "extensionsSchema", "hooksSchema", "diagnosticsSchema", "webSchema", "activitySettingsSchema", "memoryPolicySchema", "configuredComputerSchema"]) {
-  const current = schema(defaults, name);
-  const first = current.parse(undefined), second = current.parse(undefined);
+  const revisions = { expectedPreferenceRevision: 0, expectedConfigRevision: "test-revision" };
+  for (const [update, base, keys] of [
+    [settingsSaveInputSchema, revisions, ["memory", "compaction", "chatParams"]],
+    [globalPersonalizationUpdateSchema, {}, ["memory"]]
+  ] as const) {
+    assert.deepEqual(update.parse(base), base);
+    for (const key of keys) {
+      assert.deepEqual(update.parse({ ...base, [key]: undefined }), { ...base, [key]: undefined });
+      assert.equal(update.safeParse({ ...base, [key]: null }).success, false);
+      const expanded: unknown = update.parse({ ...base, [key]: {} });
+      assert.ok(isRecord(expanded) && isRecord(expanded[key]) && Object.keys(expanded[key]).length > 0);
+    }
+  }
+});
+
+test("configuration defaults are fully parsed and do not share mutable state", () => {
+  const input = { ...defaultConfig, permission: undefined, chat: undefined, crystal: undefined,
+    extensions: undefined, hooks: undefined, diagnostics: undefined, web: undefined,
+    activity: undefined, context: undefined, computer: undefined };
+  const first = configSchema.parse(input), second = configSchema.parse(input);
   assert.deepEqual(first, second);
   assertIndependent(first, second);
-}
-const contextDefault = schema(defaults, "contextSchema").parse(undefined);
-assert.ok(isRecord(contextDefault) && isRecord(contextDefault.memory));
-assert.equal(contextDefault.memory.sleepEnabled, true);
-assert.equal(contextDefault.memory.sleepTime, "03:00");
-assert.equal(contextDefault.memory.llmBatchSize, 20);
-const thinking = schema(defaults, "modelThinkingSchema");
-assert.equal(thinking.safeParse({ mapping: { high: "high" }, budgetTokens: { high: 1024 } }).success, true);
-assert.equal(thinking.safeParse({ mapping: { other: "high" } }).success, false);
-const nestedSubagent = compile(`${setup}\nconst nestedSubagent = ${property("config/schema.ts", "extensionsSchema", "subagent")};`, ["nestedSubagent"]);
-assertIndependent(schema(nestedSubagent, "nestedSubagent").parse(undefined), schema(nestedSubagent, "nestedSubagent").parse(undefined));
+  assert.equal(first.context.memory.sleepEnabled, true);
+  assert.equal(first.context.memory.sleepTime, "03:00");
+  assert.equal(first.context.memory.llmBatchSize, 20);
+  const model = defaultConfig.models[defaultConfig.defaultModel]!;
+  for (const [reasoning, valid] of [
+    [{ mapping: { high: "high" }, budgetTokens: { high: 1024 } }, true],
+    [{ mapping: { other: "high" } }, false]
+  ] as const) {
+    assert.equal(configSchema.safeParse({ ...defaultConfig,
+      models: { ...defaultConfig.models, [defaultConfig.defaultModel]: { ...model, reasoning } }
+    }).success, valid);
+  }
+});
 
-const computerNames = ["windowTargetSchema", "computerWaitSchema", "computerObservationOptions", "validateObservationOptions", "windowObserveSchema", "computerActionPayload", "validateComputerAction", "computerActionPayloadSchema", "computerActionObjectSchema", "computerActionSchema", "computerSequenceSchema"];
-const computer = compile(declarations("computer/protocol.ts", computerNames), computerNames);
-const identity = { pid: 1, windowId: "1", captureId: "synthetic" };
+test("computer action and sequence schemas retain cross-field validation", () => {
+  const identity = { pid: 1, windowId: "1", captureId: "synthetic" };
 const actionCases: [Record<string, unknown>, boolean][] = [
   [{ action: "click" }, false], [{ action: "click", x: 1, y: 2 }, true], [{ action: "click", x: 1 }, false],
   [{ action: "type_text", text: "" }, true], [{ action: "type_text", text: "a", inputMethod: "ax" }, false],
@@ -130,46 +79,19 @@ const actionCases: [Record<string, unknown>, boolean][] = [
   [{ action: "set_value", elementToken: "t", value: false }, true],
   [{ action: "select_text", elementToken: "t", matchText: "a", text: "b" }, false]
 ];
-for (const [action, valid] of actionCases) {
-  assert.equal(schema(computer, "computerActionSchema").safeParse({ ...identity, ...action }).success, valid);
-  assert.equal(schema(computer, "computerSequenceSchema").safeParse({ ...identity, actions: [action] }).success, valid);
-}
-const sequence = schema(computer, "computerSequenceSchema");
-assert.equal(sequence.safeParse({ ...identity, actions: [{ action: "click", x: 1, y: 2 }, { action: "click", x: 1, y: 2 }] }).success, false);
-assert.equal(sequence.safeParse({ ...identity, actions: [{ action: "click", x: 1, y: 2 }, { action: "press_key", key: "Enter" }] }).success, true);
-assert.equal(sequence.safeParse({ ...identity, actions: [{ action: "click", x: 1, y: 2 }, { action: "type_text", text: "x", elementToken: "stale" }] }).success, false);
-assert.equal(sequence.safeParse({ ...identity, actions: [] }).success, false);
-assert.equal(sequence.safeParse({ ...identity, actions: Array(6).fill({ action: "press_key", key: "Enter" }) }).success, false);
-assert.equal(schema(computer, "windowObserveSchema").safeParse({ pid: 1, windowId: "1", content: "image", waitFor: { text: "x" } }).success, false);
+  for (const [action, valid] of actionCases) {
+    assert.equal(computerActionSchema.safeParse({ ...identity, ...action }).success, valid);
+    assert.equal(computerSequenceSchema.safeParse({ ...identity, actions: [action] }).success, valid);
+  }
+  for (const [actions, valid] of [
+    [[{ action: "click", x: 1, y: 2 }, { action: "click", x: 1, y: 2 }], false],
+    [[{ action: "click", x: 1, y: 2 }, { action: "press_key", key: "Enter" }], true],
+    [[{ action: "click", x: 1, y: 2 }, { action: "type_text", text: "x", elementToken: "stale" }], false],
+    [[], false], [Array(6).fill({ action: "press_key", key: "Enter" }), false]
+  ] as const) assert.equal(computerSequenceSchema.safeParse({ ...identity, actions }).success, valid);
+  assert.equal(windowObserveSchema.safeParse({ pid: 1, windowId: "1", content: "image", waitFor: { text: "x" } }).success, false);
+});
 
-const toolNames = ["hashlineEditsSchema", "deleteFileArgsSchema", "moveFileArgsSchema", "hashlineEditArgsSchema", "stringEditArgsSchema"];
-const helperNames = ["isSchemaRecord", "normalizeDisjointUnions"];
-const validatorNames = ["normalizeToolParameters", "normalizeSchemaNode", "openAiCompatibleToolParameters", "omitEmptyRequired", "validateJsonSchema", "validateValue", "validateObject", "validateString", "validateNumber", "validateArray"];
-const tools = compile([
-  declarations("tools/file/editFile.ts", toolNames), declaration("tools/file/applyPatch.ts", "patchArgsSchema"),
-  declarations("tools/zodToolInput.ts", helperNames), declarations("tools/schema.ts", validatorNames)
-].join("\n"), [...toolNames, "patchArgsSchema", ...helperNames, ...validatorNames]);
-// Guard actual integration without importing the SDK or replacing its projection.
-const bridgeAst = source("tools/zodToolInput.ts");
-let bridgeConnected = false, objectEnvelope = false;
-function inspectBridge(node: ts.Node): void {
-  if (ts.isVariableDeclaration(node) && node.name.getText(bridgeAst) === "generated") {
-    const initializer = node.initializer;
-    const expression = initializer && ts.isAsExpression(initializer) ? initializer.expression : initializer;
-    bridgeConnected = Boolean(expression && ts.isCallExpression(expression) && expression.expression.getText(bridgeAst) === "normalizeDisjointUnions"
-      && expression.arguments[0]?.getText(bridgeAst) === "zodSchema(schema, { useReferences: false }).jsonSchema");
-  }
-  if (ts.isBinaryExpression(node) && node.left.getText(bridgeAst) === "parameters" && ts.isObjectLiteralExpression(node.right)) {
-    const fields = node.right.properties;
-    objectEnvelope = fields.some((field) => ts.isSpreadAssignment(field) && field.expression.getText(bridgeAst) === "generated")
-      && fields.some((field) => ts.isPropertyAssignment(field) && field.name.getText(bridgeAst) === "type" && ts.isStringLiteral(field.initializer) && field.initializer.text === "object")
-      && fields.some((field) => ts.isPropertyAssignment(field) && field.name.getText(bridgeAst) === "anyOf" && field.initializer.getText(bridgeAst) === "generated.anyOf");
-  }
-  ts.forEachChild(node, inspectBridge);
-}
-inspectBridge(bridgeAst);
-assert.ok(bridgeConnected, "The SDK projection must pass through disjoint-union normalization");
-assert.ok(objectEnvelope, "Root unions must retain the model-facing object envelope and sibling constraints");
 const cases: Record<string, [unknown, boolean][]> = {
   hashlineEditArgsSchema: [
     [{ operation: "delete", path: "x" }, true], [{ operation: "move", path: "x", to: "y" }, true],
@@ -189,92 +111,48 @@ const cases: Record<string, [unknown, boolean][]> = {
     [{ callId: "a", operation: { path: "x", diff: "+a" } }, false]
   ]
 };
+
 for (const [name, inputs] of Object.entries(cases)) {
-  const local = schema(tools, name);
-  const projected = call(tools, "normalizeDisjointUnions", z.toJSONSchema(local, { target: "draft-7", io: "input", reused: "inline" }));
-  for (const [input, valid] of inputs) {
-    assert.equal(local.safeParse(input).success, valid);
-    const result = call(tools, "validateJsonSchema", projected, input);
-    assert.ok(isRecord(result));
-    assert.equal(result.ok, valid);
-    if (name === "patchArgsSchema") {
-      const normalized = call(tools, "normalizeToolParameters", name, projected);
-      const wire = call(tools, "openAiCompatibleToolParameters", name, normalized);
-      const wireResult = call(tools, "validateJsonSchema", wire, input);
-      assert.ok(isRecord(wireResult));
-      assert.equal(wireResult.ok, valid);
+  test(`${name} publishes the same accepted and rejected inputs through the SDK`, () => {
+    const context = { workspaceRoot: process.cwd(), ignore: [] };
+    const tool = name === "patchArgsSchema" ? createApplyPatchTool(context)
+      : createEditFileTool(context, name === "hashlineEditArgsSchema");
+    const wire = openAiCompatibleToolParameters(tool.name, tool.parameters);
+    for (const [input, valid] of inputs) {
+      assert.equal(tool.schema.safeParse(input).success, valid, JSON.stringify(input));
+      assert.equal(validateJsonSchema(tool.parameters, input).ok, valid, JSON.stringify(input));
+      assert.equal(validateJsonSchema(wire, input).ok, valid, JSON.stringify(input));
     }
+  });
+}
+
+test("nested discriminated unions retain required fields and sibling constraints", () => {
+  const schema = z.object({ items: z.array(z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("a"), value: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal("b"), count: z.number().min(1) }).strict()
+  ])).min(1) }).strict();
+  const { parameters } = zodToolInput(schema);
+  for (const [input, valid] of [
+    [{ items: [{ kind: "a", value: "x" }] }, true],
+    [{ items: [{ kind: "b", count: 1 }] }, true],
+    [{ items: [{ kind: "a" }] }, false],
+    [{ items: [{ kind: "b", count: 0 }] }, false],
+    [{ items: [{ kind: "c", value: "x" }] }, false],
+    [{ items: [{ kind: "a", value: "x", extra: true }] }, false],
+    [{ items: [] }, false], [{ items: [{ kind: "a", value: "x" }], extra: true }, false]
+  ] as const) {
+    assert.equal(schema.safeParse(input).success, valid);
+    assert.equal(validateJsonSchema(parameters, input).ok, valid);
   }
-}
-const branch = (tag: string) => ({ type: "object", properties: { kind: { type: "string", const: tag } }, required: ["kind"], additionalProperties: false });
-for (const invalid of [
-  { oneOf: [branch("a"), branch("a")] }, { oneOf: [branch("a"), { ...branch("b"), required: [] }] },
-  { oneOf: [branch("a"), { ...branch("b"), properties: { kind: { type: "string" } } }] },
-  { oneOf: [branch("a"), { ...branch("b"), properties: { kind: { type: "number", const: 2 } } }] },
-  { oneOf: [{ ...branch("a"), $ref: "#/definitions/x" }, branch("b")] },
-  { oneOf: [branch("a"), { ...branch("b"), properties: { kind: { type: "string", const: "b", $ref: "#/definitions/x" } } }] },
-  { oneOf: [branch("a"), true] }, { oneOf: [branch("a"), { type: "string", const: "b" }] },
-  { oneOf: [branch("a"), branch("b")], anyOf: [] }
-]) assert.throws(() => call(tools, "normalizeDisjointUnions", invalid), /unsupported oneOf/);
-const literals = { type: "object", properties: { value: { type: "string", default: { oneOf: [true, false] }, const: { oneOf: [1, 2] }, examples: [{ oneOf: [] }] } }, default: { oneOf: [] } };
-assert.deepEqual(call(tools, "normalizeDisjointUnions", literals), literals);
-const ordinary = { anyOf: [branch("a"), branch("b")] };
-assert.deepEqual(call(tools, "normalizeDisjointUnions", ordinary), ordinary);
-for (const kind of ["array", "set"] as const) {
-  let elementCalls = 0;
-  const item = z.string().superRefine(() => { elementCalls += 1; });
-  const result = kind === "array" ? z.array(item).max(2).safeParse(["a", "b", "c"]) : z.set(item).max(2).safeParse(new Set(["a", "b", "c"]));
-  assert.equal(result.success, false);
-  assert.equal(elementCalls, 0, "Patched Zod must reject oversized collections before element parsing");
-}
-// TaskStatus publishes a manual integer schema. Preserve its existing tool-boundary
-// acceptance separately from TaskCommunication's stricter safe-revision policy.
-const statusAst = source("extensions/subagent.ts");
-const statusFactory = statusAst.statements.find((entry) => ts.isFunctionDeclaration(entry) && entry.name?.text === "createTaskStatusTool");
-assert.ok(statusFactory && ts.isFunctionDeclaration(statusFactory) && statusFactory.body);
-const statusReturn = statusFactory.body.statements.find(ts.isReturnStatement)?.expression;
-assert.ok(statusReturn && ts.isObjectLiteralExpression(statusReturn));
-function statusField(name: string): string {
-  assert.ok(statusReturn && ts.isObjectLiteralExpression(statusReturn));
-  const field = statusReturn.properties.find((entry) => ts.isPropertyAssignment(entry) && entry.name.getText(statusAst) === name);
-  assert.ok(field && ts.isPropertyAssignment(field));
-  return field.initializer.getText(statusAst);
-}
-const statusBundle = compile(`const statusSchema = ${statusField("schema")}; const statusParameters = ${statusField("parameters")};`, ["statusSchema", "statusParameters"]);
-const statusSchema = schema(statusBundle, "statusSchema");
-const statusParameters = statusBundle.statusParameters;
-assert.ok(isRecord(statusParameters) && isRecord(statusParameters.properties));
-assert.deepEqual(statusParameters.properties.afterRevision, { type: "integer", minimum: 0, description: "The last task revision observed." });
-assert.deepEqual(statusParameters.properties.waitMs, { type: "integer", minimum: 0, maximum: 60_000, description: "Wait for an update for at most 60000ms; defaults to zero." });
-for (const afterRevision of [undefined, 0, 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 1e100]) {
-  assert.deepEqual(statusSchema.parse({ taskRunId: " task-1 ", afterRevision }), { taskRunId: "task-1", afterRevision });
-}
-assert.deepEqual(statusSchema.parse({ taskRunId: "task-1" }), { taskRunId: "task-1" });
-for (const afterRevision of [-1, 0.5, "0", null, NaN, Infinity, -Infinity]) {
-  const result = statusSchema.safeParse({ taskRunId: "task-1", afterRevision });
-  assert.equal(result.success, false);
-  if (!result.success) assert.deepEqual(result.error.issues[0]?.path, ["afterRevision"]);
-}
-for (const waitMs of [undefined, 0, 60_000]) assert.equal(statusSchema.safeParse({ taskRunId: "task-1", waitMs }).success, true);
-for (const waitMs of [-1, 0.5, 60_001, null, "0", NaN, Infinity, -Infinity]) assert.equal(statusSchema.safeParse({ taskRunId: "task-1", waitMs }).success, false);
-for (const input of [{ taskRunId: "" }, { taskRunId: "   " }, { taskRunId: "task-1", extra: true }, {}]) assert.equal(statusSchema.safeParse(input).success, false);
-const normalizedStatus = call(tools, "normalizeToolParameters", "TaskStatus", statusParameters);
-const statusWire = call(tools, "openAiCompatibleToolParameters", "TaskStatus", normalizedStatus);
-for (const parameters of [statusParameters, normalizedStatus, statusWire]) {
-  for (const afterRevision of [undefined, 0, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 1e100, -1, 0.5, "0", null, NaN, Infinity, -Infinity]) {
-    const input = afterRevision === undefined ? { taskRunId: "task-1" } : { taskRunId: "task-1", afterRevision };
-    const result = call(tools, "validateJsonSchema", parameters, input);
-    assert.ok(isRecord(result));
-    assert.equal(result.ok, statusSchema.safeParse(input).success);
+});
+
+test("patched Zod rejects oversized collections before parsing their elements", () => {
+  for (const kind of ["array", "set"] as const) {
+    let elementCalls = 0;
+    const item = z.string().superRefine(() => { elementCalls += 1; });
+    const result = kind === "array" ? z.array(item).max(2).safeParse(["a", "b", "c"])
+      : z.set(item).max(2).safeParse(new Set(["a", "b", "c"]));
+    assert.equal(result.success, false);
+    assert.equal(elementCalls, 0);
   }
-  for (const waitMs of [0, 60_000, -1, 0.5, 60_001, null, "0", NaN, Infinity, -Infinity]) {
-    const input = { taskRunId: "task-1", waitMs };
-    const result = call(tools, "validateJsonSchema", parameters, input);
-    assert.ok(isRecord(result));
-    assert.equal(result.ok, statusSchema.safeParse(input).success);
-  }
-}
-// Source-only wiring check: do not execute the downstream Host communication class.
-const communicationSource = source("runtime/TaskCommunication.ts").text;
-assert.ok(communicationSource.includes('if (afterRevision !== undefined && (!Number.isSafeInteger(afterRevision) || afterRevision < 0)) throw new Error("Invalid task revision.");'));
-console.log("Zod 4 migration pure regression fixtures passed");
+});

@@ -191,8 +191,12 @@ try {
               registry.registerSubagentTool({ ...tool });
             }
             release();
-            assert.equal((await pending).isError, true);
-            assert.equal(calls, mode === "direct" ? 1 : 0);
+            const result = await pending;
+            assert.equal(result.isError, true);
+            assert.equal(calls, mode === "direct" && change === "mutated" ? 1 : 0);
+            if (mode === "direct" && change === "re-registered") {
+              assert.match(JSON.stringify(result.details), /no longer available/u);
+            }
             const results = (await persisted()).filter((event) => event.type === "tool_result");
             assert.ok(results.length > 0);
             assert.ok(results.every((event) => event.executionStatus === "failed"));
