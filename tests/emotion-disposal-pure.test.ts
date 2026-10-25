@@ -113,6 +113,7 @@ function fixture(gate: Gate = "rename", activityPending = false) {
     session.pendingMemoryTasks = new Set(); session.pendingCrystalTasks = new Set(); session.closed = false;
     session.memoryRetriever = session.localMemory = session.crystalService = {close() {}};
     session.takeRelatedUsage = () => undefined; session.toolModel = () => ({});
+    session.auxiliaryUsageModels = new WeakMap();
     session.recentEmotionMessages = async () => [{role:'user', text:'hello'}];
     session.recordModelUsage = () => undefined; session.recordModelRequest = async () => undefined;
     session.activeConfig = {context: {memory: {}}};
