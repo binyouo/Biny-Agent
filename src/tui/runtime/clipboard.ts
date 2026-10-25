@@ -126,8 +126,8 @@ function readWslImage(): ClipboardImage | undefined {
 
 async function readNativeImage(): Promise<ClipboardImage | undefined> {
   const clipboard = nativeClipboard();
-  if (!clipboard?.hasImage()) return undefined;
   try {
+    if (!clipboard?.hasImage()) return undefined;
     const value = await clipboard.getImageBinary();
     const bytes = value instanceof Uint8Array ? value : Uint8Array.from(value);
     return bytes.length ? { bytes, mimeType: "image/png" } : undefined;

@@ -13,6 +13,7 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { DiagnosticsConfig } from "../config/schema.js";
 import { runShellCommand } from "./shell/runCommand.js";
 
@@ -76,12 +77,14 @@ export class DiagnosticsRunner {
     const result = await runShellCommand(this.workspaceRoot, command, { timeoutMs, signal });
     const merged = [result.stdout, result.stderr].filter((part) => part.trim()).join("\n").trim();
     const limit = this.config.maxOutputBytes;
-    const truncated = Buffer.byteLength(merged, "utf8") > limit;
+    const localClipped = Buffer.byteLength(merged, "utf8") > limit;
+    const truncated = localClipped || result.stdoutTruncated === true || result.stderrTruncated === true;
+    const output = localClipped ? new StringDecoder("utf8").write(Buffer.from(merged, "utf8").subarray(0, limit)) : merged;
     return {
       command,
       exitCode: result.exitCode,
       // 编译器把最有用的信息放在前面，超限时留头部。
-      output: truncated ? `${Buffer.from(merged, "utf8").subarray(0, limit).toString("utf8")}\n[diagnostics output truncated]` : merged,
+      output: truncated ? `${output}\n[diagnostics output truncated]` : output,
       truncated,
       timedOut: result.status === "timed_out"
     };
