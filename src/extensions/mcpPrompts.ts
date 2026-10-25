@@ -7,7 +7,7 @@ import type { Tool } from "../tools/types.js";
 export function createMcpPromptTools(host: McpToolHost): Tool[] {
   return host.cachedGenericTools("prompts", (): Tool[] => {
   const listSchema = z.object({ server: z.string().trim().min(1).optional() }).strict();
-  const getSchema = z.object({ server: z.string().trim().min(1), name: z.string().trim().min(1), arguments: z.record(z.string().max(16_000)).refine((args) => Object.keys(args).length <= 64, "Too many prompt arguments").optional() }).strict();
+  const getSchema = z.object({ server: z.string().trim().min(1), name: z.string().trim().min(1), arguments: z.record(z.string(), z.string().max(16_000)).refine((args) => Object.keys(args).length <= 64, "Too many prompt arguments").optional() }).strict();
   return [{
     name: "mcp_list_prompts", description: "List MCP prompt templates and their required arguments, optionally from one server.",
     parameters: { type: "object", properties: { server: { type: "string" } }, additionalProperties: false },

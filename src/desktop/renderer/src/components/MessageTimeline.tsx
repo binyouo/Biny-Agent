@@ -875,9 +875,14 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
     };
   }, [menuOpen, content, projectId, sessionId, turn.assistantMessageId]);
 
-  // 组件卸载（切会话、消息被折叠）时朗读与悬浮卡定时器都要跟着停。
+  // 同一用户回合切换回复版本时操作条不会卸载，朗读必须跟随原回复结束。
   useEffect(() => () => {
     stopSpeechRef.current?.();
+    stopSpeechRef.current = undefined;
+  }, [content, projectId, sessionId, turn.assistantMessageId]);
+
+  // 悬浮卡定时器只在操作条卸载时清理，不随回复切换重置菜单交互。
+  useEffect(() => () => {
     if (usageHideTimerRef.current !== undefined) window.clearTimeout(usageHideTimerRef.current);
   }, []);
 
