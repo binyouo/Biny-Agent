@@ -153,11 +153,11 @@ function sanitizeRequestMetrics(metrics: ModelRequestMetrics): Record<string, un
   };
 }
 
-/** 输入/输出先截断再脱敏后落盘；序列化不了（循环引用等）就记个占位，不抛错。 */
+/** 输入/输出先完整脱敏再截断后落盘；序列化不了（循环引用等）就记个占位，不抛错。 */
 function safePayload(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   try {
-    return redactSecrets(JSON.stringify(value).slice(0, 8_000));
+    return redactSecrets(JSON.stringify(value)).slice(0, 8_000);
   } catch {
     return "[unserializable]";
   }
