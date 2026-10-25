@@ -49,7 +49,7 @@ export function MarkdownCodeBlock({ code, language, dashed, isStreaming = false 
   const label = copied ? "已复制" : copyFailed ? "复制失败，点击重试" : "复制代码";
   const copy = <button className={`copy-button markdown-code-copy${copied ? " is-copied" : ""}`} type="button" aria-label={label} title={label} onClick={async () => {
     window.clearTimeout(copyTimer.current);
-    if (!await copyToClipboard(code)) {
+    if (!await copyToClipboard(code, { preserveNonBreakingSpaces: true })) {
       setCopyFailed(true);
       copyTimer.current = window.setTimeout(() => setCopyFailed(false), 2_000);
       return;

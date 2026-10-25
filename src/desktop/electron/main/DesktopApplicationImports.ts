@@ -1,7 +1,7 @@
 import type { ApplicationImportService } from "../../../imports/service.js";
 import type { ApplicationImportHistory, ApplicationImportSnapshot, ApplicationImportSource } from "../../../imports/types.js";
 
-type ImportService = Pick<ApplicationImportService, "snapshot" | "preview" | "run" | "setSyncEnabled" | "configureSyncSelection" | "sync">;
+type ImportService = Pick<ApplicationImportService, "snapshot" | "preview" | "run" | "setSyncEnabled" | "configureSyncSelection" | "syncWithEffects">;
 
 export class DesktopApplicationImports {
   private operation?: Promise<unknown>;
@@ -38,10 +38,9 @@ export class DesktopApplicationImports {
   async setSyncEnabled(enabled: boolean) { return await this.track(() => this.service.setSyncEnabled(enabled)); }
   async sync() {
     const result = await this.mutate(async () => {
-      const previous = new Set((await this.service.snapshot()).history.map(history => history.id));
-      const next = await this.service.sync();
-      await this.refreshImportedMcp(next.history.filter(history => !previous.has(history.id)));
-      return next;
+      const { snapshot, effects } = await this.service.syncWithEffects();
+      if (effects.mcpImported) await this.refreshMcp();
+      return snapshot;
     });
     this.syncError = undefined;
     return this.withErrors(result);
@@ -70,6 +69,10 @@ export class DesktopApplicationImports {
   }
   private async refreshImportedMcp(histories: ApplicationImportHistory[]): Promise<void> {
     if (!this.afterMcpImport || !histories.some(history => history.results.some(result => result.category === "mcp" && result.status === "imported"))) return;
+    await this.refreshMcp();
+  }
+  private async refreshMcp(): Promise<void> {
+    if (!this.afterMcpImport) return;
     try { await this.afterMcpImport(); this.refreshError = undefined; }
     catch { this.refreshError = "内容已导入，但 MCP 运行时刷新未完成。请重启 Biny 后检查。"; }
   }

@@ -39,7 +39,7 @@ export function RenderingPreviewPanel({ previews, activeId, expanded, active, on
           <button type="button" aria-label="查看预览" title="查看预览" aria-pressed={view === "preview"} onClick={() => setView("preview")}><Icon name="eye" size={14} /></button>
           <button type="button" aria-label="查看源码" title="查看源码" aria-pressed={view === "source"} onClick={() => setView("source")}><Icon name="code" size={14} /></button>
         </div>
-        <CopyButton label="复制源码" value={preview.source} size={14} />
+        <CopyButton label="复制源码" preserveTrailingNewline preserveNonBreakingSpaces value={preview.source} size={14} />
         <DownloadButton label="下载源码" filename={preview.filename} getContent={() => new Blob([preview.source], { type: "text/plain" })} />
         <button type="button" aria-label={expanded ? "退出预览全屏" : "展开预览全屏"} title={expanded ? "退出全屏" : "全屏预览"} onClick={onToggleExpanded}><Icon name={expanded ? "collapse" : "expand"} size={14} /></button>
         <button type="button" aria-label="关闭预览" title="关闭预览" onClick={onClose}><Icon name="close" size={14} /></button>

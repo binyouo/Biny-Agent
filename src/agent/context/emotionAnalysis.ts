@@ -6,6 +6,7 @@
  */
 import type { AgentModel, AgentUsage, ModelRequestContext, ModelRequestMetrics } from "../core/types.js";
 import { z } from "zod";
+import type { UsageModelInfo, UsageModelInfoResolver } from "../../observability/usage.js";
 import { generateNativeText } from "../../llm/nativeJson.js";
 import { DEFAULT_EMOTION_STATE, type EmotionState } from "./emotionTypes.js";
 import { EmotionStorage } from "./emotionStorage.js";
@@ -44,7 +45,8 @@ export interface AnalyzeContextEmotionOptions {
   getMessages: () => Promise<readonly EmotionAnalysisMessage[]>;
   now?: () => Date;
   signal?: AbortSignal;
-  onUsage?: (usage: AgentUsage) => void | Promise<void>;
+  onUsage?: (usage: AgentUsage, model?: Readonly<UsageModelInfo>) => void | Promise<void>;
+  getUsageModelInfo?: UsageModelInfoResolver;
   onRequestMetrics?: (metrics: ModelRequestMetrics) => void | Promise<void>;
   requestContext?: ModelRequestContext;
   onUpdated?: (state: EmotionState) => void | Promise<void>;
@@ -53,6 +55,7 @@ export interface AnalyzeContextEmotionOptions {
 export async function analyzeContextEmotion(options: AnalyzeContextEmotionOptions): Promise<EmotionState | undefined> {
   const model = options.getModel();
   if (!model) return undefined;
+  const usageModel = options.getUsageModelInfo?.(model);
   const messages = normalizeMessages(await options.getMessages());
   if (!messages.length) return undefined;
 
@@ -75,7 +78,7 @@ export async function analyzeContextEmotion(options: AnalyzeContextEmotionOption
       requestContext: options.requestContext
     }
   );
-  if (result.usage) await options.onUsage?.(result.usage);
+  if (result.usage) await options.onUsage?.(result.usage, usageModel);
   options.signal?.throwIfAborted();
 
   let parsed: unknown;

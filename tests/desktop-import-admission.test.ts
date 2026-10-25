@@ -20,7 +20,7 @@ function fixture(assertReady: () => Promise<void> = async () => undefined) {
     run: async () => { writes += 1; return history; },
     setSyncEnabled: async () => snapshot,
     configureSyncSelection: async () => snapshot,
-    sync: async () => { writes += 1; return snapshot; }
+    syncWithEffects: async () => { writes += 1; return { snapshot, effects: { mcpImported: false } }; }
   }, assertReady);
   return { controller, writes: () => writes, reads: () => reads };
 }
