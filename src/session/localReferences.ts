@@ -86,13 +86,16 @@ export function localReferenceUri(reference: ParsedLocalReference): string {
   const parts = reference.id.split("/");
   if (reference.kind !== "file" && parts.length !== 1) throw new Error("Invalid reference identifier.");
   for (const part of parts) segment(encoded(part));
-  return `biny://${reference.kind}/${parts.map(encoded).join("/")}`;
+  // File paths become Markdown destinations; encode delimiters without changing other object identities.
+  const encodedParts = parts.map(part => reference.kind === "file"
+    ? encoded(part).replace(/\(/gu, "%28").replace(/\)/gu, "%29") : encoded(part));
+  return `biny://${reference.kind}/${encodedParts.join("/")}`;
 }
 
 export function formatLocalReference(label: string, uri: string): string {
-  parseLocalReferenceUri(uri);
+  const reference = parseLocalReferenceUri(uri);
   if (!label.trim() || label.length > 80 || /[\]\n\r]/u.test(label)) throw new Error("Invalid reference label.");
-  return `@[${label}](${uri})`;
+  return `@[${label}](${reference.kind === "file" ? localReferenceUri(reference) : uri})`;
 }
 
 function textOf(event: SessionEvent): string | undefined {

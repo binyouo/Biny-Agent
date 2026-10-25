@@ -209,7 +209,7 @@ const runtimeMutationSchema = z.enum([
   "capability.invoke", "capability.accept", "capability.start", "capability.result", "capability.chunk", "capability.fail", "capability.cancel",
   "worktree.merge", "worktree.remove"
 ]);
-const runtimePayloadSchema = z.record(z.unknown()).optional();
+const runtimePayloadSchema = z.record(z.string(), z.unknown()).optional();
 const settingsDraftStateSchema = z.object({
   dirty: z.boolean(),
   canSave: z.boolean(),

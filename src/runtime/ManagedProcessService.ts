@@ -134,6 +134,7 @@ interface ManagedProcessRecord {
   logBinding: ManagedProcessLogBinding;
   child: ChildProcess;
   stopRequested: boolean;
+  leaderExitObserved: boolean;
 }
 
 interface ProbeObservation {
@@ -245,7 +246,7 @@ export class ManagedProcessService {
         cleanup: { status: "pending" }
       };
       // Publish ownership before yielding again so close() cannot miss a spawned child.
-      record = { snapshot, logBinding, child, stopRequested: false };
+      record = { snapshot, logBinding, child, stopRequested: false, leaderExitObserved: false };
       this.records.set(processId, record);
       this.observeChild(record);
     } finally {
@@ -431,6 +432,7 @@ export class ManagedProcessService {
       void this.recordLifecycle("process_error", record.snapshot, error.message);
     });
     record.child.once("exit", (code, signal) => {
+      record.leaderExitObserved = true;
       const groupAlive = process.platform !== "win32" && processGroupExists(record.snapshot.pid);
       if (groupAlive) {
         record.snapshot.state = "running";
@@ -452,7 +454,7 @@ export class ManagedProcessService {
   }
 
   private refreshRecord(record: ManagedProcessRecord): void {
-    if (isRunningState(record.snapshot.state) && !managedProcessExists(record.snapshot.pid)) {
+    if (isRunningState(record.snapshot.state) && !managedProcessExists(record)) {
       record.snapshot.exitCode = record.child.exitCode ?? record.snapshot.exitCode;
       record.snapshot.signal = record.child.signalCode ?? record.snapshot.signal;
       record.snapshot.exitedAt ??= new Date().toISOString();
@@ -819,8 +821,11 @@ function isRunningState(state: ManagedProcessState): boolean {
   return state === "starting" || state === "running";
 }
 
-function managedProcessExists(pid: number): boolean {
-  return process.platform === "win32" ? pidExists(pid) : processGroupExists(pid) || pidExists(pid);
+function managedProcessExists(record: ManagedProcessRecord): boolean {
+  const pid = record.snapshot.pid;
+  // After the shell exits, its surviving group remains owned; a reused PID does not.
+  return process.platform === "win32" ? pidExists(pid)
+    : processGroupExists(pid) || (!record.leaderExitObserved && pidExists(pid));
 }
 
 function processGroupExists(pid: number): boolean {
