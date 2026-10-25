@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { redactSecrets } from "../src/utils/redaction.js";
 
 // Extract only audited declarations: never import the CLI, config store, Host,
 // provider transport or credential backend. process.env below is a synthetic map.
@@ -39,22 +40,11 @@ declarations.forEach(audit);
 const priority = file.statements.find(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => declaration.name.getText(file) === "IMAGE_MODEL_PRIORITY"));
 assert.ok(priority && ts.isVariableStatement(priority));
 assert.ok(priority.declarationList.declarations.every(declaration => declaration.initializer && ts.isArrayLiteralExpression(declaration.initializer) && declaration.initializer.elements.every(ts.isStringLiteral)));
-const redactionSource = ts.createSourceFile("redaction.ts", readFileSync(new URL("../src/utils/redaction.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
-assert.equal(redactionSource.statements.length, 1);
-const redaction = redactionSource.statements[0]!;
-assert.ok(ts.isFunctionDeclaration(redaction) && redaction.name?.text === "redactSecrets");
-function auditRedaction(node: ts.Node): void {
-  assert.notEqual(node.kind, ts.SyntaxKind.ImportKeyword);
-  assert.ok(!ts.isNewExpression(node));
-  if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "replace");
-  ts.forEachChild(node, auditRedaction);
-}
-auditRedaction(redaction);
 const printer = ts.createPrinter();
 function print(node: ts.FunctionDeclaration, source: ts.SourceFile): string {
   return printer.printNode(ts.EmitHint.Unspecified, ts.factory.updateFunctionDeclaration(node, node.modifiers?.filter(modifier => modifier.kind !== ts.SyntaxKind.ExportKeyword), node.asteriskToken, node.name, node.typeParameters, node.parameters, node.type, node.body), source);
 }
-const compiled = ts.transpileModule([priority.getText(file), ...declarations.map(node => print(node, file)), print(redaction, redactionSource), "({ providerApiKey, resolveImageModel, safeImageError, imageModelsCommand });"].join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }, reportDiagnostics: true });
+const compiled = ts.transpileModule([priority.getText(file), ...declarations.map(node => print(node, file)), "({ providerApiKey, resolveImageModel, safeImageError, imageModelsCommand });"].join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }, reportDiagnostics: true });
 assert.equal(compiled.diagnostics?.filter(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error).length, 0);
 interface Provider { type: string; apiKey?: string; apiKeyEnv?: string; enabled?: boolean; baseUrl?: string; headers?: Record<string, string> }
 interface Config { providers: Record<string, Provider>; imageGen: { model?: string } }
@@ -69,7 +59,7 @@ function fixture(config: Config) {
   const output: string[] = [], catalogs: Provider[] = [];
   const forbidden = () => { throw new Error("Unexpected network or transport operation"); };
   const api = runInNewContext(compiled.outputText, {
-    process: { env }, URL,
+    process: { env }, URL, redactSecrets,
     providerDefinition: (type: string) => ({ protocol: "openai-compatible", apiKeyEnv: ({ gemini: "GEMINI_API_KEY", openai: "OPENAI_API_KEY", openrouter: "OPENROUTER_API_KEY" } as Record<string, string>)[type] }),
     providerProtocol: (_provider: Provider, definition: { protocol: string }) => definition.protocol,
     imageConfigStore: () => ({ load: async () => config }),
