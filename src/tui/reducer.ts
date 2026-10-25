@@ -194,11 +194,10 @@ export function tuiReducer(state: TuiState, event: TuiAction): TuiState {
           `上下文已压缩 ${String(event.compactedMessages)} 条消息，正在进行第 ${String(event.attempt)} 次恢复请求。`
         ))
       };
-    case "reasoning.delta":
-      return {
-        ...state,
-        transcript: updateReasoningDelta(state.transcript, event.content)
-      };
+    case "reasoning.delta": {
+      const transcript = updateReasoningDelta(state.transcript, event.content);
+      return transcript === state.transcript ? state : { ...state, transcript };
+    }
     case "reasoning.completed":
       return {
         ...state,

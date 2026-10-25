@@ -10,7 +10,7 @@ import { ToolExecutionStatus } from "./ToolExecutionStatus.js";
 export interface ToolCallCardProps {
   tool: TimelineTool;
   open?: boolean;
-  onToggle?(): void;
+  onToggle?(id: string): void;
   projectId: string;
   onPreviewFile(path: string): void;
   onOpenExternal(url: string): void;
@@ -22,7 +22,7 @@ export const ToolCallCard = memo(function ToolCallCard({ tool, open: controlledO
   const script = tool.tool === "run_script" || tool.tool === "exec";
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
-  const toggle = (): void => { if (onToggle) onToggle(); else setLocalOpen(current => !current); };
+  const toggle = (): void => { if (onToggle) onToggle(tool.id); else setLocalOpen(current => !current); };
   const detailId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
   return <div data-activity-anchor="" data-tool-call-id={tool.id} className={`chat-tool-row-wrap${tool.permission ? " has-permission" : ""}`} onKeyDown={event => {
