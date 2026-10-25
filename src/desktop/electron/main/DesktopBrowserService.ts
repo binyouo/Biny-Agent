@@ -984,7 +984,7 @@ export class DesktopBrowserService {
     }
     const contents = await this.ensureContents();
     if (method === "evaluate") return await this.evaluate(readString(args.code, "code"), signal);
-    if (method === "cdp") return await this.sendDebuggerCommand(readString(args.method, "method"), z.record(z.unknown()).parse(args.params), signal);
+    if (method === "cdp") return await this.sendDebuggerCommand(readString(args.method, "method"), z.record(z.string(), z.unknown()).parse(args.params), signal);
     if (method === "viewport") {
       if (args.action === "reset") return await this.sendDebuggerCommand("Emulation.clearDeviceMetricsOverride", {}, signal);
       const size = z.object({ width: z.number().int().positive(), height: z.number().int().positive(), mobile: z.boolean() }).parse(args);

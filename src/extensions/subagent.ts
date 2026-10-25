@@ -203,7 +203,9 @@ export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId
       required: ["taskRunId"],
       additionalProperties: false
     },
-    schema: z.object({ taskRunId: z.string().trim().min(1), waitMs: z.number().int().min(0).max(60_000).optional(), afterRevision: z.number().int().nonnegative().optional() }).strict(),
+    // Preserve the existing tool boundary without adding Zod 4’s safe-integer cap.
+    // TaskCommunication retains its separate safe-revision guard.
+    schema: z.object({ taskRunId: z.string().trim().min(1), waitMs: z.number().int().min(0).max(60_000).optional(), afterRevision: z.number().nonnegative().refine(Number.isInteger).optional() }).strict(),
     source: "subagent",
     capability: "subagent.workspace",
     risk: "read",
