@@ -900,13 +900,13 @@ export class DesktopBrowserService {
             const htmlBytes = encoder.encode(content.outerHTML);
             const textBytes = encoder.encode(document.body?.innerText || '');
             const decoder = new TextDecoder();
-            return { html: decoder.decode(htmlBytes.subarray(0, ${maxBytes})), body: decoder.decode(textBytes.subarray(0, ${maxBytes})), finalUrl: location.href, title: document.title, contentType: document.contentType, ready: true, truncatedAtByteLimit: (document.contentType === 'text/html' ? htmlBytes : textBytes).length > ${maxBytes}, ...(googleChallenge === undefined ? {} : { googleChallenge }) };
+            return { html: decoder.decode(htmlBytes.subarray(0, ${maxBytes})), body: decoder.decode(textBytes.subarray(0, ${maxBytes})), finalUrl: location.href, title: document.title, contentType: document.contentType, ready: true, truncatedAtByteLimit: ((document.contentType === 'text/html' || document.contentType === 'application/xhtml+xml') ? htmlBytes : textBytes).length > ${maxBytes}, ...(googleChallenge === undefined ? {} : { googleChallenge }) };
           })()`) as WebReadPollResult;
           if (!result.ready) await delay(200, undefined, { signal: controller.signal });
         } while (!result.ready);
         await assertFetchableUrl(new URL(result.finalUrl), { allowPrivateNetwork, resolveHostname: this.resolveWebHostname });
         if (status >= 400) throw new Error(`网页返回 HTTP ${status}。`);
-        const body = result.contentType === "text/html" ? result.html : result.body;
+        const body = result.contentType === "text/html" || result.contentType === "application/xhtml+xml" ? result.html : result.body;
         return { ...result, body, status, truncatedAtByteLimit: result.truncatedAtByteLimit === true };
       };
       const result = await Promise.race([work(), interrupted]);

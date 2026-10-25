@@ -203,8 +203,10 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
                 };
                 const verified = await visitBoundUtf8Lines(resolveWorkspacePath(context.workspaceRoot, file, context.ignore), (line, lineNumber) => {
                   const hit = hits.get(lineNumber);
-                  if (hit && hit.text !== line) throw new Error("File changed after the native search.");
-                  return visitLine(line, lineNumber, hit ? hit.column - 1 : undefined);
+                  // ripgrep removes one initial UTF-8 BOM; preserve raw text and Edit anchors.
+                  const bomOffset = hit && lineNumber === 1 && line.startsWith("\uFEFF") ? 1 : 0;
+                  if (hit && hit.text !== line.slice(bomOffset)) throw new Error("File changed after the native search.");
+                  return visitLine(line, lineNumber, hit ? hit.column - 1 + bomOffset : undefined);
                 }, signal);
                 if (!sameFileSnapshot(initial, verified.snapshot)) throw new Error("File changed after the search was prepared.");
               } catch (error) {

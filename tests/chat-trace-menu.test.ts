@@ -32,9 +32,9 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
     assert.equal(panel.parentElement, document.body, "浮层脱离菜单动画的 transform 包含块");
     assert.equal(panel.querySelector("section h4")!.textContent, "1 个工具");
     assert.deepEqual([...panel.querySelectorAll("section:first-child p")].map(item => item.textContent), ["执行命令"]);
-    assert.match(button.textContent!, /3 个技能/u);
-    assert.deepEqual([...panel.querySelectorAll('[data-skill-name]')].map(item => item.textContent), ["review已选中", "references已加载", "broken加载失败"]);
-    assert.equal(panel.querySelector('[data-skill-name="broken"]')?.getAttribute("title"), "Unknown skill: broken");
+    assert.match(button.textContent!, /1 个技能/u);
+    assert.deepEqual([...panel.querySelectorAll('[data-skill-name]')].map(item => item.textContent), ["references已加载"]);
+    assert.equal(panel.querySelector('[data-skill-name="broken"]'), null);
     assert.doesNotMatch(panel.textContent!, /技能调用/u);
     assert.match(panel.textContent!, /记忆召回/u);
     assert.match(panel.textContent!, /向量索引尚未建立/u);
@@ -42,6 +42,12 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
     assert.doesNotMatch(panel.textContent!, /no_vector_index/u);
     await React.act(async () => button.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     assert.equal(document.querySelector('[aria-label="本轮上下文"]'), null);
+    await React.act(async () => root.render(React.createElement(MessageContextMenu, { tools: ["Bash"], skills: [], selectedSkills: ["image-gen", "codemode-tool-calling"] })));
+    await React.act(async () => document.querySelector<HTMLButtonElement>("button")!.click());
+    assert.doesNotMatch(document.querySelector("button")!.textContent!, /个技能/u);
+    const emptyPanel = document.querySelector('[aria-label="本轮上下文"]')!;
+    assert.equal(emptyPanel.querySelectorAll("section").length, 1);
+    assert.equal(emptyPanel.querySelector("[data-skill-name]"), null);
     const dialogHook = registerHooks({
       resolve(specifier, context, next) { return specifier === "@astryxdesign/core/Dialog" ? { url: "trace-test:dialog", shortCircuit: true } : next(specifier, context); },
       load(url, context, next) { return url === "trace-test:dialog" ? { format: "module", source: "export function Dialog(p){return globalThis.React.createElement('div',{role:'dialog'},p.children)};export function DialogHeader(p){return globalThis.React.createElement('h2',null,p.title)}", shortCircuit: true } : next(url, context); }

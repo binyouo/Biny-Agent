@@ -7,10 +7,11 @@ import { Script } from "node:vm";
 import { JSDOM } from "jsdom";
 import { requestBrowser } from "../../src/tools/browser.js";
 import { createWebSearchTool, type WebSearchArgs } from "../../src/tools/web/search.js";
+import { createWebFetchTool } from "../../src/tools/web/fetch.js";
 
-export async function browserPageFixture(context: TestContext) {
+export async function browserPageFixture(context: TestContext, initial?: { html: string; contentType: "text/html" | "application/xhtml+xml" }) {
   const root = await mkdtemp("/tmp/biny-page-");
-  const dom = new JSDOM("<p>loading</p>", { url: "https://www.google.com/search", runScripts: "outside-only" });
+  const dom = new JSDOM(initial?.html ?? "<p>loading</p>", { url: "https://www.google.com/search", runScripts: "outside-only", ...(initial ? { contentType: initial.contentType } : {}) });
   const counts = { polls: 0, clones: 0, encodes: 0, closed: 0 };
   const document = dom.window.document;
   Object.defineProperty(document.body, "innerText", { get: () => document.body.textContent ?? "" });
@@ -82,6 +83,12 @@ export async function browserPageFixture(context: TestContext) {
       return await requestBrowser(endpoint, "web_read", {
         url: "https://www.google.com/search", engine, maxBytes, timeoutMs: 1_000
       }) as { ready: boolean; html: string; body: string; googleChallenge?: boolean; truncatedAtByteLimit: boolean };
+    },
+    async fetch(raw = false) {
+      const tool = createWebFetchTool(undefined, { enabled: false }, { browser: endpoint });
+      const execution = await tool.resolveExecution({ url: "https://www.google.com/search", raw });
+      if ("isError" in execution) throw new Error("Invalid fetch plan");
+      return execution.execute({ toolCallId: "xhtml-fixture", operationId: "xhtml-fixture-operation" });
     },
     async search(args: WebSearchArgs, provider: "google" | "xiaohongshu" = "google") {
       const tool = createWebSearchTool({ provider, maxResults: 5, timeoutMs: 1_000, visibleBrowsing: false }, undefined, endpoint);
