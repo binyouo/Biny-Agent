@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { mock } from "node:test";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import { codeModePolicy } from "../src/agent/codeMode.js";
 import type { AgentModel, AgentToolResult, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -294,14 +295,29 @@ try {
   } }), "TaskStatus");
   const stalled = coordinator(stalledRegistry, "query-stalled");
   const stalledExec = stalled.createCodeModeTool(undefined, { ...codeModePolicy, hostCallTimeoutMs: 100, maxCellDurationMs: 2_000 });
-  const stalledCell = stalledExec.execute("query-stalled-cell", { description: "query-stalled-cell", code: "return await tools.TaskStatus({taskRunId:'fixture'});" });
-  await statusEntered.promise;
-  const stalledResult = await stalledCell;
-  assert.equal(stalledResult.isError, true);
-  assert.match(details(stalledResult).error ?? "", /unknown|deadline/u);
-  assert.equal((await stalledExec.execute("query-stalled-replay", { description: "query-stalled-replay", code: "return await tools.TaskStatus({taskRunId:'fixture'});" })).isError, true);
-  assert.equal(stalledCalls, 1);
-  releaseStatus.resolve(); await stalled.waitForIdle();
+  const stalledAbort = new AbortController();
+  const watchdog = setTimeout(() => stalledAbort.abort(new Error("Status query fixture did not finish.")), 10_000);
+  mock.timers.enable({ apis: ["setTimeout"] });
+  const stalledCell = stalledExec.execute("query-stalled-cell", { description: "query-stalled-cell", code: "return await tools.TaskStatus({taskRunId:'fixture'});" }, stalledAbort.signal);
+  try {
+    await Promise.race([statusEntered.promise, stalledCell.then((result) => {
+      assert.fail(`Status cell finished before its query entered: ${JSON.stringify(result.details)}`);
+    })]);
+    mock.timers.tick(100);
+    mock.timers.reset();
+    const stalledResult = await stalledCell;
+    assert.equal(stalledResult.isError, true);
+    assert.match(details(stalledResult).error ?? "", /unknown|deadline/u);
+    assert.equal((await stalledExec.execute("query-stalled-replay", { description: "query-stalled-replay", code: "return await tools.TaskStatus({taskRunId:'fixture'});" })).isError, true);
+    assert.equal(stalledCalls, 1);
+  } finally {
+    mock.timers.reset();
+    stalledAbort.abort();
+    releaseStatus.resolve();
+    await stalledCell;
+    await stalled.waitForIdle();
+    clearTimeout(watchdog);
+  }
 
   // Explicit selection none is honored by the actual model-facing AgentSession.
   const noToolsAgent = new AgentSession({ workspaceRoot: root, config,
