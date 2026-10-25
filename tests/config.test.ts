@@ -139,11 +139,17 @@ function testRemovedEmotionRejectedAndHeartbeatDefaults(): void {
 }
 
 function testRemovedToolNamesAreNotMigrated(): void {
-  const document = structuredClone(defaultConfig) as unknown as Record<string, any>;
-  document.permission.allowTools = ["read_file", "write_file", "multi_edit", "apply_patch", "Read"];
-  document.extensions.subagent.allowedTools = ["read_file", "multi_edit", "apply_patch", "write_file"];
-
-  assert.throws(() => configSchema.parse(document), /Invalid enum value/u);
+  const defaults = structuredClone(defaultConfig);
+  const document = {
+    ...defaults,
+    permission: { ...defaults.permission, allowTools: ["read_file", "write_file", "multi_edit", "apply_patch", "Read"] },
+    extensions: { ...defaults.extensions, subagent: { ...defaults.extensions.subagent, allowedTools: ["read_file", "multi_edit", "apply_patch", "write_file"] } }
+  };
+  const result = configSchema.safeParse(document);
+  assert.equal(result.success, false);
+  assert.ok(!result.success);
+  assert.deepEqual(result.error.issues.map(issue => ({ code: issue.code, path: issue.path, values: issue.code === "invalid_value" ? issue.values : undefined })),
+    [0, 1, 2, 3].map(index => ({ code: "invalid_value", path: ["extensions", "subagent", "allowedTools", index], values: ["Read", "Glob", "Grep", "Write", "Edit", "Bash"] })));
 }
 
 function testMemoryEmbeddingDefaultsToE5(): void {
@@ -250,7 +256,22 @@ async function testRemovedProjectBudgetFieldsAreRejected(): Promise<void> {
     }));
     await assert.rejects(
       loadConfig(workspace, { globalDir: globalRoot }),
-      /Invalid project [\s\S]*Unrecognized key\(s\)/u
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        const prefix = "Invalid project .biny/settings.json: ";
+        assert.ok(error.message.startsWith(prefix));
+        const issues: unknown = JSON.parse(error.message.slice(prefix.length));
+        assert.ok(Array.isArray(issues));
+        const rejectedKeys = issues.find((issue: unknown) => typeof issue === "object" && issue !== null
+          && "code" in issue && issue.code === "unrecognized_keys");
+        assert.deepEqual(rejectedKeys, {
+          code: "unrecognized_keys",
+          keys: ["maxSteps", "maxTaskSteps", "maxAttempts", "maxCompletionContinuations"],
+          path: ["agent"],
+          message: 'Unrecognized keys: "maxSteps", "maxTaskSteps", "maxAttempts", "maxCompletionContinuations"'
+        });
+        return true;
+      }
     );
   } finally {
     await removeTestRoot(root, { recursive: true, force: true });

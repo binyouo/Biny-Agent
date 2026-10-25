@@ -14,7 +14,7 @@ export function registerConfigurationCommands(program: Command, wrap: (action: (
     const value = existsSync(path.join(configRoot, "credentials.enc"))
       ? await requestDesktopCommand("configuration", { operation: action, input })
       : await executeConfigurationCommand(createFileConfigStore(configRoot), action, input);
-    console.log(JSON.stringify(value, null, json ? undefined : 2));
+    console.log(JSON.stringify(value === undefined ? null : value, null, json ? undefined : 2));
   };
   const config = program.command("config").description("Read and update global settings");
   config.command("get").argument("[path]", "dot-separated setting; omit for global Agent configuration")
