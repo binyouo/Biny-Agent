@@ -532,10 +532,6 @@ export class AutomationStore {
     return fire;
   }
 
-  private transaction<T>(execute: () => T): T {
-    return this.authority.runTransaction(execute);
-  }
-
   private assertOpen(): void {
     if (this.closed) throw new Error("Automation store is closed.");
   }

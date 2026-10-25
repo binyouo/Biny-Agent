@@ -13,7 +13,7 @@ test("Desktop import rejects busy or recovering runtime before dispatching side 
     run: async () => { dispatched = true; return history; },
     setSyncEnabled: async () => snapshot,
     configureSyncSelection: async () => snapshot,
-    sync: async () => { dispatched = true; return snapshot; }
+    syncWithEffects: async () => { dispatched = true; return { snapshot, effects: { mcpImported: false } }; }
   }, async () => { throw new Error("runtime busy"); });
   await assert.rejects(controller.run({ previewId: "preview", itemIds: ["one"], workspaceRoot: "/fixture" }), /runtime busy/u);
   await assert.rejects(controller.sync(), /runtime busy/u);
@@ -32,7 +32,7 @@ test("admitted imports fence new work, concurrent imports and shutdown without r
     run: async () => { writes += 1; entered(); await pending; return history; },
     setSyncEnabled: async () => snapshot,
     configureSyncSelection: async () => snapshot,
-    sync: async () => snapshot
+    syncWithEffects: async () => ({ snapshot, effects: { mcpImported: false } })
   }, async () => undefined);
   const input = { previewId: "preview", itemIds: ["one"], workspaceRoot: "/fixture" };
   const running = controller.run(input);
@@ -65,7 +65,7 @@ test("automatic sync schedules the same guarded service and cancels on close", a
     run: async () => history,
     setSyncEnabled: async () => active,
     configureSyncSelection: async () => active,
-    sync: async () => { writes += 1; return active; }
+    syncWithEffects: async () => { writes += 1; return { snapshot: active, effects: { mcpImported: false } }; }
   }, async () => undefined);
   try {
     controller.start(async () => changed());
@@ -87,7 +87,7 @@ test("closing also waits for an admitted preview state write", async () => {
     run: async () => history,
     setSyncEnabled: async () => snapshot,
     configureSyncSelection: async () => snapshot,
-    sync: async () => snapshot
+    syncWithEffects: async () => ({ snapshot, effects: { mcpImported: false } })
   }, async () => undefined);
   const preview = controller.preview("claude");
   let closed = false;

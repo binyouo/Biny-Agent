@@ -14,6 +14,7 @@ export class Appshots {
   private readonly unsubscribe: () => void;
   private heartbeat?: ReturnType<typeof setInterval>;
   private arming?: Promise<AppshotsState>;
+  private rearmRequested = false;
   private closed = false;
   private events: Promise<void> = Promise.resolve();
   constructor(private readonly driver: NativeProcessDriver, private readonly store: AgentConfigStore, private readonly emit: (event: AppshotEvent) => void) {
@@ -27,27 +28,39 @@ export class Appshots {
   }
   async prewarm(): Promise<AppshotsState> {
     if (this.closed) throw new Error("appshots_closed");
+    this.rearmRequested = true;
     if (this.arming) return await this.arming;
-    this.arming = (async () => {
-      const config = await this.store.load(); this.snapshot.settings = config.appshots;
+    // Publish the flight before work starts, and clear it before exposing the final result.
+    this.arming = Promise.resolve().then(async () => {
       try {
-        if (!config.appshots.hotkey) { if (this.snapshot.active) await this.driver.daemonCommand("appshot_monitor_stop"); this.snapshot.active = false; }
-        else {
-          await this.driver.daemonCommand("appshot_monitor_start", { hotkey: config.appshots.hotkey, emit_events: true, include_ax: true, exclude_bundles: [...ownBundles, ...config.activity.sensitiveApplications] });
-          if (this.closed) { await this.driver.daemonCommand("appshot_monitor_stop"); return this.snapshot; }
-          this.snapshot.active = true;
+        let attempted: string | undefined;
+        do {
+          this.rearmRequested = false;
+          const config = await this.store.load(); this.snapshot.settings = config.appshots;
+          if (this.closed) break;
+          const monitor = JSON.stringify([config.appshots.hotkey, config.activity.sensitiveApplications]);
+          if (monitor === attempted) continue;
+          attempted = monitor;
+          try {
+            if (!config.appshots.hotkey) { if (this.snapshot.active) await this.driver.daemonCommand("appshot_monitor_stop"); this.snapshot.active = false; }
+            else {
+              await this.driver.daemonCommand("appshot_monitor_start", { hotkey: config.appshots.hotkey, emit_events: true, include_ax: true, exclude_bundles: [...ownBundles, ...config.activity.sensitiveApplications] });
+              if (this.closed) { await this.driver.daemonCommand("appshot_monitor_stop"); this.snapshot.active = false; return { ...this.snapshot }; }
+              this.snapshot.active = true;
+            }
+            this.snapshot.error = undefined;
+          } catch (error) { this.snapshot.active = false; this.snapshot.error = error instanceof Error ? error.message : String(error); }
+        } while (this.rearmRequested && !this.closed);
+        if (this.heartbeat) clearInterval(this.heartbeat);
+        if (this.snapshot.active && !this.closed) {
+          this.heartbeat = setInterval(() => { void this.driver.daemonCommand("appshot_status").then(reply => {
+            if (!reply.data.live) { this.snapshot.active = false; this.snapshot.error = "appshot_monitor_disconnected: 请重新预热"; }
+          }).catch(() => { this.snapshot.active = false; this.snapshot.error = "appshot_monitor_disconnected: 请重新预热"; }); }, 60_000);
+          this.heartbeat.unref?.();
         }
-        this.snapshot.error = undefined;
-      } catch (error) { this.snapshot.active = false; this.snapshot.error = error instanceof Error ? error.message : String(error); }
-      if (this.heartbeat) clearInterval(this.heartbeat);
-      if (this.snapshot.active && !this.closed) {
-        this.heartbeat = setInterval(() => { void this.driver.daemonCommand("appshot_status").then(reply => {
-          if (!reply.data.live) { this.snapshot.active = false; this.snapshot.error = "appshot_monitor_disconnected: 请重新预热"; }
-        }).catch(() => { this.snapshot.active = false; this.snapshot.error = "appshot_monitor_disconnected: 请重新预热"; }); }, 60_000);
-        this.heartbeat.unref?.();
-      }
-      return { ...this.snapshot };
-    })().finally(() => { this.arming = undefined; });
+        return { ...this.snapshot };
+      } finally { this.arming = undefined; }
+    });
     return await this.arming;
   }
   async capture(): Promise<AppshotsState> {

@@ -146,7 +146,7 @@ import type { EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedd
 import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import { messageText, withMessageSentAt } from "./modelMessages.js";
-import { PluginLifecycleRegistry, type PluginMcpToolCaller } from "../extensions/pluginLifecycle.js";
+import { PluginLifecycleRegistry, type PluginMcpToolCaller, type PluginTurnMessage } from "../extensions/pluginLifecycle.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
 import { archiveToolResult } from "../session/toolResultArchive.js";
 import { TodoStore } from "../session/todoStore.js";
@@ -174,8 +174,8 @@ import type {
   MemorySearchResult,
   MemorySimilarityScan
 } from "./context/memoryTypes.js";
-import { resolvedCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, type AgentCapabilitySelection } from "./capabilitySelection.js";
-import { getToolExposure, isToolModelVisible } from "../tools/exposure.js";
+import { resolvedCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, completeToolSelection, type AgentCapabilitySelection } from "./capabilitySelection.js";
+import { getToolExposure, isToolModelVisible, isToolModelVisibleInMode } from "../tools/exposure.js";
 import { checkpointClaims } from "../session/checkpointClaims.js";
 import type { CheckpointEvidenceArgs } from "../extensions/checkpointEvidence.js";
 import type { CapabilityPreselectionInput } from "./capabilityPreselection.js";
@@ -868,7 +868,8 @@ export class AgentSession {
     }
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
     const fallback = new Set([...stableCodingToolNames, ...(this.activeConfig.agent.toolExecutionMode === "direct" ? [toolSearchToolName] : []), ...goalTools]);
-    return new Set(this.options.toolRegistry.list().map((tool) => tool.name).filter((name) => fallback.has(name)));
+    return completeToolSelection(fallback, new Set(this.options.toolRegistry.list()
+      .filter((tool) => isToolModelVisibleInMode(tool, this.activeConfig.agent.toolExecutionMode)).map((tool) => tool.name)));
   }
 
   private async prepareCapabilities(options: {
@@ -3459,29 +3460,38 @@ export class AgentSession {
       if (!retryCommitStarted) recordAssistantAudit();
       if (outcome.status === "completed" && runPluginLifecycle && pluginToolSelectionAllowsCalls && pluginLifecycle?.hasAfterTurn) {
         await this.recorder.flush();
-        const events = await readSessionEvents(this.recorder.filePath);
-        const replay = replaySessionEvents(events, { sessionId: this.recorder.sessionId, includeCompactedMessages: true });
-        const nodes = new Map(replay.messageTree.map((node) => [node.id, node]));
-        const pluginMessages = replay.messages.flatMap((message, index) => {
-          if (message.role !== "user" && message.role !== "assistant") return [];
-          const id = replay.messageReferences[index]?.id;
-          const messageContent = messageText(message);
-          if (!id || !messageContent.trim()) return [];
-          const node = nodes.get(id);
-          const event = node ? events[node.eventIndex] : undefined;
-          return [{ id, role: message.role, content: messageContent,
-            timestamp: event && "time" in event ? event.time : undefined }];
-        });
-        yield* waitForPluginLifecycle(pluginLifecycle.afterTurn({
-          workspaceRoot: this.options.workspaceRoot,
-          sessionId: this.recorder.sessionId,
-          userMessage: input,
-          useMemories: turnPersonalization.useMemories,
-          contributeMemories: turnPersonalization.contributeMemories,
-          outcome,
-          messages: pluginMessages,
-          signal: AbortSignal.timeout(10_000)
-        }, callPluginMcpTool));
+        let pluginMessages: PluginTurnMessage[] | undefined;
+        try {
+          const events = await readSessionEvents(this.recorder.filePath);
+          const replay = replaySessionEvents(events, { sessionId: this.recorder.sessionId, includeCompactedMessages: true });
+          const nodes = new Map(replay.messageTree.map((node) => [node.id, node]));
+          pluginMessages = replay.messages.flatMap((message, index) => {
+            if (message.role !== "user" && message.role !== "assistant") return [];
+            const id = replay.messageReferences[index]?.id;
+            const messageContent = messageText(message);
+            if (!id || !messageContent.trim()) return [];
+            const node = nodes.get(id);
+            const event = node ? events[node.eventIndex] : undefined;
+            return [{ id, role: message.role, content: messageContent,
+              timestamp: event && "time" in event ? event.time : undefined }];
+          });
+        } catch {
+          try {
+            console.warn("[biny] Plugin afterTurn history preparation failed; skipping optional sync.");
+          } catch { /* Optional diagnostics must not change the turn outcome. */ }
+        }
+        if (pluginMessages !== undefined) {
+          yield* waitForPluginLifecycle(pluginLifecycle.afterTurn({
+            workspaceRoot: this.options.workspaceRoot,
+            sessionId: this.recorder.sessionId,
+            userMessage: input,
+            useMemories: turnPersonalization.useMemories,
+            contributeMemories: turnPersonalization.contributeMemories,
+            outcome,
+            messages: pluginMessages,
+            signal: AbortSignal.timeout(10_000)
+          }, callPluginMcpTool));
+        }
       }
       if (content && (outcome.status === "completed" || outcome.status === "incomplete" || outcome.status === "blocked")) {
         yield { type: "assistant.completed", content, notification };
