@@ -12,6 +12,7 @@ export function nextCron(expression: string, after: Date, timezone?: string): Da
 /** A valid finite schedule may end; invalid expressions and failed advancement still throw. */
 export function nextCronOccurrence(expression: string, after: Date, timezone?: string): Date | undefined {
   const cron = new Cron(expression, { timezone, paused: true });
+  if (cron.getOnce() !== null) throw new Error("Cron expression must not be a one-shot timestamp.");
   const reference = new Date(after);
   let cursor = reference;
   for (let attempt = 0; attempt < maximumCronAdvancements; attempt += 1) {
