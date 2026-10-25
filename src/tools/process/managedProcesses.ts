@@ -176,6 +176,14 @@ export function createKillShellTool(service: ManagedProcessService): Tool<KillSh
         display: { kind: "generic", summary: `Stop background Bash ${args.processId}`, detail: args.reason },
         description: `Stop background Bash ${args.processId}`,
         approvalRule: `KillShell(${args.processId})`,
+        interpretResult(result) {
+          return {
+            result,
+            errorMessage: result.cleanup.status === "failed"
+              ? result.cleanup.message || "Failed to stop the background process group."
+              : undefined
+          };
+        },
         async execute() {
           return await service.stop(args.processId, args.reason);
         }
