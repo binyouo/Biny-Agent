@@ -197,5 +197,12 @@ function imageFilename(src: string, alt: string): string {
   try { pathname = decodeURIComponent(new URL(src, "https://localhost/").pathname.split("/").pop() ?? ""); } catch { /* 使用替代名称。 */ }
   if (/\.(?:png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i.test(pathname)) return pathname.replace(/[/\\:*?"<>|]/g, "_");
   const mime = /^data:image\/([\w+.-]+)/i.exec(src)?.[1]?.replace("svg+xml", "svg").replace("jpeg", "jpg");
-  return `${(alt || "image").replace(/[/\\:*?"<>|]/g, "_").slice(0, 80)}.${mime ?? "png"}`;
+  const extension = mime === "x-icon" ? "ico" : mime ?? "png";
+  const name = (alt || "image").replace(/[/\\:*?"<>|]/g, "_");
+  const suffix = /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i.exec(name);
+  // 本地图片的替代文字可能已是文件名；保留兼容后缀，再限制文件名主体长度。
+  if (suffix && suffix[1]!.toLowerCase().replace(/^jpeg$/, "jpg") === extension.toLowerCase().replace(/^jpeg$/, "jpg")) {
+    return `${name.slice(0, -suffix[0].length).slice(0, 80)}${suffix[0]}`;
+  }
+  return `${name.slice(0, 80)}.${extension}`;
 }

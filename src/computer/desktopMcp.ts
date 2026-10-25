@@ -14,7 +14,7 @@ import { resolveComputerMcpLease, type ComputerMcpLease } from "./mcpLease.js";
 
 export const desktopComputerMcpName = "computer-use";
 const toolMethods: Record<string, string> = { ComputerLaunch: "launch", ComputerList: "list", ComputerObserve: "observe", ComputerAction: "action", ComputerSequence: "sequence", ComputerMirror: "mirror" };
-const replySchema = z.object({ data: z.record(z.unknown()), errorCode: z.string().optional(), images: z.array(computerImageSchema) });
+const replySchema = z.object({ data: z.record(z.string(), z.unknown()), errorCode: z.string().optional(), images: z.array(computerImageSchema) });
 
 export function attachNativeComputerMcp(host: McpToolHost): Promise<void> {
   return host.attachLocalServer(desktopComputerMcpName, "native", undefined, async () => {
