@@ -168,7 +168,7 @@ const FilePreviewContent = memo(function FilePreviewContent({ preview, projectId
       <button type="button" aria-pressed={mode === "preview"} onClick={() => setMode("preview")}><Icon name="eye" size={13} />预览</button>
       <button type="button" aria-pressed={mode === "code"} onClick={() => setMode("code")}><Icon name="code" size={13} />源码</button>
       <span />
-      <CopyButton label="复制文件内容" showTooltip={false} value={file.content} />
+      <CopyButton label="复制文件内容" preserveTrailingNewline preserveNonBreakingSpaces showTooltip={false} value={file.content} />
     </div>
     {openError ? <div className="inspector-error" role="alert">{openError}</div> : null}
     {file.truncated && mode === "code" ? <div className="inspector-progress">文件过大，仅显示已读取的部分。</div> : null}
@@ -188,7 +188,7 @@ function CodeFilePreview({ file, onRunHtml }: { file: DesktopWorkspaceFilePrevie
         <div className="file-preview-meta-actions">
           {onRunHtml ? <button className="file-preview-run" type="button" aria-label="运行页面" onClick={() => onRunHtml(file.path)}><Icon name="globe" size={14} />运行页面</button> : null}
           <span>{formatBytes(file.bytes)}{file.truncated ? " · 仅显示前 512 KB" : ""}</span>
-          <CopyButton className="copy-button" label="复制文件内容" showTooltip={false} value={file.content ?? ""} />
+          <CopyButton className="copy-button" label="复制文件内容" preserveTrailingNewline preserveNonBreakingSpaces showTooltip={false} value={file.content ?? ""} />
         </div>
       </div>
       <div className="file-preview-body">

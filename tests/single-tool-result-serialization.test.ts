@@ -45,7 +45,7 @@ function checkCalls(node: ts.Node): void {
     assert.ok(ts.isIdentifier(callee) && directCalls.has(callee.text)
       || ts.isPropertyAccessExpression(callee) && (methodCalls.has(callee.name.text)
         || callee.name.text === "exec" && ts.isIdentifier(callee.expression)
-          && ["beginPattern", "endPattern"].includes(callee.expression.text)),
+          && ["beginPattern", "endPattern", "legacyQuotedPattern", "completeQuotedPattern"].includes(callee.expression.text)),
     "Unreviewed production call: " + callee.getText());
   }
   if (ts.isNewExpression(node)) {
