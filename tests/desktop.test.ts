@@ -4010,16 +4010,20 @@ function testWebSearchProjection(): void {
 }
 
 function testHistoricalReasoningAndSkillProjection(): void {
-  const timeline = buildSessionTimeline([
+  const events: SessionEvent[] = [
     { type: "user_message", content: "explain", skills: [".agent/skills/programmatic-tools/SKILL.md"], time: "2026-01-01T00:00:00.000Z" },
     { type: "tool_call", tool: "Skill", args: { skill: "programmatic-tools" }, toolCallId: "skill", time: "2026-01-01T00:00:00.500Z" },
-    { type: "tool_result", tool: "Skill", result: { instructions: "Use tools." }, toolCallId: "skill", time: "2026-01-01T00:00:00.750Z" },
+    { type: "tool_result", tool: "Skill", result: "# Skill: programmatic-tools\n\n**Skill Directory:** `/fixture/programmatic-tools`\n\nUse tools.\n\nFollow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory.", toolCallId: "skill", time: "2026-01-01T00:00:00.750Z" },
     { type: "tool_call", tool: "Bash", args: { command: "pwd" }, reasoningContent: "先确认当前工作目录。", time: "2026-01-01T00:00:01.000Z" },
     { type: "assistant_message", content: "done", reasoningContent: "然后整理结果。", time: "2026-01-01T00:00:02.512Z" }
-  ], []);
+  ];
+  const timeline = buildSessionTimeline(events, []);
   assert.deepEqual(timeline[0]?.skills, ["programmatic-tools"]);
   assert.equal(timeline[0]?.reasoning, "先确认当前工作目录。\n\n然后整理结果。");
   assert.equal(timeline[0]?.durationMs, 2_512);
+  const unproven = events.map((event) => event.type === "tool_result" && event.tool === "Skill"
+    ? { ...event, result: { instructions: "Use tools." } } : event);
+  assert.deepEqual(buildSessionTimeline(unproven, [])[0]?.skills, [], "bare instructions objects without confirmed evidence do not prove a load");
 }
 
 function testExecutionTimelineKeepsReasoningAndToolsInOrder(): void {
@@ -4283,7 +4287,7 @@ function testLiveReasoningAndSkillProjection(): void {
       skills: [".agent/skills/programmatic-tools/SKILL.md"]
     },
     { sessionId: "session", runId: "reasoning-run", timestamp: "2026-01-01T00:00:00.500Z", type: "tool.started", toolCallId: "skill", tool: "Skill", args: { skill: "programmatic-tools" } },
-    { sessionId: "session", runId: "reasoning-run", timestamp: "2026-01-01T00:00:00.750Z", type: "tool.completed", toolCallId: "skill", tool: "Skill", result: { instructions: "Use tools." } },
+    { sessionId: "session", runId: "reasoning-run", timestamp: "2026-01-01T00:00:00.750Z", type: "tool.completed", toolCallId: "skill", tool: "Skill", result: "# Skill: programmatic-tools\n\n**Skill Directory:** `/fixture/programmatic-tools`\n\nUse tools.\n\nFollow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory." },
     { sessionId: "session", runId: "reasoning-run", timestamp: "2026-01-01T00:00:01.000Z", type: "reasoning.started", phase: "initial" },
     { sessionId: "session", runId: "reasoning-run", timestamp: "2026-01-01T00:00:02.512Z", type: "reasoning.delta", content: "先拆分问题。" },
     { sessionId: "session", runId: "reasoning-run", timestamp: "2026-01-01T00:00:02.512Z", type: "reasoning.completed" },
@@ -4293,6 +4297,9 @@ function testLiveReasoningAndSkillProjection(): void {
   assert.deepEqual(timeline[0]?.skills, ["programmatic-tools"]);
   assert.equal(timeline[0]?.reasoning, "先拆分问题。");
   assert.equal(timeline[0]?.reasoningDurationMs, 1_512);
+  const unproven = live.map((event) => event.type === "tool.completed" && event.tool === "Skill"
+    ? { ...event, result: { instructions: "Use tools." } } : event);
+  assert.deepEqual(buildSessionTimeline([], unproven)[0]?.skills, [], "bare instructions objects without confirmed evidence do not prove a load");
 }
 
 function testReasoningDetailDoesNotUseCompletionStatusAsContent(): void {

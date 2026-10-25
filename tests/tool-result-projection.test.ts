@@ -5,6 +5,7 @@ import { runShellCommand } from "../src/tools/shell/runCommand.js";
 import type { AgentMessage, AgentToolResultMessage } from "../src/agent/core/types.js";
 
 await testFileAndCommandProjection();
+await testReadProjectionBoundaryMetadata();
 await testRemovedFileToolUsesGenericProjection();
 await testSemanticReplacementAndParallelIsolation();
 await testUnknownFailureIsNotMerged();
@@ -147,7 +148,34 @@ async function testFileAndCommandProjection(): Promise<void> {
   assert.equal(archiveRequests.length, 1, "only the large command result needs an archive");
   assert.equal(messages[2]?.role, "toolResult");
   assert.equal((messages[2] as AgentToolResultMessage).details, (resultDetails(messages[2])));
-  assert.equal(String((messages[4] as AgentToolResultMessage).details?.stdout).startsWith("pnpm test"), true);
+  assert.equal(String(((messages[4] as AgentToolResultMessage).details as Record<string, unknown> | undefined)?.stdout).startsWith("pnpm test"), true);
+}
+
+async function testReadProjectionBoundaryMetadata(): Promise<void> {
+  const content = "A".repeat(5_000) + "X" + "B".repeat(5_000);
+  const original = Object.freeze({ path: "boundary.txt", content });
+  const archivePath = `.biny/tool-results/tool-result-${"a".repeat(64)}.json`;
+  const captured: Array<{ result: unknown; output: string }> = [];
+  const projected = await projectSingleToolResultForModel("Read", { path: original.path }, original, {
+    archiveResult: async ({ result, output }) => {
+      captured.push({ result, output });
+      return { archivePath, resultBytes: Buffer.byteLength(output, "utf8") };
+    }
+  }) as Record<string, unknown>;
+
+  const expectedContent = "A".repeat(5_000) + "\n… [file content omitted] …\n" + "B".repeat(5_000);
+  assert.equal(projected.content, expectedContent);
+  assert.equal(projected.contentTruncated, true);
+  assert.equal(projected.contentOriginalBytes, 10_001);
+  assert.equal(projected.contentRetainedBytes, 10_032, "the displayed byte count includes the omission marker");
+  assert.equal(Buffer.byteLength(String(projected.content), "utf8"), 10_032);
+  assert.equal(projected.contentTruncationDirection, "head_and_tail");
+  assert.equal(projected.archived, true);
+  assert.equal(projected.archivePath, archivePath);
+  assert.equal(captured.length, 1);
+  assert.strictEqual(captured[0]!.result, original);
+  assert.deepEqual(JSON.parse(captured[0]!.output), original);
+  assert.deepEqual(original, { path: "boundary.txt", content });
 }
 
 async function testRemovedFileToolUsesGenericProjection(): Promise<void> {

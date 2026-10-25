@@ -62,8 +62,9 @@ function isGeminiProvider(provider: ProviderConfig): boolean {
 }
 
 function providerApiKey(provider: ProviderConfig): string | undefined {
+  const envName = provider.apiKeyEnv ?? providerDefinition(provider.type).apiKeyEnv;
   return provider.apiKey?.trim()
-    || (provider.apiKeyEnv ? process.env[provider.apiKeyEnv]?.trim() : undefined);
+    || (envName ? process.env[envName]?.trim() : undefined);
 }
 
 function normalizeGeminiBaseUrl(provider: ProviderConfig): string {
@@ -301,10 +302,7 @@ async function waitForGeminiFile(
     if (attempt >= processingPollAttempts) throw new Error("Gemini video processing timed out.");
     await wait(processingPollIntervalMs);
     const response = await apiRequest(model, fetcher, fileEndpoint(model.baseUrl, current.name));
-    const data = await responseJson(response);
-    const raw = data.file;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Gemini returned invalid file status.");
-    const record = raw as Record<string, unknown>;
+    const record = await responseJson(response);
     if (record.name !== current.name || (record.state !== "PROCESSING" && record.state !== "ACTIVE" && record.state !== "FAILED")) {
       throw new Error("Gemini returned invalid file status.");
     }
