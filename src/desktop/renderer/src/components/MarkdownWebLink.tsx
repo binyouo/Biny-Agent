@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { copyToClipboard } from "../copyToClipboard.js";
 import { Icon } from "./Icon.js";
@@ -19,6 +19,13 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
   const menuItems = useRef<Array<HTMLButtonElement | null>>([]);
   const [overlay, setOverlay] = useState<LinkOverlay>();
   const [feedback, setFeedback] = useState<LinkFeedback>();
+  const copyOwner = useRef<object | undefined>(undefined);
+  // 已发出的剪贴板写入可以完成，但旧菜单不能再关闭新菜单或抢回焦点。
+  const replaceOverlay = useCallback((next: LinkOverlay | undefined): void => {
+    copyOwner.current = undefined;
+    setOverlay(next);
+  }, []);
+  useLayoutEffect(() => () => { copyOwner.current = undefined; }, [href]);
   const text = linkText(children);
   const url = parseWebUrl(href);
   const host = url?.hostname.replace(/^www\./i, "");
@@ -41,21 +48,21 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
   useEffect(() => {
     if (!overlay) return;
     const outside = (event: PointerEvent): void => {
-      if (!panel.current?.contains(event.target as Node) && !anchor.current?.contains(event.target as Node)) setOverlay(undefined);
+      if (!panel.current?.contains(event.target as Node) && !anchor.current?.contains(event.target as Node)) replaceOverlay(undefined);
     };
-    const close = (): void => setOverlay(undefined);
+    const close = (): void => replaceOverlay(undefined);
     const key = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
-        setOverlay(undefined);
+        replaceOverlay(undefined);
         anchor.current?.focus();
       } else if (overlay.kind === "context" && event.key === "Tab") {
         event.preventDefault();
-        setOverlay(undefined);
+        replaceOverlay(undefined);
         anchor.current?.focus();
       }
     };
     const selectionChanged = (): void => {
-      if (overlay.kind === "selection" && !selected()) setOverlay(undefined);
+      if (overlay.kind === "selection" && !selected()) replaceOverlay(undefined);
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", key);
@@ -69,7 +76,7 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
       window.removeEventListener("resize", close);
       window.removeEventListener("scroll", close, true);
     };
-  }, [overlay, selected]);
+  }, [overlay, selected, replaceOverlay]);
   useEffect(() => {
     if (overlay?.kind === "context") firstItem.current?.focus();
   }, [overlay]);
@@ -87,7 +94,7 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
     });
   };
   const open = async (internal: boolean, position?: Pick<LinkOverlay, "left" | "top">): Promise<void> => {
-    setOverlay(undefined);
+    replaceOverlay(undefined);
     anchor.current?.focus();
     try {
       if (internal) await window.biny.openBrowser(href);
@@ -98,8 +105,11 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
   };
   const copyLink = async (): Promise<void> => {
     const position = overlay;
+    const request = {};
+    copyOwner.current = request;
     const copied = await copyToClipboard(href);
-    setOverlay(undefined);
+    if (copyOwner.current !== request) return;
+    replaceOverlay(undefined);
     anchor.current?.focus();
     announce(copied ? "已复制链接" : "复制链接失败", position);
   };
@@ -109,7 +119,7 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
     const menuHeight = 148;
     const left = Math.max(8, Math.min(event.clientX, window.innerWidth - 264));
     const top = Math.max(8, Math.min(event.clientY, Math.max(8, window.innerHeight - menuHeight - 8)));
-    setOverlay({ kind: "context", left, top });
+    replaceOverlay({ kind: "context", left, top });
   };
   const onMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
@@ -122,8 +132,8 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
     items[next]?.focus();
   };
   return <>
-    <a href={href} ref={anchor} className="markdown-web-link" title={bare ? undefined : href} rel="noreferrer" onMouseUp={() => setOverlay(selectionPosition())}
-      onKeyUp={(event) => { if (event.key !== "Escape") setOverlay(selectionPosition()); }}
+    <a href={href} ref={anchor} className="markdown-web-link" title={bare ? undefined : href} rel="noreferrer" onMouseUp={() => replaceOverlay(selectionPosition())}
+      onKeyUp={(event) => { if (event.key !== "Escape") replaceOverlay(selectionPosition()); }}
       onContextMenu={showContextMenu}
       onClick={(event) => {
         event.preventDefault();
