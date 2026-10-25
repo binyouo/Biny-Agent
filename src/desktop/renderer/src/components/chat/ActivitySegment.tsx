@@ -3,7 +3,7 @@ import { useChatResponseSettings } from "../../chatResponseSettings.js";
  * 活动段：连续「思考 + 工具」步骤的可展开记录。
  *
  * 头部是相位头像串（思考/探索/修改/运行/通用五类，24px 圆形图标，重叠堆叠）+ 摘要文案 +
- * 展开控件；落定后默认收起，摘要报「工具调用 N 次」或纯思考的「已思考 N 秒」；
+ * 展开控件；落定后默认收起，摘要报「用了 N 个工具」或纯思考的「已思考 N 秒」；
  * 当前阶段直接反馈运行状态，消息末尾只在等待空档补充提示。
  *
  * 头部只渲染最近 8 个相位，较早阶段以「+N」计数表示；点击计数打开完整时间线。
@@ -206,7 +206,7 @@ export const ActivitySegment = memo(function ActivitySegment({
                   <span className="chat-activity-verb">{headerLabel.verb}</span>
                   {headerLabel.rest ? <span className="chat-activity-rest"> {headerLabel.rest}</span> : null}
                 </>
-              ) : <span className="chat-activity-verb">工具调用 {String(toolSteps.length)} 次</span>}
+              ) : <span className="chat-activity-verb">用了 {String(toolSteps.length)} 个工具</span>}
             </button>
             {!allThinking && phases.length > 1 ? (
               <button
