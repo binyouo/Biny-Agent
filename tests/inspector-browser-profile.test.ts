@@ -34,7 +34,7 @@ test("仅发现已知浏览器配置，解密其 Cookie 并忽略过期条目", 
     assert.deepEqual(profiles.map((item) => ({ id: item.id, appName: item.appName, profileName: item.profileName })), [{ id: "chrome:Default", appName: "Google Chrome", profileName: "Person 1" }]);
     const result = await readBrowserProfileCookies(profiles[0]!, "test keychain value");
     assert.deepEqual(result.cookies.map(({ name, value }) => ({ name, value })), [{ name: "session", value: "session-value" }, { name: "hashed", value: "hashed-value" }, { name: "future", value: "persistent" }, { name: "no-expiry", value: "persistent" }]);
-    assert.equal(result.cookies.find((cookie) => cookie.name === "future")?.expirationDate, Number((13_454_407_831_095_631n - 11_644_473_600_000_000n) / 1_000_000n));
+    assert.equal(result.cookies.find((cookie) => cookie.name === "future")?.expirationDate, 1_809_934_231.095631);
     assert.equal(result.cookies.find((cookie) => cookie.name === "no-expiry")?.expirationDate, 253_402_300_799);
     assert.equal(result.failed, 0);
     const wrongKey = await readBrowserProfileCookies(profiles[0]!, "incorrect key");

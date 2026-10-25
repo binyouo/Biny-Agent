@@ -79,7 +79,7 @@ export async function readBrowserProfileCookies(profile: BrowserProfileRecord, k
       const rawExpiration = typeof row.expires_utc === "string" ? BigInt(row.expires_utc) : 0n;
       // Chromium 的最大整数表示极远的未来；Electron 接受的时间限制在 9999 年末。
       const expirationDate = rawExpiration > 0n
-        ? Math.min(Number((rawExpiration - 11_644_473_600_000_000n) / 1_000_000n), 253_402_300_799) : undefined;
+        ? Math.min(Number(rawExpiration - 11_644_473_600_000_000n) / 1_000_000, 253_402_300_799) : undefined;
       if (expirationDate !== undefined && expirationDate <= now) continue;
       const encrypted = row.encrypted_value instanceof Uint8Array ? Buffer.from(row.encrypted_value) : Buffer.alloc(0);
       const value = encrypted.length ? decryptCookie(encrypted, key, domain) : typeof row.value === "string" ? row.value : undefined;
