@@ -262,6 +262,21 @@ async function main(): Promise<void> {
     assert.deepEqual(persisted.map((item) => item.sequence), [1, 2, 3], "repair rewrites the current replay window without gaps");
     await journal.close();
 
+    const noLfPath = path.join(root, "without-final-newline.jsonl");
+    await writeFile(noLfPath, JSON.stringify(record(21)));
+    const noLfJournal = new RuntimeHostEventJournal(noLfPath, 100);
+    try {
+      assert.deepEqual((await noLfJournal.initialize()).records, [record(21)]);
+      await noLfJournal.persist(22, () => [record(21), record(22)]);
+    } finally { await noLfJournal.close(); }
+    const reopened = new RuntimeHostEventJournal(noLfPath, 100);
+    try {
+      const recovered = await reopened.initialize();
+      assert.deepEqual(recovered.records, [record(21), record(22)]);
+      assert.equal(recovered.sequence, 22);
+      assert.equal(reopened.status(22).state, "healthy");
+    } finally { await reopened.close(); }
+
     const corruptPath = path.join(root, "corrupt.jsonl");
     await writeFile(corruptPath, `${JSON.stringify(record(10))}\n${JSON.stringify(record(12))}\n`);
     const corruptJournal = new RuntimeHostEventJournal(corruptPath, 100);
