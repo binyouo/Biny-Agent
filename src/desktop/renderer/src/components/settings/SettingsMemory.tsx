@@ -533,6 +533,10 @@ export function SettingsMemory({
     setSaving(true);
     try {
       const next = await onClearMemory();
+      // 清空前或清空期间发起的搜索都属于旧记忆，迟到回执不能恢复它们。
+      searchRequestRef.current += 1;
+      pendingSearchRef.current = undefined;
+      setSearching(false);
       setStats(next);
       setSearchResults([]);
       await reload();
