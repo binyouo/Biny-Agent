@@ -36,7 +36,7 @@ const bridge = `
 const token=__TOKEN__, root=document.getElementById('content');
 let scriptsRun=false, lastHtml='', revision=0;
 function send(type,data){parent.postMessage(Object.assign({type,token},data),'*')}
-function report(){send('widget-resize',{height:Math.max(root.offsetHeight,root.scrollHeight),elementCount:root.querySelectorAll('*').length})}
+function report(){send('widget-resize',{height:Math.max(root.offsetHeight,root.scrollHeight)})}
 function setContent(html,complete){
  if(scriptsRun)return;
  if(html!==lastHtml || complete){
