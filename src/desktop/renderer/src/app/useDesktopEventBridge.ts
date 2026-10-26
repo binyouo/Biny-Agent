@@ -92,6 +92,7 @@ export function useDesktopEventBridge({
     let active = true;
     let documentRefreshGeneration = 0;
     const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const projectRefreshOrder = new Map<string, { issued: number; applied: number }>();
     const pendingEvents = createSessionEventBuffer<DesktopAgentEventEnvelope>();
 
     const scheduleRefresh = (projectId: string, sessionId: string): void => {
@@ -101,6 +102,9 @@ export function useDesktopEventBridge({
       const timer = setTimeout(() => {
         refreshTimers.delete(scope);
         const epoch = projectRefreshEpochs.current.get(projectId) ?? 0;
+        const order = projectRefreshOrder.get(projectId) ?? { issued: 0, applied: 0 };
+        projectRefreshOrder.set(projectId, order);
+        const request = ++order.issued;
         void window.biny.refreshProject(projectId).then(async (snapshot) => {
           if (!active) return;
           // A confirmed metadata change supplies a newer complete snapshot. Re-read after the
@@ -109,7 +113,13 @@ export function useDesktopEventBridge({
             scheduleRefresh(projectId, sessionId);
             return;
           }
-          mergeProjectSnapshot(snapshot);
+          // Different sessions share a project catalog. An older request may still
+          // refresh the selected document, but cannot replace a newer applied catalog.
+          // Failed newer requests do not prevent an older successful read publishing.
+          if (request > order.applied) {
+            order.applied = request;
+            mergeProjectSnapshot(snapshot);
+          }
           if (activeProjectIdRef.current === projectId && selectedSessionIdRef.current === sessionId) {
             const generation = ++documentRefreshGeneration;
             const requestedDocument = documentRef.current;
