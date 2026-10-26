@@ -17,6 +17,7 @@ export function MessageReferencesDialog({ projectId, uri, onClose, onOpen }: {
     setLoading(true);
     setError(undefined);
     void window.biny.referenceBacklinks(projectId, uri).then(async (links) => {
+      if (!active) return;
       const results = await Promise.allSettled(links.map((link) => window.biny.referenceResolve(projectId, link.sourceUri)));
       if (active) setSources(results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []));
     }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); })
