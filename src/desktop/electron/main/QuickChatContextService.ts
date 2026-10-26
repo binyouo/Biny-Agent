@@ -81,8 +81,10 @@ export class QuickChatContextService {
     const front = this.cached.frontApp;
     if (!front || front.pid !== pid) return this.cachedContext();
 
+    const captureSequence = this.captureSequence;
     const startedAt = Date.now();
     const result = await this.runProbe("traverse", String(pid));
+    if (captureSequence !== this.captureSequence) return this.cachedContext();
     const traversal = parseTraversal(result, pid, Date.now() - startedAt);
     if (!traversal || this.cached.frontApp?.pid !== pid) return this.cachedContext();
     this.cached = this.snapshot(this.cached.frontApp, traversal, this.cached.appIconDataUrl);
