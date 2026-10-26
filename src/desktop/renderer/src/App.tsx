@@ -121,8 +121,14 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [sessionTreePages] = useState(createSessionTreePageLifetime);
   const { states: sessionRootPages, adopt: adoptSessionRootPage, reset: resetSessionRootPages, invalidate: invalidateSessionRootPage, load: loadProjectSessions, loadedIds: loadedRootIds } = useSessionRootPages(sessionTreePages, sidebarSessions, setSidebarSessions);
   useEffect(() => () => sessionTreePages.replaceAll(), [sessionTreePages]);
-  const [composerSkillWarnings, setComposerSkillWarnings] = useState<string[]>([]);
-  const [composerSkills, setComposerSkills] = useState<DesktopSkillCatalogEntry[]>([]);
+  const [composerCatalog, setComposerCatalog] = useState<{
+    projectId: string; skills: DesktopSkillCatalogEntry[]; tools: DesktopToolCatalogEntry[]; warnings: string[];
+  }>();
+  // 已加载目录也属于原工作区；切换后的首帧不能把旧选项交给新 Composer。
+  const { skills: composerSkills, tools: composerTools, warnings: composerSkillWarnings } = useMemo(() => (
+    composerCatalog?.projectId === workspace?.project.id && composerCatalog
+      ? composerCatalog : { skills: [], tools: [], warnings: [] }
+  ), [composerCatalog, workspace?.project.id]);
   const skillDescriptions = useMemo(() => new Map(composerSkills.map((skill) => [skill.name, skill.description])), [composerSkills]);
   const skillLabels = useMemo(() => {
     const labels = new Map<string, string>();
@@ -133,7 +139,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     return labels;
   }, [composerSkills]);
-  const [composerTools, setComposerTools] = useState<DesktopToolCatalogEntry[]>([]);
   const [composerCatalogNonce, setComposerCatalogNonce] = useState(0);
   const [document, setDocument] = useState<DesktopSessionDocument>();
   const documentRef = useRef<DesktopSessionDocument | undefined>(undefined);
@@ -304,9 +309,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     let active = true;
     const projectId = workspace?.project.id;
     if (!projectId) {
-      setComposerSkillWarnings([]);
-      setComposerSkills([]);
-      setComposerTools([]);
+      setComposerCatalog(undefined);
       return () => { active = false; };
     }
     // 设置关闭后统一刷新；打开设置时不再额外扫描一次相同目录。
@@ -318,14 +321,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     ]).then(([catalog, settings, tools]) => {
       if (!active) return;
       const enabledById = new Map(settings.activations.map((activation) => [activation.id, activation.enabled]));
-      setComposerSkillWarnings(catalog.warnings);
-      setComposerSkills(catalog.skills.filter((skill) => enabledById.get(skill.id) !== false));
-      setComposerTools(tools);
+      setComposerCatalog({ projectId, warnings: catalog.warnings,
+        skills: catalog.skills.filter((skill) => enabledById.get(skill.id) !== false), tools });
     }).catch((error) => {
       if (!active) return;
-      setComposerSkillWarnings([]);
-      setComposerSkills([]);
-      setComposerTools([]);
+      setComposerCatalog(undefined);
       setWarning(`无法加载技能补全：${errorMessage(error)}`);
     });
     return () => { active = false; };

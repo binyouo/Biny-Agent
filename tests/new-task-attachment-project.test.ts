@@ -19,7 +19,7 @@ function declaration(source: ts.SourceFile, name: string): string {
   let found: ts.Node | undefined;
   const visit = (node: ts.Node): void => {
     if (ts.isVariableStatement(node) && node.declarationList.declarations.some(item =>
-      (ts.isIdentifier(item.name) && item.name.text === name) || (ts.isArrayBindingPattern(item.name)
+      (ts.isIdentifier(item.name) && item.name.text === name) || ((ts.isArrayBindingPattern(item.name) || ts.isObjectBindingPattern(item.name))
         && item.name.elements.some(element => ts.isBindingElement(element) && ts.isIdentifier(element.name) && element.name.text === name)))) found = node;
     if (ts.isFunctionDeclaration(node) && node.name?.text === name) found = node;
     ts.forEachChild(node, visit);
@@ -97,7 +97,7 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
   findCatalogEffect(app);
   assert.ok(catalogEffect, "Missing production catalog effect");
   const source = `
-    import React, {useCallback, useEffect, useRef, useState} from 'react';
+    import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
     import { z } from 'zod';
     import {Composer} from './src/desktop/renderer/src/components/Composer.js';
     import {ComposerDraftState} from './src/desktop/renderer/src/components/composer/composerDraft.js';
@@ -122,9 +122,8 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
       const setWarning = base.onWarning;
       const settingsOpen = false;
       const composerResourceRevision = 0;
-      ${declaration(app, "composerSkillWarnings")}
+      ${declaration(app, "composerCatalog")}
       ${declaration(app, "composerSkills")}
-      ${declaration(app, "composerTools")}
       ${declaration(app, "composerCatalogNonce")}
       ${declaration(app, "refreshComposerCatalog")}
       ${catalogEffect.getText(app)}
