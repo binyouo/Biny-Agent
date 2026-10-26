@@ -327,10 +327,16 @@ export function SettingsMemory({
   }, [hidden, onSleepStatus, reload, workspaceAvailable]);
   useEffect(() => {
     if (hidden || !embeddingWorking || !workspaceAvailable) return;
+    let cancelled = false;
+    let pending = false;
     const timer = window.setInterval(() => {
-      void onLoadEmbeddingStatus().then(setEmbeddingStatus).catch(() => undefined);
+      if (cancelled || pending) return;
+      pending = true;
+      void onLoadEmbeddingStatus().then((next) => {
+        if (!cancelled) setEmbeddingStatus(next);
+      }).catch(() => undefined).finally(() => { pending = false; });
     }, 750);
-    return () => window.clearInterval(timer);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [embeddingWorking, hidden, onLoadEmbeddingStatus, workspaceAvailable]);
 
   const downloadEmbedding = async (model: LocalEmbeddingModelId): Promise<void> => {
