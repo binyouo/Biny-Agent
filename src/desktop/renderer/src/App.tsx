@@ -11,7 +11,7 @@ import type { ChatResponseSettings } from "../../../config/schema.js";
 import { useThreadBrief } from "./threadBrief/context.js";
 import { hasSubmittedUserMessage } from "./chatModel.js";
 import { skillActivities } from "./skillActivity.js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type { ContextBudgetStatus } from "../../../agent/context/types.js";
 import type { PermissionResult } from "../../../permission/PermissionManager.js";
@@ -207,6 +207,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   // Removing one project must retire its reads/receipts without cancelling another project's intent.
   const projectRemovalRef = useRef(new Map<string, object>());
   const branchRequestRef = useRef(0);
+  const branchProjectRef = useRef<string | undefined>(undefined);
   const menuActionRef = useRef<(action: DesktopMenuAction) => void>(() => undefined);
 
   const {
@@ -297,6 +298,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const composerProject = selectedSessionId === undefined && draftProjectId
     ? projects.find((project) => project.id === draftProjectId) ?? workspace?.project
     : workspace?.project;
+  // Branch reads follow the committed composer target, including an unsent draft's project.
+  useLayoutEffect(() => {
+    branchProjectRef.current = composerProject?.id;
+    return () => { branchProjectRef.current = undefined; };
+  }, [composerProject?.id]);
   const composerResourceRevision = workspace?.sessionRuntimes?.[selectedSessionId ?? ""]?.resourceReadiness?.revision
     ?? workspace?.runtime?.resourceReadiness?.revision;
 
@@ -418,19 +424,22 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [briefProjectIds, mergeProjectSnapshot]);
 
   const loadProjectBranches = useCallback(async (projectId: string): Promise<void> => {
+    // A late branch-operation receipt must not start a read for an old target or
+    // supersede the current target's pending read.
+    if (branchProjectRef.current !== projectId) return;
     const request = branchRequestRef.current + 1;
     branchRequestRef.current = request;
     setBranchesLoading(true);
     try {
       const branches = await window.biny.listProjectBranches(projectId);
-      if (branchRequestRef.current === request) setProjectBranches(branches);
+      if (branchProjectRef.current === projectId && branchRequestRef.current === request) setProjectBranches(branches);
     } catch (error) {
-      if (branchRequestRef.current === request) {
+      if (branchProjectRef.current === projectId && branchRequestRef.current === request) {
         setProjectBranches([]);
         setWarning(errorMessage(error));
       }
     } finally {
-      if (branchRequestRef.current === request) setBranchesLoading(false);
+      if (branchProjectRef.current === projectId && branchRequestRef.current === request) setBranchesLoading(false);
     }
   }, []);
 
