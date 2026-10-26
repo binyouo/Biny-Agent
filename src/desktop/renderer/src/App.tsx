@@ -189,6 +189,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [warning, setWarning] = useState<string>();
   /** 当前选中会话的 Recipe 提示卡；换会话清空，事件桥和历史读取共同填充。 */
   const [recipeNotices, setRecipeNotices] = useState<RecipeNotice[]>([]);
+  const suppressedRecipeHistoryRef = useRef<{ projectId?: string; sessionId?: string; ids: Set<string> }>({ ids: new Set() });
   /** 技能提取（自进化）进度卡；换会话与新一轮 run.started 时清空。 */
   const [skillExtraction, setSkillExtraction] = useState<SkillExtractionCardState>();
   const selectedRef = useRef<string | undefined>(undefined);
@@ -266,9 +267,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   // 换会话时清掉上一会话的 Recipe 卡片与技能提取卡；新会话的卡片由历史读取和事件桥共同收集。
   useEffect(() => {
+    // Suppression belongs to this visit, not a globally shared recipe id.
+    suppressedRecipeHistoryRef.current = { projectId: workspace?.project.id, sessionId: selectedSessionId, ids: new Set() };
     setRecipeNotices([]);
     setSkillExtraction(undefined);
-  }, [selectedSessionId]);
+  }, [selectedSessionId, workspace?.project.id]);
 
   useEffect(() => {
     const projectId = workspace?.project.id;
@@ -279,7 +282,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       if (cancelled) return;
       setRecipeNotices((current) => {
         const seen = new Set(current.map((notice) => notice.id));
-        return [...current, ...recipes.filter((recipe) => !seen.has(recipe.id)).map((recipe) => ({ ...recipe, sessionId }))];
+        const suppressed = suppressedRecipeHistoryRef.current;
+        const dismissed = suppressed.projectId === projectId && suppressed.sessionId === sessionId ? suppressed.ids : new Set<string>();
+        return [...current, ...recipes.filter((recipe) => !seen.has(recipe.id) && !dismissed.has(recipe.id)).map((recipe) => ({ ...recipe, sessionId }))];
       });
     }).catch((error: unknown) => {
       if (!cancelled) setWarning(errorMessage(error));
@@ -2023,6 +2028,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (projectId && sessionId) {
+      const suppressed = suppressedRecipeHistoryRef.current;
+      if (notice.sessionId === sessionId && suppressed.projectId === projectId && suppressed.sessionId === sessionId) {
+        suppressed.ids.add(notice.id);
+      }
       void window.biny.setRecipeState(projectId, sessionId, notice.id, "dismissed")
         .catch((error: unknown) => setWarning(errorMessage(error)));
     }
@@ -2033,6 +2042,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (projectId && sessionId) {
+      const suppressed = suppressedRecipeHistoryRef.current;
+      if (notice.sessionId === sessionId && suppressed.projectId === projectId && suppressed.sessionId === sessionId) {
+        suppressed.ids.add(notice.id);
+      }
       void window.biny.setRecipeState(projectId, sessionId, notice.id, "extracted")
         .catch((error: unknown) => setWarning(errorMessage(error)));
     }
