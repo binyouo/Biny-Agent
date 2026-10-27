@@ -98,6 +98,7 @@ async function harness(options: {
   const writes: DesktopSettingsSaveInput[] = [];
   const staged: Array<{ secret: string; scope: DesktopSettingsCredentialScope }> = [];
   const reads: string[] = [];
+  const catalogFetches: string[] = [];
   const released: string[][] = [];
   let current = options.initialSnapshot ?? snapshot(options.withModel ?? true);
   Object.assign(dom.window, {
@@ -127,7 +128,7 @@ async function harness(options: {
       models: context.snapshot?.models.configured ?? [], connections: context.snapshot?.models.connections ?? [],
       defaultModelAlias: context.snapshot?.models.defaultModel,
       onReadModelApiKey: async alias => { reads.push(alias); return options.readKey ? options.readKey(alias) : syntheticKey; },
-      onFetchCatalog: async alias => ({ providerAlias: alias, source: "static", fetchedAt: "", models: [] }),
+      onFetchCatalog: async alias => { catalogFetches.push(alias); return { providerAlias: alias, source: "static", fetchedAt: "", models: [] }; },
       onTest: async () => { if (options.testConnection) return await options.testConnection(); throw new Error("Unexpected provider request"); },
       onStartLogin: async () => { throw new Error("Unexpected login"); },
       onCompleteLogin: async () => { throw new Error("Unexpected login"); },
@@ -149,7 +150,7 @@ async function harness(options: {
     return input;
   };
   return {
-    dom, writes, staged, reads, released, keyInput,
+    dom, writes, staged, reads, released, keyInput, catalogFetches,
     context: () => { assert.ok(draftContext); return draftContext; },
     click: async (selector: string) => {
       const button = document.querySelector<HTMLButtonElement>(selector);
@@ -157,8 +158,9 @@ async function harness(options: {
       await act(async () => { button.click(); });
     },
     selectProvider: async (label: string) => {
-      const row = [...document.querySelectorAll<HTMLButtonElement>('.provider-row')].find(item => item.textContent?.includes(label));
+      const row = [...document.querySelectorAll<HTMLButtonElement>('.provider-row')].find(item => item.querySelector('.provider-row-copy strong')?.textContent?.trim() === label);
       assert.ok(row, label);
+      assert.equal(row.querySelector('.provider-row-copy strong')?.textContent?.trim(), label);
       await act(async () => { row.click(); });
     },
     editInput: async (selector: string, value: string) => {
@@ -423,7 +425,7 @@ test("等待密钥防抖保存时显示待保存状态，不能提前显示所�
 test("添加失败保留模型 ID 和名称供原位重试，失败候选不能投影为已保存模型", async () => {
   let attempt = 0;
   const h = await harness({ withModel: false, save: async (_input, current) => ++attempt === 1
-    ? { status: "rolled_back", journalId: "synthetic", message: "SYNTHETIC_CONFLICT", snapshot: current }
+    ? { status: "rolled_back", draftRetained: true, journalId: "synthetic", message: "SYNTHETIC_CONFLICT", snapshot: current }
     : { status: "committed", journalId: "synthetic", appliedFields: [], snapshot: { ...current, configRevision: "config:2" } } });
   try {
     await h.editInput('[aria-label="手动添加模型 ID"]', "manual-model");
@@ -440,7 +442,7 @@ test("添加失败保留模型 ID 和名称供原位重试，失败候选不能�
 });
 
 test("关闭设置先提交待保存字段，失败时拒绝关闭并保留编辑", async t => {
-  const h = await harness({ save: async (_input, current) => ({ status: "rolled_back", journalId: "synthetic", message: "SYNTHETIC_CONFLICT", snapshot: current }) });
+  const h = await harness({ save: async (_input, current) => ({ status: "rolled_back", draftRetained: true, journalId: "synthetic", message: "SYNTHETIC_CONFLICT", snapshot: current }) });
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {
     await h.editKey("SYNTHETIC_RETRY_KEY");
@@ -517,7 +519,7 @@ test("图片输入默认自动，显式启停保持覆盖，恢复自动会清�
 test("模型选项保存失败保留对话框和填写值，只有提交成功才关闭", async () => {
   let attempt = 0;
   const h = await harness({ save: async (_input, current) => ++attempt === 1
-    ? { status: "rolled_back", journalId: "synthetic", snapshot: current, message: "SYNTHETIC_CONFLICT" }
+    ? { status: "rolled_back", draftRetained: true, journalId: "synthetic", snapshot: current, message: "SYNTHETIC_CONFLICT" }
     : { status: "committed", journalId: "synthetic", appliedFields: [], snapshot: current } });
   try {
     await h.click('.provider-model-actions .icon-button');
@@ -534,7 +536,7 @@ test("模型选项保存失败保留对话框和填写值，只有提交成功�
 
 
 test("创建供应商失败在对话框显示原因并保留填写值供重试", async () => {
-  const h = await harness({ save: async (_input, current) => ({ status: "rolled_back", journalId: "synthetic", snapshot: current, message: "SYNTHETIC_CREATE_CONFLICT" }) });
+  const h = await harness({ save: async (_input, current) => ({ status: "rolled_back", draftRetained: true, journalId: "synthetic", snapshot: current, message: "SYNTHETIC_CREATE_CONFLICT" }) });
   try {
     await h.click('.provider-settings-toolbar button');
     await h.editInput('#custom-provider-create-name', "My Relay");
@@ -595,7 +597,7 @@ test("删除服务商先请求确认，取消无写入且下一次点击重新�
   const previousConfirm = dom.window.confirm;
   let confirmed = false;
   let confirmations = 0;
-  dom.window.confirm = message => { assert.match(message, /Example/u); confirmations += 1; return confirmed; };
+  dom.window.confirm = message => { assert.ok(message !== undefined); assert.match(message, /Example/u); confirmations += 1; return confirmed; };
   const h = await harness({ withModel: false });
   try {
     await h.click('[aria-label="删除连接"]');
@@ -624,9 +626,145 @@ test("修改内置服务商端点后仍选中同一连接，目录名称重映�
     await h.selectProvider("Second");
     await h.selectProvider("DeepSeek");
     await h.editInput('[id="provider-example-base-url"]', "https://relay.example.invalid/v1");
-    await act(async () => { assert.equal(await h.context().flushModelEdits(), true); });
+    await act(async () => { const flush = h.context().flushModelEdits; assert.ok(flush); assert.equal(await flush(), true); });
     assert.ok(document.querySelector('[id="provider-example-base-url"]'), "same connection editor must remain mounted");
     assert.equal(document.querySelector<HTMLInputElement>('[id="provider-example-base-url"]')!.value, "https://relay.example.invalid/v1");
     assert.match(document.querySelector('.provider-row.is-active')!.textContent!, /Example/u);
   } finally { await h.close(); }
 });
+
+/** Keep a different configured catalog row before OpenAI, so fallback cannot mask lost selection. */
+function providerEnableSnapshot(): DesktopSettingsSnapshot {
+  const initial = snapshot(true);
+  initial.models.connections[0] = {
+    ...initial.models.connections[0]!, providerType: "anthropic", protocol: "anthropic", baseUrl: "https://api.anthropic.com"
+  };
+  initial.models.configured[0] = { ...initial.models.configured[0]!, providerType: "anthropic" };
+  return initial;
+}
+
+function withEnabledOpenAI(initial: DesktopSettingsSnapshot, input: DesktopSettingsSaveInput): DesktopSettingsSnapshot {
+  const upsert = input.models?.upserts[0];
+  assert.ok(upsert);
+  assert.equal(upsert.providerAlias, "openai");
+  return {
+    ...initial, configRevision: "config:2",
+    models: {
+      ...initial.models,
+      connections: [...initial.models.connections, {
+        providerAlias: "openai", providerType: "openai", protocol: "openai-compatible",
+        baseUrl: upsert.baseUrl, requiresApiKey: true, hasCredential: false
+      }],
+      configured: [...initial.models.configured, {
+        alias: upsert.alias, displayName: upsert.displayName, model: upsert.model,
+        modelKey: `openai\u0000${upsert.model}`, provider: "openai", providerType: "openai",
+        available: true, source: "configured", efforts: [], defaultThinking: "off", thinkingLevelMap: {}
+      }]
+    }
+  };
+}
+
+for (const navigation of ["stay", "other", "return"] as const) {
+  test(`enabling a catalog provider preserves the latest logical selection (${navigation})`, async t => {
+    const gate = deferred<void>();
+    let persisted = providerEnableSnapshot();
+    const h = await harness({ initialSnapshot: persisted, save: async input => {
+      if (input.models?.upserts.length) {
+        await gate.promise;
+        persisted = withEnabledOpenAI(persisted, input);
+      } else {
+        const change = input.models?.customProviders?.[0];
+        assert.ok(change);
+        assert.equal(change.alias, "example");
+        persisted = { ...persisted, configRevision: "config:3", models: { ...persisted.models,
+          connections: persisted.models.connections.map(connection => connection.providerAlias === change.alias
+            ? { ...connection, baseUrl: change.baseUrl ?? connection.baseUrl } : connection)
+        } };
+      }
+      return { status: "committed", journalId: "synthetic", appliedFields: [], snapshot: persisted };
+    } });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      await h.selectProvider("OpenAI");
+      await h.click('.provider-enable-card .settings-primary-button');
+      assert.equal(h.writes.length, 1);
+      if (navigation !== "stay") await h.selectProvider("Anthropic");
+      if (navigation === "return") await h.selectProvider("OpenAI");
+      const address = "https://newer-address.example.invalid/v1";
+      if (navigation === "other") {
+        await h.editInput('#provider-example-base-url', address);
+        assert.equal(h.context().pendingModelEdits, true);
+      }
+      await act(async () => { gate.resolve(); });
+      assert.equal(h.writes.length, 1, "settlement does not flush or discard the newer editor");
+      assert.deepEqual(h.catalogFetches, ["openai"], "successful enable still refreshes its own catalog");
+      assert.equal(dom.window.document.querySelector('.provider-row')?.textContent?.includes("Anthropic"), true,
+        "unrelated Anthropic remains the first fallback row after OpenAI is configured");
+      assert.deepEqual(h.staged, []);
+      if (navigation === "other") {
+        assert.match(dom.window.document.querySelector('.provider-row.is-active')!.textContent!, /Anthropic/u);
+        assert.equal(dom.window.document.querySelector<HTMLInputElement>('#provider-example-base-url')?.value, address);
+        assert.equal(h.context().pendingModelEdits, true);
+        await act(async () => { const flush = h.context().flushModelEdits; assert.ok(flush); assert.equal(await flush(), true); });
+        assert.equal(h.writes.length, 2);
+        assert.deepEqual(h.writes[1]?.models?.customProviders, [{ alias: "example", baseUrl: address }]);
+        await act(async () => { t.mock.timers.tick(900); });
+        assert.equal(h.writes.length, 2, "the pending address is saved exactly once");
+      } else {
+        assert.equal(dom.window.document.querySelector('.provider-row.is-active strong')?.textContent, "OpenAI");
+        assert.ok(dom.window.document.querySelector('#provider-openai-base-url'), "catalog key migrated to its configured connection");
+        assert.equal(dom.window.document.querySelector('.provider-enable-card'), null);
+      }
+    } finally {
+      await act(async () => { gate.resolve(); });
+      await h.close();
+    }
+  });
+}
+
+for (const outcome of ["rolled_back", "rejected"] as const) {
+  test(`failed provider enable preserves another provider's pending address (${outcome})`, async t => {
+    const gate = deferred<void>();
+    let persisted = providerEnableSnapshot();
+    const h = await harness({ initialSnapshot: persisted, save: async input => {
+      if (input.models?.upserts.length) {
+        await gate.promise;
+        if (outcome === "rejected") throw new Error("SYNTHETIC_ENABLE_FAILURE");
+        return { status: "rolled_back", draftRetained: true, journalId: "synthetic", message: "SYNTHETIC_ENABLE_FAILURE", snapshot: persisted };
+      }
+      const change = input.models?.customProviders?.[0];
+      assert.ok(change);
+      assert.equal(change.alias, "example");
+      persisted = { ...persisted, configRevision: "config:2", models: { ...persisted.models,
+        connections: persisted.models.connections.map(connection => connection.providerAlias === change.alias
+          ? { ...connection, baseUrl: change.baseUrl ?? connection.baseUrl } : connection)
+      } };
+      return { status: "committed", journalId: "synthetic", appliedFields: [], snapshot: persisted };
+    } });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      await h.selectProvider("OpenAI");
+      await h.click('.provider-enable-card .settings-primary-button');
+      await h.selectProvider("Anthropic");
+      const address = "https://retained-address.example.invalid/v1";
+      await h.editInput('#provider-example-base-url', address);
+      await act(async () => { gate.resolve(); });
+      assert.match(dom.window.document.querySelector('.provider-row.is-active')!.textContent!, /Anthropic/u);
+      assert.equal(dom.window.document.querySelector<HTMLInputElement>('#provider-example-base-url')?.value, address);
+      assert.equal(h.context().pendingModelEdits, true);
+      assert.equal(h.writes.length, 1);
+      assert.match(h.context().saveError ?? "", /SYNTHETIC_ENABLE_FAILURE/u);
+      assert.deepEqual(h.catalogFetches, []);
+      assert.deepEqual(h.staged, []);
+      assert.equal(h.context().snapshot?.models.connections.some(connection => connection.providerAlias === "openai"), false);
+      await act(async () => { const flush = h.context().flushModelEdits; assert.ok(flush); assert.equal(await flush(), true); });
+      assert.equal(h.writes.length, 2);
+      assert.deepEqual(h.writes[1]?.models?.customProviders, [{ alias: "example", baseUrl: address }]);
+      await h.selectProvider("OpenAI");
+      assert.ok(dom.window.document.querySelector('.provider-enable-card .settings-primary-button'), "failed enable remains retryable");
+    } finally {
+      await act(async () => { gate.resolve(); });
+      await h.close();
+    }
+  });
+}

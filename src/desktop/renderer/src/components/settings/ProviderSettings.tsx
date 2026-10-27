@@ -167,9 +167,12 @@ export function ProviderSettings({
     const key = activeEntry?.key ?? "custom";
     setNotices((current) => ({ ...current, [key]: providerErrorMessage(message) }));
   }, [activeEntry?.key]);
-  // 已有选中从列表里消失（例如删除自定义端点后）时回退到第一行。
+  // 目录项启用后换成连接键，保留当前选择；真正删除的连接才回退到第一行。
   useEffect(() => {
-    if (activeKey !== undefined && !entries.some((row) => row.key === activeKey)) setActiveKey(undefined);
+    if (activeKey !== undefined && !entries.some((row) => row.key === activeKey)) {
+      const replacement = entries.find((row) => row.catalog?.id === activeKey)?.key;
+      setActiveKey((current) => current === activeKey ? replacement : current);
+    }
   }, [activeKey, entries]);
 
   // 切换服务商时详情面板回到顶部：新面板不应继承上一家的滚动位置。
@@ -712,7 +715,6 @@ export function ProviderSettings({
       })
     ]);
     if (result) {
-      setActiveKey(`provider:${alias}`);
       void refreshCatalog(alias, { force: true });
     }
   }, [applyModelBatch, defaultModelAlias, refreshCatalog]);
