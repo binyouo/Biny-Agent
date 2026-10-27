@@ -10,11 +10,22 @@ import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProje
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import { RuntimeHostClient } from "../src/runtime/RuntimeHost.js";
-import { readSessionEvents } from "../src/session/events.js";
+import { readSessionEvents, type SessionEvent } from "../src/session/events.js";
 import { createSessionFile, sessionFilePath } from "../src/session/store.js";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgYPgPAAEDAQBdlO9aAAAAAElFTkSuQmCC", "base64");
 const localPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC", "base64");
+
+async function readSessionEventsIfStable(filePath: string): Promise<SessionEvent[] | undefined> {
+  try {
+    return await readSessionEvents(filePath);
+  } catch (error) {
+    // Admission precedes asynchronous recorder writes. Only the bounded terminal
+    // poll may retry a contested snapshot; invalid histories must still fail.
+    if (error instanceof Error && error.message === `Session changed repeatedly while reading: ${filePath}`) return undefined;
+    throw error;
+  }
+}
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-imported-media-"));
@@ -89,8 +100,8 @@ test("Desktop keeps user text exact and sends media and Read-only file refs as s
   const verify = async (input: string, runId: string) => {
     const deadline = Date.now() + 5_000;
     for (;;) {
-      const events = await readSessionEvents(sessionFilePath(f.project.path, f.sessionId));
-      if (events.some(event => event.type === "turn_status" && event.runtime?.runId === runId)) break;
+      const events = await readSessionEventsIfStable(sessionFilePath(f.project.path, f.sessionId));
+      if (events?.some(event => event.type === "turn_status" && event.runtime?.runId === runId)) break;
       assert.ok(Date.now() < deadline, "the submitted run must persist its own terminal event");
       await new Promise(resolve => setTimeout(resolve, 10));
     }
