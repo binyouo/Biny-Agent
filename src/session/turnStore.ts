@@ -19,6 +19,7 @@ import { isRetryCommit, isRetryWindow, type RetryCommit, type RetryWindow } from
 import { isRetryOrigin, type RetryOrigin } from "./retryOrigin.js";
 import type { RuntimeHighWater } from "./runtimeEvent.js";
 import { agentDir, ensureAgentDirs } from "./store.js";
+import { projectCheckpointToolMetadata } from "./toolCallPersistence.js";
 
 const turnStateVersion = 5;
 
@@ -84,7 +85,7 @@ export class TurnStore {
       turnId,
       prompt,
       systemPrompt,
-      messages: [...messages],
+      messages: projectCheckpointToolMetadata(messages),
       completedSteps,
       facts,
       terminal,
@@ -211,7 +212,10 @@ function isAgentMessage(value: unknown): value is AgentMessage {
         && typeof content.name === "string"
         && typeof content.arguments === "object"
         && content.arguments !== null
-        && !Array.isArray(content.arguments);
+        && !Array.isArray(content.arguments)
+        && (content.providerMetadata === undefined
+          || typeof content.providerMetadata === "object" && content.providerMetadata !== null
+          && !Array.isArray(content.providerMetadata));
     });
   }
   return message.role === "toolResult"
