@@ -113,7 +113,7 @@ export class TaskCommunication {
     let remaining = Math.max(0, Math.min(6000, maxCharacters));
     let cursor: number | undefined;
     do {
-      const page = this.tasks.list({ cursor, limit: 100 });
+      const page = this.tasks.list({ cursor, limit: 100, sessionId: receivingSessionId });
       for (const task of page.tasks) {
         if (task.sessionId !== receivingSessionId || notices.length >= 4 || remaining < 512) continue;
         const definition = task.task as { communication?: unknown; notifyParent?: unknown } | undefined;
