@@ -6,7 +6,7 @@ import { z } from "zod";
 import { globalConfigDir } from "../config/paths.js";
 import type { AgentConfigStore } from "../config/store.js";
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
-import { importSessionFile, parseSessionImport, parsePreparedChatGptImport, persistImportedSession, SessionImportCleanupError, type ParsedSessionImport } from "../session/transfer.js";
+import { parseSessionImport, parsePreparedChatGptImport, persistImportedSession, SessionImportCleanupError, type ParsedSessionImport } from "../session/transfer.js";
 import { ensureAgentDirs } from "../session/store.js";
 import { prepareChatGptSource, type PreparedChatGptSource } from "../session/import/chatgpt.js";
 import { discoverConfigurationImports, type ConfigurationImportCandidate } from "./configuration.js";
@@ -160,7 +160,7 @@ export class ApplicationImportService {
             if (!scanned?.preparedChatGpt) throw new Error("Missing prepared source.");
             preparedImport = parsePreparedChatGptImport(scanned.preparedChatGpt, current.conversationId);
           } else {
-            parseSessionImport(bytes.toString("utf8"), current.sourcePath, { format: preview.source, conversationId: current.conversationId });
+            preparedImport = parseSessionImport(bytes.toString("utf8"), current.sourcePath, { format: preview.source, conversationId: current.conversationId });
           }
         }
       } catch { result.detail = "源会话格式无效或没有可导入内容。"; continue; }
@@ -170,17 +170,10 @@ export class ApplicationImportService {
       result.detail = "导入已开始，写入结果尚未确认。";
       // If this write fails, no application or session side effect has started.
       await this.writeState(state);
-      let stagedPath: string | undefined;
       try {
         if (current.category === "sessions") {
           await ensureAgentDirs(workspaceRoot);
-          if (!preparedImport) {
-            stagedPath = path.join(this.stateRoot, `session-snapshot-${randomUUID()}.json`);
-            await fs.writeFile(stagedPath, bytes!, { flag: "wx", mode: 0o600 });
-          }
-          const importedSession = preparedImport
-            ? await persistImportedSession(workspaceRoot, preparedImport)
-            : await importSessionFile(workspaceRoot, stagedPath!, { format: preview.source, conversationId: current.conversationId });
+          const importedSession = await persistImportedSession(workspaceRoot, preparedImport!);
           result.sessionId = importedSession.sessionId;
           receipt.sessionId = importedSession.sessionId;
           result.detail = importedSession.skippedContentCount || importedSession.attachmentsSkipped
@@ -208,10 +201,6 @@ export class ApplicationImportService {
         result.detail = result.detail.slice(0, 1_700);
         await this.writeState(state);
       } finally {
-        if (stagedPath) {
-          try { await fs.rm(stagedPath, { force: true }); }
-          catch { result.detail = `${result.detail ?? ""} 临时副本清理失败：${JSON.stringify(stagedPath.slice(0, 256))}`; }
-        }
         result.detail = result.detail?.slice(0, 2_048);
       }
     }
