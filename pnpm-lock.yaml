@@ -18,6 +18,9 @@ patchedDependencies:
   '@ai-sdk/code-mode@1.0.50':
     hash: 3599031e5faf94bc0306e7a29850b6a0fb7114db6f242453a92830b3f0e409e1
     path: patches/@ai-sdk-code-mode@1.0.50.patch
+  '@earendil-works/pi-tui@0.82.1':
+    hash: 8fc9d0f8dc0bd6805baaae58744e97d11bce6d7fa871f49f24665fe334e458f4
+    path: patches/@earendil-works-pi-tui@0.82.1.patch
   run@2.1.6:
     hash: d18893479916603076cfa0fcb0980da3d65d8932362ffd16a73762ddb5f85f8e
     path: patches/run@2.1.6.patch
@@ -58,7 +61,7 @@ importers:
         version: 0.2.0(@astryxdesign/core@0.2.0(@stylexjs/stylex@0.19.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
       '@earendil-works/pi-tui':
         specifier: 0.82.1
-        version: 0.82.1
+        version: 0.82.1(patch_hash=8fc9d0f8dc0bd6805baaae58744e97d11bce6d7fa871f49f24665fe334e458f4)
       '@floating-ui/dom':
         specifier: 1.8.0
         version: 1.8.0
@@ -4903,7 +4906,7 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.1': {}
 
-  '@earendil-works/pi-tui@0.82.1':
+  '@earendil-works/pi-tui@0.82.1(patch_hash=8fc9d0f8dc0bd6805baaae58744e97d11bce6d7fa871f49f24665fe334e458f4)':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
