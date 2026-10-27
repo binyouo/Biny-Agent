@@ -58,6 +58,7 @@ import { modelThinkingOptions, selectedThinkingForModel } from "./modelOptions.j
 import { createInitialTuiState, tuiReducer } from "./reducer.js";
 import { availableThemes, editorTheme, getTheme, setTheme, theme } from "./theme/index.js";
 import { formatSessionAge } from "./transcriptText.js";
+import { sanitizeTerminalText } from "./terminalText.js";
 import type { PermissionChoice, TuiLaunchMode, TuiState, TuiStatus } from "./types.js";
 import type { AgentAttachment } from "../agent/AgentSession.js";
 import type { SkillDefinition } from "../extensions/skills.js";
@@ -1404,7 +1405,7 @@ export class BinyTui {
       items: summaries.map((summary) => ({
         value: summary.fileName.replace(/\.jsonl$/, ""),
         label: sessionLabel(summary, nowMs),
-        description: summary.firstUserMessage.replace(/\s+/g, " ").slice(0, 80)
+        description: sanitizeTerminalText(summary.firstUserMessage.replace(/\s+/g, " ")).slice(0, 80)
       })),
       onSelect: (item) => {
         // resumeSession 会把非 writer-conflict 错误（runtime 忙、会话损坏）重抛，必须就地提示。
