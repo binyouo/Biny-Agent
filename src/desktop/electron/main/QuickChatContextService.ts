@@ -67,6 +67,7 @@ export class QuickChatContextService {
     }
 
     const appIconDataUrl = await this.readAppIcon(front.appPath);
+    if (sequence !== this.captureSequence) return this.cachedContext();
     const next = this.snapshot(front, undefined, appIconDataUrl);
     this.cached = next;
     this.publish();
