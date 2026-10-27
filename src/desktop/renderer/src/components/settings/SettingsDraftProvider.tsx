@@ -455,7 +455,7 @@ export function SettingsDraftProvider({
       } else if (result.status === "rolled_back") {
         setSnapshot(result.snapshot);
         snapshotRef.current = result.snapshot;
-        setSaveState(dirtyCount > 0 ? "dirty" : "clean");
+        setSaveState(pendingModelSavesRef.current > 1 ? "saving" : dirtyCount > 0 ? "dirty" : "clean");
         setSaveError(result.message ?? "模型设置保存失败，已恢复原设置；请在对应字段重试。");
         onNotify(result.message ?? (result.conflicts?.length ? "模型设置已在其他位置更改，请重试" : "模型设置保存失败，已恢复原设置"));
       } else {
@@ -469,7 +469,7 @@ export function SettingsDraftProvider({
       return await operation;
     } catch (error) {
       if (generation === loadGenerationRef.current) {
-        setSaveState(dirtyCount > 0 ? "dirty" : "clean");
+        setSaveState(pendingModelSavesRef.current > 1 ? "saving" : dirtyCount > 0 ? "dirty" : "clean");
         setSaveError(error instanceof Error ? error.message : String(error));
       }
       throw error;
