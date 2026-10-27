@@ -1638,9 +1638,6 @@ function TestConnectionButton({
   testConfiguration(model: ModelChoice): DesktopModelConfigurationInput | undefined;
 }): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement>(null);
-  // 流动悬停：测试模型菜单按选择器自动注册。
-  const testMenuRef = useRef<HTMLDivElement>(null);
-  const testMenuHover = useFluidHoverItems(testMenuRef, ".provider-test-option");
   const [search, setSearch] = useState("");
   useEffect(() => {
     if (!open) return;
@@ -1692,8 +1689,7 @@ function TestConnectionButton({
         </button>
       </Tooltip>
       {open ? (
-        <div className="provider-test-menu" ref={testMenuRef} role="listbox" {...testMenuHover.handlers}>
-          <FluidHoverHighlight hover={testMenuHover} className="has-row-radius" />
+        <TestConnectionMenu>
           <div className="provider-test-search">
             <Icon name="search" size={12} />
             <input
@@ -1713,8 +1709,20 @@ function TestConnectionButton({
             ))}
             {!filteredModels.length ? <div className="provider-test-empty">未找到模型</div> : null}
           </div>
-        </div>
+        </TestConnectionMenu>
       ) : null}
+    </div>
+  );
+}
+
+/** 悬停注册与菜单 DOM 同时挂载和卸载，重新打开时不保留旧行。 */
+function TestConnectionMenu({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const testMenuRef = useRef<HTMLDivElement>(null);
+  const testMenuHover = useFluidHoverItems(testMenuRef, ".provider-test-option");
+  return (
+    <div className="provider-test-menu" ref={testMenuRef} role="listbox" {...testMenuHover.handlers}>
+      <FluidHoverHighlight hover={testMenuHover} className="has-row-radius" />
+      {children}
     </div>
   );
 }
