@@ -194,6 +194,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [warning, setWarning] = useState<string>();
   /** 当前选中会话的 Recipe 提示卡；换会话清空，事件桥和历史读取共同填充。 */
   const [recipeNotices, setRecipeNotices] = useState<RecipeNotice[]>([]);
+  const dismissedRecipeIdsRef = useRef(new Set<string>());
   /** 技能提取（自进化）进度卡；换会话与新一轮 run.started 时清空。 */
   const [skillExtraction, setSkillExtraction] = useState<SkillExtractionCardState>();
   const selectedRef = useRef<string | undefined>(undefined);
@@ -270,11 +271,12 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [selectedSessionId]);
 
 
-  // 换会话时清掉上一会话的 Recipe 卡片与技能提取卡；新会话的卡片由历史读取和事件桥共同收集。
+  // 换项目或会话时清掉上一会话的卡片和已处理的 Recipe。
   useEffect(() => {
+    dismissedRecipeIdsRef.current.clear();
     setRecipeNotices([]);
     setSkillExtraction(undefined);
-  }, [selectedSessionId]);
+  }, [selectedSessionId, workspace?.project.id]);
 
   useEffect(() => {
     const projectId = workspace?.project.id;
@@ -284,8 +286,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     void window.biny.recipeSuggestions(projectId, sessionId).then((recipes) => {
       if (cancelled) return;
       setRecipeNotices((current) => {
+        if (cancelled) return current;
         const seen = new Set(current.map((notice) => notice.id));
-        return [...current, ...recipes.filter((recipe) => !seen.has(recipe.id)).map((recipe) => ({ ...recipe, sessionId }))];
+        return [...current, ...recipes.filter((recipe) => !seen.has(recipe.id) && !dismissedRecipeIdsRef.current.has(recipe.id)).map((recipe) => ({ ...recipe, sessionId }))];
       });
     }).catch((error: unknown) => {
       if (!cancelled) setWarning(errorMessage(error));
@@ -2041,6 +2044,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
   }, [prefillComposer]);
   const dismissRecipe = useCallback((notice: RecipeNotice): void => {
+    dismissedRecipeIdsRef.current.add(notice.id);
     setRecipeNotices((current) => current.filter((candidate) => candidate.id !== notice.id));
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
@@ -2050,6 +2054,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
   }, []);
   const extractRecipe = useCallback((notice: RecipeNotice): void => {
+    dismissedRecipeIdsRef.current.add(notice.id);
     setRecipeNotices((current) => current.filter((candidate) => candidate.id !== notice.id));
     prefillComposer(notice.extractPrompt);
     const projectId = projectRef.current;

@@ -4,7 +4,7 @@ import { Socket } from "node:net";
 import { test, type TestContext } from "node:test";
 import type { JSDOM } from "jsdom";
 import type { Root } from "react-dom/client";
-import type { DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopAgentEventEnvelope, DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -149,7 +149,7 @@ async function fixture(t: TestContext) {
     const target = document.querySelector<HTMLButtonElement>(selector); assert.ok(target, selector);
     await React.act(async () => target.click());
   };
-  const emit = async (name: string, value: DesktopMenuAction | DesktopSessionHandoff): Promise<void> => {
+  const emit = async (name: string, value: DesktopAgentEventEnvelope | DesktopMenuAction | DesktopSessionHandoff): Promise<void> => {
     assert.ok(listeners.has(name), `Production App subscribed to ${name}`);
     await React.act(async () => listeners.get(name)!(value as never));
   };
@@ -402,3 +402,26 @@ test("stale creation failure stays local to its dialog and preserves the newer h
   assert.equal(dialog.querySelector<HTMLInputElement>("input")?.disabled, false);
   assert.deepEqual(h.commitments, [{ projectId: "b", sessionId: "session-b", activeView: "chat" }]);
 });
+
+for (const [action, state] of [["忽略此提示", "dismissed"], ["提取", "extracted"]] as const) {
+  test(`recipe ${state} survives a late history response and resets on session change`, async t => {
+    const h = await fixture(t);
+    const history = deferred<Array<{ id: "repeatable-doc-task"; title: string; description: string; slots: []; extractPrompt: string }>>();
+    const recipe = { id: "repeatable-doc-task" as const, title: "Recipe", description: "", slots: [] as [], extractPrompt: "Extract" };
+    const saved: unknown[][] = [];
+    h.api.recipeSuggestions = async (projectId: string) => projectId === "a" ? history.promise : [recipe];
+    h.api.setRecipeState = async (...args: unknown[]) => { saved.push(args); };
+    await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+    await h.emit("onAgentEvent", { projectId: "a", event: { type: "recipe.ready", sessionId: "session-a", runId: "run", timestamp: time, recipe } });
+    await h.React.act(async () => t.mock.timers.tick(16));
+    assert.ok(h.document.querySelector(".biny-recipe-ready-banner"));
+    const button = [...h.document.querySelectorAll<HTMLButtonElement>(".biny-recipe-ready-banner button")].find(item => item.getAttribute("aria-label") === action || item.textContent === action);
+    assert.ok(button);
+    await h.React.act(async () => button.click());
+    assert.deepEqual(saved, [["a", "session-a", recipe.id, state]]);
+    await h.React.act(async () => history.resolve([recipe]));
+    assert.equal(Boolean(h.document.querySelector(".biny-recipe-ready-banner")), false);
+    await h.emit("onSessionHandoff", { projectId: "b", sessionId: "session-b" });
+    assert.ok(h.document.querySelector(".biny-recipe-ready-banner"), "The same recipe remains available in another session");
+  });
+}
