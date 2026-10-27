@@ -148,9 +148,6 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
   const allMcpToolNames = useMemo(() => tools.filter((tool) => tool.source === "mcp" && isToolUserSelectable(tool)).sort(compareCapabilityTools).map((tool) => tool.name), [tools]);
   const allToolNames = useMemo(() => [...visibleToolNames, ...allMcpToolNames], [allMcpToolNames, visibleToolNames]);
   const allSkillNames = useMemo(() => [...skills].sort(compareCapabilitySkills).map((skill) => skill.ref), [skills]);
-  // 列表与搜索共用一套条目，避免同一能力在不同布局中依赖图标辨认。
-  const listRef = useRef<HTMLDivElement>(null);
-  const listHover = useFluidHoverItems(listRef, ".capability-row");
 
   if (!presence.present) return null;
 
@@ -198,13 +195,12 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
               : value === "none" || explicit?.length === 0 ? "本条消息不使用这些能力"
                 : `本条消息手动指定 ${explicit?.length ?? 0} 项能力`}</p>}
         </div>
-        <div aria-label={tab === "tools" ? "工具列表" : "技能列表"} className="capabilities-scroll" ref={listRef} role="group" {...listHover.handlers}>
-          <FluidHoverHighlight hover={listHover} className="has-option-radius" />
+        <CapabilityList aria-label={tab === "tools" ? "工具列表" : "技能列表"}>
           <CapabilityGroups groups={activeGroups} value={value} onToggle={toggleEntry} onToggleGroup={toggleGroupEntries} />
           {tab === "skills" && resourceState === "loading" ? <p className="capabilities-loading" role="status"><span className="capabilities-spinner" />正在读取本地技能目录…</p> : null}
           {tab === "skills" && skillWarnings?.length ? <div className="capabilities-diagnostics" role="status">{skillWarnings.map((warning, index) => <p key={index}>{warning}</p>)}</div> : null}
           {!hasItems && (tab === "tools" || resourceState !== "loading") ? <p className="capabilities-empty">{query.trim() ? "没有匹配的能力" : tab === "tools" ? "当前项目没有可用工具" : "当前项目没有启用的技能"}</p> : null}
-        </div>
+        </CapabilityList>
         {tab === "tools" ? (
           <div className="capabilities-mcp">
             <div className="capabilities-mcp-head">
@@ -267,6 +263,21 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
         ) : null}
       </div>
     </ComposerPopover>
+  );
+}
+
+/** 观察器与实际列表一起挂卸，保留 closing 阶段的 DOM 和悬停状态。 */
+function CapabilityList({ "aria-label": ariaLabel, children }: {
+  "aria-label": string;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  const listRef = useRef<HTMLDivElement>(null);
+  const listHover = useFluidHoverItems(listRef, ".capability-row");
+  return (
+    <div aria-label={ariaLabel} className="capabilities-scroll" ref={listRef} role="group" {...listHover.handlers}>
+      <FluidHoverHighlight hover={listHover} className="has-option-radius" />
+      {children}
+    </div>
   );
 }
 

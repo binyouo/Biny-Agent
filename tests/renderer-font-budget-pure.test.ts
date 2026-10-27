@@ -29,10 +29,12 @@ test("CJK dependency setup has its own budget below the Renderer job budget", ()
   assert.equal(renderer["timeout-minutes"], 15);
   assert.equal(fonts["timeout-minutes"], 3);
   assert.ok(Number(fonts["timeout-minutes"]) < Number(renderer["timeout-minutes"]));
-  assert.deepEqual(fonts, {
+  // The static CI gate owns the exact acquisition command contract in scripts/ci-cjk-fonts.test.mjs.
+  const { run, ...budget } = fonts;
+  assert.equal(typeof run, "string");
+  assert.deepEqual(budget, {
     name: "Install CJK screenshot fonts",
     "timeout-minutes": 3,
-    run: "sudo apt-get update && sudo apt-get install -y fonts-noto-cjk",
   });
 });
 

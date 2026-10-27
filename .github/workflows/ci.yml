@@ -112,7 +112,7 @@ jobs:
         run: pnpm lint
 
       - name: Test CI selection, runner, model metadata and release policy
-        run: node --test scripts/ci-test-plan.test.mjs scripts/run-tests.test.mjs scripts/sync-model-metadata.test.mjs scripts/release-desktop.test.mjs
+        run: node --test scripts/ci-test-plan.test.mjs scripts/run-tests.test.mjs scripts/sync-model-metadata.test.mjs scripts/release-desktop.test.mjs scripts/ci-cjk-fonts.test.mjs
 
       - name: Test Code Mode runtime
         run: pnpm test:code-mode-runtime
@@ -240,7 +240,38 @@ jobs:
 
       - name: Install CJK screenshot fonts
         timeout-minutes: 3
-        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+        run: |
+          . /etc/os-release
+          [[ "$ID" == ubuntu && "${VERSION_CODENAME:-}" =~ ^[a-z][a-z0-9]*$ ]]
+          architecture="$(dpkg --print-architecture)"
+          case "$architecture" in amd64|amd64v3) ;; *) echo 'Unsupported CJK font runner architecture' >&2; exit 1 ;; esac
+          keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+          test -f "$keyring"
+          test -r "$keyring"
+          apt_dir="$(mktemp -d /tmp/biny-cjk-apt.XXXXXX)"
+          chmod 0755 "$apt_dir"
+          mkdir -m 0755 "$apt_dir/lists" "$apt_dir/sources.list.d"
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: https://archive.ubuntu.com/ubuntu/' \
+            "Suites: $VERSION_CODENAME $VERSION_CODENAME-updates $VERSION_CODENAME-security" \
+            'Components: main' \
+            "Architectures: $architecture" \
+            "Signed-By: $keyring" > "$apt_dir/ubuntu.sources"
+          chmod 0644 "$apt_dir/ubuntu.sources"
+          apt_options=(
+            -o "Dir::Etc::sourcelist=$apt_dir/ubuntu.sources"
+            -o "Dir::Etc::sourceparts=$apt_dir/sources.list.d"
+            -o "Dir::State::lists=$apt_dir/lists"
+            -o Dir::Cache::pkgcache=
+            -o Dir::Cache::srcpkgcache=
+          )
+          date -u '+%Y-%m-%dT%H:%M:%SZ CJK fonts: apt update start'
+          sudo apt-get "${apt_options[@]}" update --error-on=any
+          date -u '+%Y-%m-%dT%H:%M:%SZ CJK fonts: apt install start'
+          sudo apt-get "${apt_options[@]}" install -y fonts-noto-cjk
+          date -u '+%Y-%m-%dT%H:%M:%SZ CJK fonts: apt install complete'
+          dpkg-query -W -f='${binary:Package} ${Version}\n' fonts-noto-cjk
 
       - name: Build production-component fixture
         env:
