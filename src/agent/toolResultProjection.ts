@@ -249,7 +249,7 @@ function collectToolResults(messages: AgentMessage[]): ToolResultEntry[] {
 function findReplacements(entries: readonly ToolResultEntry[]): Map<number, Replacement> {
   const replacements = new Map<number, Replacement>();
   const exact = new Map<string, ToolResultEntry>();
-  const reads: ToolResultEntry[] = [];
+  const readBuckets = new Map<string, Array<{ entry: ToolResultEntry; range: ReadRange }>>();
   const snapshots = new Map<string, ToolResultEntry>();
   const failures = new Map<string, ToolResultEntry[]>();
 
@@ -264,14 +264,15 @@ function findReplacements(entries: readonly ToolResultEntry[]): Map<number, Repl
 
     const read = readRange(entry);
     if (read && isSuccessfulToolResult(entry)) {
+      const reads = readBuckets.get(read.path) ?? [];
       for (const previous of reads) {
-        if (previous.step === entry.step) continue;
-        const previousRange = readRange(previous);
-        if (previousRange && rangeCovers(read, previousRange)) {
-          markReplacement(replacements, previous.index, "read_covered", true);
+        if (previous.entry.step === entry.step) continue;
+        if (rangeCovers(read, previous.range)) {
+          markReplacement(replacements, previous.entry.index, "read_covered", true);
         }
       }
-      reads.push(entry);
+      reads.push({ entry, range: read });
+      readBuckets.set(read.path, reads);
     }
 
     const snapshot = snapshotKind(entry);

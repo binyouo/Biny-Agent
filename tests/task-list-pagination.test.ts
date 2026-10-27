@@ -11,6 +11,7 @@ import { RuntimeHostClient } from "../src/runtime/host/client.js";
 import { currentRuntimeHostIdentity, ensureRuntimeHostDirectory, runtimeHostPaths } from "../src/runtime/host/lifecycle.js";
 import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
 import { DurableTaskRunStore, type TaskRunWithAttempts } from "../src/runtime/TaskRunStore.js";
+import { trackCliErrorListener } from "./helpers/cli-error-listener.js";
 
 const exec = promisify(execFile);
 const cli = path.resolve("src/cli/index.ts");
@@ -48,19 +49,33 @@ await test("task list preserves durable pagination through the CLI and client", 
     const previousArgv = process.argv;
     const previousCwd = process.cwd();
     const output: string[] = [];
+    const listeners = [process.stdout, process.stderr].map(trackCliErrorListener);
+    let failed = false;
     const stdout = t.mock.method(console, "log", (value: string) => { output.push(value); });
     const exit = t.mock.method(process, "exit", (code?: number | string | null): never => { throw new Error(`CLI exited with code ${String(code)}.`); });
     try {
       process.chdir(root);
       process.argv = [process.execPath, cli, "task", "list", ...args, "--json"];
-      await import(`${pathToFileURL(cli).href}?task-page-test=${String(++invocation)}`);
+      try {
+        await import(`${pathToFileURL(cli).href}?task-page-test=${String(++invocation)}`);
+      } finally {
+        // Capture at import settlement, including rejection; retain handlers
+        // throughout the actual command and remove only these identities.
+        for (const listener of listeners) listener.capture();
+      }
       assert.equal(output.length, 1);
       return JSON.parse(output[0]!) as Page;
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
+      const diagnostics = listeners.map((listener) => listener.dispose()).filter((value) => value !== undefined);
       stdout.mock.restore();
       exit.mock.restore();
       process.argv = previousArgv;
       process.chdir(previousCwd);
+      // Cleanup diagnostics must not replace the original import/assertion error.
+      if (!failed) assert.deepEqual(diagnostics, []);
     }
   };
   const ids = (page: Page) => page.tasks.map((task) => task.taskRunId);

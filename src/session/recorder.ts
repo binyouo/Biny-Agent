@@ -6,6 +6,7 @@ import type { ToolOptimization } from "./toolOptimization.js";
  * 追加成 JSONL。追加写入让长会话可以持续落盘，也方便后续 resume、压缩和记忆功能按行读取。
  */
 import { publicAssistantMessage } from "./publicMessage.js";
+import { redactToolCallForPersistence } from "./toolCallPersistence.js";
 import {
   closeSync,
   constants,
@@ -848,7 +849,7 @@ function redactAgentMessage(message: Exclude<AgentMessage, { role: "user" }>): E
     content: message.content.map((part) => {
       if (part.type === "text") return { ...part, text: redactSecrets(part.text) };
       if (part.type === "toolCall") {
-        return { ...part, arguments: redactSensitiveValue(part.arguments) as Record<string, unknown> };
+        return redactToolCallForPersistence(part);
       }
       const text = redactSecrets(part.text);
       return {

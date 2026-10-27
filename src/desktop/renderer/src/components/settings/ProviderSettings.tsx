@@ -167,9 +167,12 @@ export function ProviderSettings({
     const key = activeEntry?.key ?? "custom";
     setNotices((current) => ({ ...current, [key]: providerErrorMessage(message) }));
   }, [activeEntry?.key]);
-  // 已有选中从列表里消失（例如删除自定义端点后）时回退到第一行。
+  // 目录项启用后换成连接键，保留当前选择；真正删除的连接才回退到第一行。
   useEffect(() => {
-    if (activeKey !== undefined && !entries.some((row) => row.key === activeKey)) setActiveKey(undefined);
+    if (activeKey !== undefined && !entries.some((row) => row.key === activeKey)) {
+      const replacement = entries.find((row) => row.catalog?.id === activeKey)?.key;
+      setActiveKey((current) => current === activeKey ? replacement : current);
+    }
   }, [activeKey, entries]);
 
   // 切换服务商时详情面板回到顶部：新面板不应继承上一家的滚动位置。
@@ -302,8 +305,10 @@ export function ProviderSettings({
   const [testResult, setTestResult] = useState<{ alias: string; result: DesktopModelConnectionTestResult }>();
   const [testMenuOpen, setTestMenuOpen] = useState(false);
   const testGenerationRef = useRef(0);
+  const testOwnerRef = useRef<{ providerAlias: string; modelAlias: string; modelId: string; generation: number } | undefined>(undefined);
   useEffect(() => {
     testGenerationRef.current += 1;
+    testOwnerRef.current = undefined;
     setTestingAlias(undefined);
     setTestResult(undefined);
     setTestMenuOpen(false);
@@ -336,6 +341,7 @@ export function ProviderSettings({
     if (!configuration || !group) return;
     const providerKey = group.provider;
     const generation = ++testGenerationRef.current;
+    testOwnerRef.current = { providerAlias: providerKey, modelAlias: configuration.alias, modelId: configuration.model, generation };
     setTestingAlias(providerKey);
     setTestResult(undefined);
     try {
@@ -672,12 +678,22 @@ export function ProviderSettings({
       modelProfile: undefined
     });
     if (!input) return;
+    const owner = testOwnerRef.current;
+    const eligibleOwner = owner?.providerAlias === providerAlias && owner.modelAlias === model.alias && owner.modelId === model.model
+      ? owner : undefined;
     const result = await settingsDraft.saveModels(snapshot => {
       const previous = snapshot.models.modelProfiles?.[providerAlias]?.[model.model];
       const profile = { ...options.profile, showInPicker: previous?.showInPicker };
       return { upserts: [{ ...input, modelProfile: profile }], removeAliases: [] };
     });
     if (result?.status !== "committed") throw new Error(result?.message ?? "模型选项保存失败，请重试。");
+    // 只退休本次保存前被测模型的结果；旧保存不能清掉切换后的新测试。
+    if (eligibleOwner && testOwnerRef.current === eligibleOwner && testGenerationRef.current === eligibleOwner.generation) {
+      testGenerationRef.current += 1;
+      testOwnerRef.current = undefined;
+      setTestingAlias(undefined);
+      setTestResult(undefined);
+    }
   }, [catalog, choiceUpsertInput, connection, settingsDraft]);
 
   const deleteConnection = useCallback(async (): Promise<void> => {
@@ -712,7 +728,6 @@ export function ProviderSettings({
       })
     ]);
     if (result) {
-      setActiveKey(`provider:${alias}`);
       void refreshCatalog(alias, { force: true });
     }
   }, [applyModelBatch, defaultModelAlias, refreshCatalog]);

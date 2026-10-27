@@ -392,7 +392,13 @@ function parseLimits(sources: readonly Record<string, unknown>[]): ModelLimits |
 }
 
 function firstNonNegativeInteger(sources: readonly Record<string, unknown>[], keys: readonly string[]): number | undefined {
-  return nonNegativeInteger(firstValue(sources, keys));
+  for (const source of sources) {
+    for (const key of keys) {
+      const value = nonNegativeInteger(source[key]);
+      if (value !== undefined) return value;
+    }
+  }
+  return undefined;
 }
 
 /**

@@ -12,8 +12,26 @@ export function reasoningDetailText(step: Pick<TimelineReasoningStep, "content">
 /** 一句话思考的字符上限：不超过则摘要即全文，不给展开入口（按常见导轨宽度估算）。 */
 const ONE_LINE_CHARS = 30;
 
-function nonEmptyLines(text: string): string[] {
-  return text.split("\n").map((line) => line.trim()).filter(Boolean);
+function summaryLine(text: string, live: boolean): string {
+  if (live) {
+    let end = text.length;
+    while (end > 0) {
+      const start = text.lastIndexOf("\n", end - 1) + 1;
+      const line = text.slice(start, end).trim();
+      if (line) return line;
+      end = start - 1;
+    }
+  } else {
+    let start = 0;
+    while (start < text.length) {
+      const newline = text.indexOf("\n", start);
+      const end = newline < 0 ? text.length : newline;
+      const line = text.slice(start, end).trim();
+      if (line) return line;
+      start = end + 1;
+    }
+  }
+  return "";
 }
 
 /**
@@ -21,14 +39,24 @@ function nonEmptyLines(text: string): string[] {
  * 去掉 Markdown 行首标记和行内强调符，避免 `##`、`**` 原样出现在一行里。
  */
 export function reasoningSummaryLine(text: string, mode: "settled" | "live"): string {
-  const lines = nonEmptyLines(text);
-  const line = mode === "live" ? lines.at(-1) : lines[0];
+  const line = summaryLine(text, mode === "live");
   if (!line) return "";
   return line.replace(/^(#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s*)/u, "").replace(/\*\*|__|`/gu, "").trim();
 }
 
 /** 多行思考或超过一行宽度的思考才提供展开入口；一句话说完时展开只会重复摘要。 */
 export function reasoningExpandable(text: string): boolean {
-  const lines = nonEmptyLines(text);
-  return lines.length > 1 || (lines[0]?.length ?? 0) > ONE_LINE_CHARS;
+  let foundLine = false;
+  let start = 0;
+  while (start < text.length) {
+    const newline = text.indexOf("\n", start);
+    const end = newline < 0 ? text.length : newline;
+    const line = text.slice(start, end).trim();
+    if (line) {
+      if (foundLine || line.length > ONE_LINE_CHARS) return true;
+      foundLine = true;
+    }
+    start = end + 1;
+  }
+  return false;
 }

@@ -35,6 +35,7 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
   const [htmlPickerOpen, setHtmlPickerOpen] = useState(false);
   const [selectedHtmlFile, setSelectedHtmlFile] = useState<string>();
   const serverPending = useRef(false);
+  const previewOperationGeneration = useRef(0);
   const exitedServers = useRef(new Set<string>());
   const openedPreviewUrls = useRef(new Set<string>());
   const [busy, setBusy] = useState(false);
@@ -139,25 +140,42 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
   useEffect(() => {
     if (!active) return;
     let disposed = false;
+    // Snapshot reads are effect-local; only a checked tab or an actual new-tab
+    // dispatch claims the shared URL, so retiring a read cannot suppress reopening.
+    const pendingPreviewUrls = new Map<string, number>();
     const refreshStatus = async (): Promise<void> => {
+      const generation = previewOperationGeneration.current;
+      const isCurrent = (): boolean => !disposed && !serverPending.current
+        && generation === previewOperationGeneration.current;
+      if (!isCurrent()) return;
       try {
         const status = await window.biny.projectPreviewStatus(projectId);
-        if (disposed || serverPending.current) return;
+        if (!isCurrent()) return;
         setServerId(status.kind === "script" || status.kind === "starting" ? status.terminalId : undefined);
         setStaticUrl(status.kind === "static" ? status.url : undefined);
         setServerStarting(status.kind === "starting");
         if (status.kind === "failed") { setPreviewFailure(status.error); openedPreviewUrls.current.clear(); }
         if (status.kind === "failed") setServerNotice(undefined);
         if (status.kind === "script" || status.kind === "static") {
-          if (!openedPreviewUrls.current.has(status.url)) {
-            openedPreviewUrls.current.add(status.url);
+          if (!openedPreviewUrls.current.has(status.url) && pendingPreviewUrls.get(status.url) !== generation) {
+            pendingPreviewUrls.set(status.url, generation);
             try {
               const current = await window.biny.browserSnapshot(projectId);
-              if (!current.tabs.some((tab) => tab.url === status.url)) adopt(await window.biny.browserAction(projectId, { type: "new", url: status.url }));
-            } catch (reason) { if (!disposed) setError(String(reason)); }
+              if (!isCurrent()) return;
+              // Keep the existing attempted-open semantics, including failures. Claim
+              // before dispatch so a reactivated effect cannot open a duplicate tab.
+              openedPreviewUrls.current.add(status.url);
+              if (!current.tabs.some((tab) => tab.url === status.url)) {
+                const next = await window.biny.browserAction(projectId, { type: "new", url: status.url });
+                if (isCurrent()) adopt(next);
+              }
+            } catch (reason) { if (isCurrent()) setError(String(reason)); }
+            finally {
+              if (pendingPreviewUrls.get(status.url) === generation) pendingPreviewUrls.delete(status.url);
+            }
           }
         }
-      } catch (reason) { if (!disposed) setError(String(reason)); }
+      } catch (reason) { if (isCurrent()) setError(String(reason)); }
     };
     void refreshStatus();
     const statusTimer = window.setInterval(() => { void refreshStatus(); }, 500);
@@ -179,6 +197,7 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
       return;
     }
     setHtmlPickerOpen(false);
+    previewOperationGeneration.current += 1;
     serverPending.current = true; setServerBusy(true); setError(undefined); setPreviewFailure(undefined);
     try {
       if (serverId || staticUrl) {

@@ -25,6 +25,7 @@ export type AgentToolCallContent = {
   name: string;
   arguments: Record<string, unknown>;
   invalid?: boolean;
+  providerMetadata?: Record<string, unknown>;
 };
 export type AgentToolResultContent = AgentTextContent | AgentImageContent;
 

@@ -327,10 +327,16 @@ export function SettingsMemory({
   }, [hidden, onSleepStatus, reload, workspaceAvailable]);
   useEffect(() => {
     if (hidden || !embeddingWorking || !workspaceAvailable) return;
+    let cancelled = false;
+    let pending = false;
     const timer = window.setInterval(() => {
-      void onLoadEmbeddingStatus().then(setEmbeddingStatus).catch(() => undefined);
+      if (cancelled || pending) return;
+      pending = true;
+      void onLoadEmbeddingStatus().then((next) => {
+        if (!cancelled) setEmbeddingStatus(next);
+      }).catch(() => undefined).finally(() => { pending = false; });
     }, 750);
-    return () => window.clearInterval(timer);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [embeddingWorking, hidden, onLoadEmbeddingStatus, workspaceAvailable]);
 
   const downloadEmbedding = async (model: LocalEmbeddingModelId): Promise<void> => {
@@ -533,6 +539,10 @@ export function SettingsMemory({
     setSaving(true);
     try {
       const next = await onClearMemory();
+      // 清空前或清空期间发起的搜索都属于旧记忆，迟到回执不能恢复它们。
+      searchRequestRef.current += 1;
+      pendingSearchRef.current = undefined;
+      setSearching(false);
       setStats(next);
       setSearchResults([]);
       await reload();

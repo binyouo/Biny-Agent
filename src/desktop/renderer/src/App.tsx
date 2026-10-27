@@ -11,7 +11,7 @@ import type { ChatResponseSettings } from "../../../config/schema.js";
 import { useThreadBrief } from "./threadBrief/context.js";
 import { hasSubmittedUserMessage } from "./chatModel.js";
 import { skillActivities } from "./skillActivity.js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type { ContextBudgetStatus } from "../../../agent/context/types.js";
 import type { PermissionResult } from "../../../permission/PermissionManager.js";
@@ -121,8 +121,14 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [sessionTreePages] = useState(createSessionTreePageLifetime);
   const { states: sessionRootPages, adopt: adoptSessionRootPage, reset: resetSessionRootPages, invalidate: invalidateSessionRootPage, load: loadProjectSessions, loadedIds: loadedRootIds } = useSessionRootPages(sessionTreePages, sidebarSessions, setSidebarSessions);
   useEffect(() => () => sessionTreePages.replaceAll(), [sessionTreePages]);
-  const [composerSkillWarnings, setComposerSkillWarnings] = useState<string[]>([]);
-  const [composerSkills, setComposerSkills] = useState<DesktopSkillCatalogEntry[]>([]);
+  const [composerCatalog, setComposerCatalog] = useState<{
+    projectId: string; skills: DesktopSkillCatalogEntry[]; tools: DesktopToolCatalogEntry[]; warnings: string[];
+  }>();
+  // 已加载目录也属于原工作区；切换后的首帧不能把旧选项交给新 Composer。
+  const { skills: composerSkills, tools: composerTools, warnings: composerSkillWarnings } = useMemo(() => (
+    composerCatalog?.projectId === workspace?.project.id && composerCatalog
+      ? composerCatalog : { skills: [], tools: [], warnings: [] }
+  ), [composerCatalog, workspace?.project.id]);
   const skillDescriptions = useMemo(() => new Map(composerSkills.map((skill) => [skill.name, skill.description])), [composerSkills]);
   const skillLabels = useMemo(() => {
     const labels = new Map<string, string>();
@@ -133,7 +139,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     return labels;
   }, [composerSkills]);
-  const [composerTools, setComposerTools] = useState<DesktopToolCatalogEntry[]>([]);
   const [composerCatalogNonce, setComposerCatalogNonce] = useState(0);
   const [document, setDocument] = useState<DesktopSessionDocument>();
   const documentRef = useRef<DesktopSessionDocument | undefined>(undefined);
@@ -189,7 +194,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [warning, setWarning] = useState<string>();
   /** 当前选中会话的 Recipe 提示卡；换会话清空，事件桥和历史读取共同填充。 */
   const [recipeNotices, setRecipeNotices] = useState<RecipeNotice[]>([]);
-  const suppressedRecipeHistoryRef = useRef<{ projectId?: string; sessionId?: string; ids: Set<string> }>({ ids: new Set() });
+  const dismissedRecipeIdsRef = useRef(new Set<string>());
   /** 技能提取（自进化）进度卡；换会话与新一轮 run.started 时清空。 */
   const [skillExtraction, setSkillExtraction] = useState<SkillExtractionCardState>();
   const selectedRef = useRef<string | undefined>(undefined);
@@ -208,6 +213,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   // Removing one project must retire its reads/receipts without cancelling another project's intent.
   const projectRemovalRef = useRef(new Map<string, object>());
   const branchRequestRef = useRef(0);
+  const branchProjectRef = useRef<string | undefined>(undefined);
   const menuActionRef = useRef<(action: DesktopMenuAction) => void>(() => undefined);
 
   const {
@@ -265,10 +271,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [selectedSessionId]);
 
 
-  // 换会话时清掉上一会话的 Recipe 卡片与技能提取卡；新会话的卡片由历史读取和事件桥共同收集。
+  // 换项目或会话时清掉上一会话的卡片和已处理的 Recipe。
   useEffect(() => {
-    // Suppression belongs to this visit, not a globally shared recipe id.
-    suppressedRecipeHistoryRef.current = { projectId: workspace?.project.id, sessionId: selectedSessionId, ids: new Set() };
+    dismissedRecipeIdsRef.current.clear();
     setRecipeNotices([]);
     setSkillExtraction(undefined);
   }, [selectedSessionId, workspace?.project.id]);
@@ -281,10 +286,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     void window.biny.recipeSuggestions(projectId, sessionId).then((recipes) => {
       if (cancelled) return;
       setRecipeNotices((current) => {
+        if (cancelled) return current;
         const seen = new Set(current.map((notice) => notice.id));
-        const suppressed = suppressedRecipeHistoryRef.current;
-        const dismissed = suppressed.projectId === projectId && suppressed.sessionId === sessionId ? suppressed.ids : new Set<string>();
-        return [...current, ...recipes.filter((recipe) => !seen.has(recipe.id) && !dismissed.has(recipe.id)).map((recipe) => ({ ...recipe, sessionId }))];
+        return [...current, ...recipes.filter((recipe) => !seen.has(recipe.id) && !dismissedRecipeIdsRef.current.has(recipe.id)).map((recipe) => ({ ...recipe, sessionId }))];
       });
     }).catch((error: unknown) => {
       if (!cancelled) setWarning(errorMessage(error));
@@ -302,6 +306,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const composerProject = selectedSessionId === undefined && draftProjectId
     ? projects.find((project) => project.id === draftProjectId) ?? workspace?.project
     : workspace?.project;
+  // Branch reads follow the committed composer target, including an unsent draft's project.
+  useLayoutEffect(() => {
+    branchProjectRef.current = composerProject?.id;
+    return () => { branchProjectRef.current = undefined; };
+  }, [composerProject?.id]);
   const composerResourceRevision = workspace?.sessionRuntimes?.[selectedSessionId ?? ""]?.resourceReadiness?.revision
     ?? workspace?.runtime?.resourceReadiness?.revision;
 
@@ -309,9 +318,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     let active = true;
     const projectId = workspace?.project.id;
     if (!projectId) {
-      setComposerSkillWarnings([]);
-      setComposerSkills([]);
-      setComposerTools([]);
+      setComposerCatalog(undefined);
       return () => { active = false; };
     }
     // 设置关闭后统一刷新；打开设置时不再额外扫描一次相同目录。
@@ -323,14 +330,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     ]).then(([catalog, settings, tools]) => {
       if (!active) return;
       const enabledById = new Map(settings.activations.map((activation) => [activation.id, activation.enabled]));
-      setComposerSkillWarnings(catalog.warnings);
-      setComposerSkills(catalog.skills.filter((skill) => enabledById.get(skill.id) !== false));
-      setComposerTools(tools);
+      setComposerCatalog({ projectId, warnings: catalog.warnings,
+        skills: catalog.skills.filter((skill) => enabledById.get(skill.id) !== false), tools });
     }).catch((error) => {
       if (!active) return;
-      setComposerSkillWarnings([]);
-      setComposerSkills([]);
-      setComposerTools([]);
+      setComposerCatalog(undefined);
       setWarning(`无法加载技能补全：${errorMessage(error)}`);
     });
     return () => { active = false; };
@@ -423,19 +427,22 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [briefProjectIds, mergeProjectSnapshot]);
 
   const loadProjectBranches = useCallback(async (projectId: string): Promise<void> => {
+    // A late branch-operation receipt must not start a read for an old target or
+    // supersede the current target's pending read.
+    if (branchProjectRef.current !== projectId) return;
     const request = branchRequestRef.current + 1;
     branchRequestRef.current = request;
     setBranchesLoading(true);
     try {
       const branches = await window.biny.listProjectBranches(projectId);
-      if (branchRequestRef.current === request) setProjectBranches(branches);
+      if (branchProjectRef.current === projectId && branchRequestRef.current === request) setProjectBranches(branches);
     } catch (error) {
-      if (branchRequestRef.current === request) {
+      if (branchProjectRef.current === projectId && branchRequestRef.current === request) {
         setProjectBranches([]);
         setWarning(errorMessage(error));
       }
     } finally {
-      if (branchRequestRef.current === request) setBranchesLoading(false);
+      if (branchProjectRef.current === projectId && branchRequestRef.current === request) setBranchesLoading(false);
     }
   }, []);
 
@@ -463,11 +470,17 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setPlanProjection(projection);
   }, []);
 
+  const runtimeProjectionRequest = useRef(0);
   const refreshRuntimeProjection = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
     if (!projectId) return;
+    const navigationRequest = loadRequestRef.current;
+    const request = ++runtimeProjectionRequest.current;
     const runtimeProjection = await window.biny.runtimeProjection(projectId);
-    setWorkspace((current) => current?.project.id === projectId ? { ...current, runtimeProjection } : current);
+    // Recheck at commit time: a newer read or navigation can retire a queued update.
+    setWorkspace((current) => current?.project.id === projectId
+      && projectRef.current === projectId && loadRequestRef.current === navigationRequest
+      && runtimeProjectionRequest.current === request ? { ...current, runtimeProjection } : current);
   }, []);
   const mutateRuntime = useCallback(async (operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<void> => {
     const projectId = projectRef.current;
@@ -1608,7 +1621,14 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const turns = useSessionTimeline(document);
   // 「变更」视图数据：从时间线收集 Agent 改过的文件；轮次引用稳定时 useMemo 不重算。
   const sessionChanges = useMemo(() => collectSessionChanges(turns), [turns]);
-  const sessionSkills = useMemo(() => [...new Map(turns.flatMap((turn) => skillActivities(turn.skills, turn.capabilitySelection?.skills, turn.tools, skillLabels)).map((skill) => [skill.name, skill])).values()], [turns, skillLabels]);
+  const sessionSkills = useMemo(() => {
+    // Only confirmed loads contribute; normalize each distinct loaded reference once.
+    const loaded = new Set<string>();
+    for (const turn of turns) {
+      for (const skill of turn.skills) loaded.add(skill);
+    }
+    return skillActivities([...loaded], undefined, [], skillLabels);
+  }, [turns, skillLabels]);
   const inspector = useWorkspaceInspector({
     changes: sessionChanges,
     sidebarFlowWidth: sidebarLayout.flowWidth,
@@ -2024,28 +2044,22 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
   }, [prefillComposer]);
   const dismissRecipe = useCallback((notice: RecipeNotice): void => {
+    dismissedRecipeIdsRef.current.add(notice.id);
     setRecipeNotices((current) => current.filter((candidate) => candidate.id !== notice.id));
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (projectId && sessionId) {
-      const suppressed = suppressedRecipeHistoryRef.current;
-      if (notice.sessionId === sessionId && suppressed.projectId === projectId && suppressed.sessionId === sessionId) {
-        suppressed.ids.add(notice.id);
-      }
       void window.biny.setRecipeState(projectId, sessionId, notice.id, "dismissed")
         .catch((error: unknown) => setWarning(errorMessage(error)));
     }
   }, []);
   const extractRecipe = useCallback((notice: RecipeNotice): void => {
+    dismissedRecipeIdsRef.current.add(notice.id);
     setRecipeNotices((current) => current.filter((candidate) => candidate.id !== notice.id));
     prefillComposer(notice.extractPrompt);
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (projectId && sessionId) {
-      const suppressed = suppressedRecipeHistoryRef.current;
-      if (notice.sessionId === sessionId && suppressed.projectId === projectId && suppressed.sessionId === sessionId) {
-        suppressed.ids.add(notice.id);
-      }
       void window.biny.setRecipeState(projectId, sessionId, notice.id, "extracted")
         .catch((error: unknown) => setWarning(errorMessage(error)));
     }

@@ -1,5 +1,5 @@
 /** 日期引用详情只展示来源服务明确覆盖的记录；日历和原文索引由用户显式触发。 */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import type { DateReferenceDetail } from "../../../../../session/dateReferenceDetail.js";
 import type { NativeCalendarResult } from "../../../../../session/nativeCalendar.js";
@@ -11,6 +11,8 @@ interface Props {
   onClose(): void;
   onSource(sessionId: string, messageId: string): void;
 }
+
+interface DetailScope { projectId: string; uri: string; active: boolean; }
 
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
@@ -26,41 +28,67 @@ export function DateReferenceDetailDialog({ projectId, uri, onClose, onSource }:
   const request = useRef(0);
   const indexRequest = useRef<string | undefined>(undefined);
 
-  const load = useCallback(async (): Promise<void> => {
+  const scope = useRef<DetailScope | undefined>(undefined);
+  const isCurrent = (owner: DetailScope | undefined): owner is DetailScope => Boolean(owner?.active && scope.current === owner);
+  const load = useCallback(async (owner = scope.current): Promise<void> => {
+    // A retired index callback must not start another read, even with a newer request number.
+    if (!owner?.active || scope.current !== owner || owner.projectId !== projectId || owner.uri !== uri) return;
     const current = ++request.current;
     setError(undefined);
     try {
       const result = await window.biny.referenceDateDetail(projectId, uri);
-      if (current === request.current) setDetail(result);
+      if (owner.active && scope.current === owner && current === request.current) setDetail(result);
     } catch (cause) {
-      if (current === request.current) { setDetail(undefined); setError(message(cause)); }
+      if (owner.active && scope.current === owner && current === request.current) { setDetail(undefined); setError(message(cause)); }
     }
   }, [projectId, uri]);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const owner: DetailScope = { projectId, uri, active: true };
+    scope.current = owner;
     setDetail(undefined);
     setCalendar(undefined);
     setCalendarError(undefined);
+    setCalendarBusy(false);
+    setIndexBusy(undefined);
     setIndexError(undefined);
-    void load();
-    return () => { request.current += 1; if (indexRequest.current) void window.biny.referenceCancelIndex(indexRequest.current); };
-  }, [load]);
+    setIndexStatus(undefined);
+    void load(owner);
+    return () => {
+      owner.active = false;
+      if (scope.current !== owner) return;
+      scope.current = undefined;
+      request.current += 1;
+      const id = indexRequest.current;
+      indexRequest.current = undefined;
+      if (id) void window.biny.referenceCancelIndex(id);
+    };
+  }, [load, projectId, uri]);
 
   const readCalendar = async (): Promise<void> => {
+    const owner = scope.current;
+    if (!isCurrent(owner) || owner.projectId !== projectId || owner.uri !== uri) return;
     setCalendarBusy(true); setCalendar(undefined); setCalendarError(undefined);
-    try { setCalendar(await window.biny.referenceDateCalendar(projectId, uri)); }
-    catch (cause) { setCalendarError(message(cause)); }
-    finally { setCalendarBusy(false); }
+    try {
+      const result = await window.biny.referenceDateCalendar(projectId, uri);
+      if (isCurrent(owner)) setCalendar(result);
+    } catch (cause) { if (isCurrent(owner)) setCalendarError(message(cause)); }
+    finally { if (isCurrent(owner)) setCalendarBusy(false); }
   };
   const indexOriginal = async (sessionId: string): Promise<void> => {
+    const owner = scope.current;
+    if (!isCurrent(owner) || owner.projectId !== projectId || owner.uri !== uri) return;
     const id = crypto.randomUUID();
     indexRequest.current = id;
     setIndexBusy(sessionId); setIndexError(undefined); setIndexStatus(undefined);
     try {
       const result = await window.biny.referenceIndexOriginal(projectId, sessionId, id);
+      if (!isCurrent(owner)) return;
       setIndexStatus(`已索引 ${result.indexedMessages} 条原始消息`);
-      await load();
-    } catch (cause) { setIndexError(message(cause)); }
-    finally { indexRequest.current = undefined; setIndexBusy(undefined); }
+      await load(owner);
+    } catch (cause) { if (isCurrent(owner)) setIndexError(message(cause)); }
+    finally {
+      if (isCurrent(owner) && indexRequest.current === id) { indexRequest.current = undefined; setIndexBusy(undefined); }
+    }
   };
   const sessions = [...new Set(detail?.conversations.map((item) => item.sessionId) ?? [])];
 

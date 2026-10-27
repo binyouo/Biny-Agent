@@ -1,0 +1,22 @@
+diff --git a/dist/components/editor.js b/dist/components/editor.js
+--- a/dist/components/editor.js
++++ b/dist/components/editor.js
+@@ -816,12 +816,12 @@
+         return this.state.lines.join("\n");
+     }
+     expandPasteMarkers(text) {
+-        let result = text;
+-        for (const [pasteId, pasteContent] of this.pastes) {
+-            const markerRegex = new RegExp(`\\[paste #${pasteId}( (\\+\\d+ lines|\\d+ chars))?\\]`, "g");
+-            result = result.replace(markerRegex, () => pasteContent);
+-        }
+-        return result;
++        // Scan only the draft; inserted paste content must remain literal.
++        const markerRegex = /\[paste #([1-9]\d*)( (\+\d+ lines|\d+ chars))?\]/g;
++        return text.replace(markerRegex, (marker, pasteId) => {
++            const id = Number(pasteId);
++            return String(id) === pasteId ? (this.pastes.get(id) ?? marker) : marker;
++        });
+     }
+     /**
+      * Get text with paste markers expanded to their actual content.

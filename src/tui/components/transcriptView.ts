@@ -20,6 +20,7 @@ import type { TranscriptItem, TranscriptState } from "../types.js";
 export class TranscriptView extends Container {
   private readonly components = new Map<string, TranscriptItemComponent>();
   private readonly lastItems = new Map<string, TranscriptItem>();
+  private lastTranscript: TranscriptState | undefined;
 
   override invalidate(): void {
     // 一些组件保存已着色的文本；切换主题时同时更新文本，保留展开等本地状态。
@@ -30,8 +31,15 @@ export class TranscriptView extends Container {
     super.invalidate();
   }
 
-  /** 把最新状态同步进组件树，返回是否有实际变化。 */
+  /**
+   * 把最新状态同步进组件树，返回是否有实际变化。
+   * 调用方传入不可变状态快照：条目内容或顺序变化时必须替换 transcript 对象。
+   * 本地展开与主题刷新独立于状态同步，不依赖再次遍历相同快照。
+   */
   sync(transcript: TranscriptState): boolean {
+    if (transcript === this.lastTranscript) return false;
+    // 不同快照可能在更新部分组件后失败，不能继续把旧快照视为已同步。
+    this.lastTranscript = undefined;
     const items = [...transcript.committed, ...transcript.active];
     const seen = new Set<string>();
     let changed = false;
@@ -71,6 +79,8 @@ export class TranscriptView extends Container {
       this.children = ordered;
       changed = true;
     }
+    // 只有完整同步成功后才能记住快照；失败后的同一快照仍需重试。
+    this.lastTranscript = transcript;
     return changed;
   }
 
@@ -80,6 +90,7 @@ export class TranscriptView extends Container {
   }
 
   reset(): void {
+    this.lastTranscript = undefined;
     this.components.clear();
     this.lastItems.clear();
     this.children = [];

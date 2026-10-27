@@ -2051,11 +2051,20 @@ function attachToolSummary(result: unknown, durationMs: number): unknown {
   const record = result as Record<string, unknown>;
   const stdout = typeof record.stdout === "string" ? record.stdout : "";
   const stderr = typeof record.stderr === "string" ? record.stderr : "";
-  const output = [stdout, stderr].filter(Boolean).join("\n");
+  // Each nonempty stream contributes one line; joining them adds the separator.
+  // CRLF and LF each contain one LF, while a lone CR is not a line boundary.
+  let outputLines = 0;
+  for (const stream of [stdout, stderr]) {
+    if (!stream) continue;
+    outputLines++;
+    for (let index = 0; index < stream.length; index++) {
+      if (stream[index] === "\n") outputLines++;
+    }
+  }
   return {
     ...record,
     durationMs,
-    outputLines: output ? output.split(/\r?\n/).length : undefined,
+    outputLines: outputLines || undefined,
     // Bash 已经分别记录两个输出流的截断状态。保留 UI 使用的历史聚合字段，但不能
     // 覆盖更精确的逐流证据。
     truncated: record.truncated === true || record.stdoutTruncated === true || record.stderrTruncated === true

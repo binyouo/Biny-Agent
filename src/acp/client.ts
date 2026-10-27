@@ -188,8 +188,10 @@ export class AcpClient {
         if (this.info.modeConfigId) {
           const changed = await connection.agent.request("session/set_config_option", { sessionId, configId: this.info.modeConfigId, value: launch.modeId });
           this.info = { ...this.info, ...configInfo(changed.configOptions) };
-        } else await connection.agent.request("session/set_mode", { sessionId, modeId: launch.modeId });
-        this.info.currentMode = launch.modeId;
+        } else {
+          await connection.agent.request("session/set_mode", { sessionId, modeId: launch.modeId });
+          this.info.currentMode = launch.modeId;
+        }
       }
       return this.info;
     } catch (error) {
@@ -230,8 +232,10 @@ export class AcpClient {
           if (info.modelConfigId) {
             const changed = await connection.agent.request("session/set_config_option", { sessionId: info.sessionId, configId: info.modelConfigId, value: input.model });
             this.info = { ...info, ...configInfo(changed.configOptions) };
-          } else await connection.agent.request("session/set_model", { sessionId: info.sessionId, modelId: input.model });
-          info.currentModel = input.model;
+          } else {
+            await connection.agent.request("session/set_model", { sessionId: info.sessionId, modelId: input.model });
+            info.currentModel = input.model;
+          }
         }
         signal.throwIfAborted();
         const response = await connection.agent.request("session/prompt", { sessionId: info.sessionId, prompt: input.content });
@@ -305,15 +309,18 @@ export class AcpClient {
 }
 
 function sessionInfo(sessionId: string, response: unknown): AcpSessionInfo {
-  const value = response as { configOptions?: SessionConfigOption[]; models?: { currentModelId?: string; availableModels?: Array<{ modelId: string; name: string }> };
+  const value = response as { configOptions?: SessionConfigOption[] | null; models?: { currentModelId?: string; availableModels?: Array<{ modelId: string; name: string }> };
     modes?: { currentModeId?: string; availableModes?: Array<{ id: string; name: string }> } } | undefined;
   return { sessionId, models: value?.models?.availableModels?.map((model) => ({ id: model.modelId, name: model.name })) ?? [],
     modes: value?.modes?.availableModes ?? [], currentModel: value?.models?.currentModelId, currentMode: value?.modes?.currentModeId, ...configInfo(value?.configOptions) };
 }
 
-function configInfo(options?: SessionConfigOption[]): Partial<AcpSessionInfo> {
-  const result: Partial<AcpSessionInfo> = {};
-  for (const option of options ?? []) {
+function configInfo(options?: SessionConfigOption[] | null): Partial<AcpSessionInfo> {
+  if (options == null) return {};
+  // Present configOptions is a complete snapshot, not a patch of the previous selectors.
+  const result: Partial<AcpSessionInfo> = { models: [], modes: [], currentModel: undefined, currentMode: undefined,
+    modelConfigId: undefined, modeConfigId: undefined };
+  for (const option of options) {
     if (option.type !== "select" || (option.category !== "model" && option.category !== "mode")) continue;
     const choices = option.options.flatMap((entry) => "group" in entry ? entry.options : [entry]).map((entry) => ({ id: entry.value, name: entry.name }));
     if (option.category === "model") { result.models = choices; result.currentModel = option.currentValue; result.modelConfigId = option.id; }

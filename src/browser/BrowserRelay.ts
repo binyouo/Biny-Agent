@@ -103,7 +103,13 @@ export class BrowserRelay {
     const connection = "browserId" in args && typeof args.browserId === "string" ? this.connections.get(args.browserId) : undefined;
     if (!connection?.name || connection.socket.readyState !== WebSocket.OPEN) throw new BrowserRelayError("invalid", "浏览器连接已变化，请重新列出标签后再操作。");
     if ("browserId" in args && args.browserId !== connection.id) throw new BrowserRelayError("invalid", "浏览器连接已变化，请重新列出标签后再操作。");
-    if (connection.pending?.preview && !preview) { await connection.pending.completed; signal?.throwIfAborted(); }
+    if (connection.pending?.preview && !preview) {
+      await connection.pending.completed;
+      signal?.throwIfAborted();
+      if (this.connections.get(connection.id) !== connection || connection.socket.readyState !== WebSocket.OPEN) {
+        throw new BrowserRelayError("invalid", "浏览器连接已变化，请重新列出标签后再操作。");
+      }
+    }
     if (connection.pending) throw new BrowserRelayError("busy", "真实浏览器正在执行另一项操作，请等待完成。");
     const result = await new Promise<unknown>((resolve, reject) => {
       const id = randomUUID();
