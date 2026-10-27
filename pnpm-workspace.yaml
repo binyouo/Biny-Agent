@@ -16,3 +16,4 @@ overrides:
 patchedDependencies:
   'run@2.1.6': patches/run@2.1.6.patch
   '@ai-sdk/code-mode@1.0.50': patches/@ai-sdk-code-mode@1.0.50.patch
+  '@earendil-works/pi-tui@0.82.1': patches/@earendil-works-pi-tui@0.82.1.patch
