@@ -467,11 +467,17 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setPlanProjection(projection);
   }, []);
 
+  const runtimeProjectionRequest = useRef(0);
   const refreshRuntimeProjection = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
     if (!projectId) return;
+    const navigationRequest = loadRequestRef.current;
+    const request = ++runtimeProjectionRequest.current;
     const runtimeProjection = await window.biny.runtimeProjection(projectId);
-    setWorkspace((current) => current?.project.id === projectId ? { ...current, runtimeProjection } : current);
+    // Recheck at commit time: a newer read or navigation can retire a queued update.
+    setWorkspace((current) => current?.project.id === projectId
+      && projectRef.current === projectId && loadRequestRef.current === navigationRequest
+      && runtimeProjectionRequest.current === request ? { ...current, runtimeProjection } : current);
   }, []);
   const mutateRuntime = useCallback(async (operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<void> => {
     const projectId = projectRef.current;
