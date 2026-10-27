@@ -7,7 +7,7 @@
 import { autoUpdate } from "@floating-ui/dom";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { CSSProperties, RefObject } from "react";
+import type { CSSProperties, KeyboardEventHandler, ReactNode, RefObject } from "react";
 import type { ModelChoice } from "../../../../../llm/ModelManager.js";
 import type { ThinkingSelection } from "../../../../../llm/modelThinking.js";
 import { catalogForConnection } from "../../providerCatalog.js";
@@ -73,8 +73,6 @@ export function ModelPickerMenu({
   const parentSurfaceRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
   const groups = useMemo(() => groupModels(models), [models]);
-  // 流动悬停：一级菜单的两个入口行也交给统一的高亮绘制。
-  const primaryHover = useFluidHoverItems(primaryRef, ".model-picker-entry");
   const parentPositioned = Boolean(parentPosition);
   const submenuPositioned = Boolean(submenuPosition);
 
@@ -264,14 +262,13 @@ export function ModelPickerMenu({
           inert={!open}
           style={parentStyle}
         >
-          <div aria-label="模型与推理强度" className="model-picker-primary" ref={primaryRef} role="menu" {...primaryHover.handlers} onKeyDown={event => {
+          <ModelPickerPrimary primaryRef={primaryRef} onKeyDown={event => {
             if (event.nativeEvent.isComposing) return;
             if (event.key === "ArrowRight") {
               const section = (event.target as HTMLElement).closest<HTMLElement>("[data-section]")?.dataset.section as PickerSection | undefined;
               if (section) { event.preventDefault(); setActiveSection(section); setFocusSubmenu(true); }
             } else if (moveMenuFocus(event)) setActiveSection(undefined);
           }}>
-            <FluidHoverHighlight hover={primaryHover} className="has-row-radius" />
             <button
               aria-expanded={activeSection === "model"}
               aria-haspopup="menu"
@@ -302,7 +299,7 @@ export function ModelPickerMenu({
                 <Icon name="chevron" size={12} />
               </button>
             ) : null}
-          </div>
+          </ModelPickerPrimary>
         </div>,
         portalTarget ?? document.body
       )}
@@ -337,6 +334,21 @@ export function ModelPickerMenu({
           )
         : null}
     </>
+  );
+}
+
+// 与 presence 中的一级菜单 DOM 同时挂卸：首次打开时注册，完整退场后释放旧节点。
+function ModelPickerPrimary({ children, onKeyDown, primaryRef }: {
+  children: ReactNode;
+  onKeyDown: KeyboardEventHandler<HTMLDivElement>;
+  primaryRef: RefObject<HTMLDivElement | null>;
+}): React.JSX.Element {
+  const hover = useFluidHoverItems(primaryRef, ".model-picker-entry");
+  return (
+    <div aria-label="模型与推理强度" className="model-picker-primary" ref={primaryRef} role="menu" {...hover.handlers} onKeyDown={onKeyDown}>
+      <FluidHoverHighlight hover={hover} className="has-row-radius" />
+      {children}
+    </div>
   );
 }
 
