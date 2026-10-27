@@ -802,18 +802,20 @@ async function sendAgentReply(
   }
 
   let sentPhoto = false;
+  let sentCaption = false;
   for (const [index, filePath] of imagePaths.entries()) {
     try {
       const caption = !sentPhoto && index === 0 && text.length <= 1_024 ? text : undefined;
       if (ownerPrivateChatId !== undefined) await api.sendOwnerSelfiePhoto(ownerPrivateChatId, chatId, filePath, caption, signal);
       else await api.sendPhoto(chatId, filePath, caption, signal, messageThreadId);
       sentPhoto = true;
+      if (caption) sentCaption = true;
     } catch {
       // A local path may be an attachment the Bot API cannot safely upload.
       // Keep the text reply available and never fall back to sending that path as a URL.
     }
   }
-  if (text && (!sentPhoto || text.length > 1_024)) await api.sendMessage(chatId, text, signal, messageThreadId);
+  if (text && !sentCaption) await api.sendMessage(chatId, text, signal, messageThreadId);
   else if (!sentPhoto && !text) await api.sendMessage(chatId, "图片暂时无法发送。", signal, messageThreadId);
 }
 
