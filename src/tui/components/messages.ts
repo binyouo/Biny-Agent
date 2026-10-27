@@ -9,6 +9,7 @@ import { Box, Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth }
 import { classifyDiffLines } from "../../utils/diffLines.js";
 import { markdownTheme, theme } from "../theme/index.js";
 import { formatToolDuration, thinkingHeaderLabel } from "../transcriptText.js";
+import { sanitizeMarkdownText, sanitizeTerminalText } from "../terminalText.js";
 import type {
   AssistantTranscriptItem,
   ActivityTranscriptItem,
@@ -35,7 +36,7 @@ export class UserMessageComponent extends Container implements TranscriptItemCom
   constructor(item: Extract<TranscriptItem, { kind: "user" }>) {
     super();
     this.itemId = item.id;
-    this.body = new Markdown(item.content, 0, 0, markdownTheme(), {
+    this.body = new Markdown(sanitizeMarkdownText(item.content), 0, 0, markdownTheme(), {
       color: (text) => theme.fg("userMessageText", text)
     }, { preserveOrderedListMarkers: true, preserveBackslashEscapes: true });
     this.box = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
@@ -47,7 +48,7 @@ export class UserMessageComponent extends Container implements TranscriptItemCom
 
   update(item: TranscriptItem): void {
     if (item.kind !== "user") return;
-    this.body.setText(item.content);
+    this.body.setText(sanitizeMarkdownText(item.content));
     this.updateAttachments(item.attachments);
   }
 
@@ -60,7 +61,7 @@ export class UserMessageComponent extends Container implements TranscriptItemCom
     const labels = attachments.map((attachment, index) =>
       `${attachment.mimeType.startsWith("image/") ? "[Image" : "[Attachment"} #${String(index + 1)}] ${attachment.name}`
     );
-    const text = labels.map((label) => theme.fg("accent", label)).join("  ");
+    const text = labels.map((label) => theme.fg("accent", sanitizeTerminalText(label))).join("  ");
     if (!this.attachmentDisplay) {
       this.attachmentDisplay = new Text(text, 1, 0);
       this.box.addChild(this.attachmentDisplay);
@@ -78,14 +79,14 @@ export class AssistantMessageComponent extends Container implements TranscriptIt
   constructor(item: AssistantTranscriptItem) {
     super();
     this.itemId = item.id;
-    this.body = new Markdown(item.content, 1, 0, markdownTheme());
+    this.body = new Markdown(sanitizeMarkdownText(item.content), 1, 0, markdownTheme());
     this.addChild(new Spacer(1));
     this.addChild(this.body);
   }
 
   update(item: TranscriptItem): void {
     if (item.kind !== "assistant") return;
-    this.body.setText(item.content);
+    this.body.setText(sanitizeMarkdownText(item.content));
   }
 }
 
@@ -149,7 +150,7 @@ export class ActivitySummaryComponent extends Container implements TranscriptIte
 
   update(item: TranscriptItem): void {
     if (item.kind !== "activity") return;
-    this.text.setText(theme.fg("text", item.content));
+    this.text.setText(theme.fg("text", sanitizeTerminalText(item.content)));
   }
 }
 
@@ -195,7 +196,7 @@ export class ToolExecutionComponent extends Container implements TranscriptItemC
     // 运行中的耗时随时钟变化；其余行只在内容、布局或主题改变时重算。
     if (item.status !== "running" && this.rendered?.width === safeWidth) return this.rendered.lines;
     const marker = toolStatusMarker(item.status);
-    const { verb, rest } = splitToolTitle(item.title);
+    const { verb, rest } = splitToolTitle(sanitizeTerminalText(item.title));
     const elapsed = item.status === "running" && item.startedAtMs !== undefined
       ? Math.max(0, Date.now() - item.startedAtMs) : undefined;
     const duration = formatToolDuration(item.durationMs ?? elapsed);
@@ -243,7 +244,7 @@ function toolResultStats(item: ToolTranscriptItem): string {
 
 /** 按终端实际行数限额；外部控制字符不能移动光标或注入框架光标标记。 */
 function toolDetailLines(source: string, width: number, limit: number, token: Parameters<typeof theme.fg>[0]): string[] {
-  const text = source.slice(0, 16_000).replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "").replaceAll("\t", "    ").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu, "").trimEnd();
+  const text = sanitizeTerminalText(source.slice(0, 16_000)).replaceAll("\t", "    ").trimEnd();
   if (!text) return [];
   const body = new Text(text, 0, 0).render(Math.max(1, width - 3));
   const truncated = body.length > limit || source.length > 16_000;
@@ -314,8 +315,9 @@ export class NoticeComponent extends Container implements TranscriptItemComponen
 }
 
 function noticeText(item: NotificationTranscriptItem | Extract<TranscriptItem, { kind: "error" }>): string {
-  if (item.kind === "error") return theme.fg("error", `Error ${item.content}`);
-  if (item.tone === "success") return theme.fg("success", `• ${item.content}`);
-  if (item.tone === "warning") return theme.fg("warning", `• ${item.content}`);
-  return theme.fg("muted", `• ${item.content}`);
+  const content = sanitizeTerminalText(item.content);
+  if (item.kind === "error") return theme.fg("error", `Error ${content}`);
+  if (item.tone === "success") return theme.fg("success", `• ${content}`);
+  if (item.tone === "warning") return theme.fg("warning", `• ${content}`);
+  return theme.fg("muted", `• ${content}`);
 }
