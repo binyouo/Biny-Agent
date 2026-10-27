@@ -247,12 +247,11 @@ export function useSidebarLayout(): UseSidebarLayoutResult {
   useEffect(() => {
     const handleWindowBlur = (): void => {
       hoverLockedRef.current = false;
-      clearTimers();
       closePeek();
     };
     window.addEventListener("blur", handleWindowBlur);
     return () => window.removeEventListener("blur", handleWindowBlur);
-  }, [clearTimers, closePeek]);
+  }, [closePeek]);
 
   useEffect(() => () => {
     clearTimers();
