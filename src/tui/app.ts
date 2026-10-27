@@ -904,7 +904,7 @@ export class BinyTui {
       () => {
         this.dispatch({ type: "permission.details.toggled" });
       },
-      Math.max(10, this.ui.terminal.rows - 4)
+      () => Math.max(10, this.ui.terminal.rows - 4)
     );
     dialog.setDetailsExpanded(this.state.permissionDetailsExpanded);
     this.showOverlay(dialog, { maxHeight: "100%" });

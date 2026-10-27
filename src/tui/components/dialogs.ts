@@ -126,7 +126,7 @@ export class PermissionDialog extends Container {
     private request: TuiPermissionRequest,
     private readonly onAnswer: (choice: PermissionChoice, denialReason?: string) => void,
     private readonly onToggleDetails: () => void,
-    private readonly maxBodyLines = Number.POSITIVE_INFINITY
+    private readonly maxBodyLines: number | (() => number) = Number.POSITIVE_INFINITY
   ) {
     super();
     this.body = new Text("", 1, 0);
@@ -260,7 +260,8 @@ export class PermissionDialog extends Container {
     }
 
     const contentWidth = Math.max(1, this.renderWidth - 2);
-    const detailBudget = Math.max(0, this.maxBodyLines
+    const maxBodyLines = typeof this.maxBodyLines === "function" ? this.maxBodyLines() : this.maxBodyLines;
+    const detailBudget = Math.max(0, maxBodyLines
       - wrapTextWithAnsi(view.title, contentWidth).length
       - wrapTextWithAnsi(actionLines.join("\n"), contentWidth).length);
     const detailRows = details.flatMap((line) => wrapTextWithAnsi(line, contentWidth));
