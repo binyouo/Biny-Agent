@@ -239,6 +239,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm exec install-electron --no
 
       - name: Install CJK screenshot fonts
+        timeout-minutes: 3
         run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
 
       - name: Build production-component fixture
