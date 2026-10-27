@@ -112,7 +112,7 @@ jobs:
         run: pnpm lint
 
       - name: Test CI selection, runner, model metadata and release policy
-        run: node --test scripts/ci-test-plan.test.mjs scripts/run-tests.test.mjs scripts/sync-model-metadata.test.mjs scripts/release-desktop.test.mjs
+        run: node --test scripts/ci-test-plan.test.mjs scripts/run-tests.test.mjs scripts/sync-model-metadata.test.mjs scripts/release-desktop.test.mjs scripts/ci-cjk-fonts.test.mjs
 
       - name: Test Code Mode runtime
         run: pnpm test:code-mode-runtime
@@ -240,7 +240,13 @@ jobs:
 
       - name: Install CJK screenshot fonts
         timeout-minutes: 3
-        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+        run: |
+          date -u '+%Y-%m-%dT%H:%M:%SZ CJK fonts: apt update start'
+          sudo apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 update
+          date -u '+%Y-%m-%dT%H:%M:%SZ CJK fonts: apt install start'
+          sudo apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 install -y fonts-noto-cjk
+          date -u '+%Y-%m-%dT%H:%M:%SZ CJK fonts: apt install complete'
+          dpkg-query -W -f='${binary:Package} ${Version}\n' fonts-noto-cjk
 
       - name: Build production-component fixture
         env:
