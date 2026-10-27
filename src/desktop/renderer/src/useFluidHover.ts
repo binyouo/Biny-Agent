@@ -373,6 +373,9 @@ export function useFluidHover<T extends HTMLElement>(
   // the container the effect below captured has since been remounted and the
   // ref points at a different element than the one being observed.
   const itemRoRef = useRef<ResizeObserver | null>(null);
+  // A DOM-order resync can temporarily register one element at two indices.
+  // Release its observation only after the final index stops owning it.
+  const itemRegistrationCountsRef = useRef(new Map<HTMLElement, number>());
   const getItemRo = useCallback(() => {
     if (itemRoRef.current === null && typeof ResizeObserver !== "undefined") {
       itemRoRef.current = new ResizeObserver(() =>
@@ -384,13 +387,29 @@ export function useFluidHover<T extends HTMLElement>(
 
   const registerItem = useCallback(
     (index: number, element: HTMLElement | null) => {
+      const previous = itemsRef.current.get(index);
+      if (previous !== element) {
+        if (previous) {
+          const remaining = (itemRegistrationCountsRef.current.get(previous) ?? 1) - 1;
+          if (remaining > 0) {
+            itemRegistrationCountsRef.current.set(previous, remaining);
+          } else {
+            itemRegistrationCountsRef.current.delete(previous);
+            itemRoRef.current?.unobserve(previous);
+          }
+        }
+        if (element) {
+          itemRegistrationCountsRef.current.set(
+            element,
+            (itemRegistrationCountsRef.current.get(element) ?? 0) + 1
+          );
+        }
+      }
       if (element) {
         itemsRef.current.set(index, element);
         getItemRo()?.observe(element);
         if (index === activeIndexRef.current) element.setAttribute(ACTIVE_ATTR, "");
       } else {
-        const previous = itemsRef.current.get(index);
-        if (previous) itemRoRef.current?.unobserve(previous);
         itemsRef.current.delete(index);
         // The highlighted row is gone: nothing should stay lit or receive a
         // routed click until the pointer picks again.
