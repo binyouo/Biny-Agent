@@ -1603,7 +1603,14 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const turns = useSessionTimeline(document);
   // 「变更」视图数据：从时间线收集 Agent 改过的文件；轮次引用稳定时 useMemo 不重算。
   const sessionChanges = useMemo(() => collectSessionChanges(turns), [turns]);
-  const sessionSkills = useMemo(() => [...new Map(turns.flatMap((turn) => skillActivities(turn.skills, turn.capabilitySelection?.skills, turn.tools, skillLabels)).map((skill) => [skill.name, skill])).values()], [turns, skillLabels]);
+  const sessionSkills = useMemo(() => {
+    // Only confirmed loads contribute; normalize each distinct loaded reference once.
+    const loaded = new Set<string>();
+    for (const turn of turns) {
+      for (const skill of turn.skills) loaded.add(skill);
+    }
+    return skillActivities([...loaded], undefined, [], skillLabels);
+  }, [turns, skillLabels]);
   const inspector = useWorkspaceInspector({
     changes: sessionChanges,
     sidebarFlowWidth: sidebarLayout.flowWidth,
