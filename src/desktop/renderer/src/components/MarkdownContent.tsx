@@ -100,8 +100,8 @@ export const MarkdownContent = memo(function MarkdownContent({
   useEffect(() => { if (streaming) setWasStreaming(true); }, [streaming]);
   // 流结束不切换组件树，保留代码/表格节点和用户的横向滚动位置。
   const partitioned = streaming || wasStreaming;
-  const displayContent = content.replaceAll(christmasMarker, "🎄");
-  const blocks = useMemo(() => partitioned ? parseBlocks(displayContent) : [displayContent], [displayContent, parseBlocks, partitioned]);
+  const displayContent = markdown ? content.replaceAll(christmasMarker, "🎄") : content;
+  const blocks = useMemo(() => !markdown ? [] : partitioned ? parseBlocks(displayContent) : [displayContent], [displayContent, markdown, parseBlocks, partitioned]);
   const remarkPlugins = useMemo(
     () => [[remarkGfm, { singleTilde: false }], remarkCjkFriendly, [remarkCjkStrikethrough, { singleTilde: false }],
       ...(breaks ? [remarkBreaks] : []), [remarkMath, { singleDollarTextMath: singleDollarMath }]] as PluggableList,
