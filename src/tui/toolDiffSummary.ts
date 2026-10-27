@@ -72,14 +72,14 @@ function parseDiffFiles(diff: string, fallbackPath: string | undefined): ToolDif
         pushCurrent(files, current, fallbackPath);
         current = undefined;
       }
-      if (!current) current = createMutableFile(normalizeDiffPath(line.slice(4)) ?? fallbackPath ?? "changes");
-      current.oldPath = normalizeDiffPath(line.slice(4));
+      if (!current) current = createMutableFile(normalizeDiffPath(line.slice(4), fallbackPath) ?? fallbackPath ?? "changes");
+      current.oldPath = normalizeDiffPath(line.slice(4), fallbackPath);
       continue;
     }
 
     if (part.kind === "new-header") {
-      if (!current) current = createMutableFile(normalizeDiffPath(line.slice(4)) ?? fallbackPath ?? "changes");
-      current.newPath = normalizeDiffPath(line.slice(4));
+      if (!current) current = createMutableFile(normalizeDiffPath(line.slice(4), fallbackPath) ?? fallbackPath ?? "changes");
+      current.newPath = normalizeDiffPath(line.slice(4), fallbackPath);
       current.path = current.newPath ?? current.oldPath ?? current.path;
       continue;
     }
@@ -170,7 +170,9 @@ function formatReadFileSummary(tool: string, result: unknown): string | undefine
   return `Read ${path}\n${content.slice(0, 4000)}`;
 }
 
-function normalizeDiffPath(value: string): string | undefined {
+function normalizeDiffPath(value: string, fallbackPath?: string): string | undefined {
+  // Local diff headers embed the committed path verbatim, including whitespace.
+  if (fallbackPath !== undefined && (value === `a/${fallbackPath}` || value === `b/${fallbackPath}`)) return fallbackPath;
   const token = value.trim().split(/\s+/)[0] ?? "";
   if (!token || token === "/dev/null") return undefined;
   if (token.startsWith("a/") || token.startsWith("b/")) return token.slice(2);
