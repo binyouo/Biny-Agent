@@ -45,6 +45,8 @@ export interface MemoryVectorSearchIndex {
 }
 
 export interface SemanticMemoryRetrieverOptions {
+  /** Diagnostic destination only; never scopes memory retrieval. */
+  workspaceRoot?: string;
   localMemory: MemorySearchStore;
   getEmbeddingRuntime: () => Promise<EmbeddingModelRuntime | undefined>;
   getReadOnlyVectorIndex: () => MemoryVectorSearchIndex | undefined;
@@ -93,7 +95,7 @@ export class SemanticMemoryRetriever {
     options.signal?.throwIfAborted();
     const listPerfStartedAt = perfNow();
     const snapshot = await this.options.localMemory.listMemoryEntries({ signal: options.signal });
-    recordPerfPhase("memory.listEntries", listPerfStartedAt);
+    recordPerfPhase("memory.listEntries", listPerfStartedAt, undefined, this.options.workspaceRoot);
     options.signal?.throwIfAborted();
     const safeQuery = redactSecrets(query).trim();
     if (!snapshot.entries.length || options.limit < 1) return {
@@ -106,7 +108,7 @@ export class SemanticMemoryRetriever {
     const semanticPerfStartedAt = perfNow();
     const semantic = await this.semanticSearch(safeQuery, options.limit, options.signal, options.threshold, options.rewriteQuery,
       eligibleEntryIds, options.automatic !== true);
-    recordPerfPhase("memory.semantic", semanticPerfStartedAt, { available: semantic.available });
+    recordPerfPhase("memory.semantic", semanticPerfStartedAt, { available: semantic.available }, this.options.workspaceRoot);
     options.signal?.throwIfAborted();
     const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
     // 复核索引返回的 ID；模型等待期间变化的事实仍会在下方版本检查中被排除。
@@ -173,7 +175,7 @@ export class SemanticMemoryRetriever {
       signal?.throwIfAborted();
       return query;
     } finally {
-      recordPerfPhase("memory.rewrite", startedAt);
+      recordPerfPhase("memory.rewrite", startedAt, undefined, this.options.workspaceRoot);
     }
   }
 

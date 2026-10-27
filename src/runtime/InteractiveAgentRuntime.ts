@@ -1299,7 +1299,7 @@ export class InteractiveAgentRuntime {
       // Skill/MCP 清单已在 admission 时固定；慢速刷新只影响下一回合，不挡当前首个模型请求。
       this.commandRuntime.setUserInputRun?.(run.allowUserInput && run.source === undefined && !run.supervision
         ? { sessionId: run.sessionId, runId: run.runId } : undefined);
-      recordPerfPhase("runtime.executeRun.pre", executePerfStartedAt, { runId: run.runId, sessionId: run.sessionId });
+      recordPerfPhase("runtime.executeRun.pre", executePerfStartedAt, { runId: run.runId, sessionId: run.sessionId }, this.commandRuntime.workspaceRoot);
       let turn: AgentTurnOutcome | undefined;
       // 所有交互共用 AgentSession 的同一条回合执行链路。
       let terminalEvents = 0;
