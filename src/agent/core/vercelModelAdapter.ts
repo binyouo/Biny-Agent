@@ -182,7 +182,9 @@ export function toModelMessages(messages: AgentMessage[], nativePatch = false): 
           // SDK 输出使用 providerMetadata，消息输入则通过 providerOptions 回传签名等元数据。
           if (part.type === "reasoning") return { type: "reasoning", text: part.text, providerOptions: providerMetadata(part.providerMetadata) };
           if (part.name === "apply_patch" && !nativePatch) return { type: "text", text: `Historical file patch request: ${JSON.stringify(part.arguments)}` };
-          return { type: "tool-call", toolCallId: part.id, toolName: part.name, input: part.arguments };
+          const metadata = providerMetadata(part.providerMetadata);
+          return { type: "tool-call", toolCallId: part.id, toolName: part.name, input: part.arguments,
+            ...(metadata === undefined ? {} : { providerOptions: metadata }) };
         })
       };
     }

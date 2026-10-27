@@ -70,7 +70,8 @@ export const toolCallRepair: ToolCallRepairFunction<ToolSet> = async ({ toolCall
     const { input, changed } = repaired;
     const renamed = toolName !== toolCall.toolName;
     if (!renamed && !changed) return null;
-    return { ...toolCall, toolName, input: JSON.stringify(input) };
+    const { providerMetadata: _originalMetadata, ...call } = toolCall;
+    return { ...call, toolName, input: JSON.stringify(input) };
   } catch {
     // 自愈自身出错时回落原错误路径，不让修复变成新的故障源。
     return null;

@@ -70,7 +70,7 @@ export interface VercelLoopState {
   sequentialToolTail: Promise<void>;
   currentText: string;
   currentReasoning: Map<string, { text: string; providerMetadata?: Record<string, unknown> }>;
-  currentToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  currentToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown>; providerMetadata?: Record<string, unknown> }>;
   widgetInputs: Map<string, { text: string; publishedAt: number }>;
   directCall: DirectCallDiagnostics | undefined;
   directAttempts: Array<{ startedAtMs: number; durationMs?: number; error?: string }>;
@@ -573,7 +573,10 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
     state.widgetInputs.delete(part.toolCallId);
     state.outputProducedSinceStep = true;
     const input = isRecord(part.input) ? part.input : {};
-    state.currentToolCalls.push({ id: part.toolCallId, name: part.toolName, arguments: input });
+    const metadata = isRecord(part.input) ? providerMetadata(part.providerMetadata) : undefined;
+    const call = { id: part.toolCallId, name: part.toolName, arguments: input,
+      ...(metadata === undefined ? {} : { providerMetadata: metadata }) };
+    state.currentToolCalls.push(call);
     return [{
       type: "message_update",
       message: assistantSnapshot(state),
@@ -647,12 +650,14 @@ function assistantFromStep(step: StepResult<ToolSet>): AgentAssistantMessage {
         providerMetadata: providerMetadata(part.providerMetadata)
       });
     } else if (part.type === "tool-call") {
+      const metadata = isRecord(part.input) ? providerMetadata(part.providerMetadata) : undefined;
       content.push({
         type: "toolCall",
         id: part.toolCallId,
         name: part.toolName,
         arguments: isRecord(part.input) ? part.input : {},
-        invalid: part.invalid
+        invalid: part.invalid,
+        ...(metadata === undefined ? {} : { providerMetadata: metadata })
       });
     }
   }
@@ -676,7 +681,8 @@ export function assistantSnapshot(state: VercelLoopState): AgentAssistantMessage
     type: "toolCall" as const,
     id: call.id,
     name: call.name,
-    arguments: call.arguments
+    arguments: call.arguments,
+    ...(call.providerMetadata === undefined ? {} : { providerMetadata: call.providerMetadata })
   })));
   return {
     role: "assistant",
