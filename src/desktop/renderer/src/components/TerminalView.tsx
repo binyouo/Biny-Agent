@@ -17,6 +17,7 @@ export function TerminalView({ projectId, active = true }: { projectId: string; 
     if (!active) return;
     let disposed = false;
     void window.biny.listTerminals(projectId).then(async (existing) => {
+      if (disposed) return;
       const entries = existing.length ? existing : [{ ...(await window.biny.createTerminal(projectId, 80, 24)), slotId: "default" }];
       if (disposed) return;
       setTabs(entries);
