@@ -40,7 +40,7 @@ assert.ok(effect && ts.isArrowFunction(effect));
 const register = callback("registerItem");
 const getObserver = callback("getItemRo");
 const calls = new Set(["itemsRef.current.get", "itemsRef.current.set", "itemsRef.current.delete", "getItemRo", "getItemRo()?.observe",
-  "element.setAttribute", "itemRoRef.current?.unobserve", "setActiveIndex", "remeasure", "itemRegistrationCountsRef.current.get",
+  "element.setAttribute", "previous.removeAttribute", "itemRoRef.current?.unobserve", "setActiveIndex", "remeasure", "itemRegistrationCountsRef.current.get",
   "itemRegistrationCountsRef.current.set", "itemRegistrationCountsRef.current.delete", "scheduleMeasurement", "container.querySelectorAll",
   "Math.max", "registerItem", "sync", "observer.observe", "observer.disconnect"]);
 function guard(node: ts.Node): void {
@@ -65,8 +65,8 @@ const emitted = ts.transpileModule(selected, { compilerOptions: { target: ts.Scr
 assert.equal(emitted.diagnostics?.length ?? 0, 0);
 assert.equal(/\b(?:require|import|eval|fetch)\s*\(|\b(?:process|window|document)\b/u.test(emitted.outputText), false);
 
-interface ElementStub { name: string; attributes: Map<string, string>; setAttribute(name: string, value: string): void }
-const element = (name: string): ElementStub => ({ name, attributes: new Map(), setAttribute(key, value) { this.attributes.set(key, value); } });
+interface ElementStub { name: string; attributes: Map<string, string>; setAttribute(name: string, value: string): void; removeAttribute(name: string): void }
+const element = (name: string): ElementStub => ({ name, attributes: new Map(), setAttribute(key, value) { this.attributes.set(key, value); }, removeAttribute(key) { this.attributes.delete(key); } });
 function fixture(initial: ElementStub[] = [], active: number | null = null) {
   const observed = new Set<ElementStub>();
   const observeCalls: ElementStub[] = [];

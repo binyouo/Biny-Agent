@@ -390,6 +390,7 @@ export function useFluidHover<T extends HTMLElement>(
       const previous = itemsRef.current.get(index);
       if (previous !== element) {
         if (previous) {
+          if (index === activeIndexRef.current) previous.removeAttribute(ACTIVE_ATTR);
           const remaining = (itemRegistrationCountsRef.current.get(previous) ?? 1) - 1;
           if (remaining > 0) {
             itemRegistrationCountsRef.current.set(previous, remaining);
