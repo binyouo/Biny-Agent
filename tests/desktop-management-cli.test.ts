@@ -68,8 +68,8 @@ class BrowserContents extends EventEmitter {
       }
       const context = {
         location: { href: this.getURL() },
-        document: { title: this.getTitle(), documentElement: { outerHTML: "<html><body><article><h1>CLI page export</h1><p>Readable page body.</p></article></body></html>" }, querySelector: () => this.input },
-        File, Event, atob, Uint8Array, HTMLInputElement: BrowserFileInput,
+        document: { title: this.getTitle(), documentElement: { outerHTML: "<html><body><article><h1>CLI page export</h1><p>Readable page body.</p></article></body></html>" }, querySelector: () => this.input, querySelectorAll: (selector: string) => selector === "#file" ? [this.input] : [] },
+        File, Event, atob, Uint8Array, HTMLElement: BrowserFileInput, HTMLInputElement: BrowserFileInput,
         DataTransfer: class { files: File[] = []; items = { add: (file: File) => this.files.push(file) }; },
         scrollX: this.scrollX, scrollY: this.scrollY,
         window: { scrollBy: (x: number, y: number) => { context.scrollX = this.scrollX += x; context.scrollY = this.scrollY += y; } }
@@ -99,6 +99,10 @@ class BrowserFileInput {
   type = "file";
   files: File[] = [];
   events: string[] = [];
+  matches(selector: string) {
+    if (selector !== ':disabled,[aria-disabled="true"]') throw new Error(`Unexpected input selector: ${selector}`);
+    return false;
+  }
   dispatchEvent(event: Event) { this.events.push(event.type); }
 }
 class BrowserView {
