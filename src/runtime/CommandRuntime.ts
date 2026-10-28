@@ -1037,7 +1037,6 @@ async function initializeCommandRuntime(
         }
         throw error;
       }
-      controller.signal.throwIfAborted();
       return await runTaskClosure({
         taskRuns,
         taskRunId,

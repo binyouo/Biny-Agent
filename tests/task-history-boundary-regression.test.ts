@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,7 @@ import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { TaskCommunication } from "../src/runtime/TaskCommunication.js";
 import { runTaskClosure } from "../src/runtime/TaskClosure.js";
 import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
+import { WorktreeManager } from "../src/runtime/host/worktree.js";
 import { fingerprintTaskVerificationDefinitions, readTaskVerificationContract, verifyTaskCandidate, type TaskCandidateArtifacts } from "../src/runtime/taskVerification.js";
 
 async function prepareRepair(tasks: DurableTaskRunStore, root: string, sessionId: string, reports: number): Promise<string> {
@@ -69,9 +71,7 @@ for (const reports of [0, 97, 98, 99]) test(`CommandRuntime admits a valid queue
   try {
     commands = await createCommandRuntime(root, { configStore: { load: async () => structuredClone(config), save: async () => undefined } });
     const id = await prepareRepair(commands.taskRuns, root, commands.agent.getInfo().sessionId, reports);
-    const resumed = await commands.resumeTaskRun(id);
-    commands.cancelTaskRun(id);
-    await resumed.completion;
+    await assertAdmittedThenCancelledBeforeWorkspace(t, commands, id);
     assert.equal(network.mock.callCount(), 0);
   } finally { await commands?.close(); network.mock.restore(); await rm(temporary, { recursive: true, force: true }); }
 });
@@ -125,11 +125,8 @@ for (const retrySafety of ["safe", "unknown"] as const) test(`long-history queue
       await assert.rejects(commands.resumeTaskRun(task.taskRunId), /resume requires/u);
       assert.deepEqual(commands.taskRuns.get(task.taskRunId), saved);
     } else {
-      // Await the admission only; cancellation before the first model dispatch is deterministic.
-      const resumed = await commands.resumeTaskRun(task.taskRunId);
-      commands.cancelTaskRun(task.taskRunId);
-      await resumed.completion;
-      assert.equal(commands.taskRuns.get(task.taskRunId)?.attempts.length, 2);
+      // Hold workspace readiness: admit the retry without starting another Attempt.
+      await assertAdmittedThenCancelledBeforeWorkspace(t, commands, task.taskRunId);
     }
     const reader = await RuntimeEventAuthority.openReadOnly(root);
     assert.ok(reader);
@@ -150,6 +147,72 @@ for (const terminal of ["cancelled", "completed", "blocked"] as const) test(`a n
     assert.deepEqual(commands.subagents?.listSnapshots(), []);
   });
 });
+
+async function assertAdmittedThenCancelledBeforeWorkspace(t: TestContext, commands: CommandRuntime, taskRunId: string): Promise<void> {
+  const before = commands.taskRuns.get(taskRunId);
+  assert.ok(before);
+  const attemptIds = before.attempts.map(attempt => attempt.attemptId);
+  assert.equal(attemptIds.length, 1);
+  const subagents = commands.subagents;
+  assert.ok(subagents);
+  const worktreeId = `task-${createHash("sha256").update(taskRunId).digest("hex").slice(0, 40)}`;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const readinessEntered = new Promise<void>(resolve => { entered = resolve; });
+  let targetCalls = 0;
+  const originalGet = WorktreeManager.prototype.get;
+  const get = t.mock.method(WorktreeManager.prototype, "get", async function (this: WorktreeManager, id: string) {
+    if (id === worktreeId) {
+      targetCalls += 1;
+      entered();
+      await gate;
+    }
+    return await originalGet.call(this, id);
+  });
+  const submit = t.mock.method(subagents, "submit", () => { throw new Error("Admission-only fixture must not dispatch a Worker."); });
+  type Outcome = { result: Awaited<Awaited<ReturnType<CommandRuntime["resumeTaskRun"]>>["completion"]> } | { error: unknown };
+  let completion: Promise<Outcome> | undefined;
+  let outcome: Outcome | undefined;
+  let cancelled = false;
+  const failures: unknown[] = [];
+  try {
+    const resumed = await commands.resumeTaskRun(taskRunId);
+    // Observe immediately; rejection remains an explicit assertion failure below.
+    completion = resumed.completion.then(result => ({ result }), (error: unknown) => ({ error }));
+    assert.equal(targetCalls, 1, "admission must reach the exact task workspace gate");
+    await readinessEntered;
+    assert.equal(resumed.task.taskRunId, taskRunId);
+    assert.equal(resumed.task.status, "queued");
+    assert.equal(submit.mock.callCount(), 0);
+    const receipt = commands.cancelTaskRun(taskRunId, `Cancel gated admission ${taskRunId}.`);
+    cancelled = true;
+    assert.equal(receipt.status, "cancelled");
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    // Failed assertions must not release a live task into real execution.
+    try {
+      if (!cancelled) commands.cancelTaskRun(taskRunId, `Clean up gated admission ${taskRunId}.`);
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      release();
+      try { outcome = await completion; }
+      finally { try { get.mock.restore(); } finally { submit.mock.restore(); } }
+    }
+  }
+  if (failures.length > 0 && outcome && "error" in outcome) failures.push(outcome.error);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Admission assertion and cleanup failed.");
+  assert.ok(outcome);
+  assert.ok("result" in outcome, `completion rejected instead of cancelling: ${"error" in outcome ? String(outcome.error) : ""}`);
+  assert.equal(outcome.result.status, "cancelled");
+  assert.equal(commands.taskRuns.get(taskRunId)?.status, "cancelled");
+  assert.deepEqual(commands.taskRuns.get(taskRunId)?.attempts.map(attempt => attempt.attemptId), attemptIds);
+  assert.equal(submit.mock.callCount(), 0);
+  assert.deepEqual(subagents.listSnapshots(), []);
+}
 
 async function commandFixture(t: TestContext, run: (commands: CommandRuntime, root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-task-event-admission-"));
