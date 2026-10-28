@@ -15,8 +15,8 @@ test("preview window presents a live 3fps surface with takeover controls", async
   assert.match(source, /Activity 暂停截图/, "预览开启时 Activity 必须让出截图通道");
   // 支持键盘操作，初次呈现通过 showInactive 保留前台焦点。
   assert.match(source, /focusable: true/, "浮窗须支持用户主动聚焦后的键盘操作");
-  // Alma 的 PiP 是 vibrancy 材质的 hud 小窗：窗口要声明材质，页面不能再铺实色底。
+  // HUD 材质由原生窗口提供，页面本身保持透明。
   assert.match(source, /vibrancy: "hud"/, "预览窗要用 HUD 材质");
-  assert.match(source, /backgroundColor: "#00000000"/, "窗口底色必须透明，否则材质透不出来");
+  assert.match(source, /backgroundColor: "#1c1c1e"/, "窗口底色保持深色");
   assert.doesNotMatch(source, /body\{margin:0;background:#2/, "页面不能铺不透明底色，那会把材质盖掉");
 });

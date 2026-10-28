@@ -2,7 +2,7 @@ import { ComputerAuditStore } from "./auditStore.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { computerSequenceSchema, type ComputerSequence } from "./protocol.js";
+import { computerSequenceSchema, windowTargetSchema, type ComputerSequence } from "./protocol.js";
 import { ToolOutcomeUnknownError } from "../tools/types.js";
 import { computerActionSchema, computerImageSchema, computerMirrorSchema, windowObserveSchema, type ComputerMirrorRequest, type ComputerAction, type ComputerAuditEntry, type ComputerImage, type ComputerPreview, type ComputerStatus, type WindowObserve, type WindowTarget } from "./protocol.js";
 
@@ -24,17 +24,18 @@ interface ControllerOptions {
   auditStore?: ComputerAuditStore;
   now?: () => number;
   preview?: (frame: ComputerPreview | undefined) => void;
-  refreshPreview?: (target: WindowTarget | undefined, signal: AbortSignal) => Promise<ComputerPreview | undefined>;
+  refreshPreview?: (target: WindowTarget | undefined, signal: AbortSignal, launched?: { pid: number; bundleId: string }) => Promise<ComputerPreview | undefined>;
   authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string>;
   authorizeLaunch?: (bundleId: string, signal: AbortSignal) => Promise<void>;
-  setPreviewVisible?: (visible: boolean) => void;
+  setPreviewVisible?: (visible: boolean, completing?: boolean) => void;
+  allowAutomaticPreview?: (session?: string) => boolean;
   previewIdleMs?: number;
   externalMirrors?: boolean;
-  onMirrorChange?: (windowId: string, requestId?: string) => void;
+  onMirrorChange?: (windowId: string, requestId?: string, closedByRequest?: boolean) => void;
   onPreviewError?: (error: string) => void;
 }
 export class ComputerUseController {
-  private snapshot: ComputerStatus = { state: "disabled", preview: false, foregroundAllowed: false, lastOutcome: "not-dispatched" };
+  private snapshot: ComputerStatus = { state: "disabled", preview: false, lastOutcome: "not-dispatched" };
   private capture?: Capture;
   private generation = 0;
   private active?: AbortController;
@@ -50,6 +51,8 @@ export class ComputerUseController {
   private framePump?: ReturnType<typeof setInterval>;
   private previewRefresh?: AbortController;
   private previewRevision = 0;
+  private launchPreview?: { pid: number; bundleId: string };
+  private lastInputAt?: number;
   private readonly frameIntervalMs = 1000 / 3;
   // 预览窗的「用户在设置里开着」和「此刻真的显示着」是两件事：
   // 操控期间亮起监督窗，停手 90s 自动收起，
@@ -118,7 +121,7 @@ export class ComputerUseController {
     } finally { if (abort) signal.removeEventListener("abort", abort); }
   }
   async disable(): Promise<void> {
-    this.invalidate(); this.started = false; this.snapshot = { ...this.snapshot, state: "disabled", owner: undefined, foregroundAllowed: false }; this.hidePreview(); this.stopFramePump();
+    this.invalidate(); this.started = false; this.snapshot = { ...this.snapshot, state: "disabled", owner: undefined }; this.hidePreview(); this.stopFramePump();
     await this.driver.stop();
   }
   control(control: "pause" | "resume" | "takeover"): void {
@@ -138,10 +141,10 @@ export class ComputerUseController {
     }
     if (enabled) this.showPreview(); else this.hidePreview();
   }
-  dismissPreview(): void { this.hidePreview(); }
+  dismissPreview(completing = false): void { this.hidePreview(completing); }
   /** 已派发动作续期监督窗，不改变用户的预览偏好。 */
   noteActivity(): void {
-    if (!this.snapshot.preview) return;
+    if (!this.snapshot.preview || this.options.allowAutomaticPreview?.(this.snapshot.owner) === false) return;
     this.showPreview();
   }
   private showPreview(): void {
@@ -150,17 +153,18 @@ export class ComputerUseController {
     this.startFramePump();
     this.armPreviewIdle();
   }
-  private hidePreview(): void {
+  private hidePreview(completing = false): void {
     const wasShown = this.previewShown;
     this.previewShown = false;
+    this.launchPreview = undefined;
     this.clearPreviewIdle();
     this.stopFramePump();
+    if (wasShown) this.options.setPreviewVisible?.(false, completing);
     this.options.preview?.(undefined);
-    if (wasShown) this.options.setPreviewVisible?.(false);
   }
   private armPreviewIdle(): void {
     this.clearPreviewIdle();
-    this.previewTimer = setTimeout(() => { this.hidePreview(); }, this.previewIdleMs);
+    this.previewTimer = setTimeout(() => { this.hidePreview(true); }, this.previewIdleMs);
     if (typeof this.previewTimer === "object" && "unref" in this.previewTimer) this.previewTimer.unref();
   }
   private clearPreviewIdle(): void {
@@ -173,13 +177,14 @@ export class ComputerUseController {
     this.framePump = setInterval(() => {
       if (!this.snapshot.preview || !this.previewShown || this.previewRefresh || this.active) return;
       if (["paused", "taken-over", "unknown"].includes(this.snapshot.state)) return;
+      if (this.lastInputAt !== undefined && this.now() - this.lastInputAt < 1_200) return;
       const controller = new AbortController();
       this.previewRefresh = controller;
-      const revision = this.previewRevision, generation = this.generation, capture = this.capture;
+      const revision = this.previewRevision, generation = this.generation, capture = this.capture, launched = this.launchPreview;
       void (async () => {
         try {
-          const frame = await this.options.refreshPreview?.(capture ? { ...capture.target } : undefined, controller.signal);
-          if (controller.signal.aborted || revision !== this.previewRevision || generation !== this.generation || capture !== this.capture || this.active || !this.snapshot.preview || !this.previewShown) return;
+          const frame = await this.options.refreshPreview?.(capture ? { ...capture.target } : undefined, controller.signal, launched);
+          if (controller.signal.aborted || revision !== this.previewRevision || generation !== this.generation || capture !== this.capture || launched !== this.launchPreview || this.active || !this.snapshot.preview || !this.previewShown) return;
           if (frame) this.options.preview?.(frame);
         } catch (error) { if (!controller.signal.aborted && revision === this.previewRevision) this.options.onPreviewError?.(error instanceof Error ? error.message : String(error)); }
         finally { if (this.previewRefresh === controller) this.previewRefresh = undefined; }
@@ -193,10 +198,9 @@ export class ComputerUseController {
     clearInterval(this.framePump);
     this.framePump = undefined;
   }
-  setForeground(enabled: boolean): void { this.snapshot.foregroundAllowed = enabled; this.invalidate(); }
-  crashed(): void { this.invalidate(); this.started = false; this.snapshot.state = "disabled"; this.snapshot.owner = undefined; this.snapshot.diagnostic = "driver_exited"; this.snapshot.lastOutcome = "unknown"; }
+  crashed(): void { this.started = false; this.snapshot.state = "disabled"; this.snapshot.owner = undefined; this.snapshot.diagnostic = "driver_exited"; this.snapshot.lastOutcome = "unknown"; this.invalidate(); }
   private invalidate(): void {
-    this.generation++; this.capture = undefined; this.active?.abort(); this.previewRefresh?.abort(); this.options.preview?.(undefined);
+    this.generation++; this.capture = undefined; this.launchPreview = undefined; this.active?.abort(); this.previewRefresh?.abort(); this.options.preview?.(undefined);
     for (const [windowId, requestId] of this.mirrors) { this.options.onMirrorChange?.(windowId); void this.driver.mirror?.("close", { window_id: Number(windowId), request_id: requestId }).catch(() => { this.snapshot.diagnostic = "computer_mirror_cleanup_failed"; }); }
     this.mirrors.clear();
   }
@@ -228,8 +232,16 @@ export class ComputerUseController {
       await this.options.authorizeLaunch(bundleId, s);
       s.throwIfAborted();
       if (generation !== this.generation) throw new Error("computer_authorization_invalidated");
-      this.capture = undefined;
-      try { return await this.driver.launchApp(bundleId, s); }
+      this.capture = undefined; this.launchPreview = undefined; this.previewRefresh?.abort(); this.options.preview?.(undefined);
+      this.lastInputAt = this.now();
+      this.noteActivity();
+      const revision = this.previewRevision;
+      try {
+        const reply = await this.driver.launchApp(bundleId, s);
+        const pid = windowTargetSchema.shape.pid.safeParse(reply.data.pid);
+        if (!reply.errorCode && pid.success && !s.aborted && generation === this.generation && revision === this.previewRevision && this.previewShown) this.launchPreview = { pid: pid.data, bundleId };
+        return reply;
+      }
       catch { throw new ToolOutcomeUnknownError("interrupted", "应用启动结果未知，请先查询是否已运行，不要重复启动。"); }
     });
   }
@@ -248,7 +260,7 @@ export class ComputerUseController {
           const requestId = this.mirrors.get(windowId);
           if (!requestId) continue;
           const reply = await mirror("close", { window_id: Number(windowId), request_id: requestId });
-          closed += Number(reply.data.closed ?? 0); this.mirrors.delete(windowId); this.options.onMirrorChange?.(windowId);
+          closed += Number(reply.data.closed ?? 0); this.mirrors.delete(windowId); this.options.onMirrorChange?.(windowId, undefined, true);
         }
         return { data: { closed }, images: [] };
       }
@@ -294,7 +306,7 @@ export class ComputerUseController {
           attempts++;
           if (reply.errorCode) return reply;
           const elements = reply.data.elements as Record<string, unknown>[] | undefined;
-          const matched = elements?.some(element => [element.title, element.description, element.value].some(value => typeof value === "string" && value.includes(waitFor.text))) ?? false;
+          const matched = elements?.some(element => [element.title, element.description, element.value, element.role_description].some(value => typeof value === "string" && value.includes(waitFor.text))) ?? false;
           if (matched) return { ...reply, data: { ...reply.data, wait: { matched: true, attempts } } };
           await delay(250, undefined, { signal: waiting });
         }
@@ -307,12 +319,13 @@ export class ComputerUseController {
   }
   private async captureWindow(session: string, observation: WindowObserve, signal: AbortSignal, generation: number): Promise<DriverReply> {
     const target = { pid: observation.pid, windowId: observation.windowId };
-    this.capture = undefined; this.previewRefresh?.abort();
+    this.capture = undefined; this.launchPreview = undefined; this.previewRefresh?.abort();
     const appId = await this.options.authorize?.(session, target, signal);
     signal.throwIfAborted(); if (generation !== this.generation) throw new Error("computer_authorization_invalidated");
     const reply = await this.driver.observe(session, observation, signal);
     signal.throwIfAborted(); if (generation !== this.generation) throw new Error("computer_observation_invalidated");
     if (reply.errorCode) return reply;
+    if (reply.images.length === 0 && typeof reply.data.screenshot_error === "string") throw new Error(`computer_observation_image_unavailable: ${reply.data.screenshot_error}`);
     const data = captureSchema.parse(reply.data);
     if (data.pid !== target.pid || String(data.window_id) !== target.windowId) throw new Error("capture_target_mismatch");
     const images = reply.images.map(image => computerImageSchema.parse(image));
@@ -321,9 +334,9 @@ export class ComputerUseController {
     if (this.snapshot.state === "unknown") { this.snapshot.state = "ready"; this.snapshot.diagnostic = undefined; }
     this.capture = { id: data.capture_id, target, observation: { ...observation }, appId, at, width: data.screenshot_width, height: data.screenshot_height, tokens: new Set(data.elements?.flatMap(element => element.element_token ? [element.element_token] : []) ?? []) };
     if (this.snapshot.preview) this.options.preview?.({ image: images[0]!, target, capturedAt: at });
-    return { ...reply, data: { ...reply.data, foregroundAllowed: this.snapshot.foregroundAllowed }, images };
+    return { ...reply, images };
   }
-  act(session: string, input: Omit<ComputerAction, "delivery"> & { delivery?: ComputerAction["delivery"] }, signal?: AbortSignal): Promise<DriverReply> {
+  act(session: string, input: ComputerAction, signal?: AbortSignal): Promise<DriverReply> {
     const action = computerActionSchema.parse(input);
     return this.enqueue(session, signal, (s, generation) => this.performAction(session, action, s, generation));
   }
@@ -341,9 +354,12 @@ export class ComputerUseController {
         for (const [index, step] of sequence.actions.entries()) {
           running.throwIfAborted();
           const captureId = index === 0 ? sequence.captureId : String(reply.data.capture_id);
-          reply = await this.performAction(session, computerActionSchema.parse({ ...step, pid: sequence.pid, windowId: sequence.windowId, delivery: sequence.delivery, captureId }), running, generation, index === sequence.actions.length - 1 ? finalContent : "image");
+          reply = await this.performAction(session, computerActionSchema.parse({ ...step, pid: sequence.pid, windowId: sequence.windowId, captureId }), running, generation, index === sequence.actions.length - 1 ? finalContent : "image");
           steps.push({ index, action: step.action, status: reply.data.status, receipt: reply.data.action });
-          if (!reply.errorCode && reply.data.status !== "refused") completedCount++;
+          const receipt = reply.data.action as Record<string, unknown> | undefined;
+          const partial = receipt?.outcome === "partial";
+          if (!reply.errorCode && reply.data.status !== "refused" && !partial) completedCount++;
+          if (partial) return { ...reply, data: { ...reply.data, steps, completedCount, stoppedAt: index, stopReason: "partial_action", doNotRepeat: true } };
           if (reply.errorCode || reply.data.observationRequired || running.aborted || generation !== this.generation) return { ...reply, data: { ...reply.data, steps, completedCount, stoppedAt: index, doNotRepeat: true } };
         }
         return { ...reply, data: { ...reply.data, steps, completedCount, verificationRequired: true, doNotRepeat: true } };
@@ -360,7 +376,6 @@ export class ComputerUseController {
     if (this.now() - capture.at >= 60_000) { this.capture = undefined; throw new Error("capture_expired: observe again"); }
     if (action.coordinateSpace !== "screen" && [[action.x, action.y], [action.x1, action.y1], [action.x2, action.y2]].some(([x, y]) => x !== undefined && (x < 0 || y === undefined || y < 0 || x >= capture.width || y >= capture.height))) throw new Error("capture_coordinates_out_of_bounds");
     if (action.elementToken && !capture.tokens.has(action.elementToken)) throw new Error("element_token_not_in_observation");
-    if (action.delivery === "foreground" && !this.snapshot.foregroundAllowed) throw new Error("foreground_permission_required: ask user to switch or enable foreground delivery");
     const appId = await this.options.authorize?.(session, capture.target, s);
     if (appId !== capture.appId) { this.capture = undefined; throw new Error("capture_app_identity_changed: observe again"); }
     s.throwIfAborted();
@@ -368,6 +383,7 @@ export class ComputerUseController {
     this.capture = undefined; this.previewRefresh?.abort(); this.snapshot.lastOutcome = "not-dispatched";
     let result: DriverReply;
     const at = this.now();
+    this.lastInputAt = at;
     try {
       result = await this.driver.act(session, action, s);
     } catch (error) {

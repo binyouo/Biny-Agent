@@ -41,6 +41,70 @@ test("MCP days and observation options reach native commands and application gui
   const invalid = await client.callTool({ name: "list_apps", arguments: { days: 91 } });
   assert.equal(invalid.isError, true); assert.equal(calls.length, 2);
 }));
+test("MCP observation accepts screenshot-only mode and external option names", async () => fixture(async (client, calls) => {
+  const result = await client.callTool({ name: "get_app_state", arguments: {
+    pid: 12, window_id: 42, depth: 0, interactive_only: false, screenshot_max_width: 640, auto_launch: false
+  } });
+  assert.notEqual(result.isError, true);
+  assert.equal(calls[0]!.args.max_depth, 0);
+  assert.equal(calls[0]!.args.interactive_only, false);
+  assert.equal(calls[0]!.args.max_width, 640);
+  assert.equal(calls[0]!.args.auto_launch, false);
+}));
+test("MCP defaults full observations to depth six and keeps explicit depth and image-only mode", async () => fixture(async (client, calls) => {
+  for (const [options, expected] of [[{}, 6], [{ depth: 9 }, 9], [{ content: "image" }, 0], [{ depth: 0 }, 0]] as const) {
+    const result = await client.callTool({ name: "get_app_state", arguments: { pid: 12, window_id: 42, ...options } });
+    assert.notEqual(result.isError, true);
+    assert.equal(calls.at(-1)?.args.max_depth, expected);
+  }
+}));
+test("MCP accepts input_method alongside the existing spelling and rejects duplicates before input", async () => fixture(async (client, calls) => {
+  const tools = await client.listTools();
+  const typeTool = tools.tools.find(tool => tool.name === "type_text")!;
+  assert.ok(typeTool.inputSchema.properties?.input_method);
+  assert.ok(typeTool.inputSchema.properties?.inputMethod);
+  for (const method of ["auto", "physical", "unicode", "ax"] as const) {
+    const result = await client.callTool({ name: "type_text", arguments: { pid: 12, window_id: 42, ref: "e1", text: "hello", input_method: method } });
+    assert.notEqual(result.isError, true);
+    assert.equal(calls.at(-1)?.args.input_method, method);
+  }
+  const before = calls.length;
+  const duplicate = await client.callTool({ name: "type_text", arguments: { ref: "e1", text: "hello", input_method: "ax", inputMethod: "unicode" } });
+  assert.equal(duplicate.isError, true);
+  const missingRef = await client.callTool({ name: "type_text", arguments: { text: "hello", input_method: "ax" } });
+  assert.equal(missingRef.isError, true);
+  assert.equal(calls.length, before);
+  const previous = await client.callTool({ name: "type_text", arguments: { text: "hello", inputMethod: "unicode" } });
+  assert.notEqual(previous.isError, true);
+  assert.equal(calls.at(-1)?.args.input_method, "unicode");
+}));
+test("MCP selects matching text or places the cursor without replacing the field", async () => fixture(async (client, calls) => {
+  for (const selectionType of ["text", "cursor_before", "cursor_after"] as const) {
+    const result = await client.callTool({ name: "select_text", arguments: {
+      pid: 12, window_id: 42, ref: "e1", text: "目标", prefix: "前", suffix: "后", selection_type: selectionType
+    } });
+    assert.notEqual(result.isError, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), {
+      cmd: "select_text", args: { pid: 12, window_id: 42, ref: "e1", match_text: "目标", prefix: "前", suffix: "后", selection_type: selectionType }
+    });
+  }
+  const defaultResult = await client.callTool({ name: "select_text", arguments: { ref: "e1", text: "目标" } });
+  assert.notEqual(defaultResult.isError, true);
+  assert.equal(calls.at(-1)!.args.match_text, "目标");
+  assert.equal(calls.at(-1)!.args.text, undefined);
+}));
+test("MCP drag accepts start and end coordinates and forwards its mouse button", async () => fixture(async (client, calls) => {
+  const result = await client.callTool({ name: "drag", arguments: {
+    pid: 12, window_id: 42, start_x: 1, start_y: 2, end_x: 30, end_y: 40, button: "right", coord_space: "screenshot"
+  } });
+  assert.notEqual(result.isError, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), {
+    cmd: "drag", args: { pid: 12, window_id: 42, x1: 1, y1: 2, x2: 30, y2: 40, button: "right", coord_space: "screenshot" }
+  });
+  const previous = await client.callTool({ name: "drag", arguments: { x1: 1, y1: 2, x2: 30, y2: 40 } });
+  assert.notEqual(previous.isError, true);
+  assert.equal(calls.at(-1)!.args.x2, 30);
+}));
 test("product action accepts complete click routing and screen coordinates", () => {
   const parsed = computerActionSchema.safeParse({ pid: 12, windowId: "42", captureId: "c", action: "click", x: 900, y: 500, button: "middle", clickCount: 3, strategy: "physical", coordinateSpace: "screen" });
   assert.equal(parsed.success, true);
@@ -51,9 +115,17 @@ for (const [name, args] of [
   ["set_value", { ref: "e", value: "x".repeat(4001) }],
   ["set_value", { ref: "e".repeat(257), value: false }],
   ["click", { ref: "e", x: 1 }],
+  ["perform_secondary_action", { x: 1, y: 2, secondary_action: "AXPress" }],
   ["select_text", { ref: "e", matchText: "match", text: "replace" }],
+  ["select_text", { ref: "e", text: "match", selection_type: "invalid" }],
+  ["select_text", { ref: "e", location: 0, selection_type: "cursor_after" }],
+  ["drag", { start_x: 1, start_y: 2, end_x: 3 }],
+  ["drag", { start_x: 1, x1: 1, start_y: 2, end_x: 3, end_y: 4 }],
   ["press_key", { key: "Return", typo: true }],
-  ["get_app_state", { content: "image", waitFor: { text: "ready" } }]
+  ["get_app_state", { content: "image", waitFor: { text: "ready" } }],
+  ["get_app_state", { depth: 0, content: "full" }],
+  ["get_app_state", { auto_launch: false, autoLaunch: true }],
+  ["get_app_state", { interactive_only: false, interactiveOnly: true }]
 ] as const) test(`MCP rejects invalid shared input before dispatch: ${name} ${Object.keys(args)}`, async () => fixture(async (client, calls) => {
   const result = await client.callTool({ name, arguments: { pid: 12, window_id: 42, ...args } });
   assert.equal(result.isError, true);

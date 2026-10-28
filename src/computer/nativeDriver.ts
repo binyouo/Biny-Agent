@@ -6,6 +6,7 @@ import { applicationPlaybook } from "./playbooks.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
+import { performance } from "node:perf_hooks";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -66,6 +67,8 @@ interface Host {
   connected: boolean;
   stdout: string;
   decoder: StringDecoder;
+  lastActivityAt: number;
+  idleExitPending?: boolean;
 }
 
 export interface NativeDriverOptions {
@@ -101,9 +104,16 @@ function toCapture(data: Record<string, unknown>, windowId: number, captureId?: 
       element_token: typeof element.ref === "string" ? element.ref : undefined,
       role: element.role,
       title: element.title,
+      description: element.description,
+      role_description: element.role_description,
+      subrole: element.subrole,
       value: element.value,
       frame: element.frame,
-      enabled: element.enabled
+      focused: element.focused,
+      enabled: element.enabled,
+      selected: element.selected,
+      actions: element.actions,
+      children_count: element.children_count
     }))
   };
 }
@@ -122,9 +132,11 @@ export class NativeProcessDriver implements ComputerDriver {
   private readonly clientId = crypto.randomUUID();
   private readonly socketPath: string;
   private readonly binaryPath: string;
+  private readonly idleTimeout: number;
 
   constructor(private readonly onExit: () => void, options: NativeDriverOptions = {}) {
     this.binaryPath = options.binaryPath ?? NativeProcessDriver.resolveBinary();
+    this.idleTimeout = options.idleTimeoutMs ?? idleTimeoutMs;
     this.socketPath = path.join(
       options.socketDir ?? path.join(os.homedir(), "Library", "Application Support", "alma"),
       `biny-computer-use-${socketKeyFor(this.binaryPath)}.sock`
@@ -160,7 +172,7 @@ export class NativeProcessDriver implements ComputerDriver {
 
   private armIdle(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => { void this.stop(); }, idleTimeoutMs);
+    this.idleTimer = setTimeout(() => { void this.stopHost(); }, this.idleTimeout);
   }
 
   private spawnHost(): Host {
@@ -170,7 +182,7 @@ export class NativeProcessDriver implements ComputerDriver {
     });
     child.stderr?.resume();
     const socket = new net.Socket();
-    const host: Host = { child, socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), bufferStart: 0, bufferEnd: 0, bufferScan: 0, bufferOverflowed: false, closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8") };
+    const host: Host = { child, socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), bufferStart: 0, bufferEnd: 0, bufferScan: 0, bufferOverflowed: false, closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8"), lastActivityAt: performance.now() };
     // 立刻开始收集 stdout：daemon 可能在监听器挂上之前就打出 "ready"。
     child.stdout?.on("data", (chunk: Buffer) => { host.stdout += chunk.toString(); });
     socket.on("data", chunk => this.onData(host, chunk));
@@ -179,9 +191,18 @@ export class NativeProcessDriver implements ComputerDriver {
     socket.on("close", () => { if (host.connected && !host.closed) this.failAndRetire(host, "driver_process_disconnected; outcome may be unknown"); });
     child.on("error", error => this.failAndRetire(host, `driver_sdk_missing_or_crashed: ${error.message}`));
     child.once("exit", (code, signal) => {
-      host.closed = true;
+      if (host.idleExitPending) {
+        host.idleExitPending = false;
+        const active = this.host === host;
+        if (active) this.host = undefined;
+        if ((code !== 0 || signal) && this.enabled && active) { this.enabled = false; this.onExit(); }
+        return;
+      }
+      if (host.closed) return;
+      const active = this.host === host;
+      const idle = this.isExpectedIdle(host);
       this.failHost(host, `driver_process_exited: ${String(code ?? signal)}; outcome may be unknown`);
-      if (this.host === host) this.host = undefined;
+      if (active) { this.host = undefined; if (this.enabled && !idle) { this.enabled = false; this.onExit(); } }
     });
     return host;
   }
@@ -197,7 +218,7 @@ export class NativeProcessDriver implements ComputerDriver {
   private adoptExisting(): Promise<Host | undefined> {
     return new Promise(resolve => {
       const socket = new net.Socket();
-      const host: Host = { socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), bufferStart: 0, bufferEnd: 0, bufferScan: 0, bufferOverflowed: false, closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8") };
+      const host: Host = { socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), bufferStart: 0, bufferEnd: 0, bufferScan: 0, bufferOverflowed: false, closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8"), lastActivityAt: performance.now() };
       // 放弃时才能清监听器。成功路径绝不能再调这个 —— 它会把下面刚装上的
       // data 监听一起摘掉，于是连接是通的、回包永远收不到，只剩请求超时。
       const giveUp = (): void => {
@@ -316,23 +337,27 @@ export class NativeProcessDriver implements ComputerDriver {
     if (data.screenshot && Array.isArray(data.elements)) {
       const windowId = typeof data.windowId === "number" ? data.windowId : Number(data.windowId ?? 0);
       // daemon 把截图落在磁盘上；读回来转成 ComputerImage，PiP 帧泵和模型帧都靠它。
-      const image = this.readImage(data.screenshot);
-      return { data: toCapture(data, windowId, captureId), images: image ? [image] : [] };
+      let imageError: string | undefined;
+      const image = this.readImage(data.screenshot, reason => { imageError = reason; });
+      const capture = toCapture(data, windowId, captureId);
+      if (!image) { capture.screenshot_frame_valid = false; capture.screenshot_error = imageError ?? "screenshot_read_failed"; }
+      return { data: capture, images: image ? [image] : [] };
     }
     return { data, images: [] };
   }
 
-  /** 把 daemon 写出的 jpeg 读成 ComputerImage；读不到就当没有，不阻断动作。 */
-  private readImage(path: unknown): { mimeType: "image/jpeg"; dataBase64: string } | undefined {
-    if (typeof path !== "string" || !path) return undefined;
+  /** 把 daemon 写出的 jpeg 读成 ComputerImage；调用方可区分读取失败和图片超限。 */
+  private readImage(path: unknown, onFailure?: (reason: string) => void): { mimeType: "image/jpeg"; dataBase64: string } | undefined {
+    if (typeof path !== "string" || !path) { onFailure?.("screenshot_read_failed"); return undefined; }
     try {
       const bytes = readFileSync(path);
       // 与 maxComputerImageBytes 对齐：超预算的帧直接丢弃，避免撑爆模型请求。
-      if (bytes.byteLength > maxImageBytes) return undefined;
+      if (bytes.byteLength > maxImageBytes) { onFailure?.("screenshot_too_large"); return undefined; }
       const base64 = bytes.toString("base64");
-      if (base64.length > Math.ceil(maxImageBytes / 3) * 4) return undefined;
+      if (base64.length > Math.ceil(maxImageBytes / 3) * 4) { onFailure?.("screenshot_too_large"); return undefined; }
       return { mimeType: "image/jpeg", dataBase64: base64 };
     } catch {
+      onFailure?.("screenshot_read_failed");
       return undefined;
     } finally { rmSync(path, { force: true }); }
   }
@@ -343,10 +368,21 @@ export class NativeProcessDriver implements ComputerDriver {
     host.closed = true;
   }
 
+  private isExpectedIdle(host: Host): boolean {
+    return this.pending.size === 0 && !host.child?.signalCode && (host.child?.exitCode == null || host.child.exitCode === 0) && performance.now() - host.lastActivityAt >= this.idleTimeout;
+  }
+
   private failAndRetire(host: Host, reason: string): void {
+    if (host.closed) return;
+    const active = this.host === host;
+    const idle = this.isExpectedIdle(host);
+    if (active && idle && this.enabled && host.child && host.child.exitCode === null && host.child.signalCode === null) {
+      this.failHost(host, reason); host.idleExitPending = true; return;
+    }
     this.failHost(host, reason);
-    if (this.host === host) this.host = undefined;
+    if (active) this.host = undefined;
     try { host.child?.kill("SIGTERM"); } catch { /* already gone */ }
+    if (active && this.enabled && !idle) { this.enabled = false; this.onExit(); }
   }
 
   private async call(cmd: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<DriverReply> {
@@ -369,14 +405,16 @@ export class NativeProcessDriver implements ComputerDriver {
       const cleanup = () => signal?.removeEventListener("abort", onAbort);
       signal?.addEventListener("abort", onAbort, { once: true });
       this.pending.set(id, { resolve, reject, timer, cleanup, captureId });
+      host.lastActivityAt = performance.now();
       host.socket.write(`${JSON.stringify({ id, cmd, args })}\n`);
     });
   }
 
   private async ensureHost(): Promise<void> {
-    if (this.host) return;
+    if (this.host && !this.host.closed) return;
     if (!this.starting) {
       this.starting = (async () => {
+        if (this.host?.closed) await this.stopHost();
         // 已有一个 daemon 在听就采用它：ref 表、坐标映射、空闲计时都在那个进程里，
         // 每个调用方各起一个会把它们全部切碎。
         const adopted = await this.adoptExisting();
@@ -420,16 +458,21 @@ export class NativeProcessDriver implements ComputerDriver {
 
   async stop(): Promise<void> {
     this.enabled = false;
+    await this.stopHost();
+  }
+
+  private async stopHost(): Promise<void> {
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = undefined; }
     const host = this.host;
     if (!host) return;
     this.host = undefined;
-    this.failHost(host, "driver_stopped");
+    if (!host.closed) this.failHost(host, "driver_stopped");
     await new Promise<void>(resolve => {
       // 采用来的 daemon 不是我们的子进程：不杀它（别的调用方可能正用着，而且它自己会在
       // 空闲后退出），但**连接必须断开** —— 漏掉这句 socket 会一直挂在事件循环上，
       // 进程跑完用例也退不出去。上一版正是漏在这里。
       if (!host.child) { host.socket.destroy(); resolve(); return; }
+      if (host.child.exitCode !== null || host.child.signalCode !== null) { resolve(); return; }
       const timer = setTimeout(() => { try { host.child?.kill("SIGKILL"); } catch { /* noop */ } resolve(); }, shutdownTimeoutMs);
       host.child.once("exit", () => { clearTimeout(timer); resolve(); });
       try { host.child.kill("SIGTERM"); } catch { clearTimeout(timer); resolve(); }
@@ -542,7 +585,9 @@ export class NativeProcessDriver implements ComputerDriver {
       return { ...reply, data: { ...data, effect: data.effect ?? (accepted && !data.warning && !data.verification_note ? "confirmed" : "unverifiable") } };
     } catch (error) {
       // 只将确定发生在派发前的原生拒绝降为普通失败，部分输入与传输失败保持未知。
-      if (error instanceof NativeCommandError && /^(ax_not_granted|focus_guard_unavailable|element_ref_not_observed|observation_[a-z_]+|text_match_(invalid|not_found|ambiguous|unavailable|changed)|input_method_(requires_ref|unmappable_character|layout_required|layout_unavailable)|input_delivery_unsupported|unknown_key|unknown_input_method)(:|$)/.test(error.message)) {
+      if (error instanceof NativeCommandError && (/^(input_delivery_unsupported|ax_not_granted|focus_guard_unavailable|element_ref_not_observed|element_action_unsupported|element_value_unsupported|selection_(unsupported|range_invalid)|text_input_(ax_unsupported|target_not_focused)|click_action_(unsupported|unavailable)|secondary_action_unsupported|ax_cannot_express_this_click|element_has_no_(frame|context_menu)|strategy_ax_needs_ref|observation_[a-z_]+|text_match_(invalid|not_found|ambiguous|unavailable|changed)|input_method_(requires_ref|unmappable_character|layout_required|layout_unavailable)|unknown_key|unknown_input_method)(:|$)/.test(error.message)
+        || command === "press_key" && /^(background_keyboard_target_not_focused|menu_shortcut_unsupported|keyboard_event_creation_failed)(:|$)/.test(error.message)
+        || command === "scroll" && /^scroll_(event_creation_failed|target_unavailable)(:|$)/.test(error.message))) {
         return { data: { effect: "refused", code: error.message }, images: [], errorCode: error.message };
       }
       throw error;
@@ -551,7 +596,7 @@ export class NativeProcessDriver implements ComputerDriver {
 
   async act(_session: string, action: ComputerAction, signal?: AbortSignal): Promise<DriverReply> {
     return await this.input(action.action, {
-      ...toNativeActionArgs(action), client_id: this.clientId, capture_id: action.captureId, delivery: action.delivery === "foreground" ? "foreground" : undefined
+      ...toNativeActionArgs(action), client_id: this.clientId, capture_id: action.captureId
     }, signal);
   }
 }

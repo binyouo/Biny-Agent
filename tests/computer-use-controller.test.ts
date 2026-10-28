@@ -32,7 +32,7 @@ for (const stop of ["refused", "missing-frame", "pause", "unknown"] as const) te
     }
     return { data: { effect: "unverifiable" }, images: [] };
   });
-  const pending = f.controller.sequence("s", { ...target, captureId: "c1", delivery: "background", actions: [
+  const pending = f.controller.sequence("s", { ...target, captureId: "c1", actions: [
     { action: "click", x: 1, y: 1 }, { action: "type_text", text: "hello" }, { action: "press_key", key: "Return" }
   ] });
   if (stop === "unknown") await assert.rejects(pending, /已收到 1 步回执.*第 2 步执行情况未知/);
@@ -46,15 +46,51 @@ for (const stop of ["refused", "missing-frame", "pause", "unknown"] as const) te
   if (stop === "pause") assert.equal(f.controller.status().state, "paused");
 });
 
+test("a partially completed scroll stops a sequence without dispatching the next input", async () => {
+  const f = fixture(true);
+  f.setObserve(async () => { const reply = frame(); reply.data.elements = [{ element_token: "e1", role: "AXScrollArea" }]; return reply; });
+  await f.controller.observe("s", target);
+  f.setAction(async () => ({ data: { effect: "unverifiable", route: "ax-page", outcome: "partial", completedPages: 1, warning: "observe before continuing" }, images: [] }));
+  const reply = await f.controller.sequence("s", { ...target, captureId: "c1", actions: [
+    { action: "scroll", elementToken: "e1", direction: "down", pages: 2 }, { action: "type_text", text: "must not be sent" }
+  ] });
+  assert.deepEqual(f.calls, ["scroll"]);
+  assert.equal(reply.data.completedCount, 0);
+  assert.equal(reply.data.stoppedAt, 0);
+  assert.equal(reply.data.stopReason, "partial_action");
+  assert.equal(reply.data.doNotRepeat, true);
+  const steps = reply.data.steps as { receipt: { outcome: string; completedPages: number } }[];
+  assert.equal(steps[0]?.receipt.outcome, "partial");
+  assert.equal(steps[0]?.receipt.completedPages, 1);
+  assert.equal(reply.images.length, 1, "the fresh screenshot remains available for verification");
+});
+
+test("a partial scroll retains its receipt if the post-action observation fails", async () => {
+  const f = fixture(true);
+  const first = frame(); first.data.elements = [{ element_token: "e1", role: "AXScrollArea" }];
+  f.setObserve(async () => first);
+  await f.controller.observe("s", target);
+  f.setObserve(async () => { throw new Error("capture_failed"); });
+  f.setAction(async () => ({ data: { effect: "unverifiable", outcome: "partial", completedPages: 1 }, images: [] }));
+  const reply = await f.controller.sequence("s", { ...target, captureId: "c1", actions: [
+    { action: "scroll", elementToken: "e1", direction: "down", pages: 2 }, { action: "type_text", text: "must not be sent" }
+  ] });
+  assert.deepEqual(f.calls, ["scroll"]);
+  assert.equal(reply.data.completedCount, 0);
+  assert.equal(reply.data.stopReason, "partial_action");
+  assert.equal(reply.data.observationRequired, true);
+  assert.equal(reply.data.doNotRepeat, true);
+  assert.equal((reply.data.action as { completedPages: number }).completedPages, 1);
+  assert.equal(reply.images.length, 0);
+});
+
 test("连续动作先校验全部步骤且不自动升级前台，原有单动作校验未覆盖后续无效参数", async () => {
   const f = fixture(true);
   await f.controller.observe("s", target);
-  const request = { ...target, captureId: "c1", delivery: "background" as const, actions: [{ action: "click" as const, x: 1, y: 1 }, { action: "click" as const, x: 2, y: 2 }] };
+  const request = { ...target, captureId: "c1", actions: [{ action: "click" as const, x: 1, y: 1 }, { action: "click" as const, x: 2, y: 2 }] };
   assert.throws(() => f.controller.sequence("s", request), /首步之后/);
   assert.throws(() => f.controller.sequence("s", { ...request, actions: Array.from({ length: 6 }, () => ({ action: "press_key" as const, key: "Return" })) }), /5/);
-  const reply = await f.controller.sequence("s", { ...request, delivery: "foreground", actions: [request.actions[0]!] });
-  assert.match(reply.errorCode!, /foreground_permission_required/);
-  assert.equal(reply.data.completedCount, 0);
+  assert.throws(() => f.controller.sequence("s", { ...request, delivery: "foreground", actions: [request.actions[0]!] }), /[Uu]nrecognized/);
   assert.equal(f.calls.length, 0);
 });
 
@@ -86,7 +122,7 @@ test("连续动作总时限中断在途输入并保留已完成步数，立即�
     entered.resolve();
     return await new Promise<DriverReply>((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
   });
-  const pending = f.controller.sequence("s", { ...target, captureId: "c1", delivery: "background", actions: [
+  const pending = f.controller.sequence("s", { ...target, captureId: "c1", actions: [
     { action: "click", x: 1, y: 1 }, { action: "type_text", text: "hello" }, { action: "press_key", key: "Return" }
   ] });
   const rejection = assert.rejects(pending, /已收到 1 步回执.*第 2 步执行情况未知/);
@@ -386,38 +422,6 @@ test("PID reuse cannot deliver an old application's captured input even when bot
   assert.equal(inputs, 0);
 });
 
-// 前台交付是唯一允许动作改变用户焦点的模式，此前没有任何测试覆盖它的闸门。
-test("foreground delivery stays refused until the user turns it on, and closes again when they do not", async () => {
-  const f = fixture(); await f.controller.enable(); await f.controller.observe("s", target);
-
-  // 默认不放行：后台交付是默认，且不需要任何许可。
-  await f.controller.observe("s", target);
-  await f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Enter" });
-  assert.deepEqual(f.calls, ["press_key"], "默认的后台交付不该被闸门拦住");
-
-  // 同一个动作，声明成前台交付 → 必须拒绝，且绝不能派发。
-  await f.controller.observe("s", target);
-  await assert.rejects(
-    f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Enter", delivery: "foreground" }),
-    /foreground_permission_required/
-  );
-  assert.deepEqual(f.calls, ["press_key"], "被拒的前台动作不能落到驱动上");
-
-  // 用户显式放行后才通过。
-  f.controller.setForeground(true);
-  await f.controller.observe("s", target);
-  await f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Enter", delivery: "foreground" });
-  assert.deepEqual(f.calls, ["press_key", "press_key"], "放行后才派发");
-
-  // 关掉之后必须立刻恢复拒绝 —— 这个开关不能有粘性。
-  f.controller.setForeground(false);
-  await f.controller.observe("s", target);
-  await assert.rejects(
-    f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Enter", delivery: "foreground" }),
-    /foreground_permission_required/
-  );
-  assert.deepEqual(f.calls, ["press_key", "press_key"], "关闭后不得再派发前台动作");
-});
 
 // Alma 的 PiP 是「操控期间亮着的监督窗」：动作经 activity 续命，停手 90s 自动收起
 // （notes/19 §5、notes/01）。用户的选择不该因此被改掉 —— 所以「偏好」和「此刻显示」

@@ -5,16 +5,21 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { z } from "zod";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import { attachmentRoot, readAttachment, saveAttachment, savePendingAttachmentContext, updatePendingAttachmentContext } from "../src/attachments/store.js";
 
 interface Config {
   appshots: { hotkey: string; target: "current" };
   activity: { sensitiveApplications: string[] };
 }
-interface Capture { bytes: Buffer; context: string; name: string; bundle: string; at: number }
+interface Capture { bytes: Buffer; context: string; name: string; bundle: string; at: number; contextPending?: boolean; onContext?: (context: string) => void }
 interface Appshots {
   pending: Map<string, Capture>;
+  contexts: Map<string, Capture>;
   requests: Map<string, "current">;
   accept(id: string, raw: unknown): Promise<void>;
+  receive(raw: unknown): Promise<void>;
   take(id: string): Promise<Capture>;
   close(): Promise<void>;
 }
@@ -28,7 +33,8 @@ interface Project { id: string }
 interface Attachment { name: string; path: string; mimeType: string; size: number }
 interface Projects {
   requireProject(id: string): Project;
-  saveAttachment(project: Project, name: string, mimeType: string, bytes: Buffer, context: string): Promise<Attachment>;
+  saveAttachment(project: Project, name: string, mimeType: string, bytes: Buffer, context: string, pending?: boolean): Promise<Attachment>;
+  updateAppshotAttachmentContext(project: Project, path: string, context: string): Promise<boolean>;
 }
 interface WindowFixture { webContents: { mainFrame: object } }
 interface ServiceModule {
@@ -75,12 +81,13 @@ const firstId = "12345678-1234-4234-8234-123456789abc";
 const secondId = "12345678-1234-4234-8234-123456789abd";
 const allowed = (): Config => ({ appshots: { hotkey: "", target: "current" }, activity: { sensitiveApplications: [] } });
 
-async function fixture(save?: Projects["saveAttachment"], options: { captureBytes?: Buffer; now?: () => number } = {}) {
+async function fixture(save?: Projects["saveAttachment"], options: { captureBytes?: Buffer; now?: () => number; animate?: (signal: AbortSignal) => Promise<boolean>; update?: (path: string, context: string) => Promise<boolean> } = {}) {
   const instances: Appshots[] = [];
   let read: () => Promise<Config> = async () => allowed();
   const store: Store = { load: () => read() };
   const handlers = new Map<string, Handler>();
   const emitted: unknown[] = [];
+  const feedback: Array<{ frame: unknown; pixels: string }> = [];
   const window = {
     webContents: { mainFrame: {}, send: (_channel: string, event: unknown) => emitted.push(event) },
     isDestroyed: () => false, isMinimized: () => false,
@@ -114,24 +121,28 @@ async function fixture(save?: Projects["saveAttachment"], options: { captureByte
       constructor(...args: ConstructorParameters<AppshotsConstructor>) { super(...args); instances.push(this); }
     } },
     "../../../computer/appshotsProtocol.js": protocol,
+    "./AppshotFeedback.js": { AppshotFeedback: class { sound() {} async animate(_window: unknown, frame: unknown, bytes: Buffer, _icon: unknown, signal: AbortSignal) { feedback.push({ frame, pixels: bytes.toString() }); return options.animate ? await options.animate(signal) : false; } close() {} } },
     "../../../computer/nativeDriver.js": { NativeProcessDriver: class implements Driver {
       onNativeEvent() { return () => undefined; }
       detach() { detaches++; }
       daemonCommand = forbidden;
     } }
-  });
+  }, { AbortController, setTimeout, clearTimeout });
   const service = await serviceModule.createAppshotsService(store, {
     requireProject: id => ({ id }),
-    saveAttachment: async (project, name, mimeType, bytes, context) => {
+    saveAttachment: async (project, name, mimeType, bytes, context, pending) => {
       saves.push({ bytes, context });
-      return save ? await save(project, name, mimeType, bytes, context) : { name, path: "in-memory", mimeType, size: bytes.length };
+      return save ? await save(project, name, mimeType, bytes, context, pending) : { name, path: "in-memory", mimeType, size: bytes.length };
+    },
+    updateAppshotAttachmentContext: async (_project: Project, attachmentPath: string, context: string) => {
+      assert.ok(options.update); return await options.update(attachmentPath, context);
     }
   }, () => window);
   const appshots = instances[0]; assert.ok(appshots);
   const handler = handlers.get(protocol.appshotsIpc.attach); assert.ok(handler);
   const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
   return {
-    appshots, service, saves, emitted,
+    appshots, service, saves, emitted, feedback,
     attach: (id: string) => handler(event, "fixture-project", id),
     setRead: (next: () => Promise<Config>) => { read = next; },
     detaches: () => detaches,
@@ -142,6 +153,127 @@ async function fixture(save?: Projects["saveAttachment"], options: { captureByte
     }
   };
 }
+
+test("deferred window text survives attachment saving and freezes on first model read", { timeout: 15_000 }, async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "biny-deferred-appshot-"));
+  const saved = deferred<void>(), release = deferred<void>();
+  const root = attachmentRoot(workspace);
+  const f = await fixture(async (_project, name, mimeType, bytes, context, pending) => {
+    assert.equal(pending, true);
+    const attachment = await saveAttachment(workspace, name, mimeType, bytes);
+    await savePendingAttachmentContext(root, attachment.path, context);
+    saved.resolve(); await release.promise;
+    return { ...attachment, size: attachment.size ?? bytes.length };
+  }, { update: async (attachmentPath, context) => await updatePendingAttachmentContext(root, attachmentPath, context) });
+  const capture = f.seed(firstId);
+  capture.context = JSON.stringify({ source: { appName: "Notes" }, accessibility: "", accessibilityError: "accessibility_pending" });
+  capture.contextPending = true; f.appshots.contexts.set(firstId, capture);
+  try {
+    const attached = f.attach(firstId) as Promise<Attachment>;
+    await saved.promise;
+    await f.appshots.receive({ type: "context", id: firstId, data: { axText: "window text" } });
+    release.resolve(); const attachment = await attached;
+    const first = await readAttachment(workspace, attachment);
+    assert.equal(JSON.parse(first!.hiddenContext!).accessibility, "window text");
+    assert.equal(await updatePendingAttachmentContext(root, attachment.path, "unexpected late update"), false);
+    assert.equal((await readAttachment(workspace, attachment))?.hiddenContext, first?.hiddenContext);
+    assert.equal(JSON.stringify(f.emitted).includes("window text"), false);
+  } finally { release.resolve(); await f.service.close(); await rm(workspace, { recursive: true, force: true }); }
+});
+
+test("window text arriving after first use cannot change the message on replay", { timeout: 15_000 }, async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "biny-deferred-appshot-"));
+  const root = attachmentRoot(workspace), updated = deferred<boolean>();
+  const f = await fixture(async (_project, name, mimeType, bytes, context, pending) => {
+    assert.equal(pending, true);
+    const attachment = await saveAttachment(workspace, name, mimeType, bytes);
+    await savePendingAttachmentContext(root, attachment.path, context);
+    return { ...attachment, size: attachment.size ?? bytes.length };
+  }, { update: async (attachmentPath, context) => {
+    const result = await updatePendingAttachmentContext(root, attachmentPath, context); updated.resolve(result); return result;
+  } });
+  const capture = f.seed(firstId);
+  capture.context = JSON.stringify({ source: { appName: "Notes" }, accessibility: "", accessibilityError: "accessibility_pending" });
+  capture.contextPending = true; f.appshots.contexts.set(firstId, capture);
+  try {
+    const attachment = await f.attach(firstId) as Attachment;
+    const first = await readAttachment(workspace, attachment);
+    assert.equal(JSON.parse(first!.hiddenContext!).accessibilityError, "accessibility_pending");
+    await f.appshots.receive({ type: "context", id: firstId, data: { axText: "too late" } });
+    assert.equal(await updated.promise, false);
+    assert.equal((await readAttachment(workspace, attachment))?.hiddenContext, first?.hiddenContext);
+  } finally { await f.service.close(); await rm(workspace, { recursive: true, force: true }); }
+});
+
+test("window text arriving after attachment but before first use is included in the message", { timeout: 15_000 }, async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "biny-deferred-appshot-"));
+  const root = attachmentRoot(workspace), updated = deferred<boolean>();
+  const f = await fixture(async (_project, name, mimeType, bytes, context, pending) => {
+    assert.equal(pending, true);
+    const attachment = await saveAttachment(workspace, name, mimeType, bytes);
+    await savePendingAttachmentContext(root, attachment.path, context);
+    return { ...attachment, size: attachment.size ?? bytes.length };
+  }, { update: async (attachmentPath, context) => {
+    const result = await updatePendingAttachmentContext(root, attachmentPath, context); updated.resolve(result); return result;
+  } });
+  const capture = f.seed(firstId);
+  capture.context = JSON.stringify({ source: { appName: "Notes" }, accessibility: "", accessibilityError: "accessibility_pending" });
+  capture.contextPending = true; f.appshots.contexts.set(firstId, capture);
+  try {
+    const attachment = await f.attach(firstId) as Attachment;
+    await f.appshots.receive({ type: "context", id: firstId, data: { axText: "completed text", axError: "accessibility_tree_incomplete" } });
+    assert.equal(await updated.promise, true);
+    const first = await readAttachment(workspace, attachment);
+    assert.equal(JSON.parse(first!.hiddenContext!).accessibility, "completed text");
+    assert.equal(JSON.parse(first!.hiddenContext!).accessibilityError, "accessibility_tree_incomplete");
+    assert.equal((await readAttachment(workspace, attachment))?.hiddenContext, first?.hiddenContext);
+  } finally { await f.service.close(); await rm(workspace, { recursive: true, force: true }); }
+});
+
+test("a newly excluded application cannot contribute deferred context", async () => {
+  const f = await fixture();
+  const capture = f.seed(firstId);
+  capture.context = JSON.stringify({ source: { appName: "Notes" }, accessibility: "", accessibilityError: "accessibility_pending" });
+  capture.contextPending = true; f.appshots.contexts.set(firstId, capture);
+  let called = false; capture.onContext = () => { called = true; };
+  f.setRead(async () => ({ ...allowed(), activity: { sensitiveApplications: [capture.bundle] } }));
+  try {
+    await f.appshots.receive({ type: "context", id: firstId, data: { axText: "excluded text" } });
+    assert.equal(called, false);
+    assert.equal(JSON.parse(capture.context).accessibilityError, "accessibility_pending");
+    assert.equal(JSON.stringify(f.emitted).includes("excluded text"), false);
+  } finally { await f.service.close(); }
+});
+
+test("a context event that precedes image acceptance remains paired with its capture", async () => {
+  const f = await fixture(undefined, { captureBytes: Buffer.from("pixels") });
+  try {
+    f.appshots.requests.set(firstId, "current");
+    await f.appshots.receive({ type: "context", id: firstId, data: { axText: "early text" } });
+    await f.appshots.receive({ type: "context", id: secondId, data: { axText: "unrelated text" } });
+    await f.appshots.accept(firstId, { path: "/in-memory/capture.jpg", bundleId: "test.notes", appName: "Notes", pid: 12, windowId: 42, axPending: true });
+    const capture = await f.appshots.take(firstId);
+    assert.equal(JSON.parse(capture.context).accessibility, "early text");
+    assert.equal(capture.contextPending, false);
+    assert.equal(JSON.stringify(f.emitted).includes("early text"), false);
+    capture.bytes.fill(0);
+  } finally { await f.service.close(); }
+});
+
+test("closing while an early context is checked cannot publish a captured event", async () => {
+  const bytes = Buffer.from("pixels"), f = await fixture(undefined, { captureBytes: bytes });
+  const privacy = deferred<Config>(), entered = deferred<void>();
+  try {
+    f.appshots.requests.set(firstId, "current");
+    await f.appshots.receive({ type: "context", id: firstId, data: { axText: "early text" } });
+    let reads = 0;
+    f.setRead(async () => { if (++reads === 1) return allowed(); entered.resolve(); return await privacy.promise; });
+    const accepting = f.appshots.accept(firstId, { path: "/in-memory/capture.jpg", bundleId: "test.notes", appName: "Notes", pid: 12, windowId: 42, axPending: true });
+    await entered.promise; await f.service.close(); privacy.resolve(allowed()); await accepting;
+    assert.equal(f.emitted.length, 0);
+    assert.ok(bytes.every(byte => byte === 0));
+  } finally { privacy.resolve(allowed()); bytes.fill(0); }
+});
 
 test("a capture transfers to only one concurrent take after deferred privacy reads", async () => {
   const f = await fixture(); const capture = f.seed(firstId);
@@ -285,6 +417,72 @@ test("close during accept's privacy read discards the image without publishing a
     assert.deepEqual(f.fileCleanup(), { closes: 1, unlinks: 1 });
     assert.equal(f.appshots.pending.size, 0, "close must not be followed by a newly retained capture");
     assert.equal(f.emitted.length, 0, "no captured event may be published after close");
+    assert.equal(f.feedback.length, 0, "closed captures must not reach animation feedback");
     assert.ok(bytes.every(byte => byte === 0), "unclaimed private pixels must be wiped");
   } finally { bytes.fill(0); }
+});
+
+test("an accepted capture sends its image to feedback without adding pixels to the renderer event", async () => {
+  const bytes = Buffer.from("synthetic captured pixels");
+  const f = await fixture(undefined, { captureBytes: bytes });
+  try {
+    f.appshots.requests.set(firstId, "current");
+    await f.appshots.accept(firstId, { path: "/in-memory/capture.jpg", bundleId: "test.notes", appName: "Notes", pid: 12, windowId: 42, frame: { x: 10, y: 20, w: 300, h: 200 } });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.feedback.length, 1);
+    assert.equal(f.feedback[0]?.pixels, "synthetic captured pixels");
+    assert.equal(JSON.stringify(f.feedback[0]?.frame), JSON.stringify({ x: 10, y: 20, w: 300, h: 200 }));
+    assert.equal(JSON.stringify(f.emitted).includes("synthetic captured pixels"), false);
+    assert.equal(f.saves.length, 0, "feedback must not consume or save the pending attachment");
+  } finally { await f.service.close(); bytes.fill(0); }
+});
+
+test("the attachment event arrives during the final phase of the animation", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const bytes = Buffer.from("pixels"), started = deferred<boolean>();
+  const f = await fixture(undefined, { captureBytes: bytes, animate: async () => await started.promise });
+  try {
+    f.appshots.requests.set(firstId, "current");
+    await f.appshots.accept(firstId, { path: "/in-memory/capture.jpg", bundleId: "test.notes", appName: "Notes", pid: 12, windowId: 42, frame: { x: 10, y: 20, w: 300, h: 200 } });
+    assert.equal(f.emitted.length, 0);
+    started.resolve(true); await new Promise<void>(resolve => setImmediate(resolve));
+    t.mock.timers.tick(714); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.emitted.length, 0);
+    t.mock.timers.tick(1); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.emitted.length, 1);
+    assert.equal((f.emitted[0] as { type: string }).type, "captured");
+  } finally { started.resolve(false); await f.service.close(); bytes.fill(0); t.mock.timers.reset(); }
+});
+
+test("a stalled animation is cancelled and cannot prevent or duplicate attachment delivery", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const bytes = Buffer.from("pixels"), started = deferred<boolean>();
+  let signal: AbortSignal | undefined;
+  const f = await fixture(undefined, { captureBytes: bytes, animate: async value => { signal = value; return await started.promise; } });
+  try {
+    f.appshots.requests.set(firstId, "current");
+    await f.appshots.accept(firstId, { path: "/in-memory/capture.jpg", bundleId: "test.notes", appName: "Notes", pid: 12, windowId: 42, frame: { x: 10, y: 20, w: 300, h: 200 } });
+    t.mock.timers.tick(700); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(signal?.aborted, true);
+    assert.equal(f.emitted.length, 1);
+    started.resolve(true); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.emitted.length, 1);
+  } finally { started.resolve(false); await f.service.close(); bytes.fill(0); t.mock.timers.reset(); }
+});
+
+test("closing during the animation cancels delayed attachment delivery", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const bytes = Buffer.from("pixels"), started = deferred<boolean>();
+  let signal: AbortSignal | undefined, closed = false;
+  const f = await fixture(undefined, { captureBytes: bytes, animate: async value => { signal = value; return await started.promise; } });
+  try {
+    f.appshots.requests.set(firstId, "current");
+    await f.appshots.accept(firstId, { path: "/in-memory/capture.jpg", bundleId: "test.notes", appName: "Notes", pid: 12, windowId: 42, frame: { x: 10, y: 20, w: 300, h: 200 } });
+    started.resolve(true); await new Promise<void>(resolve => setImmediate(resolve));
+    await f.service.close(); closed = true;
+    t.mock.timers.tick(1000); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(signal?.aborted, true);
+    assert.equal(f.emitted.length, 0);
+    assert.ok(bytes.every(byte => byte === 0));
+  } finally { started.resolve(false); if (!closed) await f.service.close(); bytes.fill(0); t.mock.timers.reset(); }
 });

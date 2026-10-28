@@ -4,6 +4,7 @@ import { Socket } from "node:net";
 import { test, type TestContext } from "node:test";
 import type { JSDOM } from "jsdom";
 import type { Root } from "react-dom/client";
+import type { AppshotEvent } from "../src/computer/appshotsProtocol.js";
 import type { DesktopAgentEventEnvelope, DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 
 function deferred<T>() {
@@ -41,7 +42,7 @@ function cancelFrame(id: number): void { frameHost?.cancel(id); }
 // Mount the complete production App and its own views/hooks. Only IPC, native
 // DOM facilities, assets and the dependency ESM entry resolution are adapted.
 // The callbacks below are the real App subscriptions, not extracted handlers.
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, options: { hideSidebarB?: boolean } = {}) {
   const resources: { dom?: JSDOM; root?: Root; React?: typeof import("react"); imports?: ReturnType<typeof registerHooks> } = {};
   const restore: Array<() => void> = [];
   const frames = new Map<number, FrameRequestCallback>();
@@ -51,6 +52,7 @@ async function fixture(t: TestContext) {
   const opens: Array<ReturnType<typeof deferred<DesktopWorkspaceSnapshot | undefined>>> = [];
   const reads: Array<ReturnType<typeof deferred<DesktopSessionDocument>>> = [];
   const commitments: Array<{ projectId: string; sessionId?: string; activeView: string }> = [];
+  const appshotAttachments: Array<{ projectId: string; id: string }> = [];
   const listeners = new Map<string, (...args: never[]) => void>();
   let timersEnabled = false;
   t.after(async () => {
@@ -118,7 +120,7 @@ async function fixture(t: TestContext) {
   t.mock.method(Socket.prototype, "connect", () => { network.push("socket"); throw new Error("Unexpected socket"); });
   const api: Record<string, unknown> = {
     bootstrap: async (): Promise<DesktopBootstrap> => ({ version: "test", platform: "linux", projects: [project("a"), project("b")],
-      sidebarSessions: [session("a"), session("b")], workspace: workspace("a"), activeView: "chat",
+      sidebarSessions: options.hideSidebarB ? [session("a")] : [session("a"), session("b")], workspace: workspace("a"), activeView: "chat",
       sidebarWidth: 240, filePanelWidth: 320, themePreference: "light", fontPreference: { family: "system", size: 14 } }),
     createEmptyProject(url?: string) { const gate = deferred<DesktopWorkspaceSnapshot | undefined>(); creations.push({ url, gate }); return gate.promise; },
     openProject() { const gate = deferred<DesktopWorkspaceSnapshot | undefined>(); opens.push(gate); return gate.promise; },
@@ -129,16 +131,28 @@ async function fixture(t: TestContext) {
     skillCatalog: async () => ({ skills: [], warnings: [] }), skillSettings: async () => ({ activations: [] }), toolCatalog: async () => [],
     listProjectBranches: async () => [], recipeSuggestions: async () => [], planProjection: async () => ({ plans: [], activePlan: undefined }),
     activitySuggestions: async () => [],
+    browserSnapshot: async (projectId: string) => ({ projectId, revision: 0, tabs: [] }),
+    projectPreviewAvailability: async () => ({ available: false, reason: "Not configured" }),
+    projectPreviewStatus: async () => ({ kind: "stopped" }), browserBounds: async () => {},
     setSidebarWidth: async () => {}, setFilePanelWidth: async () => {}
   };
+  api.readInlineImage = async () => undefined;
   for (const name of ["onAppearanceChanged", "onApplicationImportsChanged", "onAgentEvent", "onSessionHandoff", "onMenuAction",
-    "onSettingsCloseRequest", "onBrowserOpenRequest", "onReferenceOpen"]) {
+    "onSettingsCloseRequest", "onBrowserOpenRequest", "onReferenceOpen", "onBrowserState", "onTerminalEvent"]) {
     api[name] = (listener: (...args: never[]) => void) => { listeners.set(name, listener); return () => listeners.delete(name); };
   }
   replace(window, "biny", new Proxy(api, { get(target, name: string) {
     if (name in target) return target[name];
     return (..._args: unknown[]) => { unknown.push(name); throw new Error(`Unexpected IPC ${name}`); };
   } }));
+  replace(window, "binyComputer", { onNavigate: (listener: (...args: never[]) => void) => { listeners.set("computerNavigate", listener); return () => listeners.delete("computerNavigate"); } });
+  replace(window, "binyAppshots", {
+    onEvent: (listener: (...args: never[]) => void) => { listeners.set("appshotEvent", listener); return () => listeners.delete("appshotEvent"); },
+    attach: async (projectId: string, id: string) => {
+      appshotAttachments.push({ projectId, id });
+      return { name: `${id}.jpg`, path: `attachments/${id}.jpg`, mimeType: "image/jpeg", size: 128 };
+    }
+  });
   const React = await import("react"); resources.React = React; replace(globalThis, "React", React);
   t.mock.timers.enable({ apis: ["setTimeout"] }); timersEnabled = true;
   const { createRoot } = await import("react-dom/client");
@@ -153,7 +167,15 @@ async function fixture(t: TestContext) {
     assert.ok(listeners.has(name), `Production App subscribed to ${name}`);
     await React.act(async () => listeners.get(name)!(value as never));
   };
-  return { document, window, React, creations, opens, commitments, api, click, emit,
+  return { document, window, React, creations, opens, commitments, appshotAttachments, api, click, emit,
+    async emitAppshot(event: AppshotEvent) {
+      assert.ok(listeners.has("appshotEvent"));
+      await React.act(async () => listeners.get("appshotEvent")!(event as never));
+    },
+    async emitComputer(value: { projectId?: string; sessionId?: string; revealBrowser?: boolean }) {
+      assert.ok(listeners.has("computerNavigate"));
+      await React.act(async () => listeners.get("computerNavigate")!(value as never));
+    },
     async create(url?: string) {
       await click('button[title="选择项目"]');
       const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.includes("新建项目"));
@@ -191,6 +213,133 @@ async function fixture(t: TestContext) {
     text: () => document.body.textContent ?? ""
   };
 }
+
+for (const target of ["new", "current"] as const) test(`Appshots ${target} selects its destination before capture and only attaches to the draft`, async t => {
+  const h = await fixture(t);
+  const drafts: string[] = [];
+  h.api.startDraft = async (projectId: string) => { drafts.push(projectId); return workspace(projectId); };
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const id = target === "new" ? "12345678-1234-4234-8234-123456789ac1" : "12345678-1234-4234-8234-123456789ac2";
+  await h.emitAppshot({ type: "starting", id, target });
+  assert.deepEqual(h.appshotAttachments, []);
+  assert.deepEqual(drafts, target === "new" ? ["a"] : []);
+  if (target === "new") {
+    assert.equal(h.selectedTitle(), undefined);
+    assert.doesNotMatch(h.body(), /Discuss a/u);
+  } else assert.match(h.body(), /Discuss a/u);
+  await h.emitAppshot({ type: "captured", id, target, source: { appName: "Notes", bundleId: "test.notes", pid: 12, windowId: 42 } });
+  assert.deepEqual(h.appshotAttachments, [{ projectId: "a", id }]);
+  assert.ok(h.document.querySelector('[aria-label="待发送附件"]')?.textContent?.includes(`${id}.jpg`));
+  assert.deepEqual(drafts, target === "new" ? ["a"] : [], "capture completion must not start the same draft again");
+  if (target === "current") assert.match(h.body(), /Discuss a/u);
+});
+
+test("failed Appshots capture leaves the new draft selected and reports its error", async t => {
+  const h = await fixture(t);
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const id = "12345678-1234-4234-8234-123456789ac3";
+  await h.emitAppshot({ type: "starting", id, target: "new" });
+  assert.equal(h.selectedTitle(), undefined);
+  await h.emitAppshot({ type: "failed", id, error: "appshot_frontmost_changed" });
+  assert.deepEqual(h.appshotAttachments, []);
+  assert.equal(h.selectedTitle(), undefined);
+  assert.match(h.text(), /appshot_frontmost_changed/u);
+});
+
+test("Appshots new preserves an existing draft without starting it again", async t => {
+  const h = await fixture(t);
+  let drafts = 0;
+  h.api.startDraft = async (projectId: string) => { drafts++; return workspace(projectId); };
+  const id = "12345678-1234-4234-8234-123456789ac4";
+  await h.emitAppshot({ type: "starting", id, target: "new" });
+  assert.equal(drafts, 0);
+  await h.emitAppshot({ type: "captured", id, target: "new", source: { appName: "Notes", bundleId: "test.notes", pid: 12, windowId: 42 } });
+  assert.equal(drafts, 0);
+  assert.ok(h.document.querySelector('[aria-label="待发送附件"]')?.textContent?.includes(`${id}.jpg`));
+});
+
+test("Appshots attachment survives completion of an earlier pending draft navigation", async t => {
+  const h = await fixture(t);
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const opening = deferred<DesktopWorkspaceSnapshot>();
+  let drafts = 0;
+  h.api.startDraft = async () => { drafts++; return opening.promise; };
+  const id = "12345678-1234-4234-8234-123456789ac5";
+  try {
+    await h.emitAppshot({ type: "starting", id, target: "new" });
+    assert.equal(h.selectedTitle(), undefined);
+    await h.emitAppshot({ type: "captured", id, target: "new", source: { appName: "Notes", bundleId: "test.notes", pid: 12, windowId: 42 } });
+    assert.ok(h.document.querySelector('[aria-label="待发送附件"]')?.textContent?.includes(`${id}.jpg`));
+    await h.React.act(async () => { opening.resolve(workspace("a")); await opening.promise; });
+    assert.ok(h.document.querySelector('[aria-label="待发送附件"]')?.textContent?.includes(`${id}.jpg`));
+    assert.equal(drafts, 1);
+  } finally { await h.React.act(async () => { opening.resolve(workspace("a")); await opening.promise; }); }
+});
+
+test("Appshots new does not pull a newer chat navigation back when capture completes", async t => {
+  const h = await fixture(t);
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const id = "12345678-1234-4234-8234-123456789ac6";
+  await h.emitAppshot({ type: "starting", id, target: "new" });
+  await h.emit("onSessionHandoff", { projectId: "b", sessionId: "session-b" });
+  await h.emitAppshot({ type: "captured", id, target: "new", source: { appName: "Notes", bundleId: "test.notes", pid: 12, windowId: 42 } });
+  assert.equal(h.projectName(), "Project b");
+  assert.match(h.body(), /Discuss b/u);
+  assert.equal(h.document.querySelector('[aria-label="待发送附件"]'), null);
+  assert.deepEqual(h.appshotAttachments, [{ projectId: "a", id }]);
+  await h.emitComputer({ projectId: "a" });
+  assert.ok(h.document.querySelector('[aria-label="待发送附件"]')?.textContent?.includes(`${id}.jpg`));
+});
+
+test("returning from embedded browser preview opens its project and chat before revealing the browser", async t => {
+  const h = await fixture(t, { hideSidebarB: true });
+  await h.emitComputer({ projectId: "b", sessionId: "session-b", revealBrowser: true });
+  assert.equal(h.projectName(), "Project b");
+  assert.match(h.body(), /Discuss b/u);
+  assert.ok(h.document.querySelector('[aria-label="内嵌浏览器"]'));
+});
+
+test("a newer chat navigation cancels a pending browser preview return", async t => {
+  const h = await fixture(t);
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const read = h.holdRead();
+  await h.emitComputer({ projectId: "b", sessionId: "session-b", revealBrowser: true });
+  await h.click('button.biny-sidebar-session-item[title="Conversation a"]');
+  await read.resolve("b");
+  assert.equal(h.projectName(), "Project a");
+  assert.match(h.body(), /Discuss a/u);
+  assert.equal(h.document.querySelector('[aria-label="内嵌浏览器"]'), null);
+});
+
+test("a browser preview without a session preserves the current chat in the same project", async t => {
+  const h = await fixture(t);
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const before = [...h.commitments];
+  await h.emitComputer({ projectId: "a", revealBrowser: true });
+  assert.match(h.body(), /Discuss a/u);
+  assert.deepEqual(h.commitments, before, "revealing the browser must not create a new draft");
+  assert.ok(h.document.querySelector('[aria-label="内嵌浏览器"]'));
+});
+
+test("failed browser preview navigation does not reveal an unrelated project's browser", async t => {
+  const h = await fixture(t);
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const read = h.holdRead();
+  await h.emitComputer({ projectId: "b", sessionId: "session-b", revealBrowser: true });
+  await read.reject(new Error("History unavailable"));
+  assert.equal(h.projectName(), "Project a");
+  assert.match(h.body(), /Discuss a/u);
+  assert.match(h.text(), /History unavailable/u);
+  assert.equal(h.document.querySelector('[aria-label="内嵌浏览器"]'), null);
+});
+
+test("a non-browser preview return does not open the embedded browser", async t => {
+  const h = await fixture(t, { hideSidebarB: true });
+  await h.emitComputer({ projectId: "b", sessionId: "session-b" });
+  assert.equal(h.projectName(), "Project b");
+  assert.match(h.body(), /Discuss b/u);
+  assert.equal(h.document.querySelector('[aria-label="内嵌浏览器"]'), null);
+});
 
 test("new project completion preserves a newer session handoff", async t => {
   const h = await fixture(t);

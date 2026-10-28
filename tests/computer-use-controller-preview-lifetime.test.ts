@@ -41,6 +41,22 @@ function fixture(t: TestContext, overrides: Partial<ComputerDriver> = {}, option
   return { controller, driver, visible, frames, calls, mirrorCalls, registrations };
 }
 
+test("launch presents an empty preview after approval and late completion cannot reopen a stopped preview", async t => {
+  const entered = deferred(), finish = deferred<DriverReply>();
+  const f = fixture(t, { launchApp: async () => { entered.resolve(); return await finish.promise; } }, { authorizeLaunch: async () => undefined });
+  await f.controller.observe("old", target);
+  assert.ok(f.frames.at(-1), "the previous observation had an image");
+  const pending = f.controller.launch("old", "test.synthetic");
+  await entered.promise;
+  assert.equal(f.frames.at(-1), undefined, "the old app image is cleared before presenting launch activity");
+  assert.deepEqual(f.visible, [true]);
+  await f.controller.disable();
+  assert.deepEqual(f.visible, [true, false]);
+  finish.resolve({ data: { pid: 42 }, images: [] });
+  await pending;
+  assert.deepEqual(f.visible, [true, false], "a late launch reply cannot reopen a stopped preview");
+});
+
 for (const reenable of [false, true]) test(`late confirmed input preserves its receipt without reopening preview after disable${reenable ? "/enable" : ""}`, async t => {
   t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
   const entered = deferred(), finish = deferred<DriverReply>();

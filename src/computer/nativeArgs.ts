@@ -22,11 +22,11 @@ export function toNativeActionArgs(action: Payload & Partial<WindowTarget>): Rec
     case "type_text": return { ...common, text: action.text, input_method: action.inputMethod, ref: action.elementToken };
     case "press_key": return { ...common, key: action.key };
     case "scroll": return { ...common, ref: action.elementToken, x: action.x, y: action.y, direction: action.direction, pages: action.pages ?? 1 };
-    case "drag": return { ...common, x1: action.x1, y1: action.y1, x2: action.x2, y2: action.y2 };
-    case "perform_secondary_action": return { ...common, ...(action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }) };
+    case "drag": return { ...common, x1: action.x1, y1: action.y1, x2: action.x2, y2: action.y2, button: action.button };
+    case "perform_secondary_action": return { ...common, ...(action.elementToken ? { ref: action.elementToken, secondary_action: action.secondaryAction } : { x: action.x, y: action.y }) };
     case "set_value": return { ...common, ref: action.elementToken, value: action.value };
     case "select_text": return { ...common, ref: action.elementToken, ...(action.matchText !== undefined
-      ? { match_text: action.matchText, prefix: action.prefix, suffix: action.suffix }
+      ? { match_text: action.matchText, prefix: action.prefix, suffix: action.suffix, selection_type: action.selectionType }
       : action.text !== undefined ? { text: action.text } : { location: action.location, length: action.length ?? 0 }) };
   }
 }

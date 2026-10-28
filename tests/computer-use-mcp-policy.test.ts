@@ -19,7 +19,7 @@ test("external MCP uses persistent application approval, refuses disabled contro
   const journal = new ComputerAuditStore(path.join(root, "actions.sqlite")); let dispatched = 0, notices = 0;
   const driver = new NativeProcessDriver(() => undefined);
   driver.list = async () => ({ data: { apps: [{ pid: 12, bundleId: "test.notes", name: "Notes", running: true }] }, images: [] });
-  driver.observeRaw = async () => ({ data: { pid: 12, window_id: 42, bundleId: "test.notes", elements: [] }, images: [] });
+  driver.observeRaw = async () => ({ data: { pid: 12, window_id: 42, bundleId: "test.notes", elements: [] }, images: [{ mimeType: "image/jpeg", dataBase64: "/9j/2Q==" }] });
   driver.actRaw = async (_cmd, args, pid) => { dispatched++; assert.equal(pid, 12); assert.equal(args.window_id, 42); return { data: { typed: 1 }, images: [] }; };
   driver.capturePreview = async () => ({ data: {}, images: [] });
   const policy = new LocalComputerMcpPolicy(driver, store, journal, async () => { notices++; });
@@ -54,5 +54,32 @@ test("a not-recent installed application is identified and authorized before lau
     assert.equal(launches, 0); await new ComputerAppApprovals(store).approve("test.installed");
     await policy.run("launch_app", { bundle: "test.installed" }, async () => { launches++; return { content: [] }; });
     assert.equal(launches, 1);
+  } finally { await policy.close(); await driver.dispose(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("input target comes from the structured observation rather than its display text", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-observation-target-"));
+  const store = createFileConfigStore(root, { globalDir: root });
+  const driver = new NativeProcessDriver(() => undefined);
+  driver.list = async () => ({ data: { apps: [{ pid: 12, bundleId: "test.notes", name: "Notes", running: true }] }, images: [] });
+  const policy = new LocalComputerMcpPolicy(driver, store, new ComputerAuditStore(), async () => undefined, async () => undefined);
+  let dispatched = 0;
+  try {
+    await updateConfig(store, undefined, config => ({ ...config, computer: { ...config.computer, enabled: true, strictApproval: false } }));
+    for (const text of ["Observed Notes", '{"detail":{"pid":99,"window_id":999},"pid":12,"window_id":42}']) {
+      await policy.run("get_app_state", { pid: 12, window_id: 42 }, async () => ({
+        content: [{ type: "text", text }, { type: "image", mimeType: "image/jpeg", data: "/9j/2Q==" }],
+        structuredContent: { pid: 12, window_id: 42 }
+      }));
+      const input = { pid: 12, window_id: 42, text: "test" };
+      await policy.run("type_text", input, async () => { dispatched++; assert.equal(input.pid, 12); assert.equal(input.window_id, 42); return { content: [] }; });
+    }
+    assert.equal(dispatched, 2);
+    await assert.rejects(policy.run("get_app_state", { pid: 12, window_id: 42 }, async () => ({
+      content: [{ type: "text", text: '{"pid":12,"window_id":42}' }, { type: "image", mimeType: "image/jpeg", data: "/9j/2Q==" }],
+      structuredContent: { pid: 12, window_id: 999 }
+    })), /capture_target_mismatch/);
+    await assert.rejects(policy.run("type_text", { pid: 12, text: "blocked" }, async () => { dispatched++; return { content: [] }; }), /computer_observation_required/);
+    assert.equal(dispatched, 2);
   } finally { await policy.close(); await driver.dispose(); await rm(root, { recursive: true, force: true }); }
 });

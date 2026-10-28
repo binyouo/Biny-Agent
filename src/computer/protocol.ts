@@ -48,22 +48,24 @@ export const computerActionPayload = z.object({
   action: z.enum(["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"]),
   showCursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action."),
   /** physical 先验证整段文本可由当前键盘布局表达；ax 按元素写入。 */
-  inputMethod: z.enum(["auto", "physical", "unicode", "ax"]).optional().describe("auto chooses writable AX with a ref, then a complete physical key plan, then Unicode. physical rejects unrepresentable text before input; unicode uses keyboard focus; ax requires an element token."),
+  inputMethod: z.enum(["auto", "physical", "unicode", "ax"]).optional().describe("auto tries AX with a writable ref, then a complete physical key plan, then Unicode. With a ref, keyboard fallback requires the target or its child to have focus. physical rejects unrepresentable text before input; unicode uses keyboard focus; ax requires an element token."),
   button: z.enum(["left", "right", "middle"]).optional(),
   clickCount: z.number().int().min(1).max(3).optional(),
-  strategy: z.enum(["auto", "physical", "ax"]).optional(),
+  strategy: z.enum(["auto", "physical", "ax"]).optional().describe("auto prefers a physical click when the element has bounds; without bounds, a single left click tries AX. ax only performs the control's action. Input errors never fall back to another route."),
   coordinateSpace: z.enum(["screenshot", "screen"]).optional(),
   x: z.number().finite().optional(), y: z.number().finite().optional(),
-  text: z.string().max(4000).optional(), key: z.string().min(1).max(40).optional(),
+  text: z.string().max(4000).optional(), key: z.string().min(1).max(40).optional().describe("Key or chord such as Return, F1, cmd+s or cmd+opt+esc; unknown keys and modifiers are rejected."),
   direction: z.enum(["up", "down", "left", "right"]).optional(),
   // 单位是**页**，不是行。一页 = 视口/内容，由守护进程从滚动区量出来（原生目标）；
   // 网页内容量不出页大小，那里会换算成行数并在回执里标注是估算。
-  pages: z.number().int().min(1).max(20).optional().describe("Pages to scroll, default 1. Native areas use measured viewport ratios; web areas use estimated wheel notches."),
+  pages: z.number().finite().positive().max(20).optional().describe("Pages to scroll, default 1. Native areas use measured viewport ratios; web areas use estimated wheel notches."),
   x1: z.number().finite().optional(), y1: z.number().finite().optional(),
   x2: z.number().finite().optional(), y2: z.number().finite().optional(),
   value: z.union([z.string().max(4000), z.number(), z.boolean()]).optional(),
+  secondaryAction: z.string().min(1).max(256).optional().describe("Accessibility action to perform on a referenced control; omitted opens its context menu."),
   location: z.number().int().nonnegative().optional().describe("select_text 的 UTF-16 起始偏移。"), length: z.number().int().nonnegative().optional().describe("UTF-16 选区长度，默认零；零表示移动光标。"),
   matchText: z.string().min(1).max(4000).optional().describe("按文字匹配选区，不修改正文；不得与 text/location/length 混用。"), prefix: z.string().max(1000).optional(), suffix: z.string().max(1000).optional(),
+  selectionType: z.enum(["text", "cursor_before", "cursor_after"]).optional().describe("选择匹配文字，或将光标置于文字前后。"),
   elementToken: z.string().min(1).max(256).optional()
 }).strict();
 export function validateComputerAction(value: z.infer<typeof computerActionPayload>, context: z.RefinementCtx): void {
@@ -77,27 +79,27 @@ export function validateComputerAction(value: z.infer<typeof computerActionPaylo
   if (value.action === "scroll" && (!value.direction || (!value.elementToken && (value.x === undefined || value.y === undefined)) || (value.x === undefined) !== (value.y === undefined))) context.addIssue({ code: "custom", message: "scroll requires direction and an elementToken or complete x/y coordinates" });
   if (value.action === "drag" && (value.x1 === undefined || value.y1 === undefined || value.x2 === undefined || value.y2 === undefined)) context.addIssue({ code: "custom", message: "drag requires x1, y1, x2 and y2" });
   if (value.action === "perform_secondary_action" && !value.elementToken && (value.x === undefined || value.y === undefined)) context.addIssue({ code: "custom", message: "perform_secondary_action requires elementToken or screenshot coordinates" });
+  if (value.secondaryAction !== undefined && (value.action !== "perform_secondary_action" || !value.elementToken)) context.addIssue({ code: "custom", message: "secondaryAction requires perform_secondary_action and an elementToken" });
   if (value.action === "set_value" && (!value.elementToken || value.value === undefined)) context.addIssue({ code: "custom", message: "set_value requires elementToken and value" });
   if (value.action === "select_text" && (!value.elementToken || (value.text === undefined && value.location === undefined && value.matchText === undefined))) context.addIssue({ code: "custom", message: "select_text requires elementToken and text, location or matchText" });
   if (value.matchText !== undefined && (value.action !== "select_text" || value.text !== undefined || value.location !== undefined || value.length !== undefined)) context.addIssue({ code: "custom", message: "文字匹配选区不能与写入文本或位置选区混用" });
   if ((value.prefix !== undefined || value.suffix !== undefined) && value.matchText === undefined) context.addIssue({ code: "custom", message: "前后文只能用于文字匹配选区" });
+  if (value.selectionType !== undefined && value.matchText === undefined) context.addIssue({ code: "custom", message: "selectionType 只能用于文字匹配选区" });
 }
 export const computerActionPayloadSchema = computerActionPayload.superRefine(validateComputerAction);
 const computerActionObjectSchema = computerActionPayload.extend({
   ...windowTargetSchema.shape,
   captureId: z.string().min(1).max(256),
-  delivery: z.enum(["background", "foreground"]).default("background")
 });
 export const computerActionSchema = computerActionObjectSchema.superRefine(validateComputerAction);
 
 export type ComputerAction = z.infer<typeof computerActionSchema>;
 export const computerSequenceSchema = windowTargetSchema.extend({
   captureId: z.string().min(1).max(256),
-  delivery: z.enum(["background", "foreground"]).default("background"),
-  actions: z.array(computerActionObjectSchema.omit({ pid: true, windowId: true, captureId: true, delivery: true })).min(1).max(5),
+  actions: z.array(computerActionObjectSchema.omit({ pid: true, windowId: true, captureId: true })).min(1).max(5),
 }).strict().superRefine((value, context) => {
   for (const [index, step] of value.actions.entries()) {
-    const parsed = computerActionSchema.safeParse({ ...step, pid: value.pid, windowId: value.windowId, captureId: value.captureId, delivery: value.delivery });
+    const parsed = computerActionSchema.safeParse({ ...step, pid: value.pid, windowId: value.windowId, captureId: value.captureId });
     if (!parsed.success) for (const issue of parsed.error.issues) context.addIssue({ ...issue, path: ["actions", index, ...issue.path] });
     if (index > 0 && (!["type_text", "press_key"].includes(step.action) || step.elementToken !== undefined)) context.addIssue({ code: "custom", path: ["actions", index], message: "首步之后只允许向当前焦点输入或按键，不允许沿用控件引用" });
   }
@@ -106,7 +108,7 @@ export type ComputerSequence = z.infer<typeof computerSequenceSchema>;
 export const computerImageSchema = z.object({ mimeType: z.enum(["image/png", "image/jpeg"]), dataBase64: z.string().max(Math.ceil(maxComputerImageBytes / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/) }).strict();
 export type ComputerImage = z.infer<typeof computerImageSchema>;
 export type ComputerState = "disabled" | "ready" | "paused" | "taken-over" | "unknown";
-export interface ComputerStatus { state: ComputerState; owner?: string; preview: boolean; foregroundAllowed: boolean; actionLogging?: boolean; lastOutcome: "not-dispatched" | "completed" | "refused" | "unverified" | "unknown"; diagnostic?: string }
+export interface ComputerStatus { state: ComputerState; owner?: string; preview: boolean; actionLogging?: boolean; lastOutcome: "not-dispatched" | "completed" | "refused" | "unverified" | "unknown"; diagnostic?: string }
 export type ComputerPermissionState = "granted" | "denied" | "unknown";
 export interface ComputerAuditEntry {
   at: number; action: ComputerAction["action"]; target: WindowTarget;
@@ -130,15 +132,14 @@ export interface ComputerDiagnostics {
   audit: ComputerAuditEntry[]; error?: string;
   actionLimits?: ComputerActionLimit[];
 }
-export interface ComputerPreview { image: ComputerImage; target: WindowTarget; capturedAt: number }
+export interface ComputerPreview { image: ComputerImage; target: WindowTarget; capturedAt: number; cursor?: { x: number; y: number; expiresAt: number } }
 export type ComputerControl = "pause" | "resume" | "takeover" | "stop";
 export interface ComputerDesktopApi {
-  onNavigate?(listener: (target: { sessionId?: string; projectId?: string }) => void): () => void;
+  onNavigate?(listener: (target: { sessionId?: string; projectId?: string; revealBrowser?: boolean }) => void): () => void;
   status(): Promise<ComputerStatus>;
   enable(): Promise<ComputerStatus>;
   control(control: ComputerControl): Promise<ComputerStatus>;
   preview(enabled: boolean): Promise<ComputerStatus>;
-  foreground(enabled: boolean): Promise<ComputerStatus>;
   logging(enabled: boolean): Promise<ComputerStatus>;
   diagnostics(): Promise<ComputerDiagnostics>;
   requestAccessibility(): Promise<ComputerDiagnostics>;
@@ -147,4 +148,4 @@ export interface ComputerDesktopApi {
   approve(bundleId: string): Promise<ComputerDiagnostics>;
   revoke(bundleId: string): Promise<ComputerDiagnostics>;
 }
-export const computerIpc = { navigate: "desktop:computer:navigate", strict: "desktop:computer:strict", approve: "desktop:computer:approve", revoke: "desktop:computer:revoke", status: "desktop:computer:status", enable: "desktop:computer:enable", control: "desktop:computer:control", preview: "desktop:computer:preview", foreground: "desktop:computer:foreground", logging: "desktop:computer:logging", diagnostics: "desktop:computer:diagnostics", accessibility: "desktop:computer:accessibility", test: "desktop:computer:test" } as const;
+export const computerIpc = { navigate: "desktop:computer:navigate", strict: "desktop:computer:strict", approve: "desktop:computer:approve", revoke: "desktop:computer:revoke", status: "desktop:computer:status", enable: "desktop:computer:enable", control: "desktop:computer:control", preview: "desktop:computer:preview", logging: "desktop:computer:logging", diagnostics: "desktop:computer:diagnostics", accessibility: "desktop:computer:accessibility", test: "desktop:computer:test" } as const;

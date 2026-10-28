@@ -101,19 +101,19 @@ test("authenticated HTTP MCP rejects small over-budget arguments while preservin
     assert.deepEqual(policyCalls, []);
     assert.deepEqual(nativeCalls, [], "invalid sequence must not reach native dispatch");
 
-    // All declared sequence fields fit: 5 root keys + 5 array entries +
-    // 5 * 24 scalar action fields = 130, including mutually exclusive fields.
+    // All declared sequence fields fit: 4 root keys + 5 array entries +
+    // 5 * 26 scalar action fields = 139, including mutually exclusive fields.
     const shape = computerSequenceSchema.shape;
-    assert.equal(Object.keys(shape).length + 5 + 5 * Object.keys(shape.actions.element.shape).length, 130);
+    assert.equal(Object.keys(shape).length + 5 + 5 * Object.keys(shape.actions.element.shape).length, 139);
     const step = {
       action: "type_text", showCursor: false, inputMethod: "physical", button: "left", clickCount: 1,
       strategy: "auto", coordinateSpace: "screenshot", x: 1, y: 1, text: "x".repeat(4_000), key: "Return",
       direction: "down", pages: 1, x1: 1, y1: 1, x2: 2, y2: 2, value: "x", location: 0, length: 1
     };
-    const sequence = { ...target, delivery: "background", actions: [
+    const sequence = { ...target, actions: [
       { ...step, action: "click", elementToken: "fixture-element" }, ...Array.from({ length: 4 }, () => ({ ...step }))
     ] };
-    assert.equal(Object.keys(sequence).length + sequence.actions.length + sequence.actions.reduce((count, action) => count + Object.keys(action).length, 0), 111);
+    assert.equal(Object.keys(sequence).length + sequence.actions.length + sequence.actions.reduce((count, action) => count + Object.keys(action).length, 0), 110);
     assert.equal(computerSequenceSchema.safeParse(sequence).success, true);
     const sequenceReply = await client.callTool({ name: "sequence", arguments: sequence });
     assert.equal(sequenceReply.isError, true);
