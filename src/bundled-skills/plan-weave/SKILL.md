@@ -5,7 +5,9 @@ allowed-tools:
   - Bash
 ---
 
-# Persistent Work Plans
+# Plan Weave Skill
+
+Run long, multi-step work as a **persistent task graph**. Use this for migrations, large features, investigations, and work with independently verifiable stages. For a short checklist use `todo`; for one independently tracked worker use `tasks`.
 
 Run commands from the intended workspace. The Runtime Host stores the graph and its execution records; a plan is not proof that its work ran.
 
@@ -26,6 +28,17 @@ biny graph create --nodes '[
 Model actual prerequisites. Independent branches can share an upstream dependency; coupled edits need an explicit order. Include acceptance criteria in each prompt, and use the optional `verification` field only with a supported deterministic verification contract. A node named `verify` is ordinary work, not an approval gate or automatic proof of correctness.
 
 Graph creation does not create a separate persistent goal. Only when the user explicitly requests goal tracking, use `biny goal set "<objective>" --session <sessionId> --json`; do not infer that request from a large task.
+
+### Authoring Quality
+
+- Split tasks by data flow, contract boundary, or independently verifiable acceptance — merge tiny tasks that can't be executed or verified on their own
+- Every key requirement of the goal must map to a node or acceptance item
+- Node `prompt` must be scoped and verifiable; state what NOT to touch when it matters
+- Put a review node after any work where "plausible but wrong" is likely (schema changes, contracts, security-sensitive paths)
+- Model the real execution order with `dependencies`; don't fake parallelism between coupled tasks
+- Reject fake completion: schema with no runtime use, API with no caller, config never read, fixture-only testing
+
+A review node is an ordinary graph step. Biny does not implement claim/submit/review-cycle commands here. If review discovers missing work, pause the graph and resolve the actual blocked outcome before progressing; never treat a review label as an approval gate.
 
 ## Start and inspect
 

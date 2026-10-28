@@ -3,10 +3,9 @@ name: todo
 description: "Manage a lightweight todo list for a small set of immediate, mostly linear steps in the current session. Use to create a checklist, show remaining work, add or complete items, reorder, or clear the list. Keep at most one item in progress; use tasks for independent execution and plan-weave for dependencies or review gates."
 allowed-tools:
   - Bash
-  - Bash
 ---
 
-# Session Checklists
+# Todo Skill
 
 Manage the structured todo list for the current session. Biny stores the list in its session-scoped TodoStore and injects it back into the model on later turns, so it survives context compaction without becoming an executor or a second source of task truth.
 
@@ -61,3 +60,17 @@ biny todo clear --yes --json
 - Do not create a todo list for formality when the request is one step.
 - If a write fails, preserve the last known persisted list and report the error; do not claim the replacement succeeded.
 - Keep the user's language in item text when that is clearer; the skill instructions being in English do not require an English response.
+
+## Example Session
+
+Create the checklist when starting related work:
+
+```bash
+biny todo replace --todos '[{"content":"Refactor database layer","status":"in_progress"},{"content":"Add migration support","status":"pending"},{"content":"Update API endpoints","status":"pending"},{"content":"Run focused tests","status":"pending"}]' --json
+```
+
+After the first step is verified, mark it complete and start the next step. Send the full list so unfinished work stays visible:
+
+```bash
+biny todo replace --todos '[{"content":"Refactor database layer","status":"completed"},{"content":"Add migration support","status":"in_progress"},{"content":"Update API endpoints","status":"pending"},{"content":"Run focused tests","status":"pending"}]' --json
+```
