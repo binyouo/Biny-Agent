@@ -68,6 +68,7 @@ export class DesktopStateStore {
   private writeTail = Promise.resolve();
   private readonly projectInspectionTokens = new WeakMap<DesktopProject, object>();
   private readonly projectGitInspectionTokens = new WeakMap<DesktopProject, object>();
+  private readonly selectedSessionTokens = new WeakMap<DesktopProject, object>();
 
   constructor(private readonly filePath: string) {}
 
@@ -171,9 +172,9 @@ export class DesktopStateStore {
 
   /** Renderer 确认导航成功后，一次提交当前项目、该项目的会话选择和主界面。 */
   async commitSelection(projectId: string, sessionId: string | undefined, activeView: DesktopActiveView): Promise<void> {
-    if (!this.state.projects.some((project) => project.id === projectId)) {
-      throw new Error(`Unknown project: ${projectId}`);
-    }
+    const project = this.state.projects.find((candidate) => candidate.id === projectId);
+    if (!project) throw new Error(`Unknown project: ${projectId}`);
+    this.selectedSessionTokens.set(project, {});
     this.state.activeProjectId = projectId;
     if (sessionId === undefined) delete this.state.selectedSessionIds[projectId];
     else this.state.selectedSessionIds[projectId] = sessionId;
@@ -221,11 +222,22 @@ export class DesktopStateStore {
     await this.save();
   }
 
+  /** Captures cleanup permission, not ownership of navigation or a returned workspace. */
+  captureSelectedSessionLifetime(projectId: string): () => boolean {
+    const project = this.state.projects.find((candidate) => candidate.id === projectId);
+    const token = project ? this.selectedSessionTokens.get(project) : undefined;
+    return () => project !== undefined
+      && this.state.projects.find((candidate) => candidate.id === projectId) === project
+      && this.selectedSessionTokens.get(project) === token;
+  }
+
   selectedSessionId(projectId: string): string | undefined {
     return this.state.selectedSessionIds[projectId];
   }
 
   async setSelectedSession(projectId: string, sessionId: string | undefined): Promise<void> {
+    const project = this.state.projects.find((candidate) => candidate.id === projectId);
+    if (project) this.selectedSessionTokens.set(project, {});
     if (sessionId === undefined) delete this.state.selectedSessionIds[projectId];
     else this.state.selectedSessionIds[projectId] = sessionId;
     await this.save();

@@ -345,6 +345,8 @@ async function startDesktopApplication(): Promise<void> {
       ? initialTarget.sessionId
       : undefined;
     const activeView = explicitSessionId === undefined ? state.activeView() : "chat";
+    // A delayed bootstrap may inspect old sessions after a newer selection was committed.
+    const ownsSelection = activeProjectId === undefined ? undefined : state.captureSelectedSessionLifetime(activeProjectId);
     const workspace = activeProjectId
       ? await agents.prepareWorkspace(activeProjectId)
       : undefined;
@@ -352,7 +354,7 @@ async function startDesktopApplication(): Promise<void> {
     const restorableSessionId = storedSessionId && workspace?.sessions.some((session) => session.id === storedSessionId)
       ? storedSessionId
       : undefined;
-    if (storedSessionId && restorableSessionId === undefined && activeProjectId) {
+    if (storedSessionId && restorableSessionId === undefined && activeProjectId && ownsSelection?.()) {
       await state.setSelectedSession(activeProjectId, undefined);
     }
     const selectedSessionId = explicitSessionId ?? restorableSessionId;
