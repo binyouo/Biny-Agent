@@ -781,50 +781,66 @@ async function initializeCommandRuntime(
   await agent.initialize();
   if (!agent) throw new Error("Failed to initialize Biny agent runtime.");
 
-  const heartbeatRecorder = new SessionRecorder(persistenceRoot, "heartbeat", undefined, runtimeAuthority.asSink());
-  cleanup.heartbeatAgent = async () => await heartbeatRecorder.close();
-  const heartbeatCommunication = new TaskCommunication(taskRuns, heartbeatRecorder.sessionId);
-  cleanup.heartbeatCommunication = () => heartbeatCommunication.close();
   const heartbeatToolModel = resolveToolModel(config, providerCredentials);
   const heartbeatNotificationDeduper = new HeartbeatNotificationDeduper();
   let ownerNotificationSink: ((notification: string) => Promise<void>) | undefined;
-  const heartbeatModel = heartbeatToolModel ?? modelManager.getModel();
-  const heartbeatAgent = new AgentSession({
-    workspaceRoot,
-    persistenceRoot,
-    configStore,
-    config,
-    model: heartbeatModel,
-    toolRegistry,
-    permissionManager,
-    recorder: heartbeatRecorder,
-    skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
-    subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
-    skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
-    selectCapabilities: async (input, runId) => await preselectCapabilities({
-      ...input,
-      models: resolveToolModelCandidates(input.config, providerCredentials),
-      tools: toolRegistry.listEntries().map(({ source, tool }) => ({ ...tool, source })).filter(isToolModelVisible),
-      skills: skillsForRun(runId).skills,
-      selectionState: selectionStateForConfig(input.config)
-    }),
-    prepareToolDiscovery: async (query, signal) => {
-      const result = await resourceScope.waitForMcpDiscovery({ query, signal });
-      refreshExtensionTools();
-      return { pending: result.pending, timedOut: result.timedOut };
-    },
-    mcpPrompt: () => mcpHost.instructionsPrompt(),
-    todoStore: todos,
-    sessionGoals,
-    taskCommunication: heartbeatCommunication,
-    createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
-    attachmentRoot: projectAttachmentRoot,
-    runtimeEventSink: runtimeAuthority.asSink(),
-    capabilities,
-    pluginLifecycle
-  });
-  cleanup.heartbeatAgent = async () => await heartbeatAgent.close();
-  await heartbeatAgent.initialize();
+  let heartbeatAgent: Promise<AgentSession> | undefined;
+  const initializeHeartbeatAgent = async (): Promise<AgentSession> => {
+    const heartbeatRecorder = new SessionRecorder(persistenceRoot, "heartbeat", undefined, runtimeAuthority.asSink());
+    const heartbeatCommunication = new TaskCommunication(taskRuns, heartbeatRecorder.sessionId);
+    cleanup.heartbeatCommunication = () => heartbeatCommunication.close();
+    let session: AgentSession | undefined;
+    try {
+      session = new AgentSession({
+        workspaceRoot,
+        persistenceRoot,
+        configStore,
+        config,
+        model: heartbeatToolModel ?? modelManager.getModel(),
+        toolRegistry,
+        permissionManager,
+        recorder: heartbeatRecorder,
+        skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
+        subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
+        skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
+        selectCapabilities: async (input, runId) => await preselectCapabilities({
+          ...input,
+          models: resolveToolModelCandidates(input.config, providerCredentials),
+          tools: toolRegistry.listEntries().map(({ source, tool }) => ({ ...tool, source })).filter(isToolModelVisible),
+          skills: skillsForRun(runId).skills,
+          selectionState: selectionStateForConfig(input.config)
+        }),
+        prepareToolDiscovery: async (query, signal) => {
+          const result = await resourceScope.waitForMcpDiscovery({ query, signal });
+          refreshExtensionTools();
+          return { pending: result.pending, timedOut: result.timedOut };
+        },
+        mcpPrompt: () => mcpHost.instructionsPrompt(),
+        todoStore: todos,
+        sessionGoals,
+        taskCommunication: heartbeatCommunication,
+        createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
+        attachmentRoot: projectAttachmentRoot,
+        runtimeEventSink: runtimeAuthority.asSink(),
+        capabilities,
+        pluginLifecycle
+      });
+      await session.initialize();
+      return session;
+    } catch (error) {
+      try {
+        if (session) await session.close();
+        else await heartbeatRecorder.close();
+      } finally {
+        heartbeatCommunication.close();
+      }
+      throw error;
+    }
+  };
+  cleanup.heartbeatAgent = async () => {
+    const session = await heartbeatAgent?.catch(() => undefined);
+    await session?.close();
+  };
   const heartbeat = new HeartbeatScheduler({
     configDir: undefined,
     enabled: config.heartbeat.enabled,
@@ -840,7 +856,13 @@ async function initializeCommandRuntime(
       const diary = /(?:DAILY DIARY TIME|MISSED DIARY CATCH-UP)/u.test(heartbeatPrompt);
       const primaryModel = modelManager.getModel();
       const model = diary ? primaryModel : heartbeatToolModel ?? primaryModel;
-      const runWithModel = async (selectedModel: typeof model) => await heartbeatAgent.runTask(heartbeatPrompt, {
+      signal.throwIfAborted();
+      const session = await (heartbeatAgent ??= initializeHeartbeatAgent().catch((error: unknown) => {
+        heartbeatAgent = undefined;
+        throw error;
+      }));
+      signal.throwIfAborted();
+      const runWithModel = async (selectedModel: typeof model) => await session.runTask(heartbeatPrompt, {
         abortSignal: signal,
         runId: randomUUID(),
         turnId: randomUUID(),
