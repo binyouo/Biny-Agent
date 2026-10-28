@@ -38,6 +38,7 @@ class BrowserContents extends EventEmitter {
   cursor = -1;
   destroyed = false;
   viewport: Record<string, unknown> | undefined;
+  touchEmulation: Record<string, unknown> | undefined;
   scrollX = 0;
   scrollY = 0;
   input = new BrowserFileInput();
@@ -53,8 +54,14 @@ class BrowserContents extends EventEmitter {
   };
   debugger = Object.assign(new EventEmitter(), { isAttached: () => true, attach() {}, sendCommand: async (method: string, params: Record<string, unknown>) => {
     if (method === "Page.enable") return {};
+    if (method === "Page.getLayoutMetrics") return { cssContentSize: { width: 1200, height: 2400 } };
+    if (method === "Page.captureScreenshot") {
+      assert.deepEqual(params, { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: 1200, height: 2400, scale: 1 } });
+      return { data: "iVBORw0KGgo=" };
+    }
     if (method === "Emulation.setDeviceMetricsOverride") { this.viewport = params; return {}; }
     if (method === "Emulation.clearDeviceMetricsOverride") { this.viewport = undefined; return {}; }
+    if (method === "Emulation.setTouchEmulationEnabled") { this.touchEmulation = params.enabled === true ? params : undefined; return {}; }
     if (method === "Page.captureSnapshot") return { data: "MIME-Version: 1.0\nContent-Type: text/html\n\n<p>CLI page export</p>" };
     if (method === "Page.handleJavaScriptDialog") { this.dialogAnswer = params; this.resumeDialog?.(); this.resumeDialog = undefined; this.debugger.emit("message", {}, "Page.javascriptDialogClosed", {}); return {}; }
     if (method === "Runtime.evaluate") {
@@ -66,8 +73,11 @@ class BrowserContents extends EventEmitter {
       }
       const context = {
         location: { href: this.getURL() },
-        document: { title: this.getTitle(), documentElement: { outerHTML: "<html><body><article><h1>CLI page export</h1><p>Readable page body.</p></article></body></html>" }, querySelector: () => this.input },
-        File, Event, atob, Uint8Array, HTMLInputElement: BrowserFileInput,
+        document: {
+          title: this.getTitle(), documentElement: { outerHTML: "<html><body><article><h1>CLI page export</h1><p>Readable page body.</p></article></body></html>" },
+          querySelector: () => this.input, querySelectorAll: (selector: string) => selector === "*" ? [] : selector === "#file" || selector === "input[type=file]" ? [this.input] : []
+        },
+        File, Event, atob, Uint8Array, HTMLElement: BrowserFileInput, HTMLInputElement: BrowserFileInput,
         DataTransfer: class { files: File[] = []; items = { add: (file: File) => this.files.push(file) }; },
         scrollX: this.scrollX, scrollY: this.scrollY,
         window: { scrollBy: (x: number, y: number) => { context.scrollX = this.scrollX += x; context.scrollY = this.scrollY += y; } }
@@ -95,8 +105,12 @@ class BrowserContents extends EventEmitter {
 }
 class BrowserFileInput {
   type = "file";
+  id = "file";
+  multiple = false;
   files: File[] = [];
   events: string[] = [];
+  isConnected = true;
+  matches() { return false; }
   dispatchEvent(event: Event) { this.events.push(event.type); }
 }
 class BrowserView {
@@ -209,6 +223,16 @@ test("Desktop CLI shares project, session, preference, preview and terminal owne
     const png = path.join(workspace, "browser.png");
     await run(workspace, ["iab", "screenshot", "--out", png, "--json"]);
     assert.equal((await readFile(png)).toString("hex"), "89504e470d0a1a0a");
+    const temporaryShots: string[] = [];
+    try {
+      for (let index = 0; index < 2; index++) {
+        const result = JSON.parse((await run(workspace, ["iab", "screenshot", ...(index === 1 ? ["--full-page"] : []), "--json"])).stdout);
+        temporaryShots.push(result.path);
+        assert.equal(path.dirname(path.dirname(result.path)), os.tmpdir().replace(/\/$/u, ""));
+        assert.equal((await readFile(result.path)).toString("hex"), "89504e470d0a1a0a");
+      }
+      assert.notEqual(temporaryShots[0], temporaryShots[1]);
+    } finally { for (const file of temporaryShots) await rm(path.dirname(file), { recursive: true, force: true }); }
     await run(workspace, ["iab", "reload", "--json"]);
     BrowserContents.failNextReload = true;
     const failedReload = await run(workspace, ["iab", "reload", "--json"], 1);
@@ -221,8 +245,13 @@ test("Desktop CLI shares project, session, preference, preview and terminal owne
     assert.equal(JSON.parse((await run(workspace, ["iab", "cdp", "Runtime.evaluate", '{"expression":"6 * 7"}', "--json"])).stdout).result.value, 42);
     await run(workspace, ["iab", "viewport", "set", "390", "844", "--mobile", "--json"]);
     assert.deepEqual(nativePage.viewport, { width: 390, height: 844, mobile: true, deviceScaleFactor: 1 });
+    assert.deepEqual(nativePage.touchEmulation, { enabled: true, maxTouchPoints: 1 });
+    await run(workspace, ["iab", "viewport", "set", "1280", "720", "--json"]);
+    assert.equal(nativePage.touchEmulation, undefined);
+    await run(workspace, ["iab", "viewport", "set", "390", "844", "--mobile", "--json"]);
     await run(workspace, ["iab", "viewport", "reset", "--json"]);
     assert.equal(nativePage.viewport, undefined);
+    assert.equal(nativePage.touchEmulation, undefined);
     await run(workspace, ["iab", "scroll", "600", "--x", "20", "--json"]);
     assert.equal(nativePage.scrollY, 600); assert.equal(nativePage.scrollX, 20);
     await run(workspace, ["iab", "clipboard", "write", "CLI clipboard", "--json"]);
@@ -230,7 +259,7 @@ test("Desktop CLI shares project, session, preference, preview and terminal owne
     const upload = Buffer.alloc(300 * 1024, 66);
     await writeFile(path.join(workspace, "upload.txt"), upload);
     const uploaded = JSON.parse((await run(workspace, ["iab", "upload", "#file", "upload.txt", "--json"])).stdout);
-    assert.deepEqual(uploaded, { count: 1, names: ["upload.txt"] });
+    assert.deepEqual(uploaded, { count: 1 });
     assert.deepEqual(Buffer.from(await nativePage.input.files[0]!.arrayBuffer()), upload);
     assert.deepEqual(nativePage.input.events, ["input", "change"]);
     const uploadOutside = await run(workspace, ["iab", "upload", "#file", "../browser-env.json", "--json"], 1);
@@ -246,6 +275,33 @@ test("Desktop CLI shares project, session, preference, preview and terminal owne
       await run(workspace, ["iab", "export", format, "--out", `page.${format}`, "--json"]);
       assert.match(await readFile(path.join(workspace, `page.${format}`), "utf8"), /CLI page export/u);
     }
+    const browserInternals = service as unknown as {
+      pageOperation(operation: string, args: Record<string, unknown>, signal?: AbortSignal, contents?: unknown, onAction?: unknown): Promise<unknown>;
+    };
+    const originalPageOperation = browserInternals.pageOperation;
+    browserInternals.pageOperation = async (operation, args) => {
+      assert.equal(operation, "media_source");
+      assert.equal(args.selector, "video");
+      return { url: "https://media.example/video.mp4" };
+    };
+    nativePage.session.fetch = async url => {
+      assert.equal(url, "https://media.example/video.mp4");
+      return new Response("media bytes", { headers: { "content-type": "video/mp4" } });
+    };
+    await run(workspace, ["iab", "download-media", "video", "--out", "media.mp4", "--json"]);
+    assert.equal(await readFile(path.join(workspace, "media.mp4"), "utf8"), "media bytes");
+    browserInternals.pageOperation = originalPageOperation;
+
+    await run(workspace, ["iab", "goto", "https://docs.google.com/document/u/0/d/document-1/edit", "--json"]);
+    const googlePage = BrowserContents.instances.at(-1)!;
+    const exportUrls: string[] = [];
+    googlePage.session.fetch = async url => {
+      exportUrls.push(url);
+      return new Response("docx bytes", { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" } });
+    };
+    await run(workspace, ["iab", "export-gsuite", "docx", "--out", "document.docx", "--json"]);
+    assert.deepEqual(exportUrls, ["https://docs.google.com/document/d/document-1/export?format=docx"]);
+    assert.equal(await readFile(path.join(workspace, "document.docx"), "utf8"), "docx bytes");
     const baselineListeners = nativePage.debugger.listenerCount("message");
     await run(workspace, ["iab", "dialog", "watch", "--json"]);
     assert.equal(nativePage.debugger.listenerCount("message"), baselineListeners + 1);
@@ -257,6 +313,37 @@ test("Desktop CLI shares project, session, preference, preview and terminal owne
     await run(workspace, ["iab", "dialog", "accept", "reply", "--json"]);
     assert.deepEqual(nativePage.dialogAnswer, { accept: true, promptText: "reply" });
     assert.equal(JSON.parse((await evaluating).stdout), 30);
+    await run(workspace, ["iab", "dialog", "stop", "--json"]);
+    assert.equal(nativePage.debugger.listenerCount("message"), baselineListeners);
+    for (let count = 0; count < 2; count++) {
+      await run(workspace, ["iab", "dialog", "auto", "accept", "automatic reply", "--json"]);
+      BrowserContents.dialogOnNextEvaluation = true;
+      const autoOpening = once(nativePage.debugger, "message", { signal: AbortSignal.timeout(10_000) });
+      const autoEvaluation = run(workspace, ["iab", "eval", "10 + 20", "--json"]);
+      await autoOpening;
+      assert.equal(JSON.parse((await autoEvaluation).stdout), 30);
+      assert.deepEqual(nativePage.dialogAnswer, { accept: true, promptText: "automatic reply" });
+    }
+    await run(workspace, ["iab", "dialog", "auto", "stop", "--json"]);
+    assert.equal(nativePage.debugger.listenerCount("message"), baselineListeners);
+    await run(workspace, ["iab", "dialog", "auto", "dismiss", "--json"]);
+    BrowserContents.dialogOnNextEvaluation = true;
+    const dismissOpening = once(nativePage.debugger, "message", { signal: AbortSignal.timeout(10_000) });
+    const dismissedEvaluation = run(workspace, ["iab", "eval", "10 + 20", "--json"]);
+    await dismissOpening;
+    assert.equal(JSON.parse((await dismissedEvaluation).stdout), 30);
+    assert.deepEqual(nativePage.dialogAnswer, { accept: false, promptText: undefined });
+    await run(workspace, ["iab", "dialog", "auto", "stop", "--json"]);
+    await run(workspace, ["iab", "dialog", "auto", "accept", "must not cross navigation", "--json"]);
+    nativePage.emit("did-start-navigation", {}, "https://example.test/new-document", false, true);
+    assert.equal(JSON.parse((await run(workspace, ["iab", "dialog", "get", "--json"])).stdout).autoReply, null);
+    BrowserContents.dialogOnNextEvaluation = true;
+    const navigatedOpening = once(nativePage.debugger, "message", { signal: AbortSignal.timeout(10_000) });
+    const navigatedEvaluation = run(workspace, ["iab", "eval", "10 + 20", "--json"]);
+    await navigatedOpening;
+    await run(workspace, ["iab", "dialog", "accept", "manual after navigation", "--json"]);
+    assert.equal(JSON.parse((await navigatedEvaluation).stdout), 30);
+    assert.deepEqual(nativePage.dialogAnswer, { accept: true, promptText: "manual after navigation" });
     await run(workspace, ["iab", "dialog", "stop", "--json"]);
     assert.equal(nativePage.debugger.listenerCount("message"), baselineListeners);
     await run(workspace, ["iab", "tab", "close", tab.activeId, "--json"]);
