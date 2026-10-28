@@ -287,8 +287,6 @@ export async function verifyTaskCandidate(input: {
   expectedArtifactFingerprint?: string;
   approvals?: readonly TaskVerificationApproval[];
   repairScope?: TaskRepairScopeEvidence;
-  /** Fresh, frozen post-worker snapshot; final comparison guards the entire interval through verification. */
-  candidateWorkspaceSnapshot?: TaskWorkspaceSnapshot;
   executor: TaskCommandExecutor;
   signal?: AbortSignal;
 }): Promise<TaskVerificationEvidence> {
@@ -339,20 +337,7 @@ export async function verifyTaskCandidate(input: {
       input.definitionFingerprint,
       [],
       "blocked",
-      "Candidate artifacts changed after verification paused; the previous approval or evidence cannot be reused.",
-      input.repairScope
-    );
-  }
-  const verificationWorkspace = input.candidateWorkspaceSnapshot
-    ?? await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal).catch(() => undefined);
-  if (input.signal?.aborted) return cancelled(artifactFingerprint);
-  if (verificationWorkspace === undefined) {
-    return emptyEvidence(
-      input,
-      contractFingerprint,
-      input.definitionFingerprint,
-      "blocked",
-      "Cannot capture the workspace baseline required to prove verification stability.",
+      "Candidate artifacts changed before verification; the captured candidate, approval or evidence cannot be reused.",
       input.repairScope
     );
   }
@@ -449,24 +434,6 @@ export async function verifyTaskCandidate(input: {
       checks,
       "blocked",
       "Verification definition inputs changed while checks were running.",
-      input.repairScope
-    );
-  }
-  const afterWorkspace = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal).catch(() => undefined);
-  if (input.signal?.aborted) return cancelled(artifactFingerprint, checks);
-  if (afterWorkspace === undefined) {
-    return evidence(input, contractFingerprint, artifactFingerprint, input.definitionFingerprint, checks, "blocked", "Cannot prove that the workspace stayed stable during verification.", input.repairScope);
-  }
-  const verificationChanges = compareTaskWorkspaceSnapshots(verificationWorkspace, afterWorkspace, []);
-  if (verificationChanges.changedPaths.length) {
-    return evidence(
-      input,
-      contractFingerprint,
-      artifactFingerprint,
-      input.definitionFingerprint,
-      checks,
-      "blocked",
-      `Workspace changed while verification was running: ${verificationChanges.changedPaths.join(", ")}`,
       input.repairScope
     );
   }

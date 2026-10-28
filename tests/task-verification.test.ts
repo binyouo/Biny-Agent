@@ -57,6 +57,7 @@ interface Fixture {
 const verificationIgnore = [".biny", ".verification-state"];
 
 async function main(): Promise<void> {
+  await testVerificationAllowsUnrelatedWrites();
   await testGraphVerificationRepairAndDownstreamUnlock();
   await testFailedVerificationDoesNotUnlockDownstream();
   await testRepairLimitStopsAttempts();
@@ -471,6 +472,35 @@ async function testGraphRecoveryProjectsCompletedVerification(): Promise<void> {
     }
   } finally {
     await fixture.close();
+  }
+}
+
+async function testVerificationAllowsUnrelatedWrites(): Promise<void> {
+  for (const content of ["good", "bad"]) {
+    const fixture = await createFixture("full-access");
+    try {
+      await writeFile(path.join(fixture.root, "artifact.txt"), content);
+      const contract = readTaskVerificationContract({
+        ...verificationContract(1),
+        checks: [{ id: "report", command: "node -e \"const fs=require('node:fs');const ok=fs.readFileSync('artifact.txt','utf8')==='good';fs.writeFileSync('report.json',JSON.stringify({ok}));process.exit(ok?0:1)\"", definitionPaths: [] }]
+      });
+      const task = fixture.tasks.create({ task: { prompt: "verify candidate", verification: contract } });
+      let workerCalls = 0;
+      const result = await runTaskClosure({
+        taskRuns: fixture.tasks, taskRunId: task.taskRunId, workspaceRoot: fixture.root, ignore: verificationIgnore,
+        executeAttempt: async () => { workerCalls++; return "candidate"; },
+        executor: { executeTaskCheck: async input => {
+          await writeFile(path.join(fixture.root, "user-notes.txt"), "independent user edit");
+          return await fixture.executor.executeTaskCheck(input);
+        } }
+      });
+      assert.equal(result.status, content === "good" ? "completed" : "incomplete", result.reason);
+      assert.equal(result.evidence?.status, content === "good" ? "passed" : "failed");
+      assert.equal(fixture.tasks.get(task.taskRunId)?.status, content === "good" ? "completed" : "incomplete");
+      assert.equal(await readFile(path.join(fixture.root, "report.json"), "utf8"), content === "good" ? '{"ok":true}' : '{"ok":false}');
+      assert.equal(await readFile(path.join(fixture.root, "user-notes.txt"), "utf8"), "independent user edit");
+      assert.equal(workerCalls, 1);
+    } finally { await fixture.close(); }
   }
 }
 
