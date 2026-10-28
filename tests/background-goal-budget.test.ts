@@ -200,7 +200,15 @@ test("a queued bound Worker cannot make its first request after paused Goal exha
     f.commands.runtimeAuthority.startRun({ runId: "parent-run", sessionId, turnId: "parent-turn" });
     const first = await launch(f.commands, "first-child");
     await bounded(f.started);
-    const queued = await launch(f.commands, "queued-child");
+    const queueAdmission = deferred();
+    const unsubscribe = f.commands.subagents!.subscribe(snapshot => {
+      if (snapshot.taskId === "queued-child" && snapshot.status === "queued") queueAdmission.resolve();
+    });
+    let queued: Awaited<ReturnType<typeof launch>>;
+    try {
+      queued = await launch(f.commands, "queued-child");
+      await bounded(queueAdmission.promise);
+    } finally { unsubscribe(); }
     assert.equal(f.commands.subagents?.getSnapshot("queued-child")?.status, "queued");
     assert.equal(f.requests(), 1);
     f.commands.runtimeAuthority.finishRun({ runId: "parent-run", status: "completed" });

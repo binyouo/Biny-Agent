@@ -22,10 +22,10 @@ const serializerFunctions = ["serializeToolResult", "jsonReplacer", "toolResultP
 const secretFunctions = ["redactSensitiveValue", "redactSensitiveValueInternal", "isSensitiveFieldName"];
 const directCalls = new Set([
   ...projectionFunctions, ...serializerFunctions, ...secretFunctions, "readResultLineRange",
-  "redactSecrets", "archiveToolResult", "formatToolError", "readStringField", "String", "Boolean", "createHash"
+  "redactSecrets", "redactBrowserToolResult", "archiveToolResult", "formatToolError", "readStringField", "String", "Boolean", "createHash"
 ]);
 const methods = new Set([
-  "entries", "filter", "map", "join", "set", "get", "push", "has", "add", "delete",
+  "entries", "filter", "map", "some", "join", "set", "get", "push", "has", "add", "delete",
   "keys", "isArray", "isFinite", "isSafeInteger", "parse", "stringify", "includes",
   "test", "trim", "replace", "match", "toLowerCase", "sort", "fromEntries", "endsWith",
   "slice", "exec", "hasOwn", "floor", "max", "min", "charCodeAt", "byteLength", "update", "digest", "archiveResult", "toString"
@@ -97,6 +97,7 @@ interface Api { projection: Projection; producer: Producer; serialize: Serialize
 function harness(root: string, failArchive = false): Api {
   const archives: RecordValue[] = [];
   const redaction = functions(source(root, "src/utils/redaction.ts"), ["redactSecrets"]);
+  const browserRedaction = functions(source(root, "src/session/toolArgumentRedaction.ts"), ["redactBrowserToolResult"]);
   const secrets = functions(source(root, "src/utils/secrets.ts"), secretFunctions);
   const archiveFile = source(root, "src/session/toolResultArchive.ts");
   const serialization = constants(archiveFile, ["previewCharacters"]) + functions(archiveFile, serializerFunctions);
@@ -113,7 +114,7 @@ function harness(root: string, failArchive = false): Api {
     check(found[0]!);
     return found[0]!.getText(coordinatorFile).replace(/^private\s+/u, "");
   }).join(",\n");
-  const declarations = redaction + secrets + serialization + projection
+  const declarations = redaction + browserRedaction + secrets + serialization + projection
     + constants(coordinatorFile, ["maxArchivedPreviewCharacters", "inlineResultPersistMaxBytes"])
     + functions(coordinatorFile, ["formatToolError", "readStringField"]);
   // Only the two source methods are placed in this inert object; the product
