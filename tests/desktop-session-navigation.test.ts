@@ -3,6 +3,8 @@ import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import { workerSessionId } from "../src/runtime/WorkerSession.js";
 import { projectSessionsDir } from "../src/config/paths.js";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { stat, mkdtemp, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -45,6 +47,24 @@ async function fixture(context: TestContext) {
   });
   return { root, project, projects, dataRoot, configDir, configStore, manager };
 }
+
+test("Desktop isolated drafts use a worktree and ordinary new drafts return to the project", { timeout: 20_000 }, async context => {
+  const { project, manager } = await fixture(context);
+  const git = async (args: string[]) => promisify(execFile)("git", args, { cwd: project.path });
+  await git(["init", "--quiet", "-b", "main"]);
+  await git(["-c", "user.name=Biny Tests", "-c", "user.email=biny-tests@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "initial"]);
+  const isolated = await manager.startDraft(project.id, "worktree");
+  const worktrees = (await manager.runtimeProjection(project.id)).worktrees;
+  assert.equal(worktrees.length, 1);
+  assert.notEqual(isolated.runtime?.info.workspaceRoot, project.path);
+  const repeated = await manager.startDraft(project.id, "worktree");
+  assert.equal((await manager.runtimeProjection(project.id)).worktrees.length, 1, "reuse an unsubmitted draft");
+  assert.equal(repeated.runtime?.info.sessionId, isolated.runtime?.info.sessionId);
+  const shared = await manager.startDraft(project.id);
+  assert.equal(shared.runtime?.info.workspaceRoot, project.path);
+  assert.notEqual(shared.runtime?.info.sessionId, isolated.runtime?.info.sessionId);
+  assert.equal((await manager.runtimeProjection(project.id)).worktrees.length, 1, "a shared draft must not remove the isolated checkout");
+});
 
 test("复制并打开父会话后保留子树展开能力", { timeout: 10_000 }, async (context) => {
   const { project, dataRoot, manager } = await fixture(context);

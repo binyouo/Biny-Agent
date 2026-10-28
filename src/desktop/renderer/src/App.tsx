@@ -668,7 +668,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     return true;
   }, [mergeWorkspaceProject, openSession, setPendingNavigation]);
 
-  const openNavigationTarget = useCallback(async (target: DesktopNavigationTarget): Promise<boolean> => {
+  const openNavigationTarget = useCallback(async (target: DesktopNavigationTarget, isolation?: "shared" | "worktree"): Promise<boolean> => {
     // 从项目选择到会话读取共用同一个请求号，较早的跨项目请求不能在较新的点击后重新取得提交权。
     const projectLifetime = projectRemovalRef.current.get(target.projectId);
     const request = loadRequestRef.current + 1;
@@ -698,7 +698,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     try {
       if (target.sessionId === undefined) {
-        const snapshot = await window.biny.startDraft(target.projectId);
+        const snapshot = await window.biny.startDraft(target.projectId, isolation);
         if (loadRequestRef.current !== request || projectRemovalRef.current.get(target.projectId) !== projectLifetime) return false;
         const adopted = await adoptWorkspace(snapshot, undefined, request);
         if (adopted) setFocusToken((value) => value + 1);
@@ -923,7 +923,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
   }, [loadProjectBranches, mergeProjectSnapshot]);
 
-  const newTask = useCallback(async (targetProjectId = projectRef.current, topLevel = false): Promise<void> => {
+  const newTask = useCallback(async (targetProjectId = projectRef.current, topLevel = false, isolation?: "shared" | "worktree"): Promise<void> => {
     setRuntimePanelOpen(false);
     setHeroStart(topLevel);
     const projectId = targetProjectId;
@@ -934,7 +934,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const target: DesktopNavigationTarget = { projectId, sessionId: undefined };
     const previousNavigation = navigationRef.current;
     try {
-      if (await openNavigationTarget(target)) commitNavigation(pushNavigation(previousNavigation, target));
+      if (await openNavigationTarget(target, isolation)) commitNavigation(pushNavigation(previousNavigation, target));
     } catch (error) {
       setWarning(errorMessage(error));
     }
@@ -1553,10 +1553,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const createTopLevelTask = useCallback((): void => {
     void newTask(undefined, true);
   }, [newTask]);
-  const createSidebarTask = useCallback((projectId: string): void => {
+  const createSidebarTask = useCallback((projectId: string, isolation?: "shared" | "worktree"): void => {
     // 从项目文件夹里新建：有明确上下文，不展示欢迎 hero。
     setHeroStart(false);
-    void newTask(projectId, false);
+    void newTask(projectId, false, isolation);
   }, [newTask]);
   const importSidebarSession = useCallback((projectId: string): void => {
     void importSessionIntoProject(projectId);

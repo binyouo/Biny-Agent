@@ -1166,7 +1166,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   /** 让 owner 切到一个全新的空会话（草稿），返回新会话信息（含新的 sessionId）。 */
-  async startDraft(): Promise<AgentSessionInfo> {
+  async startDraft(isolation: RuntimeIsolation = "shared"): Promise<AgentSessionInfo> {
+    if (isolation === "worktree") return (await this.ensureSession({ isolation })).snapshot.info;
     const primarySessionId = this.primarySessionId();
     const info = await this.requestWithRuntimeRevision<AgentSessionInfo>("runtime.start-draft", { sessionId: primarySessionId }, primarySessionId);
     this.focusedSessionId = info.sessionId;

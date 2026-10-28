@@ -291,6 +291,19 @@ test("Appshots new does not pull a newer chat navigation back when capture compl
   assert.ok(h.document.querySelector('[aria-label="待发送附件"]')?.textContent?.includes(`${id}.jpg`));
 });
 
+test("the project menu requests an isolated draft while ordinary new tasks keep the default", async t => {
+  const h = await fixture(t);
+  const drafts: Array<{ projectId: string; isolation?: string }> = [];
+  h.api.startDraft = async (projectId: string, isolation?: string) => { drafts.push({ projectId, isolation }); return workspace(projectId); };
+  await h.click('button[aria-label="Project a 项目操作"]');
+  const isolated = Array.from(h.document.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find(button => button.textContent?.includes("新建隔离任务"));
+  assert.ok(isolated);
+  await h.React.act(async () => isolated.click());
+  assert.deepEqual(drafts, [{ projectId: "a", isolation: "worktree" }]);
+  await h.click('button[aria-label="新建任务 Project a"]');
+  assert.deepEqual(drafts, [{ projectId: "a", isolation: "worktree" }, { projectId: "a", isolation: undefined }]);
+});
+
 test("returning from embedded browser preview opens its project and chat before revealing the browser", async t => {
   const h = await fixture(t, { hideSidebarB: true });
   await h.emitComputer({ projectId: "b", sessionId: "session-b", revealBrowser: true });

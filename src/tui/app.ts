@@ -408,10 +408,10 @@ export class BinyTui {
   }
 
   /** 创建一个新聊天；只有显式 `/new` 或普通入口才会调用，绝不等同于续跑。 */
-  private async restartRuntimeForNewChat(): Promise<void> {
+  private async restartRuntimeForNewChat(isolation?: "shared" | "worktree"): Promise<void> {
     const runtime = this.runtime;
     if (!runtime) throw new Error("TUI runtime is not ready.");
-    await runtime.startDraft();
+    await runtime.startDraft(isolation);
     this.runtimeSnapshot = runtime.getSnapshot();
   }
 
@@ -431,9 +431,9 @@ export class BinyTui {
     });
   }
 
-  private async startNewChat(): Promise<void> {
+  private async startNewChat(isolation?: "shared" | "worktree"): Promise<void> {
     try {
-      await this.restartRuntimeForNewChat();
+      await this.restartRuntimeForNewChat(isolation);
       this.clearSessionWriterConflict();
       this.chatContainer.reset();
       this.dispatch({ type: "transcript.replaced", items: [], viewingSessionId: this.runtimeSnapshot?.info.sessionId });
@@ -1031,7 +1031,11 @@ export class BinyTui {
     }
 
     if (command === "/new") {
-      await this.startNewChat();
+      if (args.length > 1 || args.length === 1 && args[0] !== "--isolated") {
+        this.showCommandResult("New chat", "Usage: /new [--isolated]");
+        return;
+      }
+      await this.startNewChat(args[0] === "--isolated" ? "worktree" : "shared");
       return;
     }
 

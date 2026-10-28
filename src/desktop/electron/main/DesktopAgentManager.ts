@@ -499,8 +499,8 @@ export class DesktopAgentManager {
     return await this.projects.listSessionTreePage(project, this.runtimeSnapshots(projectId), this.projectEvents(projectId), options);
   }
 
-  async startDraft(projectId: string): Promise<DesktopWorkspaceSnapshot> {
-    await this.ensureDraftRuntime(projectId);
+  async startDraft(projectId: string, isolation: "shared" | "worktree" = "shared"): Promise<DesktopWorkspaceSnapshot> {
+    await this.ensureDraftRuntime(projectId, isolation);
     return await this.workspaceSnapshot(projectId);
   }
 
@@ -509,10 +509,10 @@ export class DesktopAgentManager {
    * 全部保留，仅由 AgentSession.startNewSession 重置会话级状态。sendPrompt 等不需要
    * 快照的调用方走这条轻量路径；startDraft 在此基础上补一份 workspaceSnapshot。
    */
-  private async ensureDraftRuntime(projectId: string): Promise<void> {
-    const managed = this.residentRuntime(projectId);
+  private async ensureDraftRuntime(projectId: string, isolation?: "shared" | "worktree"): Promise<void> {
     // 清掉旧的初始化失败闩锁，让「新聊天」始终能作为重试入口。
     this.runtimeErrors.delete(projectId);
+    const managed = isolation === "worktree" ? await this.ensureRuntime(projectId) : this.residentRuntime(projectId);
     if (!managed) {
       this.draftSessionIds.delete(projectId);
       return;
@@ -520,7 +520,9 @@ export class DesktopAgentManager {
     const existingDraftSessionId = this.draftSessionIds.get(projectId);
     if (existingDraftSessionId !== undefined) {
       const existingDraft = managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === existingDraftSessionId);
-      if (existingDraft && !runtimeIsBusy(existingDraft.snapshot)) {
+      const matchesIsolation = existingDraft && (isolation === undefined
+        || (path.resolve(existingDraft.snapshot.info.workspaceRoot) !== path.resolve(this.projects.requireProject(projectId).path)) === (isolation === "worktree"));
+      if (existingDraft && !runtimeIsBusy(existingDraft.snapshot) && matchesIsolation) {
         await managed.runtime.focusSession(existingDraftSessionId);
         return;
       }
@@ -531,7 +533,7 @@ export class DesktopAgentManager {
     const previousSnapshot = previousSessionId === undefined
       ? undefined
       : managed.runtime.getSnapshot(previousSessionId);
-    const info = await managed.runtime.startDraft();
+    const info = await managed.runtime.startDraft(isolation);
     if (previousSessionId !== undefined
       && previousSessionId !== info.sessionId && previousSnapshot?.state.kind === "idle") {
       await managed.runtime.releaseSessionClaim(previousSessionId);

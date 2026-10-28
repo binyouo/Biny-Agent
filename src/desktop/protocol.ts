@@ -1655,7 +1655,7 @@ export interface DesktopApi {
   createProjectBranch(projectId: string, branchName: string): Promise<DesktopWorkspaceSnapshot>;
   revealProject(projectId: string): Promise<void>;
   openProjectTerminal(projectId: string): Promise<void>;
-  startDraft(projectId: string): Promise<DesktopWorkspaceSnapshot>;
+  startDraft(projectId: string, isolation?: "shared" | "worktree"): Promise<DesktopWorkspaceSnapshot>;
   readSessionTrace(projectId: string, sessionId: string): Promise<SessionEvent[]>;
   openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument>;
   retryRuntime(projectId: string, sessionId?: string): Promise<DesktopRuntimeRetryResult>;

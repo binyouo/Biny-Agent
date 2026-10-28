@@ -437,8 +437,8 @@ export function registerDesktopIpc(context: IpcContext): void {
     context.terminals.dispose(idSchema.parse(terminalId));
   });
 
-  handleRecoveryGated(desktopIpc.startDraft, async (_event, projectId: unknown) => {
-    return await context.agents.startDraft(idSchema.parse(projectId));
+  handleRecoveryGated(desktopIpc.startDraft, async (_event, projectId: unknown, isolation: unknown) => {
+    return await context.agents.startDraft(idSchema.parse(projectId), z.enum(["shared", "worktree"]).optional().parse(isolation));
   });
 
   // Trace 只读磁盘，不经 AgentManager.openSession，避免抢占当前会话或启动模型运行时。
