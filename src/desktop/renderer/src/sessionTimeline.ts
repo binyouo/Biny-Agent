@@ -358,7 +358,7 @@ function historicalPrefix(events: SessionEvent[], liveEvents: AgentHostEvent[]):
       if (matchingIndex >= 0) return events.slice(0, matchingIndex);
     }
   }
-  const liveRunIds = new Set(liveEvents.map((event) => event.runId));
+  const liveRunIds = new Set(liveEvents.filter(isConversationLiveEvent).map((event) => event.runId));
   if (liveRunIds.size === 0) return events;
   const firstLiveRunEvent = events.findIndex((event) => {
     const runId = event.runtime?.runId;
@@ -367,6 +367,10 @@ function historicalPrefix(events: SessionEvent[], liveEvents: AgentHostEvent[]):
   if (firstLiveRunEvent < 0) return events;
   const keepUserMessage = !firstLiveUser && events[firstLiveRunEvent]?.type === "user_message";
   return events.slice(0, firstLiveRunEvent + (keepUserMessage ? 1 : 0));
+}
+
+function isConversationLiveEvent(event: AgentHostEvent): boolean {
+  return event.type !== "skill_extraction.updated" && event.type !== "recipe.ready";
 }
 
 function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
@@ -901,6 +905,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
   };
 
   const apply = (event: AgentHostEvent): void => {
+    if (!isConversationLiveEvent(event)) return;
     const turn = turnFor(event);
     dirtyTurns.add(turn.id);
     if (event.type === "run.started" || event.type === "run.completed" || event.type === "run.failed"
@@ -1017,6 +1022,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       tool.optimization = event.optimization;
       tool.modelResult = event.modelResult;
       tool.status = timelineToolStatus(event.result, event.executionStatus);
+      tool.error = resultError(event.result);
       tool.executionStatus = event.executionStatus;
       tool.recovered = event.recovered;
       tool.operationId = event.operationId;

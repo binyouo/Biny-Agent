@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { registerHooks } from "node:module";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { buildSessionTimeline } from "../src/desktop/renderer/src/sessionTimeline.js";
+import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
 
 const assets = registerHooks({ load(url, context, next) {
   return url.endsWith(".png") ? { format: "module", source: `export default ${JSON.stringify(url)};`, shortCircuit: true } : next(url, context);
@@ -146,4 +148,31 @@ for (const [error, status, expectedModel] of [
   assert.match(banner, /生成错误/u);
   if (expectedModel) assert.match(banner, /Model specific-model/u);
   else assert.doesNotMatch(banner, /Model specific-model/u);
+});
+
+test("执行结果未知的停止提示同时保留同一操作的原因，且不归因于模型", () => {
+  const stop = "Cannot continue: tool ComputerAction (op_123) has an unknown side effect. Inspect its outcome before retrying.";
+  const base = { sessionId: "session", runId: "run", timestamp: "2026-10-28T09:49:11.000Z" };
+  const events: AgentHostEvent[] = [
+    { ...base, type: "message.user", messageId: "user", content: "Question" },
+    { ...base, type: "tool.started", toolCallId: "action", tool: "ComputerAction", args: {} },
+    { ...base, type: "tool.completed", toolCallId: "action", tool: "ComputerAction", executionStatus: "unknown", operationId: "op_123", result: { status: "unknown", error: "输入参数被拒绝" } },
+    { ...base, type: "run.failed", error: stop }
+  ];
+  const turns = buildSessionTimeline([], events);
+  turns[0]!.model = { alias: "test", provider: "test", label: "specific-model", reasoning: "" };
+  const html = renderToStaticMarkup(React.createElement(Workspace, { ...props, generationError: stop,
+    turns
+  }));
+  const banner = html.match(/<div class="biny-generation-error"[\s\S]*?<button/u)?.[0] ?? "";
+  assert.match(banner, /输入参数被拒绝/u);
+  assert.match(banner, /操作结果未知/u);
+  assert.doesNotMatch(banner, /生成错误/u);
+  assert.match(banner, /执行结果未知，请先检查实际结果，再决定是否重试/u);
+  assert.doesNotMatch(banner, /Model specific-model/u);
+  assert.equal((html.match(/class="biny-generation-error"/gu) ?? []).length, 1);
+  const unrelated = renderToStaticMarkup(React.createElement(Workspace, { ...props, generationError: "另一个失败", turns }));
+  const unrelatedBanner = unrelated.match(/<div class="biny-generation-error"[\s\S]*?<button/u)?.[0] ?? "";
+  assert.match(unrelatedBanner, /另一个失败/u);
+  assert.doesNotMatch(unrelatedBanner, /输入参数被拒绝/u);
 });

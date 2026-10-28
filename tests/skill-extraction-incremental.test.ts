@@ -53,6 +53,6 @@ try {
     onAnalyzed: async count => { analyzedCounts.push(count); },
     onNotice: notice => notices.push(notice.stage) }), /analyst unavailable/);
   assert.deepEqual(analyzedCounts, [3, 3], "failed analysis also advances progress");
-  assert.deepEqual(notices, ["analyzing", "skipped"], "failed analysis cannot leave a running card");
+  assert.deepEqual(notices, ["analyzing", "failed"], "failed analysis is distinguishable from a negative verdict");
   console.log("incremental skill extraction passed");
 } finally { await rm(root, { recursive: true, force: true }); }

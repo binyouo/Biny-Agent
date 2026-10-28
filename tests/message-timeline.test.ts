@@ -331,6 +331,51 @@ test("错误横幅保留原文解释，去掉重复行和堆栈", () => {
   assert.doesNotMatch(banner, /internalFunction/u);
 });
 
+test("工具结果未知后回合停止：实时与历史保留同一工具原因", () => {
+  const operationId = "op_test";
+  const reason = "原生服务拒绝输入参数";
+  const stop = `Cannot continue: tool ComputerAction (${operationId}) has an unknown side effect. Inspect its outcome before retrying.`;
+  const result = { status: "unknown", error: reason };
+  const live = buildSessionTimeline([], [
+    ...start,
+    { ...base, type: "tool.started", toolCallId: "action", tool: "ComputerAction", args: {} },
+    { ...base, type: "tool.completed", toolCallId: "action", tool: "ComputerAction", result, executionStatus: "unknown", operationId },
+    { ...failure, error: stop }
+  ])[0]!;
+  const history = buildSessionTimeline([
+    { type: "user_message", content: "检查项目", messageId: "user-message", time: base.timestamp },
+    { type: "tool_call", tool: "ComputerAction", toolCallId: "action", args: {}, time: base.timestamp },
+    { type: "tool_result", tool: "ComputerAction", toolCallId: "action", result, executionStatus: "unknown", operationId, time: base.timestamp },
+    { type: "error", message: stop, time: base.timestamp },
+    { type: "turn_status", status: "failed", stopReason: "provider_error", steps: 1, summary: stop, time: base.timestamp }
+  ], [])[0]!;
+  assert.equal(live.tools[0]?.error, reason);
+  assert.equal(history.tools[0]?.error, reason);
+});
+
+test("回合结束后的技能提取和建议通知不会截断已保存的回复和工具记录", () => {
+  const history: SessionEvent[] = [
+    { type: "user_message", content: "处理任务", messageId: "user", time: base.timestamp, runtime: { eventId: "one", eventSeq: 1, runId: "run" } },
+    { type: "tool_call", tool: "Read", toolCallId: "read", args: {}, time: base.timestamp, runtime: { eventId: "two", eventSeq: 2, runId: "run" } },
+    { type: "tool_result", tool: "Read", toolCallId: "read", result: { content: "已读取" }, time: base.timestamp, runtime: { eventId: "three", eventSeq: 3, runId: "run" } },
+    { type: "assistant_message", content: "任务完成。", time: base.timestamp, runtime: { eventId: "four", eventSeq: 4, runId: "run" } },
+    { type: "turn_status", status: "completed", steps: 1, time: base.timestamp, runtime: { eventId: "five", eventSeq: 5, runId: "run" } }
+  ];
+  const notifications: AgentHostEvent[] = [
+    { ...base, type: "skill_extraction.updated", stage: "skipped" },
+    { ...base, type: "recipe.ready", recipe: { id: "thread-to-workflow", title: "工作流", description: "建议", slots: [], extractPrompt: "提取" } }
+  ];
+  for (const notification of notifications) {
+    const projector = createSessionTimelineProjector();
+    for (const turns of [buildSessionTimeline(history, [notification]), projector.update({ sessionId: "session", events: history, liveEvents: [notification] })]) {
+      assert.equal(turns.length, 1);
+      assert.equal(turns[0]?.assistant, "任务完成。");
+      assert.equal(turns[0]?.tools.length, 1);
+      assert.equal(turns[0]?.status, "completed");
+    }
+  }
+});
+
 test("失败后正常再发一条消息：保留两条用户消息，不插入失败助手消息", () => {
   const markup = renderTurns(buildSessionTimeline([], [
     ...start, failure,

@@ -7,6 +7,8 @@ import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
 import type { DesktopAgentEventEnvelope, DesktopSessionDocument, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 import { syntheticSession } from "../src/desktop/renderer/src/app/desktopState.js";
 import { useDesktopEventBridge } from "../src/desktop/renderer/src/app/useDesktopEventBridge.js";
+import { SkillExtractionCard } from "../src/desktop/renderer/src/components/SkillExtractionCard.js";
+import type { SkillExtractionCardState } from "../src/desktop/renderer/src/app/useDesktopEventBridge.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -51,14 +53,15 @@ async function fixture(context: TestContext, deferProject = false) {
   let replaceDocument!: Dispatch<SetStateAction<DesktopSessionDocument | undefined>>;
   function Bridge() {
     const [document, setDocument] = useState<DesktopSessionDocument | undefined>(initial);
+    const [skillExtraction, setSkillExtraction] = useState<SkillExtractionCardState>();
     replaceDocument = setDocument;
     useEffect(() => { documentRef.current = document; }, [document]);
     useDesktopEventBridge({
       activeProjectIdRef, selectedSessionIdRef, documentRef, setDocument, mergeProjectSnapshot, onError,
-      setContextBudget: noop, setRecipeNotices: noop, setSkillExtraction: noop, setWriterConflict,
+      setContextBudget: noop, setRecipeNotices: noop, setSkillExtraction, setWriterConflict,
       setSidebarSessions: noop, setWorkspace: noop, onGenerationStarted: noop, onGenerationError: noop
     });
-    return createElement("pre", null, JSON.stringify(document));
+    return createElement("div", null, createElement("pre", null, JSON.stringify(document)), skillExtraction ? createElement(SkillExtractionCard, { state: skillExtraction, onDismiss: noop }) : null);
   }
   const root = createRoot(dom.window.document.getElementById("root")!);
   let mounted = true;
@@ -85,6 +88,30 @@ async function fixture(context: TestContext, deferProject = false) {
     replaceDocument: async (document: DesktopSessionDocument) => { await act(() => replaceDocument(document)); },
     text: () => dom.window.document.getElementById("root")!.textContent };
 }
+
+test("普通分析和跳过不打扰聊天，实际失败仍有提示", async (context) => {
+  const view = await fixture(context);
+  view.send({ ...view.base, type: "run.started", messageId: "user", model: { alias: "test", provider: "test", label: "test", reasoning: "" } });
+  view.send({ ...view.base, type: "skill_extraction.updated", stage: "analyzing" });
+  await view.tick(16);
+  assert.doesNotMatch(view.text()!, /技能提取|正在分析可复用工作流/);
+  view.send({ ...view.base, type: "skill_extraction.updated", stage: "skipped" });
+  await view.tick(16);
+  assert.doesNotMatch(view.text()!, /技能提取|已提取新技能/);
+  view.send({ ...view.base, type: "skill_extraction.updated", stage: "failed" });
+  await view.tick(16);
+  assert.match(view.text()!, /技能提取失败/);
+});
+
+test("技能保存后区分新建和更新", async (context) => {
+  const view = await fixture(context);
+  view.send({ ...view.base, type: "skill_extraction.updated", stage: "done", skillName: "workflow", updated: false });
+  await view.tick(16);
+  assert.match(view.text()!, /已提取新技能workflow/);
+  view.send({ ...view.base, type: "skill_extraction.updated", stage: "done", skillName: "workflow", updated: true });
+  await view.tick(16);
+  assert.match(view.text()!, /已更新技能workflow/);
+});
 
 test("a terminal refresh cannot erase newer streamed output in the same session", async (context) => {
   const view = await fixture(context);

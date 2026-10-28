@@ -19,7 +19,7 @@ import { defaultManagedSkillRoot } from "../extensions/managedSkillSources.js";
 import { redactSecrets } from "../utils/secrets.js";
 import type { SessionEvent } from "../session/recorder.js";
 
-export type SkillExtractionStage = "analyzing" | "extracting" | "saving" | "done" | "skipped";
+export type SkillExtractionStage = "analyzing" | "extracting" | "saving" | "done" | "skipped" | "failed";
 
 export interface SkillExtractionNotice {
   stage: SkillExtractionStage;
@@ -124,7 +124,7 @@ export async function runSkillExtraction(input: SkillExtractionInput): Promise<S
     input.onNotice?.({ stage: "done", skillName: name, skillDescription: description, updated });
     return outcome;
   } catch (error) {
-    input.onNotice?.({ stage: "skipped" });
+    input.onNotice?.({ stage: "failed" });
     throw error;
   } finally {
     await input.onAnalyzed?.(material.toolCalls);

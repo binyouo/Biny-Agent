@@ -29,7 +29,7 @@ export interface RecipeNotice extends DesktopRecipeSuggestion {
 export interface SkillExtractionCardState {
   sessionId: string;
   runId: string;
-  stage: "analyzing" | "extracting" | "saving" | "done";
+  stage: "extracting" | "saving" | "done" | "failed";
   skillName?: string;
   skillDescription?: string;
   updated?: boolean;
@@ -183,7 +183,9 @@ export function useDesktopEventBridge({
             });
           }
           for (const event of currentEvents) {
+            if (event.type === "run.started") setSkillExtraction(undefined);
             if (event.type === "skill_extraction.updated") {
+              if (event.stage === "analyzing") continue;
               if (event.stage === "skipped") {
                 setSkillExtraction((current) => current?.sessionId === event.sessionId && current.runId === event.runId
                   ? undefined : current);
@@ -215,8 +217,6 @@ export function useDesktopEventBridge({
           for (const event of currentEvents) {
             if (event.type === "run.started") {
               onGenerationStarted();
-              // 新一轮开始：上一轮的技能提取卡退场。
-              setSkillExtraction(undefined);
             }
             if (event.type === "run.failed") onGenerationError(event.error.trim() || "生成失败，请重试。");
             if (event.type === "run.incomplete" || event.type === "run.blocked") onGenerationError(event.reason.trim() || "生成失败，请重试。");

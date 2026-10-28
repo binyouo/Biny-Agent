@@ -179,6 +179,7 @@ export function Workspace({
     : undefined;
   const streaming = running || visiblePendingPrompt !== undefined || turns.some((turn) => turn.status === "running" || turn.status === "waiting_permission");
   const lastTurn = turns.at(-1);
+  const displayedGenerationError = generationError ? generationErrorWithToolCause(generationError, lastTurn) : undefined;
   // 上限预警按会话 dismiss：换会话要重新提示，同会话点掉后不再打扰。
   const [limitBannerDismissedFor, setLimitBannerDismissedFor] = useState<string>();
   const showLimitBanner = Boolean(sessionLimits?.nearSizeLimit && sessionId && limitBannerDismissedFor !== sessionId);
@@ -318,8 +319,9 @@ export function Workspace({
             {compactionState && compactionState.status !== "pending" ? <CompactionStatus state={compactionState} onDismiss={onDismissCompaction} onRetry={onRetryCompaction} /> : null}
             {generationError && !writerConflict && !runtimeError ? (
               <GenerationErrorBanner
-                error={generationError}
-                model={lastTurn?.error && lastTurn.status !== "completed" && lastTurn.error.trim() === generationError.trim() ? lastTurn.model?.label : undefined}
+                error={displayedGenerationError ?? generationError}
+                title={displayedGenerationError !== generationError ? "操作结果未知" : undefined}
+                model={lastTurn?.error && lastTurn.status !== "completed" && lastTurn.error.trim() === generationError.trim() && displayedGenerationError === generationError ? lastTurn.model?.label : undefined}
                 onDismiss={onDismissGenerationError}
               />
             ) : null}
@@ -336,6 +338,13 @@ export function Workspace({
       {streaming ? <span className="biny-streaming-state" aria-hidden="true" /> : null}
     </div></WidgetContext.Provider>
   );
+}
+
+function generationErrorWithToolCause(error: string, turn: TimelineTurn | undefined): string {
+  if (!turn || turn.status !== "failed" || turn.error?.trim() !== error.trim()) return error;
+  const tool = turn.tools.find(candidate => candidate.executionStatus === "unknown" && candidate.operationId && candidate.error
+    && error.trim() === `Cannot continue: tool ${candidate.tool} (${candidate.operationId}) has an unknown side effect. Inspect its outcome before retrying.`);
+  return tool?.error ? `工具 ${tool.tool} 的执行结果未知，请先检查实际结果，再决定是否重试。\n原因：${tool.error}` : error;
 }
 
 function LoadingState(): React.JSX.Element {
