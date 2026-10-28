@@ -38,6 +38,8 @@ export interface SkillExtractionCardState {
 interface DesktopEventBridgeOptions {
   onRuntimeProjectionChanged?(): Promise<void>;
   activeProjectIdRef: { current: string | undefined };
+  /** Confirmed removal retires queued and in-flight refreshes, independently of metadata invalidation. */
+  projectRemovalRef: RefObject<ReadonlyMap<string, object>>;
   selectedSessionIdRef: { current: string | undefined };
   /** 当前会话文档；判断 pending 缓冲是否已被 openSession 的主进程桶覆盖时读取。 */
   documentRef: RefObject<DesktopSessionDocument | undefined>;
@@ -63,6 +65,7 @@ interface DesktopEventBridgeOptions {
 export function useDesktopEventBridge({
   onRuntimeProjectionChanged,
   activeProjectIdRef,
+  projectRemovalRef,
   selectedSessionIdRef,
   documentRef,
   mergeProjectSnapshot,
@@ -96,17 +99,21 @@ export function useDesktopEventBridge({
     const pendingEvents = createSessionEventBuffer<DesktopAgentEventEnvelope>();
 
     const scheduleRefresh = (projectId: string, sessionId: string): void => {
+      const projectLifetime = projectRemovalRef.current.get(projectId);
+      const ownsProject = (): boolean => active && projectRemovalRef.current.get(projectId) === projectLifetime;
       const scope = JSON.stringify([projectId, sessionId]);
       const existing = refreshTimers.get(scope);
       if (existing) clearTimeout(existing);
       const timer = setTimeout(() => {
+        if (refreshTimers.get(scope) !== timer) return;
         refreshTimers.delete(scope);
+        if (!ownsProject()) return;
         const epoch = projectRefreshEpochs.current.get(projectId) ?? 0;
         const order = projectRefreshOrder.get(projectId) ?? { issued: 0, applied: 0 };
         projectRefreshOrder.set(projectId, order);
         const request = ++order.issued;
         void window.biny.refreshProject(projectId).then(async (snapshot) => {
-          if (!active) return;
+          if (!ownsProject()) return;
           // A confirmed metadata change supplies a newer complete snapshot. Re-read after the
           // existing debounce instead of combining its metadata with this older read.
           if ((projectRefreshEpochs.current.get(projectId) ?? 0) !== epoch) {
@@ -125,12 +132,12 @@ export function useDesktopEventBridge({
             const requestedDocument = documentRef.current;
             const refreshedDocument = await window.biny.openSession(projectId, sessionId);
             // 同一会话也可能已经收到新流式内容、切换消息版本或重新打开，旧回读不能覆盖它。
-            const isCurrent = (): boolean => active && documentRefreshGeneration === generation
+            const isCurrent = (): boolean => ownsProject() && documentRefreshGeneration === generation
               && activeProjectIdRef.current === projectId
               && selectedSessionIdRef.current === sessionId && documentRef.current === requestedDocument;
             if (isCurrent()) setPendingRefresh({ document: refreshedDocument, isCurrent });
           }
-        }).catch((error: unknown) => { if (active) onError(error); });
+        }).catch((error: unknown) => { if (ownsProject()) onError(error); });
       }, 260);
       refreshTimers.set(scope, timer);
     };
@@ -245,7 +252,7 @@ export function useDesktopEventBridge({
       for (const timer of refreshTimers.values()) clearTimeout(timer);
       refreshTimers.clear();
     };
-  }, [activeProjectIdRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, onGenerationError, onGenerationStarted, onCompactionStarted, onCompactionFailed, onRuntimeProjectionChanged]);
+  }, [activeProjectIdRef, projectRemovalRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, onGenerationError, onGenerationStarted, onCompactionStarted, onCompactionFailed, onRuntimeProjectionChanged]);
 
   useEffect(() => {
     if (!pendingRefresh) return;

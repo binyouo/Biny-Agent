@@ -24,6 +24,7 @@ assert.ok(invalidation.initializer && ts.isCallExpression(invalidation.initializ
 const invalidate = invalidation.initializer.arguments[0];
 assert.ok(invalidate && ts.isArrowFunction(invalidate));
 const allowedCalls = new Set([
+  "projectRemovalRef.current.get", "ownsProject",
   "projectRefreshEpochs.current.set", "projectRefreshEpochs.current.get", "createSessionEventBuffer", "JSON.stringify",
   "refreshTimers.get", "clearTimeout", "setTimeout", "refreshTimers.delete", "refreshTimers.set", "refreshTimers.values", "refreshTimers.clear",
   "projectRefreshOrder.get", "projectRefreshOrder.set", "window.biny.refreshProject", "window.biny.openSession",
@@ -84,11 +85,12 @@ function fixture() {
   const merges: Snapshot[] = [], errors: unknown[] = [], conflicts: unknown[] = [];
   let listener: ((event: Envelope) => void) | undefined;
   let disposed = false, unsubscribed = false;
+  const projectRemovalRef = { current: new Map<string, object>() };
   const activeProjectIdRef = { current: "p" }, selectedSessionIdRef = { current: "a" };
   const documentRef = { current: { session: { id: "a" }, events: [], liveEvents: [] } as Document };
   const noop = () => {};
   const sandbox: Record<string, unknown> = {
-    activeProjectIdRef, selectedSessionIdRef, documentRef, projectRefreshEpochs: { current: new Map<string, number>() }, pendingRefresh: undefined,
+    projectRemovalRef, activeProjectIdRef, selectedSessionIdRef, documentRef, projectRefreshEpochs: { current: new Map<string, number>() }, pendingRefresh: undefined,
     setTimeout(callback: () => void, delay: number) { assert.equal(delay, 260); const id = ++timerId; timers.set(id, { at: now + delay, callback }); return id; },
     clearTimeout(id: number) { timers.delete(id); },
     mergeProjectSnapshot(value: Snapshot) { merges.push(value); }, onError(error: unknown) { errors.push(error); },
@@ -125,6 +127,8 @@ function fixture() {
     run("invoke()");
   };
   return { projectReads, documentReads, merges, errors, conflicts, documentRef, activeProjectIdRef, selectedSessionIdRef, timers, send, tick,
+    // Models the already-confirmed App removal epoch, not deletion or IPC resources.
+    remove: (projectId = "p") => { projectRemovalRef.current.set(projectId, {}); },
     start: async (projectId = "p", sessionId = "a") => { send(projectId, sessionId); await tick(); },
     invalidate: (projectId = "p") => { sandbox.projectId = projectId; run("invalidate(projectId)"); },
     commit: () => run("commit()"), cleanup: () => run("cleanup()"), isUnsubscribed: () => unsubscribed };
@@ -189,4 +193,83 @@ test("burst debounces and cleanup cancels timers and in-flight publication", asy
   assert.equal(f.timers.size, 0); assert.equal(f.isUnsubscribed(), true);
   f.projectReads[0]!.gate.resolve(snapshot("p", "disposed")); await settle(); await f.tick();
   assert.equal(f.merges.length, 0); assert.equal(f.documentReads.length, 0); assert.equal(f.errors.length, 0);
+});
+
+// These model refreshes already scheduled before a confirmed Renderer removal.
+// Events arriving after removal, and not-yet-flushed batch events, have no source
+// incarnation token and are deliberately not claimed to be covered here.
+test("confirmed removal retires a queued refresh before its RPC starts", async () => {
+  const f = fixture(); f.send(); f.remove(); await f.tick();
+  assert.equal(f.projectReads.length, 0); assert.equal(f.timers.size, 0);
+});
+test("a removed inactive project's in-flight rejection cannot publish a warning", async () => {
+  const f = fixture(); f.activeProjectIdRef.current = "q"; await f.start(); f.remove();
+  f.projectReads[0]!.gate.reject(new Error("Unknown project: p")); await settle();
+  assert.equal(f.errors.length, 0); assert.equal(f.merges.length, 0);
+});
+test("a removed inactive project's in-flight success cannot republish its catalog", async () => {
+  const f = fixture(); f.activeProjectIdRef.current = "q"; await f.start(); f.remove();
+  f.projectReads[0]!.gate.resolve(snapshot("p", "retired")); await settle();
+  assert.equal(f.merges.length, 0); assert.equal(f.documentReads.length, 0);
+});
+test("a current inactive project's rejection still reports its real error", async () => {
+  const f = fixture(); f.activeProjectIdRef.current = "q"; await f.start();
+  const error = new Error("Current project read failed"); f.projectReads[0]!.gate.reject(error); await settle();
+  assert.equal(f.errors.length, 1); assert.equal(f.errors[0], error);
+});
+test("removing another project preserves the current project's in-flight refresh", async () => {
+  const f = fixture(); await f.start(); f.remove("q");
+  f.projectReads[0]!.gate.resolve(snapshot("p", "current")); await settle();
+  assert.deepEqual(f.merges.map(value => value.label), ["current"]); assert.equal(f.documentReads.length, 1);
+});
+test("same-ID recreation accepts its new refresh but not the pre-removal receipt", async () => {
+  const f = fixture(); f.activeProjectIdRef.current = "q"; await f.start(); f.remove(); await f.start();
+  f.projectReads[0]!.gate.resolve(snapshot("p", "retired")); await settle();
+  assert.equal(f.merges.length, 0);
+  f.projectReads[1]!.gate.resolve(snapshot("p", "new incarnation")); await settle();
+  assert.deepEqual(f.merges.map(value => value.label), ["new incarnation"]);
+});
+test("project retirement drops metadata-invalidated reads instead of requeuing them", async () => {
+  const f = fixture(); await f.start(); f.invalidate(); f.remove();
+  f.projectReads[0]!.gate.resolve(snapshot("p", "retired metadata")); await settle();
+  assert.equal(f.timers.size, 0); assert.equal(f.merges.length, 0);
+  await f.tick(); assert.equal(f.projectReads.length, 1);
+});
+test("a document-read rejection after confirmed removal remains silent", async () => {
+  const f = fixture(); await f.start(); f.projectReads[0]!.gate.resolve(snapshot("p", "current")); await settle();
+  assert.equal(f.documentReads.length, 1); f.remove();
+  f.documentReads[0]!.gate.reject(new Error("Removed session")); await settle();
+  assert.equal(f.errors.length, 0);
+});
+test("a document result after confirmed removal cannot commit document or conflict", async () => {
+  const f = fixture(); await f.start(); f.projectReads[0]!.gate.resolve(snapshot("p", "current")); await settle();
+  const previous = f.documentRef.current; f.remove();
+  f.documentReads[0]!.gate.resolve({ ...previous, label: "retired", writerConflict: "retired conflict" }); await settle(); f.commit();
+  assert.equal(f.conflicts.length, 0); assert.equal(f.documentRef.current, previous);
+});
+test("confirmed removal also retires an already queued document commit", async () => {
+  const f = fixture(); await f.start(); f.projectReads[0]!.gate.resolve(snapshot("p", "current")); await settle();
+  const previous = f.documentRef.current;
+  f.documentReads[0]!.gate.resolve({ ...previous, label: "queued", writerConflict: "queued conflict" }); await settle();
+  f.remove(); f.commit();
+  assert.equal(f.conflicts.length, 0); assert.equal(f.documentRef.current, previous);
+});
+test("a fresh refresh after earlier removal is not rejected by an old tombstone", async () => {
+  const f = fixture(); f.activeProjectIdRef.current = "q"; f.remove(); await f.start();
+  f.projectReads[0]!.gate.resolve(snapshot("p", "newly accepted")); await settle();
+  assert.deepEqual(f.merges.map(value => value.label), ["newly accepted"]);
+});
+test("cleanup continues to suppress an in-flight project rejection", async () => {
+  const f = fixture(); await f.start(); f.cleanup();
+  f.projectReads[0]!.gate.reject(new Error("Disposed request")); await settle();
+  assert.equal(f.errors.length, 0); assert.equal(f.isUnsubscribed(), true);
+});
+test("removing another project does not cancel a queued refresh", async () => {
+  const f = fixture(); f.send(); f.remove("q"); await f.tick();
+  assert.equal(f.projectReads.length, 1); assert.equal(f.projectReads[0]!.projectId, "p");
+});
+test("a current document-read rejection still reports its real error", async () => {
+  const f = fixture(); await f.start(); f.projectReads[0]!.gate.resolve(snapshot("p", "current")); await settle();
+  const error = new Error("Current document failed"); f.documentReads[0]!.gate.reject(error); await settle();
+  assert.equal(f.errors.length, 1); assert.equal(f.errors[0], error);
 });

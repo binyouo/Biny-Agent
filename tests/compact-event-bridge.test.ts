@@ -33,6 +33,7 @@ async function fixture(context: TestContext, deferSession = false) {
     events: [{ type: "user_message", content: "Earlier request." }, { type: "assistant_message", content: "Earlier answer." }],
     liveEvents: []
   };
+  const projectRemovalRef = { current: new Map<string, object>() };
   const documentRef = { current: initial as DesktopSessionDocument | undefined };
   const checkpoint = {
     type: "context_checkpoint" as const, reason: "manual" as const, summary: "Checkpoint.",
@@ -65,6 +66,7 @@ async function fixture(context: TestContext, deferSession = false) {
     // Recreating an input here would dispose the owner of the hook's pending refresh.
     useEffect(() => { documentRef.current = document; }, [document]);
     useDesktopEventBridge({
+      projectRemovalRef,
       activeProjectIdRef, selectedSessionIdRef: selected, documentRef,
       setDocument, mergeProjectSnapshot: noop, onError, setContextBudget,
       setRecipeNotices: noop, setSkillExtraction: noop, setWriterConflict, setSidebarSessions: noop,
