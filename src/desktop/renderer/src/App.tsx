@@ -1458,18 +1458,21 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const settingsCommitted = useCallback((snapshot: DesktopSettingsSnapshot): void => {
     setChatResponse(snapshot.chatParams.response);
     adoptAppearance({ themePreference: snapshot.themePreference, fontPreference: snapshot.fontPreference, appearancePreference: normalizeAppearancePreference(snapshot.appearancePreference) });
+    const ownsProject = sessionTreePages.captureCatalogProject(snapshot.projectId);
     void window.biny.refreshProject(snapshot.projectId)
-      .then(mergeProjectSnapshot)
-      .catch((error: unknown) => setWarning(errorMessage(error)));
-  }, [adoptAppearance, mergeProjectSnapshot]);
+      .then((workspace) => { if (ownsProject()) mergeProjectSnapshot(workspace); })
+      .catch((error: unknown) => { if (ownsProject()) setWarning(errorMessage(error)); });
+  }, [adoptAppearance, mergeProjectSnapshot, sessionTreePages]);
 
   const toggleProjectPinned = useCallback(async (projectId: string, pinned: boolean): Promise<void> => {
+    const ownsProject = sessionTreePages.captureCatalogProject(projectId);
     try {
-      mergeProjectSnapshot(await window.biny.setProjectPinned(projectId, pinned));
+      const snapshot = await window.biny.setProjectPinned(projectId, pinned);
+      if (ownsProject()) mergeProjectSnapshot(snapshot);
     } catch (error) {
-      setWarning(errorMessage(error));
+      if (ownsProject()) setWarning(errorMessage(error));
     }
-  }, [mergeProjectSnapshot]);
+  }, [mergeProjectSnapshot, sessionTreePages]);
 
   const reorderProjects = useCallback(async (projectIds: string[]): Promise<void> => {
     // Quiet optimistic reorder — this is a low-stakes UI preference, not a warnable action.
