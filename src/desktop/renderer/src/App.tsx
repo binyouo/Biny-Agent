@@ -1703,17 +1703,22 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setWarning("当前消息还没有可重试的会话。");
       return;
     }
+    const navigationRequest = loadRequestRef.current;
+    const projectLifetime = projectRemovalRef.current.get(projectId);
+    const isCurrentScope = (): boolean => loadRequestRef.current === navigationRequest
+      && projectRemovalRef.current.get(projectId) === projectLifetime
+      && projectRef.current === projectId && selectedRef.current === sessionId;
     setGenerationError(undefined);
     const retry = window.biny.retryPrompt;
     if (typeof retry !== "function") throw new Error(desktopApiVersionMismatchMessage);
     try {
       const receipt = await retry(projectId, sessionId, targetMessageId, input,
         attachments.map((attachment) => ({ ...attachment, size: attachment.size ?? 0 })), idempotencyKey);
-      setSelectedSessionId(receipt.sessionId);
+      if (isCurrentScope()) setSelectedSessionId(receipt.sessionId);
     } catch (error) {
-      if (projectRef.current === projectId && selectedRef.current === sessionId) {
+      if (isCurrentScope()) {
         await refreshRuntimeFailure(projectId, sessionId).catch(() => undefined);
-        if (projectRef.current === projectId && selectedRef.current === sessionId) setGenerationError(errorMessage(error));
+        if (isCurrentScope()) setGenerationError(errorMessage(error));
       }
       throw error;
     }
