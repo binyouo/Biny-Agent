@@ -31,6 +31,7 @@ const sidebarProps: ComponentProps<typeof Sidebar> = {
   projects: [], sessions: [{ id: "related", projectId: "", fileName: "related.jsonl", title: "编辑器发布",
     firstUserMessage: "", lastAssistantMessage: "", eventCount: 1, createdAt: "2026-09-22", updatedAt: "2026-09-22", pinned: false, status: "idle" }],
   onOpenProject: unexpected, onCreateEmptyProject: unexpected, onSelectSession: unexpected,
+  captureDeletionProject: unexpected,
   onLoadSessionChildren: unexpected, onSessionAction: unexpected, onDeleteSessions: unexpected,
   onProjectPinned: unexpected, onReorderProjects: unexpected, onRefreshProject: unexpected,
   onRevealProject: unexpected, onOpenTerminalProject: unexpected, onRenameProject: unexpected,

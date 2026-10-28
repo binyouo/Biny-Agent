@@ -219,6 +219,7 @@ test("侧栏设置只请求打开，不把鼠标事件作为目标分页", async
     let opened = 0;
     let target: unknown = "not-opened";
     await h.render(h.React.createElement(Sidebar, { projects: [], sessions: [], layout: { mode: "expanded", contentWidth: 260 },
+      captureDeletionProject: () => { throw new Error("This non-deletion test must not capture a deletion owner"); },
       peekDrawerHandlers: {}, peekTriggerHandlers: {}, resizeHandlers: {},
       onSettings: (tab?: import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js").SettingsTab) => { opened++; target = tab; }
     } as unknown as React.ComponentProps<typeof Sidebar>));
@@ -233,6 +234,7 @@ test("项目排序只提供有区别的手动排序与最近打开", async () =>
   try {
     const { Sidebar } = await import("../src/desktop/renderer/src/components/Sidebar.js");
     await h.render(h.React.createElement(Sidebar, { projects: [], sessions: [], layout: { mode: "expanded", contentWidth: 260 },
+      captureDeletionProject: () => { throw new Error("This non-deletion test must not capture a deletion owner"); },
       peekDrawerHandlers: {}, peekTriggerHandlers: {}, resizeHandlers: {},
     } as unknown as React.ComponentProps<typeof Sidebar>));
     await h.click('[aria-label="项目排序"]');
@@ -245,6 +247,7 @@ test("侧栏菜单支持方向键和首尾导航，Escape 还原触发按钮；�
   try {
     const { Sidebar } = await import("../src/desktop/renderer/src/components/Sidebar.js");
     await h.render(h.React.createElement(Sidebar, { projects: [], sessions: [], layout: { mode: "expanded", contentWidth: 260 },
+      captureDeletionProject: () => { throw new Error("This non-deletion test must not capture a deletion owner"); },
       peekDrawerHandlers: {}, peekTriggerHandlers: {}, resizeHandlers: {},
     } as unknown as React.ComponentProps<typeof Sidebar>));
     const trigger = document.querySelector<HTMLButtonElement>('[aria-label="项目排序"]')!;
