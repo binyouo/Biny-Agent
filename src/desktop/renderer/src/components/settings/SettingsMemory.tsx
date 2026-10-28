@@ -523,6 +523,11 @@ export function SettingsMemory({
     setSaving(true);
     try {
       const next = await onDeleteEntry(entry.id);
+      // 删除前或删除期间的搜索属于旧记忆；只移除这条已删除的匹配，保留其余结果与查询。
+      searchRequestRef.current += 1;
+      pendingSearchRef.current = undefined;
+      setSearching(false);
+      setSearchResults((current) => current.filter((match) => match.id !== entry.id));
       setStats(next);
       await reload();
       onNotify("记忆已删除");
