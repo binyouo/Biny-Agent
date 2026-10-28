@@ -4,7 +4,7 @@ import { Socket } from "node:net";
 import { test, type TestContext } from "node:test";
 import type { JSDOM } from "jsdom";
 import type { Root } from "react-dom/client";
-import type { DesktopRunReceipt, DesktopSlashResult, DesktopSettingsSnapshot, DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopRunReceipt, DesktopSlashResult, DesktopSettingsSaveInput, DesktopSettingsSnapshot, DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 
 import { defaultConfig } from "../src/config/schema.js";
 
@@ -531,3 +531,69 @@ test("removal between import adoption and settings completion suppresses overlay
   assert.equal(h.settingsTitle(), undefined);
   assert.deepEqual(h.projectIds(), ["Project a 项目操作", "Project c 项目操作"]);
 });
+
+// These are real project-menu and SettingsOverlay interactions. The held IPC
+// receipt represents workspaceSnapshot after inspection has already completed,
+// while config/session/catalog reads can still outlive project removal.
+for (const kind of ["pin", "settings"] as const) {
+  for (const failure of [false, true]) {
+    for (const removed of [false, true]) {
+      test(`${kind} preference ${failure ? "failure" : "success"} after ${removed ? "successful" : "rejected"} removal`, async t => {
+        const h = await fixture(t);
+        const receipt = deferred<DesktopWorkspaceSnapshot>();
+        const calls: string[] = [];
+        const draftStates: Array<{ open: boolean }> = [];
+        h.api.updateSettingsDraftState = async (state: { open: boolean }) => { draftStates.push(state); };
+        const stale = { ...workspace("a"), project: { ...project("a"), name: "Old preference receipt", pinned: true } };
+        h.api.setProjectPinned = (id: string, pinned: boolean) => {
+          assert.equal(id, "a"); assert.equal(pinned, true); calls.push("pin"); return receipt.promise;
+        };
+        h.api.refreshProject = (id: string) => { assert.equal(id, "a"); calls.push("refresh"); return receipt.promise; };
+        h.api.saveSettings = async (id: string, input: DesktopSettingsSaveInput) => {
+          assert.equal(id, "a"); assert.ok(input.chatParams); calls.push("save");
+          return { status: "committed", journalId: "inert-preference-save", appliedFields: ["chatParams"],
+            snapshot: { ...settingsSnapshot(id), configRevision: "config:2", chatParams: input.chatParams } };
+        };
+        try {
+          if (kind === "pin") {
+            await h.menuEntry("a", "置顶项目");
+            assert.deepEqual(calls, ["pin"]);
+          } else {
+            await h.emit("onMenuAction", "settings");
+            await h.click('button[data-settings-tab="聊天"]');
+            await h.click('input[role="switch"][aria-label="启用流式响应"]');
+            const save = h.document.querySelector<HTMLButtonElement>(".settings-save-button");
+            assert.ok(save); assert.equal(save.disabled, false);
+            await h.click(".settings-save-button");
+            assert.deepEqual(calls, ["save", "refresh"], "The real committed callback starts its background refresh");
+            assert.match(h.document.querySelector(".settings-save-status")?.textContent ?? "", /所有更改已保存/u);
+            assert.equal(draftStates.at(-1)?.open, true);
+            await h.click('button[aria-label="关闭设置"]');
+            assert.equal(draftStates.at(-1)?.open, false, "The real settings close must finish before using the sidebar");
+          }
+          await h.removeEntry("a");
+          if (removed) await h.resolveRemoval(0);
+          else await h.rejectRemoval(0);
+          const commits = [...h.commitments];
+          await h.React.act(async () => {
+            if (failure) receipt.reject(new Error("Preference receipt unavailable"));
+            else receipt.resolve(stale);
+          });
+          assert.deepEqual(h.commitments, commits, "Preference completion must not commit navigation");
+          if (removed) {
+            assert.deepEqual(h.projectIds(), ["Project b 项目操作", "Project c 项目操作"]);
+            assert.equal(h.projectName(), "Project b");
+            assert.doesNotMatch(h.text(), /Old preference receipt|Preference receipt unavailable/u);
+          } else if (failure) {
+            assert.match(h.text(), /Preference receipt unavailable/u);
+            assert.equal(h.projectName(), "Project a");
+          } else {
+            assert.ok(h.projectIds().includes("Old preference receipt 项目操作"));
+          }
+        } finally {
+          await h.React.act(async () => receipt.resolve(workspace("a")));
+        }
+      });
+    }
+  }
+}
