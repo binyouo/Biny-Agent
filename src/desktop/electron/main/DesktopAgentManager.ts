@@ -749,7 +749,7 @@ export class DesktopAgentManager {
     fastMode?: boolean
   ): Promise<DesktopRunReceipt> {
     const sendPerfStartedAt = perfNow();
-    const selectedBeforeSend = this.state.selectedSessionId(projectId);
+    const ownsSelection = this.state.captureSelectedSessionLifetime(projectId);
     const requestedSessionId = sessionId ?? this.draftSessionIds.get(projectId);
     const runtimeForPromptPerfStartedAt = perfNow();
     const { managed, snapshot } = await this.runtimeForPrompt(projectId, requestedSessionId, personalization);
@@ -769,7 +769,7 @@ export class DesktopAgentManager {
         throw errorFromHostOperation(queued);
       }
       if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
-      if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, targetSessionId);
+      if (ownsSelection()) await this.state.setSelectedSession(projectId, targetSessionId);
       recordPerfPhase("desktop.sendPrompt", sendPerfStartedAt, { projectId, queued: true }, project.path);
       return {
         sessionId: targetSessionId,
@@ -789,7 +789,7 @@ export class DesktopAgentManager {
     );
     if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
     if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
-    if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
+    if (ownsSelection()) await this.state.setSelectedSession(projectId, info.sessionId);
     recordPerfPhase("desktop.sendPrompt", sendPerfStartedAt, { projectId, queued: false }, project.path);
     return {
       sessionId: info.sessionId,
