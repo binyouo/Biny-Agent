@@ -168,6 +168,7 @@ export function SettingsMemory({
   const [embeddingStatus, setEmbeddingStatus] = useState<DesktopMemoryEmbeddingStatus>();
   const [embeddingWorking, setEmbeddingWorking] = useState<"download" | "rebuild">();
   const [embeddingError, setEmbeddingError] = useState<string>();
+  const embeddingActionGenerationRef = useRef(0);
   const [sleepAdvancedOpen, setSleepAdvancedOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const disclosureId = useId();
@@ -341,53 +342,59 @@ export function SettingsMemory({
 
   const downloadEmbedding = async (model: LocalEmbeddingModelId): Promise<void> => {
     if (embeddingWorking) return;
+    const generation = ++embeddingActionGenerationRef.current;
     setEmbeddingWorking("download");
     try {
-      setEmbeddingStatus(await onDownloadEmbeddingModel(model));
+      const status = await onDownloadEmbeddingModel(model);
+      if (generation !== embeddingActionGenerationRef.current) return;
+      setEmbeddingStatus(status);
       setEmbeddingError(undefined);
       onNotify("本地模型已就绪");
     } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
+      if (generation === embeddingActionGenerationRef.current) setEmbeddingError(errorMessage(cause));
     } finally {
-      setEmbeddingWorking(undefined);
+      if (generation === embeddingActionGenerationRef.current) setEmbeddingWorking(undefined);
     }
   };
 
   const cancelEmbeddingDownload = async (model: LocalEmbeddingModelId): Promise<void> => {
+    const generation = embeddingActionGenerationRef.current;
     try {
       const result = await onCancelEmbeddingDownload(model);
+      if (generation !== embeddingActionGenerationRef.current) return;
       setEmbeddingStatus(result.status);
       onNotify(result.cancelled ? "取消" : "当前没有正在进行的下载");
     } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
-    } finally {
-      setEmbeddingWorking(undefined);
+      if (generation === embeddingActionGenerationRef.current) setEmbeddingError(errorMessage(cause));
     }
   };
 
   const rebuildEmbedding = async (): Promise<void> => {
     if (embeddingWorking || dirtyCount > 0) return;
+    const generation = ++embeddingActionGenerationRef.current;
     setEmbeddingWorking("rebuild");
     try {
-      setEmbeddingStatus(await onRebuildEmbeddingIndex());
+      const status = await onRebuildEmbeddingIndex();
+      if (generation !== embeddingActionGenerationRef.current) return;
+      setEmbeddingStatus(status);
       setEmbeddingError(undefined);
       onNotify("嵌入向量重建完成！");
     } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
+      if (generation === embeddingActionGenerationRef.current) setEmbeddingError(errorMessage(cause));
     } finally {
-      setEmbeddingWorking(undefined);
+      if (generation === embeddingActionGenerationRef.current) setEmbeddingWorking(undefined);
     }
   };
 
   const cancelEmbeddingRebuild = async (): Promise<void> => {
+    const generation = embeddingActionGenerationRef.current;
     try {
       const result = await onCancelEmbeddingRebuild();
+      if (generation !== embeddingActionGenerationRef.current) return;
       setEmbeddingStatus(result.status);
       onNotify(result.cancelled ? "取消" : "当前没有正在进行的更新");
     } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
-    } finally {
-      setEmbeddingWorking(undefined);
+      if (generation === embeddingActionGenerationRef.current) setEmbeddingError(errorMessage(cause));
     }
   };
 
