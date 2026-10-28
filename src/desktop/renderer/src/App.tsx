@@ -1490,7 +1490,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const request = loadRequestRef.current;
     const lifetimes = new Map(projectRemovalRef.current);
     try {
-      const bootstrap = await window.biny.removeProject(projectId);
+      const receipt = await window.biny.removeProject(projectId);
       projectRemovalRef.current.set(projectId, {});
       // This receipt confirms only this removal, not a replacement of newer catalog/view state.
       setProjects((current) => current.filter((project) => project.id !== projectId));
@@ -1505,12 +1505,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       }
       if (projectRef.current !== projectId) return;
       const ownsFallback = loadRequestRef.current === request && (!pending || pending.projectId === projectId);
-      const candidate = bootstrap.workspace;
+      const candidate = receipt.workspace;
       const fallback = ownsFallback && candidate && candidate.project.id !== projectId
         && projectRemovalRef.current.get(candidate.project.id) === lifetimes.get(candidate.project.id)
         ? { ...candidate, selectedSessionId: undefined }
         : undefined;
       if (ownsFallback) {
+        if (receipt.fallbackWarning) setWarning(receipt.fallbackWarning);
         // A real view change retires receipts issued while removal was pending.
         loadRequestRef.current += 1;
         setPendingNavigation(undefined);
@@ -1530,7 +1531,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setWriterConflict(undefined);
       setContextBudget(undefined);
       setComposerDraft(undefined);
-      setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(fallback));
+      setRuntimePanelOpen(receipt.activeView === "runtime" && Boolean(fallback));
       commitNavigation(createNavigationState());
     } catch (error) {
       if (loadRequestRef.current === request && projectRemovalRef.current.get(projectId) === lifetimes.get(projectId)) {

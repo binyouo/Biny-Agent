@@ -649,6 +649,13 @@ export interface DesktopBootstrap {
   appearancePreference?: DesktopAppearancePreference;
 }
 
+/** Resolution confirms removal; failure to read the optional fallback does not undo it. */
+export interface DesktopProjectRemovalReceipt {
+  workspace?: DesktopWorkspaceSnapshot;
+  activeView: DesktopActiveView;
+  fallbackWarning?: string;
+}
+
 /** 发送提示或排队运行中消息后的回执。 */
 export interface DesktopRunReceipt {
   sessionId: string;
@@ -1644,7 +1651,7 @@ export interface DesktopApi {
   setProjectPinned(projectId: string, pinned: boolean): Promise<DesktopWorkspaceSnapshot>;
   reorderProjects(projectIds: string[]): Promise<DesktopProject[]>;
   renameProject(projectId: string, name: string): Promise<DesktopWorkspaceSnapshot>;
-  removeProject(projectId: string): Promise<DesktopBootstrap>;
+  removeProject(projectId: string): Promise<DesktopProjectRemovalReceipt>;
   refreshProject(projectId: string): Promise<DesktopWorkspaceSnapshot>;
   projectGitStatus(projectId: string): Promise<DesktopGitStatus>;
   initializeProjectGit(projectId: string): Promise<DesktopGitStatus>;
