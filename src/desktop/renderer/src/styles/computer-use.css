@@ -80,9 +80,10 @@
 .desktop-settings-dialog .settings-modal .appshot-settings .appshot-rows { padding: 0; gap: 0; }
 .appshot-settings .appshot-row {
   display: flex;
+  min-height: calc(56px * var(--font-scale, 1));
   align-items: center;
   justify-content: space-between;
-  gap: calc(16px * var(--font-scale, 1));
+  gap: calc(24px * var(--font-scale, 1));
   padding: var(--st-row-padding);
 }
 .appshot-settings .appshot-row + .appshot-row { border-top: 1px solid var(--border-subtle); }
@@ -117,32 +118,65 @@
 }
 .appshot-settings .appshot-link:disabled { opacity: .55; }
 
-/* 下拉框：宽度按内容走、不随行拉伸，触发器里留出一枚加载指示的位置。 */
-.appshot-settings .appshot-field { flex: none; }
+/* 下拉框与右侧分段控件、按钮共用 9px 圆角和 36px 高度，右缘对齐成一条线。
+   宽度按内容走、不随行拉伸，触发器里留出一枚加载指示的位置。 */
+.appshot-settings .appshot-field { display: inline-flex; flex: none; position: relative; }
+/* 外框只做定位壳，不画边框/底色。所有可见样式都落在 select 自己身上，
+   避免原生下拉再叠出一块内缩的小框，选中范围与实际点击范围完全重合。 */
 .appshot-settings .appshot-select {
+  position: relative;
   display: inline-flex;
-  min-width: calc(120px * var(--font-scale, 1));
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: var(--st-radius);
-  background: var(--surface-soft);
+  min-width: calc(132px * var(--font-scale, 1));
+  height: calc(36px * var(--font-scale, 1));
+  align-items: stretch;
+  padding: 0;
 }
 .appshot-settings .appshot-select select {
   width: 100%;
-  min-height: calc(32px * var(--font-scale, 1));
-  padding: 0;
-  border: 0;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 34px 0 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
   color: var(--text);
-  background: transparent;
+  background: var(--surface-soft);
   font-size: calc(13px * var(--font-scale, 1));
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: border-color .12s ease, background .12s ease;
 }
-.appshot-settings .appshot-select:hover { background: var(--surface-hover); }
-.appshot-settings .appshot-select:focus-within { border-color: var(--accent); }
+.appshot-settings .appshot-select select:hover { background: var(--surface-hover); }
+.appshot-settings .appshot-select select:focus { border-color: var(--accent); outline: none; }
 .appshot-settings .appshot-select select:focus-visible { outline: none; }
-.appshot-settings .appshot-spin { flex: none; color: var(--text-tertiary); animation: appshot-spin 1s linear infinite; }
-@keyframes appshot-spin { to { transform: rotate(1turn); } }
+/* select 下拉展开时 macOS 仍会画系统高亮；这里把未展开态的圆角/边框锁定在 select 上，
+   展开菜单本身交给系统。 */
+/* 自绘下拉箭头，叠在右侧、不吃 flex 宽度，避免原生箭头随平台字体重排、贴边不齐。 */
+.appshot-settings .appshot-select::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 0;
+  height: 0;
+  transform: translateY(-50%);
+  border-top: 5px solid var(--text-tertiary);
+  border-right: 4px solid transparent;
+  border-left: 4px solid transparent;
+  pointer-events: none;
+}
+.appshot-settings .appshot-spin {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  color: var(--text-tertiary);
+  transform: translateY(-50%);
+  animation: appshot-spin 1s linear infinite;
+}
+/* 预热时改由 spinner 占据右侧位置，隐藏静态箭头避免重叠。 */
+.appshot-settings .appshot-select:has(.appshot-spin)::after { display: none; }
+@keyframes appshot-spin { from { transform: translateY(-50%) rotate(0); } to { transform: translateY(-50%) rotate(1turn); } }
 @media (prefers-reduced-motion: reduce) { .appshot-settings .appshot-spin { animation: none; } }
 
 /* 监听未开启时显示警示卡，使用琥珀色边框和淡色背景。 */
@@ -161,6 +195,13 @@
   color: var(--text-secondary);
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.5;
+}
+
+/* 行内的次要按钮与下拉框、分段控件保持同高，右缘对齐成一条线。 */
+.appshot-settings .appshot-row > .settings-secondary-button {
+  flex: none;
+  min-height: calc(36px * var(--font-scale, 1));
+  padding-block: 0;
 }
 
 .appshot-settings .appshot-foot { gap: calc(12px * var(--font-scale, 1)); }

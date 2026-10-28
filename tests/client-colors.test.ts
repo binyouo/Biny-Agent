@@ -207,10 +207,11 @@ test("search, preference and dialog fields use focus borders without outer outli
   assert.ok(declaration(desktop, ".desktop-dialog-content .astryx-text-input:focus-within", "border-color"));
 });
 
-test("Appshot shortcut selection retains a visible focus border without an outer halo", () => {
-  assert.equal(declaration(desktop, ".appshot-settings .appshot-select", "border"), "1px solid transparent");
-  assert.equal(declaration(desktop, ".appshot-settings .appshot-select:focus-within", "border-color"), "var(--accent)");
-  assert.equal(declaration(desktop, ".appshot-settings .appshot-select:focus-within", "box-shadow"), undefined);
+test("Appshot shortcut select draws its own idle border and accent focus border without an outer halo", () => {
+  // 可见外框落在 select 本身，外框与可点击范围完全重合。
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select", "border"), "1px solid var(--border-subtle)");
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus", "border-color"), "var(--accent)");
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus", "box-shadow"), undefined);
   assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "outline"), "none");
 });
 

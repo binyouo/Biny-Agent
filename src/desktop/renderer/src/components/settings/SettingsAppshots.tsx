@@ -98,7 +98,7 @@ export function SettingsAppshots(): React.JSX.Element {
     <section className="cu-card appshot-rows">
       <div className="appshot-row">
         <div className="appshot-row-copy">
-          <strong>截图快捷键</strong>
+          <strong id="appshot-hotkey-label">截图快捷键</strong>
           {hint ? <p>{hint}</p> : <p>未设置快捷键——Appshot 处于关闭状态。</p>}
           {warming ? <p>正在启动桌面控制组件…</p> : null}
           {current ? <p className="appshot-error" role="alert">
@@ -109,12 +109,11 @@ export function SettingsAppshots(): React.JSX.Element {
             >打开辅助功能设置</button> : null}
           </p> : null}
         </div>
-        <label className="appshot-field">
-          <span className="cu-sr-only">截图快捷键</span>
+        <div className="appshot-field">
           <span className="appshot-select">
             {spinner ? <Icon className="appshot-spin" name="loader" size={12} /> : null}
             <select
-              aria-label="截图快捷键" disabled={!api || pending !== undefined}
+              aria-labelledby="appshot-hotkey-label" disabled={!api || pending !== undefined}
               value={hotkey}
               onChange={event => void perform("hotkey", () => api.settings({ ...settings!, hotkey: event.target.value }))}
             >
@@ -123,15 +122,16 @@ export function SettingsAppshots(): React.JSX.Element {
               <option value="">关闭</option>
             </select>
           </span>
-        </label>
+        </div>
       </div>
 
       <div className="appshot-row">
         <div className="appshot-row-copy">
-          <strong>截图目标</strong>
+          <strong id="appshot-target-label">截图目标</strong>
         </div>
         <SettingsSegmentedControl
           label="截图目标"
+          labelledBy="appshot-target-label"
           value={settings?.target ?? "current"}
           disabled={!api || pending !== undefined}
           options={[{ value: "current", label: "当前聊天" }, { value: "new", label: "新聊天" }]}
