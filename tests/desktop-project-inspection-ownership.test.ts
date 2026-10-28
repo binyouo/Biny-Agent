@@ -133,10 +133,15 @@ for (const owner of ["snapshot", "stored", "all"] as const) {
       await value.state.setProjectPinned(reopened.id, true);
     } finally { pending.release(); }
     const result = await pending.settled;
-    assert.ok("project" in result && result.project);
     assert.deepEqual(value.state.project(reopened.id), { ...reopened, name: "Re-added project", pinned: true });
-    assert.equal(result.project.dirty, true);
-    assert.equal(result.project.name, "Re-added project");
+    if (owner === "snapshot") {
+      assert.ok("error" in result && result.error instanceof Error);
+      assert.match(result.error.message, /Project was removed or replaced while loading workspace/);
+    } else {
+      assert.ok("project" in result && result.project);
+      assert.equal(result.project.dirty, true);
+      assert.equal(result.project.name, "Re-added project");
+    }
     await value.assertPersisted();
   })]);
 }

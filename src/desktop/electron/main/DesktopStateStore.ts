@@ -113,6 +113,13 @@ export class DesktopStateStore {
     return project ? { ...project } : undefined;
   }
 
+  /** Track the stored incarnation, not copied fields or inspection request order. */
+  captureProjectLifetime(projectId: string): () => boolean {
+    const storedProject = this.state.projects.find((project) => project.id === projectId);
+    return () => storedProject !== undefined
+      && this.state.projects.find((project) => project.id === projectId) === storedProject;
+  }
+
   async upsertProject(project: DesktopProject): Promise<void> {
     const index = this.state.projects.findIndex((candidate) => candidate.id === project.id);
     if (index === -1) this.state.projects.push({ ...project });

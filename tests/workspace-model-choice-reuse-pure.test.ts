@@ -24,6 +24,7 @@ assert.ok(method.body);
 const helpers = ["listModelChoices", "listConfiguredModelChoices", "listPickerModelChoices", "filterPickerModelChoices"].map(name => one(
   manager.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name), name));
 const calls = new Set([
+  "this.state.captureProjectLifetime", "isProjectCurrent",
   "this.projects.refreshStoredProject", "this.residentRuntime", "this.runtimeSnapshots", "Promise.all",
   "this.configStore.load", "this.configStore.load(project.path).catch", "this.projects.listWorkspaceSessions", "this.projectEvents",
   "restoreProviderCatalogs", "Object.keys", "listConfiguredModelChoices", "listPickerModelChoices", "filterPickerModelChoices",
@@ -37,7 +38,7 @@ for (const [nodes, source] of [[[method], desktop], [helpers, manager]] as const
     const inspect = (child: ts.Node): void => {
       assert.ok(!ts.isImportDeclaration(child));
       if (ts.isCallExpression(child)) assert.ok(calls.has(child.expression.getText(source)), `unreviewed call: ${child.expression.getText(source)}`);
-      if (ts.isNewExpression(child)) assert.equal(child.expression.getText(source), "ModelRuntime", "only inert Runtime may be constructed");
+      if (ts.isNewExpression(child)) assert.ok(["ModelRuntime", "Error"].includes(child.expression.getText(source)), "only inert Runtime or Error may be constructed");
       ts.forEachChild(child, inspect);
     };
     inspect(node);
@@ -129,7 +130,7 @@ function fixture(initial: Configuration | undefined, resident = false) {
     projectEvents: () => new Map(), modelsStore,
     readRuntimeProjection: async () => { await onProjection?.(); return projection; },
     runtimeErrors: new Map([["project", { kind: "fixture-error" }]]),
-    state: { selectedSessionId: () => "history" }
+    state: { captureProjectLifetime: () => () => true, selectedSessionId: () => "history" }
   };
   return {
     snapshot: (refresh = true) => api.workspaceSnapshot.call(receiver, "project", refresh),
