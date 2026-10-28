@@ -40,7 +40,7 @@ import { createSubagentTool, createTaskStatusTool, createTaskCancelTool, prepare
 import { TaskCommunication } from "./TaskCommunication.js";
 import { createPlanTools } from "../extensions/plan.js";
 import { createSessionGoalTools } from "../extensions/sessionGoal.js";
-import { buildSubagentDefinitionsPrompt, loadSubagentDefinitions, type SubagentDefinition } from "../extensions/agents.js";
+import { buildSubagentDefinitionsPrompt, findSubagentDefinition, loadSubagentDefinitions, type SubagentDefinition } from "../extensions/agents.js";
 import { createCheckpointEvidenceTool } from "../extensions/checkpointEvidence.js";
 import { createToolCounts, formatExtensionReport, type ExtensionSection, type ExtensionStatus } from "../extensions/report.js";
 import { createModelSettings, createProviderCredentialPersistence, type ModelSettings } from "../llm/modelFactory.js";
@@ -61,6 +61,7 @@ import { evaluateTaskRetry } from "./TaskRetryPolicy.js";
 import { readWorkerAttemptCheckpoint, runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
 import { isSessionWriterConflictError } from "./SessionLease.js";
 import { readWorkerSessionCheckpoint } from "./WorkerSession.js";
+import { WorktreeManager } from "./host/worktree.js";
 import { AutomationStore } from "./AutomationScheduler.js";
 import { GoalGraphStore } from "./GoalGraphStore.js";
 import { SessionGoalStore } from "./SessionGoalStore.js";
@@ -111,6 +112,7 @@ export interface CommandRuntime {
   capabilities: CapabilityStore;
   subagents: SubagentTaskManager | undefined;
   taskCommunication?: TaskCommunication;
+  isTaskExecuting(taskRunId: string): boolean;
   userInput?: UserInputRequests;
   setUserInputRun?(run?: { sessionId: string; runId: string }): void;
   setOwnerNotificationSink?(sink: ((notification: string) => Promise<void>) | undefined): void;
@@ -203,6 +205,8 @@ const backgroundOwners = new Set<{ start(): void; stop(): void }>();
 
 export interface CommandRuntimeOptions {
   persistenceRoot?: string;
+  /** Host 的主 checkout，避免在父隔离工作树内部再创建可被父级清理删除的目录。 */
+  worktreeRoot?: string;
   /** Defaults to Runtime ownership; only a disposable enclosing environment may outlive it. */
   processLifetime?: ManagedProcessLifetime;
   configStore?: AgentConfigStore;
@@ -416,7 +420,7 @@ async function initializeCommandRuntime(
     attemptId: string;
     completedStatus: "completed" | "verifying";
   }>();
-  const taskCheckPromises = new Map<string, Promise<TaskCommandExecution>>();
+  const taskCheckPromises = new Map<string, { taskRunId: string; completion: Promise<TaskCommandExecution> }>();
   const durableTaskPromises = new Map<string, Promise<TaskClosureResult>>();
   const durableTaskControllers = new Map<string, AbortController>();
   const workerContinuations = new Map<string, PreparedSubagentTask>();
@@ -477,6 +481,37 @@ async function initializeCommandRuntime(
     workspaceRoot,
     projectPaths: config.extensions.subagent.agentPaths
   });
+  const taskWorktrees = new WorktreeManager(options.worktreeRoot ?? workspaceRoot, persistenceRoot);
+  const taskWorktreeId = (taskRunId: string): string => `task-${createHash("sha256").update(taskRunId).digest("hex").slice(0, 40)}`;
+  const taskWorkspace = async (taskRunId: string, create: boolean): Promise<string> => {
+    const id = taskWorktreeId(taskRunId);
+    const registered = await taskWorktrees.get(id);
+    if (registered) return (await taskWorktrees.ensure(id, { taskRunId, sourceRoot: workspaceRoot })).worktreePath;
+    const task = taskRuns.get(taskRunId);
+    if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+    const priorRoot = task.attempts.map(attempt => readWorkerAttemptCheckpoint(attempt.artifacts)?.workspaceRoot).find(root => root !== undefined);
+    if (priorRoot !== undefined) {
+      if (priorRoot !== workspaceRoot) throw new Error("The original task worktree registration is missing; its execution was not recreated.");
+      return workspaceRoot;
+    }
+    const definition = readTaskDefinition(task.task);
+    const named = definition.agent ? findSubagentDefinition(await loadAgentDefinitions(), definition.agent) : undefined;
+    if ((definition.isolation ?? named?.isolation) !== "worktree") return workspaceRoot;
+    if (!create) throw new Error("The isolated task has no registered worktree; its execution was not recreated.");
+    return (await taskWorktrees.ensure(id, { taskRunId, sourceRoot: workspaceRoot })).worktreePath;
+  };
+  const taskWorkerOptions = async (taskRunId: string, create: boolean): Promise<SubagentOptions> => {
+    const root = await taskWorkspace(taskRunId, create);
+    if (root === workspaceRoot) return subagentOptions;
+    return { ...subagentOptions, workspaceRoot: root,
+      toolRegistry: createToolRegistry({ workspaceRoot: root, ignore: config.workspace.ignore, attachmentRoot: projectAttachmentRoot },
+        config.web.search, managedProcesses, config.web.fetch, config.sandbox, config.web.cookies) };
+  };
+  const taskWorktreeReport = async (taskRunId: string) => {
+    const record = (await taskWorktrees.status(taskWorktreeId(taskRunId)))[0];
+    return record ? { sessionId: record.sessionId, path: record.worktreePath, branch: record.branch, baseCommit: record.baseCommit,
+      exists: record.exists, dirty: record.dirty, cleanupError: record.cleanupError } : undefined;
+  };
   const subagentOptions: SubagentOptions = {
     workspaceRoot,
     permissionManager,
@@ -498,6 +533,7 @@ async function initializeCommandRuntime(
     runTask: async (input, context) => {
       const sessionId = context.sessionId ?? recorder.sessionId;
       const taskRunId = `agent-task:${sessionId}:${context.toolCallId}`;
+      const named = input.agent ? findSubagentDefinition(await loadAgentDefinitions(), input.agent) : undefined;
       taskRuns.create({
         taskRunId,
         sessionId,
@@ -510,6 +546,7 @@ async function initializeCommandRuntime(
           communication: true,
           notifyParent: input.background === true,
           agent: input.agent,
+          isolation: input.isolation ?? named?.isolation,
           verification: input.verification
         }
       });
@@ -532,10 +569,10 @@ async function initializeCommandRuntime(
           // 父回合正常结束不撤销已准入任务；显式取消仍通过 CLI / Host 传递。
           void started.completion.finally(() => context.signal?.removeEventListener("abort", abort)).catch(() => undefined);
           detached = true;
-          return taskRunToolResult(taskRuns.get(taskRunId));
+          return { ...taskRunToolResult(taskRuns.get(taskRunId)), worktree: await taskWorktreeReport(taskRunId) };
         }
         const result = await started.completion;
-        return taskRunToolResult(taskRuns.get(taskRunId), result);
+        return { ...taskRunToolResult(taskRuns.get(taskRunId), result), worktree: await taskWorktreeReport(taskRunId) };
       } finally {
         unsubscribe?.();
         if (!detached) context.signal?.removeEventListener("abort", abort);
@@ -544,7 +581,7 @@ async function initializeCommandRuntime(
     readTaskResult: async (input, context) => {
       const sessionId = context.sessionId ?? recorder.sessionId;
       const task = await taskCommunication.wait(input.taskRunId, input.waitMs, input.afterRevision, context.signal, sessionId);
-      return { ...taskRunToolResult(task), messages: taskCommunication.messages(input.taskRunId, sessionId).slice(-4).map((message) => ({ ...message, content: message.content.slice(0, 1000) })) };
+      return { ...taskRunToolResult(task), worktree: await taskWorktreeReport(input.taskRunId), messages: taskCommunication.messages(input.taskRunId, sessionId).slice(-4).map((message) => ({ ...message, content: message.content.slice(0, 1000) })) };
     }
   };
   const subagentTaskManager = config.extensions.subagent.enabled
@@ -567,10 +604,11 @@ async function initializeCommandRuntime(
         taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
         if (snapshot.status !== "queued" && snapshot.status !== "running") workerGoalBindings.delete(snapshot.taskId);
       },
-      persistCompletion: (snapshot, output) => {
+      persistCompletion: async (snapshot, output) => {
         taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId)
           ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId }, output);
         taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
+        if (!durableSubagentBindings.has(snapshot.taskId)) await taskWorktrees.releaseUnchangedTask(taskWorktreeId(snapshot.taskId));
       },
       execute: async (task, context) => {
         const prepared = workerContinuations.get(context.taskId);
@@ -586,7 +624,9 @@ async function initializeCommandRuntime(
               communication }
           } });
         }
-        return await executeSubagentTask(subagentOptions, task, context.signal, context.accessMode, context.agent, {
+        const workerOptions = durable ? await taskWorkerOptions(durable.taskRunId, true) : subagentOptions;
+        context.signal.throwIfAborted();
+        return await executeSubagentTask(workerOptions, task, context.signal, context.accessMode, context.agent, {
           persistenceRoot, taskId: attempt?.attemptId ?? context.taskId,
           parentRunId: workerGoalBindings.get(context.taskId)?.parentRunId,
           sessionGoalId: workerGoalBindings.get(context.taskId)?.sessionGoalId,
@@ -962,60 +1002,76 @@ async function initializeCommandRuntime(
     const controller = durableTaskControllers.get(taskRunId) ?? new AbortController();
     controller.signal.throwIfAborted();
     durableTaskControllers.set(taskRunId, controller);
-    const completion = runTaskClosure({
-      taskRuns,
-      taskRunId,
-      workspaceRoot,
-      ignore: config.workspace.ignore,
-      executor: { executeTaskCheck: async (checkInput) => await executeTaskCheck(checkInput) },
-      retrySafety: taskOptions.retrySafety,
-      resumeWorker: workerContinuation !== undefined,
-      signal: controller.signal,
-      executeAttempt: async (prompt, attempt) => {
-        let submitted;
-        const workerTaskId = closureRequired ? attempt.attemptId : taskRunId;
-        if (workerContinuation) workerContinuations.set(workerTaskId, workerContinuation);
-        try {
-          try {
-            submitted = startSubagentTask(prompt, {
-              taskId: workerTaskId,
-              taskRunId,
-              attemptId: attempt.attemptId,
-              completedStatus: closureRequired ? "verifying" : "completed",
-              parentRunId: latest.parentRunId,
-              signal: controller.signal,
-              accessMode: definition.review || definition.reportOnly ? "read-only" : definition.verification ? "workspace" : subagentAccessMode(permissionManager),
-              agent: definition.agent
-            });
-          } catch (error) {
-            const failure = error instanceof Error ? error : new Error(String(error));
-            finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, "failed", {
-              failure: { message: failure.message, failureClass: "dispatch_failed" }
-            });
-            throw failure;
-          }
-          try {
-            return await submitted.completion;
-          } catch (error) {
-            const failure = error instanceof Error ? error : new Error(String(error));
-            const status = failure.name === "SubagentTaskAbortedError" || failure.name === "AbortError" ? "aborted"
-              : failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
-            finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, status, {
-              artifacts: failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined,
-              failure: {
-                message: failure.message,
-                failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason
-                  : status === "failed" ? "execution_failed" : "cancelled"
-              }
-            });
-            throw failure;
-          }
-        } finally {
-          workerContinuations.delete(workerTaskId);
-          await workerContinuation?.close();
+    const completion = (async () => {
+      controller.signal.throwIfAborted();
+      let root: string;
+      try { root = await taskWorkspace(taskRunId, current.attempts.length === 0); }
+      catch (error) {
+        if (taskRuns.get(taskRunId)?.status === "queued" && current.attempts.length === 0) {
+          const attempt = taskRuns.createAttempt(taskRunId, { parentRunId: latest.parentRunId, retrySafety: "safe" });
+          finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, "failed", {
+            failure: { failureClass: "workspace_preparation_failed", message: error instanceof Error ? error.message : String(error) }
+          });
         }
+        throw error;
       }
-    }).then((result) => {
+      controller.signal.throwIfAborted();
+      return await runTaskClosure({
+        taskRuns,
+        taskRunId,
+        workspaceRoot: root,
+        ignore: config.workspace.ignore,
+        executor: { executeTaskCheck: async (checkInput) => await executeTaskCheck(checkInput) },
+        retrySafety: taskOptions.retrySafety,
+        resumeWorker: workerContinuation !== undefined,
+        signal: controller.signal,
+        executeAttempt: async (prompt, attempt) => {
+          let submitted;
+          const workerTaskId = closureRequired ? attempt.attemptId : taskRunId;
+          if (workerContinuation) workerContinuations.set(workerTaskId, workerContinuation);
+          try {
+            try {
+              submitted = startSubagentTask(prompt, {
+                taskId: workerTaskId,
+                taskRunId,
+                attemptId: attempt.attemptId,
+                completedStatus: closureRequired ? "verifying" : "completed",
+                parentRunId: latest.parentRunId,
+                signal: controller.signal,
+                accessMode: definition.review || definition.reportOnly ? "read-only" : definition.verification ? "workspace" : subagentAccessMode(permissionManager),
+                agent: definition.agent
+              });
+            } catch (error) {
+              const failure = error instanceof Error ? error : new Error(String(error));
+              finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, "failed", {
+                failure: { message: failure.message, failureClass: "dispatch_failed" }
+              });
+              throw failure;
+            }
+            try {
+              return await submitted.completion;
+            } catch (error) {
+              const failure = error instanceof Error ? error : new Error(String(error));
+              const status = failure.name === "SubagentTaskAbortedError" || failure.name === "AbortError" ? "aborted"
+                : failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
+              finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, status, {
+                artifacts: failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined,
+                failure: {
+                  message: failure.message,
+                  failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason
+                    : status === "failed" ? "execution_failed" : "cancelled"
+                }
+              });
+              throw failure;
+            }
+          } finally {
+            workerContinuations.delete(workerTaskId);
+            await workerContinuation?.close();
+          }
+        }
+      });
+    })().then(async (result) => {
+      if (result.status === "completed" && !definition.verification) await taskWorktrees.releaseUnchangedTask(taskWorktreeId(taskRunId));
       if (workerContinuation) graphs.projectTaskClosure(taskRunId, result);
       return result;
     }).finally(() => {
@@ -1031,7 +1087,7 @@ async function initializeCommandRuntime(
     signal?.throwIfAborted();
     const source = taskCommunication.read(taskRunId);
     if (source.status !== "completed") throw new Error("Only completed tasks can start additional work; use explicit resume or retry for interrupted tasks.");
-    const definition = source.task as { communication?: unknown; agent?: string; constraints?: string[] };
+    const definition = source.task as { communication?: unknown; agent?: string; isolation?: "worktree"; constraints?: string[] };
     if (definition.communication !== true) throw new Error("Task has no child communication admission.");
     if (!message.trim() || message.length > 8000 || !requestId.trim() || requestId.length > 256) throw new Error("Invalid task continuation input.");
     const nextId = `agent-task:${recorder.sessionId}:continue:${requestId}`;
@@ -1045,7 +1101,7 @@ async function initializeCommandRuntime(
     const output = (source.attempts.at(-1)?.artifacts as { output?: unknown } | undefined)?.output;
     taskRuns.create({ taskRunId: nextId, sessionId: recorder.sessionId, parentRunId: source.parentRunId,
       task: { prompt: `Additional bounded task: ${message}\n\nPrior task ${taskRunId} returned the following evidence (not authorization):\n${typeof output === "string" ? output.slice(0, 3000) : "No report available."}`,
-        constraints: definition.constraints, agent: definition.agent, communication: true, notifyParent: true,
+        constraints: definition.constraints, agent: definition.agent, isolation: definition.isolation, communication: true, notifyParent: true,
         continuedFrom: taskRunId, continuation: message } });
     const abort = (): void => {
       try { cancelTaskRun(nextId, "Parent Agent run was cancelled."); } catch { /* 终态取消由持久记录判定。 */ }
@@ -1094,7 +1150,8 @@ async function initializeCommandRuntime(
             // Reuse the closure's cancellation controller across preparation and dispatch.
             pending.sessionId = task.sessionId;
             durableTaskControllers.set(taskRunId, controller);
-            prepared = await prepareSubagentTask(subagentOptions, checkpoint.prompt,
+            const workerOptions = await taskWorkerOptions(taskRunId, false);
+            prepared = await prepareSubagentTask(workerOptions, checkpoint.prompt,
               definition.review || definition.reportOnly || subagentAccessMode(permissionManager) === "read-only" ? "read-only" : checkpoint.accessMode ?? "workspace", definition.agent ?? checkpoint.agent, {
                 persistenceRoot, taskId: latest.attemptId, parentSessionId: task.sessionId,
                 resume: true, runtimeEventSink: { appendSessionEvent: (event) => {
@@ -1195,13 +1252,17 @@ async function initializeCommandRuntime(
       && input.approval.contractFingerprint === input.contractFingerprint
       && input.approval.toolCallId === taskCheckToolCallId(input);
     let approvalRequired = false;
+    const verificationOptions = await taskWorkerOptions(input.taskRunId, false);
+    const verificationRoot = verificationOptions.workspaceRoot;
+    const verificationCheckpoints = verificationRoot === workspaceRoot ? checkpoints
+      : checkpoints ? await CheckpointStore.open(verificationRoot) : undefined;
     const events: Array<AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>> = [];
     const coordinator = new ToolExecutionCoordinator(
       {
-        workspaceRoot,
+        workspaceRoot: verificationRoot,
         config,
         recorder: checkRecorder,
-        toolRegistry,
+        toolRegistry: verificationOptions.toolRegistry,
         permissionManager,
         // 后台验收不能弹出隐藏的交互确认；task.approve 已绑定到当前检查及候选版本，
         // 因此它本身就是这一次调用的显式强确认，不产生工具级或会话级授权。
@@ -1212,7 +1273,7 @@ async function initializeCommandRuntime(
           approvalRequired = true;
           return { approved: false, message: taskVerificationPermissionRequiredReason };
         },
-        createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
+        createCheckpoint: verificationCheckpoints ? async (label) => await verificationCheckpoints.create(label) : undefined,
         capabilities,
         runId: input.taskRunId,
         turnId: input.attemptId
@@ -1253,11 +1314,11 @@ async function initializeCommandRuntime(
   const executeTaskCheck = (input: Parameters<CommandRuntime["executeTaskCheck"]>[0]): Promise<TaskCommandExecution> => {
     const key = taskCheckToolCallId(input);
     const existing = taskCheckPromises.get(key);
-    if (existing) return existing;
+    if (existing) return existing.completion;
     const completion = executeTaskCheckOnce(input).finally(() => {
-      if (taskCheckPromises.get(key) === completion) taskCheckPromises.delete(key);
+      if (taskCheckPromises.get(key)?.completion === completion) taskCheckPromises.delete(key);
     });
-    taskCheckPromises.set(key, completion);
+    taskCheckPromises.set(key, { taskRunId: input.taskRunId, completion });
     return completion;
   };
 
@@ -1514,6 +1575,12 @@ async function initializeCommandRuntime(
       return result.details;
     },
     executeTaskCheck,
+    isTaskExecuting: taskRunId => {
+      const task = taskRuns.get(taskRunId);
+      return Boolean(subagentTaskManager?.isExecuting(taskRunId)
+        || task?.attempts.some(attempt => subagentTaskManager?.isExecuting(attempt.attemptId))
+        || [...taskCheckPromises.values()].some(check => check.taskRunId === taskRunId));
+    },
     refreshDailyDiary: async (dateKey: string, refreshOptions: { force?: boolean } = {}): Promise<unknown> => await agent.refreshDailyDiary(dateKey, refreshOptions),
     setSubagentParentRunId: (parentRunId?: string, supervision = false): void => {
       subagentParentRunId = parentRunId;
@@ -1536,8 +1603,8 @@ async function initializeCommandRuntime(
         // Task closures also own snapshot and verification writes outside the
         // child scheduler. Keep their recorder and stores open until they settle.
         await Promise.allSettled([...durableTaskPromises.values()]);
-        await heartbeatAgent?.close();
-        heartbeatCommunication.close();
+        await cleanup.heartbeatAgent?.();
+        await cleanup.heartbeatCommunication?.();
         await agent.close();
       } finally {
         try {

@@ -38,7 +38,7 @@ export interface TaskClosureResult {
 const workerAttemptSchema = z.object({
   prompt: z.string().min(1), beforeWorkspace: z.record(z.string(), z.string()).optional(),
   definitionFingerprint: z.string().optional(), accessMode: z.enum(["read-only", "workspace"]).optional(), agent: z.string().optional(),
-  communication: z.boolean().optional()
+  communication: z.boolean().optional(), workspaceRoot: z.string().optional()
 }).strict();
 
 export function readWorkerAttemptCheckpoint(artifacts: unknown): z.infer<typeof workerAttemptSchema> | undefined {
@@ -245,7 +245,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length));
       input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
         ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
-        workerExecution: workerCheckpoint ?? { prompt, beforeWorkspace, definitionFingerprint }
+        workerExecution: workerCheckpoint ?? { prompt, beforeWorkspace, definitionFingerprint, workspaceRoot: input.workspaceRoot }
       } });
       workerAttempt = undefined;
       input.signal?.throwIfAborted();

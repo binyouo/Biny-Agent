@@ -34,6 +34,7 @@ const subagentParameters = {
     name: { type: "string" as const, description: "A short display name for this worker, such as Review data CLI. Choose freely; this does not select a role or change permissions." },
     agent: { type: "string" as const, description: "Optional named subagent definition to run this task with (see the named subagents list). Omit for the default bounded subagent." },
     background: { type: "boolean" as const, description: "Return the durable taskRunId immediately and continue your own work. Bounded progress and completion notices arrive at parent step boundaries; TaskStatus inspects or waits for a result." },
+    isolation: { type: "string" as const, enum: ["worktree"], description: "Run this task in a separate Git worktree based on the parent's committed HEAD. File tools, shell commands and verification use that checkout. Uncommitted parent changes are not copied. Omit to share the parent workspace unless the named agent requires isolation. Retained worktree details are returned with the task result." },
     constraints: {
       type: "array" as const,
       items: { type: "string" as const },
@@ -107,6 +108,7 @@ const subagentSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
   agent: z.string().trim().min(1).max(64).optional(),
   background: z.boolean().optional(),
+  isolation: z.literal("worktree").optional(),
   constraints: z.array(z.string().trim().min(1)).max(100).optional(),
   verification: taskVerificationSchema.optional()
 }).strict();
@@ -155,6 +157,7 @@ export function createSubagentTool(options: SubagentOptions): Tool<SubagentToolI
     promptGuidelines: [
       "Keep simple one-step requests in the current run; delegate when isolation, specialist focus, or independent execution will help.",
       "Give the worker a concrete goal, relevant constraints, and a finite deliverable; summarize its result to the user when it returns.",
+      "Use isolation: worktree for independent file changes that must not alter the parent checkout. Review and merge the returned branch explicitly; successful completion does not merge it.",
       "Include a short description of the task in the user's language for the card title. Keep the full instructions in task; name is an optional worker nickname, not the task description.",
       "Use background for independent tasks. Retain each taskRunId; progress and completion notices arrive at safe parent boundaries without starting idle parent turns. Use `biny task message <taskRunId> <message> --session <current-session-id> --json` for corrections, TaskStatus for a necessary bounded wait, and `biny task cancel <taskRunId> --json` for work no longer needed. Use `biny task continue <taskRunId> <message> --session <current-session-id> --json` only for explicitly authorized additional work from a completed report.",
       "Preserve user-specified acceptance conditions exactly. Put them in verification.checks; do not replace them with easier inferred checks.",
@@ -187,7 +190,7 @@ export function createSubagentTool(options: SubagentOptions): Tool<SubagentToolI
 export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId: string; waitMs?: number; afterRevision?: number }, unknown> {
   return {
     name: "TaskStatus",
-    description: "Read a task created by this session, including bounded output, revision, recent messages and verification status. Detailed execution and full evidence stay in the child record. waitMs waits up to 60000ms for a revision change or terminal/blocked status; afterRevision is the last revision you saw. A wait timeout leaves the child running. This never resumes, retries, approves, or creates work.",
+    description: "Read a task created by this session, including bounded output, revision, recent messages, verification status and retained worktree details. Detailed execution and full evidence stay in the child record. waitMs waits up to 60000ms for a revision change or terminal/blocked status; afterRevision is the last revision you saw. A wait timeout leaves the child running. This never resumes, retries, approves, or creates work.",
     promptSnippet: "Read or wait for a delegated task result",
     promptGuidelines: [
       "Use TaskStatus when a previous verified Task call returned needs_approval or another non-terminal status.",

@@ -132,6 +132,7 @@ export interface TaskDefinition {
   prompt: string;
   constraints?: string[];
   agent?: string;
+  isolation?: "worktree";
   verification?: TaskVerificationContract;
   review?: PlanReviewCandidate;
   /** 无命令验收的计划节点只能产出只读报告，不授予工作区写权限。 */
@@ -151,11 +152,13 @@ export function readTaskDefinition(task: unknown): TaskDefinition {
   const prompt = firstText(value.prompt) ?? (titledPrompt || JSON.stringify(task));
   if (!prompt?.trim()) throw new Error("Task prompt cannot be empty.");
   const reportOnly = typeof value.planBlock === "object" && value.planBlock !== null && (value.planBlock as { kind?: unknown }).kind === "report";
+  if (value.isolation !== undefined && value.isolation !== "worktree") throw new Error("task.isolation must be worktree when supplied.");
   if (reportOnly && (value.verification !== undefined || value.review !== undefined)) throw new Error("Read-only report nodes cannot replace verified-candidate contracts.");
   return {
     prompt: prompt.trim(),
     constraints: value.constraints === undefined ? undefined : readStringList(value.constraints, "constraints", false),
     agent: optionalText(value.agent, "task.agent"),
+    isolation: value.isolation === "worktree" ? "worktree" : undefined,
     reportOnly: reportOnly ? true : undefined,
     review: value.review === undefined ? undefined : readReviewCandidate(value.review),
     verification: value.verification === undefined ? undefined : readTaskVerificationContract(value.verification)
