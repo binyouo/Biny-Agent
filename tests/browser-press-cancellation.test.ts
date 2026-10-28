@@ -18,6 +18,12 @@ interface EmbeddedTab { view: { webContents: Contents; setVisible(visible: boole
 interface EmbeddedProject { revision: number; tabs: Map<string, EmbeddedTab>; activeId?: string }
 interface BrowserSnapshot { activeId?: string; tabs: { id: string }[] }
 interface Socket { once(name: string, listener: () => void): void; off(name: string, listener: () => void): void; write(value: string): void }
+function pageOperationName(expression: string): string | undefined {
+  const start = expression.lastIndexOf("})(");
+  if (start < 0) return undefined;
+  const end = expression.indexOf(",", start + 3);
+  return end < 0 ? undefined : JSON.parse(expression.slice(start + 3, end)) as string;
+}
 interface Subject {
   automationTail: Promise<void>;
   window?: { isDestroyed(): boolean; webContents: Contents };
@@ -63,12 +69,16 @@ function fixture(options: Options = {}) {
       if (method === "Runtime.evaluate") {
         assert.equal(typeof params.expression, "string");
         const expression = params.expression as string;
-        if (expression.includes("element.focus()")) {
-          events.push("focus");
-          if (options.pause === "focus") { reached.resolve(); await release.promise; }
-          return options.focusException ? { exceptionDetails: { text: "fixture focus failed" } } : { result: { value: undefined } };
+        if (expression !== "({ url: location.href, title: document.title })") {
+          const operation = pageOperationName(expression);
+          assert.ok(operation);
+          const action = operation === "press" ? "focus" : operation;
+          events.push(action);
+          if (action === "focus" && options.pause === "focus") { reached.resolve(); await release.promise; }
+          return action === "focus" && options.focusException
+            ? { exceptionDetails: { text: "fixture focus failed" } }
+            : { result: { value: operation === "wait" ? true : undefined } };
         }
-        assert.equal(expression, "({ url: location.href, title: document.title })");
         events.push("state");
         return { result: { value: { url: "https://example.invalid/", title: "Fixture" } } };
       }
@@ -127,9 +137,9 @@ test("final dispatch guard observes cancellation from an inert attach callback",
 test("socket close while focus CDP response is pending prevents later keyDown", testOptions, async () => {
   const f = fixture({ pause: "focus" }); const run = f.request();
   await f.reached.promise;
-  assert.deepEqual(f.events, ["focus"]);
+  assert.deepEqual(f.events, ["reveal", "wait", "focus"]);
   f.close(); f.release.resolve(); await run;
-  assert.deepEqual(f.events, ["focus"]);
+  assert.deepEqual(f.events, ["reveal", "wait", "focus"]);
   assert.equal(f.responses[0]?.ok, false);
   assert.equal(f.listenerCount(), 0);
 });
@@ -138,9 +148,9 @@ for (const target of ["automation", "environment"] as const) {
   test(`socket close prevents keyDown for current ${target} contents`, testOptions, async () => {
     const f = fixture({ target, pause: "focus" }); const run = f.request();
     await f.reached.promise;
-    assert.deepEqual(f.events, ["focus"]);
+    assert.deepEqual(f.events, ["reveal", "wait", "focus"]);
     f.close(); f.release.resolve(); await run;
-    assert.deepEqual(f.events, ["focus"]);
+    assert.deepEqual(f.events, ["reveal", "wait", "focus"]);
     assert.equal(f.responses[0]?.ok, false);
     assert.equal(f.listenerCount(), 0);
   });
@@ -148,23 +158,23 @@ for (const target of ["automation", "environment"] as const) {
 
 for (const selector of [true, false]) {
   test(`guard after artificial keyDown ensureContents wait, selector=${selector}`, testOptions, async () => {
-    const f = fixture({ pauseEnsureCall: selector ? 3 : 2 });
+    const f = fixture({ pauseEnsureCall: selector ? 5 : 2 });
     const run = selector ? f.request() : f.noSelectorRequest();
     await f.reached.promise;
-    assert.deepEqual(f.events, selector ? ["focus"] : []);
+    assert.deepEqual(f.events, selector ? ["reveal", "wait", "focus"] : []);
     f.close(); f.release.resolve(); await run;
-    assert.deepEqual(f.events, selector ? ["focus"] : []);
+    assert.deepEqual(f.events, selector ? ["reveal", "wait", "focus"] : []);
     assert.equal(f.responses[0]?.ok, false);
     assert.equal(f.listenerCount(), 0);
   });
 }
 
 test("guard after artificial focus ensureContents wait prevents focus dispatch", testOptions, async () => {
-  const f = fixture({ pauseEnsureCall: 2 }); const run = f.request();
+  const f = fixture({ pauseEnsureCall: 4 }); const run = f.request();
   await f.reached.promise;
-  assert.deepEqual(f.events, []);
+  assert.deepEqual(f.events, ["reveal", "wait"]);
   f.close(); f.release.resolve(); await run;
-  assert.deepEqual(f.events, []);
+  assert.deepEqual(f.events, ["reveal", "wait"]);
   assert.equal(f.responses[0]?.ok, false);
   assert.equal(f.listenerCount(), 0);
 });
@@ -172,9 +182,9 @@ test("guard after artificial focus ensureContents wait prevents focus dispatch",
 test("keyDown already dispatched before close still completes keyUp cleanup", testOptions, async () => {
   const f = fixture({ pause: "keyDown" }); const run = f.request();
   await f.reached.promise;
-  assert.deepEqual(f.events, ["focus", "keyDown"]);
+  assert.deepEqual(f.events, ["reveal", "wait", "focus", "keyDown"]);
   f.close(); f.release.resolve(); await run;
-  assert.deepEqual(f.events, ["focus", "keyDown", "keyUp", "state"]);
+  assert.deepEqual(f.events, ["reveal", "wait", "focus", "keyDown", "keyUp", "state"]);
   assert.equal(f.responses[0]?.ok, true); // A fake recording, not delivery over a closed socket.
   assert.equal(f.listenerCount(), 0);
 });
@@ -183,7 +193,7 @@ for (const key of ["Enter", "x"]) {
   for (const selector of [true, false]) {
     test(`normal press key=${key} selector=${selector}`, testOptions, async () => {
       const f = fixture({ key }); await (selector ? f.request() : f.noSelectorRequest());
-      assert.deepEqual(f.events, selector ? ["focus", "keyDown", "keyUp", "state"] : ["keyDown", "keyUp", "state"]);
+      assert.deepEqual(f.events, selector ? ["reveal", "wait", "focus", "keyDown", "keyUp", "state"] : ["keyDown", "keyUp", "state"]);
       const down = f.commands.find(command => command.params.type === "keyDown");
       assert.equal(down?.params.text, key.length === 1 ? key : undefined);
       assert.equal(f.responses[0]?.ok, true);
@@ -194,7 +204,7 @@ for (const key of ["Enter", "x"]) {
 
 test("focus exceptionDetails propagates without dispatching keys", testOptions, async () => {
   const f = fixture({ focusException: true }); await f.request();
-  assert.deepEqual(f.events, ["focus"]);
+  assert.deepEqual(f.events, ["reveal", "wait", "focus"]);
   assert.equal(f.responses[0]?.ok, false);
   assert.match(f.responses[0]?.error ?? "", /fixture focus failed/);
   assert.equal(f.listenerCount(), 0);
@@ -219,7 +229,7 @@ for (const selector of ["#search", undefined]) {
 
 test("legacy direct press omitting optional signal remains valid", testOptions, async () => {
   const f = fixture(); await f.subject.press("#search", "Enter");
-  assert.deepEqual(f.events, ["focus", "keyDown", "keyUp", "state"]);
+  assert.deepEqual(f.events, ["reveal", "wait", "focus", "keyDown", "keyUp", "state"]);
   assert.equal(f.listenerCount(), 0);
 });
 
@@ -247,12 +257,15 @@ function ownershipFixture(stage: PressStage, separateEnvironment: boolean) {
         attach() { assert.fail("already attached inert debugger"); },
         async sendCommand(method: string, params: Record<string, unknown>) {
           assert.equal(destroyed, false, "never dispatch to destroyed contents");
-          let action: PressStage | "state";
+          let action: PressStage | "state" | "reveal" | "wait";
           if (method === "Runtime.evaluate") {
             assert.equal(typeof params.expression, "string");
-            if ((params.expression as string).includes("element.focus()")) action = "focus";
+            const expression = params.expression as string;
+            const operation = pageOperationName(expression);
+            if (operation === "press") action = "focus";
+            else if (operation === "reveal" || operation === "wait") action = operation;
             else {
-              assert.equal(params.expression, "({ url: location.href, title: document.title })");
+              assert.equal(expression, "({ url: location.href, title: document.title })");
               action = "state";
             }
           } else {
@@ -306,7 +319,7 @@ const ownershipCases = [
   { stage: "keyUp", selector: true }, { stage: "keyUp", selector: false }
 ] as const;
 const pressEvents = (owner: string, selector: boolean): string[] => [
-  ...(selector ? [`${owner}:focus`] : []), `${owner}:keyDown`, `${owner}:keyUp`, `${owner}:state`
+  ...(selector ? [`${owner}:reveal`, `${owner}:wait`, `${owner}:focus`] : []), `${owner}:keyDown`, `${owner}:keyUp`, `${owner}:state`
 ];
 
 for (const separateEnvironment of [false, true]) {
@@ -340,7 +353,7 @@ for (const { stage, selector } of ownershipCases.filter(({ stage }) => stage !==
     try { await f.reached.promise; f.selectB(); f.cancel(); }
     finally { f.release.resolve(); }
     await run;
-    assert.deepEqual(f.events, stage === "focus" ? ["A:focus"] : pressEvents("A", selector));
+    assert.deepEqual(f.events, stage === "focus" ? ["A:reveal", "A:wait", "A:focus"] : pressEvents("A", selector));
     assert.equal(f.responses[0]?.ok, stage !== "focus");
     if (stage !== "focus") assert.deepEqual(f.responses[0]?.result, { url: "https://a.invalid/", title: "A" });
     f.assertSelection();

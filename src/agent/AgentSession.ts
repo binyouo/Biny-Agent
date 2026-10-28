@@ -1,4 +1,5 @@
 import { createVisionProjection } from "./context/visionProjection.js";
+import { boundComputerFrames } from "../computer/modelFrames.js";
 import { SelfieAlbum, selfiePrompt } from "./context/selfie.js";
 import { TravelStorage, travelPrompt } from "./context/travel.js";
 import type { TaskCommunication } from "../runtime/TaskCommunication.js";
@@ -3025,7 +3026,7 @@ export class AgentSession {
           output
         })
       });
-      const pruned = this.contextMemory.pruneToolResultsForStep(projectedMessages);
+      const pruned = boundComputerFrames(this.contextMemory.pruneToolResultsForStep(projectedMessages));
       return projectVision ? await projectVision(pruned) : pruned;
     };
 

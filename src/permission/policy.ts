@@ -152,6 +152,51 @@ export function analyzePermissionRequest(input: AnalyzePermissionInput): Permiss
     };
   }
 
+  if (input.toolName === "BrowserClipboardRead") {
+    return {
+      ...base(input),
+      actionType: "read",
+      riskLevel: "medium",
+      reason: "reads text or image from the operating-system clipboard"
+    };
+  }
+
+  if (input.toolName === "BrowserCDP") {
+    return {
+      ...base(input),
+      actionType: "shell",
+      riskLevel: "critical",
+      reason: `runs raw CDP method ${getStringField(input.args, "method")}; it may access page data, local files, or cause remote changes`
+    };
+  }
+
+  if (input.toolName === "ChromeRelayEval") {
+    return {
+      ...base(input),
+      actionType: "shell",
+      riskLevel: "critical",
+      reason: "executes JavaScript in the user's existing browser page; it may read private data or cause remote changes"
+    };
+  }
+
+  if (input.toolName === "BrowserProfileHistory") {
+    return {
+      ...base(input),
+      actionType: "read",
+      riskLevel: "medium",
+      reason: "reads local browser visit history"
+    };
+  }
+
+  if (input.toolName === "BrowserClipboardWrite") {
+    return {
+      ...base(input),
+      actionType: "write",
+      riskLevel: "medium",
+      reason: "changes text in the operating-system clipboard"
+    };
+  }
+
   if (input.toolName === "Skill" || input.toolName === "read_skill_resource") {
     // Skill 正文与资源都会在实际读取前重新校验路径、软链和硬链，按内置只读工具放行。
     return {

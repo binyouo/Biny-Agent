@@ -50,6 +50,7 @@ import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolveP
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, isToolResultArchiveReference, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
 import { redactSecrets, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
+import { redactBrowserToolArguments, redactBrowserToolResult } from "../session/toolArgumentRedaction.js";
 import { projectSingleToolResultForModel, readResultLineRange } from "./toolResultProjection.js";
 import { codeModeCatalog, codeModeDescription, codeModeInput, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
 import type {
@@ -519,7 +520,19 @@ export class ToolExecutionCoordinator {
   }
 
   private emit(event: AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>): void {
-    this.emitEvent(event.type === "tool.started" ? { ...event, parentToolCallId: this.scriptParents.get(event.toolCallId) } : event);
+    if (event.type === "tool.started") {
+      this.emitEvent({ ...event, args: redactBrowserToolArguments(event.tool, event.args), parentToolCallId: this.scriptParents.get(event.toolCallId) });
+      return;
+    }
+    if ((event.type === "tool.completed" || event.type === "tool.failed") && ["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(event.tool)) {
+      this.emitEvent({
+        ...event,
+        result: redactBrowserToolResult(event.tool, event.result),
+        modelResult: event.modelResult === undefined ? undefined : redactBrowserToolResult(event.tool, event.modelResult)
+      });
+      return;
+    }
+    this.emitEvent(event);
   }
 
   private recordAndFlush(event: SessionEvent, resultRedactionOptions?: SensitiveValueRedactionOptions): Promise<SessionEvent> {
@@ -1036,7 +1049,9 @@ export class ToolExecutionCoordinator {
     } : undefined;
     // 模型侧预算只改变返回值；session、实时界面和归档都以工具实际产出的结果为事实。
     // 否则一次预算溢出会把“模型看见的引用”误当成工具真正返回的内容，后续恢复只能看到二次包装。
-    const persistedResult = await this.outlineToolResultForPersistence(call, sequence, result, metadata.source);
+    const persistedResult = ["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name)
+      ? redactBrowserToolResult(call.name, result)
+      : await this.outlineToolResultForPersistence(call, sequence, result, metadata.source);
     await this.recordAndFlush({
       type: "tool_result",
       tool: call.name,
@@ -1049,7 +1064,7 @@ export class ToolExecutionCoordinator {
       operationId: metadata.operationId,
       evidence: metadata.evidence,
       auditOnly: metadata.auditOnly,
-      modelResult: metadata.optimizationInput ? modelResult : undefined,
+      modelResult: metadata.optimizationInput && !["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name) ? modelResult : undefined,
       optimization
     }, { context: metadata.source === "mcp" ? "mcp-result" : undefined });
     try {
@@ -1057,7 +1072,7 @@ export class ToolExecutionCoordinator {
     } catch {
       // TurnStore 是崩溃安全断点，不能把已经持久化的 tool_result 变成工具失败。
     }
-    this.context.contextMemory?.observeToolResult(call.name, call.args, result);
+    if (!["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name)) this.context.contextMemory?.observeToolResult(call.name, call.args, result);
     // 完整错误仍在 result 中；单独保存和广播的诊断只保留有界首尾摘要。
     const diagnostic = errorMessage === undefined ? undefined : toolResultPreview(redactSecrets(errorMessage));
     if (diagnostic) {
@@ -1146,6 +1161,17 @@ export class ToolExecutionCoordinator {
       const redactionOptions = { context: source === "mcp" ? "mcp-result" as const : undefined };
       const rawOutput = serializeToolResult(result, redactionOptions);
       const rawResultBytes = Buffer.byteLength(rawOutput, "utf8");
+      if (["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name)) {
+        this.producedToolResultBytes += rawResultBytes;
+        const remaining = Math.max(0, budget - this.inlineToolResultBytes);
+        const smallResultLimit = Math.min(4_096, Math.floor(budget / 4));
+        if (rawResultBytes > remaining && rawResultBytes > smallResultLimit) {
+          const omitted = call.name === "BrowserCDP" ? "browser CDP result" : call.name === "ChromeRelayEval" ? "Chrome Relay evaluation result" : "clipboard text";
+          return { text: `[${omitted} omitted because the turn output budget is exhausted]`, truncated: true };
+        }
+        this.inlineToolResultBytes += rawResultBytes;
+        return result;
+      }
       const modelResult = await projectSingleToolResultForModel(call.name, call.args, result, {
         toolCallId: call.id,
         sequence,
@@ -1240,6 +1266,7 @@ export class ToolExecutionCoordinator {
     modelResult: unknown,
     source?: ToolSource
   ): Promise<unknown> {
+    if (["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name)) return redactBrowserToolResult(call.name, modelResult);
     const goalControlOnly = (call.name === "run_script" || call.name === "Bash" && source === "builtin")
       && typeof modelResult === "object" && modelResult !== null && (modelResult as { goalControlOnly?: unknown }).goalControlOnly === true ? true : undefined;
     if (goalControlOnly) this.goalControlCalls.add(call.id);

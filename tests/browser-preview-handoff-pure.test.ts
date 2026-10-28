@@ -21,7 +21,7 @@ const allowedCalls = new Set([
   "relaySchemas[method].parse", "signal?.throwIfAborted", "this.status", "Promise.all", "browsers.map", "this.request", "this.connections.get",
   "randomUUID", "isRelayMutation", "resolve", "complete", "clearTimeout", "signal?.removeEventListener", "reject", "finish", "failure",
   "connection.socket.terminate", "setTimeout", "signal?.addEventListener", "connection.socket.send", "JSON.stringify", "abort",
-  "z.array(relayTabSchema).max(1000).parse", "z.array(relayTabSchema).max", "z.array", "relayBinarySchema.parse", "relayPageSchema.parse",
+  "z.array(relayTabSchema).max(1000).parse", "z.array(relayTabSchema).max", "z.array", "relayBinarySchema.parse", "relayPageSchema.parse", "relayOpenedTabSchema.parse",
   "z.object({ success: z.literal(true), url: relayTabSchema.shape.url }).safeParse", "z.object", "z.literal", "this.activity", "console.error", "super"
 ]);
 function check(node: ts.Node): void {
@@ -64,7 +64,7 @@ function fixture() {
   const identity = { parse: (value: unknown): unknown => value };
   const context = createContext({
     relaySchemas: { click: identity, read: identity, screenshot: identity },
-    relayBinarySchema: identity, relayPageSchema: identity, relayTabSchema: { shape: { url: "inert" } },
+    relayBinarySchema: identity, relayPageSchema: identity, relayOpenedTabSchema: identity, relayTabSchema: { shape: { url: "inert" } },
     z: { literal: (value: unknown): unknown => value, object: () => ({ safeParse: (value: unknown) => ({ success: true, data: value }) }) },
     randomUUID: () => `request-${++requestId}`, WebSocket: { OPEN: 1 },
     setTimeout: (callback: () => void): number => { timers.set(++timerId, callback); return timerId; },

@@ -370,7 +370,7 @@ async function initializeCommandRuntime(
     },
     async () => (await configStore.load(workspaceRoot)).agent.rtkEnabled
   );
-  const browserToolNames = ["BrowserOpen", "BrowserListEnvironments", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerLaunch", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction", "ComputerSequence"];
+  const browserToolNames = ["BrowserOpen", "BrowserListEnvironments", "BrowserListProfiles", "BrowserProfileHistory", "BrowserReadDom", "BrowserDOMSnapshot", "BrowserDOMAction", "BrowserLocatorRead", "BrowserLocatorAction", "BrowserCUA", "BrowserScreenshot", "BrowserTabFloat", "BrowserClick", "BrowserType", "BrowserPress", "BrowserWait", "BrowserBack", "BrowserForward", "BrowserReload", "BrowserClose", "BrowserScroll", "BrowserSelectOption", "BrowserSetChecked", "BrowserViewport", "BrowserEval", "BrowserCDP", "BrowserDialogStatus", "BrowserDialogRespond", "BrowserDialogAutoReply", "BrowserClipboardRead", "BrowserClipboardWrite", "BrowserUpload", "BrowserDownload", "BrowserExport", "ComputerLaunch", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction", "ComputerSequence"];
   let registeredMcpTools: string[] = [];
   let browserAutomationAttached = false;
   const setBrowserAutomation = (endpoint?: BrowserAutomationEndpoint): void => {
@@ -384,7 +384,7 @@ async function initializeCommandRuntime(
         toolRegistry.registerMcpTool(bindComputerTool(tool));
         registeredMcpTools.push(tool.name);
       }
-      for (const tool of createBrowserTools(endpoint)) toolRegistry.registerBuiltinTool(tool);
+      for (const tool of createBrowserTools(endpoint, { workspaceRoot, ignore: config.workspace.ignore })) toolRegistry.registerBuiltinTool(tool);
       toolRegistry.registerBuiltinTool(createWebSearchTool(config.web.search, config.web.cookies, endpoint));
     } else if (detachComputer) void resourceScope.mcp.detachLocalServer(desktopComputerMcpName).catch(() => undefined);
     if (endpoint || config.web.fetch.enabled !== false) {

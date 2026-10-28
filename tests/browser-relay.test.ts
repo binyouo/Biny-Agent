@@ -8,6 +8,7 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { BrowserRelay } from "../src/browser/BrowserRelay.js";
 import { requestBrowserRelay } from "../src/browser/relayClient.js";
+import sharp from "sharp";
 
 const origin = `chrome-extension://${"a".repeat(32)}`;
 async function connect(relay: BrowserRelay): Promise<WebSocket> {
@@ -52,9 +53,10 @@ test("file tools save binary output, refuse overwrite and deny uploads before di
   const root = path.dirname(file);
   const socket = await connect(relay);
   const dispatched: Array<{ method: string; args: { files?: Array<{ data: string }> } }> = [];
+  let screenshotData = "iVBORw0KGgo=";
   socket.on("message", (raw) => {
     const command = JSON.parse(raw.toString()); dispatched.push(command);
-    socket.send(JSON.stringify({ id: command.id, ok: true, result: command.method === "upload" ? { success: true, url: "https://example.com/" } : { mimeType: "image/png", data: "iVBORw0KGgo=" } }));
+    socket.send(JSON.stringify({ id: command.id, ok: true, result: command.method === "upload" ? { success: true, url: "https://example.com/" } : { mimeType: "image/png", data: screenshotData } }));
   });
   const tools = createBrowserRelayTools(file, { workspaceRoot: root, ignore: [] });
   const target = { browserId: relay.status().browsers[0]!.browserId, tabId: 1 };
@@ -75,6 +77,18 @@ test("file tools save binary output, refuse overwrite and deny uploads before di
   await writeFile(path.join(root, "document.txt"), "public");
   await run("ChromeRelayUpload", { selector: "input", paths: ["document.txt"] });
   assert.equal(dispatched.at(-1)?.args.files?.[0]?.data, Buffer.from("public").toString("base64"));
+  screenshotData = (await sharp({ create: { width: 20, height: 10, channels: 3, background: "#123456" } }).png().toBuffer()).toString("base64");
+  const screenshot = tools.find(item => item.name === "ChromeRelayScreenshot")!;
+  const execution = await screenshot.resolveExecution(screenshot.schema.parse(target));
+  assert.ok(!("isError" in execution));
+  let returnedImage: string | undefined;
+  const result = await execution.execute({ toolCallId: "observation", operationId: "observation", onImage: image => { returnedImage = image.data; return true; } }) as { imageReturned: boolean; path?: string };
+  assert.equal(result.imageReturned, true);
+  assert.equal(result.path, undefined);
+  assert.equal((await sharp(Buffer.from(returnedImage!, "base64")).metadata()).width, 20);
+  const beforeMissingPath = dispatched.length;
+  await assert.rejects(execution.execute({ toolCallId: "no-image-channel", operationId: "no-image-channel" }), /保存路径/);
+  assert.equal(dispatched.length, beforeMissingPath);
 }));
 
 test("Relay authenticates, lists existing tabs and invalidates targets after reconnect", async () => fixture(async (relay, file) => {
@@ -103,6 +117,71 @@ test("Relay authenticates, lists existing tabs and invalidates targets after rec
   assert.notEqual(relay.pairingUrl(), oldPairing);
   await connect(relay);
   await assert.rejects(requestBrowserRelay("read", { browserId: tabs.browserId, tabId: 7 }, { file }), /连接已变化/);
+}));
+
+test("Relay returns page evaluation values and reports the evaluated tab", async () => fixture(async (relay) => {
+  const socket = await connect(relay);
+  const browserId = relay.status().browsers[0]!.browserId;
+  const activity: Array<{ browserId: string; tabId: number; sessionId?: string; browserName: string }> = [];
+  relay.attachActivity((target) => activity.push(target));
+  let value: unknown;
+  socket.on("message", (raw) => {
+    const command = JSON.parse(raw.toString()) as { id: string; method: string };
+    socket.send(JSON.stringify({ id: command.id, ok: true, result: value }));
+  });
+  for (value of [{ title: "Page value" }, null, false, 0, "", [1, "text"]]) {
+    activity.length = 0;
+    const result = await relay.request("evaluate", {
+      browserId, tabId: 7, code: "document.title"
+    }, undefined, "agent-session");
+    assert.deepEqual(result, value);
+    assert.deepEqual(activity, [{ browserId, tabId: 7, sessionId: "agent-session", browserName: "Chrome test" }]);
+  }
+}));
+
+test("read, screenshot and wait do not start a mutation preview", async () => fixture(async (relay) => {
+  const socket = await connect(relay);
+  const target = { browserId: relay.status().browsers[0]!.browserId, tabId: 7 };
+  const activity: unknown[] = [];
+  relay.attachActivity((event) => activity.push(event));
+  socket.on("message", (raw) => {
+    const command = JSON.parse(raw.toString()) as { id: string; method: string };
+    const result = command.method === "read"
+      ? { url: "https://example.com/", title: "Page", text: "Text", interactive: [] }
+      : command.method === "screenshot"
+        ? { mimeType: "image/png", data: "iVBORw0KGgo=" }
+        : { success: true, url: "https://example.com/" };
+    socket.send(JSON.stringify({ id: command.id, ok: true, result }));
+  });
+  await relay.request("read", target);
+  await relay.request("screenshot", target);
+  await relay.request("wait", { ...target, state: "load" });
+  assert.deepEqual(activity, []);
+}));
+
+test("opening a tab reports its new target to preview without losing the result on notification failure", async () => fixture(async (relay) => {
+  const socket = await connect(relay);
+  const browserId = relay.status().browsers[0]!.browserId;
+  const activity: Array<{ browserId: string; tabId: number; sessionId?: string; browserName: string }> = [];
+  relay.attachActivity((target) => { activity.push(target); throw new Error("preview unavailable"); });
+  socket.on("message", (raw) => {
+    const command = JSON.parse(raw.toString()) as { id: string; method: string };
+    socket.send(JSON.stringify({ id: command.id, ok: true, result: { success: true, tabId: 11, windowId: 3, url: "https://example.org/" } }));
+  });
+  const result = await relay.request("open", { browserId, url: "https://example.org/" }, undefined, "agent-session");
+  assert.deepEqual(result, { success: true, tabId: 11, windowId: 3, url: "https://example.org/" });
+  assert.deepEqual(activity, [{ browserId, tabId: 11, sessionId: "agent-session", browserName: "Chrome test" }]);
+}));
+
+test("dispatched page evaluation disconnect is unknown and never replayed", async () => fixture(async (relay, file) => {
+  const socket = await connect(relay);
+  let calls = 0;
+  socket.on("message", () => { calls++; socket.terminate(); });
+  await assert.rejects(requestBrowserRelay("evaluate", {
+    browserId: relay.status().browsers[0]?.browserId, tabId: 7, code: "document.title = 'changed'"
+  }, { file }), { code: "unknown" });
+  await connect(relay);
+  assert.equal(calls, 1);
 }));
 
 test("dispatched mutation disconnect is unknown and never replayed", async () => fixture(async (relay, file) => {

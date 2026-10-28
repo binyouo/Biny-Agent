@@ -3,7 +3,7 @@ import { createDecipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { backup, DatabaseSync } from "node:sqlite";
 import type { StoredCookie } from "../../../tools/web/cookieJar.js";
 
 const sources = [
@@ -92,6 +92,46 @@ export async function readBrowserProfileCookies(profile: BrowserProfileRecord, k
   } finally { database?.close(); await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
+export interface BrowserProfileHistoryEntry {
+  url: string;
+  title: string;
+  visitedAt: string;
+}
+
+export async function readBrowserProfileHistory(
+  profile: BrowserProfileRecord,
+  query: string | undefined,
+  limit: number
+): Promise<BrowserProfileHistoryEntry[]> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("历史记录条数必须在 1 到 100 之间。");
+  if (query !== undefined && (query.trim().length === 0 || query.length > 500)) throw new Error("历史搜索词长度必须在 1 到 500 个字符之间。");
+  const source = await historyDatabasePath(profile.profilePath);
+  if (!source) throw new Error("浏览器配置没有历史记录数据库。");
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "biny-browser-history-"));
+  const copy = path.join(temporary, "History");
+  let sourceDatabase: DatabaseSync | undefined;
+  let database: DatabaseSync | undefined;
+  try {
+    sourceDatabase = new DatabaseSync(source, { readOnly: true });
+    await backup(sourceDatabase, copy);
+    database = new DatabaseSync(copy, { readOnly: true });
+    const needle = query?.trim() ?? null;
+    const rows = database.prepare(`
+      SELECT urls.url, urls.title, CAST(visits.visit_time AS TEXT) AS visit_time
+      FROM visits INNER JOIN urls ON urls.id = visits.url
+      WHERE ? IS NULL OR instr(lower(urls.url), lower(?)) > 0 OR instr(lower(urls.title), lower(?)) > 0
+      ORDER BY visits.visit_time DESC
+      LIMIT ?
+    `).all(needle, needle, needle, limit) as Array<Record<string, unknown>>;
+    return rows.flatMap((row) => {
+      if (typeof row.url !== "string" || typeof row.visit_time !== "string") return [];
+      const visitedAt = chromiumVisitTime(row.visit_time);
+      if (!visitedAt) return [];
+      return [{ url: row.url.slice(0, 8_192), title: typeof row.title === "string" ? row.title.slice(0, 2_000) : "", visitedAt }];
+    });
+  } finally { database?.close(); sourceDatabase?.close(); await fs.rm(temporary, { recursive: true, force: true }); }
+}
+
 async function cookieDatabasePath(profilePath: string): Promise<string | undefined> {
   const realProfile = await fs.realpath(profilePath);
   for (const candidate of [path.join(profilePath, "Network", "Cookies"), path.join(profilePath, "Cookies")]) {
@@ -102,6 +142,25 @@ async function cookieDatabasePath(profilePath: string): Promise<string | undefin
     catch (error) { if (!isNotFound(error)) throw error; }
   }
   return undefined;
+}
+
+async function historyDatabasePath(profilePath: string): Promise<string | undefined> {
+  const realProfile = await fs.realpath(profilePath);
+  const candidate = path.join(profilePath, "History");
+  try {
+    const realCandidate = await fs.realpath(candidate);
+    if (realCandidate.startsWith(`${realProfile}${path.sep}`) && (await fs.stat(realCandidate)).isFile()) return realCandidate;
+  } catch (error) { if (!isNotFound(error)) throw error; }
+  return undefined;
+}
+
+function chromiumVisitTime(value: string): string | undefined {
+  try {
+    const unixMicroseconds = BigInt(value) - 11_644_473_600_000_000n;
+    const milliseconds = Number(unixMicroseconds / 1_000n);
+    if (!Number.isSafeInteger(milliseconds)) return undefined;
+    return new Date(milliseconds).toISOString();
+  } catch { return undefined; }
 }
 
 function validProfileName(name: string): boolean {

@@ -1,4 +1,4 @@
-/** 只接受语义操作，页面代码由本模块固定构造，外部调用方不能发送任意 CDP 或 JavaScript。 */
+/** 只接受经过协议校验的页面操作；脚本表达式由独立高风险入口执行。 */
 import { pageOperation } from "./page.js";
 
 export async function performBrowserCommand(api, { method, args = {} }, state) {
@@ -9,7 +9,47 @@ export async function performBrowserCommand(api, { method, args = {} }, state) {
   assertConnected();
   const http = (url) => { try { const value = new URL(url); return ["http:", "https:"].includes(value.protocol) && !value.username && !value.password; } catch { return false; } };
   if (method === "tabs") return (await api.tabs.query({})).filter((tab) => http(tab.url)).slice(0, 1000).map((tab) => ({ id: tab.id, windowId: tab.windowId, url: tab.url, title: (tab.title || "").slice(0, 4096), active: tab.active }));
-  if (!["read", "navigate", "click", "fill", "press", "screenshot", "scroll", "wait", "upload", "download"].includes(method) || !Number.isInteger(args.tabId) || args.tabId < 0) throw new Error("不支持的浏览器操作或标签 ID。");
+  if (method === "open") {
+    if (!http(args.url)) throw new Error("新标签地址必须为 HTTP(S)。");
+    const tab = await api.tabs.create({ url: args.url, active: true });
+    assertConnected();
+    if (!Number.isInteger(tab.id) || !Number.isInteger(tab.windowId)) throw new Error("新标签已请求打开，但标签信息无效。");
+    const committed = await new Promise((resolve, reject) => {
+      let settled = false;
+      let timer;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        api.tabs.onUpdated.removeListener(onUpdated);
+        api.tabs.onRemoved.removeListener(onRemoved);
+        if (error) reject(error); else resolve(value);
+      };
+      const inspect = async () => {
+        if (settled) return;
+        try {
+          assertConnected();
+          const current = await api.tabs.get(tab.id);
+          if (http(current.url)) finish(undefined, current);
+          else if (current.status === "complete" && !http(current.pendingUrl)) finish(new Error("新标签未提交到普通 HTTP(S) 页面。"));
+        } catch (error) { finish(error); }
+      };
+      const onUpdated = (updatedTabId, changeInfo) => {
+        if (updatedTabId === tab.id && (changeInfo.url || changeInfo.status)) void inspect();
+      };
+      const onRemoved = (removedTabId) => {
+        if (removedTabId === tab.id) finish(new Error("新标签在导航提交前已关闭。"));
+      };
+      timer = setTimeout(() => finish(new Error("新标签的 HTTP(S) 导航八秒内未提交，请检查页面；不会自动重试。")), 8000);
+      api.tabs.onUpdated.addListener(onUpdated);
+      api.tabs.onRemoved.addListener(onRemoved);
+      void inspect();
+    });
+    return { success: true, tabId: tab.id, windowId: tab.windowId, url: committed.url };
+  }
+  if (!["read", "evaluate", "navigate", "back", "forward", "click", "fill", "press", "screenshot", "scroll", "wait", "upload", "download"].includes(method) || !Number.isInteger(args.tabId) || args.tabId < 0) throw new Error("不支持的浏览器操作或标签 ID。");
+  if (method === "evaluate" && (typeof args.code !== "string" || !args.code.trim() || args.code.length > 10000)) throw new Error("页面脚本参数无效。");
+  if (method === "evaluate" && args.timeoutMs !== undefined && (!Number.isInteger(args.timeoutMs) || args.timeoutMs < 1 || args.timeoutMs > 8000)) throw new Error("页面脚本等待时限无效。");
   const tab = await api.tabs.get(args.tabId);
   if (!http(tab.url)) throw new Error("仅支持普通 HTTP(S) 网页，不能操作浏览器内部页面。");
   if (state.dialogs.has(tab.id)) throw new Error("网页有待处理的确认框，请用户在 Chrome 中处理后继续。");
@@ -53,6 +93,19 @@ export async function performBrowserCommand(api, { method, args = {} }, state) {
     const selected = context();
     pinnedDocument = selected?.documentId;
     if (operation === "wait") input = { ...input, timeoutMs: Math.max(0, Math.min(input.timeoutMs ?? 5000, deadline - Date.now())) };
+    if (operation === "evaluate") {
+      const timeout = Math.max(1, Math.min(input.timeoutMs ?? 5000, deadline - Date.now()));
+      const params = { expression: input.code, returnByValue: true, awaitPromise: true, timeout };
+      if (selected) params.contextId = selected.contextId;
+      const evaluated = await send("Runtime.evaluate", params, selected?.sessionId);
+      if (evaluated.exceptionDetails) throw new Error("页面脚本执行失败。");
+      assertConnected(); context();
+      const value = evaluated.result?.value;
+      let output;
+      try { output = JSON.stringify(value); } catch { throw new Error("页面脚本返回值无法序列化。"); }
+      if (output !== undefined && output.length > 100000) throw new Error("页面脚本返回值超过 100000 个字符。");
+      return value === undefined ? null : value;
+    }
     const params = { expression: `(${pageOperation.toString()})(${JSON.stringify(operation)},${JSON.stringify(input)})`, returnByValue: true, awaitPromise: true };
     if (selected) params.contextId = selected.contextId;
     let result;
@@ -86,6 +139,7 @@ export async function performBrowserCommand(api, { method, args = {} }, state) {
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error("元素坐标无效，请重新读取。");
     context(); return { point: { x: point.x, y: point.y }, sessionId: selected?.sessionId };
   };
+  if (method === "evaluate") return await evaluate("evaluate");
   if (method === "read") {
     const max = args.maxCharacters ?? 24000;
     if (!Number.isInteger(max) || max < 1000 || max > 100000) throw new Error("读取长度无效。");
@@ -148,6 +202,26 @@ export async function performBrowserCommand(api, { method, args = {} }, state) {
     }
     await evaluate("wait", { state: args.waitUntil, timeoutMs: Math.max(0, deadline - Date.now()) });
     return { success: true, url: (await api.tabs.get(tab.id)).url };
+  }
+  if (method === "back" || method === "forward") {
+    const history = await send("Page.getNavigationHistory");
+    if (!Number.isInteger(history.currentIndex) || !Array.isArray(history.entries) || history.currentIndex < 0 || history.currentIndex >= history.entries.length) throw new Error("页面导航历史无效，请重新读取标签。");
+    const index = history.currentIndex + (method === "back" ? -1 : 1);
+    const entry = history.entries[index];
+    if (!entry || !http(entry.url)) return { success: true, url: tab.url };
+    if (!Number.isInteger(entry.id)) throw new Error("页面导航记录无效，请重新读取标签。");
+    await send("Page.navigateToHistoryEntry", { entryId: entry.id });
+    while (true) {
+      const current = await send("Page.getNavigationHistory");
+      if (!Number.isInteger(current.currentIndex) || !Array.isArray(current.entries) || current.currentIndex < 0 || current.currentIndex >= current.entries.length) throw new Error("页面导航历史无效，请重新读取标签。");
+      const selected = current.entries[current.currentIndex];
+      if (selected?.id === entry.id) {
+        if (!http(selected.url)) throw new Error("历史目标已离开普通网页，请重新列出标签。");
+        return { success: true, url: selected.url };
+      }
+      if (Date.now() >= deadline) throw new Error("历史导航已发出但结果未确认，请重新读取标签；不会自动重试。");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
   }
   if (args.selector !== undefined && (typeof args.selector !== "string" || !args.selector.trim() || args.selector.length > 2000)) throw new Error("元素选择器无效。");
   if (!["press", "scroll"].includes(method) && !args.selector) throw new Error("需要从页面读取结果中选择一个元素。");

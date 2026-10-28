@@ -21,7 +21,7 @@ import { z } from "zod";
 
 // This optional harness selector is a repository path, never credential/config data.
 const root = process.env.BINY_TOOL_METADATA_SOURCE_ROOT ?? process.cwd();
-const directCalls = new Set(["redactSensitiveValueInternal", "redactSecrets", "isSensitiveFieldName", "redactSensitiveValue", "isDeepStrictEqual", "redactToolCallForPersistence"]);
+const directCalls = new Set(["redactSensitiveValueInternal", "redactSecrets", "isSensitiveFieldName", "redactSensitiveValue", "isDeepStrictEqual", "redactToolCallForPersistence", "redactBrowserToolCall", "redactBrowserToolArguments"]);
 const methods: Readonly<Record<string, readonly string[]>> = {
   message: ["map", "every"], messages: ["map"], value: ["map", "replace", "slice"], normalized: ["endsWith"],
   ancestors: ["has", "add", "delete"], Array: ["isArray"],
@@ -80,6 +80,7 @@ const selected = [
   select("src/utils/redaction.ts", ["redactSecrets"]),
   select("src/utils/secrets.ts", ["redactSensitiveValue", "redactSensitiveValueInternal", "isSensitiveFieldName"]),
   select("src/session/toolCallPersistence.ts", ["redactToolCallForPersistence", "projectCheckpointToolMetadata"]),
+  select("src/session/toolArgumentRedaction.ts", ["redactBrowserToolArguments", "redactBrowserToolCall"]),
   select("src/session/recorder.ts", ["redactAgentMessage"]),
   select("src/session/turnStore.ts", ["isAgentMessage", "isUserContent", "isToolResultContent"]),
   select("src/session/events.ts", ["agentToolCallContentSchema"]),
@@ -313,7 +314,11 @@ test("TurnStore save statically wires payload.messages to the pure projection", 
   assert.ok(ts.isCallExpression(projection) && ts.isIdentifier(projection.expression));
   assert.equal(projection.expression.text, "projectCheckpointToolMetadata");
   assert.equal(projection.arguments.length, 1);
-  assert.equal(projection.arguments[0]!.getText(source), "messages");
+  const browserProjection = projection.arguments[0]!;
+  assert.ok(ts.isCallExpression(browserProjection) && ts.isIdentifier(browserProjection.expression));
+  assert.equal(browserProjection.expression.text, "redactBrowserToolMessages");
+  assert.equal(browserProjection.arguments.length, 1);
+  assert.equal(browserProjection.arguments[0]!.getText(source), "messages");
   const imports = source.statements.filter(ts.isImportDeclaration).filter(node =>
     ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === "./toolCallPersistence.js");
   assert.equal(imports.length, 1);

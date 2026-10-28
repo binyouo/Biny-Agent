@@ -5,7 +5,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
-import { BrowserRelayError, isRelayMutation, relayPageSchema, relayBinarySchema, relaySchemas, relayTabSchema, type RelayMethod, type RelayStatus } from "./relayProtocol.js";
+import { BrowserRelayError, isRelayMutation, relayOpenedTabSchema, relayPageSchema, relayBinarySchema, relaySchemas, relayTabSchema, type RelayMethod, type RelayStatus } from "./relayProtocol.js";
 import { relayCredentialsSchema } from "./relayClient.js";
 
 interface Connection { socket: WebSocket; id: string; name: string; alive: boolean; pending?: Pending }
@@ -130,13 +130,22 @@ export class BrowserRelay {
     if (method === "tabs") return { browserId: connection.id, browserName: connection.name, tabs: z.array(relayTabSchema).max(1000).parse(result) };
     if (method === "screenshot" || method === "download") return relayBinarySchema.parse(result);
     if (method === "read") return { browserId: connection.id, browserName: connection.name, tabId: (args as { tabId: number }).tabId, ...relayPageSchema.parse(result) };
-    const actionResult = z.object({ success: z.literal(true), url: relayTabSchema.shape.url }).safeParse(result);
-    if (!actionResult.success) throw new BrowserRelayError("unknown", "浏览器动作已派发，但返回结果无效；请检查页面，不会自动重试。");
-    if (isRelayMutation(method) && "tabId" in args && typeof args.tabId === "number") {
-      try { this.activity?.({ browserId: connection.id, browserName: connection.name, tabId: args.tabId, sessionId }); }
+    let completedResult = result;
+    let tabId: number | undefined = "tabId" in args && typeof args.tabId === "number" ? args.tabId : undefined;
+    if (method === "open") {
+      const opened = relayOpenedTabSchema.parse(result);
+      completedResult = opened;
+      tabId = opened.tabId;
+    } else if (method !== "evaluate") {
+      const actionResult = z.object({ success: z.literal(true), url: relayTabSchema.shape.url }).safeParse(result);
+      if (!actionResult.success) throw new BrowserRelayError("unknown", "浏览器动作已派发，但返回结果无效；请检查页面，不会自动重试。");
+      completedResult = actionResult.data;
+    }
+    if (isRelayMutation(method) && tabId !== undefined) {
+      try { this.activity?.({ browserId: connection.id, browserName: connection.name, tabId, sessionId }); }
       catch (error) { console.error("Browser preview notification failed after completed action", error instanceof Error ? error.name : "Error"); }
     }
-    return actionResult.data;
+    return completedResult;
   }
 
   private attach(socket: WebSocket): void {

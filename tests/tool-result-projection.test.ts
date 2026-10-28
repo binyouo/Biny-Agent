@@ -9,6 +9,7 @@ await testReadProjectionBoundaryMetadata();
 await testRemovedFileToolUsesGenericProjection();
 await testSemanticReplacementAndParallelIsolation();
 await testUnknownFailureIsNotMerged();
+await testImagesWithMatchingMetadataRemainVisible();
 await testArchiveFailureKeepsOriginal();
 await testRunCommandTruncationMetadata();
 await testProcessStatusProjectionKeepsPagination();
@@ -16,6 +17,19 @@ await testBashProjectionBoundsBothStreams();
 await testRecentBashProjectionIsBounded();
 
 console.log("tool result projection tests passed");
+
+async function testImagesWithMatchingMetadataRemainVisible(): Promise<void> {
+  const metadata = { bytes: 12, mimeType: "image/png", imageReturned: true };
+  const messages: AgentMessage[] = [
+    { role: "user", content: "Compare both screenshots" },
+    assistantCall("first", "BrowserScreenshot", {}),
+    { ...toolResult("first", "BrowserScreenshot", metadata), content: [{ type: "text", text: JSON.stringify(metadata) }, { type: "image", mimeType: "image/jpeg", data: "YQ==" }] },
+    assistantCall("second", "BrowserScreenshot", {}),
+    { ...toolResult("second", "BrowserScreenshot", metadata), content: [{ type: "text", text: JSON.stringify(metadata) }, { type: "image", mimeType: "image/jpeg", data: "Yg==" }] }
+  ];
+  const projected = await projectToolResultsForModel(messages);
+  assert.deepEqual(projected.flatMap(message => message.role === "toolResult" ? message.content : []).filter(part => part.type === "image").map(part => part.data), ["YQ==", "Yg=="]);
+}
 
 async function testBashProjectionBoundsBothStreams(): Promise<void> {
   // No command echo: removing it must not be mistaken for bounding the streams.

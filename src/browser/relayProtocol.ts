@@ -13,8 +13,12 @@ export const relayBinarySchema = z.object({ mimeType: z.string().max(120), data:
 export const relaySchemas = {
   status: z.object({}).strict(),
   tabs: z.object({ browserId: z.string().uuid().optional() }).strict(),
+  open: z.object({ browserId: z.string().uuid(), url: relayUrlSchema }).strict(),
   read: relayTargetSchema.extend({ ...frame, maxCharacters: z.number().int().min(1000).max(100000).optional() }),
+  evaluate: relayTargetSchema.extend({ ...frame, code: z.string().trim().min(1).max(10000), timeoutMs: z.number().int().min(1).max(8000).optional() }),
   navigate: relayTargetSchema.extend({ url: relayUrlSchema, waitUntil: z.enum(["none", "domcontentloaded", "load"]).optional(), timeoutMs: z.number().int().min(0).max(8000).optional() }),
+  back: relayTargetSchema,
+  forward: relayTargetSchema,
   click: relayTargetSchema.extend(locating),
   fill: relayTargetSchema.extend({ ...locating, value: z.string().max(50000) }),
   press: relayTargetSchema.extend({ ...locating, selector: selectorSchema.optional(), key: z.enum(["Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) }),
@@ -25,6 +29,9 @@ export const relaySchemas = {
   download: relayTargetSchema.extend({ ...frame, url: relayUrlSchema, timeoutMs: z.number().int().min(1).max(8000).optional() })
 };
 export type RelayMethod = keyof typeof relaySchemas;
+export const relayOpenedTabSchema = z.object({
+  success: z.literal(true), tabId: z.number().int().nonnegative(), windowId: z.number().int(), url: relayUrlSchema
+}).strict();
 export const relayStatusSchema = z.object({
   running: z.boolean(), connected: z.boolean(),
   browsers: z.array(z.object({ browserId: z.string().uuid(), browserName: z.string().trim().min(1).max(80) })).max(8)
