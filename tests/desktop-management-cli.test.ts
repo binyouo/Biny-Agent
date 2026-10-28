@@ -38,6 +38,7 @@ class BrowserContents extends EventEmitter {
   cursor = -1;
   destroyed = false;
   viewport: Record<string, unknown> | undefined;
+  touchEmulation: Record<string, unknown> | undefined;
   scrollX = 0;
   scrollY = 0;
   input = new BrowserFileInput();
@@ -55,6 +56,7 @@ class BrowserContents extends EventEmitter {
     if (method === "Page.enable") return {};
     if (method === "Emulation.setDeviceMetricsOverride") { this.viewport = params; return {}; }
     if (method === "Emulation.clearDeviceMetricsOverride") { this.viewport = undefined; return {}; }
+    if (method === "Emulation.setTouchEmulationEnabled") { this.touchEmulation = params; return {}; }
     if (method === "Page.captureSnapshot") return { data: "MIME-Version: 1.0\nContent-Type: text/html\n\n<p>CLI page export</p>" };
     if (method === "Page.handleJavaScriptDialog") { this.dialogAnswer = params; this.resumeDialog?.(); this.resumeDialog = undefined; this.debugger.emit("message", {}, "Page.javascriptDialogClosed", {}); return {}; }
     if (method === "Runtime.evaluate") {
@@ -221,8 +223,10 @@ test("Desktop CLI shares project, session, preference, preview and terminal owne
     assert.equal(JSON.parse((await run(workspace, ["iab", "cdp", "Runtime.evaluate", '{"expression":"6 * 7"}', "--json"])).stdout).result.value, 42);
     await run(workspace, ["iab", "viewport", "set", "390", "844", "--mobile", "--json"]);
     assert.deepEqual(nativePage.viewport, { width: 390, height: 844, mobile: true, deviceScaleFactor: 1 });
+    assert.deepEqual(nativePage.touchEmulation, { enabled: true, maxTouchPoints: 1 });
     await run(workspace, ["iab", "viewport", "reset", "--json"]);
     assert.equal(nativePage.viewport, undefined);
+    assert.deepEqual(nativePage.touchEmulation, { enabled: false });
     await run(workspace, ["iab", "scroll", "600", "--x", "20", "--json"]);
     assert.equal(nativePage.scrollY, 600); assert.equal(nativePage.scrollX, 20);
     await run(workspace, ["iab", "clipboard", "write", "CLI clipboard", "--json"]);
