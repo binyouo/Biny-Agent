@@ -476,9 +476,18 @@ function fastModeSnapshot(id: string): DesktopWorkspaceSnapshot {
 function fastModeButton(h: Harness): HTMLButtonElement {
   const button = h.document.querySelector<HTMLButtonElement>('button[data-fast-mode]');
   assert.ok(button, 'The real priority-capable Composer exposes FastMode');
+  assert.equal(button.closest('[inert]'), null, 'FastMode must be user-interactable');
+  assert.equal(button.disabled, false, 'FastMode must be enabled');
   return button;
 }
+function assertFastModeSessionInteractive(h: Harness, id: string): void {
+  const row = h.document.querySelector<HTMLButtonElement>(`button.biny-sidebar-session-item[title="Conversation session-${id}"]`);
+  assert.ok(row, `Session ${id} exists`);
+  assert.equal(row.closest('[inert]'), null, 'Select only an expanded, user-interactable session row');
+  assert.equal(row.disabled, false);
+}
 async function beginFastMode(h: Harness, id = 'a'): Promise<void> {
+  assertFastModeSessionInteractive(h, id);
   await h.chooseSession(`session-${id}`);
   assert.equal(fastModeButton(h).getAttribute('aria-pressed'), 'false', 'Explicit persisted false must not fall back to lastFastMode');
   assert.equal(fastModeButton(h).disabled, false);
@@ -497,6 +506,9 @@ for (const outcome of ['success', 'error'] as const) for (const recreate of [fal
     if (recreate) {
       h.api.bootstrap = async () => bootstrapFor(['a', 'b', 'c'], 'b');
       await h.emit('onApplicationImportsChanged', undefined as never);
+      // Sidebar retains A's expanded ID across removal/recreation. Assert that
+      // fact instead of dispatching a click through a collapsed inert subtree.
+      assertFastModeSessionInteractive(h, 'a');
       await h.chooseSession('session-a');
       // This branch models a write still pending BEFORE metadata commit. Reopening
       // legitimately reads persisted false; later completion may succeed or fail.
@@ -527,6 +539,7 @@ for (const outcome of ['success', 'error'] as const) {
   });
   test(`older session FastMode ${outcome} cannot clear a newer session override`, async t => {
     const h = await fixture(t); await beginFastMode(h, 'a');
+    await h.chooseProject('b');
     await beginFastMode(h, 'b');
     assert.equal(h.fastModes.length, 2);
     assert.notEqual(h.fastModes[0]!.expectedRevision, h.fastModes[1]!.expectedRevision, 'Independent sessions, not impossible same-revision successes');
