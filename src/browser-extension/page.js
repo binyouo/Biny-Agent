@@ -262,6 +262,7 @@ export async function pageOperation(operation, args, backendElement) {
     }
     element.files = transfer.files;
     element.dispatchEvent(new Event("input", { bubbles: true })); element.dispatchEvent(new Event("change", { bubbles: true }));
+    if (args.desktopUploadReceipt === true) return { count: element.files.length, names: Array.from(element.files, file => file.name) };
     return { count: transfer.files.length };
   }
   if (!visible(element)) throw new Error("元素不可见。");

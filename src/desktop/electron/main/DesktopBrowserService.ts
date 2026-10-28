@@ -1075,7 +1075,7 @@ export class DesktopBrowserService {
     if (method === "upload") {
       const files = relaySchemas.upload.shape.files.parse(args.files);
       const selector = readString(args.selector, "selector");
-      return await this.pageOperation("upload", { selector, files }, signal, contents, onAction);
+      return await this.pageOperation("upload", { selector, files, desktopUploadReceipt: true }, signal, contents, onAction);
     }
     if (method === "download") return await this.downloadFile(relaySchemas.download.shape.url.parse(args.url), signal, contents);
     if (method === "download_media") {
