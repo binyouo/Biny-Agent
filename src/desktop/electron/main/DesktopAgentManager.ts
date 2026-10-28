@@ -849,10 +849,11 @@ export class DesktopAgentManager {
   }
 
   async resumeInterruptedTurn(projectId: string, sessionId: string): Promise<DesktopRunReceipt | undefined> {
+    const ownsSelection = this.state.captureSelectedSessionLifetime(projectId);
     const { runtime } = await this.resolveSessionRuntime(projectId, sessionId);
     const submitted = await runtime.startInterruptedTurnForSession(sessionId, undefined, "newTurn");
     if (!submitted) return undefined;
-    await this.state.setSelectedSession(projectId, sessionId);
+    if (ownsSelection()) await this.state.setSelectedSession(projectId, sessionId);
     this.observeRunCompletion(projectId, submitted.completion);
     return {
       sessionId,
@@ -889,6 +890,7 @@ export class DesktopAgentManager {
     idempotencyKey?: string
   ): Promise<DesktopRunReceipt> {
     return await this.runIdempotently(projectId, "retry", idempotencyKey, async () => {
+      const ownsSelection = this.state.captureSelectedSessionLifetime(projectId);
       const managed = await this.resolveSessionRuntime(projectId, sessionId);
       const { runtime } = managed;
       const snapshot = runtime.getSnapshot(sessionId);
@@ -912,7 +914,7 @@ export class DesktopAgentManager {
       const requestIds = { retryOfMessageId: targetMessageId };
       const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
       if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
-      await this.state.setSelectedSession(projectId, sessionId);
+      if (ownsSelection()) await this.state.setSelectedSession(projectId, sessionId);
       return { sessionId, runId: accepted.result.runId, messageId: accepted.result.messageId };
     });
   }
@@ -935,6 +937,7 @@ export class DesktopAgentManager {
     input: string,
     attachments: DesktopAttachment[]
   ): Promise<DesktopRunReceipt> {
+    const ownsSelection = this.state.captureSelectedSessionLifetime(projectId);
     const managed = await this.resolveSessionRuntime(projectId, sessionId);
     const { runtime } = managed;
     const snapshot = runtime.getSnapshot(sessionId);
@@ -955,7 +958,7 @@ export class DesktopAgentManager {
     };
     const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
     if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
-    await this.state.setSelectedSession(projectId, sessionId);
+    if (ownsSelection()) await this.state.setSelectedSession(projectId, sessionId);
     return {
       sessionId,
       runId: accepted.result.runId,
@@ -2416,9 +2419,10 @@ export class DesktopAgentManager {
   }
 
   async duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot> {
+    const ownsSelection = this.state.captureSelectedSessionLifetime(projectId);
     const project = this.projects.requireProject(projectId);
     const targetSessionId = await this.projects.duplicateSession(project, sessionId);
-    await this.state.setSelectedSession(projectId, targetSessionId);
+    if (ownsSelection()) await this.state.setSelectedSession(projectId, targetSessionId);
     return await this.workspaceSnapshot(projectId);
   }
 

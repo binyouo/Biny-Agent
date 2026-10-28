@@ -141,10 +141,20 @@ async function residentDesktopFixture(t: TestContext) {
     if (!current) throw new Error(`Project ${id} is not registered.`);
     return current;
   };
+  const selectionTokens = new WeakMap<object, object>();
   const state = {
     project: (id: string) => members.get(id),
     selectedSessionId: () => selected.sessionId,
-    setSelectedSession: async (id: string, sessionId: string) => { requireProject(id); selected.sessionId = sessionId; }
+    captureSelectedSessionLifetime: (id: string) => {
+      const owner = members.get(id);
+      const token = owner ? selectionTokens.get(owner) : undefined;
+      return () => owner !== undefined && members.get(id) === owner && selectionTokens.get(owner) === token;
+    },
+    setSelectedSession: async (id: string, sessionId: string | undefined) => {
+      const owner = requireProject(id);
+      selectionTokens.set(owner, {});
+      selected.sessionId = sessionId;
+    }
   } as unknown as Args[0];
   const projects = {
     requireProject,
