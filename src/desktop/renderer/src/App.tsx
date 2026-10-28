@@ -793,6 +793,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const invalidateProjectRefresh = useDesktopEventBridge({
     onRuntimeProjectionChanged: refreshPlans,
     activeProjectIdRef: projectRef,
+    projectRemovalRef,
     selectedSessionIdRef: selectedRef,
     documentRef,
     mergeProjectSnapshot,

@@ -24,6 +24,7 @@ async function fixture(context: TestContext, deferProject = false) {
     Object.defineProperty(globalThis, key, { configurable: true, value });
   }
   const initial: DesktopSessionDocument = { session: syntheticSession("project", "session", "first"), events: [], liveEvents: [] };
+  const projectRemovalRef = { current: new Map<string, object>() };
   const documentRef = { current: initial as DesktopSessionDocument | undefined };
   const activeProjectIdRef = { current: "project" as string | undefined };
   const selectedSessionIdRef = { current: "session" as string | undefined };
@@ -54,6 +55,7 @@ async function fixture(context: TestContext, deferProject = false) {
     replaceDocument = setDocument;
     useEffect(() => { documentRef.current = document; }, [document]);
     useDesktopEventBridge({
+      projectRemovalRef,
       activeProjectIdRef, selectedSessionIdRef, documentRef, setDocument, mergeProjectSnapshot, onError,
       setContextBudget: noop, setRecipeNotices: noop, setSkillExtraction: noop, setWriterConflict,
       setSidebarSessions: noop, setWorkspace: noop, onGenerationStarted: noop, onGenerationError: noop
