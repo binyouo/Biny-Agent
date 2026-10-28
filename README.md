@@ -63,6 +63,7 @@ CLI 帮助：`pnpm dev -- --help`。
 
 - [CLI 使用指南](docs/CLI_USAGE.md) — 命令地图、配置、会话、项目、预览与终端操作。
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — 服务商、模型别名、凭据与项目设置。
+- [隐私脱敏](docs/PRIVACY.md) — 发送前替换、回复还原，以及缓存与本地数据边界。
 - [docs/SESSIONS.md](docs/SESSIONS.md) — 对话入口、会话恢复、分支与导入导出。
 - [docs/IMPORTS.md](docs/IMPORTS.md) — 从其他应用导入模型、MCP 与会话，管理同步和历史。
 - [docs/MEMORY.md](docs/MEMORY.md) — 长期事实的写入、召回、整理与管理。

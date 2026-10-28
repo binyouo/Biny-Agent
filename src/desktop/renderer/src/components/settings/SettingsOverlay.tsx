@@ -9,6 +9,7 @@ import { SettingsAppshots } from "./SettingsAppshots.js";
  * 记忆 CRUD、连接测试、Cookie 与模型下载等一次性动作仍通过明确回调即时执行。
  */
 import { SettingsWebSearch } from "./SettingsWebSearch.js";
+import { SettingsPrivacy } from "./SettingsPrivacy.js";
 import { SettingsBrowser } from "./SettingsBrowser.js";
 import { SettingsComputerUse } from "./SettingsComputerUse.js";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -96,7 +97,7 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "Token 节省" | "导入" | "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "关于";
+export type SettingsTab = "Token 节省" | "导入" | "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "隐私脱敏" | "关于";
 
 /**
  * 侧栏按日常偏好、能力扩展、系统工具排序，不插分组标题。
@@ -118,6 +119,7 @@ const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
   { icon: "globe", tab: "浏览器" },
   { icon: "camera", tab: "Appshots" },
   { icon: "monitor", tab: "Computer Use" },
+  { icon: "lock", tab: "隐私脱敏" },
   { icon: "computer-history", tab: "Computer History" },
   { icon: "download", tab: "导入" },
   { icon: "help", tab: "关于" }
@@ -137,6 +139,7 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   插件: { description: "安装和管理扩展能力。", keywords: "plugin 市场 安装 启停 卸载" },
   网络搜索: { description: "设置搜索来源与网页访问方式。", keywords: "搜索引擎 联网 Cookie 登录 结果 超时" },
   浏览器: { description: "连接日常浏览器，管理扩展配对。", keywords: "Chrome 扩展 安装 配对 重新生成 撤销 连接" },
+  隐私脱敏: { description: "发送给模型厂商前遮掉密钥和个人信息。", keywords: "脱敏 隐私 masking 密钥 API Key 个人信息 邮箱 手机号 身份证 银行卡 占位符" },
   Appshots: { description: "把应用截图与上下文放入聊天草稿。", keywords: "appshots 应用截图 双击 修饰键 Command Option Shift 快捷键 聊天 附件 辅助功能 权限" },
   "Computer Use": { description: "管理本机桌面控制、权限与实时预览。", keywords: "computer use 桌面 操控 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
   记忆: { description: "管理长期记忆、检索与后台整理。", keywords: "记忆 memory 向量 embedding 模型 下载 索引 睡眠 清理" },
@@ -497,6 +500,7 @@ function SettingsOverlayContent({
           {activeTab === "浏览器" ? <SettingsBrowser active={open} /> : null}
           {activeTab === "Computer Use" ? <SettingsComputerUse active={open} /> : null}
           {activeTab === "Appshots" ? <SettingsAppshots /> : null}
+          {activeTab === "隐私脱敏" ? <SettingsPrivacy /> : null}
           {activeTab === "网络搜索" ? <SettingsWebSearch
             onOpenBrowser={onOpenBrowser}
             onExportCookies={onExportCookies}

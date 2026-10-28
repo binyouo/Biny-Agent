@@ -499,6 +499,14 @@ const imageGenSchema = z.object({
   aspectRatio: z.string().trim().max(32).optional()
 }).default({ model: undefined, localModel: undefined, aspectRatio: undefined });
 
+/**
+ * 出站脱敏：发给模型厂商前，把密钥与个人信息换成占位符，回复再换回原值。
+ * 只有一个开关，不保存任何具体值（值只在运行进程内存里）。
+ */
+const redactionSchema = z.object({
+  enabled: z.boolean().default(false)
+}).default({ enabled: false });
+
 const webSearchSchema = z.object({
   provider: z.enum(["google", "xiaohongshu"]).default("google"),
   visibleBrowsing: z.boolean().default(false),
@@ -693,6 +701,7 @@ const canonicalConfigSchema = z.object({
     recordInputs: z.boolean().default(false),
     recordOutputs: z.boolean().default(false)
   }).default({ enabled: false, recordInputs: false, recordOutputs: false }),
+  redaction: redactionSchema,
   extensions: extensionsSchema
 }).strict().superRefine((config, context) => {
   const activeModel = config.models[config.defaultModel];
@@ -863,6 +872,7 @@ export type CheckpointsConfig = z.infer<typeof checkpointsSchema>;
 export type DiagnosticsConfig = z.infer<typeof diagnosticsSchema>;
 export type WebFetchConfig = z.infer<typeof webFetchSchema>;
 export type WebSearchConfig = z.infer<typeof webSearchSchema>;
+export type RedactionConfig = z.infer<typeof redactionSchema>;
 export type WebCookiesConfig = z.infer<typeof webCookiesSchema>;
 export type WebConfig = z.infer<typeof webSchema>;
 export type { ActivityDataResidency, ActivitySettings, MemoryPolicy };
@@ -995,6 +1005,7 @@ export const defaultConfig: AgentConfig = {
   },
   imageGen: { model: undefined, localModel: undefined, aspectRatio: undefined },
   telemetry: { enabled: false, recordInputs: false, recordOutputs: false },
+  redaction: { enabled: false },
   extensions: {
     mcp: {},
     skills: [...DEFAULT_PROJECT_SKILL_PATHS],

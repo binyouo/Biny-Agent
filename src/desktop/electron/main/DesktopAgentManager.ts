@@ -1,3 +1,4 @@
+import type { MaskRecord, MaskingOverview } from "../../../privacy/record.js";
 import { TaskCommunication, type TaskInspection, type TaskInspectionOptions } from "../../../runtime/TaskCommunication.js";
 import { readAttachment } from "../../../attachments/store.js";
 /**
@@ -208,6 +209,7 @@ export interface DesktopSettingsConfigSnapshot {
   externalSubagentBlockers: string[];
   permission: AgentConfig["permission"];
   webSearch: DesktopWebSearchSettings;
+  redaction: AgentConfig["redaction"];
   models: DesktopSettingsModelsSnapshot;
   skills?: DesktopSkillSettings;
 }
@@ -1045,6 +1047,18 @@ export class DesktopAgentManager {
     return (await this.requireVersionedConfig().loadVersioned!(project.path)).revision;
   }
 
+  async maskingOverview(projectId: string): Promise<MaskingOverview> {
+    return await (await this.ensureRuntime(projectId)).runtime.maskingOverview();
+  }
+
+  async maskingDetail(projectId: string, id: string): Promise<MaskRecord | undefined> {
+    return await (await this.ensureRuntime(projectId)).runtime.maskingDetail(id);
+  }
+
+  async clearMaskRecords(projectId: string): Promise<void> {
+    await (await this.ensureRuntime(projectId)).runtime.clearMaskRecords();
+  }
+
   async settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot> {
     const project = this.projects.requireProject(projectId);
     const current = await this.requireVersionedConfig().loadVersioned!(project.path);
@@ -1078,6 +1092,7 @@ export class DesktopAgentManager {
       || input.subagent !== undefined
       || input.permission !== undefined
       || input.webSearch !== undefined
+      || input.redaction !== undefined
       || input.skills !== undefined) {
       this.assertNoRunningTasks("任务运行期间不能提交全局设置。");
     }
@@ -1152,6 +1167,9 @@ export class DesktopAgentManager {
     }
     if (input.webSearch !== undefined) {
       next = configSchema.parse({ ...next, web: { ...next.web, search: input.webSearch } });
+    }
+    if (input.redaction !== undefined) {
+      next = configSchema.parse({ ...next, redaction: input.redaction });
     }
     if (input.models !== undefined) {
       for (const handle of input.models.oauthCredentialHandles ?? []) {
@@ -3205,6 +3223,7 @@ function describeSettingsConfigSnapshot(
         ? config.extensions.subagent.providerAlias ?? (config.extensions.subagent.model ? config.models[config.extensions.subagent.model]?.provider : undefined) : undefined },
     permission: structuredClone(config.permission),
     webSearch: describeWebSearchSettings(config.web.search),
+    redaction: structuredClone(config.redaction),
     models: {
       configured: listConfiguredModelChoices(config, catalogs),
       connections: describeModelConnections(config),

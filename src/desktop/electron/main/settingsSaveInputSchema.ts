@@ -66,6 +66,9 @@ const webSearchSettingsSchema = z.object({
   timeoutMs: z.number().int().min(1_000).max(60_000),
   maxResults: z.number().int().min(1).max(10)
 }).strict();
+const redactionSettingsSchema = z.object({
+  enabled: z.boolean()
+}).strict();
 const permissionSettingsSchema = z.object({
   mode: z.enum(["ask", "read-only", "auto", "full-access"]),
   allowTools: z.array(idSchema).max(512),
@@ -119,6 +122,7 @@ export const settingsSaveInputSchema = z.object({
       { message: "请选择子代理模型。", path: ["model"] }).optional(),
   permission: permissionSettingsSchema.optional(),
   webSearch: webSearchSettingsSchema.optional(),
+  redaction: redactionSettingsSchema.optional(),
   models: z.object({
     // 「全选」把当前可见的整份目录放在一次事务里提交；聚合服务商（OpenRouter）目录已有
     // 367 个模型，实时 /models 更多，所以这里的批量上界必须高于单个目录规模。
