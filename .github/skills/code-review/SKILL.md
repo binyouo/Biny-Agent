@@ -28,8 +28,6 @@ Answer three questions with evidence:
 - End the review when actionable findings are resolved and the relevant verification is complete. Do not start another round merely to produce more findings or repeat checks that remain valid for the current change.
 - Use at most three review rounds for the same scope by default. If the review still does not converge, return to the disputed requirement, root cause, or design and explain the unresolved issue instead of continuing the same review loop. Reaching the limit does not make an unresolved defect acceptable.
 
-Capture reusable lessons under the repository's [experience rules](../../../docs/DEVELOPMENT.md#经验先积累再形成长期规则). A failure, incorrect edit, or user correction alone does not require a record. Explain when the lesson applies and how it improves future judgment or verification; update an existing lesson when appropriate. Do not append routine error logs or duplicate lessons, and do not create a record when there is no new lesson. Recording a lesson does not require adding a permanent rule or a separate model-evaluation workflow.
-
 ## Findings
 
 - Lead with high-confidence, actionable defects, ordered by severity.
