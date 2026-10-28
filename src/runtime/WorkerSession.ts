@@ -217,7 +217,7 @@ export class WorkerSession {
       await this.enqueue(async () => {
         await this.recorder.recordAndFlush({ type: "tool_execution", tool, toolCallId, sequence, operationId, state: unknown ? "unknown" : "failed", retrySafety, evidence: message });
         await this.recorder.recordAndFlush({ type: "tool_result", tool, toolCallId, sequence, operationId, executionStatus: unknown ? "unknown" : "failed", result: { error: message } });
-        await this.saveFromReplay();
+        await this.save();
       });
       if (unknown) {
         this.failure = new Error(`Worker tool ${tool} has an unknown side effect; unsafe continuation is blocked.`, { cause: error });
@@ -228,7 +228,8 @@ export class WorkerSession {
     await this.enqueue(async () => {
       await this.recorder.recordAndFlush({ type: "tool_execution", tool, toolCallId, sequence, operationId, state: result.isError ? "failed" : "succeeded", retrySafety });
       await this.recorder.recordAndFlush({ type: "tool_result", tool, toolCallId, sequence, operationId, executionStatus: result.isError ? "failed" : "succeeded", result: result.details ?? result.content });
-      await this.saveFromReplay();
+      // 工具事实已落盘；消息由模型步提交，冷恢复再从 JSONL 补齐步内结果。
+      await this.save();
     });
     return result;
   }
