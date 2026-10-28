@@ -68,7 +68,6 @@ function coordinator(registry: ToolRegistry, id: string, options?: {
   tools?: Set<string>;
   ask?: (request: { tool: string; riskLevel?: string }) => Promise<{ approved: boolean; scope?: "once" }>;
   executionMode?: "direct" | "code_mode";
-  budget?: { maxToolCalls: number; maxRepeatedActions: number };
 }): ToolExecutionCoordinator {
   const recorder = new SessionRecorder(root, id);
   recorders.push(recorder);
@@ -77,7 +76,7 @@ function coordinator(registry: ToolRegistry, id: string, options?: {
   if (options?.ask) { settings.permission.mode = "ask"; settings.permission.allowTools = []; }
   return new ToolExecutionCoordinator({ workspaceRoot: root, config: settings, recorder, toolRegistry: registry,
     confirmPermission: options?.ask }, new PermissionManager(settings.permission), () => undefined, () => ({}),
-  options?.tools ?? selected, options?.budget, undefined, options?.tools);
+  options?.tools ?? selected, undefined, undefined, options?.tools);
 }
 const details = (result: AgentToolResult): { value?: unknown; childCalls?: unknown[]; error?: string; outcomeUnknown?: boolean } =>
   result.details as ReturnType<typeof details>;
@@ -130,7 +129,7 @@ try {
   assert.equal(changedRegistry.listEntries().some((entry) => entry.tool.name === "TaskStatus" && isCodeModeReadTool(entry)), false,
     "an in-place resolver replacement cannot retain the original host contract");
 
-  const main = coordinator(registry, "host-query-happy", { budget: { maxToolCalls: 8, maxRepeatedActions: 8 } });
+  const main = coordinator(registry, "host-query-happy");
   const exec = main.createCodeModeTool({ mode: "replace" });
   assert.match(exec.promptSnippet ?? "", /TaskStatus:|ProcessStatus:/u);
   assert.doesNotMatch(exec.promptSnippet ?? "", /Skill:|read_skill_resource:|Task:/u);
@@ -138,7 +137,7 @@ try {
     "const status = await tools.TaskStatus({taskRunId:'fixture'}); const skills = await tools.ProcessStatus({}); return {status:status.status, processes:skills.processes.length};" });
   assert.equal(result.isError, false, JSON.stringify(result.details));
   assert.deepEqual(details(result).value, { status: "needs_approval", processes: 0 });
-  assert.equal(main.getExecutionBudgetSnapshot().accountedToolCalls, 2);
+
   const held = coordinator(registry, "held-read-queries", { tools: new Set([...selected, "ProcessStatus", "read_skill_resource", "Skill"]) });
   assert.doesNotMatch(held.createCodeModeTool().promptSnippet ?? "", /read_skill_resource:|Skill:/u);
   for (const [name, args] of [["read_skill_resource", { skill: "query-fixture", path: "SKILL.md" }]] as const) {
@@ -180,18 +179,11 @@ try {
     assert.equal((await approved.createCodeModeTool().execute(`approve-call-${name}`, { description: "执行测试脚本", code })).isError, false);
   }
 
-  const limited = coordinator(registry, "query-budget", { budget: { maxToolCalls: 1, maxRepeatedActions: 8 } });
-  const beforeBudget = statusCalls;
-  assert.equal((await limited.createCodeModeTool().execute("query-budget-cell", { description: "query-budget-cell", code:
-    "await tools.TaskStatus({taskRunId:'fixture'}); return await tools.TaskStatus({taskRunId:'fixture'});" })).isError, true);
-  assert.equal(statusCalls, beforeBudget + 1);
-  assert.equal(limited.getBudgetRejection()?.reason, "tool_call_limit");
-  const repeated = coordinator(registry, "query-repeat", { budget: { maxToolCalls: 8, maxRepeatedActions: 1 } });
+  const repeated = coordinator(registry, "query-repeat");
   const beforeRepeat = statusCalls;
   assert.equal((await repeated.createCodeModeTool().execute("query-repeat-cell", { description: "query-repeat-cell", code:
-    "await tools.TaskStatus({taskRunId:'fixture'}); return await tools.TaskStatus({taskRunId:'fixture'});" })).isError, true);
-  assert.equal(statusCalls, beforeRepeat + 1);
-  assert.equal(repeated.getBudgetRejection()?.reason, "repeated_action_limit");
+    "await tools.TaskStatus({taskRunId:'fixture'}); return await tools.TaskStatus({taskRunId:'fixture'});" })).isError, false);
+  assert.equal(statusCalls, beforeRepeat + 2);
   const preCancelled = new AbortController(); preCancelled.abort();
   const beforeCancel = statusCalls;
   assert.equal((await exec.execute("query-pre-cancel", { description: "query-pre-cancel", code: "return await tools.TaskStatus({taskRunId:'fixture'});" }, preCancelled.signal)).isError, true);

@@ -1533,8 +1533,7 @@ function createRealTaskExecutor(
       permission,
       (event) => events.push(event),
       () => ({}),
-      new Set(["Bash"]),
-      { maxToolCalls: 1, maxRepeatedActions: 1 }
+      new Set(["Bash"])
     );
     const bash = coordinator.createAgentTools().find((tool) => tool.name === "Bash");
     assert.ok(bash);

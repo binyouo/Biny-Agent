@@ -86,11 +86,11 @@ function fixture() {
   const config={agent:{toolExecutionMode:'direct'},workspace:{ignore:[]}};
   Object.assign(c,{context:{toolRegistry:registry,config,workspaceRoot:'/inert',recorder:{sessionId:'inert'}},
     permissionManager:{evaluate:()=>({decision:'allow'}),applyResult:()=>{},revokeResult:()=>{},getDeniedPaths:()=>[]},
-    allowedToolNames:undefined,executionToolNames:undefined,executionBudget:undefined,
+    allowedToolNames:undefined,executionToolNames:undefined,
     duplicateToolCallIds:new Set(),scriptParents:new Map(),toolImages:new Map(),imageBytes:0,
     codeModeToolChecks:new WeakMap(),pendingExecutions:new Map(),quarantinedCodeModeChildIds:new Set(),uncertainExecutions:new Map(),permissionTail:Promise.resolve(),
     getStepContext:()=>({}),nextSequence:()=>audit.length+1,recordAndFlush:async (e: any)=>{audit.push(e);return e;},emit:()=>{},
-    admitToolCall:()=>undefined,assertCanContinue:()=>{},buildPermissionSnapshot:async (call: any)=>({request:{tool:call.name,toolCallId:call.id}}),
+    assertCanContinue:()=>{},buildPermissionSnapshot:async (call: any)=>({request:{tool:call.name,toolCallId:call.id}}),
     runBeforeToolHooks:async()=>undefined,ensureCheckpoint:async()=>{},attachDiagnostics:async(_risk: unknown,_args: unknown,result: unknown)=>result,attachAfterToolHooks:async(_name: unknown,_args: unknown,result: unknown)=>result,
     finishSyntheticCall:async(_call: unknown,_seq: unknown,result: unknown)=>result,
     admissionScheduler:new ToolScheduler({maxConcurrency:4,maxQueuedTasks:8}),scheduler:new ToolScheduler({maxConcurrency:4,maxQueuedTasks:8})});

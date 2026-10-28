@@ -80,7 +80,7 @@ const recorder = new SessionRecorder(root, "code-mode-test");
 const coordinator = new ToolExecutionCoordinator(
   { workspaceRoot: root, config, recorder, toolRegistry: registry },
   new PermissionManager(config.permission), () => undefined, () => ({}),
-  new Set(["Read", "Write"]), { maxToolCalls: 3, maxRepeatedActions: 3 }
+  new Set(["Read", "Write"])
 );
 
 try {
@@ -100,7 +100,7 @@ try {
   assert.equal((result.details as { value?: string }).value, "HELLO CODE MODE\n");
   assert.equal(reads, 1);
   assert.equal(writes, 0);
-  assert.equal(coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 1);
+
 
   const unselected = await exec.execute("parent-2", { description: "parent-2", code: "return await tools.Edit({});" });
   assert.equal(unselected.isError, true);
@@ -135,21 +135,6 @@ try {
     assert.equal(reads, beforeDenied);
     assert.equal(approvals, 0);
   } finally { await permissionRecorder.close(); }
-
-  const budgetRecorder = new SessionRecorder(root, "code-mode-budget");
-  try {
-    const budgetCoordinator = new ToolExecutionCoordinator(
-      { workspaceRoot: root, config, recorder: budgetRecorder, toolRegistry: registry },
-      new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["Read"]),
-      { maxToolCalls: 1, maxRepeatedActions: 3 });
-    const beforeBudget = reads;
-    const overBudget = await budgetCoordinator.createCodeModeTool().execute("parent-budget", { description: "parent-budget",
-      code: "await tools.Read({path:'hello.txt'}); return await tools.Read({path:'hello.txt'});"
-    });
-    assert.equal(overBudget.isError, true);
-    assert.equal(reads, beforeBudget + 1);
-    assert.equal(budgetCoordinator.getExecutionBudgetSnapshot().accountedToolCalls, 2);
-  } finally { await budgetRecorder.close(); }
 
   const mcpRegistry = new ToolRegistry();
   let mcpCalls = 0;

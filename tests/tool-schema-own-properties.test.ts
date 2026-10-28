@@ -148,7 +148,7 @@ async function coordinatorFixture(parameters: JsonObjectSchema, approved = true)
   const coordinator = new ToolExecutionCoordinator({
     workspaceRoot: root, config, recorder, toolRegistry: registry,
     confirmPermission: async request => { permissionIds.push(request.toolCallId); return { approved, scope: "once" }; }
-  }, new PermissionManager(config.permission), () => undefined, () => ({}), undefined, { maxToolCalls: 10, maxRepeatedActions: 10 });
+  }, new PermissionManager(config.permission), () => undefined, () => ({}));
   const agentTool = coordinator.createAgentTools().find(tool => tool.name === "mcp_fixture_inspect")!;
   return {
     coordinator, agentTool, resolved, executions, permissionIds,
@@ -166,7 +166,7 @@ for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
       assert.deepEqual(fixture.resolved, []);
       assert.deepEqual(fixture.permissionIds, []);
       assert.deepEqual(fixture.executions, []);
-      assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 1);
+
     } finally { await fixture.close(); }
   });
 
@@ -191,7 +191,7 @@ for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
         assert.deepEqual(fixture.resolved, [input]);
         assert.deepEqual(fixture.permissionIds, ["valid-special"]);
         assert.deepEqual(fixture.executions, approved ? [input] : []);
-        assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 1);
+
       } finally { await fixture.close(); }
     }
   });

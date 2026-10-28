@@ -36,13 +36,12 @@ export async function run(args: string[]): Promise<void> {
   const loaded = await loadStoredCredentials(await loadConfig(process.cwd()), new DesktopSafeStorageCredentialStore(globalConfigDir()));
   const config = configSchema.parse({ ...defaultConfig, providers: loaded.providers, models: loaded.models, defaultModel: loaded.defaultModel,
     thinking: { ...defaultConfig.thinking, enabled: false },
-    agent: { ...defaultConfig.agent, maxToolCalls: 12 },
     chat: { ...defaultConfig.chat, temperature: 0, maxOutputTokens: 1024, skillExtraction: { ...defaultConfig.chat.skillExtraction, enabled: false } },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   process.env.BINY_AGENT_DIR = path.join(output, "state");
   const manifest = { model: config.models[config.defaultModel]?.model, provider: config.models[config.defaultModel]?.provider,
-    tasks, repetitions: 1, maxSteps: 6, maxToolCalls: 12, timeoutMs: 120_000, maxOutputTokens: 1024,
+    tasks, repetitions: 1, maxSteps: 6, timeoutMs: 120_000, maxOutputTokens: 1024,
     memory: false, skills: false, toolset: ["Read"], providerCache: "uncontrolled", scope: "PTC optional selection; RTK command execution is verified separately",
     sources: Object.fromEntries(await Promise.all(["src/agent/toolExecutionCoordinator.ts", "src/agent/codeMode.ts", "benchmarks/tool-result-optimization.ts"].map(async file => [file, createHash("sha256").update(await readFile(file)).digest("hex")]))) };
   await writeFile(path.join(output, "manifest.json"), JSON.stringify(manifest, null, 2));
