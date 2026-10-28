@@ -117,7 +117,7 @@ test("late settings reads cannot revert a completed refresh or control change", 
     await act(async () => { context.mock.timers.tick(1500); });
     const secondPoll = finishPoll;
     await act(async () => { firstPoll({ ...state, state: "paused" }); });
-    assert.match(dom.window.document.querySelector(".cu-controls")?.textContent ?? "", /已暂停/, "a slow response remains visible while a newer poll is in flight");
+    assert.equal(dom.window.document.querySelector(".cu-controls"), null, "运行控制与诊断面板已移除");
     await act(async () => { secondPoll(state); });
     await act(async () => { context.mock.timers.tick(1500); });
     const thirdPoll = finishPoll;
@@ -125,7 +125,7 @@ test("late settings reads cannot revert a completed refresh or control change", 
     const fourthPoll = finishPoll;
     await act(async () => { fourthPoll(state); });
     await act(async () => { thirdPoll({ ...state, state: "paused" }); });
-    assert.match(dom.window.document.querySelector(".cu-controls")?.textContent ?? "", /已启用/, "an older response cannot replace a newer completed poll");
+    assert.equal(toggle.getAttribute("aria-checked"), "true", "an older response cannot replace a newer completed poll");
 
     holdPoll = false;
     let finishNextInitial!: (value: ComputerDiagnostics) => void;
@@ -274,15 +274,11 @@ test("compact settings keep controls and stop status polling while closed withou
     assert.ok(desktopControl, "desktop control enablement is directly visible");
     assert.equal([...dom.window.document.querySelectorAll("button")].some(button => button.textContent === "停止"), false, "关闭主开关是唯一设置页停止入口，不重复提供停止按钮");
     assert.ok(dom.window.document.querySelector('[aria-label="刷新应用授权"]'), "应用授权列表提供独立刷新入口");
-    const advanced = dom.window.document.querySelector<HTMLDetailsElement>(".cu-controls")!;
-    assert.equal(advanced.open, false);
-    assert.equal(advanced.querySelector("details"), null, "高级设置不再嵌套第二层展开");
     await act(async () => { desktopControl.click(); });
-    await click("暂停"); await click("继续（需重新观察）"); await click("人工接管"); await click("继续（需重新观察）");
     const checkbox = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="画中画"]')!;
     await act(async () => { checkbox.click(); }); await act(async () => { checkbox.click(); });
     await act(async () => { desktopControl.click(); });
-    assert.deepEqual(controls, ["enable", "pause", "resume", "takeover", "resume", "preview:true", "preview:false", "stop"]);
+    assert.deepEqual(controls, ["enable", "preview:true", "preview:false", "stop"]);
     const beforeClose = statusReads;
     await act(async () => { root.render(createElement(SettingsComputerUse, { key: "ready", active: false })); });
     await act(async () => { context.mock.timers.tick(4500); });
@@ -335,10 +331,7 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     assert.match(dom.window.document.querySelector('[data-permission="screenRecording"]')?.textContent ?? "", /未授权/);
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /已就绪|运行中/);
     assert.equal(dom.window.document.querySelector('[data-action-limit="scroll"]'), null, "原生实现不再声明 scroll 限制");
-    const details = dom.window.document.querySelector<HTMLDetailsElement>(".cu-technical-details")!;
-    assert.ok(details, "technical diagnostics belong in a collapsed disclosure");
-    assert.equal(details.open, false);
-    assert.ok(details.querySelector("pre"));
+    assert.equal(dom.window.document.querySelector(".cu-technical-details"), null, "诊断详情面板已移除");
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /synthetic|worker\.js/);
     assert.equal(dom.window.document.querySelector('[role="switch"][aria-label="逐次审批"]'), null);
     const strict = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="严格应用审批"]')!;
@@ -365,8 +358,7 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     const refresh = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent?.trim() === "刷新")!;
     await act(async () => { refresh.click(); });
     assert.match(dom.window.document.querySelector('[data-app="test.new"]')?.textContent ?? "", /待批准/);
-    assert.match(dom.window.document.querySelector('[data-app="test.new"]')?.textContent ?? "", /使用 0 次 · 最近 从未/);
-    assert.match(dom.window.document.querySelector(".cu-controls")?.textContent ?? "", /已暂停/, "统一刷新同时更新控制状态和新发现的应用授权");
+    assert.match(dom.window.document.querySelector('[data-app="test.new"]')?.textContent ?? "", /使用 0 次 · 最近 从未/, "统一刷新同时更新控制状态和新发现的应用授权");
     const beforeApprovalRefresh = calls.filter(call => call === "diagnostics").length;
     await act(async () => { dom.window.document.querySelector<HTMLButtonElement>('[aria-label="刷新应用授权"]')!.click(); });
     assert.equal(calls.filter(call => call === "diagnostics").length, beforeApprovalRefresh + 1);
@@ -375,7 +367,7 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
       assert.ok(control, label); await act(async () => { control.click(); });
     }
     assert.ok(calls.includes("grant")); assert.ok(calls.includes("test")); assert.ok(calls.includes("logging:true"));
-    assert.match(dom.window.document.querySelector("pre")?.textContent ?? "", /driver_sdk_missing_or_crashed/);
+    assert.match(dom.window.document.querySelector(".cu-feedback")?.textContent ?? "", /桌面控制暂不可用/, "错误只提示查看状态，不再有诊断详情");
     assert.ok(dom.window.document.querySelector(".cu-approvals"));
   } finally {
     await act(async () => { root.unmount(); }); dom.window.close();
@@ -528,7 +520,6 @@ test("an installed idle helper stays installed instead of reporting unavailable;
     await act(async () => { root.render(createElement(SettingsComputerUse, { key: "missing" })); });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     assert.match(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /未找到/);
-    assert.match(dom.window.document.querySelector(".cu-technical-details")?.textContent ?? "", /pnpm build:activity-sidecar/, "组件确实缺失才在诊断区引导重建");
     assert.doesNotMatch(dom.window.document.querySelector(".cu-card > .cu-description")?.textContent ?? "", /pnpm build/);
   } finally {
     await act(async () => { root.unmount(); });
@@ -612,7 +603,7 @@ test("the setup test names the check that failed, not just that one did", async 
   }
 });
 
-test("the advanced section renders the audit trail without a foreground delivery control", async () => {
+test("removed control and diagnostic panels no longer render, and no foreground delivery control exists", async () => {
   const dom = new JSDOM("<div id='root'></div>");
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -644,13 +635,11 @@ test("the advanced section renders the audit trail without a foreground delivery
     await act(async () => { root.render(createElement(SettingsComputerUse)); });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
 
-    // 审计日志：每条要能看出时间、动作、目标与结果
-    const trail = dom.window.document.querySelector(".cu-diagnostics")?.textContent ?? "";
-    assert.match(trail, /click/, "审计要记下动作名");
-    assert.match(trail, /671/, "审计要记下目标 pid");
-    assert.match(trail, /42ms/, "审计要记下耗时");
-    assert.match(trail, /type_text/, "第二条也要在");
-    assert.match(dom.window.document.body.textContent ?? "", /日志共 2 条/, "条数要如实报出");
+    // 运行控制与日志、诊断详情两处折叠区均已移除
+    assert.equal(dom.window.document.querySelector(".cu-controls"), null, "运行控制与日志面板已移除");
+    assert.equal(dom.window.document.querySelector(".cu-technical-details"), null, "诊断详情面板已移除");
+    assert.equal(dom.window.document.querySelector(".cu-diagnostics"), null, "不再渲染日志或诊断文本");
+    assert.doesNotMatch(dom.window.document.body.textContent ?? "", /日志共/u);
 
     assert.equal(dom.window.document.querySelector(".cu-foreground"), null);
     assert.doesNotMatch(dom.window.document.body.textContent ?? "", /允许.*前台动作/u);
