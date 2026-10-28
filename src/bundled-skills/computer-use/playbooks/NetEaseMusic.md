@@ -15,7 +15,7 @@ Bundle id 通常为 `com.netease.163music`，以当前应用列表为准。选�
 
 后台键盘事件可能被自绘控件丢弃。`keystrokes_may_be_dropped` 或 `unverified` 不是成功，也不证明完全没有副作用：先检查返回截图，必要时重新观察，不能盲目重放。
 
-观察返回 `foregroundAllowed: true` 时，可明确选择 `delivery: "foreground"` 点击搜索框、输入、按 Return；每一步仍使用新观察凭据。前台路径会激活准确目标窗口；窗口身份或聚焦状态无法确认时停止输入。未开启许可时，请用户在“设置 → Computer Use”开启“允许明确批准的前台动作”，不自行改设置、不静默升级。
+观察返回 `foregroundAllowed: true` 时，可明确选择 `delivery: "foreground"` 点击搜索框、输入、按 Return；每一步仍使用新观察凭据。前台路径会激活准确目标窗口；窗口身份或聚焦状态无法确认时停止输入。未开启许可时，请用户在“设置 → Computer Use”开启“允许前台操作”，不自行改设置、不静默升级。
 
 没有 AX 搜索框时，不使用 `set_value` 或 `select_text` 编造引用。只有现成列表确实含目标歌曲时，才可直接双击播放；不能用其他歌曲或歌单代替用户指定的内容。
 

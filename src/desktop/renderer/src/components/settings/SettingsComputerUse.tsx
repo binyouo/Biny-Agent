@@ -123,7 +123,7 @@ export function SettingsComputerUse({ active = true }: { active?: boolean }): Re
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "ready" || status.state === "disabled"} onClick={() => control("resume")}><Icon name="play" size={14} />继续（需重新观察）</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "disabled"} onClick={() => control("takeover")}>人工接管</button>
       </div><p className="cu-muted">暂停或接管会取消等待操作。已派发的输入可能无法撤回；继续前重新观察，不自动重放。</p>
-      <label className="cu-foreground"><input type="checkbox" disabled={unavailable || !status} checked={status?.foregroundAllowed ?? false} onChange={event => void perform(() => updateStatus(() => api.foreground(event.target.checked)))} />允许明确批准的前台动作（可能改变焦点）</label>
+      <label className="cu-foreground"><input type="checkbox" disabled={unavailable || !status} checked={status?.foregroundAllowed ?? false} onChange={event => void perform(() => updateStatus(() => api.foreground(event.target.checked)))} />允许前台操作（可能切换焦点）</label>
         <p className="cu-muted">日志共 {diagnostic?.audit.length ?? 0} 条，点击“刷新”读取最新元数据。</p>
         {diagnostic?.audit.length ? <pre className="cu-diagnostics">{diagnostic.audit.map(entry => [
               new Date(entry.at).toLocaleTimeString(),

@@ -166,7 +166,7 @@ test("仅截图观察取得新凭据且不保留旧控件，原有完整观察�
 async function fixture(t: TestContext, apps: Record<string, unknown>[] = [
   { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
   { name: "Recently Used", bundleId: "test.recent", running: false, lastUsed: "2026-10-07T00:00:00Z" }
-], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean; holdActionReply?: boolean; nativeRefusal?: boolean; failPostObservation?: boolean; observationTitles?: string[] } = {}) {
+], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean; holdActionReply?: boolean; nativeRefusal?: boolean; rejectDelivery?: boolean; failPostObservation?: boolean; observationTitles?: string[] } = {}) {
   const firstWindow = previewWindows.length;
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-dispatch-"));
   const hooks = registerHooks({ load(url, context, next) {
@@ -217,6 +217,7 @@ const server = net.createServer(socket => {
         fs.writeFileSync(args.out, Buffer.from([255, 216, 255, 217]));
         data = { path: args.out, width: 100, height: 80, windowId: args.window_id || 900 };
       } else if (['click', 'scroll', 'type_text', 'press_key'].includes(cmd)) {
+        if (${JSON.stringify(options.rejectDelivery ?? false)} && args.delivery !== undefined) { socket.write(JSON.stringify({ id, ok: false, error: { message: 'input_delivery_unsupported: 输入始终后台投递，不接受 delivery 参数' } }) + '\\n'); continue; }
         if ((cmd === 'scroll' && !args.ref && (args.x === undefined || args.y === undefined)) || (args.ref && args.ref !== ref)) {
           socket.write(JSON.stringify({ id, ok: false, error: { message: 'element_ref_not_observed' } }) + '\\n'); continue;
         }
@@ -428,8 +429,8 @@ test("custom windows without AX elements accept focused keyboard input but still
   const pressed = await f.invoke("ComputerAction", { ...target, action: "press_key", captureId: typed.capture_id, key: "Return" });
   assert.equal(pressed.imageReturned, true);
   const requests = await f.entries();
-  assert.deepEqual(requests.filter(entry => entry.cmd === "type_text"), [{ cmd: "type_text", args: { pid: 42, window_id: 900, client_id: requests.find(entry => entry.cmd === "get_app_state")!.args.client_id, capture_id: observed.capture_id, delivery: "background", text: "一半一半", input_method: "unicode" } }]);
-  assert.deepEqual(requests.filter(entry => entry.cmd === "press_key"), [{ cmd: "press_key", args: { pid: 42, window_id: 900, client_id: requests.find(entry => entry.cmd === "get_app_state")!.args.client_id, capture_id: typed.capture_id, delivery: "background", key: "Return" } }]);
+  assert.deepEqual(requests.filter(entry => entry.cmd === "type_text"), [{ cmd: "type_text", args: { pid: 42, window_id: 900, client_id: requests.find(entry => entry.cmd === "get_app_state")!.args.client_id, capture_id: observed.capture_id, text: "一半一半", input_method: "unicode" } }]);
+  assert.deepEqual(requests.filter(entry => entry.cmd === "press_key"), [{ cmd: "press_key", args: { pid: 42, window_id: 900, client_id: requests.find(entry => entry.cmd === "get_app_state")!.args.client_id, capture_id: typed.capture_id, key: "Return" } }]);
 });
 
 test("explicit foreground input reaches the native window only after user enablement and re-observation", { timeout: 8_000 }, async t => {
@@ -599,6 +600,37 @@ test("原生派发前权限拒绝不锁死观察，也不产生输入副作用",
   await assert.rejects(stat(path.join(f.directory, "action.json")), { code: "ENOENT" });
 });
 
+test("后台输入兼容不接受 delivery 字段的原生服务，并取得动作后的观察", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { rejectDelivery: true });
+  const observed = await f.invoke("ComputerObserve", target);
+  const result = await f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
+  assert.equal(result.status, "completed");
+  assert.equal(result.observationRequired, false);
+  assert.equal((await f.entries()).find(entry => entry.cmd === "click")!.args.delivery, undefined);
+  assert.equal(JSON.parse(await readFile(path.join(f.directory, "action.json"), "utf8")).cmd, "click");
+});
+
+test("原生服务明确拒绝前台参数时报告未派发，不将回合锁定为未知结果", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { rejectDelivery: true });
+  f.service.controller.setForeground(true);
+  await ensureAgentDirs(f.directory);
+  const recorder = new SessionRecorder(f.directory, "fixture-session");
+  t.after(() => recorder.close());
+  const config = structuredClone(defaultConfig);
+  config.permission.mode = "full-access";
+  config.permission.denyPaths = [];
+  const registry = new ToolRegistry();
+  for (const tool of f.mcp.createTools()) registry.registerMcpTool(tool);
+  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: f.directory, config, recorder, toolRegistry: registry }, new PermissionManager(config.permission), () => undefined, () => ({}));
+  const observed = await f.invoke("ComputerObserve", target);
+  const result = await coordinator.createAgentTools().find(tool => tool.name === "ComputerAction")!.execute("delivery-refused", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id, delivery: "foreground" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result), /input_delivery_unsupported/);
+  assert.doesNotThrow(() => coordinator.assertCanContinue());
+  assert.equal(f.service.controller.status().lastOutcome, "refused");
+  await assert.rejects(stat(path.join(f.directory, "action.json")), { code: "ENOENT" });
+});
+
 test("普通观察读图后删除临时截图，原有预览清理覆盖不到这条路径", { timeout: 8_000 }, async t => {
   const f = await fixture(t);
   await f.invoke("ComputerObserve", target);
@@ -727,7 +759,7 @@ for (const route of ["builtin", "standalone", "desktop-mcp"] as const) {
         assert.equal(dispatched.length, 1);
         const { client_id, capture_id, delivery, ...actual } = dispatched[0]!.args;
         assert.equal(typeof client_id, "string");
-        assert.equal(delivery, route === "standalone" ? undefined : "background");
+        assert.equal(delivery, undefined);
         if (route !== "standalone") assert.equal(typeof capture_id, "string");
         assert.deepEqual(actual, { pid: 42, window_id: 900, show_cursor: false, ...Object.fromEntries(Object.entries(expected).map(([key, value]) => [key, value === "REF" ? ref : value])) });
       }

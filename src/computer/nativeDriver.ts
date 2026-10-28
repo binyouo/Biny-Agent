@@ -542,7 +542,7 @@ export class NativeProcessDriver implements ComputerDriver {
       return { ...reply, data: { ...data, effect: data.effect ?? (accepted && !data.warning && !data.verification_note ? "confirmed" : "unverifiable") } };
     } catch (error) {
       // 只将确定发生在派发前的原生拒绝降为普通失败，部分输入与传输失败保持未知。
-      if (error instanceof NativeCommandError && /^(ax_not_granted|focus_guard_unavailable|element_ref_not_observed|observation_[a-z_]+|text_match_(invalid|not_found|ambiguous|unavailable|changed)|input_method_(requires_ref|unmappable_character|layout_required|layout_unavailable)|unknown_key|unknown_input_method)(:|$)/.test(error.message)) {
+      if (error instanceof NativeCommandError && /^(ax_not_granted|focus_guard_unavailable|element_ref_not_observed|observation_[a-z_]+|text_match_(invalid|not_found|ambiguous|unavailable|changed)|input_method_(requires_ref|unmappable_character|layout_required|layout_unavailable)|input_delivery_unsupported|unknown_key|unknown_input_method)(:|$)/.test(error.message)) {
         return { data: { effect: "refused", code: error.message }, images: [], errorCode: error.message };
       }
       throw error;
@@ -551,7 +551,7 @@ export class NativeProcessDriver implements ComputerDriver {
 
   async act(_session: string, action: ComputerAction, signal?: AbortSignal): Promise<DriverReply> {
     return await this.input(action.action, {
-      ...toNativeActionArgs(action), client_id: this.clientId, capture_id: action.captureId, delivery: action.delivery
+      ...toNativeActionArgs(action), client_id: this.clientId, capture_id: action.captureId, delivery: action.delivery === "foreground" ? "foreground" : undefined
     }, signal);
   }
 }
