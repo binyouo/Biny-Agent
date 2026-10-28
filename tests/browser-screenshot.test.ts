@@ -7,7 +7,7 @@ import { test } from "node:test";
 import sharp from "sharp";
 import { createBrowserTools } from "../src/tools/browser.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { ToolExecutionCoordinator } from "../src/agent/ToolExecutionCoordinator.js";
+import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
