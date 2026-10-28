@@ -22,10 +22,10 @@ function project(id: string): DesktopProject {
 function session(projectId: string, id = `session-${projectId}`): DesktopSessionSummary {
   return { id, projectId, fileName: `${projectId}.jsonl`, title: `Conversation ${id}`,
     firstUserMessage: `Discuss ${projectId}`, lastAssistantMessage: "", createdAt: time, updatedAt: time,
-    eventCount: 1, pinned: false, status: "completed", metadataRevision: `revision:${id}:initial` };
+    eventCount: 1, pinned: false, fastMode: false, status: "completed", metadataRevision: `revision:${id}:initial` };
 }
 const models = [{ alias: "inert", displayName: "inert", provider: "inert", providerType: "openai-compatible" as const,
-  model: "inert", modelKey: "inert/inert", available: true, source: "configured" as const, supportsTools: true,
+  model: "inert", modelKey: "inert/inert", available: true, source: "configured" as const, supportsTools: true, capabilities: { serviceTiers: ["priority" as const] },
   efforts: ["high" as const], defaultThinking: "high" as const, thinkingLevelMap: { high: "high" } }];
 function workspace(id: string): DesktopWorkspaceSnapshot {
   return withPage({ project: project(id), sessions: [session(id), session(id, `second-${id}`), {...session(id, `parent-${id}`), hasChildren: true}, {...session(id, `pin-${id}`), pinned: true}], permissionMode: "ask",
@@ -58,6 +58,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
   const slashes: Array<ReturnType<typeof deferred<DesktopSlashResult>>> = [];
   const actions: Array<{ kind: string; projectId: string; sessionId?: string; input: string }> = [];
   const metadata: Array<{ kind: string; projectId: string; sessionId: string; value: string | boolean; expectedRevision?: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
+  const fastModes: Array<{ projectId: string; sessionId: string; value: boolean; expectedRevision?: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const archives: Array<{ projectId: string; sessionId: string; archived: boolean; expectedRevision?: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const deletions: Array<{ targets: DesktopSessionTarget[]; start: () => void; gate: ReturnType<typeof deferred<DesktopSessionDeleteResult>> }> = [];
   const refreshes: Array<{ projectId: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
@@ -72,6 +73,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
     try {
       if (resources.root && resources.React) { await resources.React.act(()=>resources.root!.unmount()); resources.root=undefined; }
       if (resources.React) await resources.React.act(async () => {
+        fastModes.forEach(item => item.gate.resolve(workspace(item.projectId)));
         metadata.forEach(item => item.gate.resolve(workspace(item.projectId)));
         archives.forEach(item => item.gate.resolve(workspace(item.projectId)));
         deletions.forEach(item => item.gate.resolve({cancelled:false, deleted:[], failures:[]}));
@@ -82,7 +84,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
         selections.forEach(item => item.gate.resolve(workspace(item.id)));
         sends.forEach(item => item.resolve({ sessionId: "session-a", runId: "inert-run", messageId: "inert-message" }));
         slashes.forEach(item => item.resolve({ command: "/tasks", title: "Inert result", content: "Source action result" }));
-        await Promise.allSettled([...metadata.map(item=>item.gate.promise), ...archives.map(item=>item.gate.promise), ...deletions.map(item=>item.gate.promise), ...refreshes.map(item=>item.gate.promise), ...pages.map(item=>item.gate.promise), ...removals.map(item => item.gate.promise), ...reads.map(item => item.gate.promise), ...selections.map(item => item.gate.promise), ...sends.map(item => item.promise), ...slashes.map(item => item.promise)]);
+        await Promise.allSettled([...fastModes.map(item=>item.gate.promise), ...metadata.map(item=>item.gate.promise), ...archives.map(item=>item.gate.promise), ...deletions.map(item=>item.gate.promise), ...refreshes.map(item=>item.gate.promise), ...pages.map(item=>item.gate.promise), ...removals.map(item => item.gate.promise), ...reads.map(item => item.gate.promise), ...selections.map(item => item.gate.promise), ...sends.map(item => item.promise), ...slashes.map(item => item.promise)]);
       });
     } catch (error) { errors.push(error); }
     try { if (resources.root && resources.React) await resources.React.act(() => resources.root!.unmount()); }
@@ -147,6 +149,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
     bootstrap: async (): Promise<DesktopBootstrap> => ({ version: "test", platform: "linux", projects: ids.map(project),
       sidebarSessions: ids.flatMap(id => workspace(id).sessions), workspace: workspace("a"), activeView: "chat",
       sidebarWidth: 240, filePanelWidth: 320, themePreference: "light", fontPreference: { family: "system", size: 14 } }),
+    setSessionFastMode(projectId: string, sessionId: string, value: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); fastModes.push({projectId, sessionId, value, expectedRevision, gate}); return gate.promise; },
     pinSession(projectId: string, sessionId: string, value: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); metadata.push({kind:'pin',projectId,sessionId,value,expectedRevision,gate}); return gate.promise; },
     renameSession(projectId: string, sessionId: string, value: string, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); metadata.push({kind:'rename',projectId,sessionId,value,expectedRevision,gate}); return gate.promise; },
     archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); archives.push({projectId, sessionId, archived, expectedRevision, gate}); return gate.promise; },
@@ -187,7 +190,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
     assert.ok(listeners.has(name), `Production App subscribed to ${name}`);
     await React.act(async () => listeners.get(name)!(value as never));
   };
-  return { document, window, React, metadata,
+  return { document, window, React, metadata, fastModes,
     async tick(ms:number) { await React.act(async()=>t.mock.timers.tick(ms)); },
     async unmount() { if(resources.root) { await React.act(()=>resources.root!.unmount()); resources.root=undefined; } }, archives, deletions, refreshes, pages, removals, selections, sends, slashes, actions, commitments, api, click, emit,
     async sessionMenu(id: string, label: string) {
@@ -461,4 +464,87 @@ for(const latest of ['pin','rename'] as const)test(`coalesced archive and ${late
   await h.React.act(async()=>h.refreshes[1]!.gate.reject(new Error('Coalesced read failed')));await h.tick(1040);
   assert.match(h.text(),latest==='pin'?/置顶状态已保存.*Coalesced read failed/:/名称已保存.*Coalesced read failed/);assert.ok(!h.text().includes('归档状态已保存'));
   assert.equal(h.archives.length,1);assert.equal(h.metadata.length,1);assert.equal(h.refreshes.length,2);
+});
+
+
+// Only inert IPC receipts are delayed: no Host, session files or real project removal.
+function fastModeSnapshot(id: string): DesktopWorkspaceSnapshot {
+  const value = workspace(id);
+  return withPage({ ...value, sessions: value.sessions.map(item => item.id === `session-${id}`
+    ? { ...item, fastMode: true, metadataRevision: `revision:session-${id}:fast` } : item) }, `catalog:${id}:fast`);
+}
+function fastModeButton(h: Harness): HTMLButtonElement {
+  const button = h.document.querySelector<HTMLButtonElement>('button[data-fast-mode]');
+  assert.ok(button, 'The real priority-capable Composer exposes FastMode');
+  return button;
+}
+async function beginFastMode(h: Harness, id = 'a'): Promise<void> {
+  await h.chooseSession(`session-${id}`);
+  assert.equal(fastModeButton(h).getAttribute('aria-pressed'), 'false', 'Explicit persisted false must not fall back to lastFastMode');
+  assert.equal(fastModeButton(h).disabled, false);
+  await h.React.act(async () => fastModeButton(h).click());
+  assert.equal(fastModeButton(h).getAttribute('aria-pressed'), 'true');
+  const request = h.fastModes.at(-1); assert.ok(request);
+  assert.equal(request.projectId, id); assert.equal(request.sessionId, `session-${id}`);
+  assert.equal(request.value, true); assert.equal(request.expectedRevision, `revision:session-${id}:initial`);
+}
+for (const outcome of ['success', 'error'] as const) for (const recreate of [false, true]) {
+  test(`FastMode ${outcome} after confirmed removal${recreate ? ' and same-ID recreation' : ''} has no old publication`, async t => {
+    const h = await fixture(t); await beginFastMode(h);
+    await h.removeEntry('a'); assert.equal(h.removals.length, 1);
+    await h.resolveRemoval(0);
+    assert.ok(!h.projectIds().includes('Project a 项目操作')); assert.equal(h.hasSession('session-a'), false);
+    if (recreate) {
+      h.api.bootstrap = async () => bootstrapFor(['a', 'b', 'c'], 'b');
+      await h.emit('onApplicationImportsChanged', undefined as never);
+      await h.chooseSession('session-a');
+      // This branch models a write still pending BEFORE metadata commit. Reopening
+      // legitimately reads persisted false; later completion may succeed or fail.
+      assert.equal(fastModeButton(h).getAttribute('aria-pressed'), 'false', 'Retired pending override cannot color the recreated session');
+    }
+    await h.React.act(async () => {
+      if (outcome === 'success') h.fastModes[0]!.gate.resolve(fastModeSnapshot('a'));
+      else h.fastModes[0]!.gate.reject(new Error('Retired FastMode receipt'));
+    });
+    assert.equal(h.projectIds().includes('Project a 项目操作'), recreate);
+    assert.equal(h.hasSession('session-a'), recreate);
+    assert.ok(!h.text().includes('Retired FastMode receipt'));
+    if (recreate) assert.equal(fastModeButton(h).getAttribute('aria-pressed'), 'false');
+    assert.equal(h.fastModes.length, 1);
+  });
+}
+for (const outcome of ['success', 'error'] as const) {
+  test(`ordinary FastMode ${outcome} retains immediate completion behavior`, async t => {
+    const h = await fixture(t); await beginFastMode(h);
+    await h.React.act(async () => {
+      if (outcome === 'success') h.fastModes[0]!.gate.resolve(fastModeSnapshot('a'));
+      else h.fastModes[0]!.gate.reject(new Error('Current FastMode failure'));
+    });
+    assert.equal(fastModeButton(h).getAttribute('aria-pressed'), outcome === 'success' ? 'true' : 'false');
+    assert.equal(h.text().includes('Current FastMode failure'), outcome === 'error');
+    assert.equal(h.refreshes.length, 0, 'No delayed reconciliation or extra mutation');
+    assert.equal(h.fastModes.length, 1);
+  });
+  test(`older session FastMode ${outcome} cannot clear a newer session override`, async t => {
+    const h = await fixture(t); await beginFastMode(h, 'a');
+    await beginFastMode(h, 'b');
+    assert.equal(h.fastModes.length, 2);
+    assert.notEqual(h.fastModes[0]!.expectedRevision, h.fastModes[1]!.expectedRevision, 'Independent sessions, not impossible same-revision successes');
+    await h.React.act(async () => {
+      if (outcome === 'success') h.fastModes[0]!.gate.resolve(fastModeSnapshot('a'));
+      else h.fastModes[0]!.gate.reject(new Error('Earlier session FastMode failure'));
+    });
+    assert.equal(fastModeButton(h).getAttribute('aria-pressed'), 'true', 'B stays optimistic despite its persisted false');
+    assert.ok(h.selectedTitle()?.includes('session-b'));
+    await h.React.act(async () => h.fastModes[1]!.gate.resolve(fastModeSnapshot('b')));
+    assert.equal(fastModeButton(h).getAttribute('aria-pressed'), 'true');
+    assert.equal(h.fastModes.length, 2);
+  });
+}
+test('failed project removal does not retire FastMode completion', async t => {
+  const h = await fixture(t); await beginFastMode(h);
+  await h.removeEntry('a'); await h.rejectRemoval(0);
+  await h.React.act(async () => h.fastModes[0]!.gate.resolve(fastModeSnapshot('a')));
+  assert.ok(h.projectIds().includes('Project a 项目操作'));
+  assert.equal(fastModeButton(h).getAttribute('aria-pressed'), 'true');
 });
