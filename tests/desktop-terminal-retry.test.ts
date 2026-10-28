@@ -14,6 +14,7 @@ for (const sessionId of [undefined, "b"] as const) {
     const storageReads: string[] = [];
     type Args = ConstructorParameters<typeof DesktopAgentManager>;
     const state = {
+      captureProjectLifetime: (id: string) => () => id === project.id,
       project: (id: string) => id === project.id ? project : undefined,
       selectedSessionId: () => sessionId
     } as unknown as Args[0];
@@ -93,6 +94,7 @@ test("Desktop retry replaces a retired resident through actual discovery instead
   const project = { id: "retired-project", path: f.root, name: "Fixture" };
   type Args = ConstructorParameters<typeof DesktopAgentManager>;
   const state = {
+    captureProjectLifetime: (id: string) => () => id === project.id,
     project: (id: string) => id === project.id ? project : undefined,
     selectedSessionId: () => undefined
   } as unknown as Args[0];
@@ -142,6 +144,10 @@ async function residentDesktopFixture(t: TestContext) {
     return current;
   };
   const state = {
+    captureProjectLifetime: (id: string) => {
+      const current = members.get(id);
+      return () => current !== undefined && members.get(id) === current;
+    },
     project: (id: string) => members.get(id),
     selectedSessionId: () => selected.sessionId,
     setSelectedSession: async (id: string, sessionId: string) => { requireProject(id); selected.sessionId = sessionId; }
