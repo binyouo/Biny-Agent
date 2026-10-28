@@ -196,7 +196,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
     assert.equal(modelCalls, 1, "关闭采集后不能再发送记忆语义去重请求");
     assert.equal((await memory.listEntries({ origins: ["current_workspace"] })).entries.length, 1);
     assert.ok(store.getAnalysis(id), "已提交的分析仍保留");
-  } finally { release.resolve(); pipeline.close(); memory.close(); }
+  } finally { release.resolve(); memory.close(); }
 });
 
 async function mutateFromAnotherProcess(root: string, settings: ActivitySettings, mode: "clear" | "disable"): Promise<void> {
