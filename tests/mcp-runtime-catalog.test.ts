@@ -69,7 +69,6 @@ for (const change of ["removed tool", "changed schema", "disconnect", "failed re
           mcp: { fixture: { enabled: true, type: "http", url: "https://mcp-catalog.invalid/mcp",
             transportProtocol: "streamable-http", timeoutMs: 2_000, exposure: "codemode", toolExposure: { echo: "direct" } } } },
         context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-        crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
         activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
       });
       await saveConfigFile(process.env.BINY_AGENT_DIR, config);

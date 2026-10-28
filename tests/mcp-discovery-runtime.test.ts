@@ -143,7 +143,6 @@ const config = configSchema.parse({
     mcp: { notes: { enabled: true, type: "http", url: `${mcpOrigin}/mcp`, transportProtocol: "streamable-http", timeoutMs: 5_000 } } },
   checkpoints: { enabled: false },
   context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-  crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
   activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
 });
 const scope = new RuntimeHostResourceScope(workspaceRoot, config);

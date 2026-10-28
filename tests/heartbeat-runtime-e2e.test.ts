@@ -54,7 +54,6 @@ try {
     },
     thinking: { ...defaultConfig.thinking, enabled: false },
     chat: { ...defaultConfig.chat, defaultToolSelection: "all" },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
     heartbeat: { ...defaultConfig.heartbeat, enabled: false }
   });

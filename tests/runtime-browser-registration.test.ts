@@ -43,8 +43,6 @@ async function fixture(t: TestContext, endpoint?: BrowserAutomationEndpoint, fet
   config.context.memory.useMemories = false;
   config.context.memory.generateMemories = false;
   config.context.identity.enabled = false;
-  config.crystal.passiveEnabled = false;
-  config.crystal.semanticScanEnabled = false;
   config.activity.enabled = false;
   config.heartbeat.enabled = false;
   config.extensions.skills = [];

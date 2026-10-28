@@ -111,7 +111,6 @@ test("真实 Runtime 辅助 OAuth 续期持久化到凭据存储，后续回合�
       extensions: { ...defaultConfig.extensions, skills: [], subagent: { ...defaultConfig.extensions.subagent, enabled: false } },
       checkpoints: { enabled: false },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       activity: { ...defaultConfig.activity, enabled: false },
       heartbeat: { ...defaultConfig.heartbeat, enabled: false }
     }));

@@ -20,7 +20,6 @@ for (const scenario of ["unknown-scope", "repeated", "completed"] as const) {
       thinking: { ...defaultConfig.thinking, enabled: false },
       checkpoints: { enabled: false },
       chat: { ...defaultConfig.chat, defaultToolSelection: "all", defaultSkillSelection: "none", skillExtraction: { enabled: false, minToolCalls: 5 } },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       activity: { ...defaultConfig.activity, enabled: false },
       context: { ...defaultConfig.context, identity: { enabled: false, userEnabled: false }, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
       heartbeat: { ...defaultConfig.heartbeat, enabled: false }

@@ -28,8 +28,7 @@ test("ACP permission tool results keep their live classification after reading d
     const config = configSchema.parse({ ...defaultConfig, defaultModel: "external",
       providers: { external: { type: "acp", acp: launch() } }, models: { external: { provider: "external", model: "default" } },
       permission: { ...defaultConfig.permission, mode: "ask" },
-      context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false }
+      context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
     });
     const recorder = new SessionRecorder(root);
     const agent = new AgentSession({ workspaceRoot: root, config, recorder, permissionManager: new PermissionManager({ mode: "ask" }),

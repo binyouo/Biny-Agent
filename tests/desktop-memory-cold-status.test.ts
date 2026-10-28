@@ -18,10 +18,9 @@ import { readSessionCatalogRecord, sessionCatalogRecordRevision } from "../src/s
 import { SessionRecorder } from "../src/session/recorder.js";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel } from "../src/agent/core/types.js";
+import { ensureAgentDirs } from "../src/session/store.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { CrystalStorage } from "../src/agent/context/crystalStorage.js";
-import { ensureAgentDirs } from "../src/session/store.js";
 
 test("cold chat memory toggle persists without model credentials or Runtime; status-only reads did not cover writes", { timeout: 15_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-cold-chat-memory-"));
@@ -97,54 +96,6 @@ test("cold chat memory toggle persists without model credentials or Runtime; sta
   } finally {
     await conversation?.close();
     await agents?.closeAll();
-    if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("re-enabling memory contributes only opted-in turns; a disabled-only turn did not cover later history backfill", { timeout: 15_000 }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-opt-in-"));
-  const previous = process.env.BINY_AGENT_DIR;
-  process.env.BINY_AGENT_DIR = root;
-  let conversation: AgentSession | undefined;
-  const storage = new CrystalStorage({ agentDir: root });
-  try {
-    await ensureAgentDirs(root);
-    const config = structuredClone(defaultConfig);
-    const extracted: string[] = [];
-    const model: AgentModel = testModel({
-      provider: "test", modelId: "test",
-      async stream(context) {
-        const extracting = context.systemPrompt?.startsWith("你是一个称呼抽取器") === true;
-        const content = context.messages.at(-1)?.content;
-        const input = typeof content === "string" ? content : content?.filter(part => part.type === "text").map(part => part.text).join("") ?? "";
-        if (extracting) extracted.push(input);
-        return (async function* () {
-          yield { type: "text-delta" as const, text: extracting ? JSON.stringify([input]) : "Done" };
-          yield { type: "finish" as const, reason: "stop" as const };
-        })();
-      }
-    });
-    conversation = new AgentSession({
-      workspaceRoot: root, config, model, recorder: new SessionRecorder(root, "memory-opt-in"),
-      toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission)
-    });
-    await conversation.initialize();
-    await conversation.updateChatPersonalization({ useMemories: false, contributeMemories: false },
-      (await conversation.getPersonalizationState()).catalogRevision);
-    assert.equal((await conversation.runTask("PrivateTopic")).status, "completed");
-    await conversation.updateChatPersonalization({ contributeMemories: true },
-      (await conversation.getPersonalizationState()).catalogRevision);
-    assert.equal((await conversation.runTask("PublicTopicOne")).status, "completed");
-    assert.equal((await conversation.runTask("PublicTopicTwo")).status, "completed");
-    await conversation.close();
-    conversation = undefined;
-    assert.deepEqual(extracted.sort(), ["PublicTopicOne", "PublicTopicTwo"]);
-    await storage.initialize();
-    assert.deepEqual(storage.listTerms().map(term => term.term).sort(), ["publictopicone", "publictopictwo"]);
-  } finally {
-    await conversation?.close();
-    storage.close();
     if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
@@ -285,6 +236,40 @@ for (const storeState of ["populated", "empty"] as const) test(`cold memory sett
   } finally {
     await agents?.closeAll();
     storage?.close();
+    if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("contributing turns no longer extract crystal topics", { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-retired-crystal-turn-"));
+  const previous = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = root;
+  let conversation: AgentSession | undefined;
+  try {
+    await ensureAgentDirs(root);
+    const config = structuredClone(defaultConfig);
+    config.context.memory.useMemories = false;
+    config.context.memory.generateMemories = true;
+    const prompts: string[] = [];
+    const model: AgentModel = testModel({ provider: "test", modelId: "test", async stream(context) {
+      prompts.push(context.systemPrompt ?? "");
+      return (async function* () {
+        yield { type: "text-delta" as const, text: "Done" };
+        yield { type: "finish" as const, reason: "stop" as const };
+      })();
+    } });
+    conversation = new AgentSession({ workspaceRoot: root, config, model, recorder: new SessionRecorder(root, "retired-crystal"),
+      toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission) });
+    await conversation.initialize();
+    assert.equal((await conversation.runTask("A topic that used to trigger extraction")).status, "completed");
+    await conversation.close();
+    conversation = undefined;
+    assert.ok(prompts.length > 0);
+    assert.ok(prompts.every(prompt => !prompt.includes("你是一个称呼抽取器")));
+  } finally {
+    await conversation?.close();
     if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }

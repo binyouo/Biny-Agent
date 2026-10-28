@@ -37,7 +37,6 @@ async function fixture(t: TestContext, subagents = false) {
       subagent: { ...defaultConfig.extensions.subagent, enabled: subagents } },
     context: { ...defaultConfig.context, identity: { ...defaultConfig.context.identity, enabled: false },
       memory: { ...defaultConfig.context.memory, enabled: false, useMemories: false, generateMemories: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
   });
   const closes: string[] = [];

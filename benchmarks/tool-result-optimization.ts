@@ -38,7 +38,6 @@ export async function run(args: string[]): Promise<void> {
     thinking: { ...defaultConfig.thinking, enabled: false },
     agent: { ...defaultConfig.agent, maxToolCalls: 12 },
     chat: { ...defaultConfig.chat, temperature: 0, maxOutputTokens: 1024, skillExtraction: { ...defaultConfig.chat.skillExtraction, enabled: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   process.env.BINY_AGENT_DIR = path.join(output, "state");

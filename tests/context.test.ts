@@ -1,6 +1,3 @@
-import { stopTestMemoryOwners } from "./helpers/memoryOwnerCleanup.js";
-import { AgentMemoryOwner } from "../src/runtime/memory/owner.js";
-import { serveMemoryOwner, canonicalMemoryRoot } from "../src/runtime/memory/transport.js";
 import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { testModel } from "./helpers/model.js";
@@ -13,19 +10,17 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentMessage, AgentModel, ModelStreamContext, ModelStreamEvent } from "../src/agent/core/types.js";
 import { AgentSession } from "../src/agent/AgentSession.js";
-import { LocalEmbeddingManager } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
 import { estimateMessageTokens } from "../src/agent/context/tokenUsage.js";
 import { ContextMemory } from "../src/agent/context/ContextMemory.js";
 import { LocalMemory, redactSecrets } from "../src/agent/context/LocalMemory.js";
 import { sessionMessageMetadata } from "../src/session/messageTree.js";
 import { sessionEventsToTranscript } from "../src/tui/sessionTranscript.js";
 import type { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemoryRetriever.js";
-import { CrystalStorage } from "../src/agent/context/crystalStorage.js";
 import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 import { cloneAgentMessages, messageReasoning, messageText } from "../src/agent/modelMessages.js";
 import { buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext } from "../src/agent/prompts.js";
-import { BINY_AGENT_DIR_ENV, globalConfigDir, globalAgentDir, projectSessionsDir, projectStateDirName } from "../src/config/paths.js";
+import { BINY_AGENT_DIR_ENV, globalAgentDir, projectSessionsDir, projectStateDirName } from "../src/config/paths.js";
 import type { AgentConfig } from "../src/config/schema.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
@@ -173,11 +168,6 @@ async function main(): Promise<void> {
     await testContextPreparationAbortStopsAutoCompaction();
     await testRestoreWithoutPersistedBudgetUsesHistoryEstimate();
     await testSessionReplayAndAgentResume();
-    await testCrystalHistoricalMaterial();
-    await testCrystalCurrentRunAnchors();
-    await testCrystalSemanticDotProduct();
-    await testCrystalDormancyWithoutNewAnchors();
-    await testCrystalFailedAndCancelledTurnContribution();
     await testTemporalCluesFromDurableFailedAndCancelledMessages();
     await testCheckpointIsResumeTruthSource();
     await testCheckpointPersistenceFailureStopsSession();
@@ -1937,6 +1927,10 @@ async function testMemoryExactDurableContentAndWriter(): Promise<void> {
 }
 
 async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
+  const previousRoot = process.env[BINY_AGENT_DIR_ENV];
+  const isolatedRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-lifecycle-isolated-"));
+  process.env[BINY_AGENT_DIR_ENV] = isolatedRoot;
+  try {
   await withTempWorkspace(async (workspaceRoot) => {
     const config = testConfig();
     config.context.memory.enabled = true;
@@ -1956,8 +1950,7 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
       recorder
     });
     await agent.initialize();
-    // 记忆库现在是单一全局库：同一 agent 目录里先前测试写入的条目会一直保留，
-    // 因此这里断言"失败闭合的回合不新增条目"，而不是断言绝对计数为 0。
+    // 使用独立事实库，检查无 embedding 时不会新增事实。
     const baseline = await agent.getLocalMemory().getOverview();
     await agent.runTask(`Remember this successful context workflow: ${"grounded details ".repeat(20)}`);
     await agent.runTask("Remember that this workflow also applies to the next completed answer.");
@@ -2028,6 +2021,10 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
       "a completed human turn indexes its persisted original message without a CLI refresh");
     temporal.close();
   });
+  } finally {
+    if (previousRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV]; else process.env[BINY_AGENT_DIR_ENV] = previousRoot;
+    await rm(isolatedRoot, { recursive: true, force: true });
+  }
 }
 
 async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void> {
@@ -2049,11 +2046,6 @@ async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void>
       content: changes.created[0]!.content
     });
     assert.ok(written.entry);
-    const termInputs: string[] = [];
-    agent.getCrystalService().extract = async (text) => {
-      termInputs.push(text);
-      return [];
-    };
     let callbackFinished = false;
     let capturedOriginAnchors: Array<{ messageId: string; sentAt: string; timeZone: string }> | undefined;
     // 用已落库条目隔离验证抽取完成回调，不依赖下载向量模型。
@@ -2066,7 +2058,6 @@ async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void>
     await agent.runTask("Update the remembered preferences.");
     await agent.close();
     assert.equal(callbackFinished, true);
-    assert.deepEqual(termInputs, ["Update the remembered preferences."]);
     const events = await readSessionEvents(recorder.filePath);
     const assistant = events.find((event) => event.type === "assistant_message" && event.messageId !== undefined);
     assert.ok(assistant?.type === "assistant_message" && assistant.messageId);
@@ -2249,36 +2240,6 @@ function hasToolResult(message: AgentMessage | undefined, toolCallId: string): b
   return message?.role === "toolResult" && message.toolCallId === toolCallId;
 }
 
-async function testCrystalFailedAndCancelledTurnContribution(): Promise<void> {
-  for (const { status, contribute } of [
-    { status: "failed", contribute: false }, { status: "failed", contribute: true },
-    { status: "cancelled", contribute: false }, { status: "cancelled", contribute: true }
-  ] as const) {
-    await withTempWorkspace(async (workspaceRoot) => {
-      await ensureAgentDirs(workspaceRoot);
-      const config = testConfig();
-      config.context.memory.useMemories = false;
-      config.context.memory.generateMemories = contribute;
-      const model: AgentModel = testModel({ provider: "test", modelId: "terminal-crystal", stream: async () => { throw new Error("Terminal fixture model failure"); } });
-      const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(workspaceRoot) });
-      await agent.initialize();
-      const seen: string[] = [];
-      agent.getCrystalService().extract = async (text) => { seen.push(text); return []; };
-      const controller = new AbortController();
-      if (status === "cancelled") controller.abort();
-      const input = `Crystal topic from ${status} turn`;
-      try {
-        const outcome = await agent.runTask(input, { abortSignal: controller.signal });
-        assert.equal(outcome.status, status);
-      } finally {
-        await agent.close();
-      }
-      assert.deepEqual(seen, contribute ? [input] : [],
-        "Durable failed and cancelled turns contribute Crystal anchors only when that turn enabled contribution.");
-    });
-  }
-}
-
 async function testTemporalCluesFromDurableFailedAndCancelledMessages(): Promise<void> {
   for (const status of ["failed", "cancelled"] as const) {
     await withTempWorkspace(async (workspaceRoot) => {
@@ -2326,353 +2287,6 @@ async function testTemporalCluesFromDurableFailedAndCancelledMessages(): Promise
         "Host admission indexes a durable original message before model execution");
     } finally {
       temporal.close();
-    }
-  });
-}
-
-async function testCrystalSemanticDotProduct(): Promise<void> {
-  await withTempWorkspace(async (workspaceRoot) => {
-    await ensureAgentDirs(workspaceRoot);
-    const config = testConfig();
-    config.context.memory.useMemories = false;
-    config.context.memory.generateMemories = false;
-    config.crystal.semanticScanEnabled = true;
-    const agent = new AgentSession({ workspaceRoot, config, model: new ContextTestModel().model, recorder: new SessionRecorder(workspaceRoot), toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }) });
-    await agent.initialize();
-    const ready = LocalEmbeddingManager.prototype.isReady;
-    const createRuntime = LocalEmbeddingManager.prototype.createRuntime;
-    let vector = new Float32Array([0.5, 0]);
-    const inputs: string[][] = [];
-    const models: string[] = [];
-    let failEmbedding = false;
-    let failedText: string | undefined;
-    LocalEmbeddingManager.prototype.isReady = () => true;
-    LocalEmbeddingManager.prototype.createRuntime = async (model) => {
-      models.push(model);
-      return {
-      fingerprint: "crystal-dot-test",
-      descriptor: { ref: { kind: "local", model: "multilingual-e5-small" }, fingerprint: "crystal-dot-test", displayName: "test", recommendedThreshold: 0, source: "local" },
-      embed: async (request) => {
-        inputs.push([...request.texts]);
-        if (failEmbedding || request.texts[0] === failedText) throw new Error("Embedding fixture failure");
-        return { embeddings: [request.texts[0] === "Unrelated input text" ? vector : new Float32Array([1, 0])], dimensions: 2, fingerprint: "crystal-dot-test", model: { kind: "local", model: "multilingual-e5-small" } };
-      }
-      };
-    };
-    const memoryRoot = await canonicalMemoryRoot(globalAgentDir());
-    await stopTestMemoryOwners(memoryRoot);
-    const owner = await serveMemoryOwner(memoryRoot, globalConfigDir(), new AgentMemoryOwner(memoryRoot, { load: async () => config, save: async () => undefined }));
-    try {
-      const crystals = agent.getCrystalService();
-      const seed = crystals.createSeed("Target seed");
-      const orderedSeeds = crystals.storage.listCrystals()
-        .filter((item) => item.origin === "seed" && item.stage === "candidate" && !item.dormant && item.slot !== undefined)
-        .sort((left, right) => left.slot! - right.slot!);
-      const low = await crystals.processAnchor({ threadId: "dot", anchorId: "dot-low", day: "2026-09-06", text: "Unrelated input text", terms: [] });
-      assert.equal(low.materialsAdded, 0);
-      assert.deepEqual(inputs.map((texts) => texts[0]), ["Unrelated input text", ...orderedSeeds.map((item) => [item.name, ...Object.values(item.checklist).map((field) => field.value)].filter(Boolean).join(" | ").slice(0, 400))]);
-      assert.equal(crystals.storage.listMaterials(seed.id).length, 0);
-      vector = new Float32Array([0.75, 0]);
-      inputs.length = 0;
-      const high = await crystals.processAnchor({ threadId: "dot", anchorId: "dot-high", day: "2026-09-06", text: "Unrelated input text", terms: [] });
-      assert.ok(high.materialsAdded >= 1);
-      assert.equal(crystals.storage.listMaterials(seed.id).length, 1);
-      assert.equal(crystals.storage.listMaterials(seed.id)[0]?.source, "auto-semantic");
-      assert.deepEqual(inputs, [["Unrelated input text"]]);
-      inputs.length = 0;
-      await crystals.processAnchor({ threadId: "dot", anchorId: "dot-short", day: "2026-09-06", text: " 1234567 ", terms: [] });
-      assert.deepEqual(inputs, []);
-      await crystals.processAnchor({ threadId: "dot", anchorId: "dot-direct", day: "2026-09-06", text: "TARGET SEED", terms: [] });
-      assert.equal(inputs.some((texts) => texts[0] === seed.name), false);
-      assert.equal(crystals.storage.listMaterials(seed.id).find((material) => material.ref.anchorId === "dot-direct")?.source, "auto");
-      inputs.length = 0;
-      const longText = "  " + "x".repeat(900) + "  ";
-      await crystals.processAnchor({ threadId: "dot", anchorId: "dot-long", day: "2026-09-06", text: longText, terms: [] });
-      assert.ok(inputs.length > 0);
-      assert.deepEqual(inputs, [["x".repeat(800)]]);
-      const changed = crystals.storage.getCrystal(seed.id)!;
-      changed.checklist.definition = { value: "Updated definition", sources: ["test"] };
-      crystals.storage.putCrystal(changed);
-      inputs.length = 0;
-      await crystals.processAnchor({ threadId: "dot", anchorId: "dot-changed", day: "2026-09-06", text: "Unrelated input text", terms: [] });
-      assert.deepEqual(inputs, [["Unrelated input text"], ["Target seed | Updated definition"]]);
-      failEmbedding = true;
-      inputs.length = 0;
-      const beforeFailure = crystals.storage.listMaterials(seed.id);
-      await crystals.processAnchor({ threadId: "dot", anchorId: "dot-failed", day: "2026-09-06", text: "Failed semantic source", terms: [] });
-      assert.deepEqual(crystals.storage.listMaterials(seed.id), beforeFailure);
-      assert.equal(crystals.storage.hasProcessedAnchor("dot-failed"), true);
-      assert.deepEqual(inputs, [["Failed semantic source"]]);
-      failEmbedding = false;
-      const failingCandidate = crystals.storage.getCrystal(seed.id)!;
-      failingCandidate.checklist.definition = { value: "Retry candidate", sources: ["test"] };
-      crystals.storage.putCrystal(failingCandidate);
-      failedText = "Target seed | Retry candidate";
-      inputs.length = 0;
-      await crystals.processAnchor({ threadId: "dot", anchorId: "dot-candidate-failed", day: "2026-09-06", text: "Unrelated input text", terms: [] });
-      assert.deepEqual(crystals.storage.listMaterials(seed.id), beforeFailure);
-      assert.deepEqual(inputs, [["Unrelated input text"], [failedText]]);
-      const otherSeed = orderedSeeds.find((item) => item.id !== seed.id);
-      assert.ok(otherSeed, "fixture must contain another active seed");
-      assert.ok(crystals.storage.listMaterials(otherSeed.id).some((material) => material.ref.anchorId === "dot-candidate-failed"));
-      failedText = undefined;
-      inputs.length = 0;
-      await crystals.processAnchor({ threadId: "dot", anchorId: "dot-candidate-recovered", day: "2026-09-06", text: "Unrelated input text", terms: [] });
-      assert.deepEqual(inputs, [["Unrelated input text"], ["Target seed | Retry candidate"]]);
-      assert.ok(models.length > 0 && models.every((model) => model === "multilingual-e5-small"));
-      assert.ok(crystals.storage.listMaterials(seed.id).some((material) => material.ref.anchorId === "dot-candidate-recovered"));
-    } finally {
-      await owner.close();
-      LocalEmbeddingManager.prototype.isReady = ready;
-      LocalEmbeddingManager.prototype.createRuntime = createRuntime;
-      await agent.close();
-    }
-  });
-}
-
-async function testCrystalDormancyWithoutNewAnchors(): Promise<void> {
-  await withTempWorkspace(async (workspaceRoot) => {
-    await ensureAgentDirs(workspaceRoot);
-    const config = testConfig();
-    config.context.memory.useMemories = false;
-    config.context.memory.generateMemories = true;
-    const recorder = new SessionRecorder(workspaceRoot, "crystal-aging");
-    recorder.record({ type: "user_message", messageId: "aging-processed", content: "Already processed topic" });
-    const model: AgentModel = testModel({ provider: "test", modelId: "aging-test", stream: async () => {
-      return (async function* (): AsyncGenerator<ModelStreamEvent> {
-        yield { type: "text-delta", text: "Done" };
-        yield { type: "finish", reason: "stop" };
-      })();
-    } });
-    const agent = new AgentSession({ workspaceRoot, config, model, recorder, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }) });
-    await agent.initialize();
-    const crystals = agent.getCrystalService();
-    crystals.storage.markAnchorProcessed("aging-processed", new Date().toISOString());
-    const old = { ...crystals.createSeed("Old candidate"), origin: "nucleus" as const, updatedAt: "2000-01-01T00:00:00.000Z" };
-    crystals.storage.putCrystal(old);
-    let anchorCalls = 0;
-    crystals.extract = async () => { anchorCalls += 1; return []; };
-    let dormant = false;
-    const maintain = crystals.dormantOldCrystals.bind(crystals);
-    crystals.dormantOldCrystals = () => {
-      maintain();
-      dormant = crystals.storage.getCrystal(old.id)?.dormant ?? false;
-    };
-    try {
-      await agent.runTask("This anchor was already processed.", { recordSessionUserMessage: false });
-    } finally {
-      await agent.close();
-    }
-    assert.equal(anchorCalls, 0);
-    assert.equal(dormant, true);
-  });
-}
-
-async function testCrystalCurrentRunAnchors(): Promise<void> {
-  await withTempWorkspace(async (workspaceRoot) => {
-    await ensureAgentDirs(workspaceRoot);
-    const saved = new SessionRecorder(workspaceRoot, "crystal-backfill");
-    saved.record({ type: "user_message", messageId: "backfill-old", content: "Old backlog topic", time: "2026-08-01T10:00:00.000Z" });
-    saved.record({ type: "agent_message", messageId: "backfill-assistant", message: { role: "assistant", content: [{ type: "text", text: "Assistant must not become a term source" }] } });
-    saved.record({ type: "user_message", messageId: "backfill-discarded", parentMessageId: "backfill-assistant", slotId: "backfill-choice", content: "Discarded branch topic" });
-    saved.record({ type: "user_message", messageId: "backfill-selected", parentMessageId: "backfill-assistant", slotId: "backfill-choice", content: "Selected backlog topic", time: "2026-08-02T10:00:00.000Z" });
-    await saved.close();
-    const config = testConfig();
-    config.context.memory.useMemories = false;
-    config.context.memory.generateMemories = true;
-    const model: AgentModel = testModel({ provider: "test", modelId: "backfill-test", stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
-      yield { type: "text-delta", text: "Done" };
-      yield { type: "finish", reason: "stop" };
-    })() });
-    const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(workspaceRoot) });
-    await agent.initialize();
-    const seen: Array<{ text: string; day: string; anchorId: string }> = [];
-    let count = 0;
-    try {
-      await agent.resume("crystal-backfill");
-      const crystals = agent.getCrystalService();
-      crystals.extract = async () => ["BackfillOnlyTopic"];
-      const process = crystals.processAnchor.bind(crystals);
-      crystals.processAnchor = async (options) => {
-        const result = await process(options);
-        if (result.claimed) seen.push({ text: options.text, day: options.day, anchorId: options.anchorId });
-        count = crystals.storage.listTerms().find((term) => term.term === "backfillonlytopic")?.count ?? 0;
-        return result;
-      };
-      await agent.runTask("Newest backlog topic");
-      await agent.runTask("One more backlog topic");
-    } finally {
-      await agent.close();
-    }
-    const newInputs = ["Newest backlog topic", "One more backlog topic"];
-    assert.equal(seen.length, 2);
-    const newUserEvents = (await readSessionEvents(saved.filePath)).filter(
-      (event): event is Extract<SessionEvent, { type: "user_message" }> => event.type === "user_message" && newInputs.includes(event.content)
-    );
-    assert.equal(newUserEvents.length, 2);
-    assert.deepEqual(newUserEvents.map((event) => event.content), newInputs);
-    // Independent background runs may finish out of order; preserve each anchor's provenance.
-    assert.deepEqual(new Map(seen.map((entry) => [entry.anchorId, entry])), new Map(newUserEvents.map((event) => {
-      assert.ok(event.messageId && event.time);
-      return [event.messageId, { text: event.content, day: event.time.slice(0, 10), anchorId: event.messageId }];
-    })));
-    assert.equal(count, 2);
-    assert.equal(new Set(seen.map((entry) => entry.anchorId)).size, 2);
-    const reopened = new CrystalStorage();
-    await reopened.initialize();
-    try {
-      for (const id of ["backfill-old", "backfill-assistant", "backfill-discarded", "backfill-selected"]) {
-        assert.equal(reopened.hasProcessedAnchor(id), false, "historical anchors must not be backfilled or marked processed by a later run");
-      }
-    } finally {
-      reopened.close();
-    }
-  });
-}
-
-async function testCrystalHistoricalMaterial(): Promise<void> {
-  await withTempWorkspace(async (workspaceRoot) => {
-    await ensureAgentDirs(workspaceRoot);
-    const historical = new SessionRecorder(workspaceRoot, "crystal-history");
-    historical.record({ type: "user_message", messageId: "historical-anchor", content: "Historical project evidence for crystal prefill." });
-    await historical.close();
-    const config = testConfig();
-    config.context.memory.useMemories = false;
-    config.context.memory.generateMemories = false;
-    let materialPrompt = "";
-    const systemPrompts: string[] = [];
-    const model: AgentModel = testModel({
-      provider: "test",
-      modelId: "material-test",
-      stream: async (context) => (async function* (): AsyncGenerator<ModelStreamEvent> {
-        // 后台称呼抽取与主聊天并发，不能覆盖这里观察的聊天/材料请求。
-        if (context.systemPrompt?.startsWith("你是一个称呼抽取器。")) {
-          yield { type: "text-delta", text: "[]" };
-          yield { type: "finish", reason: "stop" };
-          return;
-        }
-        if (context.systemPrompt?.includes("durable context checkpoint")) {
-          yield { type: "text-delta", text: citeCheckpoint([
-            "## Goal",
-            "- Continue the current project task.",
-            "## Constraints & Preferences",
-            "- Keep only grounded facts.",
-            "## Progress",
-            "### Done",
-            "- (none verified)",
-            "### In Progress",
-            "- [ ] Continue from retained evidence.",
-            "### Blocked",
-            "- (unknown)",
-            "## Key Decisions",
-            "- (none recorded)",
-            "## Errors & Fixes",
-            "- (none recorded)",
-            "## All User Messages",
-            "- Continue after compacting the conversation.",
-            "## Next Steps",
-            "1. Inspect retained context.",
-            "## Critical Context",
-            "- Keep evidence references."
-          ].join("\n")) };
-          yield { type: "finish", reason: "stop" };
-          return;
-        }
-        materialPrompt = context.messages.map(messageText).join("\n");
-        systemPrompts.push(context.systemPrompt ?? "");
-        yield { type: "text-delta", text: JSON.stringify({ definition: { value: "Historical definition", sources: ["turn:historical-anchor"] } }) };
-        yield { type: "finish", reason: "stop" };
-      })()
-    });
-    const currentRecorder = new SessionRecorder(workspaceRoot);
-    const agent = new AgentSession({
-      workspaceRoot, config, model,
-      toolRegistry: new ToolRegistry(),
-      permissionManager: new PermissionManager({ ...config.permission, source: "test" }),
-      recorder: currentRecorder
-    });
-    await agent.initialize();
-    try {
-      const crystals = agent.getCrystalService();
-      const seed = crystals.createSeed("Historical reference");
-      crystals.setType(seed.id, "concept");
-      crystals.addMaterial(seed.id, "turn", { threadId: "crystal-history", anchorId: "historical-anchor" });
-      const filled = await crystals.prefill(seed.id);
-      assert.match(materialPrompt, /Historical project evidence/u);
-      assert.equal(filled.checklist.definition?.value, "Historical definition");
-      const wrong = crystals.createSeed("Invalid reference");
-      crystals.setType(wrong.id, "concept");
-      crystals.addMaterial(wrong.id, "turn", { threadId: "crystal-hist", anchorId: "historical-anchor" });
-      await assert.rejects(crystals.prefill(wrong.id), /no readable text/u);
-      for (const field of ["includes", "excludes", "examples", "source"]) {
-        crystals.updateChecklist(seed.id, field, { value: `${field} from historical evidence`, sources: ["turn:historical-anchor"] });
-      }
-      crystals.confirm(seed.id);
-      systemPrompts.length = 0;
-      await agent.runTask(`Use @[Historical reference](biny://crystal/${seed.id}) to explain the project.`);
-      assert.match(materialPrompt, /Historical definition/u);
-      assert.match(materialPrompt, /## Crystal references/u);
-      assert.match(materialPrompt, /只有用户可以批准正式化/u);
-      systemPrompts.length = 0;
-      await agent.runTask("Now explain a completely unrelated topic.");
-      assert.ok(systemPrompts.length > 0);
-      assert.match(materialPrompt, /Referenced earlier in this thread \(resolve if relevant\):/u);
-      assert.match(materialPrompt, new RegExp(`biny://crystal/${seed.id}`, "u"));
-      assert.ok(systemPrompts.every((prompt) => !(prompt.match(/<!-- biny-crystal:start -->([\s\S]*?)<!-- biny-crystal:end -->/u)?.[1] ?? "").includes("Historical definition")));
-      await currentRecorder.flush();
-      const retryTarget = (await readSessionEvents(currentRecorder.filePath)).filter((event) => event.type === "agent_message" && event.message.role === "assistant").at(-1);
-      assert.ok(retryTarget?.type === "agent_message" && retryTarget.messageId);
-      await agent.runTask(`Later branch uses @[Invalid reference](biny://crystal/${wrong.id}).`);
-      systemPrompts.length = 0;
-      for await (const event of agent.retry(retryTarget.messageId)) {
-        if (event.type === "error") assert.fail(event.message);
-      }
-      assert.match(materialPrompt, new RegExp(`biny://crystal/${seed.id}`, "u"));
-      assert.doesNotMatch(materialPrompt, new RegExp(`biny://crystal/${wrong.id}`, "u"));
-      await agent.compactConversation("Keep only a short summary without object references.");
-      systemPrompts.length = 0;
-      await agent.runTask("Continue after compacting the conversation.");
-      assert.match(materialPrompt, new RegExp(`biny://crystal/${seed.id}`, "u"));
-      assert.ok(systemPrompts.every((prompt) => !prompt.includes("Checklist:")));
-      assert.equal(materialPrompt.includes(`biny://crystal/${seed.id}`), true, "当前回合仍可通过动态 Crystal context 看到已确认卡片");
-      // 只有最后这个回合开启贡献；先前关闭期间的历史不能补提取。
-      await agent.updateChatPersonalization({ contributeMemories: true }, (await agent.getPersonalizationState()).catalogRevision);
-      assert.equal((await agent.getPersonalizationState()).resolved.contributeMemories, true);
-      const entered = deferred<void>();
-      const released = deferred<void>();
-      crystals.extract = async () => {
-        entered.resolve();
-        await released.promise;
-        return ["ShutdownEvidence"];
-      };
-      await agent.runTask("Keep ShutdownEvidence across shutdown.");
-      let closed = false;
-      const closing = agent.close().then(() => { closed = true; });
-      let entryTimeout: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const first = await Promise.race([
-          entered.promise.then(() => "extraction"),
-          closing.then(() => "closed"),
-          new Promise<never>((_resolve, reject) => {
-            entryTimeout = setTimeout(() => reject(new Error("Crystal extraction did not start for the contributing turn.")), 10_000);
-          })
-        ]);
-        assert.equal(first, "extraction", "Agent closed before the opted-in shutdown extraction started");
-        assert.equal(closed, false);
-      } finally {
-        clearTimeout(entryTimeout);
-        released.resolve();
-        await closing;
-      }
-      const reopened = new CrystalStorage();
-      await reopened.initialize();
-      try {
-        assert.ok(reopened.listTerms().some((term) => term.term === "shutdownevidence" && term.count >= 1));
-      } finally {
-        reopened.close();
-      }
-    } finally {
-      await agent.close();
     }
   });
 }

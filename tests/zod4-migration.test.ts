@@ -48,7 +48,7 @@ test("settings updates preserve omitted fields and normalize only supplied value
 });
 
 test("configuration defaults are fully parsed and do not share mutable state", () => {
-  const input = { ...defaultConfig, permission: undefined, chat: undefined, crystal: undefined,
+  const input = { ...defaultConfig, permission: undefined, chat: undefined,
     extensions: undefined, hooks: undefined, diagnostics: undefined, web: undefined,
     activity: undefined, context: undefined, computer: undefined };
   const first = configSchema.parse(input), second = configSchema.parse(input);

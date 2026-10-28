@@ -73,8 +73,7 @@ async function main(): Promise<void> {
       context: {
         ...defaultConfig.context,
         memory: { ...defaultConfig.context.memory, useMemories: true, generateMemories: true }
-      },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false }
+      }
     });
     const lifecycle = new PluginLifecycleRegistry();
     const calls: Array<{ server: string; tool: string; args: Record<string, unknown> }> = [];

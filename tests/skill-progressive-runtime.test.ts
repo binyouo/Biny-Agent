@@ -105,7 +105,6 @@ for (const alwaysInject of [false, true]) for (const executionMode of ["direct",
       extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: false } },
       checkpoints: { enabled: false },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
     });
     runtime = await createCommandRuntime(root, { configStore: { load: async () => config, save: async () => undefined } });

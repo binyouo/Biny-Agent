@@ -36,7 +36,7 @@ const sidebarProps: ComponentProps<typeof Sidebar> = {
   onRevealProject: unexpected, onOpenTerminalProject: unexpected, onRenameProject: unexpected,
   onNewTask: unexpected, onNewTopLevelTask: unexpected, onImportSession: unexpected,
   onRemoveProject: unexpected, onSearch: unexpected, onTimeClues: unexpected,
-  onInsertCrystal: unexpected, onToggleSidebar: unexpected
+  onToggleSidebar: unexpected
 };
 const assertSidebar = (message: string): void => {
   const previousReact = Object.getOwnPropertyDescriptor(globalThis, "React");

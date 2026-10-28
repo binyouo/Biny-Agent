@@ -52,7 +52,6 @@ try {
     providers: { local: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
     models: { "local-test": { provider: "local", model: "local-test", contextWindow: 128000, capabilities: { tools: true, reasoning: false, streaming: true } } },
     thinking: { ...defaultConfig.thinking, enabled: false },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context,
 
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }

@@ -27,7 +27,7 @@ test("one-shot Host runs isolate overrides, persist one terminal and support ver
   config.providers = { fixture: { type: "openai-compatible", baseUrl: "https://fixture.invalid/v1", requiresApiKey: false } };
   config.models = { normal: { provider: "fixture", model: "normal" }, alternate: { provider: "fixture", model: "alternate" } };
   config.context.memory.enabled = false; config.context.identity.enabled = false; config.heartbeat.enabled = false;
-  config.crystal.passiveEnabled = false; config.crystal.semanticScanEnabled = false; config.computer.enabled = false; config.checkpoints.enabled = false;
+  config.computer.enabled = false; config.checkpoints.enabled = false;
   const store = createFileConfigStore(root, { globalDir: root });
   await store.save(config, root);
   const models: string[] = [];

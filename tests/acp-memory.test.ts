@@ -30,8 +30,7 @@ test("ACP recalls persisted shared memory, excludes foreign and disabled Activit
         embeddingModels: [{ id: "fixture-embed", displayName: "Fixture", dimensions: 3, recommendedThreshold: 0.2 }] } },
     models: { external: { provider: "external", model: "default" } }, activity: { ...defaultConfig.activity, enabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: true, generateMemories: false,
-      embeddingModel: { kind: "provider", provider: "embeddings", model: "fixture-embed" }, maxRecalled: 10 } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false } });
+      embeddingModel: { kind: "provider", provider: "embeddings", model: "fixture-embed" }, maxRecalled: 10 } } });
   await ensureAgentDirs(root);
   const memoryRoot = await canonicalMemoryRoot(globalAgentDir());
   const owner = await serveMemoryOwner(memoryRoot, globalConfigDir(), new AgentMemoryOwner(memoryRoot, { load: async () => config, save: async () => undefined }));

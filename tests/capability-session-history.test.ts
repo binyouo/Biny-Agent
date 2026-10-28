@@ -48,7 +48,6 @@ const selector: AgentModel = testModel({ provider: "test", modelId: "selector", 
 } });
 const config = configSchema.parse({ ...defaultConfig,
   agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
-  crystal: { ...defaultConfig.crystal, passiveEnabled: false },
   context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
 });
 const agent = new AgentSession({ workspaceRoot: root, config, recorder, model, toolRegistry: registry,

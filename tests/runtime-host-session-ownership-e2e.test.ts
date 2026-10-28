@@ -47,7 +47,6 @@ async function fixture(context: TestContext) {
     models: { "local-test": { provider: "local", model: "local-test", contextWindow: 128000, capabilities: { tools: true, reasoning: false, streaming: true } } },
     thinking: { ...defaultConfig.thinking, enabled: false },
     heartbeat: { ...defaultConfig.heartbeat, enabled: false },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   for (const sessionId of ["history-a", "history-b"]) {

@@ -49,7 +49,6 @@ async function fixture(t: TestContext, mode: RootMode) {
     models: { "attachment-fixture": { provider: "fixture", model: "attachment-fixture", capabilities: { vision: true, tools: true, streaming: true } } },
     chat: { ...defaultConfig.chat, defaultToolSelection: "none", defaultSkillSelection: "none" },
     activity: { ...defaultConfig.activity, enabled: false },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   }));
   const reference = await saveAttachment(root, "picture.png", "image/png", png);

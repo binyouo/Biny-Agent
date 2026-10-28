@@ -124,8 +124,8 @@ function fixture(options: { gate?: "readEvents" | "writeFile"; state?: string; q
     session.persistenceRoot = () => '/synthetic'; session.closeActivityContext = async () => {if (activityPending) await activity;};
     session.sessionSearchIndex = {close: async () => undefined}; session.titleAbort = new AbortController();
     session.emotionAnalysisScheduler = {close: async () => undefined, cancelAndDrain: async () => undefined};
-    session.pendingMemoryTasks = new Set(); session.pendingCrystalTasks = new Set(); session.closed = false;
-    session.memoryRetriever = session.localMemory = session.crystalService = {close(){}}; session.takeRelatedUsage = () => undefined;
+    session.pendingMemoryTasks = new Set(); session.closed = false;
+    session.memoryRetriever = session.localMemory = {close(){}}; session.takeRelatedUsage = () => undefined;
     session.activeConfig = {context:{memory:{}}}; session.contextMemory = {restore(){},invalidateWorkspace(){},setPersonalization(){}};
     session.beginOperation = () => () => undefined; session.rehydrateSessionMessages = async messages => messages;
     session.readPersonalizationState = async () => ({config:session.activeConfig,state:{resolved:{}}});

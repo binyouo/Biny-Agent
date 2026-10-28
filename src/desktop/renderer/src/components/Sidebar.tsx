@@ -18,7 +18,6 @@ import { useClosingPresence } from "../useClosingPresence.js";
 import { useFluidHover, useRegisterFluidHoverItem, type UseFluidHoverReturn } from "../useFluidHover.js";
 import { CopyButton } from "./CopyButton.js";
 import { Collapse } from "./Collapse.js";
-import { CrystalDock } from "./CrystalDock.js";
 import { FluidHoverHighlight } from "./FluidHoverHighlight.js";
 import { Icon, type IconName } from "./Icon.js";
 import { SessionDeleteButton } from "./SessionDeleteButton.js";
@@ -87,7 +86,6 @@ interface SidebarProps {
   onSearch(): void;
   onTimeClues(): void;
   onSettings?(): void;
-  onInsertCrystal(reference: string): void;
   onToggleSidebar(): void;
 }
 
@@ -122,7 +120,6 @@ export const Sidebar = memo(function Sidebar({
   onSearch,
   onTimeClues,
   onSettings,
-  onInsertCrystal,
   onToggleSidebar
 }: SidebarProps): React.JSX.Element {
   const [selection, setSelection] = useState<Set<string>>();
@@ -668,7 +665,6 @@ export const Sidebar = memo(function Sidebar({
             <Icon name="calendar" size={16} />
           </button>
         </Tooltip>
-        <CrystalDock sessionId={selectedSessionId} onInsert={onInsertCrystal} />
       </div>
       </div>
       {resizable ? <SidebarResizer width={layout.contentWidth} {...resizeHandlers} /> : null}

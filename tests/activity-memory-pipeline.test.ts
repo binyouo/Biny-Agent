@@ -10,9 +10,7 @@ import { mock } from "node:test";
 import { AGENT_DATABASE_FILE, BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import { createActivityMemoryPipeline } from "../src/activity/memoryPipeline.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
-import { CrystalStorage } from "../src/agent/context/crystalStorage.js";
 import type { AgentModel } from "../src/agent/core/types.js";
-import type { ActivitySessionAnalysis } from "../src/activity/store.js";
 import { ActivityStore } from "../src/activity/store.js";
 import { analyzeActivitySession, analyzePendingActivitySessions } from "../src/activity/analyzer.js";
 import { defaultActivitySettings } from "../src/activity/settings.js";
@@ -44,16 +42,9 @@ try {
   await testDeferredCandidatesRecover();
   const pipeline = await createActivityMemoryPipeline({
     workspaceRoot: root,
-    findSimilarEntries: async () => [],
-    getCrystalConfig: () => ({
-      passiveEnabled: false,
-      semanticScanEnabled: false,
-      contour: { count: 1, turns: 1, spread: 1 },
-      nucleus: { count: 2, turns: 2, spread: 1 },
-      dormantDays: 14
-    })
+    findSimilarEntries: async () => []
   });
-  try {
+  {
     await pipeline.writeMemories([{
       type: "project",
       content: "Project Delta uses a staged release checklist before every deployment.",
@@ -74,54 +65,8 @@ try {
       memory.close();
     }
 
-    const analysis: ActivitySessionAnalysis = {
-      sessionId: "activity-session-1",
-      analyzedAt: "2026-09-07T10:00:00.000Z",
-      analyzerModel: model.modelId,
-      analysisStatus: "analyzed",
-      project: "Project Delta",
-      title: "Release work",
-      description: "Release work",
-      summary: "Project Delta uses a staged release checklist before every deployment.",
-      topics: ["Project Delta"],
-      prs: [],
-      issues: [],
-      people: [],
-      versions: [],
-      decisions: [],
-      entities: ["Project Delta"],
-      highlights: ["Project Delta"],
-      worthMemory: true,
-      worthKnowledge: true,
-      isMeeting: false,
-      storageTier: "standard",
-      confidence: 0.9,
-      sourceEventCount: 2,
-      inputHash: "hash-1"
-    };
-    const session = {
-      id: "activity-session-1",
-      startedAt: "2026-09-07T10:00:00.000Z",
-      endedAt: "2026-09-07T10:10:00.000Z",
-      eventCount: 2,
-      durationMs: 600_000,
-      snapshotCount: 1
-    };
-    assert.equal(await pipeline.onAnalyzed(analysis, session), undefined);
-    await pipeline.onAnalyzed(analysis, session);
-    assert.equal(await pipeline.onAnalyzed({ ...analysis, sessionId: "activity-session-2", inputHash: "hash-2" }, {
-      ...session,
-      id: "activity-session-2",
-      startedAt: "2026-09-08T10:00:00.000Z",
-      endedAt: "2026-09-08T10:10:00.000Z"
-    }), undefined);
-  } finally {
-    pipeline.close();
   }
 
-  const crystals = new CrystalStorage();
-  await crystals.initialize();
-  try {
     const activity = new ActivityStore();
     await activity.open(path.join(root, "activity"), root);
     try {
@@ -138,15 +83,6 @@ try {
     } finally {
       memory.close();
     }
-    const term = crystals.listTerms().find((candidate) => candidate.term === "project delta");
-    assert.equal(term?.count, 2);
-    assert.equal(term?.status, "nucleus");
-    assert.ok(term?.crystalId);
-    assert.equal(crystals.listMaterials(term!.crystalId!).length, 2);
-    assert.equal(crystals.listCrystals().length, 1);
-  } finally {
-    crystals.close();
-  }
   await testSkippedProjectDoesNotDropLaterUserMemories();
   await testDeferredCandidateDoesNotBlockLaterCandidate();
   await testStorageFailureIsReportedAfterLaterCandidates();
@@ -176,7 +112,7 @@ async function testDeferredCandidatesRecover(): Promise<void> {
     const id = store.startSession("2026-09-07T10:00:00.000Z");
     store.recordEvent({ sessionId: id, occurredAt: "2026-09-07T10:01:00.000Z", eventType: "app_focus", application: "Editor" });
     store.endSession(id, "2026-09-07T10:10:00.000Z");
-    const deps = { store, model: toolModel, writeMemories: pipeline.writeMemories, onAnalyzed: pipeline.onAnalyzed };
+    const deps = { store, model: toolModel, writeMemories: pipeline.writeMemories };
     await analyzeActivitySession(deps, id);
     available = true;
     await analyzePendingActivitySessions(deps);
@@ -189,7 +125,6 @@ async function testDeferredCandidatesRecover(): Promise<void> {
       assert.equal(written.length, 0, "分析结束后的写入失败不会自动补偿");
     } finally { memory.close(); }
   } finally {
-    pipeline.close();
     await store.close();
   }
 }
@@ -211,7 +146,7 @@ async function testStorageFailureIsReportedAfterLaterCandidates(): Promise<void>
     assert.deepEqual(entries.map((entry) => entry.content), ["Independent fact after the failed candidate"]);
   } finally {
     database.exec("DROP TRIGGER IF EXISTS reject_failed_candidate");
-    database.close(); memory.close(); pipeline.close();
+    database.close(); memory.close();
   }
 }
 
@@ -222,7 +157,7 @@ async function testSkippedProjectDoesNotDropLaterUserMemories(): Promise<void> {
     skipUnknownWorkspace: true,
     findSimilarEntries: async () => []
   });
-  try {
+  {
     await pipeline.writeMemories([
       { type: "project", content: "The first candidate records a release rule.", why: "Stable rule" },
       { type: "user", content: "The second candidate records an independent review rule.", why: "Stable rule" }
@@ -233,12 +168,12 @@ async function testSkippedProjectDoesNotDropLaterUserMemories(): Promise<void> {
       assert.ok(entries.some((entry) => entry.content.includes("second candidate")),
         "项目未知而跳过首条项目候选后，后续用户候选仍写入 SQLite");
     } finally { memory.close(); }
-  } finally { pipeline.close(); }
+  }
 }
 
 async function testDefaultRequiresSemantic(): Promise<void> {
   const pipeline = await createActivityMemoryPipeline({workspaceRoot:root});
-  try {
+  {
     await assert.rejects(pipeline.writeMemories([{
       type:"user",content:"A semantic gate must precede this automatic Activity fact.",why:"source parity"
     }], {sessionId:"semantic-unavailable",analyzedAt:"2026-09-07T10:00:00.000Z",model}), /语义检索暂不可用/u);
@@ -246,7 +181,7 @@ async function testDefaultRequiresSemantic(): Promise<void> {
     try {
       assert.equal((await memory.listEntries()).entries.some(entry=>entry.activitySessionId==="semantic-unavailable"),false);
     } finally {memory.close();}
-  } finally {pipeline.close();}
+  }
 }
 
 async function testDeferredCandidateDoesNotBlockLaterCandidate(): Promise<void> {
@@ -257,7 +192,7 @@ async function testDeferredCandidateDoesNotBlockLaterCandidate(): Promise<void> 
     requireSemantic: true,
     findSimilarEntries: async () => ++searches === 1 ? undefined : []
   });
-  try {
+  {
     await assert.rejects(pipeline.writeMemories([
       { type: "user", content: "The first candidate is deferred by unavailable semantic search.", why: "Stable fact" },
       { type: "user", content: "The second candidate has an independent stable review rule.", why: "Stable fact" }
@@ -268,7 +203,7 @@ async function testDeferredCandidateDoesNotBlockLaterCandidate(): Promise<void> 
       const written = (await memory.listEntries()).entries.filter((entry) => entry.activitySessionId === sessionId);
       assert.deepEqual(written.map((entry) => entry.content), ["The second candidate has an independent stable review rule."]);
     } finally { memory.close(); }
-  } finally { pipeline.close(); }
+  }
 }
 
 async function testCliSemanticGateAndIndex(): Promise<void> {

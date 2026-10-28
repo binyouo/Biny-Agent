@@ -75,7 +75,6 @@ try {
   config.context.memory.generateMemories = false;
   config.context.compaction.enabled = false;
   config.heartbeat.enabled = false;
-  config.crystal.passiveEnabled = false;
   /** @type {import("@ai-sdk/provider").LanguageModelV4} */
   const vercelModel = {
     specificationVersion: "v4", provider: "synthetic", modelId: "synthetic", supportedUrls: {},

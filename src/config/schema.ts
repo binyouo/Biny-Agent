@@ -144,28 +144,6 @@ const identityPolicySchema = z.object({
 
 export type IdentityPolicy = z.infer<typeof identityPolicySchema>;
 
-const crystalThresholdSchema = z.object({
-  count: z.number().int().min(2).max(200),
-  turns: z.number().int().min(2).max(200),
-  spread: z.number().int().min(1).max(50)
-}).strict();
-
-export const crystalSettingsSchema = z.object({
-  passiveEnabled: z.boolean().default(true),
-  semanticScanEnabled: z.boolean().default(true),
-  contour: crystalThresholdSchema.default({ count: 4, turns: 3, spread: 2 }),
-  nucleus: crystalThresholdSchema.default({ count: 8, turns: 5, spread: 2 }),
-  dormantDays: z.number().int().min(1).max(3_650).default(14)
-}).strict().prefault({
-  passiveEnabled: true,
-  semanticScanEnabled: true,
-  contour: { count: 4, turns: 3, spread: 2 },
-  nucleus: { count: 8, turns: 5, spread: 2 },
-  dormantDays: 14
-});
-
-export type CrystalSettings = z.infer<typeof crystalSettingsSchema>;
-
 function isValidTimeZone(timezone: string): boolean {
   try {
     new Intl.DateTimeFormat("en", { timeZone: timezone });
@@ -702,7 +680,6 @@ const canonicalConfigSchema = z.object({
   activity: activitySettingsSchema,
   appshots: appshotsSettingsSchema.default({ hotkey: "", target: "current" }),
   computer: computerSettingsSchema.prefault({ enabled: true, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] }),
-  crystal: crystalSettingsSchema,
   context: contextSchema,
   chat: chatParamsSchema,
   diagnostics: diagnosticsSchema,
@@ -850,9 +827,11 @@ const canonicalConfigSchema = z.object({
 export const configSchema = z.preprocess(value => {
   const checked = rejectLegacyModelConfig(value);
   if (!checked || typeof checked !== "object" || Array.isArray(checked)) return checked;
-  const config = checked as Record<string, unknown>;
+  const config = { ...(checked as Record<string, unknown>) };
+  // 旧版本保留的结晶配置不再属于当前配置。
+  delete config.crystal;
   const activity = config.activity as Record<string, unknown> | undefined;
-  if (!activity || typeof activity !== "object" || typeof activity.appshotHotkey !== "string") return checked;
+  if (!activity || typeof activity !== "object" || typeof activity.appshotHotkey !== "string") return config;
   const { appshotHotkey, ...remaining } = activity;
   return { ...config, activity: remaining, appshots: config.appshots ?? { hotkey: appshotHotkey, target: "current" } };
 }, canonicalConfigSchema);
@@ -962,13 +941,6 @@ export const defaultConfig: AgentConfig = {
     ignore: defaultWorkspaceIgnore
   },
   activity: defaultActivitySettings,
-  crystal: {
-    passiveEnabled: true,
-    semanticScanEnabled: true,
-    contour: { count: 4, turns: 3, spread: 2 },
-    nucleus: { count: 8, turns: 5, spread: 2 },
-    dormantDays: 14
-  },
   chat: { cacheMarkers: true, temperature: undefined, maxOutputTokens: undefined, defaultToolSelection: "auto", defaultSkillSelection: "auto", skillExtraction: { enabled: true, minToolCalls: 5 } },
   checkpoints: { enabled: true },
   sandbox: { mode: "off", allowNetwork: true },

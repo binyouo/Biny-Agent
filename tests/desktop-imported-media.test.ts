@@ -60,7 +60,6 @@ async function fixture(t: TestContext) {
     models: { "attachment-fixture": { provider: "fixture", model: "attachment-fixture", capabilities: { vision: true, audio: true, tools: true, streaming: true } } },
     activity: { ...defaultConfig.activity, enabled: false },
     chat: { ...defaultConfig.chat, defaultToolSelection: "none", defaultSkillSelection: "none" },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context,
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
     }

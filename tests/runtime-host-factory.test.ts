@@ -22,8 +22,6 @@ async function fixture(t: TestContext) {
   config.context.memory.enabled = false;
   config.context.identity.enabled = false;
   config.heartbeat.enabled = false;
-  config.crystal.passiveEnabled = false;
-  config.crystal.semanticScanEnabled = false;
   config.computer.enabled = false;
   config.checkpoints.enabled = false;
   const configStore: AgentConfigStore = { load: async () => structuredClone(config), save: async () => undefined };

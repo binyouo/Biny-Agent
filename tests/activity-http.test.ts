@@ -595,7 +595,7 @@ async function testActivityHttpReportDoesNotProjectMemoryCallbacks(): Promise<vo
     assert.equal(response.status, 200);
     assert.equal((response.body as { stats: { analyzedCount: number } }).stats.analyzedCount, 0);
     assert.equal(memoryWrites, 0, "日报不能写入长期记忆");
-    assert.equal(analyzedCallbacks, 0, "日报不能投影 Crystal");
+    assert.equal(analyzedCallbacks, 0, "日报不能触发分析回调");
     assert.equal(modelCalls, 0, "没有已保存分析时不调用会话分析模型");
     const checkStore = new ActivityStore();
     await checkStore.open(root, root);

@@ -1977,7 +1977,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, []);
   // 深链路由：MarkdownContent 叶子渲染直接调用 hub，这里统一解析并导航。
   const openDeepLink = useCallback(async (url: string, requestedProjectId?: string): Promise<void> => {
-    if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|agent|mcp|model|provider|tool|tool-call|task|cron|crystal|bundle|plan)\//u.test(url)) {
+    if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|agent|mcp|model|provider|tool|tool-call|task|cron|plan)\//u.test(url)) {
       const projectId = requestedProjectId ?? workspace?.project.id;
       if (!projectId) return;
       if (url.startsWith("biny://file/")) {
@@ -2036,13 +2036,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   useEffect(() => window.biny.onReferenceOpen(({ uri, projectId }) => {
     void openDeepLink(uri, projectId);
   }), [openDeepLink]);
-  const insertCrystalReference = useCallback((reference: string): void => {
-    if (composerRef.current) {
-      composerRef.current.appendText(reference);
-    } else {
-      prefillComposer(`${reference} `);
-    }
-  }, [prefillComposer]);
   const dismissRecipe = useCallback((notice: RecipeNotice): void => {
     dismissedRecipeIdsRef.current.add(notice.id);
     setRecipeNotices((current) => current.filter((candidate) => candidate.id !== notice.id));
@@ -2297,7 +2290,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
           onDeleteSessions={deleteSidebarSessions}
           onSettings={settingsEnabled ? openSettings : undefined}
           onTimeClues={openTimeClues}
-          onInsertCrystal={insertCrystalReference}
           onToggleSidebar={toggleSidebar}
           layout={sidebarLayout}
           projects={projects}

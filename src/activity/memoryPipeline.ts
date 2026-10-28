@@ -1,19 +1,15 @@
 /** Activity 分析结果的统一记忆投影。
  *
- * 分析结果先保存在 Activity 数据库，再由这里把稳定候选写入 SQLite 记忆并把会话材料
- * 投影到主题沉淀层。两条投影都允许失败而不回滚已落库的 Activity 分析。
+ * 分析结果先保存在 Activity 数据库，再由这里把稳定候选写入 SQLite 记忆。
+ * 投影失败不回滚已落库的 Activity 分析。
  */
 import { LocalMemory } from "../agent/context/LocalMemory.js";
-import { CrystalService } from "../agent/context/crystalService.js";
-import { CrystalStorage } from "../agent/context/crystalStorage.js";
-import type { CrystalConfig } from "../agent/context/crystalTypes.js";
 import type {
   ActivityAnalyzerDeps,
   ActivityMemoryCandidate,
   ActivityMemoryWriteContext
 } from "./analyzer.js";
 import { activityMemoryInput } from "./memoryInput.js";
-import type { ActivityPendingAnalysisSession, ActivitySessionAnalysis } from "./store.js";
 import type { MemoryEntry } from "../agent/context/memoryTypes.js";
 
 export interface ActivityMemoryPipelineOptions {
@@ -23,24 +19,13 @@ export interface ActivityMemoryPipelineOptions {
   indexEntry?: (entry: MemoryEntry) => Promise<void>;
   findSimilarEntries?: NonNullable<ConstructorParameters<typeof LocalMemory>[7]>;
   requireSemantic?: boolean;
-  getCrystalConfig?: () => CrystalConfig;
-  agentDir?: string;
 }
 
 export interface ActivityMemoryPipeline {
   writeMemories: NonNullable<ActivityAnalyzerDeps["writeMemories"]>;
-  onAnalyzed: NonNullable<ActivityAnalyzerDeps["onAnalyzed"]>;
-  close(): void;
 }
 
 export async function createActivityMemoryPipeline(options: ActivityMemoryPipelineOptions): Promise<ActivityMemoryPipeline> {
-  const crystalStorage = new CrystalStorage({ agentDir: options.agentDir });
-  const crystals = new CrystalService({
-    storage: crystalStorage,
-    getConfig: options.getCrystalConfig
-  });
-  await crystals.initialize();
-
   const writeMemories = async (
     candidates: readonly ActivityMemoryCandidate[],
     context: ActivityMemoryWriteContext
@@ -80,31 +65,5 @@ export async function createActivityMemoryPipeline(options: ActivityMemoryPipeli
     if (hadFailedCandidate) throw new Error("语义检索暂不可用、写入判断或存储失败，部分活动记忆未写入。");
   };
 
-  const onAnalyzed = async (
-    analysis: ActivitySessionAnalysis,
-    session: ActivityPendingAnalysisSession,
-    signal?: AbortSignal
-  ): Promise<void> => {
-    const terms = [
-      analysis.project,
-      ...analysis.topics,
-      ...analysis.highlights,
-      ...analysis.entities
-    ].filter((value): value is string => Boolean(value?.trim()));
-    await crystals.processAnchor({
-      signal,
-      threadId: `activity:${analysis.project?.trim() || "unclassified"}`,
-      anchorId: `activity:${session.id}`,
-      day: session.startedAt.slice(0, 10),
-      text: [analysis.summary, ...analysis.topics, ...analysis.highlights].join("\n"),
-      source: "activity",
-      terms
-    });
-  };
-
-  return {
-    writeMemories,
-    onAnalyzed,
-    close: () => crystals.close()
-  };
+  return { writeMemories };
 }

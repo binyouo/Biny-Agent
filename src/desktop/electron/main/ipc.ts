@@ -24,9 +24,7 @@ import {
 } from "electron";
 import { z } from "zod";
 import { localEmbeddingModelIds } from "../../../llm/embedding/types.js";
-import { desktopCrystalRequestSchema } from "../../crystalProtocol.js";
 import type { DesktopThreadBriefService } from "./DesktopThreadBriefService.js";
-import type { DesktopCrystalService } from "./DesktopCrystalService.js";
 import { agentCapabilitySelectionSchema } from "../../../agent/capabilitySelection.js";
 import { userInputResponseSchema } from "../../../runtime/userInput.js";
 import { runtimeCommandOperation } from "../../../runtime/commands.js";
@@ -84,7 +82,6 @@ import { resolveSessionFile } from "../../../session/store.js";
 interface IpcContext {
   applicationImports: DesktopApplicationImports;
   appearance: AppearancePreviewCoordinator;
-  crystals: DesktopCrystalService;
   temporalMemory: DesktopTemporalMemoryService;
   threadBriefs: DesktopThreadBriefService;
   state: DesktopStateStore;
@@ -277,9 +274,6 @@ export function registerDesktopIpc(context: IpcContext): void {
     }));
   };
   handle(desktopIpc.bootstrap, async () => await context.bootstrap());
-  handleRecoveryGated(desktopIpc.crystalRequest, async (_event, input: unknown) => {
-    return await context.crystals.request(desktopCrystalRequestSchema.parse(input));
-  });
   handleRecoveryGated(desktopIpc.activitySuggestions, async () => (await context.activity.suggestions()).suggestions);
 
   handle(desktopIpc.openProject, async () => {
@@ -951,7 +945,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   handleRecoveryGated(desktopIpc.referenceKinds, async () => localReferenceKinds);
   handleRecoveryGated(desktopIpc.referenceSearch, async (_event, projectId: unknown, query: unknown, kind: unknown, timeZone: unknown) => {
     const service = referenceService();
-    const selectedKind = z.enum(["date", "project", "file", "thread", "message", "memory", "snippet", "scratch", "skill", "agent", "mcp", "model", "provider", "tool", "tool-call", "task", "cron", "crystal", "bundle", "plan"]).optional().parse(kind);
+    const selectedKind = z.enum(["date", "project", "file", "thread", "message", "memory", "snippet", "scratch", "skill", "agent", "mcp", "model", "provider", "tool", "tool-call", "task", "cron", "plan"]).optional().parse(kind);
     return await service.search(z.string().max(128).parse(query), idSchema.parse(projectId), selectedKind, 30,
       z.string().min(1).max(100).optional().parse(timeZone));
   });

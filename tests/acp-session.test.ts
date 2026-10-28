@@ -20,8 +20,7 @@ test("ACP public session sends two turns to one real child and durably records t
     defaultModel: "external", providers: { external: { type: "acp", acp: {
       command: process.execPath, args: [path.resolve("tests/fixtures/acp-agent.mjs")]
     } } }, models: { external: { provider: "external", model: "default" } },
-    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false }
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   const recorder = new SessionRecorder(root);
   const agent = new AgentSession({ workspaceRoot: root, config, recorder, permissionManager: new PermissionManager(), toolRegistry: new ToolRegistry(), model: new ModelRuntime(config).createModelSettings().model });
@@ -53,7 +52,6 @@ test("ACP Runtime permission decisions persist one external tool result, restore
     models: { external: { provider: "external", model: "default" } },
     permission: { ...defaultConfig.permission, mode: "ask" },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     extensions: { ...defaultConfig.extensions, skills: [] }
   });
   const open = () => createCommandRuntime(root, { sessionId: "acp-runtime-session", resourceBoot: "blocking",
@@ -97,8 +95,7 @@ test("ACP cancellation and process exit produce durable terminal outcomes", { ti
   const config = configSchema.parse({ ...defaultConfig, defaultModel: "external",
     providers: { external: { type: "acp", acp: { command: process.execPath, args: [path.resolve("tests/fixtures/acp-agent.mjs")] } } },
     models: { external: { provider: "external", model: "default" } },
-    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false } });
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } } });
   await ensureAgentDirs(root);
   const recorder = new SessionRecorder(root);
   const agent = new AgentSession({ workspaceRoot: root, config, recorder, permissionManager: new PermissionManager(), toolRegistry: new ToolRegistry(), model: new ModelRuntime(config).createModelSettings().model });
@@ -123,8 +120,7 @@ test("changing the saved model selects the external execution engine on the very
     providers: { api: { type: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1", requiresApiKey: false }, external: {
       type: "acp", acp: { command: process.execPath, args: [path.resolve("tests/fixtures/acp-agent.mjs")] } } },
     models: { "api-model": { provider: "api", model: "fixture" }, external: { provider: "external", model: "default" } },
-    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false } });
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } } });
   let runtime: Awaited<ReturnType<typeof createCommandRuntime>> | undefined;
   try {
     runtime = await createCommandRuntime(root, { resourceBoot: "blocking", configStore: {

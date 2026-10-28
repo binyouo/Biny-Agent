@@ -397,8 +397,6 @@ function isolatedConfig(): AgentConfig {
   config.context.memory.generateMemories = false;
   config.context.identity.enabled = false;
   config.activity.enabled = false;
-  config.crystal.passiveEnabled = false;
-  config.crystal.semanticScanEnabled = false;
   config.heartbeat.enabled = false;
   config.chat.skillExtraction.enabled = false;
   config.extensions.skills = [];

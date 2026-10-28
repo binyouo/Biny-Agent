@@ -251,7 +251,7 @@ biny iab profile import <profile-id> --json
 | 终端对话与一次性执行 | `chat`、`tui`、`run`、`resume` | [会话与恢复](SESSIONS.md)。 |
 | 长期事实、历史与日记 | `memory`、`history`、`diary`、`reflection`、`heartbeat` | [长期记忆](MEMORY.md)。 |
 | 活动采集与工作日报 | `activity` | [活动记录与 Appshots](ACTIVITY.md)。 |
-| 人格与个性化 | `soul`、`emotion`、`crystal`、`fatigue`、`sleep`、`wake`、`rest`、`selfie`、`travel` | 按对应帮助读取或维护已有状态与内容。 |
+| 人格与个性化 | `soul`、`emotion`、`fatigue`、`sleep`、`wake`、`rest`、`selfie`、`travel` | 按对应帮助读取或维护已有状态与内容。 |
 | 对象引用与双链 | `ref` | 搜索、解析、关联、引用图、片段和固定对象，见[扩展](EXTENSIONS.md)。 |
 | 任务、目标与自动化 | `todo`、`task`、`goal`、`plan`、`graph`、`automation` | [目标与自动化](AUTOMATION.md)。 |
 | 交互提问 | `input` | 发起问题、查看待答项与提交回答，见[扩展](EXTENSIONS.md)。 |

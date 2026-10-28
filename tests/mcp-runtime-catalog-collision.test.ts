@@ -61,7 +61,6 @@ for (const fixture of [
           mcp: { fixture: { enabled: true, type: "http", url: "https://mcp-collision.invalid/mcp",
             transportProtocol: "streamable-http", timeoutMs: 2_000, exposure: "codemode", toolExposure: { [first.name]: "direct" } } } },
         context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-        crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
         activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
       });
       await saveConfigFile(process.env.BINY_AGENT_DIR, config);

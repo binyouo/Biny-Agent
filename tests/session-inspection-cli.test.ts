@@ -36,7 +36,6 @@ test("inspection CLI targets the existing session and preserves Host compaction 
       // This lifecycle fixture permits its Node child; read-only and busy admission are asserted below.
       permission: { ...defaultConfig.permission, denyPaths: [] },
       chat: { ...defaultConfig.chat, defaultToolSelection: "all" },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: false }, skills: [] },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
     });

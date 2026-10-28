@@ -20,7 +20,6 @@ import { refreshActivitySummaryWithNarrative } from "./summary.js";
 import { generateActivitySuggestions } from "./suggestions.js";
 import { searchActivitySemantic } from "./semanticSearch.js";
 import type { ActivityRuntimeSnapshot } from "./types.js";
-import { handleCrystalHttpRequest, type CrystalHttpDependencies } from "../agent/context/crystalHttp.js";
 import { globalAgentDir } from "../config/paths.js";
 import type { EmbeddingModelRuntime } from "../llm/embedding/types.js";
 
@@ -35,7 +34,6 @@ export interface ActivityHttpApiDependencies {
   onAnalyzed?: ActivityAnalyzerDeps["onAnalyzed"];
   /** 服务持有显式分析后的投影及 ActivityStore 清理，关闭时收齐。 */
   scheduleProjection?: (task: Promise<void>) => void;
-  crystal?: CrystalHttpDependencies;
   getRuntimeSnapshot?(): ActivityRuntimeSnapshot | Promise<ActivityRuntimeSnapshot>;
   /** REST 专属前台状态；IPC 快照继续使用自身的展示模型。 */
   getFrontmost?(): { bundleId: string | null; appName: string | null };
@@ -85,15 +83,6 @@ export async function handleActivityHttpRequest(
   const method = request.method.toUpperCase();
   const pathname = normalizePath(request.pathname);
   const searchParams = request.searchParams ?? new URLSearchParams();
-  if (deps.crystal) {
-    const crystalResponse = await handleCrystalHttpRequest({
-      method,
-      pathname,
-      searchParams,
-      body: request.body
-    }, deps.crystal);
-    if (crystalResponse) return crystalResponse;
-  }
   if (pathname !== "/api/activity-recorder" && !pathname.startsWith("/api/activity-recorder/")) {
     return notFound();
   }

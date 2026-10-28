@@ -1435,8 +1435,7 @@
   flex: 1 1 auto;
 }
 
-.biny-sidebar-time-clues-button,
-.biny-sidebar-crystal-button {
+.biny-sidebar-time-clues-button {
   flex: 0 0 28px;
 }
 

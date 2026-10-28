@@ -72,8 +72,6 @@ async function fixture(t: TestContext) {
   config.context.identity.enabled = false;
   config.activity.enabled = false;
   config.heartbeat.enabled = false;
-  config.crystal.passiveEnabled = false;
-  config.crystal.semanticScanEnabled = false;
   config.chat.defaultToolSelection = "none";
   config.chat.defaultSkillSelection = "none";
   config.models[config.defaultModel]!.capabilities = {

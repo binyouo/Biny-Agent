@@ -123,7 +123,6 @@ import { readFileMemoryPrompt } from "./context/fileMemory.js";
 import { MemoryVectorIndex } from "./context/MemoryVectorIndex.js";
 import { SemanticMemoryRetriever } from "./context/SemanticMemoryRetriever.js";
 import type { MemoryEmbeddingRuntimeStatus } from "./context/MemoryEmbeddingService.js";
-import { CrystalService } from "./context/crystalService.js";
 import { WorkspaceContext } from "./context/WorkspaceContext.js";
 import type { CompactionResult, ContextStatus } from "./context/types.js";
 import { recordNativeTelemetry } from "../observability/telemetry.js";
@@ -417,7 +416,6 @@ export class AgentSession {
   private readonly titleAbort = new AbortController();
   private readonly memoryRetriever: SemanticMemoryRetriever;
   private readonly memoryEmbeddingService: AgentMemoryClient;
-  private readonly crystalService: CrystalService;
   private usageRecords: SessionUsage[] = [];
   // Selection-time handoff only: callers capture before awaiting, even when adapters are shared.
   private readonly auxiliaryUsageModels = new WeakMap<AgentModel, Readonly<UsageModelInfo>>();
@@ -431,8 +429,6 @@ export class AgentSession {
   private activeOperation: string | undefined;
   private activeRunMessageQueues: ActiveRunMessageQueues | undefined;
   private readonly lingeringExternalTools = new Map<Promise<unknown>, { tool: string; toolCallId: string }>();
-  private readonly pendingCrystalTasks = new Set<Promise<void>>();
-  private readonly queuedCrystalRuns = new Set<string>();
   private pendingSkillExtraction: Promise<void> = Promise.resolve();
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
   private temporalIndexFlight: Promise<void> = Promise.resolve();
@@ -570,49 +566,6 @@ export class AgentSession {
         return result.text;
       }
     });
-    this.crystalService = new CrystalService({
-      getModel: this.toolModel,
-      getConfig: () => this.activeConfig.crystal,
-      allowActivity: () => this.activeConfig.activity.enabled,
-      readAnchorText: async ({ threadId, anchorId }) => {
-        if (threadId?.startsWith("activity:") && anchorId.startsWith("activity:")) {
-          const store = new ActivityStore();
-          try {
-            await store.open(this.activeConfig.activity.outputDirectory, globalAgentDir());
-            const analysis = store.getAnalysis(anchorId.slice("activity:".length));
-            return analysis ? [analysis.title, analysis.summary, ...analysis.highlights, ...analysis.decisions].filter(Boolean).join("\n") : undefined;
-          } finally {
-            await store.close();
-          }
-        }
-        if (!threadId || !/^[A-Za-z0-9_-]+$/u.test(threadId)) return undefined;
-        const filePath = threadId === this.recorder.sessionId
-          ? this.recorder.filePath
-          : await resolveSessionFile(this.persistenceRoot(), threadId);
-        // 查询接口也支持前缀；材料必须绑定完整会话标识，不能读到另一个近似匹配。
-        if (sessionIdFromFile(filePath) !== threadId) return undefined;
-        const events = await readSessionEvents(filePath);
-        const event = events.find((candidate) => (candidate.type === "user_message" || candidate.type === "assistant_message") && candidate.messageId === anchorId);
-        if (event?.type === "user_message" || event?.type === "assistant_message") return event.content;
-        // Desktop materials may cite an active canonical assistant step without a flat audit event.
-        const active = activeSessionMessageIds(events);
-        const canonical = events.find((candidate) => candidate.type === "agent_message"
-          && candidate.messageId === anchorId && active.has(anchorId) && candidate.message.role === "assistant");
-        return canonical?.type === "agent_message" && canonical.message.role === "assistant"
-          ? canonical.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
-          : undefined;
-      },
-      embedText: async (text, signal) => {
-        const runtime = await this.memoryEmbeddingService.embeddingRuntime(true);
-        if (!runtime) return undefined;
-        const embedded = await runtime.embed({
-          texts: [text],
-          inputType: "passage",
-          signal
-        });
-        return embedded.embeddings[0];
-      }
-    });
     // 压缩摘要可切换到更便宜的模型。与 memoryModel 一样读取 root-turn 快照；解析失败只
     // 打 warning 并回退当前对话模型。模型和容量来自同一配置快照，避免 endpoint 更新后复用旧模型。
     const summaryModels = new Map<string, { model: AgentModel; usage: UsageModelInfo }>();
@@ -696,7 +649,6 @@ export class AgentSession {
     await this.identityStorage.initialize();
     await this.soulStorage.initialize();
     await this.fatigueService.initialize();
-    await this.crystalService.initialize();
   }
 
   /** 技能元数据、具名子代理清单与 MCP instructions 共同构成 system prompt 的扩展段。 */
@@ -823,7 +775,6 @@ export class AgentSession {
     personalization: ResolvedChatPersonalization,
     capabilitySelection: Promise<AgentCapabilitySelection | undefined>,
     signal: AbortSignal | undefined,
-    referenceHistory: readonly AgentMessage[],
     runId?: string
   ): Promise<PromptBundle> {
     const promptNow = new Date();
@@ -850,15 +801,6 @@ export class AgentSession {
     const soulPrompt = soulSnapshot.source === "user"
       ? renderSoulPrompt(soulSnapshot.content, soulSnapshot.source, soulSnapshot.path)
       : undefined;
-    let crystalPrompt: string | undefined;
-    try {
-      // 引用只来自本轮选定的原始活动消息，不从压缩摘要或另一次读盘推断。
-      crystalPrompt = await this.crystalService.promptText(input, 8_000, referenceHistory
-        .filter((message) => message.role === "user" || message.role === "assistant")
-        .map(messageText));
-    } catch {
-      // 辅助引用读取失败不扩大到其他会话或阻断当前对话。
-    }
     const extensions = await this.extensionPrompt(selection, runId);
     const bundle = buildPromptBundle({
       sessionId: this.recorder.sessionId,
@@ -874,7 +816,6 @@ export class AgentSession {
       emotionPrompt,
       soulSource: soulSnapshot.source,
       dailyNotesPrompt,
-      crystalPrompt,
       activityGreetingPrompt: activityContextPrompt?.kind === "greeting" ? activityContextPrompt.text : undefined,
       activityRelevantPrompt: activityContextPrompt?.kind === "relevant" ? activityContextPrompt.text : undefined,
       activityEnabled: this.activeConfig.activity.enabled,
@@ -1365,10 +1306,6 @@ export class AgentSession {
     void task.finally(() => this.pendingMemoryTasks.delete(task));
   }
 
-  getCrystalService(): CrystalService {
-    return this.crystalService;
-  }
-
   /** 显式刷新聊天工作摘要；人格自省由正常 Agent 按 Skill 执行。 */
   async refreshDailyDiary(
     dateKey: string,
@@ -1695,7 +1632,7 @@ export class AgentSession {
     if (this.options.selectCapabilities && (options.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto") {
       yield { type: "preparation.updated", stage: "tools" };
     }
-    const basePrompt = this.baseSystemPrompt(sourceInput, personalization, selection, options.abortSignal, referenceHistory, options.runId)
+    const basePrompt = this.baseSystemPrompt(sourceInput, personalization, selection, options.abortSignal, options.runId)
       .then((prompt) => appendExternalTurnContext(prompt, options.promptContext));
     yield { type: "preparation.updated", stage: "workspace" };
     const prepared = yield* this.prepareContext(
@@ -2415,9 +2352,6 @@ export class AgentSession {
       const events = await readSessionEvents(this.recorder.filePath);
       const nodes = sessionMessageTree(events);
       const activeIds = activeSessionMessageIds(events, nodes);
-      const referenceHistory = nodes.length
-        ? nodes.filter((node) => activeIds.has(node.id)).map((node) => node.message)
-        : this.contextMemory.getHistory();
       const selection = this.prepareCapabilities({
         input, selection: runOptions.capabilitySelection, signal: abortSignal,
         onToolAccessSelection: (selection) => { runOptions.toolAccessSelection = selection; }, messageId: userMessageReference?.id, events,
@@ -2433,7 +2367,7 @@ export class AgentSession {
         yield { type: "preparation.updated", stage: "tools" };
       }
       const systemPromptPerfStartedAt = perfNow();
-      const basePrompt = this.baseSystemPrompt(input, turnPersonalization, selection, abortSignal, referenceHistory, runtimeRunId)
+      const basePrompt = this.baseSystemPrompt(input, turnPersonalization, selection, abortSignal, runtimeRunId)
         .then((prompt) => {
           recordPerfPhase("turn.baseSystemPrompt", systemPromptPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
           return appendExternalTurnContext(prompt, runOptions.promptContext);
@@ -2588,7 +2522,6 @@ export class AgentSession {
           }
         }
       } finally {
-        if (turnPersonalization.contributeMemories) this.scheduleCrystalRun(this.recorder, runtimeRunId);
         // 正文先获得模型请求机会，标题在回合结束后生成，不抢占首字响应。
         if (ordinaryRootMessage && this.options.onTitleGenerated) this.scheduleTitle();
         this.recorder.setRuntimeContext(undefined);
@@ -4619,10 +4552,8 @@ export class AgentSession {
     await Promise.allSettled([...this.pendingMemoryTasks]);
     await this.pendingSkillExtraction;
     this.closed = true;
-    await Promise.allSettled([...this.pendingCrystalTasks]);
     this.memoryRetriever.close();
     this.localMemory.close();
-    this.crystalService.close();
     const relatedUsage = this.takeRelatedUsage();
     if (relatedUsage) {
       this.recorder.record({
@@ -4883,38 +4814,6 @@ export class AgentSession {
     return hydrated;
   }
 
-  private scheduleCrystalRun(recorder: SessionRecorder, runId: string): void {
-    if (this.closed) return;
-    if (this.queuedCrystalRuns.has(runId)) return;
-    this.queuedCrystalRuns.add(runId);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const task = new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        void (async () => {
-          await recorder.flush();
-          const events = await readSessionEvents(recorder.filePath);
-          const activeIds = activeSessionMessageIds(events);
-          for (const node of sessionMessageTree(events)) {
-            if (node.message.role !== "user" || !activeIds.has(node.id) || events[node.eventIndex]?.runtime?.runId !== runId) continue;
-            if (this.crystalService.storage.hasProcessedAnchor(node.id)) continue;
-            await this.crystalService.processAnchor({
-              threadId: recorder.sessionId,
-              anchorId: node.id,
-              day: (events[node.eventIndex]?.time ?? new Date().toISOString()).slice(0, 10),
-              text: messageText(node.message),
-              source: "conversation"
-            });
-          }
-          this.crystalService.dormantOldCrystals();
-        })().catch(() => undefined).finally(resolve);
-      }, 400);
-    }).finally(() => {
-      if (timer !== undefined) clearTimeout(timer);
-      this.queuedCrystalRuns.delete(runId);
-      this.pendingCrystalTasks.delete(task);
-    });
-    this.pendingCrystalTasks.add(task);
-  }
 }
 
 function agentMessageText(message: AgentAssistantMessage): string {

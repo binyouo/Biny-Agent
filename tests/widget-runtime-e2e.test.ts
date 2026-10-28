@@ -66,7 +66,7 @@ for (const cancelled of [false, true]) test(`真实 Runtime/HTTP 参数流 ${can
       permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false },
       extensions: { ...defaultConfig.extensions, skills: [], subagent: { ...defaultConfig.extensions.subagent, enabled: false } },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-      checkpoints: { enabled: false }, crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
+      checkpoints: { enabled: false },
       activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
     });
     const canonical = await realpath(workspace);

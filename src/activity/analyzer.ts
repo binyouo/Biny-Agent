@@ -452,7 +452,7 @@ async function projectActivityAnalysis(deps: ActivityAnalyzerDeps, analysis: Act
     try {
       await deps.onAnalyzed(analysis, session, deps.signal);
     } catch {
-      console.error("[ActivityAnalyzer] Crystal write failed", session.id);
+      console.error("[ActivityAnalyzer] analysis callback failed", session.id);
     }
   }
   deps.signal?.throwIfAborted();

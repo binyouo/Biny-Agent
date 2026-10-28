@@ -176,7 +176,6 @@ async function fixture(responses: Attempt[]) {
   config.context.compaction.keepRecentMessages = 2;
   config.context.compaction.keepRecentTokens = 2_000;
   config.heartbeat.enabled = false;
-  config.crystal.passiveEnabled = false;
   const model: AgentModel = testModel({
     provider: "fixture", modelId: "manual-usage",
     async stream(context) {

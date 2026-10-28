@@ -102,7 +102,6 @@ async function withRuntime(run: (fixture: {
         mcp: { fixture: { enabled: true, type: "http", url: "https://mcp-notification.invalid/mcp",
           transportProtocol: "streamable-http", timeoutMs: 2_000 } } },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
     });
     await saveConfigFile(process.env.BINY_AGENT_DIR, config);

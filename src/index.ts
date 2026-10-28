@@ -1,8 +1,5 @@
 /** Biny 的公共 AI 类型；Agent Loop 与运行时服务保持为内部实现。 */
 export * from "./activity/index.js";
-export * from "./agent/context/crystalService.js";
-export * from "./agent/context/crystalStorage.js";
-export * from "./agent/context/crystalTypes.js";
 export * from "./agent/context/fileMemory.js";
 export * from "./agent/context/heartbeat.js";
 import type {

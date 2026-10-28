@@ -63,7 +63,6 @@ test("built Desktop Host reloads encrypted MCP authentication and continues a pe
       } },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
       checkpoints: { enabled: false },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       activity: { ...defaultConfig.activity, enabled: false },
       heartbeat: { ...defaultConfig.heartbeat, enabled: false }
     });

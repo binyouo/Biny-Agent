@@ -30,7 +30,6 @@ import { DesktopMcpService } from "./DesktopMcpService.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopSkillService } from "./DesktopSkillService.js";
 import { DesktopThreadBriefService } from "./DesktopThreadBriefService.js";
-import { DesktopCrystalService } from "./DesktopCrystalService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import { DesktopSettingsCloseCoordinator } from "./DesktopSettingsCloseCoordinator.js";
 import { DesktopSettingsTransaction } from "./DesktopSettingsTransaction.js";
@@ -128,9 +127,6 @@ async function startDesktopApplication(): Promise<void> {
   const configStore = new DesktopConfigStore(globalConfigDir());
   await registerDesktopRuntimeHost({ executable: process.execPath, appPath: app.getAppPath(), configDir: globalConfigDir() });
   const projects = new DesktopProjectService(state, storage, configStore);
-  const crystals = new DesktopCrystalService(configStore, async () => await Promise.all(
-    state.projects().map(async (project) => await projects.dataRoot(project))
-  ));
   const skills = new DesktopSkillService(state, configStore, net.fetch.bind(net) as unknown as typeof globalThis.fetch);
   let mainWindow: BrowserWindow | undefined;
   let activityTray: Tray | undefined;
@@ -270,7 +266,6 @@ async function startDesktopApplication(): Promise<void> {
       appPath: app.getAppPath()
     }),
     writeMemories: activityMemoryPipeline.writeMemories,
-    onAnalyzed: activityMemoryPipeline.onAnalyzed,
     getEmbeddingRuntime: async () => await activityEmbeddingModels.createRuntime("multilingual-e5-small").catch(() => undefined),
     emit: (snapshot) => {
       sendToDesktopWindow(mainWindow, desktopIpc.activityEvent, snapshot);
@@ -322,7 +317,6 @@ async function startDesktopApplication(): Promise<void> {
     activity,
     configStore,
     writeMemories: activityMemoryPipeline.writeMemories,
-    onAnalyzed: activityMemoryPipeline.onAnalyzed,
     getEmbeddingRuntime: async () => await activityEmbeddingModels.createRuntime("multilingual-e5-small").catch(() => undefined),
     getPermissions: getActivityPermissions,
     openPermissions: process.platform === "darwin" ? async (pane) => {
@@ -446,7 +440,6 @@ async function startDesktopApplication(): Promise<void> {
     applicationImports,
     appearance,
     temporalMemory,
-    crystals,
     threadBriefs,
     state,
     projects,
@@ -593,7 +586,6 @@ async function startDesktopApplication(): Promise<void> {
           await activityApi.close().catch(() => undefined);
           await activity.stop();
           await activityEmbeddingModels.close();
-          activityMemoryPipeline.close();
           try {
             await agents.detachBrowserAutomation();
           } catch {

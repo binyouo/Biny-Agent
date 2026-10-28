@@ -90,7 +90,6 @@ for (const withPreselection of [true, false]) {
   const config = configSchema.parse({ ...defaultConfig,
     agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false, denyPaths: [] },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   const agent = new AgentSession({ workspaceRoot: root, config, recorder, model, toolRegistry: registry,

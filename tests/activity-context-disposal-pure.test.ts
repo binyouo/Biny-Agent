@@ -118,8 +118,8 @@ function fixture(options: { delayedOpen?: boolean; delayedDiscovery?: boolean; d
     drainRecipeSuggestions = async () => undefined;
     titleAbort = new AbortController(); titleTask = undefined;
     pendingMemoryTasks = new Set(); pendingSkillExtraction = undefined;
-    closed = false; pendingCrystalTasks = new Set();
-    memoryRetriever = {close: () => undefined}; localMemory = {close: () => undefined}; crystalService = {close: () => undefined};
+    closed = false;
+    memoryRetriever = {close: () => undefined}; localMemory = {close: () => undefined};
     recorder = {close: async () => undefined}; takeRelatedUsage() {return undefined;}
     ${members}
   }

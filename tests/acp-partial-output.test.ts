@@ -29,8 +29,7 @@ test("ACP partial output survives status-only completion in the durable public s
   await ensureAgentDirs(root);
   const config = configSchema.parse({ ...defaultConfig, defaultModel: "external",
     providers: { external: { type: "acp", acp: launch() } }, models: { external: { provider: "external", model: "default" } },
-    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false }
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   const recorder = new SessionRecorder(root);
   const agent = new AgentSession({ workspaceRoot: root, config, recorder, permissionManager: new PermissionManager(),

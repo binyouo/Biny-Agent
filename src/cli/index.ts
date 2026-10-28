@@ -22,7 +22,6 @@ import { registerComputerCommands } from "./commands/computer.js";
 import { registerCuCommands } from "./commands/cu.js";
 import { registerBrowserCommands } from "./commands/browser.js";
 import { registerInAppBrowserCommands } from "./commands/iab.js";
-import { registerCrystalCommands } from "./commands/crystal.js";
 import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
   referenceTokenCommand, referenceContextCommand, referenceOpenCommand } from "./commands/references.js";
 import { registerFatigueCommands } from "./commands/fatigue.js";
@@ -146,7 +145,6 @@ program.name("biny").description("Biny — local-first agent for your terminal a
     "  biny tui --theme light       Use colors for a light terminal",
     ""
   ].join("\n"));
-registerCrystalCommands(program);
 registerSoulCommands(program);
 registerPersonaCommands(program, workspaceRoot);
 registerFatigueCommands(program);

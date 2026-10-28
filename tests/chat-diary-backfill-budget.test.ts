@@ -95,7 +95,6 @@ async function createFixture(root: string) {
     config.context.memory.useMemories = false;
     config.context.memory.generateMemories = false;
     config.activity.enabled = false;
-    config.crystal.passiveEnabled = false;
     config.checkpoints.enabled = false;
     config.agent.toolExecutionMode = "direct";
     const validatedConfig = configModule.configSchema.parse(config);

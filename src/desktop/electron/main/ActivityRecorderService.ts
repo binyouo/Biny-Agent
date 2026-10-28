@@ -648,7 +648,7 @@ export class ActivityRecorderService {
   }
 
   async clear(): Promise<ActivityRuntimeSnapshot> {
-    // 清空只删除 Activity 原始记录及其库内派生数据，不跨库删除长期记忆、结晶或导出文件。
+    // 清空只删除 Activity 原始记录及其库内派生数据，不跨库删除长期记忆或导出文件。
     // 启用时恢复完整调度（包括日报），但显式 stop 后清空不能偷偷重新启动。
     const previousState = this.state;
     const shouldRestart = previousState !== "stopped" && this.settings?.enabled === true;

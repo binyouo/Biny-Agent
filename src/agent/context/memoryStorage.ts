@@ -775,64 +775,7 @@ async function initializeDatabase(database: DatabaseSync): Promise<void> {
     "started_at TEXT NOT NULL, finished_at TEXT, ended_at TEXT, error TEXT" +
     ");"
   );
-  createCrystalTables(database);
   database.exec(`PRAGMA user_version = ${String(memorySchemaVersion)};`);
-}
-
-function createCrystalTables(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS crystal_terms (
-      id TEXT PRIMARY KEY NOT NULL,
-      term TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'latent',
-      count INTEGER NOT NULL DEFAULT 0,
-      turn_ids TEXT NOT NULL DEFAULT '[]',
-      thread_ids TEXT NOT NULL DEFAULT '[]',
-      days TEXT NOT NULL DEFAULT '[]',
-      occurrences TEXT NOT NULL DEFAULT '[]',
-      crystal_id TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_crystal_terms_status ON crystal_terms(status, updated_at);
-    CREATE TABLE IF NOT EXISTS crystals (
-      id TEXT PRIMARY KEY NOT NULL,
-      origin TEXT NOT NULL,
-      stage TEXT NOT NULL DEFAULT 'candidate',
-      name TEXT NOT NULL,
-      type TEXT,
-      dormant INTEGER NOT NULL DEFAULT 0,
-      slot INTEGER,
-      term_id TEXT,
-      checklist TEXT NOT NULL DEFAULT '{}',
-      notified INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      formal_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_crystals_stage ON crystals(stage, dormant, updated_at);
-    CREATE TABLE IF NOT EXISTS crystal_bundles (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT,
-      thread_id TEXT NOT NULL,
-      anchor_ids TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS crystal_materials (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      crystal_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      ref TEXT NOT NULL,
-      source TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_crystal_materials_crystal ON crystal_materials(crystal_id, created_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_crystal_materials_unique ON crystal_materials(crystal_id, kind, ref);
-    CREATE TABLE IF NOT EXISTS crystal_processed_anchors (
-      anchor_id TEXT PRIMARY KEY NOT NULL,
-      processed_at TEXT NOT NULL
-    );
-  `);
 }
 
 function runTransaction<T>(

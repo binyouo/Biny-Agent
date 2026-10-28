@@ -58,7 +58,6 @@ export async function run(args: string[]): Promise<void> {
     defaultModel: loaded.defaultModel, toolModel: toolAlias, thinking: { ...defaultConfig.thinking, enabled: false },
     agent: { ...defaultConfig.agent, toolExecutionMode: "direct", maxToolCalls: 20 },
     chat: { ...defaultConfig.chat, temperature: 0, maxOutputTokens: 2048, skillExtraction: { ...defaultConfig.chat.skillExtraction, enabled: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   // 后续 session、记忆与技能均隔离；配置凭据只在当前进程中使用。

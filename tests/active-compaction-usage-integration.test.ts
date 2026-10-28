@@ -34,7 +34,6 @@ test("automatic compaction repair usage survives disk replay and cold reopen", {
     config.context.compaction.keepRecentTokens = 256;
     config.context.compaction.maxSummaryTokens = 1_024;
     config.heartbeat.enabled = false;
-    config.crystal.passiveEnabled = false;
     configSchema.parse(config);
     const threshold = config.context.maxInputTokens - config.context.compaction.reserveTokens;
     let summaries = 0;

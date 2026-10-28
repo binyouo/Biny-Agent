@@ -110,8 +110,8 @@ function fixture(gate: Gate = "rename", activityPending = false) {
     session.persistenceRoot = () => '/synthetic';
     session.closeActivityContext = async () => { if (activityPending) await activity; };
     session.sessionSearchIndex = {close: async () => undefined}; session.titleAbort = new AbortController();
-    session.pendingMemoryTasks = new Set(); session.pendingCrystalTasks = new Set(); session.closed = false;
-    session.memoryRetriever = session.localMemory = session.crystalService = {close() {}};
+    session.pendingMemoryTasks = new Set(); session.closed = false;
+    session.memoryRetriever = session.localMemory = {close() {}};
     session.drainRecipeSuggestions = async () => undefined;
     session.takeRelatedUsage = () => undefined; session.toolModel = () => ({});
     session.auxiliaryUsageModels = new WeakMap();

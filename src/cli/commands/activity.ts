@@ -282,8 +282,7 @@ export async function activityAnalyzeCommand(workspaceRoot: string, sessionId: s
       store,
       model: resolveToolModel(config),
       ...operation,
-      writeMemories: memoryPipeline.writeMemories,
-      onAnalyzed: memoryPipeline.onAnalyzed
+      writeMemories: memoryPipeline.writeMemories
     }, sessionId, true);
     if (options.json) console.log(JSON.stringify(result));
     else if (result.status === "analyzed" || result.status === "trivial") console.log(result.analysis.summary);
@@ -395,7 +394,6 @@ export async function createCliActivityMemoryPipeline(
   try {
     const pipeline = await createActivityMemoryPipeline({
       workspaceRoot,
-      getCrystalConfig: () => config.crystal,
       indexEntry: async (entry) => await embeddings.indexEntry(entry),
       findSimilarEntries: async (query, options) => {
         const snapshot = await memory.listMemoryEntries({ signal: options.signal });
@@ -405,7 +403,6 @@ export async function createCliActivityMemoryPipeline(
     return {
       ...pipeline,
       close: async () => {
-        pipeline.close();
         embeddings.close();
         memory.close();
         await manager.close();

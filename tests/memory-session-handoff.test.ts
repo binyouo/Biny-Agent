@@ -97,7 +97,6 @@ async function fixture(t: TestContext) {
     providers: { synthetic: { type: "openai-compatible", baseUrl: "http://fixture.invalid", requiresApiKey: false } },
     models: { "memory-handoff": { provider: "synthetic", model: "memory-handoff" } },
     activity: { ...defaultConfig.activity, enabled: false },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context,
       compaction: { ...defaultConfig.context.compaction, enabled: false },
       memory: { ...defaultConfig.context.memory, enabled: true, useMemories: false,

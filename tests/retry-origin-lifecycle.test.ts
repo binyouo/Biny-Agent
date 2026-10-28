@@ -23,7 +23,7 @@ async function fixture(t: TestContext, attached = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-retry-lifecycle-"));
   await ensureAgentDirs(root);
   const config = configSchema.parse({ ...defaultConfig,
-    activity: { ...defaultConfig.activity, enabled: false }, crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
+    activity: { ...defaultConfig.activity, enabled: false },
     context: { ...defaultConfig.context, maxInputTokens: 1_000_000, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false },
       identity: { ...defaultConfig.context.identity, enabled: false } }
   });

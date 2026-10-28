@@ -56,7 +56,6 @@ await test("macOS runtimes connect Computer Use by default without project confi
       models: { fixture: { provider: "fixture", model: "fixture", capabilities: { tools: true, reasoning: false, streaming: true } } },
       extensions: { ...defaultConfig.extensions, plugins: [], globalPlugins: [], subagent: { ...defaultConfig.extensions.subagent, enabled: false } },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false },
       checkpoints: { enabled: false }
     });

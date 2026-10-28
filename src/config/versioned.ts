@@ -94,7 +94,6 @@ const RESTART_RELEVANT_CONFIG_FIELDS: readonly string[] = [
   "permission",
   "workspace",
   "context",
-  "crystal",
   "sandbox",
   "hooks",
   "diagnostics",

@@ -119,11 +119,11 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
     assert.equal(tables.has("memories"), true);
     assert.equal(tables.has("memory_archive"), true);
     assert.equal(tables.has("memory_sleep_runs"), true);
-    assert.equal(tables.has("crystal_terms"), true);
-    assert.equal(tables.has("crystals"), true);
-    assert.equal(tables.has("crystal_materials"), true);
-    assert.equal(tables.has("crystal_bundles"), true);
-    assert.equal(tables.has("crystal_processed_anchors"), true);
+    assert.equal(tables.has("crystal_terms"), false);
+    assert.equal(tables.has("crystals"), false);
+    assert.equal(tables.has("crystal_materials"), false);
+    assert.equal(tables.has("crystal_bundles"), false);
+    assert.equal(tables.has("crystal_processed_anchors"), false);
   } finally {
     database.close();
   }

@@ -101,8 +101,6 @@ for (const response of [
       config.heartbeat.enabled = false;
       config.context.memory.enabled = false;
       config.context.identity.enabled = false;
-      config.crystal.passiveEnabled = false;
-      config.crystal.semanticScanEnabled = false;
       commands = await createCommandRuntime(workspaceRoot, { configStore: { load: async () => structuredClone(config), save: async () => undefined } });
       const launched = await commands.agent.runTask("Delegate the bounded read-only task.", {
         capabilitySelection: { tools: ["Task"], skills: "none" }, emotionAnalysis: false,

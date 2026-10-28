@@ -85,8 +85,6 @@ try {
       config.context.memory.queryRewrite = false;
       config.context.memory.embeddingModel = { kind: "local", model: "multilingual-e5-small" };
       config.activity.enabled = false;
-      config.crystal.passiveEnabled = false;
-      config.crystal.semanticScanEnabled = false;
       config.chat.skillExtraction.enabled = false;
       const requests: Array<{ operation?: string; text: string; messages: AgentMessage[] }> = [];
       const input = "Tell me a brief joke.";

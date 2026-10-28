@@ -439,7 +439,7 @@ test("cached summary selection restores its own identity after a shared adapter 
 
 test("managerless injected fallback remains usable without a configured default", async () => {
   const f = fixture({ noManager: true, emptyConfig: true });
-  assert.equal(f.agent.toolModel(), f.chat, "the selection-only crystal consumer must remain usable");
+  assert.equal(f.agent.toolModel(), f.chat, "the tool model selection must remain usable");
   assert.equal(f.called.length, 0);
   await f.extract(); assertBill(f, "chat-provider/chat-wire", undefined);
 });

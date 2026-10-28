@@ -55,7 +55,6 @@ try {
     agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     chat: { ...defaultConfig.chat, defaultToolSelection: "all" },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, memoryModel: "aux", useMemories: false, generateMemories: false } },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     activity: { ...defaultConfig.activity, enabled: false },
     heartbeat: { ...defaultConfig.heartbeat, enabled: false }
   });

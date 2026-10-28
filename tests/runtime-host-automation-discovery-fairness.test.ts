@@ -115,7 +115,6 @@ async function fixture() {
       thinking: { ...defaultConfig.thinking, enabled: false },
       heartbeat: { ...defaultConfig.heartbeat, enabled: false },
       activity: { ...defaultConfig.activity, enabled: false },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       checkpoints: { ...defaultConfig.checkpoints, enabled: false },
       chat: { ...defaultConfig.chat, defaultToolSelection: "none", defaultSkillSelection: "none", skillExtraction: { enabled: false, minToolCalls: 5 } },
       extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: false } },

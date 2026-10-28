@@ -77,8 +77,6 @@ async function fixture(t: TestContext) {
   config.context.memory.useMemories = false;
   config.context.memory.generateMemories = false;
   config.context.identity.enabled = false;
-  config.crystal.passiveEnabled = false;
-  config.crystal.semanticScanEnabled = false;
   config.activity.enabled = false;
   const requests: AgentMessage[][] = [];
   const model: AgentModel = testModel({

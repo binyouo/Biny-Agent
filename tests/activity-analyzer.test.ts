@@ -63,7 +63,7 @@ await testUnendedSessionSkipped();
 await testAnalyzeThenCacheIsIdempotent();
 await testAnalysisPromptUsesFirstFourHundredOcrFrames();
 await testLateOcrRequeuesAnalyzedSession();
-await testAnalysisFeedsMemoryAndCrystalCallbacks();
+await testAnalysisFeedsMemoryAndCallbacks();
 await testMemoryCandidateTypesNormalizeBeforeProjection();
 await testPendingProjectionSurvivesRestartWithoutReanalysis();
 await testWorthGateSkipsLongTermProjections();
@@ -133,16 +133,16 @@ async function testPendingProjectionSurvivesRestartWithoutReanalysis(): Promise<
       { type: "project", content: "项目持续采用分阶段发布流程", why: "稳定约束" }
     ] })]);
     let memoryCalls = 0;
-    let crystalCalls = 0;
+    let callbackCalls = 0;
     const options: ActivityAnalyzerDeps = {
       ...deps(store, scripted.model),
       writeMemories: async () => { memoryCalls++; throw new Error("memory unavailable"); },
-      onAnalyzed: async () => { crystalCalls++; throw new Error("crystal unavailable"); }
+      onAnalyzed: async () => { callbackCalls++; throw new Error("callback unavailable"); }
     };
     assert.equal((await analyzeActivitySession(options, id)).status, "analyzed");
     await analyzePendingActivitySessions(options);
     assert.equal(memoryCalls, 1, "失败的记忆写入不通过后台补偿重放");
-    assert.equal(crystalCalls, 1, "失败的 Crystal 写入不通过后台补偿重放");
+    assert.equal(callbackCalls, 1, "失败的分析回调不通过后台补偿重放");
     assert.equal(scripted.calls(), 1);
     assert.ok(store.getAnalysis(id));
   });
@@ -350,7 +350,7 @@ async function testLateOcrRequeuesAnalyzedSession(): Promise<void> {
 }
 
 /** 分析结果既写入活动分析表，也通过幂等旁路交给统一记忆和主题层。 */
-async function testAnalysisFeedsMemoryAndCrystalCallbacks(): Promise<void> {
+async function testAnalysisFeedsMemoryAndCallbacks(): Promise<void> {
   await withStore(async (store) => {
     const sessionId = seedEndedSession(store, todayAt(9), todayAt(10), 3);
     const { model } = scriptedModel([JSON.stringify({

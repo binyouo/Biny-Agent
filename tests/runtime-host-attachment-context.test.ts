@@ -77,7 +77,6 @@ async function hostFixture(t: TestContext) {
     },
     chat: { ...defaultConfig.chat, defaultToolSelection: "none", defaultSkillSelection: "none" },
     activity: { ...defaultConfig.activity, enabled: false },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, enabled: false, useMemories: false, generateMemories: false } }
   }));
   resources.host = await startRuntimeHost(root, async resourceRegistry => await createInteractiveAgentHost(root, {

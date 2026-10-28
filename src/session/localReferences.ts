@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, realpath, readdir } from "node:fs/promises";
 import path from "node:path";
 import { MemoryStorage } from "../agent/context/memoryStorage.js";
-import { CrystalStorage } from "../agent/context/crystalStorage.js";
 import { globalAgentDir, projectSessionsDir } from "../config/paths.js";
 import { createFileConfigStore } from "../config/store.js";
 import type { AgentConfig } from "../config/schema.js";
@@ -17,7 +16,7 @@ import { LocalReferenceGraph } from "./referenceGraph.js";
 import { redactSensitiveValue } from "../utils/secrets.js";
 
 export type LocalReferenceKind = "date" | "project" | "file" | "thread" | "message" | "memory" | "snippet" | "scratch"
-  | "skill" | "agent" | "mcp" | "model" | "provider" | "tool" | "tool-call" | "task" | "cron" | "crystal" | "bundle" | "plan";
+  | "skill" | "agent" | "mcp" | "model" | "provider" | "tool" | "tool-call" | "task" | "cron" | "plan";
 export type ParsedLocalReference =
   | { kind: "date"; range: DateReferenceRange }
   | { kind: Exclude<LocalReferenceKind, "date" | "message" | "tool-call">; id: string }
@@ -36,7 +35,7 @@ export interface LocalReferenceProject { id: string; path: string; name: string 
 const labels: Record<LocalReferenceKind, string> = {
   date: "日期", project: "项目", file: "文件", thread: "会话", message: "消息", memory: "记忆", snippet: "片段", scratch: "临时引用",
   skill: "技能", agent: "子代理", mcp: "MCP", model: "模型", provider: "服务商", tool: "工具", "tool-call": "工具调用", task: "任务", cron: "定时任务",
-  crystal: "结晶", bundle: "结晶包", plan: "计划"
+  plan: "计划"
 };
 export const localReferenceKinds = Object.entries(labels).map(([kind, label]) => ({ kind: kind as LocalReferenceKind, label }));
 
@@ -375,7 +374,7 @@ export class LocalReferenceService {
         if (memoryMatches >= limit) break;
       } } finally { store.close(); }
     }
-    if (!kind || ["skill", "agent", "mcp", "model", "provider", "tool", "task", "cron", "crystal", "bundle", "plan"].includes(kind)) {
+    if (!kind || ["skill", "agent", "mcp", "model", "provider", "tool", "task", "cron", "plan"].includes(kind)) {
       results.push(...(await this.existingEntries(projectId, kind)).filter((item) => matches(item.label) || matches(item.content)));
     }
     if (!kind || kind === "snippet" || kind === "scratch") {
@@ -449,18 +448,6 @@ export class LocalReferenceService {
         for (const definition of definitions) add("agent", definition.name, definition.name,
           `${definition.description}\n${definition.prompt}`);
       }
-    }
-    if (!kind || kind === "crystal" || kind === "bundle") {
-      const store = new CrystalStorage({ agentDir: this.root });
-      await store.initialize();
-      try {
-        if (!kind || kind === "crystal") for (const crystal of store.listCrystals()) {
-          add("crystal", crystal.id, crystal.name, JSON.stringify({ name: crystal.name, stage: crystal.stage, checklist: crystal.checklist }));
-        }
-        if (!kind || kind === "bundle") for (const bundle of store.listBundles()) {
-          add("bundle", bundle.id, bundle.name ?? bundle.id, JSON.stringify({ name: bundle.name, threadId: bundle.threadId, anchorIds: bundle.anchorIds }));
-        }
-      } finally { store.close(); }
     }
     if (this.runtimeEntries && (!kind || ["tool", "task", "cron", "plan"].includes(kind))) {
       let entries: Awaited<ReturnType<NonNullable<typeof this.runtimeEntries>>>;

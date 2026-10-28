@@ -69,7 +69,6 @@ test("strict checkpoint retry origin rejects corrupt identities and cannot poiso
     ];
     let requests = 0;
     const config = configSchema.parse({ ...defaultConfig, activity: { ...defaultConfig.activity, enabled: false },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } } });
     const turnPath = path.join(agentDir(root), "turns", "retry-origin.json");
     for (const [name, mutate] of mutations) {

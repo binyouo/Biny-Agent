@@ -54,7 +54,6 @@ for (const closeReader of [false, true]) {
         chat: { ...defaultConfig.chat, defaultToolSelection: "all", defaultSkillSelection: "all" },
         thinking: { ...defaultConfig.thinking, enabled: false },
         heartbeat: { ...defaultConfig.heartbeat, enabled: false },
-        crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
         context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
       });
       // Observe fatal errors without handling them or changing Node's exit behavior.

@@ -12,7 +12,6 @@ import type { ApplicationImportSource, ApplicationImportSnapshot, ApplicationImp
  */
 import type { DesktopThreadBriefRequest, DesktopThreadBriefSnapshot } from "./threadBriefProtocol.js";
 import type { AppearancePreference, AppearanceSnapshot } from "../appearance/types.js";
-import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "./crystalProtocol.js";
 import type { planStatus } from "../extensions/plan.js";
 import type { TodoItem } from "../session/todoStore.js";
 import type { AcpConfig } from "../config/schema.js";
@@ -88,7 +87,6 @@ export type DesktopActivitySessionDetail = Omit<ActivitySessionDetail, "events">
 
 export const desktopIpc = {
   activitySuggestions: "desktop:activity:suggestions",
-  crystalRequest: "desktop:crystal:request",
   bootstrap: "desktop:bootstrap",
   openProject: "desktop:project:open",
   createEmptyProject: "desktop:project:create-empty",
@@ -1637,7 +1635,6 @@ export interface DesktopApi {
   configureApplicationImportSync(input: { previewId: string; itemIds: string[]; projectId: string }): Promise<ApplicationImportSnapshot>;
   syncApplicationImports(): Promise<ApplicationImportSnapshot>;
   activitySuggestions(): Promise<string[]>;
-  crystalRequest(request: DesktopCrystalRequest): Promise<DesktopCrystalSnapshot>;
   bootstrap(): Promise<DesktopBootstrap>;
   openProject(): Promise<DesktopWorkspaceSnapshot | undefined>;
   createEmptyProject(siteUrl?: string): Promise<DesktopWorkspaceSnapshot | undefined>;

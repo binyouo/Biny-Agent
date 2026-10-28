@@ -123,8 +123,6 @@ async function withFixture(t: TestContext, body: (fixture: Fixture) => Promise<v
     await ensureAgentDirs(workspaceRoot);
     const config = structuredClone(defaultConfig);
     config.activity.enabled = false;
-    config.crystal.passiveEnabled = false;
-    config.crystal.semanticScanEnabled = false;
     config.chat.skillExtraction.enabled = false;
     config.models = { [config.defaultModel]: config.models[config.defaultModel]! };
     config.toolModel = config.defaultModel;

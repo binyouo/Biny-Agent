@@ -43,7 +43,6 @@ test("cold TUI Host reads Desktop encrypted credentials and persists a reply", {
       thinking: { ...defaultConfig.thinking, enabled: false },
       chat: { ...defaultConfig.chat, defaultToolSelection: "all", defaultSkillSelection: "all" },
       context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
-      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
       heartbeat: { ...defaultConfig.heartbeat, enabled: false }
     });
     const setupEntry = path.join(root, "prepare.cjs");

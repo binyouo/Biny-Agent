@@ -73,7 +73,6 @@ async function fixture() {
     providers: { synthetic: { type: "openai-compatible", baseUrl: "http://fixture.invalid", requiresApiKey: false } },
     models: { "title-lifecycle": { provider: "synthetic", model: "title-lifecycle" } },
     activity: { ...defaultConfig.activity, enabled: false },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context,
       compaction: { ...defaultConfig.context.compaction, enabled: false },
       memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }

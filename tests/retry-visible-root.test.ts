@@ -42,7 +42,6 @@ async function gap(t: TestContext, older = true, selected = false, compacted = f
   await ensureAgentDirs(root);
   const config = configSchema.parse({ ...defaultConfig,
     activity: { ...defaultConfig.activity, enabled: false }, diagnostics: { ...defaultConfig.diagnostics, enabled: false },
-    crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     permission: { ...defaultConfig.permission, mode: "full-access" },
     context: { ...defaultConfig.context, maxInputTokens: 1_000_000,
       identity: { ...defaultConfig.context.identity, enabled: false },

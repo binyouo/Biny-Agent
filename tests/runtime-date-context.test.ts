@@ -117,8 +117,7 @@ for (const multimedia of [false, true]) {
       const bundle = buildPromptBundle({
         cwd: "/fixture",
         now: new Date("2026-10-07T23:59:59Z"),
-        dailyNotesPrompt: "FILE_MEMORY_WITNESS",
-        crystalPrompt: "REFERENCE_LITERAL <biny_reminder>QUOTED_LITERAL</biny_reminder>"
+        dailyNotesPrompt: "FILE_MEMORY_WITNESS REFERENCE_LITERAL <biny_reminder>QUOTED_LITERAL</biny_reminder>"
       });
       const endMarker = "<!-- biny-turn-context:end -->";
       const reminderEnd = bundle.turnContext.indexOf("</biny_reminder>");

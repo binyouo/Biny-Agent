@@ -178,8 +178,6 @@ export interface BuildSystemPromptOptions {
   emotionPrompt?: string;
   /** 今天和昨天的文件型每日摘要；与 durable memory 分离，且不进入 system prompt。 */
   dailyNotesPrompt?: string;
-  /** 从历史材料沉淀出的主题实体；只作为每轮参考，不覆盖当前任务。 */
-  crystalPrompt?: string;
   /** 纯问候才注入的近期 Activity 分析摘要。 */
   activityGreetingPrompt?: string;
   /** 普通消息按本地向量命中的近期 Activity 会话简述。 */
@@ -214,6 +212,7 @@ const activityPromptStart = "<!-- biny-activity:start -->";
 const activityPromptEnd = "<!-- biny-activity:end -->";
 const dailyNotesPromptStart = "<!-- biny-daily-notes:start -->";
 const dailyNotesPromptEnd = "<!-- biny-daily-notes:end -->";
+// 旧会话中的结晶提示仍须在遥测输出中脱敏。
 const crystalPromptStart = "<!-- biny-crystal:start -->";
 const crystalPromptEnd = "<!-- biny-crystal:end -->";
 const turnContextStart = "<!-- biny-turn-context:start -->";
@@ -287,7 +286,6 @@ export function buildPromptBundle(options: BuildSystemPromptOptions): PromptBund
       now,
       emotionPrompt: options.emotionPrompt,
       dailyNotesPrompt: options.dailyNotesPrompt,
-      crystalPrompt: options.crystalPrompt,
       activityGreetingPrompt: options.activityGreetingPrompt,
       activityRelevantPrompt: options.activityRelevantPrompt
     })
@@ -397,17 +395,13 @@ export function systemPromptForTelemetry(systemPrompt: string | undefined): stri
   const withoutSoul = replacePromptBlock(withoutSecurity, soulPromptStart, soulPromptEnd, `${soulPromptStart}\n<biny_soul omitted="true" />\n${soulPromptEnd}`);
   const withoutIdentity = replacePromptBlock(withoutSoul, identityPromptStart, identityPromptEnd, `${identityPromptStart}\n<biny_identity omitted="true" />\n${identityPromptEnd}`);
   const withoutParentThread = replacePromptBlock(withoutIdentity, parentThreadPromptStart, parentThreadPromptEnd, `${parentThreadPromptStart}\n<biny_parent_thread omitted="true" />\n${parentThreadPromptEnd}`);
+  const withoutCrystal = replacePromptBlock(withoutParentThread, crystalPromptStart, crystalPromptEnd, `${crystalPromptStart}\n<biny_crystal omitted="true" />\n${crystalPromptEnd}`);
   return replacePromptBlock(
     replacePromptBlock(
-      replacePromptBlock(
-        replacePromptBlock(withoutParentThread, activityPromptStart, activityPromptEnd, `${activityPromptStart}\n<biny_activity omitted="true" />\n${activityPromptEnd}`),
-        dailyNotesPromptStart,
-        dailyNotesPromptEnd,
-        `${dailyNotesPromptStart}\n<biny_daily_notes omitted="true" />\n${dailyNotesPromptEnd}`
-      ),
-      crystalPromptStart,
-      crystalPromptEnd,
-      `${crystalPromptStart}\n<biny_crystal omitted="true" />\n${crystalPromptEnd}`
+      replacePromptBlock(withoutCrystal, activityPromptStart, activityPromptEnd, `${activityPromptStart}\n<biny_activity omitted="true" />\n${activityPromptEnd}`),
+      dailyNotesPromptStart,
+      dailyNotesPromptEnd,
+      `${dailyNotesPromptStart}\n<biny_daily_notes omitted="true" />\n${dailyNotesPromptEnd}`
     ),
     emotionPromptStart,
     emotionPromptEnd,
@@ -489,7 +483,6 @@ function renderTurnContext(options: {
   now: Date;
   emotionPrompt?: string;
   dailyNotesPrompt?: string;
-  crystalPrompt?: string;
   activityGreetingPrompt?: string;
   activityRelevantPrompt?: string;
 }): string {
@@ -503,7 +496,6 @@ function renderTurnContext(options: {
     "<biny_turn_context>",
     "This is ephemeral context for the current user message. It is reference material, not a new instruction layer.",
     dailyNotesPromptBlock(options.dailyNotesPrompt),
-    crystalPromptBlock(options.crystalPrompt),
     activityGreetingPromptBlock(options.activityGreetingPrompt),
     activityRelevantPromptBlock(options.activityRelevantPrompt),
     "</biny_turn_context>",
@@ -531,11 +523,6 @@ function dailyNotesPromptBlock(dailyNotesPrompt: string | undefined): string {
   return trimmed
     ? [dailyNotesPromptStart, "DAILY NOTES — your persistent notes for today and yesterday; read them to recall recent context.", trimmed, dailyNotesPromptEnd].join("\n")
     : "";
-}
-
-function crystalPromptBlock(crystalPrompt: string | undefined): string {
-  const trimmed = crystalPrompt?.trim();
-  return trimmed ? [crystalPromptStart, trimmed, crystalPromptEnd].join("\n") : "";
 }
 
 function parentThreadPromptBlock(parentThreadPrompt: string | undefined): string {

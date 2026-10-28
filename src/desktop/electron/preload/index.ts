@@ -40,7 +40,6 @@ const api: DesktopApi = {
   setApplicationImportSync: async (enabled) => await ipcRenderer.invoke(desktopIpc.setApplicationImportSync, enabled),
   syncApplicationImports: async () => await ipcRenderer.invoke(desktopIpc.syncApplicationImports),
   activitySuggestions: async () => await ipcRenderer.invoke(desktopIpc.activitySuggestions),
-  crystalRequest: async (request) => await ipcRenderer.invoke(desktopIpc.crystalRequest, request),
   bootstrap: async () => await readRequest(desktopIpc.bootstrap),
   openProject: async () => await ipcRenderer.invoke(desktopIpc.openProject),
   createEmptyProject: async (siteUrl) => await ipcRenderer.invoke(desktopIpc.createEmptyProject, siteUrl),
