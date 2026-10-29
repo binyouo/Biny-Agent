@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, realpathSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -299,28 +299,98 @@ test("cancelled and failed pushes remain in the next comparison; PR success is n
   assert.deepEqual(changedFilesBetween(root, comparison.base, comparison.head), ["src/utils/format.ts", "tests/other.test.ts"]);
 });
 
-test("PR comparison includes unverified base changes and validates the merge head", async t => {
+test("PR comparison uses the current base without inheriting main validation debt", async t => {
   const { root, base } = history(t);
+  mkdirSync(path.join(root, "benchmarks"));
+  writeFileSync(path.join(root, "benchmarks/changed.ts"), "// unverified main input");
+  git(root, "add", "benchmarks/changed.ts");
+  git(root, "commit", "-m", "main validation debt");
+  const parent = git(root, "rev-parse", "HEAD");
   git(root, "checkout", "-b", "feature", base);
-  writeFileSync(path.join(root, "src/utils/other.ts"), "export const other = false;");
+  writeFileSync(path.join(root, "tests/view.test.ts"), "import '../src/desktop/view.js'; // PR change");
   git(root, "commit", "-am", "feature");
   const feature = git(root, "rev-parse", "HEAD");
   git(root, "checkout", "main");
   git(root, "merge", "--no-ff", "feature", "-m", "merge fixture");
-  const event = { pull_request: { head: { sha: feature }, base: { ref: "main" } } };
-  const comparison = await resolveComparison(root, "pull_request", event, {}, async () => [
-    { id: 1, head_sha: base, head_branch: "main", event: "push", conclusion: "success" }
-  ]);
-  assert.equal(comparison.base, base);
-  assert.deepEqual(changedFilesBetween(root, comparison.base, comparison.head), ["src/utils/format.ts", "src/utils/other.ts", "tests/other.test.ts"]);
-  const parent = git(root, "rev-parse", "HEAD^1");
-  const latest = await resolveComparison(root, "pull_request", event, {}, async () => [
-    { id: 2, head_sha: parent, head_branch: "main", event: "push", conclusion: "success" }
-  ]);
-  assert.equal(latest.base, parent);
+  const event = { pull_request: { head: { sha: feature }, base: { ref: "main", sha: parent } } };
+  for (const fetchRuns of [
+    async () => [{ id: 1, head_sha: base, head_branch: "main", event: "push", conclusion: "success" }],
+    async () => [],
+    async () => { throw new Error("API unavailable"); }
+  ]) {
+    const comparison = await resolveComparison(root, "pull_request", event, {}, fetchRuns);
+    assert.equal(comparison.base, parent);
+    assert.equal(comparison.head, git(root, "rev-parse", "HEAD"));
+    const changes = changedFilesBetween(root, comparison.base, comparison.head);
+    assert.deepEqual(changes, ["tests/view.test.ts"]);
+    const plan = await createPlan(root, changes);
+    assert.equal(plan.full, false);
+    assert.deepEqual(plan.standard, ["view.test.ts"]);
+    assert.deepEqual(plan.e2e, []);
+    for (const lane of ["build", "renderer", "windows", "windowsPackage"]) assert.equal(plan[lane], false);
+  }
   event.pull_request.head.sha = base;
   await assert.rejects(resolveComparison(root, "pull_request", event, {}, async () => []), /merge result/u);
+  event.pull_request.head.sha = feature;
+  event.pull_request.base.sha = base;
+  await assert.rejects(resolveComparison(root, "pull_request", event, {}, async () => []), /merge result/u);
 });
+
+test("PR plans include dependency changes introduced by the merge result", async t => {
+  const { root, base } = history(t);
+  const parent = git(root, "rev-parse", "HEAD");
+  git(root, "checkout", "-b", "feature", base);
+  writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+  git(root, "add", "package.json");
+  git(root, "commit", "-m", "dependency change");
+  const feature = git(root, "rev-parse", "HEAD");
+  git(root, "checkout", "main");
+  git(root, "merge", "--no-ff", "feature", "-m", "merge fixture");
+  const comparison = await resolveComparison(root, "pull_request", {
+    pull_request: { head: { sha: feature }, base: { ref: "main", sha: parent } }
+  }, {}, async () => []);
+  assert.equal(comparison.base, parent);
+  const plan = await createPlan(root, changedFilesBetween(root, comparison.base, comparison.head));
+  assert.equal(plan.full, true);
+  assert.match(plan.reasons.join(" "), /package.json/u);
+});
+
+for (const [files, expectedShards] of [
+  [["README.md"], [1]],
+  [["tests/view.test.ts"], [1]],
+  [["tests/view.test.ts", "tests/other.test.ts"], [1, 2]],
+  [["package.json"], [1, 2, 3, 4]]
+]) {
+  test(`plan command emits a complete matrix for ${files.join(", ")}`, async t => {
+    const { root: temporaryRoot, head } = history(t);
+    const root = realpathSync(temporaryRoot);
+    mkdirSync(path.join(root, "scripts"));
+    for (const name of ["ci-test-plan.mjs", "run-tests.mjs"]) {
+      copyFileSync(new URL(name, import.meta.url), path.join(root, "scripts", name));
+    }
+    symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), path.join(root, "node_modules"), "dir");
+    for (const file of files) writeFileSync(path.join(root, file), file === "package.json" ? "{}" : "// changed");
+    git(root, "add", "--", ...files);
+    git(root, "commit", "-m", "selected change");
+    const output = path.join(root, "outputs");
+    execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), "--base", head], {
+      cwd: root, env: { ...process.env, GITHUB_OUTPUT: output }, stdio: "pipe", timeout: 15_000
+    });
+    const outputs = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map(line => {
+      const at = line.indexOf("=");
+      return [line.slice(0, at), line.slice(at + 1)];
+    }));
+    const shards = JSON.parse(outputs.shards);
+    assert.deepEqual(shards, expectedShards);
+    const plan = JSON.parse(readFileSync(path.join(root, ".ci/plan.json"), "utf8"));
+    assert.equal(outputs.standard, String(plan.standard.length > 0));
+    const selected = shards.flatMap(shard => JSON.parse(execFileSync(process.execPath, [
+      path.join(root, "scripts/run-tests.mjs"), "--standard", "--plan=.ci/plan.json", `--shard=${shard}/${shards.length}`, "--list"
+    ], { cwd: root, encoding: "utf8", timeout: 15_000 })));
+    assert.deepEqual(selected.sort(), plan.standard);
+    assert.equal(new Set(selected).size, selected.length);
+  });
+}
 
 test("missing history, wrong-branch success, rewritten history and API failure request full validation", async t => {
   const { root, base } = history(t);
@@ -423,6 +493,9 @@ test("workflow gates selected lanes on static checks and retains full-run and pa
   }
   assert.equal(workflow.jobs.plan.needs, undefined);
   assert.equal(workflow.jobs.static.needs, undefined);
+  assert.equal(workflow.jobs.plan.outputs.shards, "${{ steps.plan.outputs.shards }}");
+  assert.equal(workflow.jobs.test.strategy.matrix.shard, "${{ fromJSON(needs.plan.outputs.shards) }}");
+  assert.ok(workflow.jobs.test.steps.some(step => step.run?.includes("--shard=${{ matrix.shard }}/${{ strategy.job-total }}")));
   assert.equal(workflow.jobs.test.strategy["fail-fast"], "${{ github.event_name == 'pull_request' }}");
   assert.equal(workflow.jobs.validate.if, "${{ always() }}");
   assert.ok(workflow.jobs.validate.needs.includes("static"));

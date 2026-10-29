@@ -1,4 +1,4 @@
-/** CI 选择计划：成功祖先是比较基准；无法证明影响范围时扩大验证。 */
+/** CI 选择计划：PR 比较合并结果与 base，push 累计成功祖先后的改动。 */
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -45,9 +45,12 @@ export async function resolveComparison(root, eventName, event, env = process.en
   const full = ["schedule", "workflow_dispatch"].includes(eventName);
   let branch = env.GITHUB_REF_NAME;
   let ancestorHead = head;
+  let prBase;
   if (eventName === "pull_request") {
     if (git(root, "rev-parse", "HEAD^2") !== event.pull_request.head.sha) throw new Error("Checkout is not the requested PR merge result");
     ancestorHead = git(root, "rev-parse", "HEAD^1");
+    if (ancestorHead !== event.pull_request.base.sha) throw new Error("Checkout is not the requested PR merge result");
+    prBase = ancestorHead;
     branch = event.pull_request.base.ref;
   } else if (eventName !== "push" && !full) {
     return { head, reason: "unknown event" };
@@ -55,10 +58,13 @@ export async function resolveComparison(root, eventName, event, env = process.en
   try {
     const runs = await fetchRuns(branch);
     const baseline = successfulAncestor(root, runs.filter(run => full || run.head_sha !== head), ancestorHead, branch, env.GITHUB_RUN_ID);
+    // PR 不承担 main 的累计验证；历史成功运行只用于分片耗时。
+    if (prBase) return { head, base: prBase, runId: baseline?.runId, reason: "PR changes against the current base in the merge result" };
     return baseline ? { head, base: baseline.sha, runId: baseline.runId, full,
       reason: full ? "scheduled or manual full validation" : undefined }
       : { head, reason: "no successful ancestor available" };
   } catch (error) {
+    if (prBase) return { head, base: prBase, reason: `PR changes against the current base; timing history unavailable: ${error.message}` };
     return { head, reason: `successful baseline unavailable: ${error.message}` };
   }
 }
@@ -324,6 +330,8 @@ async function main() {
   if (process.env.GITHUB_OUTPUT) {
     const lanes = { standard: plan.standard.length > 0, e2e: plan.e2e.length > 0, build: plan.build, renderer: plan.renderer, windows: plan.windows };
     appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(lanes).map(([key, value]) => `${key}=${value}\n`).join(""));
+    const shards = Array.from({ length: Math.max(1, Math.min(4, plan.standard.length)) }, (_, index) => index + 1);
+    appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\n`);
     appendFileSync(process.env.GITHUB_OUTPUT, `windows_package=${plan.windowsPackage}\n`);
   }
 }
