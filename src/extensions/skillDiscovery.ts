@@ -160,12 +160,14 @@ export async function discoverSkillRepositories(options: {
   repositories: SkillRepository[];
   fetcher?: typeof globalThis.fetch;
   installedNames?: ReadonlySet<string>;
+  /** Only implicit CLI sources may resolve main/master/default before selection. */
+  allowBranchFallback?: boolean;
 }): Promise<{ skills: DiscoverableSkill[]; warnings: string[] }> {
   const fetcher = options.fetcher ?? getSharedProxyAwareFetch();
   const repositories = options.repositories.filter((repo) => repo.enabled).slice(0, maxRepositories);
   const results = await mapWithConcurrency(repositories, 4, async (repository) => {
     try {
-      return await discoverRepository(repository, fetcher, options.installedNames ?? new Set<string>());
+      return await discoverRepository(repository, fetcher, options.installedNames ?? new Set<string>(), options.allowBranchFallback);
     } catch (error) {
       return { skills: [], warning: `无法读取仓库 ${repository.owner}/${repository.name}：${errorMessage(error)}` };
     }
@@ -221,6 +223,8 @@ export async function installDiscoveredSkill(options: {
   fetcher?: typeof globalThis.fetch;
   expectedVersion?: string;
   signal?: AbortSignal;
+  /** A CLI selection already binds a branch; do not replace it if it disappears. */
+  allowBranchFallback?: boolean;
 }): Promise<SkillInstallResult> {
   const { skill } = options;
   const repository: SkillRepository = { owner: skill.repoOwner, name: skill.repoName, branch: skill.repoBranch, enabled: true };
@@ -230,7 +234,9 @@ export async function installDiscoveredSkill(options: {
   options.signal?.throwIfAborted();
   const baseFetch = options.fetcher ?? getSharedProxyAwareFetch();
   const fetcher: typeof fetch = (input, init) => baseFetch(input, { ...init, signal: options.signal ? AbortSignal.any([options.signal, ...(init?.signal ? [init.signal] : [])]) : init?.signal });
-  const { tree, branch, revision } = await fetchRepositoryTreeWithFallback(repository, fetcher);
+  const { tree, branch, revision } = await (options.allowBranchFallback === false
+    ? fetchTreeForBranch(repository, repository.branch, fetcher)
+    : fetchRepositoryTreeWithFallback(repository, fetcher));
   const sourceDirectory = skill.directory;
   if (!tree.some((entry) => entry.type === "blob" && path.posix.basename(entry.path).toLowerCase() === "skill.md" && path.posix.dirname(entry.path) === sourceDirectory)) {
     throw new Error(`仓库中找不到所选 Skill 目录：${skill.directory}，请刷新目录后重新选择。`);
@@ -280,12 +286,14 @@ export async function updateDiscoveredSkill(options: { name: string; expectedVer
   return await installDiscoveredSkill({ skill: { name: current.name, directory: current.source.directory, repoOwner: current.source.owner, repoName: current.source.repository, repoBranch: current.source.branch }, homeDir: options.homeDir, fetcher: options.fetcher, expectedVersion: current.id });
 }
 
-async function discoverRepository(repository: SkillRepository, fetcher: typeof globalThis.fetch, installedNames: ReadonlySet<string>): Promise<{ skills: DiscoverableSkill[]; warning?: string }> {
-  const tree = await fetchRepositoryTree(repository, fetcher);
+async function discoverRepository(repository: SkillRepository, fetcher: typeof globalThis.fetch, installedNames: ReadonlySet<string>, allowBranchFallback = false): Promise<{ skills: DiscoverableSkill[]; warning?: string }> {
+  const resolved = allowBranchFallback ? await fetchRepositoryTreeWithFallback(repository, fetcher, true) : undefined;
+  const tree = resolved?.tree ?? await fetchRepositoryTree(repository, fetcher);
+  if (resolved) repository = { ...repository, branch: resolved.branch };
   const skillDocuments = tree.filter((entry) => entry.type === "blob" && entry.mode !== "120000" && path.posix.basename(entry.path).toLowerCase() === "skill.md");
   const skills = await mapWithConcurrency(skillDocuments, 8, async (entry) => {
     try {
-      const raw = await fetchText(fetcher, githubRawUrl(repository, entry.path), maxMetadataBytes);
+      const raw = await fetchText(fetcher, githubRawUrl(resolved ? { ...repository, branch: resolved.revision } : repository, entry.path), maxMetadataBytes);
       const parsed = parseSkillDocument(raw);
       const directory = path.posix.dirname(entry.path);
       const name = typeof parsed.frontmatter.name === "string" && parsed.frontmatter.name.trim() ? parsed.frontmatter.name.trim() : directory === "." ? repository.name : lastPathSegment(directory);
@@ -318,16 +326,21 @@ async function fetchRepositoryTree(repository: SkillRepository, fetcher: typeof 
   return response.tree.filter((entry) => typeof entry.path === "string" && isSafeSkillPath(entry.path));
 }
 
-async function fetchRepositoryTreeWithFallback(repository: SkillRepository, fetcher: typeof globalThis.fetch): Promise<{ tree: GitTreeEntry[]; branch: string; revision: string }> {
+async function fetchRepositoryTreeWithFallback(repository: SkillRepository, fetcher: typeof globalThis.fetch, onlyMissingRef = false): Promise<{ tree: GitTreeEntry[]; branch: string; revision: string }> {
   const primaryBranches = repository.branch === "main" ? ["main", "master"] : [repository.branch];
   let lastError: unknown;
   for (const branch of primaryBranches) {
+    let revision: string;
     try {
-      return await fetchTreeForBranch(repository, branch, fetcher);
+      if (!onlyMissingRef) return await fetchTreeForBranch(repository, branch, fetcher);
+      revision = await fetchBranchRevision(repository, branch, fetcher);
     } catch (error) {
       lastError = error;
       if (!isHttp404(error)) throw error;
+      continue;
     }
+    // Once the ref exists, a failed tree read is not permission to select another branch.
+    return { tree: await fetchRepositoryTree({ ...repository, branch: revision }, fetcher), branch, revision };
   }
   // 常规分支全部 404：查仓库真实默认分支再试一次，覆盖默认分支非 main/master 的仓库。
   const defaultBranch = await fetchDefaultBranch(repository, fetcher);
@@ -342,18 +355,25 @@ async function fetchRepositoryTreeWithFallback(repository: SkillRepository, fetc
 }
 
 async function fetchTreeForBranch(repository: SkillRepository, branch: string, fetcher: typeof globalThis.fetch): Promise<{ tree: GitTreeEntry[]; branch: string; revision: string }> {
+  const revision = await fetchBranchRevision(repository, branch, fetcher);
+  return { tree: await fetchRepositoryTree({ ...repository, branch: revision }, fetcher), branch, revision };
+}
+
+async function fetchBranchRevision(repository: SkillRepository, branch: string, fetcher: typeof globalThis.fetch): Promise<string> {
   const commit = await fetchJson<{ sha: string }>(fetcher, `${githubApiBase}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/commits/${encodeURIComponent(branch)}?per_page=1`, maxMetadataBytes);
   if (!/^[a-f0-9]{40}$/u.test(commit.sha)) throw new Error("GitHub 返回的提交 SHA 无效。");
-  return { tree: await fetchRepositoryTree({ ...repository, branch: commit.sha }, fetcher), branch, revision: commit.sha };
+  return commit.sha;
 }
 
 async function fetchDefaultBranch(repository: SkillRepository, fetcher: typeof globalThis.fetch): Promise<string | undefined> {
   try {
     const repositoryInfo = await fetchJson<{ default_branch?: unknown }>(fetcher, `${githubApiBase}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`, maxMetadataBytes);
     return typeof repositoryInfo.default_branch === "string" && repositoryInfo.default_branch ? repositoryInfo.default_branch : undefined;
-  } catch {
-    // 仓库信息读取失败不阻断既有错误上报。
-    return undefined;
+  } catch (error) {
+    // Only an absent repository may retain the earlier missing-branch error.
+    // Network/auth/rate-limit failures are not evidence for another branch.
+    if (isHttp404(error)) return undefined;
+    throw error;
   }
 }
 

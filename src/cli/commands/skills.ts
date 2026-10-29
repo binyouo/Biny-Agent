@@ -175,10 +175,10 @@ async function skillInstallCommand(source: string, options: SkillOutputOptions =
   if (!owner || !repositoryName || (parts.length > 2 && (parts[2] !== "tree" || !parts[3]))) throw new Error("Use owner/repository@skill or a GitHub tree URL.");
   const branch = parts[3] ?? "main";
   const directory = parts.length > 4 ? parts.slice(4).join("/") : undefined;
-  const result = await discoverSkillRepositories({ repositories: [{ owner, name: repositoryName, branch, enabled: true }] });
+  const result = await discoverSkillRepositories({ repositories: [{ owner, name: repositoryName, branch, enabled: true }], allowBranchFallback: parts[3] === undefined });
   const candidates = result.skills.filter((skill) => (!selectedName || skill.name === selectedName) && (!directory || skill.directory === directory));
   if (candidates.length !== 1) throw new Error(candidates.length ? `Choose a Skill with @name: ${candidates.map((skill) => skill.name).join(", ")}` : `Skill not found. ${result.warnings.join(" ")}`);
-  const installed = await installDiscoveredSkill({ skill: candidates[0]! });
+  const installed = await installDiscoveredSkill({ skill: candidates[0]!, allowBranchFallback: false });
   if (options.json) { console.log(JSON.stringify(installed)); return; }
   console.log(`Installed ${installed.name}: ${installed.version.revision} at ${installed.installedPath}`);
   console.log(`Environment check: ${installed.diagnostic.status}. Run biny skill check ${installed.name} for details.`);
