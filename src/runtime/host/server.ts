@@ -1,120 +1,41 @@
-import { maskingOverview, maskingDetail, clearMaskRecords } from "../../privacy/record.js";
-import { forkSession } from "../../session/fork.js";
-import { isDeepStrictEqual } from "node:util";
-import { validateRunOptions, type RunCommandOptions } from "../oneShot.js";
 /**
  * Runtime Host Server：连接接入、请求入口和 owner 侧事件发布。
  *
  * 生命周期由 lifecycle/bootstrap 负责，业务调度器由 composition 负责，线协议由 protocol 负责。
  */
 import { randomUUID } from "node:crypto";
-import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
-import { hasReflectionDate, markReflectionDate, readReflectionDiary, reflectionDiaryPath } from "../../agent/context/reflectionDates.js";
-import { TaskCommunication } from "../TaskCommunication.js";
-import { planStatus } from "../../extensions/plan.js";
 import net from "node:net";
-import { performance } from "node:perf_hooks";
-import { RuntimeHostProtocolMismatchError } from "./errors.js";
 import path from "node:path";
-import {
-  chatPersonalizationOverridePatchSchema,
-  memoryPolicySchema,
-} from "../../personalization/index.js";
-import type { AgentSessionInfo } from "../../agent/AgentSession.js";
-import type { AgentTurnCancellationReason } from "../../agent/types.js";
-import type { CommandRuntime } from "../CommandRuntime.js";
-import { AutomationTargetBusyError } from "../AutomationScheduler.js";
-import type {
-  AgentRunOutcome,
-  InteractiveRuntimeHandle,
-  SubmittedAgentRun
-} from "../InteractiveAgentRuntime.js";
-import { runtimeIsBusy, type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../agentEvents.js";
-import { isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "../TaskRunStore.js";
-import { evaluateTaskRetry } from "../TaskRetryPolicy.js";
-import type {
-  CapabilityRegistrationInput,
-  CapabilityStore
-} from "../CapabilityStore.js";
-import { cancelRuntimeGraph, executeRuntimeCommand, runtimeCommandOperation } from "../commands.js";
-import { SessionWriterConflictError } from "../SessionLease.js";
-import type { SessionGoalExpected } from "../SessionGoalStore.js";
-import { agentDir } from "../../session/store.js";
-import {
-  authenticateRuntimeHostHello
-} from "./credentials.js";
-import {
-  createRuntimeHostBusinessComposition,
-  type RuntimeHostBusinessComposition
-} from "./composition.js";
-import {
-  runtimeHostEventHistoryLimit as eventHistoryLimit,
-  runtimeHostJournalFile as hostJournalFile,
-  runtimeHostProtocolVersion as protocolVersion,
-  runtimeHostCapabilities as hostCapabilities,
-  negotiateRuntimeHostCapabilities,
-  decodeHostFrame,
-  isHelloFrame,
-  isRequestFrame,
-  type HostFrame,
-  type HostRequestFrame
-} from "./protocol.js";
-import { OperationCompletion, OperationDispatcher, operationLane, operationLaneKey, commandWritesSession } from "./operations.js";
-import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.js";
-import {
-  RuntimeHostAdmission,
-  isRuntimeHostAdmissionOperation
-} from "./admission.js";
-import { executeRuntimeHostMemoryOperation } from "./memory-operations.js";
-import {
-  asRecord,
-  optionalSafeInteger,
-  optionalString,
-  publicError,
-  publicErrorCode,
-  publicErrorData,
-  readAttachments,
-  readCapabilitySelection,
-  readFastMode,
-  readAutomationCreateInput,
-  readCapabilityOwnerType,
-  readLocalEmbeddingModel,
-  readModelRoute,
-  readOptionalRunStatus,
-  readOptionalTaskStatus,
-  readTaskRetrySafety,
-  readPermissionMode,
-  readPermissionResult,
-  readPromptContext,
-  readRequestIds,
-  readRuntimeIsolation,
-  readSurface,
-  readStringArray,
-  readThinking,
-  requiredInteger,
-  requiredString
-} from "./validation.js";
-import { isNotFound, removeRegistration, secureRuntimeSocket } from "./lifecycle.js";
-import type { HostOperationResult, HostRegistration, HostSurface, RuntimeHostFactory, RuntimeHostInfo, RuntimeHostStatus, RuntimeHostFactoryOptions, RuntimeHostLock } from "./types.js";
-import { RuntimeHostResourceRegistry } from "./resources.js";
-import { RuntimeHostEventJournal } from "./journal.js";
-import { listSessionFiles, sessionIdFromFile } from "../../session/store.js";
-import { readSessionCatalogRecord, writeSessionCatalogRecord } from "../../session/catalog.js";
-import { WorktreeDirtyError, WorktreeManager } from "./worktree.js";
-import { RuntimeHostFrameDecoder } from "./framing.js";
-import { BoundedHostSocketWriter } from "./socket-writer.js";
-import { projectBashEventFrameForTransport } from "./bash-event-projection.js";
-import { approveTaskVerification, type TaskClosureResult } from "../TaskClosure.js";
-import { readTaskDefinition } from "../taskVerification.js";
-import { ConversationMarkdownMirror } from "../../session/markdownArchive.js";
+import { performance } from "node:perf_hooks";
+import { agentDir, sessionIdFromFile } from "../../session/store.js";
 import type { BrowserAutomationEndpoint } from "../../tools/browser.js";
+import { redactSecrets } from "../../utils/redaction.js";
+import { type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../agentEvents.js";
+import type { CommandRuntime } from "../CommandRuntime.js";
+import type { AgentRunOutcome, InteractiveRuntimeHandle, SubmittedAgentRun } from "../InteractiveAgentRuntime.js";
+import { SessionWriterConflictError } from "../SessionLease.js";
+import { RuntimeHostAdmission, isRuntimeHostAdmissionOperation } from "./admission.js";
+import { projectBashEventFrameForTransport } from "./bash-event-projection.js";
+import { authenticateRuntimeHostHello } from "./credentials.js";
+import { RuntimeHostProtocolMismatchError } from "./errors.js";
+import { RuntimeHostFrameDecoder } from "./framing.js";
+import { RuntimeHostEventJournal } from "./journal.js";
+import { removeRegistration, secureRuntimeSocket } from "./lifecycle.js";
+import { OperationCompletion, OperationDispatcher, operationLane, operationLaneKey } from "./operations.js";
+import { decodeHostFrame, runtimeHostEventHistoryLimit as eventHistoryLimit, runtimeHostCapabilities as hostCapabilities, runtimeHostJournalFile as hostJournalFile, isHelloFrame, isRequestFrame, negotiateRuntimeHostCapabilities, runtimeHostProtocolVersion as protocolVersion, type HostFrame } from "./protocol.js";
+import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.js";
+import type { RuntimeHostResourceRegistry } from "./resources.js";
+import { BoundedHostSocketWriter } from "./socket-writer.js";
+import type { HostOperationResult, HostRegistration, HostSurface, RuntimeHostFactory, RuntimeHostInfo, RuntimeHostLock, RuntimeHostStatus } from "./types.js";
+import { asRecord, optionalString, publicError, publicErrorCode, publicErrorData, requiredString } from "./validation.js";
 
-interface HostConnection {
+export interface HostConnection {
   socket: net.Socket;
   writer: BoundedHostSocketWriter;
   clientId: string;
   surface: HostSurface;
   subscribed: boolean;
+  hostSubscribed?: boolean;
   /** Suppress only sequenced live events while this owner catches up; completions remain live. */
   eventReplay?: AbortController;
   authenticated: boolean;
@@ -136,66 +57,48 @@ interface PendingOwnerNotification {
   timeout: ReturnType<typeof setTimeout>;
 }
 
-function readSessionFilter(value: unknown): ReadonlySet<string> | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some((sessionId) => typeof sessionId !== "string" || !sessionId.trim())) {
-    throw new Error("Runtime Host subscribe sessions must be a string array.");
-  }
-  return new Set(value);
-}
-
-function readBrowserAutomationEndpoint(value: unknown): BrowserAutomationEndpoint | undefined {
-  if (value === undefined || value === null) return undefined;
-  const record = asRecord(value);
-  return {
-    endpoint: requiredString(record.endpoint, "browserAutomation.endpoint"),
-    token: requiredString(record.token, "browserAutomation.token"),
-    projectId: optionalString(record.projectId)
-  };
-}
-
 export class RuntimeHostServer {
   private readonly server = net.createServer((socket) => this.accept(socket));
-  private readonly connections = new Set<HostConnection>();
-  /** 按会话保护正在准入、执行和收尾的写入；空闲浏览不保留客户端占用。 */
-  private readonly oneShotSessions = new Map<string, { options: RunCommandOptions; started: boolean; clientId: string }>();
-  private readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface; pendingCompletions: number }>();
-  /** 目标的发起者跨回合保留；不能用长期 writer lease 表示持续工作的归属。 */
-  private readonly sessionGoalOwners = new Map<string, { clientId: string; goalId: string }>();
-  private primaryGoalSchedulingReady = true;
+  readonly connections = new Set<HostConnection>();
+  readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface; pendingCompletions: number }>();
   private readonly history: Array<{ sequence: number; update: AgentRuntimeUpdate }> = [];
-  private sequence = 0;
+  sequence = 0;
   private eventSequenceError: RangeError | undefined;
-  private readonly dispatcher = new OperationDispatcher();
+  readonly dispatcher = new OperationDispatcher();
   /** 已解码但尚未完成准入的直接提交；run.inspect 不能把暂时缺失误判为未提交。 */
   private readonly pendingRunAdmissions = new Map<string, Set<Promise<void>>>();
   private ownerNotificationSubscriber: HostConnection | undefined;
   private readonly pendingOwnerNotifications = new Map<string, PendingOwnerNotification>();
-  /** 聊天日报刷新串行执行，但模型等待不能占据 Host 的请求准入队列。 */
-  private readonly diaryDispatcher = new OperationDispatcher();
-  private readonly businessComposition: RuntimeHostBusinessComposition;
-  private readonly conversationMirror: ConversationMarkdownMirror;
   private readonly journal: RuntimeHostEventJournal;
-  private readonly registry: SessionRuntimeRegistry;
-  private readonly worktrees: WorktreeManager;
-  private readonly admission: RuntimeHostAdmission;
+  readonly initialRegistry: SessionRuntimeRegistry | undefined;
+  private readonly initial: { runtime: InteractiveRuntimeHandle; commands: CommandRuntime } | undefined;
+  private readonly createRuntimeFactory: RuntimeHostFactory;
+  private readonly executionOptions: import("./composition.js").RuntimeHostExecutionOptions;
+  private execution: import("./composition.js").RuntimeHostExecution | undefined;
+  private get registry(): SessionRuntimeRegistry { return this.execution?.registry ?? this.initialRegistry!; }
+  private get businessComposition() { return this.execution!.businessComposition; }
+  private get conversationMirror() { return this.execution!.conversationMirror; }
+  readonly admission: RuntimeHostAdmission;
+  private readonly resumeInterrupted: boolean;
   private readonly shutdownDrainMs: number;
   private readonly onClosing: (() => void) | undefined;
-  private readonly resourceRegistry: RuntimeHostResourceRegistry;
   private readonly onBrowserAutomationChange: ((endpoint: BrowserAutomationEndpoint | undefined) => void) | undefined;
   private browserAutomationOwnerClientId: string | undefined;
-  private readonly createRuntime: RuntimeHostFactory;
-  private closePromise: Promise<void> | undefined;
-  /** 重建只锁定目标 session，不能让一个 session 的配置刷新挡住其它 session。 */
-  private readonly runtimeRestartPromises = new Map<string, Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }>>();
+  closePromise: Promise<void> | undefined;
   private listening = false;
   private endpointReady = false;
   private initialized = false;
   private initializationPromise: Promise<void> | undefined;
   private journalReady = false;
+  private sequenceRecovered = false;
+  private lifecycle: import("./types.js").RuntimeHostLifecycle = "initializing";
+  private initializationError: string | undefined;
+  private initializationCleanupError: AggregateError | undefined;
+  private readonly initializationAbort = new AbortController();
   private pendingRequests = 0;
-  private activityRevision = 0;
-  private idleSince: number | undefined;
+  private readonly requests = new Set<Promise<void>>();
+  activityRevision = 0;
+  idleSince: number | undefined;
   private retiring = false;
 
   private get runtime(): InteractiveRuntimeHandle {
@@ -207,83 +110,40 @@ export class RuntimeHostServer {
   }
 
   constructor(
-    runtime: InteractiveRuntimeHandle,
-    commands: CommandRuntime,
-    private readonly registration: HostRegistration,
+    runtime: InteractiveRuntimeHandle | undefined,
+    commands: CommandRuntime | undefined,
+    readonly registration: HostRegistration,
     private readonly lock: RuntimeHostLock,
     createRuntime: RuntimeHostFactory,
     options: {
       workspaceRoot?: string;
       sessionRuntimeCacheTarget?: number;
       shutdownDrainMs?: number;
+      resumeInterrupted?: boolean;
       resourceRegistry?: RuntimeHostResourceRegistry;
       onClosing?: () => void;
       onBrowserAutomationChange?: (endpoint: BrowserAutomationEndpoint | undefined) => void;
     } = {}
   ) {
-    this.createRuntime = async (sessionId, factoryOptions) => {
-      const host = await createRuntime(sessionId, factoryOptions);
-      this.attachOwnerNotificationSink(host.commands);
-      return host;
-    };
-    this.conversationMirror = new ConversationMarkdownMirror(registration.agentRoot);
+    this.initial = runtime && commands ? { runtime, commands } : undefined;
+    this.createRuntimeFactory = createRuntime;
+    this.resumeInterrupted = options.resumeInterrupted === true;
+    this.executionOptions = options;
     this.journal = new RuntimeHostEventJournal(path.join(agentDir(registration.persistenceRoot), "runs", hostJournalFile), eventHistoryLimit);
-    this.resourceRegistry = options.resourceRegistry ?? new RuntimeHostResourceRegistry();
-    this.worktrees = new WorktreeManager(
-      options.workspaceRoot ?? registration.persistenceRoot,
-      registration.persistenceRoot
-    );
     this.admission = new RuntimeHostAdmission();
     this.shutdownDrainMs = options.shutdownDrainMs ?? 4_000;
     this.onClosing = options.onClosing;
     this.onBrowserAutomationChange = options.onBrowserAutomationChange;
-    this.attachOwnerNotificationSink(commands);
     if (!Number.isSafeInteger(this.shutdownDrainMs) || this.shutdownDrainMs < 1) throw new Error("shutdownDrainMs must be a positive safe integer.");
-    this.registry = new SessionRuntimeRegistry({ runtime, commands }, {
-      createRuntime: this.createRuntime,
+    if (this.initial) this.initialRegistry = new SessionRuntimeRegistry(this.initial, {
+      createRuntime,
       sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
-      canEvict: (entry) => !this.oneShotSessions.has(entry.sessionId) && !this.sessionWriterOwners.has(entry.sessionId) && !this.dispatcher.hasPendingSession(entry.sessionId),
       onUpdate: (update, managed) => this.handleRuntimeUpdate(update, managed)
-    });
-    this.businessComposition = createRuntimeHostBusinessComposition({
-      onActivity: () => { this.activityRevision += 1; this.idleSince = undefined; },
-      onGraphChange: () => this.publishSnapshot(),
-      getRuntime: () => this.runtime,
-      getCommands: () => this.commands,
-      createFreshRuntime: async (sessionId) => {
-          if (sessionId !== undefined) {
-            const existing = this.registry.get(sessionId);
-            if (existing) {
-              if (runtimeIsBusy(existing.runtime.getSnapshot())) throw new AutomationTargetBusyError(sessionId);
-              return existing.runtime;
-            }
-            return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).runtime;
-          }
-          return (await this.registry.createFresh({ isolation: "shared", resourceRegistry: this.resourceRegistry })).runtime;
-        },
-      resolveSessionRuntime: async (sessionId) => {
-          const existing = this.registry.get(sessionId);
-          if (existing) return existing.runtime;
-          return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).runtime;
-        },
-      resolveSessionCommands: async (sessionId) => {
-          const existing = this.registry.get(sessionId);
-          if (existing) return existing.commands;
-          return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).commands;
-        },
-      sessionExists: async (sessionId) => this.registry.get(sessionId) !== undefined
-        || (await listSessionFiles(this.registration.persistenceRoot)).includes(`${sessionId}.jsonl`),
-      canStartAutomationRun: () => !this.admission.isDraining(),
-      canStartGoalRun: () => !this.admission.isDraining() && this.primaryGoalSchedulingReady,
-      admitGoal: async (sessionId, execute) => await this.dispatcher.dispatch("run", async () => {
-        this.assertEventSequenceAvailable();
-        this.admission.assertAdmission();
-        return await execute();
-      }, sessionId)
     });
   }
 
   startAutomationScheduler(): void {
+    if (this.closePromise || !this.initialized) return;
     this.businessComposition.start();
     void this.conversationMirror.start().catch(() => undefined);
   }
@@ -297,7 +157,7 @@ export class RuntimeHostServer {
   setBrowserAutomation(endpoint: BrowserAutomationEndpoint | undefined, ownerClientId?: string): void {
     this.browserAutomationOwnerClientId = ownerClientId;
     this.onBrowserAutomationChange?.(endpoint);
-    for (const managed of this.registry.list()) managed.commands.setBrowserAutomation?.(endpoint);
+    for (const managed of (this.registry?.list() ?? [])) managed.commands.setBrowserAutomation?.(endpoint);
   }
 
   private detachBrowserAutomationForClient(clientId: string): void {
@@ -324,7 +184,9 @@ export class RuntimeHostServer {
     return {
       endpoint: this.registration.endpoint,
       hostEpoch: this.registration.hostEpoch,
-      sequence: this.sequence,
+      sequence: this.sequenceRecovered ? this.sequence : undefined,
+      lifecycle: this.lifecycle,
+      error: this.initializationError,
       persistenceRoot: this.registration.persistenceRoot,
       protocolRevision: protocolVersion,
       capabilities: hostCapabilities
@@ -335,7 +197,7 @@ export class RuntimeHostServer {
     const journal = this.journal.status(this.sequence);
     return {
       ...this.info,
-      journal: this.eventSequenceError === undefined ? journal : {
+      journal: !this.sequenceRecovered ? { state: "initializing" } : this.eventSequenceError === undefined ? journal : {
         state: "degraded",
         sequence: this.sequence,
         persistedSequence: journal.persistedSequence,
@@ -345,14 +207,21 @@ export class RuntimeHostServer {
   }
 
   /** 载入最近的持久事件；session JSONL 和 turnStore 仍是恢复事实来源。 */
-  async initialize(): Promise<void> {
+  async initialize(createInitialRuntime?: (resources: RuntimeHostResourceRegistry, signal: AbortSignal) => Promise<import("../InteractiveAgentRuntime.js").InteractiveAgentHost>): Promise<void> {
     if (this.initialized) return;
     if (this.closePromise) throw new Error("Runtime Host is shutting down.");
-    this.initializationPromise ??= this.initializeOnce().finally(() => { this.initializationPromise = undefined; });
+    this.initializationPromise ??= this.initializeOnce(createInitialRuntime).catch(error => {
+      if (!this.closePromise) {
+        this.initializationError = redactSecrets(publicError(error));
+        this.setLifecycle("failed");
+        void this.close().catch(() => undefined);
+      }
+      throw error;
+    });
     await this.initializationPromise;
   }
 
-  private async initializeOnce(): Promise<void> {
+  private async initializeOnce(createInitialRuntime?: (resources: RuntimeHostResourceRegistry, signal: AbortSignal) => Promise<import("../InteractiveAgentRuntime.js").InteractiveAgentHost>): Promise<void> {
     if (!this.journalReady) {
       const loaded = await this.journal.initialize();
       if (this.closePromise) throw new Error("Runtime Host is shutting down.");
@@ -360,6 +229,7 @@ export class RuntimeHostServer {
       // 恢复 high-water 后再分配最终序号，不能让临时序号覆盖旧 journal 或丢失更新。
       const pendingSequence = this.sequence;
       this.sequence = loaded.sequence;
+      this.sequenceRecovered = true;
       this.assertEventSequenceAvailable();
       if (pendingSequence > Number.MAX_SAFE_INTEGER - this.sequence) throw this.markEventSequenceExhausted();
       const pending = this.history.splice(0).map((record) => ({ ...record, sequence: record.sequence + loaded.sequence }));
@@ -373,51 +243,38 @@ export class RuntimeHostServer {
       this.journalReady = true;
       if (pending.length) void this.journal.persist(this.sequence, () => this.history, true);
     }
-    await this.worktrees.reconcile();
-    if (this.closePromise) throw new Error("Runtime Host is shutting down.");
-    await this.recoverTaskRuns();
-    if (this.closePromise) throw new Error("Runtime Host is shutting down.");
-    this.initialized = true;
+    const { RuntimeHostExecution } = await import("./composition.js");
+    this.initializationAbort.signal.throwIfAborted();
+    const { RuntimeHostResourceRegistry } = await import("./resources.js");
+    const resources = this.executionOptions.resourceRegistry ?? new RuntimeHostResourceRegistry();
+    let initial = this.initial;
+    try {
+      await RuntimeHostExecution.recoverCapabilities(this.registration.persistenceRoot);
+      this.initializationAbort.signal.throwIfAborted();
+      initial ??= await createInitialRuntime!(resources, this.initializationAbort.signal);
+      this.initializationAbort.signal.throwIfAborted();
+      this.execution = new RuntimeHostExecution(this, initial.runtime, initial.commands, this.registration, this.createRuntimeFactory, { ...this.executionOptions, resourceRegistry: resources });
+      await this.execution.initialize(this.initializationAbort.signal);
+      this.initializationAbort.signal.throwIfAborted();
+      if (this.resumeInterrupted) await this.resumeInterruptedTurn();
+      this.initializationAbort.signal.throwIfAborted();
+      this.initialized = true;
+      this.setLifecycle("ready");
+    } catch (error) {
+      if (!this.execution) {
+        const results = await Promise.allSettled([initial?.runtime.close(), resources.close()]);
+        const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+        if (failures.length) this.initializationCleanupError = new AggregateError(failures, "Runtime Host initialization cleanup failed; ownership remains held until process exit.");
+      }
+      throw error;
+    }
   }
 
-  /** Host 重启后旧进程里的 bounded subagent 已不存在；只续验已有候选，其余运行中任务保守阻塞。 */
-  private async recoverTaskRuns(): Promise<void> {
-    let cursor: number | undefined;
-    do {
-      const page = this.commands.taskRuns.list({ limit: 1_000, cursor });
-      for (const task of page.tasks) {
-        const latestAttempt = task.attempts.at(-1);
-        if (task.status !== "running" && task.status !== "verifying") continue;
-        try {
-          const owner = task.sessionId === undefined
-            || task.sessionId === this.runtime.getSnapshot().info.sessionId
-            ? this.commands
-            : (await this.registry.ensure(task.sessionId, await this.factoryOptionsForSession(task.sessionId))).commands;
-          if (task.status === "running") {
-            const resumable = await owner.canResumeWorkerTask(task.taskRunId);
-            owner.taskRuns.transition(task.taskRunId, "blocked", {
-              attemptId: latestAttempt?.attemptId,
-              artifacts: latestAttempt?.artifacts,
-              verification: latestAttempt?.verification,
-              highWaterSequence: latestAttempt?.highWaterSequence,
-              failure: {
-                failureClass: resumable ? "worker_interrupted" : "unsafe_recovery",
-                message: resumable
-                  ? "Worker was interrupted with a durable checkpoint; explicit task resume is required."
-                  : "Host restarted without a safe Worker checkpoint; unknown side effects were not replayed."
-              }
-            });
-            continue;
-          }
-          // verifying 已有候选产物；恢复只能继续验收或因证据不足阻塞，不能重跑整个 Worker。
-          const started = await this.startTaskRun(task.taskRunId, owner);
-          void started.completion.catch(() => undefined);
-        } catch {
-          // 并发恢复或已完成的任务以数据库当前终态为准，不能阻止 Host 启动。
-        }
-      }
-      cursor = page.hasMore ? page.nextCursor : undefined;
-    } while (cursor !== undefined);
+  private setLifecycle(lifecycle: import("./types.js").RuntimeHostLifecycle): void {
+    this.lifecycle = lifecycle;
+    for (const connection of this.connections) {
+      if (connection.authenticated && connection.hostSubscribed) this.send(connection, { kind: "host-status", status: this.info });
+    }
   }
 
   /** 由显式恢复入口触发续跑；普通 Host 启动不会调用此方法。 */
@@ -443,33 +300,15 @@ export class RuntimeHostServer {
 
   /** 退出权威留在 Host；客户端断开不等于后台任务结束，也不能误杀另一个 surface。 */
   async retireIfIdle(graceMs = 30_000): Promise<boolean> {
-    if (this.closePromise) return false;
+    if (this.closePromise || !this.initialized) return false;
     if (this.hasRetainingConnections() || this.pendingRequests || this.businessComposition.hasActiveWork()) {
       this.idleSince = undefined;
       return false;
     }
     const revision = this.activityRevision;
-    for (const { runtime, commands } of this.registry.list()) {
-      const processes = await commands.managedProcesses.list({ includeExited: false });
-      const heartbeat = commands.heartbeat.status();
-      const snapshot = runtime.getSnapshot();
-      // 暂停队列尚未交付且只在内存中；自动退出必须等用户清空或继续。
-      const activeWork = runtimeIsBusy(snapshot)
-        || Boolean(snapshot.queuedMessages?.length)
-        || commands.hasBackgroundWork()
-        || Boolean(processes.length)
-        || heartbeat.running
-        || commands.automationStore.listPending().some((entry) => entry.status === "running")
-        || (["queued", "running", "verifying"] as const).some((status) => Boolean(commands.taskRuns.list({ status, limit: 1 }).tasks.length));
-      // 定时职责保留进程，但历史终态和等待人工处理的记录并不是执行中的工作。
-      const scheduledWork = heartbeat.enabled
-        || commands.automationStore.list().some((entry) => entry.status === "active")
-        || commands.graphs.listGraphs().some((entry) => entry.status === "running");
-      const activeGoals = commands.sessionGoals.list({ status: "active" }).length;
-      if (activeWork || scheduledWork || activeGoals) {
-        this.idleSince = undefined;
-        return false;
-      }
+    if (await this.execution!.hasRetainingWork()) {
+      this.idleSince = undefined;
+      return false;
     }
     // 上面的进程查询有 await；必须重新核对连接和活动代次，然后同步关闭 admission。
     if (this.closePromise || this.hasRetainingConnections() || this.pendingRequests || this.businessComposition.hasActiveWork() || revision !== this.activityRevision) {
@@ -512,27 +351,37 @@ export class RuntimeHostServer {
     if (this.closePromise) return await this.closePromise;
     this.closePromise = (async () => {
       this.onClosing?.();
+      if (this.lifecycle !== "failed") this.setLifecycle("closing");
+      this.initializationAbort.abort(new Error("Runtime Host is shutting down."));
       this.admission.beginDrain();
+      for (const connection of this.connections) connection.eventReplay?.abort(new Error("Runtime Host is shutting down."));
       if (this.retiring) {
         for (const connection of this.connections) {
           this.send(connection, { kind: "retired", hostEpoch: this.registration.hostEpoch, reason: "idle" });
         }
       }
-      this.businessComposition.stop();
+      this.execution?.businessComposition.stop();
       this.ownerNotificationSubscriber = undefined;
-      for (const entry of this.registry.list()) entry.commands.setOwnerNotificationSink?.(undefined);
+      for (const entry of (this.registry?.list() ?? [])) entry.commands.setOwnerNotificationSink?.(undefined);
       this.rejectPendingOwnerNotifications(new Error("Runtime Host is shutting down."));
-      for (const entry of this.registry.list()) {
+      for (const entry of (this.registry?.list() ?? [])) {
         if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun("host_shutdown");
       }
       // 执行者真正退出时由 Runtime 释放 lease，不能在取消刚发出时提前放行新 writer。
       this.sessionWriterOwners.clear();
-      this.sessionGoalOwners.clear();
-      const runtimeClose = this.registry.closeAll();
+      this.execution?.sessionGoalOwners.clear();
+      const runtimeClose = (async () => {
+        await this.initializationPromise?.catch(() => undefined);
+        this.execution?.businessComposition.stop();
+        if (this.execution) await this.execution.close();
+        else await this.initialRegistry?.closeAll();
+        if (this.initializationCleanupError) throw this.initializationCleanupError;
+      })();
+      let shutdownError: unknown;
       let shutdownTimedOut = false;
       let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
-        runtimeClose,
+        runtimeClose.catch(error => { shutdownError = error; }),
         new Promise<void>((resolve) => {
           shutdownTimer = setTimeout(() => {
             shutdownTimedOut = true;
@@ -544,8 +393,7 @@ export class RuntimeHostServer {
       if (shutdownTimer) clearTimeout(shutdownTimer);
       void runtimeClose.catch(() => undefined);
       // JSONL writer 退出后补写最后一批；派生导出失败不能阻止宿主释放连接和 owner 锁。
-      await this.conversationMirror.close().catch(() => undefined);
-      await this.resourceRegistry.close();
+
       for (const connection of this.connections) connection.socket.destroy();
       this.connections.clear();
       if (this.listening) {
@@ -555,6 +403,7 @@ export class RuntimeHostServer {
       await this.journal.close();
       // 执行者还没确认结束时不能释放 owner 锁；独立进程的硬期限会结束旧进程，再由选举清理。
       if (shutdownTimedOut) throw new Error(`Runtime Host shutdown exceeded ${String(this.shutdownDrainMs)}ms; ownership remains held until the process exits.`);
+      if (shutdownError) throw shutdownError;
       await removeRegistration(this.registration);
       await this.lock.close();
     })();
@@ -590,23 +439,23 @@ export class RuntimeHostServer {
       this.releaseOwnerNotificationConnection(connection);
       if (this.closePromise !== undefined) return;
       if (connection.authenticated && connection.surface === "desktop") this.detachBrowserAutomationForClient(connection.clientId);
-      if (connection.clientId) this.commands.capabilities.releaseOwner(connection.clientId);
-      void this.releaseSessionWriters(connection.clientId);
+      if (connection.clientId && this.execution) this.commands.capabilities.releaseOwner(connection.clientId);
+      if (this.execution) void this.releaseSessionWriters(connection.clientId);
     });
     socket.once("error", () => {
       connection.writer.dispose();
       this.connections.delete(connection);
       this.releaseOwnerNotificationConnection(connection);
       if (this.closePromise !== undefined) return;
-      if (connection.clientId) this.commands.capabilities.releaseOwner(connection.clientId);
-      void this.releaseSessionWriters(connection.clientId);
+      if (connection.clientId && this.execution) this.commands.capabilities.releaseOwner(connection.clientId);
+      if (this.execution) void this.releaseSessionWriters(connection.clientId);
     });
   }
 
-  private handleRuntimeUpdate(update: AgentRuntimeUpdate, managed?: ManagedSessionRuntime): void {
+  handleRuntimeUpdate(update: AgentRuntimeUpdate, managed?: ManagedSessionRuntime): void {
     this.activityRevision += 1;
     this.idleSince = undefined;
-    this.businessComposition.handleRuntimeUpdate(update);
+    this.execution?.businessComposition.handleRuntimeUpdate(update);
     if (managed && update.snapshot.state.kind === "idle") {
       void this.releaseIdleSessionWriter(update.snapshot.info.sessionId, managed).catch(() => undefined);
     }
@@ -638,12 +487,21 @@ export class RuntimeHostServer {
           connection.socket.destroy(new Error("Invalid Runtime Host JSON frame."));
           return;
         }
-        void this.handleFrame(connection, frame);
+        const handling = this.handleFrame(connection, frame);
+        this.requests.add(handling);
+        void handling.then(
+          () => { this.requests.delete(handling); },
+          error => { this.requests.delete(handling); connection.socket.destroy(error instanceof Error ? error : new Error(publicError(error))); }
+        );
         if (connection.socket.destroyed) return;
       }
     } catch (error) {
       connection.socket.destroy(error instanceof Error ? error : new Error(String(error)));
     }
+  }
+
+  async waitForRequests(): Promise<void> {
+    await Promise.allSettled([...this.requests]);
   }
 
   private async handleFrame(connection: HostConnection, frame: unknown): Promise<void> {
@@ -685,11 +543,13 @@ export class RuntimeHostServer {
         result: {
           hostEpoch: this.registration.hostEpoch,
           persistenceRoot: this.registration.persistenceRoot,
-          sequence: this.sequence,
+          sequence: this.sequenceRecovered ? this.sequence : undefined,
+          lifecycle: this.lifecycle,
+          error: this.initializationError,
           protocolRevision: protocolVersion,
           capabilities: hostCapabilities,
           negotiatedCapabilities: connection.negotiatedCapabilities,
-          eventCursor: this.sequence
+          eventCursor: this.sequenceRecovered ? this.sequence : undefined
         }
       });
       return;
@@ -704,8 +564,13 @@ export class RuntimeHostServer {
     this.idleSince = undefined;
     let finishPendingAdmission: (() => void) | undefined;
     try {
-      if (this.closePromise) throw new Error("Runtime Host is shutting down.");
+      if (this.closePromise && frame.operation !== "host.info" && frame.operation !== "host.subscribe") throw new Error("Runtime Host is shutting down.");
       const payload = asRecord(frame.payload);
+      if (["host.subscribe", "host.info", "client.keep-alive", "host.close"].includes(frame.operation) || !this.initialized) {
+        const result = await this.execute(connection, frame);
+        this.send(connection, { kind: "response", requestId: frame.requestId, ok: true, result });
+        return;
+      }
       const runId = optionalString(payload.runId);
       if ((frame.operation === "run.execute" || frame.operation === "run.submit" || frame.operation === "start-interrupted")
         && runId !== undefined && runId.trim()) {
@@ -765,10 +630,29 @@ export class RuntimeHostServer {
       this.pendingRequests -= 1;
       // CLI 的 Graph/审批操作也可能改变 readiness；查询本身不触发调度扫描。
       if ((frame.operation.startsWith("graph.") || frame.operation.startsWith("task.") || frame.operation.startsWith("plan."))
-        && operationLane(frame.operation) !== "query") {
+        && operationLane(frame.operation) !== "query" && this.execution) {
         this.businessComposition.scheduleGraphs();
       }
     }
+  }
+
+  async execute(connection: HostConnection, frame: import("./protocol.js").HostRequestFrame): Promise<unknown> {
+    const payload = asRecord(frame.payload);
+    if (frame.operation === "host.subscribe" || frame.operation === "host.info") {
+      if (frame.operation === "host.subscribe") connection.hostSubscribed = true;
+      return this.status;
+    }
+    if (frame.operation === "client.keep-alive") {
+      if (typeof payload.keepAlive !== "boolean") throw new Error("keepAlive must be a boolean.");
+      connection.keepAlive = payload.keepAlive;
+      return;
+    }
+    if (frame.operation === "host.close") {
+      setImmediate(() => { void this.close().catch(() => undefined); });
+      return;
+    }
+    if (!this.initialized) throw Object.assign(new Error(this.initializationError ?? "Runtime Host execution domain is not ready."), { code: "runtime_not_ready" });
+    return await this.execution!.execute(connection, frame);
   }
 
   private registerPendingRunAdmission(runId: string): () => void {
@@ -786,7 +670,7 @@ export class RuntimeHostServer {
     };
   }
 
-  private async waitForPendingRunAdmissions(runId: string): Promise<void> {
+  async waitForPendingRunAdmissions(runId: string): Promise<void> {
     let pending = this.pendingRunAdmissions.get(runId);
     while (pending !== undefined) {
       // 不拒绝的 token 只代表准入已结束；每轮重新读取，覆盖等待期间新增的同 ID 请求。
@@ -795,967 +679,7 @@ export class RuntimeHostServer {
     }
   }
 
-  private async execute(connection: HostConnection, frame: HostRequestFrame): Promise<unknown> {
-    if (this.closePromise) throw new Error("Runtime Host is shutting down.");
-    const payload = asRecord(frame.payload);
-    const admissionOperation = frame.operation === "command"
-      ? runtimeCommandOperation(requiredString(payload.input, "input")) ?? frame.operation
-      : frame.operation;
-    this.assertRequestAdmission(connection, admissionOperation);
-    const graphEventOptions = frame.operation === "graph.events" ? readGraphEventPageOptions(payload) : undefined;
-    if (frame.operation === "session.goal.get") {
-      const sessionId = optionalString(payload.sessionId) ?? this.registry.primary().sessionId;
-      const store = this.registry.get(sessionId)?.commands.sessionGoals ?? this.commands.sessionGoals;
-      return store.get(sessionId);
-    }
-    if (frame.operation === "session.fork") {
-      this.assertRequestAdmission(connection, frame.operation);
-      return await forkSession(this.registration.persistenceRoot, optionalString(payload.session), { upToEvent: optionalSafeInteger(payload.upToEvent) });
-    }
-    if (frame.operation === "session.list") return this.sessionSummaries();
-    if (frame.operation === "client.keep-alive") {
-      if (typeof payload.keepAlive !== "boolean") throw new Error("keepAlive must be a boolean.");
-      connection.keepAlive = payload.keepAlive;
-      return;
-    }
-    if (frame.operation === "client.pause-owned-runs") return await this.pauseOwnedRunsForExit(connection);
-    if (frame.operation.startsWith("owner-notification.")) {
-      return await this.executeOwnerNotificationRequest(connection, frame.operation, payload);
-    }
-    if (frame.operation === "session.ensure") {
-      const runOptions = payload.runOptions as RunCommandOptions | undefined;
-      if (runOptions !== undefined) validateRunOptions(runOptions);
-      if (payload.processLifetime !== undefined && payload.processLifetime !== "runtime" && payload.processLifetime !== "execution-environment") throw new Error("Invalid process lifetime.");
-      const requestedSessionId = optionalString(payload.sessionId);
-      const requestedIsolation = readRuntimeIsolation(payload.isolation);
-      const writeIntent = payload.writeIntent === true;
-      const sessionId = requestedSessionId ?? (requestedIsolation === "worktree" ? randomUUID() : undefined);
-      if (writeIntent && sessionId !== undefined) this.assertSessionWriterAvailable(connection, sessionId);
-      if (sessionId !== undefined) await this.runtimeRestartPromises.get(sessionId);
-      const resident = sessionId === undefined ? undefined : this.registry.get(sessionId);
-      // 注册表中的实例已经确认过 checkout 绑定。普通发送复用它，不再枚举整个会话目录；
-      // 显式更改隔离方式仍走下方完整校验，写入者仍需取得真实 session lease。
-      if (resident && runOptions) throw new Error("Run overrides require a new session.");
-      if (resident && requestedIsolation === undefined) {
-        this.registry.touch(resident.sessionId);
-        if (writeIntent) await this.claimSessionWriter(connection, resident.sessionId);
-        return {
-          sessionId: resident.sessionId,
-          snapshot: resident.runtime.getSnapshot(),
-          sessions: this.sessionSummaries(),
-          sequence: this.sequence
-        };
-      }
-      const catalog = sessionId === undefined
-        ? undefined
-        : await readSessionCatalogRecord(this.registration.persistenceRoot, sessionId);
-      let sessionFileExists = false;
-      if (sessionId !== undefined) {
-        try {
-          sessionFileExists = (await listSessionFiles(this.registration.persistenceRoot)).includes(`${sessionId}.jsonl`);
-        } catch (error) {
-          if (!isNotFound(error)) throw error;
-        }
-      }
-      if (runOptions && sessionFileExists) throw new Error("Run overrides require a new session.");
-      const worktree = sessionId === undefined ? undefined : await this.worktrees.get(sessionId);
-      // 物理 worktree 是 catalog 写入失败后的最后事实来源；一旦 session 已有 runtime，
-      // isolation 也不能靠传入的新参数静默改写，否则同一份 transcript 会同时绑定两个 checkout。
-      const configuredIsolation = worktree === undefined ? catalog?.isolation ?? "shared" : "worktree";
-      if (requestedIsolation !== undefined && requestedIsolation !== configuredIsolation
-        && (catalog !== undefined || worktree !== undefined || sessionFileExists || (sessionId !== undefined && this.registry.get(sessionId) !== undefined))) {
-        throw new Error(`Session ${sessionId} is already configured for ${configuredIsolation} isolation.`);
-      }
-      const isolation = requestedIsolation ?? configuredIsolation;
-      const existing = sessionId === undefined ? undefined : this.registry.get(sessionId);
-      if (existing !== undefined && !this.runtimeMatchesIsolation(existing.runtime, isolation, worktree)) {
-        throw new Error(`Session ${sessionId} is already attached to a different checkout; isolation is immutable while it is active.`);
-      }
-      const factoryOptions = isolation === "worktree"
-        ? await this.prepareWorktreeSession(sessionId!, catalog, !sessionFileExists)
-        : requestedSessionId === undefined
-          ? undefined
-          : { sessionId: requestedSessionId, fresh: !sessionFileExists, isolation: "shared" as const };
-      const managed = requestedSessionId === undefined
-        ? await this.registry.createFresh({ sessionId, ...factoryOptions, isolation, runOptions, processLifetime: payload.processLifetime, resourceRegistry: this.resourceRegistry })
-        : await this.registry.ensure(requestedSessionId, { ...factoryOptions, runOptions, processLifetime: payload.processLifetime, resourceRegistry: this.resourceRegistry });
-      if (runOptions) {
-        if (connection.socket.destroyed) {
-          await this.registry.closeSession(managed.sessionId);
-          throw new Error("One-shot caller disconnected before preparation completed.");
-        }
-        this.oneShotSessions.set(managed.sessionId, { options: structuredClone(runOptions), started: false, clientId: connection.clientId });
-      }
-      if (writeIntent) {
-        this.assertSessionWriterAvailable(connection, managed.sessionId);
-        // 新 session 还没有 JSONL 时，runtime 尚未能建立文件 lease；先登记连接 owner，
-        // 首次 submit 会建立执行 lease，本次探测结束前就清掉这份短期意图。
-        if (sessionFileExists) {
-          await this.claimSessionWriter(connection, managed.sessionId);
-        } else {
-          this.sessionWriterOwners.set(managed.sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
-        }
-      }
-      return {
-        sessionId: managed.sessionId,
-        snapshot: managed.runtime.getSnapshot(),
-        sessions: this.sessionSummaries(),
-        sequence: this.sequence
-      };
-    }
-    if (frame.operation === "session.close") {
-      const sessionId = requiredString(payload.sessionId, "sessionId");
-      if ((await this.worktrees.get(sessionId))?.taskRunId) throw new Error("Task worktrees must be managed through their task, not closed as interactive sessions.");
-      this.assertSessionWriterAvailable(connection, sessionId);
-      await this.registry.closeSession(sessionId);
-      this.oneShotSessions.delete(sessionId);
-      if (this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) {
-        this.sessionWriterOwners.delete(sessionId);
-      }
-      try {
-        await this.worktrees.remove(sessionId, true);
-      } catch (error) {
-        if (!(error instanceof WorktreeDirtyError)) throw error;
-        return { worktreeKept: true, reason: error.message };
-      }
-      return undefined;
-    }
-    if (frame.operation === "worktree.list") return await this.worktrees.list();
-    if (frame.operation === "worktree.status") return await this.worktrees.status(optionalString(payload.sessionId));
-    if (frame.operation === "worktree.merge") {
-      const sessionId = requiredString(payload.sessionId, "sessionId");
-      const record = await this.assertTaskWorktreeIdle(sessionId);
-      if (record?.taskRunId) {
-        for (const parent of this.registry.list().filter(entry => entry.commands.workspaceRoot === (record.sourceRoot ?? this.worktrees.repoRoot))) {
-          this.assertSessionWriterAvailable(connection, parent.sessionId);
-          if (parent.runtime.getSnapshot().state.kind !== "idle") throw new Error("Cannot merge into a busy parent workspace.");
-        }
-      }
-      const managed = record?.taskRunId ? undefined
-        : this.registry.get(sessionId) ?? await this.registry.ensure(sessionId, await this.worktrees.runtimeFactoryOptions(sessionId));
-      if (managed && managed.runtime.getSnapshot().state.kind !== "idle") throw new Error(`Cannot merge a busy session runtime: ${sessionId}.`);
-      const strategy = payload.strategy === undefined ? undefined : payload.strategy === "squash" ? "squash" : payload.strategy === "merge" ? "merge" : undefined;
-      if (payload.strategy !== undefined && strategy === undefined) throw new Error("Worktree merge strategy must be merge or squash.");
-      const deleteAfter = payload.deleteAfter === true;
-      if (deleteAfter && managed?.primary) throw new Error("The primary Runtime Host session cannot remove its worktree runtime.");
-      if (deleteAfter && managed && !managed.primary) {
-        this.assertSessionWriterAvailable(connection, sessionId);
-        await this.registry.closeSession(sessionId);
-        if (this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) {
-          this.sessionWriterOwners.delete(sessionId);
-        }
-      }
-      return await this.worktrees.merge(sessionId, { strategy, deleteAfter });
-    }
-    if (frame.operation === "worktree.remove") {
-      const sessionId = requiredString(payload.sessionId, "sessionId");
-      await this.assertTaskWorktreeIdle(sessionId);
-      this.assertSessionWriterAvailable(connection, sessionId);
-      const managed = this.registry.get(sessionId);
-      if (managed && managed.runtime.getSnapshot().state.kind !== "idle") throw new Error(`Cannot remove a busy session runtime: ${sessionId}.`);
-      if (managed?.primary) throw new Error("The primary Runtime Host session cannot remove its worktree runtime.");
-      if (managed) {
-        await this.registry.closeSession(sessionId);
-        if (this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) {
-          this.sessionWriterOwners.delete(sessionId);
-        }
-      }
-      await this.worktrees.remove(sessionId, payload.deleteBranch === true);
-      return undefined;
-    }
-    if (frame.operation === "privacy.overview" || frame.operation === "privacy.detail" || frame.operation === "privacy.clear") {
-      const sessionIds = this.registry.list().map((entry) => entry.runtime.getSnapshot().info.sessionId);
-      if (frame.operation === "privacy.overview") return maskingOverview(sessionIds);
-      if (frame.operation === "privacy.detail") return maskingDetail(requiredString(payload.id, "id"), sessionIds);
-      clearMaskRecords(sessionIds);
-      return undefined;
-    }
-    if (frame.operation === "snapshot") {
-      const managed = await this.runtimeEntry(frame.operation, payload);
-      return { snapshot: managed.runtime.getSnapshot(), sessions: this.sessionSummaries(), sequence: this.sequence };
-    }
-    if (frame.operation === "input.list" || frame.operation === "input.answer") {
-      const sessionId = requiredString(payload.sessionId, "sessionId");
-      const requests = this.registry.get(sessionId)?.commands.userInput;
-      if (frame.operation === "input.list") return requests?.list() ?? [];
-      if (!requests) throw new Error("User input request is no longer pending in this session.");
-      return requests.answer(sessionId, requiredString(payload.runId, "runId"), requiredString(payload.toolCallId, "toolCallId"), payload.response);
-    }
-    if (frame.operation === "task.continue") {
-      const sessionId = requiredString(payload.sessionId, "sessionId");
-      const taskRunId = requiredString(payload.taskRunId, "taskRunId");
-      const scoped = new TaskCommunication(this.commands.taskRuns, sessionId);
-      try { scoped.read(taskRunId); } finally { scoped.close(); }
-      const resident = await this.registry.ensure(sessionId);
-      return await resident.commands.continueTaskRun(taskRunId, requiredString(payload.message, "message"), optionalString(payload.messageId));
-    }
-    if (frame.operation === "task.message" || frame.operation === "task.wait" || frame.operation === "task.inspect") {
-      const sessionId = requiredString(payload.sessionId, "sessionId");
-      const resident = this.registry.get(sessionId);
-      const communication = resident?.commands.taskCommunication ?? new TaskCommunication(this.commands.taskRuns, sessionId);
-      const taskRunId = requiredString(payload.taskRunId, "taskRunId");
-      communication.read(taskRunId);
-      if (frame.operation === "task.message") {
-        if (!resident?.commands.taskCommunication) throw new Error("Task has no resident Worker; use explicit task resume before sending messages.");
-        return communication.send(taskRunId, requiredString(payload.message, "message"), optionalString(payload.messageId));
-      }
-      try {
-        if (frame.operation === "task.inspect") return await communication.inspect(taskRunId, {
-          attemptId: optionalString(payload.attemptId), afterSequence: optionalSafeInteger(payload.afterSequence),
-          afterRevision: optionalSafeInteger(payload.afterRevision), limit: optionalSafeInteger(payload.limit),
-          waitMs: resident ? optionalSafeInteger(payload.waitMs) : 0, summary: payload.summary === true
-        });
-        const task = await communication.wait(taskRunId, payload.waitMs as number | undefined, payload.afterRevision as number | undefined);
-        return { task, messages: communication.messages(taskRunId) };
-      } finally { if (!resident?.commands.taskCommunication) communication.close(); }
-    }
-    if (frame.operation === "task.get" || frame.operation === "task.events") {
-      const taskRunId = requiredString(payload.taskRunId, "taskRunId");
-      const commands = await this.taskReadEntry(payload, taskRunId);
-      return frame.operation === "task.get"
-        ? commands.taskRuns.get(taskRunId)
-        : commands.taskRuns.events(taskRunId, optionalSafeInteger(payload.limit) ?? 100);
-    }
-    const graphRead = frame.operation === "graph.inspect" || frame.operation === "graph.list" || frame.operation === "graph.events";
-    // Keep every revision-bearing command on its original route. A cold target has no
-    // live revision, and its reconstruction must not depend on a borrowed read connection.
-    const graphReadCommand = frame.operation === "command" && payload.expectedRevision === undefined
-      && (admissionOperation === "graph.inspect" || admissionOperation === "graph.events");
-    if (graphRead || graphReadCommand) {
-      const query = await this.graphReadEntry(payload, graphRead ? optionalString(payload.graphId) : undefined);
-      if (graphRead) {
-        if (frame.operation === "graph.list") return query.commands.graphs.listGraphs();
-        const graphId = requiredString(payload.graphId, "graphId");
-        return frame.operation === "graph.inspect"
-          ? query.commands.graphs.inspectGraph(graphId)
-          : query.commands.graphs.listGraphEvents(graphId, graphEventOptions);
-      }
-      const source = readSurface(payload.source ?? connection.surface);
-      this.assertRequestAdmission(connection, admissionOperation);
-      return await executeRuntimeCommand(query.runtime ?? this.runtime, query.commands,
-        requiredString(payload.input, "input"), source === "desktop" ? "desktop" : "tui");
-    }
-    if (frame.operation === "run.inspect") {
-      // 先排空已收到的同 run 准入，再让持久 authority 确定真实 owner 和运行状态。
-      await this.waitForPendingRunAdmissions(requiredString(payload.runId, "runId"));
-    }
-    const managed = await this.runtimeEntry(frame.operation, payload);
-    this.assertRequestAdmission(connection, admissionOperation);
-    const runtime = managed.runtime;
-    const commands = managed.commands;
-    switch (frame.operation) {
-      case "session.command": {
-        const command = requiredString(payload.command, "command");
-        const scope = optionalString(payload.scope);
-        if (command === "AskUserQuestion") {
-          if (!runtime.requestUserInput) throw new Error("Interactive questions are unavailable in this runtime.");
-          return new OperationCompletion(runtime.requestUserInput(payload.input, scope));
-        }
-        const execute = async (signal?: AbortSignal) => {
-          const result = await commands.sessionCommand(command, payload.input, scope, optionalSafeInteger(payload.revision), signal);
-          this.publishSnapshot(runtime);
-          return result;
-        };
-        if (scope !== undefined && command !== "ToolCall" || command === "TodoShow" || command === "GoalGet" || command === "PlanStatus") return await execute();
-        await this.ensureSessionWriter(connection, runtime);
-        if (command === "ToolCall") {
-          const controller = new AbortController();
-          const disconnected = (): void => controller.abort(new Error("Tool caller disconnected."));
-          connection.socket.once("close", disconnected);
-          if (connection.socket.destroyed) disconnected();
-          const completion = runtime.runExclusiveOperation("tool", signal => execute(AbortSignal.any([signal, controller.signal])))
-            .finally(() => connection.socket.off("close", disconnected));
-          return new OperationCompletion(completion);
-        }
-        return new OperationCompletion(runtime.runExclusiveOperation("plan", execute));
-      }
-      case "plan.list": {
-        const sessionId = runtime.getSnapshot().info.sessionId;
-        return commands.graphs.listSupervisedGraphIds(sessionId)
-          .map((graphId) => planStatus(commands, graphId, sessionId));
-      }
-      case "session.goal.set":
-        return await this.executeAdmission(async () => {
-          const goal = commands.sessionGoals.set(runtime.getSnapshot().info.sessionId, requiredString(payload.objective, "objective"), {
-            tokenBudget: readGoalTokenBudget(payload.tokenBudget), expected: readGoalExpected(payload.expected)
-          });
-          if (connection.clientId) this.sessionGoalOwners.set(goal.sessionId, { clientId: connection.clientId, goalId: goal.goalId });
-          this.businessComposition.scheduleGoals();
-          this.publishSnapshot(runtime);
-          return goal;
-        }, runtime);
-      case "session.goal.resume":
-        return await this.executeAdmission(async () => {
-          const goal = commands.sessionGoals.resume(runtime.getSnapshot().info.sessionId, readGoalExpected(payload.expected));
-          if (connection.clientId) this.sessionGoalOwners.set(goal.sessionId, { clientId: connection.clientId, goalId: goal.goalId });
-          this.businessComposition.scheduleGoals();
-          this.publishSnapshot(runtime);
-          return goal;
-        }, runtime);
-      case "session.goal.pause":
-      case "session.goal.clear":
-        return await this.executeControl(async () => {
-          const sessionId = runtime.getSnapshot().info.sessionId;
-          const expected = readGoalExpected(payload.expected);
-          const previous = commands.sessionGoals.get(sessionId);
-          const goal = frame.operation === "session.goal.pause"
-            ? commands.sessionGoals.pause(sessionId, expected)
-            : commands.sessionGoals.clear(sessionId, expected);
-          if (previous?.status === "active") runtime.cancelCurrentRun("paused");
-          if (frame.operation === "session.goal.clear") this.sessionGoalOwners.delete(sessionId);
-          this.publishSnapshot(runtime);
-          return goal;
-        }, runtime);
-      case "plan.start":
-        await this.ensureSessionWriter(connection, runtime);
-        return new OperationCompletion(runtime.runExclusiveOperation("plan", async (signal) => {
-          const revision = optionalSafeInteger(payload.revision);
-          if (revision === undefined) throw new Error("Draft revision is required.");
-          return await commands.startPlanDraft(requiredString(payload.graphId, "graphId"), revision, signal);
-        }));
-      case "subscribe":
-        return this.subscribeConnection(
-          connection,
-          optionalSafeInteger(payload.afterSequence),
-          optionalString(payload.afterHostEpoch),
-          readSessionFilter(payload.sessions)
-        );
-      case "run.execute": {
-        const options = payload.options as RunCommandOptions;
-        validateRunOptions(options);
-        await this.ensureSessionWriter(connection, runtime);
-        this.assertRequestAdmission(connection, admissionOperation);
-        const sessionId = managed.sessionId;
-        const prepared = this.oneShotSessions.get(sessionId);
-        if (!prepared || prepared.started || prepared.clientId !== connection.clientId) throw new Error("One-shot execution requires a fresh prepared session.");
-        if (!isDeepStrictEqual(prepared.options, options)) throw new Error("Run options differ from the prepared session.");
-        const input = requiredString(payload.input, "input");
-        const attachments = readAttachments(payload.attachments);
-        const runId = requiredString(payload.runId, "runId");
-        prepared.started = true;
-        return new OperationCompletion(runtime.executeOneShot(input, attachments, prepared.options, runId).finally(async () => {
-          try { await this.registry.closeSession(sessionId); }
-          finally { this.oneShotSessions.delete(sessionId); }
-        }));
-      }
-      case "run.submit": {
-        if (this.oneShotSessions.has(managed.sessionId)) throw new Error("Prepared one-shot sessions require run.execute.");
-        try {
-          this.admission.assertAdmission();
-          const snapshot = runtime.getSnapshot();
-          const expected = optionalSafeInteger(payload.expectedRevision);
-          // This result is created only here, synchronously before writer acquisition
-          // and submitPrompt. A similarly worded exception cannot claim no admission.
-          if (expected !== undefined && expected !== snapshot.revision) {
-            return {
-              accepted: false,
-              sessionId: snapshot.info.sessionId,
-              revision: snapshot.revision,
-              reason: `Runtime Host revision conflict: expected ${String(expected)}, current ${String(snapshot.revision)}.`,
-              errorCode: "run_revision_conflict_before_admission",
-              errorData: { expectedRevision: expected, currentRevision: snapshot.revision }
-            };
-          }
-          await this.ensureSessionWriter(connection, runtime);
-          this.assertRequestAdmission(connection, admissionOperation);
-          const ids = readRequestIds(payload);
-          const submitted = runtime.submitPrompt(
-            requiredString(payload.input, "input"),
-            readAttachments(payload.attachments),
-            ids,
-            readPromptContext(payload.promptContext),
-            readCapabilitySelection(payload.capabilitySelection),
-            readModelRoute(payload.modelRoute),
-            readFastMode(payload.fastMode)
-          );
-          this.trackCompletion(submitted);
-          return { accepted: true, sessionId: runtime.getSnapshot().info.sessionId, revision: runtime.getSnapshot().revision,
-            result: { runId: submitted.runId, messageId: submitted.messageId } };
-        } catch (error) {
-          return { accepted: false, sessionId: runtime.getSnapshot().info.sessionId, revision: runtime.getSnapshot().revision,
-            reason: publicError(error), errorCode: publicErrorCode(error), errorData: publicErrorData(error) };
-        }
-      }
-      case "queue": {
-        this.assertRevision(payload, runtime);
-        await this.ensureSessionWriter(connection, runtime);
-        this.assertRequestAdmission(connection, admissionOperation);
-        const ids = readRequestIds(payload);
-        const input = requiredString(payload.input, "input");
-        const attachments = readAttachments(payload.attachments);
-        const delivery = payload.delivery === "steer" ? "steer" : "queue";
-        const queued = delivery === "steer"
-          ? runtime.steer(input, attachments, ids)
-          : runtime.enqueue(input, attachments, ids);
-        return queued;
-      }
-      case "run.queue":
-        return await this.executeAdmission(async () => {
-          this.assertRevision(payload, runtime);
-          await this.ensureSessionWriter(connection, runtime);
-          this.assertRequestAdmission(connection, admissionOperation);
-          const ids = readRequestIds(payload);
-          const input = requiredString(payload.input, "input");
-          const attachments = readAttachments(payload.attachments);
-          const delivery = payload.delivery === "steer" ? "steer" : "queue";
-          return delivery === "steer"
-            ? runtime.steer(input, attachments, ids)
-            : runtime.enqueue(input, attachments, ids);
-        }, runtime);
-      case "run.queue.mutate": {
-        this.assertRevision(payload, runtime);
-        const action = requiredString(payload.action, "action");
-        if (action === "send-all" || action === "steer") this.assertEventSequenceAvailable();
-        await this.ensureSessionWriter(connection, runtime);
-        if (action === "send-all") {
-          if (!runtime.sendQueuedRunMessagesNow) throw new Error("Queued message controls are unavailable.");
-          await runtime.sendQueuedRunMessagesNow();
-          return undefined;
-        }
-        const messageId = requiredString(payload.messageId, "messageId");
-        if (action === "update") {
-          if (!runtime.updateQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
-          if (typeof payload.input !== "string") throw new Error("Runtime Host field input must be a string.");
-          // The runtime rejects an empty edit unless this queued item retains attachments.
-          await runtime.updateQueuedRunMessage(messageId, payload.input);
-          return undefined;
-        }
-        if (action === "remove") {
-          if (!runtime.removeQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
-          await runtime.removeQueuedRunMessage(messageId);
-          return undefined;
-        }
-        if (action === "move") {
-          if (!runtime.moveQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
-          await runtime.moveQueuedRunMessage(
-            messageId,
-            requiredString(payload.targetMessageId, "targetMessageId"),
-            payload.placeAfter === true
-          );
-          return undefined;
-        }
-        if (action === "steer") {
-          if (!runtime.steerQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
-          await runtime.steerQueuedRunMessage(messageId);
-          return undefined;
-        }
-        throw new Error(`Unknown queued message action: ${action}.`);
-      }
-      case "session.claim":
-        await this.claimSessionWriter(connection, requiredString(payload.session, "session"));
-        return undefined;
-      case "session.release":
-        await this.releaseSessionWriter(connection, optionalString(payload.session));
-        return undefined;
-      case "resume":
-        this.assertRevision(payload, runtime);
-        await this.claimSessionWriter(connection, requiredString(payload.session, "session"));
-        return await runtime.resumeSession(requiredString(payload.session, "session"));
-      case "message.version":
-        return await this.executeControl(async () => {
-          await this.ensureSessionWriter(connection, runtime);
-          this.assertRevision(payload, runtime);
-          const direction = payload.direction === "prev" || payload.direction === "next" ? payload.direction : undefined;
-          if (direction === undefined) throw new Error("Message version direction must be prev or next.");
-          await runtime.switchMessageVersion(requiredString(payload.messageId, "messageId"), direction);
-          return undefined;
-        }, runtime);
-      case "start-interrupted": {
-        this.assertRevision(payload, runtime);
-        await this.ensureSessionWriter(connection, runtime);
-        this.assertRequestAdmission(connection, admissionOperation);
-        if (payload.mode !== undefined && payload.mode !== "exact" && payload.mode !== "newTurn") {
-          throw new Error("Invalid interrupted turn mode.");
-        }
-        const submitted = await runtime.startInterruptedTurn(readRequestIds(payload), payload.mode === "newTurn" ? "newTurn" : "exact");
-        if (submitted) this.trackCompletion(submitted);
-        return submitted === undefined
-          ? undefined
-          : { runId: submitted.runId, messageId: submitted.messageId };
-      }
-      case "cancel": {
-        // 取消可绕过滞后的 revision，但必须绑定具体 run，不能让迟到请求影响后续运行。
-        const reason = readCancellationReason(payload.reason);
-        this.pauseGoalForRun(runtime, commands, requiredString(payload.runId, "runId"));
-        return runtime.cancelRun(
-          requiredString(payload.runId, "runId"),
-          reason
-        );
-      }
-      case "permission":
-        this.assertRevision(payload, runtime);
-        runtime.answerPermission(requiredString(payload.requestId, "requestId"), readPermissionResult(payload.result));
-        return undefined;
-      case "run.cancel":
-        return await this.executeControl(async () => {
-          // 取消与运行状态更新并发到达时，不用 revision 拒绝同一 run，但不允许旧请求取消新 run。
-          const runId = requiredString(payload.runId, "runId");
-          const reason = readCancellationReason(payload.reason);
-          this.pauseGoalForRun(runtime, commands, runId);
-          const accepted = runtime.cancelRun(runId, reason);
-          if (!accepted) throw new Error(`Run ${runId} is not active.`);
-          return { runId };
-        }, runtime);
-      case "run.permission":
-        return await this.executeControl(async () => {
-          this.assertRevision(payload, runtime);
-          runtime.answerPermission(requiredString(payload.requestId, "requestId"), readPermissionResult(payload.result));
-          return { requestId: requiredString(payload.requestId, "requestId") };
-        }, runtime);
-      case "run.continue":
-        return await this.executeAdmission(async () => {
-          await this.ensureSessionWriter(connection, runtime);
-          this.assertRequestAdmission(connection, admissionOperation);
-          return await this.continueRun(payload, runtime, commands);
-        }, runtime);
-      case "run.inspect": {
-        const authority = commands.runtimeAuthority;
-        if (!authority) return undefined;
-        return authority.getRun(requiredString(payload.runId, "runId"));
-      }
-      case "run.list": {
-        const authority = commands.runtimeAuthority;
-        if (!authority) return { runs: [], hasMore: false };
-        return authority.listRuns({
-          sessionId: optionalString(payload.sessionId),
-          status: readOptionalRunStatus(payload.status),
-          limit: optionalSafeInteger(payload.limit),
-          cursor: optionalString(payload.cursor)
-        });
-      }
-      case "runtime.events": {
-        const authority = commands.runtimeAuthority;
-        if (!authority) return { events: [], hasMore: false, gap: false };
-        return authority.readEvents({
-          afterSequence: optionalSafeInteger(payload.afterSequence),
-          limit: optionalSafeInteger(payload.limit),
-          runId: optionalString(payload.runId),
-          sessionId: optionalString(payload.sessionId)
-        });
-      }
-      case "task.create":
-        return await this.executeAdmission(async () => {
-          const task = commands.taskRuns;
-          readTaskDefinition(payload.task);
-          const record = task.create({
-            task: payload.task,
-            taskRunId: optionalString(payload.taskRunId),
-            sessionId: optionalString(payload.sessionId) ?? runtime.getSnapshot().info.sessionId,
-            parentRunId: optionalString(payload.parentRunId)
-          });
-          return record;
-        }, runtime);
-      case "reflection.run":
-        return await this.executeAdmission<{ dateKey: string; path: string; written: boolean; reason?: string; runId?: string }>(async () => {
-          const dateKey = requiredString(payload.dateKey, "dateKey");
-          const diaryPath = reflectionDiaryPath(dateKey);
-          const existing = await readReflectionDiary(dateKey);
-          const legacy = readDailyMemorySection(await readDailyMemoryNote(dateKey) ?? "", "自我反思");
-          if (!payload.force && (existing || legacy || await hasReflectionDate(dateKey))) {
-            return { dateKey, path: diaryPath, written: false, reason: "up_to_date" };
-          }
-          await this.ensureSessionWriter(connection, runtime);
-          this.assertRequestAdmission(connection, admissionOperation);
-          const submitted = runtime.submitPrompt(
-            `Use the self-reflection skill to write your diary for ${dateKey}. Read the day's conversations and your emotions yourself, then write the diary with the normal tools.\n` +
-            `Write the complete diary to ${diaryPath}. Keep it separate from memory/${dateKey}.md, which contains daily notes and activity records.\n` +
-            `${payload.force ? "Rewrite the existing reflection for this date." : "If this date already has a diary, do not duplicate it."}\n` +
-            `Complete this in the current turn; do not call biny reflection run or biny diary refresh.`,
-            [], readRequestIds(payload), undefined,
-            { tools: commands.config.chat.defaultToolSelection, skills: ["self-reflection"] }
-          );
-          this.trackCompletion(submitted);
-          return new OperationCompletion(submitted.completion.then(async outcome => {
-            if (outcome.status !== "completed") throw new Error(outcome.error ?? "Self-reflection did not complete.");
-            const reflection = await readReflectionDiary(dateKey);
-            if (reflection && reflection !== existing) await markReflectionDate(dateKey);
-            return { dateKey, path: diaryPath, runId: submitted.runId, written: Boolean(reflection) && reflection !== existing };
-          }));
-        }, runtime);
-      case "diary.refresh": {
-        const sessionId = managed.sessionId;
-        return new OperationCompletion(this.diaryDispatcher.dispatch("mutation", async () => {
-          // 前一次模型调用期间可能已关闭 Host 或重建 session；未开跑的请求不能使用旧 commands。
-          if (this.closePromise) throw new Error("Runtime Host is shutting down.");
-          if (connection.exitingForPause) throw new Error("This Runtime Host client is exiting and cannot start new work.");
-          this.admission.assertAdmission();
-          const current = await this.runtimeEntry(frame.operation, { sessionId });
-          return await this.executeAdmission(async () => await current.commands.refreshDailyDiary(
-            requiredString(payload.dateKey, "dateKey"), { force: payload.force === true }
-          ), current.runtime);
-        }));
-      }
-      case "heartbeat.status":
-        return commands.heartbeat.status();
-      case "heartbeat.run":
-        return await this.executeAdmission(async () => new OperationCompletion(commands.heartbeat.triggerNow().then(
-          (triggered) => ({ triggered, status: commands.heartbeat.status() })
-        )), runtime);
-      case "task.start":
-        return await this.executeAdmission(async () => {
-          const started = await this.startTaskRun(requiredString(payload.taskRunId, "taskRunId"), commands, {
-            retrySafety: readTaskRetrySafety(payload.retrySafety)
-          });
-          return commands.taskRuns.get(started.task.taskRunId);
-        }, runtime);
-      case "task.run":
-        return await this.executeAdmission(async () => {
-          const taskRunId = requiredString(payload.taskRunId, "taskRunId");
-          const started = await this.startTaskRun(taskRunId, commands, {
-            retrySafety: readTaskRetrySafety(payload.retrySafety)
-          });
-          return new OperationCompletion(started.completion.then(() => commands.taskRuns.get(taskRunId)));
-        }, runtime);
-      case "task.cancel":
-        return await this.executeControl(async () => {
-          const taskRunId = requiredString(payload.taskRunId, "taskRunId");
-          const reason = optionalString(payload.reason) ?? "TaskRun cancelled.";
-          return commands.cancelTaskRun(taskRunId, reason);
-        }, runtime);
-      case "task.approve":
-        return await this.executeAdmission(async () => {
-          let admitted!: () => void;
-          let rejectAdmission!: (error: unknown) => void;
-          const admission = new Promise<void>((resolve, reject) => { admitted = resolve; rejectAdmission = reject; });
-          const completion = runtime.runExclusiveOperation("subagent", async () => {
-            const taskRunId = requiredString(payload.taskRunId, "taskRunId");
-            await approveTaskVerification({
-              taskRuns: commands.taskRuns,
-              taskRunId,
-              approvalId: requiredString(payload.approvalId, "approvalId"),
-              workspaceRoot: commands.workspaceRoot || this.registration.persistenceRoot,
-              ignore: commands.config.workspace.ignore ?? []
-            });
-            const started = await this.startTaskRun(taskRunId, commands);
-            // 权限校验、持久审批和派发仍在准入队列内；会话独占持续到验收结束。
-            admitted();
-            const result = await started.completion;
-            commands.graphs.projectTaskClosure(taskRunId, result);
-            return commands.taskRuns.get(taskRunId);
-          });
-          void completion.catch(rejectAdmission);
-          await admission;
-          return new OperationCompletion(completion);
-        }, runtime);
-      case "task.resume":
-        return await this.executeAdmission(async () => {
-          const started = await commands.resumeTaskRun(requiredString(payload.taskRunId, "taskRunId"));
-          return commands.taskRuns.get(started.task.taskRunId);
-        }, runtime);
-      case "task.retry":
-        return await this.executeAdmission(async () => {
-          const taskRunId = requiredString(payload.taskRunId, "taskRunId");
-          const decision = evaluateTaskRetry(commands.taskRuns.get(taskRunId));
-          if (!decision.allowed) throw new Error(`Task retry rejected (${decision.code}): ${decision.reason}`);
-          commands.taskRuns.retry(taskRunId);
-          const started = await this.startTaskRun(taskRunId, commands, { retrySafety: decision.attempt.retrySafety });
-          return commands.taskRuns.get(started.task.taskRunId);
-        }, runtime);
-      case "task.list":
-        return commands.taskRuns.list({
-          status: readOptionalTaskStatus(payload.status),
-          limit: optionalSafeInteger(payload.limit),
-          cursor: optionalSafeInteger(payload.cursor),
-          order: optionalString(payload.order) as "asc" | "desc" | undefined
-        });
-      case "automation.create":
-        return await this.executeAdmission(async () => commands.automationStore.create(readAutomationCreateInput(payload)), runtime);
-      case "automation.list":
-        return commands.automationStore.list();
-      case "automation.pause":
-        return await this.executeControl(async () => commands.automationStore.pause(requiredString(payload.automationId, "automationId")), runtime);
-      case "automation.resume":
-        return await this.executeControl(async () => commands.automationStore.resume(requiredString(payload.automationId, "automationId")), runtime);
-      case "automation.delete":
-        return await this.executeControl(async () => {
-          commands.automationStore.delete(requiredString(payload.automationId, "automationId"));
-          return undefined;
-        }, runtime);
-      case "automation.run":
-        return await this.executeAdmission(async () => {
-          return new OperationCompletion(this.businessComposition.runAutomation(requiredString(payload.automationId, "automationId")));
-        }, runtime);
-      case "automation.pending":
-        return commands.automationStore.listPending(optionalString(payload.automationId));
-      case "graph.pause":
-        return await this.executeControl(async () => commands.graphs.pauseGraph(requiredString(payload.graphId, "graphId")), runtime);
-      case "graph.resume":
-        return await this.executeAdmission(async () => {
-          const graph = commands.graphs.resumeGraph(requiredString(payload.graphId, "graphId"));
-          commands.graphs.createWake(graph.graphId, "graph_resumed");
-          return graph;
-        }, runtime);
-      case "graph.cancel":
-        return await this.executeControl(async () => await this.cancelGraph(requiredString(payload.graphId, "graphId"), runtime, commands), runtime);
-      case "capability.register":
-        return await this.executeAdmission(async () => {
-          const ownerType = readCapabilityOwnerType(payload.ownerType);
-          if (ownerType !== "client") throw new Error("Remote clients may only register client-owned capabilities.");
-          const input: CapabilityRegistrationInput = {
-            registrationId: optionalString(payload.registrationId),
-            ownerType,
-            ownerId: connection.clientId,
-            capabilityName: requiredString(payload.capabilityName, "capabilityName"),
-            schema: payload.schema,
-            expiresAt: optionalString(payload.expiresAt)
-          };
-          return commands.capabilities.register(input);
-        }, runtime);
-      case "capability.replace":
-        return await this.executeAdmission(async () => this.withCapabilityRegistrationOwner(
-          connection,
-          requiredString(payload.registrationId, "registrationId"),
-          (capabilities, registrationId) => capabilities.replace(registrationId, payload.schema, optionalString(payload.expiresAt))
-        ));
-      case "capability.admit":
-        return await this.executeAdmission(async () => this.withCapabilityRegistrationOwner(
-          connection,
-          requiredString(payload.registrationId, "registrationId"),
-          (capabilities, registrationId) => capabilities.admit(registrationId)
-        ));
-      case "capability.reject":
-        return await this.executeControl(async () => this.withCapabilityRegistrationOwner(
-          connection,
-          requiredString(payload.registrationId, "registrationId"),
-          (capabilities, registrationId) => capabilities.reject(registrationId, optionalString(payload.reason) ?? "rejected")
-        ));
-      case "capability.release":
-        return await this.executeControl(async () => this.withCapabilityRegistrationOwner(
-          connection,
-          requiredString(payload.registrationId, "registrationId"),
-          (capabilities, registrationId) => capabilities.release(registrationId, optionalString(payload.reason) ?? "released")
-        ));
-      case "capability.list":
-        return this.commands.capabilities.list(payload.ownerId === undefined ? undefined : connection.clientId);
-      case "capability.invoke":
-        return await this.executeAdmission(async () => {
-          const registrationId = requiredString(payload.registrationId, "registrationId");
-          const registration = this.commands.capabilities.get(registrationId);
-          if (!registration || registration.ownerType !== "client") {
-            throw new Error("Remote clients may only invoke client-owned capabilities.");
-          }
-          const invocation = this.commands.capabilities.invoke({
-            registrationId,
-            offerId: optionalString(payload.offerId),
-            sessionId: optionalString(payload.sessionId),
-            turnId: optionalString(payload.turnId),
-            toolCallId: optionalString(payload.toolCallId),
-            request: payload.request
-          }, optionalString(payload.invocationId));
-          const owner = [...this.connections].find((candidate) => candidate.clientId === registration.ownerId && candidate.authenticated);
-          if (owner) this.send(owner, { kind: "capability-offer", invocation, registration });
-          return invocation;
-        });
-      case "capability.accept":
-        return await this.executeAdmission(async () => this.withCapabilityOwner(connection, requiredString(payload.invocationId, "invocationId"), (capabilities, invocationId) => capabilities.accept(invocationId)));
-      case "capability.start":
-        return await this.executeAdmission(async () => this.withCapabilityOwner(connection, requiredString(payload.invocationId, "invocationId"), (capabilities, invocationId) => capabilities.start(invocationId)));
-      case "capability.result":
-        return await this.executeAdmission(async () => this.withCapabilityOwner(connection, requiredString(payload.invocationId, "invocationId"), (capabilities, invocationId) => capabilities.result(invocationId, payload.result)));
-      case "capability.chunk":
-        return await this.executeAdmission(async () => this.withCapabilityOwner(connection, requiredString(payload.invocationId, "invocationId"), (capabilities, invocationId) => capabilities.chunk(invocationId, requiredInteger(payload.chunkIndex, "chunkIndex"), payload.data, payload.final === true)));
-      case "capability.fail":
-        return await this.executeControl(async () => this.withCapabilityOwner(connection, requiredString(payload.invocationId, "invocationId"), (capabilities, invocationId) => capabilities.fail(invocationId, optionalString(payload.error) ?? "capability failed")));
-      case "capability.cancel":
-        return await this.executeControl(async () => this.withCapabilityOwner(connection, requiredString(payload.invocationId, "invocationId"), (capabilities, invocationId) => capabilities.cancel(invocationId, optionalString(payload.reason) ?? "capability cancelled")));
-      case "capability.get":
-        return commands.capabilities.getInvocation(requiredString(payload.invocationId, "invocationId"));
-      case "wait-idle":
-        if (optionalString(payload.sessionId) === undefined) {
-          await Promise.all(this.registry.list().map((entry) => entry.runtime.waitForIdle()));
-        } else {
-          await runtime.waitForIdle();
-        }
-        return undefined;
-      case "compact":
-        await this.ensureSessionWriter(connection, runtime);
-        this.assertRevision(payload, runtime);
-        return new OperationCompletion(runtime.compactConversation(optionalString(payload.hint)));
-      case "command": {
-        if (commandWritesSession(requiredString(payload.input, "input"))) await this.ensureSessionWriter(connection, runtime);
-        this.assertRevision(payload, runtime);
-        const source = readSurface(payload.source ?? connection.surface);
-        this.assertRequestAdmission(connection, admissionOperation);
-        const execution = executeRuntimeCommand(
-          runtime,
-          commands,
-          requiredString(payload.input, "input"),
-          source === "desktop" ? "desktop" : "tui"
-        ).then((result) => {
-          if (admissionOperation.startsWith("session.goal.")) {
-            const sessionId = runtime.getSnapshot().info.sessionId;
-            const goal = commands.sessionGoals.get(sessionId);
-            if (connection.clientId && goal && (admissionOperation === "session.goal.set" || admissionOperation === "session.goal.resume")) {
-              this.sessionGoalOwners.set(sessionId, { clientId: connection.clientId, goalId: goal.goalId });
-            }
-            if (admissionOperation === "session.goal.clear") this.sessionGoalOwners.delete(sessionId);
-            this.businessComposition.scheduleGoals();
-            this.publishSnapshot(runtime);
-          }
-          return result;
-        });
-        return operationLane(frame.operation, payload) === "run" ? new OperationCompletion(execution) : await execution;
-      }
-      case "agent.context":
-        return await commands.agent.contextStatus();
-      case "agent.usage":
-        return {
-          summary: commands.agent.usageSummary(),
-          report: commands.agent.usageReport(),
-          modelRequests: commands.agent.modelRequestSummary()
-        };
-      case "agent.models":
-        return commands.agent.listModels();
-      case "agent.refresh-model":
-        this.assertRevision(payload, runtime);
-        return await runtime.runExclusiveOperation("refresh_model", async () => {
-          const info = await commands.agent.refreshModelFromDisk();
-          this.publishSnapshot(runtime);
-          return info;
-        });
-      case "agent.switch-model":
-        this.assertRevision(payload, runtime);
-        return await runtime.runExclusiveOperation(
-          "switch_model",
-          async () => {
-            const info = await commands.agent.switchModel(requiredString(payload.alias, "alias"), readThinking(payload.thinking));
-            // 模型信息不一定伴随回合事件变化；主动广播才能让已连接的 App/TUI
-            // 共享同一份当前模型和思考深度，而不是只有发起请求的一侧拿到新值。
-            this.publishSnapshot(runtime);
-            return info;
-          }
-        );
-      case "agent.permission-mode":
-        this.assertRevision(payload, runtime);
-        await runtime.runExclusiveOperation(
-          "permission",
-          async () => await commands.agent.setPermissionMode(readPermissionMode(payload.mode))
-        );
-        // 权限模式是跨端共享的配置状态；模型切换后已有广播，权限切换也必须让其它
-        // 已连接的 Desktop/TUI 立即收到同一份快照。
-        this.publishSnapshot(runtime);
-        return runtime.getSnapshot().permissionMode;
-      case "agent.permission-command": {
-        this.assertRevision(payload, runtime);
-        const permissionCommandResult = await runtime.runExclusiveOperation(
-          "permission",
-          async () => await commands.agent.runPermissionCommand(readStringArray(payload.args, "args"))
-        );
-        this.publishSnapshot(runtime);
-        return permissionCommandResult;
-      }
-      case "agent.sessions":
-        return await commands.agent.listSessions();
-      case "personalization.get":
-        return await commands.agent.getPersonalizationState();
-      case "personalization.update-chat":
-        return await runtime.runExclusiveOperation(
-          "personalization",
-          async () => await commands.agent.updateChatPersonalization(
-            chatPersonalizationOverridePatchSchema.parse(payload.patch),
-            requiredString(payload.expectedRevision, "expectedRevision")
-          )
-        );
-      case "personalization.update-global": {
-        const update = asRecord(payload.update);
-        return await runtime.runExclusiveOperation(
-          "personalization",
-          async () => await commands.agent.updateGlobalPersonalization({
-            memory: update.memory === undefined
-              ? undefined
-              : memoryPolicySchema.parse(update.memory)
-          }, requiredString(payload.expectedRevision, "expectedRevision"))
-        );
-      }
-      case "skills.list":
-        return commands.listSkills();
-      case "tools.list":
-        return commands.listTools();
-      case "browser.automation.set": {
-        if (connection.surface !== "desktop") throw new Error("Only a Desktop client can manage the built-in browser capability.");
-        if (!connection.negotiatedCapabilities.includes("browser.automation.lease")) {
-          throw new Error("Runtime Host does not support browser capability leases.");
-        }
-        const browserAutomation = readBrowserAutomationEndpoint(payload.browserAutomation);
-        this.setBrowserAutomation(browserAutomation, connection.clientId);
-        return { attached: browserAutomation !== undefined };
-      }
-      case "mcp.status":
-        return commands.mcp.listServers();
-      case "mcp.details":
-        return await commands.mcp.describeServer(requiredString(payload.server, "server"));
-      case "mcp.reconnect":
-        return await runtime.runExclusiveOperation(
-          "mcp",
-          async () => await commands.mcp.reconnectServer(requiredString(payload.server, "server"))
-        );
-      case "memory":
-        return await executeRuntimeHostMemoryOperation({
-          getCommands: () => commands,
-          scheduleEmbeddingRebuild: () => this.businessComposition.scheduleMemoryEmbeddingRebuild()
-        }, payload);
-      case "memory.sleep.cancel":
-        return { cancelled: await this.businessComposition.cancelMemorySleep() };
-      case "memory.embedding.status":
-        return await commands.agent.memoryEmbeddingStatus();
-      case "memory.embedding.download":
-        await commands.agent.downloadMemoryEmbeddingModel(readLocalEmbeddingModel(payload.model));
-        return await commands.agent.memoryEmbeddingStatus();
-      case "memory.embedding.cancel-download":
-        return {
-          cancelled: await commands.agent.cancelMemoryEmbeddingDownload(readLocalEmbeddingModel(payload.model)),
-          status: await commands.agent.memoryEmbeddingStatus()
-        };
-      case "memory.embedding.delete":
-        return {
-          ...(await commands.agent.removeMemoryEmbeddingModel(readLocalEmbeddingModel(payload.model))),
-          status: await commands.agent.memoryEmbeddingStatus()
-        };
-      case "memory.embedding.rebuild":
-        await commands.agent.rebuildMemoryEmbeddingIndex();
-        return await commands.agent.memoryEmbeddingStatus();
-      case "memory.embedding.cancel-rebuild":
-        return {
-          cancelled: await commands.agent.cancelMemoryEmbeddingRebuild(),
-          status: await commands.agent.memoryEmbeddingStatus()
-        };
-      case "runtime.restart":
-        {
-          const sessionId = optionalString(payload.sessionId);
-          const target = sessionId === undefined
-            ? this.registry.primary()
-            : await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
-          this.assertRevision(payload, target.runtime);
-          // 编辑历史消息会先重建对应 AgentSession；它和 resume 一样必须先取得
-          // writer claim，否则第二个 surface 可能在重建后悄悄接管同一份 transcript。
-          if (sessionId !== undefined) await this.claimSessionWriter(connection, sessionId);
-          const result = await this.restartRuntime(sessionId);
-          if (sessionId !== undefined) {
-            this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
-          }
-          return result;
-        }
-      case "runtime.start-draft": {
-        const sessionId = optionalString(payload.sessionId);
-        const target = sessionId === undefined
-          ? this.registry.primary()
-          : await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
-        this.assertRevision(payload, target.runtime);
-        return await this.startDraftRuntime(target.sessionId);
-      }
-      case "runtime.rotate-primary": {
-        const target = this.registry.primary();
-        this.assertRevision(payload, target.runtime);
-        return await this.rotatePrimaryRuntime();
-      }
-      case "host.info":
-        return this.status;
-      default:
-        throw new Error(`Unknown Runtime Host operation: ${frame.operation}`);
-    }
-  }
-
-  private assertRequestAdmission(connection: HostConnection, operation: string): void {
+  assertRequestAdmission(connection: HostConnection, operation: string): void {
     if (!isRuntimeHostAdmissionOperation(operation)) return;
     if (connection.exitingForPause) {
       throw new Error("This Runtime Host client is exiting and cannot start new work.");
@@ -1764,14 +688,7 @@ export class RuntimeHostServer {
     this.admission.assertAdmission();
   }
 
-  private pauseGoalForRun(runtime: InteractiveRuntimeHandle, commands: CommandRuntime, runId: string): void {
-    const snapshot = runtime.getSnapshot();
-    if (snapshot.state.kind !== "runs" || snapshot.state.activeRun.runId !== runId) return;
-    const goal = commands.sessionGoals.get(snapshot.info.sessionId);
-    if (goal?.status === "active") commands.sessionGoals.pause(goal.sessionId, goal);
-  }
-
-  private async executeAdmission<T>(
+  async executeAdmission<T>(
     execute: () => Promise<T | OperationCompletion<T>>,
     runtime = this.runtime
   ): Promise<HostOperationResult<T> | OperationCompletion<HostOperationResult<T>>> {
@@ -1795,15 +712,7 @@ export class RuntimeHostServer {
     }
   }
 
-  private async startTaskRun(
-    taskRunId: string,
-    commands: CommandRuntime,
-    options: { retrySafety?: TaskRetrySafety } = {}
-  ): Promise<{ task: TaskRunWithAttempts; completion: Promise<TaskClosureResult> }> {
-    return await commands.startTaskRun(taskRunId, options);
-  }
-
-  private async executeControl<T>(execute: () => Promise<T>, runtime = this.runtime): Promise<HostOperationResult<T>> {
+  async executeControl<T>(execute: () => Promise<T>, runtime = this.runtime): Promise<HostOperationResult<T>> {
     try {
       const result = await execute();
       return { accepted: true, sessionId: runtime.getSnapshot().info.sessionId, revision: runtime.getSnapshot().revision, result };
@@ -1819,227 +728,13 @@ export class RuntimeHostServer {
     }
   }
 
-  private withCapabilityOwner<T>(connection: HostConnection, invocationId: string, execute: (capabilities: CapabilityStore, invocationId: string) => T): T {
-    const invocation = this.commands.capabilities.getInvocation(invocationId);
-    if (!invocation) throw new Error(`Capability invocation ${invocationId} was not found.`);
-    const registration = this.commands.capabilities.get(invocation.registrationId);
-    if (!registration || registration.ownerType !== "client" || registration.ownerId !== connection.clientId) {
-      throw new Error("Capability invocation owner mismatch.");
-    }
-    return execute(this.commands.capabilities, invocationId);
-  }
-
-  private withCapabilityRegistrationOwner<T>(
-    connection: HostConnection,
-    registrationId: string,
-    execute: (capabilities: CapabilityStore, registrationId: string) => T
-  ): T {
-    const registration = this.commands.capabilities.get(registrationId);
-    if (!registration || registration.ownerType !== "client" || registration.ownerId !== connection.clientId) {
-      throw new Error("Capability registration owner mismatch.");
-    }
-    return execute(this.commands.capabilities, registrationId);
-  }
-
-  private async cancelGraph(graphId: string, runtime = this.runtime, commands = this.commands): Promise<unknown> {
-    return await cancelRuntimeGraph(runtime, commands, graphId);
-  }
-
-  private async continueRun(
-    payload: Record<string, unknown>,
-    runtime = this.runtime,
-    commands = this.commands
-  ): Promise<{ runId: string; messageId: string }> {
-    const authority = commands.runtimeAuthority;
-    const sourceRunId = requiredString(payload.sourceRunId, "sourceRunId");
-    const source = authority?.getRun(sourceRunId);
-    if (!source) throw new Error(`Continuation source run ${sourceRunId} was not found.`);
-    if (source.terminalStatus !== "incomplete" && source.terminalStatus !== "blocked" && source.terminalStatus !== "unknown") {
-      throw new Error(`Run ${sourceRunId} is not resumable.`);
-    }
-    const ids = readRequestIds(payload);
-    const childRunId = ids.runId ?? randomUUID();
-    const claim = authority?.claimContinuation(sourceRunId, childRunId);
-    const existingChild = claim === undefined ? undefined : authority?.getRun(claim.childRunId);
-    if (existingChild) {
-      const childPayload = asRecord(existingChild.payload);
-      return {
-        runId: existingChild.runId,
-        messageId: typeof childPayload.messageId === "string" ? childPayload.messageId : ids.messageId ?? randomUUID()
-      };
-    }
-    try {
-      const submitted = await runtime.startInterruptedTurn({
-        ...ids,
-        runId: claim?.childRunId ?? childRunId,
-        turnId: source.turnId,
-        parentRunId: sourceRunId,
-        continuationSource: "safe_boundary_continuation"
-      });
-      if (!submitted) throw new Error("There is no interrupted turn available for continuation.");
-      this.trackCompletion(submitted);
-      return { runId: submitted.runId, messageId: submitted.messageId };
-    } catch (error) {
-      // claim 发生在真正读取断点之前；读取失败或没有断点时必须释放它，否则
-      // 后续恢复请求会被旧 childRunId 永久挡住。若 child 已经落库，release 会保留 claim。
-      if (claim) authority?.releaseContinuationClaim(sourceRunId, claim.childRunId, "continuation admission failed");
-      throw error;
-    }
-  }
-
-  /** Task facts share the workspace authority; reads do not perform session startup. */
-  private async taskReadEntry(payload: Record<string, unknown>, taskRunId: string): Promise<CommandRuntime> {
-    const requestedSessionId = optionalString(payload.sessionId)
-      ?? (typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined);
-    const routingSessionId = this.registry.get(requestedSessionId ?? "")?.sessionId ?? this.registry.primary().sessionId;
-    await this.runtimeRestartPromises.get(routingSessionId);
-    const routing = this.registry.get(routingSessionId) ?? this.registry.primary();
-    const taskSessionId = routing.commands.taskRuns.get(taskRunId)?.sessionId;
-    if (requestedSessionId !== undefined && taskSessionId !== undefined && requestedSessionId !== taskSessionId) {
-      throw new Error(`TaskRun ${taskRunId} belongs to session ${taskSessionId}, not ${requestedSessionId}.`);
-    }
-    const sessionId = requestedSessionId ?? taskSessionId ?? this.registry.primary().sessionId;
-    await this.runtimeRestartPromises.get(sessionId);
-    const sourceSessionId = (this.registry.get(sessionId) ?? this.registry.get(routingSessionId) ?? this.registry.primary()).sessionId;
-    // A cold owner borrows a resident connection; never retain a closed pre-restart store.
-    await this.runtimeRestartPromises.get(sourceSessionId);
-    return (this.registry.get(sessionId) ?? this.registry.get(sourceSessionId) ?? this.registry.primary()).commands;
-  }
-
-  /** Graph projections share the workspace authority; reading them never creates a session. */
-  private async graphReadEntry(payload: Record<string, unknown>, graphId?: string): Promise<{
-    commands: CommandRuntime; runtime?: InteractiveRuntimeHandle;
-  }> {
-    const requestedSessionId = optionalString(payload.sessionId)
-      ?? (typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined);
-    const routingSessionId = this.registry.get(requestedSessionId ?? "")?.sessionId ?? this.registry.primary().sessionId;
-    if (graphId !== undefined) await this.runtimeRestartPromises.get(routingSessionId);
-    const routing = this.registry.get(routingSessionId) ?? this.registry.primary();
-    const graphSessionId = graphId === undefined ? undefined : routing.commands.graphs.getGraph(graphId)?.supervisorSessionId;
-    if (requestedSessionId !== undefined && graphSessionId !== undefined && requestedSessionId !== graphSessionId) {
-      throw new Error(`Plan ${graphId} belongs to another session.`);
-    }
-    const sessionId = requestedSessionId ?? graphSessionId ?? this.registry.primary().sessionId;
-    await this.runtimeRestartPromises.get(sessionId);
-    const sourceSessionId = (this.registry.get(sessionId) ?? this.registry.get(routingSessionId) ?? this.registry.primary()).sessionId;
-    // A cold target borrows a resident connection, which may itself be rebuilding.
-    await this.runtimeRestartPromises.get(sourceSessionId);
-    const resident = this.registry.get(sessionId);
-    return {
-      commands: (resident ?? this.registry.get(sourceSessionId) ?? this.registry.primary()).commands,
-      runtime: resident?.runtime
-    };
-  }
-
-  private async runtimeEntry(operation: string, payload: Record<string, unknown>): Promise<ManagedSessionRuntime> {
-    const explicitSessionId = optionalString(payload.sessionId);
-    if (operation === "session.command" && optionalString(payload.scope) !== undefined) {
-      const owner = explicitSessionId === undefined ? undefined : this.registry.get(explicitSessionId);
-      if (!owner) throw new Error("Session command context expired or belongs to another run.");
-      return owner;
-    }
-    const sessionFromFile = typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined;
-    const taskRunId = operation.startsWith("task.") ? optionalString(payload.taskRunId) : undefined;
-    const graphId = operation.startsWith("graph.") || operation.startsWith("plan.") ? optionalString(payload.graphId) : undefined;
-    const sourceRunId = operation === "run.continue"
-      ? optionalString(payload.sourceRunId)
-      : operation === "cancel" || operation === "run.cancel" || operation === "run.inspect"
-        ? optionalString(payload.runId)
-        : undefined;
-    // 各会话连接同一份 authority 数据库；优先用目标会话的连接读取身份映射，
-    // 避免 primary 重建时把其它会话的取消/继续也挂起。
-    const routingSessionId = this.registry.get(explicitSessionId ?? sessionFromFile ?? "")?.sessionId ?? this.registry.primary().sessionId;
-    if (taskRunId !== undefined || graphId !== undefined || sourceRunId !== undefined) {
-      await this.runtimeRestartPromises.get(routingSessionId);
-    }
-    const routingCommands = (this.registry.get(routingSessionId) ?? this.registry.primary()).commands;
-    const task = taskRunId === undefined ? undefined : routingCommands.taskRuns.get(taskRunId);
-    const pendingResumes = operation === "task.cancel" && task !== undefined && task.sessionId === undefined
-      ? this.registry.list().flatMap(entry => {
-        const pending = entry.commands.pendingTaskResume?.(task.taskRunId);
-        return pending ? [{ entry, pending }] : [];
-      }) : [];
-    if (pendingResumes.length > 1) throw new Error("TaskRun has ambiguous pending resume admissions; cancellation was not routed.");
-    const pendingOwner = pendingResumes[0];
-    if (operation === "task.cancel" && task?.sessionId === undefined && task?.status === "blocked" && !pendingOwner) {
-      throw new Error("Ownerless blocked TaskRun has no validated pending resume admission; cancellation cannot be routed safely.");
-    }
-    if (pendingOwner && pendingOwner.pending.sessionId !== pendingOwner.entry.sessionId) {
-      throw new Error("Pending TaskRun resume session changed; cancellation was not routed.");
-    }
-    const taskSessionId = task?.sessionId ?? pendingOwner?.pending.sessionId;
-    const graphSessionId = graphId === undefined ? undefined : routingCommands.graphs.getGraph(graphId)?.supervisorSessionId;
-    const authority = routingCommands.runtimeAuthority;
-    const sourceRun = sourceRunId === undefined ? undefined : authority.getRun(sourceRunId);
-    const sourceSessionId = sourceRun?.sessionId;
-    const requestedSessionId = explicitSessionId ?? sessionFromFile;
-    if (requestedSessionId !== undefined && graphSessionId !== undefined && requestedSessionId !== graphSessionId) {
-      throw new Error(`Plan ${graphId} belongs to another session.`);
-    }
-    if (requestedSessionId !== undefined && taskSessionId !== undefined && requestedSessionId !== taskSessionId) {
-      throw new Error(`TaskRun ${taskRunId} belongs to session ${taskSessionId}, not ${requestedSessionId}.`);
-    }
-    if (requestedSessionId !== undefined && sourceSessionId !== undefined && requestedSessionId !== sourceSessionId) {
-      throw new Error(`Run ${sourceRunId} belongs to session ${sourceSessionId}, not ${requestedSessionId}.`);
-    }
-    const sessionId = requestedSessionId ?? taskSessionId ?? sourceSessionId ?? graphSessionId ?? this.registry.primary().sessionId;
-    await this.runtimeRestartPromises.get(sessionId);
-    const resident = this.registry.get(sessionId);
-    if (resident) {
-      this.registry.touch(sessionId);
-      return resident;
-    }
-    return await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
-  }
-
-  private async assertTaskWorktreeIdle(sessionId: string) {
-    const record = await this.worktrees.get(sessionId);
-    if (record?.taskRunId) {
-      const taskRunId = record.taskRunId;
-      const task = this.commands.taskRuns.get(taskRunId);
-      if (!task || !isTaskRunTerminal(task.status)
-        || this.registry.list().some(entry => entry.commands.isTaskExecuting?.(taskRunId))) {
-        throw new Error("Cannot merge or remove a task worktree while its task or dispatched processes may still be running.");
-      }
-    }
-    return record;
-  }
-
-  private async prepareWorktreeSession(
-    sessionId: string,
-    catalog: Awaited<ReturnType<typeof readSessionCatalogRecord>>,
-    fresh: boolean
-  ): Promise<RuntimeHostFactoryOptions> {
-    const worktree = await this.worktrees.ensure(sessionId);
-    if (catalog?.isolation !== "worktree") {
-      const now = new Date().toISOString();
-      await writeSessionCatalogRecord(this.registration.persistenceRoot, {
-        version: 1,
-        sessionId,
-        rootSessionId: catalog?.rootSessionId ?? sessionId,
-        parentSessionId: catalog?.parentSessionId,
-        branchPoint: catalog?.branchPoint,
-        title: catalog?.title,
-        pinned: catalog?.pinned,
-        archived: catalog?.archived,
-        unread: catalog?.unread,
-        labels: catalog?.labels,
-        personalization: catalog?.personalization,
-        isolation: "worktree",
-        createdAt: catalog?.createdAt ?? now,
-        updatedAt: now
-      });
-    }
-    return { workspaceRoot: worktree.worktreePath, sessionId, fresh, isolation: "worktree" };
-  }
-
-  private sessionSummaries(): Array<{
+  sessionSummaries(): Array<{
     sessionId: string;
     snapshot: InteractiveRuntimeSnapshot;
     primary: boolean;
     lastActiveAt: number;
   }> {
-    return this.registry.list().map((entry) => ({
+    return (this.registry?.list() ?? []).map((entry) => ({
       sessionId: entry.sessionId,
       snapshot: entry.runtime.getSnapshot(),
       primary: entry.primary,
@@ -2047,7 +742,7 @@ export class RuntimeHostServer {
     }));
   }
 
-  private async subscribeConnection(
+  async subscribeConnection(
     connection: HostConnection,
     afterSequence: number | undefined,
     afterHostEpoch: string | undefined,
@@ -2060,7 +755,7 @@ export class RuntimeHostServer {
     replayed: boolean;
     capabilities: readonly string[];
   }> {
-    connection.eventReplay?.abort();
+    connection.eventReplay?.abort(new Error("Runtime Host replay was superseded."));
     const replay = new AbortController();
     connection.eventReplay = replay;
     connection.subscribed = true;
@@ -2116,7 +811,7 @@ export class RuntimeHostServer {
     }
   }
 
-  private async executeOwnerNotificationRequest(
+  async executeOwnerNotificationRequest(
     connection: HostConnection,
     operation: string,
     payload: Record<string, unknown>
@@ -2156,7 +851,7 @@ export class RuntimeHostServer {
     throw new Error(`Unknown Runtime Host owner notification operation: ${operation}`);
   }
 
-  private attachOwnerNotificationSink(commands: CommandRuntime): void {
+  attachOwnerNotificationSink(commands: CommandRuntime): void {
     commands.setOwnerNotificationSink?.(async (text) => await this.publishOwnerNotification(text));
   }
 
@@ -2199,24 +894,24 @@ export class RuntimeHostServer {
     }
   }
 
-  private async claimSessionWriter(connection: HostConnection, session: string): Promise<void> {
+  async claimSessionWriter(connection: HostConnection, session: string): Promise<void> {
     const sessionId = sessionIdFromFile(session);
     this.assertSessionWriterAvailable(connection, sessionId);
     const foreignOwner = this.sessionWriterOwners.get(sessionId);
     if (foreignOwner?.clientId === connection.clientId) return;
-    const managed = this.registry.get(sessionId) ?? await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
+    const managed = this.registry.get(sessionId) ?? await this.registry.ensure(sessionId, await this.execution!.factoryOptionsForSession(sessionId));
     await managed.runtime.claimSession(sessionId);
     this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
   }
 
   /** 写入型协议即使没有先显式打开 session，也必须先进入同 session writer 互斥。 */
-  private async ensureSessionWriter(connection: HostConnection, runtime: InteractiveRuntimeHandle): Promise<void> {
+  async ensureSessionWriter(connection: HostConnection, runtime: InteractiveRuntimeHandle): Promise<void> {
     const sessionId = runtime.getSnapshot().info.sessionId;
     if (this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) return;
     await this.claimSessionWriter(connection, sessionId);
   }
 
-  private assertSessionWriterAvailable(connection: HostConnection, sessionId: string): void {
+  assertSessionWriterAvailable(connection: HostConnection, sessionId: string): void {
     const owner = this.sessionWriterOwners.get(sessionId);
     if (!owner || owner.clientId === connection.clientId) return;
     const snapshot = this.registry.get(sessionId)?.runtime.getSnapshot();
@@ -2230,7 +925,7 @@ export class RuntimeHostServer {
     );
   }
 
-  private async releaseSessionWriter(connection: HostConnection, session?: string): Promise<void> {
+  async releaseSessionWriter(connection: HostConnection, session?: string): Promise<void> {
     if (session === undefined) {
       await this.releaseSessionWriters(connection.clientId);
       return;
@@ -2246,12 +941,12 @@ export class RuntimeHostServer {
 
   private async releaseSessionWriters(clientId: string): Promise<void> {
     if (!clientId) return;
-    for (const [sessionId, prepared] of this.oneShotSessions) {
+    for (const [sessionId, prepared] of this.execution!.oneShotSessions) {
       if (prepared.clientId !== clientId || prepared.started) continue;
       await this.dispatcher.dispatch("run", async () => {
-        if (this.oneShotSessions.get(sessionId) !== prepared || prepared.started) return;
+        if (this.execution!.oneShotSessions.get(sessionId) !== prepared || prepared.started) return;
         try { await this.registry.closeSession(sessionId); }
-        finally { this.oneShotSessions.delete(sessionId); }
+        finally { this.execution!.oneShotSessions.delete(sessionId); }
       }, sessionId);
     }
     const owned = [...this.sessionWriterOwners.entries()]
@@ -2264,11 +959,11 @@ export class RuntimeHostServer {
     }
   }
 
-  private async pauseOwnedRunsForExit(connection: HostConnection): Promise<Array<{ sessionId: string; runId: string }>> {
+  async pauseOwnedRunsForExit(connection: HostConnection): Promise<Array<{ sessionId: string; runId: string }>> {
     const writerSessions = [...this.sessionWriterOwners.entries()]
       .filter(([, owner]) => owner.clientId === connection.clientId)
       .map(([sessionId]) => sessionId);
-    const goalSessions = [...this.sessionGoalOwners.entries()]
+    const goalSessions = [...this.execution!.sessionGoalOwners.entries()]
       .filter(([, owner]) => owner.clientId === connection.clientId)
       .map(([sessionId]) => sessionId);
     const ownedSessionIds = [...new Set([...writerSessions, ...goalSessions])];
@@ -2276,7 +971,7 @@ export class RuntimeHostServer {
       "run",
       async () => {
         // Queue behind earlier writes for this session, then recheck ownership before touching its run.
-        const goalOwner = this.sessionGoalOwners.get(sessionId);
+        const goalOwner = this.execution!.sessionGoalOwners.get(sessionId);
         const writerOwned = this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId;
         if (!writerOwned && goalOwner?.clientId !== connection.clientId) return undefined;
         const managed = this.registry.get(sessionId);
@@ -2337,7 +1032,7 @@ export class RuntimeHostServer {
     }
   }
 
-  private assertEventSequenceAvailable(): void {
+  assertEventSequenceAvailable(): void {
     if (this.eventSequenceError) throw this.eventSequenceError;
     if (this.sequence >= Number.MAX_SAFE_INTEGER) throw this.markEventSequenceExhausted();
   }
@@ -2346,12 +1041,12 @@ export class RuntimeHostServer {
     if (this.eventSequenceError === undefined) {
       this.eventSequenceError = new RangeError("Runtime Host event sequence is exhausted; no further events can be allocated.");
       this.admission.beginDrain();
-      this.businessComposition.stop();
+      this.execution?.businessComposition.stop();
     }
     return this.eventSequenceError;
   }
 
-  private publishSnapshot(runtime = this.runtime): void {
+  publishSnapshot(runtime = this.runtime): void {
     this.publish({ snapshot: runtime.getSnapshot() });
   }
 
@@ -2359,7 +1054,7 @@ export class RuntimeHostServer {
     this.send(connection, projectBashEventFrameForTransport({ kind: "event", hostEpoch: this.registration.hostEpoch, sequence, update }));
   }
 
-  private trackCompletion(submitted: SubmittedAgentRun): void {
+  trackCompletion(submitted: SubmittedAgentRun): void {
     void submitted.completion.then(
       (outcome) => this.broadcastCompletion(submitted.runId, outcome),
       () => undefined
@@ -2377,143 +1072,11 @@ export class RuntimeHostServer {
     return connection.sessionFilter === undefined || connection.sessionFilter.has(sessionId);
   }
 
-  private assertRevision(payload: Record<string, unknown>, runtime = this.runtime): void {
-    const expected = optionalSafeInteger(payload.expectedRevision);
-    if (expected === undefined) return;
-    const current = runtime.getSnapshot().revision;
-    if (expected !== current) {
-      throw new Error(`Runtime Host revision conflict: expected ${String(expected)}, current ${String(current)}.`);
-    }
-  }
+  async restartRuntime(sessionId?: string) { return await this.execution!.restartRuntime(sessionId); }
+  async startDraftRuntime(sessionId?: string) { return await this.execution!.startDraftRuntime(sessionId); }
+  async rotatePrimaryRuntime() { return await this.execution!.rotatePrimaryRuntime(); }
 
-  async restartRuntime(sessionId?: string): Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }> {
-    const targetSessionId = sessionId ?? this.registry.primary().sessionId;
-    const existing = this.runtimeRestartPromises.get(targetSessionId);
-    if (existing) return await existing;
-    const restart = this.performRuntimeRestart(sessionId);
-    this.runtimeRestartPromises.set(targetSessionId, restart);
-    try {
-      return await restart;
-    } finally {
-      if (this.runtimeRestartPromises.get(targetSessionId) === restart) this.runtimeRestartPromises.delete(targetSessionId);
-    }
-  }
-
-  /** 创建一个新的 session runtime；已有 session 和 writer claim 保持不变。 */
-  async startDraftRuntime(_targetSessionId?: string): Promise<AgentSessionInfo> {
-    const managed = await this.registry.createFresh({ isolation: "shared", resourceRegistry: this.resourceRegistry });
-    this.publishSnapshot(managed.runtime);
-    return managed.runtime.getSnapshot().info;
-  }
-
-  /** 为删除主 session 轮换主 runtime；普通重启必须保留 sessionId。 */
-  async rotatePrimaryRuntime(): Promise<InteractiveRuntimeSnapshot> {
-    const current = this.registry.primary();
-    if (runtimeIsBusy(current.runtime.getSnapshot())) {
-      throw new Error(`Cannot replace the primary session while it is busy: ${current.sessionId}.`);
-    }
-    const previousSessionId = current.sessionId;
-    const next = await this.createRuntime(undefined, {
-      workspaceRoot: undefined,
-      sessionId: undefined,
-      fresh: true,
-      isolation: "shared",
-      resourceRegistry: this.resourceRegistry
-    });
-    const managed = await this.registry.replacePrimary(next);
-    this.sessionWriterOwners.delete(previousSessionId);
-    this.primaryGoalSchedulingReady = true;
-    this.businessComposition.recoverGraphs();
-    this.businessComposition.scheduleGoals();
-    this.publishSnapshot(managed.runtime);
-    return managed.runtime.getSnapshot();
-  }
-
-  private async performRuntimeRestart(sessionId?: string): Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }> {
-    const target = sessionId === undefined
-      ? this.registry.primary()
-      : await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
-    if (target.runtime.getSnapshot().state.kind !== "idle") {
-      throw new Error(`Cannot rebuild the Runtime Host while session ${target.sessionId} is busy.`);
-    }
-    const previousSessionId = target.sessionId;
-    if (target.primary) this.primaryGoalSchedulingReady = false;
-    // 旧实例先停止并释放 session lease，新实例才能以相同身份恢复；关闭同时拒绝新 submit。
-    await target.runtime.close();
-    const factoryOptions = await this.factoryOptionsForSession(previousSessionId);
-    const next = await this.createRuntime(previousSessionId, factoryOptions);
-    const managed = await this.registry.replace(previousSessionId, next);
-    if (managed.primary) this.primaryGoalSchedulingReady = true;
-    const owner = this.sessionWriterOwners.get(previousSessionId);
-    if (owner) await managed.runtime.claimSession(previousSessionId);
-    this.businessComposition.recoverGraphs();
-    this.businessComposition.scheduleGoals();
-    this.publishSnapshot(managed.runtime);
-    return { snapshot: managed.runtime.getSnapshot(), sequence: this.sequence };
-  }
-
-  private async factoryOptionsForSession(sessionId: string): Promise<RuntimeHostFactoryOptions | undefined> {
-    const existing = await this.worktrees.runtimeFactoryOptions(sessionId);
-    if (existing) return { ...existing, resourceRegistry: this.resourceRegistry };
-    const catalog = await readSessionCatalogRecord(this.registration.persistenceRoot, sessionId);
-    let sessionFileExists = false;
-    try {
-      sessionFileExists = (await listSessionFiles(this.registration.persistenceRoot)).includes(`${sessionId}.jsonl`);
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
-    if (catalog?.isolation !== "worktree") {
-      // LRU 可能驱逐一个尚未落盘的草稿；重新取回它时必须用同一个 id fresh 创建，
-      // 不能先随机创建一个 runtime 再调用 resumeSession。
-      return sessionFileExists
-        ? { resourceRegistry: this.resourceRegistry }
-        : { sessionId, fresh: true, isolation: "shared", resourceRegistry: this.resourceRegistry };
-    }
-    return {
-      ...(await this.prepareWorktreeSession(sessionId, catalog, !sessionFileExists)),
-      resourceRegistry: this.resourceRegistry
-    };
-  }
-
-  private runtimeMatchesIsolation(runtime: InteractiveRuntimeHandle, isolation: "shared" | "worktree", worktree: Awaited<ReturnType<WorktreeManager["get"]>>): boolean {
-    const workspaceRoot = path.resolve(runtime.getSnapshot().info.workspaceRoot);
-    if (isolation === "worktree") return worktree !== undefined && workspaceRoot === path.resolve(worktree.worktreePath);
-    return workspaceRoot === path.resolve(this.worktrees.repoRoot);
-  }
-
-  private send(connection: HostConnection, frame: HostFrame): void {
+  send(connection: HostConnection, frame: HostFrame): void {
     connection.writer.send(frame);
   }
-}
-
-function readCancellationReason(value: unknown): AgentTurnCancellationReason {
-  if (value === "interrupted" || value === "replaced" || value === "cancelled" || value === "paused" || value === "host_shutdown") return value;
-  throw new Error("Cancellation reason must be interrupted, replaced, cancelled, paused, or host_shutdown.");
-}
-
-function readGraphEventPageOptions(payload: Record<string, unknown>): { afterSequence?: number; limit?: number } {
-  const options: { afterSequence?: number; limit?: number } = {};
-  for (const field of ["afterSequence", "limit"] as const) {
-    const value = payload[field];
-    if (value === undefined) continue;
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (field === "limit" ? 1 : 0) || (field === "limit" && value > 1000)) {
-      throw new Error(field === "limit" ? "Graph events limit must be an integer between 1 and 1000." : "Graph events afterSequence must be a non-negative safe integer.");
-    }
-    options[field] = value;
-  }
-  return options;
-}
-
-function readGoalExpected(value: unknown): SessionGoalExpected | undefined {
-  if (value === undefined) return undefined;
-  const record = asRecord(value);
-  const revision = optionalSafeInteger(record.revision);
-  if (revision === undefined) throw new Error("Goal expected revision must be a non-negative safe integer.");
-  return { goalId: requiredString(record.goalId, "goalId"), revision };
-}
-
-function readGoalTokenBudget(value: unknown): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new Error("Goal token budget must be a positive safe integer.");
-  return value;
 }

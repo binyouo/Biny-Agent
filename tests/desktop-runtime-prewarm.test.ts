@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { access, mkdtemp, } from "node:fs/promises";
@@ -349,7 +350,7 @@ test("disposing a pending attachment preserves an existing Host and its retainin
   const close = RuntimeHostClient.prototype.close;
   const closed: RuntimeHostClient[] = [];
   try {
-    retaining = await connectRuntimeHost(dataRoot, { configDir, clientId: "retaining-control", surface: "tui", keepAlive: true });
+    retaining = await readyHostClient(await connectRuntimeHost(dataRoot, { configDir, clientId: "retaining-control", surface: "tui", keepAlive: true }));
     assert.ok(retaining);
     const sessions = (await retaining.listRuntimeSessions()).map(({ sessionId }) => sessionId);
     assert.ok(sessions.length > 0);

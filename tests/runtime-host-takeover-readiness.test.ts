@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -46,6 +47,11 @@ class MemorySocket extends EventEmitter {
   constructor(private readonly respond: (frame: HostFrame, socket: MemorySocket) => void) { super(); }
   setEncoding(): this { return this; }
   write(data: string): boolean {
+    const lifecycleFrame = JSON.parse(data.trim()) as { kind: string; operation?: string; requestId: string };
+    if (lifecycleFrame.kind === "request" && lifecycleFrame.operation === "host.subscribe") {
+      queueMicrotask(() => this.emit("data", JSON.stringify({ kind: "response", requestId: lifecycleFrame.requestId, ok: true, result: { lifecycle: "ready" } }) + "\n"));
+      return true;
+    }
     this.respond(JSON.parse(data) as HostFrame, this);
     return true;
   }
@@ -96,7 +102,7 @@ for (const replacementSessionId of ["original-session", "replacement-session"]) 
     };
     let client: RuntimeHostClient | undefined;
     try {
-      client = await RuntimeHostClient.connect({ registration });
+      client = await readyHostClient(await RuntimeHostClient.connect({ registration }));
       assert.deepEqual(client.getSnapshot(), original);
       assert.equal(isRuntimeHostTakeoverReady(client, "original-epoch"), false, "an old-epoch snapshot is not a takeover");
       await writeFile(paths.registrationPath, JSON.stringify({ ...registration, hostEpoch: "replacement-epoch" }), { mode: 0o600 });

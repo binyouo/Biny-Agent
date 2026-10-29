@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Desktop 全进程退出只断开客户端；常驻 Host 上的任务继续运行。 */
 import assert from "node:assert/strict";
@@ -81,22 +82,22 @@ try {
   const projects = new DesktopProjectService(state, storage, configStore);
   const project = await projects.createProject(root);
   const dataRoot = await projects.dataRoot(project);
-  owner = await spawnRuntimeHost(dataRoot, {
+  owner = await readyHostClient(await spawnRuntimeHost(dataRoot, {
     workspaceRoot: root,
     configDir: path.join(root, "config"),
     lifecycleMode: "ephemeral",
     idleGraceMs: 150,
     keepAlive: false,
     surface: "tui"
-  });
+  }));
   manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
 
   const desktopRun = await manager.sendPrompt(project.id, undefined, "Desktop task to pause", []);
-  peer = await connectRuntimeHost(dataRoot, {
+  peer = await readyHostClient(await connectRuntimeHost(dataRoot, {
     configDir: path.join(root, "config"),
     clientId: "tui-peer",
     surface: "tui"
-  });
+  }));
   assert.ok(peer, "the second surface should attach to the same Host");
   const peerSession = await peer.ensureSession({ writeIntent: true, focus: false });
   const peerRun = await peer.submitRunForSession(peerSession.sessionId, "TUI task that must keep running", []);

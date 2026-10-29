@@ -575,6 +575,10 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.importSession(parsedProjectId, sourcePath);
   });
 
+  handleRecoveryGated(desktopIpc.preparePrompt, async (_event, projectId: unknown) => {
+    await context.agents.preparePrompt(idSchema.parse(projectId));
+  });
+
   handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown) => {
     return await context.agents.sendPrompt(
       idSchema.parse(projectId),
@@ -1058,7 +1062,6 @@ export function registerDesktopIpc(context: IpcContext): void {
   handle(desktopIpc.maskingOverview, async (_event, projectId: unknown) => await context.agents.maskingOverview(idSchema.parse(projectId)));
   handle(desktopIpc.maskingDetail, async (_event, projectId: unknown, id: unknown) => await context.agents.maskingDetail(idSchema.parse(projectId), idSchema.parse(id)));
   handle(desktopIpc.maskingClear, async (_event, projectId: unknown) => await context.agents.clearMaskRecords(idSchema.parse(projectId)));
-  handleRecoveryGated(desktopIpc.activityRetryFailedAnalysis, async () => await context.activity.retryFailedAnalysis());
   handle(desktopIpc.activityPermissions, async () => context.getActivityPermissions());
 
   handle(desktopIpc.activitySettings, async () => context.activity.settingsSnapshot());

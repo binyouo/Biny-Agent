@@ -176,8 +176,9 @@ async function initializationFailure(mode: "read" | "close" | "exhausted" | "ove
     f.emit(2);
     await f.internals.journal.close();
     assert.equal(await readFile(f.journalPath, "utf8"), initialText);
-    if (mode === "close") await f.server.close();
+    const closing = mode === "close" ? f.server.close() : undefined;
     release.resolve();
+    await closing;
     await rejection;
     const sequence = f.server.info.sequence;
     f.emit();
@@ -189,13 +190,13 @@ async function initializationFailure(mode: "read" | "close" | "exhausted" | "ove
       }), /event sequence.*exhausted/i);
     }
     if (mode === "read") {
-      f.internals.journal.initialize = initialize;
-      await f.server.initialize();
-      assert.equal(f.server.info.sequence, 9, "a read failure can retry without losing buffered resource changes");
-      assert.deepEqual((await f.replay(6)).frames.filter((frame) => frame.kind === "event").map((frame) => frame.sequence), [7, 8, 9]);
+      await f.server.close();
+      await assert.rejects(f.server.initialize(), /shutting down/);
+      assert.equal(f.server.info.lifecycle, "failed");
+      assert.equal(await readFile(f.journalPath, "utf8"), initialText, "failed initialization preserves the journal for a new owner");
     }
     await f.server.close();
-    if (mode !== "read") assert.equal(await readFile(f.journalPath, "utf8"), initialText, "failure/close must never overwrite the recoverable journal");
+    assert.equal(await readFile(f.journalPath, "utf8"), initialText, "failure/close must never overwrite the recoverable journal");
   } finally {
     release.resolve();
     await starting.catch(() => undefined);
@@ -254,7 +255,7 @@ try {
   await replayWindow([Number.MAX_SAFE_INTEGER - 2], 1, false);
   await closeDrainsRebasedJournal();
   for (const mode of ["read", "close", "exhausted", "overflow"] as const) await initializationFailure(mode);
-  assert.equal(runtimeHostProtocolVersion, 16, "startup recovery retains the current connection protocol");
+  assert.equal(runtimeHostProtocolVersion, 17, "startup recovery retains the current connection protocol");
 } finally {
   if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
   else process.env.BINY_AGENT_DIR = previousAgentDir;

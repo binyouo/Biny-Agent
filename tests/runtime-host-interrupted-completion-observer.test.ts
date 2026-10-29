@@ -46,6 +46,7 @@ class RecordingCompletion {
   }
 }
 interface Fixture {
+  readinessWaiters: Set<(error?: Error) => void>;
   ownerNotificationListeners: Set<() => void>;
   ownerNotificationsSubscribed: boolean;
   options: { surface: string };
@@ -101,7 +102,7 @@ function fixture(scenario: Scenario) {
   let reconnects = 0;
   const requests: Array<{ operation: string; payload: unknown }> = [];
   const state: Fixture = {
-    options: { surface: "desktop" }, completions: new Map(), pending: new Map(), idleWaiters: new Set(), ownerNotificationListeners: new Set(), closed: false, retired: false,
+    options: { surface: "desktop" }, readinessWaiters: new Set(), completions: new Map(), pending: new Map(), idleWaiters: new Set(), ownerNotificationListeners: new Set(), closed: false, retired: false,
     socket: { destroyed: false }, hostEpoch: "epoch", focusedSessionId: "session-a",
     ownerNotificationsSubscribed: false,
     snapshots: new Map([["session-a", { state: scenario === "active" ? { kind: "runs", activeRun: { runId: ids.runId } } : { kind: "idle" } }]]),

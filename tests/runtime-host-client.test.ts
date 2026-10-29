@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -114,7 +115,8 @@ const host = await startRuntimeHost(workspaceRoot, async (resourceRegistry) => {
 });
 
 try {
-  const client = await connectRuntimeHost(workspaceRoot, { clientId: "client-test", surface: "tui" });
+  const client = await readyHostClient(await connectRuntimeHost(workspaceRoot, { clientId: "client-test", surface: "tui" }));
+
   assert.ok(client);
   let writeSessionId: string | undefined;
   const owners = (host as unknown as { sessionWriterOwners: Map<string, { clientId: string }> }).sessionWriterOwners;
@@ -191,7 +193,7 @@ try {
     );
     await host["registry"].closeSession(isolated.sessionId);
     await run("git", ["worktree", "remove", isolated.snapshot.info.workspaceRoot], { cwd: workspaceRoot });
-    await host["worktrees"].reconcile();
+    await host["execution"]!["worktrees"].reconcile();
     const registrations = await client.worktreeList();
     assert.equal(registrations.find(record => record.sessionId === isolated.sessionId)?.worktreePath, isolated.snapshot.info.workspaceRoot);
     await assert.rejects(client.ensureSession({ sessionId: isolated.sessionId }), /Worktree path is missing/u,
@@ -230,7 +232,8 @@ const capacityHost = await startRuntimeHost(capacityWorkspace, async () => ({ ru
   }
 });
 try {
-  const client = await connectRuntimeHost(capacityWorkspace, { clientId: "capacity-client", surface: "desktop" });
+  const client = await readyHostClient(await connectRuntimeHost(capacityWorkspace, { clientId: "capacity-client", surface: "desktop" }));
+
   assert.ok(client);
   try {
     const first = await client.ensureSession({ writeIntent: true, focus: false });

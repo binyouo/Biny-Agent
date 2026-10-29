@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -18,10 +19,10 @@ try {
     providers: { local: { type: "ollama", baseUrl: "http://127.0.0.1:1/v1", requiresApiKey: false } },
     models: { "local-test": { ...defaultConfig.models["deepseek-v4-flash"]!, provider: "local", model: "local-test" } }
   }, { globalDir: configDir });
-  host = await spawnRuntimeHost(root, {
+  host = await readyHostClient(await spawnRuntimeHost(root, {
     workspaceRoot: root, configDir,
     entryPath: fileURLToPath(new URL("./fixtures/runtime-host-diagnostics.ts", import.meta.url))
-  });
+  }));
   const stderr = host.process.stderr!;
   const closed = once(stderr, "close");
   stderr.destroy();

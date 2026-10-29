@@ -179,3 +179,27 @@ const commands = {} as CommandRuntime;
 }
 
 console.log("runtime-host registry tests passed");
+
+{
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let lateCloses = 0;
+  const late = fakeRuntime("late");
+  late.close = async () => { lateCloses += 1; };
+  const registry = new SessionRuntimeRegistry({ runtime: fakeRuntime("primary"), commands }, {
+    createRuntime: async () => { await gate; return { runtime: late, commands }; }, onUpdate: () => undefined
+  });
+  const creating = registry.ensure("late");
+  const rejected = assert.rejects(creating, /registry is closed/);
+  let closed = false;
+  const closing = registry.closeAll().then(() => { closed = true; });
+  try {
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    assert.equal(closed, false, "registry drain must retain ownership until pending factories and late Runtime cleanup finish");
+  } finally {
+    release();
+    await rejected;
+    await closing;
+  }
+  assert.equal(lateCloses, 1);
+}

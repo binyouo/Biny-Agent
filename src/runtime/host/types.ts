@@ -104,17 +104,21 @@ export interface HostClientOptions {
   handshakeTimeoutMs?: number;
 }
 
+export type RuntimeHostLifecycle = "initializing" | "ready" | "failed" | "closing";
+
 export interface RuntimeHostInfo {
+  lifecycle: RuntimeHostLifecycle;
+  error?: string;
   endpoint: string;
   hostEpoch: string;
-  sequence: number;
+  sequence?: number;
   persistenceRoot: string;
   protocolRevision: number;
   capabilities: readonly string[];
 }
 
 export interface RuntimeHostStatus extends RuntimeHostInfo {
-  journal: RuntimeHostJournalStatus;
+  journal: RuntimeHostJournalStatus | { state: "initializing" };
 }
 
 /** Runtime Host 重建 runtime 时使用的 composition root。 */

@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Permission answers retain displayed ownership; only explicit rejection permits a manual retry. */
 import assert from "node:assert/strict";
@@ -280,7 +281,8 @@ async function hostFixture(t: TestContext) {
   const run = runtime.submitPrompt("synthetic");
   await until(() => Boolean(pendingPermission(runtime.getSnapshot())));
   const request = pendingPermission(runtime.getSnapshot())!;
-  const client = await RuntimeHostClient.connect({ registration, clientId: "tui", surface: "tui", configDir: registration.configRoot });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration, clientId: "tui", surface: "tui", configDir: registration.configRoot }));
+
   const app = new BinyTui(new TUI(terminal()), root);
   app["runtime"] = client; app["runtimeSnapshot"] = client.getSnapshot(); app["subscribeRuntime"](client); app["syncPermissionDialog"]();
   t.after(async () => {

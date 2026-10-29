@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { mkdtemp, } from "node:fs/promises";
@@ -110,7 +111,8 @@ try {
   await assert.rejects(memoryClearCommand(root, { threadId: " ", yes: true, noSpawn: true }), /threadId/u);
   assert.deepEqual(clearedThreads, ["thread-1"]);
   assert.equal(clearedAll, 0);
-  const client = await connectRuntimeHost(root, { surface: "cli", clientId: "memory-clear-invalid" });
+  const client = await readyHostClient(await connectRuntimeHost(root, { surface: "cli", clientId: "memory-clear-invalid" }));
+
   assert.ok(client);
   try {
     await assert.rejects(client.memory("clear", { threadId: " " }), /threadId/u);

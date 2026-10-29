@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -45,7 +46,7 @@ test("inspection CLI targets the existing session and preserves Host compaction 
       sessionId, configStore, resourceRegistry: options?.resourceRegistry
     });
     host = await startRuntimeHost(root, registry => factory("inspection", { fresh: true, resourceRegistry: registry }), { createRuntime: factory });
-    client = await connectRuntimeHost(root, { clientId: "inspection-observer", surface: "cli" }); assert.ok(client);
+    client = await readyHostClient(await connectRuntimeHost(root, { clientId: "inspection-observer", surface: "cli" })); assert.ok(client);
     const usage = await run(root, ["session", "usage", "--session", "inspection", "--json"]);
     assert.equal(usage.code, 0, usage.stderr);
     assert.equal(JSON.parse(usage.stdout).summary.calls, 0);

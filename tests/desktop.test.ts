@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
@@ -922,7 +923,7 @@ async function testDesktopClearsTerminalLiveEvents(): Promise<void> {
     Object.assign(commands, await createHostTestStores(desktopRoot));
     const runtime = new InteractiveAgentRuntime(commands);
     host = await startRuntimeHost(desktopRoot, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-    client = await connectRuntimeHost(desktopRoot);
+    client = await readyHostClient(await connectRuntimeHost(desktopRoot));
     assert.ok(client);
     const internals = agents as unknown as {
       wireRuntimeEvents(projectId: string, runtime: RuntimeHostClient): () => void;

@@ -7,7 +7,16 @@ import ts from "typescript";
 
 // Product source is inert text: no Host constructor, imports, sockets, stores or
 // model code are loaded. Only the reviewed request/barrier methods execute below.
-const source = readFileSync(new URL("../src/runtime/host/server.ts", import.meta.url), "utf8");
+const kernel = readFileSync(new URL("../src/runtime/host/server.ts", import.meta.url), "utf8");
+const execution = readFileSync(new URL("../src/runtime/host/composition.ts", import.meta.url), "utf8").replaceAll("this.host.", "this.");
+const kernelAst = ts.createSourceFile("server.ts", kernel, ts.ScriptTarget.Latest, true);
+const executionAst = ts.createSourceFile("composition.ts", execution, ts.ScriptTarget.Latest, true);
+const members = new Map<string, string>();
+for (const ast of [kernelAst, executionAst]) {
+  const declaration = ast.statements.find(ts.isClassDeclaration)!;
+  for (const member of declaration.members) if (member.name) members.set(member.name.getText(ast), member.getText(ast));
+}
+const source = `class RuntimeHostServer { ${[...members.values()].join("\n")} }`.replaceAll("this.execution!.", "this.");
 const parsed = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const server = parsed.statements.find((node): node is ts.ClassDeclaration =>
   ts.isClassDeclaration(node) && node.name?.text === "RuntimeHostServer");
@@ -64,6 +73,7 @@ interface Managed {
   runtime: { getSnapshot(): { state: { kind: "idle" | "runs" } } };
 }
 interface FixtureState {
+  initialized: boolean;
   pendingRunAdmissions: Map<string, Set<Promise<void>>>;
   pendingRequests: number;
   activityRevision: number;
@@ -141,6 +151,7 @@ function fixture(options: FixtureOptions = {}) {
   };
   let nextId = 0;
   const state: FixtureState = {
+    initialized: true,
     pendingRunAdmissions: new Map(), pendingRequests: 0, activityRevision: 0,
     registry: { primary: () => managed, get: (sessionId) => sessionId === managed.sessionId ? managed : undefined },
     sessionWriterOwners: new Map(),

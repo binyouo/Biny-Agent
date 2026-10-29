@@ -44,7 +44,8 @@ class MemorySocket extends EventEmitter {
   }
   reply(frame: HostRequestFrame): void {
     let result: unknown;
-    if (frame.operation === "subscribe" || frame.operation === "snapshot") {
+    if (frame.operation === "host.subscribe") result = { lifecycle: "ready", hostEpoch: "synthetic-epoch", sequence: 1 };
+    else if (frame.operation === "subscribe" || frame.operation === "snapshot") {
       result = { hostEpoch: "synthetic-epoch", sequence: 1, capabilities: [], snapshot: this.snapshot,
         sessions: [{ sessionId: this.snapshot.info.sessionId, primary: true, snapshot: this.snapshot, lastActiveAt: 1 }] };
     } else if (frame.operation === "skills.list" || frame.operation === "mcp.status") result = [];
@@ -124,7 +125,7 @@ async function fixture(t: TestContext, pauseOperation: string, resumeBusy = fals
 
 for (const resumeBusy of [false, true]) {
   test(`double Ctrl+C during initial attach releases the late client (${resumeBusy ? "resume busy session" : "new chat"})`, { timeout: 5000 }, async t => {
-    const f = await fixture(t, "subscribe", resumeBusy);
+    const f = await fixture(t, "host.subscribe", resumeBusy);
     const running = f.app.run();
     const subscribe = await f.socket.paused.promise;
     f.quit();
@@ -155,7 +156,7 @@ for (const resumeBusy of [false, true]) {
     assert.equal(f.client()!["listeners"].size, 0);
     assert.equal(f.app["unsubscribe"], undefined);
     assert.equal(f.app["status"]["tickTimer"], undefined);
-    assert.deepEqual(f.socket.requests.map(request => request.operation), ["subscribe", "skills.list"]);
+    assert.deepEqual(f.socket.requests.map(request => request.operation), ["host.subscribe", "subscribe", "skills.list"]);
   });
 }
 

@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
@@ -113,7 +114,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
         context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
       }));
       host = await startRuntimeHost(root, async resourceRegistry => await createInteractiveAgentHost(root, { resourceRegistry }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-      client = await connectRuntimeHost(root, { surface: "desktop", clientId: "cli-question-test" });
+      client = await readyHostClient(await connectRuntimeHost(root, { surface: "desktop", clientId: "cli-question-test" }));
       assert.ok(client);
       const connected = client;
       const sessionId = connected.getSnapshot().info.sessionId;

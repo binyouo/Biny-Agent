@@ -40,7 +40,7 @@ export class BoundedHostSocketWriter {
   }
 
   waitForReady(signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) return Promise.reject(new Error("Runtime Host replay was superseded."));
+    if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error("Runtime Host replay was superseded."));
     if (this.disposed || this.socket.destroyed) return Promise.reject(new Error("Runtime Host socket is closed."));
     if (this.ready) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
@@ -50,7 +50,7 @@ export class BoundedHostSocketWriter {
         if (error) reject(error);
         else resolve();
       };
-      const onAbort = (): void => finish(new Error("Runtime Host replay was superseded."));
+      const onAbort = (): void => finish(signal?.reason instanceof Error ? signal.reason : new Error("Runtime Host replay was superseded."));
       this.readyWaiters.add(finish);
       signal?.addEventListener("abort", onAbort, { once: true });
     });

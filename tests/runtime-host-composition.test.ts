@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
-import { createRuntimeHostBusinessComposition } from "../src/runtime/host/composition.js";
+import { createRuntimeHostBusinessComposition } from "../src/runtime/host/scheduling.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
 import { createHostTestStores } from "./helpers/hostStores.js";

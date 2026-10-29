@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Real TUI/client/Host shutdown over memory sockets, with no provider or database. */
 import assert from "node:assert/strict";
@@ -30,6 +31,11 @@ class MemorySocket extends EventEmitter {
   constructor(readonly snapshot: InteractiveRuntimeSnapshot) { super(); }
   setEncoding(): this { return this; }
   write(data: string): boolean {
+    const lifecycleFrame = JSON.parse(data.trim()) as { kind: string; operation?: string; requestId: string };
+    if (lifecycleFrame.kind === "request" && lifecycleFrame.operation === "host.subscribe") {
+      queueMicrotask(() => this.emit("data", JSON.stringify({ kind: "response", requestId: lifecycleFrame.requestId, ok: true, result: { lifecycle: "ready" } }) + "\n"));
+      return true;
+    }
     const frame = JSON.parse(data) as HostFrame;
     assert.ok(frame.kind === "hello" || (frame.kind === "request" && frame.operation === "subscribe"));
     const result = { hostEpoch: "synthetic-epoch", sequence: 1, capabilities: [], snapshot: this.snapshot,
@@ -76,7 +82,8 @@ async function fixture(t: TestContext, options: { stallOwner?: boolean; shared?:
     return socket as unknown as net.Socket;
   });
   t.mock.method(net, "createServer", () => { throw new Error("Real sockets forbidden"); });
-  const client = await RuntimeHostClient.connect({ registration, surface: "tui" });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration, surface: "tui" }));
+
   const clientClose = t.mock.method(client, "close");
   const releaseOwner = deferred();
   const owner = localRuntime(snapshot, async () => { if (options.stallOwner) await releaseOwner.promise; });

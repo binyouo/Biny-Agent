@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /**
  * Real Host/public plan lifecycle, killed after the completed-report transaction
  * and before Graph projection. No production hooks; the expected SIGKILL is joined.
@@ -89,7 +90,7 @@ if (process.argv[2] === "paused-report-crash-child") {
         await runtime.resumeSession(boundary.sessionId);
         return { commands, runtime };
       }, { workspaceRoot: root });
-      client = await connectRuntimeHost(root, { clientId: "paused-report-recovered", surface: "cli" });
+      client = await readyHostClient(await connectRuntimeHost(root, { clientId: "paused-report-recovered", surface: "cli" }));
       const paused = await client.graphInspect(boundary.graphId) as GraphRecord;
       assert.equal(paused.status, "paused");
       assert.deepEqual(paused.nodes, boundary.graph.nodes, "restart preserves paused node metadata");
@@ -217,7 +218,8 @@ async function crashChild(root: string, marker: string): Promise<void> {
     };
     return { commands, runtime: new InteractiveAgentRuntime(commands) };
   }, { workspaceRoot: root });
-  const client = await connectRuntimeHost(root, { clientId: "paused-report-original", surface: "cli" });
+  const client = await readyHostClient(await connectRuntimeHost(root, { clientId: "paused-report-original", surface: "cli" }));
+
   assert.equal((await client.submitPrompt("请规划一个先读取 source.txt 再综合上游报告的后台只读分析任务，先保存草稿。").completion).status, "completed");
   const draft = (await client.planList(sessionId!))[0]!;
   graphId = draft.graphId;

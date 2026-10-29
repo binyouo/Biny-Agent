@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /** 真实子进程与 IPC 断连测试；只用本地无网络模型配置，不执行模型请求。 */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -38,7 +39,7 @@ for (const crash of [false, true]) {
       launcher.once("error", (error) => { clearTimeout(deadline); reject(error); });
       launcher.once("close", (code) => { clearTimeout(deadline); reject(new Error(`launcher exited early: ${String(code)}\n${launcherStderr}`)); });
     });
-    client = await connectRuntimeHost(root, { clientId: "second-client", surface: "tui", spawnOptions: { workspaceRoot: root, configDir } });
+    client = await readyHostClient(await connectRuntimeHost(root, { clientId: "second-client", surface: "tui", spawnOptions: { workspaceRoot: root, configDir } }));
     assert.ok(client);
     if (crash) launcher.kill("SIGKILL");
     else launcher.send("exit");
@@ -53,7 +54,8 @@ for (const crash of [false, true]) {
     await assert.rejects(access(runtimeHostPaths(root).lockPath), { code: "ENOENT" });
     await assert.rejects(access(runtimeHostPaths(root).registrationPath), { code: "ENOENT" });
 
-    const service = await spawnRuntimeHost(root, { workspaceRoot: root, configDir, lifecycleMode: "service", idleGraceMs: 10 });
+    const service = await readyHostClient(await spawnRuntimeHost(root, { workspaceRoot: root, configDir, lifecycleMode: "service", idleGraceMs: 10 }));
+
     try {
       await service.client.close();
       // 常驻模式的契约就是跨过空闲窗口仍存活；等待上限 100ms，不以它证明退出成功。

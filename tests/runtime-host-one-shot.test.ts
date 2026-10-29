@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, writeFile } from "node:fs/promises";
@@ -47,7 +48,8 @@ test("one-shot Host runs isolate overrides, persist one terminal and support ver
   });
   const factory = createRuntimeHostFactory(root, () => ({ persistenceRoot: root, configStore: store }));
   const server = await startRuntimeHost(root, registry => factory("primary", { fresh: true, resourceRegistry: registry }), { createRuntime: factory, configDir: root });
-  const client = await connectRuntimeHost(root, { surface: "cli", configDir: root });
+  const client = await readyHostClient(await connectRuntimeHost(root, { surface: "cli", configDir: root }));
+
   assert.ok(client);
   try {
     const options = { model: "alternate", headless: true, maxSteps: 3 };
@@ -89,7 +91,8 @@ test("one-shot Host runs isolate overrides, persist one terminal and support ver
     await assert.rejects(client.executeRun(prepared.sessionId, "finish", [], { ...options, model: "normal" }, "mismatch"), /options differ/u);
     const submit = await client.request<{ accepted: boolean }>("run.submit", { sessionId: prepared.sessionId, input: "finish", runId: "bypass" }).catch(error => String(error));
     assert.match(String(submit), /require run.execute/u);
-    const other = await connectRuntimeHost(root, { surface: "cli", configDir: root });
+    const other = await readyHostClient(await connectRuntimeHost(root, { surface: "cli", configDir: root }));
+
     assert.ok(other);
     let abandoned: string;
     try {

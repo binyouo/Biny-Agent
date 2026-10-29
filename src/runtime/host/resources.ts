@@ -316,8 +316,10 @@ export class RuntimeHostResourceRegistry {
   async close(): Promise<void> {
     const scopes = [...this.scopes.values()];
     this.scopes.clear();
-    await Promise.all(scopes.map((scope) => scope.close()));
+    const results = await Promise.allSettled(scopes.map((scope) => scope.close()));
     this.catalogCache.clear();
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "Runtime Host resource cleanup failed.");
   }
 }
 

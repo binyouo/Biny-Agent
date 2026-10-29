@@ -5,17 +5,12 @@
  * 重建都留在 `runtime/host/`，便于 CLI、Desktop 和测试共享同一套边界。
  */
 import path from "node:path";
-import { AgentMemoryClient } from "./memory/client.js";
 import { fileURLToPath } from "node:url";
-import { createFileConfigStore, type AgentConfigStore } from "../config/store.js";
-import { createRuntimeHostFactory } from "./host/runtimeFactory.js";
-import { WorktreeManager } from "./host/worktree.js";
-import {
-  findLatestInterruptedSession,
-  startRuntimeHost,
-  type RuntimeHostServer
-} from "./RuntimeHost.js";
+import type { AgentConfigStore } from "../config/store.js";
 import type { BrowserAutomationEndpoint } from "../tools/browser.js";
+import { startRuntimeHost } from "./host/bootstrap.js";
+import type { RuntimeHostServer } from "./host/server.js";
+import type { RuntimeHostFactory } from "./host/types.js";
 
 export interface RuntimeHostProcessOptions {
   lifecycleMode: "ephemeral" | "service";
@@ -30,7 +25,7 @@ export interface RuntimeHostProcessOptions {
 }
 
 export interface RuntimeHostProcessDependencies {
-  createConfigStore?: (workspaceRoot: string, configDir?: string) => AgentConfigStore;
+  createConfigStore?: (workspaceRoot: string, configDir?: string) => AgentConfigStore | Promise<AgentConfigStore>;
 }
 
 export async function runRuntimeHostProcess(
@@ -91,32 +86,31 @@ export async function runRuntimeHostProcess(
     });
     process.channel.unref();
   }
-  const selectedSession = options.sessionId
-    ?? (options.resumeInterrupted ? await findLatestInterruptedSession(options.persistenceRoot) : undefined);
-  const configStore = dependencies.createConfigStore?.(options.workspaceRoot, options.configDir)
-    ?? createFileConfigStore(options.workspaceRoot, { globalDir: options.configDir });
-  browserAutomation = options.browserAutomationBootstrap
-    ? await receiveBrowserAutomationBootstrap()
-    : undefined;
-  const createRuntime = createRuntimeHostFactory(options.workspaceRoot, () => ({
-    persistenceRoot: options.persistenceRoot,
-    configStore,
-    attachmentRoot: options.attachmentRoot,
-    browserAutomation
-  }), (host) => {
-    // 创建期间 Desktop 可能已断开或更换端点；交付前同步最新能力。
-    host.commands.setBrowserAutomation?.(browserAutomation);
-  });
-
-  const worktrees = new WorktreeManager(options.workspaceRoot, options.persistenceRoot);
-  const initialFactoryOptions = selectedSession === undefined
-    ? undefined
-    : await worktrees.runtimeFactoryOptions(selectedSession);
-  server = await startRuntimeHost(options.persistenceRoot, (resourceRegistry) => createRuntime(selectedSession, {
-    ...initialFactoryOptions,
-    resourceRegistry,
-    resourceBoot: "background"
-  }), {
+  const browserBootstrap = options.browserAutomationBootstrap ? receiveBrowserAutomationBootstrap() : Promise.resolve(undefined);
+  let factory: Promise<RuntimeHostFactory> | undefined;
+  const getFactory = (): Promise<RuntimeHostFactory> => factory ??= (async () => {
+    const [{ createRuntimeHostFactory }, { createFileConfigStore }] = await Promise.all([
+      import("./host/runtimeFactory.js"), import("../config/store.js")
+    ]);
+    const configStore = await dependencies.createConfigStore?.(options.workspaceRoot, options.configDir)
+      ?? createFileConfigStore(options.workspaceRoot, { globalDir: options.configDir });
+    browserAutomation = await browserBootstrap;
+    return createRuntimeHostFactory(options.workspaceRoot, () => ({
+      persistenceRoot: options.persistenceRoot, configStore, attachmentRoot: options.attachmentRoot, browserAutomation
+    }), host => { host.commands.setBrowserAutomation?.(browserAutomation); });
+  })();
+  const createRuntime: RuntimeHostFactory = async (sessionId, factoryOptions) => (await getFactory())(sessionId, factoryOptions);
+  server = await startRuntimeHost(options.persistenceRoot, async (resourceRegistry, signal) => {
+    const { findLatestInterruptedSession } = await import("./host/connection.js");
+    const { WorktreeManager } = await import("./host/worktree.js");
+    const selectedSession = options.sessionId
+      ?? (options.resumeInterrupted ? await findLatestInterruptedSession(options.persistenceRoot) : undefined);
+    signal.throwIfAborted();
+    const worktrees = new WorktreeManager(options.workspaceRoot, options.persistenceRoot);
+    const initialFactoryOptions = selectedSession === undefined ? undefined : await worktrees.runtimeFactoryOptions(selectedSession);
+    signal.throwIfAborted();
+    return createRuntime(selectedSession, { ...initialFactoryOptions, resourceRegistry, resourceBoot: "background" });
+  }, {
     workspaceRoot: options.workspaceRoot,
     createRuntime,
     resumeInterrupted: options.resumeInterrupted,
@@ -124,7 +118,14 @@ export async function runRuntimeHostProcess(
     onClosing: armShutdownDeadline,
     onBrowserAutomationChange: (endpoint) => { browserAutomation = endpoint; }
   });
-  void new AgentMemoryClient(undefined, options.configDir).sleepStatus().catch(() => undefined);
+  void server.initialize().then(() => {
+    void import("./memory/client.js").then(async ({ AgentMemoryClient }) => {
+      await new AgentMemoryClient(undefined, options.configDir).sleepStatus();
+    }).catch(() => undefined);
+  }, async () => {
+    await server?.close().catch(() => undefined);
+    process.exit(1);
+  });
   if (shuttingDown) closeOwner();
   else {
     if (shutdownDeadline) clearTimeout(shutdownDeadline);

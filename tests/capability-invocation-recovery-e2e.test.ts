@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -58,12 +59,12 @@ try {
   capabilities.close();
   authority.close();
 
-  host = await spawnRuntimeHost(root, {
+  host = await readyHostClient(await spawnRuntimeHost(root, {
     workspaceRoot: root,
     configDir,
     lifecycleMode: "service",
     idleGraceMs: 10
-  });
+  }));
 
   const recoveredAuthority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
   const recoveredCapabilities = await CapabilityStore.open(root, recoveredAuthority);

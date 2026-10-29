@@ -136,6 +136,7 @@ export const desktopIpc = {
   setApplicationImportSync: "desktop:imports:sync:set",
   configureApplicationImportSync: "desktop:imports:sync:selection",
   syncApplicationImports: "desktop:imports:sync:run",
+  preparePrompt: "desktop:agent:prepare-prompt",
   sendPrompt: "desktop:agent:send",
   mutateQueuedMessage: "desktop:agent:queue:mutate",
   toolCatalog: "desktop:agent:tool-catalog",
@@ -225,7 +226,6 @@ export const desktopIpc = {
   maskingOverview: "desktop:masking:overview",
   maskingDetail: "desktop:masking:detail",
   maskingClear: "desktop:masking:clear",
-  activityRetryFailedAnalysis: "desktop:activity:retry-failed-analysis",
   activityPermissions: "desktop:activity:permissions",
   activitySettings: "desktop:activity:settings",
   activityApplications: "desktop:activity:applications",
@@ -1690,6 +1690,7 @@ export interface DesktopApi {
   exportSession(projectId: string, sessionId: string, format: "biny" | "claude"): Promise<DesktopWorkspaceSnapshot>;
   /** 从 Biny bundle 或外部 rollout 文件导入一条新会话并选中它。 */
   importSession(projectId: string): Promise<DesktopWorkspaceSnapshot>;
+  preparePrompt(projectId: string): Promise<void>;
   sendPrompt(
     projectId: string,
     sessionId: string | undefined,
@@ -1794,7 +1795,6 @@ export interface DesktopApi {
   maskingOverview(projectId: string): Promise<DesktopMaskingOverview>;
   maskingDetail(projectId: string, id: string): Promise<DesktopMaskRecord | undefined>;
   maskingClear(projectId: string): Promise<void>;
-  retryFailedActivityAnalysis(): Promise<{ queued: number; snapshot: ActivityRuntimeSnapshot }>;
   activityPermissions(): Promise<ActivityPermissionStatus>;
   activitySettings(): Promise<DesktopActivitySettingsUpdate>;
   activityApplications(): Promise<DesktopActivityApplication[]>;

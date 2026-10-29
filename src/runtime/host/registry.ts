@@ -37,6 +37,8 @@ export class SessionRuntimeRegistry {
   private readonly sessionRuntimeCacheTarget: number;
   private readonly primaryEntry: ManagedSessionRuntime;
   private closed = false;
+  private closePromise: Promise<void> | undefined;
+  private readonly cleanupFailures: unknown[] = [];
 
   constructor(
     initial: { runtime: InteractiveRuntimeHandle; commands: CommandRuntime },
@@ -112,7 +114,10 @@ export class SessionRuntimeRegistry {
 
   /** 替换一个已存在的 runtime；replacement 必须继续绑定同一个 session。 */
   async replace(sessionId: string, host: { runtime: InteractiveRuntimeHandle; commands: CommandRuntime }): Promise<ManagedSessionRuntime> {
-    if (this.closed) throw new Error("Runtime Host session registry is closed.");
+    if (this.closed) {
+      await host.runtime.close();
+      throw new Error("Runtime Host session registry is closed.");
+    }
     const actualSessionId = host.runtime.getSnapshot().info.sessionId;
     const current = this.entries.get(sessionId);
     // 新聊天由 createFresh() 负责；replacement 只能刷新同一 session 的资源，避免
@@ -158,7 +163,10 @@ export class SessionRuntimeRegistry {
 
   /** 删除主 session 前轮换主 runtime；这是删除语义，不与普通 restart 混用。 */
   async replacePrimary(host: { runtime: InteractiveRuntimeHandle; commands: CommandRuntime }): Promise<ManagedSessionRuntime> {
-    if (this.closed) throw new Error("Runtime Host session registry is closed.");
+    if (this.closed) {
+      await host.runtime.close();
+      throw new Error("Runtime Host session registry is closed.");
+    }
     const current = this.primaryEntry;
     if (runtimeIsBusy(current.runtime.getSnapshot())) {
       await host.runtime.close();
@@ -192,13 +200,20 @@ export class SessionRuntimeRegistry {
   }
 
   async closeAll(): Promise<void> {
-    if (this.closed) return;
+    if (this.closePromise) return await this.closePromise;
     this.closed = true;
-    await Promise.allSettled(this.list().map(async (entry) => {
-      entry.unsubscribe();
-      await entry.runtime.close();
-    }));
-    this.entries.clear();
+    this.closePromise = (async () => {
+      const results = await Promise.allSettled(this.list().map(async (entry) => {
+        entry.unsubscribe();
+        await entry.runtime.close();
+      }));
+      // 工厂返回的晚到实例由 create 关闭；它确认清理前不能释放 owner。
+      await Promise.allSettled([...this.initializations.values()]);
+      this.entries.clear();
+      const failures = [...results.filter(result => result.status === "rejected").map(result => result.reason), ...this.cleanupFailures];
+      if (failures.length) throw new AggregateError(failures, "Session Runtime cleanup failed.");
+    })();
+    return await this.closePromise;
   }
 
   /** 只回收 idle、非主 runtime；返回实际回收的 sessionId。 */
@@ -239,7 +254,6 @@ export class SessionRuntimeRegistry {
     try {
       host = await this.options.createRuntime(sessionId, factoryOptions);
       if (this.closed) {
-        await host.runtime.close().catch(() => undefined);
         throw new Error("Runtime Host session registry is closed.");
       }
       const actualSessionId = host.runtime.getSnapshot().info.sessionId;
@@ -250,7 +264,11 @@ export class SessionRuntimeRegistry {
       this.entries.set(sessionId, managed);
       return managed;
     } catch (error) {
-      await host?.runtime.close().catch(() => undefined);
+      try { await host?.runtime.close(); }
+      catch (cleanupError) {
+        this.cleanupFailures.push(cleanupError);
+        throw new AggregateError([error, cleanupError], "Session Runtime initialization and cleanup failed.");
+      }
       throw error;
     }
   }

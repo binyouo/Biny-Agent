@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
@@ -254,7 +255,7 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
     assert.equal(preservedDraft, "next draft", "startup and admission must preserve the next draft");
     assert.ok(stored.some((event) => event.type === "assistant_message" && event.content.includes("tui-send-reply")));
     assert.deepEqual(app.tuiState.transcript.committed.filter((item) => item.kind === "error"), []);
-    observer = await connectRuntimeHost(root, { clientId: "observer", surface: "cli" });
+    observer = await readyHostClient(await connectRuntimeHost(root, { clientId: "observer", surface: "cli" }));
     assert.ok(observer);
     await observer.waitForIdle(app.tuiState.sessionId);
 
@@ -318,7 +319,8 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
     dialog.handleInput("\r");
     assert.equal(editor.getText(), "/graph ", "required arguments remain editable after picker selection");
 
-    const competitor = await connectRuntimeHost(root, { clientId: "other-writer", surface: "cli" });
+    const competitor = await readyHostClient(await connectRuntimeHost(root, { clientId: "other-writer", surface: "cli" }));
+
     assert.ok(competitor);
     try {
       const competing = await competitor.submitRunForSession(app.tuiState.sessionId, "competing-execution");

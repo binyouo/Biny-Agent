@@ -1,3 +1,4 @@
+import { readyHostClient } from "./readyHostClient.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -57,7 +58,7 @@ async function connectAndCheck(
   const observed = observeTransport(host.internals);
   let client: RuntimeHostClient;
   try {
-    client = await RuntimeHostClient.connect({ registration: fixture.registration, configDir: fixture.configDir });
+    client = await readyHostClient(await RuntimeHostClient.connect({ registration: fixture.registration, configDir: fixture.configDir }));
   } catch (error) {
     const confirmedAggregateOverflow = observed.some((entry) => entry.aggregateOverflow && !entry.individualOversize);
     t.diagnostic(`${stage}: connect failed; confirmed aggregate writer overflow=${confirmedAggregateOverflow}; `

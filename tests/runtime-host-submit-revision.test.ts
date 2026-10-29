@@ -1,3 +1,5 @@
+import { RuntimeHostExecution } from "../src/runtime/host/composition.js";
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 /** Only an explicit pre-admission CAS rejection permits one same-owner send retry. */
 import assert from "node:assert/strict";
@@ -36,7 +38,10 @@ async function fixture(t: TestContext, scenario: Scenario, rewriteRejection?: (r
   } } as unknown as InteractiveRuntimeHandle;
   // The real Host run.submit route, CAS assertion and admission wrapper execute.
   // Persistence/writer acquisition is counted, not replaced by a second CAS implementation.
-  const server = new RuntimeHostServer(runtime, await createHostTestStores() as unknown as CommandRuntime, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
+  const commands = await createHostTestStores() as unknown as CommandRuntime;
+  const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
+  const execution = new RuntimeHostExecution(server, runtime, commands, registration, async () => { throw new Error("Unexpected creation"); });
+  Object.assign(server, { execution, initialized: true });
   const internal = server as unknown as { ensureSessionWriter(): Promise<void>; execute(connection: unknown, frame: HostRequestFrame): Promise<unknown> };
   internal.ensureSessionWriter = async () => { writerChecks += 1; };
   const event = (epoch: string) => ({ kind: "event", hostEpoch: epoch, sequence: 3, update: { snapshot: snapshot(revision, kind) } }) as HostFrame;
@@ -44,6 +49,7 @@ async function fixture(t: TestContext, scenario: Scenario, rewriteRejection?: (r
     assert.ok(frame.kind === "hello" || frame.kind === "request");
     if (frame.kind === "hello") return [{ kind: "response", requestId: frame.requestId, ok: true, result: { hostEpoch: "epoch-a", sequence: 0, capabilities: [] } }];
     requests.push(frame);
+    if (frame.operation === "host.subscribe") return [{ kind: "response", requestId: frame.requestId, ok: true, result: { ...server.info, lifecycle: "ready" } }];
     if (frame.operation === "subscribe") return [{ kind: "response", requestId: frame.requestId, ok: true, result: { hostEpoch: "epoch-a", sequence: 1, snapshot: snapshot(21), sessions: [{ sessionId: "target", primary: true, lastActiveAt: 1, snapshot: snapshot(21) }], capabilities: [] } }];
     if (frame.operation === "snapshot") {
       if (scenario === "disconnect-during-refresh") { socket.destroy(); return []; }
@@ -76,7 +82,8 @@ async function fixture(t: TestContext, scenario: Scenario, rewriteRejection?: (r
     throw new Error(`Unexpected request: ${frame.operation}`);
   });
   t.mock.method(net, "createConnection", () => { queueMicrotask(() => socket.emit("connect")); return socket as unknown as net.Socket; });
-  const client = await RuntimeHostClient.connect({ registration, surface: "desktop" });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration, surface: "desktop" }));
+
   if (scenario === "socket-before-dispatch" || scenario === "reset-before-dispatch" || scenario === "fractional-dispatch") {
     const internalClient = client as unknown as { openSocket(): Promise<void>; socket: net.Socket; pending: Map<string, unknown> };
     const original = internalClient.openSocket.bind(client); let calls = 0;

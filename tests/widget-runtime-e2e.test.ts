@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -71,7 +72,7 @@ for (const cancelled of [false, true]) test(`真实 Runtime/HTTP 参数流 ${can
     });
     const canonical = await realpath(workspace);
     host = await startRuntimeHost(canonical, resourceRegistry => createInteractiveAgentHost(canonical, { resourceRegistry, configStore: { load: async () => config, save: async () => undefined } }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-    client = await connectRuntimeHost(canonical, { surface: "desktop", clientId: "widget-test" });
+    client = await readyHostClient(await connectRuntimeHost(canonical, { surface: "desktop", clientId: "widget-test" }));
     assert.ok(client);
     const file = client.getSnapshot().info.sessionFile;
     const observed: AgentHostEvent[] = [];

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { globalAgentDir, globalConfigDir } from "../../config/paths.js";
 import { secureLocalIpcEndpoint } from "../../utils/localIpc.js";
 import {
-  acquireHostLock, ensureRuntimeHostDirectory, isProcessAlive, readRegistration, removeRegistration,
+  acquireHostLock, desktopApplicationLaunch, ensureRuntimeHostDirectory, isProcessAlive, readRegistration, removeRegistration,
   removeSocketIfStale, runtimeHostLaunchPlan, runtimeHostPaths, terminateSpawnedHost, writeRegistration
 } from "../host/lifecycle.js";
 import { runtimeHostProtocolVersion } from "../host/protocol.js";
@@ -164,7 +164,9 @@ async function spawnMemoryOwner(root: string, configRoot: string): Promise<HostR
   const currentFile = fileURLToPath(import.meta.url);
   const entryPath = path.join(path.dirname(currentFile), `../memoryProcess${currentFile.endsWith(".ts") ? ".ts" : ".js"}`);
   const plan = runtimeHostLaunchPlan(path.join(root, ".memory-owner"), {
-    workspaceRoot: root, configDir: configRoot, entryPath, lifecycleMode: "service"
+    workspaceRoot: root, configDir: configRoot, entryPath, lifecycleMode: "service",
+    // Desktop 打包会合并模块，复用应用入口以保留真实入口与加密凭据能力。
+    electronAppPath: process.versions.electron === undefined ? undefined : desktopApplicationLaunch(configRoot).appPath
   });
   const args = plan.args.map(arg => arg === "--biny-runtime-host" ? "--biny-memory-owner" : arg);
   const child = spawn(plan.executable, args, { env: { ...plan.env, BINY_AGENT_DIR: root }, detached: true, stdio: "ignore", windowsHide: true });

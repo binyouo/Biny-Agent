@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -22,13 +23,13 @@ let desktop: Awaited<ReturnType<typeof connectRuntimeHost>>;
 let observer: Awaited<ReturnType<typeof connectRuntimeHost>>;
 const endpoint = { endpoint: "/tmp/biny-test-browser.sock", token: "browser-test-token", projectId: "project-1" };
 try {
-  owner = await spawnRuntimeHost(root, {
+  owner = await readyHostClient(await spawnRuntimeHost(root, {
     workspaceRoot: root,
     configDir,
     lifecycleMode: "service",
     surface: "desktop",
     browserAutomation: endpoint
-  });
+  }));
   desktop = owner.client;
   assert.ok(desktop.hostInfo?.capabilities.includes("browser.automation.lease"));
   assert.ok((await desktop.listTools()).some((tool) => tool.name === "BrowserOpen"), "private IPC bootstrap should attach the initial browser capability");
@@ -46,7 +47,7 @@ try {
 
   await desktop.close();
   desktop = undefined;
-  observer = await connectRuntimeHost(root, { configDir, clientId: "observer", surface: "tui" });
+  observer = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "observer", surface: "tui" }));
   assert.ok(observer);
   await assert.rejects(observer.setBrowserAutomation(endpoint), /Only a Desktop client/u);
   const detachedTools = await waitFor(async () => {
@@ -59,7 +60,8 @@ try {
   assert.ok(!detachedTools.some((tool) => tool.name === "WebSearch"));
   assert.ok(detachedTools.some((tool) => tool.name === "WebFetch"), "detaching Desktop must preserve direct HTTP fetching");
 
-  const reattached = await connectRuntimeHost(root, { configDir, clientId: "desktop-reopened", surface: "desktop" });
+  const reattached = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "desktop-reopened", surface: "desktop" }));
+
   assert.ok(reattached);
   assert.equal(await reattached.setBrowserAutomation(endpoint), true);
   assert.ok((await reattached.listTools()).some((tool) => tool.name === "BrowserOpen"));

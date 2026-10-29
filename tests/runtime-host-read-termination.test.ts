@@ -26,9 +26,11 @@ function fixture(maxBytes = 256) {
   const responses: unknown[] = [];
   // Borrow only methods: never run the Host constructor or create a real socket.
   const host = Object.assign(Object.create(RuntimeHostServer.prototype), {
+    requests: new Set(),
     pendingRequests: 0,
     activityRevision: 0,
-    registry: { primary: () => ({ sessionId: "primary" }) },
+    initialized: true,
+    initialRegistry: { primary: () => ({ sessionId: "primary" }) },
     sessionWriterOwners: new Map(),
     dispatcher: {
       dispatch: (_lane: string, work: () => Promise<unknown>) => {
@@ -51,7 +53,7 @@ function fixture(maxBytes = 256) {
 }
 
 function request(requestId: string): string {
-  return encodeHostFrame({ kind: "request", requestId, operation: "client.keep-alive", payload: { keepAlive: false } });
+  return encodeHostFrame({ kind: "request", requestId, operation: "snapshot", payload: { keepAlive: false } });
 }
 
 test("valid coalesced frames dispatch in order", async () => {

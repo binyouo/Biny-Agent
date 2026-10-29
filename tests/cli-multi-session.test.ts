@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /** 通过全局 biny 与真实 PTY，验证多个终端和一次性命令共享 Host 时的 Session 边界。 */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -52,7 +53,7 @@ try {
   const first = openTui();
   await waitFor(() => first.output.includes("openai-compatible/local-test"));
   phase = "connect observer";
-  client = await connectRuntimeHost(root, { clientId: "parallel-observer", surface: "cli" });
+  client = await readyHostClient(await connectRuntimeHost(root, { clientId: "parallel-observer", surface: "cli" }));
   assert.ok(client);
   phase = "read initial Host PID";
   hostPid = (JSON.parse(await readFile(runtimeHostPaths(root).registrationPath, "utf8")) as { pid: number }).pid;

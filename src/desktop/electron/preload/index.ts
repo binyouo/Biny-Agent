@@ -80,6 +80,7 @@ const api: DesktopApi = {
   },
   exportSession: async (projectId, sessionId, format) => await ipcRenderer.invoke(desktopIpc.exportSession, projectId, sessionId, format),
   importSession: async (projectId) => await ipcRenderer.invoke(desktopIpc.importSession, projectId),
+  preparePrompt: async (projectId) => await ipcRenderer.invoke(desktopIpc.preparePrompt, projectId),
   sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection) => await ipcRenderer.invoke(
     desktopIpc.sendPrompt,
     projectId,
@@ -213,7 +214,6 @@ const api: DesktopApi = {
   },
   dailyMemoryNote: async (date) => await ipcRenderer.invoke(desktopIpc.dailyMemoryNote, date),
   clearActivity: async () => await ipcRenderer.invoke(desktopIpc.activityClear),
-  retryFailedActivityAnalysis: async () => await ipcRenderer.invoke(desktopIpc.activityRetryFailedAnalysis),
   stageSettingsCredential: async (secret, scope) => await ipcRenderer.invoke(desktopIpc.stageSettingsCredential, secret, scope),
   completeModelLoginForSettings: async (projectId, provider, authRequestId, pastedAuthorization) => await ipcRenderer.invoke(
     desktopIpc.completeModelLoginForSettings,

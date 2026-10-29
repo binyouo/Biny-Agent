@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** supervised GoalGraph、模型工具入口与 Host 监督唤醒的最小闭环。 */
 import { createRequire } from "node:module";
@@ -463,7 +464,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
   try {
     await mkdir(path.join(root, ".verification-state"));
     host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-    client = await connectRuntimeHost(root, { clientId: "plan-test", surface: "cli" });
+    client = await readyHostClient(await connectRuntimeHost(root, { clientId: "plan-test", surface: "cli" }));
     const outcome = await client.submitPrompt(independent
       ? "请在后台分别生成并验收两个独立文件，遇到审批及时告诉我。"
       : "请先生成第一个文件并验收，再生成第二个文件；后台继续，最后在这里交付。").completion;
@@ -476,7 +477,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
       await client.close(); client = undefined;
       await host.close(); host = undefined;
       host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-      client = await connectRuntimeHost(root, { clientId: "plan-draft-restarted", surface: "cli" });
+      client = await readyHostClient(await connectRuntimeHost(root, { clientId: "plan-draft-restarted", surface: "cli" }));
       assert.equal("planning" in commands!.agent.getInfo(), false, "removed planning mode is not restored into a session");
       await assert.rejects(client.startPlanDraft(sessionId!, draft.graphId, draft.revision + 1), /stale/u);
       assert.equal(commands!.graphs.inspectGraph(draft.graphId).status, "draft");
@@ -614,7 +615,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
 
     // 重新装配 Host 和所有 stores，从同一持久 Session 恢复等待审批的节点。
     host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-    client = await connectRuntimeHost(root, { clientId: "plan-test-restarted", surface: "cli" });
+    client = await readyHostClient(await connectRuntimeHost(root, { clientId: "plan-test-restarted", surface: "cli" }));
     assert.equal(commands!.taskRuns.get(first.taskRunId)?.status, "needs_approval");
     assert.equal((await client.taskApprove(first.taskRunId, approval.approvalId)).accepted, true);
     await waitUntil(() => reports.length === 2, 15_000).catch((error: unknown) => {
@@ -721,7 +722,7 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
   try {
     await writeFile(path.join(root, "source.txt"), "source fact");
     host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-    client = await connectRuntimeHost(root, { clientId: "report-test", surface: "cli" });
+    client = await readyHostClient(await connectRuntimeHost(root, { clientId: "report-test", surface: "cli" }));
     assert.equal((await client.submitPrompt("请先规划一个可在后台持续、重启后恢复的本地资料分析任务：读取来源，再综合结论，不修改文件。").completion).status, "completed");
     const draft = (await client.planList(sessionId!))[0]!;
     graphId = draft.graphId;
@@ -730,7 +731,7 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
     await client.close(); client = undefined;
     await host.close(); host = undefined;
     host = await startRuntimeHost(root, factory, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-    client = await connectRuntimeHost(root, { clientId: "report-restarted", surface: "cli" });
+    client = await readyHostClient(await connectRuntimeHost(root, { clientId: "report-restarted", surface: "cli" }));
     await client.startPlanDraft(sessionId!, graphId, draft.revision);
     await waitUntil(() => commands!.graphs.inspectGraph(graphId).status === "completed", 15_000);
     await client.waitForIdle();

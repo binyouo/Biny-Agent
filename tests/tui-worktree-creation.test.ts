@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -38,7 +39,8 @@ test("/new --isolated creates a worktree through the Host and /new returns to a 
   const server = await startRuntimeHost(root, async () => host, { createRuntime: createRuntimeHostFactory(root, () => ({ configStore })) });
   resources.server = server;
   server["businessComposition"].stop();
-  const client = await connectRuntimeHost(root, { surface: "tui" });
+  const client = await readyHostClient(await connectRuntimeHost(root, { surface: "tui" }));
+
   resources.client = client;
   assert.ok(client);
   const terminal: Terminal = {

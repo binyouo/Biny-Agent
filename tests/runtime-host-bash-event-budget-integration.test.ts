@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
@@ -57,7 +58,8 @@ test("real Host delivers large Bash terminal events live and from an unchanged r
     return runtime;
   };
   const connect = async () => {
-    const client = await RuntimeHostClient.connect({ registration, configDir, handshakeTimeoutMs: 5_000 });
+    const client = await readyHostClient(await RuntimeHostClient.connect({ registration, configDir, handshakeTimeoutMs: 5_000 }));
+
     clients.push(client);
     return client;
   };

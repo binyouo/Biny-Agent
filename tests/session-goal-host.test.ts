@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { createRequire } from "node:module";
 import assert from "node:assert/strict";
@@ -96,7 +97,7 @@ try {
     factories += 1;
     return await createInteractiveAgentHost(root, { sessionId: "goal-session", configStore: { load: async () => config, save: async () => undefined } });
   }, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-  client = await connectRuntimeHost(root);
+  client = await readyHostClient(await connectRuntimeHost(root));
   client.subscribe(update => {
     if (update.event?.type === "message.user") userInputs.push(update.event.content);
     if (update.event?.type === "permission.requested" && !permissionRequests.has(update.event.requestId)) {
@@ -148,9 +149,9 @@ try {
 
   await client.waitForIdle("goal-session");
   await client.close();
-  client = await connectRuntimeHost(root);
+  client = await readyHostClient(await connectRuntimeHost(root));
   await client.request("session.ensure", { sessionId: "goal-session", writeIntent: true });
-  goalOwnerClient = await connectRuntimeHost(root);
+  goalOwnerClient = await readyHostClient(await connectRuntimeHost(root));
   held = undefined;
   await goalOwnerClient.request("session.goal.resume", { sessionId: "goal-session" });
   await eventually(async () => held !== undefined, Boolean);
@@ -170,7 +171,7 @@ try {
   // A real Host and provider boundary must suppress textual automatic spinning,
   // persist the reason, and allow explicit recovery through the same public RPC.
   await goalOwnerClient.close();
-  goalOwnerClient = await connectRuntimeHost(root);
+  goalOwnerClient = await readyHostClient(await connectRuntimeHost(root));
   hold = false; noWork = true;
   const beforeNoWork = requests;
   const noWorkSet = await goalOwnerClient.request<{ accepted: boolean }>("session.goal.set", { sessionId: "goal-session", objective: "创建另一份产物并验证。" });

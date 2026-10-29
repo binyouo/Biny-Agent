@@ -10,7 +10,16 @@ import ts from "typescript";
 // omitted-session run.continue routing and ownership during later interrupted-turn
 // awaits are separate deferred issues. Queue fakes represent
 // an already running session; they do not claim that idle queues auto-start.
-const source = readFileSync(new URL("../src/runtime/host/server.ts", import.meta.url), "utf8");
+const kernel = readFileSync(new URL("../src/runtime/host/server.ts", import.meta.url), "utf8");
+const execution = readFileSync(new URL("../src/runtime/host/composition.ts", import.meta.url), "utf8").replaceAll("this.host.", "this.");
+const kernelAst = ts.createSourceFile("server.ts", kernel, ts.ScriptTarget.Latest, true);
+const executionAst = ts.createSourceFile("composition.ts", execution, ts.ScriptTarget.Latest, true);
+const members = new Map<string, string>();
+for (const ast of [kernelAst, executionAst]) {
+  const declaration = ast.statements.find(ts.isClassDeclaration)!;
+  for (const member of declaration.members) if (member.name) members.set(member.name.getText(ast), member.getText(ast));
+}
+const source = `class RuntimeHostServer { ${[...members.values()].join("\n")} }`.replaceAll("this.execution!.", "this.");
 const parsed = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const servers = parsed.statements.filter((node): node is ts.ClassDeclaration =>
   ts.isClassDeclaration(node) && node.name?.text === "RuntimeHostServer");

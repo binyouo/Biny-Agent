@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /** 真实 detached 子进程验证：观察连接允许回收，客户端不反复拉起空闲 Host。 */
 import assert from "node:assert/strict";
 import { access, mkdtemp, rm } from "node:fs/promises";
@@ -19,7 +20,7 @@ await saveConfig(root, {
 const options = { workspaceRoot: root, configDir, surface: "desktop" as const, keepAlive: false, idleGraceMs: 150 };
 let owner: Awaited<ReturnType<typeof connectOrSpawnRuntimeHostWithOwnership>>;
 try {
-  owner = await connectOrSpawnRuntimeHostWithOwnership(root, options);
+  owner = await readyHostClient(await connectOrSpawnRuntimeHostWithOwnership(root, options));
   assert.ok(owner?.spawnedProcess?.pid);
   const firstEpoch = owner.client.hostInfo?.hostEpoch;
   const firstPid = owner.spawnedProcess.pid;
@@ -27,10 +28,10 @@ try {
   await assert.rejects(access(runtimeHostPaths(root).registrationPath), { code: "ENOENT" });
   // 覆盖客户端真实重连定时器的首个窗口；只用于证明没有自动 respawn，最长 600ms。
   await new Promise<void>((resolve) => setTimeout(resolve, 600));
-  assert.equal(await connectRuntimeHost(root, { configDir }), undefined);
+  assert.equal(await readyHostClient(await connectRuntimeHost(root, { configDir })), undefined);
   await owner.client.close();
 
-  owner = await connectOrSpawnRuntimeHostWithOwnership(root, options);
+  owner = await readyHostClient(await connectOrSpawnRuntimeHostWithOwnership(root, options));
   assert.ok(owner?.spawnedProcess?.pid);
   assert.notEqual(owner.client.hostInfo?.hostEpoch, firstEpoch, "新的显式操作应取得新的 owner epoch");
   assert.notEqual(owner.spawnedProcess.pid, firstPid);

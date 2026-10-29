@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { createRuntimeHostFactory } from "../src/runtime/host/runtimeFactory.js";
 import assert from "node:assert/strict";
@@ -46,7 +47,8 @@ test("TUI command results stay in the transcript and goal controls show only mea
   const factory = createRuntimeHostFactory(root, () => ({ configStore: createFileConfigStore(root, { globalDir: configDir }) }));
   const server = await startRuntimeHost(root, async () => host, { configDir, createRuntime: factory });
   server["businessComposition"].stop();
-  const transport = await connectRuntimeHost(root, { configDir, surface: "tui" });
+  const transport = await readyHostClient(await connectRuntimeHost(root, { configDir, surface: "tui" }));
+
   assert.ok(transport);
   app["runtime"] = transport;
   app["runtimeSnapshot"] = host.runtime.getSnapshot();
@@ -153,7 +155,8 @@ test("TUI command results stay in the transcript and goal controls show only mea
       otherStore.pause(currentSession);
       await new Promise<void>((resolve) => setImmediate(resolve));
       try {
-        const client = await connectRuntimeHost(root, { configDir, surface: "tui", handshakeTimeoutMs: 5_000 });
+        const client = await readyHostClient(await connectRuntimeHost(root, { configDir, surface: "tui", handshakeTimeoutMs: 5_000 }));
+
         assert.ok(client);
         try {
           assert.deepEqual(client.getSnapshot().sessionGoal, { objective: "Goal delivered through Host", status: "paused" });

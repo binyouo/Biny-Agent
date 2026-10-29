@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -55,7 +56,7 @@ if (process.argv[2] === "crash-worker") {
       assert.equal((runtime.taskRuns.get("crashed-task")?.attempts[0]?.failure as { failureClass?: string }).failureClass, "worker_interrupted");
       assert.equal(requests, 0, "Host startup must not execute a parked Worker");
       assert.equal(runtime.graphs.inspectGraph("worker-graph").nodes[0]?.status, "running", "the graph must retain its parked claim without dispatching another worker");
-      client = await connectRuntimeHost(root, { clientId: "worker-recovery-test", surface: "tui" });
+      client = await readyHostClient(await connectRuntimeHost(root, { clientId: "worker-recovery-test", surface: "tui" }));
       assert.ok(client);
       const admissions = await Promise.all([client.taskResume("crashed-task"), client.taskResume("crashed-task")]);
       for (const accepted of admissions) assert.equal(accepted.accepted, true, JSON.stringify(accepted));

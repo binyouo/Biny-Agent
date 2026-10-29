@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
@@ -127,7 +128,8 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
   }));
   const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   cleanup(async () => { await host.close(); });
-  const connected = await connectRuntimeHost(root, { surface: "cli", clientId: "parent-client" });
+  const connected = await readyHostClient(await connectRuntimeHost(root, { surface: "cli", clientId: "parent-client" }));
+
   assert.ok(connected);
   let client = connected;
   const closeClient = cleanup(async () => { await connected.close(); });
@@ -187,7 +189,8 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
   assert.equal((next.task as { continuedFrom: string }).continuedFrom, taskRunId);
   assert.equal((await client.taskGet(taskRunId) as TaskRunWithAttempts).attempts.length, 1);
   await closeClient();
-  const reconnected = await connectRuntimeHost(root, { surface: "cli", clientId: "reconnected-parent" });
+  const reconnected = await readyHostClient(await connectRuntimeHost(root, { surface: "cli", clientId: "reconnected-parent" }));
+
   assert.ok(reconnected); client = reconnected;
   cleanup(async () => { await reconnected.close(); });
   assert.deepEqual((await client.taskWait(taskRunId, sessionId) as typeof queued).messages, current.messages.map((item) => item.direction === "worker" ? { ...item, delivered: true } : item));

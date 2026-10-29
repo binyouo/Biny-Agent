@@ -274,6 +274,8 @@ export class BinyTui {
       if (!runtime) throw new Error("Runtime Host is unavailable.");
       if (this.exiting) { await runtime.close(); return; }
       this.runtime = runtime;
+      await runtime.waitForReady();
+      if (this.exiting) return;
       this.startupError = undefined;
       // 补全器要的是不带斜杠的命令名，它自己会补上 `/`；带斜杠会补出 `//resume`。
       // 提前设置 autocomplete：即使模型未配置或 skills 加载失败，slash 命令补全也必须可用。

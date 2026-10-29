@@ -1,3 +1,4 @@
+import { RuntimeHostExecution } from "../../src/runtime/host/composition.js";
 import { createHostTestStores } from "./hostStores.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -115,6 +116,9 @@ export async function createReplayFixture(t: TestContext) {
         await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
         await server.listen();
         await writeFile(paths.registrationPath, JSON.stringify(registration), { mode: 0o600 });
+      } else {
+        const execution = new RuntimeHostExecution(server, runtime, commands, registration, async () => { throw new Error("Unexpected runtime creation"); });
+        Object.assign(server, { execution, initialized: true, sequenceRecovered: true });
       }
       const internals = server as unknown as ReplayInternals;
       return { runtime, server, internals,

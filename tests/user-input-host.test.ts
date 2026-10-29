@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** 真实 socket、Runtime、模型协议与 JSONL；模型只使用本机 HTTP 替身。 */
 import assert from "node:assert/strict";
@@ -63,7 +64,8 @@ test("普通模式发现提问工具后经 Host 提问、CLI 回答并落盘；�
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   }));
   const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-  const connected = await connectRuntimeHost(root, { surface: "desktop", clientId: "input-test" });
+  const connected = await readyHostClient(await connectRuntimeHost(root, { surface: "desktop", clientId: "input-test" }));
+
   assert.ok(connected);
   let client = connected;
   try {
@@ -115,7 +117,8 @@ test("普通模式发现提问工具后经 Host 提问、CLI 回答并落盘；�
     await cancelReady;
     const old = (await client.pendingUserInput(sessionId))[0]!;
     await client.close();
-    const reconnected = await connectRuntimeHost(root, { surface: "desktop", clientId: "input-test-reconnected" });
+    const reconnected = await readyHostClient(await connectRuntimeHost(root, { surface: "desktop", clientId: "input-test-reconnected" }));
+
     assert.ok(reconnected);
     client = reconnected;
     assert.deepEqual(await client.pendingUserInput(sessionId), [old], "关闭和重连客户端不得丢失待答问题");

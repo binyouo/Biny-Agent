@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /** Production client and JSONL decoder, deterministic in-memory transport only. */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -41,6 +42,11 @@ class MemorySocket extends EventEmitter {
   constructor(readonly epoch: string, readonly initial: RuntimeHostSessionSummary[]) { super(); }
   setEncoding(): this { return this; }
   write(data: string): boolean {
+    const lifecycleFrame = JSON.parse(data.trim()) as { kind: string; operation?: string; requestId: string };
+    if (lifecycleFrame.kind === "request" && lifecycleFrame.operation === "host.subscribe") {
+      queueMicrotask(() => this.emit("data", JSON.stringify({ kind: "response", requestId: lifecycleFrame.requestId, ok: true, result: { lifecycle: "ready" } }) + "\n"));
+      return true;
+    }
     const frame = JSON.parse(data) as HostFrame;
     assert.ok(frame.kind === "hello" || frame.kind === "request");
     if (frame.kind === "hello") {
@@ -82,11 +88,12 @@ async function fixture(context: TestContext, initial = summaries(snapshot("prima
     return socket as unknown as net.Socket;
   });
   context.mock.method(net, "createServer", () => { throw new Error("Real listeners forbidden"); });
-  const client = await RuntimeHostClient.connect({ registration: {
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration: {
     protocolVersion: runtimeHostProtocolVersion, endpoint: "/test/no-socket", registrationPath: "/test/no-registration",
     lockPath: "/test/no-lock", rootHash: "test-root", persistenceRoot: "/test", hostEpoch: "epoch-a",
     token: "synthetic-test-token", pid: process.pid, createdAt: "2026-10-05T00:00:00.000Z"
-  } });
+  } }));
+
   context.after(async () => {
     await client.close();
     assert.equal((client as unknown as { sessionListReads?: Set<unknown> }).sessionListReads?.size ?? 0, 0,
@@ -202,6 +209,7 @@ for (const epoch of ["epoch-a", "epoch-b"]) {
     socket.destroy();
     await rejected;
     const list = client.listRuntimeSessions();
+    await new Promise<void>(resolve => setImmediate(resolve));
     const replacement = sockets[1]!;
     replacement.deliver(reply(await replacement.next("session.list"), summaries(snapshot("primary", 0))));
     await list;

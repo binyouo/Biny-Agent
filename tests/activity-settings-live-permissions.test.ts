@@ -30,15 +30,8 @@ test("权限刷新读取实时系统权限，不沿用采集器的上次状态�
   let granted = false;
   let permissionFailure = false;
   let permissionReads = 0;
-  let retryCalls = 0;
-  let retryFailure = true;
   Object.defineProperty(dom.window, "biny", { configurable: true, value: {
     activitySnapshot: async () => runtime,
-    retryFailedActivityAnalysis: async () => {
-      retryCalls += 1;
-      if (retryFailure) throw new Error("暂无可用工具模型");
-      return { queued: 2, snapshot: { ...runtime, analysis: { failed: 0, pending: 5 } } };
-    },
     activityPermissions: async () => {
       permissionReads += 1;
       if (permissionFailure) throw new Error("系统权限不可读");
@@ -69,23 +62,10 @@ test("权限刷新读取实时系统权限，不沿用采集器的上次状态�
     await render();
     assert.ok(document.querySelector('#activity-sensitive-apps')!.compareDocumentPosition(document.querySelector('#activity-capture')!) & 4,
       "先配置不记录的应用，再调整采集参数；权限覆盖原先未保护此顺序");
-    // 持久失败位于最近会话窗口之外时仍须可恢复；既有权限测试不覆盖分析失败。
-    const analysis = document.getElementById("activity-analysis");
-    assert.match(analysis?.textContent ?? "", /失败 2/u);
-    assert.match(analysis?.textContent ?? "", /old-model/u);
-    assert.match(analysis?.textContent ?? "", /余额不足/u);
-    assert.equal(retryCalls, 0, "打开设置不能自动重试或切换 Provider");
-    const retry = analysis?.querySelector<HTMLButtonElement>('button[aria-label="重试失败分析"]');
-    assert.ok(retry);
-    await act(async () => { retry.click(); });
-    assert.equal(retryCalls, 1);
-    assert.match(analysis?.textContent ?? "", /暂无可用工具模型/u);
-    assert.match(analysis?.textContent ?? "", /失败 2/u, "入队失败时保留失败状态");
-    retryFailure = false;
-    await act(async () => { retry.click(); });
-    assert.match(analysis?.textContent ?? "", /待分析 5/u);
-    assert.match(analysis?.textContent ?? "", /已将 2 条失败记录加入待分析队列/u);
-    assert.doesNotMatch(analysis?.textContent ?? "", /Insufficient Balance|暂无可用工具模型/u);
+    // 历史分析错误保留在数据层，不在采集设置中作为当前模型错误展示。
+    assert.equal(document.getElementById("activity-analysis"), null, "不再单列后台诊断卡片");
+    assert.doesNotMatch(document.body.textContent ?? "", /old-model|Insufficient Balance|待分析|上次失败模型|后台分析|工具模型设置/u);
+    assert.equal(document.querySelector('button[aria-label="重试失败分析"]'), null);
     const capture = document.getElementById("activity-capture");
     assert.equal(capture?.tagName, "DETAILS");
     assert.equal(capture?.hasAttribute("open"), false);

@@ -709,6 +709,11 @@ export class DesktopAgentManager {
     return await this.workspaceSnapshot(projectId);
   }
 
+  async preparePrompt(projectId: string): Promise<void> {
+    const managed = await this.ensureRuntime(projectId);
+    await managed.runtime.waitForReady();
+  }
+
   async sendPrompt(
     projectId: string,
     sessionId: string | undefined,
@@ -2817,6 +2822,7 @@ export class DesktopAgentManager {
       if (!this.isRuntimeLifetimeCurrent(projectId, lifetime) || (!attached && !allowSpawn)) return undefined;
       if (attached) {
         runtime = attached;
+        await attached.waitForReady();
         await attached.setBrowserAutomation(this.browserAutomation
           ? { ...this.browserAutomation, projectId }
           : undefined);
@@ -2849,6 +2855,8 @@ export class DesktopAgentManager {
         if (!client) throw new Error("无法连接当前 Desktop 的 Runtime Host。");
         runtime = client;
       }
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
+      await runtime.waitForReady();
       if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) return undefined;
       // Desktop 可能 attach 到上一次启动后仍存活的 Runtime Host。先把 owner 的内存策略
       // 对齐到磁盘，再订阅历史事件，避免旧快照在首轮回放时覆盖刚恢复的权限模式。
