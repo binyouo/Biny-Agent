@@ -10,7 +10,7 @@ const source = readFileSync(path.join(process.cwd(), "src/desktop/electron/main/
 const ast = ts.createSourceFile("service.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const classes = ast.statements.filter((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "DesktopProjectService");
 assert.equal(classes.length, 1);
-const names = ["gitMutations", "switchProjectBranch", "createProjectBranch", "projectGitRemote", "commitProjectFiles", "initializeProjectGit"];
+const names = ["gitMutations", "gitWorktreeMutations", "gitMutationAdmission", "acquireGitMutation", "gitAdmissionRead", "switchProjectBranch", "createProjectBranch", "projectGitRemote", "commitProjectFiles", "initializeProjectGit"];
 const members = names.map(name => {
   const matches = classes[0]!.members.filter(node => node.name?.getText(ast) === name);
   assert.equal(matches.length, 1); return matches[0]!.getText(ast);
@@ -27,8 +27,8 @@ interface Service {
   commitProjectFiles(id: string, input: { message: string; paths: string[]; revision: string }): Promise<unknown>;
   initializeProjectGit(id: string): Promise<unknown>;
   requireProject(id: string): { id: string; path: string };
-  projectGitStatus(id: string): Promise<unknown>;
-  listProjectBranches(id: string): Promise<Array<{ name: string; current?: boolean }>>;
+  gitStatus(id: string): Promise<unknown>;
+  listGitBranches(id: string): Promise<Array<{ name: string; current?: boolean }>>;
 }
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 function fixture() {
@@ -41,13 +41,14 @@ function fixture() {
     if (hold && !held) { held = true; entered.resolve(); await release.promise; }
     if (failure === step) { failure = undefined; throw injectedError ?? new Error(`fixture failure: ${step}`); }
   };
-  const context = createContext({ path, os: { tmpdir: () => "/synthetic/tmp" },
+  const context = createContext({ setTimeout, clearTimeout, path, os: { tmpdir: () => "/synthetic/tmp" },
     normalizeBranchName: (name: string) => { if (!name.trim()) throw new Error("empty branch"); return name.trim(); },
     assertValidBranchName: async () => checkpoint("name"), assertGitRepository: async () => checkpoint("repository"),
     assertCleanGitWorkspace: async () => checkpoint("clean"), directoryExists: async () => true,
     gitErrorText: (error: unknown) => String(error), isGitRepositoryMissing: (error: unknown) => String(error).includes("not a git repository"),
-    fs: { mkdtemp: async () => "/synthetic/tmp/paths", writeFile: async () => {}, rm: async () => {} },
+    fs: { realpath: async (value: string) => value, mkdtemp: async () => "/synthetic/tmp/paths", writeFile: async () => {}, rm: async () => {} },
     runGit: async (cwd: string, args: string[]) => {
+      if (args.join(" ") === "rev-parse --absolute-git-dir") return { stdout: `${cwd}/.git\n`, stderr: "" };
       if (args.join(" ") === "rev-parse --git-dir") { await checkpoint("probe"); throw new Error("not a git repository"); }
       calls.push({ cwd, args: [...args] }); await checkpoint("command"); return { stdout: "", stderr: "" };
     }
@@ -55,8 +56,8 @@ function fixture() {
   new Script(emitted.outputText).runInContext(context, { timeout: 1000 });
   const service = new (context.Service as new () => Service)();
   service.requireProject = id => ({ id, path: `/synthetic/${id}` });
-  service.projectGitStatus = async () => { await checkpoint("status"); return { revision: "current", files: [{ path: "a.txt", status: " M" }] }; };
-  service.listProjectBranches = async () => { await checkpoint("branches"); return [{ name: "current", current: true }, { name: "existing" }]; };
+  service.gitStatus = async () => { await checkpoint("status"); return { revision: "current", files: [{ path: "a.txt", status: " M" }] }; };
+  service.listGitBranches = async () => { await checkpoint("branches"); return [{ name: "current", current: true }, { name: "existing" }]; };
   return { service, calls, entered, release, hold() { hold = true; }, fail(step: string, error?: Error) { failure = step; injectedError = error; } };
 }
 const actions = {
@@ -79,7 +80,7 @@ for (const [firstName, first] of Object.entries(actions)) for (const [secondName
     await second(f.service, "A");
   });
 }
-for (const [name, first] of Object.entries(actions)) {
+for (const [name, first] of Object.entries(actions).filter(([name]) => name !== "init")) {
   test(`${name} does not lock another workspace`, async () => {
     const f = fixture(); f.hold(); const pending = first(f.service, "A");
     try { await f.entered.promise; await actions.switch(f.service, "B"); }

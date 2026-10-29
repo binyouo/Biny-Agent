@@ -104,6 +104,70 @@ const imageMediaTypes: Record<string, string> = {
 export class DesktopProjectService {
   private readonly optimizationIndex = new ToolOptimizationIndex();
   private readonly gitMutations = new Set<string>();
+  private readonly gitWorktreeMutations = new Set<string>();
+  private gitMutationAdmission: Promise<void> = Promise.resolve();
+
+  /** Only primitive read promises belong here: late completion must never claim a lease or run init. */
+  private async gitAdmissionRead<T>(read: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([read, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("检查 Git 工作树超时，请检查目录后重试。")), 4_000);
+      })]);
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+  }
+
+  /** Serialize discovery (and init), not the admitted operation. Identity is per worktree, not common-dir. */
+  private async acquireGitMutation(project: DesktopProject, initialize = false): Promise<{ project: DesktopProject; release: () => void }> {
+    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
+    this.gitMutations.add(project.path);
+    const previous = this.gitMutationAdmission;
+    let leaveAdmission!: () => void;
+    this.gitMutationAdmission = new Promise<void>(resolve => { leaveAdmission = resolve; });
+    let identity: string | undefined;
+    try {
+      await previous;
+      if (project.missing || !await this.gitAdmissionRead(directoryExists(project.path))) throw new Error("项目目录不可用，无法操作 Git。");
+      // Stable aliases share a canonical cwd; this is not a directory-handle pin against external rebinding.
+      // Preserve the selected directory: do not replace a subdirectory with the repository root.
+      const current = { ...project, path: await this.gitAdmissionRead(fs.realpath(project.path)) };
+      if (initialize) {
+        try {
+          await this.gitAdmissionRead(runGit(current.path, ["rev-parse", "--git-dir"]));
+          throw new Error("当前项目已经是 Git 仓库。");
+        } catch (error) {
+          if (!isGitRepositoryMissing(error)) throw error;
+        }
+        // Keep the admission gate until init and its identity lookup finish: parent/child
+        // discovery must not observe the gap between the missing-repository probe and init.
+        // Never race a mutating subprocess: keep admission until runGit settles.
+        await runGit(current.path, ["init"], 10_000, true);
+      }
+      let output: string;
+      try {
+        output = (await this.gitAdmissionRead(runGit(current.path, ["rev-parse", "--absolute-git-dir"]))).stdout.replace(/\n$/u, "");
+      } catch (error) {
+        if (isGitRepositoryMissing(error)) throw new Error("当前项目不是 Git 仓库。");
+        throw error;
+      }
+      if (!output || !path.isAbsolute(output)) throw new Error("无法确认 Git 工作树身份。");
+      const key = await this.gitAdmissionRead(fs.realpath(output));
+      if (this.gitWorktreeMutations.has(key)) throw new Error("Git 操作进行中，请等待完成。");
+      this.gitWorktreeMutations.add(key);
+      identity = key;
+      let released = false;
+      return { project: current, release: () => {
+        if (released) return;
+        released = true;
+        this.gitWorktreeMutations.delete(key);
+        this.gitMutations.delete(project.path);
+      } };
+    } catch (error) {
+      if (identity !== undefined) this.gitWorktreeMutations.delete(identity);
+      this.gitMutations.delete(project.path);
+      throw error;
+    } finally { leaveAdmission(); }
+  }
   constructor(
     private readonly state: DesktopStateStore,
     private readonly storage: DesktopUserDataStore,
@@ -191,7 +255,10 @@ export class DesktopProjectService {
    * 就触发网络同步或把一个并不存在的本地分支伪装成可用选项。
    */
   async listProjectBranches(projectIdValue: string): Promise<DesktopGitBranch[]> {
-    const project = this.requireProject(projectIdValue);
+    return this.listGitBranches(this.requireProject(projectIdValue));
+  }
+
+  private async listGitBranches(project: DesktopProject): Promise<DesktopGitBranch[]> {
     if (project.missing || !await directoryExists(project.path)) return [];
     try {
       // Strip only the refs/heads namespace; :short depends on other ref names.
@@ -214,15 +281,14 @@ export class DesktopProjectService {
 
   /** 切换已有本地分支；所有保护都在真正执行 git switch 前重新检查。 */
   async switchProjectBranch(projectIdValue: string, branchName: string): Promise<void> {
-    const project = this.requireProject(projectIdValue);
-    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
-    this.gitMutations.add(project.path);
+    const lease = await this.acquireGitMutation(this.requireProject(projectIdValue));
+    const project = lease.project;
     try {
       const name = normalizeBranchName(branchName);
       await assertValidBranchName(name);
       await assertGitRepository(project);
       await assertCleanGitWorkspace(project);
-      const branches = await this.listProjectBranches(project.id);
+      const branches = await this.listGitBranches(project);
       if (!branches.some((branch) => branch.name === name)) {
         throw new Error(`本地分支不存在：${name}`);
       }
@@ -231,20 +297,19 @@ export class DesktopProjectService {
       } catch (error) {
         throw new Error(`切换分支失败：${gitErrorText(error)}`);
       }
-    } finally { this.gitMutations.delete(project.path); }
+    } finally { lease.release(); }
   }
 
   /** 创建并立即检出本地分支；不 stash、不 reset，也不强制覆盖工作区。 */
   async createProjectBranch(projectIdValue: string, branchName: string): Promise<void> {
-    const project = this.requireProject(projectIdValue);
-    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
-    this.gitMutations.add(project.path);
+    const lease = await this.acquireGitMutation(this.requireProject(projectIdValue));
+    const project = lease.project;
     try {
       const name = normalizeBranchName(branchName);
       await assertValidBranchName(name);
       await assertGitRepository(project);
       await assertCleanGitWorkspace(project);
-      const branches = await this.listProjectBranches(project.id);
+      const branches = await this.listGitBranches(project);
       if (branches.some((branch) => branch.name === name)) {
         throw new Error(`本地分支已存在：${name}`);
       }
@@ -253,12 +318,15 @@ export class DesktopProjectService {
       } catch (error) {
         throw new Error(`创建并检出分支失败：${gitErrorText(error)}`);
       }
-    } finally { this.gitMutations.delete(project.path); }
+    } finally { lease.release(); }
   }
 
   /** NUL 分隔保留空格、换行和非 ASCII 文件名；禁用重命名合并，让选择范围明确。 */
   async projectGitStatus(projectIdValue: string): Promise<DesktopGitStatus> {
-    const project = this.requireProject(projectIdValue);
+    return this.gitStatus(this.requireProject(projectIdValue));
+  }
+
+  private async gitStatus(project: DesktopProject): Promise<DesktopGitStatus> {
     await assertGitRepository(project);
     // Git appends one LF; any other trailing whitespace belongs to the path.
     const top = (await runGit(project.path, ["rev-parse", "--show-toplevel"])).stdout.replace(/\n$/u, "");
@@ -273,31 +341,19 @@ export class DesktopProjectService {
   }
 
   async initializeProjectGit(projectIdValue: string): Promise<DesktopGitStatus> {
-    const project = this.requireProject(projectIdValue);
-    if (project.missing || !await directoryExists(project.path)) throw new Error("项目目录不可用，无法初始化 Git 仓库。");
-    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
-    this.gitMutations.add(project.path);
-    try {
-      try {
-        await runGit(project.path, ["rev-parse", "--git-dir"]);
-        throw new Error("当前项目已经是 Git 仓库。");
-      } catch (error) {
-        if (!isGitRepositoryMissing(error)) throw error;
-      }
-      await runGit(project.path, ["init"], 10_000);
-      return await this.projectGitStatus(project.id);
-    } finally { this.gitMutations.delete(project.path); }
+    const lease = await this.acquireGitMutation(this.requireProject(projectIdValue), true);
+    try { return await this.gitStatus(lease.project); }
+    finally { lease.release(); }
   }
 
   /** 只提交明确选择的整文件；不夹带其他已暂存内容，失败时保留暂存区供用户检查。 */
   async commitProjectFiles(projectIdValue: string, input: DesktopGitCommitInput): Promise<DesktopGitStatus> {
-    const project = this.requireProject(projectIdValue);
-    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
-    this.gitMutations.add(project.path);
+    const lease = await this.acquireGitMutation(this.requireProject(projectIdValue));
+    const project = lease.project;
     let temp: string | undefined;
     try {
       if (!input.message.trim() || input.message.length > 10_000 || !input.paths.length || input.paths.length > 10_000) throw new Error("请选择文件并填写提交说明。");
-      const snapshot = await this.projectGitStatus(project.id);
+      const snapshot = await this.gitStatus(project);
       if (snapshot.revision !== input.revision) throw new Error("Git 状态已变化，请刷新后重新选择文件。");
       const files = new Map(snapshot.files.map((file) => [file.path, file]));
       const paths = [...new Set(input.paths)];
@@ -314,24 +370,23 @@ export class DesktopProjectService {
       } catch (error) {
         throw new Error(`提交失败或未确认完成，请检查 Git 状态；不自动重试，所选文件的暂存内容予以保留。${gitErrorText(error)}`);
       }
-      return await this.projectGitStatus(project.id);
+      return await this.gitStatus(project);
     } finally {
       try { if (temp) await fs.rm(temp, { recursive: true, force: true }); }
-      finally { this.gitMutations.delete(project.path); }
+      finally { lease.release(); }
     }
   }
 
   async projectGitRemote(projectIdValue: string, action: "pull" | "push"): Promise<DesktopGitStatus> {
-    const project = this.requireProject(projectIdValue);
-    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
-    this.gitMutations.add(project.path);
+    const lease = await this.acquireGitMutation(this.requireProject(projectIdValue));
+    const project = lease.project;
     try {
-      await this.projectGitStatus(project.id);
+      await this.gitStatus(project);
       if (action === "pull") await assertCleanGitWorkspace(project);
       try { await runGit(project.path, action === "pull" ? ["pull", "--ff-only"] : ["push"], 120_000); }
       catch (error) { throw new Error(`Git ${action} 未确认成功，请检查状态后决定是否重试：${gitErrorText(error)}`); }
-      return await this.projectGitStatus(project.id);
-    } finally { this.gitMutations.delete(project.path); }
+      return await this.gitStatus(project);
+    } finally { lease.release(); }
   }
 
   async projectPreviewAvailability(projectIdValue: string): Promise<{ available: true; command: string } | { available: true; kind: "static"; entry: string; entries: string[] } | { available: false; reason: string }> {
@@ -1049,14 +1104,19 @@ async function gitOutput(cwd: string, args: string[]): Promise<string | undefine
   }
 }
 
-async function runGit(cwd: string, args: string[], timeout = 4_000): Promise<{ stdout: string; stderr: string }> {
-  return await execFileAsync("git", [
+async function runGit(cwd: string, args: string[], timeout = 4_000, waitForClose = false): Promise<{ stdout: string; stderr: string }> {
+  const execution = execFileAsync("git", [
     "--no-pager",
     "--no-optional-locks",
     "-c",
     "core.fsmonitor=false",
     ...args
   ], { cwd, env: gitInspectionEnvironment(), timeout, maxBuffer: 512 * 1024 });
+  // execFile may reject on an error before close. Init must retain admission until
+  // the child actually closes, even if its timeout/kill path reports an error first.
+  const closed = waitForClose ? new Promise<void>(resolve => execution.child.once("close", () => resolve())) : undefined;
+  try { return await execution; }
+  finally { if (closed) await closed; }
 }
 
 async function assertGitRepository(project: DesktopProject): Promise<void> {
