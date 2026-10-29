@@ -71,6 +71,7 @@ const api: DesktopApi = {
   setSessionFastMode: async (projectId, sessionId, fastMode, expectedRevision) => await ipcRenderer.invoke(desktopIpc.setSessionFastMode, projectId, sessionId, fastMode, expectedRevision),
   markSessionRead: async (projectId, sessionId, expectedRevision) => await ipcRenderer.invoke(desktopIpc.markSessionRead, projectId, sessionId, expectedRevision),
   duplicateSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.duplicateSession, projectId, sessionId),
+  branchSessionAtMessage: async (projectId, sessionId, messageId) => await ipcRenderer.invoke(desktopIpc.branchSessionAtMessage, projectId, sessionId, messageId),
   deleteSessions: async (targets, confirm, onStarted) => {
     if (!await ipcRenderer.invoke(desktopIpc.confirmSessionDeletion, targets, confirm)) {
       return { cancelled: true, deleted: [], failures: [] };

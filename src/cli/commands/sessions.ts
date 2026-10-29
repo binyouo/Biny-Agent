@@ -5,7 +5,7 @@
  * 最近更新时间、事件数、首条用户消息和最后一条 assistant 消息摘要。
  */
 import { ensureAgentDirs } from "../../session/store.js";
-import { querySessionCatalog, type SessionCatalogPage } from "../../session/catalog.js";
+import { querySessionCatalog, type SessionBranchPoint, type SessionCatalogPage } from "../../session/catalog.js";
 import type { SessionSummary } from "../../session/events.js";
 
 export interface SessionsCommandOptions {
@@ -59,7 +59,7 @@ export function printSessionSummaries(sessions: SessionSummary[]): void {
 function printSessionSummary(
   session: SessionSummary,
   parentSessionId?: string,
-  branchPoint?: { kind: "event" | "user_message"; index: number }
+  branchPoint?: SessionBranchPoint
 ): void {
   // 摘要压成单行，避免长对话内容把 session 列表冲散。
   const firstMessage = sessionSummaryPreview(session.firstUserMessage) || "(no user_message)";

@@ -125,6 +125,7 @@ export const desktopIpc = {
   setSessionFastMode: "desktop:session:fast-mode",
   markSessionRead: "desktop:session:mark-read",
   duplicateSession: "desktop:session:duplicate",
+  branchSessionAtMessage: "desktop:session:branch-at-message",
   confirmSessionDeletion: "desktop:sessions:confirm-delete",
   deleteSessions: "desktop:sessions:delete-confirmed",
   exportSession: "desktop:session:export",
@@ -1685,6 +1686,8 @@ export interface DesktopApi {
   setSessionFastMode(projectId: string, sessionId: string, fastMode: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot>;
+  /** Creates a target-inclusive message branch without changing navigation. */
+  branchSessionAtMessage(projectId: string, sessionId: string, messageId: string): Promise<string>;
   deleteSessions(targets: DesktopSessionTarget[], confirm?: boolean, onStarted?: () => void): Promise<DesktopSessionDeleteResult>;
   /** 导出为 Biny bundle（无损 JSON）或外部 JSONL；用户在保存对话框里选位置。 */
   exportSession(projectId: string, sessionId: string, format: "biny" | "claude"): Promise<DesktopWorkspaceSnapshot>;

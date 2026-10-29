@@ -93,6 +93,7 @@ interface WorkspaceProps {
   generationError?: string;
   onDismissGenerationError(): void;
   onCreateBranch(): Promise<void>;
+  onBranchAtMessage(projectId: string, sessionId: string, messageId: string): Promise<void>;
   onRollbackFiles(turn: TimelineTurn): void;
   onRuntimeError(error: unknown): void;
   onRuntimeMutation(operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<void>;
@@ -156,6 +157,7 @@ export function Workspace({
   generationError,
   onDismissGenerationError,
   onCreateBranch,
+  onBranchAtMessage,
   onRollbackFiles,
   onRuntimeError,
   onRuntimeMutation,
@@ -190,9 +192,9 @@ export function Workspace({
     : runtimeProjection?.worktrees.find((worktree) => worktree.sessionId === sessionId);
   const worktreeView = sessionIsolation === "worktree" ? desktopWorktreeView(selectedWorktree) : undefined;
   const hasConversation = (turns.length > 0 || streaming || compacting) && Boolean(projectId);
-  const branchFromTimeline = useCallback((): void => {
-    void onCreateBranch().catch(onRuntimeError);
-  }, [onCreateBranch, onRuntimeError]);
+  const branchFromTimeline = useCallback((sourceProjectId: string, sourceSessionId: string, messageId: string): void => {
+    void onBranchAtMessage(sourceProjectId, sourceSessionId, messageId).catch(onRuntimeError);
+  }, [onBranchAtMessage, onRuntimeError]);
 
   return (
     <WidgetContext.Provider value={widgetContext}><div className="workspace biny-workspace biny-workspace-chat">

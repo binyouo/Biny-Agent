@@ -31,7 +31,8 @@ export const SESSION_CATALOG_MISSING_REVISION = "missing" as const;
 
 export type SessionBranchPoint =
   | { kind: "event"; index: number }
-  | { kind: "user_message"; index: number; messageId?: string };
+  | { kind: "user_message"; index: number; messageId?: string }
+  | { kind: "message"; index: number; messageId: string; role: "user" | "assistant" };
 
 export type SessionIsolation = "shared" | "worktree";
 
@@ -861,6 +862,8 @@ function assertBranchPoint(value: SessionBranchPoint): void {
 function isBranchPoint(value: unknown): value is SessionBranchPoint {
   if (!isRecord(value) || typeof value.index !== "number" || !Number.isSafeInteger(value.index) || value.index < 0) return false;
   if (value.kind === "event") return true;
+  if (value.kind === "message") return typeof value.messageId === "string" && value.messageId.length > 0
+    && (value.role === "user" || value.role === "assistant");
   return value.kind === "user_message" && (value.messageId === undefined || typeof value.messageId === "string");
 }
 
