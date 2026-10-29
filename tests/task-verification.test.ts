@@ -1,3 +1,4 @@
+import { AgentMemoryClient } from "../src/runtime/memory/client.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -1154,6 +1155,8 @@ async function testHostRestartApprovalResumesVerificationAndUnlocksGraph(): Prom
     }
 
     await saveConfig(root, hostApprovalConfig(), { globalDir: configDir });
+    // Ensure the test memory owner is registered before starting the Host.
+    await new AgentMemoryClient(path.join(root, "agent"), configDir).sleepStatus();
     const spawned = await spawnRuntimeHost(root, {
       workspaceRoot: root,
       configDir,
