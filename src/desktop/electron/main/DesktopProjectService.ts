@@ -143,7 +143,13 @@ export class DesktopProjectService {
         // Never race a mutating subprocess: keep admission until runGit settles.
         await runGit(current.path, ["init"], 10_000, true);
       }
-      const output = (await this.gitAdmissionRead(runGit(current.path, ["rev-parse", "--absolute-git-dir"]))).stdout.replace(/\n$/u, "");
+      let output: string;
+      try {
+        output = (await this.gitAdmissionRead(runGit(current.path, ["rev-parse", "--absolute-git-dir"]))).stdout.replace(/\n$/u, "");
+      } catch (error) {
+        if (isGitRepositoryMissing(error)) throw new Error("当前项目不是 Git 仓库。");
+        throw error;
+      }
       if (!output || !path.isAbsolute(output)) throw new Error("无法确认 Git 工作树身份。");
       const key = await this.gitAdmissionRead(fs.realpath(output));
       if (this.gitWorktreeMutations.has(key)) throw new Error("Git 操作进行中，请等待完成。");

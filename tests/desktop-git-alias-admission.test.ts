@@ -10,7 +10,9 @@ const source = readFileSync(path.join(process.cwd(), "src/desktop/electron/main/
 const ast = ts.createSourceFile("service.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const klass = ast.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "DesktopProjectService")!;
 const names = new Set(["gitMutations", "gitWorktreeMutations", "gitMutationAdmission", "acquireGitMutation", "gitAdmissionRead", "switchProjectBranch", "createProjectBranch", "projectGitRemote", "commitProjectFiles", "initializeProjectGit", "listProjectBranches", "listGitBranches", "projectGitStatus", "gitStatus"]);
-const emitted = ts.transpileModule(`class Service { ${klass.members.filter(node => node.name && names.has(node.name.getText(ast))).map(node => node.getText(ast)).join("\n")} }; globalThis.Service = Service;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 }, reportDiagnostics: true });
+const diagnostics = ast.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && ["isGitRepositoryMissing", "gitErrorText"].includes(node.name?.text ?? "")).map(node => node.getText(ast)).join("\n");
+assert.equal(ast.statements.filter(node => ts.isFunctionDeclaration(node) && ["isGitRepositoryMissing", "gitErrorText"].includes(node.name?.text ?? "")).length, 2);
+const emitted = ts.transpileModule(`${diagnostics} class Service { ${klass.members.filter(node => node.name && names.has(node.name.getText(ast))).map(node => node.getText(ast)).join("\n")} }; globalThis.Service = Service;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 }, reportDiagnostics: true });
 assert.equal(emitted.diagnostics?.length ?? 0, 0);
 assert.ok(!/\brequire\s*\(|\bimport\s*\(|\bprocess\b|\bfetch\s*\(/u.test(emitted.outputText));
 interface Project { id: string; path: string }
@@ -37,11 +39,12 @@ function fixture() {
   const repository = (cwd: string) => [...repos.keys()].sort((a, b) => b.length - a.length).find(root => cwd === root || cwd.startsWith(root + "/"));
   let held: { match: (cwd: string, command: string) => boolean; entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> } | undefined;
   let failure: string | undefined;
+  let injectedError: Error | undefined;
   let identityOutput: string | undefined;
   const runGit = async (input: string, args: string[], _timeout?: number, waitForClose?: boolean) => {
     const cwd = canonical(input), command = args.join(" "); calls.push({ cwd: input, command, waitForClose });
     if (held?.match(cwd, command)) { const block = held; held = undefined; block.entered.resolve(); await block.release.promise; }
-    if (failure === command) { failure = undefined; throw new Error("fixture identity failure"); }
+    if (failure === command) { failure = undefined; throw injectedError ?? new Error("fixture identity failure"); }
     const root = repository(cwd);
     if (command === "init") { repos.set(cwd, cwd + "/.git"); return { stdout: "", stderr: "" }; }
     if (!root) throw new Error("not a git repository");
@@ -56,7 +59,7 @@ function fixture() {
     normalizeBranchName: (name: string) => name.trim(), assertValidBranchName: async () => {},
     assertGitRepository: async (project: Project) => { await runGit(project.path, ["rev-parse", "--git-dir"]); },
     assertCleanGitWorkspace: async () => {}, directoryExists: async (value: string) => { await beforeRead("directory", value); return true; },
-    gitErrorText: String, isGitRepositoryMissing: (error: unknown) => String(error).includes("not a git repository"), isWorkspaceAccessDenied: () => false,
+    isWorkspaceAccessDenied: () => false,
     createHash: () => ({ update: () => ({ digest: () => "revision" }) }), gitOutput: async () => "HEAD",
     fs: { realpath: async (value: string) => { await beforeRead("realpath", value); if (failure === "realpath" || (failure === "gitdir realpath" && value.endsWith("/.git"))) { failure = undefined; throw new Error("fixture realpath failure"); } return canonical(value); }, mkdtemp: async () => "/synthetic/tmp/paths", writeFile: async () => {}, rm: async () => {} }, runGit
   }, { codeGeneration: { strings: false, wasm: false } });
@@ -67,7 +70,7 @@ function fixture() {
     expireReads() { for (const [id, callback] of timers) { timers.delete(id); callback(); } },
     pendingTimers() { return timers.size; },
     holdRead(kind: string, value: string) { const block = { kind, value, entered: deferred(), release: deferred() }; readHold = block; return block; },
-    identity(value: string) { identityOutput = value; }, fail(command: string) { failure = command; },
+    identity(value: string) { identityOutput = value; }, fail(command: string, error?: Error) { failure = command; injectedError = error; },
     hold(command: string, cwd?: string) { const block = { match: (p: string, c: string) => c === command && (!cwd || p === cwd), entered: deferred(), release: deferred() }; held = block; return block; }
   };
 }
@@ -222,4 +225,30 @@ test("late rejected missing-repository probe cannot initiate a repository", asyn
   block.release.resolve(); await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(f.calls.some(call => call.command === "init"), false); assert.equal(f.repos.has("/fresh"), false);
   await f.service.initializeProjectGit("/fresh");
+});
+
+for (const [name, action] of Object.entries(actions)) test(`missing-repository admission preserves existing Chinese error for ${name}`, async () => {
+  const f = fixture();
+  // Pure equivalent of tests/desktop.test.ts:1310: switch a valid name in a non-Git project.
+  await assert.rejects(action(f.service, "/not-a-repository"), /不是 Git/u);
+  assert.equal(f.calls.some(call => call.cwd === "/not-a-repository" && !call.command.startsWith("rev-parse")), false);
+  f.repos.set("/not-a-repository", "/not-a-repository/.git");
+  await action(f.service, "/not-a-repository");
+});
+for (const stderr of ["fatal: not a git repository (or any of the parent directories): .git\n", "致命错误：不是 git 仓库（或者任何父目录）：.git\n"]) test(`missing-repository stderr retains classification: ${stderr.trim()}`, async () => {
+  const f = fixture(); f.fail("rev-parse --absolute-git-dir", Object.assign(new Error("Command failed: git rev-parse"), { code: 128, stderr }));
+  await assert.rejects(actions.switch(f.service, "/repo"), /不是 Git/u); await actions.switch(f.service, "/alias");
+});
+for (const [code, message, stderr] of [
+  ["ETIMEDOUT", "spawn git ETIMEDOUT", ""],
+  ["EACCES", "spawn git EACCES", "Permission denied"],
+  ["EPERM", "spawn git EPERM", "Operation not permitted"],
+  [128, "Command failed: git rev-parse", "fatal: bad config line 1 in file .git/config"],
+  [128, "Command failed: git rev-parse", "fatal: invalid gitfile format: .git"]
+]) test(`non-missing ${code}/${message}/${stderr} stays unchanged and releases admission`, async () => {
+  const f = fixture(), original = Object.assign(new Error(String(message)), { code, stderr });
+  f.fail("rev-parse --absolute-git-dir", original);
+  await assert.rejects(actions.switch(f.service, "/repo"), error => error === original);
+  assert.equal(f.calls.some(call => call.command === "switch existing"), false);
+  await actions.switch(f.service, "/alias");
 });
