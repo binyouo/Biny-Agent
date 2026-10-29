@@ -195,6 +195,19 @@ test("test files invoked as subprocess fixtures retain their calling regressions
   assert.deepEqual(plan.standard, ["computed-driver.test.ts", "direct-driver.test.ts", "other.test.ts"]);
 });
 
+test("ordinary labels do not create dependencies on equally named test files", async t => {
+  const root = fixture(t, {
+    "tests/labels.test.ts": "const section = 'other'; const feature = 'view';",
+    "tests/joined-driver.test.ts": "import { spawn } from 'node:child_process'; for (const suite of ['other']) spawn('node', ['tests/' + suite + '.test.ts']);"
+  });
+  const testChange = await createPlan(root, ["tests/other.test.ts"]);
+  assert.deepEqual(testChange.standard, ["joined-driver.test.ts", "other.test.ts"]);
+  const sourceChange = await createPlan(root, ["src/utils/other.ts"]);
+  assert.ok(sourceChange.standard.includes("other.test.ts"));
+  assert.ok(sourceChange.standard.includes("joined-driver.test.ts"));
+  assert.ok(!sourceChange.standard.includes("labels.test.ts"));
+});
+
 test("documentation keeps the static gate but selects no runtime lanes", async t => {
   const plan = await createPlan(fixture(t), ["README.md", "docs/CONFIGURATION.md"]);
   assert.equal(plan.full, false);

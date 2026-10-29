@@ -169,15 +169,21 @@ async function dependencyGraph(root) {
         addImport(node.moduleReference.expression.text);
       }
     }
+    let expandsTestNames = false;
     const collectRequires = node => {
+      if ((ts.isTemplateExpression(node) && node.templateSpans.some(span => span.literal.text.endsWith(".test.ts")))
+        || (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken
+          && ts.isStringLiteralLike(node.right) && node.right.text.endsWith(".test.ts"))) expandsTestNames = true;
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && factoryCall(node.initializer)) requires.add(node.name.text);
       ts.forEachChild(node, collectRequires);
     };
     collectRequires(source);
     const visit = node => {
       if (file.startsWith("tests/") && ts.isStringLiteralLike(node)) {
-        // 部分回归把另一个测试作为子进程夹具；数组中的 suite 名同样形成依赖。
-        for (const candidate of [node.text, `tests/${node.text}`, `tests/${node.text}.test.ts`, path.posix.join(path.posix.dirname(file), node.text)]) {
+        // 仅在显式拼接测试路径的文件中展开 suite 名；普通标签不代表测试依赖。
+        const candidates = [node.text, `tests/${node.text}`, path.posix.join(path.posix.dirname(file), node.text)];
+        if (expandsTestNames) candidates.push(`tests/${node.text}.test.ts`);
+        for (const candidate of candidates) {
           if (!testFiles.has(candidate) || candidate === file) continue;
           if (!dependents.has(candidate)) dependents.set(candidate, new Set());
           dependents.get(candidate).add(file);
