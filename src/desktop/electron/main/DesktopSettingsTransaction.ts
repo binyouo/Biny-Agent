@@ -1,3 +1,4 @@
+import { syncDirectory } from "../../../utils/syncDirectory.js";
 /**
  * Desktop 设置页的跨存储事务协调器。
  *
@@ -1306,16 +1307,6 @@ async function removeRecoveryFileIfBound(
     await fs.unlink(target);
   } catch (error) {
     if (!isNotFound(error)) throw error;
-  }
-}
-
-async function syncDirectory(directory: string): Promise<void> {
-  let handle: FileHandle | undefined;
-  try {
-    handle = await fs.open(directory, constants.O_RDONLY);
-    await handle.sync();
-  } finally {
-    await handle?.close().catch(() => undefined);
   }
 }
 

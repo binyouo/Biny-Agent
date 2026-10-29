@@ -11,6 +11,7 @@
  * 工具步之间保存实际已用步数；blocked 或可恢复的 incomplete 终态用 0 保存，表示只有用户
  * 显式恢复请求后才开启一个新预算窗口。完成、显式取消会清掉；关闭暂停和可恢复失败保留，新根输入替换旧断点。
  */
+import { syncDirectory } from "../utils/syncDirectory.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -102,20 +103,15 @@ export class TurnStore {
     const temporary = `${target}.${randomUUID()}.tmp`;
     try {
       await fs.writeFile(temporary, `${JSON.stringify({ version: turnStateVersion, turn: payload })}\n`, { encoding: "utf8", mode: 0o600 });
-      const handle = await fs.open(temporary, "r");
+      const handle = await fs.open(temporary, process.platform === "win32" ? "r+" : "r");
       try {
         await handle.sync();
       } finally {
         await handle.close();
       }
       await fs.rename(temporary, target);
-      // rename 只保证可见性原子切换；同步目录后才确认新断点已提交。
-      const directory = await fs.open(path.dirname(target), "r");
-      try {
-        await directory.sync();
-      } finally {
-        await directory.close();
-      }
+      // POSIX 还同步 rename 的目录项；Windows 保留文件同步与原子替换。
+      await syncDirectory(path.dirname(target));
     } finally {
       await fs.rm(temporary, { force: true }).catch(() => undefined);
     }
