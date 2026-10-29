@@ -2547,6 +2547,17 @@ export class AgentSession {
       await this.recorder.flush();
       if (options.retryOfMessageId || options.continueFrom || options.emptyTurn) throw new Error("ACP 不自动重放或改写旧回合，请发送新的消息或新建会话。");
       if (options.attachments?.length) throw new Error("ACP 暂不发送附件，请在消息中提供项目内文件路径。");
+      // External agents own their tools/Skills and may act without asking Biny.
+      // Reject restrictions before launching or sending any prompt; a permission
+      // callback cannot enforce a local capability whitelist on that process.
+      const capabilities = [
+        options.capabilitySelection?.tools ?? this.options.config.chat.defaultToolSelection,
+        options.capabilitySelection?.skills ?? this.options.config.chat.defaultSkillSelection,
+        options.toolAccessSelection
+      ];
+      if (capabilities.some((selection) => selection === "none" || Array.isArray(selection))) {
+        throw new Error("ACP 外部 Agent 无法执行禁用或自定义工具/Skill 的回合；请改用内置模型，或明确允许外部 Agent 使用自身能力。");
+      }
       const priorEvents = await readSessionEvents(this.recorder.filePath);
       const bound = priorEvents.some((event) => event.type === "message_metadata" && event.metadata.acpProvider === providerAlias);
       if (!bound && priorEvents.some((event) => event.type === "agent_message" || event.type === "assistant_message" || event.type === "tool_call")) {
