@@ -1,51 +1,82 @@
 /** 项目终端标签持有 PTY，隐藏视图只暂停尺寸同步；关闭标签才终止对应 shell。 */
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { DesktopTerminalHandle, DesktopTerminalTab } from "../../../protocol.js";
 import { readThemeColors } from "../themeColors.js";
 import { Icon } from "./Icon.js";
 import "@xterm/xterm/css/xterm.css";
+import { TerminalConnectionOwner } from "./terminalConnectionOwner.js";
+
+type TerminalTab = DesktopTerminalTab & { connectionOwner: TerminalConnectionOwner };
 
 export function TerminalView({ projectId, active = true }: { projectId: string; active?: boolean }): React.JSX.Element {
-  const [tabs, setTabs] = useState<DesktopTerminalTab[]>();
+  const [tabs, setTabs] = useState<TerminalTab[]>();
   const [selected, setSelected] = useState<string>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const requestRef = useRef(false);
+  const listMutationRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const connectionOwners = useRef(new Map<string, TerminalConnectionOwner>());
+  const [closingSlots, setClosingSlots] = useState<Set<string>>(new Set());
+  const ownerFor = useCallback((tab: DesktopTerminalTab): TerminalConnectionOwner => {
+    let owner = connectionOwners.current.get(tab.slotId);
+    if (!owner) { owner = new TerminalConnectionOwner(tab.terminalId, () => { listMutationRef.current++; }); connectionOwners.current.set(tab.slotId, owner); }
+    return owner;
+  }, []);
+  const acceptEntries = useCallback((entries: DesktopTerminalTab[]): void => {
+    for (const entry of entries) {
+      const owner = connectionOwners.current.get(entry.slotId);
+      if (owner) connectionOwners.current.set(entry.slotId, owner.refresh(entry.terminalId));
+    }
+    setTabs(entries.map(entry => ({ ...entry, connectionOwner: ownerFor(entry) })));
+  }, [ownerFor]);
   useEffect(() => {
     if (!active) return;
     let disposed = false;
+    const mutation = ++listMutationRef.current;
     void window.biny.listTerminals(projectId).then(async (existing) => {
-      if (disposed) return;
+      if (disposed || mutation !== listMutationRef.current) return;
       const entries = existing.length ? existing : [{ ...(await window.biny.createTerminal(projectId, 80, 24)), slotId: "default" }];
-      if (disposed) return;
-      setTabs(entries);
+      if (disposed || mutation !== listMutationRef.current) return;
+      acceptEntries(entries);
       setSelected((current) => entries.some((entry) => entry.slotId === current) ? current : entries[0]?.slotId);
-    }).catch((reason: unknown) => { if (!disposed) setError(String(reason)); });
+    }).catch((reason: unknown) => { if (!disposed && mutation === listMutationRef.current) setError(String(reason)); });
     return () => { disposed = true; };
-  }, [active, projectId]);
+  }, [active, projectId, acceptEntries]);
   const add = async (): Promise<void> => {
     if (requestRef.current) return;
     requestRef.current = true;
+    listMutationRef.current++;
     setBusy(true);
     setError(undefined);
     try {
       const slotId = crypto.randomUUID();
       const handle = await window.biny.createTerminal(projectId, 80, 24, slotId);
-      setTabs((current) => [...(current ?? []), { terminalId: handle.terminalId, slotId }]);
+      const tab = { terminalId: handle.terminalId, slotId };
+      const connectionOwner = ownerFor(tab);
+      setTabs((current) => [...(current ?? []), { ...tab, connectionOwner }]);
       setSelected(slotId);
     } catch (reason) { setError(String(reason)); }
     finally { requestRef.current = false; setBusy(false); }
   };
-  const close = async (tab: DesktopTerminalTab): Promise<void> => {
+  const close = async (tab: TerminalTab): Promise<void> => {
+    const owner = tab.connectionOwner;
+    listMutationRef.current++;
+    setClosingSlots(current => new Set(current).add(tab.slotId));
     try {
-      await window.biny.disposeTerminal(tab.terminalId);
-      setTabs((current) => current?.filter((entry) => entry.slotId !== tab.slotId));
-      setSelected((current) => current === tab.slotId ? undefined : current);
-    } catch (reason) { setError(String(reason)); }
+      await owner.close(terminalId => window.biny.disposeTerminal(terminalId));
+      if (connectionOwners.current.get(tab.slotId) === owner) connectionOwners.current.delete(tab.slotId);
+      setTabs((current) => current?.filter((entry) => entry.slotId !== tab.slotId || !owner.owns(entry.terminalId)));
+    } catch (reason) {
+      if (mountedRef.current) setError(String(reason));
+      else console.error("Terminal close could not be confirmed after leaving the view.", reason);
+    }
+    finally { setClosingSlots(current => { const next = new Set(current); next.delete(tab.slotId); return next; }); }
   };
-  const activeSlot = selected ?? tabs?.[0]?.slotId;
+  const activeSlot = tabs?.some(tab => tab.slotId === selected) ? selected : tabs?.[0]?.slotId;
   return <section className="inspector-terminals" aria-label="项目终端">
     <div className="inspector-subtoolbar">
       <div className="inspector-terminal-tabs" role="tablist" aria-label="终端会话" onKeyDown={(event) => {
@@ -58,24 +89,28 @@ export function TerminalView({ projectId, active = true }: { projectId: string; 
       }}>
         {(tabs ?? []).map((tab, index) => <div className={`inspector-terminal-tab${activeSlot === tab.slotId ? " is-active" : ""}`} key={tab.slotId}>
           <button type="button" role="tab" aria-selected={activeSlot === tab.slotId} tabIndex={activeSlot === tab.slotId ? 0 : -1} onClick={() => setSelected(tab.slotId)}><Icon name="terminal" size={13} />{tab.slotId === "preview" ? "开发服务器" : `终端 ${index + 1}`}</button>
-          <button type="button" aria-label={`关闭终端 ${index + 1} 并终止进程`} title="关闭并终止进程" onClick={() => void close(tab)}><Icon name="close" size={12} /></button>
+          <button type="button" aria-label={`关闭终端 ${index + 1} 并终止进程`} title="关闭并终止进程" disabled={closingSlots.has(tab.slotId)} onClick={() => void close(tab)}><Icon name="close" size={12} /></button>
         </div>)}
       </div>
       <button type="button" aria-label="新建终端" title="新建终端" disabled={busy || tabs === undefined} onClick={() => void add()}><Icon name="add" size={15} /></button>
     </div>
     {error ? <div className="inspector-error" role="alert">{error}<button type="button" onClick={() => {
       if (tabs !== undefined) { setError(undefined); return; }
-      void window.biny.listTerminals(projectId).then((entries) => { setTabs(entries); setSelected(entries[0]?.slotId); setError(undefined); }).catch((reason: unknown) => setError(String(reason)));
+      const mutation = ++listMutationRef.current;
+      void window.biny.listTerminals(projectId).then((entries) => {
+        if (!mountedRef.current || mutation !== listMutationRef.current) return;
+        acceptEntries(entries); setSelected(entries[0]?.slotId); setError(undefined);
+      }).catch((reason: unknown) => { if (mountedRef.current && mutation === listMutationRef.current) setError(String(reason)); });
     }}>{tabs === undefined ? "重试连接" : "关闭提示"}</button></div> : null}
     {tabs === undefined && !error ? <div className="inspector-empty" role="status">正在连接终端…</div> : null}
     {tabs?.length === 0 ? <div className="inspector-empty"><Icon name="terminal" size={24} /><p>没有打开的终端</p><button type="button" disabled={busy} onClick={() => void add()}>新建终端</button></div> : null}
     {(tabs ?? []).map((tab) => <div className="inspector-terminal-screen" hidden={activeSlot !== tab.slotId} key={tab.slotId}>
-      <TerminalScreen projectId={projectId} slotId={tab.slotId} active={active && activeSlot === tab.slotId} onHandle={(terminalId) => setTabs((current) => current?.map((entry) => entry.slotId === tab.slotId && entry.terminalId !== terminalId ? { ...entry, terminalId } : entry))} />
+      <TerminalScreen projectId={projectId} slotId={tab.slotId} connectionOwner={tab.connectionOwner} closing={closingSlots.has(tab.slotId)} active={active && activeSlot === tab.slotId} onHandle={(terminalId) => setTabs((current) => current?.map((entry) => entry.slotId === tab.slotId && entry.terminalId !== terminalId ? { ...entry, terminalId } : entry))} />
     </div>)}
   </section>;
 }
 
-function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: string; slotId: string; active: boolean; onHandle(id: string): void }): React.JSX.Element {
+function TerminalScreen({ projectId, slotId, active, onHandle, connectionOwner, closing }: { projectId: string; slotId: string; active: boolean; onHandle(id: string): void; connectionOwner: TerminalConnectionOwner; closing: boolean }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | undefined>(undefined);
   const fitRef = useRef<FitAddon | undefined>(undefined);
@@ -135,7 +170,7 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
       if (result.kind !== "script") throw new Error("当前项目使用静态预览，请在浏览器面板查看。");
       return result;
     };
-    void connect().then((handle) => {
+    void connectionOwner.connect(connect, slotId !== "preview" || restartToken > 0).then((handle) => {
       if (disposed) return;
       terminalId = handle.terminalId;
       handleRef.current(terminalId);
@@ -146,7 +181,7 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
       if (activeRef.current) term.focus();
     }).catch((reason: unknown) => { if (!disposed) setError(String(reason)); });
     return () => { disposed = true; observer.disconnect(); themeObserver.disconnect(); themeMedia.removeEventListener("change", applyTheme); unsubscribe(); data.dispose(); resize.dispose(); term.dispose(); terminalRef.current = undefined; fitRef.current = undefined; };
-  }, [projectId, slotId, restartToken]);
+  }, [projectId, slotId, restartToken, connectionOwner]);
   useEffect(() => {
     if (!active) return;
     const frame = requestAnimationFrame(() => { if ((containerRef.current?.clientWidth ?? 0) > 40) { fitRef.current?.fit(); terminalRef.current?.focus(); } });
@@ -154,6 +189,6 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
   }, [active]);
   return <div className="terminal-view">
     <div className="terminal-screen" ref={containerRef} />
-    {error !== undefined || exitCode !== undefined ? <div className="terminal-overlay" role="alert"><span>{error ?? `进程已退出（${exitCode}）`}</span><button autoFocus type="button" onClick={() => setRestartToken((token) => token + 1)}>重新启动</button></div> : null}
+    {error !== undefined || exitCode !== undefined ? <div className="terminal-overlay" role="alert"><span>{error ?? `进程已退出（${exitCode}）`}</span><button autoFocus type="button" disabled={closing} onClick={() => setRestartToken((token) => token + 1)}>重新启动</button></div> : null}
   </div>;
 }

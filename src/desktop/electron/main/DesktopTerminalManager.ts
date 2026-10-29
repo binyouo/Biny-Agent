@@ -201,7 +201,10 @@ export class DesktopTerminalManager {
   dispose(terminalId: string): void {
     const session = this.sessions.get(terminalId);
     if (!session) return;
+    const stopping = session.stopping;
     session.stopping = true;
+    try { session.pty.kill(); }
+    catch (error) { session.stopping = stopping; throw error; }
     if (session.slotId === "preview") {
       this.previewFailures.delete(session.projectId);
       const launch = this.previews.get(session.projectId);
@@ -210,7 +213,6 @@ export class DesktopTerminalManager {
     this.sessions.delete(terminalId);
     const key = JSON.stringify([session.projectId, session.slotId]);
     if (this.byProject.get(key) === terminalId) this.byProject.delete(key);
-    session.pty.kill();
   }
 
   disposeAll(): void {
