@@ -56,13 +56,6 @@ type QuickChatAction =
   | { type: "question-event"; runId: string; event: Extract<AgentHostEvent, { type: "tool.started" | "tool.completed" | "tool.failed" }> }
   | { type: "finish-run"; runId: string; fallback?: string };
 
-let messageCounter = 0;
-
-function nextMessageId(prefix: string): string {
-  messageCounter += 1;
-  return prefix + "-" + String(messageCounter);
-}
-
 function emptyAssistant(runId: string): QuickChatMessage {
   return {
     id: runId,
@@ -139,6 +132,21 @@ function reduceQuickChat(state: QuickChatState, action: QuickChatAction): QuickC
   }
 }
 
+interface QuickChatSubmission {
+  messageId: string;
+  projectId: string;
+  targetSessionId?: string;
+  sessionId?: string;
+  runId?: string;
+  directReceiptRunId?: string;
+  phase: "preparing" | "dispatched" | "accepted" | "unknown" | "failed" | "handed-off";
+  receiptPending: boolean;
+  earlyTerminals: AgentHostEvent[];
+  earlyTerminalsOverflow: boolean;
+  terminal: boolean;
+  lifetime: { active: boolean };
+}
+
 export function QuickChatApp(): React.JSX.Element {
   const [state, dispatch] = useReducer(reduceQuickChat, { messages: [] });
   const [input, setInput] = useState("");
@@ -151,6 +159,7 @@ export function QuickChatApp(): React.JSX.Element {
   const [thinking, setThinking] = useState<ThinkingSelection>("off");
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [awaitingRun, setAwaitingRun] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const appearance = useDesktopAppearance(setError);
   const bootstrapAppearance = appearance.bootstrap;
@@ -161,7 +170,13 @@ export function QuickChatApp(): React.JSX.Element {
   const sessionIdRef = useRef<string | undefined>(undefined);
   const activeRunIdRef = useRef<string | undefined>(undefined);
   const [activeRunId, setActiveRunId] = useState<string | undefined>(undefined);
-  const pendingSendRef = useRef<{ input: string } | undefined>(undefined);
+  const pendingSendRef = useRef<QuickChatSubmission | undefined>(undefined);
+  const lifetimeRef = useRef({ active: true });
+  useEffect(() => {
+    const lifetime = { active: true };
+    lifetimeRef.current = lifetime;
+    return () => { lifetime.active = false; };
+  }, []);
   const runtimeModelAliasRef = useRef<string | undefined>(undefined);
   const runtimeThinkingRef = useRef<ThinkingSelection>("off");
   const settingsRef = useRef<DesktopQuickChatSettings | undefined>(undefined);
@@ -229,18 +244,34 @@ export function QuickChatApp(): React.JSX.Element {
       const projectId = projectIdRef.current;
       if (!event || !projectId || envelope.projectId !== projectId) return;
 
-      const sessionId = sessionIdRef.current;
-      if (!sessionId) {
-        const pending = pendingSendRef.current;
-        if (!pending || event.type !== "run.started" || event.input !== pending.input) return;
-        sessionIdRef.current = event.sessionId;
-        activeRunIdRef.current = event.runId;
-        setActiveRunId(event.runId);
-        pendingSendRef.current = undefined;
+      const owner = pendingSendRef.current;
+      if (!owner || !owner.lifetime.active || owner.projectId !== projectId || owner.terminal || owner.phase === "handed-off") return;
+      // Admission can fail before run.started. Retain bounded terminal evidence until
+      // a direct receipt proves which run belongs to this exact message.
+      if (owner.phase === "dispatched" && owner.runId === undefined && isTerminalRunEvent(event)) {
+        if (owner.earlyTerminals.length < 32) owner.earlyTerminals.push(event);
+        else owner.earlyTerminalsOverflow = true;
+        return;
       }
-      if (event.sessionId !== sessionIdRef.current) return;
-      if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) return;
-      handleQuickChatEvent(event, dispatch, setBusy, activeRunIdRef, setActiveRunId);
+      if (owner.runId === undefined && isTerminalRunEvent(event)
+        && event.runId === owner.directReceiptRunId && event.sessionId === owner.sessionId) {
+        owner.runId = event.runId;
+        setAwaitingRun(false);
+      }
+      if (event.type === "run.started") {
+        if (event.messageId !== owner.messageId || owner.phase === "preparing" || owner.phase === "failed"
+          || (owner.targetSessionId !== undefined && event.sessionId !== owner.targetSessionId)
+          || (owner.sessionId !== undefined && event.sessionId !== owner.sessionId)
+          || (owner.runId !== undefined && event.runId !== owner.runId)) return;
+        owner.sessionId = event.sessionId;
+        owner.runId = event.runId;
+        owner.phase = "accepted";
+        sessionIdRef.current = event.sessionId;
+        setAwaitingRun(false);
+        setBusy(true);
+      } else if (event.sessionId !== owner.sessionId || event.runId !== owner.runId) return;
+      if (isTerminalRunEvent(event)) owner.terminal = true;
+      handleQuickChatEvent(event, dispatch, (running) => setBusy(owner.receiptPending || running), activeRunIdRef, setActiveRunId);
     });
     return unsubscribe;
   }, []);
@@ -279,51 +310,93 @@ export function QuickChatApp(): React.JSX.Element {
   const send = useCallback(async (): Promise<void> => {
     const text = input.trim();
     const currentProjectId = projectIdRef.current;
-    if (!text || busy || !currentProjectId || !hasModel) return;
+    const previous = pendingSendRef.current;
+    if (!text || busy || !currentProjectId || !hasModel || !lifetimeRef.current.active
+      || previous?.receiptPending || (previous?.runId !== undefined && !previous.terminal)) return;
+    if (previous?.phase === "unknown" || previous?.phase === "handed-off") {
+      setError("上一条消息需要在主窗口核对或查看。请勿盲目重发；如需新建快速对话，旧请求或队列消息不会被撤销。");
+      return;
+    }
+    const owner: QuickChatSubmission = {
+      messageId: globalThis.crypto.randomUUID(), projectId: currentProjectId,
+      targetSessionId: sessionIdRef.current, phase: "preparing", receiptPending: true, terminal: false,
+      lifetime: lifetimeRef.current, earlyTerminals: [], earlyTerminalsOverflow: false
+    };
+    pendingSendRef.current = owner;
+    const current = (): boolean => owner.lifetime.active && pendingSendRef.current === owner;
     setBusy(true);
+    setAwaitingRun(false);
     setError(undefined);
-    pendingSendRef.current = { input: text };
     try {
+      // Transfer only this submission before awaiting model preparation; newer typing stays in the editor.
+      dispatch({ type: "append-user", message: {
+        id: owner.messageId, role: "user", content: text, reasoning: "", reasoningStreaming: false,
+        streaming: false, withScreenContext: contextAttached
+      } });
+      setInput("");
       const nextThinking = selectedModel?.efforts.length ? thinking : "off";
       if (runtimeModelAliasRef.current !== selectedAlias || runtimeThinkingRef.current !== nextThinking) {
         const info = await window.biny.switchModel(currentProjectId, selectedAlias!, nextThinking);
+        if (!current()) return;
         runtimeModelAliasRef.current = info.modelAlias;
         runtimeThinkingRef.current = info.thinking;
       }
-      dispatch({
-        type: "append-user",
-        message: {
-          id: nextMessageId("user"),
-          role: "user",
-          content: text,
-          reasoning: "",
-          reasoningStreaming: false,
-          streaming: false,
-          withScreenContext: contextAttached
-        }
-      });
-      setInput("");
+      if (!current()) return;
+      owner.phase = "dispatched";
       const receipt = await window.biny.sendPrompt(
-        currentProjectId,
-        sessionIdRef.current,
-        text,
-        [],
-        undefined,
-        undefined,
-        undefined,
+        owner.projectId, owner.targetSessionId, text, [], undefined, undefined, owner.messageId,
         contextAttached ? context.promptContext : undefined
       );
+      if (!current()) return;
+      if (receipt.messageId !== owner.messageId
+        || (owner.targetSessionId !== undefined && receipt.sessionId !== owner.targetSessionId)
+        || (owner.sessionId !== undefined && receipt.sessionId !== owner.sessionId)) throw new Error("发送回执与当前消息身份不一致。");
+      owner.phase = "accepted";
+      owner.receiptPending = false;
+      owner.sessionId = receipt.sessionId;
+      owner.directReceiptRunId = receipt.queued === false ? receipt.runId : undefined;
+      // A queued-message receipt names the preceding run, not this message's future run.
+      // Only the matching run.started event may grant run/control ownership.
       sessionIdRef.current = receipt.sessionId;
-      activeRunIdRef.current = receipt.runId;
-      setActiveRunId(receipt.runId);
-      pendingSendRef.current = undefined;
-      dispatch({ type: "ensure-assistant", runId: receipt.runId });
+      const earlyTerminal = receipt.queued === false ? owner.earlyTerminals.find(
+        (event) => event.sessionId === receipt.sessionId && event.runId === receipt.runId
+      ) : undefined;
+      owner.earlyTerminals = [];
+      if (earlyTerminal && owner.runId === undefined) {
+        owner.runId = receipt.runId;
+        owner.terminal = true;
+        handleQuickChatEvent(earlyTerminal, dispatch, setBusy, activeRunIdRef, setActiveRunId);
+      }
+      setAwaitingRun(owner.runId === undefined && !owner.terminal);
+      if (owner.runId === undefined && (receipt.queued !== false || owner.earlyTerminalsOverflow)) {
+        owner.phase = "handed-off";
+        setAwaitingRun(false);
+        setBusy(false);
+        setError(receipt.queued === true
+          ? "已交会话队列，请在主窗口查看。队列可能合并消息，快速窗口不认领其运行。新建对话不会撤销已入队消息，请勿重复发送。"
+          : "消息已接纳，但快速窗口无法完整确认运行状态，请在主窗口查看。快速窗口不会猜测运行归属；新建对话不会撤销旧消息，请勿重复发送。");
+      } else if (owner.terminal) {
+        activeRunIdRef.current = undefined;
+        setActiveRunId(undefined);
+        setBusy(false);
+      }
     } catch (sendError) {
-      pendingSendRef.current = undefined;
-      activeRunIdRef.current = undefined;
-      setActiveRunId(undefined);
-      setBusy(false);
-      setError(errorText(sendError));
+      if (!current()) return;
+      owner.receiptPending = false;
+      // A matching run event is admission evidence even when the later IPC acknowledgment fails.
+      if (owner.phase === "accepted") {
+        setAwaitingRun(owner.runId === undefined && !owner.terminal);
+        setBusy(!owner.terminal);
+        setError(`已观察到该消息的运行，回执处理失败；不会重发：${errorText(sendError)}`);
+      } else {
+        const notSent = owner.phase === "preparing";
+        owner.phase = notSent ? "failed" : "unknown";
+        setAwaitingRun(false);
+        activeRunIdRef.current = undefined;
+        setActiveRunId(undefined);
+        setBusy(false);
+        setError(`${notSent ? "发送前失败，未派发消息" : "发送结果尚未确认，请先在主窗口核对会话，避免重复发送"}。原文保留在上方消息中：${errorText(sendError)}`);
+      }
     }
   }, [busy, context.promptContext, contextAttached, hasModel, input, selectedAlias, selectedModel, thinking]);
 
@@ -375,24 +448,30 @@ export function QuickChatApp(): React.JSX.Element {
 
   const stop = useCallback(async (): Promise<void> => {
     const currentProjectId = projectIdRef.current;
+    const owner = pendingSendRef.current;
     const runId = activeRunIdRef.current;
-    if (!currentProjectId || !runId) return;
+    if (!currentProjectId || !runId || !owner?.lifetime.active || owner.projectId !== currentProjectId
+      || owner.runId !== runId || owner.terminal || owner.phase !== "accepted") return;
     try {
       await window.biny.cancelRun(currentProjectId, runId);
     } catch (stopError) {
-      setError(errorText(stopError));
+      if (owner.lifetime.active && pendingSendRef.current === owner) setError(errorText(stopError));
     }
   }, []);
 
   const startNewChat = useCallback((): void => {
-    if (busy) return;
+    const owner = pendingSendRef.current;
+    if ((busy && !awaitingRun) || owner?.receiptPending || (owner?.runId !== undefined && !owner.terminal)) return;
     sessionIdRef.current = undefined;
     activeRunIdRef.current = undefined;
     setActiveRunId(undefined);
     pendingSendRef.current = undefined;
     dispatch({ type: "reset" });
-    setError(undefined);
-  }, [busy]);
+    setBusy(false);
+    setAwaitingRun(false);
+    setError(owner?.phase === "unknown" || owner?.phase === "handed-off" || (owner?.phase === "accepted" && !owner.terminal)
+      ? "新对话已开始；先前消息可能仍在运行或排队，未被取消。请勿盲目重发。" : undefined);
+  }, [awaitingRun, busy]);
 
   return (
     <AppearanceProvider snapshot={appearance.snapshot} onError={setError}><div className="quickchat-root">
@@ -439,7 +518,7 @@ export function QuickChatApp(): React.JSX.Element {
           >
             <Icon name={clickThrough ? "eye-off" : "eye"} size={15} />
           </button>
-          <button aria-label="新建快速对话" className="quickchat-icon-button" onClick={startNewChat} title="新建对话" type="button">
+          <button aria-label="新建快速对话" className="quickchat-icon-button" disabled={busy && !awaitingRun} onClick={startNewChat} title="新建对话" type="button">
             <Icon name="add" size={16} />
           </button>
           <button aria-label="关闭快速对话" className="quickchat-icon-button" onClick={() => void window.biny.closeQuickChat()} title="关闭窗口" type="button">
@@ -553,7 +632,7 @@ export function QuickChatApp(): React.JSX.Element {
         <div className="quickchat-composer-footer">
           <span className="quickchat-composer-hint">{includeContext ? "当前窗口上下文已开启" : "仅发送输入内容"}</span>
           <button
-            aria-label={busy ? "停止生成" : "发送"}
+            aria-label={busy ? activeRunId === undefined ? awaitingRun ? "等待消息运行" : "等待发送确认" : "停止生成" : "发送"}
             className="quickchat-send"
             disabled={busy ? activeRunId === undefined : !input.trim() || noProject || !hasModel}
             onClick={() => void (busy ? stop() : send())}

@@ -659,6 +659,9 @@ export interface DesktopRunReceipt {
   sessionId: string;
   runId: string;
   messageId: string;
+  /** True: accepted into a queue, whose eventual combined run has a different identity.
+   * False: direct admission. Undefined: older caller/receipt, do not infer ownership. */
+  queued?: boolean;
 }
 
 /** 事件推送信封。带上 projectId 是因为所有项目共用同一条事件通道，渲染层要自己过滤。 */
