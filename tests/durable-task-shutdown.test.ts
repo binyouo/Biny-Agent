@@ -137,6 +137,7 @@ await test("durable task shutdown ownership", { timeout: 90_000 }, async (suite)
           const host = action === "restart"
             ? new RuntimeHostServer(initial.runtime, commands, registration, { close: async () => undefined }, factory)
             : undefined;
+          if (host) await host.initialize();
           const gate = holdWorkspaceStat(root, () => stage === "before-worker" ? providerCalls === 0 : providerCalls > 0);
           let taskCompletion: Promise<TaskClosureResult> | undefined;
           let shutdown: Promise<unknown> | undefined;

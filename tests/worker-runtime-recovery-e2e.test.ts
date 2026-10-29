@@ -52,6 +52,7 @@ if (process.argv[2] === "crash-worker") {
       assert.equal(taskBefore.attempts.length, 1);
       const interactive = new InteractiveAgentRuntime(runtime);
       host = await startRuntimeHost(root, async () => ({ commands: runtime!, runtime: interactive }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
+      await host.initialize();
       assert.equal(runtime.taskRuns.get("crashed-task")?.status, "blocked");
       assert.equal((runtime.taskRuns.get("crashed-task")?.attempts[0]?.failure as { failureClass?: string }).failureClass, "worker_interrupted");
       assert.equal(requests, 0, "Host startup must not execute a parked Worker");
@@ -104,6 +105,7 @@ if (process.argv[2] === "crash-worker") {
         globalThis.fetch = (async () => { requests += 1; throw new Error("No provider execution is allowed at this boundary."); }) as typeof fetch;
         runtime = await createCommandRuntime(root, { configStore: configStore(), sessionId: "parent-session" });
         host = await startRuntimeHost(root, async () => ({ commands: runtime!, runtime: new InteractiveAgentRuntime(runtime!) }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
+        await host.initialize();
         const parked = runtime.taskRuns.get("crashed-task")!;
         assert.equal(parked.status, "blocked");
         const failure = parked.attempts[0]?.failure as { failureClass?: string };

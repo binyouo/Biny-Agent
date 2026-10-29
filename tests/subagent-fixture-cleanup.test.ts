@@ -14,7 +14,7 @@ import * as hostBoundary from "../src/runtime/RuntimeHost.js";
 import { fixtureCleanup } from "./helpers/fixture-cleanup.js";
 
 const workerFlag = "--fixture-cleanup-worker";
-const modes = ["config", "start", "connect", "body", "body-and-close"] as const;
+const modes = ["config", "start", "connect", "ready", "body", "body-and-close"] as const;
 type Mode = typeof modes[number];
 
 async function setupWorker(mode: Mode, receipt: string): Promise<void> {
@@ -64,6 +64,7 @@ async function setupWorker(mode: Mode, receipt: string): Promise<void> {
       if (mode === "connect") throw original;
       events.push("client-open"); clientHandle = setInterval(() => {}, 1_000);
       return {
+        waitForReady: async () => { if (mode === "ready") throw original; },
         getSnapshot: () => { throw original; },
         close: async () => { counts.client += 1; events.push("client-close"); clearInterval(clientHandle); }
       };
@@ -128,14 +129,14 @@ if (process.argv[2] === workerFlag) {
           });
           const result = JSON.parse(await readFile(receipt, "utf8"));
           assert.deepEqual(result.counts, { provider: 1, connections: 1,
-            host: ["connect", "body", "body-and-close"].includes(mode) ? 1 : 0,
-            client: mode.startsWith("body") ? 1 : 0, socketCalls: 0 });
+            host: ["connect", "ready", "body", "body-and-close"].includes(mode) ? 1 : 0,
+            client: (mode === "ready" || mode.startsWith("body")) ? 1 : 0, socketCalls: 0 });
           assert.equal(result.rootRemoved, true);
           assert.equal(result.environmentRestored, true);
           assert.deepEqual(result.events, ["provider-open",
-            ...(["connect", "body", "body-and-close"].includes(mode) ? ["host-open"] : []),
-            ...(mode.startsWith("body") ? ["client-open", "client-close"] : []),
-            ...(["connect", "body", "body-and-close"].includes(mode) ? ["host-close"] : []), "provider-close"]);
+            ...(["connect", "ready", "body", "body-and-close"].includes(mode) ? ["host-open"] : []),
+            ...((mode === "ready" || mode.startsWith("body")) ? ["client-open", "client-close"] : []),
+            ...(["connect", "ready", "body", "body-and-close"].includes(mode) ? ["host-close"] : []), "provider-close"]);
         } finally {
           await rm(temporary, { recursive: true, force: true });
         }
