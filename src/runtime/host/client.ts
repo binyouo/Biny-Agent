@@ -270,6 +270,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.applySessionSummaries(result.sessions, result.sequence);
     this.acknowledgeEvents(result.sequence, result.hostEpoch);
     this.synchronizedSocket = socket;
+    runtimeHostSpawnCircuitFor(this.options.registration.endpoint).recordSuccess();
   }
 
   get isRetired(): boolean {
@@ -1418,8 +1419,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.reconnectAttempts = 0;
     }, runtimeHostReconnectStableMs);
     this.stableResetTimer.unref?.();
-    // 成功握手证明 owner 已启动；本客户端仍需完成订阅同步后才能恢复观察。
-    runtimeHostSpawnCircuitFor(this.options.registration.endpoint).recordSuccess();
   }
 
   private noteConnectionDropped(): void {
@@ -1526,6 +1525,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       // A hello is not recovery: only a current subscribed, synchronized connection
       // admits new local observations. Already rejected observations stay settled.
       this.synchronizedSocket = socket;
+      runtimeHostSpawnCircuitFor(this.options.registration.endpoint).recordSuccess();
       this.connectionRecoveryError = undefined;
       this.connectionRecoveryAttempt = undefined;
       await this.recoverCompletions();

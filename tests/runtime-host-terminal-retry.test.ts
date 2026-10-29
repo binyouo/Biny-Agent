@@ -59,7 +59,7 @@ test("hello alone cannot clear terminal error; failed subscribe stays terminal; 
   const second = observe(f.client.retryConnection());
   await until(() => f.held.length === 1, "retry hello and held subscribe");
   assert.equal(f.sockets.length, 2); assert.equal(first(), undefined); assert.equal(second(), undefined);
-  assert.equal(f.circuit.consecutiveFailures, 0, "hello may clear shared count without repairing this client's observations");
+  assert.equal(f.circuit.consecutiveFailures, 3, "hello alone must not clear startup failures before subscription synchronizes");
   const beforeSync = observe(f.client.waitForIdle("idle")); await flush();
   assert.deepEqual(beforeSync(), { error: original });
   // Fail the actual in-flight subscribe after a successful hello.
@@ -82,6 +82,7 @@ test("hello alone cannot clear terminal error; failed subscribe stays terminal; 
   f.held[1]!();
   await until(() => third() !== undefined && fourth() !== undefined, "successful retry fanout");
   assert.deepEqual(third(), { value: undefined }); assert.deepEqual(fourth(), { value: undefined });
+  assert.equal(f.circuit.consecutiveFailures, 0, "successful synchronization clears the shared startup failures");
   assert.equal(f.client.hostInfo?.hostEpoch, "epoch-b");
   const idle = observe(f.client.waitForIdle("a"));
   const fresh = observe(f.client.submitPromptForSession("a", "explicit new work", [], ids).completion);
