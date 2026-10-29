@@ -8,15 +8,11 @@ import type { AgentConfig } from "../config/schema.js";
 export interface RunBudget {
   softStepLimit: number;
   hardStepLimit: number;
-  maxToolCalls: number;
-  maxRepeatedActions: number;
 }
 
 export function resolveRunBudget(agent: AgentConfig["agent"]): RunBudget {
   return {
     softStepLimit: Math.min(agent.softStepLimit, agent.hardStepLimit),
-    hardStepLimit: agent.hardStepLimit,
-    maxToolCalls: agent.maxToolCalls ?? 512,
-    maxRepeatedActions: agent.maxRepeatedActions ?? 3
+    hardStepLimit: agent.hardStepLimit
   };
 }

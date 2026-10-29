@@ -27,6 +27,7 @@ jobs:
       actions: read
     outputs:
       standard: ${{ steps.plan.outputs.standard }}
+      shards: ${{ steps.plan.outputs.shards }}
       e2e: ${{ steps.plan.outputs.e2e }}
       build: ${{ steps.plan.outputs.build }}
       renderer: ${{ steps.plan.outputs.renderer }}
@@ -46,7 +47,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - id: plan
-        name: Select tests since the last successful ancestor
+        name: Select affected tests
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci-test-plan.mjs --ci
@@ -120,14 +121,14 @@ jobs:
   test:
     needs: [plan, static]
     if: needs.plan.outputs.standard == 'true'
-    name: Tests (${{ matrix.shard }}/4)
+    name: Tests (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       max-parallel: 4
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -148,7 +149,7 @@ jobs:
           name: ci-plan
           path: .ci
       - name: Test
-        run: node scripts/run-tests.mjs --standard --plan=.ci/plan.json --shard=${{ matrix.shard }}/4 --report=test-timings.json
+        run: node scripts/run-tests.mjs --standard --plan=.ci/plan.json --shard=${{ matrix.shard }}/${{ strategy.job-total }} --report=test-timings.json
 
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
@@ -278,8 +279,6 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck
-        run: pnpm typecheck
       - name: Test Windows platform and real shared Host
         run: node scripts/run-tests.mjs windows
       - name: Test owner election

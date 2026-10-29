@@ -11,7 +11,7 @@ export function shouldShowToolInCapabilityMenu(tool: Pick<DesktopToolCatalogEntr
 const TOOL_ORDER = [
   "Glob", "Grep", "Read", "Edit", "Write",
   "Bash", "ProcessStatus", "KillShell",
-  "BrowserOpen", "BrowserListEnvironments", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress",
+  "BrowserOpen", "BrowserListEnvironments", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "BrowserWait", "BrowserBack", "BrowserForward", "BrowserReload", "BrowserScroll", "BrowserSelectOption", "BrowserSetChecked", "BrowserUpload", "BrowserDownload", "BrowserExport",
   "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead", "ChromeRelayNavigate", "ChromeRelayClick", "ChromeRelayType", "ChromeRelayPress",
   "WebFetch", "WebSearch",
   "Task", "Skill"

@@ -1,33 +1,83 @@
 ---
 name: file-manager
-description: "Find and organize local files by name, type, size, or date; move, rename, archive, extract, or clean up a requested directory. Use for file organization and storage cleanup; use workspace-search for investigating code or document content."
+description: Find, organize, and manage files on the user's computer. Search by name, type, size, or date. Move, rename, compress, and clean up files.
 allowed-tools:
-  - Glob
-  - Read
   - Bash
+  - Read
+  - Write
+  - Glob
+  - Grep
 ---
 
-# File Manager
+# File Manager Skill
 
-Work inside the directories named by the user and permitted by the runtime. Use `Glob`, `Read`, and `Bash` as available; a Skill does not grant access to the rest of the computer.
+Help users find and organize files on their computer.
 
-## Find and inspect
+Scope operations to the directories and criteria in the request. Inspect destinations before changing files; preserve collisions and report inaccessible paths rather than treating them as empty. Skill instructions do not expand runtime file permissions.
 
-- Confirm the source directory and the criteria before scanning. Prefer `rg --files <directory>` for filenames and `find <directory>` when size or modification dates matter. Include hidden files only when relevant.
-- Return a bounded set of actual paths with the relevant size or date. Preserve permission errors instead of treating inaccessible directories as empty.
-- File size or a similar name only identifies duplicate candidates. Compare content hashes, then inspect which copy the user wants to keep before removal.
-- Do not follow symlinks outside the requested scope or search the entire home directory for a narrow request.
+## Find Files
 
-## Move, rename, and clean up
+```bash
+# By name (case-insensitive)
+find ~/Desktop ~/Documents ~/Downloads -iname "*report*" -type f 2>/dev/null
 
-1. Inspect the actual source paths and destination. Show the affected list when bulk changes or removal need the user's decision.
-2. Check for destination collisions before changing anything. Preserve existing files; do not overwrite or append numeric suffixes without a reason tied to the requested naming rule.
-3. Use safely quoted literal paths. Rename or move the selected files, then list both source and destination to verify the result. A cross-volume move may copy and then remove the source; verify the destination before removal.
+# By extension
+find ~/Downloads -name "*.pdf" -type f
 
-Prefer a recoverable move to a separate holding directory or an available trash facility for approved cleanup. Do not empty Trash, clear caches, or remove old downloads as an automatic cleanup step. Do not switch to shell operations to bypass a file-tool refusal.
+# By size (larger than 100MB)
+find ~ -size +100M -type f 2>/dev/null | head -20
 
-## Archives
+# Recently modified (last 7 days)
+find ~/Documents -mtime -7 -type f | head -20
 
-- Inspect archive member names before extracting. Reject absolute paths, parent-directory traversal, and links that escape the destination.
-- Extract into a new directory and check the resulting files. Do not merge into a populated destination unless requested.
-- Write a new archive beside, rather than over, existing files. Confirm the archive contains the intended paths; creating it does not authorize deleting the originals.
+# List sizes to inspect potential duplicates (macOS)
+find ~/Downloads -type f -exec stat -f '%z %N' {} + | sort -n
+```
+
+Equal sizes only identify candidates. Compare content hashes before calling files duplicates or deciding which copy to remove.
+
+## Organize
+
+```bash
+# Move all PDFs from Downloads to Documents
+mv -n ~/Downloads/*.pdf ~/Documents/
+
+# Create dated folder and move files
+mkdir -p ~/Documents/$(date +%Y-%m-%d)
+
+# Rename files (pattern)
+for file in *.jpeg; do [ -f "$file" ] || continue; mv -n "$file" "${file%.jpeg}.jpg"; done
+```
+
+## Cleanup
+
+```bash
+# Show large files in Downloads
+du -sh ~/Downloads/* | sort -rh | head -20
+
+# Only for an explicit request to empty Trash (macOS)
+rm -rf ~/.Trash/*
+
+# Clear old downloads (older than 30 days)
+find ~/Downloads -mtime +30 -type f
+```
+
+## Compress/Extract
+
+```bash
+# Create zip
+zip -r archive.zip folder/
+
+# Create tar.gz
+tar czf archive.tar.gz folder/
+
+# Extract
+unzip archive.zip
+tar xzf archive.tar.gz
+```
+
+## Tips
+- Always use `trash` over `rm` when available (recoverable)
+- Preview file lists before bulk operations
+- Ask before deleting — show what would be affected first
+- Extract archives into a new directory after checking for absolute paths, parent traversal, and escaping links; preserve existing destinations.

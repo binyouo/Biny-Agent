@@ -140,6 +140,7 @@ interface Api { projection: Projection; producer: Producer; serialize: Serialize
 function harness(root: string, failArchive = false): Api {
   const archives: RecordValue[] = [];
   const redaction = functions(source(root, "src/utils/redaction.ts"), ["redactSecrets"]);
+  const browserRedaction = functions(source(root, "src/session/toolArgumentRedaction.ts"), ["redactBrowserToolResult"]);
   const secrets = functions(source(root, "src/utils/secrets.ts"), secretFunctions);
   const archiveFile = source(root, "src/session/toolResultArchive.ts");
   const serialization = constants(archiveFile, ["previewCharacters"]) + functions(archiveFile, serializerFunctions);
@@ -147,9 +148,6 @@ function harness(root: string, failArchive = false): Api {
   const hasHelper = projectionFile.statements.some(node => ts.isFunctionDeclaration(node) && node.name?.text === "readResultLineRange");
   const projection = constants(projectionFile, ["projectionMarker", "archivePathPattern"])
     + functions(projectionFile, [...projectionFunctions, ...(hasHelper ? ["readResultLineRange"] : [])]);
-  // Extract the real result-only helper, not its module imports or sibling
-  // argument/message redaction functions. Its sole call is Array.isArray.
-  const browserRedaction = functions(source(root, "src/session/toolArgumentRedaction.ts"), ["redactBrowserToolResult"]);
   const coordinatorFile = source(root, "src/agent/toolExecutionCoordinator.ts");
   const coordinatorClass = coordinatorFile.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "ToolExecutionCoordinator");
   assert.ok(coordinatorClass);
@@ -159,7 +157,7 @@ function harness(root: string, failArchive = false): Api {
     check(found[0]!);
     return found[0]!.getText(coordinatorFile).replace(/^private\s+/u, "");
   }).join(",\n");
-  const declarations = redaction + secrets + serialization + projection + browserRedaction
+  const declarations = redaction + browserRedaction + secrets + serialization + projection
     + constants(coordinatorFile, ["maxArchivedPreviewCharacters", "inlineResultPersistMaxBytes"])
     + functions(coordinatorFile, ["formatToolError", "readStringField"]);
   // Only the two source methods are placed in this inert object; the product

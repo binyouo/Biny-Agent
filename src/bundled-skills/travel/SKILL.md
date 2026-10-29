@@ -40,10 +40,10 @@ When you decide to go, pick a destination that resonates with your current mood/
 
 ### 2. Exploration (Daily Heartbeat Progression)
 
-Each heartbeat while traveling advances your journey. On each "day":
+When a heartbeat or user request calls for continuing the virtual trip, inspect `biny travel status` first and progress the current day once. Do not repeat recorded events or advance merely because the skill was loaded. On each travel day:
 
 1. **Research the real place** using web search:
-   Use the web-search skill to research current travel tips, local food, hidden gems and today's weather. Use the current year in time-sensitive searches.
+   Use the web-search skill and `WebSearch` with `query` and `maxResults` to research current travel tips, local food, hidden gems, and today's weather. Use the current year in time-sensitive searches; do not invent a `biny web-search` shell command.
 
 2. **Experience something specific** based on real search results:
    - Visit a real landmark/restaurant/neighborhood
@@ -125,6 +125,6 @@ While traveling:
 
 ## Storage
 
-- Current trip: `travels/status.json`; completed trips: `travels/history.json` in the global Biny data directory.
+- Under `${BINY_AGENT_DIR:-$HOME/.config/biny}`: current trip `travels/status.json`, completed trips `travels/history.json`.
 - Diaries: `travels/YYYY-MM-DD.md`; use the journal command to read and append.
 - These are virtual experiences, not evidence of physical travel or user activities. Keep real destination research separate from imagined events. Never book, buy or message anyone merely to progress a virtual trip.

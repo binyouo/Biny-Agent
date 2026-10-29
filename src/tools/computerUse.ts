@@ -34,13 +34,13 @@ export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
       resolveExecution: args => execution(call, "observe", windowObserveSchema.parse(args), false)
     },
     {
-      name: "ComputerAction", description: "操作获准应用中刚观察的准确窗口，并返回新的验证画面。坐标必须来自当前观察凭据。默认后台投递；拒绝后不能自动重试前台输入，前台投递须经用户开启和授权。已投递后核对业务结果；效果待核对不表示调用失败。", risk: "execute", capability: "computer.action",
+      name: "ComputerAction", description: "操作获准应用中刚观察的准确窗口，并返回新的验证画面。坐标必须来自当前观察凭据。始终后台投递；拒绝后不能切换到激活窗口或其他输入通路。已投递后核对业务结果；效果待核对不表示调用失败。", risk: "execute", capability: "computer.action",
       promptGuidelines: [
         "Use this MCP control plane for native desktop input, not Bash, biny cu, osascript, Quartz, clipboard paste or another daemon. A paused, denied, unavailable or unverified action never authorizes an alternate input or activation path.",
         "Use ComputerList, then ComputerObserve to choose an exact target; never guess IDs, element tokens or screenshot coordinates. Prefer a usable element token; custom-drawn controls without tokens require screenshot coordinates.",
         "输入方式 auto、physical、unicode 可以向键盘焦点输入；ax 必须指定可写控件。需要确认焦点时先点击并检查返回画面。已经确定、无须根据中间画面决策的步骤可使用 ComputerSequence，不能合并跨窗口操作或需要找新按钮的步骤。",
         "If application approval is required, ask the user to approve the app in Settings → Computer Use. Global tool approval does not override strict application approval.",
-        "默认后台投递。只有观察返回 foregroundAllowed 为 true 且任务确实需要时，才显式选择 delivery=foreground；否则须由用户在设置中开启。后台失败不能自动升级到前台；请求中断时停止输入，不重放可能已经发生的动作。",
+        "始终后台投递，不能激活或抬升目标窗口，也不能临时切到前台再恢复。后台派发失败时报告原因；请求中断时停止输入，不重放可能已经发生的动作。",
         "已投递的动作仍须核对业务结果。已有新画面和观察凭据时直接检查并决定下一步，不要为了核对再重复观察或重放动作；只有缺少所需信息或画面尚在加载时才重新观察。请求中断导致执行情况未知时停止输入，不自动重试。",
         "Scroll directions describe content navigation (up decreases vertical offset; right increases horizontal offset). Amount is in pages, default 1. Native scroll areas use measured scrollbar ratios; web content uses estimated wheel notches. Check the reply's unit field if the distance matters.",
         "The live preview is for supervision; its frames do not refresh capture_id or element tokens. Verify the requested UI postcondition, not merely a changed picture."
@@ -50,7 +50,7 @@ export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
     }
   ];
   tools.push({
-    name: "ComputerSequence", description: "在同一窗口连续执行已确定的 1 至 5 步，最多 15 秒。首步可定位控件，之后只能向当前焦点输入或按键；需要看画面才能决定的步骤必须拆开。每步更新观察凭据，中间仅截图，最终返回画面和逐步回执。拒绝、回图失败、暂停或中断立即停止，禁止重放整个序列。", risk: "execute", capability: "computer.action",
+    name: "ComputerSequence", description: "在同一窗口连续执行已确定的 1 至 5 步，最多 15 秒。首步可定位控件，之后只能向当前焦点输入或按键；需要看画面才能决定的步骤必须拆开。每步更新观察凭据，中间仅截图，最终返回画面和逐步回执。部分完成、拒绝、回图失败、暂停或中断立即停止，禁止重放整个序列。", risk: "execute", capability: "computer.action",
     schema: computerSequenceSchema,
     parameters: zodToolInput(computerSequenceSchema).parameters, resolveExecution: args => execution(call, "sequence", computerSequenceSchema.parse(args), true)
   });
@@ -60,7 +60,7 @@ function execution(call: ComputerToolCaller, method: string, args: Record<string
   return {
     accesses: ToolAccesses.browser("biny:single-desktop"), retrySafety: mutation ? "unsafe" as const : "safe" as const,
     approvalRule: `computer_${method}`,
-    description: `Computer ${typeof args.action === "string" ? args.action : method} · pid ${String(args.pid ?? "apps")} · window ${String(args.windowId ?? "list")} · ${String(args.delivery ?? "background")}`,
+    description: `Computer ${typeof args.action === "string" ? args.action : method} · pid ${String(args.pid ?? "apps")} · window ${String(args.windowId ?? "list")}`,
     display: { kind: "generic" as const, summary: `Computer ${method}`, detail: { ...args, text: args.text === undefined ? undefined : "[input hidden]" } },
     async execute(context: ToolExecutionContext): Promise<unknown> {
       if (!context.sessionId) throw new Error("Computer use requires an Agent session.");

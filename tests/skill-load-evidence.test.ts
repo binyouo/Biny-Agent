@@ -12,10 +12,11 @@ import { z } from "zod";
 // coordinator's runtime graph or start a Host, session, provider or Code Mode VM.
 const skillSource = await fs.readFile(new URL("../src/extensions/skills.ts", import.meta.url), "utf8");
 const coordinatorSource = await fs.readFile(new URL("../src/agent/toolExecutionCoordinator.ts", import.meta.url), "utf8");
+const redactionSource = await fs.readFile(new URL("../src/session/toolArgumentRedaction.ts", import.meta.url), "utf8");
 const allowedCalls = new Set(["BigInt", "String", "source", "assertReadableSkillResource", "assertSkillFileBinding", "currentBundle",
   "errorMessage", "escapesRoot", "isNotFound", "isSymbolicLinkError", "noFollowFlag", "readBoundedSkillFile",
   "readSkillResourceFresh", "resolveSkill", "resolveSkillResourcePath", "sameSkillSnapshot", "skillSnapshot",
-  "readStringField", "serializeToolResult", "toolResultPreview", "readResultLineRange", "archiveToolResult", "formatToolError"]);
+  "readStringField", "serializeToolResult", "toolResultPreview", "readResultLineRange", "archiveToolResult", "formatToolError", "redactBrowserToolResult"]);
 const allowedMethods = new Set(["allocUnsafe", "concat", "toString", "min", "readFile", "find", "map", "join", "subarray",
   "push", "includes", "trim", "isFile", "lstat", "open", "realpath", "close", "read", "stat", "dirname", "isAbsolute",
   "relative", "resolve", "isSymbolicLink", "safeParse", "startsWith", "toLowerCase", "throwIfAborted", "object", "string",
@@ -133,7 +134,7 @@ const coordinatorClass = parsedCoordinator.statements.find((node): node is ts.Cl
 const outline = coordinatorClass?.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(parsedCoordinator) === "outlineToolResultForPersistence");
 assert.ok(outline);
 checkExtracted(outline);
-const outlineSource = `${declarations(coordinatorSource, ["readStringField"])}\nclass Fixture {\n${outline.getText(parsedCoordinator)}\n};`;
+const outlineSource = `${declarations(redactionSource, ["redactBrowserToolResult"])}\n${declarations(coordinatorSource, ["readStringField"])}\nclass Fixture {\n${outline.getText(parsedCoordinator)}\n};`;
 interface PersistenceFixture {
   context: { workspaceRoot: string; recorder: { sessionId: string } };
   goalControlCalls: Set<string>;

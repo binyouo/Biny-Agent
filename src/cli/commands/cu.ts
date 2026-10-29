@@ -1,26 +1,17 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
+import { open, rename, unlink } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { Command } from "commander";
 import { NativeProcessDriver } from "../../computer/nativeDriver.js";
 import { renderElementTree, type ElementLike } from "../../computer/elementTree.js";
 
-/**
- * `biny cu` —— 命令行的 macOS 桌面控制。
- *
- * 对 Alma 的 `cu`：同一台守护进程，同一个能力集，只是出口不同。Alma 把它算作
- * 「人和 LLM 共用一条控制面」（notes/19 §7），所以它**不经过**模型侧那三个工具
- * ——没有审批、没有审计、没有 capture 校验。那些是给模型上的护栏，人在这儿敲字
- * 时自己有判断。
- *
- * 它直连守护进程的 unix socket，因此**不需要桌面应用在运行**：守护进程按需自启。
- */
+/** 用户显式调用的原生入口；独立于模型控制器的审批和一次性观察凭据。 */
 export function registerCuCommands(program: Command): void {
-/**
- * 动作级开关：`--no-cursor` → `show_cursor: false`。
- * 参照把它写在 help 的 "Action flags: --no-cursor hides the lens for one action"，
- * 对每个动作都成立 —— 所以它是**动作参数**，不是某个动词的私事。
- */
+// Commander 将否定选项表示为 cursor:false，不能读取 noCursor。
 const withCursorFlag = (options: Record<string, unknown>): Record<string, unknown> =>
-  options.noCursor === true ? { show_cursor: false } : {};
+  options.cursor === false ? { show_cursor: false } : {};
 
 /**
  * 只在真的给了 `--pid` 时才带 pid。
@@ -105,55 +96,73 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
     command.action(async (options: { json?: boolean; days?: string }) => withDriver(async driver => {
       const apps = ((await driver.daemonCommand("list_apps", { recent_days: days ? z.number().int().min(0).max(90).parse(Number(options.days)) : 0 })).data as { apps?: never[] }).apps ?? [];
       if (options.json) return print(apps, true);
-      print(apps.map((app: { running?: boolean; name?: string; bundleId?: string; pid?: number; lastUsed?: string }) =>
-        `${app.running ? "●" : "○"} ${String(app.bundleId ?? "").padEnd(34)} ${String(app.pid ?? "").padEnd(7)} ${String(app.name ?? "")}${app.lastUsed ? `  (${app.lastUsed})` : ""}`
+      print(apps.map((app: { running?: boolean; active?: boolean; name?: string; bundleId?: string; pid?: number; lastUsed?: string; useCount?: number }) =>
+        `${app.active ? "*" : app.running ? "R" : " "} ${String(app.bundleId ?? "").padEnd(34)} ${String(app.pid ?? "").padEnd(7)} ${String(app.name ?? "")}${app.useCount === undefined ? "" : `  (${app.useCount}×)`}${app.lastUsed ? `  (${app.lastUsed})` : ""}`
       ).join("\n"));
     }));
   }
 
-  cu.command("windows").description("List the on-screen windows of an app").argument("<bundle|pid>", "app bundle id or pid")
+  cu.command("windows").description("List the windows of a running app").argument("<bundle|pid>", "app bundle id or pid")
     .option("--json", "print JSON")
     .action((value: string, options: { json?: boolean }) => withDriver(async driver => {
       const resolved = target(value);
-      const apps = ((await driver.list("cli", "pid" in resolved ? resolved.pid : undefined)).data as { apps?: { windows?: { window_id: number; title: string; frame: { w: number; h: number } }[] }[] }).apps ?? [];
-      const windows = apps[0]?.windows ?? [];
+      let pid = "pid" in resolved ? resolved.pid : undefined;
+      if ("bundle" in resolved) {
+        const apps = ((await driver.list("cli", undefined, undefined, 0)).data as { apps?: { pid?: number; bundleId?: string }[] }).apps ?? [];
+        pid = apps.find(app => app.bundleId === resolved.bundle)?.pid;
+        if (pid === undefined) throw new Error(`app_not_running: ${value}`);
+      }
+      pid = z.number().int().positive().max(2147483647).parse(pid);
+      const apps = ((await driver.list("cli", pid)).data as { apps?: { pid: number; windows?: { window_id: number; title: string; frame?: { w: number; h: number }; focused?: boolean; minimized?: boolean }[] }[] }).apps ?? [];
+      const app = apps.find(app => app.pid === pid);
+      if (!app) throw new Error(`app_not_running: ${value}`);
+      const windows = app.windows ?? [];
       if (options.json) return print(windows, true);
-      print(windows.map(w => `${String(w.window_id).padEnd(8)} ${String(w.frame.w)}×${String(w.frame.h).padEnd(6)} ${w.title}`).join("\n") || "(没有在屏窗口)");
+      print(windows.map(w => `${w.focused ? "*" : " "} ${String(w.window_id).padEnd(8)} ${w.frame ? `${String(w.frame.w)}×${String(w.frame.h).padEnd(6)}` : "(尺寸未知)"} ${w.title}${w.minimized ? "  已最小化" : ""}`).join("\n") || "(没有窗口)");
     }));
 
-  // 参照的 CLI 里这个能力叫 `get_app_state`，help 上写着 **"start every turn with
-// `alma cu get_app_state <bundle>`"** —— 名字本身就是给 agent 的契约，不只是叫法。
-// 本实现原先只有 `snap`（那是参照里 tree-only 的 legacy 名），能力在、名字不对。
-// 两个名字都留：`get_app_state` 是主名（带 --shot-max-width），`snap` 保留原名。
 for (const observeName of ["get_app_state", "snap"] as const) {
-cu.command(observeName).description("Observe a window: accessibility tree plus a screenshot").argument("<bundle|pid>", "app bundle id or pid")
-    .option("--shot-max-width <n>", "downsample width of the screenshot jpg (daemon default 1280)")
-    // 参照：`--all` 就是 `interactive_only = false`（默认**只给可交互元素**）。
-    // `--shot-out=PATH` 是把截图写到文件，本实现原有的 `--out` 是同一件事。
+const command = cu.command(observeName).description(observeName === "snap" ? "Read the accessibility tree without taking a screenshot" : "Observe a window: accessibility tree plus a screenshot").argument("<bundle|pid>", "app bundle id or pid")
     .option("--all", "include every element, not just the interactive ones")
+    .option("--window <id>", "exact window id from `cu windows`")
+    .option("--depth <n>", "how deep to walk the accessibility tree")
+    .option("--json", "print JSON");
+if (observeName === "get_app_state") command
+    .option("--shot-max-width <n>", "downsample width of the screenshot jpg (daemon default 1280)")
     .option("--shot-out <path>", "write the screenshot to this path (alias of --out)")
-    .option("--window <id>", "exact window id from `cu windows`").option("--out <path>", "where to write the jpg")
-    .option("--depth <n>", "how deep to walk the accessibility tree").option("--no-shot", "skip the screenshot and read only the tree")
-    .option("--json", "print JSON")
-    .action(async (value: string, options: { window?: string; out?: string; shotOut?: string; depth?: string; shot?: boolean; all?: boolean; shotMaxWidth?: string; json?: boolean }) => withDriver(async driver => {
+    .option("--out <path>", "where to write the jpg")
+    .option("--no-shot", "skip the screenshot and read only the tree");
+command.action(async (value: string, options: { window?: string; out?: string; shotOut?: string; depth?: string; shot?: boolean; all?: boolean; shotMaxWidth?: string; json?: boolean }) => withDriver(async driver => {
+      const noShot = observeName === "snap" || options.shot === false;
       const args = {
         ...target(value), ...windowOption(options),
-        ...(options.out ?? options.shotOut ? { out: options.out ?? options.shotOut } : {}),
         ...(options.depth ? { max_depth: Number(options.depth) } : {}),
         ...(options.all ? { interactive_only: false } : {}),
-        // 参照在这一条上给的是 `--shot-max-width=N`（守护进程侧字段 max_width）。
         ...(options.shotMaxWidth ? { max_width: Number(options.shotMaxWidth) } : {}),
         // Commander 把 --no-shot 变成 shot:false
-        ...(options.shot === false ? { no_shot: true } : {})
+        ...(noShot ? { no_shot: true } : {})
       };
-      const reply = await driver.observeRaw(args);
-      const data = reply.data as { window_id?: number; elements?: ElementLike[]; screenshot_width?: number; screenshot_height?: number };
+      const reply = await driver.daemonCommand("get_app_state", args);
+      const data = reply.data as { window_id?: number; windowId?: number; elements?: ElementLike[]; screenshot_width?: number; screenshot_height?: number; screenshot_error?: string };
+      const windowId = data.window_id ?? data.windowId;
+      const image = noShot ? undefined : reply.images[0];
+      let screenshot: string | undefined;
+      if (image) {
+        screenshot = path.resolve(options.out ?? options.shotOut ?? path.join(os.tmpdir(), `biny-cu-state-${randomUUID()}.jpg`));
+        const temporary = path.join(path.dirname(screenshot), `.biny-capture-${randomUUID()}.jpg`);
+        const file = await open(temporary, "wx", 0o600);
+        try {
+          try { await file.writeFile(Buffer.from(image.dataBase64, "base64")); } finally { await file.close(); }
+          await rename(temporary, screenshot);
+        } finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }); }
+      }
       const tree = renderElementTree(data.elements);
-      if (options.json) return print({ ...data, tree }, true);
+      if (options.json) return print({ ...data, window_id: windowId, screenshot, tree }, true);
       // --no-shot 时没有截图，也就没有尺寸 —— 别把 undefined 打给用户。
       const header = [
-        data.window_id === undefined ? undefined : `窗口 ${String(data.window_id)}`,
-        data.screenshot_width ? `${String(data.screenshot_width)}×${String(data.screenshot_height)}` : "(未截图)"
+        windowId === undefined ? undefined : `窗口 ${String(windowId)}`,
+        data.screenshot_width ? `${String(data.screenshot_width)}×${String(data.screenshot_height)}` : "(未截图)",
+        screenshot ? `截图 ${screenshot}` : data.screenshot_error
       ].filter(Boolean).join("  ");
       print([header, "", tree].join("\n"));
     }));
@@ -161,12 +170,10 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
 
   cu.command("shot").description("Capture one window to a file").argument("<bundle|pid>", "app bundle id or pid")
     .option("--window <id>", "exact window id").option("--out <path>", "where to write the jpg")
-    // 参照的这条 help 是 `shot <bundle|pid> [--window=ID] [--out=PATH] [--max-width=N]`。
-    // 守护进程一直支持 max_width（默认 1280），CLI 没开口 —— 又是能力在、路不通。
     .option("--max-width <n>", "downsample width of the jpg (daemon default 1280)")
     .option("--json", "print JSON")
     .action((value: string, options: { window?: string; out?: string; maxWidth?: string; json?: boolean }) => withDriver(async driver => {
-      const out = options.out ?? `/tmp/biny-cu-${Date.now()}.jpg`;
+      const out = path.resolve(options.out ?? path.join(os.tmpdir(), `biny-cu-${randomUUID()}.jpg`));
       const data = (await driver.daemonCommand("capture_screen", {
         ...target(value),
         window_id: options.window ? Number(options.window) : undefined,
@@ -181,17 +188,15 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
     .option("--pixel <x> <y...>", "click at these screenshot pixels instead").option("--pid <n>", "target pid when clicking a pixel")
     .option("--window <id>", "exact window id for background physical input")
     .option("--button <name>", "left | right | middle", "left").option("--clicks <n>", "1 = single, 2 = double-click", "1")
-    .option("--strategy <name>", "auto | ax | physical — ax drives the control's own action, physical synthesises a mouse click", "auto")
+    .option("--strategy <name>", "auto | ax | physical — auto prefers a physical click when bounds exist; ax drives the control's own action", "auto")
     .option("--json", "print JSON")
     .option("--no-cursor", "hide the action indicator for this one action")
-    .action(async (ref: string | undefined, options: { pixel?: string[]; pid?: string; window?: string; button?: string; clicks?: string; strategy?: string; noCursor?: boolean; json?: boolean }) => withDriver(async driver => {
-      // `--no-cursor` 是**动作级**开关（参照写在 "Action flags" 里，不挑动词）：
-      // 这一次不要指示器，下一次照旧。
-      const shared = { button: options.button, clicks: Number(options.clicks), strategy: options.strategy, ...(options.noCursor ? { show_cursor: false } : {}) };
+    .action(async (ref: string | undefined, options: { pixel?: string[]; pid?: string; window?: string; button?: string; clicks?: string; strategy?: string; cursor?: boolean; json?: boolean }) => withDriver(async driver => {
+      const shared = { button: z.enum(["left", "right", "middle"]).parse(options.button), clicks: Number(options.clicks), strategy: options.strategy, ...withCursorFlag(options) };
       const args: Record<string, unknown> = options.pixel
         ? { ...withPid(options), x: Number(options.pixel[0]), y: Number(options.pixel[1]), ...shared }
         : { ref, ...withPid(options), ...shared };
-      print((await driver.actRaw("click", { ...args, ...windowOption(options) })).data, options.json);
+      print((await driver.daemonCommand("click", { ...args, ...windowOption(options) })).data, options.json);
     }));
 
   for (const verb of ["type_text", "press_key"] as const) {
@@ -202,13 +207,16 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
     if (verb === "press_key") {
       command.option("--global", "deliver through the global HID stream to whatever is focused (needed for system-level shortcuts); default posts to the target process");
     } else {
-      command.option("--input-method <method>", "auto | physical | unicode | ax", "auto").option("--ref <ref>", "element reference for ax input");
+      command.option("--input-method <method>", "auto | physical | unicode | ax (default: auto)")
+        .option("--input_method <method>", "alias of --input-method")
+        .option("--bundle <id>", "target application bundle id")
+        .option("--ref <ref>", "element reference for ax input");
     }
-    command.action((value: string, options: { pid?: string; json?: boolean; global?: boolean; inputMethod?: string; ref?: string }) => withDriver(async driver => {
+    command.action((value: string, options: { pid?: string; bundle?: string; json?: boolean; global?: boolean; inputMethod?: string; input_method?: string; ref?: string }) => withDriver(async driver => {
       const args = verb === "type_text"
-        ? { text: value, input_method: options.inputMethod, ref: options.ref, ...withPid(options) }
+        ? { text: value, input_method: options.inputMethod ?? options.input_method ?? "auto", bundle: options.bundle, ref: options.ref, ...withPid(options) }
         : { key: value, ...withPid(options), ...(options.global ? { global: true } : {}) };
-      print((await driver.actRaw(verb, { ...args, ...withCursorFlag(options) })).data, options.json);
+      print((await driver.daemonCommand(verb, { ...args, ...withCursorFlag(options) })).data, options.json);
     }));
   }
 
@@ -218,35 +226,35 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
     }));
 
   cu.command("scroll").description("Scroll the target window, or a given element's scroll area")
-    // 参照是 `cu scroll <ref> <up|down|left|right> [--pages=N]` —— **目标由 ref 指定**。
-    // 原先是 `scroll <direction> --pid`，两种都留：第一个参数长得像 ref（e123）就按 ref 走。
     .argument("[refOrDirection]", "element ref (e12) or direction: up | down | left | right")
     .argument("[direction]", "up | down | left | right — required when a ref is given")
     .option("--pid <n>", "target pid")
-    .option("--pages <n>", "whole pages (one page = viewport/content, computed from the scroll area)")
-    .option("--amount <n>", "line notches instead of pages — an estimate, only used when --pages is absent", "1")
+    .option("--pages <n>", "pages computed from the scroll area (default: 1 when using a ref)")
+    .option("--amount <n>", "line notches instead of pages; --pages takes precedence (default: 1 without a ref)")
+    .option("--no-cursor", "hide the action indicator for this one action")
     .option("--json", "print JSON")
     .action((refOrDirection: string, direction: string | undefined, options: { pid?: string; pages?: string; amount?: string; json?: boolean }) => withDriver(async driver => {
       const looksLikeRef = /^e\d+$/.test(refOrDirection);
       const dir = looksLikeRef ? direction : refOrDirection;
       if (!dir) throw new Error("scroll 需要方向：cu scroll <ref> <up|down|left|right> 或 cu scroll <direction> --pid N");
-      // 只给 ref 时不带 pid（参照的 `cu scroll <ref> <dir>` 就是不给 pid）；
-      // 早先无条件传 `Number(undefined)` = NaN，daemon 于是报 app_not_found。
       const args: Record<string, unknown> = {
         direction: dir,
         ...withPid(options),
         ...(looksLikeRef ? { ref: refOrDirection } : {})
       };
-      // 给了 --pages 就按页面走（量出来的），否则退回滚轮行数（估的）。回执里的 unit 会说明用了哪个。
-      if (options.pages !== undefined) args.pages = Number(options.pages);
-      else args.amount = Number(options.amount);
-      print((await driver.actRaw("scroll", { ...args, ...withCursorFlag(options) })).data, options.json);
+      if (options.pages !== undefined || (looksLikeRef && options.amount === undefined)) args.pages = Number(options.pages ?? 1);
+      else args.amount = Number(options.amount ?? 1);
+      print((await driver.daemonCommand("scroll", { ...args, ...withCursorFlag(options) })).data, options.json);
     }));
 
   cu.command("drag").description("Drag between two screenshot points").arguments("<x1> <y1> <x2> <y2>")
     .option("--pid <n>", "target pid").option("--window <id>", "exact window id for background physical input").option("--json", "print JSON")
-    .action((x1: string, y1: string, x2: string, y2: string, options: { pid?: string; window?: string; json?: boolean }) => withDriver(async driver => {
-      print((await driver.actRaw("drag", { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2), ...withPid(options), ...windowOption(options), ...withCursorFlag(options) })).data, options.json);
+    .option("--button <name>", "left | right | middle", "left")
+    .option("--no-cursor", "hide the action indicator for this one action")
+    .action((x1: string, y1: string, x2: string, y2: string, options: { pid?: string; window?: string; button?: string; json?: boolean }) => withDriver(async driver => {
+      const points = z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()]).parse([x1, y1, x2, y2].map(value => Number.parseFloat(value)));
+      const button = z.enum(["left", "right", "middle"]).parse(options.button);
+      print((await driver.daemonCommand("drag", { x1: points[0], y1: points[1], x2: points[2], y2: points[3], button, ...withPid(options), ...windowOption(options), ...withCursorFlag(options) })).data, options.json);
     }));
 
   // 参照里这个名字叫 `perform_secondary_action`，且**两种定位方式**：
@@ -256,13 +264,14 @@ for (const menuName of ["perform_secondary_action", "menu"] as const) {
 cu.command(menuName).description("Open an element's context menu").argument("[ref]", "element ref from `cu snap`")
     .option("--pixel <x> <y...>", "click at screenshot coordinates instead")
     .option("--pid <n>", "target pid").option("--window <id>", "exact window id for background physical input").option("--json", "print JSON")
+    .option("--no-cursor", "hide the action indicator for this one action")
     .action((ref: string | undefined, options: { pixel?: string[]; pid?: string; window?: string; json?: boolean }) => withDriver(async driver => {
       if (ref && options.pixel) throw new Error(`${menuName} 只能二选一：ref 或 --pixel`);
       const where = options.pixel
         ? { x: Number(options.pixel[0]), y: Number(options.pixel[1]) }
         : ref ? { ref } : null;
       if (!where) throw new Error(`${menuName} 需要 ref 或 --pixel <x> <y>`);
-      print((await driver.actRaw("perform_secondary_action", { ...where, ...withPid(options), ...windowOption(options), ...withCursorFlag(options) })).data, options.json);
+      print((await driver.daemonCommand("perform_secondary_action", { ...where, ...withPid(options), ...windowOption(options), ...withCursorFlag(options) })).data, options.json);
     }));
 }
 
@@ -292,12 +301,13 @@ cu.command(menuName).description("Open an element's context menu").argument("[re
 
   cu.command("set_value").description("Write an accessibility value directly (skips keystrokes)").argument("<ref>").argument("<value>")
     .option("--pid <n>", "target pid").option("--json", "print JSON")
+    .option("--no-cursor", "hide the action indicator for this one action")
     .action((ref: string, value: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
-      const typed = value === "true" ? true : value === "false" ? false : Number.isFinite(Number(value)) ? Number(value) : value;
-      print((await driver.actRaw("set_value", { ref, value: typed, ...withPid(options), ...withCursorFlag(options) })).data, options.json);
+      const typed = value === "true" ? true : value === "false" ? false : value.trim() !== "" && Number.isFinite(Number(value)) ? Number(value) : value;
+      print((await driver.daemonCommand("set_value", { ref, value: typed, ...withPid(options), ...withCursorFlag(options) })).data, options.json);
     }));
 
-  cu.command("launch_app").description("Launch an app in the background (never takes the foreground)").argument("<bundle>")
+  cu.command("launch_app").alias("launch").description("Launch an app in the background (never takes the foreground)").argument("<bundle>")
     .option("--activates", "bring it to the front afterwards — off by default, because starting an app should not move the user's focus")
     .option("--json", "print JSON")
     .action((bundle: string, options: { activates?: boolean; json?: boolean }) => withDriver(async driver => {
@@ -317,7 +327,8 @@ cu.command(menuName).description("Open an element's context menu").argument("[re
     .argument("[mode]", "on | off | toggle (default: toggle)")
     .option("--json", "print JSON")
     .action((mode: string | undefined, options: { json?: boolean }) => withDriver(async driver => {
-      const data = (await driver.daemonCommand("lens", { mode: mode ?? "toggle" })).data;
+      const selected = z.enum(["on", "off", "toggle", "true", "false", "1", "0", "status", "report", "get"]).parse(mode ?? "toggle");
+      const data = (await driver.daemonCommand("lens", { mode: selected })).data;
       print(options.json ? data : `lens: ${(data as { enabled?: boolean }).enabled ? "on" : "off"}`, options.json);
     }));
 

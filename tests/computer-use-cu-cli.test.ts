@@ -29,13 +29,15 @@ assert.doesNotMatch(runHelp("status"), /--pid/u);
 // 每个动词的关键参数要就地可发现，不必二段查询
 assert.match(runHelp("windows"), /<bundle\|pid>/u);
 assert.match(runHelp("snap"), /--window\s+<id>/u);
-assert.match(runHelp("snap"), /--out\s+<path>/u);
+assert.match(runHelp("get_app_state"), /--out\s+<path>/u);
 assert.match(runHelp("snap"), /--depth\s+<n>/u);
-assert.match(runHelp("snap"), /--no-shot/u);
+assert.match(runHelp("get_app_state"), /--no-shot/u);
+assert.doesNotMatch(runHelp("snap"), /--out|--shot-out|--shot-max-width|--no-shot/u);
 assert.match(runHelp("launch_app"), /--activates/u);
 assert.match(runHelp("list_apps"), /--days\s+<n>/u);
 assert.match(runHelp("type_text"), /--pid\s+<n>/u);
 assert.match(runHelp("type_text"), /--input-method\s+<method>/u);
+assert.match(runHelp("type_text"), /--bundle\s+<id>/u);
 assert.match(runHelp("pip", "open"), /--on-minimize/u);
 assert.match(runHelp("pip", "close"), /--all/u);
 assert.ok(runHelp("appshot").length > 0);
@@ -55,6 +57,7 @@ assert.match(runHelp("scroll"), /refOrDirection/u);
 assert.match(runHelp("scroll"), /\[direction\]/u);
 assert.match(runHelp("scroll"), /--pages\s+<n>/u);
 assert.match(runHelp("drag"), /<x1>\s+<y1>\s+<x2>\s+<y2>/u);
+assert.match(runHelp("drag"), /--button\s+<name>/u);
 assert.match(runHelp("raise"), /--window\s+<id>/u);
 assert.match(runHelp("lens"), /\[mode\]/u);
 assert.match(runHelp("lens"), /on \| off \| toggle/u);
@@ -87,7 +90,7 @@ for (const scenario of [
   test(`CLI ${scenario.verb} forwards the explicit window required by background input; help-only tests missed dispatch`, async context => {
     const requests: Array<{ command: string; args: Record<string, unknown> }> = [];
     context.mock.method(console, "log", () => undefined);
-    context.mock.method(NativeProcessDriver.prototype, "actRaw", async (command: string, args: Record<string, unknown>) => {
+    context.mock.method(NativeProcessDriver.prototype, "daemonCommand", async (command: string, args: Record<string, unknown>) => {
       requests.push({ command, args });
       return { data: {}, images: [] };
     });

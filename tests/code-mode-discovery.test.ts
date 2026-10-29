@@ -86,6 +86,32 @@ const capped = await executeCodeModeCell({
 assert.equal(capped.ok, false);
 assert.match(capped.error ?? "", /bridge|request|limit/iu);
 
+let bridgeCalls = 0;
+const bridgeTool: AgentTool = {
+  name: "mcp__bridge__read", description: "Read bridge fixture", parameters: { type: "object", properties: {} },
+  async execute() { bridgeCalls++; return { content: [], details: { ok: true } }; }
+};
+const bridgeBoundary = async (count: number) => await executeCodeModeCell({
+  code: `for (let i = 0; i < ${count}; i++) await tools.mcp__bridge__read({}); return 'done';`,
+  parentToolCallId: `bridge-${count}`, tools: [], admittedTools: [bridgeTool], isCurrent: () => true
+});
+const bridgeAtLimit = await bridgeBoundary(32);
+assert.equal(bridgeAtLimit.ok, true, bridgeAtLimit.error);
+assert.equal(bridgeCalls, 32);
+bridgeCalls = 0;
+const bridgeAboveLimit = await bridgeBoundary(33);
+assert.equal(bridgeAboveLimit.ok, false);
+assert.match(bridgeAboveLimit.error ?? "", /32 bridge request limit/iu);
+assert.equal(bridgeCalls, 32, "the 33rd request is not dispatched");
+bridgeCalls = 0;
+const caughtBridgeLimit = await executeCodeModeCell({
+  code: "for (let i = 0; i < 32; i++) await tools.mcp__bridge__read({}); try { await tools.mcp__bridge__read({}); } catch {} try { await tools.mcp__bridge__read({}); } catch {} return 'caught';",
+  parentToolCallId: "bridge-caught", tools: [], admittedTools: [bridgeTool], isCurrent: () => true
+});
+assert.equal(caughtBridgeLimit.ok, false);
+assert.match(caughtBridgeLimit.error ?? "", /32 bridge request limit/iu);
+assert.equal(bridgeCalls, 32, "catch cannot dispatch another request after the bridge limit");
+
 let searchAborted = false;
 const cancelled = await executeCodeModeCell({
   code: "return await searchTools('查询项目报告');",

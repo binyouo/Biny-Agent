@@ -2,6 +2,14 @@ import AppKit
 import CoreGraphics
 
 enum BackgroundInput {
+    static func dragTypes(button: CGMouseButton) -> (CGEventType, CGEventType, CGEventType) {
+        switch button {
+        case .right: return (.rightMouseDown, .rightMouseDragged, .rightMouseUp)
+        case .center: return (.otherMouseDown, .otherMouseDragged, .otherMouseUp)
+        default: return (.leftMouseDown, .leftMouseDragged, .leftMouseUp)
+        }
+    }
+
     static func mouseEvent(pid: pid_t, windowID: Int, type: CGEventType, point: CGPoint, button: CGMouseButton, clickState: Int64) throws -> CGEvent {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else {
             throw NSError(domain: "input", code: 64, userInfo: [NSLocalizedDescriptionKey: "input_event_unavailable"])

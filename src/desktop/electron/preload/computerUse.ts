@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { computerIpc, type ComputerDesktopApi } from "../../../computer/protocol.js";
 const api: ComputerDesktopApi = {
-  onNavigate: listener => { const handler = (_event: Electron.IpcRendererEvent, target: { sessionId?: string; projectId?: string }): void => listener(target); ipcRenderer.on(computerIpc.navigate, handler); return () => { ipcRenderer.removeListener(computerIpc.navigate, handler); }; },
+  onNavigate: listener => { const handler = (_event: Electron.IpcRendererEvent, target: { sessionId?: string; projectId?: string; revealBrowser?: boolean }): void => listener(target); ipcRenderer.on(computerIpc.navigate, handler); return () => { ipcRenderer.removeListener(computerIpc.navigate, handler); }; },
   strict: async enabled => await ipcRenderer.invoke(computerIpc.strict, enabled),
   approve: async bundleId => await ipcRenderer.invoke(computerIpc.approve, bundleId),
   revoke: async bundleId => await ipcRenderer.invoke(computerIpc.revoke, bundleId),
@@ -9,7 +9,6 @@ const api: ComputerDesktopApi = {
   enable: async () => await ipcRenderer.invoke(computerIpc.enable),
   control: async value => await ipcRenderer.invoke(computerIpc.control, value),
   preview: async enabled => await ipcRenderer.invoke(computerIpc.preview, enabled),
-  foreground: async enabled => await ipcRenderer.invoke(computerIpc.foreground, enabled),
   logging: async enabled => await ipcRenderer.invoke(computerIpc.logging, enabled),
   diagnostics: async () => await ipcRenderer.invoke(computerIpc.diagnostics),
   requestAccessibility: async () => await ipcRenderer.invoke(computerIpc.accessibility),

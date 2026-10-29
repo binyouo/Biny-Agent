@@ -23,8 +23,7 @@ import {
   type TaskCandidateArtifacts,
   type TaskCommandExecutor,
   type TaskVerificationApproval,
-  type TaskVerificationEvidence,
-  type TaskWorkspaceSnapshot
+  type TaskVerificationEvidence
 } from "./taskVerification.js";
 
 export interface TaskClosureResult {
@@ -38,7 +37,7 @@ export interface TaskClosureResult {
 const workerAttemptSchema = z.object({
   prompt: z.string().min(1), beforeWorkspace: z.record(z.string(), z.string()).optional(),
   definitionFingerprint: z.string().optional(), accessMode: z.enum(["read-only", "workspace"]).optional(), agent: z.string().optional(),
-  communication: z.boolean().optional()
+  communication: z.boolean().optional(), workspaceRoot: z.string().optional()
 }).strict();
 
 export function readWorkerAttemptCheckpoint(artifacts: unknown): z.infer<typeof workerAttemptSchema> | undefined {
@@ -177,7 +176,6 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
     });
     let output: string;
     let candidateArtifacts: TaskCandidateArtifacts;
-    let candidateWorkspaceSnapshot: TaskWorkspaceSnapshot | undefined;
     if (resumeAttempt) {
       if (definition.reportOnly) return completeReport((attempt.artifacts as { output?: unknown } | undefined)?.output, attempt);
       if (reviewCandidate) {
@@ -245,7 +243,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length));
       input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
         ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
-        workerExecution: workerCheckpoint ?? { prompt, beforeWorkspace, definitionFingerprint }
+        workerExecution: workerCheckpoint ?? { prompt, beforeWorkspace, definitionFingerprint, workspaceRoot: input.workspaceRoot }
       } });
       workerAttempt = undefined;
       input.signal?.throwIfAborted();
@@ -266,13 +264,12 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         });
         return { status: "completed", output };
       }
-      // Reuse this immutable baseline immediately: the final full-workspace comparison
-      // also detects changes between candidate capture and the first verification check.
-      candidateWorkspaceSnapshot = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal);
+      const candidateWorkspaceSnapshot = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal);
       candidateArtifacts = {
         ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
         output,
         definitionFingerprint: definitionFingerprint!,
+        artifactFingerprint: await fingerprintTaskArtifacts(input.workspaceRoot, contract.artifactPaths, input.ignore, input.signal),
         repairScope: compareTaskWorkspaceSnapshots(beforeWorkspace!, candidateWorkspaceSnapshot, contract.allowedRepairPaths)
       };
       input.taskRuns.transition(input.taskRunId, "verifying", { attemptId: attempt.attemptId, artifacts: candidateArtifacts });
@@ -288,7 +285,6 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
       expectedArtifactFingerprint: candidateArtifacts.artifactFingerprint,
       approvals: candidateArtifacts.verificationApprovals,
       repairScope: candidateArtifacts.repairScope,
-      candidateWorkspaceSnapshot,
       executor: input.executor,
       signal: input.signal
     });

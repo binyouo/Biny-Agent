@@ -14,6 +14,7 @@ export function createRuntimeHostFactory(
     const root = options?.workspaceRoot ?? workspaceRoot;
     const host = await createInteractiveAgentHost(root, {
       ...base,
+      worktreeRoot: workspaceRoot,
       configStore: options?.runOptions ? createRunConfigStore(root, options.runOptions, base.configStore) : base.configStore,
       processLifetime: options?.processLifetime ?? base.processLifetime,
       sessionId: options?.fresh ? sessionId : undefined,

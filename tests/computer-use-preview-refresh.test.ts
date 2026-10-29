@@ -18,6 +18,56 @@ function deferred() {
 }
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
+test("background preview yields to input for 1.2 seconds from dispatch and keeps the action observation", async t => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  let now = 0, captures = 0;
+  const frames: (ComputerPreview | undefined)[] = [];
+  const slowAction = deferred();
+  let holdAction = false;
+  const controller = new ComputerUseController({ ...driver, act: async () => { if (holdAction) await slowAction.promise; return { data: { effect: "confirmed" }, images: [] }; } }, {
+    enabled: true, now: () => now, preview: frame => frames.push(frame),
+    refreshPreview: async input => { captures++; return { image, target: input!, capturedAt: now }; }
+  });
+  try {
+    await controller.observe("s", target); controller.setPreview(true);
+    t.mock.timers.tick(334); await flush();
+    assert.equal(captures, 1);
+    now = 1_000;
+    await controller.act("s", { ...target, captureId: "c1", action: "press_key", key: "Return" });
+    assert.ok(frames.some(frame => frame?.capturedAt === 1_000), "the action observation is published immediately");
+    now = 2_199; t.mock.timers.tick(334); await flush();
+    assert.equal(captures, 1, "background capture waits until 1.2 seconds after dispatch");
+    now = 2_200; t.mock.timers.tick(334); await flush();
+    assert.equal(captures, 2);
+
+    now = 3_000; holdAction = true;
+    const action = controller.act("s", { ...target, captureId: "c1", action: "press_key", key: "Return" });
+    await flush(); now = 4_500; t.mock.timers.tick(334); await flush();
+    assert.equal(captures, 2, "no capture overlaps an active input");
+    slowAction.resolve(); await action;
+    t.mock.timers.tick(334); await flush();
+    assert.equal(captures, 3, "a long action does not start a second cooldown after completion");
+  } finally { slowAction.resolve(); controller.setPreview(false); t.mock.timers.reset(); }
+});
+
+test("launch activity also yields background preview capture", async t => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  let now = 0, captures = 0;
+  const controller = new ComputerUseController({ ...driver, launchApp: async () => ({ data: { pid: 42 }, images: [] }) }, {
+    enabled: true, now: () => now, authorizeLaunch: async () => undefined,
+    refreshPreview: async () => { captures++; return undefined; }
+  });
+  try {
+    controller.setPreview(true); t.mock.timers.tick(334); await flush();
+    assert.equal(captures, 1);
+    now = 1_000; await controller.launch("s", "test.fixture");
+    now = 2_199; t.mock.timers.tick(334); await flush();
+    assert.equal(captures, 1);
+    now = 2_200; t.mock.timers.tick(334); await flush();
+    assert.equal(captures, 2);
+  } finally { controller.setPreview(false); t.mock.timers.reset(); }
+});
+
 test("preview permits only one capture until it settles, even across close and reopen", async t => {
   t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
   const pending = deferred();

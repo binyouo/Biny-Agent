@@ -23,19 +23,14 @@ function appshotError(error: string): string {
   return error;
 }
 
-/**
- * 参照实现的取值。三个修饰键双击是同一族（说明文字按当前选中项换），
- * 顺手保留了旧配置里出现过的组合键，避免升级后选择被清成空白。
- */
+// 旧配置里的组合键仍可选择；别名在展示时合并为同一项。
 const SHORTCUTS = [
   { value: "double-cmd", label: "⌘ + ⌘", hint: "同时按下左右两个 ⌘，或快速连按两次 ⌘" },
   { value: "double-option", label: "⌥ + ⌥", hint: "同时按下左右两个 ⌥，或快速连按两次 ⌥" },
   { value: "double-shift", label: "⇧ + ⇧", hint: "同时按下左右两个 ⇧，或快速连按两次 ⇧" },
-  { value: "DoubleCommand", label: "⌘ + ⌘", hint: "同时按下左右两个 ⌘，或快速连按两次 ⌘" },
-  { value: "DoubleOption", label: "⌥ + ⌥", hint: "同时按下左右两个 ⌥，或快速连按两次 ⌥" },
-  { value: "DoubleShift", label: "⇧ + ⇧", hint: "同时按下左右两个 ⇧，或快速连按两次 ⇧" },
   { value: "Control+Alt+C", label: "⌃ + ⌥ + C", hint: "" }
 ] as const;
+const SHORTCUT_ALIASES = new Map([["DoubleCommand", "double-cmd"], ["DoubleOption", "double-option"], ["DoubleShift", "double-shift"]]);
 
 export function SettingsAppshots(): React.JSX.Element {
   const [state, setState] = useState<AppshotsState>();
@@ -44,39 +39,43 @@ export function SettingsAppshots(): React.JSX.Element {
   const [warming, setWarming] = useState(false);
   const alive = useRef(false);
   const busy = useRef(false);
-  const warmed = useRef(false);
+  const revision = useRef(0);
   const api = window.binyAppshots;
 
   useEffect(() => {
     alive.current = true;
+    const request = ++revision.current;
+    let cancelled = false, prewarmApplied = false;
+    const current = () => !cancelled && request === revision.current;
     if (!api) { setError("请重新启动 Biny 以加载 Appshot 服务。"); return () => { alive.current = false; }; }
-    void api.state().then(value => { if (alive.current) setState(value); }).catch(reason => { if (alive.current) setError(String(reason)); });
-    // 预热只做一次：它要拉起桌面控制组件，每次进设置页都做一遍是白等。
-    if (!warmed.current && typeof api.prewarm === "function") {
-      warmed.current = true; setWarming(true);
-      void api.prewarm().then(value => { if (alive.current) setState(value); })
-        .catch(reason => { if (alive.current) setError(String(reason)); })
-        .finally(() => { if (alive.current) setWarming(false); });
+    void api.state().then(value => { if (current() && !prewarmApplied) setState(value); })
+      .catch(reason => { if (current() && !prewarmApplied) setError(String(reason)); });
+    if (typeof api.prewarm === "function") {
+      setWarming(true);
+      void api.prewarm().then(value => { if (current()) { prewarmApplied = true; setState(value); setError(""); } })
+        .catch(reason => { if (current()) setError(String(reason)); })
+        .finally(() => { if (!cancelled) setWarming(false); });
     }
-    return () => { alive.current = false; };
+    return () => { cancelled = true; alive.current = false; revision.current++; };
   }, [api]);
 
   const perform = async (key: string, action: () => Promise<AppshotsState>): Promise<void> => {
     if (busy.current || !api) return;
+    const request = ++revision.current;
     busy.current = true; setPending(key); setError("");
-    try { const next = await action(); if (alive.current) setState(next); }
-    catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : String(failure)); }
+    try { const next = await action(); if (alive.current && request === revision.current) setState(next); }
+    catch (failure) { if (alive.current && request === revision.current) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { busy.current = false; if (alive.current) setPending(undefined); }
   };
 
   const settings = state?.settings;
   const hotkey = settings?.hotkey ?? "";
+  const selectedHotkey = SHORTCUT_ALIASES.get(hotkey) ?? hotkey;
   const armed = state?.active === true;
   // 已配置但没能武装：热键按下去不会有反应，这和「关闭」是两种状态，不能都说成"未开启"。
   const stale = !armed && hotkey !== "";
-  const supported = Boolean(api) && !stale;
-  const hint = SHORTCUTS.find(entry => entry.value === hotkey)?.hint ?? "";
-  const known = SHORTCUTS.some(entry => entry.value === hotkey);
+  const hint = SHORTCUTS.find(entry => entry.value === selectedHotkey)?.hint ?? "";
+  const known = SHORTCUTS.some(entry => entry.value === selectedHotkey);
   const spinner = warming || pending !== undefined;
   const current = error || state?.error;
 
@@ -91,15 +90,16 @@ export function SettingsAppshots(): React.JSX.Element {
 
     {stale ? <section className="appshot-notice">
       <Icon name="warning" size={18} />
-      <p>热键已保存，但当前没有生效——通常是因为截图所需的系统权限还没给到。到
-        Computer Use 页授权辅助功能与屏幕录制，再回到这里重新预热。</p>
+      <p>热键已保存，但监听尚未生效。可检查辅助功能权限后重试预热，也可直接测试截图。</p>
     </section> : null}
 
     <section className="cu-card appshot-rows">
       <div className="appshot-row">
         <div className="appshot-row-copy">
           <strong id="appshot-hotkey-label">截图快捷键</strong>
-          {hint ? <p>{hint}</p> : <p>未设置快捷键——Appshot 处于关闭状态。</p>}
+          {hint ? <p>{hint}</p> : hotkey ? <p>使用已保存的快捷键。</p> : armed
+            ? <p>快捷键已清空，但监听可能仍在运行。请重试停止。</p>
+            : <p>未设置快捷键——Appshot 处于关闭状态。</p>}
           {warming ? <p>正在启动桌面控制组件…</p> : null}
           {current ? <p className="appshot-error" role="alert">
             {appshotError(current)}
@@ -113,8 +113,8 @@ export function SettingsAppshots(): React.JSX.Element {
           <span className="appshot-select">
             {spinner ? <Icon className="appshot-spin" name="loader" size={12} /> : null}
             <select
-              aria-labelledby="appshot-hotkey-label" disabled={!api || pending !== undefined}
-              value={hotkey}
+              aria-labelledby="appshot-hotkey-label" disabled={!api || !settings || pending !== undefined}
+              value={selectedHotkey}
               onChange={event => void perform("hotkey", () => api.settings({ ...settings!, hotkey: event.target.value }))}
             >
               {hotkey && !known ? <option value={hotkey}>{hotkey}</option> : null}
@@ -133,7 +133,7 @@ export function SettingsAppshots(): React.JSX.Element {
           label="截图目标"
           labelledBy="appshot-target-label"
           value={settings?.target ?? "current"}
-          disabled={!api || pending !== undefined}
+          disabled={!api || !settings || pending !== undefined}
           options={[{ value: "current", label: "当前聊天" }, { value: "new", label: "新聊天" }]}
           onChange={target => void perform("target", () => api.settings({ ...settings!, target }))}
         />
@@ -145,7 +145,7 @@ export function SettingsAppshots(): React.JSX.Element {
           <p>截取前台窗口，检查权限是否可用。</p>
         </div>
         <button
-          type="button" className="settings-secondary-button" disabled={!api || pending !== undefined || !supported}
+          type="button" className="settings-secondary-button" disabled={!api || pending !== undefined}
           onClick={() => void perform("capture", () => api.capture())}
         >{pending === "capture" ? "正在截图…" : "立即截图"}</button>
       </div>

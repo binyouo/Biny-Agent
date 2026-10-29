@@ -86,7 +86,8 @@ await test("default Computer Use keeps observations isolated between Agent sessi
   let inputs = 0;
   const app = { pid: 121, bundleId: "test.app", name: "Fixture", running: true, windows: [{ window_id: 9 }] };
   context.mock.method(NativeProcessDriver.prototype, "list", async () => ({ data: { apps: [app] }, images: [] }));
-  context.mock.method(NativeProcessDriver.prototype, "observeRaw", async () => ({ data: { pid: 121, window_id: 9, capture_id: "fixture", elements: [] }, images: [] }));
+  context.mock.method(NativeProcessDriver.prototype, "observeRaw", async () => ({ data: { pid: 121, window_id: 9, capture_id: "fixture", elements: [] },
+    images: [{ mimeType: "image/png", dataBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" }] }));
   context.mock.method(NativeProcessDriver.prototype, "actRaw", async () => { inputs += 1; return { data: { effect: "completed" }, images: [] }; });
   context.mock.method(NativeProcessDriver.prototype, "capturePreview", async () => ({ data: {}, images: [] }));
   try {

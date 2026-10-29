@@ -1,3 +1,4 @@
+import { maskingOverview, maskingDetail, clearMaskRecords } from "../../privacy/record.js";
 import { forkSession } from "../../session/fork.js";
 import { isDeepStrictEqual } from "node:util";
 import { validateRunOptions, type RunCommandOptions } from "../oneShot.js";
@@ -29,7 +30,7 @@ import type {
   SubmittedAgentRun
 } from "../InteractiveAgentRuntime.js";
 import { runtimeIsBusy, type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../agentEvents.js";
-import type { TaskRetrySafety, TaskRunWithAttempts } from "../TaskRunStore.js";
+import { isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "../TaskRunStore.js";
 import { evaluateTaskRetry } from "../TaskRetryPolicy.js";
 import type {
   CapabilityRegistrationInput,
@@ -904,6 +905,7 @@ export class RuntimeHostServer {
     }
     if (frame.operation === "session.close") {
       const sessionId = requiredString(payload.sessionId, "sessionId");
+      if ((await this.worktrees.get(sessionId))?.taskRunId) throw new Error("Task worktrees must be managed through their task, not closed as interactive sessions.");
       this.assertSessionWriterAvailable(connection, sessionId);
       await this.registry.closeSession(sessionId);
       this.oneShotSessions.delete(sessionId);
@@ -922,13 +924,21 @@ export class RuntimeHostServer {
     if (frame.operation === "worktree.status") return await this.worktrees.status(optionalString(payload.sessionId));
     if (frame.operation === "worktree.merge") {
       const sessionId = requiredString(payload.sessionId, "sessionId");
-      const managed = this.registry.get(sessionId) ?? await this.registry.ensure(sessionId, await this.worktrees.runtimeFactoryOptions(sessionId));
-      if (managed.runtime.getSnapshot().state.kind !== "idle") throw new Error(`Cannot merge a busy session runtime: ${sessionId}.`);
+      const record = await this.assertTaskWorktreeIdle(sessionId);
+      if (record?.taskRunId) {
+        for (const parent of this.registry.list().filter(entry => entry.commands.workspaceRoot === (record.sourceRoot ?? this.worktrees.repoRoot))) {
+          this.assertSessionWriterAvailable(connection, parent.sessionId);
+          if (parent.runtime.getSnapshot().state.kind !== "idle") throw new Error("Cannot merge into a busy parent workspace.");
+        }
+      }
+      const managed = record?.taskRunId ? undefined
+        : this.registry.get(sessionId) ?? await this.registry.ensure(sessionId, await this.worktrees.runtimeFactoryOptions(sessionId));
+      if (managed && managed.runtime.getSnapshot().state.kind !== "idle") throw new Error(`Cannot merge a busy session runtime: ${sessionId}.`);
       const strategy = payload.strategy === undefined ? undefined : payload.strategy === "squash" ? "squash" : payload.strategy === "merge" ? "merge" : undefined;
       if (payload.strategy !== undefined && strategy === undefined) throw new Error("Worktree merge strategy must be merge or squash.");
       const deleteAfter = payload.deleteAfter === true;
-      if (deleteAfter && managed.primary) throw new Error("The primary Runtime Host session cannot remove its worktree runtime.");
-      if (deleteAfter && !managed.primary) {
+      if (deleteAfter && managed?.primary) throw new Error("The primary Runtime Host session cannot remove its worktree runtime.");
+      if (deleteAfter && managed && !managed.primary) {
         this.assertSessionWriterAvailable(connection, sessionId);
         await this.registry.closeSession(sessionId);
         if (this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) {
@@ -939,6 +949,7 @@ export class RuntimeHostServer {
     }
     if (frame.operation === "worktree.remove") {
       const sessionId = requiredString(payload.sessionId, "sessionId");
+      await this.assertTaskWorktreeIdle(sessionId);
       this.assertSessionWriterAvailable(connection, sessionId);
       const managed = this.registry.get(sessionId);
       if (managed && managed.runtime.getSnapshot().state.kind !== "idle") throw new Error(`Cannot remove a busy session runtime: ${sessionId}.`);
@@ -950,6 +961,13 @@ export class RuntimeHostServer {
         }
       }
       await this.worktrees.remove(sessionId, payload.deleteBranch === true);
+      return undefined;
+    }
+    if (frame.operation === "privacy.overview" || frame.operation === "privacy.detail" || frame.operation === "privacy.clear") {
+      const sessionIds = this.registry.list().map((entry) => entry.runtime.getSnapshot().info.sessionId);
+      if (frame.operation === "privacy.overview") return maskingOverview(sessionIds);
+      if (frame.operation === "privacy.detail") return maskingDetail(requiredString(payload.id, "id"), sessionIds);
+      clearMaskRecords(sessionIds);
       return undefined;
     }
     if (frame.operation === "snapshot") {
@@ -1972,6 +1990,19 @@ export class RuntimeHostServer {
       return resident;
     }
     return await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
+  }
+
+  private async assertTaskWorktreeIdle(sessionId: string) {
+    const record = await this.worktrees.get(sessionId);
+    if (record?.taskRunId) {
+      const taskRunId = record.taskRunId;
+      const task = this.commands.taskRuns.get(taskRunId);
+      if (!task || !isTaskRunTerminal(task.status)
+        || this.registry.list().some(entry => entry.commands.isTaskExecuting?.(taskRunId))) {
+        throw new Error("Cannot merge or remove a task worktree while its task or dispatched processes may still be running.");
+      }
+    }
+    return record;
   }
 
   private async prepareWorktreeSession(

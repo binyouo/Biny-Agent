@@ -29,7 +29,9 @@ import type {
   DesktopStagedSettingsCredential,
   DesktopThemePreference,
   DesktopWebSearchSettings,
-  DesktopWebSearchSettingsInput
+  DesktopWebSearchSettingsInput,
+  DesktopRedactionSettings,
+  DesktopRedactionSettingsInput
 } from "../../../../protocol.js";
 import { canReuseSettingsSnapshot, SettingsDraftContext, type DesktopSettingsDraft, type SettingsDraftContextValue, type SettingsSaveState } from "./SettingsDraftContext.js";
 
@@ -250,6 +252,10 @@ export function SettingsDraftProvider({
 
   const setWebSearch = useCallback((value: DesktopWebSearchSettingsInput): void => {
     setDraft((current) => current ? { ...current, webSearch: value } : current);
+  }, []);
+
+  const setRedaction = useCallback((value: DesktopRedactionSettingsInput): void => {
+    setDraft((current) => current ? { ...current, redaction: value } : current);
   }, []);
 
   const setChat = useCallback((value: DesktopChatPersonalizationOverride): void => {
@@ -555,6 +561,7 @@ export function SettingsDraftProvider({
     setSubagent,
     setPermission,
     setWebSearch,
+    setRedaction,
     setChat,
     setSkills,
     upsertModel,
@@ -602,6 +609,7 @@ export function SettingsDraftProvider({
     setIdentity,
     setThemePreference,
     setWebSearch,
+    setRedaction,
     setSkills,
     snapshot,
     stageCredential,
@@ -624,6 +632,7 @@ function draftFromSnapshot(snapshot: DesktopSettingsSnapshot): DesktopSettingsDr
     subagent: structuredClone(snapshot.subagent),
     permission: structuredClone(snapshot.permission),
     webSearch: webSearchInput(snapshot.webSearch),
+    redaction: redactionInput(snapshot.redaction),
     chat: snapshot.chat ? structuredClone(snapshot.chat.personalization) : undefined,
     models: {
       upserts: [],
@@ -673,6 +682,7 @@ function countNonPreferenceDirtyFields(snapshot: DesktopSettingsSnapshot, draft:
   if (!sameJson(draft.subagent, snapshot.subagent)) count += 1;
   if (!sameJson(draft.permission, snapshot.permission)) count += 1;
   if (!sameWebSearch(draft.webSearch, snapshot.webSearch)) count += 1;
+  if (!sameRedaction(draft.redaction, snapshot.redaction)) count += 1;
   if (draft.models.upserts.length || draft.models.removeAliases.length || draft.models.defaultModel || draft.models.oauthCredentialHandles.length
     || !sameJson(draft.models.modelProfiles, snapshot.models.modelProfiles ?? {})) count += 1;
   if (snapshot.chat && draft.chat && !sameJson(draft.chat, snapshot.chat.personalization)) count += 1;
@@ -726,6 +736,7 @@ function saveInput(snapshot: DesktopSettingsSnapshot, draft: DesktopSettingsDraf
     subagent: sameJson(draft.subagent, snapshot.subagent) ? undefined : draft.subagent,
     permission: sameJson(draft.permission, snapshot.permission) ? undefined : draft.permission,
     webSearch: sameWebSearch(draft.webSearch, snapshot.webSearch) ? undefined : draft.webSearch,
+    redaction: sameRedaction(draft.redaction, snapshot.redaction) ? undefined : draft.redaction,
     skills: sameJson(draft.skills, skillInputFromSnapshot(snapshot.skills)) ? undefined : draft.skills,
     models: modelsDirty ? {
       upserts: draft.models.upserts,
@@ -762,6 +773,14 @@ function sameWebSearch(draft: DesktopWebSearchSettingsInput, snapshot: DesktopWe
     && draft.visibleBrowsing === snapshot.visibleBrowsing
     && draft.timeoutMs === snapshot.timeoutMs
     && draft.maxResults === snapshot.maxResults;
+}
+
+function redactionInput(value: DesktopRedactionSettings | undefined): DesktopRedactionSettingsInput {
+  return { enabled: value?.enabled ?? false };
+}
+
+function sameRedaction(draft: DesktopRedactionSettingsInput, snapshot: DesktopRedactionSettings | undefined): boolean {
+  return draft.enabled === (snapshot?.enabled ?? false);
 }
 
 function sameJson(left: unknown, right: unknown): boolean {

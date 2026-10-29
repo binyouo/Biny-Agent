@@ -12,6 +12,7 @@ import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { UserInputRequests } from "../src/runtime/userInput.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { SessionRecorder } from "../src/session/recorder.js";
+import { TurnStore } from "../src/session/turnStore.js";
 import { createAskUserQuestionTool } from "../src/tools/askUserQuestion.js";
 import { createToolRegistry } from "../src/tools/registry.js";
 
@@ -81,44 +82,56 @@ try {
 
   const resumeRegistry = createToolRegistry({ workspaceRoot: root, ignore: [] });
   resumeRegistry.registerBuiltinTool(createAskUserQuestionTool(new UserInputRequests()));
-  let resumedSteps = 0;
-  const resumeModel: AgentModel = testModel({ provider: "fixture", modelId: "control-resume", supportsTools: true,
-    async stream(context) {
-      assert.ok(!context.tools.some((tool) => tool.name === "ToolSearch"));
-      const first = resumedSteps++ === 0;
-      if (!first) assert.ok(context.tools.some((tool) => tool.name === "AskUserQuestion"), "completed script discovery restores the ordinary control schema");
-      return (async function* (): AsyncGenerator<ModelStreamEvent> {
-        if (first) {
-          yield { type: "tool-call", id: "resume-control-search", name: "run_script", arguments: { description: "Exercise script tool flow", code: "return await searchTools('AskUserQuestion');" } };
-          yield { type: "finish", reason: "tool-calls" };
-        } else {
-          yield { type: "text-delta", text: "Discovery restored." };
-          yield { type: "finish", reason: "stop" };
-        }
-      })();
-    }
-  });
-  const createResumeAgent = () => new AgentSession({ workspaceRoot: root, config, model: resumeModel, toolRegistry: resumeRegistry,
-    recorder: new SessionRecorder(root), permissionManager: new PermissionManager(config.permission),
-    selectCapabilities: async () => ({ tools: ["Read"], skills: [] }) });
-  let resumeAgent = createResumeAgent();
-  try {
-    await resumeAgent.initialize();
-    const sessionId = resumeAgent.getInfo().sessionId;
-    const paused = await resumeAgent.runTask("Find the requirement control", { emotionAnalysis: false, maxSteps: 1 });
-    assert.equal(paused.status, "incomplete");
-    assert.equal(paused.resumable, true);
-    await resumeAgent.close();
-    resumeAgent = createResumeAgent();
-    await resumeAgent.initialize();
-    await resumeAgent.resume(sessionId);
-    let resumedOutcome;
-    for await (const event of resumeAgent.continueInterruptedTurn({ emotionAnalysis: false, maxSteps: 3 })) {
-      if (event.type === "done") resumedOutcome = event.outcome;
-    }
-    assert.equal(resumedOutcome?.status, "completed", resumedOutcome?.error);
-    assert.equal(resumedSteps, 2, "resume must not replay completed discovery");
-  } finally { await resumeAgent.close(); }
+  for (const legacyStopReason of ["tool_call_limit", "repeated_action_limit"] as const) {
+    let resumedSteps = 0;
+    const resumeModel: AgentModel = testModel({ provider: "fixture", modelId: "control-resume", supportsTools: true,
+      async stream(context) {
+        assert.ok(!context.tools.some((tool) => tool.name === "ToolSearch"));
+        const first = resumedSteps++ === 0;
+        if (!first) assert.ok(context.tools.some((tool) => tool.name === "AskUserQuestion"), "completed script discovery restores the ordinary control schema");
+        return (async function* (): AsyncGenerator<ModelStreamEvent> {
+          if (first) {
+            yield { type: "tool-call", id: "resume-control-search", name: "run_script", arguments: { description: "Exercise script tool flow", code: "return await searchTools('AskUserQuestion');" } };
+            yield { type: "finish", reason: "tool-calls" };
+          } else {
+            yield { type: "text-delta", text: "Discovery restored." };
+            yield { type: "finish", reason: "stop" };
+          }
+        })();
+      }
+    });
+    const createResumeAgent = () => new AgentSession({ workspaceRoot: root, config, model: resumeModel, toolRegistry: resumeRegistry,
+      recorder: new SessionRecorder(root), permissionManager: new PermissionManager(config.permission),
+      selectCapabilities: async () => ({ tools: ["Read"], skills: [] }) });
+    let resumeAgent = createResumeAgent();
+    try {
+      await resumeAgent.initialize();
+      const sessionId = resumeAgent.getInfo().sessionId;
+      const paused = await resumeAgent.runTask("Find the requirement control", { emotionAnalysis: false, maxSteps: 1 });
+      assert.equal(paused.status, "incomplete");
+      assert.equal(paused.resumable, true);
+      const turns = new TurnStore(root, sessionId);
+      const saved = (await turns.load())!;
+      const facts = saved.facts as { toolDiscovery: { tools: string[] } };
+      assert.ok(facts.toolDiscovery.tools.includes("AskUserQuestion"));
+      assert.equal(Object.hasOwn(facts, "accountedToolCalls"), false, "new checkpoints do not persist obsolete call counts");
+      await turns.save(saved.prompt, saved.systemPrompt, saved.messages, saved.completedSteps,
+        { ...facts, accountedToolCalls: 512, maxRepeatedActionCount: 3, repeatedActions: [{ fingerprint: "a".repeat(64), count: 3 }],
+          toolDiscovery: { ...facts.toolDiscovery, noProgressCount: 3 } },
+        { ...saved.terminal!, stopReason: legacyStopReason }, saved.previousTerminals, saved.runtimeHighWater,
+        saved.turnId, saved.retryOrigin, saved.retryWindow, saved.retryCommit);
+      await resumeAgent.close();
+      resumeAgent = createResumeAgent();
+      await resumeAgent.initialize();
+      await resumeAgent.resume(sessionId);
+      let resumedOutcome;
+      for await (const event of resumeAgent.continueInterruptedTurn({ emotionAnalysis: false, maxSteps: 3 })) {
+        if (event.type === "done") resumedOutcome = event.outcome;
+      }
+      assert.equal(resumedOutcome?.status, "completed", resumedOutcome?.error);
+      assert.equal(resumedSteps, 2, "resume must not replay completed discovery");
+    } finally { await resumeAgent.close(); }
+  }
 
   const requests = new UserInputRequests();
   const registry = createToolRegistry({ workspaceRoot: root, ignore: [] });

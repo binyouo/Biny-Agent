@@ -184,6 +184,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [settingsCloseRequest, setSettingsCloseRequest] = useState<DesktopSettingsCloseRequest>();
   const browserSelectionPending = useRef<string | undefined>(undefined);
   const [pendingBrowserProject, setPendingBrowserProject] = useState<string>();
+  const [pendingPreviewBrowser, setPendingPreviewBrowser] = useState<{ projectId: string; sessionId?: string; request: number }>();
   const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
   const [contextBudget, setContextBudget] = useState<ContextBudgetStatus>();
   const [draftMemoryOverride, setDraftMemoryOverride] = useState<boolean>();
@@ -667,7 +668,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     return true;
   }, [mergeWorkspaceProject, openSession, setPendingNavigation]);
 
-  const openNavigationTarget = useCallback(async (target: DesktopNavigationTarget): Promise<boolean> => {
+  const openNavigationTarget = useCallback(async (target: DesktopNavigationTarget, isolation?: "shared" | "worktree"): Promise<boolean> => {
     // 从项目选择到会话读取共用同一个请求号，较早的跨项目请求不能在较新的点击后重新取得提交权。
     const projectLifetime = projectRemovalRef.current.get(target.projectId);
     const request = loadRequestRef.current + 1;
@@ -697,7 +698,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     try {
       if (target.sessionId === undefined) {
-        const snapshot = await window.biny.startDraft(target.projectId);
+        const snapshot = await window.biny.startDraft(target.projectId, isolation);
         if (loadRequestRef.current !== request || projectRemovalRef.current.get(target.projectId) !== projectLifetime) return false;
         const adopted = await adoptWorkspace(snapshot, undefined, request);
         if (adopted) setFocusToken((value) => value + 1);
@@ -922,7 +923,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
   }, [loadProjectBranches, mergeProjectSnapshot]);
 
-  const newTask = useCallback(async (targetProjectId = projectRef.current, topLevel = false): Promise<void> => {
+  const newTask = useCallback(async (targetProjectId = projectRef.current, topLevel = false, isolation?: "shared" | "worktree"): Promise<void> => {
     setRuntimePanelOpen(false);
     setHeroStart(topLevel);
     const projectId = targetProjectId;
@@ -933,7 +934,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const target: DesktopNavigationTarget = { projectId, sessionId: undefined };
     const previousNavigation = navigationRef.current;
     try {
-      if (await openNavigationTarget(target)) commitNavigation(pushNavigation(previousNavigation, target));
+      if (await openNavigationTarget(target, isolation)) commitNavigation(pushNavigation(previousNavigation, target));
     } catch (error) {
       setWarning(errorMessage(error));
     }
@@ -957,21 +958,24 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     void window.biny.setActiveView(open ? "runtime" : "chat").catch((error) => setWarning(errorMessage(error)));
   }, []);
 
-  const navigateToSession = useCallback(async (projectId: string, sessionId: string): Promise<void> => {
+  const navigateToSession = useCallback(async (projectId: string, sessionId: string): Promise<boolean> => {
     // 当前会话已经在聊天页时，点击同一行不应重新读取正文并切换 loading；否则侧栏会被无意义地重绘一次。
     if (projectId === projectRef.current && sessionId === selectedRef.current && !runtimePanelOpen) {
       // 点回已显示会话仍是新的导航意图，必须使在途的跨项目读取失效。
       loadRequestRef.current += 1;
       setPendingNavigation(undefined);
       setLoading(false);
-      return;
+      return true;
     }
     const previousNavigation = navigationRef.current;
     const target: DesktopNavigationTarget = { projectId, sessionId };
     try {
-      if (await openNavigationTarget(target)) commitNavigation(pushNavigation(previousNavigation, target));
+      const opened = await openNavigationTarget(target);
+      if (opened) commitNavigation(pushNavigation(previousNavigation, target));
+      return opened;
     } catch (error) {
       setWarning(errorMessage(error));
+      return false;
     }
   }, [commitNavigation, openNavigationTarget, runtimePanelOpen, setPendingNavigation]);
 
@@ -1549,10 +1553,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const createTopLevelTask = useCallback((): void => {
     void newTask(undefined, true);
   }, [newTask]);
-  const createSidebarTask = useCallback((projectId: string): void => {
+  const createSidebarTask = useCallback((projectId: string, isolation?: "shared" | "worktree"): void => {
     // 从项目文件夹里新建：有明确上下文，不展示欢迎 hero。
     setHeroStart(false);
-    void newTask(projectId, false);
+    void newTask(projectId, false, isolation);
   }, [newTask]);
   const importSidebarSession = useCallback((projectId: string): void => {
     void importSessionIntoProject(projectId);
@@ -1679,6 +1683,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [inspector, pendingBrowserProject, selectProject, workspace?.project.id]);
 
   useEffect(() => {
+    if (!pendingPreviewBrowser) return;
+    const { projectId, sessionId, request } = pendingPreviewBrowser;
+    if (request !== loadRequestRef.current || projectRef.current !== projectId || (sessionId && selectedRef.current !== sessionId)) { setPendingPreviewBrowser(undefined); return; }
+    if (workspace?.project.id === projectId && (!sessionId || selectedSessionId === sessionId)) { inspector.showBrowser(); setPendingPreviewBrowser(undefined); }
+  }, [inspector, pendingPreviewBrowser, selectedSessionId, workspace?.project.id]);
+
+  useEffect(() => {
     const pending = pendingPrompt;
     if (!pending) return;
     const stillSelected = pending.projectId === workspace?.project.id
@@ -1794,7 +1805,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       const unsubscribe = api.onEvent(event => {
         if (event.type === "starting") {
           const projectId = projectRef.current;
-          if (projectId) targets.set(event.id, { projectId, sessionId: event.target === "new" ? undefined : selectedRef.current });
+          if (projectId) {
+            const target = { projectId, sessionId: event.target === "new" ? undefined : selectedRef.current };
+            targets.set(event.id, target);
+            if (event.target === "new" && selectedRef.current !== undefined) void appshotNavigation.current(target).catch(failure => { if (active) setWarning(errorMessage(failure)); });
+          }
           return;
         }
         const target = targets.get(event.id); targets.delete(event.id);
@@ -1808,7 +1823,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
           if (snapshot.attachments.length + snapshot.pendingAttachments.length >= 8) { setWarning("聊天附件已满，请移除一个附件后重新截图。"); return; }
           draft.update(current => ({ attachments: [...current.attachments, attachment] }));
           setSettingsOpen(false);
-          await appshotNavigation.current(target);
+          if (event.target === "current") await appshotNavigation.current(target);
           if (!active) return;
           setFocusToken(value => value + 1); setToast(`已将 ${event.source.appName} 的截图放入聊天草稿`);
         }).catch(failure => { if (active) setWarning(errorMessage(failure)); });
@@ -1818,12 +1833,21 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [composerDrafts]);
 
   useEffect(() => window.binyComputer?.onNavigate?.(target => {
-    const projectId = target.projectId ?? sidebarSessions.find(session => session.id === target.sessionId)?.projectId;
-    if (projectId && target.sessionId) void navigateToSession(projectId, target.sessionId).catch(failure => setWarning(errorMessage(failure)));
-    else if (projectId) void openNavigationTarget({ projectId }).catch(failure => setWarning(errorMessage(failure)));
-    else if (target.sessionId && workspace?.sessions.some(session => session.id === target.sessionId)) void navigateToSession(workspace.project.id, target.sessionId).catch(failure => setWarning(errorMessage(failure)));
+    const projectId = target.projectId ?? sidebarSessions.find(session => session.id === target.sessionId)?.projectId
+      ?? (target.sessionId && workspace?.sessions.some(session => session.id === target.sessionId) ? workspace.project.id : undefined)
+      ?? (!target.sessionId && target.revealBrowser ? workspace?.project.id : undefined);
+    if (projectId && target.sessionId) {
+      const sessionId = target.sessionId;
+      const navigation = navigateToSession(projectId, sessionId), request = loadRequestRef.current;
+      void navigation.then(opened => {
+        if (opened && target.revealBrowser && request === loadRequestRef.current && projectRef.current === projectId && selectedRef.current === sessionId) setPendingPreviewBrowser({ projectId, sessionId, request });
+      }).catch(failure => setWarning(errorMessage(failure)));
+    } else if (projectId && target.revealBrowser) {
+      const navigation = selectProject(projectId), request = loadRequestRef.current;
+      void navigation.then(() => { if (request === loadRequestRef.current && projectRef.current === projectId) setPendingPreviewBrowser({ projectId, request }); });
+    } else if (projectId) void openNavigationTarget({ projectId }).catch(failure => setWarning(errorMessage(failure)));
     else if (target.sessionId) setWarning("关联聊天未在当前列表中，请从侧栏打开。");
-  }), [navigateToSession, openNavigationTarget, sidebarSessions, workspace]);
+  }), [navigateToSession, openNavigationTarget, selectProject, sidebarSessions, workspace]);
 
   const clearToast = useCallback(() => setToast(undefined), []);
   const sessionSummary = workspace?.sessions.find((session) => session.id === selectedSessionId) ?? document?.session;

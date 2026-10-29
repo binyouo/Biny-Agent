@@ -424,11 +424,11 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       return row;
     case "BrowserClick":
       row.verb = "点击";
-      row.object = stringArg(tool, "element") ?? stringArg(tool, "target") ?? tool.description ?? "…";
+      row.object = stringArg(tool, "selector") ?? stringArg(tool, "element") ?? stringArg(tool, "target") ?? tool.description ?? "…";
       return row;
     case "BrowserType":
       row.verb = "输入";
-      row.object = stringArg(tool, "text") ?? tool.description ?? "…";
+      row.object = stringArg(tool, "selector") ?? tool.description ?? "…";
       return row;
     case "BrowserPress":
       row.verb = "按键";
@@ -437,6 +437,34 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
     case "BrowserReadDom":
       row.verb = "读取页面";
       row.object = tool.description ?? "";
+      return row;
+    case "BrowserSelectOption":
+      row.verb = "选择选项";
+      row.object = stringArg(tool, "selector") ?? "…";
+      return row;
+    case "BrowserSetChecked":
+      row.verb = args?.checked === true ? "勾选" : "取消勾选";
+      row.object = stringArg(tool, "selector") ?? "…";
+      return row;
+    case "BrowserScroll":
+      row.verb = "滚动页面";
+      row.object = typeof args?.deltaY === "number" ? `垂直 ${String(args.deltaY)} px` : tool.description ?? "…";
+      return row;
+    case "BrowserDialogRespond":
+      row.verb = stringArg(tool, "action") === "accept" ? "接受对话框" : "取消对话框";
+      row.object = tool.description ?? "网页确认框";
+      return row;
+    case "BrowserDialogAutoReply":
+      row.verb = stringArg(tool, "action") === "stop" ? "停止自动响应" : "设置自动响应";
+      row.object = stringArg(tool, "behavior") === "accept" ? "接受网页对话框" : "取消网页对话框";
+      return row;
+    case "BrowserEval":
+      row.verb = "执行网页表达式";
+      row.object = tool.description ?? "…";
+      return row;
+    case "BrowserCDP":
+      row.verb = "浏览器协议操作";
+      row.object = stringArg(tool, "method") ?? tool.description ?? "…";
       return row;
     case "Task":
       row.verb = "委派子代理";

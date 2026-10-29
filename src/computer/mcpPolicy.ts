@@ -1,8 +1,9 @@
-import { legacyActionPayload, legacyObservationOptions } from "./input.js";
-import { renderElementTree, type ElementLike } from "./elementTree.js";
+import { legacyActionPayload, legacyAutoLaunch, legacyObservationOptions } from "./input.js";
+import { externalElements, renderElementTree, type ElementLike } from "./elementTree.js";
 import type { DriverReply } from "./controller.js";
 import type { BrowserAutomationEndpoint } from "../tools/browser.js";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { requestComputer } from "../tools/computerUse.js";
 import { computerDesktopConnection, notifyDesktopComputerActivity } from "./desktopActivity.js";
 import path from "node:path";
@@ -19,6 +20,30 @@ export interface ComputerMcpPolicy {
   run(tool: string, args: Record<string, unknown>, operation: () => Promise<CallToolResult>, signal?: AbortSignal): Promise<CallToolResult>;
 }
 const inputs = new Set(["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"]);
+async function waitForWindow(pid: number, bundle: string, list: (signal: AbortSignal) => Promise<DriverReply>, signal?: AbortSignal, initial?: DriverReply): Promise<number> {
+  const deadline = AbortSignal.timeout(5_000);
+  const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  try {
+    for (;;) {
+      waiting.throwIfAborted();
+      const reply = initial ?? await list(waiting);
+      initial = undefined;
+      waiting.throwIfAborted();
+      const apps = Array.isArray(reply.data.apps) ? reply.data.apps as { pid?: number; bundleId?: string; running?: boolean; windows?: { window_id: number; focused?: boolean }[] }[] : [];
+      const matches = apps.filter(app => app.pid === pid && app.running);
+      if (matches.length > 1 || (matches[0] && matches[0].bundleId !== bundle)) throw new Error("computer_app_identity_unavailable: 应用身份不匹配");
+      const windows = matches[0]?.windows?.filter(window => Number.isSafeInteger(window.window_id) && window.window_id > 0) ?? [];
+      const focused = windows.filter(window => window.focused === true);
+      if (focused.length === 1) return focused[0]!.window_id;
+      if (windows.length > 1) throw new Error("computer_window_selection_required: 请列出并指定准确窗口");
+      if (windows.length === 1) return windows[0]!.window_id;
+      await delay(200, undefined, { signal: waiting });
+    }
+  } catch (error) {
+    if (deadline.aborted && !signal?.aborted) throw new Error("computer_window_not_ready: 目标窗口尚未出现；先查询应用状态，不要重复启动。");
+    throw error;
+  }
+}
 /** MCP 和 Desktop 共用启用选择、应用审批与日志；没有 Desktop 时仍执行同一策略。 */
 export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
   private readonly approvals: ComputerAppApprovals;
@@ -65,8 +90,11 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     if (tool === "list_apps") return await operation();
     const listing = (await this.driver.list("mcp-policy", undefined)).data.apps;
     const apps = Array.isArray(listing) ? listing as { pid?: number; bundleId?: string; name?: string; running?: boolean }[] : [];
-    const pid = typeof args.pid === "number" ? args.pid : typeof args.bundle === "string" ? apps.find(app => app.bundleId === args.bundle && app.running)?.pid : this.last?.pid;
+    const bundleMatches = typeof args.bundle === "string" ? apps.filter(app => app.bundleId === args.bundle && app.running) : [];
+    if (args.pid === undefined && bundleMatches.length > 1) throw new Error("computer_app_identity_unavailable: 请指定准确进程");
+    const pid = typeof args.pid === "number" ? args.pid : typeof args.bundle === "string" ? bundleMatches[0]?.pid : this.last?.pid;
     const matches = apps.filter(app => pid ? app.pid === pid && app.running : app.bundleId === args.bundle);
+    if (pid && matches.length > 1) throw new Error("computer_app_identity_unavailable: 进程身份不唯一");
     let identity = matches.length === 1 ? matches[0] : undefined;
     if (!identity && args.pid === undefined && typeof args.bundle === "string") {
       const reply = await this.driver.daemonCommand("app_identity", { bundle: args.bundle });
@@ -75,9 +103,34 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     }
     if (!identity?.bundleId || !identity.name || (args.bundle !== undefined && args.bundle !== identity.bundleId)) throw new Error("computer_app_identity_unavailable");
     await this.approvals.authorize({ bundleId: identity.bundleId, appName: identity.name });
+    if (tool === "get_app_state") this.last = undefined;
+    const shouldLaunch = tool === "get_app_state" && args.pid === undefined && identity.running === false && legacyAutoLaunch(args) !== false;
+    const shouldSelectWindow = tool === "get_app_state" && args.window_id === undefined && (shouldLaunch || identity.running === true);
+    if (shouldLaunch || shouldSelectWindow) {
+      const beforeLaunch = await this.approvals.read();
+      const approved = beforeLaunch.apps.find(app => app.bundleId === identity.bundleId);
+      if (!beforeLaunch.enabled || !approved?.approvedAt || approved.revokedAt) throw new Error("computer_authorization_invalidated: 应用授权已改变");
+      signal?.throwIfAborted();
+      let targetPid = pid;
+      if (shouldLaunch) {
+        let launched: DriverReply;
+        try { launched = await this.driver.launchApp(identity.bundleId, signal); }
+        catch { throw new Error("computer_launch_outcome_unknown: 应用启动结果未知；先查询应用状态，不要重复启动。"); }
+        const launchedPid = launched.data.pid;
+        if (launched.errorCode || typeof launchedPid !== "number" || !Number.isSafeInteger(launchedPid) || launchedPid <= 0) throw new Error("computer_launch_outcome_unknown: 未确认启动进程；先查询应用状态，不要重复启动。");
+        targetPid = launchedPid;
+      }
+      if (typeof targetPid !== "number" || !Number.isSafeInteger(targetPid) || targetPid <= 0) throw new Error("computer_app_identity_unavailable: 请指定准确进程");
+      args.pid = targetPid;
+      if (shouldSelectWindow) args.window_id = await waitForWindow(targetPid, identity.bundleId, async waiting => await this.driver.list("mcp-policy", targetPid, waiting), signal);
+      const afterLaunch = await this.approvals.read();
+      const current = afterLaunch.apps.find(app => app.bundleId === identity.bundleId);
+      if (!afterLaunch.enabled || afterLaunch.strictApproval !== beforeLaunch.strictApproval || current?.approvedAt !== approved.approvedAt || current?.revokedAt !== approved.revokedAt) throw new Error("computer_authorization_invalidated: 等待窗口期间应用授权已改变；应用可能已启动。");
+      signal?.throwIfAborted();
+    }
+    if (tool === "get_app_state" && args.pid === undefined && identity.running === true && pid !== undefined) args.pid = pid;
     if (inputs.has(tool) && (!this.last || Date.now() - this.observedAt >= 60_000 || this.observedApp !== identity.bundleId || this.last.pid !== pid || args.window_id !== undefined && String(args.window_id) !== this.last.windowId)) throw new Error("computer_observation_required: observe the exact target before input");
     if (inputs.has(tool) && this.last) { args.pid = this.last.pid; args.window_id = Number(this.last.windowId); }
-    if (tool === "get_app_state") this.last = undefined;
     const at = Date.now(); let result: CallToolResult;
     try { result = await operation(); }
     catch (error) {
@@ -86,12 +139,12 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
       throw error;
     }
     const text = result.content.find(part => part.type === "text");
-    if (tool === "get_app_state" && !result.isError && text?.type === "text") {
-      // 观察的 JSON 是多行文本，后面可附树和说明书。
-      const match = text.text.match(/"window_id"\s*:\s*(\d+)|"windowId"\s*:\s*(\d+)/);
-      const observedPid = text.text.match(/"pid"\s*:\s*(\d+)/)?.[1];
-      if (observedPid && match) { this.last = { pid: Number(observedPid), windowId: match[1] ?? match[2]! }; this.observedAt = Date.now(); this.observedApp = identity.bundleId; }
-      else this.last = undefined;
+    if (tool === "get_app_state" && !result.isError && result.content.some(part => part.type === "image")) {
+      // 只有结果包含图片的观察才可用于后续输入。
+      const data = result.structuredContent;
+      if (!data || data.pid !== args.pid || Number(data.window_id ?? data.windowId) !== Number(args.window_id)) throw new Error("capture_target_mismatch: 观察结果与请求目标不一致");
+      this.last = { pid: Number(data.pid), windowId: String(data.window_id ?? data.windowId) };
+      this.observedAt = Date.now(); this.observedApp = identity.bundleId;
     }
     if (inputs.has(tool) && this.last) {
       const outcome = ["unverifiable", "unverified"].includes(String(result.structuredContent?.effect)) ? "unverified" : result.isError ? /timeout|disconnect|aborted|unknown/i.test(text?.type === "text" ? text.text : "") ? "unknown" : "refused" : /verification_note|warning/.test(text?.type === "text" ? text.text : "") ? "unverified" : "completed";
@@ -102,7 +155,7 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     return result;
   }
   private async runDesktop(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
-    const call = (method: string, input: Record<string, unknown>, mutation = false) => requestComputer(this.desktop!, method, { ...input, session: this.transportId }, signal, mutation);
+    const call = (method: string, input: Record<string, unknown>, mutation = false, requestSignal = signal) => requestComputer(this.desktop!, method, { ...input, session: this.transportId }, requestSignal, mutation);
     let reply: DriverReply;
     if (tool === "list_apps") reply = await call("list", { days: args.days });
     else if (tool === "launch_app") reply = await call("launch", { bundleId: args.bundle }, true);
@@ -115,22 +168,29 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     else if (tool === "get_app_state") {
       this.desktopCapture = undefined;
       let pid = args.pid;
+      let initial: DriverReply | undefined;
+      let bundle = typeof args.bundle === "string" ? args.bundle : undefined;
       if (pid === undefined) {
         const listed = await call("list", {});
         const apps = listed.data.apps as { pid?: number; bundleId?: string; running?: boolean }[];
         const matches = apps.filter(app => app.running && app.bundleId === args.bundle);
         if (matches.length > 1) throw new Error("computer_app_identity_unavailable: 请指定准确进程");
         pid = matches[0]?.pid;
-        if (pid === undefined && typeof args.bundle === "string" && args.autoLaunch !== false) pid = (await call("launch", { bundleId: args.bundle }, true)).data.pid;
+        if (pid === undefined && typeof args.bundle === "string" && legacyAutoLaunch(args) !== false) {
+          pid = (await call("launch", { bundleId: args.bundle }, true)).data.pid;
+        }
+      } else if (args.bundle !== undefined || args.window_id === undefined) {
+        initial = await call("list", { pid });
+        const apps = Array.isArray(initial.data.apps) ? initial.data.apps as { pid?: number; bundleId?: string; running?: boolean }[] : [];
+        const matches = apps.filter(app => app.pid === pid && app.running);
+        if (matches.length !== 1 || !matches[0]!.bundleId || (bundle !== undefined && matches[0]!.bundleId !== bundle)) throw new Error("computer_app_identity_unavailable: 应用与指定进程不匹配");
+        bundle = matches[0]!.bundleId;
       }
       if (typeof pid !== "number") throw new Error("computer_observation_requires_target: 请指定应用或进程");
       let windowId = args.window_id === undefined ? undefined : String(args.window_id);
       if (!windowId) {
-        const listed = await call("list", { pid });
-        const apps = listed.data.apps as { pid?: number; windows?: { window_id: number }[] }[];
-        const windows = apps.find(app => app.pid === pid)?.windows?.filter(window => window.window_id > 0) ?? [];
-        if (windows.length !== 1) throw new Error("computer_window_selection_required: 请列出并指定准确窗口");
-        windowId = String(windows[0]!.window_id);
+        if (!bundle) throw new Error("computer_app_identity_unavailable: 请指定准确进程");
+        windowId = String(await waitForWindow(pid, bundle, async waiting => await call("list", { pid }, false, waiting), signal, initial));
       }
       reply = await call("observe", { pid, windowId, ...legacyObservationOptions(args) });
     } else if (inputs.has(tool)) {
@@ -147,6 +207,14 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     if (typeof reply.data.capture_id === "string") this.desktopCapture = { pid: Number(reply.data.pid), windowId: String(reply.data.window_id), captureId: reply.data.capture_id };
     const { elements, ...data } = reply.data;
     const tree = renderElementTree(elements as ElementLike[] | undefined);
+    if (tool === "get_app_state") {
+      const body = { ...data, error: reply.errorCode, elements: externalElements(elements as ElementLike[] | undefined) };
+      return { isError: !!reply.errorCode, structuredContent: body, content: [
+        { type: "text", text: JSON.stringify(body) },
+        ...(tree ? [{ type: "text" as const, text: tree }] : []),
+        ...reply.images.map(image => ({ type: "image" as const, mimeType: image.mimeType, data: image.dataBase64 }))
+      ] };
+    }
     return { isError: !!reply.errorCode, content: [
       { type: "text", text: [JSON.stringify({ ...data, error: reply.errorCode }), tree].filter(Boolean).join("\n") },
       ...reply.images.map(image => ({ type: "image" as const, mimeType: image.mimeType, data: image.dataBase64 }))

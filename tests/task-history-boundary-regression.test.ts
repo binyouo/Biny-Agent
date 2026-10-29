@@ -71,7 +71,8 @@ for (const reports of [0, 97, 98, 99]) test(`CommandRuntime admits a valid queue
     const id = await prepareRepair(commands.taskRuns, root, commands.agent.getInfo().sessionId, reports);
     const resumed = await commands.resumeTaskRun(id);
     commands.cancelTaskRun(id);
-    await resumed.completion;
+    await assert.rejects(resumed.completion, /TaskRun cancelled\./u);
+    assert.equal(commands.taskRuns.get(id)?.status, "cancelled");
     assert.equal(network.mock.callCount(), 0);
   } finally { await commands?.close(); network.mock.restore(); await rm(temporary, { recursive: true, force: true }); }
 });
@@ -128,8 +129,10 @@ for (const retrySafety of ["safe", "unknown"] as const) test(`long-history queue
       // Await the admission only; cancellation before the first model dispatch is deterministic.
       const resumed = await commands.resumeTaskRun(task.taskRunId);
       commands.cancelTaskRun(task.taskRunId);
-      await resumed.completion;
-      assert.equal(commands.taskRuns.get(task.taskRunId)?.attempts.length, 2);
+      await assert.rejects(resumed.completion, /TaskRun cancelled\./u);
+      assert.equal(commands.taskRuns.get(task.taskRunId)?.status, "cancelled");
+      assert.equal(commands.taskRuns.get(task.taskRunId)?.attempts.length, saved.attempts.length,
+        "cancellation during workspace preparation must not start a new Attempt");
     }
     const reader = await RuntimeEventAuthority.openReadOnly(root);
     assert.ok(reader);

@@ -115,7 +115,8 @@ test("back and forward navigate only within ordinary web history", async () => {
   assert.equal(calls.filter((method) => method === "Page.navigateToHistoryEntry").length, before);
 });
 
-test("page evaluation is bounded, stays in the selected document, and hides page exceptions", async () => {
+test("page evaluation is bounded, stays in the selected document, and hides page exceptions", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
   const { api, state } = fixture();
   Object.assign(state, { contexts: new Map([[1, new Map([["child", { frameId: "child", contextId: 9, documentId: "document-a", sessionId: "session-child", url: "https://example.org/" }]])]]) });
   const commands: Array<{ target: unknown; method: string; params: Record<string, unknown> }> = [];

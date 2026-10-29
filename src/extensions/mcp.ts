@@ -27,6 +27,7 @@ import { z } from "zod";
 import { McpOAuthProvider, McpAuthRequiredError } from "./mcpOAuth.js";
 import { getSharedProxyAwareFetch } from "../network/proxyFetch.js";
 import { isSensitiveFieldName } from "../utils/secrets.js";
+import { computerImageSchema } from "../computer/protocol.js";
 
 export type McpTransportKind = "stdio" | "http" | "in-process";
 
@@ -40,6 +41,7 @@ const maxInstructionsTotalBytes = 16 * 1024;
 const maxPromptNames = 32;
 const maxToolSummaryChars = 320;
 const expiredSessionMessage = "MCP Streamable HTTP session expired; reconnect on the next request.";
+const computerImageTools = new Set(["get_app_state", "click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text", "sequence", "sky_get_app_state", "sky_click", "sky_type_text", "sky_press_key", "sky_scroll", "sky_drag", "sky_perform_secondary_action", "sky_set_value", "sky_select_text"]);
 
 export interface McpServerStatus {
   name: string;
@@ -1213,8 +1215,10 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
             const metadata = localIdentity === undefined ? undefined : {
               "biny/session-id": context.sessionId, "biny/computer-lease-id": context.computerMcpLeaseId
             };
-            const result = await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, envelope, context.onDispatched, metadata, localIdentity, expectedDefinition);
-            return envelope ? normalizeMcpEnvelope(result) : result;
+            const computerImage = serverName === "computer-use" && computerImageTools.has(definition.name);
+            const result = await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, envelope || computerImage, context.onDispatched, metadata, localIdentity, expectedDefinition);
+            const projected = computerImage ? forwardComputerImage(result, context.onImage, definition.name) : result;
+            return envelope ? normalizeMcpEnvelope(projected) : computerImage ? normalizeMcpResult(projected) : projected;
           }
           try {
             const result = await host.callServerTool(
@@ -1254,6 +1258,40 @@ function resolveMcpToolExposure(config: McpServerConfig, toolName: string): Tool
 
 function compactMcpText(value: string): string {
   return value.replace(/\s+/gu, " ").replace(/[<>]/gu, "").trim().slice(0, maxToolSummaryChars);
+}
+
+function forwardComputerImage(result: unknown, onImage: import("../tools/types.js").ToolExecutionContext["onImage"], toolName: string): unknown {
+  if (!isRecord(result) || result.isError === true || !Array.isArray(result.content)) return result;
+  let sent = false;
+  for (const part of result.content) {
+    if (!isRecord(part) || part.type !== "image") continue;
+    const image = computerImageSchema.safeParse({ mimeType: part.mimeType, dataBase64: part.data });
+    if (image.success && onImage?.({ type: "image", mimeType: image.data.mimeType, data: image.data.dataBase64 })) { sent = true; break; }
+  }
+  const safeContent = toolName === "sky_get_app_state" ? result.content.map(part => {
+    if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string") return part;
+    try {
+      const data: unknown = JSON.parse(part.text);
+      if (!isRecord(data) || !isRecord(data.screenshot) || typeof data.screenshot.url !== "string" || !data.screenshot.url.startsWith("data:")) return part;
+      return { ...part, text: JSON.stringify({ ...data, screenshot: sent ? { url: "[image delivered separately]" } : null }) };
+    } catch { return part; }
+  }) : result.content;
+  if (sent) return { ...result, content: safeContent };
+  const text = "Observation image unavailable to the model. Re-observe before further input; do not repeat an action that may already have been dispatched.";
+  let updated = false;
+  const content = safeContent.map(part => {
+    if (updated || !isRecord(part) || part.type !== "text" || typeof part.text !== "string") return part;
+    const newline = part.text.indexOf("\n");
+    const first = newline < 0 ? part.text : part.text.slice(0, newline);
+    try {
+      const data: unknown = JSON.parse(first);
+      if (!isRecord(data)) return part;
+      updated = true;
+      return { ...part, text: JSON.stringify({ ...data, observationImageUnavailable: true, observationRequired: true, doNotRepeat: true }) + (newline < 0 ? "" : part.text.slice(newline)) };
+    } catch { return part; }
+  });
+  return { ...result, content: [...content, { type: "text", text }],
+    structuredContent: isRecord(result.structuredContent) ? { ...result.structuredContent, observationImageUnavailable: true, observationRequired: true, doNotRepeat: true } : result.structuredContent };
 }
 
 function normalizeMcpResult(result: unknown): unknown {

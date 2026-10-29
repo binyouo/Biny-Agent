@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -209,6 +209,50 @@ async function testProjectionBeforeTurnBudget(): Promise<void> {
   }
 }
 
+async function testBrowserCdpResultsStayTransient(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-browser-cdp-result-"));
+  let recorder: SessionRecorder | undefined;
+  try {
+    await ensureAgentDirs(workspaceRoot);
+    const config = structuredClone(defaultConfig) as AgentConfig;
+    config.context.maxTurnToolResultBytes = 1_024;
+    config.permission.mode = "full-access";
+    const registry = new ToolRegistry();
+    registry.register(browserCdpResultTool());
+    registry.register(chromeRelayEvalResultTool());
+    const events: AgentSessionEvent[] = [];
+    recorder = new SessionRecorder(workspaceRoot, "browser-cdp-transient-test");
+    const coordinator = new ToolExecutionCoordinator({ workspaceRoot, config, recorder, toolRegistry: registry },
+      new PermissionManager(config.permission), event => events.push(event));
+    const tool = nativeTool(coordinator, "BrowserCDP");
+
+    const smallResult = await tool.execute("cdp-small", { method: "Network.getAllCookies", params: { query: "private-cdp-parameter" } });
+    assert.deepEqual((smallResult as { cookies?: unknown }).cookies, [{ name: "sid", value: "private-cdp-cookie" }]);
+    const largeResult = await tool.execute("cdp-large", { method: "Network.getAllCookies", params: { query: "private-cdp-parameter" }, large: true });
+    assert.match(JSON.stringify(largeResult), /omitted because the turn output budget is exhausted/u);
+    const relayEval = nativeTool(coordinator, "ChromeRelayEval");
+    const relaySmall = await relayEval.execute("relay-small", { code: "private-relay-expression" });
+    assert.equal((relaySmall as { result?: unknown }).result, "private-relay-page-value");
+    const relayLarge = await relayEval.execute("relay-large", { code: "private-relay-expression", large: true });
+    assert.match(JSON.stringify(relayLarge), /omitted because the turn output budget is exhausted/u);
+
+    const persisted = (await readFile(recorder.filePath, "utf8"))
+      .split("\n").filter(Boolean).map(line => JSON.parse(line) as { type: string; result?: unknown })
+      .filter(event => event.type === "tool_result");
+    assert.equal(persisted.length, 4);
+    assert.deepEqual(persisted.map(event => event.result), ["[browser CDP result redacted]", "[browser CDP result redacted]", "[Chrome Relay evaluation result redacted]", "[Chrome Relay evaluation result redacted]"]);
+    const eventResults = events.filter(event => event.type === "tool.completed");
+    assert.equal(eventResults.length, 4);
+    assert.equal(eventResults.every(event => event.type === "tool.completed" && JSON.stringify(event.result).includes("redacted")), true);
+    assert.equal((await readdir(path.join(agentDir(workspaceRoot), "tool-results"))).length, 0);
+    const session = await readFile(recorder.filePath, "utf8");
+    assert.doesNotMatch(session, /private-cdp-cookie|private-cdp-parameter|private-relay-expression|private-relay-page-value/u);
+  } finally {
+    await recorder?.close().catch(() => undefined);
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+}
+
 function projectedWriteTool(): Tool<{ path: string; content: string }, Record<string, unknown>> {
   return {
     name: "write",
@@ -254,6 +298,40 @@ function hugeResultTool(): Tool<Record<string, never>, string> {
   };
 }
 
+function browserCdpResultTool(): Tool<{ method: string; params?: Record<string, unknown>; large?: boolean }, unknown> {
+  return {
+    name: "BrowserCDP",
+    description: "Return a CDP fixture result.",
+    parameters: { type: "object", properties: { method: { type: "string" }, params: { type: "object" }, large: { type: "boolean" } }, required: ["method"], additionalProperties: false },
+    schema: z.object({ method: z.string(), params: z.record(z.string(), z.unknown()).optional(), large: z.boolean().optional() }),
+    risk: "execute",
+    resolveExecution(args) {
+      return {
+        async execute() {
+          return args.large ? { data: "x".repeat(2_000) } : { cookies: [{ name: "sid", value: "private-cdp-cookie" }] };
+        }
+      };
+    }
+  };
+}
+
+function chromeRelayEvalResultTool(): Tool<{ code: string; large?: boolean }, unknown> {
+  return {
+    name: "ChromeRelayEval",
+    description: "Return a private page evaluation result.",
+    parameters: { type: "object", properties: { code: { type: "string" }, large: { type: "boolean" } }, required: ["code"], additionalProperties: false },
+    schema: z.object({ code: z.string(), large: z.boolean().optional() }),
+    risk: "execute",
+    resolveExecution(args) {
+      return {
+        async execute() {
+          return args.large ? "x".repeat(2_000) : "private-relay-page-value";
+        }
+      };
+    }
+  };
+}
+
 function largeResultTool(): Tool<Record<string, never>, string> {
   return {
     name: "large_result",
@@ -286,4 +364,5 @@ function nativeTool(coordinator: ToolExecutionCoordinator, name: string): Execut
 await testConcurrentToolResultBudget();
 await testPersistLevelOutlining();
 await testProjectionBeforeTurnBudget();
+await testBrowserCdpResultsStayTransient();
 await main();

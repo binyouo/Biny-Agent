@@ -97,7 +97,7 @@ Save the diary as its own file at `diary/<date>.md`, separate from `memory/<date
 
 Use Bash when the file is outside the workspace (Read/Write/Edit operate within the workspace). For a full-file write, prepare the complete Markdown in a temporary file beside the target and rename it over the target only after writing succeeds. Do not truncate the original file before the new content is ready. For catch-up, use the requested date consistently; when a diary already exists, read it and avoid duplicate entries unless the user explicitly requested a rewrite.
 
-After writing, read the saved file to verify it and include a Markdown link to its actual absolute path. If writing fails, report the failure. Continue the optional steps below yourself, using their normal commands. On retry, inspect what already succeeded before repeating a memory or personality change. Do not create tasks just because a diary mentions future thoughts. If the request is analysis only, answer without persisting.
+After writing, read the saved file and run `biny reflection status <date> --json` to verify that the diary is discoverable. The saved diary itself is sufficient for completion detection; do not append a marker before a successful write. Include a Markdown link to its actual absolute path. If writing fails, report the failure. Continue the optional steps below yourself, using their normal commands. On retry, inspect what already succeeded before repeating a memory or personality change. Do not create tasks just because a diary mentions future thoughts. If the request is analysis only, answer without persisting.
 
 ### Step 4: Extract Lessons (Optional)
 

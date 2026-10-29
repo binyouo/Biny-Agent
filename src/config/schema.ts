@@ -30,8 +30,10 @@ const agentSchema = z.object({
   toolExecutionMode: z.enum(["direct", "code_mode"]).default("code_mode"),
   softStepLimit: z.number().int().min(1).max(100_000).default(32),
   hardStepLimit: z.number().int().min(1).max(100_000).default(96),
+  /** 旧配置兼容：不再限制运行中的工具调用总数。 */
   maxToolCalls: z.number().int().min(1).max(100_000).optional(),
-  maxRepeatedActions: z.number().int().min(1).max(32).default(3),
+  /** 旧配置兼容：不再限制重复工具调用。 */
+  maxRepeatedActions: z.number().int().min(1).max(32).optional(),
   maxConcurrentTools: z.number().int().min(1).max(32).default(4),
   maxQueuedToolCalls: z.number().int().min(1).max(1_024).default(64)
 }).strict().default({
@@ -39,8 +41,6 @@ const agentSchema = z.object({
   toolExecutionMode: "code_mode",
   softStepLimit: 32,
   hardStepLimit: 96,
-  maxToolCalls: undefined,
-  maxRepeatedActions: 3,
   maxConcurrentTools: 4,
   maxQueuedToolCalls: 64
 });
@@ -499,6 +499,14 @@ const imageGenSchema = z.object({
   aspectRatio: z.string().trim().max(32).optional()
 }).default({ model: undefined, localModel: undefined, aspectRatio: undefined });
 
+/**
+ * 出站脱敏：发给模型厂商前，把密钥与个人信息换成占位符，回复再换回原值。
+ * 只有一个开关，不保存任何具体值（值只在运行进程内存里）。
+ */
+const redactionSchema = z.object({
+  enabled: z.boolean().default(false)
+}).default({ enabled: false });
+
 const webSearchSchema = z.object({
   provider: z.enum(["google", "xiaohongshu"]).default("google"),
   visibleBrowsing: z.boolean().default(false),
@@ -693,6 +701,7 @@ const canonicalConfigSchema = z.object({
     recordInputs: z.boolean().default(false),
     recordOutputs: z.boolean().default(false)
   }).default({ enabled: false, recordInputs: false, recordOutputs: false }),
+  redaction: redactionSchema,
   extensions: extensionsSchema
 }).strict().superRefine((config, context) => {
   const activeModel = config.models[config.defaultModel];
@@ -863,6 +872,7 @@ export type CheckpointsConfig = z.infer<typeof checkpointsSchema>;
 export type DiagnosticsConfig = z.infer<typeof diagnosticsSchema>;
 export type WebFetchConfig = z.infer<typeof webFetchSchema>;
 export type WebSearchConfig = z.infer<typeof webSearchSchema>;
+export type RedactionConfig = z.infer<typeof redactionSchema>;
 export type WebCookiesConfig = z.infer<typeof webCookiesSchema>;
 export type WebConfig = z.infer<typeof webSchema>;
 export type { ActivityDataResidency, ActivitySettings, MemoryPolicy };
@@ -924,8 +934,6 @@ export const defaultConfig: AgentConfig = {
     toolExecutionMode: "code_mode",
     softStepLimit: 32,
     hardStepLimit: 96,
-    maxToolCalls: undefined,
-    maxRepeatedActions: 3,
     maxConcurrentTools: 4,
     maxQueuedToolCalls: 64
   },
@@ -997,6 +1005,7 @@ export const defaultConfig: AgentConfig = {
   },
   imageGen: { model: undefined, localModel: undefined, aspectRatio: undefined },
   telemetry: { enabled: false, recordInputs: false, recordOutputs: false },
+  redaction: { enabled: false },
   extensions: {
     mcp: {},
     skills: [...DEFAULT_PROJECT_SKILL_PATHS],

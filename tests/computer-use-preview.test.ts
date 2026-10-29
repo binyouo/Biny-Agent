@@ -26,9 +26,9 @@ class FixtureWindow extends EventEmitter implements PreviewWindow {
   async loadURL(): Promise<void> {}
   destroy(): void { if (this.rejectDestroy) throw new Error("fixture destroy failed"); this.destroyed = true; this.emit("closed"); }
 }
-const status = { state: "ready", preview: true, foregroundAllowed: false, lastOutcome: "not-dispatched" } as const;
+const status = { state: "ready", preview: true, lastOutcome: "not-dispatched" } as const;
 const frame = { image: { mimeType: "image/png", dataBase64: "aGVsbG8=" }, target: { pid: 42, windowId: "900" }, capturedAt: 0 } as const;
-test("refreshing preview pixels never re-presents a window the user has put behind another app", () => {
+test("refreshing preview pixels never re-presents an existing floating window", () => {
   const window = new FixtureWindow();
   const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule());
   try {
@@ -65,6 +65,21 @@ test("failed preview destruction retains the privacy hold", async () => {
   assert.throws(() => preview.close(), /destroy failed/);
   await assert.rejects(schedule.run("activity", async () => "private"), CaptureBusyError);
   window.rejectDestroy = false; preview.close(); assert.equal(await schedule.run("activity", async () => "allowed"), "allowed");
+});
+
+test("failed destruction after a preview finishes reports the error and retains its privacy hold", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const schedule = new CaptureSchedule(); const window = new FixtureWindow(); const errors: string[] = [];
+  const preview = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, schedule, { onError: error => errors.push(String(error)) });
+  try {
+    preview.present({ id: "computer", label: "电脑", frame, status });
+    window.rejectDestroy = true; preview.retire("computer");
+    assert.doesNotThrow(() => t.mock.timers.tick(420));
+    assert.deepEqual(errors, ["Error: fixture destroy failed"]);
+    assert.deepEqual(preview.itemIds(), ["computer"]);
+    assert.ok(window.paints.some(paint => paint.includes("dataset.completing=false")));
+    assert.equal(schedule.canPersistActivity(schedule.activityEpoch()), false);
+  } finally { window.rejectDestroy = false; preview.close(); t.mock.timers.reset(); }
 });
 
 // Alma 设计：PiP 是 3fps 的「可注视」画面，而非仅在动作后刷新一帧。
@@ -132,4 +147,64 @@ test("browser and window frames share one surface and close independently", asyn
   assert.match(windows[0]!.paints.slice(-2).join("\n"), /YnJvd3Nlcg==/);
   surface.remove("computer"); assert.equal(windows[0]!.isDestroyed(), false); assert.equal(closed, 0);
   surface.remove("browser"); assert.equal(windows[0]!.isDestroyed(), true);
+});
+
+test("a new source becomes active, refreshes do not steal selection, and closing selects the newest remaining source", () => {
+  const window = new FixtureWindow();
+  const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule());
+  try {
+    surface.present({ id: "computer", label: "电脑", frame, status });
+    surface.present({ id: "browser:one", label: "浏览器一", frame, status });
+    surface.present({ id: "browser:two", label: "浏览器二", frame, status });
+    assert.equal(surface.activeItem(), "browser:two");
+    surface.present({ id: "computer", label: "电脑", frame, status });
+    assert.equal(surface.activeItem(), "browser:two");
+    surface.remove("browser:two");
+    assert.equal(surface.activeItem(), "browser:one");
+    surface.select("computer");
+    surface.present({ id: "browser:one", label: "浏览器一", frame, status });
+    assert.equal(surface.activeItem(), "computer");
+  } finally { surface.close(); }
+});
+
+test("a fit failure reports the error without discarding the frame or repeating the failure", () => {
+  const window = new FixtureWindow(); const errors: string[] = [];
+  const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule(), {
+    fitFrame: () => { throw new Error("fit_failed"); }, onError: error => errors.push(String(error))
+  });
+  try {
+    surface.present({ id: "computer", label: "电脑", frame, status });
+    surface.present({ id: "computer", label: "电脑", frame, status });
+    assert.deepEqual(errors, ["Error: fit_failed"]);
+    assert.match(window.paints.join("\n"), /aGVsbG8=/);
+  } finally { surface.close(); }
+});
+
+test("an expired cursor disappears from a frozen frame without another capture", t => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 1_000 });
+  const window = new FixtureWindow();
+  const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule());
+  try {
+    surface.present({ id: "computer", label: "电脑", status, frame: { ...frame, capturedAt: 1_000, cursor: { x: 0.25, y: 0.5, expiresAt: 2_000 } } });
+    assert.ok(window.paints.some(paint => paint.includes('point={"x":0.25,"y":0.5}')));
+    t.mock.timers.tick(1_000);
+    assert.ok(window.paints.some(paint => paint.includes("point=null")));
+  } finally { surface.close(); t.mock.timers.reset(); }
+});
+
+test("a new source can replace a finishing source at the preview limit", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const window = new FixtureWindow();
+  const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule());
+  try {
+    for (let index = 0; index < 16; index++) surface.present({ id: `source:${index}`, label: String(index), frame, status });
+    surface.retire("source:15");
+    assert.doesNotThrow(() => surface.present({ id: "new", label: "new", frame, status }));
+    assert.equal(surface.itemIds().length, 16);
+    assert.equal(surface.activeItem(), "new");
+    assert.throws(() => surface.present({ id: "overflow", label: "overflow", frame, status }), /preview_item_limit/);
+    t.mock.timers.tick(420);
+    assert.equal(surface.activeItem(), "new");
+    assert.equal(surface.itemIds().includes("source:15"), false);
+  } finally { surface.close(); t.mock.timers.reset(); }
 });

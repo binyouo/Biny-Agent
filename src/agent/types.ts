@@ -53,8 +53,8 @@ export type AgentTurnStopReason =
   | "model_stop"
   | "step_limit"
   | "hard_step_limit"
-  | "tool_call_limit"
-  | "repeated_action_limit"
+  | "tool_call_limit" // 仅用于读取已有会话和断点。
+  | "repeated_action_limit" // 仅用于读取已有会话和断点。
   | "timeout"
   | "model_length"
   | "content_filter"

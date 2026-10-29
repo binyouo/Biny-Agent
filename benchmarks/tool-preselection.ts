@@ -56,14 +56,14 @@ export async function run(args: string[]): Promise<void> {
   assert.ok(toolAlias, "No configured auxiliary model is available.");
   const config = configSchema.parse({ ...defaultConfig, providers: loaded.providers, models: loaded.models,
     defaultModel: loaded.defaultModel, toolModel: toolAlias, thinking: { ...defaultConfig.thinking, enabled: false },
-    agent: { ...defaultConfig.agent, toolExecutionMode: "direct", maxToolCalls: 20 },
+    agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
     chat: { ...defaultConfig.chat, temperature: 0, maxOutputTokens: 2048, skillExtraction: { ...defaultConfig.chat.skillExtraction, enabled: false } },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   // 后续 session、记忆与技能均隔离；配置凭据只在当前进程中使用。
   process.env.BINY_AGENT_DIR = path.join(output, "state");
   const metadata = { main: config.models[config.defaultModel]?.model, auxiliary: config.models[toolAlias]?.model,
-    repeats, catalogue, tasks, temperature: 0, maxSteps: 8, maxToolCalls: 20, timeoutMs: 120_000,
+    repeats, catalogue, tasks, temperature: 0, maxSteps: 8, timeoutMs: 120_000,
     toolExecutionMode: "direct", skills: "none", cache: "fresh ToolSearch instance per trial; provider cache uncontrolled",
     sourceHashes: Object.fromEntries(await Promise.all([
       new URL(import.meta.url), new URL("../src/agent/capabilityPreselection.ts", import.meta.url),

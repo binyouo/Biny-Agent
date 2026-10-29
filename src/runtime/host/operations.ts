@@ -121,6 +121,8 @@ export function operationLane(operation: string, payload: Record<string, unknown
   if (operation === "diary.refresh" || operation === "reflection.run" || operation === "heartbeat.run") return "admission";
   if (
     operation === "snapshot"
+    || operation === "privacy.overview"
+    || operation === "privacy.detail"
     || operation === "input.list"
     || operation === "session.goal.get"
     || operation === "plan.list"
