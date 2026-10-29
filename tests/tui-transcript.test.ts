@@ -310,7 +310,17 @@ function testSlashCommandParity(): void {
   const tuiCommands = slashCommandsForSurface("tui");
   const desktopCommands = slashCommandsForSurface("desktop");
   const desktopNames = new Set(desktopCommands.map((command) => command.name));
-  assert.equal(tuiCommands.length, 28);
+  const expectedTuiNames = [
+    "/clear", "/usage", "/compact", "/model", "/theme", "/status", "/mcp", "/skills", "/plugins",
+    "/subagent", "/tasks", "/automation", "/goal", "/graph", "/capabilities", "/review", "/memories",
+    "/memory", "/soul", "/resume", "/sessions", "/worktree", "/new", "/app", "/permissions", "/undo", "/fork", "/exit",
+    "/recover"
+  ];
+  const tuiNames = tuiCommands.map((command) => command.name);
+  assert.equal(new Set(tuiNames).size, tuiNames.length, "command names remain unique");
+  assert.deepEqual([...tuiNames].sort(), expectedTuiNames.sort(), "only the reviewed TUI recovery command extends the original inventory");
+  assert.deepEqual(tuiCommands.find((command) => command.name === "/recover")?.surfaces, ["tui"]);
+  assert.equal(desktopNames.has("/recover"), false, "the recovery box belongs to the running TUI, not Desktop");
   for (const removed of ["/help", "/approvals", "/quit"]) {
     assert.equal(tuiCommands.some((command) => command.name === removed), false);
   }
