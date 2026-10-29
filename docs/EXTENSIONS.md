@@ -251,7 +251,7 @@ Plugin 的 JavaScript 在 Biny 进程中运行。受管安装、路径校验和�
 
 子代理的工具范围与全局允许集合求交集，不能扩大父任务权限。任务结果以持久 TaskRun、Attempt 和可选验证记录为准；子代理的文字报告不代替文件或测试证据。管理与恢复见 [目标与自动化](AUTOMATION.md)。
 
-具名定义放在 `.biny/agents/<name>.md`（项目级）或 `~/.config/biny/agents/`（全局）；项目级同名优先。`runtime` 可选 `auto`、`builtin`、`codex`、`claude-code`、`acp`，省略时使用 `extensions.subagent.runtime`，默认 `builtin`。`model` 优先使用定义值，其次使用 `extensions.subagent.model`；内置运行时最终可沿用主模型。显式 ACP 定义可用 `providerAlias` 选择连接并沿用 Agent 默认模型，也可设置该 Provider 下的模型别名；Codex CLI 仍需指定外部模型 ID。不自动安装或在执行失败后切换后端。
+具名定义放在 `.biny/agents/<name>.md`（项目级）或 `~/.config/biny/agents/`（全局）；项目级同名优先。`runtime` 可选 `auto`、`builtin`、`codex`、`claude-code`、`acp`，省略时使用 `extensions.subagent.runtime`，默认 `builtin`。`model` 优先使用定义值，其次使用 `extensions.subagent.model`；内置运行时最终可沿用主模型。显式 ACP 定义可用 `providerAlias` 选择连接并沿用 Agent 默认模型（不继承全局的模型选择），也可同时设置该 Provider 下的模型别名；具名模型别名不存在、与指定连接不匹配或在非 ACP 运行方式指定连接时，启动前拒绝，不回退到其他模型或连接。未指定具名连接时仍沿用原有模型优先级；Codex CLI 仍需指定外部模型 ID。不自动安装或在执行失败后切换后端。
 
 选择「自动」（`runtime: auto`）时，未指定模型的子代理在委派时查找本机可执行的 Claude Code CLI：找到则使用 Claude Code 自身的默认模型，未找到则使用 Biny 内置和主模型。不会自动选择 Codex 或 ACP 连接；显式模型别名使用内置运行方式，具名定义的 runtime 优先于全局默认。检测只确认可执行文件存在，不检查登录或服务可用性。选中 Claude Code 后仍执行外部子代理的权限与额度检查；校验、启动、登录或执行失败均直接报错，不再转用内置重跑。
 

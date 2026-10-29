@@ -278,6 +278,7 @@ export async function prepareSubagentTask(
   const settings = options.config.extensions.subagent;
   const definition = await resolveSubagentDefinition(options, agentName);
   let runtime = definition?.runtime ?? settings.runtime ?? "builtin";
+  if (definition?.providerAlias && runtime !== "acp") throw new Error("Named subagent providerAlias requires the ACP runtime.");
   let command: string | undefined;
   if (runtime === "auto") {
     command = definition?.model || settings.model ? undefined : await findClaudeSubagentCli();

@@ -26,10 +26,18 @@ export async function prepareExternalSubagent(
     throw new Error("External subagents cannot enforce Biny step, cost or session goal budgets.");
   }
   if (execution?.resume) throw new Error("External worker recovery is unsupported; the task was not replayed.");
-  const model = definition?.model ?? settings.model;
+  // A named connection is a complete routing override, not a different provider
+  // for the inherited global model. An explicitly paired model must belong to it.
+  const namedProvider = definition?.providerAlias;
+  if (namedProvider && runtime !== "acp") throw new Error("Named subagent providerAlias requires the ACP runtime.");
+  const model = definition?.model ?? (namedProvider ? undefined : settings.model);
   const useCliDefault = runtime === "claude-code";
-  const selected = model ? config.models[model] : undefined;
-  const providerAlias = selected?.provider ?? (runtime === "acp" ? settings.providerAlias : undefined);
+  const selected = model && Object.hasOwn(config.models, model) ? config.models[model] : undefined;
+  if (runtime === "acp" && model && !selected) throw new Error(`Unknown subagent model alias: ${model}`);
+  if (runtime === "acp" && namedProvider && selected && selected.provider !== namedProvider) {
+    throw new Error("Named subagent model must belong to its selected ACP provider.");
+  }
+  const providerAlias = namedProvider ?? selected?.provider ?? (runtime === "acp" ? settings.providerAlias : undefined);
   const provider = providerAlias ? config.providers[providerAlias] : undefined;
   if (!model && !useCliDefault && !(runtime === "acp" && providerAlias)) throw new Error("External subagents require an explicit model or ACP provider.");
   if (runtime === "acp" && (provider?.type !== "acp" || !provider.acp || provider.enabled === false)) {
