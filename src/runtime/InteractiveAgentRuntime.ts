@@ -2,6 +2,7 @@ import { createRunDeadlineSignal } from "./runDeadline.js";
 import { validateRunOptions, parseRunVerification, withRunTaskGuidance, resolveRunDeadlineBudget, runVerificationApproval, closureStopReason, type RunCommandOptions, type RunCommandResult } from "./oneShot.js";
 import type { ToolOptimization } from "../session/toolOptimization.js";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../agent/AgentSession.js";
 import type { AgentModel } from "../agent/core/types.js";
 import type { AttachmentReference } from "../attachments/store.js";
@@ -95,8 +96,8 @@ export interface InteractiveRuntimeHandle {
   submitFollowupTurn?(requestIds: RuntimeRequestIds): SubmittedAgentRun;
   /** Host 内部监督回合：输入只进入本轮上下文，不写成新的 user_message。 */
   submitSupervisionTurn?(input: string, requestIds: RuntimeRequestIds, promptContext?: string): SubmittedAgentRun;
-  steer(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage>;
-  enqueue(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage>;
+  steer(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds, capabilitySelection?: AgentCapabilitySelection): Promise<QueuedAgentMessage>;
+  enqueue(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds, capabilitySelection?: AgentCapabilitySelection): Promise<QueuedAgentMessage>;
   updateQueuedRunMessage?(messageId: string, input: string): Promise<void>;
   removeQueuedRunMessage?(messageId: string): Promise<void>;
   moveQueuedRunMessage?(messageId: string, targetMessageId: string, placeAfter: boolean): Promise<void>;
@@ -165,6 +166,7 @@ interface RuntimeQueuedMessage {
   messageId: string;
   input: string;
   attachments: AgentAttachment[];
+  capabilitySelection?: AgentCapabilitySelection;
 }
 
 interface SessionLeaseState {
@@ -292,32 +294,38 @@ export class InteractiveAgentRuntime {
     );
   }
 
-  async steer(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
-    return await this.queueMessage(input, attachments, "steer", requestIds);
+  async steer(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds, capabilitySelection?: AgentCapabilitySelection): Promise<QueuedAgentMessage> {
+    return await this.queueMessage(input, attachments, "steer", requestIds, capabilitySelection);
   }
 
-  async enqueue(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
-    return await this.queueMessage(input, attachments, "queue", requestIds);
+  async enqueue(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds, capabilitySelection?: AgentCapabilitySelection): Promise<QueuedAgentMessage> {
+    return await this.queueMessage(input, attachments, "queue", requestIds, capabilitySelection);
   }
 
   private async queueMessage(
     input: string,
     attachments: AgentAttachment[],
     delivery: "steer" | "queue",
-    requestIds?: RuntimeRequestIds
+    requestIds?: RuntimeRequestIds,
+    capabilitySelection?: AgentCapabilitySelection
   ): Promise<QueuedAgentMessage> {
     if (this.closed) throw new Error("Agent runtime is closed.");
     const run = this.activeRun;
     if (!run || this.state.kind !== "runs") throw new Error("There is no active run to receive a queued message.");
     if (!input.trim() && !attachments.length) throw new Error("Queued message cannot be empty.");
     const messageId = requestIds?.messageId ?? randomUUID();
+    const selection = structuredClone(capabilitySelection ?? run.capabilitySelection);
     if (delivery === "steer") {
+      if (!isDeepStrictEqual(selection, run.capabilitySelection)) {
+        throw new Error("插话不能改变当前回合的工具与技能选择，请改为排队发送。");
+      }
       await this.commandRuntime.agent.queueSteering(messageId, input, attachments);
     } else {
       this.queuedMessages.push({
         messageId,
         input,
-        attachments: attachments.map((attachment) => ({ ...attachment }))
+        attachments: attachments.map((attachment) => ({ ...attachment })),
+        capabilitySelection: selection
       });
     }
     this.publishSnapshot();
@@ -356,6 +364,10 @@ export class InteractiveAgentRuntime {
     const index = this.queuedMessages.findIndex((item) => item.messageId === messageId);
     const item = this.queuedMessages[index];
     if (!item || index < 0) throw new Error("Queued message is no longer pending.");
+    const selection = Object.hasOwn(item, "capabilitySelection") ? item.capabilitySelection : this.activeRun?.capabilitySelection;
+    if (!isDeepStrictEqual(selection, this.activeRun?.capabilitySelection)) {
+      throw new Error("这条排队消息的工具与技能选择不同，不能作为当前回合的插话。");
+    }
     this.queuedMessages.splice(index, 1);
     try {
       await this.commandRuntime.agent.queueSteering(item.messageId, item.input, item.attachments);
@@ -429,8 +441,14 @@ export class InteractiveAgentRuntime {
 
   private startQueuedMessageRun(previousRun: AgentRun): void {
     if (this.closed || !this.queuedMessages.length) return;
-    const queued = this.queuedMessages;
-    this.queuedMessages = [];
+    // Freeze legacy entries before any mixed-selection batch changes the preceding run.
+    this.queuedMessages = this.queuedMessages.map((item) => Object.hasOwn(item, "capabilitySelection")
+      ? item : { ...item, capabilitySelection: structuredClone(previousRun.capabilitySelection) });
+    const selection = this.queuedMessages[0]!.capabilitySelection;
+    let count = 1;
+    while (count < this.queuedMessages.length && isDeepStrictEqual(this.queuedMessages[count]!.capabilitySelection, selection)) count += 1;
+    // Only adjacent equal selections may share a run; never union capabilities or reorder input.
+    const queued = this.queuedMessages.splice(0, count);
     const input = queued.map((item) => item.input).filter((content) => content.trim()).join("\n\n");
     const attachments = queued.flatMap((item) => item.attachments);
     try {
@@ -441,7 +459,7 @@ export class InteractiveAgentRuntime {
         { parentRunId: previousRun.runId, continuationSource: "message_queue", allowUserInput: previousRun.allowUserInput },
         undefined,
         undefined,
-        previousRun.capabilitySelection,
+        selection,
         false,
         false,
         false,
@@ -526,7 +544,7 @@ export class InteractiveAgentRuntime {
         && requestIds?.retryOfMessageId === undefined
         && requestIds?.continuationSource === undefined,
       promptContext,
-      capabilitySelection,
+      capabilitySelection: structuredClone(capabilitySelection),
       fastMode,
       modelOverride: modelRoute === "tool" ? this.commandRuntime.resolveToolModelForRun?.() : undefined,
       retryOfMessageId: requestIds?.retryOfMessageId,

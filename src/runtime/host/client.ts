@@ -331,9 +331,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     input: string,
     delivery: "steer" | "queue",
     attachments: AgentAttachment[] = [],
-    requestIds?: RuntimeRequestIds
+    requestIds?: RuntimeRequestIds,
+    capabilitySelection?: AgentCapabilitySelection
   ): Promise<HostOperationResult<QueuedAgentMessage>> {
-    return await this.queueRunMessageForSession(this.focusedSessionId, input, delivery, attachments, requestIds);
+    return await this.queueRunMessageForSession(this.focusedSessionId, input, delivery, attachments, requestIds, capabilitySelection);
   }
 
   async queueRunMessageForSession(
@@ -341,12 +342,14 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     input: string,
     delivery: "steer" | "queue",
     attachments: AgentAttachment[] = [],
-    requestIds?: RuntimeRequestIds
+    requestIds?: RuntimeRequestIds,
+    capabilitySelection?: AgentCapabilitySelection
   ): Promise<HostOperationResult<QueuedAgentMessage>> {
     const ids = normalizeRequestIds(requestIds);
     return await this.request("run.queue", {
       input,
       delivery,
+      capabilitySelection,
       attachments,
       messageId: ids.messageId,
       sessionId,
@@ -672,13 +675,14 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return () => this.capabilityOfferListeners.delete(listener);
   }
 
-  async steer(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
+  async steer(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds, capabilitySelection?: AgentCapabilitySelection): Promise<QueuedAgentMessage> {
     this.assertQueueable(input, attachments);
     const ids = normalizeRequestIds(requestIds);
     return await this.request<QueuedAgentMessage>("queue", {
       input,
       attachments,
       delivery: "steer",
+      capabilitySelection,
       messageId: ids.messageId,
       sessionId: this.focusedSessionId,
       writeIntent: true,
@@ -686,13 +690,14 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     });
   }
 
-  async enqueue(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
+  async enqueue(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds, capabilitySelection?: AgentCapabilitySelection): Promise<QueuedAgentMessage> {
     this.assertQueueable(input, attachments);
     const ids = normalizeRequestIds(requestIds);
     return await this.request<QueuedAgentMessage>("queue", {
       input,
       attachments,
       delivery: "queue",
+      capabilitySelection,
       messageId: ids.messageId,
       sessionId: this.focusedSessionId,
       writeIntent: true,

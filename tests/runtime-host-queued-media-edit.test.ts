@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { z } from "zod";
@@ -86,7 +87,7 @@ interface Extracted {
   QueueProjection: new () => RuntimeFixture;
   hostEdit(this: HostFixture, payload: Record<string, unknown>): Promise<void>;
 }
-const sandbox: { z: typeof z; extracted?: Extracted } = { z };
+const sandbox: { z: typeof z; structuredClone: typeof structuredClone; isDeepStrictEqual: typeof isDeepStrictEqual; extracted?: Extracted } = { z, structuredClone, isDeepStrictEqual };
 runInNewContext(script, sandbox, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } });
 assert.ok(sandbox.extracted);
 const extracted = sandbox.extracted;
@@ -140,7 +141,7 @@ for (const input of ["", " \t\n"]) {
     const startedAttachments = f.starts[0]![1] as Attachment[];
     assert.equal(startedAttachments.length, attachments.length);
     attachments.forEach((attachment, index) => assert.equal(startedAttachments[index], attachment));
-    assert.equal(f.starts[0]![6], selection);
+    assert.deepEqual(JSON.parse(JSON.stringify(f.starts[0]![6])), selection);
     assert.equal(f.runtime.queuedMessages.length, 0);
   });
 }
