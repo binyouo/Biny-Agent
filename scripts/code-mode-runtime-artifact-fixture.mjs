@@ -64,6 +64,17 @@ try {
       assert.equal(result.value, 42);
     });
 
+    await fixture("compiled adapter accepts 300 bridge calls", async () => {
+      let calls = 0;
+      const read = { name: "Read", parameters: { type: "object" }, execute: async () => { calls++; return value(true); } };
+      const result = await cell("for (let i = 0; i < 300; i++) await tools.Read({}); return 'done';", [read],
+        { executionPolicy: { ...policy, timeoutMs: 5_000, maxCellDurationMs: 10_000 } });
+      assert.equal(result.ok, true, result.error);
+      assert.equal(result.value, "done");
+      assert.equal(calls, 300);
+      assert.equal(result.childCalls.length, 300);
+    });
+
     await fixture("compiled guest has bounded fetch without Node globals", async () => {
       const result = await cell("return [typeof process, typeof require, typeof fetch, typeof Buffer];");
       assert.equal(result.ok, true, result.error);
@@ -100,7 +111,7 @@ try {
     }
 
     await fixture("small CPU slices accumulate across legitimate host waits", async () => {
-      // 用连续短段的公开超时结果校准负载，覆盖热循环，避免工具次数上限先于 CPU 预算触发。
+      // 用连续短段的公开超时结果校准负载，覆盖热循环。
       const sliceCode = iterations => `let sum = 0; for (let i = 0; i < ${iterations}; i++) sum += i;`;
       const executionPolicy = { ...policy, timeoutMs: 800, maxCellDurationMs: 6_000 };
       let iterations = 10_000;
@@ -123,7 +134,7 @@ try {
       const result = await cell(`for (let j = 0; j < 100; j++) { ${slice} await tools.Read({}); } return 1;`, [read], { executionPolicy });
       assert.equal(result.ok, false);
       assert.match(result.error ?? "", /execution|interrupt|budget/iu);
-      assert.ok(calls >= 2 && calls < 32, `Cumulative CPU must expire before the bridge-count limit; observed ${calls} calls`);
+      assert.ok(calls >= 2 && calls < 100, `Cumulative CPU must expire before the loop finishes; observed ${calls} calls`);
     });
 
     await fixture("host deadline cancels and does not admit or replay another child", async () => {

@@ -22,7 +22,7 @@ patchedDependencies:
     hash: 8fc9d0f8dc0bd6805baaae58744e97d11bce6d7fa871f49f24665fe334e458f4
     path: patches/@earendil-works-pi-tui@0.82.1.patch
   run@2.1.6:
-    hash: d18893479916603076cfa0fcb0980da3d65d8932362ffd16a73762ddb5f85f8e
+    hash: 2e218b2c98748dee4d37b685974bb7ba966670eb5008cdb6dbf9a29f97c6ae20
     path: patches/run@2.1.6.patch
 
 importers:
@@ -4652,7 +4652,7 @@ snapshots:
   '@ai-sdk/code-mode@1.0.50(patch_hash=3599031e5faf94bc0306e7a29850b6a0fb7114db6f242453a92830b3f0e409e1)(ai@7.0.93(zod@4.6.7))(typescript@5.9.3)':
     dependencies:
       ai: 7.0.93(zod@4.6.7)
-      run: 2.1.6(patch_hash=d18893479916603076cfa0fcb0980da3d65d8932362ffd16a73762ddb5f85f8e)(typescript@5.9.3)
+      run: 2.1.6(patch_hash=2e218b2c98748dee4d37b685974bb7ba966670eb5008cdb6dbf9a29f97c6ae20)(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript
 
@@ -8965,7 +8965,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  run@2.1.6(patch_hash=d18893479916603076cfa0fcb0980da3d65d8932362ffd16a73762ddb5f85f8e)(typescript@5.9.3):
+  run@2.1.6(patch_hash=2e218b2c98748dee4d37b685974bb7ba966670eb5008cdb6dbf9a29f97c6ae20)(typescript@5.9.3):
     optionalDependencies:
       typescript: 5.9.3
 

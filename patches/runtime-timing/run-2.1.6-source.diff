@@ -1,3 +1,16 @@
+diff --git a/packages/run/src/continuation-validation.ts b/packages/run/src/continuation-validation.ts
+index 7ff28dd..7e83ae5 100644
+--- a/packages/run/src/continuation-validation.ts
++++ b/packages/run/src/continuation-validation.ts
+@@ -435,7 +435,7 @@ const validateLedger = (
+   if (
+     !Array.isArray(value.ledger) ||
+     value.ledger.length === 0 ||
+-    value.ledger.length > options.maxBridgeRequests
++    (options.maxBridgeRequests !== 0 && value.ledger.length > options.maxBridgeRequests)
+   ) {
+     throw new RunProtocolError('Continuation ledger length is invalid.');
+   }
 diff --git a/packages/run/src/run.ts b/packages/run/src/run.ts
 index c8d5198..9dd5afd 100644
 --- a/packages/run/src/run.ts
@@ -89,7 +102,7 @@ index 0000000..b466f11
 +  }
 +}
 diff --git a/packages/run/src/runtime/manager.ts b/packages/run/src/runtime/manager.ts
-index 40e93a7..25f06eb 100644
+index 40e93a7..e886051 100644
 --- a/packages/run/src/runtime/manager.ts
 +++ b/packages/run/src/runtime/manager.ts
 @@ -459,6 +459,7 @@ export async function runManaged(input: InternalRunInput): Promise<RunResult> {
@@ -100,6 +113,15 @@ index 40e93a7..25f06eb 100644
    source,
    sourceType,
    originalSource,
+@@ -682,7 +683,7 @@ function startWorkerRun({
+       );
+       return false;
+     }
+-    if (totalBridgeRequests >= normalizedOptions.maxBridgeRequests) {
++    if (normalizedOptions.maxBridgeRequests !== 0 && totalBridgeRequests >= normalizedOptions.maxBridgeRequests) {
+       failTerminal(
+         new RunBridgeLimitError(
+           `JavaScript runtime exceeded the ${normalizedOptions.maxBridgeRequests} bridge request limit.`,
 @@ -736,6 +737,7 @@ function startWorkerRun({
      normalizedOptions.timeoutMs,
    );
@@ -146,7 +168,7 @@ index 40e93a7..25f06eb 100644
        maxConsoleOutputBytes: normalizedOptions.maxConsoleOutputBytes,
        maxHostFunctionInputBytes: normalizedOptions.maxHostFunctionInputBytes,
 diff --git a/packages/run/src/runtime/protocol-validation.ts b/packages/run/src/runtime/protocol-validation.ts
-index 718bfb8..ed7d0c6 100644
+index 718bfb8..c3e42a3 100644
 --- a/packages/run/src/runtime/protocol-validation.ts
 +++ b/packages/run/src/runtime/protocol-validation.ts
 @@ -52,6 +52,7 @@ const isRunOptions = (value: unknown): boolean => {
@@ -172,7 +194,7 @@ index 718bfb8..ed7d0c6 100644
 +  }
 +  return Object.entries(value)
 +    .filter(([key]) => key !== 'executionTimeoutMode')
-+    .every(([, item]) => Number.isSafeInteger(item) && (item as number) > 0);
++    .every(([key, item]) => Number.isSafeInteger(item) && ((item as number) > 0 || key === 'maxBridgeRequests' && item === 0));
  };
  
  const isDeterminism = (value: unknown): boolean => {
@@ -242,7 +264,7 @@ index c6c3388..f0d3b27 100644
      maxConsoleOutputBytes: 64 * 1024,
      maxHostFunctionInputBytes: 1024 * 1024,
 diff --git a/packages/run/src/runtime/worker.ts b/packages/run/src/runtime/worker.ts
-index 516b385..525e2e8 100644
+index 516b385..60141fd 100644
 --- a/packages/run/src/runtime/worker.ts
 +++ b/packages/run/src/runtime/worker.ts
 @@ -1,4 +1,4 @@
@@ -738,6 +760,15 @@ index 516b385..525e2e8 100644
    );
  
    return { invokeHostFunction, invokeSyncHostFunction };
+@@ -802,7 +883,7 @@ function throwModuleBridgeError(
+ function admitBridgeRequestAttempt(message: WorkerRunMessage): void {
+   // Count every attempt before validation, independently of the contiguous
+   // transport indexes: locally rejected requests never reach the manager.
+-  if (bridgeRequestAttemptCounter >= message.options.maxBridgeRequests) {
++  if (message.options.maxBridgeRequests !== 0 && bridgeRequestAttemptCounter >= message.options.maxBridgeRequests) {
+     const error = new RunBridgeLimitError(
+       `JavaScript runtime exceeded the ${message.options.maxBridgeRequests} bridge request limit.`,
+       { maxBridgeRequests: message.options.maxBridgeRequests },
 @@ -863,7 +944,13 @@ function requestSyncHost(
    while (
      Atomics.load(header, SyncBridgeHeader.State) === SyncBridgeState.Request
@@ -941,7 +972,7 @@ index 516b385..525e2e8 100644
          Object.defineProperty(dumped, 'code', { enumerable: true, value });
        } else {
 diff --git a/packages/run/src/types.ts b/packages/run/src/types.ts
-index c4e4ce5..6cf9dae 100644
+index c4e4ce5..b56ae3d 100644
 --- a/packages/run/src/types.ts
 +++ b/packages/run/src/types.ts
 @@ -65,6 +65,8 @@ export type HostFunctionManifest = ReadonlyMap<string, ReadonlySet<string>>;
@@ -953,7 +984,15 @@ index c4e4ce5..6cf9dae 100644
    /** @default `64 * 1024 * 1024` */
    memoryLimitBytes?: number;
    /** @default `2 * 1024 * 1024` */
-@@ -104,6 +106,8 @@ export type RunSourceType = 'function-body' | 'module';
+@@ -80,6 +82,7 @@ export interface RunLimits {
+   /** @default `4 * 1024 * 1024` */
+   maxHostFunctionOutputBytes?: number;
+   /** @default `256` */
++  /** Zero disables the aggregate bridge request limit. */
+   maxBridgeRequests?: number;
+   /** @default `32` */
+   maxInFlightBridgeRequests?: number;
+@@ -104,6 +107,8 @@ export type RunSourceType = 'function-body' | 'module';
  
  /** Input accepted by `run` and `Runner.run`. */
  export interface RunInput<TOKEN = unknown> {
@@ -962,7 +1001,7 @@ index c4e4ce5..6cf9dae 100644
    /**
     * JavaScript or type-stripped TypeScript function-body source. Runtime type
     * stripping is used when provided natively by Node or Bun, or through the
-@@ -289,6 +293,7 @@ export interface InternalRunInput extends RunInput<unknown> {
+@@ -289,6 +294,7 @@ export interface InternalRunInput extends RunInput<unknown> {
  /** @internal */
  export interface NormalizedRunOptions {
    timeoutMs: number;
@@ -971,13 +1010,14 @@ index c4e4ce5..6cf9dae 100644
    maxStackSizeBytes: number;
    maxResultBytes: number;
 diff --git a/packages/run/src/utils/options.ts b/packages/run/src/utils/options.ts
-index 7606a03..f85d882 100644
+index 7606a03..616a159 100644
 --- a/packages/run/src/utils/options.ts
 +++ b/packages/run/src/utils/options.ts
-@@ -32,6 +32,15 @@ const positiveInteger = (
+@@ -32,7 +32,17 @@ const positiveInteger = (
  export const normalizeOptions = (
    limits: RunLimits = {},
  ): NormalizedRunOptions => ({
+-  maxBridgeRequests: positiveInteger(
 +  ...(limits.executionTimeoutMs === undefined
 +    ? {}
 +    : {
@@ -987,6 +1027,8 @@ index 7606a03..f85d882 100644
 +          'limits.executionTimeoutMs',
 +        ),
 +      }),
-   maxBridgeRequests: positiveInteger(
++  // Zero disables the aggregate count while keeping concurrency and deadlines.
++  maxBridgeRequests: limits.maxBridgeRequests === 0 ? 0 : positiveInteger(
      limits.maxBridgeRequests,
      DEFAULT_MAX_BRIDGE_REQUESTS,
+     'limits.maxBridgeRequests',
