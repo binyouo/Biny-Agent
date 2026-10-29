@@ -635,7 +635,6 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
         "softStepLimit": 100_000,
         "hardStepLimit": 100_000,
         # 工具调用数不单独限次，交由 Harbor 的 task.toml 时限终止长任务。
-        "maxToolCalls": 100_000,
         "maxRepeatedActions": 3,
         "maxConcurrentTools": 4,
         "maxQueuedToolCalls": 128,

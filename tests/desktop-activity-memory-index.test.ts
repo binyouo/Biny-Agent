@@ -77,7 +77,6 @@ try {
     } finally { index.close(); }
     assert.ok(requests >= 1);
   } finally {
-    pipeline.close();
     await memoryServer.close();
   }
 } finally {

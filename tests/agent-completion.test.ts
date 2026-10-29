@@ -339,7 +339,7 @@ async function testStepPersistenceFailureIsATurnFailure(): Promise<void> {
   }
 }
 
-async function testRepeatedActionBudgetStopsTheLoop(withFileProgress = false): Promise<void> {
+async function testRepeatedActionCanContinue(withFileProgress = false): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-repeated-action-limit-"));
   await ensureAgentDirs(workspaceRoot);
   const registry = new ToolRegistry();
@@ -366,11 +366,11 @@ async function testRepeatedActionBudgetStopsTheLoop(withFileProgress = false): P
     supportsTools: true,
     async stream() {
       requests += 1;
-      assert.ok(requests <= (withFileProgress ? 7 : 3), "budget rejection must stop the loop before another model request");
+      assert.ok(requests <= 7, "the fixture must not create an unbounded loop");
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         if (withFileProgress && requests === 3) {
           yield { type: "tool-call", id: "progress-write", name: "Write", arguments: { path: "progress.txt", content: "changed" } };
-        } else if (withFileProgress && requests === 6) {
+        } else if (requests === 6) {
           yield { type: "text-delta", text: "Rechecked after changing the file." };
           yield { type: "finish", reason: "stop" };
           return;
@@ -391,7 +391,8 @@ async function testRepeatedActionBudgetStopsTheLoop(withFileProgress = false): P
     agent: {
       ...defaultConfig.agent,
       hardStepLimit: 8,
-      maxRepeatedActions: 2
+      maxRepeatedActions: 2,
+      maxToolCalls: 1
     },
     context: {
       ...defaultConfig.context,
@@ -420,15 +421,9 @@ async function testRepeatedActionBudgetStopsTheLoop(withFileProgress = false): P
       assert.equal(events.filter((event) => event.type === "tool_result" && event.tool === "repeatable_check" && event.executionStatus === "succeeded").length, 4);
       return;
     }
-    assert.equal(requests, 3);
-    assert.equal(executions, 2);
-    assert.equal(outcome.status, "incomplete");
-    assert.equal(outcome.stopReason, "repeated_action_limit");
-    assert.equal(outcome.resumable, true);
-    assert.match(outcome.error ?? "", /repeat limit of 2/u);
-    const interrupted = await agent.interruptedTurn();
-    assert.equal(interrupted?.completedSteps, 0, "explicit continuation must open a new budget window");
-    assert.equal(interrupted?.terminal?.stopReason, "repeated_action_limit");
+    assert.equal(requests, 6);
+    assert.equal(executions, 5, "identical successful calls remain available beyond the former limit");
+    assert.equal(outcome.status, "completed", outcome.error);
   } finally {
     await agent.close();
     await rm(workspaceRoot, { recursive: true, force: true });
@@ -612,8 +607,8 @@ async function testUnattributedCancellationDoesNotWriteInterruptionMarker(): Pro
 for (const scenario of ["answer", "write", "recovery", "limit", "length", "notification", "reasoning-only"] as const) await testNaturalCompletion(scenario);
 await testOutputLimitDiagnosticsUseTheFinalRequest();
 await testAutomaticOutputBudgetReachesEveryProviderRequest();
-await testRepeatedActionBudgetStopsTheLoop();
-await testRepeatedActionBudgetStopsTheLoop(true);
+await testRepeatedActionCanContinue();
+await testRepeatedActionCanContinue(true);
 await testStepPersistenceFailureIsATurnFailure();
 await testInterruptedTurnMarkerIsModelVisibleOnlyForManualStop();
 await testReplacedTurnDoesNotWriteInterruptionMarker();

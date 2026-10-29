@@ -1,3 +1,4 @@
+import { maskingOverview, maskingDetail, clearMaskRecords } from "../../privacy/record.js";
 import { forkSession } from "../../session/fork.js";
 import { isDeepStrictEqual } from "node:util";
 import { validateRunOptions, type RunCommandOptions } from "../oneShot.js";
@@ -960,6 +961,13 @@ export class RuntimeHostServer {
         }
       }
       await this.worktrees.remove(sessionId, payload.deleteBranch === true);
+      return undefined;
+    }
+    if (frame.operation === "privacy.overview" || frame.operation === "privacy.detail" || frame.operation === "privacy.clear") {
+      const sessionIds = this.registry.list().map((entry) => entry.runtime.getSnapshot().info.sessionId);
+      if (frame.operation === "privacy.overview") return maskingOverview(sessionIds);
+      if (frame.operation === "privacy.detail") return maskingDetail(requiredString(payload.id, "id"), sessionIds);
+      clearMaskRecords(sessionIds);
       return undefined;
     }
     if (frame.operation === "snapshot") {

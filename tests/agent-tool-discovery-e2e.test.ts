@@ -184,12 +184,11 @@ async function testDiscoveryAcrossTurns(): Promise<void> {
   }
 }
 
-// query 改写不能绕过发现预算；现有逐参数预算无法识别同一能力的反复发现。
+// Repeated searches remain available; permanent discovery failures still stop separately.
 async function testDiscoveryWithoutProgress(scenario: {
   actions: Array<"search" | "inspect" | "interrupt" | "other" | "script" | "script-loop" | "parallel" | "empty" | "invalid">;
   requests: number;
   searches: number;
-  stopped: boolean;
 }): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-discovery-no-progress-"));
   await ensureAgentDirs(workspaceRoot);
@@ -240,7 +239,7 @@ async function testDiscoveryWithoutProgress(scenario: {
     }
   });
   const config = configSchema.parse({ ...defaultConfig,
-    agent: { ...defaultConfig.agent, toolExecutionMode: scenario.actions.some((action) => action.startsWith("script")) ? "code_mode" : "direct", maxRepeatedActions: 2 },
+    agent: { ...defaultConfig.agent, toolExecutionMode: scenario.actions.some((action) => action.startsWith("script")) ? "code_mode" : "direct", maxRepeatedActions: 2, maxToolCalls: 1 },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   const recorder = new SessionRecorder(workspaceRoot);
@@ -256,31 +255,26 @@ async function testDiscoveryWithoutProgress(scenario: {
       assert.equal(outcome.stopReason, "provider_error");
       for await (const event of agent.continueInterruptedTurn(options)) if (event.type === "done") outcome = event.outcome;
     }
-    assert.equal(outcome.status, scenario.stopped ? "incomplete" : "completed", JSON.stringify(scenario));
+    assert.equal(outcome.status, "completed", JSON.stringify(scenario));
     assert.equal(requests, scenario.requests, JSON.stringify(scenario));
-    if (scenario.stopped) {
-      assert.equal(outcome.stopReason, "repeated_action_limit");
-      assert.match(outcome.error ?? "", /discovery.*progress/iu);
-    }
     const replay = await replaySession(recorder.filePath);
     assert.equal(replay.events.filter((event) => event.type === "tool_result" && event.tool === "ToolSearch").length, scenario.searches);
-    if (scenario.stopped) assert.ok(replay.events.some((event) => event.type === "turn_status" && event.status === "incomplete"));
   } finally {
     await agent.close();
     await rm(workspaceRoot, { recursive: true, force: true });
   }
 }
 
-await testDiscoveryWithoutProgress({ actions: ["search", "search", "search", "search"], requests: 3, searches: 3, stopped: true });
-await testDiscoveryWithoutProgress({ actions: ["search", "search", "inspect", "search"], requests: 5, searches: 3, stopped: false });
-await testDiscoveryWithoutProgress({ actions: ["search", "inspect", "search", "inspect", "search"], requests: 5, searches: 3, stopped: true });
-await testDiscoveryWithoutProgress({ actions: ["search", "search", "interrupt", "search"], requests: 4, searches: 3, stopped: true });
-await testDiscoveryWithoutProgress({ actions: ["search", "search", "other", "search"], requests: 5, searches: 4, stopped: false });
-await testDiscoveryWithoutProgress({ actions: ["parallel"], requests: 1, searches: 3, stopped: true });
-await testDiscoveryWithoutProgress({ actions: ["empty", "empty"], requests: 2, searches: 2, stopped: true });
-await testDiscoveryWithoutProgress({ actions: ["invalid", "invalid"], requests: 2, searches: 2, stopped: true });
-await testDiscoveryWithoutProgress({ actions: ["script", "script", "script", "script"], requests: 3, searches: 3, stopped: true });
-await testDiscoveryWithoutProgress({ actions: ["script-loop"], requests: 1, searches: 4, stopped: true });
+await testDiscoveryWithoutProgress({ actions: ["search", "search", "search", "search"], requests: 5, searches: 4 });
+await testDiscoveryWithoutProgress({ actions: ["search", "search", "inspect", "search"], requests: 5, searches: 3 });
+await testDiscoveryWithoutProgress({ actions: ["search", "inspect", "search", "inspect", "search"], requests: 6, searches: 3 });
+await testDiscoveryWithoutProgress({ actions: ["search", "search", "interrupt", "search"], requests: 5, searches: 3 });
+await testDiscoveryWithoutProgress({ actions: ["search", "search", "other", "search"], requests: 5, searches: 4 });
+await testDiscoveryWithoutProgress({ actions: ["parallel"], requests: 2, searches: 3 });
+await testDiscoveryWithoutProgress({ actions: ["empty", "empty"], requests: 3, searches: 2 });
+await testDiscoveryWithoutProgress({ actions: ["invalid", "invalid"], requests: 3, searches: 2 });
+await testDiscoveryWithoutProgress({ actions: ["script", "script", "script", "script"], requests: 5, searches: 4 });
+await testDiscoveryWithoutProgress({ actions: ["script-loop"], requests: 2, searches: 8 });
 await testDiscoveryAcrossTurns();
 await testDiscoveryFailure(true);
 await testDiscoveryFailure(false);

@@ -17,7 +17,7 @@ const names = [
 ] as const;
 const directCalls = new Set<string>([...names, "serializeToolResult", "String", "Boolean"]);
 const methodCalls = new Set([
-  "messages.entries", "message.content.filter", "calls.set", "calls.get", "entries.push",
+  "messages.entries", "message.content.filter", "entry.message.content.some", "calls.set", "calls.get", "entries.push",
   "entries.filter", "exact.get", "exact.set", "reads.push", "readBuckets.get", "readBuckets.set",
   "snapshots.get", "snapshots.set", "failures.get", "failures.set", "replacements.get", "replacements.set",
   "seen.has", "seen.add", "Object.keys", "Array.isArray", "Number.isFinite", "Number.isSafeInteger",

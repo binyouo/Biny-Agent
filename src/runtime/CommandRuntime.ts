@@ -1302,8 +1302,7 @@ async function initializeCommandRuntime(
       permissionManager,
       (event) => events.push(event),
       () => ({}),
-      new Set(["Bash"]),
-      { maxToolCalls: 1, maxRepeatedActions: 1 }
+      new Set(["Bash"])
     );
     const bash = coordinator.createAgentTools().find((tool) => tool.name === "Bash");
     if (!bash) throw new Error("Bash verification tool is unavailable.");
@@ -1561,7 +1560,7 @@ async function initializeCommandRuntime(
         workspaceRoot, config: { ...config, agent: { ...config.agent, toolExecutionMode: "direct" } },
         recorder: currentRecorder, toolRegistry: registry, permissionManager, runId,
         confirmPermission: async request => ({ approved: !request.requireFullYes, action: "allow_once", scope: "once" })
-      }, permissionManager, onEvent ?? (() => undefined), () => ({}), new Set([command]), directToolCall ? undefined : { maxToolCalls: 1, maxRepeatedActions: 1 });
+      }, permissionManager, onEvent ?? (() => undefined), () => ({}), new Set([command]));
       const executable = coordinator.createAgentTools().find(entry => entry.name === command);
       if (!executable) throw new Error(`Session command is unavailable: ${command}`);
       const previousContext = currentRecorder.runtimeContextSnapshot();
@@ -1586,7 +1585,7 @@ async function initializeCommandRuntime(
         workspaceRoot, config: { ...config, agent: { ...config.agent, toolExecutionMode: "direct" } }, recorder: agent.getSessionRecorder(), toolRegistry: managementTools, permissionManager,
         confirmPermission: async (request) => ({ approved: !request.requireFullYes, action: "allow_once", scope: "once" }),
         runId: `plan-start:${graphId}:${String(revision)}`
-      }, permissionManager, () => undefined, () => ({}), new Set(["PlanStart"]), { maxToolCalls: 1, maxRepeatedActions: 1 });
+      }, permissionManager, () => undefined, () => ({}), new Set(["PlanStart"]));
       const tool = coordinator.createAgentTools().find((entry) => entry.name === "PlanStart");
       if (!tool) throw new Error("PlanStart is unavailable.");
       const result = await tool.execute(randomUUID(), { graphId, revision }, signal);
