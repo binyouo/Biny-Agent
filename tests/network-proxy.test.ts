@@ -20,7 +20,9 @@ test("parses macOS HTTP and HTTPS proxy settings", () => {
   assert.deepEqual(parseMacSystemProxy(macProxyOutput), {
     httpProxy: "http://127.0.0.1:7890",
     httpsProxy: "http://127.0.0.1:7890",
-    noProxy: ["localhost", "127.0.0.1", "*.local"]
+    noProxy: ["localhost", "127.0.0.1", "*.local"],
+    fallbackToOtherScheme: false,
+    excludeSimpleHostnames: false
   });
 });
 
