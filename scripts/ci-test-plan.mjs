@@ -1,6 +1,6 @@
 /** CI 选择计划：PR 比较合并结果与 base，push 累计成功祖先后的改动。 */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -83,6 +83,7 @@ async function dependencyGraph(root) {
   const ts = (await import("typescript")).default;
   const files = [...walk(root, "src"), ...walk(root, "tests")];
   const testFiles = new Set(files.filter(file => testPath.test(file)));
+  const canonicalRoot = realpathSync(root);
   const dependents = new Map();
   const opaque = new Set();
   const unresolved = [];
@@ -93,6 +94,7 @@ async function dependencyGraph(root) {
     const source = ts.createSourceFile(absolute, readFileSync(absolute, "utf8"), ts.ScriptTarget.Latest, true);
     if (source.parseDiagnostics.length) throw new Error(`Cannot parse ${file}`);
     const readers = new Set();
+    const filesystemNamespaces = new Set();
     const requireFactories = new Set();
     const requires = new Set();
     // 此助手的文件读取只处理经过临时根目录校验的 owner 记录和清理诊断。
@@ -103,6 +105,10 @@ async function dependencyGraph(root) {
     };
     const addBuiltin = (specifier, node) => {
       const bindings = node?.importClause?.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings) && !node.importClause.name && /^(?:node:)?fs\/promises$/u.test(specifier)) {
+        filesystemNamespaces.add(bindings.name.text);
+        return;
+      }
       if (!bindings || !ts.isNamedImports(bindings) || node.importClause.name) { opaque.add(file); return; }
       for (const binding of bindings.elements) {
         if (binding.isTypeOnly || node.importClause.isTypeOnly) continue;
@@ -110,6 +116,8 @@ async function dependencyGraph(root) {
         if (/^(?:node:)?module$/u.test(specifier)) {
           if (imported === "createRequire") requireFactories.add(binding.name.text);
           else opaque.add(file);
+        } else if (imported === "promises" && /^(?:node:)?fs$/u.test(specifier)) {
+          filesystemNamespaces.add(binding.name.text);
         } else if (/^(?:readFile|exists|stat|lstat|access|readdir|opendir|realpath)(?:Sync)?$/u.test(imported)) {
           readers.add(binding.name.text);
         } else if (!/^(?:mkdtemp|mkdir|rm|rmdir|unlink|writeFile|appendFile)(?:Sync)?$/u.test(imported)) {
@@ -153,10 +161,15 @@ async function dependencyGraph(root) {
         return;
       }
       const relative = path.relative(root, input).split(path.sep).join("/");
-      if (relative.startsWith("../") || path.isAbsolute(relative)) { opaque.add(file); return; }
-      addEdge(relative);
-      // 目录输入覆盖其中的源码；删除文件仍由计划入口扩大为全量。
-      for (const candidate of files) if (!relative || candidate.startsWith(`${relative}/`)) addEdge(candidate);
+      let target;
+      try { target = path.relative(canonicalRoot, realpathSync(input)).split(path.sep).join("/"); }
+      catch { opaque.add(file); return; }
+      if ([relative, target].some(value => value.startsWith("../") || path.isAbsolute(value))) { opaque.add(file); return; }
+      // 符号链接的路径和真实目标都可能影响读取结果。
+      for (const inputPath of new Set([relative, target])) {
+        addEdge(inputPath);
+        for (const candidate of files) if (!inputPath || candidate.startsWith(`${inputPath}/`)) addEdge(candidate);
+      }
     };
     // 先登记绑定，使别名调用和声明顺序不改变选择结果。
     for (const node of source.statements) {
@@ -202,6 +215,11 @@ async function dependencyGraph(root) {
           && argument?.getText(source) === "pathToFileURL(filePath).href")) opaque.add(file);
       } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && readers.has(node.expression.text)) {
         readInput(node.arguments[0]);
+      } else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+        && ts.isIdentifier(node.expression.expression) && filesystemNamespaces.has(node.expression.expression.text)) {
+        const method = node.expression.name.text;
+        if (/^(?:readFile|exists|stat|lstat|access|readdir|opendir|realpath)(?:Sync)?$/u.test(method)) readInput(node.arguments[0]);
+        else if (!/^(?:mkdtemp|mkdir|rm|rmdir|unlink|writeFile|appendFile)(?:Sync)?$/u.test(method)) opaque.add(file);
       } else if (factoryCall(node)) {
         if (node.arguments.length !== 1 || node.arguments[0].getText(source) !== "import.meta.url") opaque.add(file);
         const parent = node.parent;
@@ -214,6 +232,13 @@ async function dependencyGraph(root) {
         opaque.add(file);
       }
       if (ts.isCallExpression(node) && node.expression.getText(source) === "process.chdir") opaque.add(file);
+      if (ts.isIdentifier(node) && filesystemNamespaces.has(node.text)) {
+        const parent = node.parent;
+        const declaration = (ts.isImportSpecifier(parent) || ts.isNamespaceImport(parent)) && parent.name === node;
+        const directCall = ts.isPropertyAccessExpression(parent) && parent.expression === node
+          && ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+        if (!declaration && !directCall && !ts.isTypeQueryNode(parent)) opaque.add(file);
+      }
       if (ts.isIdentifier(node) && (readers.has(node.text) || requireFactories.has(node.text) || requires.has(node.text))) {
         const parent = node.parent;
         const declaration = (ts.isImportSpecifier(parent) || ts.isVariableDeclaration(parent)) && parent.name === node;
@@ -291,7 +316,7 @@ function readTimings(directory) {
     } catch (error) { console.error(`Ignoring unusable previous timings: ${error.message}`); }
   }
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^test-timings-[1-4]$/u.test(entry.name)) continue;
+    if (!entry.isDirectory() || !/^test-timings-[1-8]$/u.test(entry.name)) continue;
     const file = path.join(directory, entry.name, "test-timings.json");
     if (!existsSync(file)) continue;
     try {
@@ -336,7 +361,8 @@ async function main() {
   if (process.env.GITHUB_OUTPUT) {
     const lanes = { standard: plan.standard.length > 0, e2e: plan.e2e.length > 0, build: plan.build, renderer: plan.renderer, windows: plan.windows };
     appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(lanes).map(([key, value]) => `${key}=${value}\n`).join(""));
-    const shards = Array.from({ length: Math.max(1, Math.min(4, plan.standard.length)) }, (_, index) => index + 1);
+    const maxShards = process.env.GITHUB_EVENT_NAME === "pull_request" && plan.standard.length >= 400 ? 8 : 4;
+    const shards = Array.from({ length: Math.max(1, Math.min(maxShards, plan.standard.length)) }, (_, index) => index + 1);
     appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\n`);
     appendFileSync(process.env.GITHUB_OUTPUT, `windows_package=${plan.windowsPackage}\n`);
   }

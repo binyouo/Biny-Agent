@@ -61,6 +61,49 @@ test("literal file reads track source inputs while unknown reads stay conservati
   assert.ok(!other.standard.includes("source.test.ts"));
 });
 
+test("filesystem promise namespaces track literal reads and temporary writers", async t => {
+  const root = fixture(t, {
+    "tests/named-promises.test.ts": "import { promises as fs } from 'node:fs'; fs.readFile('src/utils/other.ts');",
+    "tests/namespace-promises.test.ts": "import * as fs from 'node:fs/promises'; fs.readFile('src/utils/other.ts');",
+    "tests/namespace-writer.test.ts": "import * as fs from 'node:fs/promises'; fs.mkdir('/tmp/fixture'); fs.writeFile('/tmp/fixture/file', 'data');"
+  });
+  const format = await createPlan(root, ["src/utils/format.ts"]);
+  for (const file of ["named-promises.test.ts", "namespace-promises.test.ts", "namespace-writer.test.ts"]) assert.ok(!format.standard.includes(file));
+  const other = await createPlan(root, ["src/utils/other.ts"]);
+  for (const file of ["named-promises.test.ts", "namespace-promises.test.ts"]) assert.ok(other.standard.includes(file));
+});
+
+for (const code of [
+  "fs.readFile(process.env.PATH_TO_SOURCE!);",
+  "const read = fs.readFile; read(process.env.PATH_TO_SOURCE!);",
+  "const name = process.env.METHOD!; fs[name]('source');",
+  "fs.copyFile('src/utils/format.ts', '/tmp/fixture');",
+  "function load(fs: any) { return fs.readFile(process.env.PATH_TO_SOURCE); }"
+]) {
+  test(`unbounded filesystem namespace use stays conservative: ${code}`, async t => {
+    const root = fixture(t, { "tests/namespace-unknown.test.ts": `import * as fs from 'node:fs/promises'; ${code}` });
+    assert.ok((await createPlan(root, ["src/utils/other.ts"])).standard.includes("namespace-unknown.test.ts"));
+  });
+}
+
+test("literal reads through a symlink track the target source", async t => {
+  const root = fixture(t, { "tests/symlink-reader.test.ts": "import * as fs from 'node:fs/promises'; fs.readFile('tests/source-link');" });
+  symlinkSync(path.join(root, "src/utils/format.ts"), path.join(root, "tests/source-link"));
+  const format = await createPlan(root, ["src/utils/format.ts"]);
+  const other = await createPlan(root, ["src/utils/other.ts"]);
+  assert.ok(format.standard.includes("symlink-reader.test.ts"));
+  assert.ok(!other.standard.includes("symlink-reader.test.ts"));
+});
+
+test("literal reads through a symlink outside the repository stay conservative", async t => {
+  const root = fixture(t, { "tests/external-link.test.ts": "import { readFileSync } from 'node:fs'; readFileSync('tests/external-link');" });
+  const outside = mkdtempSync(path.join(os.tmpdir(), "biny-ci-external-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  writeFileSync(path.join(outside, "source.ts"), "export const value = 1;");
+  symlinkSync(path.join(outside, "source.ts"), path.join(root, "tests/external-link"));
+  assert.ok((await createPlan(root, ["src/utils/other.ts"])).standard.includes("external-link.test.ts"));
+});
+
 test("directory inputs include their source descendants, including the repository root", async t => {
   const root = fixture(t, {
     "tests/root-reader.test.ts": "import { readdirSync } from 'node:fs'; readdirSync('.');",
@@ -405,6 +448,45 @@ for (const [files, expectedShards] of [
   });
 }
 
+test("large standard plans use eight shards without gaps or duplicates", t => {
+  const { root: temporaryRoot, head } = history(t);
+  const root = realpathSync(temporaryRoot);
+  mkdirSync(path.join(root, "scripts"));
+  for (const name of ["ci-test-plan.mjs", "run-tests.mjs"]) copyFileSync(new URL(name, import.meta.url), path.join(root, "scripts", name));
+  symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), path.join(root, "node_modules"), "dir");
+  for (let index = 0; index < 395; index += 1) writeFileSync(path.join(root, `tests/scale-${index}.test.ts`), "");
+  writeFileSync(path.join(root, "package.json"), "{}");
+  git(root, "add", "--", "tests", "package.json");
+  git(root, "commit", "-m", "large test set");
+  const output = path.join(root, "outputs");
+  const plan = (eventName = "pull_request") => {
+    writeFileSync(output, "");
+    execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), "--base", head], {
+      cwd: root, env: { ...process.env, GITHUB_EVENT_NAME: eventName, GITHUB_OUTPUT: output }, stdio: "pipe", timeout: 20_000
+    });
+    const line = readFileSync(output, "utf8").split("\n").find(entry => entry.startsWith("shards="));
+    return JSON.parse(line.slice("shards=".length));
+  };
+  assert.deepEqual(plan(), [1, 2, 3, 4], "399 files retain four shards");
+  writeFileSync(path.join(root, "tests/scale-395.test.ts"), "");
+  git(root, "add", "--", "tests/scale-395.test.ts");
+  git(root, "commit", "-m", "cross shard threshold");
+  assert.deepEqual(plan("push"), [1, 2, 3, 4], "push verification retains four shards");
+  const shards = plan();
+  assert.deepEqual(shards, [1, 2, 3, 4, 5, 6, 7, 8]);
+  const planPath = path.join(root, ".ci/plan.json");
+  const actualPlan = JSON.parse(readFileSync(planPath, "utf8"));
+  assert.equal(actualPlan.standard.length, 400);
+  for (const timings of [{}, Object.fromEntries(actualPlan.standard.map((name, index) => [name, (index + 1) * 13]))]) {
+    writeFileSync(planPath, JSON.stringify({ ...actualPlan, timings }));
+    const selected = shards.flatMap(shard => JSON.parse(execFileSync(process.execPath, [
+      path.join(root, "scripts/run-tests.mjs"), "--standard", "--plan=.ci/plan.json", `--shard=${shard}/${shards.length}`, "--list"
+    ], { cwd: root, encoding: "utf8", timeout: 15_000 })));
+    assert.deepEqual(selected.sort(), actualPlan.standard);
+    assert.equal(new Set(selected).size, selected.length);
+  }
+});
+
 test("missing history, wrong-branch success, rewritten history and API failure request full validation", async t => {
   const { root, base } = history(t);
   const env = { GITHUB_REF_NAME: "main" };
@@ -506,6 +588,7 @@ test("workflow gates selected lanes on static checks and retains full-run and pa
   }
   assert.equal(workflow.jobs.plan.needs, undefined);
   assert.equal(workflow.jobs.static.needs, undefined);
+  assert.equal(workflow.jobs.test.strategy["max-parallel"], 8);
   assert.equal(workflow.jobs.plan.outputs.shards, "${{ steps.plan.outputs.shards }}");
   assert.equal(workflow.jobs.test.strategy.matrix.shard, "${{ fromJSON(needs.plan.outputs.shards) }}");
   assert.ok(workflow.jobs.test.steps.some(step => step.run?.includes("--shard=${{ matrix.shard }}/${{ strategy.job-total }}")));

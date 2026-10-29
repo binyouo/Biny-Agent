@@ -126,7 +126,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
-      max-parallel: 4
+      max-parallel: 8
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
