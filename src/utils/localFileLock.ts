@@ -194,7 +194,10 @@ async function removeDeadOwnerLock(lockPath: string, authority: LockAuthority): 
   }
   const ownerAuthority = parseIdentity(owner?.authority);
   if (owner?.authority !== undefined && (!ownerAuthority || !sameIdentity(ownerAuthority, authority.identity))) {
-    throw new Error("Local file lock authority changed; refusing to reclaim the owner marker.");
+    // 重启或重新挂载后设备号可能变化；仅在旧 owner 已确认退出时恢复遗留标记。
+    if (!ownerAuthority || !Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0 || processIsAlive(Number(owner.pid))) {
+      throw new Error("Local file lock authority changed; refusing to reclaim the owner marker.");
+    }
   }
   if (!ownerAuthority && Number.isSafeInteger(owner?.pid) && Number(owner?.pid) > 0 && processIsAlive(Number(owner?.pid))) return false;
   // The unchanged kernel gate proves a gated or partially published owner no
