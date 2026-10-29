@@ -105,14 +105,14 @@ test("A to B to A preserves distinct limits and resource-local validators", asyn
   assert.equal((await readProviderCatalog(alias, second, store))?.models[0]?.contextWindow, 32_000);
 });
 
-for (const [label, a, b, urls] of [
+for (const [label, a, b, urls, conditionalValidators] of [
   ["explicit base", { ...first, baseUrl: "https://gateway.example/api", protocol: "openai-compatible" },
     { ...first, baseUrl: "https://gateway.example/api", protocol: "anthropic" },
-    ["https://gateway.example/api/models", "https://gateway.example/api/v1/models"]],
+    ["https://gateway.example/api/models", "https://gateway.example/api/v1/models"], true],
   ["provider default base", { type: "anthropic", requiresApiKey: false },
     { type: "anthropic", requiresApiKey: false, protocol: "openai-compatible" },
-    ["https://api.anthropic.com/v1/models", "https://api.anthropic.com/models"]]
-] satisfies Array<[string, ProviderConfig, ProviderConfig, string[]]>) {
+    ["https://api.anthropic.com/v1/models", "https://api.anthropic.com/models"], false]
+] satisfies Array<[string, ProviderConfig, ProviderConfig, string[], boolean]>) {
   test(`protocol A to B to A isolates real request URLs, bodies and validators: ${label}`, async () => {
     const store = new InMemoryModelsStore();
     const requests: Array<{ url: string; etag: string | null; modified: string | null }> = [];
@@ -133,7 +133,12 @@ for (const [label, a, b, urls] of [
     assert.equal(requests[1]?.modified, null);
     assert.equal((await runtime(a, store, fetcher).refreshModels()).find(model => model.id === "custom-chat")?.contextWindow, 200_000);
     assert.deepEqual(requests.map(request => request.url), [urls[0], urls[1], urls[0]]);
-    assert.equal(requests[2]?.etag, etag);
+    // Only the unpaginated OpenAI protocol may reuse a first-response validator.
+    assert.equal(requests[2]?.etag, conditionalValidators ? etag : null);
+    assert.equal(requests[2]?.modified, conditionalValidators ? new Date(modified).toUTCString() : null);
+    const returnedToA = await readProviderCatalog(alias, a, store);
+    assert.equal(returnedToA?.etag, conditionalValidators ? etag : undefined);
+    assert.equal(returnedToA?.lastModified, conditionalValidators ? modified : undefined);
     assert.equal((await readProviderCatalog(alias, b, store))?.models[0]?.contextWindow, 32_000);
   });
 }
