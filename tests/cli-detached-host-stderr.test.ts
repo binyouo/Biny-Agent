@@ -12,6 +12,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { saveConfigFile } from "../src/config/loader.js";
 import { spawnRuntimeHost, type RuntimeHostClient } from "../src/runtime/RuntimeHost.js";
 import { terminateSpawnedHost } from "../src/runtime/host/lifecycle.js";
+import { AgentMemoryClient } from "../src/runtime/memory/client.js";
 import { SessionSearchIndex } from "../src/session/searchIndex.js";
 
 for (const closeReader of [false, true]) {
@@ -56,6 +57,9 @@ for (const closeReader of [false, true]) {
         heartbeat: { ...defaultConfig.heartbeat, enabled: false },
         context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
       });
+      // Ensure the test memory owner is registered before starting the Host.
+      phase = "wait for test memory owner readiness";
+      await new AgentMemoryClient(agentDir, agentDir).sleepStatus();
       // Observe fatal errors without handling them or changing Node's exit behavior.
       await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
       const entryPath = path.join(root, "host-entry.ts");

@@ -1,3 +1,4 @@
+import { AgentMemoryClient } from "../src/runtime/memory/client.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
@@ -162,6 +163,8 @@ async function testRuntimeHostProviderCrash(): Promise<void> {
   try {
     process.env.BINY_AGENT_DIR = agentDir;
     await saveConfig(root, testConfig(server.endpoint), { globalDir: configDir });
+    // Ensure the test memory owner is registered before starting the Host.
+    await new AgentMemoryClient(agentDir, configDir).sleepStatus();
     spawned = await spawnRuntimeHost(root, {
       workspaceRoot: root,
       configDir,
