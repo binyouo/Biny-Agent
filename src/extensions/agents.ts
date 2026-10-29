@@ -28,6 +28,7 @@ export interface SubagentDefinition {
   tools?: string[];
   /** 内置与 ACP 使用 Biny 模型别名；直接 CLI 使用原始模型 ID。 */
   model?: string;
+  providerAlias?: string;
   runtime?: "auto" | "builtin" | "codex" | "claude-code" | "acp";
   isolation?: "worktree";
   scope: SubagentDefinitionScope;
@@ -84,6 +85,7 @@ export function buildSubagentDefinitionsPrompt(definitions: readonly SubagentDef
         definition.scope,
         definition.runtime ? `runtime ${definition.runtime}` : "",
         definition.model ? `model ${definition.model}` : "",
+        definition.providerAlias ? `provider ${definition.providerAlias}` : "",
         definition.isolation ? `isolation ${definition.isolation}` : "",
         definition.tools ? `tools ${definition.tools.join("/")}` : ""
       ].filter(Boolean).join(", ");
@@ -147,6 +149,7 @@ function parseDefinition(content: string, rootPath: string, filePath: string, sc
     prompt,
     tools: parseToolList(frontmatter.tools),
     model: frontmatter.model?.trim() || undefined,
+    providerAlias: frontmatter.providerAlias?.trim() || undefined,
     runtime: parseRuntime(frontmatter.runtime),
     isolation: frontmatter.isolation === "worktree" ? "worktree" : undefined,
     scope,
@@ -199,6 +202,7 @@ interface AgentFrontmatter {
   description?: string;
   tools?: string;
   model?: string;
+  providerAlias?: string;
 }
 
 function splitAgentFrontmatter(content: string): { frontmatter: AgentFrontmatter; body: string } {
@@ -217,8 +221,9 @@ function splitAgentFrontmatter(content: string): { frontmatter: AgentFrontmatter
   for (const line of lines) {
     const separator = line.indexOf(":");
     if (separator === -1) continue;
-    const key = line.slice(0, separator).trim().toLowerCase();
-    if (key !== "name" && key !== "description" && key !== "tools" && key !== "model" && key !== "runtime" && key !== "isolation") continue;
+    const rawKey = line.slice(0, separator).trim().toLowerCase();
+    const key = rawKey === "provideralias" ? "providerAlias" : rawKey;
+    if (key !== "name" && key !== "description" && key !== "tools" && key !== "model" && key !== "runtime" && key !== "isolation" && key !== "providerAlias") continue;
     const value = stripQuotes(line.slice(separator + 1).trim());
     if (value) frontmatter[key] = value;
   }
