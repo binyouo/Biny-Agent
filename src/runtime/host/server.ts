@@ -1185,8 +1185,8 @@ export class RuntimeHostServer {
         const attachments = readAttachments(payload.attachments);
         const delivery = payload.delivery === "steer" ? "steer" : "queue";
         const queued = delivery === "steer"
-          ? runtime.steer(input, attachments, ids)
-          : runtime.enqueue(input, attachments, ids);
+          ? runtime.steer(input, attachments, ids, readCapabilitySelection(payload.capabilitySelection))
+          : runtime.enqueue(input, attachments, ids, readCapabilitySelection(payload.capabilitySelection));
         return queued;
       }
       case "run.queue":
@@ -1199,8 +1199,8 @@ export class RuntimeHostServer {
           const attachments = readAttachments(payload.attachments);
           const delivery = payload.delivery === "steer" ? "steer" : "queue";
           return delivery === "steer"
-            ? runtime.steer(input, attachments, ids)
-            : runtime.enqueue(input, attachments, ids);
+            ? runtime.steer(input, attachments, ids, readCapabilitySelection(payload.capabilitySelection))
+            : runtime.enqueue(input, attachments, ids, readCapabilitySelection(payload.capabilitySelection));
         }, runtime);
       case "run.queue.mutate": {
         this.assertRevision(payload, runtime);

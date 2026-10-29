@@ -768,7 +768,7 @@ export class DesktopAgentManager {
     // 前端发送占位与持久用户消息共用身份，重复文本、事件先于回执到达也不会误合并。
     const requestIds = { messageId };
     if (runtimeIsBusy(snapshot)) {
-      const queued: HostOperationResult<import("../../../runtime/InteractiveAgentRuntime.js").QueuedAgentMessage> = await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", agentAttachments, requestIds);
+      const queued: HostOperationResult<import("../../../runtime/InteractiveAgentRuntime.js").QueuedAgentMessage> = await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", agentAttachments, requestIds, capabilitySelection);
       if (!queued.accepted || queued.result === undefined) {
         throw errorFromHostOperation(queued);
       }

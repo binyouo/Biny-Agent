@@ -233,8 +233,31 @@ test("an old timer neither dispatches nor clears a newer queue owner", async (t)
   t.mock.timers.tick(50);
   await nextTurn();
   assert.deepEqual(f.calls.map((call) => call.input), ["first", "newer", "queued"]);
-  assert.deepEqual(f.calls[2]?.options?.capabilitySelection, { tools: ["TaskStatus"], skills: "none" });
+  // A later run may own the timer, but cannot replace the queued message's admitted capabilities.
+  assert.deepEqual(f.calls[2]?.options?.capabilitySelection, { tools: ["PlanStatus"], skills: "none" });
   await waiting;
   assert.equal(idle, true);
+  await f.runtime.close();
+});
+
+
+test("mixed queued capability batches automatically wake in original order", async (t) => {
+  const f = fixture(t);
+  const gate = f.hold("first");
+  const run = f.runtime.submitPrompt("first", [], undefined, undefined, { tools: "all", skills: "all" });
+  const none = { tools: "none", skills: "none" } as const;
+  const read = { tools: ["Read"], skills: "none" } as const;
+  await f.runtime.enqueue("a", [], { messageId: "a" }, none);
+  await f.runtime.enqueue("b", [], { messageId: "b" }, none);
+  await f.runtime.enqueue("c", [], { messageId: "c" }, { tools: [...read.tools], skills: read.skills });
+  await f.runtime.enqueue("d", [], { messageId: "d" }, none);
+  gate.resolve();
+  await run.completion;
+  for (let batch = 0; batch < 3; batch += 1) { t.mock.timers.tick(100); await nextTurn(); }
+  assert.deepEqual(f.calls.map(call => call.input), ["first", "a\n\nb", "c", "d"]);
+  assert.deepEqual(f.calls.slice(1).map(call => call.options?.capabilitySelection), [none, { tools: ["Read"], skills: "none" }, none]);
+  assert.equal(f.runtime.getSnapshot().queuedMessages?.length, 0);
+  assert.equal(f.errors.length, 0);
+  await f.runtime.waitForIdle();
   await f.runtime.close();
 });
