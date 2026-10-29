@@ -63,33 +63,72 @@ export class PluginLifecycleRegistry {
   }
 
   async beforeTurn(context: PluginBeforeTurnContext, callMcpTool?: PluginMcpToolCaller): Promise<string[]> {
-    const isolatedContext = { ...context, callMcpTool };
-    const results = await Promise.all(this.lifecycles.map(async ({ lifecycle, pluginPath }) => {
-      try {
-        return await lifecycle.beforeTurn?.(isolatedContext);
-      } catch (error) {
-        this.reportError(pluginPath, "beforeTurn", error);
-        return undefined;
-      }
-    }));
+    const results = await Promise.all(this.lifecycles.map(({ lifecycle, pluginPath }) =>
+      this.runCallback(context.signal, callMcpTool, (signal, caller) =>
+        lifecycle.beforeTurn?.({ ...context, signal, callMcpTool: caller }), pluginPath, "beforeTurn")));
     return results.flatMap((result) => typeof result === "string" && result.trim()
       ? [result.trim()]
       : []);
   }
 
   async afterTurn(context: PluginAfterTurnContext, callMcpTool?: PluginMcpToolCaller): Promise<void> {
-    const isolatedContext = {
-      ...context,
-      messages: context.messages.map((message) => ({ ...message })),
-      callMcpTool
+    await Promise.all(this.lifecycles.map(({ lifecycle, pluginPath }) =>
+      this.runCallback(context.signal, callMcpTool, (signal, caller) =>
+        lifecycle.afterTurn?.({ ...context, signal, callMcpTool: caller,
+          outcome: structuredClone(context.outcome), messages: context.messages.map(message => ({ ...message }))
+        }), pluginPath, "afterTurn")));
+  }
+
+  /** Retire host-mediated authority, not arbitrary in-process plugin side effects. */
+  private async runCallback<T>(
+    parent: AbortSignal | undefined,
+    callMcpTool: PluginMcpToolCaller | undefined,
+    invoke: (signal: AbortSignal, caller: PluginMcpToolCaller | undefined) => T | Promise<T>,
+    pluginPath: string,
+    phase: "beforeTurn" | "afterTurn"
+  ): Promise<T | undefined> {
+    const owner = new AbortController();
+    let active = true;
+    const pending = new Set<Promise<unknown>>();
+    let wake: () => void = () => undefined;
+    const retired = new Promise<undefined>(resolve => { wake = () => resolve(undefined); });
+    const retire = (): void => {
+      if (!active) return;
+      active = false;
+      owner.abort(parent?.reason ?? new Error("Plugin callback scope has ended."));
+      wake();
     };
-    await Promise.all(this.lifecycles.map(async ({ lifecycle, pluginPath }) => {
-      try {
-        await lifecycle.afterTurn?.(isolatedContext);
-      } catch (error) {
-        this.reportError(pluginPath, "afterTurn", error);
-      }
-    }));
+    parent?.addEventListener("abort", retire, { once: true });
+    if (parent?.aborted) retire();
+    const caller: PluginMcpToolCaller | undefined = callMcpTool && ((server, tool, args, signal) => {
+      // Schedule only after recording ownership, including synchronous caller failures.
+      const operation = Promise.resolve().then(async () => {
+        owner.signal.throwIfAborted();
+        const combined = signal ? AbortSignal.any([owner.signal, signal]) : owner.signal;
+        combined.throwIfAborted();
+        return await callMcpTool(server, tool, args, combined);
+      });
+      pending.add(operation);
+      void operation.then(() => pending.delete(operation), () => pending.delete(operation));
+      return operation;
+    });
+    const operation = Promise.resolve().then(() => {
+      if (!active) return undefined;
+      return invoke(owner.signal, caller);
+    }).catch(error => {
+      // Late callbacks stay observed, but cannot publish diagnostics into a later turn.
+      if (active) this.reportError(pluginPath, phase, error);
+      return undefined;
+    });
+    try {
+      const result = await Promise.race([operation, retired]);
+      return active ? result : undefined;
+    } finally {
+      retire();
+      parent?.removeEventListener("abort", retire);
+      // Never use a deadline to release a still-running admitted tool or its audit writes.
+      await Promise.allSettled([...pending]);
+    }
   }
 
   private reportError(pluginPath: string, phase: "beforeTurn" | "afterTurn", error: unknown): void {

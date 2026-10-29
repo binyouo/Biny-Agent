@@ -46,7 +46,7 @@ const registryJs = ts.transpileModule(registrySource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }
 }).outputText;
 const registryExports = {};
-vm.runInNewContext(registryJs, { exports: registryExports });
+vm.runInNewContext(registryJs, { exports: registryExports, AbortController, AbortSignal, structuredClone });
 const { PluginLifecycleRegistry } = registryExports as { PluginLifecycleRegistry: typeof Registry };
 const bindingNames = [
   "retryCommitStarted", "recordAssistantAudit", "outcome", "runPluginLifecycle",
@@ -176,7 +176,7 @@ async function run(options: FaultOptions = {}) {
     pendingEvents: { drain: function* () {}, waitForEventOr: async <T>(operation: Promise<T>): Promise<T> => await operation },
     errorMessage: (error: unknown) => error instanceof Error ? error.message : String(error), recordNativeTelemetry: async () => undefined,
     activeModelSettings: { model: { provider: "fixture", modelId: "fixture" } },
-    observedSteps: 1, completedStepsBeforeRun: 0, abortSignal: { aborted: false },
+    observedSteps: 1, completedStepsBeforeRun: 0, abortSignal: new AbortController().signal,
     turnCancellationReason: () => "interrupted", isTimeoutFailure: () => false,
     usageAuditStarted: true, stepUsageRecords: [], sumSessionUsage: () => undefined,
     loopContext: { messages: [] }, streamFailureReported: false

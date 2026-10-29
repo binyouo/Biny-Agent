@@ -2788,8 +2788,10 @@ export class AgentSession {
       && runOptions.recordSessionUserMessage !== false
       && Boolean(input.trim() || runOptions.attachments?.length);
     const callPluginMcpTool: PluginMcpToolCaller = async (serverName, toolName, toolArgs, signal) => {
-      const toolSignal = signal ?? abortSignal;
+      const toolSignal = signal ? AbortSignal.any([signal, abortSignal]) : abortSignal;
+      toolSignal.throwIfAborted();
       const discovery = await this.options.prepareToolDiscovery?.(serverName, toolSignal);
+      toolSignal.throwIfAborted();
       if (discovery?.timedOut) throw new Error(`MCP discovery for ${serverName} is still pending.`);
       if (Array.isArray(runOptions.toolAccessSelection)) {
         const selected = this.options.toolRegistry.listEntries().find((entry) => entry.tool.mcpIdentity?.serverName === serverName
@@ -2836,6 +2838,23 @@ export class AgentSession {
           "\n</biny_plugin_reference_context>"
         ].filter(Boolean).join("\n\n");
       }
+    }
+    if (abortSignal.aborted) {
+      // The optional hook has retired and drained its admitted host calls. Preserve
+      // full unselected history just as cancellation during context preparation does.
+      yield* pendingEvents.drain();
+      const outcome = cancelledTurn("Current turn cancelled during plugin preparation.", completedStepsBeforeRun, turnCancellationReason(abortSignal));
+      this.recordError(outcome.error);
+      const currentInput = runOptions.emptyTurn ? [] : messages.slice(-1);
+      const currentInputReferences = runOptions.emptyTurn ? [] : messageReferences.slice(-1);
+      await this.recordCancelledTurn(outcome,
+        runOptions.continueFrom?.length ? messages : [...this.contextMemory.getHistory(), ...currentInput],
+        runOptions.continueFrom?.length ? messageReferences : [...this.contextMessageReferences, ...currentInputReferences]
+      );
+      yield { type: "error", message: outcome.error ?? "Current turn interrupted." };
+      yield { type: "status", status: "cancelled" };
+      yield doneEvent(outcome);
+      return;
     }
     if (this.activeConfig.agent.toolExecutionMode === "code_mode" && runOptions.capabilitySelection?.tools !== "none" && runOptions.toolAccessSelection !== "none"
       && !(Array.isArray(runOptions.toolAccessSelection) && runOptions.toolAccessSelection.length === 0)) {
@@ -3471,7 +3490,7 @@ export class AgentSession {
             contributeMemories: turnPersonalization.contributeMemories,
             outcome,
             messages: pluginMessages,
-            signal: AbortSignal.timeout(10_000)
+            signal: AbortSignal.any([abortSignal, AbortSignal.timeout(10_000)])
           }, callPluginMcpTool));
         }
       }
