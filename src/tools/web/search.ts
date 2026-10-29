@@ -44,7 +44,7 @@ export function createWebSearchTool(config?: WebSearchConfig, _cookies?: WebCook
       properties: {
         query: { type: "string", minLength: 1, maxLength: 500, description: "Search query written in natural language." },
         maxResults: { type: "integer", minimum: 1, maximum: 10, description: "Maximum number of results to return." },
-        domains: { type: "array", maxItems: 5, items: { type: "string", minLength: 1 }, description: "Optional domains to restrict the search to, such as weather.gov." },
+        domains: { type: "array", maxItems: 5, items: { type: "string", minLength: 1 }, description: "Optional Google source domains: results may come from any listed domain, such as weather.gov." },
         recency: { type: "string", enum: [...recencyValues], description: "Optional freshness filter: day, week, month, or year." }
       },
       required: ["query"],
@@ -87,7 +87,9 @@ async function searchWeb(config: WebSearchConfig, args: WebSearchArgs, browser: 
       if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(normalized)) throw new Error("Invalid web search domain.");
       return `site:${normalized}`;
     });
-    url.searchParams.set("q", [query, ...domains].join(" "));
+    // Listed source domains are alternatives, not simultaneous site restrictions.
+    const sites = domains.length > 1 ? `(${domains.join(" OR ")})` : domains[0];
+    url.searchParams.set("q", sites ? `${query} ${sites}` : query);
     url.searchParams.set("num", String(maxResults * 2));
     if (args.recency) url.searchParams.set("tbs", `qdr:${({ day: "d", week: "w", month: "m", year: "y" })[args.recency]}`);
   } else {
@@ -183,7 +185,15 @@ function resolveGoogleUrl(rawUrl: string): string | undefined {
   }
   if (candidate.protocol !== "http:" && candidate.protocol !== "https:") return undefined;
   const host = candidate.hostname.toLowerCase();
-  if (/(^|\.)google(\.[a-z]{2,3})+$/.test(host) || host.endsWith("googleusercontent.com")) return undefined;
+  // Public documentation is content, not search/account navigation. Keep this
+  // exception narrow: exact HTTPS hosts, default port, no embedded credentials,
+  // and complete documentation route segments rather than substring matches.
+  const documentation = candidate.protocol === "https:" && !candidate.port && !candidate.username && !candidate.password && (
+    host === "developers.google.com" && /^\/(?:[a-z0-9-]+\/)+(?:docs|documentation|reference)(?:\/|$)/u.test(candidate.pathname)
+    || host === "cloud.google.com" && /^\/(?:[a-z0-9-]+\/)?docs(?:\/|$)/u.test(candidate.pathname)
+    || host === "support.google.com" && /^\/[a-z0-9-]+\/answer\/[0-9]+(?:\/|$)/u.test(candidate.pathname)
+  );
+  if (!documentation && (/(^|\.)google(\.[a-z]{2,3})+$/.test(host) || host.endsWith("googleusercontent.com"))) return undefined;
   return candidate.toString();
 }
 
