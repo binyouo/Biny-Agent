@@ -295,10 +295,12 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     if (!baseUrl) throw new Error(`No model endpoint configured. Set providers.${this.id}.baseUrl.`);
     const route = resolveProviderRequestRoute(normalizedModel, this.config, this.definition);
     const { apiBackend: api, protocol } = route;
-    const reasoningProtocol = this.definition.reasoningProtocol
-      ?? (protocol === "anthropic" || api === "anthropic_messages"
-        ? "anthropic"
-        : protocol === "openai-compatible" || api === "responses" ? "openai" : undefined);
+    // Native wire overrides own their option schema as well as their endpoint.
+    const reasoningProtocol = api === "anthropic_messages" ? "anthropic"
+      : api === "google_generative_ai" ? "google"
+        : api === "responses" ? "openai"
+          : this.definition.reasoningProtocol === "anthropic" ? "openai"
+            : this.definition.reasoningProtocol ?? (protocol === "openai-compatible" ? "openai" : undefined);
     const compatibility = normalizedModel.compatibility;
     const capabilities = modelCapabilities(normalizedModel);
     const selection = effectiveThinkingSelection(normalizedModel, agentConfig.thinking);
@@ -649,13 +651,15 @@ function createProviderOptions(
   if (reasoningProtocol === "deepseek") return { deepseek: { thinking: { type: enabled ? "enabled" : "disabled" }, reasoningEffort: enabled ? nativeEffort : undefined } };
   if (reasoningProtocol === "openai") return { openai: { reasoningEffort: enabled ? nativeEffort : "none" } };
   if (reasoningProtocol === "google") {
-    return {
-      google: {
-        reasoningEffort: enabled ? nativeEffort : "none",
-        thinkingBudget: enabled ? budgetTokens : 0,
-        includeThoughts: enabled
-      }
-    };
+    // Gemini 3 uses levels (except the Pro image model); 2.5 uses budgets.
+    // Match the SDK's family distinction, and never send both controls.
+    const usesThinkingLevel = /gemini-3(?:[.-]|$)/iu.test(model.model) && !model.model.toLowerCase().includes("gemini-3-pro-image");
+    const level = !enabled ? "minimal"
+      : nativeEffort === "minimal" || nativeEffort === "low" || nativeEffort === "medium" ? nativeEffort : "high";
+    return { google: { thinkingConfig: {
+      ...(usesThinkingLevel ? { thinkingLevel: level } : { thinkingBudget: enabled ? budgetTokens : 0 }),
+      includeThoughts: enabled
+    } } };
   }
   if (reasoningProtocol === "alibaba") return { alibaba: { enableThinking: enabled, thinkingBudget: enabled ? budgetTokens : undefined } };
   if (reasoningProtocol === "moonshotai") {
