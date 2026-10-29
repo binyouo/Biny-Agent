@@ -1736,14 +1736,19 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setWarning("当前消息还没有可切换的会话版本。");
       return;
     }
+    const navigationRequest = loadRequestRef.current;
+    const projectLifetime = projectRemovalRef.current.get(projectId);
+    const isCurrentScope = (): boolean => loadRequestRef.current === navigationRequest
+      && projectRemovalRef.current.get(projectId) === projectLifetime
+      && projectRef.current === projectId && selectedRef.current === sessionId;
     try {
       if (typeof window.biny.switchMessageVersion !== "function") throw new Error(desktopApiVersionMismatchMessage);
       const nextDocument = await window.biny.switchMessageVersion(projectId, sessionId, messageId, direction);
-      if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+      if (!isCurrentScope()) return;
       setDocument(nextDocument);
       setWriterConflict(nextDocument.writerConflict);
     } catch (error) {
-      setWarning(errorMessage(error));
+      if (isCurrentScope()) setWarning(errorMessage(error));
     }
   }, []);
   const openExternalLink = useCallback((url: string): void => {
