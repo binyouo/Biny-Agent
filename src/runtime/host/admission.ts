@@ -46,6 +46,7 @@ export function isRuntimeHostAdmissionOperation(operation: string): boolean {
     || operation === "task.approve"
     || operation === "task.resume"
     || operation === "task.retry"
+    || operation === "task.continue"
     || operation === "diary.refresh"
     || operation === "reflection.run"
     || operation === "heartbeat.run"

@@ -987,6 +987,7 @@ export class RuntimeHostServer {
       const scoped = new TaskCommunication(this.commands.taskRuns, sessionId);
       try { scoped.read(taskRunId); } finally { scoped.close(); }
       const resident = await this.registry.ensure(sessionId);
+      this.assertRequestAdmission(connection, admissionOperation);
       return await resident.commands.continueTaskRun(taskRunId, requiredString(payload.message, "message"), optionalString(payload.messageId));
     }
     if (frame.operation === "task.message" || frame.operation === "task.wait" || frame.operation === "task.inspect") {
