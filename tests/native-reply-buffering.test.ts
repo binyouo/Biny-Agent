@@ -12,7 +12,7 @@ const source = ts.createSourceFile("nativeDriver.ts", readFileSync(
 const classes = source.statements.filter(ts.isClassDeclaration);
 const driver = classes.find(node => node.name?.text === "NativeProcessDriver");
 assert.ok(driver);
-const methodNames = ["onData", "onReply", "call", "failHost", "failAndRetire", "detach", "stop"];
+const methodNames = ["onData", "onReply", "call", "failHost", "isExpectedIdle", "failAndRetire", "detach", "stop", "stopHost"];
 const methods = methodNames.map(name => {
   const matches = driver.members.filter(ts.isMethodDeclaration).filter(node => node.name.getText(source) === name);
   assert.equal(matches.length, 1, name);
@@ -48,13 +48,13 @@ class MeasuredBuffer {
 }
 interface Host {
   buffer: MeasuredBuffer; bufferStart: number; bufferEnd: number; bufferScan: number; bufferOverflowed: boolean;
-  closed: boolean; connected: boolean; socket: { write(value: string): void; destroy(): void };
+  closed: boolean; connected: boolean; lastActivityAt: number; socket: { write(value: string): void; destroy(): void };
   decoder: { write(value: MeasuredBuffer): string };
 }
 interface Reply { data: unknown; images: unknown[] }
 interface Job { timer: number; cleanup(): void; resolve(value: Reply): void; reject(error: Error): void }
 interface Receiver {
-  host?: Host; pending: Map<string, Job>; eventListeners: Set<(name: string, data: unknown) => void>;
+  host?: Host; idleTimeout: number; pending: Map<string, Job>; eventListeners: Set<(name: string, data: unknown) => void>;
   onReply(line: string): void; shape(value: unknown): Reply; armIdle(): void;
   failAndRetire(host: Host, reason: string): void;
   assertLive(): void; ensureHost(): Promise<void>;
@@ -84,6 +84,7 @@ function fixture() {
     Buffer: buffers, maxIpcBytes: cap, maxPending: 32,
     screenshotCommands: new Set(["get_app_state"]), screenshotTimeoutMs: 30_000, requestTimeoutMs: 20_000, shutdownTimeoutMs: 2_000,
     crypto: Object.freeze({ randomUUID: () => `request-${++requestId}` }),
+    performance: Object.freeze({ now: () => 0 }),
     setTimeout: (callback: () => void) => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: (id: number) => { cleared.push(id); timers.delete(id); },
     rmSync: (name: string, options: { force: boolean }) => { assert.deepEqual(options.force, true); deleted.push(name); }
@@ -93,11 +94,12 @@ function fixture() {
   const decoder = new StringDecoder("utf8");
   const host: Host = {
     buffer: new MeasuredBuffer(Buffer.alloc(0), counts), bufferStart: 0, bufferEnd: 0, bufferScan: 0, bufferOverflowed: false,
-    closed: false, connected: true,
+    closed: false, connected: true, lastActivityAt: 0,
     socket: { write: value => { writes.push(value); onWrite?.(); }, destroy: () => { destroyed++; } },
     decoder: { write: value => decoder.write(value.bytes) }
   };
   receiver.host = host;
+  receiver.idleTimeout = 900_000;
   receiver.pending = new Map();
   receiver.eventListeners = new Set();
   receiver.shape = data => ({ data, images: [] });

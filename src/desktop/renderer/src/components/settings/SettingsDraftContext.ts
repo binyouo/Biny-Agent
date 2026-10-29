@@ -21,7 +21,8 @@ import type {
   DesktopSkillSettingsInput,
   DesktopStagedSettingsCredential,
   DesktopThemePreference,
-  DesktopWebSearchSettingsInput
+  DesktopWebSearchSettingsInput,
+  DesktopRedactionSettingsInput
 } from "../../../../protocol.js";
 
 export type SettingsSaveState = "clean" | "dirty" | "invalid" | "saving" | "rolling_back" | "recovery_required";
@@ -46,6 +47,7 @@ export interface DesktopSettingsDraft {
   subagent: DesktopSettingsSnapshot["subagent"];
   permission: DesktopPermissionSettings;
   webSearch: DesktopWebSearchSettingsInput;
+  redaction: DesktopRedactionSettingsInput;
   chat?: DesktopChatPersonalizationOverride;
   models: SettingsModelDraft;
   skills: DesktopSkillSettingsInput;
@@ -82,6 +84,7 @@ export interface SettingsDraftContextValue {
   setSubagent(value: DesktopSettingsSnapshot["subagent"]): void;
   setPermission(value: DesktopPermissionSettings): void;
   setWebSearch(value: DesktopWebSearchSettingsInput): void;
+  setRedaction(value: DesktopRedactionSettingsInput): void;
   setChat(value: DesktopChatPersonalizationOverride): void;
   setSkills(value: DesktopSkillSettingsInput): void;
   upsertModel(value: DesktopModelConfigurationInput): void;

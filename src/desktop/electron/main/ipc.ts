@@ -1055,6 +1055,9 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
 
   handle(desktopIpc.activitySnapshot, async () => context.activity.snapshot());
+  handle(desktopIpc.maskingOverview, async (_event, projectId: unknown) => await context.agents.maskingOverview(idSchema.parse(projectId)));
+  handle(desktopIpc.maskingDetail, async (_event, projectId: unknown, id: unknown) => await context.agents.maskingDetail(idSchema.parse(projectId), idSchema.parse(id)));
+  handle(desktopIpc.maskingClear, async (_event, projectId: unknown) => await context.agents.clearMaskRecords(idSchema.parse(projectId)));
   handleRecoveryGated(desktopIpc.activityRetryFailedAnalysis, async () => await context.activity.retryFailedAnalysis());
   handle(desktopIpc.activityPermissions, async () => context.getActivityPermissions());
 

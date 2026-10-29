@@ -273,7 +273,6 @@ function testSchedulerConfigDefaultsAndValidation(): void {
     toolExecutionMode: "code_mode",
     softStepLimit: 8,
     hardStepLimit: 96,
-    maxRepeatedActions: 3,
     maxConcurrentTools: 4,
     maxQueuedToolCalls: 64
   });

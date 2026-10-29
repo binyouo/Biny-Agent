@@ -722,6 +722,7 @@ export class DesktopSettingsTransaction {
       externalSubagentBlockers: [...config.externalSubagentBlockers],
       permission: structuredClone(config.permission),
       webSearch: config.webSearch,
+      redaction: config.redaction,
       models: config.models,
       skills: config.skills ?? {
         projectId,
@@ -889,6 +890,7 @@ function createJournal(
     || input.subagent !== undefined
     || input.permission !== undefined
     || input.webSearch !== undefined
+    || input.redaction !== undefined
     || input.models !== undefined
     || input.skills !== undefined;
   return {
@@ -1209,6 +1211,7 @@ function listAppliedFields(input: DesktopSettingsSaveInput): string[] {
   if (input.subagent !== undefined) fields.push("subagent");
   if (input.permission !== undefined) fields.push("permission");
   if (input.webSearch !== undefined) fields.push("webSearch");
+  if (input.redaction !== undefined) fields.push("redaction");
   if (input.models !== undefined) fields.push("models");
   if (input.skills !== undefined) fields.push("skills");
   if (input.chat !== undefined) fields.push("chat.personalization");

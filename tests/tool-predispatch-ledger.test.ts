@@ -81,8 +81,7 @@ async function fixture(options: {
   }
   const events: Array<AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>> = [];
   const context: AgentRuntimeContext = { workspaceRoot: root, config, recorder, toolRegistry: registry };
-  const coordinator = new ToolExecutionCoordinator(context, permission, (event) => events.push(event), () => ({}), undefined,
-    { maxToolCalls: 4, maxRepeatedActions: 4 });
+  const coordinator = new ToolExecutionCoordinator(context, permission, (event) => events.push(event), () => ({}));
   const internals = coordinator as unknown as {
     hooks: HookRunner;
     admissionScheduler: ToolScheduler<unknown>;
@@ -145,7 +144,7 @@ for (const source of ["builtin", "plugin", "mcp"] as const) {
       assert.equal((response.details as { status: string }).status, "blocked_by_hook");
       assert.equal(states(facts, "veto").includes("admitted"), false);
       assert.equal(result(facts, "veto").operationId, createToolOperationId(f.recorder.sessionId, "veto"));
-      assert.equal(f.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 1);
+
       assert.equal(result(facts, "veto").executionStatus, "failed");
       assert.equal(states(facts, "veto").at(-1), "failed");
       assert.equal(f.events.find((event) => event.type === "tool.failed")?.executionStatus, "failed");
@@ -163,7 +162,7 @@ await test("ordinary hook veto permits a fresh unrelated call like permission de
     assert.deepEqual(f.calls, ["followup_fixture"]);
     assert.doesNotThrow(() => f.coordinator.assertCanContinue());
     assert.equal(result(facts, "next").executionStatus, "succeeded");
-    assert.equal(f.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 2);
+
   } finally { await f.close(); }
 });
 

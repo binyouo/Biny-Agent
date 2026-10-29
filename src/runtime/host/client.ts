@@ -1,3 +1,4 @@
+import type { MaskRecord, MaskingOverview } from "../../privacy/record.js";
 import type { ForkedSession } from "../../session/fork.js";
 import type { RunCommandOptions, RunCommandResult } from "../oneShot.js";
 /**
@@ -867,6 +868,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.applySnapshot(result.snapshot, result.sequence, undefined, true);
     return { sessionId: result.sessionId, snapshot: result.snapshot };
   }
+
+  async maskingOverview(): Promise<MaskingOverview> { return await this.request("privacy.overview", {}); }
+  async maskingDetail(id: string): Promise<MaskRecord | undefined> { return await this.request("privacy.detail", { id }); }
+  async clearMaskRecords(): Promise<void> { await this.request("privacy.clear", {}); }
 
   async focusSession(sessionId: string): Promise<InteractiveRuntimeSnapshot> {
     const result = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sequence: number; sessions: RuntimeHostSessionSummary[] }>("snapshot", { sessionId });

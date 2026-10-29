@@ -323,7 +323,8 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       baseUrl,
       apiKey,
       headers,
-      fetcher: this.fetcher
+      fetcher: this.fetcher,
+      privacy: { settings: agentConfig.redaction }
     });
     const executable: AgentModel = {
       provider: this.config.type,

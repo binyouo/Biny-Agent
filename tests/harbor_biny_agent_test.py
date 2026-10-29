@@ -36,7 +36,7 @@ class EvaluationConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(config["agent"]["softStepLimit"], 100_000)
         self.assertEqual(config["agent"]["hardStepLimit"], 100_000)
-        self.assertEqual(config["agent"]["maxToolCalls"], 100_000)
+        self.assertNotIn("maxToolCalls", config["agent"])
         self.assertEqual(config["context"]["compaction"], {"enabled": False})
         self.assertEqual(config["context"]["maxTurnToolResultBytes"], 16 * 1024 * 1024)
         self.assertEqual(config["context"]["instructionsMaxBytes"], 128 * 1024)

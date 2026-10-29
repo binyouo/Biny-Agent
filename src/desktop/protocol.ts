@@ -1,3 +1,5 @@
+import type { MaskRecord, MaskRecordSummary, MaskingOverview } from "../privacy/record.js";
+import type { MaskSegment } from "../privacy/engine.js";
 import type { ToolOptimizationOverview } from "../session/toolOptimizationOverview.js";
 import type { TaskInspection, TaskInspectionOptions } from "../runtime/TaskCommunication.js";
 import type { ApplicationImportSource, ApplicationImportSnapshot, ApplicationImportPreview, ApplicationImportHistory } from "../imports/types.js";
@@ -220,6 +222,9 @@ export const desktopIpc = {
   settingsCloseRequest: "desktop:settings:close-request",
   settingsCloseResponse: "desktop:settings:close-response",
   activitySnapshot: "desktop:activity:snapshot",
+  maskingOverview: "desktop:masking:overview",
+  maskingDetail: "desktop:masking:detail",
+  maskingClear: "desktop:masking:clear",
   activityRetryFailedAnalysis: "desktop:activity:retry-failed-analysis",
   activityPermissions: "desktop:activity:permissions",
   activitySettings: "desktop:activity:settings",
@@ -1078,6 +1083,18 @@ export interface DesktopWebSearchSettings {
 
 export type DesktopWebSearchSettingsInput = DesktopWebSearchSettings;
 
+/** 出站脱敏设置。只有一个开关；具体值不在快照里。 */
+export interface DesktopRedactionSettings {
+  enabled: boolean;
+}
+
+export type DesktopRedactionSettingsInput = DesktopRedactionSettings;
+
+export type DesktopMaskSegment = MaskSegment;
+export type DesktopMaskRecord = MaskRecord;
+export type DesktopMaskRecordSummary = MaskRecordSummary;
+export type DesktopMaskingOverview = MaskingOverview;
+
 export type DesktopSettingsCredentialPurpose = "model";
 
 /** 临时凭据句柄的受众；句柄不能跨项目、用途或 provider 重放。 */
@@ -1365,6 +1382,7 @@ export interface DesktopSettingsSnapshot {
   externalSubagentBlockers: string[];
   permission: DesktopPermissionSettings;
   webSearch: DesktopWebSearchSettings;
+  redaction: DesktopRedactionSettings;
   models: DesktopSettingsModelsSnapshot;
   skills: DesktopSkillSettings;
   chat?: DesktopSettingsChatSnapshot;
@@ -1436,6 +1454,7 @@ export interface DesktopSettingsSaveInput {
   subagent?: DesktopSubagentSettings;
   permission?: DesktopPermissionSettings;
   webSearch?: DesktopWebSearchSettingsInput;
+  redaction?: DesktopRedactionSettingsInput;
   models?: DesktopSettingsModelsInput;
   skills?: DesktopSkillSettingsInput;
   chat?: DesktopSettingsChatInput;
@@ -1771,6 +1790,10 @@ export interface DesktopApi {
   settingsSnapshot(projectId: string, sessionId?: string): Promise<DesktopSettingsSnapshot>;
   saveSettings(projectId: string, input: DesktopSettingsSaveInput): Promise<DesktopSettingsSaveResult>;
   activitySnapshot(): Promise<ActivityRuntimeSnapshot>;
+  /** 最近的脱敏摘要；原文对照通过详情接口按需读取。 */
+  maskingOverview(projectId: string): Promise<DesktopMaskingOverview>;
+  maskingDetail(projectId: string, id: string): Promise<DesktopMaskRecord | undefined>;
+  maskingClear(projectId: string): Promise<void>;
   retryFailedActivityAnalysis(): Promise<{ queued: number; snapshot: ActivityRuntimeSnapshot }>;
   activityPermissions(): Promise<ActivityPermissionStatus>;
   activitySettings(): Promise<DesktopActivitySettingsUpdate>;

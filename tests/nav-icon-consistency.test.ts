@@ -5,7 +5,7 @@ test("settings navigation uses distinct implemented icons and matches the Appsho
   const { readFile } = await import("node:fs/promises");
   const overlay = await readFile(new URL("../src/desktop/renderer/src/components/settings/SettingsOverlay.tsx", import.meta.url), "utf8");
   const nav = [...overlay.matchAll(/icon: "([a-z-]+)", tab: "([^"]+)"/gu)].map(m => ({ icon: m[1], tab: m[2] }));
-  assert.equal(nav.length, 17, "导航项数量变了，先确认不是漏读");
+  assert.equal(nav.length, 18, "导航项数量变了，先确认不是漏读");
   const icons = nav.map(n => n.icon);
   const dupes = icons.filter((v, i) => icons.indexOf(v) !== i);
   assert.deepEqual(dupes, [], `导航图标重复：${dupes.join(", ")}`);
@@ -14,6 +14,7 @@ test("settings navigation uses distinct implemented icons and matches the Appsho
   assert.equal(byTab.get("Token 节省"), "terminal");
   assert.equal(byTab.get("导入"), "download");
   assert.equal(byTab.get("Computer Use"), "monitor");
+  assert.equal(byTab.get("隐私脱敏"), "lock");
   assert.equal(byTab.get("Appshots"), "camera");
   const as = await readFile(new URL("../src/desktop/renderer/src/components/settings/SettingsAppshots.tsx", import.meta.url), "utf8");
   assert.match(as, /appshot-hero-badge"><Icon name="camera"/u, "Appshots hero 图标应与导航一致");

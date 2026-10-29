@@ -61,7 +61,7 @@ class AskFiles extends PermissionManager {
   }
 }
 function coordinator(registry: ToolRegistry, options?: { tools?: Set<string>; executionMode?: "direct" | "code_mode"; denyPaths?: string[];
-  budget?: { maxToolCalls: number; maxRepeatedActions: number }; quarantined?: Promise<unknown>[]; ask?: () => Promise<{ approved: boolean; scope: "once" }> }): ToolExecutionCoordinator {
+  quarantined?: Promise<unknown>[]; ask?: () => Promise<{ approved: boolean; scope: "once" }> }): ToolExecutionCoordinator {
   const config = structuredClone(defaultConfig);
   config.agent.toolExecutionMode = options?.executionMode ?? "code_mode";
   config.agent.maxConcurrentTools = 1;
@@ -72,7 +72,7 @@ function coordinator(registry: ToolRegistry, options?: { tools?: Set<string>; ex
   recorders.push(recorder);
   return new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: options?.ask,
     quarantineExternalTool: options?.quarantined === undefined ? undefined : (_tool, _id, settlement) => { options.quarantined?.push(settlement); } },
-    options?.ask ? new AskFiles(config.permission) : new PermissionManager(config.permission), () => undefined, () => ({}), options?.tools ?? selected, options?.budget, undefined, options?.tools);
+    options?.ask ? new AskFiles(config.permission) : new PermissionManager(config.permission), () => undefined, () => ({}), options?.tools ?? selected, undefined, undefined, options?.tools);
 }
 function details(result: AgentToolResult): { value?: unknown; childCalls?: unknown[]; error?: string } { return result.details as ReturnType<typeof details>; }
 function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
@@ -103,13 +103,13 @@ try {
     const changedParameters = makeRegistry(); changedParameters.get(name).parameters = { type: "object", properties: {} };
     assert.equal(changedParameters.listEntries().some((entry) => entry.tool.name === name && isCodeModeReadTool(entry)), false);
   }
-  const main = coordinator(registry, { budget: { maxToolCalls: 8, maxRepeatedActions: 8 } });
+  const main = coordinator(registry);
   const mainRecorder = recorders.at(-1)!;
   const result = await main.createCodeModeTool().execute("file-query-happy", { description: "file-query-happy", code:
     "const resource = await tools.read_skill_resource({skill:'file-query-fixture',path:'reference.txt'}); const logs = await tools.ProcessStatus({}); return {content:resource.content,processes:logs.processes};" });
   assert.equal(result.isError, false, JSON.stringify(result.details));
   assert.deepEqual(details(result).value, { content: "temporary query resource", processes: [] });
-  assert.equal(main.getExecutionBudgetSnapshot().accountedToolCalls, 2);
+
   const events = (await readFile(mainRecorder.filePath, "utf8"))
     .trim().split("\n").map((line) => JSON.parse(line));
   for (const id of ["file-query-happy:nested:1", "file-query-happy:nested:2"]) {
@@ -134,14 +134,8 @@ try {
   assert.equal(allowedLog.isError, false);
   assert.equal((details(allowedLog).value as { output: { content: string; nextOffset: number } }).output.content, "temporary");
   assert.equal(logReads, 1);
-  const budget = coordinator(registry, { budget: { maxToolCalls: 1, maxRepeatedActions: 8 } });
-  const beforeBudget = listReads;
-  assert.equal((await budget.createCodeModeTool().execute("file-budget", { description: "file-budget", code: `${resourceCode.replace("return ", "")} return await tools.ProcessStatus({});` })).isError, true);
-  assert.equal(budget.getBudgetRejection()?.reason, "tool_call_limit");
-  assert.equal(listReads, beforeBudget);
-  const repeated = coordinator(registry, { budget: { maxToolCalls: 8, maxRepeatedActions: 1 } });
-  assert.equal((await repeated.createCodeModeTool().execute("file-repeat", { description: "file-repeat", code: "await tools.ProcessStatus({}); return await tools.ProcessStatus({});" })).isError, true);
-  assert.equal(repeated.getBudgetRejection()?.reason, "repeated_action_limit");
+  const repeated = coordinator(registry);
+  assert.equal((await repeated.createCodeModeTool().execute("file-repeat", { description: "file-repeat", code: "await tools.ProcessStatus({}); return await tools.ProcessStatus({});" })).isError, false);
   const cancelled = new AbortController(); cancelled.abort();
   const beforeCancel = listReads;
   assert.equal((await main.createCodeModeTool().execute("file-cancelled", { description: "file-cancelled", code: "return await tools.ProcessStatus({});" }, cancelled.signal)).isError, true);

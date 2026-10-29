@@ -10,6 +10,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import type { ModelApiBackend, ModelCompatibility, ProviderConfig } from "../config/schema.js";
+import { createPrivacyFetch, type PrivacyFetchContext } from "../privacy/privacyFetch.js";
 
 export interface VercelModelInput {
   providerAlias: string;
@@ -23,16 +24,26 @@ export interface VercelModelInput {
   apiKey: string | undefined;
   headers: Record<string, string>;
   fetcher: typeof globalThis.fetch;
+  /** 出站脱敏策略；设置里要求脱敏时，这个模型的推理请求会套上一层脱敏 fetch。 */
+  privacy?: Omit<PrivacyFetchContext, "provider" | "model">;
 }
 
 export function createVercelLanguageModel(input: VercelModelInput): LanguageModelV4 {
+  // 只对模型推理请求套脱敏；目录、额度、嵌入等请求不经过这里。
+  const privacyFetcher = input.privacy
+    ? createPrivacyFetch(input.fetcher, {
+      settings: input.privacy.settings,
+      provider: input.providerAlias,
+      model: input.modelId
+    })
+    : input.fetcher;
   const configuredUserAgent = Object.keys(input.headers).some((name) => name.toLowerCase() === "user-agent");
-  const fetcher: typeof globalThis.fetch = configuredUserAgent ? input.fetcher : (url, init) => {
+  const fetcher: typeof globalThis.fetch = configuredUserAgent ? privacyFetcher : (url, init) => {
     const headers = new Headers(init?.headers ?? (url instanceof Request ? url.headers : undefined));
     const operation = headers.get("x-biny-operation");
     const client = operation && operation !== "agent" ? "biny-auxiliary" : "biny";
     headers.set("user-agent", `${client} ${headers.get("user-agent") ?? ""}`.trim());
-    return input.fetcher(url, { ...init, headers });
+    return privacyFetcher(url, { ...init, headers });
   };
   if (input.api === "anthropic_messages" || input.providerType === "anthropic" || input.providerType === "claude-subscription") {
     const provider = createAnthropic({
