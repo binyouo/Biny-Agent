@@ -1,6 +1,6 @@
 {
   "name": "@biny012/biny",
-  "version": "0.0.1-beta.5",
+  "version": "0.0.1-beta.6",
   "description": "A local-first, memory-first development agent for macOS and the terminal.",
   "author": "Biny contributors",
   "homepage": "https://github.com/binyouo/Biny-Agent",
