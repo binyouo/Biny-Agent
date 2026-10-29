@@ -323,8 +323,14 @@ export class LocalReferenceService {
           const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
           if (entry.isDirectory()) await walk(path.join(directory, entry.name), relative, depth + 1);
           else if (entry.isFile() && matches(relative)) {
-            results.push({ kind: "file", uri: localReferenceUri({ kind: "file", id: relative }),
-              label: relative, content: relative, projectId });
+            let uri: string;
+            try { uri = localReferenceUri({ kind: "file", id: relative }); }
+            catch {
+              // A valid filesystem name may be outside the reference URI contract.
+              // Skip only that candidate; it must not discard other results or use their quota.
+              continue;
+            }
+            results.push({ kind: "file", uri, label: relative, content: relative, projectId });
             fileMatches += 1;
           }
           if (fileMatches >= limit) break;
