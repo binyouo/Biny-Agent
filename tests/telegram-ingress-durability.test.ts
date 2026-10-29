@@ -22,7 +22,7 @@ function extract(source: string, filename: string, select: (node: ts.Statement) 
   const tree = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
   return tree.statements.filter(select).map(node => node.getText(tree).replace(/^export /u, "")).join("\n");
 }
-const functionNames = new Set(["runTelegramBridge", "collectTelegramMediaGroupUpdates", "groupTelegramMediaUpdates"]);
+const functionNames = new Set(["runTelegramBridge", "collectTelegramMediaGroupUpdates", "groupTelegramMediaUpdates", "telegramSupportsAgentAudience"]);
 const ingress = extract(command, commandPath.pathname, node => ts.isFunctionDeclaration(node) && functionNames.has(node.name?.text ?? ""));
 const serialization = extract(channel, channelPath.pathname, node =>
   ts.isVariableStatement(node) && node.declarationList.declarations.every(declaration => ts.isIdentifier(declaration.name) && /Schema$/u.test(declaration.name.text))

@@ -42,6 +42,14 @@ const patrolDecisionSchema = z.object({
   ownerMessage: z.string().trim().min(1).max(4_000).nullable()
 }).strict();
 
+// Until group-only context and history isolation exists, no public audience may
+// enter AgentSession. Tool restrictions do not remove private prompt context.
+function telegramSupportsAgentAudience(chatType: TelegramMessage["chat"]["type"]): boolean {
+  return chatType === "private";
+}
+
+const telegramGroupPrivacyNotice = "为保护主人的私密上下文，群聊 AI 回复、媒体处理、表情回应和巡查暂时停用。主人请在与 Biny 的私聊中发送请求；群消息不会自动转发。";
+
 interface TelegramBridgeOptions {
   ownerId: string;
   allowedGroupIds: ReadonlySet<string>;
@@ -243,9 +251,21 @@ async function processTelegramUpdate(
   const ownerMessage = String(message.from?.id) === options.ownerId;
   const isPrivate = message.chat.type === "private";
   const ownerId = parseTelegramId(options.ownerId);
-  const isOwnerPrivateChat = isPrivate && ownerMessage && ownerId !== undefined && message.chat.id === ownerId;
+  const isOwnerPrivateChat = isPrivate && ownerMessage && ownerId !== undefined && message.chat.id === ownerId
+    && messages.every((item) => item.chat.type === "private" && item.chat.id === ownerId && String(item.from?.id) === options.ownerId);
   const isAllowedGroup = (message.chat.type === "group" || message.chat.type === "supergroup")
     && options.allowedGroupIds.has(chatId);
+  if (!telegramSupportsAgentAudience(message.chat.type)) {
+    if (isAllowedGroup && messages.some((item) =>
+      shouldTelegramGroupMessageReachAgent(item, botId, botUsername, options.allowedGroupIds)
+      || item.new_chat_members?.some((member) => member.id === botId))) {
+      try { await options.api.sendMessage(message.chat.id, telegramGroupPrivacyNotice, options.signal, message.message_thread_id); }
+      catch (error) {
+        if (!options.signal.aborted) options.onStatus?.(`group privacy notice failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return;
+  }
   const groupMessageIsFromOwner = isAllowedGroup && messages.every((groupMessage) => String(groupMessage.from?.id) === options.ownerId);
   const botAddedMessage = isAllowedGroup
     ? messages.find(groupMessage => groupMessage.new_chat_members?.some(member => member.id === botId))
@@ -313,6 +333,7 @@ async function processTelegramReaction(
   state: TelegramChannelState,
   options: TelegramBridgeOptions
 ): Promise<void> {
+  if (!telegramSupportsAgentAudience(reaction.chat.type)) return;
   const chatId = String(reaction.chat.id);
   if ((reaction.chat.type !== "group" && reaction.chat.type !== "supergroup")
     || !options.allowedGroupIds.has(chatId)
@@ -603,7 +624,7 @@ async function collectTelegramMediaGroupUpdates(
 ): Promise<TelegramUpdate[]> {
   const lastUpdate = updates.at(-1);
   const mediaGroupId = lastUpdate?.message?.media_group_id;
-  if (!mediaGroupId) return updates;
+  if (!mediaGroupId || !telegramSupportsAgentAudience(lastUpdate.message!.chat.type)) return updates;
   const lastKey = `${lastUpdate.message!.chat.id}:${lastUpdate.message!.message_thread_id ?? ""}:${lastUpdate.message!.from?.id ?? ""}:${mediaGroupId}`;
   const collected = [...updates];
   while (collected.at(-1)?.message?.media_group_id !== undefined) {
@@ -832,6 +853,8 @@ async function ensureTelegramSession(
 }
 
 async function patrolTelegramGroups(state: TelegramChannelState, options: TelegramBridgeOptions): Promise<void> {
+  // Do not read, reopen or mutate an old group session, even for owner-only DMs.
+  if (!telegramSupportsAgentAudience("group")) return;
   const now = options.now?.() ?? new Date();
   const nowMs = now.getTime();
   const hour = now.getHours();
