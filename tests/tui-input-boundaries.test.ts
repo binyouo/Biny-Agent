@@ -24,6 +24,17 @@ const accepted: HostOperationResult<QueuedAgentMessage> = {
 };
 const image = (name: string): AgentAttachment => ({ name, mimeType: "image/png", data: "aW1hZ2U=" });
 
+function retainedInput(app: BinyTui, text: string, attachments: AgentAttachment[], uncertain: boolean) {
+  assert.equal(app["recoverableInputs"].size, 1);
+  const input = [...app["recoverableInputs"].values()][0];
+  assert.ok(input);
+  assert.equal(input.text, text);
+  assert.deepEqual(input.attachments, attachments);
+  assert.equal(input.origin?.sessionId, "session");
+  assert.equal(input.uncertain, uncertain);
+  return input;
+}
+
 async function fixture(t: TestContext, delayWriteAccess = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-tui-input-boundaries-"));
   const previousAgentDir = process.env.BINY_AGENT_DIR;
@@ -46,7 +57,7 @@ async function fixture(t: TestContext, delayWriteAccess = false) {
   t.mock.method(app["editor"], "addToHistory", (value: string) => { history.push(value); addToHistory(value); });
   // Exercise the actual editor and TUI steer path, without starting the TUI,
   // runtime host, socket, clipboard, provider or a real terminal.
-  const getSnapshot = () => ({ info: { sessionId: "session", sessionFile: "session.jsonl" }, state: { kind: "idle" } });
+  const getSnapshot = () => ({ info: { sessionId: "session", sessionFile: "session.jsonl", workspaceRoot: root }, state: { kind: "idle" } });
   const queue = async (input: string, attachments: AgentAttachment[]) => {
     calls.push({ input, attachments });
     started.resolve();
@@ -133,7 +144,7 @@ async function fixture(t: TestContext, delayWriteAccess = false) {
     assert.deepEqual(app["pendingAttachments"], [newerImage]);
   });
 
-  test(`Host: rejected steer restores its input alongside a newer pasted draft and attachment`, { timeout: 5_000 }, async (t) => {
+  test(`Host: uncertain steer retains input separately from a newer pasted draft and attachment`, { timeout: 5_000 }, async (t) => {
     const { app, editor, admission, started, history } = await fixture(t);
     const originalImage = image("original.png");
     const newerImage = image("newer.png");
@@ -147,10 +158,11 @@ async function fixture(t: TestContext, delayWriteAccess = false) {
     app["setPendingAttachments"]([...app["pendingAttachments"], newerImage]);
     admission.reject(new Error("steer rejected"));
     await steering;
-    assert.equal(editor.getExpandedText(), `original steer\n${pasted}`);
-    assert.deepEqual(app["pendingAttachments"], [originalImage, newerImage]);
+    assert.equal(editor.getExpandedText(), pasted);
+    assert.deepEqual(app["pendingAttachments"], [newerImage]);
+    retainedInput(app, "original steer", [originalImage], true);
     assert.deepEqual(history, [], "a rejected steer must not enter history");
-    assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "error" && item.content === "steer rejected"));
+    assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "notification" && item.content.includes("steer rejected") && item.content.includes("结果未知")));
   });
 
 
@@ -168,7 +180,7 @@ async function fixture(t: TestContext, delayWriteAccess = false) {
     assert.deepEqual(app["pendingAttachments"], []);
   });
 
-  test(`Host: unedited rejection restores whitespace and attachments exactly once`, { timeout: 5_000 }, async (t) => {
+  test(`Host: uncertain unedited receipt preserves exact whitespace and attachments for explicit recovery`, { timeout: 5_000 }, async (t) => {
     const { app, editor, admission, started, calls, history } = await fixture(t);
     const original = "  original cafe\u0301 👩🏽‍💻  ";
     const attachments = [image("one.png"), image("two.png")];
@@ -179,8 +191,14 @@ async function fixture(t: TestContext, delayWriteAccess = false) {
     admission.reject(new Error("not accepted"));
     await steering;
     assert.equal(calls[0]?.input, original);
+    assert.equal(editor.getExpandedText(), "", "unknown outcome must not auto-restore");
+    assert.deepEqual(app["pendingAttachments"], []);
+    const input = retainedInput(app, original, attachments, true);
+    // The dialog's explicit confirmation is covered by the pure ownership suite.
+    app["restoreRecoverableInput"](input, true, input.origin);
     assert.equal(editor.getExpandedText(), original);
     assert.deepEqual(app["pendingAttachments"], attachments);
+    assert.equal(app["recoverableInputs"].size, 0);
     assert.deepEqual(history, []);
   });
 
@@ -240,13 +258,17 @@ async function fixture(t: TestContext, delayWriteAccess = false) {
     editor.handleInput("\u001f");
     admission.reject(new Error("not accepted"));
     await steering;
+    assert.equal(editor.getExpandedText(), "");
+    const input = retainedInput(app, pasted, [image("original.png")], true);
+    app["restoreRecoverableInput"](input, true, input.origin);
     assert.equal(editor.getExpandedText(), pasted);
     assert.deepEqual(app["pendingAttachments"], [image("original.png")]);
+    assert.equal(app["recoverableInputs"].size, 0);
   });
 
 }
 
-test("remote refusal restores only submitted text and images before the newer draft", { timeout: 5_000 }, async (t) => {
+test("remote refusal retains submitted text and images without merging the newer draft", { timeout: 5_000 }, async (t) => {
   const { app, editor, admission, started, history } = await fixture(t);
   const pasted = "👩🏽‍💻 cafe\u0301 ".repeat(110);
   editor.handleInput(`\u001b[200~${pasted}\u001b[201~`);
@@ -258,13 +280,14 @@ test("remote refusal restores only submitted text and images before the newer dr
   app["setPendingAttachments"]([...app["pendingAttachments"], image("newer.png")]);
   admission.resolve({ accepted: false, revision: 1, reason: "run ended before admission" });
   await steering;
-  assert.equal(editor.getExpandedText(), `${pasted}\nnewer draft`);
-  assert.deepEqual(app["pendingAttachments"], [image("original.png"), image("newer.png")]);
+  assert.equal(editor.getExpandedText(), "newer draft");
+  assert.deepEqual(app["pendingAttachments"], [image("newer.png")]);
+  retainedInput(app, pasted, [image("original.png")], false);
   assert.deepEqual(history, []);
-  assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "error" && item.content === "run ended before admission"));
+  assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "notification" && item.content.includes("run ended before admission")));
 });
 
-test("write-access rejection restores input before showing a writer conflict", { timeout: 5_000 }, async (t) => {
+test("write-access rejection retains input separately while showing the original writer conflict", { timeout: 5_000 }, async (t) => {
   const { app, editor, calls, history, writeAccess } = await fixture(t, true);
   editor.setText("original");
   app["setPendingAttachments"]([image("original.png")]);
@@ -278,8 +301,9 @@ test("write-access rejection restores input before showing a writer conflict", {
   writeAccess.reject(conflict);
   await steering;
   assert.deepEqual(shown, [conflict]);
-  assert.equal(editor.getExpandedText(), "original\nnewer 👩🏽‍💻");
-  assert.deepEqual(app["pendingAttachments"], [image("original.png"), image("newer.png")]);
+  assert.equal(editor.getExpandedText(), "newer 👩🏽‍💻");
+  assert.deepEqual(app["pendingAttachments"], [image("newer.png")]);
+  retainedInput(app, "original", [image("original.png")], false);
   assert.deepEqual(calls, [], "failed write access must not queue anything");
   assert.deepEqual(history, []);
 });
@@ -319,7 +343,7 @@ for (const undoStack of [undefined, null, {}, { clear: "changed API" }]) {
     assert.deepEqual(app["pendingAttachments"], [image("original.png")]);
     assert.deepEqual(calls, []);
     assert.deepEqual(history, []);
-    assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "error" && item.content.includes("submission reset is unavailable")));
+    assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "notification" && item.content.includes("submission reset is unavailable")));
   });
 }
 
@@ -334,7 +358,7 @@ test("a failing undo reset restores the consumed draft and attachments without d
   assert.deepEqual(app["pendingAttachments"], [image("original.png")]);
   assert.deepEqual(calls, []);
   assert.deepEqual(history, []);
-  assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "error" && item.content === "undo reset failed"));
+  assert.ok(app.tuiState.transcript.committed.some((item) => item.kind === "notification" && item.content.includes("undo reset failed")));
 });
 
 test("steer preserves a literal trailing backslash without calling the Enter callback", { timeout: 5_000 }, async (t) => {

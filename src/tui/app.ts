@@ -84,6 +84,24 @@ const TUI_SLASH_COMMANDS = slashCommandsForSurface("tui");
 const TUI_AUTOCOMPLETE_COMMANDS = TUI_SLASH_COMMANDS;
 const TUI_SHUTDOWN_DRAIN_MS = 1_500;
 
+interface SubmissionTarget {
+  runtime: RuntimeHostClient;
+  sessionId: string;
+  workspaceRoot: string;
+  modelSwitch?: Promise<void>;
+}
+
+interface SubmittedInput {
+  id: number;
+  text: string;
+  attachments: AgentAttachment[];
+  target: Promise<SubmissionTarget | undefined>;
+  origin?: SubmissionTarget;
+  phase: "queued" | "dispatched" | "accepted" | "failed";
+  uncertain?: boolean;
+  transferIncomplete?: boolean;
+}
+
 interface ModelPresentation {
   provider: string;
   modelLabel: string;
@@ -136,6 +154,12 @@ export class BinyTui {
   private startRuntimePromise: Promise<void> | undefined;
   /** 只串行等待发送准入，模型执行仍由 Runtime 的事件流投影。 */
   private promptSubmissionQueue: Promise<void> = Promise.resolve();
+  private submissionSequence = 0;
+  private recoveredEditorInput = false;
+  private readonly pendingSubmissions = new Map<number, SubmittedInput>();
+  private readonly recoverableInputs = new Map<number, SubmittedInput>();
+  private readonly sessionModelSwitches = new WeakMap<RuntimeHostClient, Map<string, Promise<void>>>();
+
 
   private readonly headerContainer = new Container();
   private readonly chatContainer = new TranscriptView();
@@ -154,7 +178,6 @@ export class BinyTui {
   private thinking: ThinkingSelection = "off";
   /** 模型切换先更新 TUI 展示，再按顺序等待 Runtime 确认。 */
   private modelSwitchQueue: Promise<void> = Promise.resolve();
-  private modelSwitchPromise: Promise<void> | undefined;
   private modelSwitchGeneration = 0;
   private confirmedModel: ModelPresentation | undefined;
   private gitBranch: string | undefined;
@@ -439,6 +462,7 @@ export class BinyTui {
       this.dispatch({ type: "transcript.replaced", items: [], viewingSessionId: this.runtimeSnapshot?.info.sessionId });
       this.announceCurrentSession();
       this.setEditorText("");
+      this.recoveredEditorInput = false;
       await this.refreshContextUsage();
       await this.refreshUsage();
       this.notify("New chat started.");
@@ -562,91 +586,261 @@ export class BinyTui {
   // ---------------------------------------------------------------- 输入分发
 
   /** 提交文本与附件；消息接收或命令路由完成时返回，执行结果由事件流更新。 */
+  private notifySubmissionStatus(message: string): void {
+    try { this.notify(message); } catch { /* UI failure cannot change input or admission ownership. */ }
+  }
+
+  private async captureSubmissionTarget(): Promise<SubmissionTarget | undefined> {
+    // runtime can be assigned before startup creates the intended fresh session.
+    if (this.startRuntimePromise || !this.runtime) await this.ensureRuntimeStarted();
+    if (this.exiting || !this.runtime) return undefined;
+    const runtime = this.runtime;
+    const sessionId = runtime.getSnapshot().info.sessionId;
+    return { runtime, sessionId, workspaceRoot: runtime.getSnapshot().info.workspaceRoot, modelSwitch: this.sessionModelSwitches.get(runtime)?.get(sessionId) };
+  }
+
+  private hasSubmissionCapacity(): boolean {
+    return this.pendingSubmissions.size + this.recoverableInputs.size < 20;
+  }
+
+  private takeSubmittedInput(text: string, attachments: AgentAttachment[]): SubmittedInput {
+    const input: SubmittedInput = {
+      id: ++this.submissionSequence, text, attachments: [...attachments], phase: "queued",
+      target: this.captureSubmissionTarget().catch(() => undefined)
+    };
+    input.target = input.target.then((target) => { input.origin = target; return target; });
+    this.pendingSubmissions.set(input.id, input);
+    this.recoveredEditorInput = false;
+    return input;
+  }
+
   submit(text: string, attachments = this.pendingAttachments): Promise<void> {
     const value = text.trim();
     if (isSlashCommandSubmission(value) && !isSkillInvocationText(value)) {
       this.editor.addToHistory(value);
       void appendInputHistory(this.workspaceRoot, value)
-        .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
+        .catch((error) => this.notifySubmissionStatus(`写入输入历史失败：${describeError(error)}`));
       return this.handleSlashCommand(value).catch((error) => this.dispatch({ type: "error.message", message: describeError(error) }));
     }
-    this.setPendingAttachments([]);
-    const submission = this.promptSubmissionQueue.then(() => this.submitPrompt(text, attachments));
-    this.promptSubmissionQueue = submission.catch((error) => {
-      this.restoreSubmittedInput(text, attachments);
-      this.dispatch({ type: "error.message", message: describeError(error) });
-    });
+    if ((!value && !attachments.length) || this.exiting) return Promise.resolve();
+    if (!this.hasSubmissionCapacity()) {
+      // The real keyboard path is stopped before Editor clears the submission.
+      // onSubmit/programmatic callers may already have taken the text, so restore
+      // it only into an empty editor; never merge another draft.
+      if (!this.editor.getExpandedText()) this.setEditorText(text);
+      this.notifySubmissionStatus("待处理输入已达 20 条；请等待准入完成，或 /recover 恢复/明确丢弃。当前输入未发送。");
+      return Promise.resolve();
+    }
+    const input = this.takeSubmittedInput(text, attachments);
+    try { this.setPendingAttachments([]); }
+    catch (error) {
+      return input.target.then(() => { this.retainSubmittedInput(input, error); });
+    }
+    const submission = this.promptSubmissionQueue.then(() => this.submitPrompt(input));
+    this.promptSubmissionQueue = submission.catch((error) => this.retainSubmittedInput(input, error));
     return this.promptSubmissionQueue;
   }
 
-  private async submitPrompt(text: string, attachments: AgentAttachment[]): Promise<void> {
-    if (!text.trim() && !attachments.length) return;
-    // runtime 未就绪不再只能重启 TUI：普通消息提交前先重试启动（有界，见 client 握手超时）；
-    // 仍失败则保留输入并透出真实原因，而不是反复提示「检查模型配置后重启」。
-    await this.ensureRuntimeStarted();
-    const runtime = this.runtime;
-    if (!runtime) {
-      this.restoreSubmittedInput(text, attachments);
-      this.notify(this.startupError
-        ? `Runtime 尚未就绪：${this.startupError}。消息已保留在输入框，可稍后重试或 /exit 退出。`
-        : "Runtime 尚未就绪，无法发送消息。");
-      this.ui.requestRender();
+  private submissionIsCurrent(input: SubmittedInput): boolean {
+    const origin = input.origin;
+    if (!origin || this.runtime !== origin.runtime) return false;
+    const info = origin.runtime.getSnapshot().info;
+    return info.sessionId === origin.sessionId && info.workspaceRoot === origin.workspaceRoot;
+  }
+
+  private async submitPrompt(input: SubmittedInput, delivery: "queue" | "steer" = "queue"): Promise<void> {
+    try {
+      input.origin = await input.target;
+      if (this.exiting) return;
+      const target = input.origin;
+      if (!target) throw new Error(this.startupError ?? "Runtime 尚未就绪；输入已单独保留。");
+      const { runtime, sessionId, modelSwitch } = target;
+      await modelSwitch;
+      if (this.exiting) return;
+      if (this.runtime !== runtime) throw new Error("原 Runtime 已被替换；输入未重发。");
+      await this.ensureSessionWriteAccess(sessionId, runtime);
+      if (this.exiting) return;
+      if (this.runtime !== runtime) throw new Error("原 Runtime 已被替换；输入未重发。");
+      const queued = delivery === "steer" || runtimeIsBusy(runtime.getSnapshot(sessionId));
+      input.phase = "dispatched";
+      const result = queued
+        ? await runtime.queueRunMessageForSession(sessionId, input.text, delivery, input.attachments)
+        : await runtime.submitRunForSession(sessionId, input.text, input.attachments);
+      if (!result.accepted) {
+        input.phase = "queued"; // An explicit rejection is not an uncertain acknowledgment.
+        throw errorFromHostOperation(result);
+      }
+      // Acceptance is irreversible even if subsequent presentation/history fails.
+      input.phase = "accepted";
+      this.pendingSubmissions.delete(input.id);
+      if (this.exiting) return;
+      if (input.text.trim()) {
+        this.editor.addToHistory(input.text);
+        void appendInputHistory(this.workspaceRoot, input.text)
+          .catch((error) => this.notifySubmissionStatus(`写入输入历史失败：${describeError(error)}`));
+      }
+      if (queued && !this.exiting) this.notifySubmissionStatus(`消息已加入 ${sessionId.slice(0, 8)} 的 ${delivery} 队列。`);
+    } catch (error) {
+      this.retainSubmittedInput(input, error);
+    } finally {
+      if (!this.exiting) {
+        try { void this.refreshContextUsage().catch(() => undefined); } catch { /* Presentation cannot undo admission. */ }
+      }
+    }
+  }
+
+  private retainSubmittedInput(input: SubmittedInput, error: unknown): void {
+    if (input.phase === "accepted") {
+      if (!this.exiting) {
+        try { this.notifySubmissionStatus(`消息已接纳，更新显示失败：${describeError(error)}`); } catch { /* Acceptance remains final. */ }
+      }
       return;
     }
-    const sessionId = runtime.getSnapshot().info.sessionId;
-    const pendingModelSwitch = this.modelSwitchPromise;
-    if (pendingModelSwitch) {
-      // 底部模型名已经立即变化，但消息必须等真实 Runtime 切换完成后再提交，
-      // 避免用户紧接着按 Enter 时仍由旧模型处理。
-      try {
-        await pendingModelSwitch;
-      } catch {
-        // applyModel 已经展示具体失败原因；Editor 提交时已清空输入，这里恢复，避免误发到旧模型。
-        this.restoreSubmittedInput(text, attachments);
-        return;
-      }
-    }
-    const prompt = text;
+    if (input.phase === "failed") return;
+    input.uncertain = input.phase === "dispatched";
+    input.phase = "failed";
+    this.pendingSubmissions.delete(input.id);
+    this.recoverableInputs.set(input.id, input);
+    if (this.exiting) return;
     try {
-      await this.ensureSessionWriteAccess(sessionId);
-      if (runtimeIsBusy(runtime.getSnapshot(sessionId))) {
-        const queued = await runtime.queueRunMessageForSession(sessionId, prompt, "queue", attachments);
-        if (!queued.accepted) throw errorFromHostOperation(queued);
-        this.notify("消息已加入待发送队列，将在当前任务结束后继续处理。");
+      // Never let an old writer conflict replace another session's transcript.
+      if (isSessionWriterConflictError(error) && this.submissionIsCurrent(input)) {
+        void this.showSessionWriterConflict(error).catch((conflictError) => {
+          if (!this.exiting && this.submissionIsCurrent(input)) this.notifySubmissionStatus(describeError(conflictError));
+        });
+      }
+      if (!input.uncertain && this.submissionIsCurrent(input)
+        && !this.editor.getExpandedText() && !this.pendingAttachments.length && !this.sessionWriterConflict) {
+        this.restoreRecoverableInput(input, false);
+      }
+      const origin = input.origin?.sessionId.slice(0, 8) ?? "尚未绑定会话";
+      const recovery = this.recoverableInputs.has(input.id) ? "使用 /recover 查看保留的输入" : "输入已恢复到当前编辑器";
+      this.notifySubmissionStatus(`${origin} 的输入${input.uncertain ? "接纳结果未知，可能已执行" : "未发送"}：${describeError(error)}。${recovery}；不会自动重发。`);
+    } catch { /* Payload ownership is already retained; a broken renderer must not resend it. */ }
+  }
+
+  private restoreRecoverableInput(input: SubmittedInput, confirmed: boolean, confirmationTarget?: SubmissionTarget): void {
+    if (!this.recoverableInputs.has(input.id) || this.exiting) return;
+    if (input.transferIncomplete && (this.editor.getExpandedText() || this.pendingAttachments.length)) {
+      this.notifySubmissionStatus("先检查并清空编辑器中上次恢复的内容；记录仍保留，不能重复装入。");
+      return;
+    }
+    if (this.startRuntimePromise || !this.runtime || this.sessionWriterConflict) {
+      this.notifySubmissionStatus("请先完成会话启动或解决原会话写入冲突，再恢复输入。");
+      return;
+    }
+    if (confirmationTarget && (this.runtime !== confirmationTarget.runtime
+      || this.runtime.getSnapshot().info.sessionId !== confirmationTarget.sessionId
+      || this.runtime.getSnapshot().info.workspaceRoot !== confirmationTarget.workspaceRoot)) {
+      this.notifySubmissionStatus("确认期间会话已改变；输入仍保留，请重新选择恢复。");
+      return;
+    }
+    if (input.origin && !this.submissionIsCurrent(input)) {
+      const info = this.runtime.getSnapshot().info;
+      const sameIdentity = typeof input.origin.workspaceRoot === "string" && input.origin.sessionId === info.sessionId
+        && input.origin.workspaceRoot === info.workspaceRoot;
+      if (sameIdentity && confirmed && confirmationTarget) {
+        input.origin = confirmationTarget;
+      } else if (sameIdentity) {
+        const target = { runtime: this.runtime, sessionId: info.sessionId, workspaceRoot: info.workspaceRoot };
+        this.showSelect({
+          title: `原会话已重连：确认仅将输入绑定到同项目/同会话 ${info.sessionId} 的编辑器${input.uncertain ? "；结果未知，重新发送可能重复执行" : ""}`,
+          items: [{ value: "cancel", label: "保留记录" }, { value: "restore", label: "确认重新绑定并恢复（不会发送）" }],
+          onSelect: (item) => { if (item.value === "restore") this.restoreRecoverableInput(input, true, target); }
+        });
+        return;
       } else {
-        const accepted = await runtime.submitRunForSession(sessionId, prompt, attachments);
-        if (!accepted.accepted) throw errorFromHostOperation(accepted);
-      }
-      if (prompt.trim()) {
-        this.editor.addToHistory(prompt);
-        void appendInputHistory(this.workspaceRoot, prompt)
-          .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
-      }
-    } catch (error) {
-      if (isSessionWriterConflictError(error)) {
-        await this.showSessionWriterConflict(error);
-        this.restoreSubmittedInput(text, attachments);
+        this.notifySubmissionStatus(`请先切回原项目和会话 ${input.origin.sessionId}；也可在 /recover 明确丢弃此记录，当前草稿未改变。`);
         return;
       }
-      this.restoreSubmittedInput(text, attachments);
-      this.dispatch({ type: "error.message", message: describeError(error) });
-    } finally {
-      void this.refreshContextUsage();
     }
+    if (this.editor.getExpandedText() || this.pendingAttachments.length) {
+      this.notifySubmissionStatus("当前草稿非空，请先处理草稿；保留的输入不会覆盖它。");
+      return;
+    }
+    if ((input.uncertain || !input.origin) && !confirmed) {
+      const target = { runtime: this.runtime, sessionId: this.runtime.getSnapshot().info.sessionId, workspaceRoot: this.runtime.getSnapshot().info.workspaceRoot };
+      this.showSelect({
+        title: input.uncertain ? "接纳结果未知：请先检查原会话，重新发送可能重复执行" : "输入没有原会话：确认装入当前会话的空编辑器",
+        items: [{ value: "cancel", label: "保留记录，不恢复" }, { value: "restore", label: "仅恢复到输入框（不会发送）" }],
+        onSelect: (item) => { if (item.value === "restore") this.restoreRecoverableInput(input, true, target); }
+      });
+      return;
+    }
+    if (!input.origin && confirmationTarget) input.origin = confirmationTarget;
+    // Keep the record until both editor and attachment ownership are verified.
+    input.transferIncomplete = true;
+    try {
+      this.setEditorText(input.text);
+      this.setPendingAttachments([...input.attachments]);
+      if (this.editor.getExpandedText() !== input.text || this.pendingAttachments.length !== input.attachments.length
+        || this.pendingAttachments.some((attachment, index) => attachment !== input.attachments[index])) {
+        throw new Error("恢复后的编辑器内容未能确认。");
+      }
+      this.recoveredEditorInput = true;
+      this.recoverableInputs.delete(input.id);
+      this.notifySubmissionStatus("输入已恢复；检查内容后按 Enter 才会发送。");
+    } catch (error) {
+      this.notifySubmissionStatus(`输入恢复未完成，记录仍保留：${describeError(error)}`);
+    }
+  }
+
+  private showRecoverableInputs(): void {
+    if (!this.recoverableInputs.size) { this.notifySubmissionStatus("没有待恢复的输入。"); return; }
+    this.showSelect({
+      title: "保留的输入（仅本次 TUI 生命周期；不会自动发送）",
+      items: [...this.recoverableInputs.values()].map((input) => ({
+        value: String(input.id),
+        label: `${input.origin?.sessionId.slice(0, 8) ?? "未绑定"} · ${input.uncertain ? "结果未知" : "未发送"} · ${Array.from(input.text.slice(0, 80), (character) => { const code = character.codePointAt(0)!; return code < 32 || code >= 127 && code <= 159 ? " " : character; }).join("") || "[附件]"}`,
+        description: `${input.attachments.length} 个附件${input.transferIncomplete ? " · 上次恢复未完成，请检查编辑器" : ""}`
+      })),
+      onSelect: (item) => {
+        const input = this.recoverableInputs.get(Number(item.value));
+        if (!input) return;
+        this.showSelect({
+          title: `保留输入 ${input.id} · ${input.origin?.sessionId ?? "未绑定会话"}`,
+          items: [{ value: "restore", label: "恢复到原会话的空输入框" }, { value: "discard", label: "明确丢弃这条保留输入" }],
+          onSelect: (action) => {
+            if (action.value === "restore") this.restoreRecoverableInput(input, false);
+            if (action.value === "discard") this.showSelect({
+              title: input.uncertain ? "丢弃此本地副本？原请求可能已执行；丢弃不撤销请求。" : "确认丢弃这条文本和附件的本地恢复副本？",
+              items: [{ value: "cancel", label: "保留" }, { value: "discard", label: "确认丢弃，不发送" }],
+              onSelect: (choice) => {
+                if (choice.value === "discard" && this.recoverableInputs.get(input.id) === input) {
+                  this.recoverableInputs.delete(input.id);
+                  this.notifySubmissionStatus("已明确丢弃这条本地恢复记录；未发送或撤销任何请求。");
+                }
+              }
+            });
+          }
+        });
+      }
+    });
+  }
+
+  private requestExit(): Promise<void> {
+    if (!this.recoverableInputs.size && !this.pendingSubmissions.size
+      && !this.editor.getExpandedText() && !this.pendingAttachments.length) return this.exit();
+    this.showSelect({
+      title: `退出将放弃 ${this.recoverableInputs.size} 条保留输入、${this.pendingSubmissions.size} 条未结算输入和当前草稿（不持久保存）；其中 ${[...this.pendingSubmissions.values()].filter((input) => input.phase === "dispatched").length} 条已派发，可能已接纳/执行，退出不保证撤销。`,
+      items: [{ value: "cancel", label: "继续使用，保留输入" }, { value: "exit", label: "明确放弃并退出" }],
+      onSelect: (item) => { if (item.value === "exit") void this.exit(); }
+    });
+    return Promise.resolve();
   }
 
   /** 全局键位。返回 `{consume:true}` 表示不再投递给焦点组件。 */
   private handleGlobalKey(data: string): { consume?: boolean } | undefined {
     const busy = runtimeIsBusy(this.runtimeSnapshot);
 
-    // 连续两次 Ctrl+C 始终退出（弹层打开时也一样）；
+    // 连续两次 Ctrl+C 发起退出（弹层打开时也一样）；保留/恢复输入须先明确放弃。
     // 单次 Ctrl+C 在弹层打开时交给弹层自己处理（选择器取消、查看器关闭），
     // 避免「想退出却发现被弹层卡住」。
     if (matchesKey(data, "ctrl+c")) {
       const now = Date.now();
       if (ctrlCAction(this.lastCtrlCAt, now) === "exit") {
         this.lastCtrlCAt = 0;
-        void this.exit();
+        void this.requestExit();
       } else {
         this.lastCtrlCAt = now;
         this.status.showExitHint(ctrlCExitWindowMs);
@@ -654,9 +848,12 @@ export class BinyTui {
         if (busy) {
           this.dismissAutocomplete();
           this.runtime?.cancelCurrentRun("interrupted");
+        } else if (this.recoveredEditorInput && (this.editor.getExpandedText() || this.pendingAttachments.length)) {
+          void this.requestExit();
         } else {
           this.setEditorText("");
           this.setPendingAttachments([]);
+          this.recoveredEditorInput = false;
         }
       }
       return { consume: true };
@@ -666,6 +863,13 @@ export class BinyTui {
         this.sessionWriterConflictView?.handleInput(data);
       }
       // 冲突状态只允许 Retry 和退出，普通输入不能落入 Editor。
+      return { consume: true };
+    }
+    if (!this.overlay && !this.hasSubmissionCapacity()
+      && (matchesKey(data, "enter") && (!isSlashCommandSubmission(this.editor.getExpandedText().trim())
+          || isSkillInvocationText(this.editor.getExpandedText().trim()))
+        || matchesKey(data, "ctrl+s") && busy)) {
+      this.notifySubmissionStatus("待处理输入已达 20 条；请等待准入完成，或 /recover 恢复/明确丢弃。草稿保持不变。");
       return { consume: true };
     }
     // steer 消费的是编辑器内容，必须排在冲突遮罩之后，避免冲突期间改写已隐藏的编辑器。
@@ -712,43 +916,52 @@ export class BinyTui {
   }
 
   private async steerCurrentInput(): Promise<void> {
-    const runtime = this.runtime;
-    if (!runtime) return;
-    const sessionId = runtime.getSnapshot().info.sessionId;
+    if (!this.runtime || this.startRuntimePromise || this.exiting) return;
     const text = this.editor.getExpandedText();
     if (!text.trim() && !this.pendingAttachments.length) return;
-    const prompt = text;
-    const attachments = this.pendingAttachments;
-    let inputTaken = false;
+    if (!this.hasSubmissionCapacity()) { this.notifySubmissionStatus("待处理输入已达 20 条，请先 /recover；草稿保持不变。"); return; }
+    let input: SubmittedInput | undefined;
     try {
       const undo = editorSubmissionUndo(this.editor);
-      // 与 Enter 提交一致：在准入等待前取走这一份输入，后续编辑属于下一份草稿。
+      input = this.takeSubmittedInput(text, this.pendingAttachments);
       this.setEditorText("");
       this.setPendingAttachments([]);
-      inputTaken = true;
       undo.clear();
-      await this.ensureSessionWriteAccess(sessionId);
-      const queued = await runtime.queueRunMessageForSession(sessionId, prompt, "steer", attachments);
-      if (!queued.accepted) throw errorFromHostOperation(queued);
-      if (prompt.trim()) {
-        this.editor.addToHistory(prompt);
-        void appendInputHistory(this.workspaceRoot, prompt)
-          .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
-      }
-      this.notify("消息已加入 steer 队列，将在当前模型步骤和工具批次结束后处理。");
     } catch (error) {
-      if (inputTaken) this.restoreSubmittedInput(text, attachments);
-      if (isSessionWriterConflictError(error)) {
-        await this.showSessionWriterConflict(error);
+      if (!input) {
+        this.notifySubmissionStatus(`输入保持不变：${describeError(error)}`);
         return;
       }
-      this.dispatch({ type: "error.message", message: describeError(error) });
+      // A synchronous editor failure must roll back before any await lets a new
+      // draft arrive. Verify ownership rather than keeping a duplicate backup.
+      try { this.setEditorText(input.text); } catch { /* Verify below. */ }
+      try { this.setPendingAttachments([...input.attachments]); } catch { /* Verify below. */ }
+      let restored = false;
+      const originalAttachments = input.attachments;
+      try {
+        restored = this.editor.getExpandedText() === input.text
+          && this.pendingAttachments.length === input.attachments.length
+          && this.pendingAttachments.every((attachment, index) => attachment === originalAttachments[index]);
+      } catch { /* Keep the independent recovery record if ownership is unknown. */ }
+      if (restored) {
+        this.pendingSubmissions.delete(input.id);
+        input.phase = "failed";
+        this.recoveredEditorInput = true;
+        this.notifySubmissionStatus(`输入已保留在编辑器，未发送：${describeError(error)}`);
+        return;
+      }
+      input.transferIncomplete = true;
+      await input.target;
+      this.retainSubmittedInput(input, error);
+      return;
     }
+    // Rollback above owns only synchronous editor consumption, never Host/UI
+    // completion. Accepted work must not restore into a subsequently focused draft.
+    await this.submitPrompt(input, "steer");
   }
 
   /** Remote Host 的写入口检查可写性；实际提交仍由 Host 在同会话队列内重新仲裁。 */
-  private async ensureSessionWriteAccess(sessionId: string): Promise<void> {
-    const runtime = this.runtime;
+  private async ensureSessionWriteAccess(sessionId: string, runtime = this.runtime): Promise<void> {
     if (!runtime) return;
 
     await runtime.ensureSession({ sessionId, writeIntent: true, focus: false });
@@ -784,11 +997,6 @@ export class BinyTui {
     this.editor.setText(text);
   }
 
-  private restoreSubmittedInput(text: string, attachments: AgentAttachment[]): void {
-    const draft = this.editor.getExpandedText();
-    this.setEditorText([text, draft].filter(Boolean).join("\n"));
-    this.setPendingAttachments([...attachments, ...this.pendingAttachments]);
-  }
 
   private dismissAutocomplete(): void {
     if (!this.editor.isShowingAutocomplete()) return;
@@ -984,8 +1192,13 @@ export class BinyTui {
       return;
     }
 
+    if (command === "/recover") {
+      this.showRecoverableInputs();
+      return;
+    }
+
     if (command === "/exit") {
-      await this.exit();
+      await this.requestExit();
       return;
     }
 
@@ -1339,14 +1552,19 @@ export class BinyTui {
         }
       });
     this.modelSwitchQueue = request.catch(() => undefined);
-    this.modelSwitchPromise = request;
+    let switches = this.sessionModelSwitches.get(runtime);
+    if (!switches) { switches = new Map(); this.sessionModelSwitches.set(runtime, switches); }
+    switches.set(sessionId, request);
+    const clearSessionSwitch = (): void => {
+      if (switches.get(sessionId) === request) switches.delete(sessionId);
+    };
+    void request.then(clearSessionSwitch, clearSessionSwitch);
+
     void request.then(
       () => {
-        if (this.modelSwitchGeneration === requestId) this.modelSwitchPromise = undefined;
       },
       (error: unknown) => {
         if (this.modelSwitchGeneration !== requestId) return;
-        this.modelSwitchPromise = undefined;
         if (runtime.getSnapshot().info.sessionId !== sessionId) return;
         this.applyModelPresentation(this.confirmedModel ?? modelPresentationFromInfo(runtime.getSnapshot().info));
         this.showCommandResult("Model", `Model switch failed: ${describeError(error)}`);
@@ -1644,6 +1862,8 @@ export class BinyTui {
 
   private async showSessionWriterConflict(conflict: SessionWriterConflictInfo): Promise<void> {
     const sessionId = conflict.sessionId;
+    const runtime = this.runtime;
+    if (!runtime || runtime.getSnapshot().info.sessionId !== sessionId) return;
     this.sessionWriterConflict = conflict;
     this.editorContainer.removeChild(this.pendingAttachmentsView);
     this.editorContainer.removeChild(this.editor);
@@ -1660,13 +1880,18 @@ export class BinyTui {
     this.chatContainer.reset();
     try {
       const stored = await readStoredSessionEvents(this.workspaceRoot, sessionId);
+      if (this.runtime !== runtime || runtime.getSnapshot().info.sessionId !== sessionId
+        || this.sessionWriterConflict !== conflict) return;
       this.dispatch({
         type: "transcript.replaced",
         viewingSessionId: sessionId,
         items: sessionEventsToTranscript(stored.events)
       });
     } catch (error) {
-      this.dispatch({ type: "error.message", message: `读取只读会话失败：${describeError(error)}` });
+      if (this.runtime === runtime && runtime.getSnapshot().info.sessionId === sessionId
+        && this.sessionWriterConflict === conflict) {
+        this.dispatch({ type: "error.message", message: `读取只读会话失败：${describeError(error)}` });
+      }
     }
     this.ui.requestRender();
   }
