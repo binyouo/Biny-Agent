@@ -29,6 +29,7 @@ interface ProbeDialog { title: string; onSelect(item: { value: string }): void }
 interface ProbeApp {
   runtime?: ProbeRuntime;
   startRuntimePromise?: Promise<void>;
+  startupError?: string;
   startRuntime(): Promise<void>;
   editor: { addToHistory(value: string): void; getExpandedText(): string };
   pendingAttachments: AgentAttachment[];
@@ -392,4 +393,26 @@ test("real Editor undo cannot resurrect accepted steer before admission complete
   const p = f.app.steerCurrentInput(); await flush(); f.editor.handleInput("\u001f");
   assert.equal(f.editor.getExpandedText(), ""); gate.resolve({ accepted: true }); await p;
   f.editor.handleInput("\u001f"); assert.equal(f.editor.getExpandedText(), ""); assert.equal(f.sends.length, 1);
+});
+
+
+test("startup failures preserve unavailable classification and cause without merging or replaying input", async () => {
+  const f = fixture(); f.app.runtime = undefined; f.app.startupError = "No model available. Missing fixture credential.";
+  f.app.startRuntime = async () => undefined;
+  f.setDraft("newer draft"); const image = attachment("unbound.png");
+  await f.app.submit("first unbound input", [image]);
+  assert.equal(f.draft(), "newer draft"); assert.equal(f.sends.length, 0);
+  const input = onlyRecovery(f.app); assert.equal(input.text, "first unbound input");
+  assert.equal(input.attachments[0], image); assert.equal(input.origin, undefined); assert.equal(input.uncertain, false);
+  assert.ok(f.notices.some(message => message.includes("Runtime 尚未就绪") && message.includes("No model available")));
+  f.app.startupError = "New session initialization failed.";
+  await f.app.submit("second unbound input");
+  assert.equal(f.draft(), "newer draft"); assert.equal(f.app.recoverableInputs.size, 2); assert.equal(f.sends.length, 0);
+  assert.ok(f.notices.some(message => message.includes("Runtime 尚未就绪") && message.includes("New session initialization failed")));
+  const unavailableCount = f.notices.filter(message => message.includes("尚未就绪")).length;
+  f.app.runtime = f.runtime; f.app.startupError = undefined;
+  await f.app.submit("explicit new input after recovery");
+  assert.deepEqual(f.sends.map(message => message.text), ["explicit new input after recovery"]);
+  assert.deepEqual([...f.app.recoverableInputs.values()].map(message => message.text), ["first unbound input", "second unbound input"]);
+  assert.equal(f.notices.filter(message => message.includes("尚未就绪")).length, unavailableCount);
 });

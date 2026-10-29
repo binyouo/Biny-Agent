@@ -78,7 +78,13 @@ try {
   const failedSend = submit("第一次发送");
   app["editor"].setText("下一条草稿");
   await failedSend;
-  assert.equal(app["editor"].getText(), "第一次发送\n下一条草稿", "启动失败时保留原消息和新草稿");
+  assert.equal(app["editor"].getText(), "下一条草稿", "启动失败不得把未绑定消息合并进较新的草稿");
+  const retained = [...app["recoverableInputs"].values()];
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0]?.text, "第一次发送");
+  assert.deepEqual(retained[0]?.attachments, []);
+  assert.equal(retained[0]?.origin, undefined, "failed initialization must not invent a session target");
+  assert.equal(retained[0]?.uncertain, false, "no message request was dispatched");
   const firstRound = notifications(app);
   assert.ok(firstRound.some((content) => content.includes("尚未就绪")), "应提示 runtime 未就绪");
   assert.ok(
@@ -138,6 +144,8 @@ try {
   assert.notEqual(app.tuiState.sessionId, "", "重试后 runtime 应就绪并派发 session.started");
   const stillStuck = notifications(app).filter((content) => content.includes("尚未就绪")).length;
   assert.equal(stillStuck, stuckCount, "恢复后不应再出现「尚未就绪」通知");
+  assert.deepEqual([...app["recoverableInputs"].values()].map(input => input.text), ["第一次发送", "初始化失败时不应误发"],
+    "successful startup must not automatically resend or discard either unbound input");
 } finally {
   // 先关 TUI 的 client 再关 Host：Host 先关会触发 client 的重连级联（甚至 respawn），
   // 让测试进程无法退出。

@@ -653,7 +653,7 @@ export class BinyTui {
       input.origin = await input.target;
       if (this.exiting) return;
       const target = input.origin;
-      if (!target) throw new Error(this.startupError ?? "Runtime 尚未就绪；输入已单独保留。");
+      if (!target) throw new Error(`Runtime 尚未就绪：${this.startupError ?? "会话初始化尚未完成"}。输入已单独保留。`);
       const { runtime, sessionId, modelSwitch } = target;
       await modelSwitch;
       if (this.exiting) return;
