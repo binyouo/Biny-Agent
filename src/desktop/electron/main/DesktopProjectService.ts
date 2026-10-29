@@ -116,25 +116,25 @@ export class DesktopProjectService {
    */
   async createProject(projectPath: string, iconDataUrl?: string): Promise<DesktopProject> {
     const resolvedPath = path.resolve(projectPath);
-    const stat = await fs.stat(resolvedPath);
-    if (!stat.isDirectory()) throw new Error("Selected project path is not a directory.");
-    const existing = this.state.projects().find((project) => project.path === resolvedPath);
-    const now = new Date().toISOString();
-    const project = await this.inspectProject({
-      id: existing?.id ?? projectId(resolvedPath),
-      path: resolvedPath,
-      name: existing?.name ?? path.basename(resolvedPath),
-      iconDataUrl: iconDataUrl ?? existing?.iconDataUrl,
-      branch: existing?.branch,
-      dirty: existing?.dirty ?? false,
-      missing: false,
-      pinned: existing?.pinned ?? false,
-      addedAt: existing?.addedAt ?? now,
-      lastOpenedAt: now
-    });
-    await this.storage.ensureProjectData(project);
-    await this.state.upsertProject(project);
-    return project;
+    return await this.state.openProject(resolvedPath, async (existing) => {
+      const stat = await fs.stat(resolvedPath);
+      if (!stat.isDirectory()) throw new Error("Selected project path is not a directory.");
+      const now = new Date().toISOString();
+      const project = await this.inspectProject({
+        id: existing?.id ?? projectId(resolvedPath),
+        path: resolvedPath,
+        name: existing?.name ?? path.basename(resolvedPath),
+        iconDataUrl: iconDataUrl ?? existing?.iconDataUrl,
+        branch: existing?.branch,
+        dirty: existing?.dirty ?? false,
+        missing: false,
+        pinned: existing?.pinned ?? false,
+        addedAt: existing?.addedAt ?? now,
+        lastOpenedAt: now
+      });
+      await this.storage.ensureProjectData(project);
+      return project;
+    }, iconDataUrl);
   }
 
   async createEmptyProject(projectPath: string, iconDataUrl?: string): Promise<DesktopProject> {
