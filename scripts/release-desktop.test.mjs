@@ -9,6 +9,10 @@ import { parse } from "yaml";
 const workflow = parse(readFileSync(new URL("../.github/workflows/release-desktop.yml", import.meta.url), "utf8"));
 const signingCheck = workflow.jobs.build.steps.find(step => step.name === "Verify macOS signing configuration").run;
 
+test("desktop release builds only Apple Silicon", () => {
+  assert.deepEqual(workflow.jobs.build.strategy.matrix.include.map(entry => entry.arch), ["arm64"]);
+});
+
 // 执行发布工作流的真实检查；现有应用测试不覆盖无凭据的 Beta 发布。
 for (const [name, unsigned, tag, credentials, expected] of [
   ["unsigned Beta can build without Apple credentials", "true", "v0.0.1-beta.1", false, 0],
@@ -94,10 +98,11 @@ printf '%s\\n' "$@"
       });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       assert.deepEqual(result.stdout.split("\n").filter(arg => arg.startsWith("release-assets/")), [
-        "release-assets/Biny-arm64.dmg", "release-assets/Biny-x64.dmg",
+        "release-assets/Biny-arm64.dmg",
       ]);
       const notes = readFileSync(path.join(cwd, "release-notes.md"), "utf8");
-      assert.ok(notes.includes("arm64.dmg") && notes.includes("x64.dmg"));
+      assert.ok(notes.includes("arm64.dmg"));
+      assert.ok(!notes.includes("x64.dmg"));
       assert.doesNotMatch(notes, /ZIP|SHA256SUMS/iu);
     } finally {
       rmSync(cwd, { recursive: true, force: true });

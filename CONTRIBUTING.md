@@ -98,11 +98,13 @@ Windows 兼容测试和构建后的 Host 验证在源码变更、选中 Windows 
 
 采用按里程碑手动发布，不固定每日或每次提交发版。完成一个可用功能或重要修复后，由维护者明确发起发布；零散小修与文档更新合并到下一版。普通提交、push 与 CI 成功不自动修改版本、创建 tag 或发布安装包。
 
-当前 Beta 沿用 `0.0.1-beta.N`，每次新发布递增 `N`；已有 tag 不覆盖。工作流或验证环境故障可修复后按原 tag 重试；标签内的应用源码需要修改时创建新版本。进入稳定版或调整主版本时另行确定版本。发布前收齐本次范围内的并行改动，确认对应源码的 CI、构建和产物检查结果；安装、首次启动及界面交互的人工验收结果单独说明。
+Beta 使用 `<major>.<minor>.<patch>-beta.N`，同一版本线每次新发布递增 `N`；已有 tag 不覆盖。工作流或验证环境故障可修复后按原 tag 重试；标签内的应用源码需要修改时创建新版本。进入稳定版或调整主版本时另行确定版本。发布前收齐本次范围内的并行改动，确认对应源码的 CI、构建和产物检查结果；安装、首次启动及界面交互的人工验收结果单独说明。
 
-公开下载只提供 macOS Apple Silicon、Intel 各一份 DMG。`pnpm build:desktop` 先从应用原稿生成平台图标，打包使用同一批资源。发布工作流只构建、上传 DMG，不额外提供 ZIP 或校验和文件。
+桌面版公开下载只提供 macOS Apple Silicon 的 DMG；TUI 与 CLI 使用同一个 npm 包，在 macOS 和 Windows 安装。`pnpm build:desktop` 先从应用原稿生成平台图标，打包使用同一批资源。发布工作流只构建、上传 DMG，不额外提供 ZIP 或校验和文件。
 
-版本来源为 `package.json`。通过 [Prepare release](.github/workflows/prepare-release.yml) 手动输入新版本，工作流提交版本、创建 `v<version>` tag，再启动 [Release macOS app](.github/workflows/release-desktop.yml)。后者验证标签对应源码，构建两种架构并创建 GitHub Release；已有标签的失败构建可通过其 `tag` 输入重试。只有 Actions 成功且 Release 安装包实际上传完成，才算发布完成。
+版本来源为 `package.json`。通过 [Prepare release](.github/workflows/prepare-release.yml) 手动输入新版本，工作流提交版本、创建 `v<version>` tag，再启动 [Release Desktop and TUI](.github/workflows/release-desktop.yml)。后者验证标签对应源码，构建 Apple Silicon 并创建 GitHub Release；已有标签的失败构建可通过其 `tag` 输入重试。只有 Actions 成功且 Release 安装包实际上传完成，才算发布完成。
+
+TUI 与 CLI 发布同一份 npm 包：桌面构建生成 `tui-npm` 工作流产物，并在 macOS 与 Windows 安装验证。发布完成后下载该产物，使用 `npm publish <包文件> --tag latest --ignore-scripts` 发布；确认 npm 账号已登录且版本与 Git 标签一致。
 
 ### macOS 签名与公证
 

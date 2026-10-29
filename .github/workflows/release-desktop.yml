@@ -1,4 +1,4 @@
-name: Release macOS app
+name: Release Desktop and TUI
 
 on:
   push:
@@ -82,8 +82,6 @@ jobs:
         include:
           - runner: macos-15
             arch: arm64
-          - runner: macos-15-intel
-            arch: x64
     runs-on: ${{ matrix.runner }}
     env:
       CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
@@ -142,15 +140,52 @@ jobs:
           fi
           pnpm exec electron-builder "${args[@]}"
 
+      - name: Pack TUI npm package
+        run: node scripts/pack-tui.mjs tui-package
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tui-npm
+          path: tui-package/*.tgz
+          if-no-files-found: error
+
       - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
           path: release/*.dmg
           if-no-files-found: error
 
+  tui:
+    name: Verify TUI package (${{ matrix.os }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: tui-npm
+          path: tui-package
+
+      - name: Install and verify packaged TUI
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/biny-tui" --no-audit --no-fund ./tui-package/*.tgz
+          node scripts/verify-tui-package.mjs "$RUNNER_TEMP/biny-tui/node_modules/@biny012/biny"
+
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, tui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -173,7 +208,7 @@ jobs:
           Biny 是本地优先、记忆优先的开发协作 Agent，提供 macOS Desktop、TUI 与 CLI，支持通过 MCP、Skills 和插件扩展。
 
           ### macOS Beta 安装
-          - Apple Silicon 下载 `arm64.dmg`；Intel 下载 `x64.dmg`。打开 DMG 后将 Biny 拖入 Applications。
+          - Apple Silicon 下载 `arm64.dmg`。打开 DMG 后将 Biny 拖入 Applications。
           - 此 Beta 未使用 Apple Developer ID 签名或公证。首次打开可能被 macOS 拦截；确认下载来源后，在“系统设置 → 隐私与安全性”中选择“仍要打开”。[Apple 操作说明](https://support.apple.com/en-us/102445)
           - 首次使用请配置模型服务商；桌面观察与操作需要相应的 macOS 权限。配置入口见 [用户文档](https://github.com/binyouo/Biny-Agent/blob/main/docs/README.md)。
           - 此版本供测试使用；安装、首次启动及界面交互待人工验收。
@@ -181,11 +216,11 @@ jobs:
             notes+=(--notes-file release-notes.md)
           fi
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release-assets/*.dmg --clobber
+            gh release upload "$RELEASE_TAG" release-assets/*-arm64.dmg --clobber
           else
             if [[ "$RELEASE_TAG" == *-* ]]; then
-              gh release create "$RELEASE_TAG" release-assets/*.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes --prerelease "${notes[@]}"
+              gh release create "$RELEASE_TAG" release-assets/*-arm64.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes --prerelease "${notes[@]}"
             else
-              gh release create "$RELEASE_TAG" release-assets/*.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes
+              gh release create "$RELEASE_TAG" release-assets/*-arm64.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes
             fi
           fi
