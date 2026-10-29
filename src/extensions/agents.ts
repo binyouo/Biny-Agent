@@ -21,6 +21,8 @@ export type SubagentDefinitionScope = "project" | "global";
 
 export interface SubagentDefinition {
   name: string;
+  /** A known-name invalid definition reserves precedence but must never be dispatched. */
+  invalidReason?: string;
   description: string;
   /** 定义正文，作为子代理的附加 system prompt。 */
   prompt: string;
@@ -70,8 +72,12 @@ export async function loadSubagentDefinitions(options: LoadSubagentDefinitionsOp
 
 export function findSubagentDefinition(definitions: readonly SubagentDefinition[], name: string): SubagentDefinition | undefined {
   const requested = name.trim();
-  return definitions.find((definition) => definition.name === requested)
+  const definition = definitions.find((definition) => definition.name === requested)
     ?? definitions.find((definition) => definition.name.toLowerCase() === requested.toLowerCase());
+  if (definition?.invalidReason) {
+    throw new Error(`Named subagent ${definition.name} is unavailable (${definition.path}): ${definition.invalidReason}. Fix the definition before delegating; no fallback was selected.`);
+  }
+  return definition;
 }
 
 /** system prompt 里的具名子代理元数据段（正文不进入主上下文，保持渐进披露）。 */
@@ -80,6 +86,7 @@ export function buildSubagentDefinitionsPrompt(definitions: readonly SubagentDef
   return [
     "Named subagents (metadata only; each runs as a bounded worker in its selected runtime):",
     ...definitions.map((definition) => {
+      if (definition.invalidReason) return `- ${definition.name} (${definition.scope}, unavailable): ${definition.invalidReason}. Fix ${definition.path} before requesting this agent; do not substitute a lower-priority definition.`;
       const extras = [
         definition.scope,
         definition.runtime ? `runtime ${definition.runtime}` : "",
@@ -128,19 +135,33 @@ async function readDefinition(rootPath: string, filePath: string, scope: Subagen
     // 单个异常定义（软链/硬链/越界/超限）直接跳过，不拖垮其余定义。
     return undefined;
   }
-  return parseDefinition(content, rootPath, filePath, scope);
+  return parseDefinition(content, rootPath, filePath, scope, true);
 }
 
-function parseDefinition(content: string, rootPath: string, filePath: string, scope: SubagentDefinitionScope): SubagentDefinition | undefined {
+function parseDefinition(content: string, rootPath: string, filePath: string, scope: SubagentDefinitionScope, retainInvalid = false): SubagentDefinition | undefined {
   const { frontmatter, body } = splitAgentFrontmatter(content);
   const name = normalizeAgentName(frontmatter.name ?? path.basename(filePath, path.extname(filePath)));
   const description = (frontmatter.description ?? "").trim();
   const prompt = body.trim();
   // 没有 description 或正文的定义视为无效。
   if (!name || !description || !prompt) return undefined;
-  if (frontmatter.runtime && !parseRuntime(frontmatter.runtime)) throw new Error(`Invalid subagent runtime: ${frontmatter.runtime}`);
-  if (frontmatter.isolation && frontmatter.isolation !== "worktree") throw new Error(`Invalid subagent isolation: ${frontmatter.isolation}`);
+  const validationError = frontmatter.runtime && !parseRuntime(frontmatter.runtime)
+    ? `Invalid subagent runtime: ${frontmatter.runtime}`
+    : frontmatter.isolation && frontmatter.isolation !== "worktree"
+      ? `Invalid subagent isolation: ${frontmatter.isolation}` : undefined;
+  // Creation stays strict. Discovery retains only reliably parsed identities:
+  // the tombstone blocks same-name fallback without blocking unrelated agents.
+  if (validationError && !retainInvalid) throw new Error(validationError);
+  const invalidReason = validationError === undefined ? undefined : truncateChars(validationError, maxAgentDescriptionChars);
   const relative = path.relative(rootPath, filePath);
+  if (invalidReason !== undefined) {
+    return {
+      name, invalidReason, description: `Unavailable: ${invalidReason}`,
+      prompt: "", tools: [], scope,
+      path: scope === "global" ? globalDisplayPath(rootPath, relative) : relative,
+      filePath
+    };
+  }
   return {
     name,
     description: truncateChars(description, maxAgentDescriptionChars),
