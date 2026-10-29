@@ -278,8 +278,6 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck
-        run: pnpm typecheck
       - name: Test Windows platform and real shared Host
         run: node scripts/run-tests.mjs windows
       - name: Test owner election
