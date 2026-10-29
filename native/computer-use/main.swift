@@ -256,9 +256,7 @@ let knownNeteaseRoutes = ["dailyRecommend", "historyRecommend", "historyPlaylist
 
 /// 让用户**看见** agent 正在哪里动手。
 ///
-/// 参照实现的 helper 里是 `main/Overlay.swift`，含 `LensOverlay` / `LensView` /
-/// `ActionCursor`，以及 `alma.lens.scrollBadge` / `alma.lens.typeBadge` 两个角标图层 ——
-/// 也就是「光标落点 + 这一次做了什么」。`lens on|off|toggle` 开关它，
+/// 叠加层包含光标落点与滚动、输入两个角标，表达「落在哪里 + 这一次做了什么」。`lens on|off|toggle` 开关它，
 /// 单个动作可以用 `show_cursor=false` 临时不显示。
 ///
 /// 三条硬约束，缺一条就会打扰用户：
@@ -433,9 +431,7 @@ func axTrusted() -> Bool { return AXIsProcessTrusted() }
 /// 权限缺失时的文案：**要说清去哪儿开**，不能只回一个错误码。
 ///
 /// 这两项授权 macOS **每次新构建都会重置**，所以用户会反复看到这条消息；
-/// 只回 `ax_not_granted` 等于让他自己猜。参照的 helper 就是明说的：
-/// "Accessibility permission not granted to Alma Computer Use. Open System Settings →
-///  Privacy & Security → Accessibility and enable \"Alma Computer Use\"."
+/// 只回 `ax_not_granted` 等于让他自己猜，所以错误里直接写出系统设置中的授权路径。
 func axNotGranted() -> NSError {
     NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey:
         "ax_not_granted: 辅助功能权限没有授予「Biny Computer Use」。"
@@ -815,8 +811,7 @@ func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint, button: CGMouseButton = 
 /// 目标应用是否处在能接收键盘输入的状态。
 ///
 /// 后台应用被投递的按键常被系统直接丢弃，而 API 会照常报"已输入"——
-/// 这是最坏的一类失败：调用方以为写进去了。Alma 的守护进程会显式报这个
-/// （notes/19 §3：「目标是后台 app 且无 key window，按键被系统丢弃」）。
+/// 这是最坏的一类失败：调用方以为写进去了，所以目标是后台应用且没有 key window 时要显式报出来。
 /// AX 路由：写滚动条的 AXValue。
 ///
 /// 顺序：**先试整页滚动动作**（`AXScrollDownByPage` 等，参照用的就是它），不认再写 AXValue。
@@ -1037,9 +1032,8 @@ func keyDeliveryWarning(_ pid: pid_t) -> String? {
     // 而它正是按键的去处。没有它，按键就是被系统丢掉。
     let axApp = axApp(pid)
     if axCopy(axApp, kAXFocusedUIElementAttribute as String) != nil { return nil }
-    // 参照在同一个位置给的是：说清发生了什么 + **点明那个显而易见的错误修法** + 给替代做法。
+    // 说清发生了什么 + **点明那个显而易见的错误修法** + 给替代做法。
     // 「别把应用调到前台」这条铁律单说不够 —— agent 最可能做的就是那件事，所以要顺手告诉它改走哪条路。
-    // （参照原文："Do NOT bring the app forward to make typing land — Alma never takes the user's foreground."）
     return "keystrokes_may_be_dropped: 目标应用不在前台，且没有任何聚焦的 UI 元素，这些按键很可能已被系统丢弃。"
         + "先重新观察确认目标状态，别把它当成写进去了。"
         + "要真的写进那个控件，用 set_value（带 ref 直接写值）或 type_text 的 input_method=ax（同样按元素走）。"
@@ -1109,7 +1103,7 @@ func performBackgroundMenuShortcut(_ pid: pid_t, windowID: Int, keyCode: CGKeyCo
 }
 
 /// 焦点护栏警告：护栏武装不起来时，动作可能真的会把用户的焦点带走。
-/// 每 30 秒最多提示一次 —— 每一步都重复同一句话只会把结果淹没（Alma 同样做了节流）。
+/// 每 30 秒最多提示一次 —— 每一步都重复同一句话只会把结果淹没。
 let focusGuardLock = NSLock()
 var lastFocusGuardWarnAt = Date.distantPast
 func focusGuardWarning() -> String? {
@@ -1336,7 +1330,7 @@ DispatchQueue.global().async {
                             case "grant":
                                 // 必须由守护进程自己发起：系统弹窗授的是「调用进程」——
                                 // 从 Electron 宿主发起就会把辅助功能授给宿主，而真正需要它的是
-                                // 这个独立签名的 helper（Alma 的 grant 同样落在 helper 上）。
+                                // 这个独立签名的 helper。
                                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                                 let granted = AXIsProcessTrustedWithOptions(options)
                                 reply(connection, ["id": id, "ok": true, "data": ["accessibility": granted ? "granted" : "denied", "prompted": !granted] as [String: Any]])
@@ -1351,7 +1345,7 @@ DispatchQueue.global().async {
                                     ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? url.deletingPathExtension().lastPathComponent
                                 reply(connection, ["id": id, "ok": true, "data": ["bundleId": bundleId, "name": name, "running": running != nil] as [String: Any]])
                             case "launch_app":
-                                // 后台拉起：绝不 activate，不抢用户焦点（Alma 的 launch_app 同样保证这点）。
+                                // 后台拉起：绝不 activate，不抢用户焦点。
                                 guard let bundle = args["bundle"] as? String else {
                                     throw NSError(domain: "app", code: 64, userInfo: [NSLocalizedDescriptionKey: "launch_app requires a bundle id"])
                                 }
@@ -1369,7 +1363,7 @@ DispatchQueue.global().async {
                                 }
                                 let config = NSWorkspace.OpenConfiguration()
                                 // 默认**不**激活：绝不因为启动一个应用就把用户的前台窗口顶掉。
-                                // 只有调用方明确给了 activates 才动焦点（Alma 的 --activates 同理）。
+                                // 只有调用方明确给了 activates 才动焦点。
                                 config.activates = args["activates"] as? Bool ?? false
                                 let launched: NSRunningApplication? = await withCheckedContinuation { continuation in
                                     NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in

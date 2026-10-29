@@ -544,7 +544,7 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   /**
-   * 整屏截图，用作观察失败时的回落（Alma 的帧泵同样是「优先抓窗口，失败回落整屏」）。
+   * 整屏截图，用作观察失败时的回落（优先抓窗口，失败回落整屏）。
    * 走 daemon 的 capture_screen：只截图、不读 AX，因此不会被卡住的无障碍调用牵连，
    * 也不依赖目标 app 是否可被单独捕获。
    */

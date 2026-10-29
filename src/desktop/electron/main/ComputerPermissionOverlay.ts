@@ -1,8 +1,7 @@
 // 辅助功能授权引导浮层。
 //
-// Alma 的对应物是「权限辅助覆盖」：520×76、定位到目标控件下方、始终置顶、
-// 不可聚焦、0.9 透明度、mac 上取 floating 层级，并以 250ms 轮询跟着目标控件走
-// （alma-reverse notes/01-main-process.md）。
+// 520×76、定位到目标控件下方、始终置顶、不可聚焦、0.9 透明度、mac 上取 floating 层级，
+// 并以 250ms 轮询跟着目标控件走。
 //
 // 它存在的理由：辅助功能授权要去「系统设置」里手动打开，而用户不知道该点哪里。
 // 一个不抢焦点、跟着目标跑的小卡片，比一句「请去设置里开启」有用得多。
@@ -16,7 +15,7 @@ import {
 } from "./computerPermissionGeometry.js";
 
 export type { OverlayRect, OverlayPoint } from "./computerPermissionGeometry.js";
-/** Alma 的跟踪节奏；比它慢就跟不上滚动的列表，比它快是白烧电。 */
+/** 跟踪节奏：再慢就跟不上滚动的列表，再快是白烧电。 */
 const TRACK_INTERVAL_MS = 250;
 
 export const permissionOverlayHtml = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -83,7 +82,7 @@ export class ComputerPermissionOverlay {
   reveal(locate?: () => Promise<OverlayRect | undefined> | OverlayRect | undefined): void {
     const window = this.window && !this.window.isDestroyed() ? this.window : (this.window = this.createWindow());
     if (window.webContents.isLoading()) void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(permissionOverlayHtml)}`);
-    // Alma 的引导窗是 0.9 透明度：要看得见，又不能像正常窗口那样压住底下的设置界面。
+    // 0.9 透明度：要看得见，又不能像正常窗口那样压住底下的设置界面。
     window.setOpacity(0.9);
     window.showInactive();
     if (locate) this.track(locate);

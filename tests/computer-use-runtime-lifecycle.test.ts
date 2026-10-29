@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -422,7 +423,8 @@ await test("Host RPC restart and factory recovery failure release the old bridge
       } catch (error) { await host.runtime.close(); throw error; }
     }
   });
-  const client = await connectRuntimeHost(f.workspace, { configDir: process.env.BINY_AGENT_DIR, clientId: "lifecycle-test", surface: "tui" });
+  const client = await readyHostClient(await connectRuntimeHost(f.workspace, { configDir: process.env.BINY_AGENT_DIR, clientId: "lifecycle-test", surface: "tui" }));
+
   assert.ok(client);
   try {
     await client.ensureSession({ sessionId: "host-peer" });

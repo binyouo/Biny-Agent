@@ -423,8 +423,8 @@ test("PID reuse cannot deliver an old application's captured input even when bot
 });
 
 
-// Alma 的 PiP 是「操控期间亮着的监督窗」：动作经 activity 续命，停手 90s 自动收起
-// （notes/19 §5、notes/01）。用户的选择不该因此被改掉 —— 所以「偏好」和「此刻显示」
+// PiP 是「操控期间亮着的监督窗」：动作经 activity 续命，停手 90s 自动收起。
+// 用户的选择不该因此被改掉 —— 所以「偏好」和「此刻显示」
 // 必须是两件事，否则开关会自己跳回去。
 test("the preview lights up with activity, times out on its own, and re-arms on the next action", async () => {
   const visible: boolean[] = [];
