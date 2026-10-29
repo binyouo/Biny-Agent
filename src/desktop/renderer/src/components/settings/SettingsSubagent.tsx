@@ -36,10 +36,9 @@ export function SettingsSubagent({ onOpenProviders, busy = false }: { onOpenProv
   return <section className="settings-preference-section" id="subagent" tabIndex={-1}>
     <h3>Coding Agent</h3>
     <div className="settings-form-group">
-      <p className="settings-subagent-description">选择 `coder` 类型 subagent 执行代码任务时使用的后端。</p>
       <div className="settings-subagent-select-field">
         <label htmlFor="settings-subagent-default">默认 Coding Agent</label>
-        <select id="settings-subagent-default" aria-label="默认 Coding Agent" className="settings-subagent-select" disabled={disabled} value={selected}
+        <select id="settings-subagent-default" aria-label="默认 Coding Agent" aria-describedby="settings-subagent-help" className="settings-field settings-subagent-select" disabled={disabled} value={selected}
           onChange={event => {
             const next = choices.get(event.currentTarget.value);
             if (!disabled && next) setSubagent(next);
@@ -48,15 +47,15 @@ export function SettingsSubagent({ onOpenProviders, busy = false }: { onOpenProv
           {options.map(option => <option key={option.value} disabled={option.disabled} value={option.value}>{option.label}</option>)}
         </select>
       </div>
-      <div className="settings-subagent-help">
-        <p>优先使用 Claude Code，不可用时回退到内置 agent。</p>
-        <p>直接使用本地安装的 Claude Code CLI。</p>
-        <p>使用 Biny 内置子代理，并沿用当前聊天模型。</p>
-        <p>使用已配置的 ACP provider，例如 Codex CLI 或 Gemini CLI。</p>
+      <div className="settings-subagent-help" id="settings-subagent-help" aria-live="polite">
+        <p>{selected === "auto" ? "优先使用本机 Claude Code 及其 CLI 默认模型，不可用时使用内置 Agent。"
+          : selected === "claude-code" ? "使用本机 Claude Code 及其 CLI 默认模型。"
+          : selected === "builtin" ? "使用 Biny 内置子代理，沿用当前聊天模型。"
+          : "通过所选 ACP 连接执行代码任务，模型由该连接配置。"}</p>
       </div>
       <div className="settings-subagent-providers">
-        <p>{connections.length ? `ACP Providers: ${connections.length}` : "还没有配置 ACP provider。"}</p>
-        <button className="settings-secondary-button settings-subagent-manage" onClick={onOpenProviders} type="button">管理 Providers</button>
+        <p>{connections.length ? `已配置 ${connections.length} 个 ACP 连接` : "尚未配置 ACP 连接"}</p>
+        <button className="settings-action settings-secondary-button settings-subagent-manage" onClick={onOpenProviders} type="button">管理连接</button>
       </div>
       {restrictions.length ? <p role="status">{restrictions.join(" ")}</p> : null}
     </div>

@@ -19,10 +19,10 @@ function SavingsIcon({ name, size = 16 }: { name: MetricIcon; size?: number }): 
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 function SavingsCard({ title, description, icon, children }: { title: string; description?: string; icon?: MetricIcon; children: ReactNode }): React.JSX.Element {
-  return <section className="savings-card"><header><h3>{icon ? <span className="savings-emerald"><SavingsIcon name={icon} size={18} /></span> : null}{title}</h3>{description ? <p>{description}</p> : null}</header><div className="savings-card-content">{children}</div></section>;
+  return <section className="settings-section savings-card"><header><h3>{icon ? <span><SavingsIcon name={icon} size={18} /></span> : null}{title}</h3>{description ? <p>{description}</p> : null}</header><div className="settings-section-body savings-card-content">{children}</div></section>;
 }
-function Metric({ icon, color, label, value, title }: { icon: MetricIcon; color: string; label: string; value: string; title?: string }): React.JSX.Element {
-  return <div className="savings-metric" title={title}><div><span className={`savings-${color}`}><SavingsIcon name={icon} /></span>{label}</div><strong className={value.startsWith("-") ? "savings-rose" : undefined}>{value}</strong></div>;
+function Metric({ icon, label, value, title }: { icon: MetricIcon; label: string; value: string; title?: string }): React.JSX.Element {
+  return <div className="savings-metric" title={title}><div><span><SavingsIcon name={icon} /></span>{label}</div><strong className={value.startsWith("-") ? "savings-rose" : undefined}>{value}</strong></div>;
 }
 const number = (value: number): string => new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 const percent = (value: number): string => `${value.toFixed(1)}%`;
@@ -35,7 +35,7 @@ export function SettingsToolOptimization(): React.JSX.Element {
   const { data: stats, error } = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
   useEffect(() => { void state.refresh(); }, [state]);
   if (!stats && !error) return <div className="savings-loading" role="status"><span className="savings-spinner" />加载中…</div>;
-  if (!stats) return <div className="savings-loading" role="alert"><p>统计读取失败：{error}</p><button type="button" onClick={() => { void state.refresh(true); }}>重试</button></div>;
+  if (!stats) return <div className="savings-loading" role="alert"><p>统计读取失败：{error}</p><button className="settings-action settings-secondary-button" type="button" onClick={() => { void state.refresh(true); }}>重试</button></div>;
   const compression = rate(stats.rtk.beforeTokens, stats.rtk.savedTokens);
   const maxCommand = Math.max(1, ...stats.commands.map(command => Math.abs(command.savedTokens)));
   const colors = ["emerald", "cyan", "blue", "violet", "fuchsia", "amber", "rose", "teal"];
@@ -47,10 +47,10 @@ export function SettingsToolOptimization(): React.JSX.Element {
     {detail ? <OptimizationCallDetail origin={detail.origin} optimizationId={detail.optimizationId} onClose={() => setDetail(undefined)} /> : null}
     <SavingsCard title="编程式工具调用" description="在沙箱内筛选工具结果，减少上下文占用。" icon="code">
       <div className="savings-ptc-metrics">
-        <Metric icon="zap" color="emerald" label="节省 Token" value={number(stats.ptc.savedTokens)} />
-        <Metric icon="sparkles" color="cyan" label="脚本运行次数" value={number(stats.ptc.runs)} />
-        <Metric icon="layers" color="blue" label="工具调用次数" value={number(stats.toolCalls)} />
-        <Metric icon="down" color="violet" label="已处理结果" value={number(stats.ptc.beforeTokens)} />
+        <Metric icon="zap" label="节省 Token" value={number(stats.ptc.savedTokens)} />
+        <Metric icon="sparkles" label="脚本运行次数" value={number(stats.ptc.runs)} />
+        <Metric icon="layers" label="工具调用次数" value={number(stats.toolCalls)} />
+        <Metric icon="down" label="已处理结果" value={number(stats.ptc.beforeTokens)} />
       </div>
     </SavingsCard>
     {stats.rtk.runs ? <>
@@ -61,12 +61,12 @@ export function SettingsToolOptimization(): React.JSX.Element {
             <div><strong>{percent(compression)}</strong><span>压缩率</span></div>
           </div>
           <div className="savings-rtk-metrics">
-            <Metric icon="zap" color="emerald" label="已节省 Token" value={number(stats.rtk.savedTokens)} />
-            <Metric icon="terminal" color="blue" label="命令次数" value={number(stats.rtk.runs)} />
-            <Metric icon="down" color="cyan" label="平均节省" value={percent(stats.average)} />
-            <Metric icon="input" color="violet" label="输入 Token" value={number(stats.rtk.beforeTokens)} />
-            <Metric icon="output" color="fuchsia" label="输出 Token" value={number(stats.rtk.afterTokens)} />
-            <Metric icon="clock" color="amber" label="平均耗时" value={stats.durationCount ? `${Math.round(stats.totalDurationMs / stats.durationCount).toLocaleString()} ms` : "—"} title={`已采集 ${stats.durationCount} / ${stats.rtk.runs} 次命令耗时；旧记录不补造`} />
+            <Metric icon="zap" label="已节省 Token" value={number(stats.rtk.savedTokens)} />
+            <Metric icon="terminal" label="命令次数" value={number(stats.rtk.runs)} />
+            <Metric icon="down" label="平均节省" value={percent(stats.average)} />
+            <Metric icon="input" label="输入 Token" value={number(stats.rtk.beforeTokens)} />
+            <Metric icon="output" label="输出 Token" value={number(stats.rtk.afterTokens)} />
+            <Metric icon="clock" label="平均耗时" value={stats.durationCount ? `${Math.round(stats.totalDurationMs / stats.durationCount).toLocaleString()} ms` : "—"} title={`已采集 ${stats.durationCount} / ${stats.rtk.runs} 次命令耗时；旧记录不补造`} />
           </div>
         </div>
       </SavingsCard>
@@ -89,7 +89,7 @@ export function SettingsToolOptimization(): React.JSX.Element {
       </SavingsCard>
     </> : <section className="savings-card savings-empty"><SavingsIcon name="zap" size={48} /><h3>暂无节省数据</h3><p>执行支持的命令后显示统计。</p></section>}
     {stats.incompleteSessions ? <p className="savings-notice" role="status">有 {stats.incompleteSessions} 个会话或项目无法读取，当前显示部分统计。</p> : null}
-    <p className="savings-notice">全部项目累计估算；负数表示上下文增加。不含脚本生成、缓存和原文回查，不代表账单节省。<button type="button" onClick={() => { void state.refresh(true); }}>刷新</button></p>
+    <p className="savings-notice">全部项目累计估算；负数表示上下文增加。不含脚本生成、缓存和原文回查，不代表账单节省。<button className="settings-action settings-secondary-button" type="button" onClick={() => { void state.refresh(true); }}>刷新</button></p>
     {error ? <p className="savings-notice" role="alert">刷新失败：{error}</p> : null}
   </div>;
 }

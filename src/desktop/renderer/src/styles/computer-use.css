@@ -34,6 +34,12 @@
 .computer-use-settings details[open] > summary { margin-bottom: 12px; }
 .computer-use-settings details .cu-description { margin-bottom: 12px; }
 
+/* 总开关作为卡片首行，与下方组件/权限/审批之间留一道分隔线。 */
+.computer-use-settings .cu-master { padding-bottom: var(--st-card-gap); border-bottom: 1px solid var(--border-subtle); }
+.computer-use-settings .cu-master .settings-switch-row { padding: 0; }
+.computer-use-settings .cu-master .settings-switch-copy strong { font-size: calc(1 * var(--st-rem)); font-weight: 500; }
+
+/* 三个运行时开关是瓷贴网格，不走 row-group 的分隔线容器。 */
 .computer-use-settings .cu-toggles { display: grid; gap: var(--st-card-gap); }
 .computer-use-settings .cu-toggle { display: flex; align-items: flex-start; gap: 8px; padding: var(--st-control-py) var(--st-control-px); border: 1px solid var(--border-subtle); border-radius: var(--st-radius); background: var(--surface); }
 .computer-use-settings .cu-toggle > svg { flex: none; margin-top: 3px; color: var(--text-secondary); }
@@ -61,25 +67,12 @@
 .computer-use-settings .cu-checkup li { font-size: calc(12px * var(--font-scale, 1)); color: var(--text-secondary); }
 .computer-use-settings .cu-checkup li[data-ok="false"] { color: var(--red-text); }
 
-/* ── Appshots ──────────────────────────────────────────────────────────────
-   截图设置采用介绍卡和行卡片：一个带徽章的介绍卡、
-   一张 divide 的行列表、一条脚注。所有行共用同一套 4px/16px 间距节奏。 */
+/* Appshots：介绍、偏好行和操作反馈。 */
 .appshot-settings .appshot-hero {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
   gap: calc(12px * var(--font-scale, 1));
-}
-.appshot-settings .appshot-hero-badge {
-  display: inline-flex;
-  width: calc(48px * var(--font-scale, 1));
-  height: calc(48px * var(--font-scale, 1));
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: calc(12px * var(--font-scale, 1));
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .appshot-settings .appshot-hero-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .appshot-settings .appshot-hero-copy h3 { margin: 0; }
@@ -127,16 +120,14 @@
 }
 .appshot-settings .appshot-link:disabled { opacity: .55; }
 
-/* 下拉框与右侧分段控件、按钮共用 9px 圆角和 36px 高度，右缘对齐成一条线。
-   宽度按内容走、不随行拉伸，触发器里留出一枚加载指示的位置。 */
+/* 下拉框与右侧分段控件、按钮共用同一控件节奏，右缘对齐成一条线。
+   外框只做定位壳，可见样式都落在 select 自己身上，避免原生下拉再叠出一块内缩小框。 */
 .appshot-settings .appshot-field { display: inline-flex; flex: none; position: relative; }
-/* 外框只做定位壳，不画边框/底色。所有可见样式都落在 select 自己身上，
-   避免原生下拉再叠出一块内缩的小框，选中范围与实际点击范围完全重合。 */
 .appshot-settings .appshot-select {
   position: relative;
   display: inline-flex;
   min-width: calc(132px * var(--font-scale, 1));
-  height: calc(36px * var(--font-scale, 1));
+  min-height: var(--st-control-h);
   align-items: stretch;
   padding: 0;
 }
@@ -147,7 +138,7 @@
   margin: 0;
   padding: 0 34px 0 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: 9px;
+  border-radius: var(--st-button-radius);
   color: var(--text);
   background: var(--surface-soft);
   font-size: calc(13px * var(--font-scale, 1));
@@ -159,9 +150,7 @@
 .appshot-settings .appshot-select select:hover { background: var(--surface-hover); }
 .appshot-settings .appshot-select select:focus { border-color: var(--accent); outline: none; }
 .appshot-settings .appshot-select select:focus-visible { outline: none; }
-/* select 下拉展开时 macOS 仍会画系统高亮；这里把未展开态的圆角/边框锁定在 select 上，
-   展开菜单本身交给系统。 */
-/* 自绘下拉箭头，叠在右侧、不吃 flex 宽度，避免原生箭头随平台字体重排、贴边不齐。 */
+/* 自绘下拉箭头，叠在右侧、不吃 flex 宽度，避免原生箭头随平台字体重排。 */
 .appshot-settings .appshot-select::after {
   content: "";
   position: absolute;
@@ -183,7 +172,6 @@
   transform: translateY(-50%);
   animation: appshot-spin 1s linear infinite;
 }
-/* 预热时改由 spinner 占据右侧位置，隐藏静态箭头避免重叠。 */
 .appshot-settings .appshot-select:has(.appshot-spin)::after { display: none; }
 @keyframes appshot-spin { from { transform: translateY(-50%) rotate(0); } to { transform: translateY(-50%) rotate(1turn); } }
 @media (prefers-reduced-motion: reduce) { .appshot-settings .appshot-spin { animation: none; } }
@@ -204,13 +192,6 @@
   color: var(--text-secondary);
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.5;
-}
-
-/* 行内的次要按钮与下拉框、分段控件保持同高，右缘对齐成一条线。 */
-.appshot-settings .appshot-row > .settings-secondary-button {
-  flex: none;
-  min-height: calc(36px * var(--font-scale, 1));
-  padding-block: 0;
 }
 
 .appshot-settings .appshot-foot { gap: calc(12px * var(--font-scale, 1)); }

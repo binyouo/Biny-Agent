@@ -1,0 +1,314 @@
+/* 布局基准：14px 根字号；放在 Dialog 上，让关闭确认层也继承相同的控件参数。 */
+.desktop-settings-dialog, .theme-editor, .theme-delete-dialog {
+  --st-rem: calc(14px * var(--font-scale, 1));
+  --st-content-inset: calc(16px * var(--font-scale, 1));
+  --st-card-padding: calc(20px * var(--font-scale, 1));
+  --st-card-gap: calc(0.75 * var(--st-rem));
+  --st-control-h: max(var(--biny-control-height), calc(32px * var(--font-scale, 1)));
+  --st-control-h-sm: calc(2 * var(--st-rem));
+  --st-control-px: calc(0.9 * var(--st-rem));
+  --st-control-py: calc(0.4 * var(--st-rem));
+  --st-control-gap: calc(8px * var(--font-scale, 1));
+  --st-stack-gap: calc(24px * var(--font-scale, 1));
+  --st-row-padding: calc(12px * var(--font-scale, 1)) var(--st-content-inset);
+  --st-page-padding: clamp(16px, 3vw, 28px);
+  --st-radius: var(--biny-radius-card);
+  --st-button-height: var(--st-control-h);
+  --st-button-font-size: calc(13px * var(--font-scale, 1));
+  --st-button-padding: calc(12px * var(--font-scale, 1));
+  --st-button-radius: var(--biny-radius-control);
+  /* 文字操作用控件圆角；胶囊形只留给分段控件轨道、开关和滑块这类天生圆形的控件。 */
+  --st-action-radius: var(--st-button-radius);
+  /* 主操作用正文墨色实底，次要操作用前景色淡填充；强调色只留给焦点、链接与状态。
+     全部从 --text 派生，自定义配色无需额外声明按钮色。 */
+  --st-primary: var(--text);
+  --st-on-primary: var(--surface-raised);
+  --st-primary-hover: color-mix(in srgb, var(--text) 84%, var(--surface-raised));
+  --st-primary-active: color-mix(in srgb, var(--text) 72%, var(--surface-raised));
+  --st-ring: color-mix(in srgb, var(--accent) 25%, transparent);
+  --st-ring-weak: color-mix(in srgb, var(--accent) 22%, transparent);
+  --st-action-border: transparent;
+  --st-action-border-hover: transparent;
+  --st-action-bg: color-mix(in srgb, var(--text) 7%, transparent);
+  --st-action-bg-hover: color-mix(in srgb, var(--text) 12%, transparent);
+  /* 底栏次要操作用实底 + 细描边，与主操作拉开层级；页面内次要操作仍是无描边淡填充。 */
+  --st-footer-secondary-bg: var(--surface-raised);
+  --st-footer-secondary-bg-hover: var(--surface);
+  --st-footer-secondary-border: var(--border-strong);
+  --st-muted-foreground: var(--text-secondary);
+  --st-card: var(--surface-raised);
+  /* 输入控件比所在卡片低一层：浅色近白、深色更暗，靠细边界定形。 */
+  --st-field-bg: var(--surface);
+  --st-field-border: var(--border-subtle);
+  --st-field-border-hover: var(--border);
+  --st-sidebar-bg: var(--sidebar);
+  --st-sidebar-border: var(--border-subtle);
+  /* 浮层（模型选择器、原生下拉弹出层）：深色下比卡片再亮一档，两层阴影给出高度。 */
+  --st-popover: light-dark(var(--surface-raised), color-mix(in srgb, var(--surface-raised) 93%, var(--text)));
+  --st-popover-border: color-mix(in srgb, var(--text) 10%, transparent);
+  --st-popover-shadow: 0 2px 6px -2px var(--shadow-soft), 0 18px 40px -12px var(--shadow-heavy);
+  --st-menu-hover: color-mix(in srgb, var(--text) 7%, transparent);
+  --st-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --st-scrollbar-thumb: color-mix(in srgb, var(--text) 30%, transparent);
+}
+
+/* 所有设置页和独立主题弹窗共用控件；页面样式只负责布局。 */
+.settings-action {
+  display: inline-flex;
+  box-sizing: border-box;
+  min-height: var(--st-control-h);
+  height: auto;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  flex: none;
+  gap: var(--st-control-gap);
+  padding: var(--st-control-py) var(--st-control-px);
+  border: 1px solid transparent;
+  border-radius: var(--st-action-radius);
+  color: var(--text);
+  background: var(--st-action-bg);
+  box-shadow: none;
+  font-family: inherit;
+  font-size: var(--st-button-font-size);
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+}
+.settings-action:hover:not(:disabled) { background: var(--st-action-bg-hover); filter: none; }
+.settings-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-action:is(.settings-primary-button, .settings-save-button) { color: var(--st-on-primary); background: var(--st-primary); }
+.settings-action:is(.settings-primary-button, .settings-save-button):hover:not(:disabled) { background: var(--st-primary-hover); }
+.settings-action.settings-text-action { color: var(--text-secondary); background: transparent; padding-inline: 6px; }
+.settings-action.settings-text-action:hover:not(:disabled) { color: var(--text); background: var(--st-action-bg); }
+.settings-action:is(.settings-danger-button, .is-danger) { color: var(--red-text); }
+.settings-action:is(.settings-danger-button, .is-danger):hover:not(:disabled) { color: var(--red-text); background: var(--red-bg); }
+.settings-action:disabled { opacity: .5; cursor: default; }
+.settings-action.settings-save-button:disabled { opacity: 1; color: var(--text-tertiary); background: var(--surface-soft); }
+.settings-action > svg { width: 16px; height: 16px; flex: none; }
+
+.settings-field {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--st-control-h);
+  padding: var(--st-control-py) var(--st-control-px);
+  border: 1px solid var(--st-field-border);
+  border-radius: var(--st-button-radius);
+  color: var(--text);
+  background: var(--st-field-bg);
+  box-shadow: none;
+  font-family: inherit;
+  font-size: var(--st-button-font-size);
+  line-height: 1.4;
+}
+.settings-field:hover:not(:disabled) { border-color: var(--st-field-border-hover); }
+.settings-field:focus-visible { border-color: var(--accent); outline: none; box-shadow: none; }
+.settings-field:disabled { opacity: .5; cursor: default; }
+.settings-field::placeholder { color: var(--text-tertiary); }
+textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize: vertical; }
+.settings-search-field {
+  display: flex;
+  min-height: var(--st-control-h);
+  height: auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 var(--st-control-px);
+  border: 1px solid var(--st-field-border);
+  border-radius: var(--st-button-radius);
+  color: var(--text-tertiary);
+  background: var(--st-field-bg);
+  box-shadow: none;
+}
+.settings-search-field:focus-within { border-color: var(--accent); }
+.settings-search-field > .settings-field,
+.settings-model-picker-search > .settings-field,
+.settings-search > .settings-field {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  padding: var(--st-control-py) 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+/* 原生复选框与 button 开关共用同一轨道，不再分别维护滑块子节点。 */
+.settings-switch {
+  appearance: none;
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: calc(34px * var(--font-scale, 1));
+  min-width: calc(34px * var(--font-scale, 1));
+  height: calc(20px * var(--font-scale, 1));
+  min-height: calc(20px * var(--font-scale, 1));
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: calc(2px * var(--font-scale, 1)) solid transparent;
+  border-radius: 999px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 20%, transparent);
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color .15s ease;
+}
+.settings-switch::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  width: calc(16px * var(--font-scale, 1));
+  height: calc(16px * var(--font-scale, 1));
+  border-radius: 999px;
+  background: var(--switch-thumb);
+  box-shadow: 0 1px 2px var(--shadow-soft);
+  content: "";
+  transition: transform .15s ease, background-color .15s ease;
+}
+.settings-switch:is(:checked, [aria-checked="true"]) { background: var(--st-primary); }
+.settings-switch:is(:checked, [aria-checked="true"])::before { background: var(--st-on-primary); transform: translateX(calc(14px * var(--font-scale, 1))); }
+.settings-switch:hover:not(:disabled) { filter: brightness(.9); }
+.settings-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.settings-switch:disabled { opacity: .5; cursor: default; }
+
+/* 滑块：已完成段与圆点同用正文墨色；圆点靠 2px 卡片底色描边从轨道上分离。
+   两者都从 --text / --st-card 派生，换配色后不需要额外声明，也不会被调色板的灰线染成灰球。 */
+.settings-range {
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  accent-color: var(--st-primary);
+  appearance: none;
+}
+.settings-range::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: linear-gradient(90deg, var(--st-primary) 0 var(--range-progress, 0%), color-mix(in srgb, var(--text) 14%, transparent) var(--range-progress, 0%) 100%); }
+.settings-range::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; margin-top: -6px; border: 0; border-radius: 50%; background: var(--st-primary); box-shadow: 0 0 0 2px var(--st-card), 0 1px 3px var(--shadow-soft); }
+.settings-range::-moz-range-track { height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--text) 14%, transparent); }
+.settings-range::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--st-primary); }
+.settings-range::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 50%; background: var(--st-primary); box-shadow: 0 0 0 2px var(--st-card), 0 1px 3px var(--shadow-soft); }
+.settings-range:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.settings-segmented, .settings-choice-tabs {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--segment-track);
+}
+.settings-segmented label > span, .settings-choice-tabs > button {
+  display: inline-flex;
+  min-height: calc(28px * var(--font-scale, 1));
+  height: auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--st-button-font-size);
+  font-weight: 400;
+  line-height: 1.35;
+}
+.settings-segmented input:checked + span,
+.settings-choice-tabs > button:is(.is-active, [aria-pressed="true"]) { color: var(--text); background: var(--st-card); border-color: var(--border-subtle); box-shadow: 0 1px 2px var(--shadow); font-weight: 500; }
+.settings-choice-tabs > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.settings-choice-tabs > button:hover { color: var(--text); }
+.settings-choice-tabs > button > svg { width: 14px; height: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-action, .settings-switch, .settings-switch::before { transition: none; }
+}
+
+/* 标题位于分组外；同一组内容只保留一个表面。 */
+.desktop-settings-dialog .settings-modal .settings-section,
+.desktop-settings-dialog .settings-modal .theme-mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-block: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.settings-section-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--st-card-gap);
+  padding: var(--st-card-padding);
+  border: 0;
+  border-radius: var(--st-radius);
+  background: var(--st-card);
+}
+.settings-section-body > p:not([role="alert"]):not(.is-error):not(.settings-effective-hint):not(.cu-feedback):not(.activity-feedback) {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 1.5;
+}
+.desktop-settings-dialog .settings-modal :is(.settings-section, .theme-mode-section) > h3,
+.settings-section > :is(header, .section-heading-row, .activity-section-heading, .activity-section-title, .activity-memory-heading-row, .browser-connection-heading, .cu-approvals-heading) h3 {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(12px * var(--font-scale, 1));
+  font-weight: 600;
+  line-height: 1.5;
+}
+.settings-section > :is(header, .section-heading-row, .activity-section-heading, .activity-section-title, .activity-memory-heading-row, .browser-connection-heading, .cu-approvals-heading) {
+  margin: 0;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+}
+.settings-section > header > p { margin: 4px 0 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
+.settings-section > header h3 > span { display: none; }
+.settings-section-body > .settings-switch-row { padding-inline: 0; }
+.settings-section-body > :is(input, textarea) { width: 100%; }
+.settings-section-body > .settings-model-picker { align-self: flex-start; max-width: 100%; }
+.settings-section-body > .settings-button-row { margin: 0; }
+.settings-section-body > .web-search-options-grid { margin: 0; }
+.theme-mode-section + .theme-mode-section { margin-top: var(--st-stack-gap); }
+.theme-card[aria-pressed="true"] { border-color: var(--text-secondary); background: var(--st-card); box-shadow: 0 0 0 1px var(--text-secondary); }
+.theme-card-check { color: var(--st-on-primary); background: var(--st-primary); }
+.appshot-settings .appshot-select { display: inline-flex; align-items: center; gap: 8px; min-width: calc(132px * var(--font-scale, 1)); }
+.appshot-settings .appshot-select select { width: 100%; }
+.appshot-settings .appshot-spin { position: static; flex: none; transform: none; color: var(--text-tertiary); animation: settings-control-spin 1s linear infinite; }
+@keyframes settings-control-spin { to { transform: rotate(1turn); } }
+
+@media (prefers-reduced-motion: reduce) { .appshot-settings .appshot-spin { animation: none; } }
+
+.settings-skill-extraction,
+.privacy-overview,
+.desktop-settings-dialog .settings-modal :is(.biny-mcp-market-card, .biny-mcp-installed-card, .settings-plugin-card, .settings-skill-card) {
+  padding: var(--st-card-padding);
+  border: 0;
+  border-radius: var(--st-radius);
+  background: var(--st-card);
+  box-shadow: none;
+}
+.settings-skill-extraction-heading h3,
+.privacy-toolbar h3,
+.desktop-settings-dialog .settings-modal :is(.biny-mcp-card-heading h2, .settings-plugin-card h3) {
+  margin: 0;
+  font-size: calc(14px * var(--font-scale, 1));
+  font-weight: 600;
+}

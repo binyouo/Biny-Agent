@@ -86,7 +86,7 @@ export function SettingsImport({ projectId, projects: allProjects, hidden = fals
     {!hidden && customize && snapshot ? <SettingsDetailLayer onClose={() => setCustomize(false)}><section className="model-dialog import-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="import-sync-title">
       <header><h3 id="import-sync-title">要同步的内容</h3><button type="button" aria-label="关闭同步范围" onClick={() => setCustomize(false)}><Icon name="close" size={16} /></button></header>
       <div className="import-preview-body">
-      <div className="settings-row-group">{snapshot.sync.selections?.length ? snapshot.sync.selections.map((selection, index) => <div className="settings-preference-row import-card-row" key={index}><span className="settings-row-copy"><strong>{selection.label}</strong><small>{selection.workspaceRoot} · {selection.itemIds.length} 项</small></span><button type="button" className="settings-secondary-button" disabled={busy || disabled || !projects.some(project => project.path === selection.workspaceRoot)} onClick={() => { if (busy || disabled) return; const project = projects.find(project => project.path === selection.workspaceRoot); if (!project) return; setTarget(project.id); choose(selection.source, true, selection.workspaceRoot, selection.itemIds); }}>调整</button></div>) : <p>尚未选择同步内容。</p>}</div>
+      <div className="settings-row-group">{snapshot.sync.selections?.length ? snapshot.sync.selections.map((selection, index) => <div className="settings-preference-row import-card-row" key={index}><span className="settings-row-copy"><strong>{selection.label}</strong><small>{selection.workspaceRoot} · {selection.itemIds.length} 项</small></span><button type="button" className="settings-action settings-secondary-button" disabled={busy || disabled || !projects.some(project => project.path === selection.workspaceRoot)} onClick={() => { if (busy || disabled) return; const project = projects.find(project => project.path === selection.workspaceRoot); if (!project) return; setTarget(project.id); choose(selection.source, true, selection.workspaceRoot, selection.itemIds); }}>调整</button></div>) : <p>尚未选择同步内容。</p>}</div>
       <p>ChatGPT 的同步范围调整需要重新选择同一份导出文件。</p>
       </div>
     </section></SettingsDetailLayer> : null}
@@ -94,7 +94,7 @@ export function SettingsImport({ projectId, projects: allProjects, hidden = fals
       <section role="dialog" aria-modal="true" aria-labelledby="import-preview-title" className="model-dialog import-preview-dialog" aria-busy={busy}>
         <header><h3 id="import-preview-title">从 {preview.label} 导入</h3><button type="button" aria-label="关闭导入选择" disabled={busy} onClick={() => setPreview(undefined)}><Icon name="close" size={16} /></button></header>
         <div className="import-preview-body">
-        <label className="import-target">导入到项目<select data-settings-detail-autofocus value={target} disabled={busy || disabled} onChange={event => setTarget(event.target.value)}><option value="">选择项目</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+        <label className="import-target">导入到项目<select className="settings-field" data-settings-detail-autofocus value={target} disabled={busy || disabled} onChange={event => setTarget(event.target.value)}><option value="">选择项目</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
         <p>会话保存到所选项目；模型设置和 MCP 配置保存为全局配置。同名配置会跳过，MCP 导入后默认关闭。</p>
         {preview.warnings.map((warning, index) => <p className="import-warning" key={index}>{warning}</p>)}
         <div className="import-preview-items">{preview.items.length ? preview.items.map(item => <label key={item.id} className="import-preview-item">
@@ -103,7 +103,7 @@ export function SettingsImport({ projectId, projects: allProjects, hidden = fals
         </label>) : <p>没有可导入的内容。</p>}</div>
         {error ? <p role="alert">{error}</p> : null}
         </div>
-        <footer><span>{selected.length} 项已选</span><button className="settings-primary-button" disabled={busy || disabled || !target || (!selected.length && !selectionOnly)} type="button" onClick={run}>{busy ? "正在保存…" : selectionOnly ? "保存同步选择" : "导入所选内容"}</button></footer>
+        <footer><span>{selected.length} 项已选</span><button className="settings-action settings-primary-button" disabled={busy || disabled || !target || (!selected.length && !selectionOnly)} type="button" onClick={run}>{busy ? "正在保存…" : selectionOnly ? "保存同步选择" : "导入所选内容"}</button></footer>
       </section>
     </SettingsDetailLayer> : null}
   </div>;
@@ -114,21 +114,21 @@ export function SettingsImportContent({ snapshot, error, busy, onRetry, onChoose
   onRetry(): void; onCustomize(): void; onChoose(source: ApplicationImportSource): void; onSyncChange(enabled: boolean): void; onSync(): void;
 }): React.JSX.Element {
   return <div className="settings-import" aria-busy={busy}>
-    {error ? <div role="alert" className="import-error"><p>{error}</p><button type="button" className="settings-secondary-button" disabled={busy} onClick={onRetry}>重新加载</button></div> : null}
+    {error ? <div role="alert" className="import-error"><p>{error}</p><button type="button" className="settings-action settings-secondary-button" disabled={busy} onClick={onRetry}>重新加载</button></div> : null}
       <section><h3>从其他 AI 应用导入</h3><p className="import-section-note">导入模型设置、MCP 配置与会话。选择来源后，可预览并勾选内容。</p><div className="settings-row-group import-card">
         {Object.values(applicationImportSources).map(source => {
           const unavailable = source.source !== "chatgpt" && snapshot?.sources.find(candidate => candidate.source === source.source)?.detected === false;
           return <div className="settings-preference-row import-card-row import-source-row" key={source.source}>
           <span className="import-source-icon" aria-hidden="true"><Icon name={source.source === "chatgpt" ? "message" : "terminal"} size={18} /></span>
           <span className="settings-row-copy import-source-copy"><strong>{source.label}</strong><small>{source.description}</small></span>
-          <button type="button" className="settings-secondary-button" disabled={busy || unavailable} aria-label={`从 ${source.label} 导入`} onClick={() => onChoose(source.source)}>{source.source === "chatgpt" ? "选择文件" : unavailable ? "未检测到" : "预览导入"}</button>
+          <button type="button" className="settings-action settings-secondary-button" disabled={busy || unavailable} aria-label={`从 ${source.label} 导入`} onClick={() => onChoose(source.source)}>{source.source === "chatgpt" ? "选择文件" : unavailable ? "未检测到" : "预览导入"}</button>
         </div>; })}
       </div></section>
     {snapshot ? <>
       <section><h3>自动同步</h3><div className="settings-row-group import-card">
         <SettingsSwitch checked={snapshot.sync.enabled} disabled={busy || !snapshot.sync.hasSelection} label="保持导入同步" detail={!snapshot.sync.hasSelection ? "首次导入后，可开启已选内容的自动同步。" : snapshot.sync.enabled ? "每分钟检查已选内容；变化的会话创建新副本。" : "同步已暂停。所选内容与导入历史保留。"} onChange={onSyncChange} />
-        <div className="settings-preference-row import-card-row"><span className="settings-row-copy"><strong>要同步的内容</strong><small>{snapshot.sync.hasSelection ? "沿用首次导入选择；重新导入可更新选择。" : "首次导入后可用。"}</small></span><button type="button" className="settings-secondary-button" disabled={busy || !snapshot.sync.hasSelection} onClick={onCustomize}>自定义</button></div>
-        {snapshot.sync.hasSelection ? <div className="settings-preference-row import-card-row"><span className="settings-row-copy">检查已选择的来源内容</span><button type="button" className="settings-secondary-button" disabled={busy || !snapshot.sync.enabled} onClick={onSync}>立即检查</button></div> : null}
+        <div className="settings-preference-row import-card-row"><span className="settings-row-copy"><strong>要同步的内容</strong><small>{snapshot.sync.hasSelection ? "沿用首次导入选择；重新导入可更新选择。" : "首次导入后可用。"}</small></span><button type="button" className="settings-action settings-secondary-button" disabled={busy || !snapshot.sync.hasSelection} onClick={onCustomize}>自定义</button></div>
+        {snapshot.sync.hasSelection ? <div className="settings-preference-row import-card-row"><span className="settings-row-copy">检查已选择的来源内容</span><button type="button" className="settings-action settings-secondary-button" disabled={busy || !snapshot.sync.enabled} onClick={onSync}>立即检查</button></div> : null}
         {snapshot.sync.lastError ? <p role="alert" className="import-warning">{snapshot.sync.lastError}</p> : null}
       </div></section>
       <section><h3>导入历史</h3>{snapshot.history.length ? snapshot.history.map(history => <ImportHistoryCard key={history.id} history={history} />) : <p className="import-empty">尚未导入内容。</p>}</section>

@@ -10,8 +10,8 @@
 
 /* 图标选择器弹层使用 portal，尺寸和位置由组件根据锚点计算。 */
 .provider-icon-picker { min-width: 0; }
-.provider-icon-trigger { display: flex; align-items: center; gap: 8px; width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text); font: inherit; font-weight: 400; text-align: left; cursor: pointer; }
-.provider-icon-trigger:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+.provider-icon-trigger { display: flex; align-items: center; gap: 8px; width: 100%; min-height: var(--st-control-h); padding: var(--st-control-py) var(--st-control-px); border: 1px solid var(--st-field-border); border-radius: var(--st-button-radius); background: var(--st-field-bg); color: var(--text); font: inherit; font-weight: 400; text-align: left; cursor: pointer; }
+.provider-icon-trigger:hover { border-color: var(--st-field-border-hover); }
 .provider-icon-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .provider-icon-trigger-glyph { flex: 0 0 auto; width: 20px; height: 20px; }
 .provider-icon-trigger-glyph.is-selected { color: color-mix(in srgb, var(--text) 70%, transparent); }
@@ -42,7 +42,7 @@
 }
 
 /* 连接信息按常用项与端点设置分层，标题和模型列表保持紧凑。 */
-.provider-detail-pane .provider-panel { gap: 20px; padding: 22px; }
+.provider-detail-pane .provider-panel { gap: var(--st-card-gap); }
 .provider-panel-head { align-items: flex-start; gap: 14px; }
 .provider-panel-title h3 { flex-wrap: wrap; column-gap: 7px; row-gap: 5px; font-size: calc(1 * var(--st-rem)); font-weight: 600; }
 .provider-panel-title .provider-panel-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -53,7 +53,7 @@
 .provider-connection-test { gap: 6px; padding: 0 10px; line-height: 1; white-space: nowrap; }
 .provider-connection-test:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .provider-detail-pane .provider-rows { gap: 18px; }
-.provider-endpoint-details { border: 1px solid var(--border); border-radius: var(--st-radius); }
+.provider-endpoint-details { border: 1px solid var(--border-subtle); border-radius: var(--st-radius); }
 .provider-endpoint-details > summary { display: flex; min-height: 42px; align-items: center; gap: 8px; padding: 0 12px; color: var(--text-secondary); cursor: pointer; list-style: none; }
 .provider-endpoint-details > summary::-webkit-details-marker { display: none; }
 .provider-endpoint-details > summary > span { color: var(--text); font-size: calc(0.8125 * var(--st-rem)); font-weight: 550; }
@@ -69,7 +69,7 @@
 .provider-models-head > button { flex-shrink: 0; }
 .provider-model-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .provider-model-tools > button { display: inline-flex; min-height: 28px; align-items: center; gap: 4px; font-size: calc(0.75 * var(--st-rem)); }
-.provider-manual-row { flex-wrap: wrap; padding: 12px; border: 1px solid var(--border); border-radius: var(--st-radius); background: var(--surface-soft); }
+.provider-manual-row { flex-wrap: wrap; padding: 12px; border: 0; border-radius: var(--st-radius); background: var(--surface-soft); }
 .provider-manual-row input { flex: 1 1 140px; }
 .provider-models-empty { padding: 22px 12px; }
 @container settings (max-width: 720px) {
@@ -79,8 +79,8 @@
   .provider-detail-pane .provider-panel { padding: 16px; }
 }
 
-.provider-list-rows { gap: 7px; padding: 8px; }
-.provider-row { min-height: 42px; border-color: var(--border); padding: 8px 9px; }
+.provider-list-rows { gap: 2px; padding: 6px; }
+.provider-row { min-height: 40px; border-color: transparent; border-radius: var(--st-button-radius); padding: 7px 9px; }
 .provider-row-copy { flex-direction: row; align-items: center; gap: 6px; }
 .provider-row-copy strong { flex: 1; min-width: 0; }
 .provider-row-copy .provider-row-badge { flex-shrink: 0; padding: 2px 6px; border-radius: 6px; background: var(--surface-hover); font-size: calc(0.625 * var(--st-rem)); }
@@ -90,7 +90,7 @@
 
 .acp-provider-fields { display: flex; flex-direction: column; gap: 16px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .acp-provider-fields label { display: flex; flex-direction: column; gap: 7px; color: var(--text-secondary); font-size: calc(0.8125 * var(--st-rem)); }
-.acp-provider-fields input:not([type="checkbox"]), .acp-provider-fields textarea, .acp-provider-fields select { width: 100%; box-sizing: border-box; min-height: 36px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text); font: inherit; }
+.acp-provider-fields input:not([type="checkbox"]), .acp-provider-fields textarea, .acp-provider-fields select { width: 100%; box-sizing: border-box; min-height: var(--st-control-h); padding: var(--st-control-py) var(--st-control-px); border: 1px solid var(--st-field-border); border-radius: var(--st-button-radius); background: var(--st-field-bg); color: var(--text); font: inherit; }
 .acp-provider-fields textarea { resize: vertical; }
 .acp-provider-fields input:focus-visible, .acp-provider-fields textarea:focus-visible, .acp-provider-fields select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .acp-provider-fields p { margin: 0; color: var(--text-secondary); font-size: calc(0.8125 * var(--st-rem)); line-height: 1.5; }

@@ -380,14 +380,14 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
       <div className="settings-extension-list-heading">
         <span>{query.trim() ? `${skills.length} / ${totalSkills} 个技能` : `${totalSkills} 个技能可用`}</span>
         <div>
-          <button disabled={loading} onClick={onRefresh} type="button"><Icon name="refresh" size={16} />{loading ? "刷新中…" : "刷新"}</button>
-          {unmanagedSkills.length > 0 ? <button onClick={onImportExisting} type="button"><Icon name="archive" size={16} />导入已有 ({unmanagedSkills.length})</button> : null}
-          {skills[0] ? <button onClick={() => onOpenDirectory(skills[0]!)} type="button"><Icon name="folder-open" size={16} />打开文件夹</button> : null}
+          <button className="settings-action settings-secondary-button" disabled={loading} onClick={onRefresh} type="button"><Icon name="refresh" size={16} />{loading ? "刷新中…" : "刷新"}</button>
+          {unmanagedSkills.length > 0 ? <button className="settings-action settings-secondary-button" onClick={onImportExisting} type="button"><Icon name="archive" size={16} />导入已有 ({unmanagedSkills.length})</button> : null}
+          {skills[0] ? <button className="settings-action settings-secondary-button" onClick={() => onOpenDirectory(skills[0]!)} type="button"><Icon name="folder-open" size={16} />打开文件夹</button> : null}
         </div>
       </div>
-      <label className="settings-extension-search">
+      <label className="settings-search-field settings-extension-search">
         <Icon name="search" size={18} />
-        <input aria-label="搜索技能名称、描述或路径" onChange={(event) => onQuery(event.target.value)} placeholder="搜索技能名称、描述或路径…" value={query} />
+        <input className="settings-field" aria-label="搜索技能名称、描述或路径" onChange={(event) => onQuery(event.target.value)} placeholder="搜索技能名称、描述或路径…" value={query} />
         {query ? <button aria-label="清空搜索" onClick={() => onQuery("")} type="button"><Icon name="close" size={14} /></button> : null}
       </label>
       <section className="settings-extension-scroll" aria-label="技能列表">
@@ -427,12 +427,13 @@ function SkillExtractionSettings(): React.JSX.Element | null {
   return <section className="settings-skill-extraction" id="skill-extraction" tabIndex={-1} aria-label="自动技能提取">
     <div className="settings-skill-extraction-heading">
       <h3>自动技能提取</h3>
-      <input aria-label="启用自动技能提取" checked={extraction.enabled} onChange={(event) => update({ enabled: event.target.checked })} type="checkbox" />
+      <input aria-checked={extraction.enabled} aria-label="启用自动技能提取" checked={extraction.enabled} className="settings-switch"
+        onChange={(event) => update({ enabled: event.target.checked })} role="switch" type="checkbox" />
     </div>
     {extraction.enabled ? <>
       <label className="compaction-threshold-field">
         <span><strong>最少工具调用次数</strong><em>{extraction.minToolCalls}</em></span>
-        <input aria-label="最少工具调用次数" min={1} max={100} step={1} type="range" value={extraction.minToolCalls}
+        <input className="settings-range" aria-label="最少工具调用次数" min={1} max={100} step={1} type="range" value={extraction.minToolCalls}
           onChange={(event) => update({ minToolCalls: Number(event.target.value) })}
           style={{ "--range-progress": `${((extraction.minToolCalls - 1) / 99) * 100}%` } as React.CSSProperties} />
       </label>
@@ -461,16 +462,16 @@ const SkillSettingsCard = memo(function SkillSettingsCard({ onError, onVersionCh
         <div className="settings-skill-card-heading"><h4>{skill.name}</h4></div>
         <p>{skill.description || "暂无描述"}</p>
         <div className="settings-skill-card-footer">
-          <button aria-expanded={expanded} className="settings-skill-content-toggle" onClick={onToggleContent} type="button"><Icon name="chevron" size={15} />{expanded ? "收起内容" : "查看内容"}</button>
+          <button aria-expanded={expanded} className="settings-action settings-text-action settings-skill-content-toggle" onClick={onToggleContent} type="button"><Icon name="chevron" size={15} />{expanded ? "收起内容" : "查看内容"}</button>
           <code className="settings-skill-path" title={skill.absolutePath}>{skill.absolutePath}</code>
         </div>
       </div>
-      <button aria-checked={activation.enabled} aria-label={`${activation.enabled ? "停用" : "启用"}技能 ${skill.name}`} className={`settings-extension-switch${activation.enabled ? " is-on" : ""}`} onClick={onToggle} role="switch" type="button"><span /></button>
+      <button aria-checked={activation.enabled} aria-label={`${activation.enabled ? "停用" : "启用"}技能 ${skill.name}`} className={`settings-switch settings-extension-switch${activation.enabled ? " is-on" : ""}`} onClick={onToggle} role="switch" type="button" />
       {expanded ? <div className="settings-skill-content" aria-label={`${skill.name} 内容`}>
         <div className="settings-skill-card-actions">
-          <button className="settings-skill-content-toggle" onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={15} />打开文件夹</button>
-          {activation.projectOverride !== undefined ? <button className="settings-skill-content-toggle" onClick={onInherit} type="button">恢复继承</button> : null}
-          {activation.projectOverride !== undefined ? <button className="settings-skill-content-toggle" onClick={onSetGlobal} type="button">设为全局默认</button> : null}
+          <button className="settings-action settings-text-action settings-skill-content-toggle" onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={15} />打开文件夹</button>
+          {activation.projectOverride !== undefined ? <button className="settings-action settings-text-action settings-skill-content-toggle" onClick={onInherit} type="button">恢复继承</button> : null}
+          {activation.projectOverride !== undefined ? <button className="settings-action settings-text-action settings-skill-content-toggle" onClick={onSetGlobal} type="button">设为全局默认</button> : null}
         </div>
         <SkillVersionControls key={`version:${skill.id}`} skillId={skill.id} disabled={false} onChanged={onVersionChanged} onError={onError} />
         {contentLoading ? <span>正在读取内容…</span> : preview?.binary ? <span>无法预览二进制文件。</span> : <pre>{content || "暂无可显示内容。"}</pre>}
@@ -504,23 +505,23 @@ const PluginsSettingsContent = memo(function PluginsSettingsContent({ busyPlugin
   const categories = ["全部", ...new Set(registry.plugins.map((plugin) => plugin.category))];
   return <>
     <div className="settings-plugin-toolbar">
-      <div className="settings-plugin-tabs" role="tablist" aria-label="插件列表">
+      <div className="settings-choice-tabs settings-plugin-tabs" role="tablist" aria-label="插件列表">
         <button aria-selected={pluginTab === "installed"} className={pluginTab === "installed" ? "is-active" : ""} onClick={() => onPluginTab("installed")} role="tab" type="button"><Icon name="cube" size={18} />已安装</button>
         <button aria-selected={pluginTab === "market"} className={pluginTab === "market" ? "is-active" : ""} onClick={() => onPluginTab("market")} role="tab" type="button"><Icon name="site" size={18} />应用市场</button>
       </div>
-      <button className="settings-plugin-action" onClick={onRefresh} type="button"><Icon name="refresh" size={18} />刷新</button>
-      <button className="settings-plugin-action" onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={18} />打开文件夹</button>
+      <button className="settings-action settings-secondary-button settings-plugin-action" onClick={onRefresh} type="button"><Icon name="refresh" size={18} />刷新</button>
+      <button className="settings-action settings-secondary-button settings-plugin-action" onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={18} />打开文件夹</button>
     </div>
     <div className="settings-plugin-filters">
-      <div className="settings-plugin-tabs settings-plugin-scope-tabs" role="tablist" aria-label="插件安装范围">
+      <div className="settings-choice-tabs settings-plugin-tabs settings-plugin-scope-tabs" role="tablist" aria-label="插件安装范围">
         <button aria-selected={pluginScope === "global"} className={pluginScope === "global" ? "is-active" : ""} onClick={() => onScope("global")} role="tab" type="button">全局</button>
         <button aria-selected={pluginScope === "project"} className={pluginScope === "project" ? "is-active" : ""} onClick={() => onScope("project")} role="tab" type="button">当前项目</button>
       </div>
-      <div className="settings-plugin-categories" role="tablist" aria-label="插件分类">
+      <div className="settings-choice-tabs settings-plugin-categories" role="tablist" aria-label="插件分类">
         {categories.map((item) => <button aria-selected={category === item} className={category === item ? "is-active" : ""} key={item} onClick={() => onCategory(item)} role="tab" type="button">{item}</button>)}
       </div>
     </div>
-    <label className="settings-extension-search settings-plugin-search"><Icon name="search" size={18} /><input aria-label="搜索插件" onChange={(event) => onQuery(event.target.value)} placeholder="搜索插件…" value={query} />{query ? <button aria-label="清空搜索" onClick={() => onQuery("")} type="button"><Icon name="close" size={14} /></button> : null}</label>
+    <label className="settings-search-field settings-extension-search settings-plugin-search"><Icon name="search" size={18} /><input className="settings-field" aria-label="搜索插件" onChange={(event) => onQuery(event.target.value)} placeholder="搜索插件…" value={query} />{query ? <button aria-label="清空搜索" onClick={() => onQuery("")} type="button"><Icon name="close" size={14} /></button> : null}</label>
     {registry.loadingError ? <div className="settings-extension-notice is-warning">应用市场刷新失败：{registry.loadingError}{registry.stale ? "，当前显示上次缓存。" : "，当前没有可用缓存。"}</div> : null}
     <div className="settings-extension-notice">Plugin 无沙箱隔离，只安装你信任的来源。</div>
     {pluginTab === "market" ? <section className="settings-extension-scroll" aria-label="Plugin 应用市场">{loading && !market.length ? <ExtensionSettingsLoading /> : !market.length ? <ExtensionSettingsEmpty icon="puzzle" title="没有匹配的 Plugin" detail="刷新市场或换一个搜索词。" /> : market.map((plugin) => <PluginMarketCard busy={busyPluginId === plugin.id} key={plugin.id} onInstall={(candidate) => onInstall(candidate, pluginScope)} plugin={plugin} />)}</section> : <section className="settings-plugin-list" aria-label="已安装 Plugin">{loading && !plugins.length ? <ExtensionSettingsLoading /> : !plugins.length ? <ExtensionSettingsEmpty icon="puzzle" title="还没有安装 Plugin" detail="从官方应用市场安装后，默认保持关闭。" /> : plugins.map((plugin) => <PluginSettingsCard busy={busyPluginId === plugin.path.split("/").at(-1)} key={`${plugin.scope}:${plugin.id}`} onSetEnabled={onSetEnabled} onUninstall={onUninstall} plugin={plugin} />)}</section>}
@@ -528,12 +529,12 @@ const PluginsSettingsContent = memo(function PluginsSettingsContent({ busyPlugin
 });
 
 const PluginMarketCard = memo(function PluginMarketCard({ busy, onInstall, plugin }: { busy: boolean; onInstall(plugin: DesktopPluginMarketEntry): void; plugin: DesktopPluginMarketEntry }): React.JSX.Element {
-  return <article className="settings-plugin-card"><span className="settings-plugin-card-icon"><Icon name="puzzle" size={23} /></span><div className="settings-plugin-card-main"><h3><span className="settings-plugin-card-name">{plugin.name}</span>{plugin.featured ? <span className="settings-plugin-featured">精选</span> : null}</h3><p>{plugin.category} · v{plugin.version}{plugin.author ? ` · ${plugin.author.name}` : ""}</p><span className="settings-plugin-description">{plugin.description}</span>{plugin.tags.length ? <p className="settings-plugin-tags">{plugin.tags.map((tag) => `#${tag}`).join(" ")}</p> : null}</div><button className="settings-plugin-install-button" disabled={busy} onClick={() => onInstall(plugin)} type="button">{busy ? "安装中…" : "安装"}</button></article>;
+  return <article className="settings-plugin-card"><span className="settings-plugin-card-icon"><Icon name="puzzle" size={23} /></span><div className="settings-plugin-card-main"><h3><span className="settings-plugin-card-name">{plugin.name}</span>{plugin.featured ? <span className="settings-plugin-featured">精选</span> : null}</h3><p>{plugin.category} · v{plugin.version}{plugin.author ? ` · ${plugin.author.name}` : ""}</p><span className="settings-plugin-description">{plugin.description}</span>{plugin.tags.length ? <p className="settings-plugin-tags">{plugin.tags.map((tag) => `#${tag}`).join(" ")}</p> : null}</div><button className="settings-action settings-primary-button settings-plugin-install-button" disabled={busy} onClick={() => onInstall(plugin)} type="button">{busy ? "安装中…" : "安装"}</button></article>;
 });
 
 const PluginSettingsCard = memo(function PluginSettingsCard({ busy, onSetEnabled, onUninstall, plugin }: { busy: boolean; onSetEnabled(plugin: DesktopPluginSummary): void; onUninstall(plugin: DesktopPluginSummary): void; plugin: DesktopPluginSummary }): React.JSX.Element {
   const scopeLabel = plugin.scope === "global" ? "全局" : plugin.projectName ?? "当前项目";
-  return <article className="settings-plugin-card"><span className="settings-plugin-card-icon"><Icon name="puzzle" size={23} /></span><div className="settings-plugin-card-main"><h3><span className="settings-plugin-card-name">{plugin.name}</span></h3><p>{scopeLabel}{plugin.version ? ` · v${plugin.version}` : ""}</p><details className="settings-disclosure"><summary>安装位置</summary><code>{plugin.path}</code></details><span className={`settings-plugin-status is-${plugin.status}`}>{plugin.status === "disabled" ? "已安装但未启用" : plugin.status === "missing" ? "路径不可用" : plugin.status === "failed" ? "加载失败" : `${plugin.moduleCount} 个模块`}</span>{plugin.error ? <span className="settings-plugin-description">{plugin.error}</span> : null}</div>{plugin.managed ? <><button aria-checked={plugin.enabled === true} aria-label={`${plugin.enabled === true ? "停用" : "启用"}插件 ${plugin.name}`} className={`settings-extension-switch${plugin.enabled === true ? " is-on" : ""}`} disabled={busy} onClick={() => onSetEnabled(plugin)} role="switch" type="button"><span /></button><button className="settings-plugin-danger-button" disabled={busy} onClick={() => onUninstall(plugin)} type="button">卸载</button></> : null}</article>;
+  return <article className="settings-plugin-card"><span className="settings-plugin-card-icon"><Icon name="puzzle" size={23} /></span><div className="settings-plugin-card-main"><h3><span className="settings-plugin-card-name">{plugin.name}</span></h3><p>{scopeLabel}{plugin.version ? ` · v${plugin.version}` : ""}</p><details className="settings-disclosure"><summary>安装位置</summary><code>{plugin.path}</code></details><span className={`settings-plugin-status is-${plugin.status}`}>{plugin.status === "disabled" ? "已安装但未启用" : plugin.status === "missing" ? "路径不可用" : plugin.status === "failed" ? "加载失败" : `${plugin.moduleCount} 个模块`}</span>{plugin.error ? <span className="settings-plugin-description">{plugin.error}</span> : null}</div>{plugin.managed ? <><button aria-checked={plugin.enabled === true} aria-label={`${plugin.enabled === true ? "停用" : "启用"}插件 ${plugin.name}`} className={`settings-switch settings-extension-switch${plugin.enabled === true ? " is-on" : ""}`} disabled={busy} onClick={() => onSetEnabled(plugin)} role="switch" type="button" /><button className="settings-action settings-danger-button settings-plugin-danger-button" disabled={busy} onClick={() => onUninstall(plugin)} type="button">卸载</button></> : null}</article>;
 });
 
 function activationFor(skill: DesktopSkillCatalogEntry, globalDefaults: Record<string, boolean>, projectOverrides: Record<string, boolean>): DesktopSkillActivation {

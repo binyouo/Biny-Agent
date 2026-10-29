@@ -89,6 +89,7 @@ import { TimeCluesDialog } from "./components/overlays/TimeCluesDialog.js";
 import { MessageReferencesDialog } from "./components/overlays/MessageReferencesDialog.js";
 import { DateReferenceDetailDialog } from "./components/overlays/DateReferenceDetailDialog.js";
 import { SettingsOverlay, type SettingsTab } from "./components/settings/SettingsOverlay.js";
+import { warmSettingsSnapshot } from "./components/settings/SettingsDraftProvider.js";
 import { useWorkspaceInspector } from "./components/workspace/useWorkspaceInspector.js";
 import { RenderingPreviewContext } from "./components/RenderingPreviewContext.js";
 import { sessionGoalSlashFeedback } from "./components/workspace/sessionGoalControl.js";
@@ -229,6 +230,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   const openSettings = useCallback((targetTab?: SettingsTab): void => {
     if (!settingsEnabled) return;
+    // 点击即预热快照 IPC，弹窗挂载时数据通常已就绪或在路上；dialog 绘制本身
+    // 也要一帧时间，足以盖掉大部分可见加载态。设置本身不是静态的，仍会后台校验。
+    warmSettingsSnapshot(projectRef.current, selectedRef.current);
     setSettingsTargetTab(targetTab);
     setSettingsOpen(true);
   }, [settingsEnabled]);
@@ -772,6 +776,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const clearGenerationError = useCallback((): void => {
     setGenerationError(undefined);
   }, []);
+  // 先清掉旧会话的瞬态错误，再由事件桥回放新会话可能已经失败的运行。
+  useEffect(clearGenerationError, [clearGenerationError, selectedSessionId, workspace?.project.id]);
   const compactionCommand = useCompactionCommand({
     projectId: selectedSessionId === undefined ? draftProjectId ?? workspace?.project.id : workspace?.project.id,
     sessionId: selectedSessionId,
@@ -819,6 +825,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   useEffect(() => window.biny.onSettingsCloseRequest((request) => {
     if (!settingsEnabled) return;
+    warmSettingsSnapshot(projectRef.current, selectedRef.current);
     setSettingsCloseRequest(request);
     setSettingsOpen(true);
   }), [settingsEnabled]);
@@ -1426,11 +1433,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     () => editingMessage ? { nonce: editingMessage.nonce, value: editingMessage.value } : undefined,
     [editingMessage]
   );
-  // 切会话/切项目时退出编辑态、清掉生成错误横幅：都是当前会话的瞬态，不带过去。
+  // 切会话/切项目时退出编辑态，不带到新会话。
   useEffect(() => {
     setEditingMessage(undefined);
     setEditInFlight(undefined);
-    setGenerationError(undefined);
   }, [selectedSessionId, workspace?.project.id]);
 
   const createBranch = useCallback(async (): Promise<void> => {
@@ -2134,6 +2140,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       fastMode={composerFastMode}
       onChangeFastMode={(fastMode) => { void changeFastMode(fastMode); }}
       onSaveAttachment={saveAttachment}
+      onPrepare={async () => { if (workspace && !externalAgent) await window.biny.preparePrompt(workspace.project.id); }}
       onSend={sendPromptWithTransition}
       recovery={!loading && document?.session.id === selectedSessionId ? document?.recovery : undefined}
       onResume={continueInterrupted}

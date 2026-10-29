@@ -28,18 +28,20 @@ export function SettingsPageFooter({
 }): React.JSX.Element {
   const status = unavailable ?? (state === "clean" && pendingModelEdits ? "等待保存…" : state === "clean" && error ? "保存失败，请重试" : settingsSaveStatus(state, dirtyCount));
   const clean = dirtyCount === 0 && state === "clean";
+  // 状态圆点只跟随草稿：本页不走草稿或仍在加载时不显示"已保存"。
+  const tone = unavailable !== undefined ? "idle" : clean && pendingModelEdits ? "dirty" : state;
   return (
     <footer className="settings-page-footer">
       <div className="settings-save-feedback">
         {error ? <p className="settings-save-error" role="alert">{error}</p> : null}
-        <p aria-live="polite" className={`settings-save-status is-${state}`} id="settings-save-status" role="status">{status}{blockedReason ? <span>{blockedReason}</span> : null}</p>
+        <p aria-live="polite" className={`settings-save-status is-${tone}`} id="settings-save-status" role="status">{status}{blockedReason ? <span>{blockedReason}</span> : null}</p>
         {hint ? <small className="settings-save-scope">{hint}</small> : null}
       </div>
       <span className="settings-footer-actions">
-        <button className="ghost-button" disabled={state === "saving" || state === "rolling_back"} onClick={onCancel} type="button">{clean ? "关闭" : "取消"}</button>
+        <button className="settings-action settings-secondary-button" disabled={state === "saving" || state === "rolling_back"} onClick={onCancel} type="button">{clean ? "关闭" : "取消"}</button>
         {!hideSave ? <button
           aria-describedby="settings-save-status"
-          className="settings-save-button"
+          className="settings-action settings-primary-button settings-save-button"
           disabled={disabled || dirtyCount === 0 || state === "invalid" || state === "saving" || state === "rolling_back" || state === "recovery_required"}
           onClick={onSave}
           type="button"

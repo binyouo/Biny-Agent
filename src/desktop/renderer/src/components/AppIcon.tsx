@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const openEyes = new URL("../assets/app-icon.png", import.meta.url).href;
 const closedEyes = new URL("../assets/app-icon-blink.png", import.meta.url).href;
@@ -9,16 +9,12 @@ interface AppIconProps {
   animated?: boolean;
   active?: boolean;
   hidden?: boolean;
-  /** 只递增已确认保存的回执；挂载时的值不重播。 */
-  memoryRevision?: number;
 }
 
-export function AppIcon({ size, className, animated = false, active = false, hidden = false, memoryRevision = 0 }: AppIconProps): React.JSX.Element {
+export function AppIcon({ size, className, animated = false, active = false, hidden = false }: AppIconProps): React.JSX.Element {
   const [sleeping, setSleeping] = useState(false);
-  const [remembering, setRemembering] = useState(false);
   const [background, setBackground] = useState(() => typeof document !== "undefined" && document.hidden);
   const [reducedMotion, setReducedMotion] = useState(false);
-  const lastMemoryRevision = useRef(memoryRevision);
   const paused = hidden || background || reducedMotion;
 
   useEffect(() => {
@@ -50,19 +46,9 @@ export function AppIcon({ size, className, animated = false, active = false, hid
       window.removeEventListener("keydown", wake);
       window.removeEventListener("focus", wake);
     };
-  }, [active, animated, paused, memoryRevision]);
+  }, [active, animated, paused]);
 
-  useEffect(() => {
-    const fresh = memoryRevision > lastMemoryRevision.current;
-    lastMemoryRevision.current = memoryRevision;
-    setRemembering(false);
-    if (!fresh || !animated || active || paused) return;
-    setRemembering(true);
-    const timer = setTimeout(() => setRemembering(false), 2_100);
-    return () => clearTimeout(timer);
-  }, [active, animated, memoryRevision, paused]);
-
-  const state = active ? "listen" : remembering ? "remember" : sleeping ? "sleep" : "idle";
+  const state = active ? "listen" : sleeping ? "sleep" : "idle";
   return <span aria-hidden="true" className={`app-icon${className ? ` ${className}` : ""}`}
     data-animated={animated} data-paused={paused} data-state={state} style={{ width:size, height:size }}>
     <span className="app-icon-art">

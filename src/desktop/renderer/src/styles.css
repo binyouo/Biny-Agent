@@ -222,28 +222,6 @@ button:disabled { opacity: 0.42; }
 
 .thinking-trigger svg { color: var(--text-tertiary); }
 .composer-popover { position: absolute; z-index: 30; bottom: calc(100% + 8px); min-width: 290px; padding: 7px; border: 1px solid var(--border-strong); border-radius: 11px; background: var(--surface-raised); box-shadow: 0 16px 40px var(--shadow); }
-.model-menu { right: 0; width: 286px; overflow: visible; }
-.popover-heading { padding: 5px 9px 7px; color: var(--text-tertiary); font-size: calc(10px * var(--font-scale)); font-weight: 600; }
-.model-search { display: flex; height: 29px; align-items: center; margin: 1px 1px 7px; padding: 0 9px; border: 1px solid var(--border); border-radius: 8px; background: transparent; }
-.model-search:focus-within { border-color: var(--border-strong); }
-.model-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-family: var(--font-sans); font-size: calc(11px * var(--font-scale)); }
-.model-search input::placeholder { color: var(--text-tertiary); }
-.model-options-scroll { max-height: min(360px, 44vh); overflow: hidden auto; }
-.model-group + .model-group { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); }
-.model-group-heading { display: flex; height: 27px; align-items: center; gap: 8px; padding: 0 8px; color: var(--text-tertiary); font-size: calc(11px * var(--font-scale)); font-weight: 550; }
-.model-group-heading .provider-logo { width: 15px; height: 15px; color: var(--accent); }
-.menu-option { display: grid; width: 100%; min-height: 32px; grid-template-columns: 18px 1fr; align-items: center; gap: 7px; padding: 0 8px; border-radius: 8px; text-align: left; }
-.menu-option:hover { background: var(--surface-hover); }
-.menu-option.is-selected { color: var(--text); background: var(--surface-hover); }
-.menu-check { display: grid; place-items: center; color: var(--text); }
-.menu-option-copy { display: flex; min-width: 0; flex-direction: column; }
-.menu-option-copy strong { overflow: hidden; font-size: calc(11.5px * var(--font-scale)); font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
-.menu-option-copy small { overflow: hidden; color: var(--text-tertiary); font-size: calc(9.5px * var(--font-scale)); text-overflow: ellipsis; white-space: nowrap; }
-.model-option strong { overflow: hidden; font-size: calc(11.5px * var(--font-scale)); font-weight: 520; text-overflow: ellipsis; white-space: nowrap; }
-.model-option.is-selected strong { font-weight: 600; }
-.capability-label { padding: 2px 5px; border-radius: 4px; color: var(--text-tertiary); background: var(--surface-soft); font-size: calc(8.5px * var(--font-scale)); }
-.thinking-level-menu { left: 0; width: 240px; }
-.thinking-level-menu .menu-option { min-height: 38px; align-items: center; gap: 8px; padding: 4px 8px; }
 .segmented-control { display: flex; padding: 2px; border-radius: 7px; background: var(--surface-soft); }
 .segmented-control button { height: 23px; padding: 0 7px; border-radius: 5px; color: var(--text-secondary); font-size: calc(9px * var(--font-scale)); }
 .segmented-control button.is-selected { color: var(--text); background: var(--surface-raised); box-shadow: 0 1px 3px var(--shadow); }

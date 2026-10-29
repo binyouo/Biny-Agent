@@ -2,9 +2,9 @@
  * 桌面端样式入口。
  *
  * Astryx 自己使用 cascade layers；旧样式必须显式落进 legacy 层，否则未分层的 reset 会
- * 无视选择器权重覆盖组件库。Desktop 2.0 的样式放在最后一层，只处理产品布局和必要适配。
+ * 无视选择器权重覆盖组件库。产品页面负责布局，设置控件与图标按钮各自用公共层统一外观。
  */
-@layer reset, astryx-base, astryx-theme, legacy, desktop, icon-controls;
+@layer reset, astryx-base, astryx-theme, legacy, desktop, settings-controls, icon-controls;
 
 @import "@astryxdesign/core/reset.css";
 @import "@astryxdesign/core/astryx.css";
@@ -30,4 +30,5 @@
 
 @import "./thread-brief.css" layer(desktop);
 @import "./appearance.css" layer(desktop);
+@import "./settings-controls.css" layer(settings-controls);
 @import "./icon-buttons.css" layer(icon-controls);

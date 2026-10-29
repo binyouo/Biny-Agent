@@ -80,6 +80,8 @@ export function useDesktopEventBridge({
   onCompactionFailed
 }: DesktopEventBridgeOptions): (projectId: string) => void {
   const projectRefreshEpochs = useRef(new Map<string, number>());
+  const pendingEvents = useRef(createSessionEventBuffer<DesktopAgentEventEnvelope>());
+  const replaySelectedEvents = useRef<(() => void) | undefined>(undefined);
   const invalidateProjectRefresh = useCallback((projectId: string): void => {
     projectRefreshEpochs.current.set(projectId, (projectRefreshEpochs.current.get(projectId) ?? 0) + 1);
   }, []);
@@ -93,7 +95,6 @@ export function useDesktopEventBridge({
     let documentRefreshGeneration = 0;
     const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const projectRefreshOrder = new Map<string, { issued: number; applied: number }>();
-    const pendingEvents = createSessionEventBuffer<DesktopAgentEventEnvelope>();
 
     const scheduleRefresh = (projectId: string, sessionId: string): void => {
       const scope = JSON.stringify([projectId, sessionId]);
@@ -135,6 +136,88 @@ export function useDesktopEventBridge({
       refreshTimers.set(scope, timer);
     };
 
+    const flushSelectedEvents = (projectBatch: DesktopAgentEventEnvelope[]): void => {
+      const currentSessionId = selectedSessionIdRef.current;
+      const currentEvents: AgentHostEvent[] = [];
+      const doc = documentRef.current;
+      // 头部事件可能先于会话选中到达（草稿首发时 message.user / run.started 先于 receipt）：
+      // 未命中当前会话的事件按会话暂存，不能丢——historicalPrefix 依赖这些锚点截断历史。
+      // 会话选中后，文档还是空占位时原序回放缓冲；文档已带该会话内容（openSession 的
+      // 主进程桶是超集）则整体作废，避免同一批事件被折叠两次。
+      for (const envelope of projectBatch) {
+        const event = envelope.event;
+        if (event === undefined) continue;
+        if (currentSessionId !== undefined && event.sessionId === currentSessionId
+          && doc?.session.id === currentSessionId) currentEvents.push(event);
+        else if (event.sessionId !== undefined) pendingEvents.current.hold(event.sessionId, envelope);
+      }
+      if (currentSessionId && doc?.session.id === currentSessionId) {
+        if (doc.events.length > 0 || doc.liveEvents.length > 0) {
+          pendingEvents.current.take(currentSessionId, true);
+        } else {
+          const drained = pendingEvents.current.take(currentSessionId)
+            .map((envelope) => envelope.event)
+            .filter((event): event is AgentHostEvent => event !== undefined);
+          currentEvents.unshift(...drained);
+        }
+        if (!currentEvents.length) return;
+        // recipe.ready / skill_extraction.updated 是提示通知而非对话内容：
+        // 不进消息时间线，分别驱动聊天内卡片。
+        const recipeNotices = currentEvents.filter((event) => event.type === "recipe.ready");
+        if (recipeNotices.length) {
+          setRecipeNotices((current) => {
+            const seen = new Set(current.map((notice) => notice.id));
+            const fresh = recipeNotices
+              .filter((event) => !seen.has(event.recipe.id))
+              .map((event) => ({ ...event.recipe, sessionId: currentSessionId }));
+            return fresh.length ? [...current, ...fresh] : current;
+          });
+        }
+        for (const event of currentEvents) {
+          if (event.type === "run.started") setSkillExtraction(undefined);
+          if (event.type === "skill_extraction.updated") {
+            if (event.stage === "analyzing") continue;
+            if (event.stage === "skipped") {
+              setSkillExtraction((current) => current?.sessionId === event.sessionId && current.runId === event.runId
+                ? undefined : current);
+              continue;
+            }
+            setSkillExtraction({
+              sessionId: currentSessionId,
+              runId: event.runId,
+              stage: event.stage,
+              skillName: event.skillName,
+              skillDescription: event.skillDescription,
+              updated: event.updated
+            });
+          }
+        }
+        const timelineSource = recipeNotices.length || currentEvents.some((event) => event.type === "skill_extraction.updated")
+          ? currentEvents.filter((event) => event.type !== "recipe.ready" && event.type !== "skill_extraction.updated")
+          : currentEvents;
+        const timelineEvents = liveTimelineEvents(timelineSource);
+        if (timelineEvents.length) {
+          setDocument((current) => current?.session.id === currentSessionId
+            ? { ...current, liveEvents: appendLiveTimelineEvents(current.liveEvents, timelineEvents) }
+            : current);
+        }
+        const contextEvents = currentEvents.filter(hasContextStatus);
+        const latestContext = contextEvents.at(-1);
+        if (latestContext) setContextBudget(latestContext.context.budget);
+        // 按事件顺序更新瞬态提示，确保同一批中后开始的运行清掉前一轮失败。
+        for (const event of currentEvents) {
+          if (event.type === "run.started") {
+            onGenerationStarted();
+          }
+          if (event.type === "run.failed") onGenerationError(event.error.trim() || "生成失败，请重试。");
+          if (event.type === "run.incomplete" || event.type === "run.blocked") onGenerationError(event.reason.trim() || "生成失败，请重试。");
+          if (event.type === "compact.started") onCompactionStarted?.(event.runId);
+          if (event.type === "compact.failed") onCompactionFailed?.(event.error, event.cancelled, event.runId);
+        }
+      }
+    };
+    replaySelectedEvents.current = () => flushSelectedEvents([]);
+
     const flushEvents = (batch: DesktopAgentEventEnvelope[]): void => {
       setSidebarSessions((current) => applyUpdatesToSidebarSessions(current, batch));
       const activeProjectId = activeProjectIdRef.current;
@@ -148,83 +231,9 @@ export function useDesktopEventBridge({
         setWorkspace((current) => current && current.project.id === activeProjectId
           ? applyUpdatesToWorkspace(current, projectBatch)
           : current);
-        const currentSessionId = selectedSessionIdRef.current;
-        const currentEvents: AgentHostEvent[] = [];
-        // 头部事件可能先于会话选中到达（草稿首发时 message.user / run.started 先于 receipt）：
-        // 未命中当前会话的事件按会话暂存，不能丢——historicalPrefix 依赖这些锚点截断历史。
-        // 会话选中后，文档还是空占位时原序回放缓冲；文档已带该会话内容（openSession 的
-        // 主进程桶是超集）则整体作废，避免同一批事件被折叠两次。
-        for (const envelope of projectBatch) {
-          const event = envelope.event;
-          if (event === undefined) continue;
-          if (currentSessionId !== undefined && event.sessionId === currentSessionId) currentEvents.push(event);
-          else if (event.sessionId !== undefined) pendingEvents.hold(event.sessionId, envelope);
-        }
-        if (currentSessionId) {
-          const doc = documentRef.current;
-          if (doc?.session.id === currentSessionId && (doc.events.length > 0 || doc.liveEvents.length > 0)) {
-            pendingEvents.take(currentSessionId, true);
-          } else if (doc?.session.id === currentSessionId && doc.events.length === 0 && doc.liveEvents.length === 0) {
-            const drained = pendingEvents.take(currentSessionId)
-              .map((envelope) => envelope.event)
-              .filter((event): event is AgentHostEvent => event !== undefined);
-            currentEvents.unshift(...drained);
-          }
-          // recipe.ready / skill_extraction.updated 是提示通知而非对话内容：
-          // 不进消息时间线，分别驱动聊天内卡片。
-          const recipeNotices = currentEvents.filter((event) => event.type === "recipe.ready");
-          if (recipeNotices.length) {
-            setRecipeNotices((current) => {
-              const seen = new Set(current.map((notice) => notice.id));
-              const fresh = recipeNotices
-                .filter((event) => !seen.has(event.recipe.id))
-                .map((event) => ({ ...event.recipe, sessionId: currentSessionId }));
-              return fresh.length ? [...current, ...fresh] : current;
-            });
-          }
-          for (const event of currentEvents) {
-            if (event.type === "run.started") setSkillExtraction(undefined);
-            if (event.type === "skill_extraction.updated") {
-              if (event.stage === "analyzing") continue;
-              if (event.stage === "skipped") {
-                setSkillExtraction((current) => current?.sessionId === event.sessionId && current.runId === event.runId
-                  ? undefined : current);
-                continue;
-              }
-              setSkillExtraction({
-                sessionId: currentSessionId,
-                runId: event.runId,
-                stage: event.stage,
-                skillName: event.skillName,
-                skillDescription: event.skillDescription,
-                updated: event.updated
-              });
-            }
-          }
-          const timelineSource = recipeNotices.length || currentEvents.some((event) => event.type === "skill_extraction.updated")
-            ? currentEvents.filter((event) => event.type !== "recipe.ready" && event.type !== "skill_extraction.updated")
-            : currentEvents;
-          const timelineEvents = liveTimelineEvents(timelineSource);
-          if (timelineEvents.length) {
-            setDocument((current) => current?.session.id === currentSessionId
-              ? { ...current, liveEvents: appendLiveTimelineEvents(current.liveEvents, timelineEvents) }
-              : current);
-          }
-          const contextEvents = currentEvents.filter(hasContextStatus);
-          const latestContext = contextEvents.at(-1);
-          if (latestContext) setContextBudget(latestContext.context.budget);
-          // 按事件顺序更新瞬态提示，确保同一批中后开始的运行清掉前一轮失败。
-          for (const event of currentEvents) {
-            if (event.type === "run.started") {
-              onGenerationStarted();
-            }
-            if (event.type === "run.failed") onGenerationError(event.error.trim() || "生成失败，请重试。");
-            if (event.type === "run.incomplete" || event.type === "run.blocked") onGenerationError(event.reason.trim() || "生成失败，请重试。");
-            if (event.type === "compact.started") onCompactionStarted?.(event.runId);
-            if (event.type === "compact.failed") onCompactionFailed?.(event.error, event.cancelled, event.runId);
-          }
-        }
       }
+
+      flushSelectedEvents(projectBatch);
 
       const completedSessions = new Map<string, { projectId: string; sessionId: string }>();
       for (const envelope of batch) {
@@ -240,12 +249,16 @@ export function useDesktopEventBridge({
     const unsubscribe = window.biny.onAgentEvent(batcher.push);
     return () => {
       active = false;
+      replaySelectedEvents.current = undefined;
       unsubscribe();
       batcher.dispose();
       for (const timer of refreshTimers.values()) clearTimeout(timer);
       refreshTimers.clear();
     };
   }, [activeProjectIdRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, onGenerationError, onGenerationStarted, onCompactionStarted, onCompactionFailed, onRuntimeProjectionChanged]);
+
+  // 首发回执可能晚于整轮事件；文档就绪就回放，不依赖下一条 Host 通知。
+  useEffect(() => { replaySelectedEvents.current?.(); });
 
   useEffect(() => {
     if (!pendingRefresh) return;

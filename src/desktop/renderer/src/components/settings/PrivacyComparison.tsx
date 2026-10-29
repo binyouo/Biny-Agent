@@ -68,7 +68,7 @@ function ChangedGroup({ group, mode }: { group: DesktopMaskRecord["preview"][num
       {mode !== "masked" ? <div><pre>{highlighted(shown.original, shown.segments, true)}</pre></div> : null}
       {mode !== "original" ? <div><pre>{highlighted(shown.masked, shown.segments, false)}</pre></div> : null}
     </div>
-    {long ? <button type="button" className="settings-text-action" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : "显示全部"}</button> : null}
+    {long ? <button type="button" className="settings-action settings-text-action" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : "显示全部"}</button> : null}
     {group.truncated ? <p className="privacy-note">此字段超出保留预算，内容不完整。</p> : null}
   </article>;
 }
@@ -87,7 +87,7 @@ export function PrivacyComparison({ groups, truncated = false }: { groups: Deskt
   // 整条请求没有替换时，默认展开正文，直接可读；有替换时保持折叠，只突出改动。
   const anyChanged = groups.some((group) => group.original !== group.masked);
   return <div className="privacy-detail">
-    <div className="privacy-toolbar"><div className="privacy-content-title"><strong>请求内容</strong><span className="privacy-content-chip">{anyChanged ? "只显示有改动的部分" : "本次未替换，原样发送"}</span></div><div className="privacy-modes" role="group" aria-label="内容视图">
+    <div className="privacy-toolbar"><div className="privacy-content-title"><strong>请求内容</strong><span className="privacy-content-chip">{anyChanged ? "只显示有改动的部分" : "本次未替换，原样发送"}</span></div><div className="settings-choice-tabs privacy-modes" role="group" aria-label="内容视图">
       {([["original", "原文"], ["masked", "厂商看到的样子"], ["compare", "对照"]] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={mode === value} onClick={() => setMode(value)}>{label}</button>)}
     </div></div>
     {mode === "compare" ? <div className="privacy-comparison-labels"><span>这台电脑上的</span><span>厂商看到的样子</span></div> : null}

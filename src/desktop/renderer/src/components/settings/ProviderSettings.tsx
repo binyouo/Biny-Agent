@@ -940,11 +940,11 @@ export function ProviderSettings({
   return (
     <div className="provider-settings">
       <header className="provider-settings-toolbar">
-        <label className="provider-list-search">
+        <label className="settings-search-field provider-list-search">
           <Icon name="search" size={14} />
-          <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索服务商" value={query} />
+          <input className="settings-field" onChange={(event) => setQuery(event.target.value)} placeholder="搜索服务商" value={query} />
         </label>
-        <button className="settings-primary-button" onClick={openCreateDialog} type="button"><Icon name="add" size={14} />添加自定义服务商</button>
+        <button className="settings-action settings-primary-button" onClick={openCreateDialog} type="button"><Icon name="add" size={14} />添加自定义服务商</button>
       </header>
       <aside aria-label="服务商列表" className="provider-list-pane">
         <div className="provider-list-rows" role="tablist">
@@ -1099,7 +1099,7 @@ export function ProviderSettings({
             <div className="provider-enable-card">
               <strong>启用 {catalog.label}</strong>
               <p>{catalog.requiresApiKey ? "正式使用前需要在下方粘贴 API Key。" : "该服务无需密钥。"}</p>
-              <button className="settings-primary-button" disabled={saving} onClick={() => void enableProvider(catalog)} type="button">
+              <button className="settings-action settings-primary-button" disabled={saving} onClick={() => void enableProvider(catalog)} type="button">
                 {saving ? "启用中…" : "启用服务商"}
               </button>
               {apiKeyUrl ? (
@@ -1253,11 +1253,11 @@ function LoginProviderPanel({
         {authenticated ? (
           <>
             <p>{oauthExpiryHint(connection?.oauthExpiresAt)}</p>
-            <button className="ghost-button" onClick={onRelogin} type="button">重新登录</button>
+            <button className="settings-action settings-secondary-button ghost-button" onClick={onRelogin} type="button">重新登录</button>
           </>
         ) : !waiting ? (
           <>
-            <button className="settings-primary-button" onClick={onStart} type="button">登录 {catalog.label}</button>
+            <button className="settings-action settings-primary-button" onClick={onStart} type="button">登录 {catalog.label}</button>
           </>
         ) : (
           <p>{usesPasteCode ? "请在浏览器完成登录后粘贴授权码。" : stage === "submitted" ? "已收到浏览器回调，正在自动验证账号。" : "请在弹出的浏览器窗口完成登录，浏览器会自动返回此应用。"}</p>
@@ -1266,15 +1266,15 @@ function LoginProviderPanel({
           <div className="login-code-panel">
             <p>在 {authorizationHost} 完成登录后，会跳转到控制台显示一段授权码（含 <code>#</code> 分隔符），把它粘贴到下面：</p>
             <small>提示：你的 state 以 <code>{loginRequest?.stateHint}</code> 开头。</small>
-            <textarea
+            <textarea className="settings-field"
               autoFocus
               onChange={(event) => onAuthorizationCode(event.target.value)}
               placeholder="粘贴授权码（格式：xxx#yyy）"
               value={authorizationCode}
             />
             <div className="login-code-actions">
-              <button className="settings-primary-button" disabled={!authorizationCode.trim() || stage === "submitted"} onClick={onSubmit} type="button">提交授权码</button>
-              <button onClick={onStart} type="button">重新开始登录</button>
+              <button className="settings-action settings-primary-button" disabled={!authorizationCode.trim() || stage === "submitted"} onClick={onSubmit} type="button">提交授权码</button>
+              <button className="settings-action settings-secondary-button" onClick={onStart} type="button">重新开始登录</button>
             </div>
           </div>
         ) : null}
@@ -1421,7 +1421,7 @@ function ConnectedProviderPanel({
     <div className="provider-connection-fields">
       <div className="provider-row-item">
           <label className="provider-row-label" htmlFor={`${fieldPrefix}-base-url`}>服务地址</label>
-          <input
+          <input className="settings-field"
             id={`${fieldPrefix}-base-url`}
             onBlur={onBaseUrlBlur}
             onChange={(event) => onBaseUrlChange(event.target.value)}
@@ -1437,7 +1437,7 @@ function ConnectedProviderPanel({
         <div className="provider-row-item">
           <label className="provider-row-label" htmlFor={`${fieldPrefix}-api-format`}>API 格式</label>
           <NativeSelect
-            className="connection-select"
+            className="settings-field connection-select"
             id={`${fieldPrefix}-api-format`}
             onChange={(event) => {
               const next = event.target.value as ConnectionApiFormat;
@@ -1512,7 +1512,7 @@ function ConnectedProviderPanel({
             </div>
             {status ? <span className={`status-pill is-${status.tone}`}>{status.label}</span> : null}
           </div>
-          <button className="ghost-button" onClick={onRelogin} type="button">重新登录</button>
+          <button className="settings-action settings-secondary-button ghost-button" onClick={onRelogin} type="button">重新登录</button>
         </div>
       ) : (
         <div className="provider-rows">
@@ -1538,7 +1538,7 @@ function ConnectedProviderPanel({
               ) : null}
             </div>
             <div className="secret-input-row">
-              <input
+              <input className="settings-field"
                 autoComplete="off"
                 id={`${fieldPrefix}-api-key`}
                 disabled={keyLoading}
@@ -1603,7 +1603,7 @@ function ConnectedProviderPanel({
             <strong>删除连接</strong>
             <span>删除此连接的全部模型与本地凭据引用，无法撤销。</span>
           </div>
-          <button className="danger-button" disabled={saving} onClick={onDeleteConnection} type="button">
+          <button className="settings-action settings-danger-button danger-button" disabled={saving} onClick={onDeleteConnection} type="button">
             删除
           </button>
         </section>
@@ -1660,7 +1660,7 @@ function TestConnectionButton({
       <Tooltip delay={150} content={disabledReason ?? (target ? "测试模型请求" : "先获取或添加模型，再测试模型请求")}>
         <button
           aria-label="测试连接"
-          className={`provider-test-button provider-connection-test${testing ? " is-testing" : ""}`}
+          className={`settings-action settings-secondary-button provider-test-button provider-connection-test${testing ? " is-testing" : ""}`}
           disabled={Boolean(disabledReason) || testing || !target || !testConfiguration(target)}
           onClick={() => target && void onTest(target)}
           type="button"
@@ -1681,7 +1681,7 @@ function TestConnectionButton({
         <button
           aria-expanded={open}
           aria-label="测试连接"
-          className={`provider-test-button provider-connection-test${testing ? " is-testing" : ""}`}
+          className={`settings-action settings-secondary-button provider-test-button provider-connection-test${testing ? " is-testing" : ""}`}
           disabled={testing || Boolean(disabledReason)}
           onClick={() => onOpen(!open)}
           type="button"
@@ -1696,7 +1696,7 @@ function TestConnectionButton({
           <FluidHoverHighlight hover={testMenuHover} className="has-row-radius" />
           <div className="provider-test-search">
             <Icon name="search" size={12} />
-            <input
+            <input className="settings-field"
               autoFocus
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeMenu(); } }}
@@ -1794,14 +1794,14 @@ function ModelsSection({
       <CatalogFeedback />
       <div className="provider-models-head">
         <div className="provider-models-heading"><h4>模型</h4><span className="provider-model-count">{query.trim() ? `${String(models.length)} 个结果` : `${String(models.length)} 个 · 已选择 ${String(enabledChoiceByModel.size)} 个`}</span></div>
-        <button className="ghost-button" disabled={fetchingCatalog} onClick={onRefreshCatalog} type="button" aria-label="获取模型">
+        <button className="settings-action settings-secondary-button ghost-button" disabled={fetchingCatalog} onClick={onRefreshCatalog} type="button" aria-label="获取模型">
           <Icon name="refresh" size={13} />{fetchingCatalog ? "获取中…" : "获取"}
         </button>
       </div>
       {models.length > 0 || query.trim() ? (
         <label className="provider-model-search">
           <Icon name="search" size={13} />
-          <input aria-label="搜索模型" onChange={(event) => onQuery(event.target.value)} placeholder="搜索模型…" value={query} />
+          <input className="settings-field" aria-label="搜索模型" onChange={(event) => onQuery(event.target.value)} placeholder="搜索模型…" value={query} />
         </label>
       ) : null}
       <div className="provider-model-list">
@@ -1851,13 +1851,13 @@ function ModelsSection({
                   aria-checked={enabled}
                   aria-label={`${enabled ? "停用" : "启用"} ${model.displayName}`}
                   aria-describedby={`${model.id.replace(/[^a-z0-9_-]/gi, "-")}-meta`}
-                  className={`model-toggle${enabled ? " is-on" : ""}`}
+                  className={`settings-switch model-toggle${enabled ? " is-on" : ""}`}
                   disabled={saving}
                   onClick={() => { void onToggleModel(model, !enabled); }}
                   role="switch"
                   type="button"
                 >
-                  <span className="model-toggle-thumb" />
+
                 </button>
               </div>
             </div>
@@ -1871,14 +1871,14 @@ function ModelsSection({
         ) : null}
       </div>
       <div className="provider-model-tools">
-        <button className="settings-link" type="button" disabled={adding || saving} aria-label={manualOpen ? "收起手动添加" : "手动添加模型"} aria-expanded={manualOpen} onClick={() => {
+        <button className="settings-action settings-text-action settings-link" type="button" disabled={adding || saving} aria-label={manualOpen ? "收起手动添加" : "手动添加模型"} aria-expanded={manualOpen} onClick={() => {
           focusManualRef.current = !manualOpen;
           setManualOpen(!manualOpen);
         }}><Icon name="add" size={12} />{manualOpen ? "收起手动添加" : "手动添加"}</button>
-        {models.length > 0 ? <button className="settings-link" type="button" disabled={fetchingCatalog || saving} aria-busy={saving} onClick={() => void onToggleMany(models, !allVisibleEnabled)}>{saving ? "正在保存…" : `${allVisibleEnabled ? "取消全选" : "全选"}${query.trim() ? "搜索结果" : ""}`}</button> : null}
+        {models.length > 0 ? <button className="settings-action settings-text-action settings-link" type="button" disabled={fetchingCatalog || saving} aria-busy={saving} onClick={() => void onToggleMany(models, !allVisibleEnabled)}>{saving ? "正在保存…" : `${allVisibleEnabled ? "取消全选" : "全选"}${query.trim() ? "搜索结果" : ""}`}</button> : null}
       </div>
       {manualOpen ? <div className="provider-manual-row">
-        <input
+        <input className="settings-field"
           id={manualInputId}
           ref={manualInputRef}
           disabled={adding || saving}
@@ -1888,7 +1888,7 @@ function ModelsSection({
           placeholder="模型 ID（例如 gpt-4o）"
           value={manualModelId}
         />
-        <input
+        <input className="settings-field"
           disabled={adding || saving}
           aria-label="手动添加模型显示名称"
           onChange={(event) => setManualDisplayName(event.target.value)}
@@ -1896,7 +1896,7 @@ function ModelsSection({
           placeholder="显示名称（可选）"
           value={manualDisplayName}
         />
-        <button className="ghost-button" disabled={adding || saving || !manualModelId.trim()} onClick={() => void submitManual()} type="button">
+        <button className="settings-action settings-secondary-button ghost-button" disabled={adding || saving || !manualModelId.trim()} onClick={() => void submitManual()} type="button">
           <Icon name="add" size={13} />
           {adding ? "添加中…" : "添加"}
         </button>
@@ -1986,7 +1986,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
           <div className="provider-rows">
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-name">名称</label>
-              <input
+              <input className="settings-field"
                 autoFocus
                 disabled={creating}
                 id="custom-provider-create-name"
@@ -2002,7 +2002,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
             </div>
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-url">服务地址</label>
-              <input
+              <input className="settings-field"
                 disabled={creating}
                 id="custom-provider-create-url"
                 onChange={(event) => setBaseUrl(event.target.value)}
@@ -2016,7 +2016,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-key">API Key（可选）</label>
               <div className="secret-input-row">
-                <input
+                <input className="settings-field"
                   autoComplete="off"
                   disabled={creating}
                   id="custom-provider-create-key"
@@ -2030,7 +2030,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
             </div>
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-format">API 格式</label>
-              <NativeSelect disabled={creating} className="connection-select" id="custom-provider-create-format" onChange={(event) => setFormat(event.target.value as ApiFormatId)} value={format}>
+              <NativeSelect disabled={creating} className="settings-field connection-select" id="custom-provider-create-format" onChange={(event) => setFormat(event.target.value as ApiFormatId)} value={format}>
                 {formatOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
               </NativeSelect>
               <div className="provider-row-hint">{apiFormatOption(format).description}</div>
@@ -2040,8 +2040,8 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
         </div>
 
         <footer>
-          <button className="ghost-button" disabled={creating} onClick={onCancel} type="button">取消</button>
-          <button className="settings-primary-button" disabled={!canSubmit} type="submit">{creating ? "添加中…" : "添加"}</button>
+          <button className="settings-action settings-secondary-button ghost-button" disabled={creating} onClick={onCancel} type="button">取消</button>
+          <button className="settings-action settings-primary-button" disabled={!canSubmit} type="submit">{creating ? "添加中…" : "添加"}</button>
         </footer>
       </form>
     </SettingsDetailLayer>
@@ -2216,7 +2216,7 @@ function ModelOptionsDialog({
             <div className="provider-cap-grid">
               <div className="provider-cap-card">
                 <label className="provider-cap-label" htmlFor="model-vision"><Icon name="eye" size={13} />图片输入</label>
-                <NativeSelect disabled={saving} aria-label="图片输入" id="model-vision" onChange={(event) => setVision(event.target.value as typeof vision)} value={vision}>
+                <NativeSelect className="settings-field" disabled={saving} aria-label="图片输入" id="model-vision" onChange={(event) => setVision(event.target.value as typeof vision)} value={vision}>
                   <option value="auto">自动</option>
                   <option value="enabled">启用</option>
                   <option value="disabled">禁用</option>
@@ -2245,7 +2245,7 @@ function ModelOptionsDialog({
                 <textarea
                   aria-label="自定义请求头（JSON）"
                   disabled={saving}
-                  className="provider-json-editor"
+                  className="settings-field provider-json-editor"
                   onChange={(event) => { setHeadersText(event.target.value); setHeadersError(undefined); }}
                   placeholder={'{\n  "X-Custom-Header": "value"\n}'}
                   rows={5}
@@ -2262,7 +2262,7 @@ function ModelOptionsDialog({
         <footer>
           {hasOverrides ? (
             <button
-              className="text-button provider-reset-button"
+              className="settings-action settings-text-action text-button provider-reset-button"
               disabled={saving}
               onClick={(event) => {
                 resetToDefault();
@@ -2272,8 +2272,8 @@ function ModelOptionsDialog({
               type="button"
             >恢复推荐配置</button>
           ) : null}
-          <button className="ghost-button" disabled={saving} onClick={onClose} type="button">取消</button>
-          <button className="settings-primary-button" disabled={saving} type="submit">{saving ? "保存中…" : "保存"}</button>
+          <button className="settings-action settings-secondary-button ghost-button" disabled={saving} onClick={onClose} type="button">取消</button>
+          <button className="settings-action settings-primary-button" disabled={saving} type="submit">{saving ? "保存中…" : "保存"}</button>
         </footer>
       </form>
     </SettingsDetailLayer>
@@ -2297,13 +2297,13 @@ function CapabilityOption({ disabled, icon, label, onChange, value }: {
       <button
         aria-checked={value}
         aria-label={label}
-        className={`model-toggle${value ? " is-on" : ""}`}
+        className={`settings-switch model-toggle${value ? " is-on" : ""}`}
         disabled={disabled}
         onClick={() => onChange(!value)}
         role="switch"
         type="button"
       >
-        <span className="model-toggle-thumb" />
+
       </button>
     </div>
   );
@@ -2387,7 +2387,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, di
         <div className="provider-cap-fields">
           <label>
             <span>上下文容量</span>
-            <input
+            <input className="settings-field"
               disabled={disabled}
               min={4096}
               onChange={(event) => updateField("contextWindow", event.target.value)}
@@ -2399,7 +2399,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, di
           </label>
           <label>
             <span>单次回复上限</span>
-            <input
+            <input className="settings-field"
               disabled={disabled}
               min={1}
               onChange={(event) => updateField("maxOutputTokens", event.target.value)}
@@ -2411,7 +2411,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, di
           </label>
           <label>
             <span>单次输入上限</span>
-            <input
+            <input className="settings-field"
               disabled={disabled}
               min={2048}
               onChange={(event) => updateField("maxInputTokens", event.target.value)}
@@ -2428,7 +2428,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, di
           <h5>请求格式</h5>
           <p>连接当前使用 {apiFormatOption(apiFormat).label}，通常保持跟随即可。</p>
         </div>
-        <NativeSelect disabled={disabled} aria-label="当前模型的请求格式" onChange={(event) => onApiFormat(event.target.value as ApiFormatId | "provider_default")} value={formatOverride}>
+        <NativeSelect className="settings-field" disabled={disabled} aria-label="当前模型的请求格式" onChange={(event) => onApiFormat(event.target.value as ApiFormatId | "provider_default")} value={formatOverride}>
           <option value="provider_default">跟随连接设置</option>
           {formatOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
         </NativeSelect>
@@ -2442,7 +2442,7 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, di
           {modelProfileThinkingLevels.map(({ level, label }) => (
             <label key={level}>
               <span>{label}</span>
-              <input
+              <input className="settings-field"
                 disabled={disabled}
                 onChange={(event) => updateThinkingLevel(level, event.target.value)}
                 placeholder={automaticThinkingPlaceholder(model, level)}
@@ -2636,7 +2636,7 @@ function ProviderToggle({ group }: { group: ConnectionGroup }): React.JSX.Elemen
   };
   // 供应商状态独立保存，保存期间禁止重复切换。
   return <div className="provider-master-toggle">
-    <button type="button" role="switch" aria-checked={enabled} aria-label={enabled ? "停用整个服务商" : "启用整个服务商"} disabled={saving || !draft} className={`model-toggle${enabled ? " is-on" : ""}`} onClick={() => void toggle()}><span className="model-toggle-thumb" /></button>
+    <button type="button" role="switch" aria-checked={enabled} aria-label={enabled ? "停用整个服务商" : "启用整个服务商"} disabled={saving || !draft} className={`settings-switch model-toggle${enabled ? " is-on" : ""}`} onClick={() => void toggle()}></button>
     {error ? <small role="alert">{error}</small> : null}
   </div>;
 }

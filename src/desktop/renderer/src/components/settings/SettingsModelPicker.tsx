@@ -10,6 +10,7 @@ export function SettingsModelPicker({
   ariaLabel,
   disabled = false,
   groups,
+  inheritDetail,
   inheritLabel,
   onChange,
   placeholder,
@@ -20,6 +21,8 @@ export function SettingsModelPicker({
   ariaLabel: string;
   disabled?: boolean;
   groups: readonly SettingsModelPickerGroup[];
+  /** 仅在快照明确解析了继承结果时提供，不用全局默认模型推测当前会话。 */
+  inheritDetail?: string;
   inheritLabel?: string;
   onChange(value: string | undefined): void;
   placeholder: string;
@@ -69,12 +72,12 @@ export function SettingsModelPicker({
     const update = (): void => {
       void computePosition(anchor, panel, {
         strategy: "fixed", placement: "bottom-start",
-        middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 }), size({
+        middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 }), size({
           padding: 8,
           apply({ availableHeight, rects, elements }) {
             if (!active) return;
             Object.assign(elements.floating.style, {
-              width: `${Math.min(rects.reference.width, Math.max(0, window.innerWidth - 16))}px`,
+              width: `${Math.min(Math.max(rects.reference.width, 280), Math.max(0, window.innerWidth - 16))}px`,
               maxHeight: `${Math.max(0, availableHeight)}px`
             });
           }
@@ -161,7 +164,7 @@ export function SettingsModelPicker({
         ref={triggerRef}
         title={selected ? `${selectedGroup?.label} · ${selected.label}` : value ?? placeholder}
       >
-        <ProviderMark iconId={selectedGroup?.iconId} iconTone={selectedGroup?.iconTone ?? "model"} />
+        {selected || value !== undefined ? <ProviderMark iconId={selectedGroup?.iconId} iconTone={selectedGroup?.iconTone ?? "model"} /> : null}
         {selected ? (
           <>
             <span className="settings-model-picker-trigger-copy">
@@ -169,23 +172,27 @@ export function SettingsModelPicker({
               {selectionHint ? <small>（{selectionHint}）</small> : null}
             </span>
           </>
-        ) : <span className="settings-model-picker-placeholder">{value ?? placeholder}</span>}
-        <Icon className="settings-model-picker-chevron" name="chevron" size={15} />
+        ) : <span className="settings-model-picker-placeholder">
+          {value ?? placeholder}
+          {value === undefined && inheritDetail ? <small>{inheritDetail}</small> : null}
+        </span>}
+        <Icon className="settings-model-picker-chevron" name="chevron" size={14} />
       </button>
       {expanded && portalTarget ? createPortal(
         <div className="settings-model-picker-panel" ref={panelRef} style={{ visibility: "hidden" }}>
           <label className="settings-model-picker-search">
             <Icon name="search" size={14} />
-            <input ref={searchRef} aria-label="搜索模型或服务商" onChange={event => setQuery(event.target.value)}
-              placeholder="搜索模型…" type="search" value={query} />
+            <input className="settings-field" ref={searchRef} aria-label="搜索模型或服务商" onChange={event => setQuery(event.target.value)}
+              placeholder="搜索模型或服务商" type="search" value={query} />
           </label>
           <div className="settings-model-picker-options" id={listId} ref={listRef} role="listbox" aria-label={ariaLabel}>
             {inheritLabel ? (
               <button aria-selected={value === undefined}
                 className={`settings-model-picker-option is-inherit${value === undefined ? " is-selected" : ""}`}
                 onClick={() => choose(undefined)} role="option" type="button">
-                <span className="settings-model-picker-option-check"><Icon name={value === undefined ? "check" : "close"} size={13} /></span>
                 <span className="settings-model-picker-option-copy"><strong>{inheritLabel}</strong></span>
+                {inheritDetail ? <small className="settings-model-picker-option-trailing">{inheritDetail}</small> : null}
+                <span aria-hidden="true" className="settings-model-picker-option-check">{value === undefined ? <Icon name="check" size={14} /> : null}</span>
               </button>
             ) : null}
             {visibleGroups.map(group => (
@@ -201,9 +208,9 @@ export function SettingsModelPicker({
                       className={`settings-model-picker-option${selectedOption ? " is-selected" : ""}`}
                       disabled={option.disabled} key={option.value} onClick={() => choose(option.value)} role="option" type="button"
                       title={`${group.label} · ${option.label}${option.secondary ? ` · ${option.secondary}` : ""}${option.disabled ? " · 未配置" : ""}`}>
-                      <span className="settings-model-picker-option-check">{selectedOption ? <Icon name="check" size={13} /> : null}</span>
                       <span className="settings-model-picker-option-copy"><strong>{option.label}</strong></span>
                       {option.trailing || option.disabled ? <small className="settings-model-picker-option-trailing">{option.trailing ?? "未配置"}</small> : null}
+                      <span aria-hidden="true" className="settings-model-picker-option-check">{selectedOption ? <Icon name="check" size={14} /> : null}</span>
                     </button>
                   );
                 })}

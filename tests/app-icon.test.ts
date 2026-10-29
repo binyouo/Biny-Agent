@@ -6,7 +6,7 @@ import { JSDOM } from "jsdom";
 
 const { AppIcon } = await import("../src/desktop/renderer/src/components/AppIcon.js");
 
-test("萌宠按活动和成功回执切换，旧回执不重播，隐藏和卸载停止展示任务", async context => {
+test("萌宠按活动切换倾听与休息姿态，隐藏和卸载停止展示任务", async context => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
   const dom = new JSDOM('<div id="root"></div>', { pretendToBeVisual:true });
   const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -23,38 +23,29 @@ test("萌宠按活动和成功回执切换，旧回执不重播，隐藏和卸�
   };
   const state = () => dom.window.document.querySelector(".app-icon")?.getAttribute("data-state");
   try {
-    await render({memoryRevision:4});
-    assert.equal(state(),"idle", "挂载已有保存计数不能播放成功动画");
+    await render();
+    assert.equal(state(),"idle", "初始不展示休息姿态");
     await act(() => context.mock.timers.tick(60_000));
-    assert.equal(state(),"sleep");
+    assert.equal(state(),"sleep", "空闲计时结束后进入休息姿态");
     await act(() => dom.window.dispatchEvent(new dom.window.Event("pointerdown")));
-    assert.equal(state(),"idle");
-    await render({active:true,memoryRevision:4});
+    assert.equal(state(),"idle", "指针活动唤醒");
+    await render({active:true});
     await act(() => context.mock.timers.tick(60_000));
     assert.equal(state(),"listen", "运行中不能因空闲计时进入休息姿态");
-    await render({active:false,memoryRevision:5});
-    assert.equal(state(),"remember");
-    await act(() => context.mock.timers.tick(2_100));
+    await render({active:false});
     assert.equal(state(),"idle");
-    await render({memoryRevision:5});
-    assert.equal(state(),"idle", "相同保存回执不重播");
-    await render({memoryRevision:6});
-    await render({active:true,memoryRevision:6});
-    assert.equal(state(),"listen", "新任务打断收纳，不被旧计时器覆盖");
-    await act(() => context.mock.timers.tick(2_100));
-    assert.equal(state(),"listen");
     Object.defineProperty(dom.window.document,"hidden",{configurable:true,value:true});
     await act(() => dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange")));
     assert.equal(dom.window.document.querySelector(".app-icon")?.getAttribute("data-paused"),"true");
     Object.defineProperty(dom.window.document,"hidden",{configurable:true,value:false});
     media.matches=true;
     await act(() => { dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange")); mediaChanged?.(); });
-    await render({memoryRevision:7});
+    await render();
     await act(() => context.mock.timers.tick(60_000));
-    assert.equal(state(),"idle", "减少动态效果时不启动睡眠或保存计时");
+    assert.equal(state(),"idle", "减少动态效果时不启动睡眠计时");
     media.matches=false;
     await act(() => mediaChanged?.());
-    assert.equal(state(),"idle", "恢复动画不补播隐藏期间的保存回执");
+    assert.equal(state(),"idle");
     await act(() => root.unmount());
     assert.equal(mediaChanged,undefined);
     await act(() => context.mock.timers.tick(60_000));

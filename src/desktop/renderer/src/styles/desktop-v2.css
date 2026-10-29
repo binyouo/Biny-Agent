@@ -791,206 +791,6 @@ select option:disabled {
   border-radius: var(--radius-element);
 }
 
-/* 紧凑模型选择器：只保留模型名称列表，其他信息由独立菜单承担。 */
-.model-menu {
-  width: 220px;
-  max-width: calc(100vw - 24px);
-  padding: 0;
-  overflow: visible;
-}
-
-.model-menu-main {
-  padding: 6px;
-}
-
-.thinking-level-menu {
-  width: 150px;
-}
-
-.thinking-level-menu .menu-option {
-  display: flex;
-  min-height: 34px;
-  align-items: center;
-  padding: 0 8px;
-}
-
-.model-menu .model-search {
-  height: 36px;
-  gap: 8px;
-  margin: 0 0 6px;
-  padding-inline: 12px;
-  border-color: var(--border-strong);
-  border-radius: 18px;
-  color: var(--text-tertiary);
-}
-
-.model-menu .model-search:focus-within {
-  color: var(--text-secondary);
-  border-color: color-mix(in srgb, var(--text-secondary) 54%, var(--border));
-}
-
-.model-menu .model-options-scroll {
-  max-height: min(300px, 42vh);
-}
-
-.model-menu .model-group + .model-group {
-  margin-top: 4px;
-  padding-top: 4px;
-}
-
-.model-menu .model-group-heading {
-  height: 24px;
-  padding-inline: 12px;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.model-menu .model-option {
-  position: relative;
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 0 12px;
-  border-radius: 8px;
-}
-
-.model-option-leading,
-.model-option-copy,
-.model-option-check,
-.model-option-brand {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.model-option-leading {
-  flex: 1;
-  gap: 9px;
-}
-
-.model-option-brand {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  justify-content: center;
-  color: var(--text-secondary);
-}
-
-.model-option-brand .provider-logo {
-  width: 15px;
-  height: 15px;
-}
-
-.model-option-copy {
-  flex: 1;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.model-menu .model-option-copy strong {
-  min-width: 0;
-  overflow: hidden;
-  font-size: calc(12.5px * var(--font-scale));
-  font-weight: 540;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-menu .model-option-copy small {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
-  font-size: calc(11px * var(--font-scale));
-  white-space: nowrap;
-}
-
-.model-option-check {
-  width: 16px;
-  flex: 0 0 16px;
-  justify-content: center;
-  color: var(--text);
-}
-
-.model-menu-footer {
-  margin: 6px 4px 0;
-  padding-top: 6px;
-  border-top: 1px solid var(--border);
-}
-
-.model-menu-footer button {
-  display: flex;
-  width: 100%;
-  height: 34px;
-  align-items: center;
-  gap: 8px;
-  padding-inline: 8px;
-  border-radius: 8px;
-  color: var(--text-secondary);
-  font-size: calc(11.5px * var(--font-scale));
-  text-align: left;
-}
-
-.model-menu-footer button:hover {
-  color: var(--text);
-  background: var(--surface-hover);
-}
-
-.model-detail-panel {
-  position: absolute;
-  right: calc(100% + 8px);
-  bottom: 0;
-  display: flex;
-  width: 248px;
-  max-height: min(430px, 64vh);
-  flex-direction: column;
-  gap: 6px;
-  overflow: auto;
-  padding: 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  background: var(--surface-raised);
-  box-shadow: 0 16px 40px var(--shadow);
-}
-
-.model-detail-panel > header {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 5px 8px 7px;
-}
-
-.model-detail-panel > header strong {
-  overflow: hidden;
-  font-size: calc(12.5px * var(--font-scale));
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-detail-panel > header span {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--text-tertiary);
-  font-size: calc(10.5px * var(--font-scale));
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.model-detail-section {
-  padding-block: 6px;
-  border-block: 1px solid var(--border);
-}
-
-.model-detail-label {
-  padding: 2px 8px 5px;
-  color: var(--text-tertiary);
-  font-size: calc(10px * var(--font-scale));
-  font-weight: 600;
-}
-
 .model-effort-options {
   display: flex;
   flex-direction: column;
@@ -1106,11 +906,11 @@ select option:disabled {
 }
 
 .model-picker-submenu {
+  display: flex;
   max-height: min(400px, calc(100vh - 16px));
-  overflow: hidden auto;
-  overscroll-behavior: contain;
+  flex-direction: column;
+  overflow: hidden;
   padding: 6px;
-  scrollbar-gutter: stable;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   background: var(--surface-raised);
@@ -1124,15 +924,47 @@ select option:disabled {
   font-weight: 600;
 }
 
+/* 搜索框与设置弹层里的搜索同一材质：淡填充、无描边，聚焦时图标变正文色。 */
 .model-picker-search {
-  height: 32px;
-  margin: 0 2px 7px;
+  display: flex;
+  min-height: 32px;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  margin: 0 2px 6px;
   padding-inline: 9px;
-  border-radius: 8px;
+  border-radius: 7px;
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.model-picker-search:focus-within {
+  color: var(--text-secondary);
 }
 
 .model-picker-search input {
-  font-size: calc(11px * var(--font-scale));
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  outline: 0;
+  font-family: var(--font-sans);
+  font-size: calc(12px * var(--font-scale));
+}
+
+.model-picker-search input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* 选项独立滚动：高亮量测坐标不被搜索框和分组头位移干扰。 */
+.model-picker-submenu-options {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .model-picker-submenu-group + .model-picker-submenu-group {
@@ -1152,6 +984,22 @@ select option:disabled {
   font-weight: 600;
 }
 
+/* 组头左侧：服务商品牌图标 + 名称；品牌 svg 跟随文本色。 */
+.model-picker-group-brand {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.model-picker-group-brand .provider-logo,
+.model-picker-group-brand svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
 .model-picker-group-heading small {
   overflow: hidden;
   color: var(--text-tertiary);
@@ -1163,8 +1011,10 @@ select option:disabled {
 
 .model-picker-option-label {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
+  gap: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1186,6 +1036,45 @@ select option:disabled {
   white-space: nowrap;
 }
 
+/* 行内徽标：能力图标 + 上下文容量，与设置页徽标同一灰阶。 */
+.model-picker-option-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-tertiary);
+}
+
+.model-picker-option-badges svg {
+  width: 11px;
+  height: 11px;
+}
+
+.model-picker-option-badges small {
+  font-size: calc(9px * var(--font-scale));
+  line-height: 1;
+}
+
+/* 选中标记固定在行首列，未选中时占位保持名称对齐。 */
+.model-picker-option-check {
+  display: inline-flex;
+  width: 14px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+}
+
+/* 右侧别名：等宽弱化，与 Alma 的 alias 列对齐。 */
+.model-picker-option-alias {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: calc(9.5px * var(--font-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .model-picker-submenu-empty {
   padding: 20px 9px;
   color: var(--text-tertiary);
@@ -1199,9 +1088,8 @@ select option:disabled {
   width: 100%;
   min-height: 34px;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 9px;
+  gap: 7px;
+  padding: 3px 9px;
   border-radius: 7px;
   color: var(--text-secondary);
   font-size: calc(13px * var(--font-scale));
@@ -1218,7 +1106,7 @@ select option:disabled {
   color: var(--text);
 }
 
-.model-picker-submenu-option svg {
+.model-picker-submenu-option .model-picker-option-check svg {
   flex: 0 0 auto;
   color: var(--text);
 }
@@ -1316,8 +1204,6 @@ select option:disabled {
   white-space: normal;
   overflow-wrap: anywhere;
 }
-
-/* ===================== 设置中心 ===================== */
 /* 原生 Dialog 保持焦点隔离与 Escape 行为；尺寸只由外层决定，内部双栏共用一张面板。 */
 .desktop-settings-dialog {
   height: min(740px, calc(100dvh - 48px));
@@ -1344,43 +1230,6 @@ select option:disabled {
   -webkit-backdrop-filter: none;
 }
 
-/* 布局基准：14px 根字号；放在 Dialog 上，让关闭确认层也继承相同的控件参数。 */
-.desktop-settings-dialog {
-  --st-rem: calc(14px * var(--font-scale, 1));
-  --st-content-inset: calc(16px * var(--font-scale, 1));
-  --st-card-padding: calc(20px * var(--font-scale, 1));
-  --st-card-gap: calc(0.75 * var(--st-rem));
-  --st-control-h: max(var(--biny-control-height), calc(32px * var(--font-scale, 1)));
-  --st-control-h-sm: calc(2 * var(--st-rem));
-  --st-control-px: calc(0.9 * var(--st-rem));
-  --st-control-py: calc(0.4 * var(--st-rem));
-  --st-control-gap: calc(8px * var(--font-scale, 1));
-  --st-stack-gap: calc(24px * var(--font-scale, 1));
-  --st-row-padding: calc(12px * var(--font-scale, 1)) var(--st-content-inset);
-  --st-page-padding: clamp(16px, 3vw, 28px);
-  --st-radius: var(--biny-radius-card);
-  --st-button-height: var(--st-control-h);
-  --st-button-font-size: calc(13px * var(--font-scale, 1));
-  --st-button-padding: calc(12px * var(--font-scale, 1));
-  --st-button-radius: var(--biny-radius-control);
-  /* 实底只强调主要操作，次要操作用细边框，辅助操作使用透明底。 */
-  --st-primary: var(--accent);
-  --st-on-primary: var(--accent-foreground);
-  --st-primary-hover: var(--accent-hover);
-  --st-primary-active: color-mix(in srgb, var(--st-primary) 82%, var(--surface));
-  --st-ring: color-mix(in srgb, var(--accent) 25%, transparent);
-  --st-ring-weak: color-mix(in srgb, var(--accent) 22%, transparent);
-  --st-action-border: var(--border-strong);
-  --st-action-border-hover: var(--text-tertiary);
-  --st-action-bg: var(--surface-raised);
-  --st-muted-foreground: var(--text-secondary);
-  --st-card: var(--surface-raised);
-  --st-sidebar-bg: var(--sidebar);
-  --st-sidebar-border: var(--border);
-  --st-ease: cubic-bezier(0.4, 0, 0.2, 1);
-  --st-scrollbar-thumb: color-mix(in srgb, var(--text) 30%, transparent);
-}
-
 .desktop-settings-dialog .settings-modal {
   position: relative;
   display: flex;
@@ -1399,22 +1248,23 @@ select option:disabled {
   line-height: 1.4;
 }
 
-/* 设置导航以冷灰底和细分隔线区分内容区。 */
+/* 设置导航贴边铺满，只用一条细线和内容区分开。 */
 .desktop-settings-dialog .settings-modal .settings-tabs {
   position: relative;
   z-index: 11;
   display: flex;
-  width: 208px;
-  min-width: 208px;
-  max-width: 208px;
-  height: calc(100% - 16px);
-  flex: 0 0 208px;
+  width: 212px;
+  min-width: 212px;
+  max-width: 212px;
+  height: 100%;
+  flex: 0 0 212px;
   flex-direction: column;
   overflow: hidden;
-  margin: 8px 0 8px 8px;
+  margin: 0;
   padding: 0;
-  border: 1px solid var(--st-sidebar-border);
-  border-radius: var(--biny-radius-card);
+  border: 0;
+  border-right: 1px solid var(--st-sidebar-border);
+  border-radius: 0;
   background: var(--st-sidebar-bg);
   box-shadow: none;
 }
@@ -1422,18 +1272,18 @@ select option:disabled {
 /* 弹窗内无需为系统红绿灯预留位置。 */
 .settings-sidebar-strip {
   display: flex;
-  min-height: 58px;
   flex: none;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 18px;
+  padding: 20px 20px 12px;
 }
 
 .settings-sidebar-strip strong {
-  color: var(--text);
-  font-size: calc(1.125 * var(--st-rem));
+  color: var(--text-secondary);
+  font-size: calc(12px * var(--font-scale, 1));
   font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 /* 导航独立滚动，短窗口与大字号下始终可以访问全部分类。 */
@@ -1444,8 +1294,8 @@ select option:disabled {
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
-  gap: 10px;
-  padding: 6px 0 14px;
+  gap: 1px;
+  padding: 2px 0 14px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
 }
@@ -1473,45 +1323,24 @@ select option:disabled {
   background: none;
 }
 
-/* 分组：小号全大写感的组标题 + 组内紧凑列表，替代 16 项平铺。 */
-.desktop-settings-dialog .settings-modal .settings-nav-group {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.desktop-settings-dialog .settings-modal .settings-nav-group-title {
-  margin: 0 0 4px;
-  padding: 0 18px 0 19px;
-  color: var(--text-tertiary);
-  font-size: calc(10.5px * var(--font-scale));
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  line-height: 1.2;
-  text-transform: none;
-  user-select: none;
-}
-
 .desktop-settings-dialog .settings-modal .settings-nav-list button {
   position: relative;
   display: flex;
   width: auto;
-  min-height: 32px;
+  min-height: calc(30px * var(--font-scale, 1));
   height: auto;
   flex: none;
   align-items: center;
-  gap: 10px;
-  /* 左右内缩 8px：命中块是圆角胶囊，不再是贴边整行。 */
-  margin: 0 8px;
-  padding: 6px 10px;
+  gap: 8px;
+  margin: 0 10px;
+  padding: 5px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--st-button-radius);
   color: var(--text-secondary);
   background: transparent;
   text-align: left;
-  font-size: calc(0.925 * var(--st-rem));
-  font-weight: 500;
+  font-size: calc(13px * var(--font-scale, 1));
+  font-weight: 450;
   letter-spacing: 0;
   line-height: 1.35;
   cursor: default;
@@ -1524,31 +1353,19 @@ select option:disabled {
 
 .desktop-settings-dialog .settings-modal .settings-nav-list button:hover {
   color: var(--text);
-  background: color-mix(in srgb, var(--text) 7%, transparent);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
 .desktop-settings-dialog .settings-modal .settings-nav-list button:active {
-  background: color-mix(in srgb, var(--text) 11%, transparent);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
 }
 
+/* 选中项用抬升的卡片面表达，和内容卡片、分段控件选中片同一材质，不另用彩色。 */
 .desktop-settings-dialog .settings-modal .settings-nav-list button.is-selected {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
-  font-weight: 600;
-}
-
-/* 选中项左侧竖条：图标垂直居中，和文字基线对齐后再画。 */
-.desktop-settings-dialog .settings-modal .settings-nav-list button.is-selected::before {
-  position: absolute;
-  left: 0;
-  width: 2.5px;
-  height: 16px;
-  margin: auto 0;
-  border-radius: 999px;
-  background: var(--accent);
-  content: "";
-  inset-block: 0;
+  color: var(--text);
+  background: var(--st-card);
+  box-shadow: 0 0 0 1px var(--border-subtle), 0 1px 2px var(--shadow);
+  font-weight: 500;
 }
 
 .desktop-settings-dialog .settings-nav-list button:focus-visible,
@@ -1557,15 +1374,16 @@ select option:disabled {
   outline-offset: 2px;
 }
 
+/* 侧栏图标容器只提供位宽；图形语义在新 SettingsNavIcon（duotone 软底 + 细节）里。 */
 .desktop-settings-dialog .settings-modal .settings-nav-icon {
   display: inline-flex;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   flex: none;
   align-items: center;
   justify-content: center;
   opacity: 0.72;
-  transition: opacity 0.15s var(--st-ease), transform 0.15s var(--st-ease);
+  transition: opacity 0.15s var(--st-ease);
 }
 
 .desktop-settings-dialog .settings-modal .settings-nav-list button:hover .settings-nav-icon,
@@ -1573,19 +1391,10 @@ select option:disabled {
   opacity: 1;
 }
 
-/* 图标在悬停时轻微前推，暗示这是可点的导航项。 */
-.desktop-settings-dialog .settings-modal .settings-nav-list button:hover .settings-nav-icon {
-  transform: translateX(0.5px);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .desktop-settings-dialog .settings-modal .settings-nav-list button,
   .desktop-settings-dialog .settings-modal .settings-nav-icon {
     transition: none;
-  }
-
-  .desktop-settings-dialog .settings-modal .settings-nav-list button:hover .settings-nav-icon {
-    transform: none;
   }
 }
 
@@ -1596,9 +1405,6 @@ select option:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-
-
 
 /* 右列：标题栏 + 滚动区 + 底栏，自身不滚动。 */
 .desktop-settings-dialog .settings-modal .settings-content {
@@ -1629,8 +1435,8 @@ select option:disabled {
   justify-content: space-between;
   gap: calc(0.5 * var(--st-rem));
   margin: 0;
-  padding: 20px var(--st-page-padding);
-  border-bottom: 1px solid var(--border);
+  padding: 18px var(--st-page-padding) 10px;
+  border-bottom: 0;
   background: var(--bg);
 }
 
@@ -1650,18 +1456,25 @@ select option:disabled {
   margin: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: calc(1.15 * var(--st-rem));
+  font-size: calc(19px * var(--font-scale, 1));
   font-weight: 600;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.settings-titlebar h2:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
 }
 
 .desktop-settings-dialog .settings-close-button {
-  width: var(--st-control-h);
-  height: var(--st-control-h);
+  width: calc(28px * var(--font-scale, 1));
+  height: calc(28px * var(--font-scale, 1));
   flex: none;
-  margin-right: 0;
+  margin-right: -4px;
   border: 0;
-  border-radius: var(--st-button-radius);
+  border-radius: var(--st-action-radius);
 }
 
 /* 内容滚动区与固定标题、底栏对齐。 */
@@ -1671,7 +1484,7 @@ select option:disabled {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 24px var(--st-page-padding);
+  padding: 10px var(--st-page-padding) 28px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -1684,7 +1497,8 @@ select option:disabled {
   padding-bottom: 0;
 }
 
-/* 底栏：border-t、px-6 py-4；左侧状态文本，右侧操作按钮。 */
+/* 底栏：比内容区高一级的台面，滚动到末尾时内容从栏下滑过；
+   左侧状态、右侧操作的 sticky save bar 是通用做法（Polaris / dub / dify 同构）。 */
 .desktop-settings-dialog .settings-modal .settings-page-footer {
   position: relative;
   display: flex;
@@ -1693,27 +1507,57 @@ select option:disabled {
   align-items: center;
   justify-content: space-between;
   gap: calc(1 * var(--st-rem));
-  padding: 16px var(--st-page-padding);
-  background: var(--bg);
-  border-top: 1px solid var(--border);
+  padding: 10px var(--st-page-padding);
+  background: var(--st-card);
+  border-top: 1px solid var(--border-subtle);
+  box-shadow: 0 -12px 24px -20px var(--shadow-heavy, var(--shadow));
+}
+
+/* 状态与说明同一行，基线对齐；内容过长时整体省略。 */
+.settings-save-feedback {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: baseline;
+  gap: calc(0.75 * var(--st-rem));
 }
 
 .settings-save-status {
   min-width: 0;
+  flex: none;
+  max-width: 100%;
   color: var(--st-muted-foreground);
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.5;
 }
+
+/* 保存状态前的小圆点：已保存为绿、待保存为琥珀、出错为红，进行中为灰。 */
+.desktop-settings-dialog .settings-page-footer .settings-save-status::before {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 0 7px 1px 0;
+  border-radius: 999px;
+  background: var(--green);
+  content: "";
+  vertical-align: middle;
+}
+
+.desktop-settings-dialog .settings-page-footer .settings-save-status:is(.is-dirty, .is-invalid)::before { background: var(--amber); }
+.desktop-settings-dialog .settings-page-footer .settings-save-status.is-recovery_required::before,
+.desktop-settings-dialog .settings-page-footer .settings-save-error ~ .settings-save-status::before { background: var(--red); }
+.desktop-settings-dialog .settings-page-footer .settings-save-status:is(.is-saving, .is-rolling_back)::before { background: var(--text-tertiary); }
+.desktop-settings-dialog .settings-page-footer .settings-save-status.is-idle::before { display: none; }
 
 .settings-footer-actions {
   display: flex;
   flex: none;
   align-items: center;
   justify-content: flex-end;
-  gap: calc(0.75 * var(--st-rem));
+  gap: calc(0.5 * var(--st-rem));
 }
 
-/* 底栏按钮：outline 变体在前，default（主色）变体殿后。 */
+/* 底栏按钮：描边次要操作在前，实底主操作殿后。 */
 .settings-page-footer button,
 .settings-confirm-actions button {
   display: inline-flex;
@@ -1721,11 +1565,11 @@ select option:disabled {
   align-items: center;
   justify-content: center;
   gap: var(--st-control-gap);
-  padding: var(--st-control-py) var(--st-control-px);
-  border: 1px solid var(--border);
-  border-radius: var(--st-radius);
+  padding: var(--st-control-py) calc(var(--st-control-px) + 0.15 * var(--st-rem));
+  border: 1px solid transparent;
+  border-radius: var(--st-action-radius);
   color: var(--text);
-  background: transparent;
+  background: var(--st-action-bg);
   box-shadow: none;
   outline: none;
   cursor: pointer;
@@ -1737,7 +1581,19 @@ select option:disabled {
 
 .settings-page-footer button:hover:not(:disabled),
 .settings-confirm-actions button:hover:not(:disabled) {
-  background: var(--surface-hover);
+  background: var(--st-action-bg-hover);
+}
+
+/* 底栏次要操作描边实底：在台面上保持可辨识的控件轮廓。 */
+.desktop-settings-dialog .settings-modal .settings-page-footer .settings-footer-actions .settings-secondary-button:not(:disabled) {
+  border-color: var(--st-footer-secondary-border);
+  color: var(--text);
+  background: var(--st-footer-secondary-bg);
+}
+
+.desktop-settings-dialog .settings-modal .settings-page-footer .settings-footer-actions .settings-secondary-button:not(:disabled):hover {
+  border-color: var(--border-strong);
+  background: var(--st-footer-secondary-bg-hover);
 }
 
 .settings-page-footer .settings-save-button,
@@ -1776,8 +1632,8 @@ select option:disabled {
   width: min(430px, 100%);
   padding: 20px;
   border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface-raised);
+  border-radius: var(--st-radius);
+  background: var(--st-card);
 }
 
 .settings-confirm-panel h3 {
@@ -1795,45 +1651,29 @@ select option:disabled {
 
 .settings-confirm-panel input {
   width: 100%;
-  height: 36px;
+  min-height: var(--st-control-h);
   margin: 0 0 16px;
-  padding: 0 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  padding: var(--st-control-py) var(--st-control-px);
+  border: 1px solid var(--st-field-border);
+  border-radius: var(--st-button-radius);
   color: var(--text);
-  background: var(--surface);
+  background: var(--st-field-bg);
 }
 
 /* 卡片内主操作沿用设置中心的控件尺寸。 */
 .desktop-settings-dialog .settings-modal .settings-primary-button {
   display: inline-flex;
-  min-height: var(--st-control-h);
   align-items: center;
   justify-content: center;
   gap: var(--st-control-gap);
-  padding: var(--st-control-py) var(--st-control-px);
-  border: 1px solid transparent;
-  border-radius: var(--st-radius);
-  color: var(--st-on-primary);
-  background: var(--st-primary);
-  box-shadow: 0 1px 2px var(--shadow);
-  font-size: calc(0.875 * var(--st-rem));
-  font-weight: 500;
-  transition: background-color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease);
-}
-
-.desktop-settings-dialog .settings-modal .settings-primary-button:hover:not(:disabled) {
-  background: var(--st-primary-hover);
 }
 
 .desktop-settings-dialog .settings-modal .settings-primary-button:disabled {
-  opacity: 0.5;
-  cursor: default;
   pointer-events: none;
 }
 
 /* 分区统一密度；模块间距与内部间距分开，避免行自身留白再叠加大段 gap。
-   相邻模块的间距由下方规则负责，卡片保留边框来区分分组。 */
+   相邻模块的间距由下方规则负责；卡片靠比页面高一层的填充面区分分组，不画描边。 */
 .desktop-settings-dialog .settings-modal .settings-sections > section:not(.settings-preference-section),
 .desktop-settings-dialog .settings-modal .settings-sections > details,
 .desktop-settings-dialog .settings-modal .settings-sections > .connection-section,
@@ -1843,7 +1683,7 @@ select option:disabled {
   gap: var(--st-card-gap);
   margin-bottom: 0;
   padding: var(--st-card-padding);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--st-radius);
   background: var(--st-card);
   box-shadow: none;
@@ -1874,8 +1714,8 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-sections > section:not(.activity-memory-group):not(.settings-preference-section) > h3 {
   margin: 0;
   color: var(--text);
-  font-size: calc(1.125 * var(--st-rem));
-  font-weight: 500;
+  font-size: calc(14px * var(--font-scale, 1));
+  font-weight: 600;
   letter-spacing: 0;
 }
 
@@ -1901,7 +1741,7 @@ select option:disabled {
   line-height: 1.5;
 }
 
-/* 卡片内输入 / 下拉：统一控件高度与 12px 圆角，焦点环 3px。 */
+/* 输入与下拉共用控件高度和细边界，焦点以边框表示。 */
 .desktop-settings-dialog .settings-modal .settings-sections input[type="text"],
 .desktop-settings-dialog .settings-modal .settings-sections input[type="number"],
 .desktop-settings-dialog .settings-modal .settings-sections input[type="search"],
@@ -1911,11 +1751,11 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-sections select {
   min-height: var(--st-control-h);
   padding: var(--st-control-py) var(--st-control-px);
-  border: 1px solid var(--border);
+  border: 1px solid var(--st-field-border);
   border-radius: var(--st-button-radius);
   color: var(--text);
-  background: transparent;
-  box-shadow: 0 1px 2px var(--shadow);
+  background: var(--st-field-bg);
+  box-shadow: none;
   font-size: calc(0.875 * var(--st-rem));
   transition: color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease);
 }
@@ -1929,6 +1769,44 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-sections select:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   outline: none;
+}
+
+/* 设置内原生下拉与模型选择器同一套外观：细线箭头、同材质浮层、对勾标出当前项。 */
+.desktop-settings-dialog select::picker-icon {
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  color: var(--text-tertiary);
+  content: "";
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / 14px no-repeat;
+  transition: rotate 0.15s var(--st-ease);
+}
+
+.desktop-settings-dialog select:open::picker-icon {
+  rotate: 180deg;
+}
+
+.desktop-settings-dialog select::picker(select) {
+  padding: 6px;
+  border: 1px solid var(--st-popover-border);
+  border-radius: var(--st-radius);
+  background: var(--st-popover);
+  box-shadow: var(--st-popover-shadow);
+}
+
+.desktop-settings-dialog select option {
+  min-block-size: calc(30px * var(--font-scale, 1));
+  padding: 5px 8px;
+  border-radius: calc(var(--st-radius) - 5px);
+}
+
+.desktop-settings-dialog select option:checked {
+  background: transparent;
+  font-weight: 550;
+}
+
+.desktop-settings-dialog select option:is(:hover, :focus):not(:disabled) {
+  background: var(--st-menu-hover);
 }
 
 /* 统一布尔开关行：左侧标题与说明、右侧滑动开关。 */
@@ -1971,53 +1849,6 @@ select option:disabled {
   line-height: 1.4;
 }
 
-/* 开启态使用主题强调色与配对前景色，深色模式仍能区分轨道和圆点。 */
-.desktop-settings-dialog .settings-modal .settings-switch {
-  appearance: none;
-  position: relative;
-  display: block;
-  box-sizing: border-box;
-  width: calc(36px * var(--font-scale, 1));
-  height: calc(22px * var(--font-scale, 1));
-  flex: none;
-  margin: 0;
-  padding: 0;
-  border: calc(2px * var(--font-scale, 1)) solid transparent;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 22%, transparent);
-  cursor: pointer;
-  transition: background-color 0.15s var(--st-ease);
-}
-
-.desktop-settings-dialog .settings-modal .settings-switch:checked {
-  background: var(--accent);
-}
-
-.desktop-settings-dialog .settings-modal .settings-switch:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-
-.desktop-settings-dialog .settings-modal .settings-switch:disabled {
-  cursor: default;
-}
-
-.desktop-settings-dialog .settings-modal .settings-switch::before {
-  content: "";
-  position: absolute;
-  display: block;
-  width: calc(18px * var(--font-scale, 1));
-  height: calc(18px * var(--font-scale, 1));
-  border-radius: 999px;
-  background: var(--switch-thumb);
-  box-shadow: 0 1px 2px var(--shadow-soft);
-  transition: transform 0.15s var(--st-ease);
-}
-
-.desktop-settings-dialog .settings-modal .settings-switch:checked::before {
-  transform: translateX(calc(14px * var(--font-scale, 1)));
-}
-
 /* 动效降级：系统要求减少动态效果时关闭设置内的过渡。 */
 @media (prefers-reduced-motion: reduce) {
   .desktop-settings-dialog .settings-modal .settings-nav-list button,
@@ -2032,31 +1863,6 @@ select option:disabled {
   .desktop-settings-dialog .settings-modal .settings-sections select {
     transition: none;
   }
-}
-
-.settings-inline-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text-secondary);
-  background: var(--surface);
-  font-size: calc(12px * var(--font-scale));
-  line-height: 1.5;
-}
-
-.settings-inline-notice strong {
-  flex: none;
-  color: var(--text);
-}
-
-.settings-inline-notice.is-warning {
-  border-color: color-mix(in srgb, var(--amber) 36%, var(--border));
-  color: var(--amber-text);
-  background: var(--amber-bg);
 }
 
 /* 标签与控件在空间足够时同行；只有整组放不下时才换行，不挤压成竖排。 */
@@ -2089,203 +1895,15 @@ select option:disabled {
 /* 行已有高度、内边距和分隔线；权重须与上方分区规则一致，避免 gap 被覆盖。 */
 .desktop-settings-dialog .settings-modal .appearance-card { gap: 0; }
 
-.desktop-settings-dialog .capability-default-field {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 20px;
-}
-
-.desktop-settings-dialog .capability-default-grid { margin-top: 0; }
-.desktop-settings-dialog .capability-default-option-title { white-space: nowrap; }
-
 .desktop-settings-dialog .activity-permission-row { flex-wrap: wrap; }
 .desktop-settings-dialog .activity-permission-copy { flex: 1 1 220px; }
 .desktop-settings-dialog .activity-memory-heading-row { flex-wrap: wrap; gap: 8px 16px; }
 .desktop-settings-dialog .activity-memory-heading-row span { white-space: normal; }
 
-.appearance-settings .appearance-card {
-  margin: 0;
-  padding: 18px 20px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-}
-
-/* 单库记忆 v3：配置先按功能分组，维护与记忆库保持独立。 */
-.memory-mode-nested {
-  margin: 2px 0 0 7px;
-  padding-left: 20px;
-  border-left: 1px solid var(--border);
-}
-
-.memory-mode-nested .memory-slider-field {
-  margin-top: 2px;
-}
-
-.memory-statistics-section .memory-stat-grid {
-  margin-top: 14px;
-}
-
-.memory-library-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-/* 图标与文案共同构成一个动作，避免窄按钮把它们拆成两行。 */
-.settings-inline-action {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-.settings-inline-action > svg {
-  flex: 0 0 auto;
-}
-
-.memory-library-toolbar > button {
-  min-height: 30px;
-  padding: 0 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
-  border-radius: 8px;
-  color: var(--biny-selection-text);
-  background: var(--accent);
-  font-size: calc(11px * var(--font-scale));
-  white-space: nowrap;
-}
-
-.memory-library-toolbar > button:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-
-.memory-settings-v3 .setting-row:last-child {
-  border-bottom: 0;
-}
-
 /* 设置中的即时操作保持一行，由外层布局在窄屏时换位，避免把动作名称拆成两行。 */
 .settings-content .settings-sections .setting-row > button,
-.settings-content .settings-sections .settings-button-row > button,
-.settings-content .settings-sections .memory-index-actions > button,
-.settings-content .settings-sections .memory-search-row > button,
-.settings-content .settings-sections .memory-advanced-toggle {
+.settings-content .settings-sections .settings-button-row > button {
   white-space: nowrap;
-}
-
-.memory-embedding-option-action em {
-  color: var(--text-secondary);
-  font-style: normal;
-  font-size: calc(10.5px * var(--font-scale));
-}
-
-.memory-index-summary > span {
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--surface-soft);
-}
-
-.memory-embedding-maintenance {
-  display: flex;
-  flex-direction: column;
-  margin-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-.memory-embedding-maintenance .setting-row {
-  padding-inline: 0;
-}
-
-.memory-index-actions {
-  margin-top: 12px;
-}
-
-.memory-filter-tabs {
-  display: flex;
-  overflow-x: auto;
-  margin: 12px 0;
-}
-
-.memory-filter-tabs button {
-  min-width: 98px;
-}
-
-.memory-list-heading {
-  margin-top: 14px;
-}
-
-.memory-origin-tag {
-  display: inline-flex;
-  height: 18px;
-  align-items: center;
-  flex: 0 0 auto;
-  padding: 0 7px;
-  border-radius: 999px;
-  color: var(--text-secondary);
-  background: var(--surface);
-  font-size: calc(10px * var(--font-scale));
-  line-height: 1;
-}
-
-.memory-entry-head {
-  flex-wrap: wrap;
-}
-
-.memory-entry-head .settings-inline-actions {
-  margin-left: auto;
-}
-
-.memory-editor-panel {
-  width: min(680px, 100%);
-  max-height: calc(100vh - 48px);
-  overflow: auto;
-  padding: 18px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface-raised);
-}
-
-.memory-editor-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.memory-editor-fields fieldset {
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.memory-editor-fields legend {
-  margin-bottom: 7px;
-}
-
-.memory-editor-panel .model-dialog-footer {
-  position: sticky;
-  bottom: -18px;
-  margin: 18px -18px -18px;
-  padding: 12px 18px;
-  border-top: 1px solid var(--border);
-  background: var(--surface-raised);
-}
-
-.memory-clear-panel strong {
-  color: var(--text);
-}
-
-.desktop-model-dialog > div > .connect-dialog {
-  width: 100%;
-  max-height: none;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
 }
 
 .slash-result-modal {
@@ -2310,26 +1928,9 @@ select option:disabled {
   .desktop-settings-dialog .settings-modal .settings-content > header.settings-titlebar { padding: 24px 24px 20px; }
   .desktop-settings-dialog .settings-modal .settings-scroll { padding-inline: 24px; }
   .desktop-settings-dialog .settings-modal .settings-page-footer { padding-inline: 24px; }
-
-  .memory-stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 720px) {
-  .memory-library-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .memory-library-toolbar > button {
-    width: 100%;
-  }
-
-  .model-detail-panel {
-    display: none;
-  }
-
   .desktop-settings-dialog .settings-modal .settings-tabs {
     width: 147px;
     min-width: 147px;
@@ -2339,16 +1940,7 @@ select option:disabled {
 
   .desktop-settings-dialog { max-width: calc(100dvw - 32px); }
   .desktop-settings-dialog .settings-modal .settings-nav-list { padding-inline: 0; }
-  .desktop-settings-dialog .settings-modal .settings-nav-list button { gap: 8px; margin-inline: 6px; padding-inline: 8px; }
-  .desktop-settings-dialog .settings-modal .settings-nav-group-title { padding-inline: 14px; }
-
-  .memory-threshold-grid,
-  .memory-model-grid,
-  .memory-editor-grid,
-  .memory-index-summary {
-    grid-template-columns: 1fr;
-  }
-}
+  .desktop-settings-dialog .settings-modal .settings-nav-list button { gap: 8px; margin-inline: 6px; padding-inline: 8px; }}
 
 /* Activity Recorder：设置、sidecar 运行态和历史证据各自保持清晰边界。 */
 .activity-settings {
@@ -2511,66 +2103,6 @@ select option:disabled {
 
 .activity-status-badge.is-locked svg {
   flex: 0 0 auto;
-}
-
-.activity-switch {
-  display: inline-flex;
-  min-width: 36px;
-  min-height: 24px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0;
-  border: 0;
-  color: var(--text);
-  background: transparent;
-  text-align: left;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.activity-switch:disabled {
-  cursor: wait;
-  opacity: .72;
-}
-
-.activity-switch-track {
-  position: relative;
-  display: block;
-  width: calc(36px * var(--font-scale, 1));
-  height: calc(22px * var(--font-scale, 1));
-  flex: none;
-  border: calc(2px * var(--font-scale, 1)) solid transparent;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 22%, transparent);
-  transition: background 150ms var(--st-ease, ease);
-}
-
-.activity-switch-track > span {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  width: calc(18px * var(--font-scale, 1));
-  height: calc(18px * var(--font-scale, 1));
-  border-radius: 999px;
-  background: var(--switch-thumb);
-  box-shadow: 0 1px 2px var(--shadow-soft);
-  transform: translateY(-50%);
-  transition: transform 150ms var(--st-ease, ease);
-}
-
-.activity-switch.is-checked .activity-switch-track {
-  background: var(--accent);
-}
-
-.activity-switch.is-checked .activity-switch-track > span {
-  transform: translateY(-50%) translateX(calc(14px * var(--font-scale, 1)));
-}
-
-.activity-switch:focus-visible .activity-switch-track {
-  outline: 2px solid color-mix(in srgb, var(--accent) 48%, transparent);
-  outline-offset: 2px;
 }
 
 /* 活动记录器总开关关闭：状态摘要区不隐藏，仅整体变暗。 */
@@ -2847,26 +2379,8 @@ select option:disabled {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  color: var(--text-secondary);
-  background: var(--surface);
-  font-size: calc(10.5px * var(--font-scale));
   white-space: nowrap;
   touch-action: manipulation;
-}
-
-.activity-secondary-button:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-  background: var(--surface-hover);
-}
-
-.activity-secondary-button:disabled {
-  cursor: wait;
-  opacity: .64;
 }
 
 .activity-field-grid {
@@ -2996,22 +2510,7 @@ select option:disabled {
 
 .activity-danger-button {
   width: 100%;
-  min-height: 36px;
   margin-top: 16px;
-  border-color: color-mix(in srgb, var(--red) 30%, var(--border));
-  color: var(--red-text);
-  background: color-mix(in srgb, var(--red) 8%, var(--surface-soft));
-}
-
-.activity-danger-button:disabled {
-  cursor: not-allowed;
-  opacity: .58;
-}
-
-.activity-danger-button:not(:disabled):hover {
-  border-color: color-mix(in srgb, var(--red) 48%, var(--border));
-  color: var(--red-text);
-  background: color-mix(in srgb, var(--red) 14%, var(--surface-soft));
 }
 
 .activity-disabled-hint {
@@ -3044,19 +2543,16 @@ select option:disabled {
     align-self: flex-start;
   }
 
-
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .activity-progress > span,
-  .activity-switch-track,
-  .activity-switch-track > span {
+  .activity-progress > span {
     transition: none;
   }
 }
 
-/* 记忆设置沿用 ；索引状态只在必要的操作反馈中出现。 */
-.activity-memory-group { display: flex; flex-direction: column; gap: 13px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+/* 记忆索引状态只在必要的操作反馈中出现。 */
+.activity-memory-group { display: flex; flex-direction: column; gap: var(--st-card-gap); padding: var(--st-card-padding); border: 0; border-radius: var(--st-radius); background: var(--st-card); }
 .time-clues-dialog { display: flex; flex-direction: column; max-height: min(82vh, 720px); min-height: 220px; }
 .time-clues-tabs { display: flex; gap: 20px; margin: 0 24px; padding: 0; border-bottom: 1px solid var(--border); }
 .time-clues-tabs button { border: 0; border-bottom: 1px solid transparent; padding: 10px 0; color: var(--text-secondary); background: transparent; cursor: pointer; }
@@ -3122,15 +2618,13 @@ select option:disabled {
 
 /* 记忆设置与 ，
    状态与索引细节留在后端，不把实现信息变成设置页的主视觉。 */
-.activity-memory-settings { gap: 24px; }
-.activity-memory-settings > .activity-memory-group { gap: 16px; padding: 20px 22px; border-radius: 12px; }
-.activity-memory-settings > .activity-memory-group h3 { margin: 0 0 2px; font-size: calc(16px * var(--font-scale)); font-weight: 500; }
+.activity-memory-settings { gap: var(--st-stack-gap); }
+.activity-memory-settings > .activity-memory-group { gap: 16px; padding: 20px 22px; border-radius: var(--st-radius); }
+.activity-memory-settings > .activity-memory-group h3 { margin: 0 0 2px; font-size: calc(14px * var(--font-scale)); font-weight: 600; }
 .activity-memory-settings > .activity-memory-group > p { margin: -8px 0 2px; color: var(--text-tertiary); font-size: calc(11px * var(--font-scale)); line-height: 1.5; }
-.activity-memory-checkbox-row { display: flex; flex-direction: column; gap: 6px; }
-.activity-memory-checkbox-row label { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: calc(12px * var(--font-scale)); font-weight: 550; cursor: pointer; }
-.activity-memory-checkbox-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
-.activity-memory-checkbox-row p { margin: 0 0 0 26px; color: var(--text-tertiary); font-size: calc(12px * var(--font-scale)); line-height: 1.5; }
-.activity-memory-nested { display: flex; flex-direction: column; gap: var(--st-stack-gap); margin-left: 26px; }
+/* 子选项挂在父开关下：左侧细线表达从属，父项关闭时整组随之隐藏。 */
+.activity-memory-nested { display: flex; flex-direction: column; gap: var(--st-stack-gap); margin-left: 2px; padding-left: 14px; border-left: 2px solid var(--border-subtle); }
+.desktop-settings-dialog .settings-modal :is(.activity-memory-group, .activity-memory-nested) > .settings-switch-row { min-height: 0; padding: 0; }
 .activity-memory-range { display: flex; flex-direction: column; gap: 7px; }
 .activity-memory-range label { color: var(--text); font-size: calc(14px * var(--font-scale)); font-weight: 500; }
 .activity-memory-range input[type="range"] { width: 100%; }
@@ -3214,11 +2708,6 @@ select option:disabled {
 
 .activity-memory-entry-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
 
-/* ===================== 设置内容区统一参数 ===================== */
-/* 内容区的行内盒、控件、按钮与二级弹层对齐壳层参数：
-   圆角体系 12px / 8px（内层）/ 4px（小标签）/ 999px（药丸），
-   控件高 2.25rem（紧凑 2rem），焦点环 3px 主色，过渡 150ms。 */
-
 /* —— 内容区单行输入与下拉：统一控件高度与圆角 —— */
 .desktop-settings-dialog .settings-modal .settings-sections input[type="text"],
 .desktop-settings-dialog .settings-modal .settings-sections input[type="number"],
@@ -3260,13 +2749,8 @@ select option:disabled {
 /* —— 对话框与面板输入（模型连接、记忆编辑、详情层） —— */
 .desktop-settings-dialog .settings-modal .connection-field > input,
 .desktop-settings-dialog .settings-modal .secret-input-row input,
-.desktop-settings-dialog .settings-modal .connection-row-editor input,
-.desktop-settings-dialog .settings-modal .manual-model-row input,
-.desktop-settings-dialog .settings-modal .model-profile-editor-fields input,
 .desktop-settings-dialog .settings-modal .settings-confirm-panel input,
 .desktop-settings-dialog .settings-modal .web-browser-url-row input,
-.desktop-settings-dialog .settings-modal .settings-inline-input,
-.desktop-settings-dialog .settings-modal .memory-importance-input,
 .desktop-settings-dialog .settings-modal .provider-row-item > input {
   height: var(--st-control-h);
   min-height: 0;
@@ -3281,27 +2765,15 @@ select option:disabled {
 
 .desktop-settings-dialog .settings-modal .connection-field > input:focus,
 .desktop-settings-dialog .settings-modal .secret-input-row input:focus,
-.desktop-settings-dialog .settings-modal .connection-row-editor input:focus,
-.desktop-settings-dialog .settings-modal .manual-model-row input:focus,
-.desktop-settings-dialog .settings-modal .model-profile-editor-fields input:focus,
 .desktop-settings-dialog .settings-modal .settings-confirm-panel input:focus,
 .desktop-settings-dialog .settings-modal .web-browser-url-row input:focus,
-.desktop-settings-dialog .settings-modal .settings-inline-input:focus,
-.desktop-settings-dialog .settings-modal .memory-importance-input:focus,
 .desktop-settings-dialog .settings-modal .provider-row-item > input:focus,
-.desktop-settings-dialog .settings-modal .connection-select:focus,
-.desktop-settings-dialog .settings-modal .memory-note-input:focus,
-.desktop-settings-dialog .settings-modal .personalization-instructions:focus,
-.desktop-settings-dialog .settings-modal .chat-instructions-field textarea:focus,
-.desktop-settings-dialog .settings-modal .provider-search:focus-within {
+.desktop-settings-dialog .settings-modal .connection-select:focus {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   outline: none;
 }
 
-.desktop-settings-dialog .settings-modal .connection-select,
-.desktop-settings-dialog .settings-modal .chat-override-grid select,
-.desktop-settings-dialog .settings-modal .compaction-model-select,
-.desktop-settings-dialog .settings-modal .font-select {
+.desktop-settings-dialog .settings-modal .connection-select {
   height: var(--st-control-h);
   min-height: 0;
   padding-inline: var(--st-control-px);
@@ -3318,35 +2790,12 @@ select option:disabled {
   border-radius: var(--st-button-radius);
 }
 
-.desktop-settings-dialog .settings-modal .provider-search {
-  height: var(--st-control-h);
-  border-radius: var(--st-button-radius);
-}
-
-/* —— 文本域 —— */
-.desktop-settings-dialog .settings-modal .memory-note-input,
-.desktop-settings-dialog .settings-modal .personalization-instructions,
-.desktop-settings-dialog .settings-modal .chat-instructions-field textarea {
-  border: 1px solid var(--border);
-  border-radius: var(--st-button-radius);
-  background: transparent;
-  box-shadow: 0 1px 2px var(--shadow);
-  transition: color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease);
-}
-
-/* —— 按钮变体统一 —— */
-/* outline（次要操作）：1px 边 + 透明底，悬停浮起。 */
+/* 次要操作：前景色淡填充的胶囊，无描边。 */
 .desktop-settings-dialog .settings-modal .settings-secondary-button,
-.desktop-settings-dialog .settings-modal .memory-library-toolbar > button,
-.desktop-settings-dialog .settings-modal .memory-add-row > button,
 .desktop-settings-dialog .settings-modal .activity-secondary-button,
 .desktop-settings-dialog .settings-modal .web-browser-url-row button,
-.desktop-settings-dialog .settings-modal .memory-search-row > button,
 .desktop-settings-dialog .settings-modal .settings-button-row > button,
-.desktop-settings-dialog .settings-modal .memory-index-actions > button,
-.desktop-settings-dialog .settings-modal .memory-advanced-toggle,
 .desktop-settings-dialog .settings-modal .login-code-actions > button:last-child,
-.desktop-settings-dialog .settings-modal .connect-dialog-actions button:not(.is-primary):not(.is-danger),
 .desktop-settings-dialog .settings-modal .danger-button,
 .desktop-settings-dialog .settings-modal .activity-danger-button {
   display: inline-flex;
@@ -3355,11 +2804,11 @@ select option:disabled {
   justify-content: center;
   gap: var(--st-control-gap);
   padding: 0 calc(var(--st-control-px) - 0.15 * var(--st-rem));
-  border: 1px solid var(--border);
-  border-radius: var(--st-radius);
+  border: 1px solid var(--st-action-border);
+  border-radius: var(--st-action-radius);
   color: var(--text);
-  background: transparent;
-  box-shadow: 0 1px 2px var(--shadow);
+  background: var(--st-action-bg);
+  box-shadow: none;
   outline: none;
   font-size: calc(0.875 * var(--st-rem));
   font-weight: 500;
@@ -3367,55 +2816,22 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-secondary-button:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .memory-library-toolbar > button:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .memory-add-row > button:hover:not(:disabled),
 .desktop-settings-dialog .settings-modal .activity-secondary-button:hover:not(:disabled),
 .desktop-settings-dialog .settings-modal .web-browser-url-row button:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .memory-search-row > button:hover:not(:disabled),
 .desktop-settings-dialog .settings-modal .settings-button-row > button:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .memory-index-actions > button:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .memory-advanced-toggle:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .login-code-actions > button:last-child:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .connect-dialog-actions button:not(.is-primary):not(.is-danger):hover:not(:disabled) {
-  background: var(--surface-hover);
+.desktop-settings-dialog .settings-modal .login-code-actions > button:last-child:hover:not(:disabled) {
+  background: var(--st-action-bg-hover);
 }
 
-/* destructive（危险操作）：红描边 + 弱红底悬停。 */
+/* 危险操作：红字淡填充，悬停加深为红底。 */
 .desktop-settings-dialog .settings-modal .danger-button,
 .desktop-settings-dialog .settings-modal .activity-danger-button {
-  border-color: color-mix(in srgb, var(--red) 35%, transparent);
   color: var(--red-text);
 }
 
 .desktop-settings-dialog .settings-modal .danger-button:hover:not(:disabled),
 .desktop-settings-dialog .settings-modal .activity-danger-button:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--red) 50%, transparent);
   background: var(--red-bg);
-}
-
-/* default（主要操作）：主色底。 */
-.desktop-settings-dialog .settings-modal .login-primary-button,
-.desktop-settings-dialog .settings-modal .connect-dialog-actions button.is-primary {
-  display: inline-flex;
-  min-height: var(--st-control-h-sm);
-  align-items: center;
-  justify-content: center;
-  gap: var(--st-control-gap);
-  padding: 0 calc(var(--st-control-px) - 0.15 * var(--st-rem));
-  border: 1px solid transparent;
-  border-radius: var(--st-radius);
-  color: var(--st-on-primary);
-  background: var(--st-primary);
-  box-shadow: 0 1px 2px var(--shadow);
-  outline: none;
-  font-size: calc(0.875 * var(--st-rem));
-  font-weight: 500;
-  transition: background-color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease);
-}
-
-.desktop-settings-dialog .settings-modal .login-primary-button:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .connect-dialog-actions button.is-primary:hover:not(:disabled) {
-  background: var(--st-primary-hover);
 }
 
 /* ghost 图标按钮：方形紧凑，悬停弱化底。 */
@@ -3426,7 +2842,7 @@ select option:disabled {
   min-height: var(--st-control-h-sm);
   padding: 0;
   border: 0;
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
   color: var(--text-secondary);
   background: transparent;
   transition: background-color 0.15s var(--st-ease), color 0.15s var(--st-ease);
@@ -3444,7 +2860,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .chat-temperature-reset {
   border: 0;
   border-radius: calc(var(--st-radius) - 4px);
-  color: var(--st-primary);
+  color: var(--accent);
   background: transparent;
   transition: color 0.15s var(--st-ease);
 }
@@ -3452,7 +2868,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .text-button:hover,
 .desktop-settings-dialog .settings-modal .settings-link:hover,
 .desktop-settings-dialog .settings-modal .chat-temperature-reset:hover {
-  color: color-mix(in srgb, var(--st-primary) 80%, transparent);
+  color: var(--accent-hover);
 }
 
 /* 通用 ghost 按钮（设置范围内）：无边框弱化按钮。 */
@@ -3464,7 +2880,7 @@ select option:disabled {
   gap: var(--st-control-gap);
   padding: 0 calc(var(--st-control-px) - 0.15 * var(--st-rem));
   border: 0;
-  border-radius: var(--st-radius);
+  border-radius: var(--st-action-radius);
   color: var(--text);
   background: transparent;
   font-size: calc(0.875 * var(--st-rem));
@@ -3473,7 +2889,7 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .ghost-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 6%, transparent);
+  background: var(--st-action-bg);
 }
 
 .desktop-settings-dialog .settings-modal .ghost-button.is-danger {
@@ -3490,69 +2906,30 @@ select option:disabled {
   min-height: var(--st-control-h);
 }
 
-/* —— 选项卡片（单选组）圆角与选中环 —— */
-.desktop-settings-dialog .settings-modal .capability-default-option,
-.desktop-settings-dialog .settings-modal .personality-option {
-  border-radius: var(--st-radius);
-}
-
 /* —— 行内提示 / 内层信息盒圆角 —— */
-.desktop-settings-dialog .settings-modal .settings-inline-notice,
-.desktop-settings-dialog .settings-modal .manual-model-editor,
-.desktop-settings-dialog .settings-modal .model-profile-editor-row,
-.desktop-settings-dialog .settings-modal .settings-memory-report,
 .desktop-settings-dialog .settings-modal .connection-test-result,
-.desktop-settings-dialog .settings-modal .connection-oauth-card,
 .desktop-settings-dialog .settings-modal .login-subscription-card,
 .desktop-settings-dialog .settings-modal .login-code-panel,
-.desktop-settings-dialog .settings-modal .memory-stat-card,
-.desktop-settings-dialog .settings-modal .memory-entry,
-  .desktop-settings-dialog .settings-modal .memory-index-summary > span,
-.desktop-settings-dialog .settings-modal .chat-personalization-section,
-.desktop-settings-dialog .settings-modal .activity-permission-row,
-.desktop-settings-dialog .settings-modal .memory-embedding-maintenance,
-.desktop-settings-dialog .settings-modal .memory-filter-tabs button {
-  border-radius: var(--st-radius);
-}
-
-/* 搜索条：控件级圆角。 */
-.desktop-settings-dialog .settings-modal .memory-search-row .settings-inline-input {
-  border-radius: var(--st-radius);
-}
-
-.desktop-settings-dialog .settings-modal .web-search-select {
-  padding-inline: var(--st-control-px);
+.desktop-settings-dialog .settings-modal .activity-permission-row {
   border-radius: var(--st-radius);
 }
 
 /* —— 二级弹层面板：对齐卡片语言（12px 圆角 + 卡片底 + 投影） —— */
-.desktop-settings-dialog .settings-modal .connect-dialog,
-.desktop-settings-dialog .settings-modal .memory-editor-panel,
 .desktop-settings-dialog .settings-modal .settings-confirm-panel {
   border: 1px solid var(--border);
   border-radius: var(--st-radius);
   background: var(--st-card);
 }
 
-.desktop-settings-dialog .settings-modal .detail-section-head h3 {
-  font-size: calc(1.125 * var(--st-rem));
-  font-weight: 500;
-}
-
-.desktop-settings-dialog .settings-modal .connection-detail-title strong {
-  font-size: calc(1.125 * var(--st-rem));
-  font-weight: 600;
-}
-
-/* 分段控件 / 标签条：外层 12px、内层选中片 8px（radius-sm）。 */
+/* 分段控件 / 标签条是胶囊形，选中片是抬起的卡片面；普通操作按钮不再走这个半径。 */
 .desktop-settings-dialog .settings-modal .settings-segmented,
 .desktop-settings-dialog .settings-modal .memory-filter-tabs {
-  border-radius: var(--st-radius);
+  border-radius: 999px;
 }
 
-.desktop-settings-dialog .settings-modal .settings-segmented button,
+.desktop-settings-dialog .settings-modal .settings-segmented :is(button, label > span),
 .desktop-settings-dialog .settings-modal .memory-filter-tabs button {
-  border-radius: calc(var(--st-radius) - 4px);
+  border-radius: 999px;
 }
 
 /* 活动页字段控件高度归一。 */
@@ -3566,25 +2943,19 @@ select option:disabled {
 /* 减少动态效果时关闭内容区过渡。 */
 @media (prefers-reduced-motion: reduce) {
   .desktop-settings-dialog .settings-modal .settings-secondary-button,
-  .desktop-settings-dialog .settings-modal .memory-library-toolbar > button,
   .desktop-settings-dialog .settings-modal .activity-secondary-button,
   .desktop-settings-dialog .settings-modal .danger-button,
   .desktop-settings-dialog .settings-modal .activity-danger-button,
-  .desktop-settings-dialog .settings-modal .login-primary-button,
   .desktop-settings-dialog .settings-modal .icon-button,
   .desktop-settings-dialog .settings-modal .activity-icon-button,
   .desktop-settings-dialog .settings-modal .text-button,
   .desktop-settings-dialog .settings-modal .ghost-button,
   .desktop-settings-dialog .settings-modal .settings-primary-button,
   .desktop-settings-dialog .settings-modal .connection-field > input,
-  .desktop-settings-dialog .settings-modal .connection-select,
-  .desktop-settings-dialog .settings-modal .memory-note-input,
-  .desktop-settings-dialog .settings-modal .personalization-instructions {
+  .desktop-settings-dialog .settings-modal .connection-select {
     transition: none;
   }
 }
-
-/* ===================== 设置控件可读性 ===================== */
 /* 模型选择器在各设置页使用同一紧凑布局，浮层保留设置主题。 */
 .desktop-settings-dialog .settings-modal .settings-model-picker {
   position: relative;
@@ -3598,19 +2969,19 @@ select option:disabled {
   align-items: center;
   justify-content: flex-start;
   text-align: left;
-  gap: 9px;
-  padding: 5px 10px;
-  border: 1px solid var(--border);
+  gap: 8px;
+  padding: 5px 10px 5px 9px;
+  border: 1px solid var(--st-field-border);
   border-radius: var(--st-button-radius);
   color: var(--text);
-  background: var(--surface-soft);
+  background: var(--st-field-bg);
   box-shadow: none;
   cursor: pointer;
   transition: border-color 0.15s var(--st-ease), background-color 0.15s var(--st-ease);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger:hover {
-  background: var(--surface-hover);
+  border-color: var(--st-field-border-hover);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger:focus-visible,
@@ -3638,15 +3009,19 @@ select option:disabled {
   text-align: left;
 }
 
+/* 模型名用界面字体：它是要读的名字，不是要复制的代码。 */
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger-copy strong,
 .desktop-settings-dialog .settings-modal .settings-model-picker-option-copy strong {
   overflow: hidden;
   color: var(--text);
   font-size: calc(13px * var(--font-scale, 1));
-  font-family: var(--font-mono);
-  font-weight: 500;
+  font-weight: 450;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.desktop-settings-dialog .settings-modal .settings-model-picker-trigger-copy strong {
+  font-weight: 500;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger-copy small {
@@ -3659,14 +3034,29 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-placeholder {
+  display: flex;
   min-width: 0;
   flex: 1;
+  align-items: baseline;
+  gap: 6px;
   overflow: hidden;
   text-align: left;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-secondary);
-  font-size: 12px;
+  color: var(--text);
+  font-size: calc(13px * var(--font-scale, 1));
+}
+
+/* 跟随项在触发器上直接带出实际落到的模型。 */
+.desktop-settings-dialog .settings-modal .settings-model-picker-placeholder small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: calc(12px * var(--font-scale, 1));
+  text-overflow: ellipsis;
+}
+
+.desktop-settings-dialog .settings-modal .settings-model-picker-placeholder small::before {
+  content: "· ";
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-chevron {
@@ -3705,26 +3095,31 @@ select option:disabled {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--border-strong, var(--border));
+  padding: 6px;
+  border: 1px solid var(--st-popover-border);
   border-radius: var(--st-radius);
-  background: var(--st-card);
+  background: var(--st-popover);
+  box-shadow: var(--st-popover-shadow);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-search {
   display: flex;
-  min-height: 38px;
+  min-height: 32px;
   flex: none;
   align-items: center;
   gap: 8px;
-  padding: 0 11px;
-  border-bottom: 1px solid var(--border);
+  margin: 0 0 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--st-button-radius);
   color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-search input {
   width: 100%;
   min-height: 0;
-  height: 36px;
+  height: 30px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -3732,35 +3127,42 @@ select option:disabled {
   background: transparent;
   box-shadow: none;
   outline: none;
-  font-size: 12px;
+  font-size: calc(13px * var(--font-scale, 1));
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-options {
   min-height: 0;
   max-height: 300px;
-  padding: 4px;
+  padding: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
+/* 跟随项与具体模型是两类选择，中间用一道细线分开。 */
+.desktop-settings-dialog .settings-modal .settings-model-picker-option.is-inherit + .settings-model-picker-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--st-popover-border);
+}
+
 .desktop-settings-dialog .settings-modal .settings-model-picker-group + .settings-model-picker-group {
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-group-heading {
   display: flex;
-  min-height: 28px;
+  min-height: 26px;
   align-items: center;
-  gap: 7px;
-  padding: 4px 8px;
-  color: var(--text-secondary);
+  gap: 6px;
+  padding: 4px 8px 2px;
+  color: var(--text-tertiary);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-group-heading .settings-model-picker-provider-mark {
-  width: 20px;
-  height: 20px;
-  flex-basis: 20px;
-  border-radius: 6px;
+  width: 14px;
+  height: 14px;
+  flex-basis: 14px;
+  color: var(--text-tertiary);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-group-heading .provider-logo {
@@ -3770,72 +3172,90 @@ select option:disabled {
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-group-heading strong {
   flex: 1;
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: calc(11.5px * var(--font-scale, 1));
   font-weight: 500;
+  letter-spacing: 0.01em;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: calc(34px * var(--font-scale, 1));
+  min-height: calc(30px * var(--font-scale, 1));
   align-items: center;
-  gap: 7px;
-  padding: 6px 8px;
+  gap: 8px;
+  /* 选项文字与组标题文字左对齐：8px 内边距 + 14px 标志 + 6px 间距。 */
+  padding: 5px 8px 5px 28px;
   margin: 0;
   border: 0;
-  border-radius: calc(var(--st-radius) - 4px);
+  border-radius: calc(var(--st-radius) - 5px);
   color: var(--text);
   background: transparent;
   cursor: pointer;
   text-align: left;
 }
 
-.desktop-settings-dialog .settings-modal .settings-model-picker-option.is-selected,
-.desktop-settings-dialog .settings-modal .settings-model-picker-option:hover:not(:disabled) {
-  background: var(--surface-hover);
+/* 选中只靠右侧对勾和字重表达；底色只给悬停和键盘焦点。 */
+.desktop-settings-dialog .settings-modal .settings-model-picker-option:is(:hover, :focus-visible):not(:disabled) {
+  background: var(--st-menu-hover);
+}
+
+.desktop-settings-dialog .settings-modal .settings-model-picker-option.is-selected .settings-model-picker-option-copy strong {
+  font-weight: 550;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--st-ring);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
   outline: none;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option:disabled {
   cursor: not-allowed;
-  opacity: 0.48;
+  opacity: 0.45;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option-check {
   display: grid;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   place-items: center;
-  color: var(--accent);
+  color: var(--text);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option-trailing {
   flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
   color: var(--text-tertiary);
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: calc(12px * var(--font-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option.is-inherit {
-  color: var(--text-secondary);
+  padding-left: 8px;
+  color: var(--text);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-empty {
-  margin: 15px 8px;
+  margin: 18px 8px;
   color: var(--text-tertiary);
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: calc(12px * var(--font-scale, 1));
   text-align: center;
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option.is-inherit strong {
-  color: var(--text-secondary);
+  color: var(--text);
   font-family: inherit;
-  font-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-settings-dialog .settings-modal .settings-model-picker-trigger,
+  .desktop-settings-dialog .settings-modal .settings-model-picker-chevron,
+  .desktop-settings-dialog select::picker-icon {
+    transition: none;
+  }
 }
 
 /* 工具模型：选择器占满剩余宽度，测试按钮与其等高成组；
@@ -3858,64 +3278,7 @@ select option:disabled {
   line-height: 1.5;
 }
 
-/* 滑块统一有“已完成/剩余”轨道与右侧数值，避免只看见一个难定位的圆点。 */
-.desktop-settings-dialog .settings-modal .settings-sections input[type="range"] {
-  width: 100%;
-  height: 22px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  accent-color: var(--accent);
-}
-
-.desktop-settings-dialog .settings-modal .settings-sections input[type="range"]::-webkit-slider-runnable-track {
-  height: 5px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent) 0 var(--range-progress, 0%), color-mix(in srgb, var(--text) 16%, transparent) var(--range-progress, 0%) 100%);
-}
-
-.desktop-settings-dialog .settings-modal .settings-sections input[type="range"]::-webkit-slider-thumb {
-  width: 16px;
-  height: 16px;
-  margin-top: -5.5px;
-  border: 2px solid var(--surface);
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 1px 4px var(--shadow-heavy);
-  appearance: none;
-}
-
-.desktop-settings-dialog .settings-modal .settings-sections input[type="range"]::-moz-range-track {
-  height: 5px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 16%, transparent);
-}
-
-.desktop-settings-dialog .settings-modal .settings-sections input[type="range"]::-moz-range-progress {
-  height: 5px;
-  border-radius: 999px;
-  background: var(--accent);
-}
-
-.desktop-settings-dialog .settings-modal .settings-sections input[type="range"]::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--surface);
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 1px 4px var(--shadow-heavy);
-}
-
-.desktop-settings-dialog .settings-modal .settings-sections input[type="range"]:focus-visible {
-  outline: none;
-}
-
-.desktop-settings-dialog .settings-modal .settings-sections input[type="range"]:focus-visible::-webkit-slider-runnable-track {
-  box-shadow: 0 0 0 3px var(--st-ring);
-}
+/* 滑块样式统一在 settings-controls.css 的 .settings-range，这里只补充设置页特有的排版。 */
 
 .desktop-settings-dialog .settings-modal .compaction-threshold-field strong {
   font-size: calc(13px * var(--font-scale, 1));
@@ -3924,26 +3287,18 @@ select option:disabled {
 
 .desktop-settings-dialog .settings-modal .compaction-threshold-field em {
   flex: 0 0 auto;
-  padding: 3px 7px;
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
-  border-radius: 999px;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
-  font-size: calc(11px * var(--font-scale, 1));
+  min-width: 2.4em;
+  padding: 2px 7px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  font-size: calc(12px * var(--font-scale, 1));
   font-style: normal;
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  line-height: 1.2;
-}
-
-.desktop-settings-dialog .settings-modal .settings-sections input[type="text"],
-.desktop-settings-dialog .settings-modal .settings-sections input[type="number"],
-.desktop-settings-dialog .settings-modal .settings-sections input[type="search"],
-.desktop-settings-dialog .settings-modal .settings-sections input[type="password"],
-.desktop-settings-dialog .settings-modal .settings-sections input:not([type]),
-.desktop-settings-dialog .settings-modal .settings-sections textarea,
-.desktop-settings-dialog .settings-modal .settings-sections select {
-  background: var(--surface-soft);
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: center;
 }
 
 .desktop-settings-dialog .settings-modal .settings-sections input::placeholder,
@@ -3989,16 +3344,15 @@ select option:disabled {
   .provider-models-head { flex-wrap: wrap; }
 }
 
-
 .provider-list-pane {
   display: flex;
   flex: 0 0 224px;
   flex-direction: column;
   min-height: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border: 0;
   border-radius: var(--st-radius);
-  background: color-mix(in srgb, var(--surface-raised) 70%, transparent);
-  box-shadow: 0 1px 2px var(--biny-shadow-soft);
+  background: var(--st-card);
+  box-shadow: none;
 }
 
 .provider-list-search {
@@ -4008,10 +3362,10 @@ select option:disabled {
   gap: 7px;
   margin: 8px 8px 4px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--st-field-border);
   border-radius: 8px;
   color: var(--text-tertiary);
-  background: var(--surface-soft);
+  background: var(--st-field-bg);
 }
 
 .provider-list-search input {
@@ -4049,11 +3403,12 @@ select option:disabled {
   transition: background 130ms ease, border-color 130ms ease;
 }
 
-.provider-row:hover { background: var(--surface-hover); }
+.provider-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 
+/* 选中服务商用中性填充，强调色只用于焦点。 */
 .provider-row.is-active {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
 }
 
 .provider-row-copy {
@@ -4134,7 +3489,7 @@ select option:disabled {
   flex-direction: column;
   gap: 24px;
   padding: 24px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--st-radius);
   background: var(--surface-raised);
 }
@@ -4216,8 +3571,6 @@ select option:disabled {
   flex-direction: column;
   gap: 12px;
   padding: 0;
-
-
 
 }
 
@@ -4357,8 +3710,8 @@ select option:disabled {
 .provider-test-button .is-error { color: var(--red-text); }
 .provider-test-button .provider-test-caret { color: var(--text-tertiary); }
 
-/* 工具模型/记忆工具模型的测试按钮：同套描边样式，高度跟随同行选择器，烧瓶图标。 */
-.model-test-button { flex: 0 0 auto; padding: 0 12px; }
+/* 工具模型/记忆工具模型的测试按钮：烧瓶图标独占一方，与同行选择器等高同宽。 */
+.model-test-button { flex: 0 0 auto; width: var(--st-control-h); min-height: var(--st-control-h); padding: 0; border-radius: var(--st-action-radius); }
 
 .icon-spin { animation: provider-icon-spin 0.7s linear infinite; }
 
@@ -4502,8 +3855,6 @@ select option:disabled {
   gap: 12px;
   padding: 0;
 
-
-
 }
 
 .provider-models-head {
@@ -4533,10 +3884,10 @@ select option:disabled {
   align-items: center;
   gap: 7px;
   padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid var(--st-field-border);
+  border-radius: var(--st-button-radius);
   color: var(--text-tertiary);
-  background: var(--surface-soft);
+  background: var(--st-field-bg);
 }
 
 .provider-model-search input {
@@ -4676,38 +4027,6 @@ select option:disabled {
 }
 
 .provider-model-actions .icon-button { width: var(--st-control-h-sm); }
-
-/* 迷你开关：几何与 settings-switch 一致，尺寸缩到行内。 */
-.model-toggle {
-  position: relative;
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  width: 30px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-tertiary) 35%, transparent);
-  transition: background 140ms ease;
-}
-
-.model-toggle .model-toggle-thumb {
-  width: 14px;
-  height: 14px;
-  margin-left: 2px;
-  border-radius: 999px;
-  background: var(--surface-raised);
-  box-shadow: 0 1px 2px var(--biny-shadow-soft);
-  transition: transform 140ms ease;
-}
-
-.model-toggle.is-on { background: var(--accent); }
-.model-toggle.is-on .model-toggle-thumb { background: var(--accent-foreground); transform: translateX(12px); }
-
-/* 悬停加深轨道：开关是纯图形控件，需要额外的可供性提示。 */
-.model-toggle:hover:not(:disabled) { background: color-mix(in srgb, var(--text-tertiary) 52%, transparent); }
-.model-toggle.is-on:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); }
 
 .provider-models-empty {
   display: flex;
@@ -5066,26 +4385,13 @@ select option:disabled {
   align-items: center;
   justify-content: center;
   gap: var(--st-control-gap);
-  min-height: var(--st-control-h);
-  padding: var(--st-control-py) var(--st-control-px);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--st-button-radius);
-  background: var(--surface-soft);
-  color: var(--text);
-  font-size: var(--st-button-font-size);
-  font-weight: 500;
-  line-height: 1.4;
   white-space: nowrap;
-  cursor: pointer;
 }
-.desktop-settings-dialog .settings-modal .web-search-settings .web-search-action:hover:not(:disabled) { background: var(--surface-hover); }
-.desktop-settings-dialog .settings-modal .web-search-settings .web-search-action:active:not(:disabled) { background: var(--surface-selected); }
 .desktop-settings-dialog .settings-modal .web-search-settings .web-search-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.desktop-settings-dialog .settings-modal .web-search-settings .web-search-action:disabled { opacity: .5; cursor: default; }
 
 /* 设置页的同类操作共享反馈；导航、分段选择和开关维持各自的控件形态。 */
-.desktop-settings-dialog :is(.settings-primary-button, .login-primary-button, .connect-dialog-actions button.is-primary, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-page-footer .settings-save-button, .settings-confirm-actions button:last-child) {
-  border: 1px solid color-mix(in srgb, var(--st-primary) 82%, var(--text));
+.desktop-settings-dialog :is(.settings-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-page-footer .settings-save-button, .settings-confirm-actions button:last-child) {
+  border: 1px solid transparent;
   color: var(--st-on-primary);
   background: var(--st-primary);
   font-weight: 600;
@@ -5093,20 +4399,20 @@ select option:disabled {
   white-space: nowrap;
   cursor: pointer;
 }
-.desktop-settings-dialog :is(.settings-primary-button, .login-primary-button, .connect-dialog-actions button.is-primary, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-page-footer .settings-save-button, .settings-confirm-actions button:last-child):active:not(:disabled) {
+.desktop-settings-dialog :is(.settings-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-page-footer .settings-save-button, .settings-confirm-actions button:last-child):active:not(:disabled) {
   background: var(--st-primary-active);
   box-shadow: none;
 }
-.desktop-settings-dialog :is(.settings-primary-button, .login-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-secondary-button, .activity-secondary-button, .web-search-action, .connect-dialog-actions button, .settings-page-footer button, .settings-confirm-actions button):focus-visible {
+.desktop-settings-dialog :is(.settings-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-secondary-button, .activity-secondary-button, .web-search-action, .settings-page-footer button, .settings-confirm-actions button):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .desktop-settings-dialog .settings-modal :is(.settings-secondary-button, .activity-secondary-button, .biny-mcp-secondary-button, .biny-mcp-clipboard-button, .settings-plugin-action) {
-  border-color: var(--border-strong);
-  background: var(--surface-soft);
+  border-color: var(--st-action-border);
+  background: var(--st-action-bg);
   cursor: pointer;
 }
-.desktop-settings-dialog :is(.settings-primary-button, .login-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-secondary-button, .activity-secondary-button, .biny-mcp-secondary-button, .biny-mcp-clipboard-button, .settings-plugin-action, .connect-dialog-actions button, .settings-page-footer button, .settings-confirm-actions button):disabled {
+.desktop-settings-dialog :is(.settings-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-secondary-button, .activity-secondary-button, .biny-mcp-secondary-button, .biny-mcp-clipboard-button, .settings-plugin-action, .settings-page-footer button, .settings-confirm-actions button):disabled {
   border-color: transparent;
   color: var(--text-tertiary);
   background: var(--surface-soft);
@@ -5116,19 +4422,19 @@ select option:disabled {
 }
 
 /* 操作按钮采用设置页紧凑尺寸；卡片、输入框与导航保留各自的布局尺寸。 */
-.desktop-settings-dialog :is(.settings-modal, .settings-confirm-panel, .settings-page-footer) :is(.settings-primary-button, .login-primary-button, .settings-secondary-button, .activity-secondary-button, .danger-button, .activity-danger-button, .web-search-action, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .biny-mcp-secondary-button, .biny-mcp-clipboard-button, .settings-plugin-install-button, .settings-plugin-action, .settings-plugin-danger-button, .connect-dialog-actions button, .settings-page-footer button, .settings-confirm-actions button) {
+.desktop-settings-dialog :is(.settings-modal, .settings-confirm-panel, .settings-page-footer) :is(.settings-primary-button, .settings-secondary-button, .activity-secondary-button, .danger-button, .activity-danger-button, .web-search-action, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .biny-mcp-secondary-button, .biny-mcp-clipboard-button, .settings-plugin-install-button, .settings-plugin-action, .settings-plugin-danger-button, .settings-page-footer button, .settings-confirm-actions button) {
   box-sizing: border-box;
   height: auto;
   min-height: var(--st-button-height);
   padding: 0 var(--st-button-padding);
-  border-radius: var(--st-button-radius);
+  border-radius: var(--st-action-radius);
   gap: calc(6px * var(--font-scale, 1));
   font-size: var(--st-button-font-size);
   font-weight: 500;
   line-height: 1.4;
   box-shadow: none;
 }
-.desktop-settings-dialog :is(.settings-primary-button, .login-primary-button, .settings-secondary-button, .activity-secondary-button, .web-search-action, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button) > svg {
+.desktop-settings-dialog :is(.settings-primary-button, .settings-secondary-button, .activity-secondary-button, .web-search-action, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button) > svg {
   width: calc(14px * var(--font-scale, 1));
   height: calc(14px * var(--font-scale, 1));
   flex: none;

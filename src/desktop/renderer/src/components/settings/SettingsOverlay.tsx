@@ -17,7 +17,8 @@ import { Dialog } from "@astryxdesign/core/Dialog";
 import type { LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
 import type { MemorySleepRun } from "../../../../../agent/context/memoryTypes.js";
 import type { DesktopCookieJarStatus, DesktopFontPreference, DesktopMemoryArchiveMutationResult, DesktopMemoryArchivePage, DesktopMemoryEmbeddingCancellationResult, DesktopMemoryEmbeddingDeleteResult, DesktopMemoryEmbeddingStatus, DesktopMemoryEntriesPage, DesktopMemoryEntryInput, DesktopMemoryEntryPatch, DesktopMemoryStats, DesktopMemorySearchMatch, DesktopModelCatalogResult, DesktopModelConfigurationInput, DesktopModelConnectionTestResult, DesktopModelLoginProvider, DesktopModelLoginStartResult, DesktopProject, DesktopSettingsCloseRequest, DesktopSettingsCloseResponse, DesktopSettingsSnapshot, DesktopThemePreference, DesktopWorkspaceSnapshot } from "../../../../protocol.js";
-import { Icon, type IconName } from "../Icon.js";
+import { Icon } from "../Icon.js";
+import { SettingsNavIcon } from "./SettingsNavIcon.js";
 import { McpServersView } from "../McpServersView.js";
 import { TopToast } from "../overlays/TopToast.js";
 import { ProviderSettings } from "./ProviderSettings.js";
@@ -104,25 +105,25 @@ export type SettingsTab = "Token 节省" | "导入" | "通用" | "用户界面" 
  *
  * 「快速对话」「工具模型」不是独立页面 —— 它们是通用页里的卡片。
  */
-const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
-  { icon: "sun", tab: "通用" },
-  { icon: "network", tab: "模型" },
-  { icon: "message", tab: "聊天" },
-  { icon: "terminal", tab: "Token 节省" },
-  { icon: "layout-grid", tab: "用户界面" },
-  { icon: "sliders", tab: "配色" },
-  { icon: "brain", tab: "记忆" },
-  { icon: "wand", tab: "技能" },
-  { icon: "server", tab: "MCP 服务器" },
-  { icon: "puzzle", tab: "插件" },
-  { icon: "search", tab: "网络搜索" },
-  { icon: "globe", tab: "浏览器" },
-  { icon: "camera", tab: "Appshots" },
-  { icon: "monitor", tab: "Computer Use" },
-  { icon: "lock", tab: "隐私脱敏" },
-  { icon: "computer-history", tab: "Computer History" },
-  { icon: "download", tab: "导入" },
-  { icon: "help", tab: "关于" }
+const settingsNav: Array<{ tab: SettingsTab }> = [
+  { tab: "通用" },
+  { tab: "模型" },
+  { tab: "聊天" },
+  { tab: "Token 节省" },
+  { tab: "用户界面" },
+  { tab: "配色" },
+  { tab: "记忆" },
+  { tab: "技能" },
+  { tab: "MCP 服务器" },
+  { tab: "插件" },
+  { tab: "网络搜索" },
+  { tab: "浏览器" },
+  { tab: "Appshots" },
+  { tab: "Computer Use" },
+  { tab: "隐私脱敏" },
+  { tab: "Computer History" },
+  { tab: "导入" },
+  { tab: "关于" }
 ];
 const settingsRouteEntries = settingsNav.map(page => ({ value: page.tab }));
 const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 聊天: "聊天偏好" };
@@ -148,13 +149,20 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
 };
 const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value }) => value));
 const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
+  通用: "模型选择与快速对话即时保存，Coding Agent 需保存",
   导入: "导入与同步设置即时保存",
   模型: "连接与模型配置即时保存",
   ["Computer History"]: "采集设置即时保存", 浏览器: "连接操作即时生效",
   Appshots: "截图设置即时保存", "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
-  插件: "安装与启停即时生效", 技能: "启用范围与自动提取需保存，导入操作即时生效",
+  插件: "安装与启停即时生效", "Token 节省": "本页只展示统计", 关于: "",
+  技能: "启用范围与自动提取需保存，导入操作即时生效",
   记忆: "配置需保存，记忆管理操作即时生效", 网络搜索: "搜索偏好需保存，登录操作即时生效"
 };
+/**
+ * 不写设置草稿的页面：没有待保存更改时不显示保存按钮，底栏只说明本页的生效方式。
+ * 其他页面留下的草稿仍会让保存按钮出现，避免离开草稿页后无处提交。
+ */
+const immediateOnlyTabs = new Set<SettingsTab>(["导入", "模型", "Computer History", "浏览器", "Appshots", "Computer Use", "MCP 服务器", "插件", "Token 节省", "关于"]);
 
 function normalizeSettingsTab(value: SettingsTab | string | undefined): SettingsTab {
   return value !== undefined && settingsTabValues.has(value as SettingsTab) ? value as SettingsTab : "通用";
@@ -353,6 +361,8 @@ function SettingsOverlayContent({
     if (closeRequest) await onResolveCloseRequest(closeRequest.requestId, "cancelled");
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
+  const immediateOnly = immediateOnlyTabs.has(activeTab) && settingsDraft.dirtyCount === 0
+    && !settingsDraft.pendingModelEdits && settingsDraft.saveState === "clean" && !settingsDraft.saveError;
   const needsProject = !workspace && ["聊天", "网络搜索", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
   // 只有"从没读到过快照且这次也失败了"才拦整页；单纯在刷新不该把已经能用的界面遮起来。
   const loadBlocked = Boolean((workspace && !["导入", "浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
@@ -381,7 +391,7 @@ function SettingsOverlayContent({
           </div>
           <div className="settings-search">
             <Icon name="search" size={15} />
-            <input aria-label="搜索设置" placeholder="搜索设置" ref={searchRef} type="search" value={search}
+            <input className="settings-field" aria-label="搜索设置" placeholder="搜索设置" ref={searchRef} type="search" value={search}
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
@@ -400,7 +410,7 @@ function SettingsOverlayContent({
           <nav aria-label="设置分类" className="settings-nav-list">
             {settingsNav.map(page => <button key={page.tab} aria-current={activeTab === page.tab ? "page" : undefined} data-settings-tab={page.tab}
               className={activeTab === page.tab ? "is-selected" : ""} onClick={() => selectTab(page.tab)} title={page.tab} type="button">
-              <span aria-hidden="true" className="settings-nav-icon"><Icon name={page.icon} size={17} /></span>
+              <span aria-hidden="true" className="settings-nav-icon"><SettingsNavIcon page={page.tab} /></span>
               <span className="settings-nav-label">{settingsTabLabels[page.tab] ?? page.tab}</span>
             </button>)}
           </nav>}
@@ -408,16 +418,16 @@ function SettingsOverlayContent({
         <main className={`settings-content${extensionSettings ? " is-extension-settings" : ""}`}>
           <header className="settings-titlebar">
             <div>
-              <h2 ref={titleRef} tabIndex={-1}><Icon name={settingsNav.find(page => page.tab === activeTab)!.icon} size={18} />{settingsTabLabels[activeTab] ?? activeTab}</h2>
+              <h2 ref={titleRef} tabIndex={-1}>{settingsTabLabels[activeTab] ?? activeTab}</h2>
             </div>
             <button aria-label="关闭设置" className="icon-button settings-close-button" onClick={requestCancel} title="关闭设置 · Esc" type="button">
-              <Icon name="close" size={18} />
+              <Icon name="close" size={16} />
             </button>
           </header>
           <div className={`settings-scroll${extensionSettings ? " is-extension" : activeTab === "模型" ? " is-providers" : ""}`} ref={scrollRef}>
           {loadBlocked ? <div className="settings-load-state" aria-busy={settingsDraft.loading}>
             {settingsDraft.loadError ? <><div role="alert"><h3>无法加载设置</h3><p>{settingsDraft.loadError}</p></div>
-              <button aria-label="重新加载设置" className="settings-secondary-button" onClick={settingsDraft.retryLoad} type="button">重新加载</button></> : <p role="status">正在加载设置…</p>}
+              <button aria-label="重新加载设置" className="settings-action settings-secondary-button" onClick={settingsDraft.retryLoad} type="button">重新加载</button></> : <p role="status">正在加载设置…</p>}
           </div> : needsProject ? <div className="settings-load-state"><h3>先打开一个项目</h3></div> : <>
           {activeTab === "模型" ? <ProviderSettings
             active={open}
@@ -462,7 +472,7 @@ function SettingsOverlayContent({
             onChange={settingsDraft.setAppearancePreference}
             disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
           /> : null}
-          {activeTab === "Computer History" ? <SettingsActivity onOpenToolModel={() => { void selectTab("通用"); }} /> : null}
+          {activeTab === "Computer History" ? <SettingsActivity /> : null}
           {activeTab === "Token 节省" ? <SettingsToolOptimization /> : null}
           {activeTab === "聊天" ? <SettingsChatPage /> : null}
           {memoryVisited ? <SettingsMemory key={workspace?.project.id}
@@ -515,9 +525,9 @@ function SettingsOverlayContent({
           </div>
           <SettingsPageFooter
             pendingModelEdits={settingsDraft.pendingModelEdits}
-            hideSave={activeTab === "模型" && settingsDraft.dirtyCount === 0}
-            hint={activeTab === "模型" ? undefined : immediateSaveHints[activeTab]}
-            unavailable={!workspace && activeTab === "通用" ? settingsDraft.saveState === "saving" ? "正在保存外观偏好…" : "外观偏好即时保存" : settingsDraft.loading ? "正在加载设置…" : settingsDraft.loadError ? "设置尚未加载" : !settingsDraft.draft ? "本页操作即时保存" : undefined}
+            hideSave={immediateOnly}
+            hint={immediateOnly ? undefined : immediateSaveHints[activeTab]}
+            unavailable={loadBlocked ? settingsDraft.loading ? "正在加载设置…" : "设置尚未加载" : immediateOnly ? immediateSaveHints[activeTab] : !workspace && activeTab === "用户界面" ? settingsDraft.saveState === "saving" ? "正在保存外观偏好…" : "外观偏好即时保存" : !settingsDraft.draft ? "本页操作即时保存" : undefined}
             blockedReason={settingsDraft.dirtyCount > 0 && runtimeBusy && !settingsDraft.preferencesOnly ? "任务运行中，共享设置暂不能保存。更改已保留。" : undefined}
             error={settingsDraft.saveError ?? settingsDraft.snapshot?.pendingRecovery?.message}
             dirtyCount={settingsDraft.dirtyCount}

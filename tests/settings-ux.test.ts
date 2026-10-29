@@ -241,6 +241,53 @@ test("设置加载失败持续显示重试入口，重试期间不声称已保�
   } finally { await h.close(); }
 });
 
+test("即时页面隐藏全局保存，跨页草稿仍能保存且关于页不显示已保存圆点", async () => {
+  const h = await harness();
+  try {
+    await h.overlay({ targetTab: "模型" });
+    assert.equal(document.querySelector(".settings-save-button"), null);
+    assert.match(document.querySelector(".settings-save-status")?.textContent ?? "", /即时保存/u);
+    await h.click('[data-settings-tab="关于"]');
+    assert.equal(document.querySelector(".settings-save-button"), null);
+    assert.equal(document.querySelector(".settings-save-status")?.textContent, "");
+    assert.ok(document.querySelector(".settings-save-status.is-idle"));
+    await h.click('[data-settings-tab="用户界面"]');
+    await h.click('input[value="dark"]');
+    await h.click('[data-settings-tab="关于"]');
+    assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, false);
+    assert.match(document.querySelector(".settings-save-status")?.textContent ?? "", /未保存/u);
+    await h.click('[aria-label="关闭设置"]');
+    assert.equal(h.confirmations.length, 1, "跨页后关闭仍需处理草稿");
+  } finally { await h.close(); }
+});
+
+test("模型页首次读取失败或重试时优先说明加载状态", async () => {
+  let resolve!: (value: DesktopSettingsSnapshot) => void;
+  let reads = 0;
+  const h = await harness({ settingsSnapshot: () => ++reads === 1
+    ? Promise.reject(new Error("设置暂不可读")) : new Promise<DesktopSettingsSnapshot>(done => { resolve = done; }) });
+  try {
+    await h.overlay({ targetTab: "模型" });
+    assert.equal(document.querySelector(".settings-save-status")?.textContent, "设置尚未加载");
+    await h.click('[aria-label="重新加载设置"]');
+    assert.equal(document.querySelector(".settings-save-status")?.textContent, "正在加载设置…");
+    await h.React.act(() => resolve(snapshot()));
+    assert.match(document.querySelector(".settings-save-status")?.textContent ?? "", /即时保存/u);
+    assert.equal(document.querySelector(".settings-save-button"), null);
+  } finally { await h.close(); }
+});
+
+test("即时页面不能掩盖待恢复的设置事务", async () => {
+  const h = await harness({ settingsSnapshot: async () => ({ ...snapshot(),
+    pendingRecovery: { journalId: "interrupted", message: "上次保存尚待恢复" } }) });
+  try {
+    await h.overlay({ targetTab: "关于" });
+    assert.match(document.querySelector(".settings-save-status")?.textContent ?? "", /需要恢复/u);
+    assert.match(document.querySelector(".settings-save-error")?.textContent ?? "", /上次保存尚待恢复/u);
+    assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, true);
+  } finally { await h.close(); }
+});
+
 test("保存失败保留草稿并就地显示原因，重试提交同一组更改", async () => {
   const writes: DesktopSettingsSaveInput[] = [];
   const h = await harness({ saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
@@ -708,6 +755,7 @@ test("自动工具模型显示实际模型，打开菜单不保存也不发起�
     assert.equal(saves, 0);
     assert.equal(tests, 0);
     assert.equal(document.querySelector('.is-inherit')?.getAttribute("aria-selected"), "true");
+    assert.match(document.querySelector(".is-inherit")?.textContent ?? "", /自动选择.*deepseek-v4-flash/u);
     assert.equal(document.querySelectorAll('[role="option"][aria-selected="true"]').length, 1);
     const panel = document.querySelector('.settings-model-picker-panel');
     assert.ok(panel?.closest('.settings-modal'), "浮层保留设置主题作用域");
@@ -721,7 +769,7 @@ test("自动工具模型显示实际模型，打开菜单不保存也不发起�
   } finally { await h.close(); }
 });
 
-test("Coding Agent 展示默认后端说明、ACP Provider 数量，并按 Provider 保存选择", async () => {
+test("Coding Agent 仅解释所选后端，并按连接保存选择", async () => {
   const h = await harness();
   try {
     const { SettingsSubagent } = await import("../src/desktop/renderer/src/components/settings/SettingsSubagent.js");
@@ -744,11 +792,9 @@ test("Coding Agent 展示默认后端说明、ACP Provider 数量，并按 Provi
     assert.equal(select.value, "auto");
     assert.deepEqual([...select.options].map(option => option.textContent), ["自动", "Claude Code", "内置 Agent", "Claude ACP", "Codex CLI", "Gemini CLI", "Offline ACP"]);
     assert.equal(select.querySelector<HTMLOptionElement>('option[value="acp:offline"]')?.disabled, true, "已配置但停用的 Provider 不可选择");
-    assert.match(document.querySelector("#subagent")?.textContent ?? "", /选择 `coder` 类型 subagent 执行代码任务时使用的后端/u);
-    for (const description of ["优先使用 Claude Code，不可用时回退到内置 agent。", "直接使用本地安装的 Claude Code CLI。",
-      "使用 Biny 内置子代理，并沿用当前聊天模型。", "使用已配置的 ACP provider，例如 Codex CLI 或 Gemini CLI。"])
-      assert.ok(document.querySelector("#subagent")?.textContent?.includes(description), description);
-    assert.match(document.querySelector("#subagent")?.textContent ?? "", /ACP Providers: 4/u);
+    assert.match(document.querySelector(".settings-subagent-help")?.textContent ?? "", /优先使用本机 Claude Code/u);
+    assert.equal(document.querySelectorAll(".settings-subagent-help p").length, 1, "只解释当前选择，其他后端的说明随选择切换");
+    assert.match(document.querySelector("#subagent")?.textContent ?? "", /已配置 4 个 ACP 连接/u);
     const selectValue = Object.getOwnPropertyDescriptor(h.dom.window.HTMLSelectElement.prototype, "value")!.set!;
     await h.React.act(() => {
       selectValue.call(select, "acp:gemini");
@@ -766,7 +812,9 @@ test("Coding Agent 展示默认后端说明、ACP Provider 数量，并按 Provi
       h.React.createElement(SettingsSubagent, { onOpenProviders() {} })));
     const emptySelect = document.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]');
     assert.deepEqual([...emptySelect!.options].map(option => option.textContent), ["自动", "Claude Code", "内置 Agent"]);
-    assert.match(document.querySelector("#subagent")?.textContent ?? "", /还没有配置 ACP provider。/u);
+    assert.match(document.querySelector("#subagent")?.textContent ?? "", /尚未配置 ACP 连接/u);
+    assert.match(document.querySelector(".settings-subagent-help")?.textContent ?? "", /沿用当前聊天模型/u);
+    assert.doesNotMatch(document.querySelector(".settings-subagent-help")?.textContent ?? "", /Claude Code/u);
     await h.React.act(() => {
       selectValue.call(emptySelect, "auto");
       emptySelect!.dispatchEvent(new h.dom.window.Event("change", { bubbles: true }));
@@ -859,11 +907,11 @@ test("窗口拖影选项只在选中对应结构皮肤时出现", async () => {
     const { DEFAULT_APPEARANCE } = await import("../src/appearance/index.js");
     const preference = structuredClone(DEFAULT_APPEARANCE);
     await h.render(h.React.createElement(SettingsThemes, { preference, onChange: async () => true }));
-    assert.equal(document.querySelector(".theme-trail-option") === null, true);
+    assert.equal(document.querySelector('[role="switch"][aria-label="Windows 98 窗口拖影"]') === null, true);
     await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "win98" }, onChange: async () => true }));
-    assert.equal(document.querySelector<HTMLInputElement>('.theme-trail-option input')?.checked, true);
+    assert.equal(document.querySelector<HTMLInputElement>('[role="switch"][aria-label="Windows 98 窗口拖影"]')?.checked, true);
     await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "winxp", win98Trail: false }, onChange: async () => true }));
-    assert.equal(document.querySelector(".theme-trail-option") === null, true);
+    assert.equal(document.querySelector('[role="switch"][aria-label="Windows 98 窗口拖影"]') === null, true);
   } finally { await h.close(); }
 });
 

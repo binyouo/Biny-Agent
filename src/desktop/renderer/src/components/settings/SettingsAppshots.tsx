@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppshotsApi, AppshotsState } from "../../../../../computer/appshotsProtocol.js";
+import { NativeSelect } from "../NativeSelect.js";
 import { Icon } from "../Icon.js";
 import { SettingsSegmentedControl } from "./SettingsSegmentedControl.js";
 
@@ -81,7 +82,6 @@ export function SettingsAppshots(): React.JSX.Element {
 
   return <div className="settings-sections appshot-settings">
     <section className="cu-card appshot-hero">
-      <span aria-hidden="true" className="appshot-hero-badge"><Icon name="camera" size={24} /></span>
       <div className="appshot-hero-copy">
         <h3>窗口截图</h3>
         <p className="cu-description">截取前台窗口及无障碍文本，放入聊天草稿；发送后才交给模型。</p>
@@ -104,7 +104,7 @@ export function SettingsAppshots(): React.JSX.Element {
           {current ? <p className="appshot-error" role="alert">
             {appshotError(current)}
             {/accessibility|ax_not_granted|appshot_tap_unavailable/.test(current) ? <button
-              className="appshot-link" type="button" disabled={!api || pending !== undefined}
+              className="settings-action settings-text-action appshot-link" type="button" disabled={!api || pending !== undefined}
               onClick={() => void perform("accessibility", async () => { await window.binyComputer.requestAccessibility(); return await api.prewarm(); })}
             >打开辅助功能设置</button> : null}
           </p> : null}
@@ -112,7 +112,7 @@ export function SettingsAppshots(): React.JSX.Element {
         <div className="appshot-field">
           <span className="appshot-select">
             {spinner ? <Icon className="appshot-spin" name="loader" size={12} /> : null}
-            <select
+            <NativeSelect className="settings-field"
               aria-labelledby="appshot-hotkey-label" disabled={!api || !settings || pending !== undefined}
               value={selectedHotkey}
               onChange={event => void perform("hotkey", () => api.settings({ ...settings!, hotkey: event.target.value }))}
@@ -120,7 +120,7 @@ export function SettingsAppshots(): React.JSX.Element {
               {hotkey && !known ? <option value={hotkey}>{hotkey}</option> : null}
               {SHORTCUTS.map(entry => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
               <option value="">关闭</option>
-            </select>
+            </NativeSelect>
           </span>
         </div>
       </div>
@@ -145,7 +145,7 @@ export function SettingsAppshots(): React.JSX.Element {
           <p>截取前台窗口，检查权限是否可用。</p>
         </div>
         <button
-          type="button" className="settings-secondary-button" disabled={!api || pending !== undefined}
+          type="button" className="settings-action settings-secondary-button" disabled={!api || pending !== undefined}
           onClick={() => void perform("capture", () => api.capture())}
         >{pending === "capture" ? "正在截图…" : "立即截图"}</button>
       </div>
@@ -158,15 +158,15 @@ export function SettingsAppshots(): React.JSX.Element {
       </p>
       <div className="cu-button-row">
         <button
-          type="button" className="settings-secondary-button" disabled={!api || pending !== undefined}
+          type="button" className="settings-action settings-secondary-button" disabled={!api || pending !== undefined}
           onClick={() => void perform("prewarm", () => api.prewarm())}
         >{pending === "prewarm" ? "正在预处理…" : "预热与重试"}</button>
         <button
-          type="button" className="settings-secondary-button"
+          type="button" className="settings-action settings-secondary-button"
           onClick={() => void window.biny.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")}
         >辅助功能设置</button>
         <button
-          type="button" className="settings-secondary-button"
+          type="button" className="settings-action settings-secondary-button"
           onClick={() => void window.biny.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")}
         >屏幕录制设置</button>
       </div>

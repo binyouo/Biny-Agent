@@ -91,30 +91,30 @@ export function AcpProviderPanel({ catalog, connection, currentModel, onSave, on
               { action: "复制登录命令", command: setup.loginCommand }
             ].map((step) => <div className="acp-setup-step" key={step.action}>
               <code>{step.command}</code>
-              <button type="button" className="settings-secondary-button" onClick={() => void copy(step.command)}>{step.action}</button>
+              <button type="button" className="settings-action settings-secondary-button" onClick={() => void copy(step.command)}>{step.action}</button>
             </div>)}
-            <button type="button" className="settings-secondary-button" onClick={() => void window.biny.openExternal(setup.docsUrl).catch(() => { setMessage("无法打开安装说明，请检查系统浏览器。"); setFailed(true); })}>安装说明</button>
+            <button type="button" className="settings-action settings-secondary-button" onClick={() => void window.biny.openExternal(setup.docsUrl).catch(() => { setMessage("无法打开安装说明，请检查系统浏览器。"); setFailed(true); })}>安装说明</button>
           </div>
         </details>
       </> : null}
       <details className="provider-endpoint-details acp-advanced" open={!catalog.acpSetup}>
         <summary><span>{catalog.acpSetup ? "高级设置" : "启动配置"}</span></summary>
         <div className="provider-connection-fields">
-          <label>连接名称<input value={alias} disabled={Boolean(connection)} onChange={(event) => setAlias(event.target.value)} /></label>
-          <label>启动命令<input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="可执行文件或绝对路径" spellCheck={false} /></label>
-          <label>参数（JSON 数组）<input value={args} onChange={(event) => setArgs(event.target.value)} spellCheck={false} /></label>
-          <label>环境变量引用（变量名 → 本机变量名）<input value={env} onChange={(event) => setEnv(event.target.value)} placeholder={'{"API_KEY":"MY_AGENT_KEY"}'} spellCheck={false} /></label>
-          <label>认证方式 ID（可选）<input value={auth} onChange={(event) => setAuth(event.target.value)} spellCheck={false} /></label>
-          <label>MCP 服务名（每行一个，完全访问模式下授权整个服务）<textarea value={mcp} onChange={(event) => setMcp(event.target.value)} rows={3} spellCheck={false} /></label>
+          <label>连接名称<input className="settings-field" value={alias} disabled={Boolean(connection)} onChange={(event) => setAlias(event.target.value)} /></label>
+          <label>启动命令<input className="settings-field" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="可执行文件或绝对路径" spellCheck={false} /></label>
+          <label>参数（JSON 数组）<input className="settings-field" value={args} onChange={(event) => setArgs(event.target.value)} spellCheck={false} /></label>
+          <label>环境变量引用（变量名 → 本机变量名）<input className="settings-field" value={env} onChange={(event) => setEnv(event.target.value)} placeholder={'{"API_KEY":"MY_AGENT_KEY"}'} spellCheck={false} /></label>
+          <label>认证方式 ID（可选）<input className="settings-field" value={auth} onChange={(event) => setAuth(event.target.value)} spellCheck={false} /></label>
+          <label>MCP 服务名（每行一个，完全访问模式下授权整个服务）<textarea className="settings-field" value={mcp} onChange={(event) => setMcp(event.target.value)} rows={3} spellCheck={false} /></label>
         </div>
       </details>
       {result?.acp || model !== "default" || mode ? <>
-        <label>模型<NativeSelect value={model} onChange={(event) => setModel(event.target.value)}>
+        <label>模型<NativeSelect className="settings-field" value={model} onChange={(event) => setModel(event.target.value)}>
           <option value="default">Agent 默认模型</option>
           {model !== "default" && !result?.acp?.models.some((item) => item.id === model) ? <option value={model}>{model}</option> : null}
           {result?.acp?.models.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
         </NativeSelect></label>
-        <label>运行模式<NativeSelect value={mode} onChange={(event) => setMode(event.target.value)}>
+        <label>运行模式<NativeSelect className="settings-field" value={mode} onChange={(event) => setMode(event.target.value)}>
           <option value="">Agent 默认模式</option>
           {mode && !result?.acp?.modes.some((item) => item.id === mode) ? <option value={mode}>{mode}</option> : null}
           {result?.acp?.modes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -123,8 +123,8 @@ export function AcpProviderPanel({ catalog, connection, currentModel, onSave, on
       <SettingsSwitch label="允许此 Agent 接收 Biny 记忆" checked={allowMemory} onChange={setAllowMemory} disabled={busy} detail="还需开启聊天记忆。关闭后停止新注入，已发送的内容仍可能保留在外部历史中。" />
       <p>仅连接可信程序。外部 Agent 可访问本机文件；Biny 只能处理它主动发出的审批。</p>
       <div className="settings-row-actions">
-        <button type="button" className="settings-primary-button" disabled={!command.trim()} onClick={execute}>{busy ? "正在连接并保存…" : "连接并保存"}</button>
-        {onDelete ? <button type="button" className="settings-secondary-button" onClick={onDelete}>删除连接</button> : null}
+        <button type="button" className="settings-action settings-primary-button" disabled={!command.trim()} onClick={execute}>{busy ? "正在连接并保存…" : "连接并保存"}</button>
+        {onDelete ? <button type="button" className="settings-action settings-secondary-button" onClick={onDelete}>删除连接</button> : null}
       </div>
     </fieldset>
     {message ? <p role={failed ? "alert" : "status"}>{message}</p> : null}

@@ -246,10 +246,11 @@
   .inspector-browser-actions { margin-left: auto; }
 }
 @container browser-panel (max-width: 470px) {
-  .inspector-browser-preview-action { flex: 1; justify-content: flex-start; }
-  .inspector-browser-actions { order: 2; }
+  /* 窄面板时预览按钮按内容收缩，不再拉伸占满整行。 */
+  .inspector-browser-preview-action { flex: 0 0 auto; }
+  .inspector-browser-actions { order: 2; margin-left: auto; }
   .inspector-browser-history { order: 3; border-left: 0; padding-left: 0; }
-  .inspector-browser-address { order: 4; flex-basis: 140px; }
+  .inspector-browser-address { order: 4; flex: 1 1 120px; min-width: 0; }
 }
 .inspector-preview-failure { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-bottom: 1px solid var(--biny-border); color: var(--biny-danger); font-size: 12px; }
 .inspector-preview-failure > div { flex: 1; min-width: 0; }
@@ -272,6 +273,8 @@
 .inspector-profile-picker > button small { color: var(--biny-text-secondary); }
 .inspector-browser-slot { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .inspector-browser-slot > .inspector-empty, .file-browser-content > .inspector-empty { box-sizing: border-box; height: 100%; }
+/* 欢迎区块在槽位不足整页高度时允许滚动，避免图标和说明被裁掉一半。 */
+.inspector-browser-slot > .inspector-empty { overflow: auto; }
 .inspector-browser-progress { flex: 0 0 2px; background: var(--biny-focus); }
 
 /* 外壳负责开合裁切，文件树和预览只按最终可用宽度排版。 */

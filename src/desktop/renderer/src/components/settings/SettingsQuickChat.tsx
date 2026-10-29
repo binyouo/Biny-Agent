@@ -50,10 +50,10 @@ export function SettingsQuickChat(): React.JSX.Element {
 
   if (loadError) {
     return <div className="settings-load-state"><div role="alert"><h3>无法加载快速对话设置</h3><p>{loadError}</p></div>
-      <button aria-label="重新加载快速对话设置" className="settings-secondary-button" onClick={() => setAttempt((value) => value + 1)} type="button">重新加载</button></div>;
+      <button aria-label="重新加载快速对话设置" className="settings-action settings-secondary-button" onClick={() => setAttempt((value) => value + 1)} type="button">重新加载</button></div>;
   }
   if (!settings) {
-    return <div className="settings-sections"><section className="appearance-card"><p className="quickchat-hint">正在加载快速对话设置…</p></section></div>;
+    return <div className="settings-load-state"><h3>快速对话</h3><p role="status">正在加载快速对话设置…</p></div>;
   }
 
   return (
@@ -85,7 +85,7 @@ export function SettingsQuickChat(): React.JSX.Element {
       </section>
       {saveError ? <div className="settings-inline-error">
         <p className="settings-save-error" role="alert">{saveError}。保存尚未确认，待保存的选择已保留。</p>
-        <button aria-label="重试保存快速对话设置" className="settings-secondary-button" onClick={() => update({})} type="button">重试保存</button>
+        <button aria-label="重试保存快速对话设置" className="settings-action settings-secondary-button" onClick={() => update({})} type="button">重试保存</button>
       </div> : null}
       {saving ? <p className="settings-inline-status" role="status">正在保存…</p> : null}
     </div>

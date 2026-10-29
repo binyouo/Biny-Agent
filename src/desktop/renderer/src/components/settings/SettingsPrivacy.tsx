@@ -79,7 +79,7 @@ function PrivacyRecords({ projectId, enabled }: { projectId: string; enabled: bo
     {!data && !error ? <p role="status">正在读取记录…</p> : null}
     <div hidden={selected !== undefined}>
       <div className="privacy-overview">
-        <div className="privacy-toolbar"><h3>本机脱敏记录</h3><div className="privacy-modes" role="group" aria-label="时间范围">
+        <div className="privacy-toolbar"><h3>本机脱敏记录</h3><div className="settings-choice-tabs privacy-modes" role="group" aria-label="时间范围">
           {[7, 30].map(value => <button type="button" key={value} aria-pressed={days === value} onClick={() => { setDays(value); setDay(""); setPage(0); }}>{value} 天</button>)}
         </div></div>
         <div className="privacy-summary"><strong>{view.total.toLocaleString()}<span>处替换</span></strong><span>{view.records.length} 次请求 · {replaced} 次含替换{view.records.length > replaced ? `，${view.records.length - replaced} 次原样发送` : ""}</span></div>
@@ -95,12 +95,12 @@ function PrivacyRecords({ projectId, enabled }: { projectId: string; enabled: bo
           onSessionChange={(value) => { setSession(session === value ? "" : value); setPage(0); }}
           onProviderChange={(value) => { setProvider(provider === value ? "" : value); setPage(0); }} />
       </div>
-      <div className="privacy-toolbar privacy-filters"><select aria-label="筛选供应商" value={provider} onChange={(e) => { setProvider(e.target.value); setPage(0); }}><option value="">所有供应商</option>{providers.map((p) => <option key={p}>{p}</option>)}</select>
-        <select aria-label="筛选会话" value={session} onChange={(e) => { setSession(e.target.value); setPage(0); }}><option value="">所有会话</option>{sessions.map((s) => <option key={s} value={s}>会话 {s.slice(-6)}</option>)}</select>
-        <div className="privacy-actions"><button type="button" className="settings-text-action" disabled={loading || clearing} onClick={() => void state.refresh(true)}>{loading ? "刷新中…" : "刷新"}</button>
-          <button type="button" className="settings-text-action" disabled={clearing || !records.length} onClick={() => void clear()}>清除</button></div>
+      <div className="privacy-toolbar privacy-filters"><select className="settings-field" aria-label="筛选供应商" value={provider} onChange={(e) => { setProvider(e.target.value); setPage(0); }}><option value="">所有供应商</option>{providers.map((p) => <option key={p}>{p}</option>)}</select>
+        <select className="settings-field" aria-label="筛选会话" value={session} onChange={(e) => { setSession(e.target.value); setPage(0); }}><option value="">所有会话</option>{sessions.map((s) => <option key={s} value={s}>会话 {s.slice(-6)}</option>)}</select>
+        <div className="privacy-actions"><button type="button" className="settings-action settings-text-action" disabled={loading || clearing} onClick={() => void state.refresh(true)}>{loading ? "刷新中…" : "刷新"}</button>
+          <button type="button" className="settings-action settings-text-action" disabled={clearing || !records.length} onClick={() => void clear()}>清除</button></div>
       </div>
-      <div className="privacy-type-filters" role="group" aria-label="筛选敏感类型"><button type="button" aria-pressed={!kind} onClick={() => { setKind(""); setPage(0); }}>全部</button>
+      <div className="settings-choice-tabs privacy-type-filters" role="group" aria-label="筛选敏感类型"><button type="button" aria-pressed={!kind} onClick={() => { setKind(""); setPage(0); }}>全部</button>
         {kinds.map(value => <button type="button" key={value} aria-pressed={kind === value} onClick={() => { setKind(kind === value ? "" : value); setPage(0); }}>{privacyKinds[value] ?? value}</button>)}
         {provider || session || kind || day ? <button type="button" onClick={reset}>重置筛选</button> : null}
       </div>
@@ -112,15 +112,15 @@ function PrivacyRecords({ projectId, enabled }: { projectId: string; enabled: bo
         <strong>{record.count}</strong><span aria-hidden="true">›</span>
       </button></li>)}</ul>
       {view.records.length > 20 ? <div className="privacy-toolbar privacy-pagination"><span>{currentPage * 20 + 1}–{Math.min((currentPage + 1) * 20, view.records.length)} / {view.records.length}</span><div className="privacy-actions">
-        <button type="button" className="settings-text-action" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>上一页</button>
-        <button type="button" className="settings-text-action" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>下一页</button>
+        <button type="button" className="settings-action settings-text-action" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>上一页</button>
+        <button type="button" className="settings-action settings-text-action" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>下一页</button>
       </div></div> : null}
       <p className="privacy-note">内存满时移除最早记录；退出运行进程后清空。</p>
     </div>
-    {selected ? <div className="privacy-request-detail"><div className="privacy-toolbar"><button type="button" className="settings-text-action" onClick={back}>‹ 返回列表</button>
+    {selected ? <div className="privacy-request-detail"><div className="privacy-toolbar"><button type="button" className="settings-action settings-text-action" onClick={back}>‹ 返回列表</button>
       <div className="privacy-actions"><span>{selectedIndex >= 0 ? `${selectedIndex + 1} / ${view.records.length}` : ""}</span>
-        <button type="button" className="settings-text-action" disabled={selectedIndex <= 0} onClick={() => setSelected(view.records[selectedIndex - 1]?.id)}>上一条</button>
-        <button type="button" className="settings-text-action" disabled={selectedIndex < 0 || selectedIndex + 1 >= view.records.length} onClick={() => setSelected(view.records[selectedIndex + 1]?.id)}>下一条</button>
+        <button type="button" className="settings-action settings-text-action" disabled={selectedIndex <= 0} onClick={() => setSelected(view.records[selectedIndex - 1]?.id)}>上一条</button>
+        <button type="button" className="settings-action settings-text-action" disabled={selectedIndex < 0 || selectedIndex + 1 >= view.records.length} onClick={() => setSelected(view.records[selectedIndex + 1]?.id)}>下一条</button>
       </div></div>
       {detailError ? <p role="alert">{detailError}</p> : !detail || detail.id !== selected ? <p role="status">正在读取请求详情…</p> : <>
         <p className="privacy-detail-caption">{new Date(detail.time).toLocaleString()}</p>

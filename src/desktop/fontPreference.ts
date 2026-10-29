@@ -8,7 +8,7 @@ import type { DesktopFontPreference } from "./protocol.js";
 
 export const MIN_FONT_SIZE = 10;
 export const MAX_FONT_SIZE = 32;
-/** 默认字号与 Alma 的界面默认一致（13px），也是样式表尺寸的设计基准。 */
+/** 默认界面字号（13px），也是样式表尺寸的设计基准。 */
 export const DEFAULT_FONT_SIZE = 13;
 /** family 取该值时跟随操作系统字体，不注入自定义字体族。 */
 export const SYSTEM_FONT_FAMILY = "system";

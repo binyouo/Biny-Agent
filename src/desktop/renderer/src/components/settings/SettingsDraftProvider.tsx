@@ -35,6 +35,49 @@ import type {
 } from "../../../../protocol.js";
 import { canReuseSettingsSnapshot, SettingsDraftContext, type DesktopSettingsDraft, type SettingsDraftContextValue, type SettingsSaveState } from "./SettingsDraftContext.js";
 
+// 请求与 adoption 分开缓存：打开设置要在 shell 生命周期结束前预热同一 IPC，
+// 但之前的快照/draft 绝不能跨项目 scope 沿用，否则旧界面会闪别的项目的内容。
+// in-flight 与快照各自独立缓存 —— pending 时订阅同一 promise，resolve 后写 persisted
+// 并从 in-flight 移除；bridge 换主时一并失效。
+const persistedSnapshots = { owner: undefined as object | undefined, map: new Map<string, DesktopSettingsSnapshot>() };
+const inFlightRequests = { owner: undefined as object | undefined, map: new Map<string, Promise<DesktopSettingsSnapshot>>() };
+
+function bucket<T>(store: { owner: object | undefined; map: Map<string, T> }, owner: object): Map<string, T> {
+  if (store.owner !== owner) {
+    store.map.clear();
+    store.owner = owner;
+  }
+  return store.map;
+}
+
+function readPersistedSnapshot(owner: object, key: string): DesktopSettingsSnapshot | undefined {
+  return persistedSnapshots.owner === owner ? persistedSnapshots.map.get(key) : undefined;
+}
+
+function writePersistedSnapshot(owner: object, key: string, next: DesktopSettingsSnapshot): void {
+  bucket(persistedSnapshots, owner).set(key, next);
+}
+
+/** 应用层在用户点设置前调用：同一 project+session 只预热一次。resolve 后写 persisted 缓存并释放 in-flight。 */
+export function warmSettingsSnapshot(projectId: string | undefined, sessionId: string | undefined): void {
+  // 无项目时 provider 走的是 activitySettings（纯内存读，不需要预热）。
+  if (projectId === undefined) return;
+  const key = `${projectId}::${sessionId ?? ""}`;
+  const requests = bucket(inFlightRequests, window.biny);
+  if (requests.has(key)) return;
+  const request = window.biny.settingsSnapshot(projectId, sessionId);
+  requests.set(key, request);
+  const drop = (): void => {
+    if (requests.get(key) === request) requests.delete(key);
+  };
+  // resolve 时顺手把快照写进模块缓存：预热完成但用户没打开设置时，下次 mount
+  // 用 persisted 直接渲染；reject 时立即释放，下次打开走正常加载。
+  void request.then(next => {
+    writePersistedSnapshot(window.biny, key, next);
+    drop();
+  }, () => drop());
+}
+
 export function SettingsDraftProvider({
   active,
   children,
@@ -58,26 +101,31 @@ export function SettingsDraftProvider({
   sessionId?: string;
   sessionRunning: boolean;
 }): React.JSX.Element {
-  const [snapshot, setSnapshot] = useState<DesktopSettingsSnapshot>();
   // 关掉设置窗口不销毁缓存：下次打开先用它渲染，后台再校验一次，
   // 避免每次都从零走一趟 IPC（这正是"进设置先看到正在加载"的来源）。
   const cacheKey = `${projectId ?? ""}::${sessionId ?? ""}`;
+  const initialCached = readPersistedSnapshot(window.biny, cacheKey);
+  const [snapshot, setSnapshot] = useState<DesktopSettingsSnapshot | undefined>(initialCached);
   const cacheKeyRef = useRef(cacheKey);
-  const reusableCacheRef = useRef<{ key: string } | undefined>(undefined);
+  const reusableCacheRef = useRef<{ key: string } | undefined>(
+    initialCached === undefined ? undefined : { key: cacheKey }
+  );
   const lastLoadAttemptRef = useRef(0);
   useEffect(() => () => { void window.biny.previewAppearance(null).catch((error: unknown) => onNotify(`恢复外观失败：${error instanceof Error ? error.message : String(error)}`)); }, [onNotify]);
-  const [draft, setDraft] = useState<DesktopSettingsDraft>();
+  const [draft, setDraft] = useState<DesktopSettingsDraft | undefined>(() =>
+    initialCached === undefined ? undefined : draftFromSnapshot(initialCached)
+  );
   const [globalActivity, setGlobalActivity] = useState<DesktopActivitySettingsUpdate>();
   const globalActivityRef = useRef<DesktopActivitySettingsUpdate | undefined>(undefined);
   const [loadError, setLoadError] = useState<string>();
-  const [loading, setLoading] = useState(active);
+  const [loading, setLoading] = useState(active && initialCached === undefined);
   const [revalidating, setRevalidating] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [saveError, setSaveError] = useState<string>();
   const [pendingModelEdits, reportModelEditState] = useState(false);
   const [saveState, setSaveState] = useState<SettingsSaveState>("clean");
   const credentialHandlesRef = useRef(new Set<string>());
-  const snapshotRef = useRef<DesktopSettingsSnapshot | undefined>(undefined);
+  const snapshotRef = useRef<DesktopSettingsSnapshot | undefined>(initialCached);
   useLayoutEffect(() => { cacheKeyRef.current = cacheKey; }, [cacheKey]);
   const loadGenerationRef = useRef(0);
   const activityUpdateTailRef = useRef(Promise.resolve());
@@ -85,6 +133,7 @@ export function SettingsDraftProvider({
   const adoptSnapshot = useCallback((next: DesktopSettingsSnapshot, submittedDraft?: DesktopSettingsDraft, refreshing = false): void => {
     snapshotRef.current = next;
     setSnapshot(next);
+    writePersistedSnapshot(window.biny, cacheKeyRef.current, next);
     // 记下这份快照属于哪个项目；下次打开同一项目时可以先拿它渲染。
     // 这里必须用 cacheKeyRef 而不是闭包里的 projectId/sessionId —— adoptSnapshot 的
     // 依赖数组不含它们，闭包里读到的是旧值，会给快照挂错 key。
@@ -125,9 +174,9 @@ export function SettingsDraftProvider({
       setRevalidating(true);
       setLoadError(undefined);
     } else {
-      setSnapshot(undefined);
-      snapshotRef.current = undefined;
-      setDraft(undefined);
+      // 无缓存可走 stale-while-revalidate：初始 state 已是空，只需点亮加载态。
+      // 模块级缓存保证 scope 唯一，跨项目/会话 remount 时新实例从 initialCached 起步，
+      // 不可能出现"同实例换 cacheKey"的场景（key={scope} 会让 React 重建整个 Provider）。
       setGlobalActivity(undefined);
       globalActivityRef.current = undefined;
       setLoadError(undefined);
@@ -138,8 +187,13 @@ export function SettingsDraftProvider({
     }
     // 没有项目时只读取全局 Activity 快照，不伪造项目 ID，也不加载项目模型或会话。
     const refreshBase = snapshotRef.current;
+    // 预热请求（warmSettingsSnapshot）与正常读取共用同一个 promise：打开设置时
+    // 数据可能已经在路上甚至已到达，只订阅一次，不重复 IPC。
+    const warmed = bucket(inFlightRequests, window.biny);
+    const pending = warmed.get(cacheKey);
+    warmed.delete(cacheKey);
     const request = projectId
-      ? window.biny.settingsSnapshot(projectId, sessionId).then((next) => {
+      ? (pending ?? window.biny.settingsSnapshot(projectId, sessionId)).then((next) => {
         if (!cancelled && snapshotRef.current === refreshBase) adoptSnapshot(next, refreshBase ? draftFromSnapshot(refreshBase) : undefined, reusable);
       })
       : window.biny.activitySettings().then((next) => {

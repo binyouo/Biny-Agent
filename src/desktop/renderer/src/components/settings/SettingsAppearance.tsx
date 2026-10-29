@@ -62,7 +62,7 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, d
         <div className="settings-row-group">
           <div className="settings-preference-row" id="appearance-font">
             <div className="settings-row-copy"><label htmlFor="appearance-font-family">界面字体</label></div>
-            <NativeSelect
+            <NativeSelect className="settings-field"
               id="appearance-font-family"
               onChange={(event) => onFontChange({ ...font, family: event.target.value })}
               value={font.family}
@@ -74,7 +74,7 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, d
             <div className="settings-row-copy"><label htmlFor="appearance-font-size">字体大小</label><p>同时缩放控件。</p></div>
             <div className="font-size-row">
               <input
-                className="font-size-input"
+                className="settings-field font-size-input"
                 id="appearance-font-size"
                 max={MAX_FONT_SIZE}
                 min={MIN_FONT_SIZE}
@@ -94,7 +94,7 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, d
             <p style={{ fontFamily: font.family === SYSTEM_FONT_FAMILY ? undefined : `"${font.family.replaceAll('"', '')}", var(--font-sans-stack)`, fontSize: font.size }}>
               这是一段文字预览，用于检查字号和阅读效果。<br /><span>The quick brown fox jumps over the lazy dog. 0123456789</span>
             </p>
-            <button aria-label="恢复默认字体" className="settings-text-action" disabled={font.family === SYSTEM_FONT_FAMILY && font.size === DEFAULT_FONT_PREFERENCE.size}
+            <button aria-label="恢复默认字体" className="settings-action settings-text-action" disabled={font.family === SYSTEM_FONT_FAMILY && font.size === DEFAULT_FONT_PREFERENCE.size}
               onClick={() => onFontChange({ ...DEFAULT_FONT_PREFERENCE })} type="button">恢复默认</button>
           </div>
         </div>

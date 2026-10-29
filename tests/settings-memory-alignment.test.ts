@@ -76,8 +76,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     document.body.append(dialogHost);
     await act(async () => { root.render(createElement(SettingsDetailHostContext.Provider, { value: dialogHost },
       createElement(SettingsDraftContext.Provider, { value: context }, createElement(SettingsMemory, props)))); });
-    const mascotState = () => document.querySelector('#memory-add .app-icon')?.getAttribute('data-state');
-    assert.equal(mascotState(), 'idle', '读取已有记忆不播放保存动画');
+    assert.equal(document.querySelector('#memory-add .app-icon'), null, '添加记忆标题不展示萌宠图标');
     const memoryInput = document.querySelector<HTMLTextAreaElement>('#memory-add textarea')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!.call(memoryInput, '喜欢本地保存');
@@ -85,11 +84,10 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     });
     const addMemoryButton = document.querySelector<HTMLButtonElement>('#memory-add button')!;
     await act(async () => { addMemoryButton.click(); });
-    assert.equal(mascotState(), 'idle', '写入失败不收纳记忆');
     assert.ok(notices.includes('保存失败'));
     rejectMemorySave = false;
     await act(async () => { addMemoryButton.click(); });
-    assert.equal(mascotState(), 'remember', '写入成功回执驱动收纳动作');
+    assert.equal(notices.at(-1), '记忆已添加');
     const button = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("清空全部"));
     assert.deepEqual([...document.querySelectorAll('.activity-memory-settings > section')].slice(0, 6).map(node => node.id),
       ["memory-feature", "memory-retrieval", "memory-summarization", "memory-search", "memory-list", "memory-add"],

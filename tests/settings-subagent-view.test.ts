@@ -28,19 +28,22 @@ test("Coding Agent settings show configured ACP providers and keep disabled or b
     assert.deepEqual([...native.querySelectorAll<HTMLSelectElement>('[aria-label="默认 Coding Agent"] option')].map(option => option.textContent),
       ["自动", "Claude Code", "内置 Agent", "Claude Code", "Codex CLI", "Offline"]);
     assert.equal(native.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"] option[value="acp:offline"]')?.disabled, true);
-    assert.match(native.body.textContent!, /ACP Providers: 3/u);
+    assert.match(native.body.textContent!, /已配置 3 个 ACP 连接/u);
     assert.match(native.body.textContent!, /沿用当前聊天模型/);
     assert.doesNotMatch(native.body.textContent!, /沙箱测试限制/);
     assert.match(render("auto").body.textContent!, /优先.*Claude Code/);
     const acp = render("acp", true, false, undefined, "worker");
     assert.equal(acp.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "acp:worker");
     assert.match(acp.body.textContent!, /沙箱测试限制/);
+    assert.match(acp.querySelector(".settings-subagent-help")!.textContent!, /通过所选 ACP 连接/u);
+    assert.doesNotMatch(acp.querySelector(".settings-subagent-help")!.textContent!, /内置 Agent/u);
+    assert.match(render("claude-code").querySelector(".settings-subagent-help")!.textContent!, /CLI 默认模型/u);
     assert.equal(render("acp", true, false, undefined, "other-worker").querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "acp:other-worker");
-    assert.doesNotMatch(render("builtin", true, false, undefined, undefined, false).body.textContent!, /添加外部 Agent|管理 Agent 连接|ACP Providers: [1-9]/u);
+    assert.doesNotMatch(render("builtin", true, false, undefined, undefined, false).body.textContent!, /已配置 [1-9] 个 ACP 连接/u);
     const cli = render("codex", true, false, "custom-id");
     assert.equal(cli.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "auto");
     assert.equal(cli.querySelector('input'), null);
-    assert.match(cli.body.textContent!, /直接使用本地安装的 Claude Code CLI/u);
+    assert.match(cli.body.textContent!, /优先使用本机 Claude Code/u);
     assert.ok(render("codex", true, true).querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]:disabled'));
     assert.equal(render("acp", true, false, "missing").querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "auto");
   } finally { await vite.close(); }

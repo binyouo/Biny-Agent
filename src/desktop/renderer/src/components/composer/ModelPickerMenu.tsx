@@ -11,10 +11,13 @@ import type { CSSProperties, RefObject } from "react";
 import type { ModelChoice } from "../../../../../llm/ModelManager.js";
 import type { ThinkingSelection } from "../../../../../llm/modelThinking.js";
 import { catalogForConnection } from "../../providerCatalog.js";
+import { resolveProviderIconId } from "../../providerIconIds.js";
 import { useClosingPresence } from "../../useClosingPresence.js";
 import { useFluidHoverItems } from "../../useFluidHoverItems.js";
 import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import { Icon } from "../Icon.js";
+import { ProviderBrandGlyph } from "../ProviderBrandGlyph.js";
+import { ProviderBrandIcon } from "../ProviderBrandIcon.js";
 
 type PickerSection = "model" | "thinking";
 
@@ -22,6 +25,11 @@ interface ModelGroup {
   key: string;
   label: string;
   providerAlias: string;
+  /** 服务商目录给出的品牌图标；自定义连接回退到 iconTone 字母标。 */
+  iconId?: string;
+  iconTone: string;
+  /** 连接 baseUrl 的 host，展示在组头右侧帮助区分同服务商的不同端点。 */
+  host?: string;
   models: ModelChoice[];
 }
 
@@ -367,10 +375,9 @@ function ModelSubmenu({ currentAlias, groups, onSelect, unsetLabel }: { currentA
   }, [groups]);
 
   return (
-    <div className="model-picker-submenu" ref={listRef} {...hover.handlers}>
-      <FluidHoverHighlight hover={hover} className="has-row-radius" />
+    <div className="model-picker-submenu">
       <div className="model-picker-submenu-heading">模型</div>
-      <label className="model-search model-picker-search">
+      <label className="model-picker-search">
         <Icon name="search" size={13} />
         <input
           aria-label="搜索模型"
@@ -380,47 +387,86 @@ function ModelSubmenu({ currentAlias, groups, onSelect, unsetLabel }: { currentA
           value={query}
         />
       </label>
-      {unsetLabel ? (
-        <button
-          aria-checked={currentAlias === undefined}
-          className={`model-picker-submenu-option${currentAlias === undefined ? " is-selected" : ""}`}
-          onClick={() => onSelect("")}
-          role="menuitemradio"
-          type="button"
-        >
-          <span className="model-picker-option-label"><strong>{unsetLabel}</strong></span>
-          {currentAlias === undefined ? <Icon name="check" size={14} /> : null}
-        </button>
-      ) : null}
-      {filteredGroups.map((group) => (
-        <div className="model-picker-submenu-group" key={group.key}>
-          <div className="model-picker-group-heading">
-            <span>{group.label}</span>
-            {duplicateLabels.has(group.label) ? <small>{group.providerAlias}</small> : null}
+      {/* 选项单独一层：滚动只发生在这里，流动高亮也在这个容器坐标系里量测，
+          不再受搜索框与分组头位移影响。 */}
+      <div className="model-picker-submenu-options" ref={listRef} {...hover.handlers}>
+        <FluidHoverHighlight hover={hover} className="has-row-radius" />
+        {unsetLabel ? (
+          <button
+            aria-checked={currentAlias === undefined}
+            className={`model-picker-submenu-option${currentAlias === undefined ? " is-selected" : ""}`}
+            onClick={() => onSelect("")}
+            role="menuitemradio"
+            type="button"
+          >
+            <span className="model-picker-option-check">{currentAlias === undefined ? <Icon name="check" size={14} /> : null}</span>
+            <span className="model-picker-option-label"><strong>{unsetLabel}</strong></span>
+          </button>
+        ) : null}
+        {filteredGroups.map((group) => (
+          <div className="model-picker-submenu-group" key={group.key}>
+            <div className="model-picker-group-heading">
+              <span className="model-picker-group-brand">
+                <ProviderBrandIcon
+                  className="provider-logo"
+                  fallback={<ProviderBrandGlyph type={group.iconTone} />}
+                  iconId={group.iconId}
+                />
+                <span>{group.label}</span>
+              </span>
+              <small>{duplicateLabels.has(group.label) ? group.providerAlias : group.host}</small>
+            </div>
+            {group.models.map((model) => {
+              const selected = model.alias === currentAlias;
+              return (
+                <button
+                  aria-checked={selected}
+                  className={`model-picker-submenu-option${selected ? " is-selected" : ""}`}
+                  key={model.alias}
+                  onClick={() => onSelect(model.alias)}
+                  role="menuitemradio"
+                  type="button"
+                >
+                  <span className="model-picker-option-check">{selected ? <Icon name="check" size={14} /> : null}</span>
+                  <span className="model-picker-option-label">
+                    <strong>{model.displayName}</strong>
+                    <ModelOptionBadges model={model} />
+                  </span>
+                  {model.alias !== model.displayName ? <small className="model-picker-option-alias">{model.alias}</small> : null}
+                </button>
+              );
+            })}
           </div>
-          {group.models.map((model) => {
-            const selected = model.alias === currentAlias;
-            return (
-              <button
-                aria-checked={selected}
-                className={`model-picker-submenu-option${selected ? " is-selected" : ""}`}
-                key={model.alias}
-                onClick={() => onSelect(model.alias)}
-                role="menuitemradio"
-                type="button"
-              >
-                <span className="model-picker-option-label">
-                  <strong>{model.displayName}</strong>
-                </span>
-                {selected ? <Icon name="check" size={14} /> : null}
-              </button>
-            );
-          })}
-        </div>
-      ))}
-      {!filteredGroups.length ? <div className="model-picker-submenu-empty">{groups.length ? "没有匹配的模型" : "没有可用模型"}</div> : null}
+        ))}
+        {!filteredGroups.length ? <div className="model-picker-submenu-empty">{groups.length ? "没有匹配的模型" : "没有可用模型"}</div> : null}
+      </div>
     </div>
   );
+}
+
+/** 模型行能力徽标：图片输入 → 工具调用 → 推理 → 上下文容量；与设置页徽标语义一致。 */
+function ModelOptionBadges({ model }: { model: ModelChoice }): React.JSX.Element | null {
+  const capabilities = model.capabilities;
+  const vision = capabilities?.vision === true;
+  const tools = model.supportsTools !== false && capabilities?.tools !== false;
+  const reasoning = capabilities?.reasoning === true || model.efforts.length > 0;
+  const context = model.contextWindow !== undefined && model.contextWindowIsFallback !== true
+    ? contextWindowLabel(model.contextWindow)
+    : undefined;
+  if (!vision && !tools && !reasoning && !context) return null;
+  return (
+    <span aria-hidden="true" className="model-picker-option-badges">
+      {vision ? <Icon name="eye" size={11} /> : null}
+      {tools ? <Icon name="wrench" size={11} /> : null}
+      {reasoning ? <Icon name="brain-spark" size={11} /> : null}
+      {context ? <small>{context}</small> : null}
+    </span>
+  );
+}
+
+/** 上下文容量缩写：百万位取 M、其余取 K；与设置页徽标同一口径。 */
+function contextWindowLabel(contextWindow: number): string {
+  return contextWindow >= 1e6 ? `${Math.round(contextWindow / 1e6)}M` : `${Math.round(contextWindow / 1e3)}K`;
 }
 
 function ThinkingSubmenu({ current, levels, onSelect }: { current?: ThinkingSelection; levels: ThinkingSelection[]; onSelect(thinking: ThinkingSelection): void }): React.JSX.Element {
@@ -462,12 +508,25 @@ function groupModels(models: ModelChoice[]): ModelGroup[] {
       key,
       label: catalog?.label ?? providerLabel(model.provider),
       providerAlias: model.provider,
+      iconId: resolveProviderIconId(undefined, catalog?.id),
+      iconTone: catalog?.iconTone ?? model.providerType,
+      host: hostLabel(model.baseUrl ?? catalog?.baseUrl),
       models: []
     };
     group.models.push(model);
     groups.set(key, group);
   }
   return [...groups.values()];
+}
+
+/** baseUrl 只留 host（去协议与路径），区分同服务商的不同端点；无法解析时不展示。 */
+function hostLabel(baseUrl: string | undefined): string | undefined {
+  if (!baseUrl) return undefined;
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return undefined;
+  }
 }
 
 function filterModelGroups(groups: ModelGroup[], query: string): ModelGroup[] {

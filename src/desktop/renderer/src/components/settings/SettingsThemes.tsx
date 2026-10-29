@@ -4,6 +4,7 @@ import { cloneAppearanceTheme, exportAppearanceTheme, getAppearancePalette, impo
 import { appearancePreferenceSchema, listAppearanceThemes } from "../../../../../appearance/preferences.js";
 import { palettePreviewColors } from "../../../../../appearance/palette.js";
 import type { AppearanceMode, AppearancePreference, CustomAppearanceTheme } from "../../../../../appearance/types.js";
+import { SettingsSwitch } from "./SettingsSwitch.js";
 import { ThemeEditor } from "./ThemeEditor.js";
 
 export function SettingsThemes({ preference, onChange, disabled }: { preference: AppearancePreference; onChange(preference: AppearancePreference): Promise<boolean>; disabled?: boolean }): React.JSX.Element {
@@ -49,8 +50,8 @@ export function SettingsThemes({ preference, onChange, disabled }: { preference:
     if (fileInput.current) fileInput.current.value = "";
   };
   return <div className="settings-theme-page"><fieldset className="settings-appearance-fieldset" disabled={disabled}>
-    <div className="theme-page-toolbar"><input type="search" aria-label="搜索主题" placeholder="搜索主题…" value={search} onChange={event => setSearch(event.target.value)} />
-      <button type="button" onClick={() => setEditor({ type: "dark" })}>创建主题</button><button type="button" onClick={() => fileInput.current?.click()}>导入主题</button>
+    <div className="theme-page-toolbar"><input className="settings-field" type="search" aria-label="搜索主题" placeholder="搜索主题…" value={search} onChange={event => setSearch(event.target.value)} />
+      <button className="settings-action settings-primary-button" type="button" onClick={() => setEditor({ type: "dark" })}>创建主题</button><button className="settings-action settings-secondary-button" type="button" onClick={() => fileInput.current?.click()}>导入主题</button>
       <input ref={fileInput} type="file" accept=".json,.lua" hidden onChange={event => { void importFile(event.target.files?.[0]); }} /></div>
     {error && !pendingDelete ? <p role="alert">{error}</p> : null}
     {(["dark", "light"] as const).map(type => {
@@ -63,18 +64,18 @@ export function SettingsThemes({ preference, onChange, disabled }: { preference:
           const custom = theme.id.startsWith("custom:");
           return <div className="theme-card-wrapper" key={theme.id}><button type="button" className="theme-card" aria-pressed={selected === theme.id} onClick={() => change({ ...preference, [field]: theme.id })}>
             <div className="theme-swatches">{palettePreviewColors(palette).map((color, index) => <span key={index} style={{ background: color }} />)}</div><span>{theme.displayName}</span>{selected === theme.id ? <span className="theme-card-check" aria-hidden="true">✓</span> : null}</button>
-            <div className="theme-card-actions"><button type="button" aria-label={`${custom ? "编辑" : "克隆"} ${theme.displayName}`} onClick={() => setEditor({ type, theme: custom ? palette as CustomAppearanceTheme : cloneAppearanceTheme(palette, `theme-${crypto.randomUUID()}`, `${theme.displayName} 副本`) })}>{custom ? "编辑" : "克隆"}</button>
-              <button type="button" aria-label={`导出 ${theme.displayName}`} onClick={() => download(theme.id, theme.displayName)}>导出</button>
-              {custom ? <button type="button" aria-label={`删除 ${theme.displayName}`} onClick={() => { setError(undefined); setPendingDelete(palette as CustomAppearanceTheme); }}>删除</button> : null}</div>
+            <div className="theme-card-actions"><button className="settings-action settings-text-action" type="button" aria-label={`${custom ? "编辑" : "克隆"} ${theme.displayName}`} onClick={() => setEditor({ type, theme: custom ? palette as CustomAppearanceTheme : cloneAppearanceTheme(palette, `theme-${crypto.randomUUID()}`, `${theme.displayName} 副本`) })}>{custom ? "编辑" : "克隆"}</button>
+              <button className="settings-action settings-text-action" type="button" aria-label={`导出 ${theme.displayName}`} onClick={() => download(theme.id, theme.displayName)}>导出</button>
+              {custom ? <button className="settings-action settings-text-action" type="button" aria-label={`删除 ${theme.displayName}`} onClick={() => { setError(undefined); setPendingDelete(palette as CustomAppearanceTheme); }}>删除</button> : null}</div>
           </div>;
         })}</div>{themes.every(theme => theme.type !== type) && search ? <p>没有匹配的主题。</p> : null}</section>;
     })}
-    {preference.lightTheme === "win98" ? <label className="theme-trail-option"><input type="checkbox" checked={preference.win98Trail} onChange={event => change({ ...preference, win98Trail: event.target.checked })} />Windows 98 窗口拖影<span>拖动窗口时留下冻结帧残影；仅 Windows 98 皮肤启用。</span></label> : null}
+    {preference.lightTheme === "win98" ? <SettingsSwitch checked={preference.win98Trail} label="Windows 98 窗口拖影" detail="拖动窗口时留下冻结帧残影；仅 Windows 98 皮肤启用。" onChange={win98Trail => change({ ...preference, win98Trail })} /> : null}
   </fieldset>{editor ? <ThemeEditor theme={editor.theme} initialMode={editor.type} onSave={save} onClose={() => setEditor(undefined)} /> : null}
     {pendingDelete ? <Dialog aria-label="删除主题" className="theme-delete-dialog" isOpen onOpenChange={isOpen => { if (!isOpen) closeDelete(); }} purpose="info" width={420} padding={4}>
       <h2>删除主题</h2><p>确定删除“{pendingDelete.displayName}”吗？如果正在使用，将恢复默认配色。</p>
       {error ? <p role="alert">{error}</p> : null}
-      <footer><button type="button" aria-label="取消删除主题" onClick={closeDelete}>取消</button><button type="button" aria-label="确认删除主题" disabled={disabled} onClick={confirmDelete}>删除</button></footer>
+      <footer><button className="settings-action settings-secondary-button" type="button" aria-label="取消删除主题" onClick={closeDelete}>取消</button><button className="settings-action settings-danger-button" type="button" aria-label="确认删除主题" disabled={disabled} onClick={confirmDelete}>删除</button></footer>
     </Dialog> : null}
   </div>;
 }
