@@ -253,6 +253,8 @@ Plugin 的 JavaScript 在 Biny 进程中运行。受管安装、路径校验和�
 
 具名定义放在 `.biny/agents/<name>.md`（项目级）或 `~/.config/biny/agents/`（全局）；项目级同名优先。`runtime` 可选 `auto`、`builtin`、`codex`、`claude-code`、`acp`，省略时使用 `extensions.subagent.runtime`，默认 `builtin`。`model` 优先使用定义值，其次使用 `extensions.subagent.model`；内置运行时最终可沿用主模型。显式 ACP 定义可用 `providerAlias` 选择连接并沿用 Agent 默认模型，也可设置该 Provider 下的模型别名；Codex CLI 仍需指定外部模型 ID。不自动安装或在执行失败后切换后端。
 
+已有定义若能解析名称、description 和正文，但 `runtime` 或 `isolation` 无效，会以「Unavailable」保留名称及来源；`agent list`、`/subagent agents` 和扩展报告显示原因。其他有效定义仍可加载，启用子代理的普通会话不因这一项失败。显式委派该名称会报告错误，不使用同名全局定义或其他后端替代；修正文档后下一次加载生效。`agent create` 仍拒绝无效定义，不写入文件。此隔离仅覆盖这两类已知名称校验错误；读取失败、目录问题、缺失必填字段与无法解析的 frontmatter 沿用原有处理，不承诺所有配置故障均被隔离。
+
 选择「自动」（`runtime: auto`）时，未指定模型的子代理在委派时查找本机可执行的 Claude Code CLI：找到则使用 Claude Code 自身的默认模型，未找到则使用 Biny 内置和主模型。不会自动选择 Codex 或 ACP 连接；显式模型别名使用内置运行方式，具名定义的 runtime 优先于全局默认。检测只确认可执行文件存在，不检查登录或服务可用性。选中 Claude Code 后仍执行外部子代理的权限与额度检查；校验、启动、登录或执行失败均直接报错，不再转用内置重跑。
 
 ```markdown
