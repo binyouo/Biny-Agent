@@ -1,3 +1,4 @@
+import type { DesktopSessionExportResult } from "../../protocol.js";
 import type { MaskRecord, MaskingOverview } from "../../../privacy/record.js";
 import { TaskCommunication, type TaskInspection, type TaskInspectionOptions } from "../../../runtime/TaskCommunication.js";
 import { readAttachment } from "../../../attachments/store.js";
@@ -2446,14 +2447,16 @@ export class DesktopAgentManager {
    * 导出会话到用户选定的文件。`targetPath` 由 IPC 层的保存对话框给出；用户取消时它是
    * undefined，这里就只回一份快照、不写任何文件。
    */
-  async exportSession(projectId: string, sessionId: string, format: "biny" | "claude", targetPath?: string): Promise<DesktopWorkspaceSnapshot> {
+  async exportSession(projectId: string, sessionId: string, format: "biny" | "claude", targetPath?: string): Promise<DesktopSessionExportResult> {
     const project = this.projects.requireProject(projectId);
-    if (targetPath) {
-      this.assertNoRunningTasks("任务运行期间不能导出会话。");
-      const exported = await this.projects.buildSessionExport(project, sessionId, format);
-      await this.projects.writeSessionExport(targetPath, exported);
-    }
-    return await this.workspaceSnapshot(projectId);
+    if (!targetPath) return { committed: false, warnings: [], snapshot: await this.workspaceSnapshot(projectId) };
+    this.assertNoRunningTasks("任务运行期间不能导出会话。");
+    const exported = await this.projects.buildSessionExport(project, sessionId, format);
+    const receipt = await this.projects.writeSessionExport(targetPath, exported);
+    const result: DesktopSessionExportResult = { committed: true, file: receipt.file, warnings: [...receipt.warnings] };
+    try { result.snapshot = await this.workspaceSnapshot(projectId); }
+    catch (error) { result.warnings.push(`导出文件已保存，但工作区刷新失败：${error instanceof Error ? error.message : String(error)}`); }
+    return result;
   }
 
   /**

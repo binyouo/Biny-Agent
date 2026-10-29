@@ -55,6 +55,7 @@ import {
   type ExportedSessionFile,
   type ImportedSession
 } from "../../../session/transfer.js";
+import { writeSessionExportFile, type SessionExportReceipt } from "../../../session/exportFile.js";
 import { gitInspectionEnvironment } from "../../../tools/git/environment.js";
 import { resolveWorkspaceDirectory, resolveWorkspacePath, toWorkspaceRelative } from "../../../workspace/resolvePath.js";
 import { readDesktopWorkspaceFileIndex } from "../../workspaceFileIndex.js";
@@ -782,9 +783,8 @@ export class DesktopProjectService {
   }
 
   /** 把导出内容写到用户在保存对话框里选定的路径，权限按 0600（含完整对话）。 */
-  async writeSessionExport(filePath: string, exported: ExportedSessionFile): Promise<void> {
-    await fs.writeFile(filePath, exported.content, { encoding: "utf8", mode: 0o600 });
-    await fs.chmod(filePath, 0o600);
+  async writeSessionExport(filePath: string, exported: ExportedSessionFile): Promise<SessionExportReceipt> {
+    return await writeSessionExportFile(filePath, exported.content);
   }
 
   /** 从外部文件导入一条新会话，返回新建会话 id；选中它由 DesktopAgentManager 负责。 */
