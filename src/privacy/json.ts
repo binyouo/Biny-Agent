@@ -88,6 +88,23 @@ function contextAt(root: unknown, path: string[]): { args: boolean; signed: bool
   return { args, signed: signed && !args, defs: !args && DEF_KEYS.has(path[0] ?? "") };
 }
 
+/** Provider file payloads are opaque only in typed media blocks, never by text prefix. */
+function isFilePayload(root: unknown, path: string[]): boolean {
+  const responses = path.length === 5 && path[0] === "input" && /^(?:content|output)$/u.test(path[2] ?? "")
+    && /^\d+$/u.test(path[1] ?? "") && /^\d+$/u.test(path[3] ?? "");
+  const chat = path.length === 6 && path[0] === "messages" && path[2] === "content" && path[4] === "file"
+    && /^\d+$/u.test(path[1] ?? "") && /^\d+$/u.test(path[3] ?? "");
+  if (path.at(-1) !== "file_data" || (!responses && !chat)) return false;
+  let node: unknown = root;
+  let parent: Record<string, unknown> | undefined;
+  for (const key of path.slice(0, -1)) {
+    parent = object(node);
+    node = node !== null && typeof node === "object" ? (node as Record<string, unknown>)[key] : undefined;
+  }
+  const owner = object(node);
+  return responses ? owner?.type === "input_file" : parent?.type === "file";
+}
+
 export interface MaskJsonSegment { path: string; original: string; masked: string; segments: MaskSegment[]; role?: string; truncated?: boolean }
 export interface MaskJsonResult { text: string; hits: MaskHit[]; segments: MaskJsonSegment[] }
 
@@ -105,7 +122,8 @@ function maskRequestJson(source: string, settings: RedactionSettings, store: Red
   let discovering = true;
   const transform: Transform = (value, path, key) => {
     const context = contextAt(root, path);
-    if (value.startsWith("data:") || context.signed) return value;
+    if (context.signed) return value;
+    if (!context.args && isFilePayload(root, path)) return value;
     if (context.defs && key !== "description") return value;
     if (!context.args && (KEPT_KEYS.has(key) || /(?:^ids?$|_ids?$|Ids?$)/u.test(key))) return value;
     // 工具参数中的键属于工具领域，不能套用 Provider 的 name/id 等保留规则。
@@ -117,12 +135,11 @@ function maskRequestJson(source: string, settings: RedactionSettings, store: Red
     return apply(value, path);
   };
   const apply = (value: string, path: string[]): string => {
-    if (value.startsWith("data:")) return value;
     const key = path.at(-1) ?? "";
     const sensitive = /^(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|密码|密碼|密钥|金鑰|パスワード)$/iu.test(key);
     const kind = sensitive ? /password|passwd|密码|密碼|パスワード/iu.test(key) ? "PASSWORD" : "SECRET" : "text";
     const detect = (): MaskTextResult => {
-      if (sensitive && settings.enabled && value.length >= 3 && !/^(?:\$|%|\{|<|\[|\*|data:)/u.test(value)) {
+      if (sensitive && settings.enabled && value.length >= 3 && !/^(?:\$|%|\{|<|\[|\*)/u.test(value)) {
         const tag = store.register(kind, value);
         return { text: tag, hits: [{ kind, placeholder: tag, length: [...value].length }], segments: [{ kind, original: value, masked: tag, start: 0, end: value.length }] };
       }
