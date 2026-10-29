@@ -728,7 +728,8 @@ function clampFilePanelWidthForLayout(width: number, layoutRoot: HTMLElement | n
 }
 
 function normalizeWorkspacePath(value: string): string {
-  const normalized = value.replaceAll("\\", "/").replace(/^\.\//, "");
+  // IPC directory paths already use forward-slash separators; a backslash may be a POSIX filename character.
+  const normalized = value.replace(/^\.\//, "");
   return normalized || ".";
 }
 
