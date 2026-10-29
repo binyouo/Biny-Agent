@@ -128,7 +128,13 @@ function requestOptions(input: VercelModelInput, params: LanguageModelV4CallOpti
     : input.providerType === "qwen" ? "alibaba"
       : input.providerType === "gemini" || input.providerType === "google-native" ? "google" : input.providerType;
   const camelAlias = alias.replace(/[_-]([a-z])/gu, (_match, letter: string) => letter.toUpperCase());
-  const layers = [options[namespace] ?? options.openai, options[alias],
+  const inherited = options[namespace] ?? options.openai;
+  // The generic compatible route previously used standardized max -> xhigh.
+  // Preserve that default without rewriting vendor-native or explicit alias
+  // effort values (native OpenAI and Kimi can legitimately accept "max").
+  const defaults = options[namespace] === undefined && inherited?.reasoningEffort === "max"
+    ? { ...inherited, reasoningEffort: "xhigh" } : inherited;
+  const layers = [defaults, options[alias],
     ...(camelAlias === alias ? [] : [options[camelAlias]])].filter((value) => value !== undefined);
   if (!layers.length) return params;
   // Match the SDK: canonical vendor defaults, legacy raw alias, then camel alias.

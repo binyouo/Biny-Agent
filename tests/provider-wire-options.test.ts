@@ -21,6 +21,8 @@ interface Fixture {
   options?: Record<string, unknown>;
   clearOptions?: boolean;
   priority?: boolean;
+  effort?: "high" | "max";
+  nativeMax?: string;
 }
 interface Capture { url: string; body: Record<string, unknown> }
 function freeze(value: unknown): void {
@@ -33,11 +35,11 @@ async function capture(fixture: Fixture): Promise<Capture> {
   const enabled = fixture.enabled ?? true;
   const config = configSchema.parse({
     ...structuredClone(defaultConfig), defaultModel: "fixture", toolModel: "fixture",
-    thinking: { enabled, effort: "high" }, redaction: { enabled: false },
+    thinking: { enabled, effort: fixture.effort ?? "high" }, redaction: { enabled: false },
     providers: { [alias]: { type: fixture.type, baseUrl: endpoint, apiKey: "synthetic-fixture-key", apiBackend: fixture.api,
       retry: { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 } } },
     models: { fixture: { provider: alias, model: fixture.model ?? "fixture-reasoner", apiBackend: fixture.modelApi,
-      capabilities: { reasoning: true }, thinkingLevelMap: { off: "none", low: "low", high: "high" } } }
+      capabilities: { reasoning: true }, thinkingLevelMap: { ...(fixture.model === "kimi-k3" ? {} : { off: "none" }), low: "low", high: "high", max: fixture.nativeMax ?? "max" } } }
   });
   const requests: Capture[] = [];
   const fetcher: typeof fetch = async (input, init) => {
@@ -53,7 +55,7 @@ async function capture(fixture: Fixture): Promise<Capture> {
     : fixture.options === undefined ? {} : { providerOptions: fixture.options };
   if (fixture.mode === "auxiliary") {
     await assert.rejects(generateNativeText(settings.model, [{ role: "user", content: "Serialize a fixture request." }], {
-      reasoning: enabled ? "high" : "off", maxRetries: 0, ...override
+      reasoning: enabled ? fixture.effort ?? "high" : "off", maxRetries: 0, ...override
     }), new RegExp(boundaryMessage, "u"));
   } else {
     const events: AgentEvent[] = [];
@@ -242,5 +244,37 @@ for (const key of ["openai-compatible", "openaiCompatible"]) {
     assert.equal(body.reasoning_effort, undefined);
     assert.equal(body.user, "preserved-fixture");
     assert.deepEqual(body.extra_body, { google: { thinking_config: { thinking_budget: 1024, include_thoughts: true } } });
+  });
+}
+
+for (const mode of ["main", "auxiliary"] as const) {
+  test(`generic compatible max retains standardized xhigh in ${mode}`, async () => {
+    const { body } = await capture({ type: "openai-compatible", effort: "max", mode });
+    assert.equal(body.reasoning_effort, "xhigh");
+  });
+  for (const nativeMax of ["xhigh", "custom-native-level"]) {
+    test(`generic compatible native mapping ${nativeMax} remains intact in ${mode}`, async () => {
+      const { body } = await capture({ type: "openai-compatible", effort: "max", nativeMax, mode });
+      assert.equal(body.reasoning_effort, nativeMax);
+    });
+  }
+  for (const key of ["custom-relay", "customRelay"]) {
+    test(`explicit ${key} native max outranks generic default in ${mode}`, async () => {
+      const { body } = await capture({ type: "openai-compatible", alias: "custom-relay", effort: "max", mode,
+        options: { openai: { reasoningEffort: "max" }, [key]: { reasoningEffort: "max" } } });
+      assert.equal(body.reasoning_effort, "max");
+    });
+  }
+  test(`native OpenAI max is not rewritten in ${mode}`, async () => {
+    const { body } = await capture({ type: "openai", effort: "max", mode });
+    assert.equal(body.reasoning_effort, "max");
+  });
+  test(`DeepSeek native max is not rewritten in ${mode}`, async () => {
+    const { body } = await capture({ type: "deepseek", effort: "max", mode });
+    assert.equal(body.reasoning_effort, "max");
+  });
+  test(`Kimi native max is not rewritten in ${mode}`, async () => {
+    const { body } = await capture({ type: "kimi", model: "kimi-k3", effort: "max", mode });
+    assert.equal(body.reasoning_effort, "max");
   });
 }
