@@ -234,6 +234,10 @@ export interface PreparedDesktopSettingsChat {
   targetRevision: string;
 }
 
+interface DraftAdmission {
+  status: "pending" | "ready" | "failed" | "retired";
+}
+
 export class DesktopAgentManager {
   private readonly runtimes = new Map<string, ManagedRuntime>();
   private readonly runtimeInitializations = new Map<string, Promise<ManagedRuntime | undefined>>();
@@ -246,6 +250,8 @@ export class DesktopAgentManager {
   private readonly writerConflicts = new Map<string, DesktopSessionWriterConflict>();
   /** Renderer 用 undefined 表示空白草稿；主进程仍需记住它实际对应的 session runtime。 */
   private readonly draftSessionIds = new Map<string, string>();
+  /** Undefined-session sends must not bypass an unfinished or failed isolation request. */
+  private readonly draftAdmissions = new Map<string, DraftAdmission>();
   /** 侧栏工作使用独立 session，不能占用或污染主对话。并发初始化共用一个 promise。 */
   private readonly inspectorSessions = new Map<string, Promise<string>>();
   /** 同一发送/编辑操作键复用 Promise，避免 IPC 重入再次产生用户消息或分叉会话。 */
@@ -414,7 +420,8 @@ export class DesktopAgentManager {
       sessions: sessionData.sessions,
       sessionPage: sessionData.sessionPage,
       selectedSessionId: this.state.selectedSessionId(projectId),
-      runtime: runtime?.getSnapshot(),
+      // Client focus can complete out of order; a blank composer owns its admitted draft ID.
+      runtime: runtime?.getSnapshot(this.draftSessionIds.get(projectId)),
       sessionRuntimes: Object.fromEntries(this.runtimeSnapshots(projectId).map((snapshot) => [snapshot.info.sessionId, snapshot])),
       runtimeError: this.runtimeErrors.get(projectId),
       memory: config?.context.memory,
@@ -502,8 +509,32 @@ export class DesktopAgentManager {
   }
 
   async startDraft(projectId: string, isolation: "shared" | "worktree" = "shared"): Promise<DesktopWorkspaceSnapshot> {
-    await this.ensureDraftRuntime(projectId, isolation);
-    return await this.workspaceSnapshot(projectId);
+    const admission: DraftAdmission = { status: "pending" };
+    this.draftAdmissions.set(projectId, admission);
+    try {
+      await this.ensureDraftRuntime(projectId, isolation, admission);
+      const snapshot = await this.workspaceSnapshot(projectId);
+      this.assertDraftAdmission(projectId, admission);
+      admission.status = "ready";
+      return snapshot;
+    } catch (error) {
+      if (this.draftAdmissions.get(projectId) === admission) {
+        admission.status = "failed";
+        this.draftSessionIds.delete(projectId);
+      }
+      throw error;
+    }
+  }
+
+  private assertDraftAdmission(projectId: string, admission: DraftAdmission | undefined): void {
+    if (this.closing || this.draftAdmissions.get(projectId) !== admission) {
+      throw new Error("草稿目标已变更，请在当前会话重新操作。");
+    }
+  }
+
+  private retireDraftAdmission(projectId: string): void {
+    this.draftAdmissions.set(projectId, { status: "retired" });
+    this.draftSessionIds.delete(projectId);
   }
 
   /**
@@ -511,10 +542,11 @@ export class DesktopAgentManager {
    * 全部保留，仅由 AgentSession.startNewSession 重置会话级状态。sendPrompt 等不需要
    * 快照的调用方走这条轻量路径；startDraft 在此基础上补一份 workspaceSnapshot。
    */
-  private async ensureDraftRuntime(projectId: string, isolation?: "shared" | "worktree"): Promise<void> {
+  private async ensureDraftRuntime(projectId: string, isolation: "shared" | "worktree", admission: DraftAdmission): Promise<void> {
     // 清掉旧的初始化失败闩锁，让「新聊天」始终能作为重试入口。
     this.runtimeErrors.delete(projectId);
     const managed = isolation === "worktree" ? await this.ensureRuntime(projectId) : this.residentRuntime(projectId);
+    this.assertDraftAdmission(projectId, admission);
     if (!managed) {
       this.draftSessionIds.delete(projectId);
       return;
@@ -522,10 +554,11 @@ export class DesktopAgentManager {
     const existingDraftSessionId = this.draftSessionIds.get(projectId);
     if (existingDraftSessionId !== undefined) {
       const existingDraft = managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === existingDraftSessionId);
-      const matchesIsolation = existingDraft && (isolation === undefined
-        || (path.resolve(existingDraft.snapshot.info.workspaceRoot) !== path.resolve(this.projects.requireProject(projectId).path)) === (isolation === "worktree"));
+      const matchesIsolation = existingDraft
+        && (path.resolve(existingDraft.snapshot.info.workspaceRoot) !== path.resolve(this.projects.requireProject(projectId).path)) === (isolation === "worktree");
       if (existingDraft && !runtimeIsBusy(existingDraft.snapshot) && matchesIsolation) {
         await managed.runtime.focusSession(existingDraftSessionId);
+        this.assertDraftAdmission(projectId, admission);
         return;
       }
       this.draftSessionIds.delete(projectId);
@@ -536,9 +569,11 @@ export class DesktopAgentManager {
       ? undefined
       : managed.runtime.getSnapshot(previousSessionId);
     const info = await managed.runtime.startDraft(isolation);
+    this.assertDraftAdmission(projectId, admission);
     if (previousSessionId !== undefined
       && previousSessionId !== info.sessionId && previousSnapshot?.state.kind === "idle") {
       await managed.runtime.releaseSessionClaim(previousSessionId);
+      this.assertDraftAdmission(projectId, admission);
     }
     this.draftSessionIds.set(projectId, info.sessionId);
   }
@@ -628,7 +663,7 @@ export class DesktopAgentManager {
   async openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument> {
     const lifetime = this.runtimeLifetime(projectId);
     const project = this.projects.requireProject(projectId);
-    if (this.draftSessionIds.get(projectId) !== sessionId) this.draftSessionIds.delete(projectId);
+    if (this.draftSessionIds.get(projectId) !== sessionId) this.retireDraftAdmission(projectId);
     // 浏览只消费磁盘历史和本地事件投影；聚焦 RPC 会让读取排在 Host 操作后面。
     const snapshots = this.runtimeSnapshots(projectId);
     const document = await this.projects.openSession(project, sessionId, snapshots, this.projectEvents(projectId));
@@ -754,9 +789,17 @@ export class DesktopAgentManager {
   ): Promise<DesktopRunReceipt> {
     const sendPerfStartedAt = perfNow();
     const selectedBeforeSend = this.state.selectedSessionId(projectId);
+    const draftAdmission = this.draftAdmissions.get(projectId);
+    if (sessionId === undefined && (draftAdmission?.status === "pending" || draftAdmission?.status === "failed")) {
+      throw new Error("新任务尚未准备完成或创建失败，请重试新建任务后再发送。");
+    }
+    const assertSendTarget = (): void => {
+      if (sessionId === undefined) this.assertDraftAdmission(projectId, draftAdmission);
+    };
     const requestedSessionId = sessionId ?? this.draftSessionIds.get(projectId);
     const runtimeForPromptPerfStartedAt = perfNow();
     const { managed, snapshot } = await this.runtimeForPrompt(projectId, requestedSessionId, personalization);
+    assertSendTarget();
     const runtime = managed.runtime;
     const targetSessionId = snapshot.info.sessionId;
     const project = this.projects.requireProject(projectId);
@@ -764,6 +807,7 @@ export class DesktopAgentManager {
     const prompt = input;
     const attachmentsPerfStartedAt = perfNow();
     const agentAttachments = await loadAgentAttachments(project.path, attachments);
+    assertSendTarget();
     recordPerfPhase("desktop.loadAttachments", attachmentsPerfStartedAt, { count: attachments.length }, project.path);
     // 前端发送占位与持久用户消息共用身份，重复文本、事件先于回执到达也不会误合并。
     const requestIds = { messageId };
@@ -772,8 +816,9 @@ export class DesktopAgentManager {
       if (!queued.accepted || queued.result === undefined) {
         throw errorFromHostOperation(queued);
       }
-      if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
-      if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, targetSessionId);
+      if (this.draftAdmissions.get(projectId) === draftAdmission && this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
+      if ((sessionId !== undefined || this.draftAdmissions.get(projectId) === draftAdmission)
+        && this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, targetSessionId);
       recordPerfPhase("desktop.sendPrompt", sendPerfStartedAt, { projectId, queued: true }, project.path);
       return {
         sessionId: targetSessionId,
@@ -792,8 +837,9 @@ export class DesktopAgentManager {
       fastMode
     );
     if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
-    if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
-    if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
+    if (this.draftAdmissions.get(projectId) === draftAdmission && this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
+    if ((sessionId !== undefined || this.draftAdmissions.get(projectId) === draftAdmission)
+      && this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
     recordPerfPhase("desktop.sendPrompt", sendPerfStartedAt, { projectId, queued: false }, project.path);
     return {
       sessionId: info.sessionId,
@@ -2279,7 +2325,13 @@ export class DesktopAgentManager {
   }
 
   async compact(projectId: string, hint?: string): Promise<string> {
-    return await (await this.ensureRuntime(projectId)).runtime.compactConversation(hint);
+    const admission = this.draftAdmissions.get(projectId);
+    if (admission?.status === "pending" || admission?.status === "failed" || this.draftSessionIds.has(projectId)) {
+      throw new Error("新任务尚未准备完成或仍为空白草稿，暂不能压缩对话。");
+    }
+    const managed = await this.ensureRuntime(projectId);
+    this.assertDraftAdmission(projectId, admission);
+    return await managed.runtime.compactConversation(hint);
   }
 
   /**
@@ -2288,6 +2340,13 @@ export class DesktopAgentManager {
    * 与 TUI 相同），结果同样只进弹层、不写入会话。
    */
   async runSlashCommand(projectId: string, sessionId: string | undefined, input: string): Promise<DesktopSlashResult> {
+    const fromDraft = sessionId === undefined;
+    const admission = this.draftAdmissions.get(projectId);
+    if (fromDraft && (admission?.status === "pending" || admission?.status === "failed")) {
+      throw new Error("新任务尚未准备完成或创建失败，请重试新建任务后再执行命令。");
+    }
+    const assertTarget = (): void => { if (fromDraft) this.assertDraftAdmission(projectId, admission); };
+    sessionId ??= this.draftSessionIds.get(projectId);
     const operation = runtimeCommandOperation(input);
     if (operation?.startsWith("session.goal.") && sessionId === undefined && operation !== "session.goal.set") {
       if (operation === "session.goal.get" || operation === "session.goal.clear") return {
@@ -2297,9 +2356,17 @@ export class DesktopAgentManager {
       throw new Error("请先用 /goal set <目标> 设置当前会话目标。");
     }
     if (!["session.goal.get", "session.goal.pause", "session.goal.clear"].includes(operation ?? "")) await this.requireConfiguredModel(projectId);
+    assertTarget();
     const managed = await this.ensureRuntime(projectId);
-    if (operation === "session.goal.set" && sessionId === undefined) sessionId = (await managed.runtime.ensureSession({ writeIntent: true })).sessionId;
-    if (sessionId !== undefined) await managed.runtime.focusSession(sessionId);
+    assertTarget();
+    if (operation === "session.goal.set" && sessionId === undefined) {
+      sessionId = (await managed.runtime.ensureSession({ writeIntent: true, focus: false })).sessionId;
+      assertTarget();
+    }
+    if (sessionId !== undefined) {
+      await managed.runtime.focusSession(sessionId);
+      assertTarget();
+    }
     const result = await managed.runtime.executeCommand(input, "desktop", sessionId);
     if (!result) throw new Error(`未知命令：${input.trim().split(/\s+/, 1)[0] ?? input}`);
     return operation?.startsWith("session.goal.") ? { ...result, sessionId: sessionId ?? managed.runtime.getSnapshot().info.sessionId } : result;
@@ -2512,6 +2579,7 @@ export class DesktopAgentManager {
     if (disposing) return await disposing;
     // Retire admitted work synchronously, before any resource cleanup yields.
     this.runtimeLifetimes.delete(projectId);
+    this.retireDraftAdmission(projectId);
     if (this.activeProjectId === projectId) this.activeProjectId = undefined;
     // 移除项目同时清理展示缓存；后台任务是否需要驻留由 Host 判断。
     this.liveEvents.delete(projectId);
@@ -2604,6 +2672,7 @@ export class DesktopAgentManager {
    */
   async closeAll(): Promise<void> {
     this.closing = true;
+    for (const projectId of this.draftAdmissions.keys()) this.retireDraftAdmission(projectId);
     for (const operation of this.modelLoginOperations.values()) operation.abort(new DOMException("Desktop is shutting down", "AbortError"));
     this.modelLoginOperations.clear();
     this.stagedSettingsCredentials.clear();

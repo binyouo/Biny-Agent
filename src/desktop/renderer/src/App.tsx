@@ -205,6 +205,25 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const navigationRef = useRef<DesktopNavigationState>(createNavigationState());
   const [_navigationState, setNavigationState] = useState<DesktopNavigationState>(() => createNavigationState());
   const loadRequestRef = useRef(0);
+  const draftProjectRef = useRef<string | undefined>(undefined);
+  const draftIntentEpochRef = useRef(0);
+  const draftAdmissionRef = useRef<{ projectId: string; request: number; isolation?: "shared" | "worktree"; status: "pending" | "failed" } | undefined>(undefined);
+  const [draftAdmission, setDraftAdmission] = useState<typeof draftAdmissionRef.current>();
+  const clearDraftAdmission = useCallback((): void => {
+    draftAdmissionRef.current = undefined;
+    setDraftAdmission(undefined);
+  }, []);
+  const assertDraftAdmission = useCallback((): void => {
+    const admission = draftAdmissionRef.current;
+    const targetProjectId = selectedRef.current === undefined ? draftProjectRef.current ?? projectRef.current : undefined;
+    if (admission && (admission.request === loadRequestRef.current || admission.projectId === targetProjectId)) {
+      const label = admission.isolation === "worktree" ? "隔离任务" : "新任务";
+      throw new Error(admission.status === "pending"
+        ? `${label}正在准备，请就绪后再发送。输入已保留。`
+        : `${label}尚未就绪，请重新新建任务后再发送。输入已保留。`);
+    }
+  }, []);
+
   const [pendingNavigation, setPendingNavigationState] = useState<DesktopNavigationTarget>();
   const pendingNavigationRef = useRef<DesktopNavigationTarget | undefined>(undefined);
   const setPendingNavigation = useCallback((target: DesktopNavigationTarget | undefined): void => {
@@ -601,9 +620,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         projectRef.current = resolvedWorkspace.project.id;
         mergeWorkspaceProject(resolvedWorkspace);
       }
+      clearDraftAdmission();
       setRuntimePanelOpen(activeView === "runtime");
       selectedRef.current = sessionId;
       setSelectedSessionId(sessionId);
+      draftProjectRef.current = undefined;
       setDraftProjectId(undefined);
       setDraftMemoryOverride(undefined);
       // 上下文用量属于某一个会话，换会话就作废，等新会话跑出 context.updated 再显示。
@@ -632,7 +653,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } finally {
       if (showLoader && loadRequestRef.current === request) setLoading(false);
     }
-  }, [mergeWorkspaceProject, sessionTreePages, setPendingNavigation]);
+  }, [clearDraftAdmission, mergeWorkspaceProject, sessionTreePages, setPendingNavigation]);
 
   const adoptWorkspace = useCallback(async (
     snapshot: DesktopWorkspaceSnapshot,
@@ -649,6 +670,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (projectRef.current !== snapshot.project.id) {
       permissionModeRequestRef.current += 1;
     }
+    clearDraftAdmission();
     memoryToggleRequestRef.current += 1;
     setMemoryToggleBusy(false);
     setRuntimePanelOpen(false);
@@ -657,6 +679,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     mergeWorkspaceProject(snapshot);
     // 显式切换项目或新建任务时进入空白草稿，不沿用该项目之前保存的会话正文。
     setSelectedSessionId(undefined);
+    draftProjectRef.current = undefined;
     setDraftProjectId(undefined);
     setDraftMemoryOverride(undefined);
     setDocument(undefined);
@@ -666,13 +689,23 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setLoading(false);
     void window.biny.commitSelection(snapshot.project.id, undefined, "chat").catch((error) => setWarning(errorMessage(error)));
     return true;
-  }, [mergeWorkspaceProject, openSession, setPendingNavigation]);
+  }, [clearDraftAdmission, mergeWorkspaceProject, openSession, setPendingNavigation]);
 
   const openNavigationTarget = useCallback(async (target: DesktopNavigationTarget, isolation?: "shared" | "worktree"): Promise<boolean> => {
     // 从项目选择到会话读取共用同一个请求号，较早的跨项目请求不能在较新的点击后重新取得提交权。
     const projectLifetime = projectRemovalRef.current.get(target.projectId);
     const request = loadRequestRef.current + 1;
     loadRequestRef.current = request;
+    const admission = target.sessionId === undefined
+      ? { projectId: target.projectId, request, isolation, status: "pending" as const }
+      : undefined;
+    if (admission) {
+      // Synchronous admission precedes clearing the selected session: a same-tick
+      // submission must not create a shared runtime while startDraft is pending.
+      draftIntentEpochRef.current += 1;
+      draftAdmissionRef.current = admission;
+      setDraftAdmission(admission);
+    }
     setPendingNavigation(target);
     const startingCurrentDraft = target.sessionId === undefined && target.projectId === projectRef.current;
     if (startingCurrentDraft) {
@@ -681,6 +714,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setRuntimePanelOpen(false);
       selectedRef.current = undefined;
       setSelectedSessionId(undefined);
+      draftProjectRef.current = undefined;
+      setDraftProjectId(undefined);
       memoryToggleRequestRef.current += 1;
       setMemoryToggleBusy(false);
       setDraftMemoryOverride(undefined);
@@ -710,6 +745,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       return await openSession(target.projectId, target.sessionId, false, request, window.biny.selectProject(target.projectId));
     } catch (error) {
       if (loadRequestRef.current !== request || projectRemovalRef.current.get(target.projectId) !== projectLifetime) return false;
+      if (admission && draftAdmissionRef.current === admission) {
+        const failed = { ...admission, status: "failed" as const };
+        draftAdmissionRef.current = failed;
+        setDraftAdmission(failed);
+      }
       throw error;
     } finally {
       if (loadRequestRef.current === request) {
@@ -863,10 +903,12 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       loadRequestRef.current += 1;
       setPendingNavigation(undefined);
       setLoading(false);
+      draftProjectRef.current = undefined;
       setDraftProjectId(undefined);
       return;
     }
     setComposerDraft(undefined);
+    draftProjectRef.current = undefined;
     setDraftProjectId(undefined);
     const projectLifetime = projectRemovalRef.current.get(projectId);
     const request = loadRequestRef.current + 1;
@@ -893,11 +935,24 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (selectedRef.current === undefined) {
       // 回填已进入所属草稿；目标切换时不能再次覆盖另一项目保留的输入。
       setComposerDraft(undefined);
-      setDraftProjectId(projectId === projectRef.current ? undefined : projectId);
+      draftIntentEpochRef.current += 1;
+      loadRequestRef.current += 1;
+      setPendingNavigation(undefined);
+      setLoading(false);
+      // Selecting another draft folder supersedes pending draft adoption, but
+      // does not turn the unconfirmed source draft into an admitted shared one.
+      const admission = draftAdmissionRef.current;
+      if (admission) {
+        const failed = { ...admission, status: "failed" as const };
+        draftAdmissionRef.current = failed;
+        setDraftAdmission(failed);
+      }
+      draftProjectRef.current = projectId === projectRef.current ? undefined : projectId;
+      setDraftProjectId(draftProjectRef.current);
       return;
     }
     void selectProject(projectId);
-  }, [selectProject]);
+  }, [selectProject, setPendingNavigation]);
 
   const switchProjectBranch = useCallback(async (projectId: string, branchName: string): Promise<void> => {
     try {
@@ -1122,6 +1177,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [newTask, openProject, openSearch, openSettings, toggleSidebar]);
 
   const sendPrompt = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<DesktopRunReceipt> => {
+    assertDraftAdmission();
+    if (selectedRef.current === undefined && draftProjectId !== draftProjectRef.current) {
+      throw new Error("草稿目标已改变，请在当前任务中重新发送。输入已保留。");
+    }
     const activeProjectId = projectRef.current;
     const projectId = selectedRef.current === undefined
       ? draftProjectId ?? activeProjectId
@@ -1173,6 +1232,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       return receipt;
     }
     setSelectedSessionId(receipt.sessionId);
+    draftProjectRef.current = undefined;
     setDraftProjectId(undefined);
     setDraftMemoryOverride(undefined);
     if (receipt.sessionId !== previousSessionId) {
@@ -1187,7 +1247,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setDocument({ session: summary, events: [], liveEvents: [] });
     }
     return receipt;
-  }, [commitNavigation, document, draftMemoryOverride, draftProjectId, openSession, workspace?.sessions]);
+  }, [assertDraftAdmission, commitNavigation, document, draftMemoryOverride, draftProjectId, openSession, workspace?.sessions]);
 
   const retryRuntime = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
@@ -1243,6 +1303,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   // 发送直接进入聊天布局；临时用户消息覆盖 IPC/事件桥的空窗，真实事件到达后自动替换。
   const sendPromptWithTransition = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<void> => {
+    assertDraftAdmission();
+    if (selectedRef.current === undefined && draftProjectId !== draftProjectRef.current) {
+      throw new Error("草稿目标已改变，请在当前任务中重新发送。输入已保留。");
+    }
     if (loading) throw new Error("会话正在加载，请稍后发送。");
     setGenerationError(undefined);
     const pendingProjectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
@@ -1272,9 +1336,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       }
       throw error;
     }
-  }, [draftProjectId, loading, refreshRuntimeFailure, sendPrompt]);
+  }, [assertDraftAdmission, draftProjectId, loading, refreshRuntimeFailure, sendPrompt]);
 
   const runSlashCommand = useCallback(async (command: string): Promise<void> => {
+    assertDraftAdmission();
+    if (selectedRef.current === undefined && draftProjectId !== draftProjectRef.current) {
+      throw new Error("草稿目标已改变，请在当前任务中重新发送。输入已保留。");
+    }
     const projectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
     if (!projectId) throw new Error("请先打开一个项目。");
     if (command.trim().split(/\s+/, 1)[0] === "/compact") {
@@ -1288,34 +1356,29 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const isCurrent = (): boolean => loadRequestRef.current === navigationRequest
       && projectRemovalRef.current.get(projectId) === projectLifetime;
     const previousNavigation = navigationRef.current;
-    try {
-      const result = await window.biny.runSlashCommand(projectId, previousSessionId, command);
-      if (!isCurrent()) return;
-      if (result.sessionGoal) {
-        if (previousSessionId === undefined && result.sessionId !== undefined) {
-          const snapshot = await window.biny.refreshProject(projectId);
-          if (!isCurrent()) return;
-          const opened = await openSession(projectId, result.sessionId, false, navigationRequest, snapshot);
-          if (!opened || !isCurrent()) return;
-          const target: DesktopNavigationTarget = { projectId, sessionId: result.sessionId };
-          const currentTarget = previousNavigation.entries[previousNavigation.index];
-          commitNavigation(currentTarget?.projectId === projectId && currentTarget.sessionId === undefined
-            ? replaceNavigation(previousNavigation, target)
-            : pushNavigation(previousNavigation, target));
-        }
-        await refreshPlans();
+    const result = await window.biny.runSlashCommand(projectId, previousSessionId, command);
+    if (!isCurrent()) return;
+    if (result.sessionGoal) {
+      if (previousSessionId === undefined && result.sessionId !== undefined) {
+        const snapshot = await window.biny.refreshProject(projectId);
+        if (!isCurrent()) return;
+        const opened = await openSession(projectId, result.sessionId, false, navigationRequest, snapshot);
+        if (!opened || !isCurrent()) return;
+        const target: DesktopNavigationTarget = { projectId, sessionId: result.sessionId };
+        const currentTarget = previousNavigation.entries[previousNavigation.index];
+        commitNavigation(currentTarget?.projectId === projectId && currentTarget.sessionId === undefined
+          ? replaceNavigation(previousNavigation, target)
+          : pushNavigation(previousNavigation, target));
       }
-      const feedback = sessionGoalSlashFeedback(result, isCurrent());
-      if (feedback.result) setSlashResult(feedback.result);
-      if (feedback.notice) {
-        setSlashResult(undefined);
-        setToast(feedback.notice);
-      }
-    } catch (error) {
-      if (!isCurrent()) return;
-      throw error;
+      await refreshPlans();
     }
-  }, [draftProjectId, refreshPlans, openSession, commitNavigation, runCompaction]);
+    const feedback = sessionGoalSlashFeedback(result, isCurrent());
+    if (feedback.result) setSlashResult(feedback.result);
+    if (feedback.notice) {
+      setSlashResult(undefined);
+      setToast(feedback.notice);
+    }
+  }, [assertDraftAdmission, draftProjectId, refreshPlans, openSession, commitNavigation, runCompaction]);
 
   const editPrompt = useCallback(async (
     input: string,
@@ -1501,7 +1564,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       sessionTreePages.removeProject(projectId);
       invalidateSessionRootPage(projectId);
       setSidebarSessions((current) => current.filter((session) => session.projectId !== projectId));
-      setDraftProjectId((current) => current === projectId ? undefined : current);
+      if (draftProjectRef.current === projectId) {
+        draftProjectRef.current = undefined;
+        setDraftProjectId(undefined);
+      }
       const pending = pendingNavigationRef.current;
       if (pending?.projectId === projectId) {
         setPendingNavigation(undefined);
@@ -2105,13 +2171,22 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       projects={projects}
     />
   ) : undefined;
+  const composerDraftIntent = draftIntentEpochRef.current;
   const composer = (
     <>
+    {draftAdmission && selectedSessionId === undefined && draftAdmission.projectId === composerProject?.id ? (
+      <div role="status" className="chat-run-notice">
+        {draftAdmission.status === "pending"
+          ? `${draftAdmission.isolation === "worktree" ? "隔离任务" : "新任务"}正在准备；可以继续输入，就绪后再发送。`
+          : "任务尚未就绪，请重新新建任务后再发送；输入已保留。"}
+      </div>
+    ) : null}
     <Composer
       key={`${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`}
       draftKey={`${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`}
       draftProjectId={composerProject?.id}
-      isSubmissionCurrent={() => projectRef.current === workspace?.project.id && selectedRef.current === selectedSessionId}
+      isSubmissionCurrent={() => draftIntentEpochRef.current === composerDraftIntent
+        && projectRef.current === workspace?.project.id && selectedRef.current === selectedSessionId}
       drafts={composerDrafts}
       onInspectReference={inspector.previewReference}
       ref={composerRef}

@@ -339,16 +339,24 @@ export const Composer = memo(function Composer({
 
   const runSlash = async (command: string, consumeDraft: boolean): Promise<void> => {
     if (!project || busy) return;
+    const originalDraft = currentDraft();
+    const originalHistory = editing ? editHistory.current : draftState.getSnapshot().history;
+    const clearedDraft: ReferenceDraft = { value: "", tokens: [] };
     if (consumeDraft) {
       clearHistory();
-      setDraft({ value: "", tokens: [] });
+      setDraft(clearedDraft);
     }
     setBusy(true);
     try {
       await onSlashCommand(command);
     } catch (slashError) {
-      if (consumeDraft) setDraft({ value: command, tokens: [] });
-      onWarning(errorMessage(slashError));
+      // Restore only the draft this command cleared. A newer input (even an
+      // intentional empty draft) owns a different object and must survive.
+      if (consumeDraft && currentDraft() === clearedDraft) {
+        if (editing) { editHistory.current = originalHistory; setDraft(originalDraft); }
+        else draftState.update({ draft: originalDraft, history: originalHistory });
+      }
+      if (mounted.current && isSubmissionCurrent?.() !== false) onWarning(errorMessage(slashError));
     } finally {
       setBusy(false);
     }
