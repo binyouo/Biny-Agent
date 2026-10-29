@@ -1,7 +1,7 @@
 import Foundation
 
 /// 无障碍选区使用 UTF-16 偏移；必须唯一匹配，不能默认选择重复文字的第一处。
-func matchingTextRange(in text: String, match: String, prefix: String? = nil, suffix: String? = nil) throws -> NSRange {
+func matchingTextRange(in text: String, match: String, prefix: String? = nil, suffix: String? = nil, selectionType: String = "text") throws -> NSRange {
     func failure(_ code: String) -> NSError { NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: code]) }
     guard !match.isEmpty else { throw failure("text_match_invalid") }
     let source = text as NSString
@@ -22,5 +22,10 @@ func matchingTextRange(in text: String, match: String, prefix: String? = nil, su
         start = found.location + 1
     }
     guard let result = selected else { throw failure("text_match_not_found") }
-    return result
+    switch selectionType {
+    case "text": return result
+    case "cursor_before": return NSRange(location: result.location, length: 0)
+    case "cursor_after": return NSRange(location: result.location + result.length, length: 0)
+    default: throw failure("text_selection_type_invalid")
+    }
 }

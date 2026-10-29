@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 const registryVersion = 1 as const;
 const worktreeDirectoryName = "worktrees";
 const worktreePrefix = "wt-";
+const mutationTails = new Map<string, Promise<void>>();
 
 export type WorktreeLifecycleStatus = "active" | "merged" | "conflicted" | "orphaned" | "kept";
 
@@ -33,6 +34,13 @@ export interface WorktreeRecord {
   mergeStrategy?: "merge" | "squash";
   /** merge 成功后基线分支的新 HEAD；squash 清理不能用源分支祖先关系证明。 */
   mergedCommit?: string;
+  /** 被合并的源分支版本；新增提交后旧 squash 证据不再允许清理。 */
+  mergedSourceCommit?: string;
+  /** 子任务拥有的工作树不由 Session catalog 的缺失触发回收。 */
+  taskRunId?: string;
+  /** 子任务的合并目标仍是创建它的父检出。 */
+  sourceRoot?: string;
+  cleanupError?: string;
 }
 
 export interface WorktreeMergeResult {
@@ -108,7 +116,6 @@ export class WorktreeBaseBranchMismatchError extends Error {
 export class WorktreeManager {
   readonly worktreeDirectory: string;
   readonly registryPath: string;
-  private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(
     readonly repoRoot: string,
@@ -120,15 +127,19 @@ export class WorktreeManager {
     this.registryPath = path.join(agentDir(this.persistenceRoot), "runs", "worktrees.json");
   }
 
-  async ensure(sessionId: string): Promise<WorktreeRecord> {
+  async ensure(sessionId: string, task?: { taskRunId: string; sourceRoot: string }): Promise<WorktreeRecord> {
     return await this.enqueue(async () => {
       const records = await this.readRecords();
       const existing = records.find((record) => record.sessionId === sessionId);
-      if (existing && await pathExists(existing.worktreePath)) return existing;
-      if (existing) records.splice(records.indexOf(existing), 1);
+      if (existing) {
+        if (existing.taskRunId !== task?.taskRunId) throw new WorktreeUnavailableError("The registered worktree belongs to a different execution owner.");
+        if (!(await pathExists(existing.worktreePath))) throw new WorktreeUnavailableError(`Worktree path is missing: ${existing.worktreePath}. Restore the registered checkout before resuming this session.`);
+        return existing;
+      }
 
-      const baseBranch = await this.currentBranch();
-      const baseCommit = (await this.git(["rev-parse", "HEAD"])).trim();
+      const sourceRoot = task?.sourceRoot ?? this.repoRoot;
+      const baseBranch = await this.currentBranch(sourceRoot);
+      const baseCommit = (await this.git(["rev-parse", "HEAD"], sourceRoot)).trim();
       await this.ensureWorktreeDirectory();
       const prefix = `${worktreePrefix}${sessionId.slice(0, 8)}`;
       let suffix = 0;
@@ -150,6 +161,10 @@ export class WorktreeManager {
         createdAt: new Date().toISOString(),
         status: "active"
       };
+      if (task) {
+        record.taskRunId = task.taskRunId;
+        record.sourceRoot = task.sourceRoot;
+      }
       records.push(record);
       await this.writeRecords(records);
       return record;
@@ -178,6 +193,8 @@ export class WorktreeManager {
   async runtimeFactoryOptions(sessionId: string): Promise<RuntimeHostFactoryOptions | undefined> {
     const record = await this.get(sessionId);
     if (record === undefined) return undefined;
+    if (record.taskRunId) throw new WorktreeUnavailableError("A task worktree cannot be opened as an interactive session.");
+    if (!(await pathExists(record.worktreePath))) throw new WorktreeUnavailableError(`Worktree path is missing: ${record.worktreePath}. Restore the registered checkout before resuming this session.`);
     let sessionFileExists = false;
     try {
       sessionFileExists = (await listSessionFiles(this.persistenceRoot)).includes(`${sessionId}.jsonl`);
@@ -210,30 +227,33 @@ export class WorktreeManager {
       if ((await this.git(["status", "--porcelain", "--ignore-submodules=all"], record.worktreePath)).trim()) {
         throw new WorktreeDirtyError(record.worktreePath);
       }
-      if ((await this.git(["status", "--porcelain", "--ignore-submodules=all"])).trim()) {
-        throw new Error("The main checkout has uncommitted changes; merge was not started.");
+      const targetRoot = record.sourceRoot ?? this.repoRoot;
+      if ((await this.git(["status", "--porcelain", "--ignore-submodules=all"], targetRoot)).trim()) {
+        throw new Error("The target checkout has uncommitted changes; merge was not started.");
       }
-      const currentBranch = await this.currentBranch();
+      const currentBranch = await this.currentBranch(targetRoot);
       if (currentBranch !== record.baseBranch) {
         throw new WorktreeBaseBranchMismatchError(sessionId, record.baseBranch, currentBranch);
       }
       const strategy = options.strategy ?? "merge";
+      const sourceCommit = (await this.git(["rev-parse", record.branch])).trim();
       try {
         if (strategy === "squash") {
-          await this.git(["merge", "--squash", record.branch], this.repoRoot, 30_000);
-          await this.git(["commit", "-m", `Merge ${record.branch}`], this.repoRoot, 30_000);
+          await this.git(["merge", "--squash", sourceCommit], targetRoot, 30_000);
+          await this.git(["commit", "-m", `Merge ${record.branch}`], targetRoot, 30_000);
         } else {
-          await this.git(["merge", "--no-ff", record.branch, "-m", `Merge ${record.branch}`], this.repoRoot, 30_000);
+          await this.git(["merge", "--no-ff", sourceCommit, "-m", `Merge ${record.branch}`], targetRoot, 30_000);
         }
       } catch (_error) {
-        await this.git(["merge", "--abort"], this.repoRoot, 10_000).catch(() => undefined);
+        await this.git(["merge", "--abort"], targetRoot, 10_000).catch(() => undefined);
         record.status = "conflicted";
         await this.writeRecords(records);
         throw new WorktreeMergeConflictError(sessionId, record.worktreePath);
       }
       record.status = "merged";
       record.mergeStrategy = strategy;
-      record.mergedCommit = (await this.git(["rev-parse", "HEAD"])).trim();
+      record.mergedCommit = (await this.git(["rev-parse", "HEAD"], targetRoot)).trim();
+      record.mergedSourceCommit = sourceCommit;
       await this.writeRecords(records);
       const mergedRecord = { ...record };
       if (options.deleteAfter !== true) {
@@ -263,6 +283,26 @@ export class WorktreeManager {
     });
   }
 
+  /** 只在子任务已停稳且成功交回后调用；新增提交也属于必须保留的成果。 */
+  async releaseUnchangedTask(sessionId: string): Promise<void> {
+    await this.enqueue(async () => {
+      const records = await this.readRecords();
+      const record = records.find(candidate => candidate.sessionId === sessionId);
+      if (!record?.taskRunId) return;
+      try {
+        if (!(await this.isClean(record.worktreePath))) return;
+        if ((await this.git(["rev-parse", "HEAD"], record.worktreePath)).trim() !== record.baseCommit) return;
+        await this.removeRecord(records, record, true);
+      }
+      catch (error) {
+        record.status = "kept";
+        record.cleanupError = error instanceof Error ? error.message : String(error);
+        if (!records.includes(record)) records.push(record);
+        await this.writeRecords(records);
+      }
+    });
+  }
+
   /** 启动时对注册表、git worktree 和 session catalog 做三方对账。 */
   async reconcile(): Promise<WorktreeReconcileResult> {
     return await this.enqueue(async () => {
@@ -274,9 +314,8 @@ export class WorktreeManager {
       const present = new Map(gitWorktrees.map((worktree) => [worktree.path, worktree]));
       for (const record of [...records]) {
         if (!present.has(path.resolve(record.worktreePath))) {
-          records.splice(records.indexOf(record), 1);
-          removed.push(record.sessionId);
-          continue;
+          record.status = "orphaned";
+          orphaned.push(record.sessionId);
         }
       }
 
@@ -299,7 +338,7 @@ export class WorktreeManager {
 
       const catalogIds = await this.catalogSessionIds();
       for (const record of [...records]) {
-        if (record.status === "kept" || record.sessionId.startsWith("orphan:")) continue;
+        if (record.taskRunId || record.status === "kept" || record.sessionId.startsWith("orphan:") || !present.has(path.resolve(record.worktreePath))) continue;
         if (catalogIds.has(record.sessionId) || await this.catalogRecordExists(record.sessionId)) continue;
         const clean = await this.isClean(record.worktreePath);
         const merged = clean && await this.isMergedIntoBase(record);
@@ -338,9 +377,9 @@ export class WorktreeManager {
     await this.writeRecords(records);
   }
 
-  private async currentBranch(): Promise<string> {
-    if (!(await this.isRepository())) throw new WorktreeUnavailableError("The workspace is not a git repository.");
-    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
+  private async currentBranch(cwd = this.repoRoot): Promise<string> {
+    if (!(await this.isRepository(cwd))) throw new WorktreeUnavailableError("The workspace is not a git repository.");
+    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)).trim();
     if (!branch) throw new WorktreeUnavailableError("Worktree isolation requires a named base branch; the main checkout is detached.");
     return branch;
   }
@@ -371,6 +410,8 @@ export class WorktreeManager {
     return record.status === "merged"
       && record.mergeStrategy === "squash"
       && record.mergedCommit !== undefined
+      && record.mergedSourceCommit !== undefined
+      && (await this.git(["rev-parse", record.branch])).trim() === record.mergedSourceCommit
       && await this.isBranchAncestor(record.mergedCommit, record.baseBranch);
   }
 
@@ -414,9 +455,9 @@ export class WorktreeManager {
     return (await readSessionCatalogRecord(this.persistenceRoot, sessionId)) !== undefined;
   }
 
-  private async isRepository(): Promise<boolean> {
+  private async isRepository(cwd = this.repoRoot): Promise<boolean> {
     try {
-      await this.git(["rev-parse", "--is-inside-work-tree"]);
+      await this.git(["rev-parse", "--is-inside-work-tree"], cwd);
       return true;
     } catch {
       return false;
@@ -462,8 +503,10 @@ export class WorktreeManager {
   }
 
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.mutationTail.then(work, work);
-    this.mutationTail = result.then(() => undefined, () => undefined);
+    const result = (mutationTails.get(this.registryPath) ?? Promise.resolve()).then(work, work);
+    const tail = result.then(() => undefined, () => undefined);
+    mutationTails.set(this.registryPath, tail);
+    void tail.then(() => { if (mutationTails.get(this.registryPath) === tail) mutationTails.delete(this.registryPath); });
     return result;
   }
 }
@@ -481,7 +524,11 @@ function isWorktreeRecord(value: unknown): value is WorktreeRecord {
     && record.status !== undefined
     && ["active", "merged", "conflicted", "orphaned", "kept"].includes(String(record.status))
     && (record.mergeStrategy === undefined || record.mergeStrategy === "merge" || record.mergeStrategy === "squash")
-    && (record.mergedCommit === undefined || typeof record.mergedCommit === "string");
+    && (record.mergedCommit === undefined || typeof record.mergedCommit === "string")
+    && (record.mergedSourceCommit === undefined || typeof record.mergedSourceCommit === "string")
+    && (record.taskRunId === undefined || typeof record.taskRunId === "string")
+    && (record.sourceRoot === undefined || typeof record.sourceRoot === "string")
+    && (record.cleanupError === undefined || typeof record.cleanupError === "string");
 }
 
 function isWithin(parent: string, target: string): boolean {

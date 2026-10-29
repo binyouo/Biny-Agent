@@ -9,6 +9,7 @@ import { constants, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { agentDir, ensureAgentDirs } from "../session/store.js";
+import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 import { attachmentPathPrefix, attachmentRelativePath } from "./paths.js";
 export { attachmentPathPrefix } from "./paths.js";
 
@@ -259,11 +260,12 @@ async function attachmentParent(root: string, virtualPath: string): Promise<{ fi
   return { file, parent, identity };
 }
 
-async function readStoredAttachmentFile(root: string, virtualPath: string, maxBytes?: number, context = false): Promise<Buffer | undefined> {
+async function readStoredAttachmentFile(root: string, virtualPath: string, maxBytes?: number, context = false, pendingContext = false): Promise<Buffer | undefined> {
   if (attachmentRelativePath(virtualPath) === undefined) return undefined;
   try {
     const binding = await attachmentParent(root, virtualPath);
-    if (context) binding.file += ".context";
+    if (pendingContext) binding.file = path.join(binding.parent, pendingContextName(virtualPath));
+    else if (context) binding.file += ".context";
     const before = await fs.lstat(binding.file);
     if (!before.isFile() || before.isSymbolicLink()) throw new Error("attachment_path_invalid");
     const handle = await fs.open(binding.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -374,9 +376,109 @@ export async function saveAttachmentContext(root: string, virtualPath: string, c
   await attachmentParent(root, virtualPath);
   await fs.writeFile(`${file}.context`, context, { mode: 0o600, flag: "wx" });
 }
+
+function pendingContextName(virtualPath: string): string {
+  return `.appshot-${createHash("sha256").update(virtualPath).digest("hex")}.pending`;
+}
+
+async function removeOwnedContextTemp(file: string, identity: Stats): Promise<void> {
+  try {
+    const current = await fs.lstat(file);
+    if (!current.isFile() || current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino) throw new Error("attachment_path_invalid");
+    await fs.unlink(file);
+  } catch (error) { if (!isNotFound(error)) throw error; }
+}
+
+async function withPrivateContextTemp<T>(parent: string, context: string, publish: (file: string) => Promise<T>, filename?: string): Promise<T> {
+  const file = filename ?? path.join(parent, `.appshot-update-${randomBytes(16).toString("hex")}`);
+  const handle = await fs.open(file, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
+  try {
+    const identity = await handle.stat();
+    try {
+      await handle.writeFile(context);
+      return await publish(file);
+    } finally { await removeOwnedContextTemp(file, identity); }
+  } finally { await handle.close(); }
+}
+
+async function recoverPendingContextLink(pending: string): Promise<void> {
+  let info: Stats;
+  try { info = await fs.lstat(pending); } catch (error) { if (isNotFound(error)) return; throw error; }
+  if (info.nlink !== 2 || !info.isFile() || info.isSymbolicLink()) return;
+  const writing = `${pending}.writing`;
+  let other: Stats;
+  try { other = await fs.lstat(writing); } catch (error) { if (isNotFound(error)) return; throw error; }
+  if (other.isFile() && !other.isSymbolicLink() && other.dev === info.dev && other.ino === info.ino && other.nlink === 2) await fs.unlink(writing);
+}
+
+/** 草稿可更新，首次交给模型时固定为不可变的历史上下文。 */
+export async function savePendingAttachmentContext(root: string, virtualPath: string, context: string): Promise<void> {
+  if (!attachmentRelativePath(virtualPath) || Buffer.byteLength(context) > 128000) throw new Error("attachment_context_invalid");
+  await attachmentParent(root, virtualPath);
+  await withLocalFileWriteLock(root, ".appshot-context.lock", async () => {
+    const binding = await attachmentParent(root, virtualPath);
+    if (!await validateStoredAttachmentFile(root, virtualPath)) throw new Error("attachment_file_missing_or_invalid");
+    try { await fs.lstat(`${binding.file}.context`); throw new Error("attachment_context_already_sealed"); }
+    catch (error) { if (!isNotFound(error)) throw error; }
+    const pending = path.join(binding.parent, pendingContextName(virtualPath)), writing = `${pending}.writing`;
+    try {
+      const stale = await fs.lstat(writing);
+      if (!stale.isFile() || stale.isSymbolicLink() || stale.nlink !== 1) throw new Error("attachment_path_invalid");
+      await fs.unlink(writing);
+    } catch (error) { if (!isNotFound(error)) throw error; }
+    await withPrivateContextTemp(binding.parent, context, async temp => {
+      const current = await attachmentParent(root, virtualPath);
+      if (current.identity.dev !== binding.identity.dev || current.identity.ino !== binding.identity.ino) throw new Error("attachment_path_invalid");
+      await fs.link(temp, pending);
+    }, writing);
+  });
+}
+
+export async function updatePendingAttachmentContext(root: string, virtualPath: string, context: string): Promise<boolean> {
+  if (!attachmentRelativePath(virtualPath) || Buffer.byteLength(context) > 128000) throw new Error("attachment_context_invalid");
+  await attachmentParent(root, virtualPath);
+  return await withLocalFileWriteLock(root, ".appshot-context.lock", async () => {
+    const binding = await attachmentParent(root, virtualPath);
+    if (!await validateStoredAttachmentFile(root, virtualPath)) return false;
+    const pending = path.join(binding.parent, pendingContextName(virtualPath));
+    try { await fs.lstat(`${binding.file}.context`); return false; }
+    catch (error) { if (!isNotFound(error)) throw error; }
+    await recoverPendingContextLink(pending);
+    if (!await readStoredAttachmentFile(root, virtualPath, 128000, true, true)) return false;
+    return await withPrivateContextTemp(binding.parent, context, async temp => {
+      const current = await attachmentParent(root, virtualPath);
+      if (current.identity.dev !== binding.identity.dev || current.identity.ino !== binding.identity.ino) throw new Error("attachment_path_invalid");
+      await fs.rename(temp, pending);
+      return true;
+    });
+  });
+}
+
 export async function readAttachmentContext(root: string, virtualPath: string): Promise<string | undefined> {
   if (attachmentRelativePath(virtualPath) === undefined) return undefined;
   const file = `${attachmentFilePath(root, virtualPath)!}.context`;
+  const binding = await attachmentParent(root, virtualPath).catch(error => { if (isNotFound(error) || hasCode(error, "ENOTDIR")) return undefined; throw error; });
+  if (!binding) return undefined;
+  const pending = path.join(binding.parent, pendingContextName(virtualPath));
+  let hasPending = false;
+  try { await fs.lstat(pending); hasPending = true; }
+  catch (error) { if (!isNotFound(error)) throw error; }
+  if (hasPending) return await withLocalFileWriteLock(root, ".appshot-context.lock", async () => {
+    await attachmentParent(root, virtualPath);
+    await recoverPendingContextLink(pending);
+    let pendingInfo: Stats | undefined, finalInfo: Stats | undefined;
+    try { pendingInfo = await fs.lstat(pending); } catch (error) { if (!isNotFound(error)) throw error; }
+    try { finalInfo = await fs.lstat(file); } catch (error) { if (!isNotFound(error) && !hasCode(error, "ENAMETOOLONG")) throw error; }
+    // Recover a process exit between publishing the hard link and removing the pending name.
+    if (pendingInfo && finalInfo && pendingInfo.isFile() && !pendingInfo.isSymbolicLink() && finalInfo.isFile() && !finalInfo.isSymbolicLink()
+      && pendingInfo.dev === finalInfo.dev && pendingInfo.ino === finalInfo.ino && pendingInfo.nlink === 2 && finalInfo.nlink === 2) await fs.unlink(pending);
+    if (finalInfo) return (await readStoredAttachmentFile(root, virtualPath, 128000, true))?.toString("utf8");
+    const bytes = await readStoredAttachmentFile(root, virtualPath, 128000, true, true);
+    if (!bytes) return undefined;
+    await fs.link(pending, file);
+    await fs.unlink(pending);
+    return (await readStoredAttachmentFile(root, virtualPath, 128000, true))?.toString("utf8");
+  });
   try { await fs.lstat(file); }
   catch (error) { if (isNotFound(error) || hasCode(error, "ENAMETOOLONG")) return undefined; throw error; }
   return (await readStoredAttachmentFile(root, virtualPath, 128000, true))?.toString("utf8");

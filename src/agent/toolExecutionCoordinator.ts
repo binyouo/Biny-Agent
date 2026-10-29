@@ -50,6 +50,7 @@ import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolveP
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, isToolResultArchiveReference, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
 import { redactSecrets, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
+import { redactBrowserToolArguments, redactBrowserToolResult } from "../session/toolArgumentRedaction.js";
 import { projectSingleToolResultForModel, readResultLineRange } from "./toolResultProjection.js";
 import { codeModeCatalog, codeModeDescription, codeModeInput, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
 import type {
@@ -126,50 +127,12 @@ interface ToolCallExecutionOptions {
   onActualResult?: (result: unknown) => void;
 }
 
-/**
- * 工具副作用的 admission 预算。
- *
- * 额度必须在 ToolScheduler 和权限请求之前原子占用；否则一个 provider 批次可以先执行完所有
- * 并行调用，再由上层在步结束后发现超限。
- */
-export interface ToolExecutionBudget {
-  maxToolCalls: number;
-  maxRepeatedActions: number;
-  /** 进程内断点续跑时，已占用的调用额度。显式新预算窗口应传 0。 */
-  initialToolCallCount?: number;
-  /** 逐动作恢复，不能把某个动作的次数转嫁给恢复后的所有其他动作。 */
-  initialRepeatedActions?: RepeatedActionBudget[];
-  initialToolDiscovery?: ToolDiscoveryProgress;
-}
-
 export interface ToolDiscoveryProgress {
   tools: string[];
-  noProgressCount: number;
 }
 
-export interface RepeatedActionBudget {
-  fingerprint: string;
-  count: number;
-  resultFingerprint?: string;
-}
-
-export interface ToolExecutionBudgetSnapshot {
-  accountedToolCalls: number;
-  maxRepeatedActionCount: number;
-  repeatedActions: RepeatedActionBudget[];
+export interface ToolDiscoverySnapshot {
   toolDiscovery?: ToolDiscoveryProgress;
-}
-
-export type ToolBudgetReason = "tool_call_limit" | "repeated_action_limit";
-
-export interface ToolBudgetRejection {
-  status: "budget_rejected";
-  reason: ToolBudgetReason;
-  resumable: true;
-  limit: number;
-  attemptedToolCallCount: number;
-  attemptedActionCount: number;
-  error: string;
 }
 
 export class ToolExecutionCoordinator {
@@ -192,14 +155,7 @@ export class ToolExecutionCoordinator {
   private readonly hooks: HookRunner;
   /** 本回合共享的快照完成信号；所有写入等待同一次快照。 */
   private checkpointPromise?: Promise<void>;
-  private accountedToolCallCount = 0;
-  private readonly accountedActionCounts = new Map<string, number>();
-  private readonly actionResults = new Map<string, string>();
-  private readonly pendingActionCounts = new Map<string, number>();
   private readonly discoveredToolNames = new Set<string>();
-  private discoveryNoProgressCount = 0;
-  /** 首个预算拒绝决定本轮终态，后续并行调用不得覆盖更早发生的事实。 */
-  private budgetRejection: ToolBudgetRejection | undefined;
   private readonly uncertainExecutions = new Map<string, string>();
   private readonly toolImages = new Map<string, AgentImageContent>();
   private imageBytes = 0;
@@ -213,27 +169,14 @@ export class ToolExecutionCoordinator {
     private readonly emitEvent: (event: AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>) => void,
     private readonly getStepContext: () => AgentStepContext = () => ({}),
     allowedToolNames?: ReadonlySet<string>,
-    private readonly executionBudget?: ToolExecutionBudget,
+    initialToolDiscovery?: ToolDiscoveryProgress,
     private readonly onToolResultPersisted?: () => Promise<void>,
     executionToolNames?: ReadonlySet<string>
   ) {
     this.allowedToolNames = allowedToolNames ? new Set(allowedToolNames) : undefined;
     this.executionToolNames = executionToolNames ? new Set(executionToolNames) : undefined;
     for (const name of allowedToolNames ?? []) this.discoveredToolNames.add(name);
-    if (executionBudget) {
-      assertPositiveSafeInteger(executionBudget.maxToolCalls, "maxToolCalls");
-      assertPositiveSafeInteger(executionBudget.maxRepeatedActions, "maxRepeatedActions");
-      assertNonNegativeSafeInteger(executionBudget.initialToolCallCount ?? 0, "initialToolCallCount");
-      this.accountedToolCallCount = executionBudget.initialToolCallCount ?? 0;
-      assertNonNegativeSafeInteger(executionBudget.initialToolDiscovery?.noProgressCount ?? 0, "toolDiscovery.noProgressCount");
-      this.discoveryNoProgressCount = executionBudget.initialToolDiscovery?.noProgressCount ?? 0;
-      for (const name of executionBudget.initialToolDiscovery?.tools ?? []) this.discoveredToolNames.add(name);
-      for (const action of executionBudget.initialRepeatedActions ?? []) {
-        assertNonNegativeSafeInteger(action.count, "repeatedAction.count");
-        this.accountedActionCounts.set(action.fingerprint, action.count);
-        if (action.resultFingerprint) this.actionResults.set(action.fingerprint, action.resultFingerprint);
-      }
-    }
+    for (const name of initialToolDiscovery?.tools ?? []) this.discoveredToolNames.add(name);
     this.diagnostics = context.config.diagnostics.enabled
       ? new DiagnosticsRunner(context.workspaceRoot, context.config.diagnostics)
       : undefined;
@@ -519,7 +462,19 @@ export class ToolExecutionCoordinator {
   }
 
   private emit(event: AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>): void {
-    this.emitEvent(event.type === "tool.started" ? { ...event, parentToolCallId: this.scriptParents.get(event.toolCallId) } : event);
+    if (event.type === "tool.started") {
+      this.emitEvent({ ...event, args: redactBrowserToolArguments(event.tool, event.args), parentToolCallId: this.scriptParents.get(event.toolCallId) });
+      return;
+    }
+    if ((event.type === "tool.completed" || event.type === "tool.failed") && ["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(event.tool)) {
+      this.emitEvent({
+        ...event,
+        result: redactBrowserToolResult(event.tool, event.result),
+        modelResult: event.modelResult === undefined ? undefined : redactBrowserToolResult(event.tool, event.modelResult)
+      });
+      return;
+    }
+    this.emitEvent(event);
   }
 
   private recordAndFlush(event: SessionEvent, resultRedactionOptions?: SensitiveValueRedactionOptions): Promise<SessionEvent> {
@@ -530,30 +485,9 @@ export class ToolExecutionCoordinator {
     return this.context.recorder.recordAndFlush(record, runtimeContext, resultRedactionOptions);
   }
 
-  getExecutionBudgetSnapshot(): ToolExecutionBudgetSnapshot {
+  getToolDiscoverySnapshot(): ToolDiscoverySnapshot {
     return {
-      accountedToolCalls: this.accountedToolCallCount,
-      maxRepeatedActionCount: Math.max(
-        0,
-        ...this.accountedActionCounts.values()
-      ),
-      repeatedActions: [...this.accountedActionCounts].map(([fingerprint, count]) => ({
-        fingerprint, count, resultFingerprint: this.actionResults.get(fingerprint)
-      })),
-      toolDiscovery: { tools: [...this.discoveredToolNames], noProgressCount: this.discoveryNoProgressCount }
-    };
-  }
-
-  getBudgetRejection(): ToolBudgetRejection | undefined {
-    if (this.budgetRejection) return this.budgetRejection;
-    if (!this.executionBudget || this.discoveryNoProgressCount < this.executionBudget.maxRepeatedActions) return undefined;
-    // 同批已准入的业务调用仍可能取得进展；批次收敛前不锁死这一派生状态。
-    return {
-      status: "budget_rejected", reason: "repeated_action_limit", resumable: true,
-      limit: this.executionBudget.maxRepeatedActions,
-      attemptedToolCallCount: this.accountedToolCallCount,
-      attemptedActionCount: this.discoveryNoProgressCount,
-      error: `Tool discovery stopped after ${String(this.discoveryNoProgressCount)} searches without new tools or execution progress. Use the discovered tools or inspect the missing capability before continuing.`
+      toolDiscovery: { tools: [...this.discoveredToolNames] }
     };
   }
 
@@ -660,7 +594,6 @@ export class ToolExecutionCoordinator {
     let validationFailure = false;
     let finishPromise: Promise<unknown> | undefined;
     let committedChange: CommittedFileChange | undefined;
-    let budgetAdmitted = false;
     let taskStatusResultIsData = false;
     const updateState = (state: ToolExecutionState, evidence?: string): void => {
       latestState = state;
@@ -724,43 +657,9 @@ export class ToolExecutionCoordinator {
         if (latestState !== terminalState || status === "unknown" && outcomeUnknownReason !== undefined) {
           await persistState(terminalState, undefined, outcomeUnknownReason);
         }
-        if (budgetAdmitted) {
-          const fingerprint = actionFingerprint(call);
-          const pending = Math.max(0, (this.pendingActionCounts.get(fingerprint) ?? 1) - 1);
-          this.pendingActionCounts.set(fingerprint, pending);
-          const discoveryCall = call.name === toolSearchToolName && source === "builtin";
-          const retryableDiscoveryFailure = status === "failed" && typeof result === "object" && result !== null
-            && "retryable" in result && result.retryable === true;
-          if (executionStarted && discoveryCall && (status === "succeeded" || retryableDiscoveryFailure)) {
-            const names = toolSearchResultNames(result);
-            const hasNewTools = names.some((name) => !this.discoveredToolNames.has(name));
-            for (const name of names) this.discoveredToolNames.add(name);
-            this.discoveryNoProgressCount = hasNewTools ? 0 : this.discoveryNoProgressCount + 1;
-          }
-          // 比较原始结果，排除后续附加的 operationId 等每次必变的审计元数据。
-          // 仅成功结果变化才重置；报错文案变化、权限拒绝和取消不算进展。
-          if (executionStarted && status === "succeeded") {
-            const comparableResult = typeof result === "object" && result !== null && !Array.isArray(result)
-              ? Object.fromEntries(Object.entries(result).filter(([key]) => key !== "durationMs"))
-              : result;
-            const resultFingerprint = createHash("sha256").update(stableJson(comparableResult)).digest("hex");
-            const previous = this.actionResults.get(fingerprint);
-            if (!discoveryCall && previous !== resultFingerprint) {
-              this.discoveryNoProgressCount = 0;
-            }
-            if (previous !== undefined && previous !== resultFingerprint) {
-              this.accountedActionCounts.set(fingerprint, pending + 1);
-            }
-            this.actionResults.set(fingerprint, resultFingerprint);
-            // 已落盘的文件提交允许其他检查重新开始；自己的次数不清零，避免重复写入自我豁免。
-            if (committedChange && committedChange.diff.length > 0) {
-              for (const key of this.accountedActionCounts.keys()) {
-                if (key === fingerprint) continue;
-                this.accountedActionCounts.set(key, this.pendingActionCounts.get(key) ?? 0);
-                this.actionResults.delete(key);
-              }
-            }
-          }
+        if (executionStarted && status === "succeeded"
+          && call.name === toolSearchToolName && source === "builtin") {
+          for (const name of toolSearchResultNames(result)) this.discoveredToolNames.add(name);
         }
         const modelResult = await this.finishSyntheticCall(
           call,
@@ -800,14 +699,6 @@ export class ToolExecutionCoordinator {
         return await finish({ status: "skipped", error: message }, message, "cancelled");
       }
       options.assertCurrentRegistration?.();
-      const budgetRejection = this.admitToolCall(call, source);
-      if (budgetRejection) {
-        this.budgetRejection ??= budgetRejection;
-        this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
-        return await finish(budgetRejection, budgetRejection.error, "failed");
-      }
-      budgetAdmitted = this.executionBudget !== undefined;
-
       return await this.admissionScheduler.schedule({
         accesses: ToolAccesses.none(),
         signal,
@@ -1036,7 +927,9 @@ export class ToolExecutionCoordinator {
     } : undefined;
     // 模型侧预算只改变返回值；session、实时界面和归档都以工具实际产出的结果为事实。
     // 否则一次预算溢出会把“模型看见的引用”误当成工具真正返回的内容，后续恢复只能看到二次包装。
-    const persistedResult = await this.outlineToolResultForPersistence(call, sequence, result, metadata.source);
+    const persistedResult = ["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name)
+      ? redactBrowserToolResult(call.name, result)
+      : await this.outlineToolResultForPersistence(call, sequence, result, metadata.source);
     await this.recordAndFlush({
       type: "tool_result",
       tool: call.name,
@@ -1049,7 +942,7 @@ export class ToolExecutionCoordinator {
       operationId: metadata.operationId,
       evidence: metadata.evidence,
       auditOnly: metadata.auditOnly,
-      modelResult: metadata.optimizationInput ? modelResult : undefined,
+      modelResult: metadata.optimizationInput && !["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name) ? modelResult : undefined,
       optimization
     }, { context: metadata.source === "mcp" ? "mcp-result" : undefined });
     try {
@@ -1057,7 +950,7 @@ export class ToolExecutionCoordinator {
     } catch {
       // TurnStore 是崩溃安全断点，不能把已经持久化的 tool_result 变成工具失败。
     }
-    this.context.contextMemory?.observeToolResult(call.name, call.args, result);
+    if (!["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name)) this.context.contextMemory?.observeToolResult(call.name, call.args, result);
     // 完整错误仍在 result 中；单独保存和广播的诊断只保留有界首尾摘要。
     const diagnostic = errorMessage === undefined ? undefined : toolResultPreview(redactSecrets(errorMessage));
     if (diagnostic) {
@@ -1146,6 +1039,17 @@ export class ToolExecutionCoordinator {
       const redactionOptions = { context: source === "mcp" ? "mcp-result" as const : undefined };
       const rawOutput = serializeToolResult(result, redactionOptions);
       const rawResultBytes = Buffer.byteLength(rawOutput, "utf8");
+      if (["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name)) {
+        this.producedToolResultBytes += rawResultBytes;
+        const remaining = Math.max(0, budget - this.inlineToolResultBytes);
+        const smallResultLimit = Math.min(4_096, Math.floor(budget / 4));
+        if (rawResultBytes > remaining && rawResultBytes > smallResultLimit) {
+          const omitted = call.name === "BrowserCDP" ? "browser CDP result" : call.name === "ChromeRelayEval" ? "Chrome Relay evaluation result" : "clipboard text";
+          return { text: `[${omitted} omitted because the turn output budget is exhausted]`, truncated: true };
+        }
+        this.inlineToolResultBytes += rawResultBytes;
+        return result;
+      }
       const modelResult = await projectSingleToolResultForModel(call.name, call.args, result, {
         toolCallId: call.id,
         sequence,
@@ -1240,6 +1144,7 @@ export class ToolExecutionCoordinator {
     modelResult: unknown,
     source?: ToolSource
   ): Promise<unknown> {
+    if (["BrowserClipboardRead", "BrowserCDP", "ChromeRelayEval"].includes(call.name)) return redactBrowserToolResult(call.name, modelResult);
     const goalControlOnly = (call.name === "run_script" || call.name === "Bash" && source === "builtin")
       && typeof modelResult === "object" && modelResult !== null && (modelResult as { goalControlOnly?: unknown }).goalControlOnly === true ? true : undefined;
     if (goalControlOnly) this.goalControlCalls.add(call.id);
@@ -1738,53 +1643,6 @@ export class ToolExecutionCoordinator {
     return this.context.recorder.nextToolCallSequence();
   }
 
-  /**
-   * 没有 await 的同步临界区：同一批并行 execute 即使同时恢复 microtask，也会逐个检查并占用
-   * 额度，后来的调用无法越过前一个调用刚提交的计数。
-   */
-  private admitToolCall(call: { name: string; args: unknown }, source: ToolSource): ToolBudgetRejection | undefined {
-    const budget = this.executionBudget;
-    if (!budget) return undefined;
-    const attemptedToolCallCount = this.accountedToolCallCount + 1;
-    const fingerprint = actionFingerprint(call);
-    const actionCount = this.accountedActionCounts.get(fingerprint) ?? 0;
-    const attemptedActionCount = actionCount + 1;
-    // 被重复动作规则拒绝的调用仍是真实 provider Tool Call，也必须消耗总调用额度。先原子记账，
-    // 再选择拒绝原因，保证同一批后续调用看见最新计数。
-    this.accountedToolCallCount = attemptedToolCallCount;
-    this.accountedActionCounts.set(fingerprint, actionCount + 1);
-
-    if (attemptedToolCallCount > budget.maxToolCalls) {
-      return {
-        status: "budget_rejected",
-        reason: "tool_call_limit",
-        resumable: true,
-        limit: budget.maxToolCalls,
-        attemptedToolCallCount,
-        attemptedActionCount,
-        error: `Tool ${call.name} was not executed because the run reached its ${String(budget.maxToolCalls)}-call limit.`
-      };
-    }
-    // 同一脚本内的后续搜索也必须在辅助模型调用前停止，不能等外层 exec 返回。
-    if (call.name === toolSearchToolName && source === "builtin" && this.discoveryNoProgressCount >= budget.maxRepeatedActions) {
-      return this.getBudgetRejection();
-    }
-    if (attemptedActionCount > budget.maxRepeatedActions) {
-      return {
-        status: "budget_rejected",
-        reason: "repeated_action_limit",
-        resumable: true,
-        limit: budget.maxRepeatedActions,
-        attemptedToolCallCount,
-        attemptedActionCount,
-        error: `Tool ${call.name} was not executed because the same structured action reached its repeat limit of ${String(budget.maxRepeatedActions)}.`
-      };
-    }
-
-    this.pendingActionCounts.set(fingerprint, (this.pendingActionCounts.get(fingerprint) ?? 0) + 1);
-    return undefined;
-  }
-
   private duplicateAuditId(toolCallId: string, sequence: number): string {
     const count = (this.duplicateExecutionCounts.get(toolCallId) ?? 0) + 1;
     this.duplicateExecutionCounts.set(toolCallId, count);
@@ -1834,18 +1692,6 @@ function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
-}
-
-function assertPositiveSafeInteger(value: number, field: string): void {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new RangeError(`Tool execution budget ${field} must be a positive safe integer.`);
-  }
-}
-
-function assertNonNegativeSafeInteger(value: number, field: string): void {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new RangeError(`Tool execution budget ${field} must be a non-negative safe integer.`);
-  }
 }
 
 function isToolExecutionError(execution: unknown): execution is { isError: true; result: unknown; errorMessage: string } {
@@ -2039,11 +1885,6 @@ function displaySummary(display: ToolInputDisplay | undefined): string | undefin
   if (display.kind === "command") return `Run command: ${display.command}`;
   if (display.kind === "file_io") return `${display.operation}${display.path ? ` ${display.path}` : ""}`.trim();
   return display.summary;
-}
-
-function actionFingerprint(call: { name: string; args: unknown }): string {
-  // 持久化计数只保存摘要，不能把工具参数中的凭据写进恢复状态。
-  return createHash("sha256").update(`${call.name}\0${stableJson(call.args)}`).digest("hex");
 }
 
 function attachToolSummary(result: unknown, durationMs: number): unknown {

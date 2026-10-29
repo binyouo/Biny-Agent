@@ -36,6 +36,10 @@ assert.equal(merged.label, "已合并");
 assert.equal(merged.canMerge, false);
 assert.equal(merged.deleteBranchOnRemove, true);
 
+const changedAfterMerge = { sessionId: "session-new-commits", status: "merged" as const, exists: true, dirty: false, mergedIntoBase: false };
+assert.equal(desktopWorktreeView(changedAfterMerge).deleteBranchOnRemove, false);
+assert.deepEqual(tuiWorktreeView(changedAfterMerge).actions, ["merge", "remove-worktree"]);
+
 const orphaned = desktopWorktreeView({
   sessionId: "session-orphaned",
   status: "orphaned",

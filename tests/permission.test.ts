@@ -44,6 +44,41 @@ function testEvaluationOrder(): void {
     criticalAlwaysAsk: true
   });
 
+  const clipboardRead = analyzePermissionRequest({
+    toolName: "BrowserClipboardRead", args: {}, sessionId: "test-session", projectRoot: "/workspace", toolRisk: "read"
+  });
+  assert.equal(clipboardRead.actionType, "read");
+  assert.equal(clipboardRead.riskLevel, "medium");
+  assert.match(clipboardRead.reason ?? "", /clipboard/u);
+  assert.equal(new PermissionManager({ mode: "ask" }).evaluate(clipboardRead).decision, "ask");
+  const browserCdp = analyzePermissionRequest({
+    toolName: "BrowserCDP", args: { method: "Page.getLayoutMetrics" }, sessionId: "test-session", projectRoot: "/workspace", toolRisk: "execute"
+  });
+  assert.equal(browserCdp.actionType, "shell");
+  assert.equal(browserCdp.riskLevel, "critical");
+  assert.equal(new PermissionManager({ mode: "ask" }).evaluate(browserCdp).decision, "ask");
+  assert.equal(new PermissionManager({ mode: "auto" }).evaluate(browserCdp).decision, "ask");
+  const chromeRelayEval = analyzePermissionRequest({
+    toolName: "ChromeRelayEval", args: { code: "document.title" }, sessionId: "test-session", projectRoot: "/workspace", toolRisk: "execute"
+  });
+  assert.equal(chromeRelayEval.actionType, "shell");
+  assert.equal(chromeRelayEval.riskLevel, "critical");
+  assert.equal(new PermissionManager({ mode: "ask" }).evaluate(chromeRelayEval).decision, "ask");
+  assert.equal(new PermissionManager({ mode: "auto" }).evaluate(chromeRelayEval).decision, "ask");
+  const browserHistory = analyzePermissionRequest({
+    toolName: "BrowserProfileHistory", args: { profileId: "chrome:Default" }, sessionId: "test-session", projectRoot: "/workspace", toolRisk: "read"
+  });
+  assert.equal(browserHistory.actionType, "read");
+  assert.equal(browserHistory.riskLevel, "medium");
+  assert.match(browserHistory.reason ?? "", /local browser visit history/u);
+  assert.equal(new PermissionManager({ mode: "ask" }).evaluate(browserHistory).decision, "ask");
+  const clipboardWrite = analyzePermissionRequest({
+    toolName: "BrowserClipboardWrite", args: { text: "private" }, sessionId: "test-session", projectRoot: "/workspace", toolRisk: "write"
+  });
+  assert.equal(clipboardWrite.actionType, "write");
+  assert.equal(clipboardWrite.riskLevel, "medium");
+  assert.equal(new PermissionManager({ mode: "read-only" }).evaluate(clipboardWrite).decision, "deny");
+
   assert.deepEqual(
     manager.evaluate({ ...baseRequest, targetPath: "private/keys.txt" }),
     { decision: "deny", reason: "Target path is denied by project policy: private/" }

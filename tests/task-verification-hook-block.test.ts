@@ -103,7 +103,7 @@ for (const hookBlocks of [true, false]) {
           const toolCallId = taskCheckToolCallId(input);
           const coordinator = new ToolExecutionCoordinator(
             { workspaceRoot: root, config, recorder, toolRegistry: registry, runId: input.taskRunId, turnId: input.attemptId },
-            permission, () => {}, () => ({}), new Set(["Bash"]), { maxToolCalls: 1, maxRepeatedActions: 1 }
+            permission, () => {}, () => ({}), new Set(["Bash"])
           );
           const tool = coordinator.createAgentTools().find((entry) => entry.name === "Bash");
           assert.ok(tool);

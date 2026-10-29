@@ -132,6 +132,7 @@ export interface TaskDefinition {
   prompt: string;
   constraints?: string[];
   agent?: string;
+  isolation?: "worktree";
   verification?: TaskVerificationContract;
   review?: PlanReviewCandidate;
   /** 无命令验收的计划节点只能产出只读报告，不授予工作区写权限。 */
@@ -151,11 +152,13 @@ export function readTaskDefinition(task: unknown): TaskDefinition {
   const prompt = firstText(value.prompt) ?? (titledPrompt || JSON.stringify(task));
   if (!prompt?.trim()) throw new Error("Task prompt cannot be empty.");
   const reportOnly = typeof value.planBlock === "object" && value.planBlock !== null && (value.planBlock as { kind?: unknown }).kind === "report";
+  if (value.isolation !== undefined && value.isolation !== "worktree") throw new Error("task.isolation must be worktree when supplied.");
   if (reportOnly && (value.verification !== undefined || value.review !== undefined)) throw new Error("Read-only report nodes cannot replace verified-candidate contracts.");
   return {
     prompt: prompt.trim(),
     constraints: value.constraints === undefined ? undefined : readStringList(value.constraints, "constraints", false),
     agent: optionalText(value.agent, "task.agent"),
+    isolation: value.isolation === "worktree" ? "worktree" : undefined,
     reportOnly: reportOnly ? true : undefined,
     review: value.review === undefined ? undefined : readReviewCandidate(value.review),
     verification: value.verification === undefined ? undefined : readTaskVerificationContract(value.verification)
@@ -284,8 +287,6 @@ export async function verifyTaskCandidate(input: {
   expectedArtifactFingerprint?: string;
   approvals?: readonly TaskVerificationApproval[];
   repairScope?: TaskRepairScopeEvidence;
-  /** Fresh, frozen post-worker snapshot; final comparison guards the entire interval through verification. */
-  candidateWorkspaceSnapshot?: TaskWorkspaceSnapshot;
   executor: TaskCommandExecutor;
   signal?: AbortSignal;
 }): Promise<TaskVerificationEvidence> {
@@ -336,20 +337,7 @@ export async function verifyTaskCandidate(input: {
       input.definitionFingerprint,
       [],
       "blocked",
-      "Candidate artifacts changed after verification paused; the previous approval or evidence cannot be reused.",
-      input.repairScope
-    );
-  }
-  const verificationWorkspace = input.candidateWorkspaceSnapshot
-    ?? await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal).catch(() => undefined);
-  if (input.signal?.aborted) return cancelled(artifactFingerprint);
-  if (verificationWorkspace === undefined) {
-    return emptyEvidence(
-      input,
-      contractFingerprint,
-      input.definitionFingerprint,
-      "blocked",
-      "Cannot capture the workspace baseline required to prove verification stability.",
+      "Candidate artifacts changed before verification; the captured candidate, approval or evidence cannot be reused.",
       input.repairScope
     );
   }
@@ -446,24 +434,6 @@ export async function verifyTaskCandidate(input: {
       checks,
       "blocked",
       "Verification definition inputs changed while checks were running.",
-      input.repairScope
-    );
-  }
-  const afterWorkspace = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal).catch(() => undefined);
-  if (input.signal?.aborted) return cancelled(artifactFingerprint, checks);
-  if (afterWorkspace === undefined) {
-    return evidence(input, contractFingerprint, artifactFingerprint, input.definitionFingerprint, checks, "blocked", "Cannot prove that the workspace stayed stable during verification.", input.repairScope);
-  }
-  const verificationChanges = compareTaskWorkspaceSnapshots(verificationWorkspace, afterWorkspace, []);
-  if (verificationChanges.changedPaths.length) {
-    return evidence(
-      input,
-      contractFingerprint,
-      artifactFingerprint,
-      input.definitionFingerprint,
-      checks,
-      "blocked",
-      `Workspace changed while verification was running: ${verificationChanges.changedPaths.join(", ")}`,
       input.repairScope
     );
   }

@@ -79,7 +79,7 @@ export function desktopWorktreeView(status: DesktopWorktreeStatus | undefined): 
       deleteBranchOnRemove: false
     };
   }
-  if (status.status === "merged" || status.mergedIntoBase) {
+  if (status.mergedIntoBase) {
     return {
       label: "已合并",
       detail: "改动已进入项目主分支，可以清理隔离环境。",

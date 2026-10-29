@@ -10,8 +10,8 @@ test("the element tree renders as lines that keep the refs the actions need", ()
     { element_token: "e8", role: "AXTextField", value: "搜索", focused: true, frame: { x: 10, y: 20, w: 200, h: 30 } },
     { element_token: "e9", role: "AXButton", enabled: false }
   ]).split("\n");
-  assert.equal(line[0], '[0] (e7) AXButton "返回" @0,90 40×34');
-  assert.match(line[1]!, /\(e8\) AXTextField "搜索" @10,20 200×30 \(focused\)/, "聚焦状态要内联，模型才知道输入落到哪");
+  assert.equal(line[0], '[0] (e7) AXButton "返回" @0,90 40x34');
+  assert.match(line[1]!, /\(e8\) AXTextField "搜索" @10,20 200x30 \(focused\)/, "聚焦状态要内联，模型才知道输入落到哪");
   assert.match(line[2]!, /\(disabled\)/);
   // 引用必须活着：摘掉它模型就没法点
   for (const entry of line) assert.match(entry, /\(e\d+\)/);
@@ -29,4 +29,18 @@ test("the tree stays small enough to be worth the trouble", () => {
 test("an absent or empty tree renders as nothing, not as a stray newline", () => {
   assert.equal(renderElementTree(undefined), "");
   assert.equal(renderElementTree([]), "");
+});
+
+test("labels retain distinguishing text, fall back through nonempty AX fields and do not invent bounds", () => {
+  const longLabel = "这是一段用于区分相似控件的完整无障碍标题".repeat(3) + "最终确认按钮";
+  const lines = renderElementTree([
+    { ref: "a", role: "AXButton", title: `  ${longLabel}  ` },
+    { ref: "b", role: "AXButton", title: "  ", description: "  播放音乐  ", value: "other" },
+    { ref: "c", role: "AXTextField", title: "", description: "\n", value: "  目标文字  " },
+    { ref: "d", role: "AXButton", role_description: "  菜单按钮  " }
+  ]).split("\n");
+  assert.equal(lines[0], `[0] (a) AXButton ${JSON.stringify(longLabel)}`);
+  assert.equal(lines[1], '[1] (b) AXButton "播放音乐" value="other"');
+  assert.equal(lines[2], '[2] (c) AXTextField "目标文字"');
+  assert.equal(lines[3], '[3] (d) AXButton "菜单按钮"');
 });

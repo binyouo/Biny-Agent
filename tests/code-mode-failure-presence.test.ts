@@ -52,7 +52,7 @@ for (const returnOnly of [true, false]) {
       assert.equal(preparations, 1);
       assert.equal(calls, 0, "the fatal bridge latch prevents another child dispatch");
       assert.deepEqual(details.childCalls, []);
-      assert.equal(coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 0);
+
       await recorder.flush();
       const results = (await readFile(recorder.filePath, "utf8")).trim().split("\n")
         .map((line) => JSON.parse(line)).filter((event) => event.type === "tool_result");

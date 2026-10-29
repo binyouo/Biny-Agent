@@ -18,6 +18,7 @@ import type { AgentMessage } from "../agent/core/types.js";
 import { isRetryCommit, isRetryWindow, type RetryCommit, type RetryWindow } from "./retryCommit.js";
 import { isRetryOrigin, type RetryOrigin } from "./retryOrigin.js";
 import type { RuntimeHighWater } from "./runtimeEvent.js";
+import { redactBrowserToolMessages } from "./toolArgumentRedaction.js";
 import { agentDir, ensureAgentDirs } from "./store.js";
 import { projectCheckpointToolMetadata } from "./toolCallPersistence.js";
 
@@ -85,7 +86,7 @@ export class TurnStore {
       turnId,
       prompt,
       systemPrompt,
-      messages: projectCheckpointToolMetadata(messages),
+      messages: projectCheckpointToolMetadata(redactBrowserToolMessages(messages)),
       completedSteps,
       facts,
       terminal,

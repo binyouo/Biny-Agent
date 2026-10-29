@@ -158,7 +158,7 @@ export function attachDesktopComputerMcp(host: McpToolHost, endpoint: BrowserAut
             try {
               await ready;
               await Promise.allSettled([...next.pending]);
-              if (next.used) await requestComputer(endpoint, "release", { session }, AbortSignal.timeout(2_000));
+              if (next.used) await requestComputer(endpoint, "release", { session, projectId: endpoint.projectId }, AbortSignal.timeout(2_000));
               if (sessions.get(session) === next) sessions.delete(session);
             } finally { unregister?.(); }
           })();
@@ -172,7 +172,7 @@ export function attachDesktopComputerMcp(host: McpToolHost, endpoint: BrowserAut
       const signal = AbortSignal.any([extra.signal, closed.signal, entry.lifetime.signal]);
       signal.throwIfAborted();
       entry.used = true;
-      const pending = requestComputer(endpoint, method, { ...args, session }, signal, mutation);
+      const pending = requestComputer(endpoint, method, { ...args, session, projectId: endpoint.projectId }, signal, mutation);
       entry.pending.add(pending);
       try {
         const reply = await pending;

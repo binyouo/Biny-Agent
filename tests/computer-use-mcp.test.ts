@@ -20,7 +20,8 @@ test("computer use is served over MCP with the documented verbs", async () => {
     assert.deepEqual(names, [
       "click", "drag", "get_app_state", "grant", "launch_app", "list_apps",
       "perform_secondary_action", "permissions", "pip_close", "pip_list", "pip_open", "press_key", "scroll",
-      "select_text", "sequence", "set_value", "type_text"
+      "select_text", "sequence", "set_value", "sky_click", "sky_drag", "sky_get_app_state", "sky_list_apps",
+      "sky_perform_secondary_action", "sky_press_key", "sky_scroll", "sky_select_text", "sky_set_value", "sky_type_text", "type_text"
     ]);
     // 动作类工具必须声明 pid，否则调用方无法把动作定向到目标窗口。
     for (const name of ["click", "type_text", "press_key", "scroll", "drag", "set_value", "select_text", "perform_secondary_action"]) {
@@ -38,6 +39,29 @@ test("computer use is served over MCP with the documented verbs", async () => {
     await server.close();
     await driver.dispose();
   }
+});
+
+test("native failures have one MCP error response across observation, setup and mirror tools", async () => {
+  const driver = new NativeProcessDriver(() => undefined);
+  const fail = async () => { throw new Error("fixture_native_unavailable"); };
+  driver.daemonCommand = fail; driver.launchApp = fail; driver.observeRaw = fail;
+  driver.grantAccessibility = fail; driver.diagnostics = fail;
+  const server = createComputerUseMcpServer(driver, { run: async (_tool, _args, operation) => await operation() });
+  const [left, right] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "error-client", version: "1" });
+  try {
+    await Promise.all([server.connect(right), client.connect(left)]);
+    const cases: [string, Record<string, unknown>][] = [
+      ["pip_open", { pid: 12, window_id: 42 }], ["pip_close", { all: true }], ["pip_list", {}],
+      ["launch_app", { bundle: "test.notes" }], ["list_apps", {}],
+      ["get_app_state", { pid: 12, window_id: 42 }], ["grant", {}], ["permissions", {}]
+    ];
+    for (const [name, args] of cases) {
+      const result = await client.callTool({ name, arguments: args });
+      assert.equal(result.isError, true, name);
+      assert.deepEqual(result.content, [{ type: "text", text: "fixture_native_unavailable" }], name);
+    }
+  } finally { await client.close(); await server.close(); await driver.dispose(); }
 });
 
 test("the MCP permissions verb reports current native diagnostics", async () => {

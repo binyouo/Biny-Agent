@@ -12,6 +12,12 @@ test("runtime discovery and recall helpers are not user-selectable capabilities"
   for (const name of ["Glob", "Grep", "Read", "Bash", "WebSearch"]) {
     assert.equal(shouldShowToolInCapabilityMenu({ name, source: "builtin" }), true, name);
   }
+  for (const name of ["BrowserBack", "BrowserScroll", "BrowserSelectOption", "BrowserSetChecked"]) {
+    assert.equal(shouldShowToolInCapabilityMenu({ name, source: "builtin" }), true, name);
+  }
+  for (const name of ["BrowserClose", "BrowserTabFloat", "BrowserListProfiles", "BrowserProfileHistory", "BrowserViewport", "BrowserEval", "BrowserCDP", "BrowserClipboardRead", "BrowserClipboardWrite", "BrowserDialogStatus", "BrowserDialogRespond", "BrowserDialogAutoReply"]) {
+    assert.equal(shouldShowToolInCapabilityMenu({ name, source: "builtin" }), false, name);
+  }
 });
 
 test("取消显式选择的最后一个能力回到自动选择", () => {

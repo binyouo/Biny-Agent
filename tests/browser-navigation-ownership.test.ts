@@ -14,6 +14,15 @@ function deferred<T = void>() {
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
+function pageOperationName(expression: string): string | undefined {
+  const start = expression.lastIndexOf("})(");
+  if (start < 0) return undefined;
+  const end = expression.indexOf(",", start + 3);
+  return end < 0 ? undefined : JSON.parse(expression.slice(start + 3, end)) as string;
+}
+function isPageOperation(params: Record<string, unknown>, operation: string): boolean {
+  return typeof params.expression === "string" && pageOperationName(params.expression) === operation;
+}
 const navigationUrl = "https://example.invalid/navigated-a";
 interface NavigationGate {
   entered: ReturnType<typeof deferred<NavigationContents>>;
@@ -35,6 +44,7 @@ class NavigationContents extends EventEmitter {
   destroyed = false;
   navigations: string[] = [];
   evaluations: string[] = [];
+  inputEvents: string[] = [];
   keyEvents: Array<{ type: unknown; key: unknown }> = [];
   debuggerGate?: DebuggerGate;
   evaluationError?: string;
@@ -53,6 +63,10 @@ class NavigationContents extends EventEmitter {
       if (method === "Input.dispatchKeyEvent") {
         assert.ok(params.type === "keyDown" || params.type === "keyUp");
         this.keyEvents.push({ type: params.type, key: params.key });
+      } else if (method.startsWith("Input.")) {
+        this.inputEvents.push(method);
+        if (method === "Input.insertText") assert.equal(typeof params.text, "string");
+        else assert.equal(method, "Input.dispatchMouseEvent");
       } else {
         assert.equal(method, "Runtime.evaluate");
         assert.equal(typeof params.expression, "string");
@@ -64,9 +78,16 @@ class NavigationContents extends EventEmitter {
         gate.entered.resolve(this);
         await gate.release.promise;
       }
-      if (method === "Input.dispatchKeyEvent") return {};
+      if (method.startsWith("Input.")) return {};
       if (this.evaluationError) return { exceptionDetails: { text: this.evaluationError } };
-      return { result: { value: { url: this.url, title: this.title } } };
+      const expression = params.expression as string;
+      const operation = pageOperationName(expression);
+      const value = operation === "read" || expression === "({ url: location.href, title: document.title })"
+        ? { url: this.url, title: this.title }
+        : operation === "wait" ? true
+          : operation === "click" ? { x: 10, y: 20 }
+            : true;
+      return { result: { value } };
     }
   });
   navigationHistory = { canGoBack: () => false, canGoForward: () => false };
@@ -283,6 +304,69 @@ test("navigation owns its loaded page without overwriting a newer user selection
           () => exercise(scenario, interruption, true));
       }
     }
+    await t.test("model navigation preserves user tabs and reuses its session page", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "biny-browser-agent-tab-"));
+      NavigationContents.sequence = 0;
+      NavigationView.instances = [];
+      NavigationWindow.instances = [];
+      const browser = new DesktopBrowserService(async () => path.join(root, "cookies.json"), undefined, undefined, new BrowserEnvironmentStore());
+      const host = Object.assign(new EventEmitter(), {
+        isDestroyed: () => false,
+        getContentBounds: () => ({ width: 1200, height: 800 }),
+        contentView: { addChildView() {}, removeChildView() {} },
+        webContents: { send() {}, getZoomFactor: () => 1 }
+      });
+      browser.attachDesktopWindow(host as unknown as Electron.BrowserWindow);
+      try {
+        const endpoint = await browser.startAutomationServer(path.join(root, "browser.sock"));
+        const userTab = browser.browserAction("project", { type: "new", url: "https://example.invalid/user" });
+        const userContents = NavigationView.instances.at(-1)!.webContents;
+        browser.browserAction("project", { type: "select", tabId: userTab.activeId! });
+        await requestBrowser(endpoint, "navigate", { projectId: "project", sessionId: "agent-session", url: "https://example.invalid/agent-one" });
+        const agentContents = NavigationView.instances.at(-1)!.webContents;
+        assert.notEqual(agentContents, userContents);
+        assert.equal(userContents.getURL(), "https://example.invalid/user");
+        assert.equal(browser.browserSnapshot("project").tabs.length, 2);
+
+        await requestBrowser(endpoint, "navigate", { projectId: "project", sessionId: "agent-session", url: "https://example.invalid/agent-two" });
+        assert.equal(NavigationView.instances.length, 2, "the same Agent session reuses its own tab");
+        assert.deepEqual(agentContents.navigations, ["https://example.invalid/agent-one", "https://example.invalid/agent-two"]);
+        assert.equal(userContents.getURL(), "https://example.invalid/user");
+
+        await requestBrowser(endpoint, "select_option", { projectId: "project", sessionId: "agent-session", selector: "#country", values: ["ca"] });
+        await requestBrowser(endpoint, "set_checked", { projectId: "project", sessionId: "agent-session", selector: "#accept", checked: true });
+        assert.ok(agentContents.evaluations.some(expression => pageOperationName(expression) === "select_option"));
+        assert.ok(agentContents.evaluations.some(expression => pageOperationName(expression) === "set_checked"));
+        assert.equal(userContents.evaluations.length, 0, "form actions remain on the owning Agent page");
+        const actionEvaluationCount = agentContents.evaluations.length;
+        await assert.rejects(requestBrowser(endpoint, "select_option", { projectId: "project", sessionId: "agent-session", selector: "#country", values: [] }));
+        assert.equal(agentContents.evaluations.length, actionEvaluationCount, "invalid selection input is rejected before page execution");
+
+        browser.browserAction("project", { type: "select", tabId: userTab.activeId! });
+        const agentEvaluations = agentContents.evaluations.length;
+        const userEvaluations = userContents.evaluations.length;
+        await requestBrowser(endpoint, "read_dom", { projectId: "project", sessionId: "agent-session" });
+        assert.ok(agentContents.evaluations.length > agentEvaluations, "session reads remain on its own page after the user changes tabs");
+        assert.equal(userContents.evaluations.length, userEvaluations);
+
+        const agentTabId = browser.browserSnapshot("project").tabs.find(tab => tab.url === "https://example.invalid/agent-two")!.id;
+        browser.browserAction("project", { type: "select", tabId: agentTabId });
+        const selectedAgentUrl = agentContents.getURL();
+        await requestBrowser(endpoint, "navigate", { projectId: "project", sessionId: "agent-session", url: "https://example.invalid/agent-three" });
+        assert.equal(NavigationView.instances.length, 3, "a manually selected Agent page becomes user-owned");
+        assert.equal(agentContents.getURL(), selectedAgentUrl, "navigation leaves the user-selected page intact");
+        const ownedTab = browser.browserSnapshot("project").tabs.find(tab => tab.url === "https://example.invalid/agent-three")!;
+        await assert.rejects(requestBrowser(endpoint, "close", { projectId: "project", sessionId: "other-session" }), /no longer owned/u);
+        assert.equal(browser.browserSnapshot("project").tabs.some(tab => tab.id === ownedTab.id), true);
+        await requestBrowser(endpoint, "close", { projectId: "project", sessionId: "agent-session" });
+        assert.equal(browser.browserSnapshot("project").tabs.some(tab => tab.id === ownedTab.id), false);
+        assert.equal(userContents.isDestroyed(), false, "closing an Agent tab preserves the user-owned page");
+      } finally {
+        for (const window of NavigationWindow.instances) window.destroy();
+        try { await browser.dispose(); }
+        finally { await rm(root, { recursive: true, force: true }); }
+      }
+    });
     await t.test("an explicitly closed page owner never falls back to the selected page", async () => {
       // A direct guard control, not a claim that Electron resolves loadURL
       // successfully after closing a page. Real pending-close rejection is above.
@@ -410,13 +494,14 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
     allocate?: boolean;
   }
   const scenarios: Scenario[] = [
-    ...(["navigate", "click", "fill", "press"] as const).map(method => ({ name: `${method} successful no-switch control`, method })),
+    ...(["click", "fill", "press"] as const).map(method => ({ name: `${method} successful no-switch control`, method })),
+    { name: "navigate successful no-switch control", method: "navigate", identity: "project" },
     { name: "click retains its pending Runtime.evaluate target across project selection", method: "click", stage: "evaluate" },
     { name: "fill retains its pending Runtime.evaluate target across environments in one project", method: "fill", stage: "evaluate", selection: "same-project" },
     { name: "press retains its mutation target while trailing pageState is pending", method: "press", stage: "evaluate" },
     { name: "press retains keyUp and pageState ownership after selection", method: "press", stage: "keyUp" },
-    { name: "navigate retains its target while loadURL is pending", method: "navigate", stage: "load" },
-    { name: "navigate retains its target while trailing pageState is pending", method: "navigate", stage: "evaluate" },
+    { name: "navigate retains its target while loadURL is pending", method: "navigate", stage: "load", identity: "project" },
+    { name: "navigate retains its target while trailing pageState is pending", method: "navigate", stage: "evaluate", identity: "project" },
     { name: "click ignores a new tab created during Runtime.evaluate", method: "click", stage: "evaluate", selection: "new" },
     { name: "fill ignores a new tab created during Runtime.evaluate", method: "fill", stage: "evaluate", selection: "new" },
     { name: "navigate attributes a newly allocated environment tab", method: "navigate", stage: "load", allocate: true },
@@ -430,17 +515,17 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
       let b = scenario.selection === "same-project" ? f.addTab("project-a", f.work, "same-project-b") : f.b;
       f.select(f.a);
       const args: Record<string, unknown> = {
-        ...(scenario.identity !== "session" && scenario.identity !== "cli" ? { projectId: "project-a" } : {}),
-        ...(scenario.identity !== "project" && scenario.identity !== "cli" ? { sessionId: "session-a" } : {}),
+        ...((scenario.identity ?? "project") !== "session" && (scenario.identity ?? "project") !== "cli" ? { projectId: "project-a" } : {}),
+        ...((scenario.identity ?? "project") !== "project" && (scenario.identity ?? "project") !== "cli" ? { sessionId: "session-a" } : {}),
         ...(scenario.method === "navigate" ? { url: navigationUrl, ...(scenario.allocate ? { environment: f.work } : {}) }
           : scenario.method === "press" ? { key: "Enter", selector: "#field" }
           : { selector: "#field", ...(scenario.method === "fill" ? { value: "fixture text" } : {}) })
       };
       const gate = scenario.stage === "load" ? f.gate() : scenario.stage ? f.gate(f.a.contents, (method, params) =>
         scenario.stage === "keyUp" ? method === "Input.dispatchKeyEvent" && params.type === "keyUp"
-          : method === "Runtime.evaluate" && String(params.expression).includes(
-            scenario.method === "click" ? "element.click()" : scenario.method === "fill" ? "new InputEvent(" : "({ url: location.href, title: document.title })"
-          )) : undefined;
+        : method === "Runtime.evaluate" && (scenario.method === "click" ? isPageOperation(params, "reveal")
+          : scenario.method === "fill" ? isPageOperation(params, "reveal")
+            : String(params.expression).includes("({ url: location.href, title: document.title })"))) : undefined;
       const pending = f.request(scenario.method, args);
       let owner = f.a.contents;
       if (gate) {
@@ -465,8 +550,9 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
       assert.equal(f.sources.length, 1);
       if (!gate) f.select(b); // Capture is lazy, after a later independent selection.
       assert.equal(f.browser.browserSnapshot(b.projectId).activeId, b.id);
-      await assertPreview(f.sources[0]!, owner, scenario.identity === "session" ? undefined : "project-a",
-        scenario.identity === "cli" || scenario.identity === "project" ? undefined : "session-a");
+      const identity = scenario.identity ?? "project";
+      await assertPreview(f.sources[0]!, owner, identity === "session" ? undefined : "project-a",
+        identity === "cli" || identity === "project" ? undefined : "session-a");
       assert.equal(owner.captures, 1);
       assert.equal(b.contents.captures, 0);
       assert.equal(b.contents.keyEvents.length, 0, "preview attribution must not dispatch another mutation");
@@ -477,7 +563,7 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
   }
 
   await t.test("preview: a closed capture owner never falls back to B or changes the successful result", () => withPreviewBrowser(Service, async f => {
-    const result = await f.request("click", { selector: "#field", projectId: "project-a", sessionId: "session-a" });
+    const result = await f.request("click", { selector: "#field", projectId: "project-a" });
     assert.deepEqual(result, { url: f.a.contents.url, title: f.a.contents.title });
     assert.equal(f.sources.length, 1);
     f.select(f.b);
@@ -490,8 +576,8 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
   }));
 
   await t.test("preview: a closed command owner suppresses notification without losing its successful result", () => withPreviewBrowser(Service, async f => {
-    const gate = f.gate(f.a.contents, (method, params) => method === "Runtime.evaluate" && String(params.expression).includes("element.click()"));
-    const pending = f.request("click", { selector: "#field", projectId: "project-a", sessionId: "session-a" });
+    const gate = f.gate(f.a.contents, (method, params) => method === "Runtime.evaluate" && String(params.expression).includes("({ url: location.href, title: document.title })"));
+    const pending = f.request("click", { selector: "#field", projectId: "project-a" });
     assert.equal(await Promise.race([
       gate.entered.promise,
       pending.then(() => { throw new Error("click completed before the CDP gate"); })
@@ -534,7 +620,7 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
     f.browser.attachPreviewActivity(() => { notifications++; throw new Error("fixture preview listener failed"); });
     assert.deepEqual(await f.request("fill", { selector: "#field", value: "fixture text" }), { url: f.a.contents.url, title: f.a.contents.title });
     assert.equal(notifications, 1);
-    assert.equal(f.a.contents.evaluations.length, 1, "a failed notification must not retry the mutation");
+    assert.equal(f.a.contents.inputEvents.filter(method => method === "Input.insertText").length, 1, "a failed notification must not retry the mutation");
   }));
 
   await t.test("preview: deferred capture failure cannot change a successful response or capture B", () => withPreviewBrowser(Service, async f => {
@@ -548,7 +634,7 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
   }));
 
   await t.test("preview: read-only requests and rejected web_read do not publish activity", () => withPreviewBrowser(Service, async f => {
-    assert.deepEqual(await f.request("read_dom", { projectId: "project-a", sessionId: "session-a" }), { url: f.a.contents.url, title: f.a.contents.title });
+    assert.deepEqual(await f.request("read_dom", { projectId: "project-a" }), { url: f.a.contents.url, title: f.a.contents.title });
     const environments = await f.request("list_environments", {}) as Array<{ id: string }>;
     assert.deepEqual(environments.map(environment => environment.id), ["default", f.work]);
     // Reject before browser creation or network access; web_read's successful
@@ -571,8 +657,8 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
   }));
 
   await t.test("preview: queued authenticated requests retain separate sources and origins", () => withPreviewBrowser(Service, async f => {
-    const firstGate = f.gate(f.a.contents, (method, params) => method === "Runtime.evaluate" && String(params.expression).includes("element.click()"));
-    const secondGate = f.gate(f.b.contents, (method, params) => method === "Runtime.evaluate" && String(params.expression).includes("new InputEvent("));
+    const firstGate = f.gate(f.a.contents, (method, params) => method === "Runtime.evaluate" && isPageOperation(params, "reveal"));
+    const secondGate = f.gate(f.b.contents, (method, params) => method === "Runtime.evaluate" && isPageOperation(params, "reveal"));
     const submitted = deferred<void>();
     const server = (f.browser as unknown as { automationServer: net.Server }).automationServer;
     server.once("connection", peer => {
@@ -607,8 +693,8 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
     socket.once("connect", () => {
       // Submit both requests over the real authenticated transport.
       socket.write([
-        { id: "queued-a", token: f.endpoint.token, method: "click", args: { selector: "#field", projectId: "project-a", sessionId: "session-a" } },
-        { id: "queued-b", token: f.endpoint.token, method: "fill", args: { selector: "#field", value: "fixture text", projectId: "project-b", sessionId: "session-b" } }
+        { id: "queued-a", token: f.endpoint.token, method: "click", args: { selector: "#field", projectId: "project-a" } },
+        { id: "queued-b", token: f.endpoint.token, method: "fill", args: { selector: "#field", value: "fixture text", projectId: "project-b" } }
       ].map(request => JSON.stringify(request)).join("\n") + "\n");
     });
     try {
@@ -634,11 +720,11 @@ async function previewAttributionTests(t: TestContext, Service: BrowserServiceCl
       assert.deepEqual(replies.get("queued-a")?.result, { url: f.a.contents.url, title: f.a.contents.title });
       assert.deepEqual(replies.get("queued-b")?.result, { url: f.b.contents.url, title: f.b.contents.title });
       assert.equal(f.sources.length, 2);
-      const sourceA = f.sources.find(source => source.sessionId === "session-a");
-      const sourceB = f.sources.find(source => source.sessionId === "session-b");
+      const sourceA = f.sources.find(source => source.projectId === "project-a");
+      const sourceB = f.sources.find(source => source.projectId === "project-b");
       assert.ok(sourceA); assert.ok(sourceB);
-      await assertPreview(sourceA, f.a.contents, "project-a", "session-a");
-      await assertPreview(sourceB, f.b.contents, "project-b", "session-b");
+      await assertPreview(sourceA, f.a.contents, "project-a");
+      await assertPreview(sourceB, f.b.contents, "project-b");
       assert.deepEqual(await f.request("read_dom", {}), { url: f.b.contents.url, title: f.b.contents.title });
       assert.equal(f.sources.length, 2);
     } finally {

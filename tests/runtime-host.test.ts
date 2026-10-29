@@ -1,3 +1,5 @@
+import { maskJson } from "../src/privacy/json.js";
+import { recordMask, maskingDetail, resetMaskRecordsForTest } from "../src/privacy/record.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
@@ -390,6 +392,19 @@ async function main(): Promise<void> {
   assert.equal((await readFile(hostPaths.lockPath, "utf8")).trim(), String(ownerRegistration.pid));
   const client = await connectRuntimeHost(workspace, { clientId: "test-client", surface: "tui" });
   assert.ok(client);
+  resetMaskRecordsForTest();
+  const privacyInput = maskJson(JSON.stringify({ messages: [{ content: "sk-proj-0123456789abcdefghijklmnop" }] }), { enabled: true });
+  const ownRecord = recordMask({ provider: "fixture", model: "fixture", sessionId: snapshot.info.sessionId, segments: privacyInput.segments })!;
+  const otherRecord = recordMask({ provider: "fixture", model: "fixture", sessionId: "session-other-host", segments: privacyInput.segments })!;
+  const privacyOverview = await client.maskingOverview();
+  assert.deepEqual(privacyOverview.records.map((record) => record.id), [ownRecord.id]);
+  assert.equal("preview" in privacyOverview.records[0]!, false);
+  assert.equal((await client.maskingDetail(ownRecord.id))?.preview[0]?.original, "sk-proj-0123456789abcdefghijklmnop");
+  assert.equal(await client.maskingDetail(otherRecord.id), undefined);
+  await client.clearMaskRecords();
+  assert.equal((await client.maskingOverview()).records.length, 0);
+  assert.ok(maskingDetail(otherRecord.id));
+  resetMaskRecordsForTest();
   const recovered = await client.taskGet("task-host-recovered") as { status?: string };
   assert.equal(recovered.status, "blocked", "没有可恢复 checkpoint 的 Worker 不得在 Host 重启后重新排队");
   const startsBeforeUnsafeAdmission = taskStarts;

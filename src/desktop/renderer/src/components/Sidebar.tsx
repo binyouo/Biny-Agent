@@ -78,7 +78,7 @@ interface SidebarProps {
   onRevealProject(projectId: string): void;
   onOpenTerminalProject(projectId: string): void;
   onRenameProject(projectId: string): void;
-  onNewTask(projectId: string): void;
+  onNewTask(projectId: string, isolation?: "shared" | "worktree"): void;
   /** 顶层「新建任务」：会展示欢迎 hero，和文件夹内新建区分开。 */
   onNewTopLevelTask(): void;
   onImportSession(projectId: string): void;
@@ -494,6 +494,7 @@ export const Sidebar = memo(function Sidebar({
             setProjectMenuOpen((current) => current === `${section}:${project.id}` ? undefined : `${section}:${project.id}`);
           }}
           onNewTask={() => { setProjectMenuOpen(undefined); onNewTask(project.id); }}
+          onNewIsolatedTask={() => { setProjectMenuOpen(undefined); onNewTask(project.id, "worktree"); }}
           onImportSession={() => { setProjectMenuOpen(undefined); onImportSession(project.id); }}
           onOpenTerminal={() => { setProjectMenuOpen(undefined); onOpenTerminalProject(project.id); }}
           onPin={() => { setProjectMenuOpen(undefined); onProjectPinned(project.id, !project.pinned); }}
@@ -1022,6 +1023,7 @@ const ProjectRow = memo(function ProjectRow({
   onSelect,
   onMenu,
   onNewTask,
+  onNewIsolatedTask,
   onImportSession,
   onPin,
   onRefresh,
@@ -1041,6 +1043,7 @@ const ProjectRow = memo(function ProjectRow({
   onSelect(projectId: string): void;
   onMenu(): void;
   onNewTask(): void;
+  onNewIsolatedTask(): void;
   onImportSession(): void;
   onPin(): void;
   onRefresh(): void;
@@ -1098,15 +1101,16 @@ const ProjectRow = memo(function ProjectRow({
       <div className={`biny-project-row-actions${menuOpen ? " is-open" : ""} biny-sidebar-menu-anchor`}>
         <button aria-label={`新建任务 ${project.name}`} className="biny-project-row-action" onClick={onNewTask} title="新建任务" type="button"><Icon name="compose" size={14} /></button>
         <button ref={menuButtonRef} aria-expanded={menuOpen} aria-haspopup="menu" aria-label={`${project.name} 项目操作`} className="biny-project-row-action" onClick={onMenu} title="项目操作" type="button"><Icon name="more" size={14} /></button>
-        <ProjectMenu anchorRef={menuButtonRef} onImportSession={onImportSession} onOpenTerminal={onOpenTerminal} onPin={onPin} onRefresh={onRefresh} onRemove={onRemove} onRename={onRename} onReveal={onReveal} open={menuOpen} project={project} />
+        <ProjectMenu anchorRef={menuButtonRef} onNewIsolatedTask={onNewIsolatedTask} onImportSession={onImportSession} onOpenTerminal={onOpenTerminal} onPin={onPin} onRefresh={onRefresh} onRemove={onRemove} onRename={onRename} onReveal={onReveal} open={menuOpen} project={project} />
       </div>
     </div>
   );
 });
 
-function ProjectMenu({ anchorRef, project, open, onPin, onRefresh, onReveal, onOpenTerminal, onRename, onRemove, onImportSession }: { anchorRef: FloatingMenuAnchor; project: DesktopProject; open: boolean; onPin(): void; onRefresh(): void; onReveal(): void; onOpenTerminal(): void; onRename(): void; onRemove(): void; onImportSession(): void }): React.JSX.Element {
+function ProjectMenu({ anchorRef, project, open, onNewIsolatedTask, onPin, onRefresh, onReveal, onOpenTerminal, onRename, onRemove, onImportSession }: { anchorRef: FloatingMenuAnchor; project: DesktopProject; open: boolean; onNewIsolatedTask(): void; onPin(): void; onRefresh(): void; onReveal(): void; onOpenTerminal(): void; onRename(): void; onRemove(): void; onImportSession(): void }): React.JSX.Element {
   return (
     <FloatingSidebarMenu anchorRef={anchorRef} ariaLabel="项目操作菜单" open={open}>
+      <button disabled={project.missing} onClick={onNewIsolatedTask} role="menuitem" title="在独立 Git 工作树中修改文件" type="button"><Icon name="compose" size={15} /><span>新建隔离任务</span></button>
       <button onClick={onPin} role="menuitem" type="button"><Icon name="pin" size={15} /><span>{project.pinned ? "取消置顶项目" : "置顶项目"}</span></button>
       <button onClick={onImportSession} role="menuitem" type="button"><Icon name="download" size={15} /><span>导入会话…</span></button>
       <button onClick={onRefresh} role="menuitem" type="button"><Icon name="refresh" size={15} /><span>刷新项目状态</span></button>

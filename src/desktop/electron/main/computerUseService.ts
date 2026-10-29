@@ -24,6 +24,12 @@ const nativeAppsSchema = z.object({ apps: z.array(z.object({
   running: z.boolean(),
   bundleId: z.string().min(1).max(256).optional()
 }).passthrough().refine(app => !app.running || app.pid !== undefined, { path: ["pid"], message: "Running applications require a PID" })) }).passthrough();
+const previewDataSchema = z.object({ cursor: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), remainingMs: z.number().min(0).max(8000) }).optional() }).passthrough();
+const previewWindowsSchema = z.array(z.object({ window_id: z.number().int().min(0).max(4294967295), onscreen: z.boolean().optional(), minimized: z.boolean().optional() }).passthrough()).optional();
+function previewCursor(data: unknown, now: number): ComputerPreview["cursor"] {
+  const cursor = previewDataSchema.parse(data).cursor;
+  return cursor ? { x: cursor.x, y: cursor.y, expiresAt: now + cursor.remainingMs } : undefined;
+}
 
 function runOcr(imagePath: string, workerPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -41,19 +47,32 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
   let closed = false;
   let nativeSourceEpoch = 0;
   let computerFrame: ComputerPreview | undefined; let computerError: string | undefined; let computerShown = false;
-  type PreviewSource = { label: string; sessionId?: string; projectId?: string; frame?: ComputerPreview; lastUsed: number; capture(): Promise<{ frame?: ComputerPreview; diagnostic?: string; waiting?: boolean }> };
+  let computerLabel = "电脑"; let computerApp: { pid: number; name: string } | undefined;
+  const sessionProjects = new Map<string, { projectId: string }>();
+  const dismissed = new Map<string, number>();
+  const dismissalKey = (id: string, sessionId?: string): string => JSON.stringify([id, sessionId ?? ""]);
+  function dismissSource(id: string, sessionId?: string): void { dismissed.set(dismissalKey(id, sessionId), Date.now()); }
+  function isDismissed(id: string, sessionId?: string): boolean {
+    const now = Date.now();
+    for (const [key, at] of dismissed) if (now - at > 600_000) dismissed.delete(key);
+    const key = dismissalKey(id, sessionId);
+    if (!dismissed.has(key)) return false;
+    dismissed.set(key, now); return true;
+  }
+  type PreviewSource = { label: string; sessionId?: string; projectId?: string; frame?: ComputerPreview; diagnostic?: string; lastUsed: number; capture(): Promise<{ frame?: ComputerPreview; diagnostic?: string; waiting?: boolean }> };
   const sources = new Map<string, PreviewSource>();
   function setSource(id: string, source: PreviewSource): void {
     if (closed) return;
     if (!sources.has(id) && sources.size >= 15) {
       const oldest = [...sources.entries()].filter(([key]) => !key.startsWith("mirror:")).sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
       if (!oldest) throw new Error("preview_item_limit");
-      sources.delete(oldest[0]); sourceErrors.delete(oldest[0]); preview.remove(oldest[0]);
+      sources.delete(oldest[0]); preview.remove(oldest[0]);
     }
+    source.diagnostic = sources.get(id)?.diagnostic;
     sources.set(id, source);
   }
-  const returnToChat = (sessionId?: string, projectId?: string): void => { const window = getWindow(); if (!window || window.isDestroyed()) return; if (window.isMinimized()) window.restore(); window.show(); window.focus(); window.webContents.send(computerIpc.navigate, { sessionId, projectId }); };
-  const preview = new ComputerPreviewWindow(control => { void controlComputer(control).catch(() => undefined); }, () => controller.dismissPreview());
+  const returnToChat = (sessionId?: string, projectId?: string, revealBrowser?: boolean): void => { const window = getWindow(); if (!window || window.isDestroyed()) return; if (window.isMinimized()) window.restore(); window.show(); window.focus(); window.webContents.send(computerIpc.navigate, { sessionId, projectId, revealBrowser }); };
+  const preview = new ComputerPreviewWindow(control => { void controlComputer(control).catch(() => undefined); }, () => controller.dismissPreview(), getWindow);
   const driver = createDriver(() => controller.crashed());
   const approvals = new ComputerAppApprovals(configStore);
   let approvalWrites = Promise.resolve();
@@ -67,6 +86,8 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     if (!app?.bundleId) throw new Error("computer_app_identity_unavailable: 无法确认目标应用身份，不截图或输入。");
     signal.throwIfAborted();
     await approvals.authorize({ bundleId: app.bundleId, appName: app.name });
+    signal.throwIfAborted();
+    computerApp = { pid: target.pid, name: app.name };
     return app.bundleId;
   }, authorizeLaunch: async (bundleId, signal) => {
     await approvalWrites; signal.throwIfAborted();
@@ -74,73 +95,97 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     const identity = z.object({ bundleId: z.literal(bundleId), name: z.string().min(1) }).parse(reply.data);
     await approvals.authorize({ bundleId, appName: identity.name });
     signal.throwIfAborted();
+    computerLabel = identity.name;
   }, preview: frame => {
     computerFrame = frame; computerError = undefined;
+    if (frame) computerLabel = frame.target.pid === computerApp?.pid ? computerApp.name : "电脑";
     if (computerShown) presentComputer();
   },
   externalMirrors: true,
-  onMirrorChange: (windowId, requestId) => {
+  onMirrorChange: (windowId, requestId, closedByRequest) => {
     const id = `mirror:${windowId}`;
-    if (!requestId) { sources.delete(id); sourceErrors.delete(id); preview.remove(id); return; }
-    setSource(id, { label: `窗口 ${windowId}`, sessionId: controller.status().owner, lastUsed: Date.now(), capture: async () => {
+    if (!requestId) { sources.delete(id); if (!closedByRequest || !controller.status().preview || !preview.isRetiring(id)) preview.remove(id); return; }
+    const sessionId = controller.status().owner;
+    setSource(id, { label: `窗口 ${windowId}`, sessionId, projectId: sessionId ? sessionProjects.get(sessionId)?.projectId : undefined, lastUsed: Date.now(), capture: async () => {
       const reply = await driver.daemonCommand("pip_frame", { window_id: Number(windowId), request_id: requestId });
       const data = z.object({ state: z.string(), pid: z.number(), last_frame_age_ms: z.number().nullable(), image: computerImageSchema.optional(), error: z.string().optional() }).passthrough().parse(reply.data);
       return { waiting: data.state === "armed", diagnostic: data.error, frame: data.image ? { image: data.image, target: { pid: data.pid, windowId }, capturedAt: Date.now() - (data.last_frame_age_ms ?? 0) } : undefined };
     } });
+    if (preview.isRetiring(id)) presentSource(id);
   },
   onPreviewError: error => { computerError = error; if (computerShown) presentComputer(); },
-  setPreviewVisible: visible => { if (closed) return; computerShown = visible; if (visible) presentComputer(); else preview.remove("computer"); },
-  refreshPreview: async (target, signal) => {
+  allowAutomaticPreview: sessionId => !isDismissed("computer", sessionId),
+  setPreviewVisible: (visible, completing) => { if (closed) return; computerShown = visible; if (visible) presentComputer(); else if (completing) preview.retire("computer"); else preview.remove("computer"); },
+  refreshPreview: async (target, signal, launched) => {
     if (closed) throw new Error("Computer use service is closed");
-    if (!target) throw new Error("preview_observation_unavailable");
+    let launchedName: string | undefined;
+    if (!target && launched) {
+      const listed = await driver.list("launch-preview", launched.pid, signal);
+      signal.throwIfAborted();
+      if (listed.errorCode) throw new Error(listed.errorCode);
+      const matches = nativeAppsSchema.parse(listed.data).apps.filter(app => app.running && app.pid === launched.pid);
+      if (matches.length !== 1 || matches[0]!.bundleId !== launched.bundleId) throw new Error("computer_app_identity_unavailable");
+      const window = previewWindowsSchema.parse(matches[0]!.windows)?.find(item => item.window_id > 0 && item.onscreen !== false && item.minimized !== true);
+      if (!window) return undefined;
+      target = { pid: launched.pid, windowId: String(window.window_id) };
+      launchedName = matches[0]!.name;
+    }
+    if (!target) return undefined;
+    signal.throwIfAborted();
     const reply = await driver.capturePreview(target, signal);
     const image = reply.images[0];
     if (!image) throw new Error(String(reply.data.screenshot_error ?? "preview_frame_unavailable"));
-    return { image, target, capturedAt: Date.now() };
+    signal.throwIfAborted();
+    if (launchedName) computerApp = { pid: target.pid, name: launchedName };
+    const capturedAt = Date.now();
+    return { image, target, cursor: previewCursor(reply.data, capturedAt), capturedAt };
   } });
   function presentComputer(): void {
     if (closed) return;
-    preview.present({ id: "computer", label: "电脑", frame: computerFrame, status: { ...controller.status(), diagnostic: computerError ?? controller.status().diagnostic }, onReturn: () => returnToChat(controller.status().owner), onClose: () => controller.dismissPreview() });
+    const status = controller.status(), sessionId = status.owner;
+    const projectId = sessionId ? sessionProjects.get(sessionId)?.projectId : undefined;
+    preview.present({ id: "computer", label: computerLabel, frame: computerFrame, status: { ...status, diagnostic: computerError ?? status.diagnostic }, onReturn: () => returnToChat(sessionId, projectId), onClose: completing => { dismissSource("computer", sessionId); controller.dismissPreview(completing); } });
   }
   browser.attachPreviewActivity(source => {
     if (closed || !controller.status().preview) return;
+    if (isDismissed(source.id, source.sessionId)) return;
     setSource(source.id, { ...source, lastUsed: Date.now(), capture: async () => ({ frame: { image: await source.capture(), target: { pid: 0, windowId: source.id }, capturedAt: Date.now() } }) });
     presentSource(source.id);
   });
   function presentSource(id: string): void {
     if (closed) return;
     const source = sources.get(id); if (!source) return;
-    preview.present({ id, label: source.label, frame: source.frame, status: { ...controller.status(), diagnostic: sourceErrors.get(id) }, onReturn: () => returnToChat(source.sessionId, source.projectId), onClose: () => {
-      sources.delete(id); sourceErrors.delete(id);
+    preview.present({ id, label: source.label, frame: source.frame, status: { ...controller.status(), diagnostic: source.diagnostic }, onReturn: () => returnToChat(source.sessionId, source.projectId, id.startsWith("browser:") ? true : undefined), onClose: () => {
+      if (!id.startsWith("mirror:")) dismissSource(id, source.sessionId);
+      sources.delete(id);
       if (id.startsWith("mirror:") && source.sessionId) void controller.mirror(source.sessionId, { operation: "close", windowId: id.slice(7) }).catch(() => { computerError = "computer_mirror_cleanup_failed"; });
     } });
   }
-  const sourceErrors = new Map<string, string>(); let pumping = false;
+  const pendingSources = new Map<string, ReturnType<typeof setTimeout>>();
   const sourceTimer = setInterval(() => {
-    if (closed || pumping || !controller.status().preview || sources.size === 0) return;
-    pumping = true;
-    void (async () => {
-      try {
-        for (const [id, source] of [...sources]) {
-          // A previous capture may have yielded across source removal or replacement.
-          if (closed || !controller.status().preview) break;
-          if (sources.get(id) !== source) continue;
-          if (!id.startsWith("mirror:") && Date.now() - source.lastUsed >= 90_000) { sources.delete(id); sourceErrors.delete(id); preview.remove(id); continue; }
-          if (!id.startsWith("mirror:") && preview.activeItem() !== id) continue;
-          let expired = false;
-          const timeout = setTimeout(() => { expired = true; if (!closed && controller.status().preview && sources.get(id) === source) { sourceErrors.set(id, "preview_capture_timeout"); presentSource(id); } }, 4000);
-          try {
-            const result = await source.capture();
-            if (closed || expired || sources.get(id) !== source || !controller.status().preview) continue;
-            if (result.waiting) continue;
-            if (result.frame) source.frame = result.frame;
-            sourceErrors.set(id, result.diagnostic ?? (result.frame ? "" : "preview_frame_unavailable"));
-            presentSource(id);
-          } catch (error) { if (!closed && controller.status().preview && sources.get(id) === source) { sourceErrors.set(id, error instanceof Error ? error.message : String(error)); presentSource(id); } }
-          finally { clearTimeout(timeout); }
-        }
-      } finally { pumping = false; }
-    })();
+    if (closed || !controller.status().preview || sources.size === 0) return;
+    for (const [id, source] of [...sources]) {
+      if (closed || !controller.status().preview) break;
+      if (sources.get(id) !== source) continue;
+      if (!id.startsWith("mirror:") && Date.now() - source.lastUsed >= 90_000) { sources.delete(id); preview.retire(id); continue; }
+      if (!id.startsWith("mirror:") && preview.activeItem() !== id) continue;
+      if (pendingSources.has(id)) continue;
+      if (pendingSources.size >= 16) { if (source.diagnostic !== "preview_capture_capacity") { source.diagnostic = "preview_capture_capacity"; presentSource(id); } continue; }
+      let expired = false;
+      const timeout = setTimeout(() => { expired = true; if (!closed && controller.status().preview && sources.get(id) === source) { source.diagnostic = "preview_capture_timeout"; presentSource(id); } }, 4000);
+      pendingSources.set(id, timeout);
+      void (async () => {
+        try {
+          const result = await source.capture();
+          if (closed || expired || sources.get(id) !== source || !controller.status().preview) return;
+          if (result.waiting) { if (source.diagnostic !== undefined) { source.diagnostic = undefined; presentSource(id); } return; }
+          if (result.frame) source.frame = result.frame;
+          source.diagnostic = result.diagnostic ?? (result.frame ? undefined : "preview_frame_unavailable");
+          presentSource(id);
+        } catch (error) { if (!closed && !expired && controller.status().preview && sources.get(id) === source) { source.diagnostic = error instanceof Error ? error.message : String(error); presentSource(id); } }
+        finally { clearTimeout(timeout); if (pendingSources.get(id) === timeout) pendingSources.delete(id); }
+      })();
+    }
   }, 1000 / 3); sourceTimer.unref();
 
   let controlEpoch = 0;
@@ -189,13 +234,15 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
   }
   function clearNativeSources(): void {
     nativeSourceEpoch++;
-    for (const id of [...sources.keys()]) if (id.startsWith("mirror:") || id.startsWith("external:")) { sources.delete(id); sourceErrors.delete(id); preview.remove(id); }
+    if (!computerShown) preview.remove("computer");
+    for (const id of new Set([...sources.keys(), ...preview.itemIds()])) if (id.startsWith("mirror:") || id.startsWith("external:")) { sources.delete(id); preview.remove(id); }
   }
   async function controlComputer(control: "pause" | "resume" | "takeover" | "stop"): Promise<ComputerStatus> {
     if (closed) throw new Error("Computer use service is closed");
     if (control !== "resume") clearNativeSources();
     if (control === "stop") {
       const epoch = ++controlEpoch;
+      sessionProjects.clear();
       const results = await Promise.allSettled([
         controller.disable(),
         persistIntent(false, epoch)
@@ -231,11 +278,11 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     assertSender(event);
     // Also retire admissions made while the preference write was pending.
     if (!enabled) nativeSourceEpoch++;
+    if (enabled) dismissed.clear();
     controller.setPreview(enabled);
-    if (!enabled) { for (const id of sources.keys()) preview.remove(id); sources.clear(); sourceErrors.clear(); }
+    if (!enabled) { for (const id of preview.itemIds()) preview.remove(id); sources.clear(); }
     return controller.status();
   });
-  ipcMain.handle(computerIpc.foreground, (event, value: unknown) => { assertSender(event); controller.setForeground(z.boolean().parse(value)); return controller.status(); });
   ipcMain.handle(computerIpc.logging, async (event, value: unknown) => { assertSender(event); const enabled = z.boolean().parse(value); await updateConfig(configStore, undefined, current => ({ ...current, computer: { ...current.computer, actionLogging: enabled } })); assertSender(event); controller.setLogging(enabled); return controller.status(); });
   async function changeApproval(update: () => Promise<void>): Promise<ComputerDiagnostics> {
     clearNativeSources(); controller.authorizationChanged();
@@ -313,11 +360,18 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
       // Stop takes effect before its saved intent; browser previews use a separate gate.
       return !closed && sourceEpoch === nativeSourceEpoch && status.state !== "disabled" && status.preview;
     };
-    if (method === "computer_release") { controller.release(z.string().min(1).max(240).parse(input.session)); return { data: { released: true }, images: [] }; }
+    if (method === "computer_release") {
+      const session = z.string().min(1).max(240).parse(input.session);
+      const projectId = z.string().min(1).max(240).optional().parse(input.projectId);
+      if (projectId && sessionProjects.get(session)?.projectId !== projectId) return { data: { released: false }, images: [] };
+      controller.release(session); sessionProjects.delete(session); return { data: { released: true }, images: [] };
+    }
     await assertWorkAllowed();
     if (method === "computer_external_activity") {
       if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
-      const target = windowTargetSchema.parse(input), current = await configStore.load();
+      const target = windowTargetSchema.parse(input), id = `external:${target.pid}:${target.windowId}`;
+      if (isDismissed(id)) return { data: { visible: false }, images: [] };
+      const current = await configStore.load();
       if (!externalPreviewCurrent() || !current.computer.enabled || !current.computer.previewEnabled) return { data: { visible: false }, images: [] };
       const apps = nativeAppsSchema.parse((await driver.list("external-preview", target.pid, signal)).data).apps;
       if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
@@ -325,22 +379,29 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
       const identity = matches.length === 1 ? matches[0] : undefined; if (!identity?.bundleId) throw new Error("computer_app_identity_unavailable");
       await approvals.authorize({ bundleId: identity.bundleId, appName: identity.name }); signal.throwIfAborted();
       if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
-      const id = `external:${target.pid}:${target.windowId}`;
-      setSource(id, { label: identity.name, lastUsed: Date.now(), capture: async () => { const reply = await driver.capturePreview(target); return { frame: reply.images[0] ? { image: reply.images[0], target, capturedAt: Date.now() } : undefined, diagnostic: typeof reply.data.screenshot_error === "string" ? reply.data.screenshot_error : undefined }; } });
+      if (isDismissed(id)) return { data: { visible: false }, images: [] };
+      setSource(id, { label: identity.name, lastUsed: Date.now(), capture: async () => { const reply = await driver.capturePreview(target); const capturedAt = Date.now(); return { frame: reply.images[0] ? { image: reply.images[0], target, cursor: previewCursor(reply.data, capturedAt), capturedAt } : undefined, diagnostic: typeof reply.data.screenshot_error === "string" ? reply.data.screenshot_error : undefined }; } });
       presentSource(id); return { data: { visible: true }, images: [] };
     }
     const session = z.string().min(1).max(240).parse(input.session);
-    const args = { ...input }; delete args.session;
-    if (method === "computer_launch") return await controller.launch(session, z.object({ bundleId: z.string().min(1).max(256) }).strict().parse(args).bundleId, signal);
-    if (method === "computer_list") { const parsed = computerListSchema.parse(args); return await controller.list(session, parsed.pid, signal, parsed.days); }
-    if (method === "computer_observe") return await controller.observe(session, windowObserveSchema.parse(args), signal);
-    if (method === "computer_action") return await controller.act(session, computerActionSchema.parse(args), signal);
-    if (method === "computer_sequence") return await controller.sequence(session, computerSequenceSchema.parse(args), signal);
-    if (method === "computer_mirror") return await controller.mirror(session, computerMirrorSchema.parse(args), signal);
-    throw new Error("Unsupported computer method");
+    const projectId = z.string().min(1).max(240).optional().parse(input.projectId);
+    const existingProject = sessionProjects.get(session)?.projectId;
+    if (projectId && existingProject && existingProject !== projectId && controller.status().owner === session) throw new Error("computer_owner_conflict");
+    const binding = projectId ? { projectId } : undefined;
+    if (binding) sessionProjects.set(session, binding);
+    const args = { ...input }; delete args.session; delete args.projectId;
+    try {
+      if (method === "computer_launch") return await controller.launch(session, z.object({ bundleId: z.string().min(1).max(256) }).strict().parse(args).bundleId, signal);
+      if (method === "computer_list") { const parsed = computerListSchema.parse(args); return await controller.list(session, parsed.pid, signal, parsed.days); }
+      if (method === "computer_observe") return await controller.observe(session, windowObserveSchema.parse(args), signal);
+      if (method === "computer_action") return await controller.act(session, computerActionSchema.parse(args), signal);
+      if (method === "computer_sequence") return await controller.sequence(session, computerSequenceSchema.parse(args), signal);
+      if (method === "computer_mirror") return await controller.mirror(session, computerMirrorSchema.parse(args), signal);
+      throw new Error("Unsupported computer method");
+    } finally { if (binding && controller.status().owner !== session && sessionProjects.get(session) === binding) sessionProjects.delete(session); }
   });
   return { controller, close: async () => {
-    closed = true; nativeSourceEpoch++; clearInterval(sourceTimer); browser.attachPreviewActivity(undefined); sources.clear(); sourceErrors.clear();
+    closed = true; nativeSourceEpoch++; clearInterval(sourceTimer); for (const timer of pendingSources.values()) clearTimeout(timer); pendingSources.clear(); browser.attachPreviewActivity(undefined); sources.clear(); dismissed.clear(); sessionProjects.clear();
     // Abort input before destroying the preview; a failing surface must not keep control alive.
     const cleanup: Promise<unknown>[] = [controller.disable()];
     try { preview.close(); } catch (error) { cleanup.push(Promise.reject(error)); }

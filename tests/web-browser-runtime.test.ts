@@ -12,6 +12,7 @@ import { createBrowserTools, requestBrowser } from "../src/tools/browser.js";
 import { createWebFetchTool } from "../src/tools/web/fetch.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { BrowserEnvironmentStore, browserPartitionForEnvironment } from "../src/desktop/browserEnvironments.js";
+import { maxBrowserClipboardReadCharacters, maxBrowserClipboardWriteCharacters } from "../src/browser/clipboardSchema.js";
 
 class Contents extends EventEmitter {
   static nextId = 1;
@@ -22,7 +23,7 @@ class Contents extends EventEmitter {
   url = "";
   destroyed = false;
   setWindowOpenHandler(): void {}
-  async loadURL(url: string): Promise<void> { this.url = url; Contents.onLoad?.(); if (Contents.hang) await new Promise<void>(() => undefined); }
+  async loadURL(url: string): Promise<void> { this.url = url; this.emit("did-navigate", {}, url); this.emit("did-stop-loading"); Contents.onLoad?.(); if (Contents.hang) await new Promise<void>(() => undefined); }
   navigationHistory = { canGoBack: () => false, canGoForward: () => false };
   getTitle(): string { return "Page"; }
   isLoading(): boolean { return false; }
@@ -44,17 +45,32 @@ class Window extends EventEmitter {
     return { getBounds: () => ({ x: 80, y: 50, width: 1280, height: 900 }) };
   }
   webContents = new Contents();
+  contentView = { addChildView() {}, removeChildView() {} };
   destroyed = false;
   constructor(readonly options: Record<string, unknown>) { super(); Window.instances.push(this); }
   loadURL(url: string): Promise<void> { return this.webContents.loadURL(url); }
+  getContentBounds(): { width: number; height: number } { return { width: 960, height: 680 }; }
+  show(): void {}
+  focus(): void {}
+  close(): void { this.emit("close"); this.destroy(); }
   isDestroyed(): boolean { return this.destroyed; }
   destroy(): void { this.destroyed = true; this.webContents.destroyed = true; this.emit("closed"); }
 }
 
 test("WebSearch 经浏览器控制 socket 返回结果，关闭侧栏时使用隐藏窗口并释放", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-web-"));
+  const clipboardState = { text: "", imageSize: { width: 1920, height: 1080 } };
+  const clipboardWrites: string[] = [];
   const proxyChanges: Array<{ mode?: string; proxyRules?: string; proxyBypassRules?: string }> = [];
-  const fake = { BrowserWindow: Window, WebContentsView: View, clipboard: {}, session: { fromPartition: () => ({
+  const fake = { BrowserWindow: Window, WebContentsView: View, clipboard: {
+    readText: () => clipboardState.text,
+    readImage: () => ({
+      isEmpty: () => false,
+      getSize: () => clipboardState.imageSize,
+      resize: ({ width, height }: { width: number; height: number }) => ({ toJPEG: () => Buffer.from([0xff, 0xd8, 0xff, 0xd9, width % 256, height % 256]) })
+    }),
+    writeText: (text: string) => { clipboardState.text = text; clipboardWrites.push(text); }
+  }, session: { fromPartition: () => ({
     webRequest: { onBeforeRequest() {} }, cookies: { on() {}, get: async () => [], set: async () => {}, remove: async () => {} },
     setProxy: async (config: { mode?: string; proxyRules?: string; proxyBypassRules?: string }) => { proxyChanges.push(config); },
     closeAllConnections: async () => {}, clearStorageData: async () => {}, clearAuthCache: async () => {}, clearCache: async () => {}
@@ -66,6 +82,24 @@ test("WebSearch 经浏览器控制 socket 返回结果，关闭侧栏时使用�
     const { DesktopBrowserService } = await import("../src/desktop/electron/main/DesktopBrowserService.js");
     const browser = new DesktopBrowserService(async () => path.join(root, "cookies.json"), undefined, async () => ["93.184.216.34"], new BrowserEnvironmentStore()); service = browser;
     const endpoint = await browser.startAutomationServer(path.join(root, "b.sock"));
+    clipboardState.text = "c".repeat(maxBrowserClipboardReadCharacters + 3);
+    assert.deepEqual(await requestBrowser(endpoint, "clipboard", { action: "read" }), {
+      text: "c".repeat(maxBrowserClipboardReadCharacters), truncated: true
+    });
+    assert.deepEqual(await requestBrowser(endpoint, "clipboard", { action: "read", includeImage: true }), {
+      text: "c".repeat(maxBrowserClipboardReadCharacters), truncated: true, hasImage: true, imageStatus: "available",
+      imageData: Buffer.from([0xff, 0xd8, 0xff, 0xd9, 0x00, 0xd0]).toString("base64")
+    });
+    clipboardState.imageSize = { width: 6000, height: 6000 };
+    assert.deepEqual(await requestBrowser(endpoint, "clipboard", { action: "read", includeImage: true }), {
+      text: "c".repeat(maxBrowserClipboardReadCharacters), truncated: true, hasImage: true, imageStatus: "too_large"
+    });
+    clipboardState.imageSize = { width: 1920, height: 1080 };
+    await assert.rejects(requestBrowser(endpoint, "clipboard", { action: "write", text: "x".repeat(maxBrowserClipboardWriteCharacters + 1) }));
+    assert.deepEqual(clipboardWrites, [], "oversized clipboard content is rejected before write");
+    await requestBrowser(endpoint, "clipboard", { action: "write", text: "copied text" });
+    assert.equal(clipboardState.text, "copied text");
+    assert.deepEqual(clipboardWrites, ["copied text"]);
     await assert.rejects(requestBrowser(endpoint, "read_dom", {}), /未打开|不可用/);
     assert.equal(Window.instances.length, 0, "读取不能创建首页并冒充用户当前浏览器");
     const registry = createToolRegistry({ workspaceRoot: root, ignore: [] }, { ...defaultConfig.web.search, visibleBrowsing: true }, undefined, defaultConfig.web.fetch, undefined, { enabled: false }, undefined, { ...endpoint, projectId: "p" });
@@ -91,9 +125,27 @@ test("WebSearch 经浏览器控制 socket 返回结果，关闭侧栏时使用�
     const browserTools = createBrowserTools({ ...endpoint, projectId: "p" });
     const openExecution = await browserTools.find((tool) => tool.name === "BrowserOpen")!.resolveExecution!({ url: "https://example.org/account", environment: "Work" });
     if ("isError" in openExecution) assert.fail("browser navigation plan failed");
-    await openExecution.execute({ toolCallId: "open-env", operationId: "open-env-operation", signal: undefined });
+    await openExecution.execute({ toolCallId: "open-env", operationId: "open-env-operation", sessionId: "agent-session", signal: undefined });
+    assert.ok(await requestBrowser(endpoint, "cdp_agent", { method: "Page.getLayoutMetrics", params: {}, projectId: "p", sessionId: "agent-session" }));
+    assert.ok(await requestBrowser(endpoint, "cdp_agent", { method: "DOM.setFileInputFiles", params: { files: ["/etc/passwd"] }, projectId: "p", sessionId: "agent-session" }));
     assert.equal(browser.browserSnapshot("p").tabs.at(-1)?.environmentId, environment.id);
     assert.equal(browser.browserSnapshot("p").tabs.at(-1)?.environmentName, "Work");
+    const floatTool = browserTools.find(item => item.name === "BrowserTabFloat")!;
+    const showFloat = await floatTool.resolveExecution(floatTool.schema.parse({ action: "show" }));
+    if ("isError" in showFloat) assert.fail("browser float plan failed");
+    assert.deepEqual(await showFloat.execute({ toolCallId: "float-show", operationId: "float-show-operation", sessionId: "agent-session" }), {
+      floating: true, title: "Page", url: "https://example.org/account"
+    });
+    assert.equal(Window.instances.at(-1)?.options.alwaysOnTop, true);
+    await assert.rejects(requestBrowser(endpoint, "float", { action: "show", projectId: "p", sessionId: "another-session" }), /no longer owned by this session/);
+    const hideFloat = await floatTool.resolveExecution(floatTool.schema.parse({ action: "hide" }));
+    if ("isError" in hideFloat) assert.fail("browser unfloat plan failed");
+    assert.deepEqual(await hideFloat.execute({ toolCallId: "float-hide", operationId: "float-hide-operation", sessionId: "agent-session" }), {
+      floating: false, title: "Page", url: "https://example.org/account"
+    });
+    const agentTabId = browser.browserSnapshot("p").activeId!;
+    browser.browserAction("p", { type: "select", tabId: agentTabId });
+    await assert.rejects(requestBrowser(endpoint, "float", { action: "show", projectId: "p", sessionId: "agent-session" }), /no longer owned by this session/);
     const listExecution = await browserTools.find((tool) => tool.name === "BrowserListEnvironments")!.resolveExecution!({});
     if ("isError" in listExecution) assert.fail("environment listing plan failed");
     const listed = await listExecution.execute({ toolCallId: "list-env", operationId: "list-env-operation", signal: undefined }) as Array<{ id: string; name: string; color: string }>;

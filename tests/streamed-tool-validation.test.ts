@@ -186,7 +186,7 @@ for (const transport of ["direct", "compatible"] as const) {
   });
 }
 
-for (const mode of ["raw-validation", "approved", "denied", "budget", "collision"] as const) {
+for (const mode of ["raw-validation", "approved", "denied", "collision"] as const) {
   test(`main coordinator retains ${mode} after SDK repair`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-stream-validation-"));
     await ensureAgentDirs(root);
@@ -210,8 +210,7 @@ for (const mode of ["raw-validation", "approved", "denied", "budget", "collision
     const coordinator = new ToolExecutionCoordinator({
       workspaceRoot: root, config, recorder, toolRegistry: registry,
       confirmPermission: async () => { permissionRequests++; return { approved: mode === "approved" }; }
-    }, new PermissionManager(config.permission), () => undefined, () => ({}), undefined,
-    { maxToolCalls: 1, maxRepeatedActions: 10, initialToolCallCount: mode === "budget" ? 1 : 0 });
+    }, new PermissionManager(config.permission), () => undefined, () => ({}));
     const agentTool = coordinator.createAgentTools().find(tool => tool.name === "Inspect")!;
     try {
       if (mode === "raw-validation") {
@@ -233,12 +232,11 @@ for (const mode of ["raw-validation", "approved", "denied", "budget", "collision
         await run.done;
         assert.equal(run.requests(), 1);
         assert.deepEqual(run.events.filter(event => event.type === "tool_execution_start").map(event => event.toolCallId), ["original-call-id"]);
-        assert.deepEqual(resolved, mode === "budget" ? [] : [{ path: "fixture", count: 2 }]);
+        assert.deepEqual(resolved, [{ path: "fixture", count: 2 }]);
         assert.deepEqual(executed, mode === "approved" ? [{ path: "fixture", count: 2 }] : []);
-        assert.equal(permissionRequests, mode === "budget" ? 0 : 1);
+        assert.equal(permissionRequests, 1);
         const result = run.events.find(event => event.type === "tool_execution_end");
         assert.equal(result?.type === "tool_execution_end" ? result.result.isError : undefined, mode !== "approved");
-        if (mode === "budget") assert.equal(coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 2);
       }
     } finally {
       await coordinator.waitForIdle();

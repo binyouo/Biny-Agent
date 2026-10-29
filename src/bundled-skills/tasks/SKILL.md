@@ -5,9 +5,17 @@ allowed-tools:
   - Bash
 ---
 
-# Durable Tasks
+# Tasks Skill
 
 A TaskRun records execution identity, lifecycle, attempts, and events. Creating a record does not start a worker. Run commands from the intended workspace and retain the IDs returned by the runtime.
+
+## When to Use
+
+- Work needs independently tracked execution across turns or restarts.
+- The user wants background work with progress, cancellation, or recovery.
+- A long-running worker needs follow-up instructions tied to its existing execution.
+
+For an immediate linear checklist use `todo`. For work with dependencies use `plan-weave`. The number of steps alone does not require creating a TaskRun.
 
 ## Create and dispatch
 
@@ -57,3 +65,13 @@ Approval requires the exact ID from the current `needs_approval` result and actu
 After a restart, inspect state and events before dispatching again. `retry` checks the recorded failure and retry safety, then requests a new execution attempt. Do not issue another start after an accepted retry. Where `start` or `run` requires `--retry-safety`, choose `safe` or `idempotent` only with evidence that replay cannot duplicate an unsafe effect. Unknown execution needs inspection and resolution before replay.
 
 Cancellation does not undo effects already performed. Never fabricate background progress or completion from an accepted command, remembered plan, or elapsed time. Task instructions do not grant permission to delegate or bypass runtime limits.
+
+## Workflow
+
+1. Describe the intended outcome, scope, and acceptance criteria in the task prompt.
+2. Create the record and retain its returned ID; start it once.
+3. Inspect state and events as the worker runs. Use `message` for scoped corrections to that worker.
+4. Report completion only after its recorded result and verification support it. Do not manually mark a running worker done.
+5. After an interruption, inspect the same TaskRun before considering a retry. Keep its events as the execution history.
+
+Task state belongs to the Runtime Host. Do not create or hand-edit a parallel `tasks.json` progress table.

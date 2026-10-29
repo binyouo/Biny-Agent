@@ -1,37 +1,60 @@
 ---
 name: system-info
-description: "Inspect operating system version, CPU, memory, disk usage, processes, battery, and network or port status. Use when the user asks about their computer's health, capacity, or a resource bottleneck; gather read-only evidence before proposing changes."
+description: Get system information — OS version, disk usage, memory, running processes, network status. Use when users ask about their computer status or system health.
 allowed-tools:
   - Bash
 ---
 
-# System Information
+# System Info Skill
 
-Use `Bash` for the smallest read-only probe that answers the question. Detect the operating system first and select supported commands; macOS and Linux command options differ.
+Gather system information using standard command-line tools.
 
-## macOS probes
+## Commands
 
-| Question | Command |
-| --- | --- |
-| OS version | `sw_vers` |
-| CPU architecture and core count | `uname -m` and `sysctl -n hw.ncpu` |
-| Physical memory and VM statistics | `sysctl -n hw.memsize` and `vm_stat` |
-| Volume free space | `df -h` |
-| Size of a requested directory | `du -sh '<directory>'` |
-| Processes ordered by CPU | `ps -Ao pid,pcpu,pmem,comm -r` |
-| Processes ordered by memory | `ps -Ao pid,pcpu,pmem,comm -m` |
-| Listener on a known port | `lsof -nP -iTCP:<port> -sTCP:LISTEN` |
-| Battery and power source | `pmset -g batt` |
-| Uptime and load | `uptime` |
+```bash
+# OS version
+sw_vers                              # macOS
+uname -a                             # Any Unix
 
-Replace placeholders with the actual requested path or port and quote paths safely. Bound process output to the relevant entries. On Linux, use supported equivalents such as `uname`, `free`, `df`, and `ps` after checking availability.
+# Disk usage
+df -h                                # All volumes
+du -sh '<requested-directory>'       # Only the directory relevant to the request
 
-## Interpret results
+# Memory
+vm_stat                              # macOS memory stats
+top -l 1 -s 0 | head -12            # Quick system overview
 
-- Label units and the sampling time. Convert `vm_stat` counts using its reported page size; free pages alone do not measure macOS memory pressure.
-- Distinguish a point-in-time CPU sample from sustained load. A process name or high memory use alone does not prove a leak.
-- Disk-full evidence should identify the affected volume. A directory total may be incomplete when access was denied.
-- For connectivity, inspect the requested interface or endpoint. A successful ping to one host does not prove that DNS, HTTPS, or the user's service works.
-- Avoid full environment dumps, credential files, process arguments containing tokens, and hardware serial numbers.
+# CPU
+sysctl -n machdep.cpu.brand_string   # CPU model
+sysctl -n hw.ncpu                    # CPU count
 
-Report unavailable commands or denied access. Diagnosis does not authorize killing processes, changing networking, installing software, or deleting files.
+# Running processes (top CPU/memory)
+ps -Ao pid,pcpu,pmem,comm -r | head -11  # Top CPU (macOS)
+ps -Ao pid,pcpu,pmem,comm -m | head -11  # Top memory (macOS)
+
+# Network
+ifconfig | grep "inet "              # IP addresses
+networksetup -listallhardwareports   # Find the actual Wi-Fi interface first
+networksetup -getairportnetwork <wifi-interface>  # Substitute its Device value
+ping -c 1 8.8.8.8                    # Connectivity check
+
+# Battery (MacBook)
+pmset -g batt                        # Battery status
+
+# Uptime
+uptime
+```
+
+## Tips
+- Use `sw_vers` for macOS version details
+- For hardware details, use `uname -m`, `sysctl -n hw.ncpu`, and `sysctl -n hw.memsize`; avoid printing serial numbers or identifiers.
+- Use `lsof -nP -iTCP:<port> -sTCP:LISTEN` for a requested listening port.
+
+## Interpret Results
+
+- These examples target macOS; check the platform before using them. On Linux, use supported equivalents such as `uname`, `free`, `df`, and the platform's `ps` options.
+- Label units and sampling time. Convert `vm_stat` pages using its reported page size; free pages alone do not establish memory pressure.
+- A point-in-time CPU sample does not establish sustained load, and high memory use alone does not prove a leak.
+- Report access-denied paths and unavailable commands. A directory total may be incomplete.
+- A successful ping to one host does not prove DNS, HTTPS, or the user's service works. Check the relevant endpoint.
+- Avoid environment dumps and process arguments that may expose credentials. Diagnosis alone does not authorize killing processes, changing networking, or deleting files.

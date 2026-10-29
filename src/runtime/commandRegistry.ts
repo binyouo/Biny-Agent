@@ -38,7 +38,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDefinition[] = [
   { name: "/resume", description: "Choose a session and resume its history", category: "session", surfaces: terminalOnly },
   { name: "/sessions", description: "List active Runtime Host sessions and switch focus", category: "session", surfaces: terminalOnly },
   { name: "/worktree", description: "Inspect and safely manage isolated worktrees", category: "session", acceptsArgs: true, surfaces: terminalOnly },
-  { name: "/new", description: "Start a new chat", category: "session", surfaces: terminalOnly },
+  { name: "/new", description: "Start a new chat; --isolated uses a Git worktree", category: "session", surfaces: terminalOnly },
   { name: "/app", description: "Open the current chat in Biny Desktop", category: "session", surfaces: terminalOnly },
   { name: "/permissions", description: "View or change permission mode", category: "system", surfaces: terminalOnly },
   { name: "/undo", description: "Restore the workspace from a Biny checkpoint", category: "system", acceptsArgs: true, surfaces: allInteractive },

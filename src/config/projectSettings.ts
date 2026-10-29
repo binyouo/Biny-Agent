@@ -26,7 +26,9 @@ const thinkingOverrideSchema = z.object({
 const agentOverrideSchema = z.object({
   softStepLimit: z.number().int().min(1).max(1_024).optional(),
   hardStepLimit: z.number().int().min(1).max(1_024).optional(),
+  /** 接受旧项目配置，但不再限制运行中的工具调用总数。 */
   maxToolCalls: z.number().int().min(1).max(65_536).optional(),
+  /** 接受旧项目配置，但不再限制重复工具调用。 */
   maxRepeatedActions: z.number().int().min(1).max(32).optional(),
   maxConcurrentTools: z.number().int().min(1).max(32).optional(),
   maxQueuedToolCalls: z.number().int().min(1).max(1_024).optional()

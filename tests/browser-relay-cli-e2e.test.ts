@@ -23,11 +23,20 @@ test("built CLI reports status, reads connected tabs and installs credential-fre
     socket.send(JSON.stringify({ type: "hello", version: 2, browserName: "Chrome CLI" })); await ready;
     socket.on("message", (raw) => {
       const command = JSON.parse(raw.toString());
-      socket.send(JSON.stringify({ id: command.id, ok: true, result: command.method === "tabs" ? [{ id: 4, windowId: 1, url: "https://example.com/", title: "Page", active: true }] : command.method === "screenshot" ? { mimeType: "image/png", data: "iVBORw0KGgo=" } : { url: "https://example.com/", title: "Page", text: "Hello CLI", interactive: [] } }));
+      const result = command.method === "tabs" ? [{ id: 4, windowId: 1, url: "https://example.com/", title: "Page", active: true }]
+        : command.method === "open" ? { success: true, tabId: 8, windowId: 1, url: command.args.url }
+          : command.method === "back" || command.method === "forward" ? { success: true, url: "https://example.com/" }
+            : command.method === "screenshot" ? { mimeType: "image/png", data: "iVBORw0KGgo=" }
+              : command.method === "evaluate" ? "Evaluated title" : { url: "https://example.com/", title: "Page", text: "Hello CLI", interactive: [] };
+      socket.send(JSON.stringify({ id: command.id, ok: true, result }));
     });
     const { browsers: [tabs] } = await run("tabs");
     assert.equal(tabs.tabs[0].id, 4);
     assert.equal((await run("read", tabs.browserId, "4")).text, "Hello CLI");
+    assert.deepEqual(await run("open", tabs.browserId, "https://example.org/"), { success: true, tabId: 8, windowId: 1, url: "https://example.org/" });
+    assert.deepEqual(await run("back", tabs.browserId, "8"), { success: true, url: "https://example.com/" });
+    assert.deepEqual(await run("forward", tabs.browserId, "8"), { success: true, url: "https://example.com/" });
+    assert.equal(await run("act", "evaluate", "--args", JSON.stringify({ browserId: tabs.browserId, tabId: 4, code: "document.title" })), "Evaluated title");
     const screenshot = await run("act", "screenshot", "--args", JSON.stringify({ browserId: tabs.browserId, tabId: 4, path: "screen.png" }));
     assert.equal(screenshot.bytes, 8);
     assert.equal((await readFile(path.join(root, "screen.png"))).toString("hex"), "89504e470d0a1a0a");

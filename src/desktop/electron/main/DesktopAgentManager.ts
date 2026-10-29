@@ -1,3 +1,4 @@
+import type { MaskRecord, MaskingOverview } from "../../../privacy/record.js";
 import { TaskCommunication, type TaskInspection, type TaskInspectionOptions } from "../../../runtime/TaskCommunication.js";
 import { readAttachment } from "../../../attachments/store.js";
 /**
@@ -208,6 +209,7 @@ export interface DesktopSettingsConfigSnapshot {
   externalSubagentBlockers: string[];
   permission: AgentConfig["permission"];
   webSearch: DesktopWebSearchSettings;
+  redaction: AgentConfig["redaction"];
   models: DesktopSettingsModelsSnapshot;
   skills?: DesktopSkillSettings;
 }
@@ -499,8 +501,8 @@ export class DesktopAgentManager {
     return await this.projects.listSessionTreePage(project, this.runtimeSnapshots(projectId), this.projectEvents(projectId), options);
   }
 
-  async startDraft(projectId: string): Promise<DesktopWorkspaceSnapshot> {
-    await this.ensureDraftRuntime(projectId);
+  async startDraft(projectId: string, isolation: "shared" | "worktree" = "shared"): Promise<DesktopWorkspaceSnapshot> {
+    await this.ensureDraftRuntime(projectId, isolation);
     return await this.workspaceSnapshot(projectId);
   }
 
@@ -509,10 +511,10 @@ export class DesktopAgentManager {
    * 全部保留，仅由 AgentSession.startNewSession 重置会话级状态。sendPrompt 等不需要
    * 快照的调用方走这条轻量路径；startDraft 在此基础上补一份 workspaceSnapshot。
    */
-  private async ensureDraftRuntime(projectId: string): Promise<void> {
-    const managed = this.residentRuntime(projectId);
+  private async ensureDraftRuntime(projectId: string, isolation?: "shared" | "worktree"): Promise<void> {
     // 清掉旧的初始化失败闩锁，让「新聊天」始终能作为重试入口。
     this.runtimeErrors.delete(projectId);
+    const managed = isolation === "worktree" ? await this.ensureRuntime(projectId) : this.residentRuntime(projectId);
     if (!managed) {
       this.draftSessionIds.delete(projectId);
       return;
@@ -520,7 +522,9 @@ export class DesktopAgentManager {
     const existingDraftSessionId = this.draftSessionIds.get(projectId);
     if (existingDraftSessionId !== undefined) {
       const existingDraft = managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === existingDraftSessionId);
-      if (existingDraft && !runtimeIsBusy(existingDraft.snapshot)) {
+      const matchesIsolation = existingDraft && (isolation === undefined
+        || (path.resolve(existingDraft.snapshot.info.workspaceRoot) !== path.resolve(this.projects.requireProject(projectId).path)) === (isolation === "worktree"));
+      if (existingDraft && !runtimeIsBusy(existingDraft.snapshot) && matchesIsolation) {
         await managed.runtime.focusSession(existingDraftSessionId);
         return;
       }
@@ -531,7 +535,7 @@ export class DesktopAgentManager {
     const previousSnapshot = previousSessionId === undefined
       ? undefined
       : managed.runtime.getSnapshot(previousSessionId);
-    const info = await managed.runtime.startDraft();
+    const info = await managed.runtime.startDraft(isolation);
     if (previousSessionId !== undefined
       && previousSessionId !== info.sessionId && previousSnapshot?.state.kind === "idle") {
       await managed.runtime.releaseSessionClaim(previousSessionId);
@@ -1043,6 +1047,18 @@ export class DesktopAgentManager {
     return (await this.requireVersionedConfig().loadVersioned!(project.path)).revision;
   }
 
+  async maskingOverview(projectId: string): Promise<MaskingOverview> {
+    return await (await this.ensureRuntime(projectId)).runtime.maskingOverview();
+  }
+
+  async maskingDetail(projectId: string, id: string): Promise<MaskRecord | undefined> {
+    return await (await this.ensureRuntime(projectId)).runtime.maskingDetail(id);
+  }
+
+  async clearMaskRecords(projectId: string): Promise<void> {
+    await (await this.ensureRuntime(projectId)).runtime.clearMaskRecords();
+  }
+
   async settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot> {
     const project = this.projects.requireProject(projectId);
     const current = await this.requireVersionedConfig().loadVersioned!(project.path);
@@ -1076,6 +1092,7 @@ export class DesktopAgentManager {
       || input.subagent !== undefined
       || input.permission !== undefined
       || input.webSearch !== undefined
+      || input.redaction !== undefined
       || input.skills !== undefined) {
       this.assertNoRunningTasks("任务运行期间不能提交全局设置。");
     }
@@ -1150,6 +1167,9 @@ export class DesktopAgentManager {
     }
     if (input.webSearch !== undefined) {
       next = configSchema.parse({ ...next, web: { ...next.web, search: input.webSearch } });
+    }
+    if (input.redaction !== undefined) {
+      next = configSchema.parse({ ...next, redaction: input.redaction });
     }
     if (input.models !== undefined) {
       for (const handle of input.models.oauthCredentialHandles ?? []) {
@@ -3203,6 +3223,7 @@ function describeSettingsConfigSnapshot(
         ? config.extensions.subagent.providerAlias ?? (config.extensions.subagent.model ? config.models[config.extensions.subagent.model]?.provider : undefined) : undefined },
     permission: structuredClone(config.permission),
     webSearch: describeWebSearchSettings(config.web.search),
+    redaction: structuredClone(config.redaction),
     models: {
       configured: listConfiguredModelChoices(config, catalogs),
       connections: describeModelConnections(config),

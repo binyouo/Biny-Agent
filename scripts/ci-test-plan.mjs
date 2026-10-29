@@ -1,11 +1,10 @@
-/** CI 选择计划：成功祖先是比较基准；无法证明影响范围时扩大验证。 */
+/** CI 选择计划：PR 比较合并结果与 base，push 累计成功祖先后的改动。 */
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
-const corePath = /^src\/(?:(?:agent|runtime|session|permission|config|llm|extensions|network)\/|utils\/(?:secrets|redaction|windowsSecurity|localFileLock|localIpc)\.ts$)/u;
 const sourcePath = /^src\/.*\.[cm]?[jt]sx?$/u;
 const testPath = /^tests\/[^/]+\.test\.ts$/u;
 const documentation = /^(?:README(?:\.[\w-]+)?\.md|CONTRIBUTING\.md|docs\/.*\.md)$/u;
@@ -46,9 +45,12 @@ export async function resolveComparison(root, eventName, event, env = process.en
   const full = ["schedule", "workflow_dispatch"].includes(eventName);
   let branch = env.GITHUB_REF_NAME;
   let ancestorHead = head;
+  let prBase;
   if (eventName === "pull_request") {
     if (git(root, "rev-parse", "HEAD^2") !== event.pull_request.head.sha) throw new Error("Checkout is not the requested PR merge result");
     ancestorHead = git(root, "rev-parse", "HEAD^1");
+    if (ancestorHead !== event.pull_request.base.sha) throw new Error("Checkout is not the requested PR merge result");
+    prBase = ancestorHead;
     branch = event.pull_request.base.ref;
   } else if (eventName !== "push" && !full) {
     return { head, reason: "unknown event" };
@@ -56,10 +58,13 @@ export async function resolveComparison(root, eventName, event, env = process.en
   try {
     const runs = await fetchRuns(branch);
     const baseline = successfulAncestor(root, runs.filter(run => full || run.head_sha !== head), ancestorHead, branch, env.GITHUB_RUN_ID);
+    // PR 不承担 main 的累计验证；历史成功运行只用于分片耗时。
+    if (prBase) return { head, base: prBase, runId: baseline?.runId, reason: "PR changes against the current base in the merge result" };
     return baseline ? { head, base: baseline.sha, runId: baseline.runId, full,
       reason: full ? "scheduled or manual full validation" : undefined }
       : { head, reason: "no successful ancestor available" };
   } catch (error) {
+    if (prBase) return { head, base: prBase, reason: `PR changes against the current base; timing history unavailable: ${error.message}` };
     return { head, reason: `successful baseline unavailable: ${error.message}` };
   }
 }
@@ -87,10 +92,37 @@ async function dependencyGraph(root) {
     const absolute = path.join(root, file);
     const source = ts.createSourceFile(absolute, readFileSync(absolute, "utf8"), ts.ScriptTarget.Latest, true);
     if (source.parseDiagnostics.length) throw new Error(`Cannot parse ${file}`);
-    const addImport = specifier => {
+    const readers = new Set();
+    const requireFactories = new Set();
+    const requires = new Set();
+    // 此助手的文件读取只处理经过临时根目录校验的 owner 记录和清理诊断。
+    const externalFileReads = file === "tests/helpers/memoryOwnerCleanup.ts";
+    const addEdge = dependency => {
+      if (!dependents.has(dependency)) dependents.set(dependency, new Set());
+      dependents.get(dependency).add(file);
+    };
+    const addBuiltin = (specifier, node) => {
+      const bindings = node?.importClause?.namedBindings;
+      if (!bindings || !ts.isNamedImports(bindings) || node.importClause.name) { opaque.add(file); return; }
+      for (const binding of bindings.elements) {
+        if (binding.isTypeOnly || node.importClause.isTypeOnly) continue;
+        const imported = binding.propertyName?.text ?? binding.name.text;
+        if (/^(?:node:)?module$/u.test(specifier)) {
+          if (imported === "createRequire") requireFactories.add(binding.name.text);
+          else opaque.add(file);
+        } else if (/^(?:readFile|exists|stat|lstat|access|readdir|opendir|realpath)(?:Sync)?$/u.test(imported)) {
+          readers.add(binding.name.text);
+        } else if (!/^(?:mkdtemp|mkdir|rm|rmdir|unlink|writeFile|appendFile)(?:Sync)?$/u.test(imported)) {
+          opaque.add(file);
+        }
+      }
+    };
+    const addImport = (specifier, node) => {
       // Vite 的 SSR loader 在导入图之外读取源码；其消费者也必须保守保留。
-      if (specifier === "vite" || /^(?:node:)?module$/u.test(specifier)
-        || (file.startsWith("tests/") && /^(?:node:)?(?:fs(?:\/promises)?|child_process|vm)$/u.test(specifier))) opaque.add(file);
+      if (specifier === "vite" || (file.startsWith("tests/") && /^(?:node:)?(?:child_process|vm)$/u.test(specifier))) opaque.add(file);
+      if (/^(?:node:)?module$/u.test(specifier)
+        || (file.startsWith("tests/") && /^(?:node:)?fs(?:\/promises)?$/u.test(specifier))) addBuiltin(specifier, node);
+      if (path.isAbsolute(specifier) || /^(?:file:|[A-Za-z]:[\\/])/u.test(specifier)) { opaque.add(file); return; }
       if (!specifier.startsWith(".")) return;
       const modulePath = specifier.split("?")[0];
       const resolved = ts.resolveModuleName(modulePath, absolute, options, ts.sys, cache).resolvedModule;
@@ -103,9 +135,45 @@ async function dependencyGraph(root) {
         return;
       }
       const dependency = path.relative(root, resolvedFile).split(path.sep).join("/");
-      if (!dependents.has(dependency)) dependents.set(dependency, new Set());
-      dependents.get(dependency).add(file);
+      addEdge(dependency);
     };
+    const factoryCall = node => ts.isCallExpression(node) && ts.isIdentifier(node.expression) && requireFactories.has(node.expression.text);
+    const requireExpression = node => ts.isIdentifier(node) ? node.text === "require" || requires.has(node.text) : factoryCall(node);
+    const readInput = argument => {
+      let input;
+      if (argument && ts.isStringLiteralLike(argument)) input = path.resolve(root, argument.text);
+      else if (argument && ts.isNewExpression(argument) && ts.isIdentifier(argument.expression) && argument.expression.text === "URL"
+        && argument.arguments?.length === 2 && ts.isStringLiteralLike(argument.arguments[0])
+        && argument.arguments[1].getText(source) === "import.meta.url") {
+        try { input = fileURLToPath(new URL(argument.arguments[0].text, pathToFileURL(absolute))); }
+        catch { /* 非文件 URL 不证明项目输入范围。 */ }
+      }
+      if (!input || !existsSync(input)) {
+        if (!externalFileReads) opaque.add(file);
+        return;
+      }
+      const relative = path.relative(root, input).split(path.sep).join("/");
+      if (relative.startsWith("../") || path.isAbsolute(relative)) { opaque.add(file); return; }
+      addEdge(relative);
+      // 目录输入覆盖其中的源码；删除文件仍由计划入口扩大为全量。
+      for (const candidate of files) if (!relative || candidate.startsWith(`${relative}/`)) addEdge(candidate);
+    };
+    // 先登记绑定，使别名调用和声明顺序不改变选择结果。
+    for (const node of source.statements) {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+        // 类型引用由全仓 typecheck 验证；它不会加载模块或执行被引用源码。
+        if (node.importClause?.isTypeOnly) continue;
+        addImport(node.moduleSpecifier.text, node);
+      } else if (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference)
+        && node.moduleReference.expression && ts.isStringLiteral(node.moduleReference.expression)) {
+        addImport(node.moduleReference.expression.text);
+      }
+    }
+    const collectRequires = node => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && factoryCall(node.initializer)) requires.add(node.name.text);
+      ts.forEachChild(node, collectRequires);
+    };
+    collectRequires(source);
     const visit = node => {
       if (file.startsWith("tests/") && ts.isStringLiteralLike(node)) {
         // 部分回归把另一个测试作为子进程夹具；数组中的 suite 名同样形成依赖。
@@ -115,18 +183,40 @@ async function dependencyGraph(root) {
           dependents.get(candidate).add(file);
         }
       }
-      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-        addImport(node.moduleSpecifier.text);
+      if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        if (!node.isTypeOnly) addImport(node.moduleSpecifier.text);
       } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
-        || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
+        || requireExpression(node.expression)
+        || (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "resolve" && requireExpression(node.expression.expression)))) {
         const argument = node.arguments[0];
+        if (ts.isPropertyAccessExpression(node.expression) && node.arguments.length !== 1) opaque.add(file);
         if (argument && ts.isStringLiteralLike(argument)) addImport(argument.text);
-        else opaque.add(file);
-      } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
-        addImport(node.argument.literal.text);
+        // 插件导入目标来自受约束的用户工作区 pluginRoot，不属于仓库源码。
+        else if (!(file === "src/extensions/plugins.ts" && node.expression.kind === ts.SyntaxKind.ImportKeyword
+          && argument?.getText(source) === "pathToFileURL(filePath).href")) opaque.add(file);
+      } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && readers.has(node.expression.text)) {
+        readInput(node.arguments[0]);
+      } else if (factoryCall(node)) {
+        if (node.arguments.length !== 1 || node.arguments[0].getText(source) !== "import.meta.url") opaque.add(file);
+        const parent = node.parent;
+        if (!((ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name) && parent.initializer === node)
+          || (ts.isCallExpression(parent) && parent.expression === node)
+          || (ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === "resolve"
+            && ts.isCallExpression(parent.parent) && parent.parent.expression === parent))) opaque.add(file);
       } else if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && ts.isIdentifier(node.expression)
         && ["eval", "Function"].includes(node.expression.text)) {
         opaque.add(file);
+      }
+      if (ts.isCallExpression(node) && node.expression.getText(source) === "process.chdir") opaque.add(file);
+      if (ts.isIdentifier(node) && (readers.has(node.text) || requireFactories.has(node.text) || requires.has(node.text))) {
+        const parent = node.parent;
+        const declaration = (ts.isImportSpecifier(parent) || ts.isVariableDeclaration(parent)) && parent.name === node;
+        const invocation = ts.isCallExpression(parent) && parent.expression === node;
+        const resolve = requires.has(node.text) && ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === "resolve"
+          && ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+        const propertyName = (ts.isPropertyAccessExpression(parent) || ts.isMethodDeclaration(parent) || ts.isPropertyAssignment(parent)) && parent.name === node;
+        if (!declaration && !invocation && !resolve && !propertyName && !ts.isImportSpecifier(parent) && !ts.isTypeQueryNode(parent)
+          && !(externalFileReads && readers.has(node.text))) opaque.add(file);
       }
       ts.forEachChild(node, visit);
     };
@@ -149,7 +239,6 @@ export async function createPlan(root, changedFiles, { full = false } = {}) {
   const changed = [...new Set(changedFiles)];
   for (const file of changed) {
     if (documentation.test(file)) continue;
-    if (corePath.test(file)) return all(`shared authority changed: ${file}`);
     if ((!sourcePath.test(file) && !testPath.test(file)) || !existsSync(path.join(root, file))) return all(`unknown, shared, or removed input: ${file}`);
   }
   const code = changed.filter(file => !documentation.test(file));
@@ -168,7 +257,9 @@ export async function createPlan(root, changedFiles, { full = false } = {}) {
     reasons: [...code.map(file => `changed: ${file}`), ...(sources.length ? ["include opaque file/process/dynamic consumers and all runtime E2E"] : [])],
     standard: selected.filter(file => !file.endsWith("-e2e.test.ts")),
     e2e: (sources.length ? tests : selected).filter(file => file.endsWith("-e2e.test.ts")),
-    build: sources.length > 0, renderer: sources.length > 0, windows: true, windowsPackage: false
+    build: sources.length > 0, renderer: affected.has("tests/fixtures/memory-disclosure/main.tsx"),
+    windows: sources.length > 0 || selected.some(file => /^(?:windows|runtime-host-(?:lock|connection-options|lifecycle)|desktop-host-startup-e2e)/u.test(file)),
+    windowsPackage: false
   };
 }
 
@@ -239,6 +330,8 @@ async function main() {
   if (process.env.GITHUB_OUTPUT) {
     const lanes = { standard: plan.standard.length > 0, e2e: plan.e2e.length > 0, build: plan.build, renderer: plan.renderer, windows: plan.windows };
     appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(lanes).map(([key, value]) => `${key}=${value}\n`).join(""));
+    const shards = Array.from({ length: Math.max(1, Math.min(4, plan.standard.length)) }, (_, index) => index + 1);
+    appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\n`);
     appendFileSync(process.env.GITHUB_OUTPUT, `windows_package=${plan.windowsPackage}\n`);
   }
 }

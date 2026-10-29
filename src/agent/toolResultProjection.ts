@@ -161,6 +161,7 @@ export async function projectToolResultsForModel(
   const projected = [...messages];
   let changed = false;
   for (const entry of entries) {
+    if (entry.message.content.some((part) => part.type !== "text")) continue;
     const replacement = replacements.get(entry.index);
     if (replacement) {
       const marker = await replacementMessage(entry, replacement, options);
@@ -254,6 +255,7 @@ function findReplacements(entries: readonly ToolResultEntry[]): Map<number, Repl
   const failures = new Map<string, ToolResultEntry[]>();
 
   for (const entry of entries.filter((candidate) => candidate.currentTurn)) {
+    if (entry.message.content.some((part) => part.type !== "text")) continue;
     const callKey = entry.call ? `${entry.call.tool}\0${stableJson(entry.call.args)}` : undefined;
     const exactKey = callKey === undefined ? undefined : `${callKey}\0${resultSignature(entry)}`;
     const previousExact = exactKey === undefined ? undefined : exact.get(exactKey);

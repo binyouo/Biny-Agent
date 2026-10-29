@@ -20,8 +20,12 @@ export function registerBrowserCommands(program: Command): void {
     catch (error) { fail(error, json); }
   };
   for (const method of ["status", "tabs"] as const) browser.command(method).option("--json", "print JSON").action((options: { json?: boolean }) => perform(method, {}, options.json));
+  browser.command("open").argument("<browser-id>").argument("<url>", "HTTP(S) URL").option("--json", "print JSON")
+    .action((browserId: string, url: string, options: { json?: boolean }) => perform("open", { browserId, url }, options.json));
   browser.command("read").argument("<browser-id>").argument("<tab-id>").option("--json", "print JSON")
     .action((browserId: string, tabId: string, options: { json?: boolean }) => perform("read", { browserId, tabId: Number(tabId) }, options.json));
+  for (const method of ["back", "forward"] as const) browser.command(method).argument("<browser-id>").argument("<tab-id>").option("--json", "print JSON")
+    .action((browserId: string, tabId: string, options: { json?: boolean }) => perform(method, { browserId, tabId: Number(tabId) }, options.json));
   for (const method of ["navigate", "click", "fill", "press"] as const) {
     const command = browser.command(method).argument("<browser-id>").argument("<tab-id>").argument("<value>", method === "navigate" ? "HTTP(S) URL" : method === "press" ? "key" : "CSS selector");
     if (method === "fill") command.argument("<text>");
@@ -37,11 +41,11 @@ export function registerBrowserCommands(program: Command): void {
     });
   }
   // 结构化入口覆盖框架、等待与文件操作，和工具使用同一协议及文件边界。
-  browser.command("act").argument("<method>", "read, navigate, click, fill, press, screenshot, scroll, wait, upload, download")
+  browser.command("act").argument("<method>", "open, read, evaluate, navigate, back, forward, click, fill, press, screenshot, scroll, wait, upload, download")
     .requiredOption("--args <json>", "operation parameters; files use workspace-relative paths")
     .option("--json", "print JSON").action(async (method: string, options: { args: string; json?: boolean }) => {
       try {
-        if (!["read", "navigate", "click", "fill", "press", "screenshot", "scroll", "wait", "upload", "download"].includes(method)) throw new BrowserRelayError("invalid", "不支持的浏览器操作。");
+        if (!["open", "read", "evaluate", "navigate", "back", "forward", "click", "fill", "press", "screenshot", "scroll", "wait", "upload", "download"].includes(method)) throw new BrowserRelayError("invalid", "不支持的浏览器操作。");
         let args: unknown;
         try { args = JSON.parse(options.args); } catch { throw new BrowserRelayError("invalid", "--args 必须为 JSON 对象。"); }
         const result = method === "screenshot" || method === "upload" || method === "download"

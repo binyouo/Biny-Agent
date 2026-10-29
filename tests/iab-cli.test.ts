@@ -84,6 +84,33 @@ test("iab fetch extracts readable text and preserves the selected environment", 
   assert.match(page?.content ?? "", /Readable page text/u);
 });
 
+test("iab profile history searches an explicitly selected profile", async () => {
+  const output = await runCli(["iab", "profile", "history", "chrome:Default", "--query", "github", "--limit", "12", "--json"], async (method, args) => {
+    assert.equal(method, "profile_history");
+    assert.deepEqual(args, { profileId: "chrome:Default", query: "github", limit: 12 });
+    return [{ url: "https://github.com/openai", title: "OpenAI", visitedAt: "2026-02-01T00:00:00.000Z" }];
+  });
+  assert.deepEqual(JSON.parse(output), [{ url: "https://github.com/openai", title: "OpenAI", visitedAt: "2026-02-01T00:00:00.000Z" }]);
+});
+
+test("iab profile history rejects invalid result limits before connecting", async () => {
+  let connected = false;
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  try {
+    const output = await runCli(["iab", "profile", "history", "chrome:Default", "--limit", "101", "--json"], async () => {
+      connected = true;
+      return [];
+    });
+    const result = JSON.parse(output) as { ok: boolean; code: string; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "request_failed");
+    assert.ok(result.error.length > 0);
+    assert.equal(connected, false);
+    assert.equal(process.exitCode, 1);
+  } finally { process.exitCode = previousExitCode; }
+});
+
 test("iab reports that the Desktop browser is unavailable", async () => {
   const previousExitCode = process.exitCode;
   process.exitCode = 0;

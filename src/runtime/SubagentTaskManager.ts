@@ -161,6 +161,11 @@ export class SubagentTaskManager {
     return task ? publicSnapshot(task) : this.terminalSnapshots.get(taskId);
   }
 
+  /** 取消终态可能先于执行退出；任务仍驻留时不能清理其工作目录。 */
+  isExecuting(taskId: string): boolean {
+    return this.tasks.get(taskId)?.startedAt !== undefined;
+  }
+
   listSnapshots(): SubagentTaskSnapshot[] {
     return [...this.terminalSnapshots.values(), ...[...this.tasks.values()].filter((task) => !this.terminalSnapshots.has(task.taskId)).map(publicSnapshot)];
   }

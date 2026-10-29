@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -28,7 +28,7 @@ const contract = readTaskVerificationContract({
 const success = { result: { status: "completed", exitCode: 0 }, toolCallId: "check-result", eventReferences: ["check-result"] };
 
 async function workspace(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-verification-cancel-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-verification-cancel-")));
   await Promise.all(["artifact.txt", "definition.txt", "unrelated.txt"].map((name) =>
     writeFile(path.join(root, name), `${name}\n`.repeat(20_000))
   ));
@@ -49,7 +49,7 @@ function observeReads(onRead: (filename: string, stream: fs.ReadStream) => void)
   };
 }
 
-for (const name of ["artifact.txt", "definition.txt", "unrelated.txt"]) {
+for (const name of ["artifact.txt", "definition.txt"]) {
   await test(`signal-only cancellation during final ${name} scan never passes`, async () => {
     const root = await workspace();
     const controller = new AbortController();
@@ -139,7 +139,7 @@ await test("closure durably cancels a signal-only abort in its final scan", asyn
     const controller = new AbortController();
     let lastCheckSucceeded = false;
     const restore = observeReads((filename, stream) => {
-      if (lastCheckSucceeded && filename === path.join(root, "unrelated.txt")) stream.once("data", () => controller.abort());
+      if (lastCheckSucceeded && filename === path.join(root, "definition.txt")) stream.once("data", () => controller.abort());
     });
     try {
       const result = await runTaskClosure({
@@ -198,7 +198,7 @@ await test("a late abort does not replace an already terminal successful outcome
   });
 });
 
-await test("one attempt uses three full content snapshots and returns immutable snapshots", async () => {
+await test("only worker scope checks take full snapshots; verification does not read unrelated files", async () => {
   await withStore(async (root, tasks) => {
     const snapshot = await captureTaskWorkspaceSnapshot(root, ignore);
     assert.equal(Object.isFrozen(snapshot), true);
@@ -213,32 +213,63 @@ await test("one attempt uses three full content snapshots and returns immutable 
         executeAttempt: async () => "candidate", executor: { executeTaskCheck: async () => success }
       });
       assert.equal(result.status, "completed");
-      assert.equal(fullContentReads, 3, "reuse post-worker content snapshot, retaining before-worker and final full guards");
+      assert.equal(fullContentReads, 2, "retain worker scope snapshots without scanning unrelated files during verification");
     } finally { restore(); }
   });
 });
 
-await test("mutations between candidate capture and verification remain guarded", async () => {
-  await withStore(async (root, tasks) => {
-    const task = tasks.create({ task: { prompt: "verify", verification: contract } });
-    const transition = tasks.transition.bind(tasks);
-    let mutated = false;
-    tasks.transition = (id, status, input) => {
-      const result = transition(id, status, input);
-      if (status === "verifying" && !mutated) {
-        mutated = true;
-        fs.writeFileSync(path.join(root, "unrelated.txt"), "out-of-scope mutation after candidate snapshot");
-      }
-      return result;
-    };
-    const result = await runTaskClosure({
-      taskRuns: tasks, taskRunId: task.taskRunId, workspaceRoot: root, ignore,
-      executeAttempt: async () => "candidate", executor: { executeTaskCheck: async () => success }
+for (const name of ["artifact.txt", "definition.txt", "unrelated.txt"]) {
+  await test(`candidate handoff checks the declared scope: ${name}`, async () => {
+    await withStore(async (root, tasks) => {
+      const task = tasks.create({ task: { prompt: "verify", verification: contract } });
+      const transition = tasks.transition.bind(tasks);
+      let mutated = false;
+      tasks.transition = (id, status, input) => {
+        const result = transition(id, status, input);
+        if (status === "verifying" && !mutated) {
+          mutated = true;
+          fs.writeFileSync(path.join(root, name), "mutation after candidate capture");
+        }
+        return result;
+      };
+      const result = await runTaskClosure({
+        taskRuns: tasks, taskRunId: task.taskRunId, workspaceRoot: root, ignore,
+        executeAttempt: async () => "candidate", executor: { executeTaskCheck: async () => success }
+      });
+      assert.equal(result.status, name === "unrelated.txt" ? "completed" : "blocked", result.reason);
+      if (name === "artifact.txt") assert.match(result.reason ?? "", /Candidate artifacts changed/i);
+      if (name === "definition.txt") assert.match(result.reason ?? "", /definition inputs changed/i);
     });
-    assert.equal(result.status, "blocked");
-    assert.match(result.reason ?? "", /Workspace changed.*unrelated.txt/i);
   });
-});
+}
+
+for (const name of ["artifact.txt", "definition.txt", "unrelated.txt"]) {
+  await test(`verification checks only declared inputs after execution: ${name}`, async () => {
+    const root = await workspace();
+    try {
+      const definitionFingerprint = await fingerprintTaskVerificationDefinitions(root, contract, ignore);
+      let unrelatedReads = 0;
+      const restore = observeReads(filename => {
+        if (filename === path.join(root, "unrelated.txt")) unrelatedReads++;
+      });
+      try {
+        const result = await verifyTaskCandidate({
+          workspaceRoot: root, ignore, contract, definitionFingerprint,
+          taskRunId: "task", attemptId: "attempt",
+          executor: { executeTaskCheck: async () => {
+            await writeFile(path.join(root, name), "changed during verification");
+            return success;
+          } }
+        });
+        assert.equal(result.checks[0]?.status, "passed");
+        assert.equal(result.status, name === "unrelated.txt" ? "passed" : "blocked", result.reason);
+        if (name === "artifact.txt") assert.match(result.reason ?? "", /Candidate artifacts changed/i);
+        if (name === "definition.txt") assert.match(result.reason ?? "", /definition inputs changed/i);
+        assert.equal(unrelatedReads, 0, "unrelated content must never be read by verification");
+      } finally { restore(); }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
 
 for (const stage of ["before-worker", "after-worker"] as const) {
   await test(`closure persists cancellation during ${stage} snapshot IO`, async () => {

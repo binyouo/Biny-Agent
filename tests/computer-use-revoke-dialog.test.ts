@@ -15,9 +15,9 @@ test("revoke uses a modal, remains open while pending or failed, and Escape rest
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   const diagnostic = { approvals: [{ bundleId: "test.notes", appName: "Notes", approvedAt: new Date().toISOString(), useCount: 2 }], audit: [], permissions: { accessibility: "granted", screenRecording: "granted" } };
   let reject!: (error: Error) => void; const pending = new Promise<never>((_resolve, fail) => { reject = fail; });
-  const status = { state: "ready", preview: true, foregroundAllowed: false, lastOutcome: "not-dispatched" };
+  const status = { state: "ready", preview: true, lastOutcome: "not-dispatched" };
   const noop = async () => status;
-  Object.assign(dom.window, { binyComputer: { status: noop, enable: noop, control: noop, preview: noop, foreground: noop, logging: noop, diagnostics: async () => diagnostic, requestAccessibility: async () => diagnostic, testSetup: async () => diagnostic, strict: async () => diagnostic, approve: async () => diagnostic, revoke: () => pending } });
+  Object.assign(dom.window, { binyComputer: { status: noop, enable: noop, control: noop, preview: noop, logging: noop, diagnostics: async () => diagnostic, requestAccessibility: async () => diagnostic, testSetup: async () => diagnostic, strict: async () => diagnostic, approve: async () => diagnostic, revoke: () => pending } });
   const root = createRoot(dom.window.document.getElementById("root")!);
   try {
     await act(async () => root.render(React.createElement(SettingsComputerUse)));

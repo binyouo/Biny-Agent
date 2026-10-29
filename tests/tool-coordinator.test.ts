@@ -3,10 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import {
-  ToolExecutionCoordinator,
-  type ToolExecutionBudget
-} from "../src/agent/toolExecutionCoordinator.js";
+import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import type { AgentSessionEvent, AgentToolEvent } from "../src/agent/types.js";
 import { defaultConfig, type AgentConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
@@ -14,7 +11,6 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { parseSessionEvents } from "../src/session/events.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { createToolSearchTool } from "../src/tools/toolSearch.js";
 import type { Tool } from "../src/tools/types.js";
 
 interface ExecutableTool {
@@ -23,82 +19,28 @@ interface ExecutableTool {
 
 type CoordinatorEvent = AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>;
 
-async function testBatchCannotExceedToolCallLimit(): Promise<void> {
-  const fixture = await createFixture({
-    maxToolCalls: 2,
-    maxRepeatedActions: 10
-  });
+async function testRepeatedCallsCanExecuteInParallel(): Promise<void> {
+  const fixture = await createFixture();
   try {
-    const results = await Promise.all([
-      fixture.tool.execute("call-a", { key: "a" }),
-      fixture.tool.execute("call-b", { key: "b" }),
-      fixture.tool.execute("call-c", { key: "c" })
-    ]);
-    await fixture.coordinator.waitForIdle();
-
-    assert.equal(fixture.resolveCount(), 2, "over-budget calls must not reach resolveExecution");
-    assert.equal(fixture.executeCount(), 2, "over-budget calls must not execute");
-    assert.deepEqual(results[2], {
-      status: "budget_rejected",
-      reason: "tool_call_limit",
-      resumable: true,
-      limit: 2,
-      attemptedToolCallCount: 3,
-      attemptedActionCount: 1,
-      error: "Tool counted_tool was not executed because the run reached its 2-call limit."
-    });
-    assert.equal(
-      fixture.events.some((event) =>
-        event.type === "tool.failed"
-        && event.toolCallId === "call-c"
-        && readString(event.result, "reason") === "tool_call_limit"
-      ),
-      true
-    );
-    assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 3);
-    assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().maxRepeatedActionCount, 1);
-  } finally {
-    await fixture.close();
-  }
+    const results = await Promise.all(Array.from({ length: 5 }, (_, index) =>
+      fixture.tool.execute(`repeat-${index}`, { key: "same" })));
+    assert.equal(fixture.resolveCount(), 5);
+    assert.equal(fixture.executeCount(), 5);
+    assert.deepEqual(results.map((result) => readString(result, "key")), Array(5).fill("same"));
+  } finally { await fixture.close(); }
 }
 
-async function testBatchCannotExceedRepeatedActionLimit(): Promise<void> {
-  const fixture = await createFixture({
-    maxToolCalls: 10,
-    maxRepeatedActions: 2
-  });
+async function testRepeatedCallsExceedFormerTotalLimit(): Promise<void> {
+  const fixture = await createFixture();
   try {
-    const results = await Promise.all([
-      fixture.tool.execute("repeat-1", { key: "same" }),
-      fixture.tool.execute("repeat-2", { key: "same" }),
-      fixture.tool.execute("repeat-3", { key: "same" })
-    ]);
-    await fixture.coordinator.waitForIdle();
-
-    assert.equal(fixture.resolveCount(), 2, "repeated calls beyond the limit must not resolve");
-    assert.equal(fixture.executeCount(), 2, "repeated calls beyond the limit must not execute");
-    assert.deepEqual(results[2], {
-      status: "budget_rejected",
-      reason: "repeated_action_limit",
-      resumable: true,
-      limit: 2,
-      attemptedToolCallCount: 3,
-      attemptedActionCount: 3,
-      error: "Tool counted_tool was not executed because the same structured action reached its repeat limit of 2."
-    });
-    assert.equal(
-      fixture.events.some((event) =>
-        event.type === "tool.failed"
-        && event.toolCallId === "repeat-3"
-        && readString(event.result, "reason") === "repeated_action_limit"
-      ),
-      true
-    );
-    assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 3);
-    assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().maxRepeatedActionCount, 3);
-  } finally {
-    await fixture.close();
-  }
+    for (let start = 0; start < 513; start += 16) {
+      const results = await Promise.all(Array.from({ length: Math.min(16, 513 - start) }, (_, index) =>
+        fixture.tool.execute(`many-${start + index}`, { key: "same" })));
+      assert.ok(results.every((result) => readString(result, "key") === "same"));
+    }
+    assert.equal(fixture.resolveCount(), 513);
+    assert.equal(fixture.executeCount(), 513);
+  } finally { await fixture.close(); }
 }
 
 async function testAbortAfterSuccessfulPromiseKeepsSuccess(): Promise<void> {
@@ -223,72 +165,21 @@ async function createLifecycleFixture(
   };
 }
 
-async function testProgressAndRestoredActionBudgets(): Promise<void> {
-  let version = 0;
-  const fixture = await createFixture({ maxToolCalls: 20, maxRepeatedActions: 2 }, () => ({ version }));
+async function testRepeatedFailuresDoNotStopAdmission(): Promise<void> {
+  let attempts = 0;
+  const fixture = await createFixture(() => { throw new Error(`failure ${++attempts}`); });
   try {
-    for (version = 0; version < 5; version++) {
-      const result = await fixture.tool.execute(`progress-${version}`, { key: "same" });
-      assert.equal(readString(result, "status"), undefined, "成功结果变化不能累计成重复动作");
+    for (let index = 0; index < 4; index++) {
+      const result = await fixture.tool.execute(`failed-${index}`, { key: "same" });
+      assert.match(readString(result, "error") ?? "", /failure/u);
     }
-    version = 4;
-    await fixture.tool.execute("unchanged", { key: "same" });
-    const snapshot = fixture.coordinator.getExecutionBudgetSnapshot();
-    const resumed = await createFixture({
-      maxToolCalls: 20, maxRepeatedActions: 2,
-      initialToolCallCount: snapshot.accountedToolCalls,
-      initialRepeatedActions: snapshot.repeatedActions
-    });
-    try {
-      assert.equal(readString(await resumed.tool.execute("new-action", { key: "different" }), "status"), undefined,
-        "恢复不能把旧动作次数转嫁给新动作");
-      assert.equal(readString(await resumed.tool.execute("old-action", { key: "same" }), "reason"), "repeated_action_limit",
-        "恢复也不能清掉原动作的无变化重复次数");
-    } finally {
-      await resumed.close();
-    }
-  } finally {
-    await fixture.close();
-  }
+    assert.equal(attempts, 4);
+  } finally { await fixture.close(); }
 }
 
-async function testChangingErrorsDoNotResetRepeatBudget(): Promise<void> {
-  let failures = 0;
-  const fixture = await createFixture({ maxToolCalls: 10, maxRepeatedActions: 2 }, () => {
-    throw new Error(`Failure attempt ${++failures}`);
-  });
-  try {
-    await fixture.tool.execute("error-1", { key: "same" });
-    await fixture.tool.execute("error-2", { key: "same" });
-    assert.equal(readString(await fixture.tool.execute("error-3", { key: "same" }), "reason"), "repeated_action_limit");
-    assert.equal(failures, 2, "不同错误文本不能被当成进展而无限执行");
-  } finally {
-    await fixture.close();
-  }
-}
-
-// 搜索先完成、同批业务调用稍后取得结果时，不能把暂时无进展锁死为终态。
-async function testPendingExecutionResetsDiscoveryStop(): Promise<void> {
-  let started!: () => void;
-  const admitted = new Promise<void>((resolve) => { started = resolve; });
-  let release!: () => void;
-  const result = new Promise<unknown>((resolve) => { release = () => resolve({ records: [1] }); });
-  const fixture = await createFixture({ maxToolCalls: 20, maxRepeatedActions: 2 }, () => { started(); return result; });
-  try {
-    const execution = fixture.tool.execute("business", { key: "read" });
-    await admitted;
-    for (let index = 0; index < 3; index++) await fixture.search.execute(`search-${index}`, { query: `counted_tool alternative ${index}` });
-    assert.equal(fixture.coordinator.getBudgetRejection()?.reason, "repeated_action_limit");
-    release();
-    await execution;
-    assert.equal(fixture.coordinator.getBudgetRejection(), undefined, "已经准入的调用取得新结果后，批次应当继续");
-  } finally { release(); await fixture.close(); }
-}
-
-async function createFixture(budget: ToolExecutionBudget, result?: () => unknown): Promise<{
+async function createFixture(result?: () => unknown): Promise<{
   coordinator: ToolExecutionCoordinator;
   tool: ExecutableTool;
-  search: ExecutableTool;
   events: CoordinatorEvent[];
   resolveCount(): number;
   executeCount(): number;
@@ -325,7 +216,6 @@ async function createFixture(budget: ToolExecutionBudget, result?: () => unknown
       };
     }
   } as Tool);
-  registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries()));
   const recorder = new SessionRecorder(workspaceRoot, "tool-budget");
   const events: CoordinatorEvent[] = [];
   const coordinator = new ToolExecutionCoordinator(
@@ -337,14 +227,11 @@ async function createFixture(budget: ToolExecutionBudget, result?: () => unknown
     },
     new PermissionManager(config.permission),
     (event) => events.push(event),
-    () => ({}),
-    undefined,
-    budget
+    () => ({})
   );
   return {
     coordinator,
     tool: nativeTool(coordinator, "counted_tool"),
-    search: nativeTool(coordinator, "ToolSearch"),
     events,
     resolveCount: () => resolved,
     executeCount: () => executed,
@@ -372,11 +259,9 @@ function readString(value: unknown, key: string): string | undefined {
   return typeof field === "string" ? field : undefined;
 }
 
-await testBatchCannotExceedToolCallLimit();
-await testBatchCannotExceedRepeatedActionLimit();
-await testPendingExecutionResetsDiscoveryStop();
-await testProgressAndRestoredActionBudgets();
-await testChangingErrorsDoNotResetRepeatBudget();
+await testRepeatedCallsCanExecuteInParallel();
+await testRepeatedCallsExceedFormerTotalLimit();
+await testRepeatedFailuresDoNotStopAdmission();
 await testAbortAfterSuccessfulPromiseKeepsSuccess();
 await testStartedExternalToolQuarantinesAsUnknown();
 await testNotStartedToolIsAuditOnly();

@@ -38,7 +38,7 @@ function fixture(options: { selected?: string[]; ask?: () => Promise<{ approved:
   recorders.push(recorder);
   const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: options.ask },
     new PermissionManager(config.permission), options.onEvent ?? (() => undefined), undefined, new Set(options.selected ?? ["Read", "Write", "Edit", "Bash", "ToolSearch"]),
-    { maxToolCalls: 20, maxRepeatedActions: 10 }, undefined, options.selected ? new Set(options.selected) : undefined);
+    undefined, undefined, options.selected ? new Set(options.selected) : undefined);
   const call = async (mode: "direct" | "code_mode", name: string, args: Record<string, unknown>, editing: EditingMode = "replace", signal?: AbortSignal): Promise<AgentToolResult> => {
     const id = `${mode}-${name}-${recorders.length}`;
     return mode === "direct"
@@ -64,7 +64,7 @@ try {
         assert.equal(commits.length, 1);
         assert.ok(events.some((event) => event.type === "tool_result" && event.tool === name && event.operationId && event.auditOnly === (mode === "code_mode")));
       }
-      assert.equal(current.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 2);
+
     }
   });
   await test("script Patch keeps both editing grants and rejects a revoked Edit while approval is pending", { timeout: 15_000 }, async () => {

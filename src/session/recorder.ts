@@ -40,6 +40,7 @@ import path from "node:path";
 import { redactSecrets, redactSensitiveValue, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
 import { assertSessionFileSize, maxSessionEventLineBytes } from "./limits.js";
 import { sessionFilePath } from "./store.js";
+import { redactBrowserToolArguments, redactBrowserToolCall, redactBrowserToolResult } from "./toolArgumentRedaction.js";
 import { projectSessionsDir } from "../config/paths.js";
 import type { SessionContextCheckpoint, SessionContextState, SessionUsage } from "./metadata.js";
 import type { AttachmentReference } from "../attachments/store.js";
@@ -747,14 +748,20 @@ function redactSessionEvent(event: SessionEvent, resultRedactionOptions: Sensiti
   if (event.type === "tool_call") {
     return {
       ...event,
-      args: redactSensitiveValue(event.args),
+      args: redactBrowserToolArguments(event.tool, redactSensitiveValue(event.args)),
       assistantContent: event.assistantContent === undefined ? undefined : redactSecrets(publicAssistantMessage(event.assistantContent)),
       reasoningContent: event.reasoningContent === undefined ? undefined : redactSecrets(event.reasoningContent),
       reasoningBlocks: redactReasoningBlocks(event.reasoningBlocks)
     };
   }
   if (event.type === "tool_result") {
-    return { ...event, result: redactSensitiveValue(event.result, resultRedactionOptions) };
+    return {
+      ...event,
+      result: redactBrowserToolResult(event.tool, redactSensitiveValue(event.result, resultRedactionOptions)),
+      modelResult: event.modelResult === undefined
+        ? undefined
+        : redactBrowserToolResult(event.tool, redactSensitiveValue(event.modelResult, resultRedactionOptions))
+    };
   }
   if (event.type === "tool_execution") {
     return {
@@ -836,6 +843,11 @@ function redactModelRequestMetrics(metrics: ModelRequestMetrics): ModelRequestMe
 
 function redactAgentMessage(message: Exclude<AgentMessage, { role: "user" }>): Exclude<AgentMessage, { role: "user" }> {
   if (message.role === "toolResult") {
+    if (message.toolName === "BrowserClipboardRead" || message.toolName === "BrowserCDP" || message.toolName === "ChromeRelayEval") {
+      const text = message.toolName === "BrowserCDP" ? "[browser CDP result redacted]"
+        : message.toolName === "ChromeRelayEval" ? "[Chrome Relay evaluation result redacted]" : "[clipboard text redacted]";
+      return { ...message, content: [{ type: "text", text }], details: undefined };
+    }
     return {
       ...message,
       content: message.content.map((part) => part.type === "text"
@@ -849,7 +861,7 @@ function redactAgentMessage(message: Exclude<AgentMessage, { role: "user" }>): E
     content: message.content.map((part) => {
       if (part.type === "text") return { ...part, text: redactSecrets(part.text) };
       if (part.type === "toolCall") {
-        return redactToolCallForPersistence(part);
+        return redactToolCallForPersistence(redactBrowserToolCall(part));
       }
       const text = redactSecrets(part.text);
       return {

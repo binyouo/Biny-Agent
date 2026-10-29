@@ -57,7 +57,7 @@ export function tuiWorktreeView(status: WorktreeStatusView): TuiWorktreeView {
       actions: []
     };
   }
-  if (status.status === "merged" || status.mergedIntoBase) {
+  if (status.mergedIntoBase) {
     return {
       label: "merged",
       detail: "Changes are in the project base; the isolated environment can be cleaned.",

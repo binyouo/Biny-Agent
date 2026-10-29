@@ -189,6 +189,14 @@ try {
       /already configured for worktree isolation/u,
       "已有 worktree session 不能被显式参数切回 shared"
     );
+    await host["registry"].closeSession(isolated.sessionId);
+    await run("git", ["worktree", "remove", isolated.snapshot.info.workspaceRoot], { cwd: workspaceRoot });
+    await host["worktrees"].reconcile();
+    const registrations = await client.worktreeList();
+    assert.equal(registrations.find(record => record.sessionId === isolated.sessionId)?.worktreePath, isolated.snapshot.info.workspaceRoot);
+    await assert.rejects(client.ensureSession({ sessionId: isolated.sessionId }), /Worktree path is missing/u,
+      "重开目录缺失的隔离会话必须报错，不能另建 checkout");
+    assert.deepEqual(await client.worktreeList(), registrations);
 
     primary.setState("idle");
     await client.focusSession(created.sessionId);

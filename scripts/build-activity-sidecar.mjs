@@ -57,7 +57,7 @@ writeFileSync(
 </dict></plist>
 `
 );
-const computerSources = ["main.swift", "Observations.swift", "TextSelection.swift", "MirrorSessions.swift", "WindowMirrors.swift", "PhysicalInput.swift", "CaptureDeadline.swift", "WindowGeometry.swift", "ModifierDoubleTap.swift", "BackgroundInput.swift"].map(name => path.join(root, "native/computer-use", name));
+const computerSources = ["main.swift", "NativeConnection.swift", "Hotkey.swift", "AppshotIcon.swift", "AppshotCapture.swift", "Observations.swift", "ObservationDiff.swift", "StableElementRefs.swift", "AccessibilityAction.swift", "AccessibilityElement.swift", "AccessibilityEnablement.swift", "TextSelection.swift", "MirrorSessions.swift", "WindowMirrors.swift", "PhysicalInput.swift", "CaptureDeadline.swift", "WindowGeometry.swift", "WindowListing.swift", "ModifierDoubleTap.swift", "BackgroundInput.swift", "ActionCursor.swift", "ScrollPages.swift", "ScrollRouting.swift", "MenuShortcuts.swift", "RecentApplications.swift"].map(name => path.join(root, "native/computer-use", name));
 const built = spawnSync("xcrun", ["swiftc", "-O", "-swift-version", "5", "-o", bundleBinary, ...computerSources, "-framework", "AppKit", "-framework", "ScreenCaptureKit", "-framework", "ApplicationServices", "-framework", "CoreGraphics"], { stdio: "inherit" });
 if (built.error) throw built.error;
 if (built.status !== 0) process.exit(built.status ?? 1);

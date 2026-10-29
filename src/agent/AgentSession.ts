@@ -1,4 +1,5 @@
 import { createVisionProjection } from "./context/visionProjection.js";
+import { boundComputerFrames } from "../computer/modelFrames.js";
 import { SelfieAlbum, selfiePrompt } from "./context/selfie.js";
 import { TravelStorage, travelPrompt } from "./context/travel.js";
 import type { TaskCommunication } from "../runtime/TaskCommunication.js";
@@ -67,8 +68,7 @@ import type {
 } from "./core/types.js";
 import {
   ToolExecutionCoordinator,
-  type ToolBudgetRejection,
-  type ToolExecutionBudgetSnapshot
+  type ToolDiscoverySnapshot
 } from "./toolExecutionCoordinator.js";
 import {
   appendExternalTurnContext,
@@ -346,7 +346,7 @@ interface TurnArgs {
   messageReferences: Array<SessionMessageReference | undefined>;
   selectionMessageId?: string;
   runOptions: AgentRunOptions & {
-    initialToolBudget?: ToolExecutionBudgetSnapshot;
+    initialToolDiscovery?: ToolDiscoverySnapshot;
     retryOrigin?: RetryOrigin;
     retryWindow?: RetryWindow;
     previousTerminals?: InterruptedTurnTerminal[];
@@ -1192,7 +1192,7 @@ export class AgentSession {
         continueSystemPrompt: turn.systemPrompt,
         recordSessionUserMessage: false,
         completedStepsBeforeRun: turn.completedSteps,
-        initialToolBudget: restartToolBudget(readToolBudget(turn.facts), turn.completedSteps === 0),
+        initialToolDiscovery: readToolDiscovery(turn.facts),
         recoveryCheckpoint: turn,
         restoreAdmittedFollowup,
         retryOrigin: turn.retryOrigin,
@@ -2001,7 +2001,7 @@ export class AgentSession {
     input: string,
     runOptions: AgentRunOptions & {
       completedStepsBeforeRun?: number;
-      initialToolBudget?: ToolExecutionBudgetSnapshot;
+      initialToolDiscovery?: ToolDiscoverySnapshot;
       previousTerminals?: InterruptedTurnTerminal[];
       continueMessageReferences?: Array<SessionMessageReference | undefined>;
       emptyTurnAuditRecorded?: boolean;
@@ -2245,7 +2245,7 @@ export class AgentSession {
       }
       assertRetryWindow(events, runOptions.retryOrigin, runOptions.retryWindow);
       await this.turnStore.save(input, runOptions.continueSystemPrompt, cancellationContext().messages, completedStepsBeforeRun,
-        runOptions.initialToolBudget, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater(), runtimeTurnId,
+        runOptions.initialToolDiscovery, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater(), runtimeTurnId,
         runOptions.retryOrigin, runOptions.retryWindow);
     }
     const preparePromptPerfStartedAt = perfNow();
@@ -2754,7 +2754,7 @@ export class AgentSession {
           systemPrompt,
           replay.messages,
           completedStepsBeforeRun + observedSteps + 1,
-          coordinator.getExecutionBudgetSnapshot(),
+          coordinator.getToolDiscoverySnapshot(),
           undefined,
           runOptions.previousTerminals,
           this.recorder.runtimeHighWater(),
@@ -2777,13 +2777,7 @@ export class AgentSession {
         reasoningBlocks: stepReasoningBlocks
       }),
       allowedToolNames,
-      {
-        maxToolCalls: runBudget.maxToolCalls,
-        maxRepeatedActions: runBudget.maxRepeatedActions,
-        initialToolCallCount: runOptions.initialToolBudget?.accountedToolCalls,
-        initialRepeatedActions: runOptions.initialToolBudget?.repeatedActions,
-        initialToolDiscovery: runOptions.initialToolBudget?.toolDiscovery
-      },
+      runOptions.initialToolDiscovery?.toolDiscovery,
       persistToolResultCheckpoint,
       resolveCapabilityNames(runOptions.capabilitySelection?.tools === "none" ? "none" : runOptions.toolAccessSelection, this.activeConfig.chat.defaultToolSelection, this.options.toolRegistry.list().map((tool) => tool.name))
     );
@@ -2845,7 +2839,7 @@ export class AgentSession {
     }
     if (this.activeConfig.agent.toolExecutionMode === "code_mode" && runOptions.capabilitySelection?.tools !== "none" && runOptions.toolAccessSelection !== "none"
       && !(Array.isArray(runOptions.toolAccessSelection) && runOptions.toolAccessSelection.length === 0)) {
-      coordinator.allowTools(runOptions.initialToolBudget?.toolDiscovery?.tools ?? []);
+      coordinator.allowTools(runOptions.initialToolDiscovery?.toolDiscovery?.tools ?? []);
     }
     if (runOptions.toolAccessSelection === "auto" && runOptions.capabilitySelection?.tools !== "none") {
       // 仅复用当前活动上下文中的成功发现；用户手选范围不继承旧发现，权限仍逐次检查。
@@ -2926,7 +2920,7 @@ export class AgentSession {
       if (runOptions.retryOrigin && delivered.length) {
         await this.recorder.flush();
         await this.turnStore.save(input, currentStepContext.systemPrompt ?? systemPrompt, [...currentStepContext.messages, ...delivered],
-          completedStepsBeforeRun + observedSteps, coordinator.getExecutionBudgetSnapshot(), undefined, runOptions.previousTerminals,
+          completedStepsBeforeRun + observedSteps, coordinator.getToolDiscoverySnapshot(), undefined, runOptions.previousTerminals,
           this.recorder.runtimeHighWater(), runOptions.turnId, runOptions.retryOrigin, runOptions.retryWindow);
       }
       return delivered;
@@ -2942,7 +2936,7 @@ export class AgentSession {
       const phase: RetryCommit = { version: 1, replyMessageId: runOptions.retryWindow.replyMessageId, runId: runOptions.runId!,
         parentMessageId: retryCursor, runtimeHighWater: highWater, message: pendingRetryReply, outcome };
       retryCommitStarted = true;
-      await this.turnStore.save(input, systemPrompt, history, terminal ? 0 : outcome.steps, coordinator.getExecutionBudgetSnapshot(),
+      await this.turnStore.save(input, systemPrompt, history, terminal ? 0 : outcome.steps, coordinator.getToolDiscoverySnapshot(),
         terminal, runOptions.previousTerminals, highWater, runOptions.turnId, runOptions.retryOrigin, runOptions.retryWindow, phase);
       const source = await readSessionEventsForBackfill(this.recorder.filePath, 0);
       const commit = { ownerTurnId: runOptions.retryOrigin.ownerTurnId,
@@ -3025,7 +3019,7 @@ export class AgentSession {
           output
         })
       });
-      const pruned = this.contextMemory.pruneToolResultsForStep(projectedMessages);
+      const pruned = boundComputerFrames(this.contextMemory.pruneToolResultsForStep(projectedMessages));
       return projectVision ? await projectVision(pruned) : pruned;
     };
 
@@ -3138,7 +3132,7 @@ export class AgentSession {
                 context.systemPrompt ?? systemPrompt,
                 context.messages,
                 completedStepsBeforeRun + observedSteps,
-                coordinator.getExecutionBudgetSnapshot(),
+                coordinator.getToolDiscoverySnapshot(),
                 undefined,
                 runOptions.previousTerminals,
                 this.recorder.runtimeHighWater(),
@@ -3153,10 +3147,10 @@ export class AgentSession {
           }
           emitUpdate({ type: "context.updated", context: await this.contextStatus() });
         },
-        // 预算拒绝和不可恢复的发现故障都不能靠继续请求模型取得新事实。
+        // 不可恢复的发现故障不能靠继续请求模型取得新事实。
         shouldStopAfterTurn: () => {
           if (this.sessionGoalUsageFailure) throw this.sessionGoalUsageFailure;
-          return coordinator.getBudgetRejection() !== undefined || toolDiscoveryFailure !== undefined || this.sessionGoalBudgetStopped();
+          return toolDiscoveryFailure !== undefined || this.sessionGoalBudgetStopped();
         },
         prepareNextTurn: async ({ context, toolResults }) => {
           coordinator.assertCanContinue();
@@ -3417,17 +3411,8 @@ export class AgentSession {
         if (runOptions.retryOrigin && retryCommitStarted) return this.recorder.recordAndFlush(audit).then(() => undefined);
         this.recorder.record(audit);
       };
-      const budgetRejection = coordinator.getBudgetRejection();
       let outcome = {
-        ...(budgetRejection
-          ? toolBudgetTurnOutcome(
-              budgetRejection,
-              content,
-              lastAssistant?.stopReason,
-              completedStepsBeforeRun + observedSteps,
-              usageRecord
-            )
-          : toolDiscoveryFailure
+        ...(toolDiscoveryFailure
             ? toolDiscoveryTurnOutcome(
                 toolDiscoveryFailure,
                 content,
@@ -3501,7 +3486,7 @@ export class AgentSession {
             systemPrompt,
             finalMessages,
             0,
-            coordinator.getExecutionBudgetSnapshot(),
+            coordinator.getToolDiscoverySnapshot(),
             {
               status: outcome.status,
               stopReason: outcome.stopReason,
@@ -4967,25 +4952,6 @@ function nativeTurnOutcome(
   return { status: "completed", stopReason: "model_stop", finishReason, steps, output, usage };
 }
 
-function toolBudgetTurnOutcome(
-  rejection: ToolBudgetRejection,
-  output: string,
-  finishReason: string | undefined,
-  steps: number,
-  usage?: SessionUsage
-): AgentTurnOutcome {
-  return {
-    status: "incomplete",
-    stopReason: rejection.reason,
-    finishReason,
-    steps,
-    output,
-    usage,
-    error: rejection.error,
-    resumable: true
-  };
-}
-
 function toolDiscoveryTurnOutcome(
   failure: ToolSearchResult,
   output: string,
@@ -5048,49 +5014,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readToolBudget(value: unknown): ToolExecutionBudgetSnapshot | undefined {
+function readToolDiscovery(value: unknown): ToolDiscoverySnapshot | undefined {
   if (!isRecord(value)) return undefined;
-  if (
-    !Number.isSafeInteger(value.accountedToolCalls)
-    || typeof value.accountedToolCalls !== "number"
-    || value.accountedToolCalls < 0
-    || !Number.isSafeInteger(value.maxRepeatedActionCount)
-    || typeof value.maxRepeatedActionCount !== "number"
-    || value.maxRepeatedActionCount < 0
-    || !Array.isArray(value.repeatedActions)
-    || !value.repeatedActions.every((action: unknown) => isRecord(action)
-      && typeof action.fingerprint === "string" && /^[a-f0-9]{64}$/u.test(action.fingerprint)
-      && typeof action.count === "number" && Number.isSafeInteger(action.count) && action.count >= 0
-      && (action.resultFingerprint === undefined || typeof action.resultFingerprint === "string" && /^[a-f0-9]{64}$/u.test(action.resultFingerprint)))
-  ) return undefined;
   const discovery = value.toolDiscovery;
   if (discovery !== undefined && (!isRecord(discovery)
-    || !Array.isArray(discovery.tools) || !discovery.tools.every((name: unknown) => typeof name === "string" && name.length > 0)
-    || typeof discovery.noProgressCount !== "number" || !Number.isSafeInteger(discovery.noProgressCount) || discovery.noProgressCount < 0)) return undefined;
+    || !Array.isArray(discovery.tools) || !discovery.tools.every((name: unknown) => typeof name === "string" && name.length > 0))) return undefined;
   return {
-    accountedToolCalls: value.accountedToolCalls,
-    maxRepeatedActionCount: value.maxRepeatedActionCount,
-    repeatedActions: value.repeatedActions.map((action) => ({
-      fingerprint: action.fingerprint as string,
-      count: action.count as number,
-      resultFingerprint: action.resultFingerprint as string | undefined
-    })),
     toolDiscovery: discovery === undefined ? undefined : {
-      tools: discovery.tools as string[], noProgressCount: discovery.noProgressCount as number
+      tools: discovery.tools as string[]
     }
-  };
-}
-
-function restartToolBudget(
-  budget: ToolExecutionBudgetSnapshot | undefined,
-  restartBudget: boolean
-): ToolExecutionBudgetSnapshot | undefined {
-  if (!budget || !restartBudget) return budget;
-  return {
-    accountedToolCalls: 0,
-    maxRepeatedActionCount: 0,
-    repeatedActions: [],
-    toolDiscovery: budget.toolDiscovery === undefined ? undefined : { tools: budget.toolDiscovery.tools, noProgressCount: 0 }
   };
 }
 

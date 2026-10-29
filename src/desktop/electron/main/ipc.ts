@@ -437,8 +437,8 @@ export function registerDesktopIpc(context: IpcContext): void {
     context.terminals.dispose(idSchema.parse(terminalId));
   });
 
-  handleRecoveryGated(desktopIpc.startDraft, async (_event, projectId: unknown) => {
-    return await context.agents.startDraft(idSchema.parse(projectId));
+  handleRecoveryGated(desktopIpc.startDraft, async (_event, projectId: unknown, isolation: unknown) => {
+    return await context.agents.startDraft(idSchema.parse(projectId), z.enum(["shared", "worktree"]).optional().parse(isolation));
   });
 
   // Trace 只读磁盘，不经 AgentManager.openSession，避免抢占当前会话或启动模型运行时。
@@ -1055,6 +1055,9 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
 
   handle(desktopIpc.activitySnapshot, async () => context.activity.snapshot());
+  handle(desktopIpc.maskingOverview, async (_event, projectId: unknown) => await context.agents.maskingOverview(idSchema.parse(projectId)));
+  handle(desktopIpc.maskingDetail, async (_event, projectId: unknown, id: unknown) => await context.agents.maskingDetail(idSchema.parse(projectId), idSchema.parse(id)));
+  handle(desktopIpc.maskingClear, async (_event, projectId: unknown) => await context.agents.clearMaskRecords(idSchema.parse(projectId)));
   handleRecoveryGated(desktopIpc.activityRetryFailedAnalysis, async () => await context.activity.retryFailedAnalysis());
   handle(desktopIpc.activityPermissions, async () => context.getActivityPermissions());
 

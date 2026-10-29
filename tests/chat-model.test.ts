@@ -474,6 +474,10 @@ test("activityToolRow 覆盖记忆/技能/浏览器/任务工具", () => {
   assert.equal(search.verb, "搜索技能");
   const open = activityToolRow(toolStep("t", "BrowserOpen", "success", { args: { url: "https://example.com" } }).tool);
   assert.deepEqual({ verb: open.verb, object: open.object }, { verb: "打开", object: "https://example.com" });
+  const typing = activityToolRow(toolStep("t", "BrowserType", "success", { args: { selector: "#email", text: "private text" } }).tool);
+  assert.deepEqual({ verb: typing.verb, object: typing.object }, { verb: "输入", object: "#email" });
+  const checked = activityToolRow(toolStep("t", "BrowserSetChecked", "success", { args: { selector: "#consent", checked: false } }).tool);
+  assert.deepEqual({ verb: checked.verb, object: checked.object }, { verb: "取消勾选", object: "#consent" });
   const task = activityToolRow(toolStep("t", "Task", "success", { args: { task: "梳理构建产物" } }).tool);
   assert.deepEqual({ verb: task.verb, object: task.object }, { verb: "委派子代理", object: "梳理构建产物" });
 });

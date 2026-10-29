@@ -45,7 +45,7 @@ const runtime = read('src/runtime/CommandRuntime.ts');
 let setter: ts.Expression | undefined;
 function locate(n: ts.Node) { if (ts.isVariableDeclaration(n) && n.name.getText(runtime) === 'setBrowserAutomation') { assert.equal(setter, undefined); setter = n.initializer; } ts.forEachChild(n, locate); }
 locate(runtime); assert.ok(setter); selected.push(setter);
-const setterSource = `function wiring(toolRegistry, config, createBrowserTools, createWebSearchTool, createWebFetchTool, resourceScope, attachDesktopComputerMcp, bindComputerTool) { const browserToolNames = ['BrowserOpen','BrowserListEnvironments','BrowserReadDom','BrowserClick','BrowserType','BrowserPress','ComputerLaunch','ComputerMirror','ComputerList','ComputerObserve','ComputerAction','ComputerSequence']; const desktopComputerMcpName = 'computer-use'; let registeredMcpTools = []; let browserAutomationAttached = false; return ${setter.getText(runtime)}; }`;
+  const setterSource = `function wiring(toolRegistry, config, createBrowserTools, createWebSearchTool, createWebFetchTool, resourceScope, attachDesktopComputerMcp, bindComputerTool) { const workspaceRoot = '/test-workspace'; const browserToolNames = ['BrowserOpen','BrowserListEnvironments','BrowserListProfiles','BrowserProfileHistory','BrowserReadDom','BrowserDOMSnapshot','BrowserDOMAction','BrowserLocatorRead','BrowserLocatorAction','BrowserCUA','BrowserScreenshot','BrowserTabFloat','BrowserClick','BrowserType','BrowserPress','BrowserWait','BrowserBack','BrowserForward','BrowserReload','BrowserClose','BrowserScroll','BrowserSelectOption','BrowserSetChecked','BrowserViewport','BrowserEval','BrowserCDP','BrowserDialogStatus','BrowserDialogRespond','BrowserDialogAutoReply','BrowserClipboardRead','BrowserClipboardWrite','BrowserUpload','BrowserDownload','BrowserExport','ComputerLaunch','ComputerMirror','ComputerList','ComputerObserve','ComputerAction','ComputerSequence']; const desktopComputerMcpName = 'computer-use'; let registeredMcpTools = []; let browserAutomationAttached = false; return ${setter.getText(runtime)}; }`;
 source += '\n' + setterSource;
 // Fail closed on newly introduced dynamic execution/imports and effectful globals.
 for (const n of selected) {
@@ -86,11 +86,11 @@ function fixture() {
   const config={agent:{toolExecutionMode:'direct'},workspace:{ignore:[]}};
   Object.assign(c,{context:{toolRegistry:registry,config,workspaceRoot:'/inert',recorder:{sessionId:'inert'}},
     permissionManager:{evaluate:()=>({decision:'allow'}),applyResult:()=>{},revokeResult:()=>{},getDeniedPaths:()=>[]},
-    allowedToolNames:undefined,executionToolNames:undefined,executionBudget:undefined,
+    allowedToolNames:undefined,executionToolNames:undefined,
     duplicateToolCallIds:new Set(),scriptParents:new Map(),toolImages:new Map(),imageBytes:0,
     codeModeToolChecks:new WeakMap(),pendingExecutions:new Map(),quarantinedCodeModeChildIds:new Set(),uncertainExecutions:new Map(),permissionTail:Promise.resolve(),
     getStepContext:()=>({}),nextSequence:()=>audit.length+1,recordAndFlush:async (e: any)=>{audit.push(e);return e;},emit:()=>{},
-    admitToolCall:()=>undefined,assertCanContinue:()=>{},buildPermissionSnapshot:async (call: any)=>({request:{tool:call.name,toolCallId:call.id}}),
+    assertCanContinue:()=>{},buildPermissionSnapshot:async (call: any)=>({request:{tool:call.name,toolCallId:call.id}}),
     runBeforeToolHooks:async()=>undefined,ensureCheckpoint:async()=>{},attachDiagnostics:async(_risk: unknown,_args: unknown,result: unknown)=>result,attachAfterToolHooks:async(_name: unknown,_args: unknown,result: unknown)=>result,
     finishSyntheticCall:async(_call: unknown,_seq: unknown,result: unknown)=>result,
     admissionScheduler:new ToolScheduler({maxConcurrency:4,maxQueuedTasks:8}),scheduler:new ToolScheduler({maxConcurrency:4,maxQueuedTasks:8})});
@@ -141,7 +141,7 @@ test('actual browser lease setter replaces/removes inert built-in registrations'
   const f=fixture(),events: string[]=[];
   const factories=(e: any)=>[tool('BrowserClick',e.label,events)];
   f.registry.registerBuiltinTool=function(this: any,t: any){this.register(t);};
-  const setter=wiring(f.registry,{web:{search:{},cookies:{},fetch:{enabled:true}}},factories,(_a: unknown,_b: unknown,e: any)=>tool('WebSearch',e.label,events),(_a: unknown,_b: unknown,d: any)=>tool('WebFetch',d.browser?.label??'http',events),{mcp:{createTools:()=>[],detachLocalServer:async()=>{}}},async()=>{},(x: unknown)=>x);
+  const setter=wiring(f.registry,{workspace:{ignore:[]},web:{search:{},cookies:{},fetch:{enabled:true}}},factories,(_a: unknown,_b: unknown,e: any)=>tool('WebSearch',e.label,events),(_a: unknown,_b: unknown,d: any)=>tool('WebFetch',d.browser?.label??'http',events),{mcp:{createTools:()=>[],detachLocalServer:async()=>{}}},async()=>{},(x: unknown)=>x);
   setter({label:'A'});const a=f.registry.listEntries().find((e: any)=>e.tool.name==='BrowserClick');
   setter({label:'B'});const b=f.registry.listEntries().find((e: any)=>e.tool.name==='BrowserClick');
   assert.notEqual(a,b);assert.equal(b.tool.description,'B');setter(undefined);

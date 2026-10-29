@@ -17,7 +17,7 @@ const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-code-mode
 await ensureAgentDirs(root);
 await writeFile(path.join(root, "known.txt"), "needle\n");
 const recorders: SessionRecorder[] = [];
-function fixture(options: { denyPaths?: string[]; maxToolCalls?: number; externalTool?: Tool } = {}) {
+function fixture(options: { denyPaths?: string[]; externalTool?: Tool } = {}) {
   const config = structuredClone(defaultConfig);
   config.permission.mode = "full-access";
   config.permission.denyPaths = options.denyPaths ?? [];
@@ -29,8 +29,7 @@ function fixture(options: { denyPaths?: string[]; maxToolCalls?: number; externa
   const selected = new Set(["Read", "Grep", "Glob", "Write", "Edit"]);
   if (options.externalTool) selected.add(options.externalTool.name);
   const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry },
-  new PermissionManager(config.permission), () => undefined, undefined, selected,
-  { maxToolCalls: options.maxToolCalls ?? 20, maxRepeatedActions: 10 });
+  new PermissionManager(config.permission), () => undefined, undefined, selected);
   return { coordinator, recorder, run: (code: string) => coordinator.createCodeModeTool().execute("cell", { description: "Verify error recovery", code }) };
 }
 
@@ -49,7 +48,7 @@ try {
     const events = await readSessionEvents(current.recorder.filePath);
     const outcomes = events.filter(e => e.type === "tool_result").map(e => ({ tool: e.tool, status: e.executionStatus }));
     assert.deepEqual(outcomes, [{ tool: "Read", status: "failed" }, { tool: "Grep", status: "succeeded" }, { tool: "run_script", status: "succeeded" }]);
-    assert.equal(current.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 2);
+
   });
 
   await test("schema mistakes can be corrected inside the cell without relaxing tool validation", async () => {
@@ -69,7 +68,7 @@ try {
     assert.match(value.errors[1]!, /glob is not allowed/);
     assert.equal(value.matches, 1);
     assert.deepEqual(value.files, ["known.txt"]);
-    assert.equal(current.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 4);
+
   });
 
   await test("search results provide callable schemas before the model composes its next script", async () => {
@@ -113,12 +112,10 @@ try {
     assert.deepEqual((result.details as { value: unknown }).value, { states: ["rejected", "fulfilled"], content: "needle" });
   });
 
-  for (const scenario of ["permission", "budget", "write"] as const) {
+  for (const scenario of ["permission", "write"] as const) {
     await test(`catch cannot suppress ${scenario} failure and dispatch another tool`, async () => {
-      const current = fixture({ denyPaths: scenario === "permission" ? ["blocked.txt"] : undefined,
-        maxToolCalls: scenario === "budget" ? 1 : undefined });
+      const current = fixture({ denyPaths: scenario === "permission" ? ["blocked.txt"] : undefined });
       const first = scenario === "permission" ? "await tools.Read({path:'blocked.txt'});"
-        : scenario === "budget" ? "await tools.Read({path:'known.txt'}); await tools.Read({path:'known.txt'});"
         : "await tools.Edit({path:'missing.txt',old_string:'before',new_string:'after'});";
       const target = `after-${scenario}.txt`;
       const result = await current.run(`try { ${first} } catch {} try { await tools.Write({path:${JSON.stringify(target)},content:'must not run'}); } catch {} return 'caught';`);

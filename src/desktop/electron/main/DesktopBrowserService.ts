@@ -24,8 +24,15 @@ import { BrowserWindow, WebContentsView, clipboard, session, type WebContents, t
 import { desktopIpc, type DesktopCookieJarStatus, type DesktopBrowserSnapshot, type DesktopBrowserTab, type DesktopBrowserAction, type DesktopBrowserBounds } from "../../protocol.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
 import { BrowserRelay } from "../../../browser/BrowserRelay.js";
+import { pageOperation as browserPageOperation } from "../../../browser-extension/page.js";
 import { browserRelayFile } from "../../../browser/relayClient.js";
-import { relaySchemas } from "../../../browser/relayProtocol.js";
+import { relayBinarySchema, relaySchemas } from "../../../browser/relayProtocol.js";
+import { browserLocatorActionSchema, browserLocatorReadSchema } from "../../../browser/locatorSchema.js";
+import { browserCuaSchema, browserDomActionSchema, browserDomSnapshotSchema, type BrowserCuaArgs } from "../../../browser/cuaSchema.js";
+import { browserDialogAutoReplySchema } from "../../../browser/dialogSchema.js";
+import { browserClipboardReadSchema, browserClipboardWriteSchema, maxBrowserClipboardImageBytes, maxBrowserClipboardReadCharacters } from "../../../browser/clipboardSchema.js";
+import { browserCdpSchema } from "../../../browser/cdpSchema.js";
+import { googleWorkspaceExportFormats, googleWorkspaceExportUrl } from "../../../browser/googleWorkspaceExport.js";
 import { extractReadableHtml } from "../../../tools/web/html.js";
 import { prepareBrowserExtension } from "../../../browser/extensionAssets.js";
 import type { RelayStatus } from "../../../browser/relayProtocol.js";
@@ -36,7 +43,8 @@ import {
   writeCookieJar,
   type StoredCookie
 } from "../../../tools/web/cookieJar.js";
-import { listBrowserProfiles, readBrowserProfileCookies } from "./browserProfileCookies.js";
+import { listBrowserProfiles, readBrowserProfileCookies, readBrowserProfileHistory } from "./browserProfileCookies.js";
+import { browserProfileHistorySchema } from "../../../browser/profileHistorySchema.js";
 import { ToolOutcomeUnknownError } from "../../../tools/types.js";
 import { localIpcEndpoint, removeLocalIpcEndpoint, secureLocalIpcEndpoint } from "../../../utils/localIpc.js";
 import { BrowserEnvironmentStore, browserPartitionForEnvironment, type BrowserEnvironmentInput } from "../../browserEnvironments.js";
@@ -56,9 +64,12 @@ const browserActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.enum(["close", "select", "back", "forward", "reload", "stop", "float"]), tabId: z.string().min(1).max(240) }).strict()
 ]);
 
-interface EmbeddedTab { view: WebContentsView; state: DesktopBrowserTab; navigation: number; inspection: number; popup?: BrowserWindow }
+interface EmbeddedTab { view: WebContentsView; state: DesktopBrowserTab; navigation: number; inspection: number; agentSessionId?: string; popup?: BrowserWindow }
 interface EmbeddedProject { revision: number; tabs: Map<string, EmbeddedTab>; activeId?: string }
 type BrowserActionTarget = (contents: WebContents) => void;
+interface BrowserDomSnapshotTarget { tag: string; role?: string; name: string; selector: string; box: { x: number; y: number; width: number; height: number } }
+interface BrowserDomSnapshotReferences { id: string; url: string; elements: Map<string, BrowserDomSnapshotTarget> }
+interface BrowserDialogWatcher { close(): void; dialog?: Record<string, unknown>; autoReply?: { behavior: "accept" | "dismiss"; text?: string }; autoReplyPending?: boolean; autoReplyError?: string }
 
 export class DesktopBrowserService {
   private desktopCommand?: (args: Record<string, unknown>) => Promise<unknown>;
@@ -120,6 +131,8 @@ export class DesktopBrowserService {
   private readonly proxyReady = new Map<string, Promise<void>>();
   private readonly deletingBrowserEnvironments = new Set<string>();
   private automationContents: WebContents | undefined;
+  private readonly domSnapshots = new WeakMap<WebContents, BrowserDomSnapshotReferences>();
+  private readonly domSnapshotInvalidators = new WeakMap<WebContents, (...args: unknown[]) => void>();
   private shownBrowser: { projectId: string; tabId: string } | undefined;
   private readonly guardedPages = new Map<number, { allowPrivateNetwork: boolean; reject(error: Error): void }>();
   private readonly guardedPartitions = new Set<string>();
@@ -127,7 +140,7 @@ export class DesktopBrowserService {
   private automationCredentials: BrowserAutomationEndpoint | undefined;
   /** 一个可见 BrowserWindow 对应一个上下文；来自不同 Runtime Host 的请求也必须在这里串行。 */
   private automationTail: Promise<void> = Promise.resolve();
-  private readonly dialogWatchers = new Map<number, { close(): void; dialog?: Record<string, unknown> }>();
+  private readonly dialogWatchers = new Map<number, BrowserDialogWatcher>();
   private syncTimer: ReturnType<typeof setTimeout> | undefined;
   private syncTail = Promise.resolve();
   private cookieListenerAttached = false;
@@ -385,6 +398,7 @@ export class DesktopBrowserService {
           this.automationContents = active?.view.webContents;
         }
       } else if (action.type === "select") {
+        tab.agentSessionId = undefined;
         this.hideEmbeddedBrowser(); group.activeId = action.tabId;
         this.automationContents = contents;
       } else if (action.type === "float") {
@@ -406,7 +420,7 @@ export class DesktopBrowserService {
           });
           resize(); tab.view.setVisible(true); popup.show();
         }
-      } else if (action.type === "navigate") { this.automationContents = contents; this.navigateEmbedded(projectId, tab, action.url); }
+      } else if (action.type === "navigate") { tab.agentSessionId = undefined; this.automationContents = contents; this.navigateEmbedded(projectId, tab, action.url); }
       else if (action.type === "reload") { tab.state.error = undefined; contents.reload(); }
       else if (action.type === "stop") contents.stop();
       else if (action.type === "back" && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
@@ -756,6 +770,7 @@ export class DesktopBrowserService {
   }
 
   private handleAutomationConnection(socket: net.Socket, token: string): void {
+    socket.on("error", () => socket.destroy());
     socket.setEncoding("utf8");
     let buffer = "";
     socket.on("data", (chunk: string) => {
@@ -790,11 +805,12 @@ export class DesktopBrowserService {
       try {
         result = method === "desktop_command" && this.desktopCommand ? await this.desktopCommand(args)
           : method === "dialog" ? await this.controlDialog(args, controller.signal)
+            : method === "dialog_auto" ? await this.controlDialogAutoReply(args, controller.signal)
           : method.startsWith("computer_") && this.computerUse ? await this.computerUse(method, args, controller.signal) : await this.enqueueAutomation(() => {
           controller.signal.throwIfAborted();
           return method === "web_read" ? this.readWebPage(args, controller.signal) : this.executeAutomation(method, args, controller.signal, contents => { previewTarget.contents = contents; });
         });
-        if (["navigate", "click", "fill", "press"].includes(method) && this.previewActivity && previewTarget.contents) {
+        if (["navigate", "click", "fill", "press", "upload"].includes(method) && this.previewActivity && previewTarget.contents) {
           try {
             const contents = previewTarget.contents;
             if (contents.isDestroyed()) throw new Error("browser_preview_closed");
@@ -813,9 +829,9 @@ export class DesktopBrowserService {
           } catch (error) { console.error("Browser preview notification failed after completed action", error instanceof Error ? error.name : "Error"); }
         }
       } finally { socket.off("close", abort); }
-      socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
+      if (!socket.destroyed) socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
     } catch (error) {
-      socket.write(`${JSON.stringify({ id, ok: false, error: error instanceof Error ? error.message : String(error), outcomeUnknown: error instanceof ToolOutcomeUnknownError })}\n`);
+      if (!socket.destroyed) socket.write(`${JSON.stringify({ id, ok: false, error: error instanceof Error ? error.message : String(error), outcomeUnknown: error instanceof ToolOutcomeUnknownError })}\n`);
     }
   }
 
@@ -939,14 +955,41 @@ export class DesktopBrowserService {
 
   private async executeAutomation(method: string, args: Record<string, unknown>, signal?: AbortSignal, onAction?: BrowserActionTarget): Promise<unknown> {
     if (method === "list_environments") return this.browserEnvironments.list().map(({ id, name, color }) => ({ id, name, color }));
+    if (method === "list_profiles") return (await this.listProfiles()).map(({ id, appName, profileName }) => ({ id, appName, profileName }));
+    if (method === "profile_history") {
+      const parsed = browserProfileHistorySchema.parse({ profileId: args.profileId, query: args.query, limit: args.limit });
+      if (process.platform !== "darwin") throw new Error("本机浏览器历史查询目前仅支持 macOS。");
+      const profile = (await listBrowserProfiles()).find(candidate => candidate.id === parsed.profileId);
+      if (!profile) throw new Error("浏览器配置已不存在，请重新列出配置后再试。");
+      return await readBrowserProfileHistory(profile, parsed.query, parsed.limit);
+    }
     if (method === "status") {
       const contents = this.automationContents;
       return { running: true, page: contents && !contents.isDestroyed() ? { url: contents.getURL(), title: contents.getTitle() } : null };
     }
     if (method === "clipboard") {
-      if (args.action === "read") return { text: clipboard.readText() };
+      if (args.action === "read") {
+        const { includeImage } = browserClipboardReadSchema.parse({ includeImage: args.includeImage });
+        const text = clipboard.readText();
+        const result = { text: text.slice(0, maxBrowserClipboardReadCharacters), truncated: text.length > maxBrowserClipboardReadCharacters };
+        if (!includeImage) return result;
+        const image = clipboard.readImage();
+        if (image.isEmpty()) return { ...result, hasImage: false };
+        const { width, height } = image.getSize();
+        if (width * height > 32_000_000) return { ...result, hasImage: true, imageStatus: "too_large" };
+        const scale = Math.min(1, 1280 / width, 1600 / height);
+        const resized = image.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: "good" });
+        let data = resized.toJPEG(65);
+        if (data.length > maxBrowserClipboardImageBytes) {
+          const smallScale = Math.min(scale, 960 / width, 1200 / height);
+          data = image.resize({ width: Math.max(1, Math.round(width * smallScale)), height: Math.max(1, Math.round(height * smallScale)), quality: "good" }).toJPEG(45);
+        }
+        if (data.length > maxBrowserClipboardImageBytes) return { ...result, hasImage: true, imageStatus: "too_large" };
+        return { ...result, hasImage: true, imageStatus: "available", imageData: data.toString("base64") };
+      }
       if (args.action !== "write") throw new Error("Unknown clipboard action.");
-      clipboard.writeText(z.string().parse(args.text));
+      const { text } = browserClipboardWriteSchema.parse({ text: args.text });
+      clipboard.writeText(text);
       return { written: true };
     }
     if (method === "navigate") {
@@ -963,12 +1006,16 @@ export class DesktopBrowserService {
       await this.prepareBrowserEnvironment(environment.id);
       let contents: WebContents;
       if (projectId && this.desktopWindow && !this.desktopWindow.isDestroyed()) {
-        let tab = active?.state.environmentId === environment.id ? active : undefined;
+        const sessionId = typeof args.sessionId === "string" ? args.sessionId : undefined;
+        let tab = sessionId
+          ? [...(this.embeddedProjects.get(projectId)?.tabs.values() ?? [])].find(candidate => candidate.agentSessionId === sessionId && candidate.state.environmentId === environment.id)
+          : active?.state.environmentId === environment.id ? active : undefined;
         if (!tab) {
           const snapshot = this.browserAction(projectId, { type: "new", environmentId: environment.id });
           tab = this.embeddedProjects.get(projectId)?.tabs.get(snapshot.activeId ?? "");
         }
         if (!tab || tab.view.webContents.isDestroyed()) throw new Error("浏览器标签不可用。");
+        if (sessionId) tab.agentSessionId = sessionId;
         contents = tab.view.webContents;
         this.automationContents = contents;
         await tab.view.webContents.loadURL(url);
@@ -983,49 +1030,88 @@ export class DesktopBrowserService {
       onAction?.(contents);
       return await this.pageState(contents);
     }
-    const contents = await this.ensureContents();
-    if (method === "evaluate") return await this.evaluate(readString(args.code, "code"), signal);
-    if (method === "cdp") return await this.sendDebuggerCommand(readString(args.method, "method"), z.record(z.string(), z.unknown()).parse(args.params), signal);
+    if (method === "screenshot") return await this.screenshot(args, signal);
+    if (method === "float") {
+      const projectId = readString(args.projectId, "projectId");
+      const sessionId = readString(args.sessionId, "sessionId");
+      const action = z.enum(["show", "hide"]).parse(args.action);
+      const tab = [...(this.embeddedProjects.get(projectId)?.tabs.values() ?? [])].find(candidate => candidate.agentSessionId === sessionId);
+      if (!tab || tab.view.webContents.isDestroyed()) throw new Error("Browser floating page is closed or no longer owned by this session.");
+      if (action === "show") {
+        if (tab.popup) { tab.popup.show(); tab.popup.focus(); }
+        else this.browserAction(projectId, { type: "float", tabId: tab.state.id });
+      } else if (tab.popup) tab.popup.close();
+      return { floating: tab.popup !== undefined, title: tab.state.title, url: tab.state.url };
+    }
+    const contents = await this.ensureAutomationContents(args);
+    if (["back", "forward", "reload", "close", "scroll", "locator_action", "select_option", "set_checked", "viewport", "evaluate", "cdp", "cdp_agent", "click", "fill", "press", "upload", "cua"].includes(method)) {
+      this.domSnapshots.delete(contents);
+    }
+    if (method === "evaluate") return await this.evaluate(readString(args.code, "code"), signal, contents);
+    if (method === "cdp") return await this.sendDebuggerCommand(readString(args.method, "method"), z.record(z.string(), z.unknown()).parse(args.params), signal, contents);
+    if (method === "cdp_agent") {
+      const command = browserCdpSchema.parse({ method: args.method, params: args.params });
+      return await this.sendDebuggerCommand(command.method, command.params ?? {}, signal, contents);
+    }
+    if (method === "close") {
+      const projectId = readString(args.projectId, "projectId");
+      const sessionId = readString(args.sessionId, "sessionId");
+      const tab = [...(this.embeddedProjects.get(projectId)?.tabs.values() ?? [])].find(candidate => candidate.agentSessionId === sessionId && candidate.view.webContents === contents);
+      if (!tab) throw new Error("Browser action page is no longer owned by this session.");
+      this.browserAction(projectId, { type: "close", tabId: tab.state.id });
+      return { closed: true };
+    }
     if (method === "viewport") {
-      if (args.action === "reset") return await this.sendDebuggerCommand("Emulation.clearDeviceMetricsOverride", {}, signal);
-      const size = z.object({ width: z.number().int().positive(), height: z.number().int().positive(), mobile: z.boolean() }).parse(args);
-      return await this.sendDebuggerCommand("Emulation.setDeviceMetricsOverride", { ...size, deviceScaleFactor: 1 }, signal);
+      if (args.action === "reset") {
+        await this.sendDebuggerCommand("Emulation.setTouchEmulationEnabled", { enabled: false }, signal, contents);
+        await this.sendDebuggerCommand("Emulation.clearDeviceMetricsOverride", {}, signal, contents);
+        return { reset: true };
+      }
+      const size = z.object({ width: z.number().int().min(1).max(8192), height: z.number().int().min(1).max(8192), mobile: z.boolean() }).parse(args);
+      await this.sendDebuggerCommand("Emulation.setDeviceMetricsOverride", { ...size, deviceScaleFactor: 1 }, signal, contents);
+      await this.sendDebuggerCommand("Emulation.setTouchEmulationEnabled", { enabled: size.mobile, ...(size.mobile ? { maxTouchPoints: 1 } : {}) }, signal, contents);
+      return size;
     }
     if (method === "upload") {
       const files = relaySchemas.upload.shape.files.parse(args.files);
       const selector = readString(args.selector, "selector");
-      return await this.evaluate(`(() => {
-        const input = document.querySelector(${JSON.stringify(selector)});
-        if (!(input instanceof HTMLInputElement) || input.type !== 'file') throw new Error('Selector must match a file input.');
-        const transfer = new DataTransfer();
-        for (const file of ${JSON.stringify(files)}) {
-          const bytes = Uint8Array.from(atob(file.data), character => character.charCodeAt(0));
-          transfer.items.add(new File([bytes], file.name, { type: file.mimeType }));
-        }
-        input.files = transfer.files;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        return { count: input.files.length, names: Array.from(input.files, file => file.name) };
-      })()`, signal);
+      return await this.pageOperation("upload", { selector, files }, signal, contents, onAction);
     }
-    if (method === "download") return await this.downloadFile(relaySchemas.download.shape.url.parse(args.url), signal);
+    if (method === "download") return await this.downloadFile(relaySchemas.download.shape.url.parse(args.url), signal, contents);
+    if (method === "download_media") {
+      const media = asRecord(await this.pageOperation("media_source", { selector: readString(args.selector, "selector") }, signal, contents));
+      if (typeof media.url === "string") return await this.downloadFile(relaySchemas.download.shape.url.parse(media.url), signal, contents);
+      const result = relayBinarySchema.parse(media);
+      const data = Buffer.from(result.data, "base64");
+      if (data.length > 8 * 1024 * 1024) throw new Error("媒体文件超过 8 MiB 限制。");
+      return { data: data.toString("base64"), mimeType: result.mimeType };
+    }
     if (method === "export") {
       const format = z.enum(["pdf", "html", "mhtml", "md"]).parse(args.format);
-      const contents = await this.ensureContents();
       let data: Buffer;
       if (format === "pdf") data = await contents.printToPDF({});
-      else if (format === "mhtml") data = Buffer.from((await this.sendDebuggerCommand("Page.captureSnapshot", { format: "mhtml" }, signal) as { data: string }).data);
+      else if (format === "mhtml") data = Buffer.from((await this.sendDebuggerCommand("Page.captureSnapshot", { format: "mhtml" }, signal, contents) as { data: string }).data);
       else {
-        const html = String(await this.evaluate("document.documentElement.outerHTML", signal));
+        const html = String(await this.evaluate("document.documentElement.outerHTML", signal, contents));
         data = Buffer.from(format === "md" ? (await extractReadableHtml(html, contents.getURL())).text : html);
       }
+      if (data.length > 8 * 1024 * 1024) throw new Error("浏览器导出超过 8 MiB 限制。");
       const mimeTypes = { pdf: "application/pdf", html: "text/html", mhtml: "multipart/related", md: "text/markdown" };
       return { data: data.toString("base64"), mimeType: mimeTypes[format] };
     }
+    if (method === "export_gsuite") {
+      const format = z.enum(googleWorkspaceExportFormats).parse(args.format);
+      const { url, kind } = googleWorkspaceExportUrl(contents.getURL(), format);
+      const result = await this.downloadFile(url, signal, contents) as { mimeType: string; data: string };
+      if (result.mimeType.toLowerCase().split(";")[0] === "text/html" && format !== "html") throw new Error("Google Workspace 返回了 HTML 页面；请确认文档已登录且有导出权限。");
+      if (kind === "spreadsheets" && ["csv", "tsv"].includes(format) && !new URL(contents.getURL()).searchParams.has("gid") && !new URL(contents.getURL()).hash.includes("gid=")) {
+        return result;
+      }
+      return result;
+    }
     if (method === "back" || method === "forward" || method === "reload") {
-      const contents = await this.ensureContents();
       const history = contents.navigationHistory;
-      if (method === "back" && !history.canGoBack() || method === "forward" && !history.canGoForward()) return await this.pageState();
+      if (method === "back" && !history.canGoBack() || method === "forward" && !history.canGoForward()) return await this.pageState(contents);
       signal?.throwIfAborted();
       await new Promise<void>((resolve, reject) => {
         const cleanup = (): void => {
@@ -1048,22 +1134,109 @@ export class DesktopBrowserService {
           else history.goForward();
         } catch (error) { cleanup(); reject(error); }
       });
-      return await this.pageState();
+      return await this.pageState(contents);
     }
-    if (method === "history") return (await this.ensureContents()).navigationHistory.getAllEntries();
-    if (method === "screenshot") {
-      const image = await (await this.ensureContents()).capturePage();
-      return { mimeType: "image/png", data: image.toPNG().toString("base64") };
-    }
+    if (method === "history") return contents.navigationHistory.getAllEntries();
     if (method === "scroll") {
-      const delta = z.object({ x: z.number().finite(), y: z.number().finite() }).parse(args);
-      return await this.evaluate(`(() => { window.scrollBy(${delta.x}, ${delta.y}); return { x: scrollX, y: scrollY }; })()`, signal);
+      const delta = z.object({ x: z.number().finite().min(-10_000).max(10_000), y: z.number().finite().min(-10_000).max(10_000) }).parse(args);
+      return await this.pageOperation("scroll", delta, signal, contents);
     }
-    if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000));
-    if (method === "click") return await this.click(readString(args.selector, "selector"), onAction);
-    if (method === "fill") return await this.fill(readString(args.selector, "selector"), readString(args.value, "value"), onAction);
+    if (method === "locator_read") {
+      const parsed = browserLocatorReadSchema.parse({ steps: args.steps, action: args.action });
+      return await this.pageOperation("locator_read", parsed, signal, contents);
+    }
+    if (method === "locator_action") {
+      const parsed = browserLocatorActionSchema.parse({ steps: args.steps, action: args.action });
+      const target = asRecord(await this.pageOperation("locator_target", { steps: parsed.steps }, signal, contents));
+      const selector = readString(target.selector, "selector");
+      const action = parsed.action;
+      if (action.m === "click" || action.m === "dblclick") return await this.click(selector, signal, onAction, contents, action.m === "dblclick" ? 2 : 1);
+      if (action.m === "fill") return await this.fill(selector, action.value, signal, onAction, contents);
+      if (action.m === "type") return await this.type(selector, action.value, signal, onAction, contents);
+      if (action.m === "press") return await this.press(selector, action.key, signal, contents, onAction);
+      if (action.m === "check" || action.m === "uncheck") return await this.pageOperation("set_checked", { selector, checked: action.m === "check" }, signal, contents, onAction);
+      if (action.m === "selectOption") return await this.pageOperation("select_option", { selector, values: action.values }, signal, contents, onAction);
+      throw new Error("Unsupported browser locator action.");
+    }
+    if (method === "dom_snapshot") {
+      browserDomSnapshotSchema.parse({});
+      const parsed = z.object({
+        url: z.string(), title: z.string(),
+        elements: z.array(z.object({
+          tag: z.string(), role: z.string().optional(), name: z.string(), selector: z.string().min(1).max(2_000),
+          box: z.object({ x: z.number().finite(), y: z.number().finite(), width: z.number().finite().positive(), height: z.number().finite().positive() }).strict()
+        }).strict()).max(200)
+      }).strict().parse(await this.pageOperation("dom_snapshot", {}, signal, contents));
+      const snapshotId = randomUUID();
+      const elements = new Map<string, BrowserDomSnapshotTarget>();
+      const refs = parsed.elements.map((element, index) => {
+        const ref = `e${index + 1}`;
+        elements.set(ref, element);
+        return { ref, tag: element.tag, role: element.role, name: element.name, box: element.box };
+      });
+      this.domSnapshots.set(contents, { id: snapshotId, url: parsed.url, elements });
+      this.watchDomSnapshotNavigation(contents);
+      return { snapshotId, url: parsed.url, title: parsed.title, elements: refs };
+    }
+    if (method === "dom_action") {
+      const parsed = browserDomActionSchema.parse({ snapshotId: args.snapshotId, ref: args.ref, action: args.action });
+      const snapshot = this.domSnapshots.get(contents);
+      if (!snapshot || snapshot.id !== parsed.snapshotId || snapshot.url !== contents.getURL()) throw new Error("DOM 引用已失效，请重新获取页面快照。");
+      const target = snapshot.elements.get(parsed.ref);
+      if (!target) throw new Error("DOM 引用不存在，请重新获取页面快照。");
+      await this.pageOperation("dom_target", { selector: target.selector, expected: target }, signal, contents);
+      this.domSnapshots.delete(contents);
+      if (parsed.action.m === "click") return await this.click(target.selector, signal, onAction, contents);
+      if (parsed.action.m === "type") return await this.type(target.selector, parsed.action.text, signal, onAction, contents);
+      return await this.press(target.selector, parsed.action.key, signal, contents, onAction);
+    }
+    if (method === "cua") {
+      const parsed = browserCuaSchema.parse(args.action);
+      return await this.performCoordinateAction(parsed, signal, onAction, contents);
+    }
+    if (method === "select_option" || method === "set_checked") {
+      const pageArgs = { ...args };
+      delete pageArgs.projectId;
+      delete pageArgs.sessionId;
+      const action = method === "select_option"
+        ? z.object({ selector: z.string().trim().min(1).max(2_000), values: z.array(z.string().max(1_000)).min(1).max(100) }).strict().parse(pageArgs)
+        : z.object({ selector: z.string().trim().min(1).max(2_000), checked: z.boolean() }).strict().parse(pageArgs);
+      await this.pageOperation("reveal", { selector: action.selector }, signal, contents);
+      await this.pageOperation("wait", { selector: action.selector, state: "visible", timeoutMs: 8_000 }, signal, contents);
+      return await this.pageOperation(method, action, signal, contents, onAction);
+    }
+    if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000), signal, contents);
+    if (method === "wait") return await this.waitForPage(args, signal, contents);
+    if (method === "click") return await this.click(readString(args.selector, "selector"), signal, onAction, contents);
+    if (method === "fill") return await this.fill(readString(args.selector, "selector"), readString(args.value, "value"), signal, onAction, contents);
     if (method === "press") return await this.press(args.selector === undefined ? undefined : readString(args.selector, "selector"), readString(args.key, "key"), signal, contents, onAction);
     throw new Error(`Unsupported browser automation method: ${method}`);
+  }
+
+  private async screenshot(args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const fullPage = z.boolean().optional().parse(args.fullPage) ?? false;
+    const projectId = z.string().optional().parse(args.projectId);
+    const group = projectId === undefined ? undefined : this.embeddedProjects.get(projectId);
+    const sessionId = z.string().optional().parse(args.sessionId);
+    const sessionTab = sessionId ? [...(group?.tabs.values() ?? [])].find(tab => tab.agentSessionId === sessionId) : undefined;
+    if (projectId !== undefined && sessionId && (!sessionTab || sessionTab.view.webContents.isDestroyed())) throw new Error("Browser screenshot page is closed or no longer owned by this session.");
+    const active = sessionTab?.view.webContents ?? group?.tabs.get(group.activeId ?? "")?.view.webContents;
+    if (projectId !== undefined && !active) throw new Error("当前项目未打开浏览器页面。");
+    const owner = await this.ensureContents(active);
+    signal?.throwIfAborted();
+    let data: Buffer;
+    if (fullPage) {
+      const metrics = asRecord(await this.sendDebuggerCommand("Page.getLayoutMetrics", {}, signal, owner));
+      signal?.throwIfAborted();
+      const size = z.object({ width: z.number().positive().finite(), height: z.number().positive().finite() }).parse(metrics.cssContentSize);
+      if (size.width * size.height > 32_000_000 || size.width > 8192 || size.height > 16_000) throw new Error("页面过大，请分段截图。");
+      const result = asRecord(await this.sendDebuggerCommand("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale: 1 } }, signal, owner));
+      data = Buffer.from(z.string().max(Math.ceil(8 * 1024 * 1024 / 3) * 4).parse(result.data), "base64");
+    } else data = (await owner.capturePage()).toPNG();
+    signal?.throwIfAborted();
+    if (owner.isDestroyed()) throw new Error("Browser screenshot page is closed.");
+    if (data.length > 8 * 1024 * 1024) throw new Error("浏览器截图超过 8 MiB 限制，请缩小范围。");
+    return { mimeType: "image/png", data: data.toString("base64"), url: owner.getURL(), title: owner.getTitle() };
   }
 
   private async ensureContents(owner?: WebContents): Promise<WebContents> {
@@ -1081,9 +1254,9 @@ export class DesktopBrowserService {
     throw new Error("Biny 内置浏览器未打开页面。读取日常浏览器请使用 ChromeRelayListTabs；不会自动打开首页。");
   }
 
-  private async downloadFile(url: string, signal?: AbortSignal): Promise<unknown> {
-    const contents = await this.ensureContents();
-    const response = await contents.session.fetch(url, { credentials: "include", signal });
+  private async downloadFile(url: string, signal?: AbortSignal, contents?: WebContents): Promise<unknown> {
+    const page = contents ?? await this.ensureContents();
+    const response = await page.session.fetch(url, { credentials: "include", signal });
     const reader = response.body?.getReader();
     const chunks: Uint8Array[] = [];
     let total = 0;
@@ -1104,33 +1277,89 @@ export class DesktopBrowserService {
 
   private async controlDialog(args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const action = z.enum(["watch", "get", "accept", "dismiss", "stop"]).parse(args.action);
-    const contents = await this.ensureContents();
+    const contents = await this.ensureAutomationContents(args);
     let watcher = this.dialogWatchers.get(contents.id);
-    if (action === "watch" && !watcher) {
-      const onMessage = (_event: unknown, method: string, params: unknown): void => {
-        const current = this.dialogWatchers.get(contents.id);
-        if (!current) return;
-        if (method === "Page.javascriptDialogOpening") current.dialog = asRecord(params);
-        else if (method === "Page.javascriptDialogClosed") current.dialog = undefined;
-      };
-      const close = (): void => {
-        contents.debugger.off("message", onMessage);
-        contents.off("destroyed", close);
-        this.dialogWatchers.delete(contents.id);
-      };
-      watcher = { close };
-      this.dialogWatchers.set(contents.id, watcher);
-      contents.debugger.on("message", onMessage);
-      contents.once("destroyed", close);
-      try { await this.sendDebuggerCommand("Page.enable", {}, signal); }
-      catch (error) { close(); throw error; }
-    }
+    if (action === "watch") watcher = await this.ensureDialogWatcher(contents, signal);
     if (action === "stop") { watcher?.close(); watcher = undefined; }
     if (action === "accept" || action === "dismiss") {
-      await this.sendDebuggerCommand("Page.handleJavaScriptDialog", { accept: action === "accept", promptText: z.string().optional().parse(args.text) }, signal);
+      this.domSnapshots.delete(contents);
+      await this.sendDebuggerCommand("Page.handleJavaScriptDialog", { accept: action === "accept", promptText: z.string().optional().parse(args.text) }, signal, contents);
       if (watcher) watcher.dialog = undefined;
     }
-    return { watching: watcher !== undefined, dialog: watcher?.dialog ?? null };
+    return { watching: watcher !== undefined, dialog: watcher?.dialog ?? null, autoReply: watcher?.autoReply?.behavior ?? null, autoReplyError: watcher?.autoReplyError };
+  }
+
+  private async controlDialogAutoReply(args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const parsed = browserDialogAutoReplySchema.parse(args.action === "stop"
+      ? { action: "stop" }
+      : { action: args.action, behavior: args.behavior, text: args.text });
+    if (parsed.action === "stop") return await this.controlDialog({ ...args, action: "stop" }, signal);
+    const contents = await this.ensureAutomationContents(args);
+    signal?.throwIfAborted();
+    const watcher = await this.ensureDialogWatcher(contents, signal, { behavior: parsed.behavior, text: parsed.text });
+    return { watching: true, dialog: watcher.dialog ?? null, autoReply: watcher.autoReply?.behavior ?? null, autoReplyError: watcher.autoReplyError };
+  }
+
+  private async ensureDialogWatcher(
+    contents: WebContents,
+    signal?: AbortSignal,
+    autoReply?: { behavior: "accept" | "dismiss"; text?: string }
+  ): Promise<BrowserDialogWatcher> {
+    const watcher = this.dialogWatchers.get(contents.id);
+    if (watcher) {
+      if (autoReply) {
+        watcher.autoReply = autoReply;
+        watcher.autoReplyError = undefined;
+      }
+      return watcher;
+    }
+    const current: BrowserDialogWatcher = { close: () => {} };
+    const onMessage = (_event: unknown, method: string, params: unknown): void => {
+      const active = this.dialogWatchers.get(contents.id);
+      if (active !== current) return;
+      if (method === "Page.javascriptDialogOpening") {
+        current.dialog = asRecord(params);
+        if (current.autoReply && !current.autoReplyPending) {
+          const behavior = current.autoReply;
+          current.autoReplyPending = true;
+          current.autoReplyError = undefined;
+          this.domSnapshots.delete(contents);
+          void this.sendDebuggerCommand("Page.handleJavaScriptDialog", { accept: behavior.behavior === "accept", promptText: behavior.text }, undefined, contents).then(
+            () => {
+              if (this.dialogWatchers.get(contents.id) !== current) return;
+              current.dialog = undefined;
+              current.autoReplyPending = false;
+            },
+            () => {
+              if (this.dialogWatchers.get(contents.id) !== current) return;
+              current.autoReply = undefined;
+              current.autoReplyPending = false;
+              current.autoReplyError = "自动处理浏览器对话框失败。";
+            }
+          );
+        }
+      } else if (method === "Page.javascriptDialogClosed") current.dialog = undefined;
+    };
+    const onNavigation = (_event: unknown, _url: string, _inPlace: boolean, isMainFrame: boolean): void => {
+      if (isMainFrame && this.dialogWatchers.get(contents.id) === current) {
+        current.autoReply = undefined;
+        current.autoReplyError = undefined;
+      }
+    };
+    const close = (): void => {
+      contents.debugger.off("message", onMessage);
+      contents.off("did-start-navigation", onNavigation);
+      contents.off("destroyed", close);
+      this.dialogWatchers.delete(contents.id);
+    };
+    Object.assign(current, { close, autoReply });
+    this.dialogWatchers.set(contents.id, current);
+    contents.debugger.on("message", onMessage);
+    contents.on("did-start-navigation", onNavigation);
+    contents.once("destroyed", close);
+    try { await this.sendDebuggerCommand("Page.enable", {}, signal, contents); }
+    catch (error) { close(); throw error; }
+    return current;
   }
 
   private async openInEnvironmentWindow(url: string, environmentId: string): Promise<WebContents> {
@@ -1160,75 +1389,143 @@ export class DesktopBrowserService {
     return { url: readString(state.url, "url"), title: typeof state.title === "string" ? state.title : "" };
   }
 
-  private async readDom(maxCharacters: number): Promise<unknown> {
-    return await this.evaluate(`(() => {
-      const cssPath = (element) => {
-        if (element.id) return '#' + CSS.escape(element.id);
-        const parts = [];
-        let current = element;
-        while (current && current.nodeType === 1 && parts.length < 6) {
-          let part = current.tagName.toLowerCase();
-          if (current.parentElement) {
-            const siblings = Array.from(current.parentElement.children).filter((child) => child.tagName === current.tagName);
-            if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(current) + 1) + ')';
-          }
-          parts.unshift(part);
-          current = current.parentElement;
-        }
-        return parts.join(' > ');
-      };
-      const nodes = Array.from(document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]')).slice(0, 200);
-      return {
-        url: location.href,
-        title: document.title,
-        text: (document.body?.innerText || '').slice(0, ${String(maxCharacters)}),
-        interactive: nodes.map((element) => ({
-          tag: element.tagName.toLowerCase(),
-          role: element.getAttribute('role') || undefined,
-          name: element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.innerText?.trim().slice(0, 120) || undefined,
-          selector: cssPath(element)
-        }))
-      };
-    })()`);
+  private async readDom(maxCharacters: number, signal?: AbortSignal, contents?: WebContents): Promise<unknown> {
+    return await this.pageOperation("read", { maxCharacters }, signal, contents);
   }
 
-  private async click(selector: string, onAction?: BrowserActionTarget): Promise<unknown> {
-    return await this.evaluate(`(() => {
-      const element = document.querySelector(${JSON.stringify(selector)});
-      if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.');
-      element.scrollIntoView({ block: 'center', inline: 'center' });
-      element.click();
-      return { tag: element.tagName.toLowerCase(), text: element.innerText?.trim().slice(0, 200) || '' };
-    })()`, undefined, undefined, onAction);
+  private async click(selector: string, signal?: AbortSignal, onAction?: BrowserActionTarget, contents?: WebContents, clickCount = 1): Promise<unknown> {
+    const owner = contents ?? await this.ensureContents();
+    await this.pageOperation("reveal", { selector }, signal, owner);
+    await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner);
+    const point = z.object({ x: z.number().finite(), y: z.number().finite() }).parse(await this.pageOperation("click", { selector }, signal, owner));
+    signal?.throwIfAborted();
+    await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount, ...point }, signal, owner);
+    try {
+      await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount, ...point }, undefined, owner, onAction);
+    } catch (error) {
+      await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount, ...point }, undefined, owner).catch(() => undefined);
+      throw error;
+    }
+    return await this.pageState(owner);
   }
 
-  private async fill(selector: string, value: string, onAction?: BrowserActionTarget): Promise<unknown> {
-    return await this.evaluate(`(() => {
-      const element = document.querySelector(${JSON.stringify(selector)});
-      if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.');
-      element.scrollIntoView({ block: 'center', inline: 'center' });
-      element.focus();
-      if (element.isContentEditable) element.textContent = ${JSON.stringify(value)};
-      else if ('value' in element) {
-        const prototype = Object.getPrototypeOf(element);
-        const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
-        if (descriptor?.set) descriptor.set.call(element, ${JSON.stringify(value)});
-        else element.value = ${JSON.stringify(value)};
-      } else throw new Error('The matched element is not an editable field.');
-      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(value)} }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      return { tag: element.tagName.toLowerCase() };
-    })()`, undefined, undefined, onAction);
+  private async fill(selector: string, value: string, signal?: AbortSignal, onAction?: BrowserActionTarget, contents?: WebContents): Promise<unknown> {
+    const owner = contents ?? await this.ensureContents();
+    await this.pageOperation("reveal", { selector }, signal, owner);
+    await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner);
+    await this.pageOperation("fill", { selector }, signal, owner);
+    await this.sendDebuggerCommand("Input.insertText", { text: value }, signal, owner, onAction);
+    return await this.pageState(owner);
+  }
+
+  private async type(selector: string, value: string, signal?: AbortSignal, onAction?: BrowserActionTarget, contents?: WebContents): Promise<unknown> {
+    const owner = contents ?? await this.ensureContents();
+    await this.pageOperation("reveal", { selector }, signal, owner);
+    await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner);
+    await this.pageOperation("type", { selector }, signal, owner);
+    await this.sendDebuggerCommand("Input.insertText", { text: value }, signal, owner, onAction);
+    return await this.pageState(owner);
   }
 
   private async press(selector: string | undefined, key: string, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
     // UI tab selection is independent of automationTail. Keep this action on its
     // original page without restoring selection over a newer user choice.
     const owner = contents ?? await this.ensureContents();
-    if (selector) await this.evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.'); element.focus(); })()`, signal, owner);
+    if (selector) {
+      await this.pageOperation("reveal", { selector }, signal, owner);
+      await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner);
+      await this.pageOperation("press", { selector }, signal, owner);
+    }
     await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined }, signal, owner);
-    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key }, undefined, owner, onAction);
+    try {
+      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key }, undefined, owner, onAction);
+    } catch (error) {
+      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key }, undefined, owner).catch(() => undefined);
+      throw error;
+    }
     return await this.pageState(owner);
+  }
+
+  private async waitForPage(args: Record<string, unknown>, signal?: AbortSignal, contents?: WebContents): Promise<unknown> {
+    const parsed = z.object({ selector: z.string().trim().min(1).max(2_000).optional(), state: z.enum(["visible", "hidden", "attached", "domcontentloaded", "load"]).default("visible"), timeoutMs: z.number().int().min(0).max(8_000).default(5_000) }).strict().parse({ selector: args.selector, state: args.state, timeoutMs: args.timeoutMs });
+    if (!parsed.selector && !["domcontentloaded", "load"].includes(parsed.state)) throw new Error("等待元素状态时必须提供 selector。");
+    return await this.pageOperation("wait", parsed, signal, contents);
+  }
+
+  private async pageOperation(operation: string, args: Record<string, unknown>, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
+    return await this.evaluate(`(${browserPageOperation.toString()})(${JSON.stringify(operation)},${JSON.stringify(args)})`, signal, contents, onAction);
+  }
+
+  private watchDomSnapshotNavigation(contents: WebContents): void {
+    if (this.domSnapshotInvalidators.has(contents)) return;
+    const invalidate = (_event: unknown, _url: unknown, _inPlace: unknown, isMainFrame: unknown): void => {
+      if (isMainFrame !== true) return;
+      this.domSnapshots.delete(contents);
+      contents.off("did-start-navigation", invalidate);
+      this.domSnapshotInvalidators.delete(contents);
+    };
+    this.domSnapshotInvalidators.set(contents, invalidate);
+    contents.on("did-start-navigation", invalidate);
+    contents.once("destroyed", () => {
+      contents.off("did-start-navigation", invalidate);
+      this.domSnapshotInvalidators.delete(contents);
+      this.domSnapshots.delete(contents);
+    });
+  }
+
+  private async performCoordinateAction(action: BrowserCuaArgs, signal: AbortSignal | undefined, onAction: BrowserActionTarget | undefined, contents: WebContents): Promise<unknown> {
+    if ("x" in action) {
+      const viewport = z.object({ width: z.number().finite().positive(), height: z.number().finite().positive() }).parse(await this.evaluate("({ width: innerWidth, height: innerHeight })", signal, contents));
+      if (action.x >= viewport.width || action.y >= viewport.height) throw new Error("坐标超出当前浏览器视口。");
+    }
+    if (action.action === "click" || action.action === "doubleClick") {
+      const clickCount = action.action === "doubleClick" ? 2 : 1;
+      await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: action.x, y: action.y, buttons: 0 }, signal, contents);
+      await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount, x: action.x, y: action.y }, signal, contents);
+      try {
+        await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount, x: action.x, y: action.y }, undefined, contents, onAction);
+      } catch (error) {
+        await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount, x: action.x, y: action.y }, undefined, contents).catch(() => undefined);
+        throw error;
+      }
+      return await this.pageState(contents);
+    }
+    if (action.action === "move") {
+      await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: action.x, y: action.y, buttons: 0 }, signal, contents, onAction);
+      return await this.pageState(contents);
+    }
+    if (action.action === "scroll") {
+      await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mouseWheel", x: action.x, y: action.y, deltaX: action.deltaX, deltaY: action.deltaY }, signal, contents, onAction);
+      return await this.pageState(contents);
+    }
+    if (action.action === "type") {
+      await this.sendDebuggerCommand("Input.insertText", { text: action.text }, signal, contents, onAction);
+      return await this.pageState(contents);
+    }
+    const modifierBits = { Alt: 1, Control: 2, Meta: 4, Shift: 8 } as const;
+    const modifiers = action.modifiers.reduce((bits, modifier) => bits | modifierBits[modifier], 0);
+    await this.sendDebuggerCommand("Input.dispatchKeyEvent", {
+      type: "keyDown", key: action.key, modifiers,
+      text: modifiers === 0 && action.key.length === 1 ? action.key : undefined
+    }, signal, contents);
+    try {
+      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key: action.key, modifiers }, undefined, contents, onAction);
+    } catch (error) {
+      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key: action.key, modifiers }, undefined, contents).catch(() => undefined);
+      throw error;
+    }
+    return await this.pageState(contents);
+  }
+
+  private async ensureAutomationContents(args: Record<string, unknown>): Promise<WebContents> {
+    const projectId = typeof args.projectId === "string" ? args.projectId : undefined;
+    const sessionId = typeof args.sessionId === "string" ? args.sessionId : undefined;
+    if (projectId && sessionId) {
+      const tab = [...(this.embeddedProjects.get(projectId)?.tabs.values() ?? [])].find(candidate => candidate.agentSessionId === sessionId);
+      if (!tab || tab.view.webContents.isDestroyed()) throw new Error("Browser action page is closed or no longer owned by this session.");
+      return tab.view.webContents;
+    }
+    return await this.ensureContents();
   }
 
   private async evaluate(expression: string, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {

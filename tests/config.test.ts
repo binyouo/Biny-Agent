@@ -18,7 +18,7 @@ import {
 } from "../src/config/credentials.js";
 import { resolveRunBudget } from "../src/agent/runBudget.js";
 import { createFileConfigStore, updateConfig } from "../src/config/store.js";
-import { loadProjectSettings, updateProjectSettings } from "../src/config/projectSettings.js";
+import { loadProjectSettings, projectSettingsSchema, updateProjectSettings } from "../src/config/projectSettings.js";
 import { ConfigRevisionConflictError, configDocumentRevision } from "../src/config/versioned.js";
 import type { CredentialStore } from "../src/config/credentials.js";
 import { DesktopConfigStore } from "../src/desktop/electron/main/DesktopConfigStore.js";
@@ -70,9 +70,7 @@ async function testGlobalPathResolution(): Promise<void> {
 function testRunBudget(): void {
   assert.deepEqual(resolveRunBudget(defaultConfig.agent), {
     softStepLimit: 32,
-    hardStepLimit: 96,
-    maxToolCalls: 512,
-    maxRepeatedActions: 3
+    hardStepLimit: 96
   });
 
   const configured = configSchema.parse({
@@ -87,10 +85,14 @@ function testRunBudget(): void {
   });
   assert.deepEqual(resolveRunBudget(configured.agent), {
     softStepLimit: 12,
-    hardStepLimit: 48,
-    maxToolCalls: 200,
-    maxRepeatedActions: 5
+    hardStepLimit: 48
   });
+  assert.equal(configured.agent.maxRepeatedActions, 5, "old global settings remain readable");
+  assert.equal(configured.agent.maxToolCalls, 200, "old global tool call limit remains readable");
+  assert.equal(projectSettingsSchema.parse({ agent: { maxRepeatedActions: 2 } }).agent?.maxRepeatedActions, 2,
+    "old project settings remain readable");
+  assert.equal(projectSettingsSchema.parse({ agent: { maxToolCalls: 1 } }).agent?.maxToolCalls, 1,
+    "old project tool call limit remains readable");
   const benchmarkBudget = configSchema.parse({
     ...defaultConfig,
     agent: {
@@ -102,9 +104,7 @@ function testRunBudget(): void {
   });
   assert.deepEqual(resolveRunBudget(benchmarkBudget.agent), {
     softStepLimit: 100_000,
-    hardStepLimit: 100_000,
-    maxToolCalls: 100_000,
-    maxRepeatedActions: 3
+    hardStepLimit: 100_000
   });
   assert.throws(() => configSchema.parse({
     ...defaultConfig,

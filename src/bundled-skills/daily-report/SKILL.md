@@ -1,34 +1,34 @@
 ---
 name: daily-report
-description: "Build an evidence-based work journal for a day or date range, grouped by project, theme, and outcome. Use for questions about today, yesterday, last week, completed work, or daily reports. Prefer biny activity report for day-level coverage; use digest for a recent overview and disclose missing records."
+description: "Generate a rich work journal for a specific day, grouped by project/theme with PR links, @mentions, versions, and decisions — NOT a minute-by-minute timeline. Use this whenever the user asks about their day, yesterday, last Friday, this week, or similar. Triggers: 'what did I do today', 'recap my day', 'summarize yesterday', 'work journal', 'daily recap'."
 allowed-tools:
   - Bash
 ---
 
-# Daily Work Reports
+# Daily Report Skill
 
-Generate a thematic work journal from Biny's local activity records. The report is grouped by project, theme, and outcome; it is not intended to be a minute-by-minute timeline.
+Generate a thematic work journal from the user's on-screen activity records.
 
-Use `report` for outcomes across a day; use `digest` for a recent timeline.
+This skill is how Biny answers day-scope activity questions. It exists because the generic `biny activity digest` returns a time-ordered list of session titles (good for "what was I just doing 10 min ago") but is too shallow for "what did I get done today".
 
 ## When to use
 
-Use this skill for a **day-level or multi-day** question about the user's own activity:
+Use this skill when the user asks a **day-level or multi-day** question about their own activity:
 
+- 我今天都干啥了 / 今天做了什么 / 今天的工作总结
+- 昨天呢？/ 我昨天干啥了
 - what did I do today / yesterday / last Friday
-- summarize my week / give me a recap / work journal / daily report
-- any request where the answer should be organized by outcomes or themes rather than timestamps
+- summarize my week / give me a recap / 打工日记
+- Any question where the answer should be organized by what got done, not by timestamps
 
 **Do NOT use for**:
-
-- "What was I just doing?" → use `biny activity digest` with an appropriate lookback window.
-- "Find the activity about this code/project" → use `biny activity search <query>`.
-- "Show recent or specific sessions" → use `biny activity sessions [limit]`, optionally with `--since`.
-- A request about the daily note itself → use `biny diary show [date]`.
+- "What was I just doing?" → use `biny activity digest` (last ~2h)
+- "Find that code I was looking at" → use `biny activity search <query>` / `search semantic`
+- "Show me session X" → use `biny activity show <id>`
 
 ## How to use
 
-Run the CLI from the current workspace. Its plain output is the finished Markdown journal; relay it verbatim.
+Run the CLI, pipe its markdown straight into your reply. It already produces a polished report — do not rewrite, condense, or reformat it.
 
 ```bash
 # Today's report
@@ -38,26 +38,24 @@ biny activity report today
 biny activity report yesterday
 
 # A specific date
-biny activity report <YYYY-MM-DD>
+biny activity report 2026-04-17
 
-# Recent timeline instead of a day-level journal
-biny activity digest --lookback 120
+# Force regeneration (bypass 10min cache)
+biny activity report today --force
 ```
 
-`report` reuses a cached journal when available. Use `--force` only when the requested report needs regeneration. `--skeleton` produces a deterministic report from stored analyses without a new model-generated narrative; identify that mode when returning it. Resolve the date range in the user's local time before requesting individual days.
-
-When the user asks a follow-up about one project or event, drill down with `biny activity search` (use `biny activity search semantic <query>` when keyword search misses meaning-based recalls), `biny activity sessions`, or `biny activity show <session-id>` for one session's events, snapshots and analysis, instead of regenerating the whole report.
+The command is safe to run unconditionally: it will return `# <date> 打工日记 … 今天没有可分析的活动记录。` if nothing has been recorded yet, and you should relay that as-is.
 
 ## Output rules
 
-- Paste successful report output directly. Do not rewrite, translate, shorten, add a preface, or append another summary. Preserve partial-analysis notices and missing-data messages.
-- For multiple days, run the report once for each requested date and relay the outputs in date order, without synthesizing an additional combined report.
-- Use `--json` only if the user explicitly requests machine-readable output; do not use it as a way to rewrite the journal.
-- For a follow-up interpretation rather than a report, keep any inference separate from the recorded facts. A session or screenshot is not proof that an action completed.
+1. **Paste the markdown verbatim** as your reply. The report already has a title, section headings, PR links, @mentions, versions, and decisions — don't strip or reflow them.
+2. **Do not add a summary at the top.** The report's opening paragraph is the summary.
+3. **Do not narrate time.** The report intentionally de-emphasizes "at 10:03 you did X" — that's the pattern the user called out as useless. If they want a minute-by-minute view, they'll ask and you run `biny activity digest` instead.
+4. **Match the user's language.** The report detects Chinese/Japanese/English from the underlying OCR. Don't translate it.
+5. If the user asks a follow-up like "tell me more about the tokenspeed part", drill down with `biny activity sessions` + `biny activity show <id>` — not by re-running the report.
 
 ## Failure modes
 
-- If `biny activity report` fails, report the failure and fall back to `biny activity digest` only when a recent overview is still useful. Say explicitly that the day-level journal could not be built.
-- If the report has no analyzed sessions, relay that there is no verifiable activity for the requested date and suggest checking `biny activity status`.
-- If only part of the activity has been analyzed, state that the report is partial; do not fill the gap from conversation context.
-- The Activity pipeline may send redacted text to the configured model. Do not separately upload screenshots, databases, or raw files to another service.
+- If `biny activity report` returns an error, fall back to `biny activity digest` and explain briefly that the day-level journal couldn't be built.
+- If the report is empty (no analyzed sessions for that date), relay it and suggest the user check `biny activity status` to confirm the recorder was running.
+- Never fabricate activity details. Every PR number, person handle, version, or decision in your reply must appear in the report output.

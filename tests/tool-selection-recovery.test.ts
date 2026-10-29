@@ -11,6 +11,7 @@ import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
+import { TurnStore } from "../src/session/turnStore.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolAccesses } from "../src/tools/access.js";
@@ -110,6 +111,17 @@ async function testSelectionRecovery(mode: "none" | "manual" | "discovered", ste
     assert.equal(interrupted.resumable, true);
     assert.equal(interrupted.stopReason, mode === "none" && !steering ? "model_length" : "hard_step_limit");
     assert.ok((await agent.interruptedTurn())?.terminal, "selection recovery must cover terminal checkpoints");
+    if (mode === "discovered" && !steering) {
+      const turns = new TurnStore(workspaceRoot, sessionId);
+      const saved = (await turns.load())!;
+      const facts = saved.facts as Record<string, unknown>;
+      const discovery = facts.toolDiscovery as { tools: string[] };
+      await turns.save(saved.prompt, saved.systemPrompt, saved.messages, saved.completedSteps,
+        { ...facts, maxRepeatedActionCount: 3, repeatedActions: [{ fingerprint: "a".repeat(64), count: 3 }],
+          toolDiscovery: { ...discovery, noProgressCount: 3 } },
+        saved.terminal, saved.previousTerminals, saved.runtimeHighWater, saved.turnId,
+        saved.retryOrigin, saved.retryWindow, saved.retryCommit);
+    }
     if (steering) {
       await recorder.flush();
       const events = await readSessionEvents(recorder.filePath);

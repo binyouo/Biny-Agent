@@ -203,15 +203,21 @@ biny iab viewport set 390 844 --mobile --json
 biny iab viewport reset --json
 biny iab upload 'input[type=file]' reports/summary.pdf --json
 biny iab download https://example.test/report.pdf --out report.pdf --json
+biny iab download-media 'video' --out clip.mp4 --json
 biny iab export pdf --out page.pdf --json
 biny iab export html --out page.html --json
 biny iab export mhtml --out page.mhtml --json
 biny iab export md --out page.md --json
+biny iab export-gsuite docx --out document.docx --json
+biny iab export-gsuite xlsx --out spreadsheet.xlsx --json
 biny iab dialog watch --json
 biny iab dialog get --json
 biny iab dialog accept "提示框回复" --json
 biny iab dialog dismiss --json
 biny iab dialog stop --json
+biny iab dialog auto accept "授权的提示框回复" --json
+biny iab dialog auto dismiss --json
+biny iab dialog auto stop --json
 biny iab clipboard write "待粘贴文本" --json
 biny iab clipboard read --json
 biny iab tab list --json
@@ -227,17 +233,27 @@ biny iab env import-cookies <source-environment-id> <target-environment-id> --js
 biny iab env delete <environment-id> --json
 biny iab profile list --json
 biny iab profile import <profile-id> --json
+biny iab profile history <profile-id> --query github --limit 50 --json
+biny iab locator '{"steps":[{"m":"getByRole","role":"button","name":"Save"}],"action":{"m":"count"}}' --json
+biny iab dom-snapshot --json
+biny iab dom-action '{"snapshotId":"<snapshot-id>","ref":"e2","action":{"m":"click"}}' --json
+biny iab cua '{"action":"click","x":320,"y":210}' --json
+biny iab cua '{"action":"keypress","key":"c","modifiers":["Control"]}' --json
 ```
 
-`click/fill/press` 操作当前内置页面，`fill` 替换控件值，`press --selector` 先聚焦指定元素再发送按键。`info` 已提供当前页面读取；`fetch` 用所选登录环境抓取页面。`browser` 命令操作 Chrome Relay 连接的浏览器，目标与 `iab` 不同，详见[浏览器](BROWSER.md)。
+Locator 操作使用链式查询，页面动作要求唯一目标；存在重复项时先 `count`，再添加 `first`、`last` 或 `nth`。DOM 引用必须连同快照返回的 `snapshotId` 使用，单次动作或页面导航后重新获取。CUA 坐标是当前视口 CSS 像素；动作仅作用于 Biny 内置浏览器。
 
-`status` 不创建页面。`back/forward/reload` 等待页面停止加载，导航失败会返回错误；没有可后退/前进的记录时返回当前页面。`scroll <y> --x <x>` 按像素滚动，负数向上或向左。`history` 只列当前页面的导航栈；`screenshot` 保存可见视口的 PNG，默认文件为当前目录的 `biny-browser.png`。
+`click/fill/press` 操作当前内置页面，`fill` 替换控件值，`press --selector` 先聚焦指定元素再发送按键。`download-media <selector> --out <path>` 保存页面中的媒体资源；`export-gsuite <format> --out <path>` 导出当前 Google Workspace 文件。`info` 已提供当前页面读取；`fetch` 用所选登录环境抓取页面。`browser` 命令操作 Chrome Relay 连接的浏览器，可在指定配置中开新标签或前进/后退；目标与 `iab` 不同，详见[浏览器](BROWSER.md)。用户直接运行 `biny browser act evaluate --args '<JSON>'` 时可执行当前 Chrome 页面的表达式；Agent 应调用 `ChromeRelayEval`，由统一权限策略处理。
 
-`eval` 在当前页面执行 JavaScript 表达式并返回结果，成功但没有返回值时 JSON 输出为 `null`；`cdp` 发送指定的原始 DevTools Protocol 方法和 JSON 参数，保留协议本身的能力与副作用。`viewport set/reset` 设置或还原页面视口模拟，不改变应用窗口大小。`clipboard` 读写 Desktop 系统剪贴板的文本，无需打开页面。
+`iab profile history` 查询本机已列出配置的近期访问记录（URL、标题和时间），可用 `--query` 按 URL 或标题筛选，并用 `--limit` 限制结果数为 1 到 100 条。只有用户明确要求检查本机浏览历史时才查询；先运行 `profile list` 并使用用户指定的 profile ID。它不读取页面正文。当前仅支持 macOS。
+
+`status` 不创建页面。`back/forward/reload` 等待页面停止加载，导航失败会返回错误；没有可后退/前进的记录时返回当前页面。`scroll <y> --x <x>` 按像素滚动，负数向上或向左。`history` 只列当前页面的导航栈；`screenshot` 保存可见视口 PNG，默认写到系统临时目录中的独立 `biny-browser-*` 目录并打印路径；传 `--out <path>` 时保存为工作区文件。
+
+`eval` 在当前页面执行 JavaScript 表达式并返回结果，成功但没有返回值时 JSON 输出为 `null`；`cdp` 发送指定的原始 DevTools Protocol 方法和 JSON 参数，保留协议本身的能力与副作用。`viewport set/reset` 设置或还原页面视口模拟，不改变应用窗口大小；`--mobile` 同时启用触控输入模拟。`clipboard` 读写 Desktop 系统剪贴板的文本，无需打开页面。
 
 上传、下载、截图和导出沿用浏览器文件传输边界：读写路径必须在当前工作区内，拒绝被禁止的路径，上传最多 10 个文件且合计不超过 8 MiB，单次保存不超过 8 MiB，输出文件须尚不存在且父目录已存在。`upload` 将文件传给指定的文件输入控件并触发 input/change；`download` 使用当前页面环境的登录状态请求 HTTP(S) URL；`export` 支持 PDF、HTML、MHTML 和可读正文 Markdown。
 
-需要处理网页 alert、confirm 或 prompt 时先运行 `dialog watch`。监听保留在 Desktop 中，`get` 查看当前弹窗，`accept [text]` 接受并可填写 prompt，`dismiss` 拒绝，`stop` 只停止监听；关闭页面会清理监听。弹窗命令可以在页面 JavaScript 正等待回复时执行，不需要自动同意弹窗。
+需要处理网页 alert、confirm 或 prompt 时先运行 `dialog watch`。监听保留在 Desktop 中，`get` 查看当前弹窗，`accept [text]` 接受并可填写 prompt，`dismiss` 拒绝，`stop` 停止监听；关闭页面会清理监听。确有明确授权时可用 `dialog auto accept [text]` 或 `dialog auto dismiss` 自动处理当前文档后续弹窗，并在目标操作完成后运行 `dialog auto stop`；主页面导航会撤销该策略。弹窗命令可以在页面 JavaScript 正等待回复时执行。
 
 `tab` 管理当前目录登记项目的标签页，可传 `--project <id>`；`float` 切换独立浮窗，`stop` 停止加载。页面交互命令使用当前选中的页面，不隐式选择其他标签。环境文件格式为 `{"name":"Work","proxy":{"mode":"system"}}`，代理字段沿用浏览器环境设置。默认环境不能修改、删除或清空。`clear` 清空指定环境的本地站点数据；`import-cookies` 用源环境 Cookie 替换目标环境 Cookie；`profile import` 将本机浏览器配置的 Cookie 导入默认环境。它们操作真实登录状态，沿用 Desktop 的运行门禁。
 
