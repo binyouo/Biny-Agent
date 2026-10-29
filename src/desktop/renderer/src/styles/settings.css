@@ -403,7 +403,7 @@
 .privacy-record-list time { display: grid; gap: 3px; flex: none; }
 .privacy-pagination { margin-top: 12px; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
 .privacy-hit > button { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
-.privacy-hit-tooltip { position: fixed; z-index: 10000; display: grid; gap: 6px; max-width: min(320px, calc(100vw - 24px)); padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-raised); color: var(--text); box-shadow: 0 4px 16px #0002; font-size: calc(12px * var(--font-scale, 1)); font-family: var(--font-mono, monospace); overflow-wrap: anywhere; white-space: pre-wrap; pointer-events: none; }
+.privacy-hit-tooltip { position: fixed; z-index: 10000; display: grid; gap: 6px; max-width: min(320px, calc(100vw - 24px)); padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-raised); color: var(--text); box-shadow: 0 4px 16px var(--shadow-heavy); font-size: calc(12px * var(--font-scale, 1)); font-family: var(--font-mono, monospace); overflow-wrap: anywhere; white-space: pre-wrap; pointer-events: none; }
 .privacy-hit-tooltip > span { color: var(--text-secondary); }
 .privacy-hit-tooltip > strong { font-weight: 400; }
 .privacy-hit-tooltip > code { color: var(--accent); }

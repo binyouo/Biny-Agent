@@ -38,14 +38,153 @@ test("source changes select transitive consumers and opaque tests, not unrelated
   assert.equal(plan.windowsPackage, false);
 });
 
+test("temporary directory writers do not turn their consumers into global tests", async t => {
+  const root = fixture(t, {
+    "tests/helpers/temp.ts": "import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'; export const clean = rm;",
+    "tests/temporary.test.ts": "import './helpers/temp.js'; import '../src/utils/other.js';"
+  });
+  assert.ok(!(await createPlan(root, ["src/utils/format.ts"])).standard.includes("temporary.test.ts"));
+  assert.ok((await createPlan(root, ["src/utils/other.ts"])).standard.includes("temporary.test.ts"));
+});
+
+test("literal file reads track source inputs while unknown reads stay conservative", async t => {
+  const root = fixture(t, {
+    "tests/url-reader.test.ts": "import { readFileSync as read } from 'node:fs'; read(new URL('../src/utils/other.ts', import.meta.url), 'utf8');",
+    "tests/unknown-reader.test.ts": "import { readFile } from 'node:fs/promises'; readFile(process.env.SOURCE!, 'utf8');",
+    "tests/escaped-reader.test.ts": "import { readFileSync } from 'node:fs'; const read = readFileSync; read(process.env.SOURCE!);"
+  });
+  const format = await createPlan(root, ["src/utils/format.ts"]);
+  assert.ok(!format.standard.includes("url-reader.test.ts"));
+  for (const file of ["unknown-reader.test.ts", "escaped-reader.test.ts"]) assert.ok(format.standard.includes(file));
+  const other = await createPlan(root, ["src/utils/other.ts"]);
+  assert.ok(other.standard.includes("url-reader.test.ts"));
+  assert.ok(!other.standard.includes("source.test.ts"));
+});
+
+test("directory inputs include their source descendants, including the repository root", async t => {
+  const root = fixture(t, {
+    "tests/root-reader.test.ts": "import { readdirSync } from 'node:fs'; readdirSync('.');",
+    "tests/directory-reader.test.ts": "import { readdirSync } from 'node:fs'; readdirSync('src/desktop');"
+  });
+  const unrelated = await createPlan(root, ["src/utils/other.ts"]);
+  assert.ok(unrelated.standard.includes("root-reader.test.ts"));
+  assert.ok(!unrelated.standard.includes("directory-reader.test.ts"));
+  const desktop = await createPlan(root, ["src/desktop/view.ts"]);
+  assert.ok(desktop.standard.includes("directory-reader.test.ts"));
+});
+
+test("literal createRequire calls preserve local edges without globally selecting package consumers", async t => {
+  const root = fixture(t, {
+    "src/utils/package.ts": "import { createRequire as makeRequire } from 'node:module'; const load = makeRequire(import.meta.url); export const value = load('external-package');",
+    "tests/package.test.ts": "import '../src/utils/package.js';",
+    "tests/required.test.ts": "import { createRequire } from 'node:module'; const load = createRequire(import.meta.url); load('../src/utils/format.js');",
+    "tests/inline-required.test.ts": "import { createRequire } from 'node:module'; createRequire(import.meta.url).resolve('../src/utils/format.js');"
+  });
+  const format = await createPlan(root, ["src/utils/format.ts"]);
+  assert.ok(!format.standard.includes("package.test.ts"));
+  for (const file of ["required.test.ts", "inline-required.test.ts"]) assert.ok(format.standard.includes(file));
+  const other = await createPlan(root, ["src/utils/other.ts"]);
+  for (const file of ["package.test.ts", "required.test.ts", "inline-required.test.ts"]) assert.ok(!other.standard.includes(file));
+  assert.ok((await createPlan(root, ["src/utils/package.ts"])).standard.includes("package.test.ts"));
+});
+
+for (const code of [
+  "const load = createRequire(import.meta.url); load(process.env.MODULE!);",
+  "const load = createRequire(import.meta.url); const escaped = load; escaped('../src/utils/format.js');",
+  "const factory = createRequire; factory(import.meta.url)('../src/utils/format.js');",
+  "export function loader() { return createRequire(import.meta.url); }",
+  "const load = createRequire(import.meta.url); load('/tmp/another-module.js');",
+  "const load = createRequire(import.meta.url); load.resolve('../src/utils/format.js', { paths: ['/another/package'] });",
+  "const load = createRequire('/another/package/index.js'); load('./unknown.js');"
+]) {
+  test(`unresolved require ownership stays conservative: ${code}`, async t => {
+    const root = fixture(t, { "tests/unknown-require.test.ts": `import { createRequire } from 'node:module'; ${code}` });
+    assert.ok((await createPlan(root, ["src/utils/other.ts"])).standard.includes("unknown-require.test.ts"));
+  });
+}
+
+test("working-directory changes keep relative file reads conservative", async t => {
+  const root = fixture(t, {
+    "tests/chdir.test.ts": "import { readFileSync } from 'node:fs'; process.chdir(process.env.DIRECTORY!); readFileSync('src/utils/format.ts');"
+  });
+  assert.ok((await createPlan(root, ["src/utils/other.ts"])).standard.includes("chdir.test.ts"));
+});
+
+test("external plugin and temporary-owner inputs retain ordinary source dependencies", async t => {
+  const root = fixture(t, {
+    "src/extensions/plugins.ts": "import '../utils/other.js'; export const load = (filePath: string) => import(pathToFileURL(filePath).href);",
+    "tests/plugins.test.ts": "import '../src/extensions/plugins.js';",
+    "tests/helpers/memoryOwnerCleanup.ts": "import { readFile } from 'node:fs/promises'; import '../../src/utils/other.js'; export const clean = (file: string) => readFile(file);",
+    "tests/owner.test.ts": "import './helpers/memoryOwnerCleanup.js';"
+  });
+  const unrelated = await createPlan(root, ["src/utils/format.ts"]);
+  for (const file of ["plugins.test.ts", "owner.test.ts"]) assert.ok(!unrelated.standard.includes(file));
+  const dependency = await createPlan(root, ["src/utils/other.ts"]);
+  for (const file of ["plugins.test.ts", "owner.test.ts"]) assert.ok(dependency.standard.includes(file));
+  assert.ok((await createPlan(root, ["src/extensions/plugins.ts"])).standard.includes("plugins.test.ts"));
+  // 声明只覆盖已有的外部插件入口；新增动态入口仍须保守处理。
+  writeFileSync(path.join(root, "src/extensions/plugins.ts"), "export const load = (input: string) => import(input);");
+  assert.ok((await createPlan(root, ["src/utils/format.ts"])).standard.includes("plugins.test.ts"));
+});
+
+test("renderer selection follows fixture dependencies and unknown consumers", async t => {
+  const root = fixture(t, { "tests/fixtures/memory-disclosure/main.tsx": "import '../../../src/desktop/view.js';" });
+  assert.equal((await createPlan(root, ["src/utils/format.ts"])).renderer, true);
+  assert.equal((await createPlan(root, ["src/utils/other.ts"])).renderer, false);
+  writeFileSync(path.join(root, "tests/fixtures/memory-disclosure/main.tsx"), "import('../../helpers/loader.js');");
+  assert.equal((await createPlan(root, ["src/utils/other.ts"])).renderer, true);
+});
+
+test("selected execution catches the same injected runtime and file-input faults as the full fixture", async t => {
+  const root = fixture(t, {
+    "package.json": '{"type":"module"}',
+    "tests/view.test.ts": "import assert from 'node:assert/strict'; import { format } from '../src/desktop/view.js'; assert.equal(format(), 'ok');",
+    "tests/source.test.ts": "import assert from 'node:assert/strict'; import { readFileSync } from 'node:fs'; assert.match(readFileSync(new URL('../src/utils/format.ts', import.meta.url), 'utf8'), /'ok'/);"
+  });
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const run = files => {
+    try {
+      execFileSync(process.execPath, ["--import", import.meta.resolve("tsx"), "--test", ...files.map(file => `tests/${file}`)],
+        { cwd: root, env, stdio: "pipe", timeout: 20_000 });
+      return { status: 0, output: "" };
+    } catch (error) {
+      if (error.status !== 1) throw error;
+      return { status: error.status, output: error.stdout.toString() };
+    }
+  };
+  const full = await createPlan(root, [], { full: true });
+  assert.equal(run(full.standard).status, 0);
+  writeFileSync(path.join(root, "src/utils/format.ts"), "export const format = () => 'broken';");
+  const selected = await createPlan(root, ["src/utils/format.ts"]);
+  assert.ok(!selected.standard.includes("other.test.ts"));
+  for (const files of [selected.standard, full.standard]) {
+    const result = run(files);
+    assert.equal(result.status, 1);
+    for (const file of ["view.test.ts", "source.test.ts"]) assert.ok(result.output.includes(file));
+    assert.match(result.output, /AssertionError|ERR_ASSERTION/u);
+  }
+});
+
 test("test-only changes select the changed test and its consumers", async t => {
   const root = fixture(t, { "tests/reuse.test.ts": "import './other.test.js';" });
   const plan = await createPlan(root, ["tests/other.test.ts"]);
   assert.deepEqual(plan.standard, ["other.test.ts", "reuse.test.ts"]);
   assert.deepEqual(plan.e2e, []);
   assert.equal(plan.build, false);
+  assert.equal(plan.windows, false);
   assert.equal(plan.windowsPackage, false);
 });
+
+for (const file of ["windows-security.test.ts", "runtime-host-lock.test.ts", "runtime-host-connection-options.test.ts",
+  "runtime-host-lifecycle.test.ts", "desktop-host-startup-e2e.test.ts"]) {
+  test(`Windows regression changes retain platform validation: ${file}`, async t => {
+    const root = fixture(t, { [`tests/${file}`]: "export {};" });
+    const plan = await createPlan(root, [`tests/${file}`]);
+    assert.equal(plan.windows, true);
+    assert.equal(plan.windowsPackage, false);
+  });
+}
 
 test("test files invoked as subprocess fixtures retain their calling regressions", async t => {
   const root = fixture(t, {
@@ -78,13 +217,17 @@ for (const file of ["pnpm-lock.yaml", "package.json", ".github/workflows/ci.yml"
 }
 
 for (const file of ["src/permission/check.ts", "src/runtime/host/protocol.ts", "src/session/store.ts",
-  "src/config/schema.ts", "src/agent/AgentSession.ts", "src/utils/secrets.ts", "src/utils/windowsSecurity.ts"]) {
-  test(`existing shared authority forces full despite a resolvable test: ${file}`, async t => {
+  "src/session/localReferences.ts", "src/extensions/skillDiscovery.ts", "src/config/schema.ts",
+  "src/agent/AgentSession.ts", "src/utils/secrets.ts", "src/utils/windowsSecurity.ts"]) {
+  test(`shared source uses dependency coverage and retains opaque tests and E2E: ${file}`, async t => {
     const root = fixture(t, { [file]: "export const value = true;", "tests/core.test.ts": `import '../${file}';` });
     const plan = await createPlan(root, [file]);
-    assert.equal(plan.full, true);
-    assert.equal(plan.windowsPackage, true);
-    assert.equal(plan.standard.length, 5);
+    assert.equal(plan.full, false);
+    assert.deepEqual(plan.standard, ["core.test.ts", "dynamic.test.ts"]);
+    assert.deepEqual(plan.e2e, ["process-e2e.test.ts"]);
+    assert.equal(plan.build, true);
+    assert.equal(plan.windows, true);
+    assert.equal(plan.windowsPackage, false);
   });
 }
 
@@ -102,13 +245,23 @@ test("uncovered source and unresolved relative imports widen to full", async t =
   assert.equal((await createPlan(root, ["src/utils/format.ts"])).full, true);
 });
 
-test("literal dynamic imports and type imports retain dependency edges", async t => {
+test("runtime imports retain dependency edges while erased types stay in the static gate", async t => {
   const root = fixture(t, {
     "tests/typed.test.ts": "import type { Value } from '../src/utils/format.js';",
+    "tests/typed-named.test.ts": "import { type Value } from '../src/utils/format.js';",
+    "tests/typed-expression.test.ts": "type Value = import('../src/utils/format.js').Value;",
+    "tests/typed-export.test.ts": "export type { Value } from '../src/utils/format.js';",
+    "tests/typed-named-export.test.ts": "export { type Value } from '../src/utils/format.js';",
+    "tests/mixed.test.ts": "import { type Value, format } from '../src/utils/format.js'; format();",
+    "tests/require-import.test.ts": "import format = require('../src/utils/format.js');",
     "tests/literal.test.ts": "await import('../src/utils/format.js');"
   });
   const plan = await createPlan(root, ["src/utils/format.ts"]);
-  assert.ok(plan.standard.includes("typed.test.ts"));
+  for (const file of ["typed.test.ts", "typed-expression.test.ts", "typed-export.test.ts"]) assert.ok(!plan.standard.includes(file));
+  // 内联 type 修饰符在部分编译配置下保留模块加载，仍按运行依赖处理。
+  for (const file of ["typed-named.test.ts", "typed-named-export.test.ts"]) assert.ok(plan.standard.includes(file));
+  assert.ok(plan.standard.includes("mixed.test.ts"));
+  assert.ok(plan.standard.includes("require-import.test.ts"));
   assert.ok(plan.standard.includes("literal.test.ts"));
 });
 
