@@ -22,7 +22,7 @@ WebSearch(query="your search query", maxResults=5)
 - Requires Biny Desktop's browser execution endpoint.
 - Uses the configured search engine: Google or Xiaohongshu.
 - Returns structured links and snippets; a result is not proof that the linked page was read.
-- `maxResults` accepts 1–10 and is capped by configuration. Google supports optional `domains` (up to five) and `recency` (`day`, `week`, `month`, `year`); the other engine does not support these filters.
+- `maxResults` accepts 1–10 and is capped by configuration. Google supports optional `domains` (up to five alternative source domains; any listed domain may supply results) and `recency` (`day`, `week`, `month`, `year`); the other engine does not support these filters.
 - Report login walls, verification challenges, and unavailable Desktop execution accurately. Do not promise CAPTCHA bypass.
 
 ## Fetching Page Content
