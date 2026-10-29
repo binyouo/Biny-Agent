@@ -338,6 +338,8 @@ function buildServerConfig(existing: McpServerConfig | undefined, draft: Desktop
   const hasCredentialRefs = Object.keys(credentialRefs.env).length > 0 || Object.keys(credentialRefs.headers).length > 0;
   return {
     id: serverId,
+    exposure: existing?.exposure,
+    toolExposure: existing?.toolExposure,
     toolContracts: existing?.toolContracts,
     description: optionalText(draft.description),
     type: transport === "remote" ? "http" : "stdio",
