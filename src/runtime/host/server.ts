@@ -242,7 +242,7 @@ export class RuntimeHostServer {
     this.registry = new SessionRuntimeRegistry({ runtime, commands }, {
       createRuntime: this.createRuntime,
       sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
-      canEvict: (entry) => !this.oneShotSessions.has(entry.sessionId) && !this.sessionWriterOwners.has(entry.sessionId) && !this.dispatcher.hasPendingSession(entry.sessionId),
+      canEvict: (entry) => !this.oneShotSessions.has(entry.sessionId) && !this.sessionWriterOwners.has(entry.sessionId) && !this.dispatcher.hasPendingSession(entry.sessionId) && !entry.commands.hasBackgroundWork(),
       onUpdate: (update, managed) => this.handleRuntimeUpdate(update, managed)
     });
     this.businessComposition = createRuntimeHostBusinessComposition({
