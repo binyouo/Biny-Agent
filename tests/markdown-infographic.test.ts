@@ -6,6 +6,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownContent } from "../src/desktop/renderer/src/components/MarkdownContent.js";
 import { JSDOM } from "jsdom";
 
+// JSDOM exercises the renderer as a browser; the library also has a separate Node/SSR path.
+const nodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
+try {
+  Object.defineProperty(process.versions, "node", { ...nodeVersion, value: undefined });
+  await import("@antv/infographic");
+} finally {
+  Object.defineProperty(process.versions, "node", nodeVersion);
+}
+
 const validSource = "infographic list-row-simple-horizontal-arrow\ndata\n  items\n    - label 第一步\n    - label 第二步";
 const theme = { dark: false, background: "#ffffff", primary: "#0055aa", palette: ["#0055aa", "#00aa55"], font: "sans-serif" };
 
@@ -17,6 +26,10 @@ function setupDom() {
   Object.defineProperty(dom.window.HTMLElement.prototype, "innerText", { configurable: true, get() { return this.textContent; }, set(value: string) { this.textContent = value; } });
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
   Object.defineProperty(dom.window.document, "fonts", { configurable: true, value: { forEach() {} } });
+  // JSDOM has no SVG layout; expose a stable non-zero viewport for the browser renderer.
+  Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 0, y: 0, width: 100, height: 100 }) });
+  Object.defineProperty(dom.window.SVGElement.prototype, "getBoundingClientRect", { configurable: true, value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 100, bottom: 100, width: 100, height: 100, toJSON() {} }) });
+  Object.assign(globalThis, { requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) });
   return dom;
 }
 

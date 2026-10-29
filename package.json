@@ -66,7 +66,7 @@
     "@ai-sdk/openai": "4.0.60",
     "@ai-sdk/openai-compatible": "3.0.11",
     "@ai-sdk/provider": "^4.0.10",
-    "@antv/infographic": "0.2.6",
+    "@antv/infographic": "0.2.11",
     "@astryxdesign/core": "0.2.0",
     "@astryxdesign/theme-neutral": "0.2.0",
     "@earendil-works/pi-tui": "0.82.1",

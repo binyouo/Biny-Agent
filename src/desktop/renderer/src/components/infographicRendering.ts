@@ -167,7 +167,7 @@ async function prepareData(data: Data, signal: AbortSignal): Promise<{ data: Dat
   };
   const item = async (value: ItemDatum): Promise<ItemDatum> => ({ ...value, icon: await asset(value.icon, value.label ?? ""), illus: await asset(value.illus, value.label ?? ""), children: value.children ? await Promise.all(value.children.map(item)) : undefined });
   const illus = data.illus ? Object.fromEntries((await Promise.all(Object.entries(data.illus).map(async ([key, value]) => [key, await asset(value, key)] as const))).filter((entry): entry is readonly [string, NonNullable<ItemDatum["icon"]>] => entry[1] !== undefined)) : undefined;
-  const items = await Promise.all(data.items.map(item));
+  const items = await Promise.all((data.items ?? []).map(item));
   return { data: { ...data, items, illus }, resourceErrors };
 }
 
