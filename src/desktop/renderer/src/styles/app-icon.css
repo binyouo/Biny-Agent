@@ -1,5 +1,5 @@
 .app-icon { display: inline-flex; flex: 0 0 auto; vertical-align: middle; }
-.app-icon-art { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; border-radius: 22.5%; background: #fff; }
+.app-icon-art { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; border-radius: 22.5%; }
 .app-icon-art img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .app-icon-art .app-icon-closed { position: absolute; inset: 0; opacity: 0; }
 .app-icon[data-animated="true"][data-paused="false"]:is([data-state="idle"], [data-state="listen"]) .app-icon-closed {
