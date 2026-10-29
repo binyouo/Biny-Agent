@@ -236,8 +236,17 @@ function createPlanUpdateTool(options: PlanToolOptions, inspectedRuns: Set<strin
               ? (graph.payload as { constraints: unknown[] }).constraints.filter((value): value is string => typeof value === "string")
               : undefined;
             const additions = toGraphNodes(args.nodes, constraints);
-            const gates = new Map(graph.nodes.filter((node) => planBlock(node.intent)?.kind === "review")
+            const reviewGates = new Map(graph.nodes.filter((node) => planBlock(node.intent)?.kind === "review")
               .map((node) => [planBlock(node.intent)!.taskKey, node.nodeKey]));
+            const gates = new Map(reviewGates);
+            // Replacements and rework repairs keep their original task identity,
+            // but expose new node keys in PlanStatus. Those aliases must still
+            // wait for the task's review, not merely its implementation.
+            for (const node of graph.nodes) {
+              const block = planBlock(node.intent);
+              const gate = block?.kind === "implementation" ? reviewGates.get(block.taskKey) : undefined;
+              if (gate !== undefined) gates.set(node.nodeKey, gate);
+            }
             options.graphs.addSupervisedNodes(args.graphId, sessionId, additions.map((node) => ({ ...node, dependencies: node.dependencies?.map((key) => gates.get(key) ?? key) })));
             options.graphs.createWake(args.graphId, "plan_updated");
           } else if (args.action === "replace") {
