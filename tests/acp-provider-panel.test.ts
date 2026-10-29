@@ -17,7 +17,7 @@ function connectionAction(props: React.ComponentProps<typeof AcpProviderPanel>):
   let action: (() => Promise<void>) | undefined;
   const currentReact = Reflect.get(globalThis, "React");
   Object.assign(globalThis, { React: { ...React, createElement(type: React.ElementType, attributes: Record<string, unknown> | null, ...children: React.ReactNode[]) {
-    if (type === "button" && attributes?.className === "settings-primary-button") action = attributes.onClick as () => Promise<void>;
+    if (type === "button" && String(attributes?.className ?? "").split(/\s+/u).includes("settings-primary-button")) action = attributes.onClick as () => Promise<void>;
     return React.createElement(type, attributes, ...children);
   } } });
   try { renderToStaticMarkup(React.createElement(AcpProviderPanel, props)); }

@@ -129,6 +129,7 @@ async function fixture(t: TestContext, options: { recovery?: boolean } = {}) {
   const api: Record<string, unknown> = {
     switchModel(projectId: string, alias: string, thinking: ThinkingSelection) { const gate = deferred<ModelRuntimeInfo>(); switches.push({ projectId, alias, thinking, gate }); return gate.promise; },
     refreshProject(projectId: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({ projectId, gate }); return gate.promise; },
+    preparePrompt: async (projectId: string) => { assert.ok(["a", "b"].includes(projectId)); },
     sendPrompt: async (projectId: string, sessionId: string | undefined, input: string) => { actions.push({ kind: "send", projectId, sessionId, input }); return { sessionId: sessionId ?? `session-${projectId}`, runId: "run-inert", messageId: "message-inert" }; },
     runSlashCommand: async (projectId: string, sessionId: string | undefined, input: string) => { actions.push({ kind: "slash", projectId, sessionId, input }); return { command: input, title: "inert", content: "inert result" }; },
     resumeInterruptedTurn: async (projectId: string, sessionId: string) => { actions.push({ kind: "resume", projectId, sessionId }); return { sessionId, runId: "run-inert", messageId: "message-inert" }; },

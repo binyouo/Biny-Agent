@@ -11,6 +11,7 @@ import { withCliAbortSignal } from "../src/cli/sigint.js";
 
 interface Turn { status: string; stopReason: string; steps: number; output: string }
 interface Runtime {
+  waitForReady(): Promise<void>;
   ensureSession(input: unknown): Promise<{ sessionId: string }>;
   executeRun(sessionId: string, input: string, attachments: unknown[]): Promise<Turn>;
   subscribe(listener: unknown): () => void;
@@ -80,10 +81,11 @@ for (const rpcMode of ["accepted", "not-active", "rejected", "no-sigint"] as con
         process: { pid: 123, env: {} },
         console: { log: (...args: unknown[]) => { outputs.push(args); }, error: () => assert.fail("no new logging contract") }
       }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as Loaded;
-      let closes = 0; let usageReads = 0;
+      let closes = 0; let usageReads = 0; let ready = false;
       const cancellations: unknown[][] = [];
       const runtime: Runtime = {
-        ensureSession: async input => { assert.deepEqual(JSON.parse(JSON.stringify(input)), { isolation: "shared", writeIntent: true, runOptions: { json: true }, processLifetime: "runtime" }); return { sessionId: "submitted-session" }; },
+        waitForReady: async () => { ready = true; },
+        ensureSession: async input => { assert.equal(ready, true); assert.deepEqual(JSON.parse(JSON.stringify(input)), { isolation: "shared", writeIntent: true, runOptions: { json: true }, processLifetime: "runtime" }); return { sessionId: "submitted-session" }; },
         executeRun: (sessionId, input, attachments) => {
           assert.equal(sessionId, "submitted-session"); assert.equal(input, "do work");
           assert.equal(attachments.length, 0);
