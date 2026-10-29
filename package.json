@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
-    "build:icons": "node --import tsx scripts/generate-app-icons.tsx",
+    "build:icons": "node --import tsx scripts/generate-app-icons.ts",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "build": "pnpm build:desktop",
     "build:cli": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/build-code-mode-runtime.mjs && node scripts/build-calendar-sidecar.mjs && node scripts/copy-bundled-skills.mjs dist/bundled-skills && node scripts/copy-browser-extension.mjs dist/browser-extension",

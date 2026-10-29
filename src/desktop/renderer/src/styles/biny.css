@@ -5346,7 +5346,7 @@ button.capability-check[aria-checked="true"] {
   animation-play-state: paused;
 }
 
-.biny-hero-avatar .fold-art {
+.biny-hero-avatar .app-icon-art {
   transform-origin: 50% 86%;
   animation: biny-hero-unfold 650ms cubic-bezier(.22, 1, .36, 1) backwards;
 }
@@ -5397,7 +5397,7 @@ button.capability-check[aria-checked="true"] {
 
 @media (prefers-reduced-motion: reduce) {
   .biny-hero-avatar,
-  .biny-hero-avatar .fold-art,
+  .biny-hero-avatar .app-icon-art,
   .biny-hero-fade {
     opacity: 1;
     animation: none;

@@ -1,17 +1,12 @@
 import assert from "node:assert/strict";
-import { registerHooks } from "node:module";
 import { test } from "node:test";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 
-const assets = registerHooks({ load(url, context, next) {
-  return url.endsWith(".png") ? { format: "module", source: `export default ${JSON.stringify(url)};`, shortCircuit: true } : next(url, context);
-} });
 const { AppIcon } = await import("../src/desktop/renderer/src/components/AppIcon.js");
-assets.deregister();
 
-test("口袋灵按活动和成功回执切换，旧回执不重播，隐藏和卸载停止展示任务", async context => {
+test("萌宠按活动和成功回执切换，旧回执不重播，隐藏和卸载停止展示任务", async context => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
   const dom = new JSDOM('<div id="root"></div>', { pretendToBeVisual:true });
   const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -36,7 +31,7 @@ test("口袋灵按活动和成功回执切换，旧回执不重播，隐藏和�
     assert.equal(state(),"idle");
     await render({active:true,memoryRevision:4});
     await act(() => context.mock.timers.tick(60_000));
-    assert.equal(state(),"listen", "运行中不能因空闲计时蜷缩");
+    assert.equal(state(),"listen", "运行中不能因空闲计时进入休息姿态");
     await render({active:false,memoryRevision:5});
     assert.equal(state(),"remember");
     await act(() => context.mock.timers.tick(2_100));

@@ -1,25 +1,26 @@
-import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
-import { PocketSpiritArtwork } from "../src/desktop/renderer/src/components/PocketSpiritArtwork.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const markup = renderToStaticMarkup(<PocketSpiritArtwork id="biny-icon" tile />);
-const variables = new Map([...markup.matchAll(/(--fold-[\w-]+):([^;"}]+)/gu)].map(match => [match[1], match[2]]));
-const svg = markup.replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" ')
-  .replace('width="100%" height="100%"', 'width="1024" height="1024"')
-  .replace('class="fold-closed-eyes"', 'class="fold-closed-eyes" opacity="0"')
-  .replace(/var\((--fold-[\w-]+)\)/gu, (_match, name: string) => {
-    const value = variables.get(name);
-    if (!value) throw new Error(`Missing icon color: ${name}`);
-    return value;
-  });
-const png = async (size: number): Promise<Buffer> => await sharp(Buffer.from(svg)).resize(size, size).png().toBuffer();
-await writeFile(path.join(root, "build/icon-master.png"), await png(1024));
-await writeFile(path.join(root, "src/desktop/renderer/public/favicon.png"), await png(64));
+// 两帧共用 824/1024 底板、圆角与外边距，避免 Dock 眨眼时轮廓和视觉尺寸变化。
+const mask = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="824" height="824"><rect width="824" height="824" rx="185" fill="white"/></svg>');
+async function renderIcon(filename: string): Promise<Buffer> {
+  const tile = await sharp(path.join(root, "build", filename)).resize(824, 824)
+    .composite([{ input: mask, blend: "dest-in" }]).png().toBuffer();
+  return await sharp({ create: { width: 1024, height: 1024, channels: 4, background: "#00000000" } })
+    .composite([{ input: tile, left: 100, top: 100 }]).png().toBuffer();
+}
+const master = await renderIcon("icon-source.png");
+const png = async (size: number): Promise<Buffer> => await sharp(master).resize(size, size).png().toBuffer();
+await writeFile(path.join(root, "build/icon-master.png"), master);
+await writeFile(path.join(root, "build/icon-blink.png"), await renderIcon("icon-blink-source.png"));
+// 应用内头像与标签页不带 Dock 外边距，小尺寸时保留脸部的实际显示面积。
+await sharp(path.join(root, "build/icon-source.png")).resize(64, 64).png().toFile(path.join(root, "src/desktop/renderer/public/favicon.png"));
+for (const [input, output] of [["icon-source.png", "app-icon.png"], ["icon-blink-source.png", "app-icon-blink.png"]]) {
+  await sharp(path.join(root, "build", input)).resize(256, 256).png().toFile(path.join(root, "src/desktop/renderer/src/assets", output));
+}
 
 const chunks: Buffer[] = [];
 for (const [kind, size] of [["icp4", 16], ["icp5", 32], ["icp6", 64], ["ic07", 128], ["ic08", 256], ["ic09", 512], ["ic10", 1024]] as const) {
@@ -53,4 +54,4 @@ for (const [index, size] of sizes.entries()) {
   offset += data.length;
 }
 await writeFile(path.join(root, "build/icon.ico"), Buffer.concat([icoHeader, ...images]));
-console.log("Generated Biny PNG, ICNS, ICO and favicon from PocketSpiritArtwork.");
+console.log("Generated Biny PNG, ICNS, ICO and favicon.");

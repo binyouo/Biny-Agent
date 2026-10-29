@@ -1,0 +1,17 @@
+.app-icon { display: inline-flex; flex: 0 0 auto; vertical-align: middle; }
+.app-icon-art { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; border-radius: 22.5%; background: #fff; }
+.app-icon-art img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.app-icon-art .app-icon-closed { position: absolute; inset: 0; opacity: 0; }
+.app-icon[data-animated="true"][data-paused="false"]:is([data-state="idle"], [data-state="listen"]) .app-icon-closed {
+  animation: app-icon-blink 5.8s steps(1, end) infinite;
+}
+.app-icon[data-animated="true"][data-paused="false"][data-state="listen"] .app-icon-art { animation: app-icon-listening 2.8s ease-in-out infinite; }
+.app-icon[data-animated="true"][data-paused="false"]:is([data-state="sleep"], [data-state="remember"]) .app-icon-closed { opacity: 1; }
+.app-icon[data-animated="true"][data-paused="false"][data-state="remember"] .app-icon-art { animation: app-icon-remember 2.1s ease-in-out both; }
+@keyframes app-icon-blink { 0%, 40%, 78%, 100% { opacity: 0; } 38%, 76% { opacity: 1; } }
+@keyframes app-icon-listening { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-3deg); } }
+@keyframes app-icon-remember { 0%, 100% { transform: translateY(0) rotate(0); } 25% { transform: translateY(-3px) rotate(-4deg); } 60% { transform: translateY(1px) rotate(2deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .app-icon * { animation: none !important; }
+  .app-icon .app-icon-closed { opacity: 0 !important; }
+}

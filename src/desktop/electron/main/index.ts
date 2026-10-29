@@ -57,6 +57,7 @@ import { createDesktopWindow, sendToDesktopWindow, syncDesktopWindowAppearance, 
 import { parseDesktopReferenceLaunch } from "./desktopReferenceLaunch.js";
 import { createComputerUseService } from "./computerUseService.js";
 import { startRuntimeHostApp } from "./runtimeHostStartup.js";
+import { animateDockStartup } from "./dockStartupIcon.js";
 
 app.setName("Biny");
 app.setAboutPanelOptions({
@@ -71,6 +72,7 @@ let pendingReferenceOpen = parseDesktopReferenceLaunch(process.argv);
 const runtimeHostLaunchIndex = process.argv.indexOf("--biny-runtime-host");
 
 const memoryOwnerLaunchIndex = process.argv.indexOf("--biny-memory-owner");
+let finishDesktopStartupIcon = (): void => {};
 if (memoryOwnerLaunchIndex >= 0) {
   void startRuntimeHostApp(app, async () => {
     const { runMemoryOwnerProcess } = await import("../../../runtime/memoryProcess.js");
@@ -95,6 +97,7 @@ if (memoryOwnerLaunchIndex >= 0) {
   app.quit();
 } else {
   void startDesktopApplication().catch((error: unknown) => {
+    finishDesktopStartupIcon();
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     console.error(message);
     dialog.showErrorBox("Biny 无法启动", message);
@@ -114,7 +117,7 @@ async function startDesktopApplication(): Promise<void> {
     app.getAppPath(),
     app.isPackaged ? "dist/runtime/hostProcess.js" : "src/runtime/hostProcess.ts"
   );
-  setDesktopIcon();
+  finishDesktopStartupIcon = setDesktopIcon();
   const userDataRoot = app.getPath("userData");
   const desktopRoot = path.join(userDataRoot, "workspaces", "default");
   const storage = new DesktopUserDataStore(desktopRoot);
@@ -400,11 +403,16 @@ async function startDesktopApplication(): Promise<void> {
     attachWindowTrail(trailWindow, () => { const snapshot = appearance.snapshot(); return resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors).win98Trail; });
     appearance.refresh();
     browser.attachDesktopWindow(mainWindow);
+    mainWindow.webContents.on("did-fail-load", (_event, _code, _description, _url, isMainFrame) => {
+      if (isMainFrame) finishDesktopStartupIcon();
+    });
+    mainWindow.webContents.once("render-process-gone", () => finishDesktopStartupIcon());
     mainWindow.webContents.once("did-finish-load", () => {
       if (pendingReferenceOpen) mainWindow?.webContents.send(desktopIpc.referenceOpen, pendingReferenceOpen);
       pendingReferenceOpen = undefined;
     });
     mainWindow.on("closed", () => {
+      finishDesktopStartupIcon();
       pauseComputer();
       mainWindow = undefined;
       // 关闭窗口后托盘继续承载 Activity；重新打开时创建新的主窗口。
@@ -457,7 +465,10 @@ async function startDesktopApplication(): Promise<void> {
     getQuickChatWindow: () => quickChatWindow,
     quickChatContext,
     toggleQuickChat,
-    bootstrap,
+    bootstrap: async () => {
+      try { return await bootstrap(); }
+      finally { finishDesktopStartupIcon(); }
+    },
     updateSettingsDraftState: (draftState) => { importDraftOpen = draftState.dirty; settingsClose.updateState(draftState); },
     resolveSettingsCloseRequest: (requestId, response) => settingsClose.resolve(requestId, response)
   });
@@ -568,6 +579,7 @@ async function startDesktopApplication(): Promise<void> {
         }
         confirmed = true;
         quitCommitted = true;
+        finishDesktopStartupIcon();
         // 先移除所有可见入口；异步清理期间不留可重新激活的窗口或图标。
         mainWindow?.hide();
         if (process.platform === "darwin") app.dock?.hide();
@@ -643,13 +655,17 @@ function resolveActivityProject(
   ));
 }
 
-function setDesktopIcon(): void {
-  if (process.platform !== "darwin") return;
+function setDesktopIcon(): () => void {
+  if (process.platform !== "darwin" || !app.dock) return () => {};
   const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, "icon.icns")
+    ? path.join(process.resourcesPath, "native/tray-icon.png")
     : path.join(app.getAppPath(), "build/icon-master.png");
-  const icon = nativeImage.createFromPath(iconPath);
-  if (!icon.isEmpty()) app.dock?.setIcon(icon);
+  const blinkPath = app.isPackaged
+    ? path.join(process.resourcesPath, "native/icon-blink.png")
+    : path.join(app.getAppPath(), "build/icon-blink.png");
+  const frames = { open: nativeImage.createFromPath(iconPath), closed: nativeImage.createFromPath(blinkPath) };
+  if (frames.open.isEmpty() || frames.closed.isEmpty()) throw new Error("无法加载应用图标资源");
+  return animateDockStartup(app.dock, frames, () => systemPreferences.getAnimationSettings().prefersReducedMotion);
 }
 
 async function showMessage(

@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from "react";
-import { useAppearance } from "../appearanceContext.js";
-import { PocketSpiritArtwork } from "./PocketSpiritArtwork.js";
+import { useEffect, useRef, useState } from "react";
+
+const openEyes = new URL("../assets/app-icon.png", import.meta.url).href;
+const closedEyes = new URL("../assets/app-icon-blink.png", import.meta.url).href;
 
 interface AppIconProps {
   size: number;
@@ -8,14 +9,11 @@ interface AppIconProps {
   animated?: boolean;
   active?: boolean;
   hidden?: boolean;
-  tile?: boolean;
   /** 只递增已确认保存的回执；挂载时的值不重播。 */
   memoryRevision?: number;
 }
 
-export function AppIcon({ size, className, animated = false, active = false, hidden = false, tile = false, memoryRevision = 0 }: AppIconProps): React.JSX.Element {
-  const id = useId();
-  const appearance = useAppearance();
+export function AppIcon({ size, className, animated = false, active = false, hidden = false, memoryRevision = 0 }: AppIconProps): React.JSX.Element {
   const [sleeping, setSleeping] = useState(false);
   const [remembering, setRemembering] = useState(false);
   const [background, setBackground] = useState(() => typeof document !== "undefined" && document.hidden);
@@ -65,8 +63,11 @@ export function AppIcon({ size, className, animated = false, active = false, hid
   }, [active, animated, memoryRevision, paused]);
 
   const state = active ? "listen" : remembering ? "remember" : sleeping ? "sleep" : "idle";
-  return <span aria-hidden="true" className={`app-icon pocket-spirit${className ? ` ${className}` : ""}`}
+  return <span aria-hidden="true" className={`app-icon${className ? ` ${className}` : ""}`}
     data-animated={animated} data-paused={paused} data-state={state} style={{ width:size, height:size }}>
-    <PocketSpiritArtwork dark={appearance.mode === "dark"} id={id} tile={tile} />
+    <span className="app-icon-art">
+      <img src={openEyes} width={size} height={size} alt="" draggable={false} />
+      <img className="app-icon-closed" src={closedEyes} width={size} height={size} alt="" draggable={false} />
+    </span>
   </span>;
 }
