@@ -43,7 +43,7 @@ function deferred<T>() {
 
 type Call = { projectId: string; alias: string; thinking: ThinkingSelection; result: ReturnType<typeof deferred<ModelRuntimeInfo>> };
 
-async function fixture(autoIpc = false) {
+async function fixture(autoIpc = false, editing = false, runEditedPrompt = false, editError?: Error) {
   const folder = await mkdtemp(path.join(os.tmpdir(), "biny-model-choice-audit-"));
   const providerAlias = `model-choice-${randomUUID()}`;
   const previousAgentDir = process.env.BINY_AGENT_DIR;
@@ -108,6 +108,8 @@ async function fixture(autoIpc = false) {
   const drafts = new Map<string, ComposerDraftState>();
   const ref = React.createRef<ComposerHandle>();
   const warnings: string[] = []; const errors: string[] = []; const sends: string[] = [];
+  const edits: string[] = [];
+  const editRequests: Array<ReturnType<typeof actualNextPrompt>> = [];
   const projectIdRef = { current: project.id };
   let latestWorkspace = initial;
   let setExternal!: React.Dispatch<React.SetStateAction<DesktopWorkspaceSnapshot | undefined>>;
@@ -117,7 +119,12 @@ async function fixture(autoIpc = false) {
     running: false, runtimeBusy: false, queuedMessages: [], sessionWriterConflict: false, modelSetupRequired: false,
     focusToken: 0, capabilityDefaults: { tools: "none", skills: "none" }, skills: [], toolCatalog: [],
     onSend: async text => { sends.push(text); }, onMutateQueuedMessage: noop, onResume: noop,
-    onSubmitEdit: noop, onCancelEdit: () => {}, onSlashCommand: noop, onStop: noop, onToggleMemory: noop,
+    editingMessage: editing ? { nonce: 1, value: "edited prompt" } : undefined,
+    onSubmitEdit: async text => {
+      edits.push(text);
+      if (editError) throw editError;
+      if (runEditedPrompt) { const request = actualNextPrompt(); editRequests.push(request); await request; }
+    }, onCancelEdit: () => {}, onSlashCommand: noop, onStop: noop, onToggleMemory: noop,
     onSaveAttachment: async () => { throw new Error("unused"); }, onWarning: message => { warnings.push(message); }, onSubmitError: message => { errors.push(message); }
   };
   function Harness({ sessionId }: { sessionId: string }) {
@@ -155,7 +162,9 @@ async function fixture(autoIpc = false) {
       return requests;
     } finally { await runtime?.close(); globalThis.fetch = originalFetch; }
   }
-  return { React, calls, warnings, errors, sends, picker, choose, think, commit, receipt, refreshes, render, project, projects, agents, configStore,
+  const input = () => (window as unknown as { __modelAuditInput: { value: string; onSubmit(): void } }).__modelAuditInput;
+  const submitEdit = async () => { await React.act(async () => input().onSubmit()); };
+  return { React, calls, warnings, errors, sends, edits, editRequests, input, submitEdit, picker, choose, think, commit, receipt, refreshes, render, project, projects, agents, configStore,
     ref, drafts, actualNextPrompt, modelsStore, workspace: () => latestWorkspace, selected: () => latestWorkspace.selectedModel,
     async navigateProject(snapshot: DesktopWorkspaceSnapshot) { projectIdRef.current = snapshot.project.id; await React.act(async () => setExternal(snapshot)); },
     async close() {
@@ -305,3 +314,61 @@ for (const failure of ["older", "newer"] as const) {
     } finally { await h.close(); }
   });
 }
+
+
+test("historical edit waits for model and thinking receipts before consuming its draft", { timeout: 20_000 }, async () => {
+  const h = await fixture(false, true, true);
+  try {
+    await h.choose("beta"); await h.think("max"); await h.submitEdit();
+    assert.deepEqual(h.edits, []); assert.equal(h.input().value, "edited prompt");
+    await h.receipt(0, await h.commit(0));
+    assert.deepEqual(h.edits, []);
+    await h.receipt(1, await h.commit(1));
+    assert.deepEqual(h.edits, ["edited prompt"]);
+    let requests!: Awaited<ReturnType<typeof h.actualNextPrompt>>;
+    await h.React.act(async () => { requests = (await Promise.all(h.editRequests))[0]!; });
+    assert.ok(requests.every(body => body.model === "chat-beta"));
+    assert.equal(requests[0]!.reasoning_effort, "xhigh");
+  } finally { await Promise.allSettled(h.editRequests); await h.close(); }
+});
+
+test("failed model save leaves a historical edit available instead of dispatching with the old model", { timeout: 20_000 }, async () => {
+  const h = await fixture(false, true);
+  try {
+    await h.choose("beta"); await h.submitEdit();
+    await h.React.act(async () => h.calls[0]!.result.reject(new Error("save rejected")));
+    assert.deepEqual(h.edits, []); assert.equal(h.input().value, "edited prompt");
+    assert.deepEqual(h.warnings, ["save rejected"]); assert.deepEqual(h.errors, []);
+    await h.submitEdit();
+    assert.deepEqual(h.edits, ["edited prompt"], "retry after the failed selection uses the confirmed model");
+  } finally { await h.close(); }
+});
+
+test("navigation retires an edit waiting for a model save without sending into the new session", { timeout: 20_000 }, async () => {
+  const h = await fixture(false, true);
+  try {
+    await h.choose("beta"); await h.submitEdit(); await h.render("another-session");
+    await h.receipt(0, await h.commit(0));
+    assert.deepEqual(h.edits, []);
+    assert.equal(h.input().value, "edited prompt", "late completion must not consume the new editor");
+  } finally { await h.close(); }
+});
+
+test("historical edit without a pending model choice keeps the existing immediate admission path", { timeout: 20_000 }, async () => {
+  const h = await fixture(false, true);
+  try { await h.submitEdit(); assert.deepEqual(h.edits, ["edited prompt"]); }
+  finally { await h.close(); }
+});
+
+
+test("an edit admission failure after a successful model save restores the same editor draft", { timeout: 20_000 }, async () => {
+  const h = await fixture(false, true, false, new Error("edit rejected"));
+  try {
+    await h.choose("beta"); await h.submitEdit();
+    await h.receipt(0, await h.commit(0));
+    assert.deepEqual(h.edits, ["edited prompt"]);
+    assert.equal(h.input().value, "edited prompt");
+    assert.deepEqual(h.errors, ["edit rejected"]);
+    assert.deepEqual(h.warnings, []);
+  } finally { await h.close(); }
+});

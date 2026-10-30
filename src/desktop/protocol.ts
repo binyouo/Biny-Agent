@@ -1711,7 +1711,7 @@ export interface DesktopApi {
   ): Promise<void>;
   toolCatalog(projectId: string): Promise<DesktopToolCatalogEntry[]>;
   resumeInterruptedTurn(projectId: string, sessionId: string): Promise<DesktopRunReceipt | undefined>;
-  editPrompt(projectId: string, sessionId: string, userMessageIndex: number, input: string, attachments: DesktopAttachment[], idempotencyKey?: string): Promise<DesktopRunReceipt>;
+  editPrompt(projectId: string, sessionId: string, userMessageIndex: number, input: string, attachments: DesktopAttachment[], idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<DesktopRunReceipt>;
   retryPrompt(projectId: string, sessionId: string, targetMessageId: string, input: string, attachments: DesktopAttachment[], idempotencyKey?: string): Promise<DesktopRunReceipt>;
   switchMessageVersion(projectId: string, sessionId: string, messageId: string, direction: "prev" | "next"): Promise<DesktopSessionDocument>;
   cancelRun(projectId: string, runId: string): Promise<void>;

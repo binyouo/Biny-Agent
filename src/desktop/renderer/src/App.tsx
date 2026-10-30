@@ -1329,7 +1329,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     attachments: DesktopAttachment[],
     sessionId: string,
     userMessageIndex: number,
-    idempotencyKey?: string
+    idempotencyKey?: string,
+    capabilitySelection?: AgentCapabilitySelection,
+    fastMode?: boolean
   ): Promise<void> => {
     const projectId = projectRef.current;
     if (!projectId) throw new Error("请先打开一个项目。");
@@ -1349,7 +1351,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     let receipt: Awaited<ReturnType<typeof edit>>;
     try {
-      receipt = await edit(projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey);
+      receipt = await edit(projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey, capabilitySelection, fastMode);
     } catch (error) {
       if (isCurrentScope()) {
         if (previousDocument) setDocument(previousDocument);
@@ -1377,14 +1379,14 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, [commitNavigation, refreshRuntimeFailure, workspace?.sessions]);
 
   const [editingMessage, setEditingMessage] = useState<{ turnId: string; userMessageIndex: number; value: string; nonce: number; attachments: NonNullable<TimelineTurn["userAttachments"]> }>();
-  const editUserMessage = useCallback(async (input: string, userMessageIndex: number, idempotencyKey?: string): Promise<void> => {
+  const editUserMessage = useCallback(async (input: string, userMessageIndex: number, idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<void> => {
     const sessionId = selectedRef.current;
     if (!sessionId) {
       throw new Error("当前消息还没有可编辑的会话。");
     }
     const current = editingMessage;
     const attachments = current?.userMessageIndex === userMessageIndex ? current.attachments : [];
-    await editPrompt(input, attachments.map((attachment) => ({ ...attachment, size: attachment.size ?? 0 })), sessionId, userMessageIndex, idempotencyKey);
+    await editPrompt(input, attachments.map((attachment) => ({ ...attachment, size: attachment.size ?? 0 })), sessionId, userMessageIndex, idempotencyKey, capabilitySelection, fastMode);
   }, [editPrompt, editingMessage]);
 
   // 编辑历史消息：点「编辑」把文本回填到底部输入框，提交后原位替换并重新生成。
@@ -1403,7 +1405,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     });
     setFocusToken((value) => value + 1);
   }, []);
-  const submitEditedMessage = useCallback(async (value: string): Promise<void> => {
+  const submitEditedMessage = useCallback(async (value: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<void> => {
     const current = editingMessage;
     if (!current) return;
     const navigationRequest = loadRequestRef.current;
@@ -1415,7 +1417,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setGenerationError(undefined);
     setEditInFlight(pending);
     try {
-      await editUserMessage(value, current.userMessageIndex, globalThis.crypto.randomUUID());
+      await editUserMessage(value, current.userMessageIndex, globalThis.crypto.randomUUID(), capabilitySelection, fastMode);
       if (!isCurrentScope()) return;
       setEditingMessage((active) => active === current ? undefined : active);
     } catch (error) {

@@ -81,7 +81,7 @@ const api: DesktopApi = {
   exportSession: async (projectId, sessionId, format) => await ipcRenderer.invoke(desktopIpc.exportSession, projectId, sessionId, format),
   importSession: async (projectId) => await ipcRenderer.invoke(desktopIpc.importSession, projectId),
   preparePrompt: async (projectId) => await ipcRenderer.invoke(desktopIpc.preparePrompt, projectId),
-  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection) => await ipcRenderer.invoke(
+  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection, fastMode) => await ipcRenderer.invoke(
     desktopIpc.sendPrompt,
     projectId,
     sessionId,
@@ -91,7 +91,8 @@ const api: DesktopApi = {
     personalization,
     idempotencyKey,
     promptContext,
-    capabilitySelection
+    capabilitySelection,
+    fastMode
   ),
   mutateQueuedMessage: async (projectId, sessionId, action, mutation) => await ipcRenderer.invoke(
     desktopIpc.mutateQueuedMessage,
@@ -102,7 +103,7 @@ const api: DesktopApi = {
   ),
   toolCatalog: async (projectId) => await readRequest(desktopIpc.toolCatalog, projectId),
   resumeInterruptedTurn: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.resumeInterruptedTurn, projectId, sessionId),
-  editPrompt: async (projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey) => await ipcRenderer.invoke(desktopIpc.editPrompt, projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey),
+  editPrompt: async (projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey, capabilitySelection, fastMode) => await ipcRenderer.invoke(desktopIpc.editPrompt, projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey, capabilitySelection, fastMode),
   retryPrompt: async (projectId, sessionId, targetMessageId, input, attachments, idempotencyKey) => await ipcRenderer.invoke(desktopIpc.retryPrompt, projectId, sessionId, targetMessageId, input, attachments, idempotencyKey),
   switchMessageVersion: async (projectId, sessionId, messageId, direction) => await ipcRenderer.invoke(desktopIpc.switchMessageVersion, projectId, sessionId, messageId, direction),
   cancelRun: async (projectId, runId) => await ipcRenderer.invoke(desktopIpc.cancelRun, projectId, runId),
