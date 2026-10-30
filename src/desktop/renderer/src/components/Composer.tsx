@@ -77,7 +77,6 @@ interface ComposerProps {
   sessionWriterConflict: boolean;
   modelSetupRequired: boolean;
   focusToken: number;
-  prefillInput?: string;
   capabilityDefaults: DesktopCapabilityDefaults;
   skills: DesktopSkillCatalogEntry[];
   toolCatalog: DesktopToolCatalogEntry[];
@@ -146,7 +145,6 @@ export const Composer = memo(function Composer({
   sessionWriterConflict,
   modelSetupRequired,
   focusToken,
-  prefillInput,
   capabilityDefaults,
   skills,
   toolCatalog,
@@ -295,12 +293,6 @@ export const Composer = memo(function Composer({
   useEffect(() => {
     if (focusToken) inputRef.current?.focus();
   }, [focusToken]);
-
-  useEffect(() => {
-    if (prefillInput === undefined) return;
-    draftState.update({ history: [], draft: normalizeDraftReferences(prefillInput, []) });
-    inputRef.current?.focus();
-  }, [prefillInput, draftState]);
 
   // 编辑模式：横幅常驻 + 新的编辑请求（nonce）到达时回填一次文本并聚焦。
   const editNonce = editingMessage?.nonce;
