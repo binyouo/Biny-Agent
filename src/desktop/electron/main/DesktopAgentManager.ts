@@ -379,6 +379,7 @@ export class DesktopAgentManager {
   }
 
   async workspaceSnapshot(projectId: string, refreshDetails = true): Promise<DesktopWorkspaceSnapshot> {
+    const isProjectCurrent = this.state.captureProjectLifetime(projectId);
     // Keep lastOpenedAt stable on select/refresh so the sidebar order does not jump.
     const project = await this.projects.refreshStoredProject(projectId, refreshDetails);
     const managed = this.residentRuntime(projectId);
@@ -403,6 +404,8 @@ export class DesktopAgentManager {
         if (!managed.runtime.isRetired) throw error;
       }
     }
+    // Config, sessions, catalogs and runtime projection can outlive the project record.
+    if (!isProjectCurrent()) throw new Error(`Project was removed or replaced while loading workspace: ${projectId}`);
     const runtime = this.residentRuntime(projectId)?.runtime;
     // 磁盘配置是跨 Desktop/TUI 共享的持久化来源；Runtime 快照只在配置不可读时兜底。
     // 这样调试客户端重开时不会被一个仍存活的旧 Host 内存快照改回 ask。
