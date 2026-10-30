@@ -38,6 +38,9 @@ export interface ProxySettings {
   httpsProxy?: string;
   allProxy?: string;
   noProxy: string[];
+  /** System proxy switches are per-scheme; environment proxies retain their fallback. */
+  fallbackToOtherScheme?: boolean;
+  excludeSimpleHostnames?: boolean;
 }
 
 /** 创建一份会自动遵循环境/系统代理的 fetch；显式传入的 baseFetch 用于无代理直连和宿主注入。 */
@@ -118,9 +121,11 @@ export function parseMacSystemProxy(output: string): ProxySettings | undefined {
   const httpsProxy = proxyFromScutil(values, "HTTPS");
   const socksProxy = proxyFromScutil(values, "SOCKS");
   if (!httpProxy && !httpsProxy && !socksProxy) return undefined;
-  // undici ProxyAgent 只处理 HTTP/HTTPS CONNECT；macOS 的 HTTPS 代理优先，
+  // undici ProxyAgent 只处理 HTTP/HTTPS CONNECT；系统开关保持逐协议生效，
   // SOCKS 仅作为存在性提示，不冒充成可用的 HTTP 代理。
-  return { httpProxy, httpsProxy, noProxy };
+  const excludeSimpleHostnames = Number(values.get("ExcludeSimpleHostnames") ?? 0);
+  return { httpProxy, httpsProxy, noProxy, fallbackToOtherScheme: false,
+    excludeSimpleHostnames: Number.isFinite(excludeSimpleHostnames) && excludeSimpleHostnames !== 0 };
 }
 
 function parseEnvironmentProxy(env: NodeJS.ProcessEnv): ProxySettings | undefined {
@@ -168,9 +173,11 @@ function splitNoProxy(value: string | undefined): string[] {
 }
 
 function proxyForUrl(url: URL, settings: ProxySettings): string | undefined {
+  if (settings.excludeSimpleHostnames && !/[.:]/u.test(url.hostname)) return undefined;
   if (matchesNoProxy(url, settings.noProxy)) return undefined;
-  if (url.protocol === "https:") return settings.httpsProxy ?? settings.httpProxy ?? settings.allProxy;
-  if (url.protocol === "http:") return settings.httpProxy ?? settings.httpsProxy ?? settings.allProxy;
+  const fallback = settings.fallbackToOtherScheme !== false;
+  if (url.protocol === "https:") return settings.httpsProxy ?? (fallback ? settings.httpProxy : undefined) ?? settings.allProxy;
+  if (url.protocol === "http:") return settings.httpProxy ?? (fallback ? settings.httpsProxy : undefined) ?? settings.allProxy;
   return undefined;
 }
 
