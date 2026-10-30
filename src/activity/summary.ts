@@ -333,7 +333,7 @@ function aggregateActivitySummaryStats(
   const keyMoments: ActivitySummaryKeyMoment[] = [];
 
   for (const session of source.sessions) {
-    const durationMs = sessionDurationMs(session);
+    const durationMs = sessionDurationMs(session, now);
     totalActiveMs += durationMs;
     snapshotCount += session.snapshotCount;
     ocrCharCount += session.ocrCharCount;
@@ -425,10 +425,9 @@ function perAppDurationsForSession(
   return durations;
 }
 
-function sessionDurationMs(session: ActivitySummarySourceSession): number {
-  if (session.endedAt === undefined) return 0;
+function sessionDurationMs(session: ActivitySummarySourceSession, now: Date): number {
   const startedAt = parseTimestamp(session.startedAt);
-  const endedAt = parseTimestamp(session.endedAt);
+  const endedAt = session.endedAt === undefined ? now.getTime() : parseTimestamp(session.endedAt);
   if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) return 0;
   return Math.max(0, endedAt - startedAt);
 }
