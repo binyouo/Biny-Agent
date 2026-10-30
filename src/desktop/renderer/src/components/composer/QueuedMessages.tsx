@@ -5,9 +5,11 @@
  */
 import React, { useRef, useState } from "react";
 import type { QueuedRunMessageSnapshot } from "../../../../../runtime/agentEvents.js";
+import { AttachmentCard } from "../AttachmentCard.js";
 import { Icon } from "../Icon.js";
 
 interface QueuedMessagesProps {
+  projectId?: string;
   messages: readonly QueuedRunMessageSnapshot[];
   running: boolean;
   onRemove(messageId: string): Promise<void>;
@@ -18,7 +20,7 @@ interface QueuedMessagesProps {
   onError(message: string): void;
 }
 
-export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, onSendNow, onUpdate, onError }: QueuedMessagesProps): React.JSX.Element | null {
+export function QueuedMessages({ projectId, messages, running, onRemove, onMove, onSteer, onSendNow, onUpdate, onError }: QueuedMessagesProps): React.JSX.Element | null {
   const [editing, setEditing] = useState<{ messageId: string; content: string }>();
   const [draggingId, setDraggingId] = useState<string>();
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -27,6 +29,7 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
   const lastMoveRef = useRef<string | undefined>(undefined);
 
   if (!messages.length) return null;
+  const hasRecovery = messages.some((message) => message.recovery !== undefined);
 
   const run = async (key: string, action: () => Promise<void>): Promise<void> => {
     setBusyIds((current) => new Set(current).add(key));
@@ -65,7 +68,7 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
         <button
           aria-label="停止当前任务并发送队列"
           className="biny-queued-send-now"
-          disabled={!running || busyIds.has("all")}
+          disabled={!running || hasRecovery || busyIds.has("all")}
           onClick={() => { void run("all", onSendNow); }}
           title="停止当前任务并发送队列"
           type="button"
@@ -73,21 +76,24 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
           <Icon name="arrow-up" size={17} /><span>停止并发送</span>
         </button>
       </header>
+      {hasRecovery ? (
+        <p role="status">队列受理未确认。以下恢复副本只读，不会自动重发；会话可能已有输入记录，请先核对。副本和附件仅保留在当前 Host 进程内，退出或重启后不保留。移除副本不会删除会话记录。</p>
+      ) : null}
       <div className="biny-queued-message-list">
         {messages.map((message, index) => {
-          const isEditing = editing?.messageId === message.messageId;
+          const isEditing = !message.recovery && editing?.messageId === message.messageId;
           const pending = busyIds.has(message.messageId);
           return (
             <div
               className={`biny-queued-message-row${draggingId === message.messageId ? " is-dragging" : ""}`}
-              draggable={!isEditing && !pending}
+              draggable={!hasRecovery && !isEditing && !pending}
               key={message.messageId}
               onDragEnd={() => {
                 setDraggingId(undefined);
                 lastMoveRef.current = undefined;
               }}
               onDragOver={(event) => {
-                if (!draggingId || draggingId === message.messageId) return;
+                if (hasRecovery || !draggingId || draggingId === message.messageId) return;
                 event.preventDefault();
                 const bounds = event.currentTarget.getBoundingClientRect();
                 const placeAfter = event.clientY > bounds.top + bounds.height / 2;
@@ -117,7 +123,16 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
               <span aria-hidden="true" className="biny-queued-message-grip" title="拖动或按 Alt+↑/↓ 重新排序">
                 <Icon name="grip-vertical" size={14} />
               </span>
-              {isEditing ? (
+              {message.recovery ? (
+                <div className="biny-queued-message-content">
+                  <textarea aria-label="只读恢复副本" readOnly rows={3} value={message.content || `[${String(message.attachmentCount)} 个文件]`} />
+                  {message.recovery.attachments.map((attachment) => projectId
+                    ? <AttachmentCard key={attachment.path} attachment={attachment} projectId={projectId} />
+                    : <div key={attachment.path}>附件：{attachment.name}（当前项目不可用，无法打开）</div>)}
+                  {message.recovery.unavailableAttachmentNames.length ? <div>无可打开的持久附件引用：{message.recovery.unavailableAttachmentNames.join("、")}；仅在进程内保留，不能在此下载。</div> : null}
+                  <small>受理未确认 · 请核对会话后处理</small>
+                </div>
+              ) : isEditing ? (
                 <textarea
                   aria-label="编辑待发送消息"
                   autoFocus
@@ -144,7 +159,7 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
                   disabled={pending}
                   onClick={() => setEditing({ messageId: message.messageId, content: message.content })}
                   onKeyDown={(event) => {
-                    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+                    if (hasRecovery || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
                     const up = event.key === "ArrowUp";
                     const target = messages[up ? index - 1 : index + 1];
                     event.preventDefault();
@@ -156,13 +171,13 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
                   {message.content || `[${String(message.attachmentCount)} 个文件]`}
                 </button>
               )}
-              {running && !isEditing ? (
+              {running && !hasRecovery && !isEditing ? (
                 <button className="biny-queued-message-steer" disabled={pending} onClick={() => { void run(message.messageId, async () => await onSteer(message.messageId)); }} title="立即把这条消息注入正在生成的回答" type="button">
                   <Icon name="corner-down-right" size={14} />
                   <span>插话</span>
                 </button>
               ) : null}
-              <button aria-label="删除" className="biny-queued-message-delete" disabled={pending} onClick={() => { void run(message.messageId, async () => await onRemove(message.messageId)); }} title="删除" type="button"><Icon name="trash" size={14} /></button>
+              <button aria-label={message.recovery ? "移除恢复副本" : "删除"} className="biny-queued-message-delete" disabled={pending} onClick={() => { void run(message.messageId, async () => await onRemove(message.messageId)); }} title={message.recovery ? "仅移除本进程的恢复副本，不删除会话记录" : "删除"} type="button"><Icon name="trash" size={14} /></button>
             </div>
           );
         })}

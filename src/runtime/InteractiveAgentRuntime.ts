@@ -134,6 +134,8 @@ interface BackgroundOperation {
 }
 
 interface AgentRun extends ActiveRunSnapshot {
+  queuedHandoff?: RuntimeQueuedMessage[];
+  userAdmissionConfirmed?: boolean;
   allowUserInput: boolean;
   turnId: string;
   startedAtMs: number;
@@ -162,6 +164,7 @@ interface ActiveTool {
 }
 
 interface RuntimeQueuedMessage {
+  recovery?: { runId: string; messageId: string };
   messageId: string;
   input: string;
   attachments: AgentAttachment[];
@@ -326,6 +329,7 @@ export class InteractiveAgentRuntime {
 
   async updateQueuedRunMessage(messageId: string, input: string): Promise<void> {
     const item = this.requireQueuedMessage(messageId);
+    if (item.recovery) throw new Error("Unconfirmed queue handoff is read-only; inspect the conversation before discarding its recovery copy.");
     const content = input.trim();
     if (!content && !item.attachments.length) throw new Error("Queued message cannot be empty.");
     item.input = content;
@@ -343,6 +347,7 @@ export class InteractiveAgentRuntime {
     const from = this.queuedMessages.findIndex((item) => item.messageId === messageId);
     const over = this.queuedMessages.findIndex((item) => item.messageId === targetMessageId);
     if (from < 0 || over < 0) throw new Error("Queued message is no longer pending.");
+    if (this.queuedMessages.some((item) => item.recovery)) throw new Error("Resolve the unconfirmed queue handoff before reordering messages.");
     let target = placeAfter ? over + 1 : over;
     if (from < target) target -= 1;
     if (target === from) return;
@@ -356,6 +361,7 @@ export class InteractiveAgentRuntime {
     const index = this.queuedMessages.findIndex((item) => item.messageId === messageId);
     const item = this.queuedMessages[index];
     if (!item || index < 0) throw new Error("Queued message is no longer pending.");
+    if (this.queuedMessages.some((pending) => pending.recovery)) throw new Error("Unconfirmed queue handoff blocks steering.");
     this.queuedMessages.splice(index, 1);
     try {
       await this.commandRuntime.agent.queueSteering(item.messageId, item.input, item.attachments);
@@ -369,6 +375,7 @@ export class InteractiveAgentRuntime {
 
   async sendQueuedRunMessagesNow(): Promise<void> {
     if (!this.queuedMessages.length) return;
+    if (this.queuedMessages.some((item) => item.recovery)) throw new Error("Unconfirmed queue handoff cannot be resent automatically.");
     const run = this.activeRun;
     const completion = this.activeRunCompletion;
     this.sendQueuedMessagesWithoutDelay = true;
@@ -389,12 +396,13 @@ export class InteractiveAgentRuntime {
     return this.queuedMessages.map((item) => ({
       messageId: item.messageId,
       content: item.input,
-      attachmentCount: item.attachments.length
+      attachmentCount: item.attachments.length,
+      ...(item.recovery ? { recovery: { ...item.recovery, attachments: sessionAttachmentReferences(item.attachments) ?? [], unavailableAttachmentNames: item.attachments.filter((attachment) => !attachment.path).map((attachment) => attachment.name) } } : {})
     }));
   }
 
   private scheduleQueuedMessageRun(previousRun: AgentRun): void {
-    if (this.closed || !this.queuedMessages.length) return;
+    if (this.closed || !this.queuedMessages.length || this.queuedMessages.some((item) => item.recovery)) return;
     if (this.sendQueuedMessagesWithoutDelay) {
       this.sendQueuedMessagesWithoutDelay = false;
       this.startQueuedMessageRun(previousRun);
@@ -428,7 +436,7 @@ export class InteractiveAgentRuntime {
   }
 
   private startQueuedMessageRun(previousRun: AgentRun): void {
-    if (this.closed || !this.queuedMessages.length) return;
+    if (this.closed || !this.queuedMessages.length || this.queuedMessages.some((item) => item.recovery)) return;
     const queued = this.queuedMessages;
     this.queuedMessages = [];
     const input = queued.map((item) => item.input).filter((content) => content.trim()).join("\n\n");
@@ -446,7 +454,8 @@ export class InteractiveAgentRuntime {
         false,
         false,
         undefined,
-        previousRun.fastMode
+        previousRun.fastMode,
+        queued
       );
     } catch (error) {
       // 新一轮尚未成功受理时保留队列，避免资源未就绪等同步失败直接吞掉用户输入。
@@ -486,7 +495,8 @@ export class InteractiveAgentRuntime {
     emptyTurn = false,
     planSupervision = false,
     modelRoute?: "tool",
-    fastMode?: boolean
+    fastMode?: boolean,
+    queuedHandoff?: RuntimeQueuedMessage[]
   ): SubmittedAgentRun {
     if (this.closed) throw new Error("Agent runtime is closed.");
     if (this.state.kind === "maintenance") {
@@ -509,6 +519,7 @@ export class InteractiveAgentRuntime {
     const messageId = requestIds?.messageId ?? randomUUID();
     const startedAtMs = Date.now();
     const run: AgentRun = {
+      queuedHandoff,
       allowUserInput: requestIds?.allowUserInput === true,
       sessionId,
       runId,
@@ -584,6 +595,16 @@ export class InteractiveAgentRuntime {
     }
     const completion: Promise<AgentRunOutcome> = execution
       .catch(async (error: unknown) => {
+        // A rejected admission may already have written the canonical input.
+        // Keep exact input/attachments for inspection, never infer non-delivery
+        // or replay it. This ownership transfer happens before terminal events.
+        if (run.queuedHandoff && !run.userAdmissionConfirmed) {
+          this.queuedMessages = [
+            ...run.queuedHandoff.map((item) => ({ ...item, recovery: { runId: run.runId, messageId: run.messageId } })),
+            ...this.queuedMessages
+          ];
+        }
+        run.queuedHandoff = undefined;
         try {
           return await this.failUncaughtRun(run, error);
         } catch (terminalError) {
@@ -591,6 +612,7 @@ export class InteractiveAgentRuntime {
         }
       })
       .finally(() => {
+        run.queuedHandoff = undefined;
         this.commandRuntime.releaseRunResourceSnapshot?.(runId);
         if (this.activeRun === run) {
           this.activeRun = undefined;
@@ -737,6 +759,7 @@ export class InteractiveAgentRuntime {
     if (this.state.kind !== "idle" || this.activeRun) {
       throw new Error("Cannot start a new session while the runtime is busy.");
     }
+    if (this.queuedMessages.some((item) => item.recovery)) throw new Error("Inspect or discard unconfirmed queue recovery before starting a new session.");
     await this.runMaintenanceOperation("draft", async () => await this.commandRuntime.agent.startNewSession());
     this.queuedMessages = [];
     // 草稿已经切走，旧会话的 writer claim 一并释放；否则旧会话会被这个 surface 一直占着。
@@ -1233,6 +1256,11 @@ export class InteractiveAgentRuntime {
 
   private async executeRun(run: AgentRun, signal: AbortSignal): Promise<AgentRunOutcome> {
     const agent = this.commandRuntime.agent;
+    if (run.queuedHandoff && typeof agent.admitUserMessage !== "function") {
+      // A legacy adapter cannot certify a durable queue transfer. Reject before
+      // any provider/tool execution rather than infer admission from its result.
+      throw new Error("Queued handoff requires durable user admission support.");
+    }
     const startedAtMs = Date.now();
     const executePerfStartedAt = perfNow();
     const info = this.getInfo();
@@ -1254,6 +1282,10 @@ export class InteractiveAgentRuntime {
         replacementUserMessageId: replacingUserMessage ? run.replacementUserMessageId : undefined,
         source: run.source
       });
+      // Only an actual positive admission receipt releases the queued batch.
+      // A legacy adapter without this API cannot attest durable user admission.
+      run.userAdmissionConfirmed = true;
+      run.queuedHandoff = undefined;
     }
     // message.user 也会把时间线切到 running；必须和 run.started 一样晚于 durable admission。
     if (!run.supervision && !run.continuation && !run.emptyTurn && run.retryOfMessageId === undefined) {
