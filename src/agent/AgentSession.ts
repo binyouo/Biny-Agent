@@ -5151,4 +5151,3 @@ function sessionAttachments(attachments: AgentAttachment[] | undefined): Attachm
     .map(({ name, mimeType, path: virtualPath, size }) => ({ name, mimeType, path: virtualPath!, size }));
   return references?.length ? references : undefined;
 }
-
