@@ -46,6 +46,8 @@ test("TUI command results stay in the transcript and goal controls show only mea
   const app = new BinyTui(terminalUi, root);
   const factory = createRuntimeHostFactory(root, () => ({ configStore: createFileConfigStore(root, { globalDir: configDir }) }));
   const server = await startRuntimeHost(root, async () => host, { configDir, createRuntime: factory });
+  t.after(async () => { await server.close(); await rm(root, { recursive: true, force: true }); });
+  await server.initialize();
   server["businessComposition"].stop();
   const transport = await readyHostClient(await connectRuntimeHost(root, { configDir, surface: "tui" }));
 
