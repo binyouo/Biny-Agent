@@ -284,6 +284,7 @@ export function apiFormatOptionsForConnection(
  * 实际决定请求形状的字段；老配置只有 protocol（anthropic）时也能正确折回。
  */
 export function apiFormatForConnection(protocol?: string, apiBackend?: string): ApiFormatId {
+  if (apiBackend === "chat_completions") return "chat_completions";
   if (apiBackend === "responses") return "responses";
   if (apiBackend === "google_generative_ai") return "google_generative_ai";
   if (apiBackend === "anthropic_messages" || protocol === "anthropic") return "anthropic_messages";
