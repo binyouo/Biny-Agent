@@ -32,6 +32,7 @@ export function resolveProviderRequestRoute(
   const apiBackend = model?.apiBackend
     ?? config.apiBackend
     ?? (config.protocol === "anthropic" ? "anthropic_messages" : undefined)
+    ?? (config.type === "google-native" ? "google_generative_ai" : undefined)
     ?? definition.api
     ?? (config.type === "openai-codex"
       ? "responses"
@@ -45,7 +46,7 @@ export function resolveProviderRequestRoute(
     ? "model"
     : config.apiBackend !== undefined || config.protocol === "anthropic"
       ? "provider"
-      : definition.api !== undefined
+      : definition.api !== undefined && config.type !== "google-native"
         ? "definition"
         : "fallback";
   return { apiBackend, protocol, source };
