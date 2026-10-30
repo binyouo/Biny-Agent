@@ -56,7 +56,8 @@ import {
   type ImportedSession
 } from "../../../session/transfer.js";
 import { gitInspectionEnvironment } from "../../../tools/git/environment.js";
-import { resolveWorkspaceDirectory, resolveWorkspacePath, toWorkspaceRelative } from "../../../workspace/resolvePath.js";
+import { resolveWorkspaceDirectory, resolveWorkspacePath } from "../../../workspace/resolvePath.js";
+import { readDesktopWorkspaceDirectory, workspaceTreePath } from "../../workspaceDirectoryListing.js";
 import { readDesktopWorkspaceFileIndex } from "../../workspaceFileIndex.js";
 import { saveAttachmentContext, savePendingAttachmentContext, updatePendingAttachmentContext, attachmentFilePath, attachmentPathPrefix, saveAttachment as saveProjectAttachment } from "../../../attachments/store.js";
 import type {
@@ -70,7 +71,6 @@ import type {
   DesktopSessionTreePageOptions,
   DesktopSessionStatus,
   DesktopWorkspaceDirectory,
-  DesktopWorkspaceDirectoryEntry,
   DesktopSessionSummary,
   DesktopWorkspaceFilePreview
 } from "../../protocol.js";
@@ -828,26 +828,7 @@ export class DesktopProjectService {
   }
 
   async listWorkspaceDirectory(project: DesktopProject, relativePath: string): Promise<DesktopWorkspaceDirectory> {
-    const directoryPath = this.workspaceDirectory(project, relativePath);
-    const stat = await fs.stat(directoryPath);
-    if (!stat.isDirectory()) throw new Error(`Path is not a directory: ${relativePath}`);
-    const directoryRelativePath = toWorkspaceRelative(project.path, directoryPath);
-    const dirEntries = await fs.readdir(directoryPath, { withFileTypes: true });
-    const entries: DesktopWorkspaceDirectoryEntry[] = dirEntries
-      .map((entry) => ({
-        name: entry.name,
-        path: directoryRelativePath === "." ? entry.name : `${directoryRelativePath.split(path.sep).join("/")}/${entry.name}`,
-        kind: entry.isDirectory() ? "directory" : "file"
-      } satisfies DesktopWorkspaceDirectoryEntry))
-      // 目录在前、文件在后，同类按名称排序。
-      .sort((left, right) => {
-        if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
-        return left.name.localeCompare(right.name);
-      });
-    return {
-      path: directoryRelativePath.split(path.sep).join("/"),
-      entries
-    };
+    return await readDesktopWorkspaceDirectory(project.path, relativePath);
   }
 
   async workspaceFileIndex(project: DesktopProject): Promise<Awaited<ReturnType<typeof readDesktopWorkspaceFileIndex>>> {
@@ -884,7 +865,7 @@ export class DesktopProjectService {
     const binary = content.includes(0);
     const truncated = stat.size > bytesRead;
     return {
-      path: isDailyNote || relativePath.startsWith(attachmentPathPrefix) ? relativePath : toWorkspaceRelative(project.path, filePath),
+      path: isDailyNote || relativePath.startsWith(attachmentPathPrefix) ? relativePath : workspaceTreePath(project.path, relativePath),
       // Only a byte-limited preview may end mid-character; preserve the BOM and real malformed bytes.
       content: binary ? undefined : truncated && bytesRead === filePreviewLimit
         ? new TextDecoder("utf-8", { ignoreBOM: true }).decode(content, { stream: true })
