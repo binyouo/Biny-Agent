@@ -18,11 +18,13 @@ export const maxIdentityDocumentChars: Record<IdentityDocumentKind, number> = {
 export const maxIdentityPromptChars = 32_000;
 
 export function normalizeIdentityContent(content: string, kind: IdentityDocumentKind): string {
-  return content
-    .replaceAll("\r\n", "\n")
-    .replaceAll("\r", "\n")
-    .trim()
-    .slice(0, maxIdentityDocumentChars[kind]);
+  const normalized = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+  const limit = maxIdentityDocumentChars[kind];
+  const previous = normalized.charCodeAt(limit - 1);
+  const next = normalized.charCodeAt(limit);
+  // Keep the UTF-16 budget, but never cut between a valid surrogate pair.
+  const end = previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? limit - 1 : limit;
+  return normalized.slice(0, end);
 }
 
 export function identityContentHash(content: string): string {
