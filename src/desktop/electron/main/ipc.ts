@@ -579,7 +579,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     await context.agents.preparePrompt(idSchema.parse(projectId));
   });
 
-  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown) => {
+  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown, fastMode: unknown) => {
     return await context.agents.sendPrompt(
       idSchema.parse(projectId),
       sessionId === undefined ? undefined : idSchema.parse(sessionId),
@@ -589,7 +589,8 @@ export function registerDesktopIpc(context: IpcContext): void {
       chatPersonalizationSchema.optional().parse(personalization),
       idempotencyKeySchema.parse(idempotencyKey),
       promptContextSchema.parse(promptContext),
-      capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection)
+      capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection),
+      z.boolean().optional().parse(fastMode)
     );
   });
 
@@ -615,14 +616,16 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.resumeInterruptedTurn(idSchema.parse(projectId), idSchema.parse(sessionId));
   });
 
-  handleRecoveryGated(desktopIpc.editPrompt, async (_event, projectId: unknown, sessionId: unknown, userMessageIndex: unknown, input: unknown, attachments: unknown, idempotencyKey: unknown) => {
+  handleRecoveryGated(desktopIpc.editPrompt, async (_event, projectId: unknown, sessionId: unknown, userMessageIndex: unknown, input: unknown, attachments: unknown, idempotencyKey: unknown, capabilitySelection: unknown, fastMode: unknown) => {
     return await context.agents.editPrompt(
       idSchema.parse(projectId),
       idSchema.parse(sessionId),
       userMessageIndexSchema.parse(userMessageIndex),
       promptSchema.parse(input),
       z.array(attachmentSchema).max(20).parse(attachments),
-      idempotencyKeySchema.parse(idempotencyKey)
+      idempotencyKeySchema.parse(idempotencyKey),
+      capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection),
+      z.boolean().optional().parse(fastMode)
     );
   });
 

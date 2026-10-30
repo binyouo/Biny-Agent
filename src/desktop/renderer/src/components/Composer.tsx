@@ -87,7 +87,7 @@ interface ComposerProps {
   /** 正在编辑的历史消息；nonce 变化时把 value 回填进输入框并聚焦。 */
   editingMessage?: { nonce: number; value: string };
   /** 提交编辑：原位替换该消息并重新生成回复。 */
-  onSubmitEdit(input: string): Promise<void>;
+  onSubmitEdit(input: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<void>;
   /** 取消编辑（横幅 X / 退出编辑态）。 */
   onCancelEdit(): void;
   onSlashCommand(command: string): Promise<void>;
@@ -369,7 +369,8 @@ export const Composer = memo(function Composer({
     const resume = suggestion === undefined && Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
     if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
       || (modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(value))) || memoryToggleBusy || pendingAttachments.length) return;
-    // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
+    // 编辑模式：原附件由 App 保留；本次工具/技能与快速模式选择随替换回合提交。
+    // 继续使用既有编辑准入和恢复路径，不走普通发送/斜杠命令链路。
     if (editing) {
       submitFlightRef.current = true;
       setBusy(true);
@@ -379,7 +380,7 @@ export const Composer = memo(function Composer({
         if (!mounted.current || isSubmissionCurrent?.() === false || editingMessageRef.current !== editingMessage) return;
         clearHistory();
         setDraft({ value: "", tokens: [] });
-        await onSubmitEdit(value);
+        await onSubmitEdit(value, capabilitySelection, fastMode);
       } catch (submitError) {
         if (mounted.current && editingMessageRef.current === editingMessage) {
           setDraft(draft);

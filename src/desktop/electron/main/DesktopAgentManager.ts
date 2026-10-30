@@ -877,14 +877,18 @@ export class DesktopAgentManager {
     userMessageIndex: number,
     input: string,
     attachments: DesktopAttachment[],
-    idempotencyKey?: string
+    idempotencyKey?: string,
+    capabilitySelection?: AgentCapabilitySelection,
+    fastMode?: boolean
   ): Promise<DesktopRunReceipt> {
     return await this.runIdempotently(projectId, "edit", idempotencyKey, async () => await this.editPromptOnce(
       projectId,
       sessionId,
       userMessageIndex,
       input,
-      attachments
+      attachments,
+      capabilitySelection,
+      fastMode
     ));
   }
 
@@ -942,7 +946,9 @@ export class DesktopAgentManager {
     sessionId: string,
     userMessageIndex: number,
     input: string,
-    attachments: DesktopAttachment[]
+    attachments: DesktopAttachment[],
+    capabilitySelection?: AgentCapabilitySelection,
+    fastMode?: boolean
   ): Promise<DesktopRunReceipt> {
     const managed = await this.resolveSessionRuntime(projectId, sessionId);
     const { runtime } = managed;
@@ -962,7 +968,7 @@ export class DesktopAgentManager {
       retryOfMessageId: targetMessageId,
       replaceUserMessageId: targetMessageId
     };
-    const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds);
+    const accepted = await runtime.submitRunForSession(sessionId, prompt, agentAttachments, requestIds, undefined, capabilitySelection, fastMode);
     if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
     await this.state.setSelectedSession(projectId, sessionId);
     return {
