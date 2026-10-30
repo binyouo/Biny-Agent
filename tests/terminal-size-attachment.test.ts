@@ -31,11 +31,9 @@ function setup({ slotId = "default", restartToken = 0, active = true, width = 10
   let target = { cols: 120, rows: 40 };
   let observer!: () => void;
   let frame: (() => void) | undefined;
-  let terminal!: FakeTerminal;
   class FakeTerminal {
     cols = 80; rows = 24; options: { theme?: unknown } = {};
     listener: ((size: Dimensions) => void) | undefined;
-    constructor() { terminal = this; }
     loadAddon(addon: FakeFitAddon): void { addon.activate(this); }
     open(): void {} write(): void {} focus(): void {} dispose(): void {}
     onData(): { dispose(): void } { return { dispose() {} }; }
@@ -71,7 +69,7 @@ function setup({ slotId = "default", restartToken = 0, active = true, width = 10
   const cleanup = vm.runInContext(connection, context, { timeout: 1000 }) as () => void;
   const flush = async (): Promise<void> => { for (let index = 0; index < 8; index++) await Promise.resolve(); };
   return {
-    sent, errors, created, container, cleanup, observer: () => observer(), terminal: () => terminal,
+    sent, errors, created, container, cleanup, observer: () => observer(),
     setTarget(cols: number, rows: number) { target = { cols, rows }; },
     setActive(value: boolean) { activeRef.current = value; context.active = value; },
     activate() { activeRef.current = true; context.active = true; vm.runInContext(activation, context, { timeout: 1000 }); frame?.(); },
