@@ -1,4 +1,4 @@
-/** Execute only TerminalView's actual first effect; every boundary is an inert fake. */
+/** Execute TerminalView's actual list-initialization effect; every boundary is an inert fake. */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -14,12 +14,17 @@ const sourcePath = path.resolve(process.cwd(), "src/desktop/renderer/src/compone
 const source = ts.createSourceFile(sourcePath, readFileSync(sourcePath, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "TerminalView");
 assert.ok(component?.body);
+function containsListCall(node: ts.Node): boolean {
+  if (ts.isCallExpression(node) && node.expression.getText(source) === "window.biny.listTerminals") return true;
+  return ts.forEachChild(node, containsListCall) === true;
+}
 const effects = component.body.statements.filter((node): node is ts.ExpressionStatement => ts.isExpressionStatement(node)
-  && ts.isCallExpression(node.expression) && node.expression.expression.getText(source) === "useEffect");
-assert.equal(effects.length, 1, "TerminalView has exactly one top-level initialization effect");
+  && ts.isCallExpression(node.expression) && node.expression.expression.getText(source) === "useEffect"
+  && node.expression.arguments[0] !== undefined && containsListCall(node.expression.arguments[0]));
+assert.equal(effects.length, 1, "TerminalView has exactly one top-level list-initialization effect");
 const call = effects[0]!.expression as ts.CallExpression;
 assert.equal(call.arguments.length, 2);
-assert.equal(call.arguments[1]!.getText(source), "[active, projectId]");
+assert.equal(call.arguments[1]!.getText(source), "[active, projectId, acceptEntries]");
 const callback = call.arguments[0]!;
 assert.ok(ts.isArrowFunction(callback));
 const boundaryCalls: string[] = [];
@@ -33,7 +38,7 @@ function callRoot(node: ts.Expression): string {
 const allowedCalls = new Set([
   "window.biny.listTerminals", "window.biny.createTerminal",
   "window.biny.listTerminals().then", "window.biny.listTerminals().then().catch",
-  "entries.some", "setTabs", "setSelected", "setError", "String"
+  "entries.some", "setTabs", "acceptEntries", "setSelected", "setError", "String"
 ]);
 const visit = (node: ts.Node): void => {
   assert.ok(!ts.isNewExpression(node) && !ts.isTaggedTemplateExpression(node)
@@ -76,15 +81,19 @@ function fixture(projectId = "A", active = true, selected: string | undefined = 
     createTerminal: (...args: unknown[]) => { calls.push(["create", ...args]); return create.promise; }
   });
   // No dispose/write/resize/PTY/IPC APIs exist in the context at all.
+  const listMutationRef = { current: 0 };
+  const publishTabs = (tabs: Tab[]): void => { state.tabs = tabs; publications.push(["tabs", plain(tabs)]); };
+  // This fixture observes the effect's publication boundary; the real ownership
+  // adoption helper and mounted effect are covered by the full React fixture.
   const context = vm.createContext({ active, projectId, window: Object.freeze({ biny: api }),
-    setTabs: (tabs: Tab[]) => { state.tabs = tabs; publications.push(["tabs", plain(tabs)]); },
+    listMutationRef, acceptEntries: publishTabs, setTabs: publishTabs,
     setSelected: (update: (current: string | undefined) => string | undefined) => {
       state.selected = update(state.selected); publications.push(["selected", state.selected]);
     },
     setError: (error: string) => { state.error = error; publications.push(["error", error]); }
   }, { codeGeneration: { strings: false, wasm: false } });
   const cleanup = vm.runInContext(compiled.outputText, context, { timeout: 1_000 }) as (() => void) | undefined;
-  return { list, create, calls, publications, state, cleanup };
+  return { list, create, calls, publications, state, cleanup, invalidate: () => { listMutationRef.current++; } };
 }
 
 test("inactive initialization does not list or create", { timeout: 2_000 }, async () => {
@@ -149,5 +158,21 @@ for (const nextProject of ["A", "B"]) {
     fresh.create.resolve(handle); await flush();
     assert.equal(fresh.state.selected, "default"); assert.equal(fresh.publications.length, 2);
     fresh.cleanup!();
+  });
+}
+
+for (const entries of [[], existing]) {
+  test(`accepted terminal mutation retires a pending ${entries.length ? "existing" : "empty"} list`, { timeout: 2_000 }, async () => {
+    const f = fixture(); f.invalidate(); f.list.resolve(entries); await flush();
+    assert.deepEqual(f.calls, [["list", "A"]]);
+    assert.deepEqual(f.publications, []); f.cleanup!();
+  });
+}
+for (const reject of [false, true]) {
+  test(`accepted terminal mutation retires already-issued initialization ${reject ? "failure" : "success"}`, { timeout: 2_000 }, async () => {
+    const f = fixture(); f.list.resolve([]); await flush(); f.invalidate();
+    if (reject) f.create.reject(new Error("old create failed")); else f.create.resolve(handle);
+    await flush(); assert.deepEqual(f.calls, [["list", "A"], ["create", "A", 80, 24]]);
+    assert.deepEqual(f.publications, []); f.cleanup!();
   });
 }

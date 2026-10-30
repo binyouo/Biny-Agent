@@ -416,7 +416,17 @@ export function registerDesktopIpc(context: IpcContext): void {
   handle(desktopIpc.createTerminal, async (_event, projectId: unknown, cols: unknown, rows: unknown, slotId: unknown) => {
     const project = context.projects.requireProject(idSchema.parse(projectId));
     if (project.missing) throw new Error("项目目录不可用，无法打开终端。");
-    return await context.terminals.create(project.id, project.path, terminalSizeSchema.parse(cols), terminalSizeSchema.parse(rows), z.string().min(1).max(100).optional().parse(slotId));
+    const parsedCols = terminalSizeSchema.parse(cols), parsedRows = terminalSizeSchema.parse(rows);
+    const parsedSlot = z.string().min(1).max(100).optional().parse(slotId);
+    if (parsedSlot === "preview") {
+      // Initial attachment is not permission to launch a new server (or a bare
+      // preview shell). Explicit restart uses startProjectPreview instead.
+      const existing = context.terminals.list(project.id).find(entry => entry.slotId === "preview");
+      if (!existing) throw new Error("开发服务器已退出，请点击重新启动。");
+      context.terminals.resize(existing.terminalId, parsedCols, parsedRows);
+      return context.terminals.read(existing.terminalId);
+    }
+    return await context.terminals.create(project.id, project.path, parsedCols, parsedRows, parsedSlot);
   });
 
   // 键盘输入和窗口尺寸走 fire-and-forget 的 send 通道，省掉 invoke 往返延迟。
