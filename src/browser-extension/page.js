@@ -248,6 +248,9 @@ export async function pageOperation(operation, args, backendElement) {
     window.scrollBy(args.x ?? 0, args.y ?? 0);
     return { x: scrollX, y: scrollY };
   }
+  if (operation === "scroll_target" && !args.selector) {
+    return { x: innerWidth / 2, y: innerHeight / 2, viewportWidth: innerWidth, viewportHeight: innerHeight };
+  }
   const matches = locate(args.selector);
   if (matches.length !== 1) throw new Error("需要唯一元素，请重新读取页面。");
   const element = matches[0];
