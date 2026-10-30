@@ -67,7 +67,9 @@ function cells(markdown: string) {
   assert.ok(table && table.type === 'table');
   return table.children.map(row => row.children.map(visible));
 }
-for (const value of ['*draft*', '**draft**', '_draft_', '~~draft~~', '`draft`', '[notes](plain)']) {
+for (const value of ['*draft*', '**draft**', '_draft_', '~~draft~~', '`draft`', '[notes](plain)',
+  '<br>', '<b>literal</b>', 'a &copy; b', '&#124;', '&#x1F408;', '&amp;copy;',
+  '<https://example.test>', '<name@example.test>', '<!-- literal -->', '\\<br> &notanentity;']) {
   test(`literal visible text roundtrips: ${value}`, () => {
     const f = fixture(['Status'], [[value]]);
     try {
@@ -81,6 +83,14 @@ test('literal inline syntax in header also roundtrips', () => {
   const f = fixture(['*Status*'], [['draft']]);
   try { assert.deepEqual(cells(serializeMarkdownTable(f.table, 'markdown')), [['*Status*'], ['draft']]); }
   finally { f.dispose(); }
+});
+test('literal HTML and entities remain distinct from structural line breaks in headers and cells', () => {
+  const f = fixture([['<br>', null, '&copy;']], [[['<b>literal</b>', null, '&#124;']]]);
+  try {
+    assert.deepEqual(cells(serializeMarkdownTable(f.table, 'markdown')), [['<br>\n&copy;'], ['<b>literal</b>\n&#124;']]);
+    assert.equal(serializeMarkdownTable(f.table, 'csv'), '"<br>\n&copy;"\n"<b>literal</b>\n&#124;"');
+    assert.equal(serializeMarkdownTable(f.table, 'tsv'), '<br>\\n&copy;\n<b>literal</b>\\n&#124;');
+  } finally { f.dispose(); }
 });
 test('pipes, backslashes, Unicode and empty columns remain aligned', () => {
   const rows = [['a|b', ''], ['C:\\notes\\file', '中文 🐈 café'], ['\\|', 'last']];
