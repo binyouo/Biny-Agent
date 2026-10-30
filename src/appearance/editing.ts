@@ -168,7 +168,7 @@ export function upsertAppearanceTheme(preference: AppearancePreference, theme: C
 export function importAppearanceTheme(content: string, name = "imported-theme"): CustomAppearanceTheme {
   if (content.length > 256 * 1024) throw new Error("主题文件不能超过 256 KiB。");
   if (content.trimStart().startsWith("{")) {
-    const parsed: unknown = JSON.parse(content);
+    const parsed: unknown = JSON.parse(content.replace(/^\uFEFF/u, ""));
     if (!parsed || typeof parsed !== "object") throw new Error("主题文件必须是对象。");
     const record = parsed as Record<string, unknown>;
     return customAppearanceThemeSchema.parse({ ...record, displayName: record.displayName ?? record.name }) as CustomAppearanceTheme;
