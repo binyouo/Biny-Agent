@@ -23,7 +23,7 @@ async function withInspector(check: (fixture: {
   } });
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "https://desktop.local", pretendToBeVisual: true });
-  dom.window.innerWidth = viewportWidth;
+  Object.defineProperty(dom.window, "innerWidth", { configurable: true, value: viewportWidth });
   const React = await import("react");
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
@@ -46,7 +46,7 @@ async function withInspector(check: (fixture: {
     const directoryReplies = new Map<string, Promise<DesktopWorkspaceDirectory>>();
     const initialChanges: SessionFileChange[] = [];
     const options = {
-      changes: initialChanges, tools: [], filePanelResizing: false, filePanelWidth: 800, projectId: "p", source: "p:s",
+      changes: initialChanges, tools: [], skills: [], filePanelResizing: false, filePanelWidth: 800, projectId: "p", source: "p:s",
       onFilePanelResizeEnd() {}, onFilePanelResizeStart() {}, onFilePanelWidthChange() {},
       onListDirectory: async (path: string) => { directories.push(path); return await (directoryReplies.get(path) ?? Promise.resolve({ path, entries: tree.get(path) ?? [] })); },
       onOpenFile() {}, onOpenBrowser: async () => {}, onSwitchBranch: async () => {}, onFixPreview() {}, onWarning() {},
@@ -227,5 +227,38 @@ test("刷新使隐藏分支的在途结果失效，不让迟到内容成为重�
     assert.match(document.body.textContent ?? "", /fresh.txt/u);
     assert.doesNotMatch(document.body.textContent ?? "", /stale.txt/u);
     await act(() => reads.at(-1)!.resolve(file("a.bin")));
+  });
+});
+
+
+test("文件树保留反斜杠目录身份，展开、预览、收起和刷新不会跳到同名嵌套目录", async () => {
+  await withInspector(async ({ preview, act, reads, directories, tree }) => {
+    const literal = "report\\draft";
+    tree.set(".", [{ name: literal, path: literal, kind: "directory" }, { name: "report", path: "report", kind: "directory" }]);
+    tree.set(literal, [{ name: "literal.bin", path: `${literal}/literal.bin`, kind: "file" }]);
+    tree.set("report", [{ name: "draft", path: "report/draft", kind: "directory" }]);
+    tree.set("report/draft", [{ name: "nested.bin", path: "report/draft/nested.bin", kind: "file" }]);
+    const click = async (name: string) => await act(() => {
+      const button = [...document.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')].find(row => row.querySelector("span:last-child")?.textContent === name);
+      assert.ok(button, `可见条目 ${name}`); button.click();
+    });
+    await act(() => preview("a.bin"));
+    await act(() => reads[0]!.resolve(file("a.bin")));
+    await click(literal);
+    assert.deepEqual(directories, [".", literal]);
+    await click("literal.bin");
+    assert.equal(reads.at(-1)!.path, `${literal}/literal.bin`);
+    await act(() => reads.at(-1)!.resolve(file(`${literal}/literal.bin`)));
+    await click("report"); await click("draft");
+    assert.deepEqual(directories, [".", literal, "report", "report/draft"]);
+    await click(literal);
+    assert.doesNotMatch(document.querySelector('[role="tree"]')?.textContent ?? "", /literal.bin/u);
+    assert.match(document.querySelector('[role="tree"]')?.textContent ?? "", /nested.bin/u);
+    await click(literal);
+    assert.equal(directories.length, 4, "重新展开使用同身份缓存，不多读另一路径");
+    directories.length = 0;
+    await act(() => document.querySelector<HTMLButtonElement>('[aria-label="刷新文件"]')!.click());
+    assert.deepEqual(new Set(directories), new Set([".", literal, "report", "report/draft"]));
+    await act(() => reads.at(-1)!.resolve(file(`${literal}/literal.bin`)));
   });
 });

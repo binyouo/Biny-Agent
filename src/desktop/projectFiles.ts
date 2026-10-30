@@ -1,5 +1,6 @@
 export interface DesktopWorkspaceFileMatch {
   name: string;
+  /** Workspace-relative path; the producer normalizes only native platform separators. */
   path: string;
 }
 
@@ -14,12 +15,11 @@ export function matchDesktopWorkspaceFiles(files: DesktopWorkspaceFileMatch[], q
   const first = terms[0]!;
   return files
     .flatMap(file => {
-      const normalizedPath = file.path.replace(/\\/gu, "/");
-      const lowerPath = normalizedPath.toLocaleLowerCase();
+      const lowerPath = file.path.toLocaleLowerCase();
       if (!terms.every(term => lowerPath.includes(term))) return [];
       const lowerName = file.name.toLocaleLowerCase();
       const rank = lowerName === first ? 0 : lowerName.startsWith(first) ? 1 : lowerName.includes(first) ? 2 : 3;
-      return [{ file: { ...file, path: normalizedPath }, rank }];
+      return [{ file, rank }];
     })
     .sort((left, right) => left.rank - right.rank || left.file.path.length - right.file.path.length)
     .slice(0, limit)
