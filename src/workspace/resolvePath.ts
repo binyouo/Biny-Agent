@@ -12,6 +12,16 @@ export function resolveWorkspacePath(workspaceRoot: string, requestedPath: strin
   return resolveWorkspaceLocation(workspaceRoot, requestedPath, ignore, false);
 }
 
+/** Delete/move operate on a named file entry, never on a final symbolic link's referent. */
+export function resolveWorkspaceFileEntry(workspaceRoot: string, requestedPath: string, ignore: string[]): string {
+  // Retain both lexical and canonical workspace/ignore checks, including directory aliases.
+  const canonicalPath = resolveWorkspacePath(workspaceRoot, requestedPath, ignore);
+  if (lstatSync(path.resolve(workspaceRoot, requestedPath)).isSymbolicLink()) {
+    throw new Error("Delete and move do not accept symbolic-link files. Specify the intended regular file explicitly.");
+  }
+  return canonicalPath;
+}
+
 /** Directory browsers may address the workspace root itself while retaining all other path protections. */
 export function resolveWorkspaceDirectory(workspaceRoot: string, requestedPath: string, ignore: string[]): string {
   return resolveWorkspaceLocation(workspaceRoot, requestedPath, ignore, true);
