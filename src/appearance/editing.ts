@@ -185,7 +185,7 @@ export function importAppearanceTheme(content: string, name = "imported-theme"):
     }
     return colors;
   };
-  const type = /\btype\s*=\s*["'](light|dark)["']/u.exec(cleaned)?.[1] ?? "dark";
+  const type = /(?:\btype|\[\s*["']type["']\s*\])\s*=\s*["'](light|dark)["']/u.exec(cleaned)?.[1] ?? "dark";
   return customAppearanceThemeSchema.parse({ name, displayName: name, type, base_30: table("base_30"), base_16: table("base_16") }) as CustomAppearanceTheme;
 }
 
