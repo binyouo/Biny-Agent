@@ -125,6 +125,7 @@ function fixture(options: {selection?: unknown; fastMode?: unknown; running?: bo
     isSubmissionCurrent: () => selectedRef.current === "s", editingMessageRef: {current: editingMessage},
     clearHistory: () => undefined, setDraft: (draft: unknown) => {drafts.push(draft);},
     onSubmitError: (message: string) => {errors.push(message);}, errorMessage: (error: Error) => error.message,
+    modelSwitchPromiseRef: {current: undefined},
     inputRef: {current: undefined}, capabilitySelection: options.selection, fastMode: options.fastMode,
     onWarning: (message: string) => {errors.push(message);}
   });

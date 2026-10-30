@@ -375,6 +375,12 @@ export const Composer = memo(function Composer({
       submitFlightRef.current = true;
       setBusy(true);
       try {
+        const pendingModelSwitch = modelSwitchPromiseRef.current;
+        if (pendingModelSwitch) {
+          // 编辑重发也必须使用已确认的模型和推理强度；保存失败时保留编辑草稿。
+          try { await pendingModelSwitch; } catch { return; }
+        }
+        if (!mounted.current || isSubmissionCurrent?.() === false || editingMessageRef.current !== editingMessage) return;
         setPreparing(true);
         try { await onPrepare?.(); } finally { if (mounted.current) setPreparing(false); }
         if (!mounted.current || isSubmissionCurrent?.() === false || editingMessageRef.current !== editingMessage) return;
