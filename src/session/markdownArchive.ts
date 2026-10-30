@@ -61,7 +61,11 @@ export async function archiveConversationMarkdown(agentDir = globalAgentDir()): 
           continue;
         }
         const content = generatedMarker + [`# Conversation ${id}`, ...messages.map((event) => `## ${event.type === "user_message" ? "User" : "Assistant"} · ${event.time}\n\n${event.type === "assistant_message" ? publicAssistantMessage(event.content) : event.content}`)].join("\n\n") + "\n";
-        if (await readExistingFile(target) === content) continue;
+        const existing = await readExistingFile(target);
+        if (existing !== undefined && !existing.startsWith(generatedMarker)) {
+          throw new Error("Markdown target is not a generated conversation mirror; move the existing file before exporting.");
+        }
+        if (existing === content) continue;
         await writeSnapshot(target, content);
         result.exported += 1;
       } catch (error) {
