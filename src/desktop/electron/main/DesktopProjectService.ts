@@ -215,37 +215,45 @@ export class DesktopProjectService {
   /** 切换已有本地分支；所有保护都在真正执行 git switch 前重新检查。 */
   async switchProjectBranch(projectIdValue: string, branchName: string): Promise<void> {
     const project = this.requireProject(projectIdValue);
-    const name = normalizeBranchName(branchName);
-    await assertValidBranchName(name);
-    await assertGitRepository(project);
-    await assertCleanGitWorkspace(project);
-    const branches = await this.listProjectBranches(project.id);
-    if (!branches.some((branch) => branch.name === name)) {
-      throw new Error(`本地分支不存在：${name}`);
-    }
+    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
+    this.gitMutations.add(project.path);
     try {
-      await runGit(project.path, ["switch", name], 10_000);
-    } catch (error) {
-      throw new Error(`切换分支失败：${gitErrorText(error)}`);
-    }
+      const name = normalizeBranchName(branchName);
+      await assertValidBranchName(name);
+      await assertGitRepository(project);
+      await assertCleanGitWorkspace(project);
+      const branches = await this.listProjectBranches(project.id);
+      if (!branches.some((branch) => branch.name === name)) {
+        throw new Error(`本地分支不存在：${name}`);
+      }
+      try {
+        await runGit(project.path, ["switch", name], 10_000);
+      } catch (error) {
+        throw new Error(`切换分支失败：${gitErrorText(error)}`);
+      }
+    } finally { this.gitMutations.delete(project.path); }
   }
 
   /** 创建并立即检出本地分支；不 stash、不 reset，也不强制覆盖工作区。 */
   async createProjectBranch(projectIdValue: string, branchName: string): Promise<void> {
     const project = this.requireProject(projectIdValue);
-    const name = normalizeBranchName(branchName);
-    await assertValidBranchName(name);
-    await assertGitRepository(project);
-    await assertCleanGitWorkspace(project);
-    const branches = await this.listProjectBranches(project.id);
-    if (branches.some((branch) => branch.name === name)) {
-      throw new Error(`本地分支已存在：${name}`);
-    }
+    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
+    this.gitMutations.add(project.path);
     try {
-      await runGit(project.path, ["switch", "-c", name], 10_000);
-    } catch (error) {
-      throw new Error(`创建并检出分支失败：${gitErrorText(error)}`);
-    }
+      const name = normalizeBranchName(branchName);
+      await assertValidBranchName(name);
+      await assertGitRepository(project);
+      await assertCleanGitWorkspace(project);
+      const branches = await this.listProjectBranches(project.id);
+      if (branches.some((branch) => branch.name === name)) {
+        throw new Error(`本地分支已存在：${name}`);
+      }
+      try {
+        await runGit(project.path, ["switch", "-c", name], 10_000);
+      } catch (error) {
+        throw new Error(`创建并检出分支失败：${gitErrorText(error)}`);
+      }
+    } finally { this.gitMutations.delete(project.path); }
   }
 
   /** NUL 分隔保留空格、换行和非 ASCII 文件名；禁用重命名合并，让选择范围明确。 */
