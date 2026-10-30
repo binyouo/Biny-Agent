@@ -1755,9 +1755,37 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const openExternalLink = useCallback((url: string): void => {
     void window.biny.openExternal(url).catch((error) => setWarning(errorMessage(error)));
   }, []);
-  const openTurnBranch = useCallback(async (): Promise<void> => {
-    await createBranch();
-  }, [createBranch]);
+  const messageBranchPendingRef = useRef(false);
+  const openTurnBranch = useCallback(async (projectId: string, sessionId: string, messageId: string): Promise<void> => {
+    // Menu ownership comes from its rendered message, never the latest selected refs.
+    if (messageBranchPendingRef.current || projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+    let request = loadRequestRef.current;
+    const projectLifetime = projectRemovalRef.current.get(projectId);
+    const previousNavigation = navigationRef.current;
+    const ownsSource = (): boolean => loadRequestRef.current === request
+      && projectRef.current === projectId && selectedRef.current === sessionId
+      && projectRemovalRef.current.get(projectId) === projectLifetime;
+    messageBranchPendingRef.current = true;
+    let targetSessionId: string | undefined;
+    try {
+      if (typeof window.biny.branchSessionAtMessage !== "function") throw new Error(desktopApiVersionMismatchMessage);
+      targetSessionId = await window.biny.branchSessionAtMessage(projectId, sessionId, messageId);
+      if (!ownsSource()) return;
+      // The main-process create does not select anything. Only a current, successful
+      // read commits navigation through openSession's existing ownership contract.
+      request = loadRequestRef.current + 1;
+      const opened = await openSession(projectId, targetSessionId);
+      if (!opened) return;
+      commitNavigation(pushNavigation(previousNavigation, { projectId, sessionId: targetSessionId }));
+      setToast("已创建分支，保留到所选消息");
+    } catch (error) {
+      if (ownsSource()) setWarning(targetSessionId
+        ? `分支已创建，但打开失败；可刷新侧栏后重新打开。${errorMessage(error)}`
+        : errorMessage(error));
+    } finally {
+      messageBranchPendingRef.current = false;
+    }
+  }, [commitNavigation, openSession]);
 
   // 替换回合出现（同 userMessageIndex 且文本一致）后才撤掉编辑乐观投影，避免旧消息闪回。
   useEffect(() => {
@@ -2342,7 +2370,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         onSendActivitySuggestion={async text => { await composerRef.current?.submitSuggestion(text); }}
         heroStart={heroStart && selectedSessionId === undefined}
         onWidgetDraftPrompt={draftWidgetPrompt}
-        onCreateBranch={openTurnBranch}
+        onCreateBranch={createBranch}
+        onBranchAtMessage={openTurnBranch}
         onEditRequest={requestEditMessage}
         editInFlight={editInFlight}
         generationError={generationError}

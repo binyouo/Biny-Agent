@@ -484,6 +484,9 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.markSessionRead(parsedProjectId, idSchema.parse(sessionId), revisionSchema.parse(expectedRevision));
   });
 
+  handle(desktopIpc.branchSessionAtMessage, async (_event, projectId: unknown, sessionId: unknown, messageId: unknown) => {
+    return await context.agents.branchSessionAtMessage(idSchema.parse(projectId), idSchema.parse(sessionId), idSchema.parse(messageId));
+  });
   handle(desktopIpc.duplicateSession, async (_event, projectId: unknown, sessionId: unknown) => {
     return await context.agents.duplicateSession(idSchema.parse(projectId), idSchema.parse(sessionId));
   });

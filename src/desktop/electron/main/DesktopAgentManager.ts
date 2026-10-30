@@ -2440,6 +2440,12 @@ export class DesktopAgentManager {
     return await executeRemoteRuntimeMutation(runtime, operation, payload);
   }
 
+  /** Creation does not select: the originating renderer owns subsequent navigation. */
+  async branchSessionAtMessage(projectId: string, sessionId: string, messageId: string): Promise<string> {
+    const project = this.projects.requireProject(projectId);
+    return await this.projects.branchSessionAtMessage(project, sessionId, messageId);
+  }
+
   async duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot> {
     const project = this.projects.requireProject(projectId);
     const targetSessionId = await this.projects.duplicateSession(project, sessionId);

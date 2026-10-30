@@ -58,7 +58,7 @@ interface MessageTimelineProps {
   onEditRequest(turn: TimelineTurn): void;
   /** 进行中的编辑重写：App 提交时置位，替换回合出现后由 App 清除。 */
   editInFlight?: { turnId: string; user: string; userMessageIndex?: number };
-  onCreateBranch?(): void;
+  onCreateBranch?(projectId: string, sessionId: string, messageId: string): void;
   onRollbackFiles(turn: TimelineTurn): void;
 }
 
@@ -475,7 +475,7 @@ const Turn = memo(function Turn({
   onRetrySettled(turnId: string, succeeded: boolean): void;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
   onEditRequest(turn: TimelineTurn): void;
-  onCreateBranch?(): void;
+  onCreateBranch?(projectId: string, sessionId: string, messageId: string): void;
   onRollbackFiles(turn: TimelineTurn): void;
 }): React.JSX.Element {
   const running = turnIsRunning(turn, runtimeActiveRunId);
@@ -529,7 +529,8 @@ const Turn = memo(function Turn({
           messageId={turn.userMessageId}
           pending={pending}
           hasChangedFiles={listChangedFiles(turn).length > 0}
-          onCreateBranch={externalAgent || readOnly || pending ? undefined : onCreateBranch}
+          onCreateBranch={externalAgent || readOnly || pending || running || !sessionId || !turn.userMessageId || !onCreateBranch
+            ? undefined : () => onCreateBranch(projectId, sessionId, turn.userMessageId!)}
           onEdit={externalAgent || readOnly || pending ? undefined : () => onEditRequest(turn)}
           onOpenExternal={onOpenExternal}
           onReference={!readOnly && !pending && turn.userMessageId ? () => onReferenceMessage(turn.userMessageId!) : undefined}
@@ -576,7 +577,8 @@ const Turn = memo(function Turn({
             content={turn.assistant}
             finishReason={turn.finishReason}
             metrics={turnMetrics(turn)}
-            onCreateBranch={externalAgent || readOnly ? undefined : onCreateBranch}
+            onCreateBranch={externalAgent || readOnly || turn.status !== "completed" || !sessionId || !turn.assistantMessageId || !onCreateBranch
+              ? undefined : () => onCreateBranch(projectId, sessionId, turn.assistantMessageId!)}
             onReference={!readOnly && turn.assistantMessageId ? () => onReferenceMessage(turn.assistantMessageId!) : undefined}
             onShowReferences={!readOnly && turn.assistantMessageId ? () => onShowMessageReferences(turn.assistantMessageId!) : undefined}
             onRegenerate={canRetry ? retry : undefined}
@@ -790,7 +792,7 @@ function UserMessage({
         <div className="message-menu" data-direction={menuPosition.direction} ref={menuRef} role="menu" style={menuPosition.style}>
           <button className="message-menu-item" onClick={() => { copyText(message.text); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为 Markdown</span></button>
           <button className="message-menu-item" onClick={() => { copyText(plainTextFromMarkdown(message.text)); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为纯文本</span></button>
-          {onCreateBranch ? <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button> : null}
+          {onCreateBranch ? <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} title="保留此消息及之前的对话，不包含之后的消息" role="menuitem" type="button"><Icon name="branch" size={14} /><span>从此消息创建分支</span></button> : null}
           {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
           {onShowReferences ? <button className="message-menu-item" onClick={() => { onShowReferences(); closeMenu(); }} role="menuitem" type="button"><Icon name="network" size={14} /><span>查看引用来源</span></button> : null}
           {onRollbackFiles ? <button className="message-menu-item" disabled={!hasChangedFiles} onClick={() => { onRollbackFiles(); closeMenu(); }} role="menuitem" title={hasChangedFiles ? "回滚本条消息产生的文件修改" : "当前消息没有可回滚的文件修改"} type="button"><Icon name="arrow-left" size={14} /><span>回滚文件</span></button> : null}
@@ -1047,7 +1049,7 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
           {copyFailed ? <div className="message-menu-item is-static is-danger" role="alert">复制失败，请重试或手动复制</div> : null}
           <button className="message-menu-item" role="menuitem" type="button" onClick={() => { closeMenu(); setTraceOpen(true); }}><Icon name="activity" size={14} /><span>查看 Trace</span></button>
           <div className="message-menu-separator" role="separator" />
-          {onCreateBranch ? <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button> : null}
+          {onCreateBranch ? <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} title="保留此消息及之前的对话，不包含之后的消息" role="menuitem" type="button"><Icon name="branch" size={14} /><span>从此消息创建分支</span></button> : null}
           {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
           {onShowReferences ? <button className="message-menu-item" onClick={() => { onShowReferences(); closeMenu(); }} role="menuitem" type="button"><Icon name="network" size={14} /><span>查看引用来源</span></button> : null}
         </div>,

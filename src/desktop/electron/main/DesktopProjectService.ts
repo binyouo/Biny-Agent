@@ -41,6 +41,7 @@ import {
   type SessionCatalogRecord
 } from "../../../session/catalog.js";
 import { deleteSessionArtifacts } from "../../../session/cleanup.js";
+import { projectMessageBranch } from "../../../session/messageBranch.js";
 import { rebaseForkedSessionEvents } from "../../../session/fork.js";
 import { createSessionId, type SessionTurnStatus } from "../../../session/recorder.js";
 import { RuntimeEventAuthority, type RuntimeRunRecord } from "../../../runtime/RuntimeAuthority.js";
@@ -716,6 +717,37 @@ export class DesktopProjectService {
       branchPoint: { kind: "event", index: sourceCatalog?.summary.eventCount ?? 0 }
     });
     await this.copyCatalogMetadata(dataRoot, sourceCatalog, targetSessionId);
+    return targetSessionId;
+  }
+
+  /** Message-scoped inclusive fork; full-session duplicate intentionally remains separate. */
+  async branchSessionAtMessage(project: DesktopProject, sessionId: string, messageId: string): Promise<string> {
+    const dataRoot = await this.storage.ensureProjectData(project);
+    const source = await readStoredSessionEvents(dataRoot, sessionId);
+    if (source.truncated) throw new Error("会话历史不完整，无法安全创建消息分支。");
+    const projection = projectMessageBranch(source.events, messageId);
+    const events = rebaseForkedSessionEvents(projection.events);
+    const replay = replaySessionEvents(events, { includeCompactedMessages: true });
+    if (replay.recoveredToolResults.length || replay.discardedToolCalls.length
+      || JSON.stringify(replay.messageReferences.map(reference => reference.id)) !== JSON.stringify(projection.messageIds)) {
+      throw new Error("消息分支的上下文无法完整回放；未创建分支。");
+    }
+    const sourceCatalog = (await listSessionCatalog(dataRoot)).find(item => item.id === sessionId);
+    const targetSessionId = createSessionId();
+    await createSessionFile(dataRoot, targetSessionId, Buffer.from(`${events.map(event => JSON.stringify(event)).join("\n")}\n`, "utf8"));
+    try {
+      await registerSessionBranch(dataRoot, {
+        sessionId: targetSessionId, parentSessionId: sessionId,
+        branchPoint: { kind: "message", index: projection.sourceEventIndex, messageId, role: projection.role }
+      });
+      await this.copyCatalogMetadata(dataRoot, sourceCatalog, targetSessionId);
+    } catch (error) {
+      try { await deleteSessionArtifacts(dataRoot, targetSessionId); }
+      catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], `分支创建失败，未切换会话；残留会话 ${targetSessionId} 清理失败。`);
+      }
+      throw error;
+    }
     return targetSessionId;
   }
 
