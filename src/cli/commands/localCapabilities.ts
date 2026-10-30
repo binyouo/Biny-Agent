@@ -366,9 +366,11 @@ export async function temporalDateReferenceCommand(options: LocalCapabilityOutpu
 
 export async function temporalCalendarCommand(options: LocalCapabilityOutputOptions & { from: string; to: string; timeZone: string; allowCalendar?: boolean }): Promise<void> {
   const result = await readNativeCalendar({ startDate: options.from, endDate: options.to, timeZone: options.timeZone }, { authorized: options.allowCalendar === true });
-  printResult(result, options.json, () => result.events.length
-    ? result.events.map((event) => `${event.startDate} · ${event.title}${event.calendar ? ` · ${event.calendar}` : ""}`).join("\n")
-    : "此日期范围没有日历事件。");
+  printResult(result, options.json, () => {
+    const events = result.events.map((event) => `${event.startDate} · ${event.title}${event.calendar ? ` · ${event.calendar}` : ""}`).join("\n");
+    if (result.hasMore) return [events, `结果不完整：仅显示 ${String(result.events.length)} 条日历事件，仍有更多结果。请缩小日期范围后重试。`].filter(Boolean).join("\n\n");
+    return events || "此日期范围没有日历事件。";
+  });
 }
 
 export async function temporalClueActionCommand(kind: "ignore" | "seen", id: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
