@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { globalConfigDir } from "../config/paths.js";
+import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 
 /**
  * 每日记忆笔记：给人和 agent 看的可读叙事，不属于 durable memory entries。
@@ -9,8 +10,6 @@ import { globalConfigDir } from "../config/paths.js";
  * 避免一个来源刷新时覆盖另一个来源。
  */
 const dailyNoteQueues = new Map<string, Promise<void>>();
-const dailyNoteLockTimeoutMs = 5_000;
-const dailyNoteLockPollMs = 25;
 
 interface DailyNoteWriteOptions {
   configDir?: string;
@@ -148,27 +147,27 @@ async function mutateDailyMemoryNote(
   const turn = new Promise<void>((resolve) => { release = resolve; });
   const queued = previous.then(() => turn, () => turn);
   dailyNoteQueues.set(target, queued);
-  let releaseFileLock: (() => Promise<void>) | undefined;
   try {
     await options.checkpoint?.();
     await previous;
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    releaseFileLock = await acquireDailyNoteLock(target);
-    const existing = await readDailyNote(target, dateKey);
-    const next = `${mutate(existing).trim()}\n`;
-    const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
-    try {
-      await options.checkpoint?.();
-      await writeFile(temporary, next, { encoding: "utf8", mode: 0o600 });
-      await options.checkpoint?.();
-      await rename(temporary, target);
-    } catch (error) {
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw error;
-    }
-    return target;
+    const directory = await realpath(path.dirname(target));
+    return await withLocalFileWriteLock(directory, `${path.basename(target)}.lock`, async () => {
+      const existing = await readDailyNote(target, dateKey);
+      const next = `${mutate(existing).trim()}\n`;
+      const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
+      try {
+        await options.checkpoint?.();
+        await writeFile(temporary, next, { encoding: "utf8", mode: 0o600 });
+        await options.checkpoint?.();
+        await rename(temporary, target);
+      } catch (error) {
+        await rm(temporary, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      return target;
+    }, { unownedLegacyMarkerGraceMs: 5_000 });
   } finally {
-    await releaseFileLock?.();
     release();
     if (dailyNoteQueues.get(target) === queued) dailyNoteQueues.delete(target);
   }
@@ -216,34 +215,6 @@ function readDailySection(existing: string, heading: string): string {
   return lines.slice(start + 1, end).join("\n").trim();
 }
 
-async function acquireDailyNoteLock(target: string): Promise<() => Promise<void>> {
-  const lockPath = `${target}.lock`;
-  const deadline = Date.now() + dailyNoteLockTimeoutMs;
-  while (true) {
-    try {
-      const handle = await open(lockPath, "wx", 0o600);
-      return async () => {
-        await handle.close().catch(() => undefined);
-        await rm(lockPath, { force: true }).catch(() => undefined);
-      };
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw error;
-      try {
-        const lockStat = await stat(lockPath);
-        if (Date.now() - lockStat.mtimeMs > dailyNoteLockTimeoutMs) {
-          await rm(lockPath, { force: true });
-          continue;
-        }
-      } catch (statError) {
-        if (isNotFound(statError)) continue;
-        throw statError;
-      }
-      if (Date.now() >= deadline) throw new Error(`Timed out waiting for daily memory note lock: ${path.basename(target)}`);
-      await new Promise((resolve) => setTimeout(resolve, dailyNoteLockPollMs));
-    }
-  }
-}
-
 function normalizeSectionHeading(value: string): string {
   const title = value.trim();
   if (!title || title.includes("\n") || title.includes("\r")) throw new Error("Daily memory section title must be a single non-empty line.");
@@ -260,8 +231,4 @@ function formatLocalDate(date: Date): string {
 
 function isNotFound(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-function isAlreadyExists(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "EEXIST";
 }
