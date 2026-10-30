@@ -66,6 +66,7 @@ const defaultState: PersistedDesktopState = {
 export class DesktopStateStore {
   private state: PersistedDesktopState = structuredClone(defaultState);
   private writeTail = Promise.resolve();
+  private readonly projectOpenOwners = new Map<string, symbol>();
   private readonly projectInspectionTokens = new WeakMap<DesktopProject, object>();
   private readonly projectGitInspectionTokens = new WeakMap<DesktopProject, object>();
 
@@ -114,10 +115,46 @@ export class DesktopStateStore {
   }
 
   async upsertProject(project: DesktopProject): Promise<void> {
+    this.projectOpenOwners.delete(project.path);
     const index = this.state.projects.findIndex((candidate) => candidate.id === project.id);
     if (index === -1) this.state.projects.push({ ...project });
     else this.state.projects[index] = { ...project };
     await this.save();
+  }
+
+  /** Opening owns preparation, but never owns concurrent edits to project metadata. */
+  async openProject(
+    projectPath: string,
+    prepare: (existing: DesktopProject | undefined) => Promise<DesktopProject>,
+    iconDataUrl?: string
+  ): Promise<DesktopProject> {
+    if (this.projectOpenOwners.has(projectPath)) throw new Error("This project is already being opened.");
+    const owner = Symbol(projectPath);
+    const previous = this.state.projects.find((project) => project.path === projectPath);
+    this.projectOpenOwners.set(projectPath, owner);
+    try {
+      const opened = await prepare(previous ? { ...previous } : undefined);
+      const current = this.state.projects.find((project) => project.path === projectPath);
+      if (this.projectOpenOwners.get(projectPath) !== owner || current !== previous) {
+        throw new Error("Project changed while opening; open it again if still wanted.");
+      }
+      if (opened.path !== projectPath || (current && opened.id !== current.id)
+        || this.state.projects.some((project) => project.id === opened.id && project.path !== projectPath)) {
+        throw new Error("Project identity changed while opening.");
+      }
+      const committed = current ? { ...opened, name: current.name, pinned: current.pinned,
+        addedAt: current.addedAt, iconDataUrl: iconDataUrl ?? current.iconDataUrl } : { ...opened };
+      if (current) this.state.projects[this.state.projects.indexOf(current)] = committed;
+      else this.state.projects.push(committed);
+      await this.save();
+      // A rename may finish while saving, or removal/re-add may retire this open.
+      if (this.projectOpenOwners.get(projectPath) !== owner || !this.state.projects.includes(committed)) {
+        throw new Error("Project changed while opening; open it again if still wanted.");
+      }
+      return { ...committed };
+    } finally {
+      if (this.projectOpenOwners.get(projectPath) === owner) this.projectOpenOwners.delete(projectPath);
+    }
   }
 
   /** Commit inspection-owned fields onto the current record without replaying user edits. */
@@ -154,6 +191,8 @@ export class DesktopStateStore {
   }
 
   async removeProject(projectId: string): Promise<void> {
+    const project = this.state.projects.find((candidate) => candidate.id === projectId);
+    if (project) this.projectOpenOwners.delete(project.path);
     this.state.projects = this.state.projects.filter((project) => project.id !== projectId);
     delete this.state.selectedSessionIds[projectId];
     if (this.state.activeProjectId === projectId) this.state.activeProjectId = this.state.projects.at(0)?.id;
