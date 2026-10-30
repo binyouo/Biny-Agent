@@ -282,4 +282,3 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isNotFound(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
 }
-
