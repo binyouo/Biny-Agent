@@ -40,7 +40,7 @@ import {
   thinkingSchema
 } from "./settingsSaveInputSchema.js";
 import { clampFontSize } from "../../fontPreference.js";
-import type { DesktopActiveView, DesktopBootstrap, DesktopQuickChatSettings, DesktopSettingsCloseResponse, DesktopSettingsDraftState, DesktopSettingsSaveInput, DesktopSystemSettingsPane, DesktopThemePreference } from "../../protocol.js";
+import type { DesktopActiveView, DesktopBootstrap, DesktopProjectRemovalReceipt, DesktopQuickChatSettings, DesktopSettingsCloseResponse, DesktopSettingsDraftState, DesktopSettingsSaveInput, DesktopSystemSettingsPane, DesktopThemePreference } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 import { DesktopAgentManager } from "./DesktopAgentManager.js";
 import { ActivityRecorderService } from "./ActivityRecorderService.js";
@@ -356,10 +356,15 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.renameProject(idSchema.parse(projectId), titleSchema.parse(name));
   });
 
-  handle(desktopIpc.removeProject, async (_event, projectId: unknown) => {
+  handle(desktopIpc.removeProject, async (_event, projectId: unknown): Promise<DesktopProjectRemovalReceipt> => {
     const id = idSchema.parse(projectId);
     await context.agents.removeProject(id);
-    return await context.bootstrap();
+    // Removal is already confirmed. A failed fallback read must not disguise it as a failed mutation.
+    try {
+      return await context.bootstrap();
+    } catch {
+      return { activeView: "chat", fallbackWarning: "项目已移除，但无法加载后续工作区。请重新选择项目。" };
+    }
   });
 
   handle(desktopIpc.refreshProject, async (_event, projectId: unknown) => {
