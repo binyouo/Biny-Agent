@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fork, execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,8 +19,18 @@ interface ProbeResult {
   fdsAfter?: number;
 }
 
-async function descriptorCount(): Promise<number | undefined> {
-  return process.platform === "linux" ? (await readdir("/proc/self/fd")).length : undefined;
+async function descriptorCount(root: string): Promise<number | undefined> {
+  if (process.platform !== "linux") return undefined;
+  const targets = await Promise.all((await readdir("/proc/self/fd")).map(async fd => {
+    try { return await readlink(`/proc/self/fd/${fd}`); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }));
+  // Loader/background descriptors can close during a command. Inspect only the
+  // real descriptors pointing at this fixture's own temporary input directory.
+  return targets.filter(target => target === root || target?.startsWith(`${root}${path.sep}`)).length;
 }
 
 async function probe(file: string, mode: string): Promise<void> {
@@ -32,7 +42,7 @@ async function probe(file: string, mode: string): Promise<void> {
   let uploaded: string | undefined;
   const logs: string[] = [];
   const originalLog = console.log;
-  const fdsBefore = await descriptorCount();
+  const fdsBefore = await descriptorCount(path.dirname(file));
   process.send?.({ ready: true });
   console.log = (...values: unknown[]) => { logs.push(values.join(" ")); };
   let error: string | undefined;
@@ -57,7 +67,7 @@ async function probe(file: string, mode: string): Promise<void> {
   } finally {
     console.log = originalLog;
   }
-  process.send?.({ error, requests, uploaded, logs, fdsBefore, fdsAfter: await descriptorCount() });
+  process.send?.({ error, requests, uploaded, logs, fdsBefore, fdsAfter: await descriptorCount(path.dirname(file)) });
   process.disconnect?.();
 }
 
@@ -98,6 +108,13 @@ if (process.argv[2] === "--video-input-probe") {
         execFileSync("mkfifo", [path.join(root, "pipe.mp4")]);
         await symlink(file, path.join(root, "alias.mp4"));
       }
+      await t.test("descriptor probe detects an actually open input", { skip: process.platform !== "linux" }, async () => {
+        assert.equal(await descriptorCount(root), 0);
+        const handle = await open(file, "r");
+        try { assert.equal(await descriptorCount(root), 1); }
+        finally { await handle.close(); }
+        assert.equal(await descriptorCount(root), 0);
+      });
       const rejected = async (name: string, pattern: RegExp, mode?: string) => {
         const result = await runProbe(path.join(root, name), mode);
         assert.equal(result.timedOut, undefined, "input must settle without waiting for a FIFO writer");
