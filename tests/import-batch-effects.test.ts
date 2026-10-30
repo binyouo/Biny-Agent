@@ -40,6 +40,7 @@ const { ApplicationImportService } = load('src/imports/service.ts', {
   'node:crypto': crypto, 'node:fs': { constants: {}, promises: fs },
   'node:os': { homedir: deny('real home') }, 'node:path': path, zod,
   '../config/paths.js': { globalConfigDir: deny('global config') },
+  '../utils/syncDirectory.js': { syncDirectory: deny('directory sync') },
   '../utils/localFileLock.js': { withLocalFileWriteLock: async (root: string, name: string, action: () => Promise<unknown>) => { guard(root); assert.equal(name, '.imports.lock'); return action(); } },
   '../session/transfer.js': { ...forbiddenProxy, SessionImportCleanupError: class extends Error {} },
   '../session/store.js': forbiddenProxy, '../session/import/chatgpt.js': forbiddenProxy,
