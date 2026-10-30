@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
 import { globalConfigDir } from "../config/paths.js";
 
 /**
@@ -8,6 +10,7 @@ import { globalConfigDir } from "../config/paths.js";
  * 文件是按日期共享的派生结果；聊天摘要和 Activity 摘要各自维护自己的 Markdown section，
  * 避免一个来源刷新时覆盖另一个来源。
  */
+const dailyMarkdownParser = unified().use(remarkParse).freeze();
 const dailyNoteQueues = new Map<string, Promise<void>>();
 const dailyNoteLockTimeoutMs = 5_000;
 const dailyNoteLockPollMs = 25;
@@ -112,12 +115,12 @@ export async function appendDailyMemoryEntry(
   const heading = normalizeSectionHeading(sectionTitle);
   const marker = dailyMemoryEntryMarker(entryKey);
   return await mutateDailyMemoryNote(dateKey, options, (existing) => {
-    const withSection = replaceDailySection(existing, dateKey, heading, readDailySection(existing, heading));
-    if (withSection.includes(marker)) return withSection;
-    const section = readDailySection(withSection, heading);
-    const entry = [marker, content.trim() || "（空摘要。）"].join("\n");
-    const next = section.trim() ? `${section.trim()}\n\n${entry}` : entry;
-    return replaceDailySection(withSection, dateKey, heading, next);
+    const alreadyPresent = existing.includes(marker);
+    return replaceDailySection(existing, dateKey, heading, (section) => {
+      if (alreadyPresent) return section;
+      const entry = [marker, content.trim() || "（空摘要。）"].join("\n");
+      return section ? `${section}\n\n${entry}` : entry;
+    }, alreadyPresent ? "missing" : "any");
   });
 }
 
@@ -188,32 +191,77 @@ function dailyMemoryPath(dateKey: string, options: { configDir?: string }): stri
   return path.join(root, "memory", `${dateKey}.md`);
 }
 
-function replaceDailySection(existing: string, dateKey: string, heading: string, content: string): string {
+function replaceDailySection(
+  existing: string, dateKey: string, heading: string, content: string | ((section: string) => string),
+  rejectUnclosedFence: "missing" | "any" = "missing"
+): string {
   const root = existing.trim() || `# ${dateKey} 每日摘要`;
   const lines = root.split("\n");
   const sectionHeadings = heading === "## 活动记录"
     ? [heading, `## ${dateKey} 工作日记`]
     : [heading];
-  const start = lines.findIndex((line) => sectionHeadings.includes(line.trim()));
-  if (start < 0) return `${root}\n\n${heading}\n\n${content.trim()}`;
-  let end = start + 1;
-  while (end < lines.length && !/^#{1,2} /u.test(lines[end] ?? "")) end += 1;
+  const range = dailySectionRange(lines, sectionHeadings, rejectUnclosedFence);
+  const section = range ? lines.slice(range.start + 1, range.end).join("\n").trim() : "";
+  const next = (typeof content === "function" ? content(section) : content).trim();
+  if (!range) return `${root}\n\n${heading}\n\n${next}`;
+  const { start, end } = range;
   return [
     ...lines.slice(0, start),
     heading,
     "",
-    content.trim(),
+    next,
     ...lines.slice(end)
   ].join("\n").trim();
 }
 
 function readDailySection(existing: string, heading: string): string {
   const lines = existing.trim().split("\n");
-  const start = lines.findIndex((line) => line.trim() === heading);
-  if (start < 0) return "";
-  let end = start + 1;
-  while (end < lines.length && !/^#{1,2} /u.test(lines[end] ?? "")) end += 1;
+  const range = dailySectionRange(lines, [heading]);
+  if (!range) return "";
+  const { start, end } = range;
   return lines.slice(start + 1, end).join("\n").trim();
+}
+
+/** Only document-level headings own notebook sections; nested Markdown stays content. */
+function dailySectionRange(lines: string[], headings: string[], rejectUnclosedFence?: "missing" | "any"): { start: number; end: number } | undefined {
+  // Ordinary generated diary lines cannot open Markdown containers. Avoid parsing
+  // the growing notebook for every backfilled entry; ambiguous syntax stays on AST.
+  if (lines.every(isPlainDailyLine)) {
+    const start = lines.findIndex((line) => headings.includes(line.trim()));
+    if (start < 0) return undefined;
+    let end = start + 1;
+    while (end < lines.length && !/^#{1,2} /u.test(lines[end] ?? "")) end += 1;
+    return { start, end };
+  }
+  const blocks = dailyMarkdownParser.parse(lines.join("\n")).children;
+  let start: number | undefined;
+  for (const block of blocks) {
+    if (block.type !== "heading" || block.depth > 2 || !block.position) continue;
+    const index = block.position.start.line - 1;
+    const line = lines[index] ?? "";
+    if (start !== undefined && /^#{1,2} /u.test(line)) return { start, end: index };
+    if (start === undefined && headings.includes(line.trim())) start = index;
+  }
+  const last = blocks.at(-1);
+  if (last?.type === "code" && last.position && (rejectUnclosedFence === "any" || (start === undefined && rejectUnclosedFence === "missing"))) {
+    const firstLine = last.position.start.line - 1;
+    const lastLine = last.position.end.line - 1;
+    const opener = (lines[firstLine] ?? "").match(/^ {0,3}(`{3,}|~{3,})/u)?.[1];
+    const closer = (lines[lastLine] ?? "").replace(/\r$/u, "").match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
+    if (opener && !(lastLine > firstLine && closer && closer[0] === opener[0] && closer.length >= opener.length)) {
+      throw new Error("Cannot append daily memory content while a code fence is unclosed.");
+    }
+  }
+  return start === undefined ? undefined : { start, end: lines.length };
+}
+
+function isPlainDailyLine(value: string): boolean {
+  const line = value.replace(/\r$/u, "");
+  if (line.includes("\r")) return false;
+  if (!line.trim() || /^#{1,6}(?:[ \t]|$)/u.test(line)) return true;
+  if (/^<!-- biny-daily-(?:entry|source|model):[A-Za-z0-9_-]+ -->$/u.test(line)) return true;
+  if (/^- (?:请求|结果)：/u.test(line)) return true;
+  return !/^[\s`~<>[\]#+*_\-=\\]/u.test(line);
 }
 
 async function acquireDailyNoteLock(target: string): Promise<() => Promise<void>> {
