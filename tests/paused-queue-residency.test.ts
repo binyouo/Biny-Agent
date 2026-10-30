@@ -22,6 +22,11 @@ function extracted(file: ts.SourceFile, name: string): string {
 }
 const registrySource = source("src/runtime/host/registry.ts");
 const serverSource = source("src/runtime/host/server.ts");
+const executionSource = source("src/runtime/host/composition.ts");
+const execution = declaration(executionSource, "RuntimeHostExecution");
+assert.ok(ts.isClassDeclaration(execution));
+const retaining = execution.members.find(member => ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.name.text === "hasRetainingWork");
+assert.ok(retaining && ts.isMethodDeclaration(retaining));
 const eventsSource = source("src/runtime/agentEvents.ts");
 const server = declaration(serverSource, "RuntimeHostServer");
 assert.ok(ts.isClassDeclaration(server));
@@ -32,7 +37,8 @@ const fixtureSource = [
   extracted(eventsSource, "runtimeIsBusy"),
   extracted(registrySource, "SessionRuntimeRegistry"),
   `class RetirementFixture { ${method.getText(serverSource)} }`,
-  "({ Registry: SessionRuntimeRegistry, retire: RetirementFixture.prototype.retireIfIdle });"
+  `class ExecutionFixture { ${retaining.getText(executionSource)} }`,
+  "({ Registry: SessionRuntimeRegistry, retire: RetirementFixture.prototype.retireIfIdle, retaining: ExecutionFixture.prototype.hasRetainingWork });"
 ].join("\n");
 const transpiled = ts.transpileModule(fixtureSource, {
   reportDiagnostics: true,
@@ -76,12 +82,14 @@ interface RegistryOptions {
   onUpdate(): void;
 }
 interface RetiringHost {
+  initialized: boolean;
   closePromise?: Promise<void>;
   pendingRequests: number;
   activityRevision: number;
   idleSince?: number;
   retiring: boolean;
   registry: { list(): Entry[] };
+  execution: { hasRetainingWork(): Promise<boolean> };
   businessComposition: { hasActiveWork(): boolean };
   hasRetainingConnections(): boolean;
   closeOwner(): Promise<void>;
@@ -89,6 +97,7 @@ interface RetiringHost {
 interface Extracted {
   Registry: new (initial: { runtime: Runtime; commands: Entry["commands"] }, options: RegistryOptions) => Registry;
   retire: (this: RetiringHost, graceMs?: number) => Promise<boolean>;
+  retaining: (this: { registry: { list(): Entry[] } }) => Promise<boolean>;
 }
 function subject() {
   let now = 0;
@@ -171,8 +180,9 @@ function retirementFixture(queuedIndex: number | undefined, signal?: RetainingSi
     sessionId: item.snapshot.info.sessionId, runtime: item, commands: retirementCommands(index === 0 ? signal : undefined), primary: index === 0, lastActiveAt: 0
   }));
   const host: RetiringHost = {
-    pendingRequests: 0, activityRevision: 0, retiring: false,
+    initialized: true, pendingRequests: 0, activityRevision: 0, retiring: false,
     registry: { list: () => entries },
+    execution: { hasRetainingWork: () => loaded.retaining.call({ registry: { list: () => entries } }) },
     businessComposition: { hasActiveWork: () => false },
     hasRetainingConnections: () => false,
     closeOwner: async () => { closes += 1; }

@@ -1,27 +1,27 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { JSDOM } from "jsdom";
+import { SettingsNavIcon } from "../src/desktop/renderer/src/components/settings/SettingsNavIcon.js";
+import type { SettingsTab } from "../src/desktop/renderer/src/components/settings/SettingsOverlay.js";
 
-test("settings navigation uses distinct implemented icons and matches the Appshots badge", async () => {
-  const { readFile } = await import("node:fs/promises");
+test("every settings navigation item has a distinct, accessible icon", async () => {
+  const tabs: SettingsTab[] = ["通用", "模型", "聊天", "Token 节省", "用户界面", "配色", "记忆", "技能", "MCP 服务器", "插件", "网络搜索", "浏览器", "Appshots", "Computer Use", "隐私脱敏", "Computer History", "导入", "关于"];
   const overlay = await readFile(new URL("../src/desktop/renderer/src/components/settings/SettingsOverlay.tsx", import.meta.url), "utf8");
-  const nav = [...overlay.matchAll(/icon: "([a-z-]+)", tab: "([^"]+)"/gu)].map(m => ({ icon: m[1], tab: m[2] }));
-  assert.equal(nav.length, 18, "导航项数量变了，先确认不是漏读");
-  const icons = nav.map(n => n.icon);
-  const dupes = icons.filter((v, i) => icons.indexOf(v) !== i);
-  assert.deepEqual(dupes, [], `导航图标重复：${dupes.join(", ")}`);
-  // 保留导航目的地的图标语义；现有页面徽标与导航一致。
-  const byTab = new Map(nav.map(n => [n.tab, n.icon]));
-  assert.equal(byTab.get("Token 节省"), "terminal");
-  assert.equal(byTab.get("导入"), "download");
-  assert.equal(byTab.get("Computer Use"), "monitor");
-  assert.equal(byTab.get("隐私脱敏"), "lock");
-  assert.equal(byTab.get("Appshots"), "camera");
-  const as = await readFile(new URL("../src/desktop/renderer/src/components/settings/SettingsAppshots.tsx", import.meta.url), "utf8");
-  assert.match(as, /appshot-hero-badge"><Icon name="camera"/u, "Appshots hero 图标应与导航一致");
-  // 图标必须真的在 Icon.tsx 里存在，否则渲染成空白
-  const iconSrc = await readFile(new URL("../src/desktop/renderer/src/components/Icon.tsx", import.meta.url), "utf8");
-  for (const name of icons) {
-    assert.match(iconSrc, new RegExp(`^\\s*\\| "${name}"$`, "mu"), `Icon "${name}" 未在 Icon.tsx 中声明`);
-    assert.match(iconSrc, new RegExp(`case "${name}":`, "u"), `Icon "${name}" 没有实现`);
-  }
+  const nav = [...overlay.matchAll(/\{ tab: "([^"]+)" \}/gu)].map(match => match[1]);
+  assert.deepEqual(nav, tabs, "all settings pages must have a navigation icon");
+  const icons = tabs.map(page => {
+    const html = renderToStaticMarkup(React.createElement(SettingsNavIcon, { page }));
+    const dom = new JSDOM(html);
+    try {
+      const svg = dom.window.document.querySelector("svg");
+      assert.ok(svg, `${page} must render an icon`);
+      assert.equal(svg.getAttribute("aria-hidden"), "true");
+      assert.ok(svg.querySelector("path, rect, circle"), `${page} must render a visible shape`);
+      return svg.innerHTML;
+    } finally { dom.window.close(); }
+  });
+  assert.equal(new Set(icons).size, tabs.length, "navigation icons must be distinct");
 });

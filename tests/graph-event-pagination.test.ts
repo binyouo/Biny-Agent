@@ -148,7 +148,8 @@ await test("graph event cursors and limits reject malformed continuations instea
 
 await test("invalid graph pagination never connects the CLI or routes a cold Host session", async (t) => {
   await fixture(t, async ({ server, rpc, readCli, connectionCount }) => {
-    const route = t.mock.method(server as unknown as { runtimeEntry: () => Promise<unknown> }, "runtimeEntry", async () => {
+    const { execution } = server as unknown as { execution: { runtimeEntry: () => Promise<unknown> } };
+    const route = t.mock.method(execution, "runtimeEntry", async () => {
       throw new Error("Invalid graph history query reached session routing.");
     });
     try {
@@ -225,6 +226,7 @@ async function fixture(t: TestContext, execute: (context: {
     persistenceRoot: root, hostEpoch: "graph-page-fixture", token: "synthetic-graph-pages-token", pid: process.pid, createdAt: new Date().toISOString() };
   await writeFile(paths.registrationPath, JSON.stringify(registration), { mode: 0o600 });
   const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
+  await server.initialize();
   const entry = server as unknown as { execute(connection: unknown, frame: HostRequestFrame): Promise<unknown> };
   const rpc = async (operation: string, payload: Record<string, unknown>) => wire(await entry.execute({ surface: "cli" }, { kind: "request", requestId: "graph-pages", operation, payload }));
   // Only connection/IPC transport is replaced. CLI parsing, discovery, client.graphEvents,
