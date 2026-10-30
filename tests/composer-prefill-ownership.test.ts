@@ -24,11 +24,11 @@ const draftSource = readFileSync(new URL("components/composer/composerDraft.ts",
 const referenceSource = readFileSync(new URL("components/composer/referenceCompletion.ts", renderer), "utf8");
 const ComposerDraftState = evaluate(`${draftSource.replaceAll("export ", "")}\nreturn ComposerDraftState;`);
 const normalizeDraftReferences = evaluate(`${referenceSource.replaceAll("export ", "")}\nreturn normalizeDraftReferences;`);
-const mountDraft = required(composer, /const \[draftState\] = useState\(\(\) => \{([\s\S]*?)\n  \}\);/u);
-const prefillEffect = composer.match(/useEffect\(\(\) => \{\n(    if \(prefillInput === undefined\)[\s\S]*?)\n  \}, \[prefillInput, draftState\]\);/u)?.[1];
-const draftKey = required(app, /\n      draftKey=\{([^\n]+)\}/u);
-const projectDeclaration = required(app, /\n  (const composerProject = [\s\S]*?);\n/u);
-const keyDeclaration = app.match(/\n  (const composerDraftKey = [^\n]+);\n/u)?.[1] ?? "";
+const mountDraft = required(composer, /const \[draftState\] = useState\(\(\) => \{([\s\S]*?)\n {2}\}\);/u);
+const prefillEffect = composer.match(/useEffect\(\(\) => \{\n( {4}if \(prefillInput === undefined\)[\s\S]*?)\n {2}\}, \[prefillInput, draftState\]\);/u)?.[1];
+const draftKey = required(app, /\n {6}draftKey=\{([^\n]+)\}/u);
+const projectDeclaration = required(app, /\n {2}(const composerProject = [\s\S]*?);\n/u);
+const keyDeclaration = app.match(/\n {2}(const composerDraftKey = [^\n]+);\n/u)?.[1] ?? "";
 function deferred() {
   let resolve!: (value: unknown) => void; let reject!: (error: Error) => void;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -90,7 +90,7 @@ function fixture() {
     const bound = { ...values(), prefillComposer: scope().prefillComposer };
     if (kind === "recipe") evaluate(`return ${callback("extractRecipe")};`, bound)({ id: "recipe", extractPrompt: text });
     else if (kind === "preview") {
-      const body = required(app, /onFixPreview: \(error\) => \{([\s\S]*?)\n    \},/u);
+      const body = required(app, /onFixPreview: \(error\) => \{([\s\S]*?)\n {4}\},/u);
       evaluate(body, { ...bound, error: text });
     } else scope().prefillComposer(text);
     render();
