@@ -1,5 +1,6 @@
 import { ChatResponseContext } from "./chatResponseSettings.js";
 import { ComposerDraftState } from "./components/composer/composerDraft.js";
+import { normalizeDraftReferences } from "./components/composer/referenceCompletion.js";
 import type { ChatResponseSettings } from "../../../config/schema.js";
 /**
  * Desktop 渲染进程的装配根。
@@ -159,7 +160,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const { changeThemePreference, changeFontPreference, changeAppearancePreference, bootstrap: bootstrapAppearance, adopt: adoptAppearance } = appearance;
   const [focusToken, setFocusToken] = useState(0);
   const [composerDrafts] = useState(() => new Map<string, ComposerDraftState>());
-  const [composerDraft, setComposerDraft] = useState<string>();
   const composerRef = useRef<ComposerHandle>(null);
   const draftWidgetPrompt = useCallback((text: string) => composerRef.current?.appendText(text), []);
   /** 发送前的乐观用户消息；真实 message.user 到达后按 messageId 移除。 */
@@ -311,6 +311,15 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const composerProject = selectedSessionId === undefined && draftProjectId
     ? projects.find((project) => project.id === draftProjectId) ?? workspace?.project
     : workspace?.project;
+  const composerDraftKey = `${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`;
+  const prefillComposer = useCallback((input: string): void => {
+    // 回填是当前草稿的一次编辑，不是跨会话重挂载时可重放的全局输入。
+    // 直接写入所属状态也支持设置页关闭前 Composer 尚未挂载的入口。
+    let draft = composerDrafts.get(composerDraftKey);
+    if (!draft) { draft = new ComposerDraftState(); composerDrafts.set(composerDraftKey, draft); }
+    draft.update({ history: [], draft: normalizeDraftReferences(input, []) });
+    setFocusToken((value) => value + 1);
+  }, [composerDraftKey, composerDrafts]);
   // Branch reads follow the committed composer target, including an unsent draft's project.
   useLayoutEffect(() => {
     branchProjectRef.current = composerProject?.id;
@@ -666,7 +675,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setDocument(undefined);
     setWriterConflict(undefined);
     setContextBudget(undefined);
-    setComposerDraft(undefined);
     setLoading(false);
     void window.biny.commitSelection(snapshot.project.id, undefined, "chat").catch((error) => setWarning(errorMessage(error)));
     return true;
@@ -873,7 +881,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setDraftProjectId(undefined);
       return;
     }
-    setComposerDraft(undefined);
     setDraftProjectId(undefined);
     const projectLifetime = projectRemovalRef.current.get(projectId);
     const request = loadRequestRef.current + 1;
@@ -898,8 +905,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const selectComposerProject = useCallback((projectId: string): void => {
     // 新消息尚未生成 session 时，文件夹只是消息归属，不应触发工作区和左侧栏切换。
     if (selectedRef.current === undefined) {
-      // 回填已进入所属草稿；目标切换时不能再次覆盖另一项目保留的输入。
-      setComposerDraft(undefined);
       setDraftProjectId(projectId === projectRef.current ? undefined : projectId);
       return;
     }
@@ -1145,7 +1150,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       useMemories: draftMemoryOverride ?? "inherit",
       contributeMemories: draftMemoryOverride ?? "inherit"
     };
-    setComposerDraft(undefined);
     const receipt = await window.biny.sendPrompt(
       projectId,
       switchingDraftProject ? undefined : selectedRef.current,
@@ -1539,7 +1543,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setDraftMemoryOverride(undefined);
       setWriterConflict(undefined);
       setContextBudget(undefined);
-      setComposerDraft(undefined);
       setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(fallback));
       commitNavigation(createNavigationState());
     } catch (error) {
@@ -1657,8 +1660,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     onOpenBrowser: openBrowser,
     onFixPreview: (error) => {
       const prompt = `当前项目的预览服务无法启动。请检查项目实际文件和启动方式，修复后验证预览可运行。\n\n错误：${error.slice(0, 2_000)}`;
-      setComposerDraft(prompt);
-      setFocusToken((value) => value + 1);
+      prefillComposer(prompt);
     },
     onAttachBrowserReference: (reference) => {
       const label = reference.label.replace(/[\]\n\r]/gu, " ").slice(0, 80) || "网页";
@@ -1946,10 +1948,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       if (isCurrentRequest()) setMemoryToggleBusy(false);
     }
   }, [chatMemoryEnabled, draftMemoryOverride, memoryPolicy, memoryToggleBusy, mergeProjectSnapshot, selectedSession]);
-  const prefillComposer = useCallback((input: string): void => {
-    setComposerDraft(input);
-    setFocusToken((value) => value + 1);
-  }, []);
   const referenceMessage = useCallback(async (messageId: string): Promise<void> => {
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
@@ -2114,8 +2112,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const composer = (
     <>
     <Composer
-      key={`${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`}
-      draftKey={`${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`}
+      key={composerDraftKey}
+      draftKey={composerDraftKey}
       draftProjectId={composerProject?.id}
       isSubmissionCurrent={() => projectRef.current === workspace?.project.id && selectedRef.current === selectedSessionId}
       drafts={composerDrafts}
@@ -2128,7 +2126,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       memoryToggleDisabledReason={memoryToggleDisabledReason}
       contextUsage={contextUsage}
       focusToken={focusToken}
-      prefillInput={composerDraft}
       capabilityDefaults={workspace?.capabilityDefaults ?? { tools: "auto", skills: "auto" }}
       skills={composerSkills}
       toolCatalog={composerTools}

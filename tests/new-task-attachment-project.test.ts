@@ -76,7 +76,7 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
   const ipc = ts.createSourceFile("ipc.ts", await readFile("src/desktop/electron/main/ipc.ts", "utf8"), ts.ScriptTarget.Latest, true);
   const composerText = declaration(app, "composer");
   const composerNode = ts.createSourceFile("composer.tsx", composerText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const selectedProps = new Set(["key", "draftKey", "drafts", "isSubmissionCurrent", "project", "onSaveAttachment", "onSend", "onInspectReference", "prefillInput", "draftProjectId", "skills", "toolCatalog", "onRefreshCatalog"]);
+  const selectedProps = new Set(["key", "draftKey", "drafts", "isSubmissionCurrent", "project", "onSaveAttachment", "onSend", "onInspectReference", "draftProjectId", "skills", "toolCatalog", "onRefreshCatalog"]);
   const attributes: string[] = [];
   const collect = (node: ts.Node): void => {
     if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(composerNode) === "Composer") {
@@ -101,6 +101,7 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
     import { z } from 'zod';
     import {Composer} from './src/desktop/renderer/src/components/Composer.js';
     import {ComposerDraftState} from './src/desktop/renderer/src/components/composer/composerDraft.js';
+    import {normalizeDraftReferences} from './src/desktop/renderer/src/components/composer/referenceCompletion.js';
     import {WorkspaceContextBar} from './src/desktop/renderer/src/components/project/WorkspaceContextBar.js';
     import {WorkspaceReferencesPanel} from './src/desktop/renderer/src/components/workspace/WorkspaceReferencesPanel.js';
     import {createNavigationState, pushNavigation, replaceNavigation} from './src/desktop/renderer/src/navigationHistory.js';
@@ -131,9 +132,7 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
       const openInspector = noop;
       ${declaration(inspectorSource, "previewReference")}
       const inspector = {previewReference};
-      ${declaration(app, "composerDraft")}
       const setFocusToken = noop;
-      ${declaration(app, "prefillComposer")}
       const draftMemoryOverride = undefined;
       const setDraftMemoryOverride = noop;
       const loadRequestRef = useRef(0);
@@ -147,6 +146,8 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
       ${declaration(app, "draftProjectId")}
       ${declaration(app, "composerDrafts")}
       ${declaration(app, "composerProject")}
+      ${declaration(app, "composerDraftKey")}
+      ${declaration(app, "prefillComposer")}
       ${declaration(app, "selectComposerProject")}
       ${declaration(app, "saveAttachment")}
       ${declaration(app, "sendPrompt")}
