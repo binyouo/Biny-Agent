@@ -224,6 +224,15 @@ function readDailySection(existing: string, heading: string): string {
 
 /** Only document-level headings own notebook sections; nested Markdown stays content. */
 function dailySectionRange(lines: string[], headings: string[], rejectUnclosedFence?: "missing" | "any"): { start: number; end: number } | undefined {
+  // Ordinary generated diary lines cannot open Markdown containers. Avoid parsing
+  // the growing notebook for every backfilled entry; ambiguous syntax stays on AST.
+  if (lines.every(isPlainDailyLine)) {
+    const start = lines.findIndex((line) => headings.includes(line.trim()));
+    if (start < 0) return undefined;
+    let end = start + 1;
+    while (end < lines.length && !/^#{1,2} /u.test(lines[end] ?? "")) end += 1;
+    return { start, end };
+  }
   const blocks = dailyMarkdownParser.parse(lines.join("\n")).children;
   let start: number | undefined;
   for (const block of blocks) {
@@ -244,6 +253,15 @@ function dailySectionRange(lines: string[], headings: string[], rejectUnclosedFe
     }
   }
   return start === undefined ? undefined : { start, end: lines.length };
+}
+
+function isPlainDailyLine(value: string): boolean {
+  const line = value.replace(/\r$/u, "");
+  if (line.includes("\r")) return false;
+  if (!line.trim() || /^#{1,6}(?:[ \t]|$)/u.test(line)) return true;
+  if (/^<!-- biny-daily-(?:entry|source|model):[A-Za-z0-9_-]+ -->$/u.test(line)) return true;
+  if (/^- (?:请求|结果)：/u.test(line)) return true;
+  return !/^[\s`~<>[\]#+*_\-=\\]/u.test(line);
 }
 
 async function acquireDailyNoteLock(target: string): Promise<() => Promise<void>> {

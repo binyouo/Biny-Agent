@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { unified } from "unified";
 import { appendDailyMemoryEntry, DailyMemorySectionConflictError, readDailyMemoryNote, readDailyMemorySection,
   upsertDailyMemorySection, writeDailyActivityNote, writeDailyMemoryNote } from "../src/activity/dailyNotes.js";
 
@@ -135,3 +136,22 @@ for (const [name, example] of [
     });
   });
 }
+
+test("plain backfilled notebooks avoid repeated full Markdown parsing", async (t) => {
+  const prototype = Object.getPrototypeOf(unified) as { parse: (...args: unknown[]) => unknown };
+  t.mock.method(prototype, "parse", () => { throw new Error("Plain generated entries must not parse the growing notebook."); });
+  await withNote(async root => {
+    for (let index = 0; index < 520; index += 1) {
+      await appendDailyMemoryEntry(date, "聊天摘要", `plain-${index}`, `### 10:20 · project\n- 请求：Request ${index}\n- 结果：Completed ${index}`, { configDir: root });
+      if (index === 259) await upsertDailyMemorySection(date, "每日总结", "<!-- biny-daily-source:abc123 -->\n<!-- biny-daily-model:fallback -->\n2026-10-30 完成了 260 个聊天回合。", { configDir: root });
+    }
+    const note = (await readDailyMemoryNote(date, { configDir: root }))!;
+    assert.equal(note.match(/biny-daily-entry:/gu)?.length, 520);
+    assert.ok(readDailyMemorySection(note, "聊天摘要")?.includes("Completed 519"));
+    assert.ok(readDailyMemorySection(note, "每日总结")?.includes("完成了 260 个聊天回合。"));
+  });
+});
+
+test("a bare CR cannot hide a fenced-code opener from the plain-text guard", () => {
+  assert.equal(readDailyMemorySection(`# ${date}\n\nordinary\r\`\`\`md\n## 活动记录\nFake`, "活动记录"), undefined);
+});
