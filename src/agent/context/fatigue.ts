@@ -104,8 +104,14 @@ export class FatigueService {
     return false;
   }
   private async readState(): Promise<FatigueState> {
+    let content: string;
+    try { content = await fs.readFile(this.filePath, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaultState(this.now());
+      throw error;
+    }
     try {
-      const value = JSON.parse(await fs.readFile(this.filePath, "utf8")) as Partial<FatigueState>;
+      const value = JSON.parse(content) as Partial<FatigueState>;
       const lastMessageTime = typeof value.lastMessageTime === "number" ? new Date(value.lastMessageTime).toISOString() : value.lastMessageTime;
       if (!Number.isFinite(value.fatigue) || value.fatigue! < 0 || value.fatigue! > 100
         || !Number.isSafeInteger(value.messageCount) || value.messageCount! < 0
