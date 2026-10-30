@@ -82,10 +82,11 @@ export function createRuntimeHostBusinessComposition(
       goalRunner.start();
     },
     stop(): void {
+      if (stopped) return;
+      stopped = true;
       automationScheduler.stop();
       graphSupervisor.stop();
       goalRunner.stop();
-      stopped = true;
       unsubscribeGraphs();
     },
     handleRuntimeUpdate(update: AgentRuntimeUpdate): void {
