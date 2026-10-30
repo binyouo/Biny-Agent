@@ -1939,4 +1939,3 @@ function mutatedFilePath(args: unknown): string | undefined {
   if (typeof record.operation === "object" && record.operation !== null && "path" in record.operation && typeof record.operation.path === "string") return record.operation.path;
   return undefined;
 }
-
