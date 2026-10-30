@@ -108,4 +108,3 @@ export function readWidgetMessage(value: unknown, token: string): WidgetMessage 
   }
   return undefined;
 }
-
