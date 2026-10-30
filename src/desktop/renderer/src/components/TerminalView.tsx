@@ -78,7 +78,7 @@ export function TerminalView({ projectId, active = true }: { projectId: string; 
 function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: string; slotId: string; active: boolean; onHandle(id: string): void }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | undefined>(undefined);
-  const fitRef = useRef<FitAddon | undefined>(undefined);
+  const fitRef = useRef<(() => void) | undefined>(undefined);
   const activeRef = useRef(active);
   const handleRef = useRef(onHandle);
   useLayoutEffect(() => { activeRef.current = active; handleRef.current = onHandle; }, [active, onHandle]);
@@ -96,7 +96,6 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
     term.loadAddon(fit);
     term.open(container);
     terminalRef.current = term;
-    fitRef.current = fit;
     let terminalId: string | undefined;
     let disposed = false;
     const applyTheme = (): void => {
@@ -114,11 +113,25 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
     themeMedia.addEventListener("change", applyTheme);
     const themeObserver = new MutationObserver(applyTheme);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
-    const fitVisible = (): void => { if (activeRef.current && container.clientWidth > 40 && container.clientHeight > 40) fit.fit(); };
+    let syncedSize: { cols: number; rows: number } | undefined;
+    const syncSize = (): void => {
+      if (!terminalId || disposed || !activeRef.current || container.clientWidth <= 40 || container.clientHeight <= 40) return;
+      const { cols, rows } = term;
+      if (syncedSize?.cols === cols && syncedSize.rows === rows) return;
+      window.biny.resizeTerminal(terminalId, cols, rows);
+      syncedSize = { cols, rows };
+    };
+    // A fit before connection has no PTY ID; an unchanged fit emits no resize event.
+    const fitVisible = (): void => {
+      if (disposed || !activeRef.current || container.clientWidth <= 40 || container.clientHeight <= 40) return;
+      fit.fit();
+      syncSize();
+    };
+    fitRef.current = fitVisible;
     const observer = new ResizeObserver(fitVisible);
     observer.observe(container);
     const data = term.onData((value) => { if (terminalId) window.biny.writeTerminal(terminalId, value); });
-    const resize = term.onResize(({ cols, rows }) => { if (terminalId) window.biny.resizeTerminal(terminalId, cols, rows); });
+    const resize = term.onResize(syncSize);
     // 先订阅再连接；用输出序号排除 replay 已包含的事件，覆盖 IPC 回执前的输出窗口。
     const pending: import("../../../protocol.js").DesktopTerminalEvent[] = [];
     const applyEvent = (event: import("../../../protocol.js").DesktopTerminalEvent): void => {
@@ -149,7 +162,7 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
   }, [projectId, slotId, restartToken]);
   useEffect(() => {
     if (!active) return;
-    const frame = requestAnimationFrame(() => { if ((containerRef.current?.clientWidth ?? 0) > 40) { fitRef.current?.fit(); terminalRef.current?.focus(); } });
+    const frame = requestAnimationFrame(() => { if ((containerRef.current?.clientWidth ?? 0) > 40) { fitRef.current?.(); terminalRef.current?.focus(); } });
     return () => cancelAnimationFrame(frame);
   }, [active]);
   return <div className="terminal-view">
