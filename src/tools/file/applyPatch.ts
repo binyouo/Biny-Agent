@@ -1,7 +1,7 @@
 /** 原生结构化 patch 的输入适配；单文件执行继续复用 Write/Edit 的权限、CAS 和提交回调。 */
 import { applyDiff } from "@openai/agents-core/utils";
 import { z } from "zod";
-import { resolveWorkspacePath } from "../../workspace/resolvePath.js";
+import { resolveWorkspaceFileEntry, resolveWorkspacePath } from "../../workspace/resolvePath.js";
 import type { Tool, ToolContext } from "../types.js";
 import { zodToolInput } from "../zodToolInput.js";
 import { fileChangeOutputSchema, type FileChangeResult } from "./fileChange.js";
@@ -41,7 +41,8 @@ export function createApplyPatchTool(context: ToolContext): Tool<PatchArgs, File
     capability: "filesystem.edit",
     risk: "write",
     async resolveExecution({ callId, operation }) {
-      const absolutePath = resolveWorkspacePath(context.workspaceRoot, operation.path, context.ignore);
+      const resolveSource = operation.type === "delete_file" ? resolveWorkspaceFileEntry : resolveWorkspacePath;
+      const absolutePath = resolveSource(context.workspaceRoot, operation.path, context.ignore);
       const before = await readOptionalFile(absolutePath, undefined, operation.type === "update_file");
       if (operation.type === "create_file" ? before.snapshot !== null : before.snapshot === null) {
         throw new Error(operation.type === "create_file" ? "Patch create target already exists." : "Patch target does not exist.");
@@ -65,3 +66,4 @@ export function createApplyPatchTool(context: ToolContext): Tool<PatchArgs, File
     }
   };
 }
+

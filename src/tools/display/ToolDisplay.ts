@@ -9,7 +9,7 @@ import type { PermissionPrompt, PermissionRequestContext } from "../../permissio
 import { createUnifiedDiff } from "../../utils/diff.js";
 import { classifyDiffLines } from "../../utils/diffLines.js";
 import { redactSecrets, redactSensitiveValue } from "../../utils/secrets.js";
-import { resolveWorkspacePath } from "../../workspace/resolvePath.js";
+import { resolveWorkspaceFileEntry, resolveWorkspacePath } from "../../workspace/resolvePath.js";
 import { applyHashlineEdits } from "../file/hashline.js";
 import { applyStringEdit } from "../file/stringEdit.js";
 import { patchArgsSchema, patchContent } from "../file/applyPatch.js";
@@ -76,6 +76,7 @@ export const toolDisplayRules: Record<string, ToolDisplayRule> = {
     title: "File patch request",
     async summarize(args, context) {
       const { operation } = patchArgsSchema.parse(args);
+      if (operation.type === "delete_file") resolveWorkspaceFileEntry(context.workspaceRoot, operation.path, context.ignore);
       const content = await readExistingFileForDiff(operation.path, context, operation.type === "create_file");
       const diff = createUnifiedDiff(operation.path, content, patchContent(content, operation));
       return { details: `${operation.type}: ${operation.path}`, diff, preview: formatUnifiedDiffPreview(operation.path, diff, 16), requireFullYes: operation.type === "delete_file" };
@@ -116,6 +117,7 @@ export const toolDisplayRules: Record<string, ToolDisplayRule> = {
     async summarize(args, context) {
       const parsed = editArgsSchema.parse(args);
       const filePath = parsed.path;
+      if (parsed.operation === "delete" || parsed.operation === "move") resolveWorkspaceFileEntry(context.workspaceRoot, filePath, context.ignore);
       const oldContent = await readExistingFileForDiff(filePath, context);
       if (parsed.operation === "delete") {
         const diff = createUnifiedDiff(filePath, oldContent, "");
@@ -243,3 +245,4 @@ function formatUnifiedDiffPreview(filePath: string, diff: string, maxLines: numb
     ...(body.length > maxLines ? [`     … ${String(body.length - maxLines)} 行未展示`] : [])
   ].join("\n");
 }
+

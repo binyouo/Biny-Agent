@@ -5,7 +5,7 @@
  */
 import { z } from "zod";
 import { createUnifiedDiff } from "../../utils/diff.js";
-import { resolveWorkspacePath, toWorkspaceRelative } from "../../workspace/resolvePath.js";
+import { resolveWorkspaceFileEntry, resolveWorkspacePath, toWorkspaceRelative } from "../../workspace/resolvePath.js";
 import { ToolAccesses } from "../access.js";
 import type { Tool, ToolContext } from "../types.js";
 import { zodToolInput } from "../zodToolInput.js";
@@ -80,7 +80,8 @@ export function createEditFileTool(context: ToolContext, hashline = false): Tool
     capability: "filesystem.edit",
     risk: "write",
     async resolveExecution(args) {
-      const absolutePath = resolveWorkspacePath(context.workspaceRoot, args.path, context.ignore);
+      const resolveSource = args.operation === "update" ? resolveWorkspacePath : resolveWorkspaceFileEntry;
+      const absolutePath = resolveSource(context.workspaceRoot, args.path, context.ignore);
       const path = toWorkspaceRelative(context.workspaceRoot, absolutePath);
       const absoluteDestination = args.operation === "move"
         ? resolveWorkspacePath(context.workspaceRoot, args.to, context.ignore)
@@ -107,7 +108,7 @@ export function createEditFileTool(context: ToolContext, hashline = false): Tool
         approvalRule: args.operation === "move" ? `Edit(move:${path}->${destinationPath ?? args.to})` : `Edit(${args.operation}:${path})`,
         async execute({ signal, approvedFile, onFileChangeCommitted, onExecutionState }) {
           signal?.throwIfAborted();
-          const currentPath = resolveWorkspacePath(context.workspaceRoot, args.path, context.ignore);
+          const currentPath = resolveSource(context.workspaceRoot, args.path, context.ignore);
           if (currentPath !== absolutePath) throw new Error("The edit target changed after the tool call was prepared.");
           if (approvedFile && approvedFile.path !== absolutePath) throw new Error("The approved edit target does not match the prepared tool target.");
           const { content, snapshot } = await readUtf8FileForEdit(absolutePath, signal, args.operation === "update");
@@ -160,3 +161,4 @@ function moveDiff(from: string, to: string): string {
 function capitalize(value: string): string {
   return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }
+
