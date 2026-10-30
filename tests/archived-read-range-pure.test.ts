@@ -22,20 +22,63 @@ const serializerFunctions = ["serializeToolResult", "jsonReplacer", "toolResultP
 const secretFunctions = ["redactSensitiveValue", "redactSensitiveValueInternal", "isSensitiveFieldName"];
 const directCalls = new Set([
   ...projectionFunctions, ...serializerFunctions, ...secretFunctions, "readResultLineRange",
-  "redactSecrets", "redactBrowserToolResult", "archiveToolResult", "formatToolError", "readStringField", "String", "Boolean", "createHash"
+  "redactSecrets", "archiveToolResult", "formatToolError", "readStringField", "String", "Boolean", "createHash"
 ]);
 const methods = new Set([
-  "entries", "filter", "map", "some", "join", "set", "get", "push", "has", "add", "delete",
+  "entries", "filter", "map", "join", "set", "get", "push", "has", "add", "delete",
   "keys", "isArray", "isFinite", "isSafeInteger", "parse", "stringify", "includes",
   "test", "trim", "replace", "match", "toLowerCase", "sort", "fromEntries", "endsWith",
   "slice", "exec", "hasOwn", "floor", "max", "min", "charCodeAt", "byteLength", "update", "digest", "archiveResult", "toString"
 ]);
+
+// The browser image-preservation guard is reviewed only at this exact site.
+// Do not admit arbitrary `.some()` receivers or callback capabilities.
+function isReviewedContentSomeCall(node: ts.CallExpression): boolean {
+  function property(expression: ts.Expression, name: string): ts.PropertyAccessExpression | undefined {
+    return ts.isPropertyAccessExpression(expression) && !expression.questionDotToken
+      && expression.name.text === name ? expression : undefined;
+  }
+  const some = property(node.expression, "some");
+  const content = some && property(some.expression, "content");
+  const message = content && property(content.expression, "message");
+  if (!message || !ts.isIdentifier(message.expression) || message.expression.text !== "entry"
+    || node.questionDotToken || node.typeArguments?.length || node.arguments.length !== 1) return false;
+  const callback = node.arguments[0]!;
+  if (!ts.isArrowFunction(callback) || callback.modifiers?.length || callback.typeParameters?.length
+    || callback.type || callback.parameters.length !== 1) return false;
+  const parameter = callback.parameters[0]!;
+  if (!ts.isIdentifier(parameter.name) || parameter.name.text !== "part" || parameter.initializer
+    || parameter.dotDotDotToken || parameter.questionToken || parameter.type || parameter.modifiers?.length) return false;
+  const predicate = callback.body;
+  if (!ts.isBinaryExpression(predicate) || predicate.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken
+    || !ts.isStringLiteral(predicate.right) || predicate.right.text !== "text") return false;
+  const type = property(predicate.left, "type");
+  if (!type || !ts.isIdentifier(type.expression) || type.expression.text !== "part") return false;
+  let owner: ts.Node | undefined = node.parent;
+  while (owner && !ts.isFunctionDeclaration(owner)) owner = owner.parent;
+  return !!owner && ts.isFunctionDeclaration(owner) && owner.name?.text === "findReplacements";
+}
+
+function isReviewedBrowserRedactionCall(node: ts.CallExpression): boolean {
+  if (!ts.isIdentifier(node.expression) || node.expression.text !== "redactBrowserToolResult"
+    || node.questionDotToken || node.typeArguments?.length || node.arguments.length !== 2) return false;
+  const [tool, result] = node.arguments;
+  if (!tool || !ts.isPropertyAccessExpression(tool) || tool.questionDotToken || tool.name.text !== "name"
+    || !ts.isIdentifier(tool.expression) || tool.expression.text !== "call"
+    || !result || !ts.isIdentifier(result) || result.text !== "modelResult") return false;
+  let owner: ts.Node | undefined = node.parent;
+  while (owner && !ts.isMethodDeclaration(owner)) owner = owner.parent;
+  return !!owner && ts.isMethodDeclaration(owner) && ts.isIdentifier(owner.name)
+    && owner.name.text === "outlineToolResultForPersistence";
+}
 
 function check(node: ts.Node): void {
   assert.ok(!ts.isImportDeclaration(node) && !ts.isImportEqualsDeclaration(node) && !ts.isExportDeclaration(node), "No imports in extracted code");
   if (ts.isCallExpression(node)) {
     const callee = node.expression;
     assert.ok(ts.isIdentifier(callee) && directCalls.has(callee.text)
+      || isReviewedContentSomeCall(node)
+      || isReviewedBrowserRedactionCall(node)
       || ts.isPropertyAccessExpression(callee) && (methods.has(callee.name.text)
         || callee.name.text === "exec" && ts.isIdentifier(callee.expression)
           && ["beginPattern", "endPattern", "legacyQuotedPattern", "completeQuotedPattern"].includes(callee.expression.text)), "Unreviewed call: " + callee.getText());
@@ -145,12 +188,101 @@ function pair(id: string, args: RecordValue, details: unknown, isError = false, 
     { role: "toolResult", toolCallId: id, toolName: tool, content: [{ type: "text", text: JSON.stringify(details) }], details, isError }];
 }
 function selections(api: Api, messages: Message[]): Map<number, Replacement> { return api.projection.findReplacements(api.projection.collectToolResults(messages)); }
+test("content guard admits only the reviewed receiver and inert predicate", () => {
+  function declaration(expression: string, name = "findReplacements"): ts.FunctionDeclaration {
+    const file = ts.createSourceFile("guard-fixture.ts", `function ${name}() { return ${expression}; }`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const node = file.statements[0];
+    assert.ok(node && ts.isFunctionDeclaration(node));
+    return node;
+  }
+  const reviewed = 'entry.message.content.some((part) => part.type !== "text")';
+  assert.doesNotThrow(() => check(declaration(reviewed)));
+  for (const expression of [
+    'other.message.content.some((part) => part.type !== "text")',
+    'entry.message.content["some"]((part) => part.type !== "text")',
+    'entry.message?.content.some((part) => part.type !== "text")',
+    'entry.message.content.some?.((part) => part.type !== "text")',
+    'entry.message.content.some((part) => part.type === "text")',
+    'entry.message.content.some((part) => part.type !== "image")',
+    'entry.message.content.some((part) => inspect(part))',
+    'entry.message.content.some((part) => { inspect(part); return part.type !== "text"; })',
+    'entry.message.content.some((part) => part.type !== "text", receiver)',
+    'entry.message.content.some(async (part) => part.type !== "text")',
+    'entry.message.content.some((part = load()) => part.type !== "text")'
+  ]) assert.throws(() => check(declaration(expression)), /Unreviewed call:/u, expression);
+  assert.throws(() => check(declaration(reviewed, "otherFunction")), /Unreviewed call:/u);
+});
+
+test("non-text results retain matching metadata while text-only duplicates are replaced", () => {
+  const api = harness(sourceRoot);
+  const details = { bytes: 12, mimeType: "image/png", imageReturned: true };
+  const messages: Message[] = [{ role: "user", content: "Compare observations" },
+    ...pair("first", {}, details, false, "BrowserScreenshot"),
+    ...pair("second", {}, details, false, "BrowserScreenshot")];
+  const textOnly = selections(api, messages);
+  assert.equal(textOnly.get(2)?.reason, "duplicate");
+  assert.equal(textOnly.get(2)?.archive, false);
+  for (const index of [2, 4]) {
+    const content = messages[index]!.content;
+    assert.ok(Array.isArray(content));
+    content.push({ type: "image", mimeType: "image/jpeg", data: index === 2 ? "YQ==" : "Yg==" });
+  }
+  freeze(messages);
+  const before = JSON.stringify(messages);
+  assert.equal(selections(api, messages).size, 0);
+  assert.equal(JSON.stringify(messages), before);
+  assert.equal(api.archives.length, 0);
+});
+
 async function envelope(api: Api, kind: "budget" | "persistence", id: string, value: RecordValue, tool = "Read", remaining = 0): Promise<RecordValue> {
   const raw = api.serialize(value);
   return record(kind === "budget"
     ? await api.producer.archivedToolResultEnvelope({ id, name: tool }, 7, value, raw, Buffer.byteLength(raw), remaining, value)
     : await api.producer.outlineToolResultForPersistence({ id, name: tool }, 7, value));
 }
+
+test("actual persistence redaction uses the exact inert helper without archiving private results", async () => {
+  function method(expression: string, name = "outlineToolResultForPersistence"): ts.MethodDeclaration {
+    const file = ts.createSourceFile("redaction-guard.ts", `class Fixture { ${name}() { return ${expression}; } }`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const owner = file.statements[0];
+    assert.ok(owner && ts.isClassDeclaration(owner));
+    const member = owner.members[0];
+    assert.ok(member && ts.isMethodDeclaration(member));
+    return member;
+  }
+  const reviewed = "redactBrowserToolResult(call.name, modelResult)";
+  assert.doesNotThrow(() => check(method(reviewed)));
+  for (const expression of [
+    "redactBrowserToolResult(other.name, modelResult)",
+    "redactBrowserToolResult(call.name, otherResult)",
+    "redactBrowserToolResult(call.name, modelResult, extra)",
+    "redactBrowserToolResult?.(call.name, modelResult)",
+    "redactBrowserToolResult(call.name, load())"
+  ]) assert.throws(() => check(method(expression)), /Unreviewed call:/u);
+  assert.throws(() => check(method(reviewed, "otherMethod")), /Unreviewed call:/u);
+  const api = harness(sourceRoot);
+  const clipboard = {
+    text: "private-clipboard-value", imageData: "private-image-bytes", unknown: "private-extra",
+    truncated: true, hasImage: true, imageStatus: "available", imageReturned: false
+  };
+  freeze(clipboard);
+  const before = JSON.stringify(clipboard);
+  const project = (tool: string, value: unknown) => api.producer.outlineToolResultForPersistence({ id: "sensitive", name: tool }, 1, value);
+  assert.deepEqual(plain(await project("BrowserClipboardRead", clipboard)), {
+    text: "[redacted]", truncated: true, hasImage: true, imageStatus: "available", imageReturned: false
+  });
+  for (const malformed of ["private-string", null, ["private-array"]]) {
+    assert.equal(await project("BrowserClipboardRead", malformed), "[clipboard text redacted]");
+  }
+  assert.deepEqual(plain(await project("BrowserClipboardRead", {
+    text: "private-value", truncated: "true", hasImage: 1, imageStatus: false, imageReturned: "false"
+  })), { text: "[redacted]" });
+  assert.equal(await project("BrowserCDP", clipboard), "[browser CDP result redacted]");
+  assert.equal(await project("ChromeRelayEval", clipboard), "[Chrome Relay evaluation result redacted]");
+  assert.strictEqual(await project("Read", clipboard), clipboard, "ordinary small results retain identity");
+  assert.equal(JSON.stringify(clipboard), before);
+  assert.equal(api.archives.length, 0);
+});
 
 for (const kind of ["budget", "persistence"] as const) {
   for (const failure of [false, true]) {
