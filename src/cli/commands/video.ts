@@ -128,7 +128,9 @@ async function openVideoInput(workspaceRoot: string, input: string): Promise<Ope
     if (!attachmentBytes.length) throw new Error("Video file is empty.");
     return { name: path.basename(filePath), mimeType, size: attachmentBytes.length, bytes: attachmentBytes, close: async () => undefined };
   }
-  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+  // Reach the regular-file check without waiting for a FIFO writer.
+  const nonBlocking = process.platform === "win32" ? 0 : (constants.O_NONBLOCK ?? 0);
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | nonBlocking;
   const handle = await fs.open(filePath, flags);
   try {
     const [stat, pathStat] = await Promise.all([handle.stat(), fs.lstat(filePath)]);
