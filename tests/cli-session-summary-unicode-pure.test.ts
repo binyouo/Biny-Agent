@@ -13,7 +13,7 @@ const sourcePath = new URL("../src/cli/commands/sessions.ts", import.meta.url);
 let source = readFileSync(sourcePath, "utf8");
 for (const declaration of [
   'import { ensureAgentDirs } from "../../session/store.js";',
-  'import { querySessionCatalog, type SessionCatalogPage } from "../../session/catalog.js";',
+  'import { querySessionCatalog, type SessionBranchPoint, type SessionCatalogPage } from "../../session/catalog.js";',
   'import type { SessionSummary } from "../../session/events.js";'
 ]) {
   assert.equal(source.split(declaration).length, 2, `Expected exactly one import: ${declaration}`);
@@ -123,6 +123,19 @@ test("catalog page protects both summaries without changing branch status or cur
     "  branch: parent @ user_message:3", "next-cursor: next-token"
   ]);
   assert.equal(JSON.stringify(page), before);
+});
+
+test("catalog page preserves message branch metadata while clipping both summaries", () => {
+  for (const role of ["user", "assistant"] as const) {
+    const page = pageOf(summary(crossing, crossing));
+    page.items[0]!.parentSessionId = "parent";
+    page.items[0]!.branchPoint = { kind: "message", index: 3, messageId: "selected-message", role };
+    const before = JSON.stringify(page);
+    const h = harness();
+    h.api.printSessionCatalogPage(page);
+    assertLines(h.lines, [...expectedLines(prefix, prefix), "  branch: parent @ message:3"]);
+    assert.equal(JSON.stringify(page), before);
+  }
 });
 
 test("clipping boundary is computed after existing whitespace folding", () => {
