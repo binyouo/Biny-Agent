@@ -7,6 +7,8 @@
 import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
 import { globalConfigDir } from "../../config/paths.js";
 import { renderSoulPrompt, type SoulPromptSource } from "../builtinSoul.js";
 
@@ -183,24 +185,65 @@ function normalizeTrait(description: string): string {
     .trim();
 }
 
-/** 成长区保留日期和最多十五条特质，其他章节保持原样。 */
+const soulMarkdownParser = unified().use(remarkParse);
+
+/** Only actual root-level Markdown sections and list items belong to the growth ledger. */
+function soulTraitSection(content: string) {
+  const lines = content.split("\n");
+  const blocks = soulMarkdownParser.parse(content).children;
+  let start = -1;
+  let end = lines.length;
+  for (const block of blocks) {
+    if (block.type !== "heading" || block.depth > 2 || !block.position) continue;
+    const index = block.position.start.line - 1;
+    if (start >= 0) { end = index; break; }
+    if (lines[index]?.trim().toLowerCase() === "## evolved traits") start = index;
+  }
+  const traits: Array<{ start: number; end: number; description: string }> = [];
+  const markers: number[] = [];
+  if (start >= 0) for (const block of blocks) {
+    if (!block.position || block.position.start.line - 1 <= start || block.position.end.line - 1 >= end) continue;
+    if (block.type === "list" && !block.ordered) {
+      for (const item of block.children) {
+        if (!item.position) continue;
+        const index = item.position.start.line - 1;
+        const description = traitDescription(lines[index] ?? "");
+        if (description !== undefined) traits.push({ start: index, end: item.position.end.line, description });
+      }
+    } else if (block.type === "html" && block.position.start.line === block.position.end.line
+      && /^<!-- biny-soul-growth:\d{4}-\d{2}-\d{2} -->$/u.test(block.value.trim())) {
+      markers.push(block.position.start.line - 1);
+    }
+  }
+  return { lines, start, end, traits, markers };
+}
+
+/** 成长区保留日期和最多十五条特质，其他章节和示例代码保持原样。 */
 function appendTrait(content: string, description: string, now: Date): string {
   const trait = validateTrait(description);
-  const lines = content.split("\n");
-  let start = lines.findIndex(line => line.trim().toLowerCase() === "## evolved traits");
-  if (start < 0) { lines.push("", "## Evolved Traits", ""); start = lines.length - 2; }
-  let end = start + 1;
-  while (end < lines.length && !/^#{1,2}\s/u.test(lines[end]!)) end += 1;
-  const section = lines.slice(start + 1, end).filter(line => !/^<!-- biny-soul-growth:\d{4}-\d{2}-\d{2} -->$/u.test(line.trim()));
-  if (!section.some(line => traitDescription(line) === trait)) {
-    while (section.filter(line => traitDescription(line) !== undefined).length >= maxSoulTraits) {
-      section.splice(section.findIndex(line => traitDescription(line) !== undefined), 1);
-    }
-    let insertion = section.length;
-    while (insertion > 0 && section[insertion - 1]?.trim() === "") insertion -= 1;
-    section.splice(insertion, 0, `- [${now.toISOString().slice(0, 10)}] ${trait}`);
+  let section = soulTraitSection(content);
+  if (section.start < 0) {
+    section = soulTraitSection(`${content}\n\n## Evolved Traits\n`);
+    if (section.start < 0) throw new Error("Cannot append a Soul trait while Markdown hides the Evolved Traits section.");
   }
-  return [...lines.slice(0, start + 1), ...section, ...lines.slice(end)].join("\n").trim();
+  const duplicate = section.traits.some((item) => item.description === trait);
+  const removed = new Set(section.markers);
+  if (!duplicate) for (const item of section.traits.slice(0, Math.max(0, section.traits.length - maxSoulTraits + 1))) {
+    for (let index = item.start; index < item.end; index += 1) removed.add(index);
+  }
+  const body = section.lines.slice(section.start + 1, section.end).filter((_line, index) => !removed.has(section.start + 1 + index));
+  if (!duplicate) {
+    let insertion = body.length;
+    while (insertion > 0 && body[insertion - 1]?.trim() === "") insertion -= 1;
+    const separator = insertion > 0 && traitDescription(body[insertion - 1] ?? "") === undefined ? [""] : [];
+    body.splice(insertion, 0, ...separator, `- [${now.toISOString().slice(0, 10)}] ${trait}`);
+  }
+  const result = [...section.lines.slice(0, section.start + 1), ...body, ...section.lines.slice(section.end)].join("\n").trim();
+  // Unclosed fences or HTML must not swallow the new entry. Validate before any file write.
+  if (!duplicate && !soulTraitSection(result).traits.some((item) => item.description === trait)) {
+    throw new Error("Cannot append a Soul trait while Markdown hides the new list item.");
+  }
+  return result;
 }
 
 function traitDescription(line: string): string | undefined {
