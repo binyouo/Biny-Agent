@@ -33,7 +33,7 @@ function methods(p: string, className: string, names: string[]) {
   }).join('\n')}\n}`;
 }
 const coordinatorPath = 'src/agent/toolExecutionCoordinator.ts';
-let source = methods(coordinatorPath, 'ToolExecutionCoordinator', ['createAgentTools', 'execute', 'prepareToolCall', 'executeResolvedTool', 'withPermissionGate', 'trackExecution']);
+let source = methods(coordinatorPath, 'ToolExecutionCoordinator', ['createAgentTools', 'takeToolImage', 'execute', 'prepareToolCall', 'executeResolvedTool', 'withPermissionGate', 'trackExecution']);
 source += '\n' + decls(coordinatorPath, ['validateStrongConfirmation', 'isToolExecutionError', 'executionStateForResultStatus', 'terminalResultStatus', 'classifyCancellation', 'isSideEffectCommitted', 'exposeExecutionMetadata', 'formatToolError', 'isAbortError', 'abortedToolMessage', 'failedToolResultMessage', 'readStringField', 'attachToolSummary', 'waitForAbort']);
 source += '\n' + decls('src/tools/exposure.ts', ['getToolExposure', 'isToolModelVisible', 'isToolModelVisibleInMode', 'isToolScriptCallable']);
 source += '\n' + decls('src/tools/access.ts', ['ToolAccesses', 'file', 'conflicts', 'isWriteOperation', 'pathOverlaps', 'isWithin', 'normalizeAccessPath']);
