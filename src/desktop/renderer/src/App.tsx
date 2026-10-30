@@ -146,7 +146,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [writerConflict, setWriterConflict] = useState<DesktopSessionWriterConflict>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [lastFastMode, setLastFastMode] = useState(readLastFastMode);
-  const [fastModeOverride, setFastModeOverride] = useState<{ sessionId?: string; value: boolean }>();
+  const [fastModeOverride, setFastModeOverride] = useState<{ sessionId?: string; value: boolean; ownsProject?: () => boolean }>();
   const [loading, setLoading] = useState(true);
   // 启动与后续会话加载分开，避免导航时再次隐藏整个客户端。
   const [starting, setStarting] = useState(true);
@@ -304,6 +304,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const selectedSession = workspace?.sessions.find((session) => session.id === selectedSessionId)
     ?? (document?.session.id === selectedSessionId ? document?.session : undefined);
   const composerFastMode = fastModeOverride !== undefined && fastModeOverride.sessionId === selectedSessionId
+    && (fastModeOverride.ownsProject?.() ?? true)
     ? fastModeOverride.value
     : selectedSession?.fastMode ?? lastFastMode;
   // Composer 归属的项目：未进入会话时跟随未发送草稿的目标项目（缺省回落到当前工作区项目），
@@ -384,21 +385,25 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setLastFastMode(fastMode);
     try { window.localStorage.setItem("biny.lastFastMode", String(fastMode)); }
     catch { /* The per-session setting remains available when local storage is unavailable. */ }
-    setFastModeOverride({ sessionId: selectedSession?.id, value: fastMode });
+    // Removal/recreation retires both this receipt and its optimistic display.
+    const ownsProject = selectedSession ? sessionTreePages.captureCatalogProject(selectedSession.projectId) : undefined;
+    const override = { sessionId: selectedSession?.id, value: fastMode, ownsProject };
+    setFastModeOverride(override);
     if (!selectedSession) return;
     try {
-      mergeProjectSnapshot(await window.biny.setSessionFastMode(
+      const snapshot = await window.biny.setSessionFastMode(
         selectedSession.projectId,
         selectedSession.id,
         fastMode,
         selectedSession.metadataRevision
-      ));
+      );
+      if (ownsProject?.()) mergeProjectSnapshot(snapshot);
     } catch (error) {
-      setWarning(errorMessage(error));
+      if (ownsProject?.()) setWarning(errorMessage(error));
     } finally {
-      setFastModeOverride(undefined);
+      setFastModeOverride((current) => current === override ? undefined : current);
     }
-  }, [mergeProjectSnapshot, selectedSession]);
+  }, [mergeProjectSnapshot, selectedSession, sessionTreePages]);
 
   useEffect(() => {
     const subscribe = window.biny.onApplicationImportsChanged;
