@@ -133,7 +133,8 @@ function pushClaudeUserContent(
       });
     }
   }
-  const text = textParts.join("\n").trim();
+  const joinedText = textParts.join("\n");
+  const text = joinedText.trim() ? joinedText : "";
   if (text) events.push({ type: "user_message", content: text, time });
 }
 
@@ -168,7 +169,8 @@ function pushClaudeAssistantContent(
       if (typeof use.name === "string" && use.name) toolCalls.push({ id: use.id, name: use.name, input: use.input });
     }
   }
-  const text = textParts.join("\n").trim();
+  const joinedText = textParts.join("\n");
+  const text = joinedText.trim() ? joinedText : "";
   if (text || reasoning) {
     events.push({
       type: "assistant_message",
