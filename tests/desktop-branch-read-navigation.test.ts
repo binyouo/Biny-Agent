@@ -203,4 +203,3 @@ assert.equal(f.toasts.length,0)}]
 
 for (const [name, run] of cases) test(name, async () => { await run(fixture());
  });
-
