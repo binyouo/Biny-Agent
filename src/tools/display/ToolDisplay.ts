@@ -245,4 +245,3 @@ function formatUnifiedDiffPreview(filePath: string, diff: string, maxLines: numb
     ...(body.length > maxLines ? [`     … ${String(body.length - maxLines)} 行未展示`] : [])
   ].join("\n");
 }
-

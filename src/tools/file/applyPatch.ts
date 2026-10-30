@@ -66,4 +66,3 @@ export function createApplyPatchTool(context: ToolContext): Tool<PatchArgs, File
     }
   };
 }
-
