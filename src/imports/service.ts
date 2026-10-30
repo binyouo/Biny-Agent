@@ -117,7 +117,8 @@ export class ApplicationImportService {
           const scanned = await this.scan(selection.source, selection.filePath);
           // A newly discovered conversation is not authorization to import it.
           const items = scanned.preview.items.filter((item) => selection.itemIds.includes(item.id));
-          if (!items.length) { state.sync.lastError = "已选择的来源项目不可用，请重新预览。"; continue; }
+          if (!items.length || items.length < selection.itemIds.length) state.sync.lastError = "已选择的来源项目不可用，请重新预览。";
+          if (!items.length) continue;
           scanned.preview.items = items;
           const history = await this.execute(state, scanned.preview, items.map((item) => item.id), workspaceRoot, scanned, effects);
           if (history.results.some((result) => result.status === "unknown" || result.status === "failed")) state.sync.lastError = "部分同步项目未完成，请查看导入历史。";
