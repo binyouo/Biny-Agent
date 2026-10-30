@@ -3,6 +3,7 @@ import { constants, promises as fs, type Stats } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { syncDirectory } from "../utils/syncDirectory.js";
 import { globalConfigDir } from "../config/paths.js";
 import type { AgentConfigStore } from "../config/store.js";
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
@@ -323,8 +324,7 @@ export class ApplicationImportService {
       try { identity = await handle.stat(); await handle.writeFile(bytes); await handle.sync(); }
       finally { await handle.close(); }
       await fs.rename(temporary, target);
-      const directory = await fs.open(this.stateRoot, constants.O_RDONLY);
-      try { await directory.sync(); } finally { await directory.close(); }
+      await syncDirectory(this.stateRoot);
     } finally {
       if (identity) await removeOwnedTemporaryFile(temporary, identity);
     }
