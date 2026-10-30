@@ -468,11 +468,20 @@ test("inactive removal preserves a newer unrelated draft target and text", async
   await h.submit("send"); assert.equal(h.actions[0]?.projectId, "c"); await h.settleAction("send", "c");
 });
 
-test("active fallback preserves a newer unrelated draft target", async t => {
+for (const kind of ["send", "slash"] as const) test(`active removal preserves a newer unrelated draft ${kind}`, async t => {
   const h = await fixture(t); await h.removeEntry("a"); await h.chooseProject("c");
+  const input = kind === "send" ? "Keep draft C" : "/tasks";
+  await h.fillDraft(input);
   await h.resolveRemoval(0, bootstrapFor(["b", "c"], "b"));
   assert.equal(h.projectName(), "Project c");
-  await h.submit("send"); assert.equal(h.actions[0]?.projectId, "c"); await h.settleAction("send", "c");
+  assert.equal(h.draft(), input, "Removing A cannot discard C's unsent input");
+  assert.equal(h.document.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')?.disabled, false);
+  await h.submit(kind, input);
+  assert.deepEqual(h.actions, [{ kind, projectId: "c", sessionId: undefined, input }]);
+  await h.settleAction(kind, "c");
+  assert.equal(h.projectName(), "Project c");
+  if (kind === "send") assert.match(h.selectedTitle() ?? "", /Conversation c/u);
+  else assert.match(h.document.querySelector(".slash-result-modal")?.textContent ?? "", /Source action result/u);
 });
 
 test("a sampled import-entry selection cannot reinsert its removed target", async t => {

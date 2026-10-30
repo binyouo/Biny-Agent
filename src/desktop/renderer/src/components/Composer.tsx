@@ -48,7 +48,7 @@ interface ComposerProps {
   externalAgent?: boolean;
   ref?: React.Ref<ComposerHandle>;
   project?: DesktopProject;
-  /** 未发送草稿的附件与引用目标；能力目录和模型仍使用工作区项目。 */
+  /** 草稿的提交、附件与引用目标；移除旧工作区后仍可保留，能力目录和模型仍使用工作区项目。 */
   draftProjectId?: string;
   drafts: Map<string, ComposerDraftState>;
   draftKey: string;
@@ -338,7 +338,7 @@ export const Composer = memo(function Composer({
   }, [menu]);
 
   const runSlash = async (command: string, consumeDraft: boolean): Promise<void> => {
-    if (!project || busy) return;
+    if (!draftProjectId || busy) return;
     const originalDraft = currentDraft();
     const originalHistory = editing ? editHistory.current : draftState.getSnapshot().history;
     const clearedDraft: ReferenceDraft = { value: "", tokens: [] };
@@ -372,7 +372,7 @@ export const Composer = memo(function Composer({
     const sentAttachments = suggestion === undefined ? attachments : [];
     const value = materializeDraftReferences(draft.value, draft.tokens).trim() || (sentAttachments.length ? "请分析这些附件。" : "");
     const resume = suggestion === undefined && Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
-    if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
+    if (!draftProjectId || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
       || (modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(value))) || memoryToggleBusy || pendingAttachments.length) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
     if (editing) {
@@ -595,9 +595,9 @@ export const Composer = memo(function Composer({
   const resumeAction = Boolean(recovery) && !running && !editing && isResumeInput(input, attachmentCount);
   const modelConnectionRequired = modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(input));
   const sendDisabled = (externalAgent && (running || editing || attachmentCount > 0 || resumeAction)) || (resumeAction && !recovery?.canContinue) || memoryToggleBusy
-    || (!hasDraft && !resumeAction) || !project || sessionWriterConflict || modelConnectionRequired || busy || pendingAttachments.length > 0;
+    || (!hasDraft && !resumeAction) || !draftProjectId || sessionWriterConflict || modelConnectionRequired || busy || pendingAttachments.length > 0;
   const sendDisabledReason = externalAgent && (running || editing || attachmentCount > 0 || resumeAction)
-    ? "ACP 仅支持运行结束后的文本新回合。" : !project
+    ? "ACP 仅支持运行结束后的文本新回合。" : !draftProjectId
     ? "请先打开一个项目。"
       : modelConnectionRequired
         ? "还没有可用的模型连接，请先配置模型。"
