@@ -262,23 +262,26 @@ export class ToolExecutionCoordinator {
             if (options?.parentToolCallId) this.scriptParents.set(toolCallId, options.parentToolCallId);
             let resultStatus: ToolExecutionResultStatus | undefined;
             let recoverableError = false;
-            const result = await this.trackExecution(this.execute(
-              registered,
-              scriptPatch ? { ...args, callId: toolCallId } : args,
-              { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly, script: options?.script,
-                onResultStatus: (status, recoverable) => { resultStatus = status; recoverableError = recoverable; },
-                toolDiscoveryNames: options?.toolDiscoveryNames, toolDiscoveryModelNames: options?.toolDiscoveryModelNames, toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
-                assertCurrentRegistration: () => {
-                  if (!(options?.script ? isCurrent() : isCurrentDirect())) {
-                    throw new Error(`Tool ${registered.name} is no longer available in this ${options?.script ? "cell" : "step"}.`);
-                  }
-                } },
-              source
-            ), toolCallId);
+            let result: unknown;
+            let image: AgentImageContent | undefined;
+            try {
+              result = await this.trackExecution(this.execute(
+                registered,
+                scriptPatch ? { ...args, callId: toolCallId } : args,
+                { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly, script: options?.script,
+                  onResultStatus: (status, recoverable) => { resultStatus = status; recoverableError = recoverable; },
+                  toolDiscoveryNames: options?.toolDiscoveryNames, toolDiscoveryModelNames: options?.toolDiscoveryModelNames, toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
+                  assertCurrentRegistration: () => {
+                    if (!(options?.script ? isCurrent() : isCurrentDirect())) {
+                      throw new Error(`Tool ${registered.name} is no longer available in this ${options?.script ? "cell" : "step"}.`);
+                    }
+                  } },
+                source
+              ), toolCallId);
+            } finally {
+              image = this.takeToolImage(toolCallId);
+            }
             const isError = resultStatus !== "succeeded";
-            const image = this.toolImages.get(toolCallId);
-            this.toolImages.delete(toolCallId);
-            if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
             return {
               content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...(!isError && image ? [image] : [])],
               details: result,
@@ -309,18 +312,31 @@ export class ToolExecutionCoordinator {
     }
     let resultStatus: ToolExecutionResultStatus | undefined;
     let actualResult: unknown;
-    await this.trackExecution(this.execute(registration.tool, args, {
-      toolCallId,
-      abortSignal: signal,
-      onResultStatus: (status) => { resultStatus = status; },
-      onActualResult: (value) => { actualResult = value; }
-    }, registration.source), toolCallId);
+    let image: AgentImageContent | undefined;
+    try {
+      await this.trackExecution(this.execute(registration.tool, args, {
+        toolCallId,
+        abortSignal: signal,
+        onResultStatus: (status) => { resultStatus = status; },
+        onActualResult: (value) => { actualResult = value; }
+      }, registration.source), toolCallId);
+    } finally {
+      image = this.takeToolImage(toolCallId);
+    }
     const isError = resultStatus !== "succeeded";
     return {
-      content: [{ type: "text", text: serializeToolResult(actualResult, { context: "mcp-result" }) }],
+      content: [{ type: "text", text: serializeToolResult(actualResult, { context: "mcp-result" }) }, ...(!isError && image ? [image] : [])],
       details: actualResult,
       isError
     };
+  }
+
+  /** The caller owns image delivery, but every settled invocation releases its reservation. */
+  private takeToolImage(toolCallId: string): AgentImageContent | undefined {
+    const image = this.toolImages.get(toolCallId);
+    this.toolImages.delete(toolCallId);
+    if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
+    return image;
   }
 
   /** Outer Code Mode admission is separate from the child scheduler: a cell
@@ -1923,3 +1939,4 @@ function mutatedFilePath(args: unknown): string | undefined {
   if (typeof record.operation === "object" && record.operation !== null && "path" in record.operation && typeof record.operation.path === "string") return record.operation.path;
   return undefined;
 }
+
