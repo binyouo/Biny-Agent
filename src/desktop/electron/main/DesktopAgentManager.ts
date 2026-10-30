@@ -783,7 +783,8 @@ export class DesktopAgentManager {
       return {
         sessionId: targetSessionId,
         runId: queued.result.runId,
-        messageId: queued.result.messageId
+        messageId: queued.result.messageId,
+        queued: true
       };
     }
     const info = snapshot.info;
@@ -803,7 +804,8 @@ export class DesktopAgentManager {
     return {
       sessionId: info.sessionId,
       runId: accepted.result.runId,
-      messageId: accepted.result.messageId
+      messageId: accepted.result.messageId,
+      queued: false
     };
   }
 
