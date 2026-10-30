@@ -214,6 +214,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, []);
   // Removing one project must retire its reads/receipts without cancelling another project's intent.
   const projectRemovalRef = useRef(new Map<string, object>());
+  const sessionRemovalRef = useRef(new Map<string, object>());
+  const sessionDeletionsRef = useRef(new Map<string, Set<Promise<void>>>());
   const branchRequestRef = useRef(0);
   const branchProjectRef = useRef<string | undefined>(undefined);
   const menuActionRef = useRef<(action: DesktopMenuAction) => void>(() => undefined);
@@ -586,6 +588,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     activeView: DesktopActiveView = "chat"
   ): Promise<boolean> => {
     const projectLifetime = projectRemovalRef.current.get(projectId);
+    const sessionKey = `${projectId}\0${sessionId}`;
+    const sessionLifetime = sessionRemovalRef.current.get(sessionKey);
     const request = activeRequest ?? loadRequestRef.current + 1;
     if (activeRequest === undefined) {
       loadRequestRef.current = request;
@@ -597,7 +601,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (showLoader) setLoading(true);
     try {
       const { document: nextDocument, workspace: resolvedWorkspace } = await readDesktopSession(window.biny, projectId, sessionId, nextWorkspace);
-      if (loadRequestRef.current !== request || projectRemovalRef.current.get(projectId) !== projectLifetime) return false;
+      while (sessionDeletionsRef.current.get(sessionKey)?.size) {
+        await Promise.all(sessionDeletionsRef.current.get(sessionKey) ?? []);
+      }
+      if (loadRequestRef.current !== request || projectRemovalRef.current.get(projectId) !== projectLifetime
+        || sessionRemovalRef.current.get(sessionKey) !== sessionLifetime) return false;
       if (resolvedWorkspace) {
         if (projectRef.current !== resolvedWorkspace.project.id) {
           permissionModeRequestRef.current += 1;
@@ -631,7 +639,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       void window.biny.commitSelection(projectId, sessionId, activeView).catch((error) => setWarning(errorMessage(error)));
       return true;
     } catch (error) {
-      if (loadRequestRef.current !== request || projectRemovalRef.current.get(projectId) !== projectLifetime) return false;
+      while (sessionDeletionsRef.current.get(sessionKey)?.size) {
+        await Promise.all(sessionDeletionsRef.current.get(sessionKey) ?? []);
+      }
+      if (loadRequestRef.current !== request || projectRemovalRef.current.get(projectId) !== projectLifetime
+        || sessionRemovalRef.current.get(sessionKey) !== sessionLifetime) return false;
       throw error;
     } finally {
       if (showLoader && loadRequestRef.current === request) setLoading(false);
@@ -1026,26 +1038,47 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       setWorkspace(current => current ? { ...current, selectedSessionId: undefined } : current);
       if (projectRef.current) commitNavigation(replaceNavigation(navigationRef.current, { projectId: projectRef.current }));
     };
-    const result = await window.biny.deleteSessions(targets, confirm, () => {
-      onStarted?.();
-      // 确认后立即离开目标聊天；旧删除回执不能清掉后来打开的会话。
-      clearDeletedSelection(new Set(targets.map(target => `${target.projectId}\0${target.sessionId}`)));
-    });
-    if (result.cancelled) return result;
-    const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
-    for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
-      sessionTreePages.replaceProject(projectId, []);
-      invalidateSessionRootPage(projectId);
-      void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
+    let completeDeletion!: () => void;
+    const deletion = new Promise<void>(resolve => { completeDeletion = resolve; });
+    const pendingKeys = new Set<string>();
+    try {
+      const result = await window.biny.deleteSessions(targets, confirm, () => {
+        for (const target of targets) {
+          const key = `${target.projectId}\0${target.sessionId}`;
+          const pending = sessionDeletionsRef.current.get(key) ?? new Set<Promise<void>>();
+          pending.add(deletion);
+          sessionDeletionsRef.current.set(key, pending);
+          pendingKeys.add(key);
+        }
+        onStarted?.();
+        // 确认后立即离开目标聊天；旧删除回执不能清掉后来打开的会话。
+        clearDeletedSelection(new Set(targets.map(target => `${target.projectId}\0${target.sessionId}`)));
+      });
+      if (result.cancelled) return result;
+      const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
+      // Only confirmed deletions retire reads; failed or cancelled targets keep their documents.
+      for (const key of deleted) sessionRemovalRef.current.set(key, {});
+      for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
+        sessionTreePages.replaceProject(projectId, []);
+        invalidateSessionRootPage(projectId);
+        void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
+      }
+      setSidebarSessions(current => current.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)));
+      setWorkspace(current => current ? { ...current, sessions: current.sessions.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)) } : current);
+      clearDeletedSelection(deleted);
+      if (result.failures.length) setWarning(result.failures.map(failure => {
+        const title = sessions.find(session => session.projectId === failure.projectId && session.id === failure.sessionId)?.title ?? failure.sessionId;
+        return `${title}：${failure.error}`;
+      }).join("\n"));
+      return result;
+    } finally {
+      for (const key of pendingKeys) {
+        const pending = sessionDeletionsRef.current.get(key);
+        pending?.delete(deletion);
+        if (pending?.size === 0) sessionDeletionsRef.current.delete(key);
+      }
+      completeDeletion();
     }
-    setSidebarSessions(current => current.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)));
-    setWorkspace(current => current ? { ...current, sessions: current.sessions.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)) } : current);
-    clearDeletedSelection(deleted);
-    if (result.failures.length) setWarning(result.failures.map(failure => {
-      const title = sessions.find(session => session.projectId === failure.projectId && session.id === failure.sessionId)?.title ?? failure.sessionId;
-      return `${title}：${failure.error}`;
-    }).join("\n"));
-    return result;
   }, [commitNavigation, invalidateSessionRootPage, mergeProjectSnapshot, sessionTreePages]);
 
   const runSessionAction = useCallback(async (session: DesktopSessionSummary, action: DesktopSessionMenuAction): Promise<void> => {
