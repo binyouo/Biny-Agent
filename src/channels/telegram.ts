@@ -397,8 +397,29 @@ export function shouldTelegramGroupMessageReachAgent(
     || message.from.is_bot
     || !telegramMessageText(message)) return false;
   if (message.reply_to_message?.from?.id === botId) return true;
-  const text = message.text?.trim() || message.caption?.trim() || "";
-  return botUsername !== undefined && new RegExp(`(?:^|\\s)@${escapeRegExp(botUsername)}\\b`, "iu").test(text);
+  if (botUsername === undefined) return false;
+  // Telegram offsets use UTF-16 code units: slice the original, untrimmed text.
+  const hasText = Boolean(message.text?.trim());
+  const text = (hasText ? message.text : message.caption) ?? "";
+  const entities = hasText ? message.entities : message.caption_entities;
+  if (entities !== undefined) return hasTelegramUsernameMention(text, entities, botUsername);
+  // Keep compatibility with older integrations that supply no entity metadata.
+  return new RegExp(`(?:^|\\s)@${escapeRegExp(botUsername)}\\b`, "iu").test(text.trim());
+}
+
+function hasTelegramUsernameMention(text: string, entities: unknown, botUsername: string): boolean {
+  if (!Array.isArray(entities)) return false;
+  const expected = `@${botUsername.toLowerCase()}`;
+  return entities.some((value: unknown) => {
+    if (typeof value !== "object" || value === null) return false;
+    const entity = value as Record<string, unknown>;
+    // text_mention addresses user identities rather than username spans; do not
+    // infer a bot identity from its visible label or broaden this routing gate.
+    if (entity.type !== "mention" || typeof entity.offset !== "number" || typeof entity.length !== "number"
+      || !Number.isSafeInteger(entity.offset) || !Number.isSafeInteger(entity.length)
+      || entity.offset < 0 || entity.length < 1 || entity.length > text.length - entity.offset) return false;
+    return text.slice(entity.offset, entity.offset + entity.length).toLowerCase() === expected;
+  });
 }
 
 export function telegramMessageText(message: TelegramMessage): string {
