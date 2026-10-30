@@ -1073,7 +1073,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         return;
       }
       if (action === "export-bundle" || action === "export-claude") {
-        mergeProjectSnapshot(await window.biny.exportSession(session.projectId, session.id, action === "export-claude" ? "claude" : "biny"));
+        const result = await window.biny.exportSession(session.projectId, session.id, action === "export-claude" ? "claude" : "biny");
+        if (result.snapshot) mergeProjectSnapshot(result.snapshot);
+        if (result.committed) setToast("会话已导出");
+        if (result.warnings.length) setWarning(`会话导出已保存；请检查以下提示（无需重新导出）：\n${result.warnings.join("\n")}`);
         return;
       }
       if (action === "duplicate") {

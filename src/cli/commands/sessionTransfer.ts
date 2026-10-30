@@ -15,6 +15,7 @@ import {
   type ExportedSessionFile,
   type SessionTransferFormat
 } from "../../session/transfer.js";
+import { writeSessionExportFile } from "../../session/exportFile.js";
 import { ensureAgentDirs } from "../../session/store.js";
 
 export interface SessionExportOptions {
@@ -42,6 +43,15 @@ export async function sessionExportCommand(
   const exported = format === "claude"
     ? await exportSessionClaudeCode(workspaceRoot, session)
     : await exportSessionBundle(workspaceRoot, session);
+  if (options.out !== undefined) {
+    const receipt = await writeSessionExportFile(options.out, exported.content);
+    if (options.json) console.log(JSON.stringify({ ...receipt, format, baseName: exported.baseName }));
+    else {
+      console.log(`Exported ${format} session to ${receipt.file}`);
+      for (const warning of receipt.warnings) console.warn(`Export saved; warning: ${warning}`);
+    }
+    return;
+  }
   const target = await writeExportFile(exported, options.out);
   await fs.chmod(target, 0o600);
   if (options.json) {

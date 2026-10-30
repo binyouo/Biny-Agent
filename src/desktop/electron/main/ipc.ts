@@ -530,7 +530,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     };
     const window = context.getWindow();
     const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
-    if (result.canceled || !result.filePath) return await context.agents.workspaceSnapshot(parsedProjectId);
+    if (result.canceled || !result.filePath) return { committed: false, warnings: [], snapshot: await context.agents.workspaceSnapshot(parsedProjectId) };
     return await context.agents.exportSession(parsedProjectId, parsedSessionId, exportFormat, result.filePath);
   });
 

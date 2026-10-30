@@ -1599,6 +1599,14 @@ export interface DesktopSessionTarget {
   sessionId: string;
 }
 
+/** Export publication is separate from best-effort cleanup and workspace refresh. */
+export interface DesktopSessionExportResult {
+  committed: boolean;
+  file?: string;
+  warnings: string[];
+  snapshot?: DesktopWorkspaceSnapshot;
+}
+
 export interface DesktopSessionDeleteResult {
   cancelled: boolean;
   deleted: DesktopSessionTarget[];
@@ -1687,7 +1695,7 @@ export interface DesktopApi {
   duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot>;
   deleteSessions(targets: DesktopSessionTarget[], confirm?: boolean, onStarted?: () => void): Promise<DesktopSessionDeleteResult>;
   /** 导出为 Biny bundle（无损 JSON）或外部 JSONL；用户在保存对话框里选位置。 */
-  exportSession(projectId: string, sessionId: string, format: "biny" | "claude"): Promise<DesktopWorkspaceSnapshot>;
+  exportSession(projectId: string, sessionId: string, format: "biny" | "claude"): Promise<DesktopSessionExportResult>;
   /** 从 Biny bundle 或外部 rollout 文件导入一条新会话并选中它。 */
   importSession(projectId: string): Promise<DesktopWorkspaceSnapshot>;
   preparePrompt(projectId: string): Promise<void>;
