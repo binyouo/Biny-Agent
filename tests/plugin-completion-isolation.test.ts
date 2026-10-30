@@ -56,7 +56,7 @@ const bindingNames = [
   "finalAssistantReference", "parseTemporalClues", "referenceByMessage", "sessionMessageMetadata",
   "pendingEvents", "errorMessage", "recordNativeTelemetry", "activeModelSettings", "observedSteps",
   "completedStepsBeforeRun", "abortSignal", "turnCancellationReason", "isTimeoutFailure",
-  "usageAuditStarted", "stepUsageRecords", "sumSessionUsage", "loopContext", "streamFailureReported"
+  "usageAuditStarted", "stepUsageRecords", "sumSessionUsage", "loopContext", "streamFailureReported", "warmHistoryInstalled"
 ];
 const program = `
 ${["doneEvent", "nativeTurnOutcome", "failedTurn", "cancelledTurn"].map(declaration).join("\n")}
@@ -178,6 +178,8 @@ async function run(options: FaultOptions = {}) {
     activeModelSettings: { model: { provider: "fixture", modelId: "fixture" } },
     observedSteps: 1, completedStepsBeforeRun: 0, abortSignal: { aborted: false },
     turnCancellationReason: () => "interrupted", isTimeoutFailure: () => false,
+    // This extracted post-audit tail starts after final warm history is installed.
+    warmHistoryInstalled: true,
     usageAuditStarted: true, stepUsageRecords: [], sumSessionUsage: () => undefined,
     loopContext: { messages: [] }, streamFailureReported: false
   };
