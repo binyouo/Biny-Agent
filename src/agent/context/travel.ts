@@ -51,7 +51,7 @@ export class TravelStorage {
         } else if (action === "advance") trip.day += 1;
         else if (action === "mood") trip.mood = text!.trim();
         else {
-          state.trips.push({ ...trip, returnedAt: timestamp, days: Math.max(1, Math.ceil((this.now().getTime() - Date.parse(trip.departedAt)) / 86_400_000)), totalSpent: trip.events.reduce((sum, event) => sum + event.cost, 0) });
+          state.trips.push({ ...trip, returnedAt: timestamp, days: trip.day, totalSpent: trip.events.reduce((sum, event) => sum + event.cost, 0) });
           state.current = undefined;
         }
       }
