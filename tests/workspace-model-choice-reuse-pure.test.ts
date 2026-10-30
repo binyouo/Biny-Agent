@@ -28,7 +28,7 @@ const calls = new Set([
   "this.configStore.load", "this.configStore.load(project.path).catch", "this.projects.listWorkspaceSessions", "this.projectEvents",
   "restoreProviderCatalogs", "Object.keys", "listConfiguredModelChoices", "listPickerModelChoices", "filterPickerModelChoices",
   "pickerModels.some", "modelRuntimeInfo", "pickerModels.sort", "Number", "this.readRuntimeProjection",
-  "runtime?.getSnapshot", "Object.fromEntries", "this.runtimeSnapshots(projectId).map", "this.state.selectedSessionId",
+  "runtime?.getSnapshot", "this.draftSessionIds.get", "Object.fromEntries", "this.runtimeSnapshots(projectId).map", "this.state.selectedSessionId",
   "describeModelConnections", "this.runtimeErrors.get", "listModelChoices", "new ModelRuntime(config, catalogs).listModels", "models.filter",
   "listModelChoices(config, catalogs).filter"
 ]);
@@ -89,7 +89,9 @@ function fixture(initial: Configuration | undefined, resident = false) {
   const sessions = [{ id: "history" }];
   const sessionPage = { revision: "r1", sessions };
   const runtimeSnapshot = { info: { sessionId: "resident" }, permissionMode: "plan", revision: 7 };
-  const runtime = { getSnapshot: () => runtimeSnapshot };
+  const snapshotTargets: Array<string | undefined> = [];
+  const draftSessionIds = new Map<string, string>();
+  const runtime = { getSnapshot: (sessionId?: string) => { snapshotTargets.push(sessionId); return runtimeSnapshot; } };
   const managed = resident ? { runtime } : undefined;
   const projection = { tasks: { tasks: [], hasMore: false }, graphs: [] };
   const catalogs = [["fixture", [{ id: "catalog-only" }]]];
@@ -129,10 +131,13 @@ function fixture(initial: Configuration | undefined, resident = false) {
     projectEvents: () => new Map(), modelsStore,
     readRuntimeProjection: async () => { await onProjection?.(); return projection; },
     runtimeErrors: new Map([["project", { kind: "fixture-error" }]]),
+    draftSessionIds,
     state: { selectedSessionId: () => "history" }
   };
   return {
     snapshot: (refresh = true) => api.workspaceSnapshot.call(receiver, "project", refresh),
+    setDraftSession: (sessionId: string) => { draftSessionIds.set("project", sessionId); },
+    snapshotTargets,
     setConfig: (next: Configuration | undefined) => { current = next; },
     setProjection: (next: () => Promise<void>) => { onProjection = next; },
     counts: () => ({ enumeration, construction, restores, infoCalls }),
@@ -223,4 +228,12 @@ test("one snapshot enumerates the model choices once", async () => {
   console.log("COUNTS " + JSON.stringify(f.counts()));
   assert.equal(f.counts().enumeration, 1, "one catalog enumeration per workspace snapshot");
   assert.equal(f.counts().construction, 1, "inert list-wrapper Runtime construction only, not a macOS measurement");
+});
+
+test("workspace snapshot reads the admitted draft without changing model enumeration", async () => {
+  const selected = config(); const f = fixture(selected, true);
+  f.setDraftSession("admitted-draft");
+  verify("draft-target", await f.snapshot(), f.expected(selected));
+  assert.deepEqual(f.snapshotTargets, ["admitted-draft"]);
+  assert.equal(f.counts().enumeration, 1);
 });
