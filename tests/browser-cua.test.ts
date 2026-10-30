@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { registerHooks } from "node:module";
 import type { BrowserCuaArgs } from "../src/browser/cuaSchema.js";
@@ -21,7 +22,6 @@ interface ServiceSubject {
   ensureAutomationContents(args: Record<string, unknown>): Promise<object>;
   pageOperation(operation: string, args: Record<string, unknown>, signal?: AbortSignal, contents?: object): Promise<unknown>;
   click(selector: string, signal?: AbortSignal, onAction?: (contents: object) => void, contents?: object): Promise<unknown>;
-  watchDomSnapshotNavigation(contents: object): void;
 }
 
 function coordinateFixture(options: { failRelease?: boolean } = {}) {
@@ -71,13 +71,18 @@ test("coordinate browser input stays within the viewport and releases mouse and 
   assert.deepEqual(failed.commands.map(command => command.params.type), ["keyDown", "keyUp", "keyUp"]);
 });
 
-test("DOM references are bound to one snapshot and expire after an action or navigation", async () => {
+test("DOM references are bound to one snapshot and expire after an action or navigation", async (t) => {
   const subject = new DesktopBrowserService(async () => "unused-cookie-jar.json") as unknown as ServiceSubject;
-  const contents = { getURL: () => "https://example.test/" };
+  let destroyed = false;
+  const contents = Object.assign(new EventEmitter(), {
+    getURL: () => "https://example.test/",
+    isDestroyed: () => destroyed,
+    isLoadingMainFrame: () => false
+  });
+  t.after(() => { destroyed = true; contents.emit("destroyed"); });
   const target = { tag: "button", role: "button", name: "Save", selector: "#save", box: { x: 10, y: 20, width: 100, height: 30 } };
   let actions = 0;
   subject.ensureAutomationContents = async () => contents;
-  subject.watchDomSnapshotNavigation = () => {};
   subject.pageOperation = async operation => {
     if (operation === "dom_snapshot") return { url: contents.getURL(), title: "Fixture", elements: [target] };
     if (operation === "scroll") return { x: 0, y: 100 };

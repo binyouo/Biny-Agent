@@ -69,6 +69,7 @@ interface EmbeddedProject { revision: number; tabs: Map<string, EmbeddedTab>; ac
 type BrowserActionTarget = (contents: WebContents) => void;
 interface BrowserDomSnapshotTarget { tag: string; role?: string; name: string; selector: string; box: { x: number; y: number; width: number; height: number } }
 interface BrowserDomSnapshotReferences { id: string; url: string; elements: Map<string, BrowserDomSnapshotTarget> }
+interface BrowserDomSnapshotLifetime { navigation: number; capture: number; destroyed: boolean }
 interface BrowserDialogWatcher { close(): void; dialog?: Record<string, unknown>; autoReply?: { behavior: "accept" | "dismiss"; text?: string }; autoReplyPending?: boolean; autoReplyError?: string }
 
 export class DesktopBrowserService {
@@ -132,7 +133,7 @@ export class DesktopBrowserService {
   private readonly deletingBrowserEnvironments = new Set<string>();
   private automationContents: WebContents | undefined;
   private readonly domSnapshots = new WeakMap<WebContents, BrowserDomSnapshotReferences>();
-  private readonly domSnapshotInvalidators = new WeakMap<WebContents, (...args: unknown[]) => void>();
+  private readonly domSnapshotInvalidators = new WeakMap<WebContents, BrowserDomSnapshotLifetime>();
   private shownBrowser: { projectId: string; tabId: string } | undefined;
   private readonly guardedPages = new Map<number, { allowPrivateNetwork: boolean; reject(error: Error): void }>();
   private readonly guardedPartitions = new Set<string>();
@@ -1160,6 +1161,10 @@ export class DesktopBrowserService {
     }
     if (method === "dom_snapshot") {
       browserDomSnapshotSchema.parse({});
+      const lifetime = this.watchDomSnapshotNavigation(contents);
+      if (contents.isLoadingMainFrame()) throw new Error("DOM 引用已失效，请重新获取页面快照。");
+      const navigation = lifetime.navigation;
+      const capture = ++lifetime.capture;
       const parsed = z.object({
         url: z.string(), title: z.string(),
         elements: z.array(z.object({
@@ -1167,6 +1172,10 @@ export class DesktopBrowserService {
           box: z.object({ x: z.number().finite(), y: z.number().finite(), width: z.number().finite().positive(), height: z.number().finite().positive() }).strict()
         }).strict()).max(200)
       }).strict().parse(await this.pageOperation("dom_snapshot", {}, signal, contents));
+      signal?.throwIfAborted();
+      if (lifetime.destroyed || contents.isDestroyed() || contents.isLoadingMainFrame() || lifetime.navigation !== navigation || lifetime.capture !== capture) {
+        throw new Error("DOM 引用已失效，请重新获取页面快照。");
+      }
       const snapshotId = randomUUID();
       const elements = new Map<string, BrowserDomSnapshotTarget>();
       const refs = parsed.elements.map((element, index) => {
@@ -1175,7 +1184,6 @@ export class DesktopBrowserService {
         return { ref, tag: element.tag, role: element.role, name: element.name, box: element.box };
       });
       this.domSnapshots.set(contents, { id: snapshotId, url: parsed.url, elements });
-      this.watchDomSnapshotNavigation(contents);
       return { snapshotId, url: parsed.url, title: parsed.title, elements: refs };
     }
     if (method === "dom_action") {
@@ -1184,11 +1192,21 @@ export class DesktopBrowserService {
       if (!snapshot || snapshot.id !== parsed.snapshotId || snapshot.url !== contents.getURL()) throw new Error("DOM 引用已失效，请重新获取页面快照。");
       const target = snapshot.elements.get(parsed.ref);
       if (!target) throw new Error("DOM 引用不存在，请重新获取页面快照。");
+      const lifetime = this.watchDomSnapshotNavigation(contents);
+      const navigation = lifetime.navigation;
+      const capture = lifetime.capture;
+      const beforeDispatch = (): void => {
+        if (lifetime.destroyed || contents.isDestroyed() || contents.isLoadingMainFrame() || lifetime.navigation !== navigation || lifetime.capture !== capture) {
+          throw new Error("DOM 引用已失效，请重新获取页面快照。");
+        }
+      };
       await this.pageOperation("dom_target", { selector: target.selector, expected: target }, signal, contents);
+      signal?.throwIfAborted();
+      if (contents.isDestroyed() || this.domSnapshots.get(contents) !== snapshot) throw new Error("DOM 引用已失效，请重新获取页面快照。");
       this.domSnapshots.delete(contents);
-      if (parsed.action.m === "click") return await this.click(target.selector, signal, onAction, contents);
-      if (parsed.action.m === "type") return await this.type(target.selector, parsed.action.text, signal, onAction, contents);
-      return await this.press(target.selector, parsed.action.key, signal, contents, onAction);
+      if (parsed.action.m === "click") return await this.click(target.selector, signal, onAction, contents, 1, beforeDispatch);
+      if (parsed.action.m === "type") return await this.type(target.selector, parsed.action.text, signal, onAction, contents, beforeDispatch);
+      return await this.press(target.selector, parsed.action.key, signal, contents, onAction, beforeDispatch);
     }
     if (method === "cua") {
       const parsed = browserCuaSchema.parse(args.action);
@@ -1393,13 +1411,13 @@ export class DesktopBrowserService {
     return await this.pageOperation("read", { maxCharacters }, signal, contents);
   }
 
-  private async click(selector: string, signal?: AbortSignal, onAction?: BrowserActionTarget, contents?: WebContents, clickCount = 1): Promise<unknown> {
+  private async click(selector: string, signal?: AbortSignal, onAction?: BrowserActionTarget, contents?: WebContents, clickCount = 1, beforeDispatch?: () => void): Promise<unknown> {
     const owner = contents ?? await this.ensureContents();
-    await this.pageOperation("reveal", { selector }, signal, owner);
-    await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner);
-    const point = z.object({ x: z.number().finite(), y: z.number().finite() }).parse(await this.pageOperation("click", { selector }, signal, owner));
+    await this.pageOperation("reveal", { selector }, signal, owner, undefined, beforeDispatch);
+    await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner, undefined, beforeDispatch);
+    const point = z.object({ x: z.number().finite(), y: z.number().finite() }).parse(await this.pageOperation("click", { selector }, signal, owner, undefined, beforeDispatch));
     signal?.throwIfAborted();
-    await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount, ...point }, signal, owner);
+    await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount, ...point }, signal, owner, undefined, beforeDispatch);
     try {
       await this.sendDebuggerCommand("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount, ...point }, undefined, owner, onAction);
     } catch (error) {
@@ -1418,25 +1436,25 @@ export class DesktopBrowserService {
     return await this.pageState(owner);
   }
 
-  private async type(selector: string, value: string, signal?: AbortSignal, onAction?: BrowserActionTarget, contents?: WebContents): Promise<unknown> {
+  private async type(selector: string, value: string, signal?: AbortSignal, onAction?: BrowserActionTarget, contents?: WebContents, beforeDispatch?: () => void): Promise<unknown> {
     const owner = contents ?? await this.ensureContents();
-    await this.pageOperation("reveal", { selector }, signal, owner);
-    await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner);
-    await this.pageOperation("type", { selector }, signal, owner);
-    await this.sendDebuggerCommand("Input.insertText", { text: value }, signal, owner, onAction);
+    await this.pageOperation("reveal", { selector }, signal, owner, undefined, beforeDispatch);
+    await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner, undefined, beforeDispatch);
+    await this.pageOperation("type", { selector }, signal, owner, undefined, beforeDispatch);
+    await this.sendDebuggerCommand("Input.insertText", { text: value }, signal, owner, onAction, beforeDispatch);
     return await this.pageState(owner);
   }
 
-  private async press(selector: string | undefined, key: string, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
+  private async press(selector: string | undefined, key: string, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget, beforeDispatch?: () => void): Promise<unknown> {
     // UI tab selection is independent of automationTail. Keep this action on its
     // original page without restoring selection over a newer user choice.
     const owner = contents ?? await this.ensureContents();
     if (selector) {
-      await this.pageOperation("reveal", { selector }, signal, owner);
-      await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner);
-      await this.pageOperation("press", { selector }, signal, owner);
+      await this.pageOperation("reveal", { selector }, signal, owner, undefined, beforeDispatch);
+      await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner, undefined, beforeDispatch);
+      await this.pageOperation("press", { selector }, signal, owner, undefined, beforeDispatch);
     }
-    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined }, signal, owner);
+    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined }, signal, owner, undefined, beforeDispatch);
     try {
       await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key }, undefined, owner, onAction);
     } catch (error) {
@@ -1452,25 +1470,40 @@ export class DesktopBrowserService {
     return await this.pageOperation("wait", parsed, signal, contents);
   }
 
-  private async pageOperation(operation: string, args: Record<string, unknown>, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
-    return await this.evaluate(`(${browserPageOperation.toString()})(${JSON.stringify(operation)},${JSON.stringify(args)})`, signal, contents, onAction);
+  private async pageOperation(operation: string, args: Record<string, unknown>, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget, beforeDispatch?: () => void): Promise<unknown> {
+    return await this.evaluate(`(${browserPageOperation.toString()})(${JSON.stringify(operation)},${JSON.stringify(args)})`, signal, contents, onAction, beforeDispatch);
   }
 
-  private watchDomSnapshotNavigation(contents: WebContents): void {
-    if (this.domSnapshotInvalidators.has(contents)) return;
+  private watchDomSnapshotNavigation(contents: WebContents): BrowserDomSnapshotLifetime {
+    const existing = this.domSnapshotInvalidators.get(contents);
+    if (existing) return existing;
+    if (contents.isDestroyed()) throw new Error("DOM 引用已失效，请重新获取页面快照。");
+    const lifetime: BrowserDomSnapshotLifetime = { navigation: 0, capture: 0, destroyed: false };
     const invalidate = (_event: unknown, _url: unknown, _inPlace: unknown, isMainFrame: unknown): void => {
       if (isMainFrame !== true) return;
+      lifetime.navigation += 1;
       this.domSnapshots.delete(contents);
-      contents.off("did-start-navigation", invalidate);
-      this.domSnapshotInvalidators.delete(contents);
     };
-    this.domSnapshotInvalidators.set(contents, invalidate);
+    const committed = (): void => {
+      lifetime.navigation += 1;
+      this.domSnapshots.delete(contents);
+    };
+    const committedInPage = (_event: unknown, _url: unknown, isMainFrame: unknown): void => {
+      if (isMainFrame === true) committed();
+    };
+    this.domSnapshotInvalidators.set(contents, lifetime);
     contents.on("did-start-navigation", invalidate);
+    contents.on("did-navigate", committed);
+    contents.on("did-navigate-in-page", committedInPage);
     contents.once("destroyed", () => {
+      lifetime.destroyed = true;
       contents.off("did-start-navigation", invalidate);
+      contents.off("did-navigate", committed);
+      contents.off("did-navigate-in-page", committedInPage);
       this.domSnapshotInvalidators.delete(contents);
       this.domSnapshots.delete(contents);
     });
+    return lifetime;
   }
 
   private async performCoordinateAction(action: BrowserCuaArgs, signal: AbortSignal | undefined, onAction: BrowserActionTarget | undefined, contents: WebContents): Promise<unknown> {
@@ -1528,21 +1561,22 @@ export class DesktopBrowserService {
     return await this.ensureContents();
   }
 
-  private async evaluate(expression: string, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
-    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal, contents, onAction));
+  private async evaluate(expression: string, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget, beforeDispatch?: () => void): Promise<unknown> {
+    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal, contents, onAction, beforeDispatch));
     const exception = asRecord(result.exceptionDetails);
     if (Object.keys(exception).length) throw new Error(typeof exception.text === "string" ? exception.text : "Browser page evaluation failed.");
     const remote = asRecord(result.result);
     return remote.value;
   }
 
-  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal, owner?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
+  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal, owner?: WebContents, onAction?: BrowserActionTarget, beforeDispatch?: () => void): Promise<unknown> {
     const contents = await this.ensureContents(owner);
     signal?.throwIfAborted();
     if (contents.isDestroyed()) throw new Error("Browser action page is closed.");
     const debuggerSession = contents.debugger;
     if (!debuggerSession.isAttached()) debuggerSession.attach("1.3");
     signal?.throwIfAborted();
+    beforeDispatch?.();
     const result = await debuggerSession.sendCommand(method, params);
     onAction?.(contents);
     return result;
