@@ -142,7 +142,18 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
       const commitNavigation = noop;
       const openSession = async () => true;
       const refreshRuntimeFailure = async () => {};
-      const loading = false;
+      const [loading, setLoading] = useState(false);
+      // Keep the extracted callbacks' production admission/navigation dependencies:
+      // a draft folder change supersedes pending navigation without changing workspace catalogs.
+      ${declaration(app, "draftProjectRef")}
+      ${declaration(app, "draftIntentEpochRef")}
+      ${declaration(app, "setDraftIntentEpoch")}
+      ${declaration(app, "draftAdmissionRef")}
+      ${declaration(app, "draftAdmission")}
+      ${declaration(app, "assertDraftAdmission")}
+      ${declaration(app, "pendingNavigation")}
+      ${declaration(app, "pendingNavigationRef")}
+      ${declaration(app, "setPendingNavigation")}
       const selectProject = async () => { throw new Error('Unexpected workspace navigation'); };
       ${declaration(app, "draftProjectId")}
       ${declaration(app, "composerDrafts")}
@@ -151,6 +162,7 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
       ${declaration(app, "saveAttachment")}
       ${declaration(app, "sendPrompt")}
       ${declaration(app, "sendPromptWithTransition")}
+      ${declaration(app, "composerDraftIntent")}
       return <><button onClick={() => prefillComposer("Suggested text")}>Prefill draft</button><WorkspaceContextBar project={composerProject} projects={projects} branches={[]} branchesLoading={false}
         onSelectProject={selectComposerProject} onCreateProject={noop} onCreateBranch={async () => {}} onOpenBranches={noop} onSelectBranch={noop} />
         <Composer {...base} ${attributes.join(" ")} {...(legacyDraftProject ? {draftProjectId: undefined} : {})} onSubmitError={setGenerationError} />
