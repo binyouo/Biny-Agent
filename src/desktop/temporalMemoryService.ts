@@ -111,19 +111,18 @@ export class DesktopTemporalMemoryService {
       }
       return { id: project.id, sessions: projectSessionsDir(workspace, { env: { ...process.env, BINY_AGENT_DIR: this.root } }) };
     }));
-    const projectBySession = new Map<string, string | undefined>();
+    const projectBySource = new Map<string, string | undefined>();
     const visibleSessions = new Set(page.clues.map((clue) => clue.sessionId));
     for (const file of visibleSessions.size ? await listAllSessionFiles(this.root) : []) {
       if (!visibleSessions.has(sessionIdFromFile(file))) continue;
       const canonicalFile = await realpath(file);
       const owner = projectRoots.find((project) => project && canonicalFile.startsWith(`${project.sessions}${path.sep}`));
       if (owner) {
-        const sessionId = sessionIdFromFile(file);
-        projectBySession.set(sessionId, projectBySession.has(sessionId) && projectBySession.get(sessionId) !== owner.id
+        projectBySource.set(canonicalFile, projectBySource.has(canonicalFile) && projectBySource.get(canonicalFile) !== owner.id
           ? undefined : owner.id);
       }
     }
-    return { ...page, clues: page.clues.map((clue) => ({ ...clue, projectId: projectBySession.get(clue.sessionId) })),
+    return { ...page, clues: page.clues.map((clue) => ({ ...clue, projectId: clue.sourcePath ? projectBySource.get(clue.sourcePath) : undefined })),
       scheduled: scheduledTemporalRows(scheduledSources, query, query.timeZone ?? "UTC", query.offset ?? 0) };
   }
 
