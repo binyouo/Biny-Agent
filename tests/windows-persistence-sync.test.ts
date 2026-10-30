@@ -20,7 +20,7 @@ const turn = read("src/session/turnStore.ts");
 const settings = read("src/desktop/electron/main/DesktopSettingsTransaction.ts");
 const helperPath = path.join(root, "src/utils/syncDirectory.ts");
 const helper = existsSync(helperPath)
-  ? readFileSync(helperPath, "utf8").replace(/^import .*;\n/u, "").replace("export async", "async")
+  ? readFileSync(helperPath, "utf8")
   : between(settings, "async function syncDirectory(", "function recoveryWriteFlags(");
 const bodies = {
   imports: between(imports, "  private async writeState(", "  private async toSnapshot("),
@@ -38,7 +38,7 @@ interface Subject {
   save(prompt: string, systemPrompt: undefined, messages: unknown[], steps: number): Promise<unknown>;
   writeRecoveryPayload(value: unknown): Promise<unknown>;
 }
-function fixture(entry: Entry, platform: string, failure?: "file" | "directory" | "rename" | "open-directory", readOnlyTemporary = false) {
+function fixture(entry: Entry, platform: string, failure?: "file" | "directory" | "rename" | "open-directory", readOnlyTemporary = false, helperSource = helper) {
   const calls: string[] = [];
   const error = new Error(`injected ${failure}`);
   const stat = { dev: 1, ino: 2, nlink: 1, isFile: () => true, isSymbolicLink: () => false };
@@ -63,7 +63,9 @@ function fixture(entry: Entry, platform: string, failure?: "file" | "directory" 
     async rename() { calls.push("rename"); if (failure === "rename") throw error; },
     async link() { calls.push("link"); }, async unlink() { calls.push("unlink"); }, async rm() { calls.push("cleanup"); }
   };
-  const code = `${helper}\nclass Subject { ${bodies[entry]} }\nglobalThis.Subject = Subject;`;
+  // Git may check source out as CRLF on Windows; remove the import in either form.
+  const helperBody = helperSource.replace(/^import .*;\r?\n/u, "").replace("export async", "async");
+  const code = `${helperBody}\nclass Subject { ${bodies[entry]} }\nglobalThis.Subject = Subject;`;
   const context = {
     fs, constants: { O_RDONLY: 0, O_DIRECTORY: 65536 }, process: { platform }, path,
     Buffer, JSON, Date, Error, structuredClone, randomUUID: () => "unique", randomBytes: () => ({ toString: () => "unique" }),
@@ -114,3 +116,14 @@ for (const platform of ["linux", "darwin"]) test(`turn: ${platform} retains read
   assert.ok(f.calls.includes("open:file:r"));
   assert.ok(f.calls.includes("rename"));
 });
+
+for (const [name, ending] of [["LF", "\n"], ["CRLF", "\r\n"]] as const) {
+  test(`helper fixture accepts ${name} source line endings`, async () => {
+    const source = helper.replace(/\r?\n/gu, ending);
+    const f = fixture("imports", "linux", undefined, false, source);
+    await f.run();
+    assert.ok(f.calls.includes("sync:file"));
+    assert.ok(f.calls.includes("sync:directory"));
+    assert.ok(f.calls.indexOf("sync:directory") > f.calls.indexOf("rename"));
+  });
+}
