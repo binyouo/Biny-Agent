@@ -9,18 +9,24 @@ import { projectSessionsDir } from "../config/paths.js";
 import { deleteSessionCatalogRecord } from "./catalog.js";
 import { deleteInterruptedTurn } from "./turnStore.js";
 import { RecipeStateStore } from "./recipes.js";
-import { deleteSessionFile } from "./store.js";
+import { deleteSessionFile, SessionFileNotFoundError } from "./store.js";
 import { SessionSearchIndex } from "./searchIndex.js";
 
 export async function deleteSessionArtifacts(persistenceRoot: string, sessionId: string): Promise<void> {
-  // 每步独立容错：一个产物删除失败（比如 JSONL 已被并发删掉）不能阻止其余产物的清理，
-  // 否则会话会留在半删除状态。全部尝试完后抛出首个错误，让调用方知道有残留。
+  // Only a successful transcript removal or validated absence permits destructive
+  // sidecar cleanup. Other failures may leave a recoverable transcript/tombstone.
   let firstError: unknown;
   let sourcePath: string | undefined;
-  for (const step of [
-    () => deleteSessionFile(persistenceRoot, sessionId, {
+  try {
+    await deleteSessionFile(persistenceRoot, sessionId, {
       beforeTombstoneMove: async ({ filePath }) => { sourcePath = filePath; }
-    }),
+    });
+  } catch (error) {
+    if (!(error instanceof SessionFileNotFoundError)) throw error;
+    firstError = error;
+  }
+  // Once deletion is established, attempt every sidecar and preserve the first error.
+  for (const step of [
     () => deleteSessionCatalogRecord(persistenceRoot, sessionId),
     () => deleteInterruptedTurn(persistenceRoot, sessionId),
     async () => await new RecipeStateStore(persistenceRoot).clear(sessionId),
