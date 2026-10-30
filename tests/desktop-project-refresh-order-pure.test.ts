@@ -5,6 +5,7 @@ import test from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { createContext, Script } from "node:vm";
 import ts from "typescript";
+import { createSessionEventBuffer } from "../src/desktop/renderer/src/app/sessionEventBuffer.js";
 
 // Source-only extraction: never import React, Electron, IPC, Host, or product services.
 // Run under an external process watchdog; VM timeouts bound synchronous entry points.
@@ -16,8 +17,12 @@ const hook = one(source.statements.filter((n): n is ts.FunctionDeclaration => ts
 assert.ok(hook.body);
 const effects = hook.body.statements.filter(ts.isExpressionStatement).map(n => n.expression)
   .filter((n): n is ts.CallExpression => ts.isCallExpression(n) && n.expression.getText(source) === "useEffect");
-assert.equal(effects.length, 2);
-const callbacks = effects.map(n => { const callback = n.arguments[0]; assert.ok(callback && ts.isArrowFunction(callback)); return callback; });
+const callbacks = ["window.biny.onAgentEvent", "pendingRefresh.isCurrent"].map(marker => {
+  const effect = one(effects.filter(item => item.getText(source).includes(marker)), marker);
+  const callback = effect.arguments[0];
+  assert.ok(callback && ts.isArrowFunction(callback));
+  return callback;
+});
 const invalidation = one(hook.body.statements.filter(ts.isVariableStatement).flatMap(n => [...n.declarationList.declarations])
   .filter(n => n.name.getText(source) === "invalidateProjectRefresh"), "invalidation");
 assert.ok(invalidation.initializer && ts.isCallExpression(invalidation.initializer));
@@ -30,7 +35,7 @@ const allowedCalls = new Set([
   "scheduleRefresh", "mergeProjectSnapshot", "isCurrent", "setPendingRefresh", "onError",
   "setSidebarSessions", "applyUpdatesToSidebarSessions", "batch.filter", "projectBatch.some", "isTerminalRunEvent",
   "onRuntimeProjectionChanged", "setWorkspace", "applyUpdatesToWorkspace",
-  "currentEvents.push", "pendingEvents.hold", "pendingEvents.take",
+  "currentEvents.push", "pendingEvents.current.hold", "pendingEvents.current.take", "flushSelectedEvents",
   "currentEvents.unshift", "currentEvents.filter", "setRecipeNotices", "current.map", "recipeNotices.filter", "seen.has",
   "setSkillExtraction", "currentEvents.some", "liveTimelineEvents", "setDocument", "appendLiveTimelineEvents", "hasContextStatus",
   "contextEvents.at", "setContextBudget", "onGenerationStarted", "onGenerationError", "event.error.trim", "event.reason.trim",
@@ -41,8 +46,8 @@ const allowedCalls = new Set([
 // the exact reviewed chains; arbitrary methods on an allowed call's result fail.
 const allowedChains = new Set([
   "window.biny.refreshProject().then", "window.biny.refreshProject().then().catch",
-  "onRuntimeProjectionChanged?.().catch", "pendingEvents.take().map",
-  "pendingEvents.take().map().filter", "recipeNotices.filter().map"
+  "onRuntimeProjectionChanged?.().catch", "pendingEvents.current.take().map",
+  "pendingEvents.current.take().map().filter", "recipeNotices.filter().map"
 ]);
 function callTarget(expression: ts.Expression): string {
   if (ts.isIdentifier(expression)) return expression.text;
@@ -98,7 +103,7 @@ function fixture() {
     onGenerationStarted: noop, onGenerationError: noop, onCompactionStarted: undefined, onCompactionFailed: undefined, onRuntimeProjectionChanged: undefined,
     isTerminalRunEvent: (event: Envelope["event"]) => event.type === "run.completed",
     liveTimelineEvents: () => [], hasContextStatus: () => false,
-    createSessionEventBuffer: () => ({ hold: noop, take: () => [] }),
+    pendingEvents: { current: createSessionEventBuffer<Envelope>() }, replaySelectedEvents: { current: undefined },
     // The actual event bridge routes these batches; real batcher timing is out of scope.
     createDesktopEventBatcher: (flush: (batch: Envelope[]) => void) => ({ push: (event: Envelope) => { if (!disposed) flush([event]); }, dispose: () => { disposed = true; } }),
     window: { biny: {

@@ -250,6 +250,7 @@ async function hostFixture(t: TestContext) {
   const registration = { protocolVersion: runtimeHostProtocolVersion, endpoint: path.join(root, "unused.sock"), registrationPath: path.join(root, "unused.json"), lockPath: path.join(root, "unused.lock"), rootHash: "synthetic", persistenceRoot: root, configRoot: path.join(root, "config"), agentRoot: process.env.BINY_AGENT_DIR,
     hostEpoch: randomUUID(), token: "synthetic-token", pid: process.pid, createdAt: new Date().toISOString() };
   const host = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
+  await host.initialize();
   const internal = host as unknown as { handleFrame(connection: any, frame: HostFrame): Promise<void>; connections: Set<any>; publishSnapshot(runtime: InteractiveRuntimeHandle): void };
   const calls: HostRequestFrame[] = [];
   const sockets: MemorySocket[] = [];

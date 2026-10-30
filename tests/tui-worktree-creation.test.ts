@@ -38,6 +38,7 @@ test("/new --isolated creates a worktree through the Host and /new returns to a 
   const host = await createInteractiveAgentHost(root, { configStore });
   const server = await startRuntimeHost(root, async () => host, { createRuntime: createRuntimeHostFactory(root, () => ({ configStore })) });
   resources.server = server;
+  await server.initialize();
   server["businessComposition"].stop();
   const client = await readyHostClient(await connectRuntimeHost(root, { surface: "tui" }));
 
