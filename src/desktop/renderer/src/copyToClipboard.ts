@@ -46,8 +46,9 @@ export async function copyToClipboard(text: string, options: { preserveNonBreaki
       } catch {
         // 恢复焦点失败不改变原有复制结果或 textarea 清理行为。
       }
+      // Selection/copy failures must not retain hidden copies of the input in the DOM.
+      document.body.removeChild(el);
     }
-    document.body.removeChild(el);
     return ok;
   } catch {
     return false;
