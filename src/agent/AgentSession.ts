@@ -347,6 +347,7 @@ interface TurnArgs {
   selectionMessageId?: string;
   runOptions: AgentRunOptions & {
     initialToolDiscovery?: ToolDiscoverySnapshot;
+    recoveryCheckpoint?: InterruptedTurn;
     retryOrigin?: RetryOrigin;
     retryWindow?: RetryWindow;
     previousTerminals?: InterruptedTurnTerminal[];
@@ -437,6 +438,13 @@ export class AgentSession {
   private readonly pendingUserAdmissions = new Map<string, { input: string; identity: UserAdmissionOptions; promise: Promise<void> }>();
   /** Only a hint to read fresh selected facts before leaving an owned retry view. */
   private retryScopedView = false;
+  /** A failed native run may have durable inputs/tool facts absent from warm history. */
+  private failedRunHistoryPending: {
+    sessionId: string;
+    turnId: string | undefined;
+    /** Exact legacy checkpoint admitted by public continuation, never guessed from disk after failure. */
+    legacyCheckpoint?: InterruptedTurn;
+  } | undefined;
   private closed = false;
   /** checkpoint 持久化结果不确定后只能关闭重开，禁止继续使用已经压缩的内存视图。 */
   private checkpointPersistenceError: Error | undefined;
@@ -1612,6 +1620,7 @@ export class AgentSession {
     this.activePersonalization = snapshot.state.resolved;
     const personalization = snapshot.state.resolved;
     this.contextMemory.restore(prefixMessages, replay.contextState);
+    this.failedRunHistoryPending = undefined;
     this.contextMessageReferences = prefixReferences;
     // Mark the installed view before preflight/admission can fail. An edit
     // replaces any earlier retry-scoped view at this same installation boundary.
@@ -1762,6 +1771,7 @@ export class AgentSession {
         replay.messageTree.filter((node) => activeIdSet.has(node.id)).at(-1)?.id
       );
       this.retryScopedView = false;
+      this.failedRunHistoryPending = undefined;
     } finally {
       release();
     }
@@ -1803,9 +1813,11 @@ export class AgentSession {
 
   private async admitUserMessageOnce(input: string, options: UserAdmissionOptions): Promise<void> {
     const rebind = this.retryScopedView && options.replaceUserMessageId === undefined;
-    const release = rebind ? this.beginOperation("user message admission") : () => {};
+    const recoverHistory = this.failedRunHistoryPending && options.replaceUserMessageId === undefined;
+    const release = rebind || recoverHistory ? this.beginOperation("user message admission") : () => {};
     const previousContext = this.recorder.runtimeContextSnapshot();
     try {
+    if (recoverHistory && !rebind) await this.restoreFailedRunHistory();
     let replacement: { messageId: string; parentMessageId?: string; slotId?: string } | undefined;
     if (options.replaceUserMessageId !== undefined) {
       await this.recorder.flush();
@@ -1848,6 +1860,39 @@ export class AgentSession {
     }
   }
 
+  /** Restore before admitting a new user/checkpoint; failures leave the old task intact. */
+  private async restoreFailedRunHistory(): Promise<void> {
+    if (!this.failedRunHistoryPending || this.retryScopedView) return;
+    await this.recorder.flush();
+    const turn = await this.turnStore.load();
+    if (!turn) throw new Error("Cannot restore failed conversation history: the original checkpoint is unavailable.");
+    const owner = this.failedRunHistoryPending;
+    const currentIdentity = owner.turnId !== undefined && turn.turnId === owner.turnId && turn.runtimeHighWater !== undefined;
+    const admittedLegacy = owner.legacyCheckpoint !== undefined && isDeepStrictEqual(turn, owner.legacyCheckpoint);
+    if (owner.sessionId !== this.recorder.sessionId || turn.retryOrigin || (!currentIdentity && !admittedLegacy)) {
+      throw new Error("Cannot restore failed conversation history: checkpoint identity does not match the failed turn.");
+    }
+    // Reuse cold continuation's durable-outcome reconciliation. Incomplete calls
+    // receive protocol results; no tool is executed or blindly replayed here.
+    const replay = await this.reconcileInterruptedToolExecutions(turn);
+    const messages = await this.rehydrateSessionMessages(
+      replay.messages, replay.events, replay.contextStartUserMessageIndex,
+      replay.retrySourceEvents ? replay.messageReferences : undefined
+    );
+    const staged = this.createStagingContextMemory();
+    staged.restore(messages, replay.contextState);
+    if (replay.contextCheckpoint) staged.setCheckpoint(replay.contextCheckpoint);
+    const state = staged.snapshot();
+    const activeIds = activeSessionMessageIds(replay.events);
+    const parentId = replay.messageTree.filter((node) => activeIds.has(node.id)).at(-1)?.id;
+    this.contextMemory.restore(messages, state);
+    if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
+    this.contextMessageReferences = replay.messageReferences.map((reference) => ({ ...reference }));
+    this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
+    this.recorder.restoreMessageParent(parentId);
+    this.failedRunHistoryPending = undefined;
+  }
+
   private async admitTurnFromSelectedRetryView(
     kind: "ordinary" | "paused-followup" | "admitted-followup",
     create: (selected: SessionReplay) => Extract<SessionEvent, { type: "user_message" }> | undefined
@@ -1877,6 +1922,7 @@ export class AgentSession {
       } };
     });
     this.retryScopedView = false;
+    this.failedRunHistoryPending = undefined;
     return recorded;
   }
 
@@ -2015,6 +2061,9 @@ export class AgentSession {
   ): AsyncGenerator<AgentSessionEvent> {
     const release = this.beginOperation("agent turn");
     try {
+    if (runOptions.retryOfMessageId === undefined && !runOptions.continueFrom?.length && !runOptions.emptyTurn) {
+      await this.restoreFailedRunHistory();
+    }
     let refreshError: Error | undefined;
     try { await this.options.modelManager?.refreshFromDisk(); }
     catch (error) { refreshError = new Error(errorMessage(error)); }
@@ -2970,6 +3019,7 @@ export class AgentSession {
       await this.recordModelRequest(metrics);
     };
     let usageAuditStarted = false;
+    let warmHistoryInstalled = false;
     let streamFailure: string | undefined;
     let streamFailureReported = false;
     let hardStepLimitReached = false;
@@ -3374,6 +3424,8 @@ export class AgentSession {
           ...newMessages.map((message) => referenceByMessage.get(message))
         ];
       this.contextMemory.replaceHistory(stripTransientTurnContext(finalMessages));
+      warmHistoryInstalled = true;
+      this.failedRunHistoryPending = undefined;
       this.contextMessageReferences = finalReferences;
       const usageRecord = stepUsageRecords.length ? sumSessionUsage(stepUsageRecords) : undefined;
       const content = lastAssistant ? agentMessageText(lastAssistant) : "";
@@ -3595,6 +3647,15 @@ export class AgentSession {
       yield doneEvent(outcome);
     } catch (error) {
       if (retryCommitStarted) throw error;
+      if (!warmHistoryInstalled && !abortSignal.aborted && runOptions.retryOfMessageId === undefined && !runOptions.retryOrigin) {
+        const checkpoint = runOptions.recoveryCheckpoint;
+        this.failedRunHistoryPending = {
+          sessionId: this.recorder.sessionId,
+          turnId: runOptions.turnId,
+          ...(checkpoint && !checkpoint.retryOrigin && (!checkpoint.turnId || !checkpoint.runtimeHighWater)
+            ? { legacyCheckpoint: structuredClone(checkpoint) } : {})
+        };
+      }
       yield* pendingEvents.drain();
       const message = errorMessage(error);
       await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
@@ -3760,6 +3821,7 @@ export class AgentSession {
       await this.options.todoStore?.useSession(replacementRecorder.sessionId);
       this.recorder = replacementRecorder;
       this.retryScopedView = replay.retrySourceEvents !== undefined;
+      this.failedRunHistoryPending = undefined;
       this.turnStore = new TurnStore(this.persistenceRoot(), replacementRecorder.sessionId);
       const personalization = await this.readPersonalizationState();
       this.activeConfig = personalization.config;
@@ -3826,6 +3888,7 @@ export class AgentSession {
       await this.options.todoStore?.useSession(nextRecorder.sessionId);
       this.recorder = nextRecorder;
       this.retryScopedView = false;
+      this.failedRunHistoryPending = undefined;
       this.turnStore = new TurnStore(this.persistenceRoot(), nextRecorder.sessionId);
       return nextRecorder.sessionId;
     } catch (error) {
@@ -4357,6 +4420,7 @@ export class AgentSession {
       historyReferences.push(undefined);
     }
     this.contextMemory.replaceHistory(history);
+    this.failedRunHistoryPending = undefined;
     this.contextMessageReferences = historyReferences;
     await this.recorder.flush();
     await this.recordTurnOutcome(outcome);
@@ -5087,3 +5151,4 @@ function sessionAttachments(attachments: AgentAttachment[] | undefined): Attachm
     .map(({ name, mimeType, path: virtualPath, size }) => ({ name, mimeType, path: virtualPath!, size }));
   return references?.length ? references : undefined;
 }
+
