@@ -1451,7 +1451,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     try {
       const snapshot = await window.biny.duplicateSession(projectId, sessionId);
       if (loadRequestRef.current !== request || projectRef.current !== projectId || selectedRef.current !== sessionId) return;
-      await adoptWorkspace(snapshot, snapshot.selectedSessionId);
+      if (!await adoptWorkspace(snapshot, snapshot.selectedSessionId)) return;
       if (snapshot.selectedSessionId) commitNavigation(pushNavigation(previousNavigation, { projectId, sessionId: snapshot.selectedSessionId }));
       setToast("已创建会话分支");
     } catch (error) {
