@@ -66,7 +66,8 @@ function stripReasoningEnvelope(content: string): string {
     const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/u)?.[1];
     if (!thinking && fenceMatch) {
       if (!fence) fence = fenceMatch;
-      else if (fenceMatch[0] === fence[0] && fenceMatch.length >= fence.length) fence = undefined;
+      else if (fenceMatch[0] === fence[0] && fenceMatch.length >= fence.length
+        && /^[ \t]*(?:\r?\n|\r)?$/u.test(line.slice(line.indexOf(fenceMatch) + fenceMatch.length))) fence = undefined;
       output += line;
       continue;
     }
@@ -119,6 +120,8 @@ export class PublicAssistantStream {
   private fenceRun = 0;
   private fenceMarker = "";
   private openingFence = false;
+  private closingFence = false;
+  private closingFenceCarriageReturn = false;
   private notification = false;
   private notificationSuffix = "";
   private publicNotificationSuffix = "";
@@ -137,6 +140,8 @@ export class PublicAssistantStream {
     this.fenceRun = 0;
     this.fenceMarker = "";
     this.openingFence = false;
+    this.closingFence = false;
+    this.closingFenceCarriageReturn = false;
     this.notification = false;
     this.notificationSuffix = "";
     this.publicNotificationSuffix = "";
@@ -213,6 +218,13 @@ export class PublicAssistantStream {
       this.mode = "text";
     }
     if (this.mode === "text") {
+      // A marker run is only a closing candidate until the rest of its line
+      // proves empty. Text after it leaves the original code fence open.
+      if (this.closingFence) {
+        if (character === "\n") this.fence = undefined;
+        else if (character === "\r" && !this.closingFenceCarriageReturn) this.closingFenceCarriageReturn = true;
+        else if (this.closingFenceCarriageReturn || (character !== " " && character !== "\t")) this.closingFence = false;
+      }
       this.publish(character, output);
       if (character === "\n") this.startLine();
       return;
@@ -263,7 +275,7 @@ export class PublicAssistantStream {
     if (this.openingFence) {
       this.fence = { marker: this.fenceMarker, length: this.fenceRun };
     } else if (this.fence?.marker === this.fenceMarker && this.fenceRun >= this.fence.length) {
-      this.fence = undefined;
+      this.closingFence = true;
     }
   }
 
@@ -271,6 +283,8 @@ export class PublicAssistantStream {
     this.mode = this.fence ? "fence-prefix" : "prefix";
     this.allowEnvelope = true;
     this.fenceIndent = 0;
+    this.closingFence = false;
+    this.closingFenceCarriageReturn = false;
   }
 
   /** Notification filtering follows reasoning filtering, including across removals. */
