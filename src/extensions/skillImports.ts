@@ -32,7 +32,7 @@ export interface SkillImportResult {
 export function listUnmanagedSkillCandidates(snapshot: SkillCatalogSnapshot): SkillImportCandidate[] {
   const managedNames = new Set(
     snapshot.inventory
-      .filter((entry) => entry.scope === "global" && entry.source === "biny")
+      .filter((entry) => entry.scope === "global" && entry.source === "biny" && entry.parseError === undefined)
       .map((entry) => normalise(entry.name))
   );
   return snapshot.inventory
@@ -57,20 +57,23 @@ export async function importUnmanagedSkills(options: {
     ? path.join(globalConfigDir(), "skills")
     : path.join(globalConfigDir({ env: {}, homeDir }), "skills");
   await ensureManagedRoot(managedRoot);
+  const installedByPath = new Map(snapshot.inventory
+    .filter((entry) => entry.scope === "global" && entry.source === "biny")
+    .map((entry) => [entry.absolutePath, entry]));
   const results: SkillImportResult[] = [];
   for (const candidate of candidates) {
     const entry = snapshot.inventory.find((item) => item.id === candidate.id);
     if (!entry) continue;
-    results.push(await importSkillDirectory(entry, managedRoot));
+    results.push(await importSkillDirectory(entry, managedRoot, installedByPath));
   }
   return results;
 }
 
-async function importSkillDirectory(entry: SkillCatalogEntry, managedRoot: string): Promise<SkillImportResult> {
+async function importSkillDirectory(entry: SkillCatalogEntry, managedRoot: string, installedByPath: ReadonlyMap<string, SkillCatalogEntry>): Promise<SkillImportResult> {
   const installName = path.basename(entry.absolutePath);
   assertSafeDirectoryName(installName);
   const target = path.join(managedRoot, installName);
-  if (await hasValidSkillDirectory(target)) {
+  if (await hasValidSkillDirectory(target, entry.name, installedByPath)) {
     return { id: entry.id, name: entry.name, installedPath: target, alreadyInstalled: true };
   }
 
@@ -82,7 +85,7 @@ async function importSkillDirectory(entry: SkillCatalogEntry, managedRoot: strin
     return { id: entry.id, name: entry.name, installedPath: target, alreadyInstalled: false };
   } catch (error) {
     await fs.rm(temporary, { recursive: true, force: true }).catch(() => undefined);
-    if (isAlreadyExists(error) && await hasValidSkillDirectory(target)) {
+    if (isAlreadyExists(error) && await hasValidSkillDirectory(target, entry.name, installedByPath)) {
       return { id: entry.id, name: entry.name, installedPath: target, alreadyInstalled: true };
     }
     throw error;
@@ -125,20 +128,24 @@ async function ensureManagedRoot(directory: string): Promise<void> {
   if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Biny Skill 目录必须是真实目录：${directory}`);
 }
 
-async function hasValidSkillDirectory(directory: string): Promise<boolean> {
-  try {
-    const stat = await fs.lstat(directory);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Biny Skill 目标不是安全目录：${directory}`);
-    const skillFile = path.join(directory, "SKILL.md");
-    const skillStat = await fs.lstat(skillFile);
-    if (skillStat.isSymbolicLink() || !skillStat.isFile() || skillStat.nlink !== 1) {
-      throw new Error(`Biny Skill 目标缺少安全的 SKILL.md：${directory}`);
-    }
-    return true;
-  } catch (error) {
-    if (isNotFound(error)) return false;
-    throw error;
+async function hasValidSkillDirectory(directory: string, expectedName: string, installedByPath: ReadonlyMap<string, SkillCatalogEntry>): Promise<boolean> {
+  let stat;
+  try { stat = await fs.lstat(directory); }
+  catch (error) { if (isNotFound(error)) return false; throw error; }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Biny Skill 目标不是安全目录：${directory}`);
+  const conflict = (): Error => new Error(`Biny Skill 导入目标已存在，但不是已验证的同名 Skill；请移走或修复后重试：${directory}`);
+  const skillFile = path.join(directory, "SKILL.md");
+  let skillStat;
+  try { skillStat = await fs.lstat(skillFile); }
+  catch (error) { if (isNotFound(error)) throw conflict(); throw error; }
+  if (skillStat.isSymbolicLink() || !skillStat.isFile() || skillStat.nlink !== 1) {
+    throw new Error(`Biny Skill 目标缺少安全的 SKILL.md：${directory}`);
   }
+  // A regular SKILL.md alone is not evidence that this candidate is installed.
+  // Targets created after this scan require a refresh, not an assumed success.
+  const installed = installedByPath.get(await fs.realpath(directory));
+  if (!installed || installed.parseError !== undefined || normalise(installed.name) !== normalise(expectedName)) throw conflict();
+  return true;
 }
 
 function toCandidate(entry: SkillCatalogEntry): SkillImportCandidate {
