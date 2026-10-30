@@ -103,7 +103,7 @@ test("大批追加按有界批次提交；失败后从最后提交偏移继续",
   await fs.writeFile(file, lines.join(""));
   const index = new SessionSearchIndex(root);
   index.status();
-  const database = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
+  const database = new DatabaseSync(path.join(root, "search", "sessions-v3.sqlite"));
   const failAfterOffset = Buffer.byteLength(lines.slice(0, 300).join(""), "utf8");
   try {
     database.prepare(

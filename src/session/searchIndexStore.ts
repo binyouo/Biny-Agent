@@ -36,8 +36,9 @@ export interface SessionSearchIndexStatus {
 }
 
 const sqliteBusyTimeoutMs = 5_000;
-const sessionSearchIndexVersion = 2;
-export const sessionSearchDatabaseFileName = "sessions-v2.sqlite";
+const sessionSearchIndexVersion = 3;
+// A separate cache prevents old processes from reintroducing queued audit receipts.
+export const sessionSearchDatabaseFileName = "sessions-v3.sqlite";
 const sessionSearchReadChunkBytes = 64 * 1024;
 const sessionSearchBatchBytes = 256 * 1024;
 const sessionSearchBatchEvents = 128;
@@ -281,6 +282,10 @@ export class SessionSearchStore {
           signal?.throwIfAborted();
           offset = endOffset;
           if (event?.type !== "user_message" && event?.type !== "assistant_message") continue;
+          // Admission receipts are not delivered conversation messages. Hosted
+          // audit-only user turns remain searchable, matching transcript export.
+          if (event.type === "user_message" && event.auditOnly
+            && (event.metadata?.queuedDelivery === "queue" || event.metadata?.queuedDelivery === "steer")) continue;
           const content = event.type === "assistant_message" ? publicAssistantMessage(event.content) : event.content;
           if (!content.trim()) continue;
           const inserted = insert.run(

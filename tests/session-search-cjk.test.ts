@@ -104,8 +104,8 @@ test("legacy EOF cache stays untouched while a separate source-aware cache index
     assert.equal(database.prepare("SELECT value FROM unrelated_data").get()?.value, "preserve me");
     assert.equal(database.prepare("SELECT tokens FROM session_transcripts").get()?.tokens, tokenizeMemoryText(lateCjkBody).join(" "));
     database.close();
-    database = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
-    assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 2);
+    database = new DatabaseSync(path.join(root, "search", "sessions-v3.sqlite"));
+    assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 3);
     assert.equal(database.prepare("SELECT byte_offset FROM session_index_state").get()?.byte_offset, Buffer.byteLength(original));
     assert.equal(await readFile(file, "utf8"), original);
     assert.equal(await readFile(sentinel, "utf8"), '{"authoritative":"keep"}\n');
@@ -162,7 +162,7 @@ for (const read of ["status", "search"] as const) {
       await writeFile(file, row(lateCjkBody, "committed"));
       await warm.indexSessionFile("thread", file);
       warm.close();
-      writer = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
+      writer = new DatabaseSync(path.join(root, "search", "sessions-v3.sqlite"));
       writer.exec("BEGIN IMMEDIATE");
       const inserted = writer.prepare("INSERT INTO session_transcripts (session_id, message_id, role, body, tokens) VALUES (?, ?, ?, ?, ?)")
         .run("thread", "uncommitted", "user", lateCjkBody, tokenizeMemoryText(lateCjkBody, maxSessionEventLineBytes).join(" "));
@@ -193,7 +193,7 @@ test("cold initialization never discards a completed source-aware cache from ano
     await writeFile(file, original);
     await index.indexSessionFile("legacy", file);
     index.close();
-    second = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
+    second = new DatabaseSync(path.join(root, "search", "sessions-v3.sqlite"));
     second.exec("PRAGMA user_version = 0");
     const originalPrepare = DatabaseSync.prototype.prepare;
     t.mock.method(DatabaseSync.prototype, "prepare", function (this: DatabaseSync, sql: string) {

@@ -296,7 +296,7 @@ test("cancellation rolls back the current batch and resumes from the last commit
   try {
     await assert.rejects(index.indexSessionFile("batch", file, controller.signal), (error) => error === reason);
     assert.equal(index.status().indexedMessages, 128, "only complete batches remain committed");
-    database = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
+    database = new DatabaseSync(path.join(root, "search", "sessions-v3.sqlite"));
     const state = database.prepare("SELECT byte_offset FROM session_index_state WHERE session_id = ?").get("batch");
     assert.equal(state?.byte_offset, Buffer.byteLength(lines.slice(0, 128).join("")));
     t.mock.restoreAll();
@@ -322,7 +322,7 @@ test("cancellation during truncated-file reset rolls back transcript rows and of
   let database: DatabaseSync | undefined;
   try {
     assert.equal(await index.indexSessionFile("truncated", file), 2);
-    database = new DatabaseSync(path.join(root, "search", "sessions-v2.sqlite"));
+    database = new DatabaseSync(path.join(root, "search", "sessions-v3.sqlite"));
     await fs.writeFile(file, row("new", "rebuilt transcript marker"));
     const controller = new AbortController();
     const reason = new Error("cancel after resetting transcript rows");

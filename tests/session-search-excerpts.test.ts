@@ -105,7 +105,7 @@ test("CJK search retains an already useful SQLite excerpt", async (t) => {
 test("a hidden legacy-only match cannot fabricate a visible body anchor or leak protocol", async (t) => {
   const f = await fixture(t, "公开答复。<biny_notification>部署回滚</biny_notification>");
   await f.index.refreshAll();
-  const database = new DatabaseSync(path.join(f.root, "search", "sessions-v2.sqlite"));
+  const database = new DatabaseSync(path.join(f.root, "search", "sessions-v3.sqlite"));
   try {
     // 模拟旧版本已缓存但尚未清理的协议行；权威 JSONL 不做任何修改。
     database.prepare("UPDATE session_transcripts SET body = ?, tokens = ? WHERE message_id = ?")
