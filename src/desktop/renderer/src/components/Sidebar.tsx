@@ -43,10 +43,23 @@ function sessionKey(session: DesktopSessionSummary): string {
   return `${session.projectId}\0${session.id}`;
 }
 interface SessionDeletion {
+  token: object;
+  ownsProject(): boolean;
   session: DesktopSessionSummary;
   index: number;
   phase: "waiting" | "exiting" | "hidden";
 }
+/** Check owners on every render without changing the identity of a wholly current map. */
+function currentSessionDeletions(entries: Map<string, SessionDeletion>): Map<string, SessionDeletion> {
+  let current: Map<string, SessionDeletion> | undefined;
+  for (const [key, entry] of entries) {
+    if (entry.ownsProject()) continue;
+    current ??= new Map(entries);
+    current.delete(key);
+  }
+  return current ?? entries;
+}
+
 interface SessionRowActions {
   selection?: Set<string>;
   deletions: Map<string, SessionDeletion>;
@@ -71,6 +84,7 @@ interface SidebarProps {
   onSelectSession(projectId: string, sessionId: string): void;
   onLoadSessionChildren(projectId: string, parentSessionId: string, cursor?: string): Promise<LoadedSessionTreePage>;
   onSessionAction(session: DesktopSessionSummary, action: DesktopSessionMenuAction): void;
+  captureDeletionProject(projectId: string): () => boolean;
   onDeleteSessions(sessions: DesktopSessionSummary[], confirm: boolean, onStarted: () => void): Promise<DesktopSessionDeleteResult>;
   onProjectPinned(projectId: string, pinned: boolean): void;
   onReorderProjects(projectIds: string[]): void;
@@ -107,6 +121,7 @@ export const Sidebar = memo(function Sidebar({
   onLoadSessionChildren,
   onSessionAction,
   onDeleteSessions,
+  captureDeletionProject,
   onProjectPinned,
   onReorderProjects,
   onRefreshProject,
@@ -122,11 +137,15 @@ export const Sidebar = memo(function Sidebar({
   onSettings,
   onToggleSidebar
 }: SidebarProps): React.JSX.Element {
-  const [selection, setSelection] = useState<Set<string>>();
+  const [selectionOwners, setSelectionOwners] = useState<Map<string, () => boolean>>();
+  // Selection is preparation for a later delete, not ownership of every future row with the same ID.
+  // Keep an empty Set while the mode is active; expired choices cannot become checked again.
+  const selection = selectionOwners === undefined ? undefined
+    : new Set([...selectionOwners].filter(([, ownsProject]) => ownsProject()).map(([key]) => key));
   const [deletions, setDeletions] = useState(new Map<string, SessionDeletion>());
   const [deletionError, setDeletionError] = useState<string>();
   const mounted = useRef(true);
-  const deletionFlights = useRef(new Set<string>());
+  const deletionFlights = useRef(new Map<string, SessionDeletion>());
   const deletionTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
     mounted.current = true;
@@ -134,34 +153,42 @@ export const Sidebar = memo(function Sidebar({
     return () => { mounted.current = false; for (const timer of timers) clearTimeout(timer); };
   }, []);
   useEffect(() => {
-    if (!selection) return;
+    if (!selectionOwners) return;
     const cancel = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && !event.defaultPrevented) setSelection(undefined);
+      if (event.key === "Escape" && !event.defaultPrevented) setSelectionOwners(undefined);
     };
     window.addEventListener("keydown", cancel);
     return () => window.removeEventListener("keydown", cancel);
-  }, [selection]);
+  }, [selectionOwners]);
+  // Recheck on every render: catalog ownership can change without changing this local map.
+  const activeDeletions = currentSessionDeletions(deletions);
   const sessions = useMemo(() => {
-    const result = storedSessions.filter(session => deletions.get(sessionKey(session))?.phase !== "hidden");
+    const result = storedSessions.filter(session => activeDeletions.get(sessionKey(session))?.phase !== "hidden");
     const ids = new Set(result.map(sessionKey));
-    for (const [key, entry] of [...deletions].sort((a, b) => a[1].index - b[1].index)) {
+    for (const [key, entry] of [...activeDeletions].sort((a, b) => a[1].index - b[1].index)) {
       if (entry.phase !== "hidden" && !ids.has(key)) result.splice(Math.min(entry.index, result.length), 0, entry.session);
     }
     return result;
-  }, [storedSessions, deletions]);
-  const selectedRows = storedSessions.filter(session => selection?.has(sessionKey(session)) && !deletions.has(sessionKey(session)));
+  }, [storedSessions, activeDeletions]);
+  const selectedRows = storedSessions.filter(session => selection?.has(sessionKey(session)) && !activeDeletions.has(sessionKey(session)));
   const deleteRows = async (rows: DesktopSessionSummary[], confirm: boolean): Promise<void> => {
-    const targets = rows.filter(session => !deletionFlights.current.has(sessionKey(session)));
+    const targets = rows.filter(session => !deletionFlights.current.get(sessionKey(session))?.ownsProject());
     if (!targets.length) return;
-    for (const session of targets) deletionFlights.current.add(sessionKey(session));
+    const owners = new Map<string, () => boolean>([...new Set(targets.map(session => session.projectId))]
+      .map(projectId => [projectId, captureDeletionProject(projectId)]));
+    const entries = new Map<string, SessionDeletion>(targets.map(session => [sessionKey(session), {
+      token: {}, ownsProject: owners.get(session.projectId)!, session,
+      index: storedSessions.findIndex(row => sessionKey(row) === sessionKey(session)), phase: "waiting"
+    }]));
+    for (const [key, entry] of entries) deletionFlights.current.set(key, entry);
     setDeletionError(undefined);
     setDeletions(current => {
       const next = new Map(current);
-      for (const session of targets) next.set(sessionKey(session), { session, index: storedSessions.findIndex(row => sessionKey(row) === sessionKey(session)), phase: "waiting" });
+      for (const [key, entry] of entries) if (entry.ownsProject()) next.set(key, entry);
       return next;
     });
     let removed = new Set<string>();
-    const animated = new Set(targets.map(sessionKey));
+    const animated = new Set(entries.keys());
     let started = false;
     const startExit = (): void => {
       if (started || !mounted.current) return;
@@ -171,7 +198,9 @@ export const Sidebar = memo(function Sidebar({
         const next = new Map(current);
         for (const key of animated) {
           const entry = next.get(key);
-          if (entry) next.set(key, { ...entry, phase: reducedMotion ? "hidden" : "exiting" });
+          if (entry && entry.token === entries.get(key)?.token && entry.ownsProject()) {
+            next.set(key, { ...entry, phase: reducedMotion ? "hidden" : "exiting" });
+          }
         }
         return next;
       });
@@ -182,8 +211,8 @@ export const Sidebar = memo(function Sidebar({
           const next = new Map(current);
           for (const key of animated) {
             const entry = next.get(key);
-            if (!entry) continue;
-            if (removed.has(key)) next.delete(key);
+            if (!entry || entry.token !== entries.get(key)?.token) continue;
+            if (!entry.ownsProject() || removed.has(key)) next.delete(key);
             else next.set(key, { ...entry, phase: "hidden" });
           }
           return next;
@@ -195,25 +224,34 @@ export const Sidebar = memo(function Sidebar({
     try {
       const result = await onDeleteSessions(targets, confirm, startExit);
       if (!mounted.current) return;
-      removed = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
-      setSelection(current => {
+      removed = new Set(result.deleted.filter(target => owners.get(target.projectId)?.())
+        .map(target => `${target.projectId}\0${target.sessionId}`));
+      setSelectionOwners(current => {
         if (!current) return current;
-        const next = new Set([...current].filter(key => !removed.has(key)));
-        return next.size ? next : undefined;
+        const next = new Map([...current].filter(([, ownsProject]) => ownsProject()));
+        let removedSelection = false;
+        for (const key of removed) {
+          if (entries.get(key)?.ownsProject() && next.delete(key)) removedSelection = true;
+        }
+        // A retired/empty receipt must not close a newer, explicitly empty selection mode.
+        return removedSelection && next.size === 0 ? undefined : next;
       });
     } catch (error) {
-      if (mounted.current) setDeletionError(error instanceof Error ? error.message : String(error));
+      if (mounted.current) setDeletionError(current => [...entries.values()].some(entry => entry.ownsProject())
+        ? error instanceof Error ? error.message : String(error) : current);
     } finally {
-      for (const session of targets) deletionFlights.current.delete(sessionKey(session));
+      for (const [key, entry] of entries) {
+        if (deletionFlights.current.get(key)?.token === entry.token) deletionFlights.current.delete(key);
+      }
       if (mounted.current) {
-        // 失败项立即恢复；从旧计时器移除，避免重试中的新动画被旧请求结束。
+        // Failed targets leave this timer; token checks also isolate a recreated project's new flight.
         for (const key of animated) if (!removed.has(key)) animated.delete(key);
         setDeletions(current => {
           const next = new Map(current);
-          for (const session of targets) {
-            const key = sessionKey(session);
+          for (const [key, original] of entries) {
             const entry = next.get(key);
-            if (!removed.has(key) || entry?.phase !== "exiting") next.delete(key);
+            if (!entry || entry.token !== original.token) continue;
+            if (!entry.ownsProject() || !removed.has(key) || entry.phase !== "exiting") next.delete(key);
           }
           return next;
         });
@@ -222,13 +260,17 @@ export const Sidebar = memo(function Sidebar({
   };
   const rowActions: SessionRowActions = {
     selection,
-    deletions,
-    toggle: session => setSelection(current => {
-      const next = new Set(current);
+    deletions: activeDeletions,
+    toggle: session => {
       const key = sessionKey(session);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    }),
+      const ownsProject = captureDeletionProject(session.projectId);
+      setSelectionOwners(current => {
+        const next = new Map([...(current ?? [])].filter(([, ownsSelection]) => ownsSelection()));
+        if (next.has(key)) next.delete(key);
+        else if (ownsProject()) next.set(key, ownsProject);
+        return next;
+      });
+    },
     delete: session => { void deleteRows([session], false); }
   };
   const [expandedSections, setExpandedSections] = useState<Record<SidebarSectionName, boolean>>({
@@ -555,7 +597,7 @@ export const Sidebar = memo(function Sidebar({
       {selection ? <div className="biny-session-selection-bar" role="toolbar" aria-label="会话多选">
         <span>已选 {selectedRows.length} 项</span>
         <button className="is-danger" disabled={!selectedRows.length} onClick={() => { void deleteRows(selectedRows, true); }} type="button"><Icon name="trash" size={13} />删除</button>
-        <button aria-label="退出多选" onClick={() => setSelection(undefined)} type="button"><Icon name="close" size={14} /></button>
+        <button aria-label="退出多选" onClick={() => setSelectionOwners(undefined)} type="button"><Icon name="close" size={14} /></button>
       </div> : null}
       {deletionError ? <div className="biny-session-delete-error" role="alert">{deletionError}</div> : null}
       <div className="biny-sidebar-body">
@@ -672,7 +714,10 @@ export const Sidebar = memo(function Sidebar({
       </aside>
       <SessionContextMenu
         onSelectMode={() => {
-          if (sessionMenu) setSelection(new Set([sessionKey(sessionMenu.session)]));
+          if (sessionMenu) {
+            const ownsProject = captureDeletionProject(sessionMenu.session.projectId);
+            setSelectionOwners(new Map([[sessionKey(sessionMenu.session), ownsProject]]));
+          }
           setSessionMenuVisible(false);
         }}
         menu={sessionMenu}

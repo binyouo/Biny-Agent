@@ -47,7 +47,7 @@ function cancelFrame(id: number): void { frameHost?.cancel(id); }
 // Mount the complete production App and its own views/hooks. Only IPC, native
 // DOM facilities, assets and the dependency ESM entry resolution are adapted.
 // The callbacks below are the real App subscriptions, not extracted handlers.
-async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
+async function fixture(t: TestContext, ids = ["a", "b", "c"], options: { reducedMotion?: boolean; holdDeletionStart?: boolean } = {}) {
   const resources: { dom?: JSDOM; root?: Root; React?: typeof import("react"); imports?: ReturnType<typeof registerHooks> } = {};
   const restore: Array<() => void> = [];
   const frames = new Map<number, FrameRequestCallback>();
@@ -59,7 +59,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
   const actions: Array<{ kind: string; projectId: string; sessionId?: string; input: string }> = [];
   const metadata: Array<{ kind: string; projectId: string; sessionId: string; value: string | boolean; expectedRevision?: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const archives: Array<{ projectId: string; sessionId: string; archived: boolean; expectedRevision?: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
-  const deletions: Array<{ targets: DesktopSessionTarget[]; start: () => void; gate: ReturnType<typeof deferred<DesktopSessionDeleteResult>> }> = [];
+  const deletions: Array<{ targets: DesktopSessionTarget[]; confirm: boolean; start: () => void; gate: ReturnType<typeof deferred<DesktopSessionDeleteResult>> }> = [];
   const refreshes: Array<{ projectId: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const pages: Array<{ projectId: string; parentSessionId: string; gate: ReturnType<typeof deferred<DesktopSessionTreePage>> }> = [];
   const removals: Array<{ id: string; gate: ReturnType<typeof deferred<DesktopBootstrap>> }> = [];
@@ -128,7 +128,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
   })) replace(globalThis, key, value);
   replace(window, "requestAnimationFrame", requestFrame); replace(window, "cancelAnimationFrame", cancelFrame);
   replace(window, "ResizeObserver", LayoutObserver);
-  replace(window, "matchMedia", (query: string) => ({ matches: query.includes("prefers-reduced-motion"), media: query, onchange: null,
+  replace(window, "matchMedia", (query: string) => ({ matches: (options.reducedMotion ?? true) && query.includes("prefers-reduced-motion"), media: query, onchange: null,
     addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => true }));
   replace(window.HTMLElement.prototype, "scrollIntoView", () => {});
   replace(window.HTMLElement.prototype, "scrollTo", () => {});
@@ -150,7 +150,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
     pinSession(projectId: string, sessionId: string, value: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); metadata.push({kind:'pin',projectId,sessionId,value,expectedRevision,gate}); return gate.promise; },
     renameSession(projectId: string, sessionId: string, value: string, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); metadata.push({kind:'rename',projectId,sessionId,value,expectedRevision,gate}); return gate.promise; },
     archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); archives.push({projectId, sessionId, archived, expectedRevision, gate}); return gate.promise; },
-    deleteSessions(targets: DesktopSessionTarget[], _confirm: boolean, start: () => void) { const gate = deferred<DesktopSessionDeleteResult>(); deletions.push({targets, start, gate}); start(); return gate.promise; },
+    deleteSessions(targets: DesktopSessionTarget[], confirm: boolean, start: () => void) { const gate = deferred<DesktopSessionDeleteResult>(); deletions.push({targets, confirm, start, gate}); if (!options.holdDeletionStart) start(); return gate.promise; },
     refreshProject(projectId: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({projectId, gate}); return gate.promise; },
     listSessionTreePage(projectId: string, options: {parentSessionId: string}) { const gate = deferred<DesktopSessionTreePage>(); pages.push({projectId, parentSessionId:options.parentSessionId, gate}); return gate.promise; },
     removeProject: (id: string) => { const gate = deferred<DesktopBootstrap>(); removals.push({ id, gate }); return gate.promise; },
@@ -320,6 +320,301 @@ async function acceptEventCatalog(h:Harness,fresh:DesktopWorkspaceSnapshot):Prom
   const request=h.refreshes.at(-1);assert.ok(request);assert.equal(request.projectId,id);
   await h.React.act(async()=>request.gate.resolve(fresh));
 }
+
+// Deletion receipts belong to a project incarnation, including Sidebar's local
+// animation/flight state. These helpers only drive visible production controls.
+function interactiveControl<T extends HTMLButtonElement | HTMLInputElement>(element: T | null | undefined, label: string): T {
+  assert.ok(element, label);
+  assert.equal(element.closest('[inert]'), null, `${label} must not be inside a collapsed/busy subtree`);
+  assert.equal(element.disabled, false, `${label} must be enabled`);
+  assert.equal(element.ownerDocument.querySelector('dialog[open]'), null, 'Never click through a modal');
+  return element;
+}
+function availableDeletionRow(h: Harness, id = 'session-a'): HTMLButtonElement {
+  const button = interactiveControl(h.document.querySelector<HTMLButtonElement>(`button.biny-sidebar-session-item[title="Conversation ${id}"]`), id);
+  const row = button.closest('.biny-sidebar-session-tree-row');
+  assert.ok(row);
+  assert.notEqual(row.getAttribute('aria-busy'), 'true', 'Recreated row is not owned by an old flight');
+  assert.equal(row.classList.contains('is-removing'), false);
+  return button;
+}
+async function selectDeletionRow(h: Harness, id = 'session-a'): Promise<void> {
+  const row = availableDeletionRow(h, id);
+  await h.React.act(async () => row.click());
+  assert.equal(row.getAttribute('aria-current'), 'page');
+}
+async function shiftDeleteRow(h: Harness, id = 'session-a'): Promise<void> {
+  availableDeletionRow(h, id);
+  const button = interactiveControl(h.document.querySelector<HTMLButtonElement>(`button[aria-label="删除 Conversation ${id}"]`), `Delete ${id}`);
+  await h.React.act(async () => button.dispatchEvent(new h.window.MouseEvent('click', { bubbles: true, shiftKey: true })));
+}
+async function removeDeletionProject(h: Harness): Promise<void> {
+  interactiveControl(h.document.querySelector<HTMLButtonElement>('button[aria-label="Project a 项目操作"]'), 'Remove A menu');
+  await h.removeEntry('a');
+  await h.resolveRemoval(h.removals.length - 1, bootstrapFor(['b', 'c'], 'b'));
+  assert.ok(!h.projectIds().includes('Project a 项目操作'));
+}
+async function expandDeletionProject(h: Harness, id: string): Promise<void> {
+  const row = h.document.querySelector<HTMLElement>(`.biny-project-row[role="button"][title="/synthetic/${id}"]`);
+  assert.ok(row, `Project ${id} row`);
+  assert.equal(row.closest('[inert]'), null, 'Project expansion is a real interactive Sidebar action');
+  assert.equal(row.matches(':disabled, [aria-disabled="true"]'), false);
+  assert.equal(h.document.querySelector('dialog[open]'), null);
+  if (row.getAttribute('aria-expanded') !== 'true') await h.React.act(async () => row.click());
+  assert.equal(row.getAttribute('aria-expanded'), 'true');
+}
+async function recreateDeletionProject(h: Harness): Promise<void> {
+  h.api.bootstrap = async () => bootstrapFor(['a', 'b', 'c'], 'b');
+  await h.emit('onApplicationImportsChanged', undefined as never);
+  await expandDeletionProject(h, 'a');
+  availableDeletionRow(h);
+}
+async function settleDeletion(h: Harness, index: number, outcome: 'success' | 'failure' | 'throw'): Promise<void> {
+  const request = h.deletions[index]!;
+  await h.React.act(async () => {
+    if (outcome === 'throw') request.gate.reject(new Error('Retired deletion transport error'));
+    else request.gate.resolve({ cancelled: false, deleted: outcome === 'success' ? request.targets : [],
+      failures: outcome === 'failure' ? request.targets.map(target => ({ ...target, error: 'Retired deletion target error' })) : [] });
+  });
+}
+function selectedDeletionView(h: Harness): unknown[] {
+  return [h.heading(), h.selectedTitle(), h.body(), h.draft(), h.projectName()];
+}
+async function beginDeletionBatch(h: Harness, ids: string[]): Promise<void> {
+  // Open every project before entering selection mode, so no collapsed row is clicked.
+  for (const projectId of new Set(ids.map(id => id.slice(id.lastIndexOf('-') + 1)))) await expandDeletionProject(h, projectId);
+  availableDeletionRow(h, ids[0]!);
+  await h.sessionMenu(ids[0]!, '多选');
+  for (const id of ids.slice(1)) {
+    const checkbox = interactiveControl(h.document.querySelector<HTMLInputElement>(`input[aria-label="选择 Conversation ${id}"]`), `Select ${id}`);
+    await h.React.act(async () => checkbox.click());
+  }
+  await submitDeletionBatch(h);
+}
+async function submitDeletionBatch(h: Harness): Promise<void> {
+  const button = interactiveControl([...h.document.querySelectorAll<HTMLButtonElement>('[aria-label="会话多选"] button')].find(item => item.textContent === '删除'), 'Batch delete');
+  await h.React.act(async () => button.click());
+}
+
+for (const reducedMotion of [true, false]) for (const outcome of ['success', 'failure', 'throw'] as const) {
+  test(`retired ${outcome} deletion cannot touch recreated same-ID rows (reduced motion ${reducedMotion})`, async t => {
+    const h = await fixture(t, undefined, { reducedMotion });
+    await selectDeletionRow(h); await shiftDeleteRow(h);
+    assert.equal(h.deletions.length, 1); assert.equal(h.deletions[0]!.confirm, false);
+    await removeDeletionProject(h); await recreateDeletionProject(h);
+    await selectDeletionRow(h); await h.fillDraft('Keep recreated conversation');
+    const before = selectedDeletionView(h);
+    await h.tick(750); // Old exit deadline must not hide a recreated row even before its receipt.
+    availableDeletionRow(h);
+    await settleDeletion(h, 0, outcome); await h.tick(1040);
+    availableDeletionRow(h); assert.deepEqual(selectedDeletionView(h), before);
+    assert.equal(h.refreshes.length, 0); assert.doesNotMatch(h.text(), /Retired deletion/);
+  });
+}
+
+for (const outcome of ['success', 'failure', 'throw'] as const) {
+  test(`retired ${outcome} finally and exit timer cannot unlock or hide a newer deletion flight`, async t => {
+    const h = await fixture(t, undefined, { reducedMotion: false });
+    await shiftDeleteRow(h); await h.tick(200);
+    await removeDeletionProject(h); await recreateDeletionProject(h); await shiftDeleteRow(h);
+    assert.equal(h.deletions.length, 2, 'New incarnation can delete without waiting for old flight');
+    const busyRow = () => h.document.querySelector('button[title="Conversation session-a"]')?.closest('.biny-sidebar-session-tree-row');
+    assert.equal(busyRow()?.getAttribute('aria-busy'), 'true');
+    await settleDeletion(h, 0, outcome);
+    assert.equal(busyRow()?.getAttribute('aria-busy'), 'true', 'Old finally cannot unlock new flight');
+    assert.equal(busyRow()?.hasAttribute('inert'), true);
+    await h.tick(550);
+    assert.equal(busyRow()?.classList.contains('is-removing'), true, 'Old 750ms timer cannot finish new animation');
+    await h.tick(199); assert.ok(busyRow());
+    await h.tick(1); assert.equal(busyRow(), undefined, 'Only new flight deadline hides its row');
+    assert.equal(h.refreshes.length, 0);
+    await h.React.act(async () => h.deletions[1]!.gate.reject(new Error('Current deletion failed')));
+    availableDeletionRow(h); assert.match(h.text(), /Current deletion failed/);
+    await shiftDeleteRow(h); assert.equal(h.deletions.length, 3, 'New failure restores a genuine retry');
+  });
+}
+
+for (const reducedMotion of [true, false]) test(`late onStarted cannot clear recreated selection (reduced motion ${reducedMotion})`, async t => {
+  const h = await fixture(t, undefined, { reducedMotion, holdDeletionStart: true });
+  // Removal is already in flight before the non-confirming preload IPC gap.
+  // No menu click occurs while a native confirmation dialog could be open.
+  await h.removeEntry('a'); await shiftDeleteRow(h);
+  assert.equal(h.deletions[0]!.confirm, false);
+  await h.resolveRemoval(0, bootstrapFor(['b', 'c'], 'b'));
+  await recreateDeletionProject(h); await selectDeletionRow(h); await h.fillDraft('Late start must not clear me');
+  const before = selectedDeletionView(h);
+  await h.React.act(async () => h.deletions[0]!.start());
+  availableDeletionRow(h); assert.deepEqual(selectedDeletionView(h), before);
+  await settleDeletion(h, 0, 'success'); await h.tick(1040);
+  availableDeletionRow(h); assert.deepEqual(selectedDeletionView(h), before); assert.equal(h.refreshes.length, 0);
+});
+
+for (const outcome of ['success', 'failure'] as const) test(`mixed deletion batch retires A but preserves B ${outcome}`, async t => {
+  const h = await fixture(t);
+  await beginDeletionBatch(h, ['session-a', 'session-b']);
+  assert.deepEqual(h.deletions[0]!.targets, [{ projectId: 'a', sessionId: 'session-a' }, { projectId: 'b', sessionId: 'session-b' }]);
+  // Default fake start has already completed confirmation; project menu is usable.
+  await removeDeletionProject(h); await recreateDeletionProject(h);
+  availableDeletionRow(h);
+  const recreatedCheckbox = interactiveControl(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-a"]'), 'Recreated A selection');
+  assert.equal(recreatedCheckbox.checked, false, 'Old incarnation selection is not new deletion authorization');
+  await h.React.act(async () => h.deletions[0]!.gate.resolve({ cancelled: false,
+    deleted: outcome === 'success' ? h.deletions[0]!.targets : [],
+    failures: outcome === 'failure' ? [{ projectId: 'a', sessionId: 'session-a', error: 'Retired A failure' }, { projectId: 'b', sessionId: 'session-b', error: 'Current B failure' }] : [] }));
+  availableDeletionRow(h); assert.doesNotMatch(h.text(), /Retired A failure/);
+  if (outcome === 'success') {
+    assert.equal(h.hasSession('session-b'), false); assert.deepEqual(h.refreshes.map(item => item.projectId), ['b']);
+  } else {
+    availableDeletionRow(h, 'session-b'); assert.match(h.text(), /Current B failure/); assert.equal(h.refreshes.length, 0);
+    assert.equal(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-a"]')?.checked, false);
+    assert.equal(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-b"]')?.checked, true);
+    await submitDeletionBatch(h);
+    assert.deepEqual(h.deletions[1]!.targets, [{ projectId: 'b', sessionId: 'session-b' }], 'Retry must not silently target recreated A');
+  }
+});
+
+for (const outcome of ['success', 'failure'] as const) test(`failed project removal does not retire deletion ${outcome}`, async t => {
+  const h = await fixture(t); await shiftDeleteRow(h); await h.removeEntry('a'); await h.rejectRemoval(0);
+  await settleDeletion(h, 0, outcome);
+  assert.ok(h.projectIds().includes('Project a 项目操作'));
+  if (outcome === 'success') { assert.equal(h.hasSession('session-a'), false); assert.deepEqual(h.refreshes.map(item => item.projectId), ['a']); }
+  else { availableDeletionRow(h); assert.match(h.text(), /Retired deletion target error/); assert.equal(h.refreshes.length, 0); }
+});
+
+test('cancelled native batch restores selectable rows without deletion or refresh', async t => {
+  const h = await fixture(t, undefined, { holdDeletionStart: true });
+  await beginDeletionBatch(h, ['session-a', 'second-a']);
+  assert.equal(h.deletions[0]!.confirm, true);
+  assert.equal(h.document.querySelector('.is-removing'), null);
+  // No Sidebar interactions while confirmation is unresolved.
+  await h.React.act(async () => h.deletions[0]!.gate.resolve({ cancelled: true, deleted: [], failures: [] }));
+  availableDeletionRow(h); availableDeletionRow(h, 'second-a'); assert.equal(h.refreshes.length, 0);
+  assert.equal(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation second-a"]')?.checked, true);
+});
+
+test('partial deletion failure retries only surviving selected targets', async t => {
+  const h = await fixture(t); await beginDeletionBatch(h, ['session-a', 'second-a']);
+  await h.React.act(async () => h.deletions[0]!.gate.resolve({ cancelled: false,
+    deleted: [{ projectId: 'a', sessionId: 'session-a' }], failures: [{ projectId: 'a', sessionId: 'second-a', error: 'Retry current target' }] }));
+  assert.equal(h.hasSession('session-a'), false); availableDeletionRow(h, 'second-a');
+  assert.equal(h.document.querySelector('[aria-label="会话多选"] span')?.textContent, '已选 1 项');
+  await submitDeletionBatch(h);
+  assert.deepEqual(h.deletions[1]!.targets, [{ projectId: 'a', sessionId: 'second-a' }]);
+  await settleDeletion(h, 1, 'success'); assert.equal(h.hasSession('second-a'), false);
+  assert.equal(h.document.querySelector('[aria-label="会话多选"]'), null, 'Successful final target exits selection mode');
+});
+
+test('independent live deletion flights settle without restoring the successful sibling', async t => {
+  const h = await fixture(t); await shiftDeleteRow(h); await shiftDeleteRow(h, 'second-a');
+  assert.equal(h.deletions.length, 2);
+  await settleDeletion(h, 1, 'success'); await settleDeletion(h, 0, 'failure');
+  availableDeletionRow(h); assert.equal(h.hasSession('second-a'), false);
+  assert.deepEqual(h.refreshes.map(item => item.projectId), ['a']);
+});
+
+for (const outcome of ['success', 'error'] as const) test(`deletion refresh ${outcome} cannot publish across removal and recreation`, async t => {
+  const h = await fixture(t); await shiftDeleteRow(h); await settleDeletion(h, 0, 'success');
+  assert.equal(h.refreshes.length, 1, 'Deletion refresh starts immediately, without a 260ms tick');
+  await removeDeletionProject(h); await recreateDeletionProject(h); await selectDeletionRow(h); await h.fillDraft('Keep new incarnation during old read');
+  const before = selectedDeletionView(h);
+  await h.React.act(async () => {
+    if (outcome === 'error') h.refreshes[0]!.gate.reject(new Error('Retired deletion refresh error'));
+    else h.refreshes[0]!.gate.resolve(withPage({ ...workspace('a'), sessions: [session('a', 'obsolete-a')] }, 'catalog:obsolete-deletion'));
+  });
+  await h.tick(1040); availableDeletionRow(h); assert.equal(h.hasSession('obsolete-a'), false);
+  assert.deepEqual(selectedDeletionView(h), before); assert.doesNotMatch(h.text(), /Retired deletion refresh error/); assert.equal(h.refreshes.length, 1);
+});
+
+test('successful recreated deletion keeps its own exit deadline after its flight is released', async t => {
+  const h = await fixture(t, undefined, { reducedMotion: false });
+  await shiftDeleteRow(h); await h.tick(200);
+  await removeDeletionProject(h); await recreateDeletionProject(h); await shiftDeleteRow(h);
+  await settleDeletion(h, 0, 'success'); await settleDeletion(h, 1, 'success');
+  assert.deepEqual(h.refreshes.map(item => item.projectId), ['a']);
+  const exiting = () => h.document.querySelector('button[title="Conversation session-a"]')?.closest('.biny-sidebar-session-tree-row');
+  assert.equal(exiting()?.classList.contains('is-removing'), true, 'Success retains the exit ghost');
+  await h.tick(550); assert.equal(exiting()?.classList.contains('is-removing'), true, 'Old deadline cannot remove the new exit ghost');
+  await h.tick(199); assert.ok(exiting());
+  await h.tick(1); assert.equal(exiting(), undefined, 'New entry timer retires its ghost even after success released the flight');
+});
+
+
+for (const outcome of ['success', 'failure', 'throw'] as const) test(`explicit recreated A selection survives old mixed batch ${outcome}`, async t => {
+  const h = await fixture(t);
+  await beginDeletionBatch(h, ['session-a', 'session-b']);
+  await removeDeletionProject(h); await recreateDeletionProject(h);
+  const checkbox = interactiveControl(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-a"]'), 'New A selection');
+  assert.equal(checkbox.checked, false, 'Retired A starts unselected');
+  await h.React.act(async () => checkbox.click());
+  assert.equal(checkbox.checked, true, 'User explicitly authorizes selection of the new incarnation');
+  // The initial default start already passed native confirmation. This checkbox
+  // interaction is during storage work, not through a confirmation modal.
+  await settleDeletion(h, 0, outcome);
+  const retained = interactiveControl(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-a"]'), 'Retained new A selection');
+  assert.equal(retained.checked, true, 'Old continuation cannot clear a newly selected owner of the same key');
+  if (outcome === 'success') {
+    assert.equal(h.hasSession('session-b'), false);
+    assert.equal(h.document.querySelector('[aria-label="会话多选"] span')?.textContent, '已选 1 项');
+  } else {
+    const survivingB = interactiveControl(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-b"]'), 'Surviving B selection');
+    assert.equal(survivingB.checked, true);
+    assert.equal(h.document.querySelector('[aria-label="会话多选"] span')?.textContent, '已选 2 项');
+  }
+  await submitDeletionBatch(h);
+  assert.deepEqual(h.deletions[1]!.targets, outcome === 'success'
+    ? [{ projectId: 'a', sessionId: 'session-a' }]
+    : [{ projectId: 'a', sessionId: 'session-a' }, { projectId: 'b', sessionId: 'session-b' }],
+  'Only the new explicit A selection may add A to a retry');
+});
+
+
+test('empty selection mode and project-owned selection work without a deletion flight', async t => {
+  const h = await fixture(t);
+  const assertEmptyMode = (): void => {
+    const toolbar = h.document.querySelector('[aria-label="会话多选"]');
+    assert.ok(toolbar, 'Explicit empty selection mode remains visible');
+    assert.equal(toolbar.querySelector('span')?.textContent, '已选 0 项');
+    const remove = [...toolbar.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '删除');
+    assert.ok(remove); assert.equal(remove.disabled, true, 'Empty selection cannot submit deletion');
+  };
+  const escape = async (): Promise<void> => {
+    await h.React.act(async () => h.window.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape' })));
+    assert.equal(h.document.querySelector('[aria-label="会话多选"]'), null);
+  };
+  availableDeletionRow(h); await h.sessionMenu('session-a', '多选');
+  const checkbox = interactiveControl(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-a"]'), 'Toggle last selection');
+  assert.equal(checkbox.checked, true);
+  await h.React.act(async () => checkbox.click());
+  assert.equal(checkbox.checked, false); assertEmptyMode(); await escape();
+  availableDeletionRow(h); await h.sessionMenu('session-a', '多选');
+  await removeDeletionProject(h); await recreateDeletionProject(h);
+  const recreated = interactiveControl(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-a"]'), 'Recreated selection without deletion');
+  assert.equal(recreated.checked, false, 'Selection owner retires even without any deletion entry');
+  assertEmptyMode(); await escape(); assert.equal(h.deletions.length, 0);
+});
+
+test('retired deletion receipt preserves a newly opened empty selection mode', async t => {
+  const h = await fixture(t);
+  await shiftDeleteRow(h); await removeDeletionProject(h); await recreateDeletionProject(h);
+  availableDeletionRow(h); await h.sessionMenu('session-a', '多选');
+  const checkbox = interactiveControl(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-a"]'), 'New selection to toggle off');
+  assert.equal(checkbox.checked, true);
+  await h.React.act(async () => checkbox.click());
+  const assertEmptyMode = (): void => {
+    const toolbar = h.document.querySelector('[aria-label="会话多选"]');
+    assert.ok(toolbar, 'Old deletion does not own the new empty selection mode');
+    assert.equal(toolbar.querySelector('span')?.textContent, '已选 0 项');
+    const remove = [...toolbar.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '删除');
+    assert.ok(remove); assert.equal(remove.disabled, true);
+    const current = interactiveControl(h.document.querySelector<HTMLInputElement>('input[aria-label="选择 Conversation session-a"]'), 'Unselected new A');
+    assert.equal(current.checked, false);
+  };
+  assertEmptyMode();
+  await settleDeletion(h, 0, 'success');
+  assertEmptyMode(); assert.equal(h.refreshes.length, 0);
+  await h.React.act(async () => h.window.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape' })));
+  assert.equal(h.document.querySelector('[aria-label="会话多选"]'), null);
+});
 for (const kind of ['pin','rename'] as const) for(const later of ['archive','delete','new-session'] as const) {
   test(`late ${kind} response cannot replace a later accepted ${later} catalog`,async t=>{
     const h=await fixture(t);await begin(h,kind);const old=savedSnapshot(kind);const fresh=savedSnapshot(kind);

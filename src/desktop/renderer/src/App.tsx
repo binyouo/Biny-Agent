@@ -26,6 +26,7 @@ import type {
   DesktopProject,
   DesktopRuntimeMutation,
   DesktopSessionDocument,
+  DesktopSessionDeleteResult,
   DesktopSessionMenuAction,
   DesktopSessionWriterConflict,
   DesktopSessionSummary,
@@ -1014,41 +1015,74 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
   }, [invalidateProjectRefresh, mergeProjectSnapshot, sessionTreePages]);
 
-  const deleteSidebarSessions = useCallback(async (sessions: DesktopSessionSummary[], confirm = true, onStarted?: () => void) => {
+  const deleteSidebarSessions = useCallback(async (sessions: DesktopSessionSummary[], confirm = true, onStarted?: () => void): Promise<DesktopSessionDeleteResult> => {
     const targets = sessions.map(session => ({ projectId: session.projectId, sessionId: session.id }));
+    // Capture before confirmation: a later removal/recreation must not inherit this UI receipt.
+    const owners = new Map<string, () => boolean>([...new Set(targets.map(target => target.projectId))]
+      .map(projectId => [projectId, sessionTreePages.captureCatalogProject(projectId)]));
+    const ownsProject = (projectId: string): boolean => owners.get(projectId)?.() === true;
     const clearDeletedSelection = (keys: Set<string>): void => {
-      if (!keys.has(`${projectRef.current}\0${selectedRef.current}`)) return;
+      const projectId = projectRef.current;
+      if (!projectId || !ownsProject(projectId) || !keys.has(`${projectId}\0${selectedRef.current}`)) return;
       selectedRef.current = undefined;
-      setSelectedSessionId(undefined);
-      setDocument(undefined);
-      setWriterConflict(undefined);
-      setContextBudget(undefined);
-      setWorkspace(current => current ? { ...current, selectedSessionId: undefined } : current);
-      if (projectRef.current) commitNavigation(replaceNavigation(navigationRef.current, { projectId: projectRef.current }));
+      setSelectedSessionId(current => ownsProject(projectId) ? undefined : current);
+      setDocument(current => ownsProject(projectId) ? undefined : current);
+      setWriterConflict(current => ownsProject(projectId) ? undefined : current);
+      setContextBudget(current => ownsProject(projectId) ? undefined : current);
+      setWorkspace(current => current?.project.id === projectId && ownsProject(projectId)
+        ? { ...current, selectedSessionId: undefined } : current);
+      commitNavigation(replaceNavigation(navigationRef.current, { projectId }));
     };
-    const result = await window.biny.deleteSessions(targets, confirm, () => {
-      onStarted?.();
-      // 确认后立即离开目标聊天；旧删除回执不能清掉后来打开的会话。
-      clearDeletedSelection(new Set(targets.map(target => `${target.projectId}\0${target.sessionId}`)));
-    });
-    if (result.cancelled) return result;
-    const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
-    for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
+    let result: DesktopSessionDeleteResult;
+    try {
+      result = await window.biny.deleteSessions(targets, confirm, () => {
+        if (!targets.some(target => ownsProject(target.projectId))) return;
+        onStarted?.();
+        // Only the original project incarnation can leave its selected chat.
+        clearDeletedSelection(new Set(targets.filter(target => ownsProject(target.projectId))
+          .map(target => `${target.projectId}\0${target.sessionId}`)));
+      });
+    } catch (error) {
+      if (targets.some(target => ownsProject(target.projectId))) throw error;
+      // Empty UI receipt, not cancellation of an already confirmed storage operation.
+      return { cancelled: false, deleted: [], failures: [] };
+    }
+    const receipt = {
+      ...result,
+      deleted: result.deleted.filter(target => ownsProject(target.projectId)),
+      failures: result.failures.filter(target => ownsProject(target.projectId))
+    };
+    if (receipt.cancelled || (!receipt.deleted.length && !receipt.failures.length)) return receipt;
+    const deleted = new Set(receipt.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
+    for (const projectId of new Set(receipt.deleted.map(target => target.projectId))) {
+      if (!ownsProject(projectId)) continue;
       sessionTreePages.replaceProject(projectId, []);
       invalidateSessionRootPage(projectId);
-      void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
+      // Keep the immediate refresh; this guard retires project incarnations, not same-owner read ordering.
+      void window.biny.refreshProject(projectId).then(snapshot => {
+        if (ownsProject(projectId)) mergeProjectSnapshot(snapshot);
+      }).catch(error => {
+        if (ownsProject(projectId)) setWarning(current => ownsProject(projectId) ? errorMessage(error) : current);
+      });
     }
-    setSidebarSessions(current => current.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)));
-    setWorkspace(current => current ? { ...current, sessions: current.sessions.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)) } : current);
+    const keepSession = (session: DesktopSessionSummary): boolean => !ownsProject(session.projectId)
+      || !deleted.has(`${session.projectId}\0${session.id}`);
+    setSidebarSessions(current => current.filter(keepSession));
+    setWorkspace(current => current && ownsProject(current.project.id)
+      ? { ...current, sessions: current.sessions.filter(keepSession) } : current);
     clearDeletedSelection(deleted);
-    if (result.failures.length) setWarning(result.failures.map(failure => {
-      const title = sessions.find(session => session.projectId === failure.projectId && session.id === failure.sessionId)?.title ?? failure.sessionId;
-      return `${title}：${failure.error}`;
-    }).join("\n"));
-    return result;
+    if (receipt.failures.length) setWarning(current => {
+      const failures = receipt.failures.filter(failure => ownsProject(failure.projectId));
+      return failures.length ? failures.map(failure => {
+        const title = sessions.find(session => session.projectId === failure.projectId && session.id === failure.sessionId)?.title ?? failure.sessionId;
+        return `${title}：${failure.error}`;
+      }).join("\n") : current;
+    });
+    return receipt;
   }, [commitNavigation, invalidateSessionRootPage, mergeProjectSnapshot, sessionTreePages]);
 
   const runSessionAction = useCallback(async (session: DesktopSessionSummary, action: DesktopSessionMenuAction): Promise<void> => {
+    const ownsDeletionProject = action === "delete" ? sessionTreePages.captureCatalogProject(session.projectId) : undefined;
     try {
       if (action === "rename") {
         setRenameTarget({ kind: "session", projectId: session.projectId, sessionId: session.id, title: session.title, metadataRevision: session.metadataRevision });
@@ -1093,7 +1127,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       }
       if (action === "delete") await deleteSidebarSessions([session]);
     } catch (error) {
-      setWarning(errorMessage(error));
+      setWarning(current => !ownsDeletionProject || ownsDeletionProject() ? errorMessage(error) : current);
     }
   }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, invalidateProjectRefresh, mergeProjectSnapshot, sessionTreePages, toggleSessionPinned]);
 
@@ -2319,6 +2353,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
           onLoadSessionChildren={loadSessionChildren}
           onSessionAction={runSidebarSessionAction}
           onDeleteSessions={deleteSidebarSessions}
+          captureDeletionProject={sessionTreePages.captureCatalogProject}
           onSettings={settingsEnabled ? openSettings : undefined}
           onTimeClues={openTimeClues}
           onToggleSidebar={toggleSidebar}
