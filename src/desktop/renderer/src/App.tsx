@@ -424,8 +424,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   useEffect(() => {
     let cancelled = false;
     for (const projectId of briefProjectIds.split("\0").filter(Boolean)) {
+      // Brief acceptance may introduce a project not yet in the renderer catalog.
+      // Only a confirmed removal retires this refresh, including a same-ID re-add.
+      const projectLifetime = projectRemovalRef.current.get(projectId);
       void window.biny.refreshProject(projectId).then((snapshot) => {
-        if (!cancelled) mergeProjectSnapshot(snapshot);
+        if (!cancelled && projectRemovalRef.current.get(projectId) === projectLifetime) mergeProjectSnapshot(snapshot);
       }).catch(() => undefined);
     }
     return () => { cancelled = true; };
