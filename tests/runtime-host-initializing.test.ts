@@ -42,8 +42,14 @@ try {
   const server = await starting;
   assert.equal(await server.retireIfIdle(0), false);
   const waiting = clients[0]!.waitForReady();
+  void waiting.catch(() => undefined);
+  let queryResult: { value?: unknown; error?: unknown } | undefined;
+  const query = clients[1]!.graphList().then(value => { queryResult = { value }; }, error => { queryResult = { error }; });
+  await clients[1]!.getHostStatus();
+  assert.equal(queryResult, undefined, "read queries wait while the Host execution domain initializes");
   release();
-  await waiting;
+  await Promise.all([waiting, query]);
+  assert.deepEqual(queryResult, { value: [] });
   assert.equal((await clients[0]!.getHostStatus()).lifecycle, "ready");
   assert.equal(clients[0]!.getSnapshot().info.sessionId, "initial-session");
   assert.equal(creations, 1);

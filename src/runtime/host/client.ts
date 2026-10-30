@@ -1792,7 +1792,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private request<T>(operation: string, payload: unknown, timeoutMs?: number, onDispatch?: (socket: net.Socket) => void): Promise<T> {
-    if (["host.info", "host.subscribe", "host.close", "client.keep-alive"].includes(operation) || operationLane(operation, asRecord(payload)) === "query") return this.requestRaw(operation, payload, timeoutMs, onDispatch);
+    if (["host.info", "host.subscribe", "host.close", "client.keep-alive"].includes(operation)) return this.requestRaw(operation, payload, timeoutMs, onDispatch);
+    if (this.lifecycle === "ready" && operationLane(operation, asRecord(payload)) === "query") return this.requestRaw(operation, payload, timeoutMs, onDispatch);
     if (this.lifecycle === "ready" && this.socket && !this.socket.destroyed && this.synchronizedSocket === this.socket) return this.requestRaw(operation, payload, timeoutMs, onDispatch);
     return this.waitForReady().then(() => this.requestRaw<T>(operation, payload, timeoutMs, onDispatch));
   }
