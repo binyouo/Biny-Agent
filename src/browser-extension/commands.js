@@ -239,7 +239,7 @@ export async function performBrowserCommand(api, { method, args = {} }, state) {
       await evaluate("reveal");
       await evaluate("wait", { ...args, state: "visible" });
     }
-    const point = await evaluate(method);
+    const point = method === "scroll" ? undefined : await evaluate(method);
     if (method === "upload") return { success: true, url: (await api.tabs.get(tab.id)).url };
 
     if (method === "click") {
@@ -249,7 +249,7 @@ export async function performBrowserCommand(api, { method, args = {} }, state) {
     }
   }
   if (method === "scroll") {
-    const target = await pointer(await evaluate("scroll"));
+    const target = await pointer(await evaluate("scroll_target"));
     await send("Input.dispatchMouseEvent", { type: "mouseWheel", ...target.point, deltaX: args.deltaX ?? 0, deltaY: args.deltaY }, target.sessionId);
   }
   if (method === "fill") await send("Input.insertText", { text: args.value }, context()?.sessionId);
