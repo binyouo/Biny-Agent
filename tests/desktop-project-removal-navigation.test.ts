@@ -540,3 +540,13 @@ test("removal between import adoption and settings completion suppresses overlay
   assert.equal(h.settingsTitle(), undefined);
   assert.deepEqual(h.projectIds(), ["Project a 项目操作", "Project c 项目操作"]);
 });
+
+for (const kind of ["send", "slash"] as const) test(`reselecting the current draft folder keeps ${kind} available`, async t => {
+  const h = await fixture(t);
+  await h.chooseProject("a");
+  await h.submit(kind);
+  assert.equal(h.actions.length, 1, "A same-folder intent must not leave the rendered submission owner stale");
+  assert.equal(h.actions[0]?.projectId, "a");
+  assert.equal(h.actions[0]?.sessionId, undefined);
+  await h.settleAction(kind, "a");
+});

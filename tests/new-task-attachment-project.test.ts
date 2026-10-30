@@ -147,6 +147,7 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
       // a draft folder change supersedes pending navigation without changing workspace catalogs.
       ${declaration(app, "draftProjectRef")}
       ${declaration(app, "draftIntentEpochRef")}
+      ${declaration(app, "setDraftIntentEpoch")}
       ${declaration(app, "draftAdmissionRef")}
       ${declaration(app, "draftAdmission")}
       ${declaration(app, "assertDraftAdmission")}

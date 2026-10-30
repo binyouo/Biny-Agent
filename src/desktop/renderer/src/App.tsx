@@ -207,6 +207,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const loadRequestRef = useRef(0);
   const draftProjectRef = useRef<string | undefined>(undefined);
   const draftIntentEpochRef = useRef(0);
+  // Even selecting the same folder must refresh the rendered submission owner.
+  // Other state setters can bail out while the synchronous epoch still advances.
+  const [, setDraftIntentEpoch] = useState(0);
   const draftAdmissionRef = useRef<{ projectId: string; request: number; isolation?: "shared" | "worktree"; status: "pending" | "failed" } | undefined>(undefined);
   const [draftAdmission, setDraftAdmission] = useState<typeof draftAdmissionRef.current>();
   const clearDraftAdmission = useCallback((): void => {
@@ -703,6 +706,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       // Synchronous admission precedes clearing the selected session: a same-tick
       // submission must not create a shared runtime while startDraft is pending.
       draftIntentEpochRef.current += 1;
+      setDraftIntentEpoch(draftIntentEpochRef.current);
       draftAdmissionRef.current = admission;
       setDraftAdmission(admission);
     }
@@ -936,6 +940,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       // 回填已进入所属草稿；目标切换时不能再次覆盖另一项目保留的输入。
       setComposerDraft(undefined);
       draftIntentEpochRef.current += 1;
+      setDraftIntentEpoch(draftIntentEpochRef.current);
       loadRequestRef.current += 1;
       setPendingNavigation(undefined);
       setLoading(false);
