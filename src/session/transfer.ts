@@ -21,7 +21,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { attachmentFilePath, attachmentRoot, readAttachmentBytes, createAttachmentImportBatch, type AttachmentImportBatch, AttachmentImportCleanupError, AttachmentReadLimitError } from "../attachments/store.js";
+import { attachmentFilePath, attachmentRoot, readAttachmentBytes, readSealedAttachmentContextBytes, createAttachmentImportBatch, type AttachmentImportBatch, AttachmentImportCleanupError, AttachmentReadLimitError } from "../attachments/store.js";
 import { rewriteAttachmentReferences } from "../attachments/references.js";
 import { parseSessionEvents, readStoredSessionEvents } from "./events.js";
 import type { SessionEvent } from "./recorder.js";
@@ -39,6 +39,7 @@ import { claudeLinesToBinyEvents, type ClaudeContentBlock, type ClaudeLine } fro
 /** bundle 的格式标识与版本号；导入时据此拒绝不兼容的文件。 */
 export const BINY_BUNDLE_FORMAT = "biny-session-bundle" as const;
 export const BINY_BUNDLE_VERSION = 2 as const;
+export const BINY_CONTEXT_BUNDLE_VERSION = 3 as const;
 export type SessionTransferFormat = "biny" | "claude" | "codex" | "chatgpt";
 
 /** 单个附件超过这个体积就不内嵌进 bundle，导入时记为 skipped（不阻塞整体导入）。 */
@@ -67,11 +68,13 @@ export interface BinySessionBundleAttachment {
   data: string;
   /** 原始字节的 SHA-256，用于区分“可解码”和“内容完整”。 */
   sha256: string;
+  /** Sealed, untrusted Appshot context; absent for ordinary images and legacy bundles. */
+  context?: { data: string; size: number; sha256: string };
 }
 
 export interface BinySessionBundle {
   format: typeof BINY_BUNDLE_FORMAT;
-  version: typeof BINY_BUNDLE_VERSION;
+  version: typeof BINY_BUNDLE_VERSION | typeof BINY_CONTEXT_BUNDLE_VERSION;
   manifest: BinySessionBundleManifest;
   events: SessionEvent[];
   attachments: BinySessionBundleAttachment[];
@@ -129,7 +132,7 @@ export async function exportSessionBundle(workspaceRoot: string, session: string
   };
   const bundle: BinySessionBundle = {
     format: BINY_BUNDLE_FORMAT,
-    version: BINY_BUNDLE_VERSION,
+    version: attachments.some(attachment => attachment.context !== undefined) ? BINY_CONTEXT_BUNDLE_VERSION : BINY_BUNDLE_VERSION,
     manifest,
     events,
     attachments
@@ -185,13 +188,15 @@ async function collectBundleAttachments(
         skipped.push(name);
         continue;
       }
+      const context = await readSealedAttachmentContextBytes(attachmentRoot(workspaceRoot), reference.path);
       attachments.push({
         name,
         mimeType: typeof reference.mimeType === "string" ? reference.mimeType : "application/octet-stream",
         sourcePath: reference.path,
         size: bytes.byteLength,
         data: bytes.toString("base64"),
-        sha256: createHash("sha256").update(bytes).digest("hex")
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        ...(context === undefined ? {} : { context: { data: context.toString("base64"), size: context.length, sha256: createHash("sha256").update(context).digest("hex") } })
       });
     }
   }
@@ -354,7 +359,7 @@ function parseBinyBundleEnvelope(raw: string, sourcePath: string): Record<string
   if (!isRecord(parsed) || parsed.format !== BINY_BUNDLE_FORMAT) {
     throw new Error(`不是 Biny 会话包（缺少 format: "${BINY_BUNDLE_FORMAT}"）：${path.basename(sourcePath)}`);
   }
-  if (parsed.version !== BINY_BUNDLE_VERSION) {
+  if (parsed.version !== BINY_BUNDLE_VERSION && parsed.version !== BINY_CONTEXT_BUNDLE_VERSION) {
     throw new Error(`不支持的 Biny 会话包版本：${String(parsed.version)}`);
   }
   return parsed;
@@ -372,6 +377,7 @@ function parseBinyBundleAttachments(raw: string): BinySessionBundleAttachment[] 
   const result: BinySessionBundleAttachment[] = [];
   for (const entry of parsed.attachments) {
     if (!isRecord(entry)) continue;
+    const context = parsed.version === BINY_CONTEXT_BUNDLE_VERSION ? parseBundleAttachmentContext(entry.context) : undefined;
     if (typeof entry.name !== "string" || typeof entry.sourcePath !== "string" || typeof entry.data !== "string") continue;
     result.push({
       name: entry.name,
@@ -379,7 +385,8 @@ function parseBinyBundleAttachments(raw: string): BinySessionBundleAttachment[] 
       sourcePath: entry.sourcePath,
       size: typeof entry.size === "number" ? entry.size : -1,
       data: entry.data,
-      sha256: typeof entry.sha256 === "string" ? entry.sha256 : ""
+      sha256: typeof entry.sha256 === "string" ? entry.sha256 : "",
+      ...(context === undefined ? {} : { context })
     });
   }
   return result;
@@ -403,6 +410,7 @@ async function restoreBundleAttachments(
 ): Promise<RestoredAttachments> {
   const result: RestoredAttachments = { restored: 0, renamed: 0, skipped: [], pathBySource: new Map() };
   for (const attachment of attachments) {
+    const context = parseBundleAttachmentContext(attachment.context);
     if (!Number.isSafeInteger(attachment.size) || attachment.size < 0) {
       result.skipped.push({ name: attachment.name, reason: "invalid" });
       continue;
@@ -421,12 +429,26 @@ async function restoreBundleAttachments(
       result.skipped.push({ name: attachment.name, reason: "invalid" });
       continue;
     }
-    const saved = await (await batchForWrite()).save(attachment.name, attachment.mimeType, bytes);
+    const saved = await (await batchForWrite()).save(attachment.name, attachment.mimeType, bytes, context === undefined ? undefined : Buffer.from(context.data, "base64"));
     result.restored += 1;
     if (saved.path !== attachment.sourcePath) result.renamed += 1;
     result.pathBySource.set(attachment.sourcePath, saved.path);
   }
   return result;
+}
+
+function parseBundleAttachmentContext(value: unknown): BinySessionBundleAttachment["context"] {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || typeof value.data !== "string" || typeof value.size !== "number" || typeof value.sha256 !== "string"
+    || !Number.isSafeInteger(value.size) || value.size < 0 || value.size > 128000
+    || value.data.length > Math.ceil(128000 / 3) * 4 || !isStrictBase64(value.data) || !/^[0-9a-f]{64}$/u.test(value.sha256)) {
+    throw new Error("attachment_context_invalid");
+  }
+  const bytes = Buffer.from(value.data, "base64");
+  if (bytes.length !== value.size || createHash("sha256").update(bytes).digest("hex") !== value.sha256) throw new Error("attachment_context_invalid");
+  try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new Error("attachment_context_invalid"); }
+  return { data: value.data, size: value.size, sha256: value.sha256 };
 }
 
 function isStrictBase64(value: string): boolean {

@@ -111,7 +111,7 @@ interface ImportedAttachmentFile {
 }
 
 export interface AttachmentImportBatch {
-  save(name: string, mimeType: string, bytes: Uint8Array): Promise<AttachmentReference>;
+  save(name: string, mimeType: string, bytes: Uint8Array, context?: Uint8Array): Promise<AttachmentReference>;
   commit(): void;
   /** Returns files retained because their ownership or cleanup could not be confirmed. */
   rollback(): Promise<string[]>;
@@ -137,8 +137,28 @@ export async function createAttachmentImportBatch(persistenceRoot: string): Prom
       return current.isDirectory() && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino;
     } catch (error) { if (isNotFound(error)) return false; throw error; }
   };
+  const writeOwnedFile = async (file: string, handle: FileHandle, payload: Uint8Array): Promise<ImportedAttachmentFile> => {
+    let entry: ImportedAttachmentFile | undefined;
+    try {
+      const stat = await handle.stat();
+      const stableBytes = Buffer.from(payload);
+      entry = { file, bytes: stableBytes, size: stableBytes.length, checksum: createHash("sha256").update(stableBytes).digest("hex"),
+        identity: { dev: stat.dev, ino: stat.ino }, completed: false };
+      files.push(entry);
+      await handle.writeFile(stableBytes);
+      await handle.sync();
+      entry.completed = true;
+      entry.bytes = undefined;
+    } finally {
+      try { if (entry) entry.snapshot = await handle.stat(); }
+      finally { await handle.close(); }
+    }
+    if (!entry || !await isOwnedDirectory() || !await sameImportedFile(file, entry)) throw new Error("attachment_import_file_replaced");
+    return entry;
+  };
   return {
-    async save(name, mimeType, bytes) {
+    async save(name, mimeType, bytes, context) {
+      if (context !== undefined && context.byteLength > 128000) throw new Error("attachment_context_invalid");
       if (!active || !await isOwnedDirectory()) throw new Error("attachment_import_batch_unavailable");
       const safeName = sanitizeAttachmentName(name);
       for (let attempt = 1; ; attempt += 1) {
@@ -147,22 +167,14 @@ export async function createAttachmentImportBatch(persistenceRoot: string): Prom
         let handle: FileHandle;
         try { handle = await fs.open(file, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); }
         catch (error) { if (attempt >= 10 || !hasCode(error, "EEXIST")) throw error; continue; }
-        let entry: ImportedAttachmentFile | undefined;
-        try {
-          const stat = await handle.stat();
-          const stableBytes = Buffer.from(bytes);
-          entry = { file, bytes: stableBytes, size: stableBytes.length, checksum: createHash("sha256").update(stableBytes).digest("hex"),
-            identity: { dev: stat.dev, ino: stat.ino }, completed: false };
-          files.push(entry);
-          await handle.writeFile(stableBytes);
-          await handle.sync();
-          entry.completed = true;
-          entry.bytes = undefined;
-        } finally {
-          try { if (entry) entry.snapshot = await handle.stat(); }
-          finally { await handle.close(); }
+        const imageEntry = await writeOwnedFile(file, handle, bytes);
+        if (context !== undefined) {
+          if (!await isOwnedDirectory()) throw new Error("attachment_import_batch_unavailable");
+          const contextFile = `${file}.context`;
+          const contextHandle = await fs.open(contextFile, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+          await writeOwnedFile(contextFile, contextHandle, context);
+          if (!await isOwnedDirectory() || !await sameImportedFile(file, imageEntry)) throw new Error("attachment_import_file_replaced");
         }
-        if (!entry || !await isOwnedDirectory() || !await sameImportedFile(file, entry)) throw new Error("attachment_import_file_replaced");
         return { name: safeName, mimeType, path: `${attachmentPathPrefix}${path.basename(directory)}/${leaf}`, size: bytes.byteLength };
       }
     },
@@ -260,7 +272,7 @@ async function attachmentParent(root: string, virtualPath: string): Promise<{ fi
   return { file, parent, identity };
 }
 
-async function readStoredAttachmentFile(root: string, virtualPath: string, maxBytes?: number, context = false, pendingContext = false): Promise<Buffer | undefined> {
+async function readStoredAttachmentFile(root: string, virtualPath: string, maxBytes?: number, context = false, pendingContext = false, boundedContext = false): Promise<Buffer | undefined> {
   if (attachmentRelativePath(virtualPath) === undefined) return undefined;
   try {
     const binding = await attachmentParent(root, virtualPath);
@@ -273,7 +285,7 @@ async function readStoredAttachmentFile(root: string, virtualPath: string, maxBy
       const info = await handle.stat();
       if (!info.isFile() || info.nlink !== 1 || info.dev !== before.dev || info.ino !== before.ino) throw new Error("attachment_path_invalid");
       if (maxBytes !== undefined && info.size > maxBytes) throwAttachmentReadLimit(info.size, maxBytes, context);
-      const bytes = maxBytes !== undefined && !context
+      const bytes = maxBytes !== undefined && (!context || boundedContext)
         ? await readAttachmentWithinLimit(handle, maxBytes)
         : await handle.readFile();
       const current = await attachmentParent(root, virtualPath);
@@ -452,6 +464,23 @@ export async function updatePendingAttachmentContext(root: string, virtualPath: 
       return true;
     });
   });
+}
+
+/** Export observes only sealed history; it must never seal or update a pending capture. */
+export async function readSealedAttachmentContextBytes(root: string, virtualPath: string): Promise<Buffer | undefined> {
+  if (attachmentRelativePath(virtualPath) === undefined) throw new Error("attachment_path_invalid");
+  let sealed: Buffer | undefined;
+  try { sealed = await readStoredAttachmentFile(root, virtualPath, 128000, true, false, true); }
+  catch (error) { if (!hasCode(error, "ENAMETOOLONG")) throw error; }
+  if (sealed !== undefined) {
+    try { new TextDecoder("utf-8", { fatal: true }).decode(sealed); }
+    catch { throw new Error("attachment_context_invalid"); }
+    return sealed;
+  }
+  const binding = await attachmentParent(root, virtualPath);
+  try { await fs.lstat(path.join(binding.parent, pendingContextName(virtualPath))); }
+  catch (error) { if (isNotFound(error)) return undefined; throw error; }
+  throw new Error("attachment_context_not_sealed");
 }
 
 export async function readAttachmentContext(root: string, virtualPath: string): Promise<string | undefined> {
