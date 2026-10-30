@@ -22,7 +22,17 @@ function fixture(t: TestContext) {
   let sessionId = "session-a";
   let infoError = false;
   let recordingError = false;
+  // Inert durable-admission boundary: acknowledge exact run/input identity;
+  // this fixture does not model disk persistence. Reuse cannot change payload.
+  const admissions = new Map<string, { input: string; options: Parameters<AgentSession["admitUserMessage"]>[1] }>();
   const agent = {
+    async admitUserMessage(input: string, options: Parameters<AgentSession["admitUserMessage"]>[1]): Promise<void> {
+      assert.ok(options.runId && options.turnId && options.messageId);
+      const identity = { input, options: structuredClone(options) };
+      const existing = admissions.get(options.runId);
+      if (existing) assert.deepEqual(existing, identity, "admission identity must remain stable");
+      else admissions.set(options.runId, identity);
+    },
     getInfo: () => {
       if (infoError) throw new Error("inert info failure");
       return { workspaceRoot: "/inert", sessionId, sessionFile: "/inert/session.jsonl",
@@ -41,7 +51,7 @@ function fixture(t: TestContext) {
       budget: { maxTokens: 100, usedTokens: 0, omitted: [], autoCompacted: false },
       memoryEnabled: false, memoryInjectedSummaries: [] }),
     recordError: (error: unknown) => { errors.push(error); if (recordingError) throw new Error("inert recorder failure"); }
-  } satisfies Pick<AgentSession, "getInfo" | "getPermissionMode" | "prompt" | "contextStatus" | "recordError">;
+  } satisfies Pick<AgentSession, "getInfo" | "getPermissionMode" | "admitUserMessage" | "prompt" | "contextStatus" | "recordError">;
   const commands = {
     agent, refreshSkills: async () => {}, setSubagentParentRunId: () => {}, close: async () => {},
     setUserInputRun: (run?: { sessionId: string; runId: string }) => { userInputRuns.push(run); }

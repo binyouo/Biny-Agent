@@ -180,6 +180,8 @@ export interface InteractiveRuntimeSnapshot {
 }
 
 export interface QueuedRunMessageSnapshot {
+  /** Read-only, process-local copy; canonical admission may have partially committed. Never resend automatically. */
+  recovery?: { runId: string; messageId: string; attachments: AttachmentReference[]; unavailableAttachmentNames: string[] };
   messageId: string;
   content: string;
   attachmentCount: number;

@@ -1337,7 +1337,17 @@ function fakeCommandRuntime(options: FakeRuntimeOptions = {}): CommandRuntime {
     }
     yield completed(`done:${input}`);
   };
+  // Inert durable-admission boundary: acknowledge exact run/input identity;
+  // this fixture does not model disk persistence. Reuse cannot change payload.
+  const admissions = new Map<string, { input: string; options: Parameters<AgentSession["admitUserMessage"]>[1] }>();
   const agent = {
+    async admitUserMessage(input: string, options: Parameters<AgentSession["admitUserMessage"]>[1]): Promise<void> {
+      assert.ok(options.runId && options.turnId && options.messageId);
+      const identity = { input, options: structuredClone(options) };
+      const existing = admissions.get(options.runId);
+      if (existing) assert.deepEqual(existing, identity, "admission identity must remain stable");
+      else admissions.set(options.runId, identity);
+    },
     getInfo: options.getInfo ?? (() => info),
     getPermissionMode: () => "ask" as const,
     setPermissionMode: options.setPermissionMode ?? (async () => undefined),

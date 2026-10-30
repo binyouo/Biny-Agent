@@ -678,6 +678,7 @@ export const Composer = memo(function Composer({
         </div>
       ) : null}
       <QueuedMessages
+        projectId={project?.id}
         messages={queuedMessages}
         running={running}
         onError={onSubmitError}
