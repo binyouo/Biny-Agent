@@ -672,7 +672,7 @@ export function ProviderSettings({
       supportsThinking: options.reasoning,
       // 空对象明确清空模型级 Header；undefined 在普通更新中表示保留。
       headers: options.headers,
-      protocol: format?.protocol ?? connection?.protocol ?? catalog?.protocol,
+      protocol: connection?.protocol ?? catalog?.protocol,
       apiBackend: format?.apiBackend,
       providerApiBackend: undefined,
       modelProfile: undefined
