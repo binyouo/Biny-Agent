@@ -329,8 +329,14 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
       const rejected = app.submit("rejected message", [{ name: "original.png", mimeType: "image/png", data: "b3JpZ2luYWw=" }]);
       editor.setText("newer draft");
       await rejected;
-      assert.equal(editor.getText(), "rejected message\nnewer draft");
-      assert.match(attachments.render(80).join("\n"), /\[Image #1\]/u);
+      assert.equal(editor.getText(), "newer draft");
+      assert.deepEqual(app["pendingAttachments"], []);
+      assert.equal(app["recoverableInputs"].size, 1);
+      const retained = [...app["recoverableInputs"].values()][0];
+      assert.ok(retained);
+      assert.equal(retained.text, "rejected message");
+      assert.equal(retained.origin?.sessionId, app.tuiState.sessionId);
+      assert.deepEqual(retained.attachments, [{ name: "original.png", mimeType: "image/png", data: "b3JpZ2luYWw=" }]);
       const afterRejection = await readSessionEvents(app.tuiState.sessionFile);
       assert.equal(afterRejection.some((event) => event.type === "user_message" && event.content.includes("rejected message")), false);
       const notice = composer.children.find((component) => component instanceof SessionWriterConflictComponent);
@@ -347,8 +353,9 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
     assert.ok(conflict instanceof SessionWriterConflictComponent);
     conflict.handleInput("\r");
     await waitUntil(() => composer.children.includes(editor));
-    assert.equal(editor.getText(), "rejected message\nnewer draft", "retrying write access does not resend or discard the draft");
-    assert.match(attachments.render(80).join("\n"), /\[Image #1\]/u);
+    assert.equal(editor.getText(), "newer draft", "retrying write access neither merges nor discards the current draft");
+    assert.deepEqual(app["pendingAttachments"], []);
+    assert.equal(app["recoverableInputs"].size, 1, "the original refused text and image remain independently recoverable");
   } finally {
     releaseDraft();
     await app.exit();

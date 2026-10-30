@@ -36,6 +36,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDefinition[] = [
   { name: "/memory", description: "Manage durable workspace and universal memory (list/show/add/forget/search/compact)", category: "extension", acceptsArgs: true, surfaces: allInteractive },
   { name: "/soul", description: "Show or edit the persistent Soul (show/edit/set/append-trait/reset)", category: "system", acceptsArgs: true, surfaces: allInteractive },
   { name: "/resume", description: "Choose a session and resume its history", category: "session", surfaces: terminalOnly },
+  { name: "/recover", description: "Recover retained input without sending it", category: "session", surfaces: ["tui"] },
   { name: "/sessions", description: "List active Runtime Host sessions and switch focus", category: "session", surfaces: terminalOnly },
   { name: "/worktree", description: "Inspect and safely manage isolated worktrees", category: "session", acceptsArgs: true, surfaces: terminalOnly },
   { name: "/new", description: "Start a new chat; --isolated uses a Git worktree", category: "session", surfaces: terminalOnly },
