@@ -426,7 +426,14 @@ export class LocalReferenceService {
     const project = this.project(projectId);
     const result: LocalReferenceResult[] = [];
     const add = (entryKind: LocalReferenceKind, id: string, label: string, content: string): void => {
-      result.push({ kind: entryKind, uri: localReferenceUri({ kind: entryKind as Exclude<LocalReferenceKind, "date" | "message" | "tool-call">, id }),
+      let uri: string;
+      try { uri = localReferenceUri({ kind: entryKind as Exclude<LocalReferenceKind, "date" | "message" | "tool-call">, id }); }
+      catch {
+        // Configured object names need not satisfy the reference identifier contract.
+        // An unsupported candidate must not hide other references in this discovery.
+        return;
+      }
+      result.push({ kind: entryKind, uri,
         label: label.slice(0, 80), content: content.slice(0, 64 * 1024), projectId });
     };
     if (!kind || ["provider", "model", "mcp", "skill", "agent"].includes(kind)) {
