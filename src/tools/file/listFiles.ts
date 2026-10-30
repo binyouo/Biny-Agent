@@ -61,9 +61,9 @@ export function createListFilesTool(context: ToolContext): Tool<ListFilesArgs, L
     resolveExecution(args) {
       const listRoot = resolveWorkspaceDirectory(context.workspaceRoot, args.path ?? ".", context.ignore);
       const relativeRoot = normalizePath(toWorkspaceRelative(context.workspaceRoot, listRoot));
-      const pattern = args.pattern?.trim();
+      const pattern = args.pattern;
       const cursor = args.cursor;
-      if (args.pattern !== undefined && !pattern) throw new Error("Glob requires a non-empty pattern.");
+      if (args.pattern !== undefined && !pattern?.trim()) throw new Error("Glob requires a non-empty pattern.");
       if (args.cursor !== undefined && !cursor) throw new Error("Glob requires a non-empty cursor.");
       if (pattern) path.matchesGlob("validation-path", pattern);
       return {
