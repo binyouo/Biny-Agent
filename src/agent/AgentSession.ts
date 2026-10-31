@@ -145,7 +145,7 @@ import { AgentMemoryClient } from "../runtime/memory/client.js";
 import type { EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
 import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
-import { messageText, withMessageSentAt } from "./modelMessages.js";
+import { messageText, withMessageSentAt, withReferencedMessageSentAt } from "./modelMessages.js";
 import { PluginLifecycleRegistry, type PluginMcpToolCaller, type PluginTurnMessage } from "../extensions/pluginLifecycle.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
 import { archiveToolResult } from "../session/toolResultArchive.js";
@@ -2399,9 +2399,8 @@ export class AgentSession {
       systemPrompt = prepared.systemPrompt;
       messages = prepared.messages;
       const currentUser = messages.at(-1);
-      const currentUserEvent = events.find(event => event.type === "user_message" && event.messageId === userMessageReference?.id);
-      if (!runOptions.emptyTurn && currentUser?.role === "user" && currentUserEvent?.type === "user_message") {
-        messages[messages.length - 1] = withMessageSentAt(currentUser, currentUserEvent);
+      if (!runOptions.emptyTurn && currentUser?.role === "user") {
+        messages[messages.length - 1] = withReferencedMessageSentAt(currentUser, events, userMessageReference?.id);
       }
       const selectedHistoryCount = runOptions.emptyTurn ? messages.length : Math.max(0, messages.length - 1);
       messageReferences = [
