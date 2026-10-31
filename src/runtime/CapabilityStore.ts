@@ -248,7 +248,8 @@ export class CapabilityStore {
   /** 确保 Host-owned MCP/Plugin 工具在第一次执行前已经有 durable registration。 */
   ensureHostCapability(capabilityName: string, schema: unknown): CapabilityRegistration {
     const current = this.register({ ownerType: "host", ownerId: "host", capabilityName, schema });
-    if (current.status === "released" || current.status === "rejected") return this.replace(current.registrationId, schema);
+    if (current.status === "released" || current.status === "rejected"
+      || canonicalJson(current.schema) !== canonicalJson(schema)) return this.replace(current.registrationId, schema);
     if (current.status !== "admitted") return this.admit(current.registrationId);
     return current;
   }
@@ -624,7 +625,6 @@ export class CapabilityStore {
       this.updateRegistrationStatus(registration.registrationId, "released", "capability.expired");
       throw new Error(`Capability ${registration.capabilityName} has expired.`);
     }
-    validateRequest(registration.schema, input.request);
     const requestHash = requestIdentityHash(input.request);
     if (input.offerId !== undefined) {
       const matches = this.findInvocationsByOffer(registration.registrationId, input.offerId);
@@ -642,6 +642,9 @@ export class CapabilityStore {
       }
     }
 
+    // Existing operations retain their original admission and must not be replayed
+    // or hidden by a later schema change. Validate only a new invocation.
+    validateRequest(registration.schema, input.request);
     const invocationId = input.offerId === undefined
       ? requestedInvocationId
       : invocationIdForOffer(registration.registrationId, input.offerId);
