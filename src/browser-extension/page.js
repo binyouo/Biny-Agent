@@ -10,12 +10,12 @@ export async function pageOperation(operation, args, backendElement) {
   const normalizeText = (value) => String(value || "").replace(/\s+/gu, " ").trim();
   const name = (node) => {
     const ariaLabel = node.getAttribute("aria-label");
-    if (ariaLabel) return normalizeText(ariaLabel);
     const labelledBy = node.getAttribute("aria-labelledby");
     if (labelledBy) {
       const labels = labelledBy.split(/\s+/u).map(id => node.getRootNode().getElementById?.(id) || document.getElementById(id)).filter(Boolean);
-      if (labels.length) return normalizeText(labels.map(label => label.textContent).join(" "));
+      if (labels.length) return normalizeText(labels.map(label => normalizeText(label.getAttribute("aria-label")) || label.textContent).join(" "));
     }
+    if (ariaLabel) return normalizeText(ariaLabel);
     if (node.labels?.length) return normalizeText([...node.labels].map(label => label.textContent).join(" "));
     if (node instanceof HTMLImageElement) return normalizeText(node.alt || node.title);
     if (node instanceof HTMLInputElement && ["button", "submit", "reset"].includes(node.type)) return normalizeText(node.value || node.title);
