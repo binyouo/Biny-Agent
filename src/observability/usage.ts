@@ -77,9 +77,8 @@ export function calculateUsageCost(
   const outputTokens = usage.outputTokens;
   const cacheReadTokens = usage.cacheReadTokens ?? 0;
   const cacheWriteTokens = usage.cacheWriteTokens ?? 0;
-  // 服务商没回报任何 token 时不能算成 $0，只能记为未知。
-  const hasTokenData = inputTokens !== undefined || outputTokens !== undefined || usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined;
-  if (!hasTokenData) return { costUsd: undefined, known: false };
+  // 缺失任一侧总量时不能把部分费用冒充完整费用；显式 0 仍是已知计数。
+  if (inputTokens === undefined || outputTokens === undefined) return { costUsd: undefined, known: false };
   let known = true;
   let cost = 0;
 

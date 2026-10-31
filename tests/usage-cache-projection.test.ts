@@ -77,25 +77,46 @@ test("new projection preserves normalized measured input/read counts independent
   assert.deepEqual(summary.epochCacheHitRates, { e: null });
 });
 
-test("every existing scalar/count/rate/cost output stays equal to durable88 golden values", () => {
+test("legacy counts/rates and historical costs stay pinned while new incomplete requests are unpriced", () => {
   assert.equal(golden.base, "a5826c37bdcb85738503c936f0413bfef1c14e6c");
   for (const fixture of golden.cases) {
     const records = fixture.inputs.map(usage => make(usage));
+    const expectedRecords = fixture.records.map((record, index) => {
+      const input = fixture.inputs[index]!;
+      if (input.inputTokens !== undefined && input.outputTokens !== undefined) return record;
+      const expected = { ...record, pricingKnown: false };
+      delete expected.costUsd;
+      return expected;
+    });
+    const expectedCost = <T extends SessionUsage | UsageSummary>(value: T, source: SessionUsage[]): T => {
+      const expected = { ...value };
+      const priced = source.filter(record => record.pricingKnown && record.costUsd !== undefined);
+      expected.pricingKnown = priced.length === source.length;
+      if (expected.pricingKnown) expected.costUsd = priced.reduce((total, record) => total + record.costUsd!, 0);
+      else delete expected.costUsd;
+      if ("pricedCalls" in expected) {
+        expected.pricedCalls = priced.length;
+        expected.unpricedCalls = source.length - priced.length;
+      }
+      return expected;
+    };
+    const expectedTurn = expectedCost(fixture.turn, expectedRecords);
     const turn = sumSessionUsage(records);
     const nested = records.length > 1 ? sumSessionUsage([records[0]!, sumSessionUsage(records.slice(1))]) : turn;
-    assert.deepEqual(records.map(legacy), fixture.records, fixture.name);
-    assert.deepEqual(legacy(turn), fixture.turn, fixture.name);
-    assert.deepEqual(legacy(nested), fixture.nested, fixture.name);
-    assert.deepEqual(legacy(summarizeUsage(records)), fixture.summary, fixture.name);
-    assert.deepEqual(legacy(summarizeUsage([turn])), fixture.turnSummary, fixture.name);
-    assert.deepEqual(legacy(summarizeUsage([nested])), fixture.nestedSummary, fixture.name);
+    assert.deepEqual(records.map(legacy), expectedRecords, fixture.name);
+    assert.deepEqual(legacy(turn), expectedTurn, fixture.name);
+    assert.deepEqual(legacy(nested), expectedCost(fixture.nested, expectedRecords), fixture.name);
+    assert.deepEqual(legacy(summarizeUsage(records)), expectedCost(fixture.summary, expectedRecords), fixture.name);
+    assert.deepEqual(legacy(summarizeUsage([turn])), expectedCost(fixture.turnSummary, [expectedTurn]), fixture.name);
+    assert.deepEqual(legacy(summarizeUsage([nested])), expectedCost(fixture.nestedSummary, [expectedTurn]), fixture.name);
     assert.equal(projection(sumSessionUsage(fixture.records)), undefined);
     assert.equal(projection(summarizeUsage(fixture.records)), undefined);
     assert.equal(formatUsageSummary(summarizeUsage(fixture.records)), fixture.report);
     if (records.length > 1) {
       const mixed = [records[0]!, ...fixture.records.slice(1)];
-      assert.deepEqual(legacy(sumSessionUsage(mixed)), fixture.turn, `${fixture.name} mixed scalars`);
-      assert.deepEqual(legacy(summarizeUsage(mixed)), fixture.summary, `${fixture.name} mixed summary`);
+      const expectedMixed = [expectedRecords[0]!, ...fixture.records.slice(1)];
+      assert.deepEqual(legacy(sumSessionUsage(mixed)), expectedCost(fixture.turn, expectedMixed), `${fixture.name} mixed scalars`);
+      assert.deepEqual(legacy(summarizeUsage(mixed)), expectedCost(fixture.summary, expectedMixed), `${fixture.name} mixed summary`);
     }
   }
 });
