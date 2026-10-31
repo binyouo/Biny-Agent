@@ -58,7 +58,7 @@ import { AiRegistry } from "../llm/AiRegistry.js";
 import { RuntimeEventAuthority } from "./RuntimeAuthority.js";
 import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "./TaskRunStore.js";
 import { evaluateTaskRetry } from "./TaskRetryPolicy.js";
-import { readWorkerAttemptCheckpoint, runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
+import { approveTaskVerification, readWorkerAttemptCheckpoint, runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
 import { isSessionWriterConflictError } from "./SessionLease.js";
 import { readWorkerSessionCheckpoint } from "./WorkerSession.js";
 import { WorktreeManager } from "./host/worktree.js";
@@ -148,6 +148,8 @@ export interface CommandRuntime {
     task: TaskRunWithAttempts;
     completion: Promise<TaskClosureResult>;
   }>;
+  /** Approve only the current task candidate in its original validated execution workspace. */
+  approveTaskVerification(taskRunId: string, approvalId: string): Promise<void>;
   continueTaskRun(taskRunId: string, message: string, requestId?: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
   canResumeWorkerTask(taskRunId: string): Promise<boolean>;
   /** Exact validated resume admission, before its durable owner can be reconciled. */
@@ -1495,6 +1497,13 @@ async function initializeCommandRuntime(
     startTaskRun,
     resumeTaskRun,
     continueTaskRun,
+    async approveTaskVerification(taskRunId, approvalId) {
+      const task = taskRuns.get(taskRunId);
+      if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+      assertTaskOwner(task);
+      const root = await taskWorkspace(taskRunId, false);
+      await approveTaskVerification({ taskRuns, taskRunId, approvalId, workspaceRoot: root, ignore: config.workspace.ignore });
+    },
     pendingTaskResume(taskRunId) {
       const pending = workerResumeAdmissions.get(taskRunId);
       if (!pending?.sessionId || durableTaskControllers.get(taskRunId) !== pending.controller

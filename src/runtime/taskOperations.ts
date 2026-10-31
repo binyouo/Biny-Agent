@@ -1,4 +1,3 @@
-import { approveTaskVerification } from "./TaskClosure.js";
 import type { InteractiveRuntimeHandle } from "./InteractiveAgentRuntime.js";
 import type { TaskRunWithAttempts } from "./TaskRunStore.js";
 import type { CommandRuntime } from "./CommandRuntime.js";
@@ -46,16 +45,12 @@ export async function recoverTaskRuns(
 }
 
 /** 审批与验证派发在准入内完成，模型验证的 completion 不阻塞其它准入。 */
-export async function approveTaskRun(runtime: InteractiveRuntimeHandle, commands: CommandRuntime, taskRunId: string, approvalId: string, persistenceRoot: string): Promise<{ completion: Promise<TaskRunWithAttempts | undefined> }> {
+export async function approveTaskRun(runtime: InteractiveRuntimeHandle, commands: CommandRuntime, taskRunId: string, approvalId: string, _persistenceRoot: string): Promise<{ completion: Promise<TaskRunWithAttempts | undefined> }> {
   let admitted!: () => void;
   let rejectAdmission!: (error: unknown) => void;
   const admission = new Promise<void>((resolve, reject) => { admitted = resolve; rejectAdmission = reject; });
   const completion = runtime.runExclusiveOperation("subagent", async () => {
-    await approveTaskVerification({
-      taskRuns: commands.taskRuns, taskRunId, approvalId,
-      workspaceRoot: commands.workspaceRoot || persistenceRoot,
-      ignore: commands.config.workspace.ignore ?? []
-    });
+    await commands.approveTaskVerification(taskRunId, approvalId);
     const started = await commands.startTaskRun(taskRunId);
     admitted();
     const result = await started.completion;
