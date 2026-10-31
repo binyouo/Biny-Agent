@@ -556,7 +556,7 @@ export class DurableTaskRunStore {
     const artifacts = attempt.artifacts as Record<string, unknown> | undefined;
     return this.transition(taskRunId, status, {
       attemptId: attempt.attemptId,
-      artifacts: snapshot.status === "completed" && output !== undefined ? { ...artifacts, output } : artifacts,
+      artifacts: (snapshot.status === "completed" || snapshot.status === "incomplete") && output !== undefined ? { ...artifacts, output } : artifacts,
       failure: snapshot.error === undefined ? undefined : { message: snapshot.error, failureClass: snapshot.stopReason }
     });
   }
