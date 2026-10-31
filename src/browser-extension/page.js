@@ -271,6 +271,7 @@ export async function pageOperation(operation, args, backendElement) {
     if (!Array.isArray(values) || values.length === 0 || (!element.multiple && values.length > 1)) throw new Error("下拉选项值无效。");
     const options = [...element.options];
     if (values.some((value) => typeof value !== "string" || !options.some((option) => option.value === value))) throw new Error("找不到指定下拉选项。");
+    if (options.some((option) => values.includes(option.value) && option.matches(":disabled"))) throw new Error("指定下拉选项不可操作。");
   }
   if (operation === "set_checked") {
     if (!(element instanceof HTMLInputElement) || !["checkbox", "radio"].includes(element.type)) throw new Error("目标不是复选框或单选框。");
