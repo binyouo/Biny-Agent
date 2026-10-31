@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { mock, test } from "node:test";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { ErrorCode, McpError, type JSONRPCMessage, type JSONRPCRequest } from "@modelcontextprotocol/sdk/types.js";
+import { type JSONRPCMessage, type JSONRPCRequest } from "@modelcontextprotocol/sdk/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { McpToolHost } from "../src/extensions/mcp.js";
 import { ToolOutcomeUnknownError } from "../src/tools/types.js";
@@ -165,7 +165,7 @@ await test("progress extends the active timeout; timeout and late progress canno
     await drain(); mock.timers.tick(900); f.progress(f.calls[0]!); await drain();
     mock.timers.tick(900); await drain(); assert.equal(firstSettled, false);
     mock.timers.tick(100); const timed = await first;
-    assert.ok("error" in timed && timed.error instanceof McpError && timed.error.code === ErrorCode.RequestTimeout);
+    assert.ok("error" in timed && timed.error instanceof ToolOutcomeUnknownError && timed.error.reason === "timeout");
     assert.deepEqual(f.cancellations, [{ generation: 1, requestId: f.calls[0]!.request.id }]);
     assert.equal(f.calls.length, 1); assert.equal(f.connections.length, 1);
     let secondSettled = false;
