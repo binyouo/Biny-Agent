@@ -258,7 +258,12 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     if (phase === "supervision") {
       assert.equal(names.has("Bash"), true);
       assert.equal(names.has("PlanUpdate"), false);
-      assert.ok(messages.some((message) => message.role === "user" && textContent(message.content) === supervisionPrompt),
+      assert.ok(messages.some((message) => {
+        if (message.role !== "user") return false;
+        const content = textContent(message.content);
+        return content === supervisionPrompt || (content.startsWith("<!-- biny-turn-context:start -->\n\n")
+          && content.endsWith(`<!-- biny-turn-context:end -->\n\n${supervisionPrompt}`));
+      }),
         "the current supervision input must reach the model even when child notices follow it");
       return streamText("supervision delivered");
     }
