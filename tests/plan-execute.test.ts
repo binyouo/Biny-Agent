@@ -264,7 +264,11 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
         return content === supervisionPrompt || (content.startsWith("<!-- biny-turn-context:start -->\n\n")
           && content.endsWith(`<!-- biny-turn-context:end -->\n\n${supervisionPrompt}`));
       }),
-        "the current supervision input must reach the model even when child notices follow it");
+        `the current supervision input must reach the model even when child notices follow it: ${JSON.stringify({
+          expected: supervisionPrompt, userMessages: messages.filter((message) => message.role === "user").slice(-8).map((message) => ({
+            role: message.role, contentTail: (typeof message.content === "string" ? message.content : JSON.stringify(message.content) ?? "").slice(-2000)
+          }))
+        })}`);
       return streamText("supervision delivered");
     }
     if (phase === "simple") return streamText("普通回答");
