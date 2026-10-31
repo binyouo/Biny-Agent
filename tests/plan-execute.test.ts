@@ -858,4 +858,3 @@ async function executeTool(tool: ReturnType<typeof createPlanTools>[number], arg
   if ("isError" in execution) throw new Error(execution.errorMessage);
   return await execution.execute(context);
 }
-
