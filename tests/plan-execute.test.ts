@@ -266,7 +266,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
       }),
         `the current supervision input must reach the model even when child notices follow it: ${JSON.stringify({
           expected: supervisionPrompt, userMessages: messages.filter((message) => message.role === "user").slice(-8).map((message) => ({
-            role: message.role, contentTail: (typeof message.content === "string" ? message.content : JSON.stringify(message.content) ?? "").slice(-2000)
+            role: message.role, contentHead: (typeof message.content === "string" ? message.content : JSON.stringify(message.content) ?? "").slice(0, 500), contentTail: (typeof message.content === "string" ? message.content : JSON.stringify(message.content) ?? "").slice(-2000)
           }))
         })}`);
       return streamText("supervision delivered");
