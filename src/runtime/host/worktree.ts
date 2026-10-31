@@ -224,6 +224,7 @@ export class WorktreeManager {
       const record = records.find((candidate) => candidate.sessionId === sessionId);
       if (!record) throw new Error(`No worktree is registered for session ${sessionId}.`);
       if (!(await pathExists(record.worktreePath))) throw new WorktreeUnavailableError(`Worktree path is missing: ${record.worktreePath}`);
+      await this.assertRegisteredBranch(record);
       if ((await this.git(["status", "--porcelain", "--ignore-submodules=all"], record.worktreePath)).trim()) {
         throw new WorktreeDirtyError(record.worktreePath);
       }
@@ -356,6 +357,7 @@ export class WorktreeManager {
   }
 
   private async removeRecord(records: WorktreeRecord[], record: WorktreeRecord, deleteBranch: boolean): Promise<void> {
+    if (await pathExists(record.worktreePath)) await this.assertRegisteredBranch(record);
     const branchExists = deleteBranch && await this.branchExists(record.branch);
     const squashMerged = branchExists && record.mergeStrategy === "squash" && await this.hasSquashMergeEvidence(record);
     if (branchExists && !squashMerged && !(await this.isBranchAncestor(record.branch, record.baseBranch))) {
@@ -403,7 +405,20 @@ export class WorktreeManager {
   }
 
   private async isMergedIntoBase(record: WorktreeRecord): Promise<boolean> {
+    if (!(await this.hasRegisteredBranch(record))) return false;
     return await this.isBranchAncestor(record.branch, record.baseBranch) || await this.hasSquashMergeEvidence(record);
+  }
+
+  private async hasRegisteredBranch(record: WorktreeRecord): Promise<boolean> {
+    try {
+      return (await this.git(["symbolic-ref", "--quiet", "HEAD"], record.worktreePath)).trim() === `refs/heads/${record.branch}`;
+    } catch { return false; }
+  }
+
+  private async assertRegisteredBranch(record: WorktreeRecord): Promise<void> {
+    if (!(await this.hasRegisteredBranch(record))) {
+      throw new WorktreeUnavailableError(`Worktree ${record.sessionId} is detached or no longer on its registered branch ${record.branch}; restore that branch before merging or removing it. The checkout was kept.`);
+    }
   }
 
   private async hasSquashMergeEvidence(record: WorktreeRecord): Promise<boolean> {
