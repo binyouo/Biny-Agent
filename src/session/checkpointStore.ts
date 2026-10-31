@@ -115,8 +115,6 @@ export class CheckpointStore {
         GIT_COMMITTER_NAME: "Biny", GIT_COMMITTER_EMAIL: "checkpoint@biny.local"
       })).trim();
       const checkpoint: Checkpoint = { id: shortId(commit), label, commit, createdAt: new Date().toISOString() };
-      // ref 让快照提交不会被 gc 掉，同时留在 refs/biny 下不污染 refs/heads。
-      await this.git(["update-ref", `${checkpointRefPrefix}/${checkpoint.id}`, commit]);
       await this.appendIndexEntry(checkpoint);
       return checkpoint;
     } finally {
@@ -256,6 +254,10 @@ export class CheckpointStore {
       const checkpoints = [...await this.readIndex(), checkpoint];
       const dropped = checkpoints.slice(0, Math.max(0, checkpoints.length - maxCheckpoints));
       const retained = checkpoints.slice(-maxCheckpoints);
+      const retainedIds = new Set(retained.map((entry) => entry.id));
+      // Ref creation and expiry share the publication lock: a waiting publisher
+      // must not lose its ref when an older entry with the same id is pruned.
+      await this.git(["update-ref", `${checkpointRefPrefix}/${checkpoint.id}`, checkpoint.commit]);
       const target = this.indexPath();
       const temporary = `${target}.${randomUUID()}.tmp`;
       try {
@@ -266,6 +268,7 @@ export class CheckpointStore {
       }
       // 过期的快照连 ref 一起删掉，否则那些提交会永远留在仓库里。
       for (const entry of dropped) {
+        if (retainedIds.has(entry.id)) continue;
         await this.git(["update-ref", "-d", `${checkpointRefPrefix}/${entry.id}`]).catch(() => undefined);
       }
     });
