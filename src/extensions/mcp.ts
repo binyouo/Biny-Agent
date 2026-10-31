@@ -324,18 +324,19 @@ export class McpToolHost {
     if (expectedLocalIdentity !== undefined && managed.local?.identity !== expectedLocalIdentity) throw new Error("Local MCP endpoint was replaced; prepare a new tool call.");
     if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
     signal?.throwIfAborted();
-    if (expectedDefinition !== undefined) {
-      const definition = managed.tools.find(tool => tool.name === toolName);
-      if (!definition || mcpMetadataSignature({ definition, config: managed.config, instructions: managed.status.instructions }) !== expectedDefinition) {
-        throw new Error(`MCP tool ${serverName}/${toolName} definition changed; discover and prepare a new tool call.`);
-      }
-    }
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
     try {
-      onDispatched?.();
-      const result = await this.requestWithCredentials(managed, (options) =>
-        client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, options), signal);
+      const result = await this.requestWithCredentials(managed, (options) => {
+        if (expectedDefinition !== undefined) {
+          const definition = managed.tools.find(tool => tool.name === toolName);
+          if (!definition || mcpMetadataSignature({ definition, config: managed.config, instructions: managed.status.instructions }) !== expectedDefinition) {
+            throw new Error(`MCP tool ${serverName}/${toolName} definition changed; discover and prepare a new tool call.`);
+          }
+        }
+        onDispatched?.();
+        return client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, options);
+      }, signal);
       return rawResult ? result : normalizeMcpResult(result);
     } catch (error) {
       if (signal?.aborted || !isConnectionError(error)) throw error;
