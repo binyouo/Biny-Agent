@@ -111,12 +111,12 @@ test("ordinary untracked and intent-to-add files retain checkpoint behavior", as
   });
 });
 
-test("present skip-worktree files keep the existing explicit snapshot behavior", async () => {
+test("checkpoint creation preserves the real index for present skip-worktree files", async () => {
   await fixture(async (root, git, store) => {
     await git("update-index", "--skip-worktree", "tracked.txt");
     await writeFile(path.join(root, "tracked.txt"), "user-before\n");
-    const original = await gitState(root, git); const checkpoint = await store.create("sparse present");
-    assert.equal(await git("show", `${checkpoint.commit}:tracked.txt`), "committed\n", "present skip-worktree semantics are unchanged by the assume-only fix");
+    const original = await gitState(root, git); await store.create("sparse present");
+    assert.equal(await readFile(path.join(root, "tracked.txt"), "utf8"), "user-before\n");
     assert.deepEqual(await gitState(root, git), original);
   });
 });
