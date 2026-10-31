@@ -81,6 +81,10 @@ export class CheckpointStore {
         if (!isMissingFile(error)) throw error;
         await this.git(["read-tree", "--empty"], env);
       }
+      // Only the copied index may forget assume-unchanged; checkpoints must capture actual worktree bytes.
+      const assumed = (await this.gitPaths(["ls-files", "-v", "-z", "--", "."], env))
+        .filter((entry) => /^[hsmrck] /u.test(entry)).map((entry) => entry.slice(2));
+      if (assumed.length) await this.git(["update-index", "--no-assume-unchanged", "-z", "--stdin"], env, `${assumed.join("\0")}\0`);
       const files = await this.trackedFilesNow(env);
       const statePaths = await this.excludedStatePaths([...files]);
       // --sparse 也清除稀疏范围外的状态；只改 index 副本，不改变用户暂存区。
@@ -288,12 +292,19 @@ export class CheckpointStore {
     return entries;
   }
 
-  private async git(args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
-    const { stdout } = await run("git", args, {
+  private async git(args: string[], env?: NodeJS.ProcessEnv, input?: string): Promise<string> {
+    const invocation = run("git", args, {
       cwd: this.workspaceRoot,
       env: env ?? process.env,
       maxBuffer: 64 * 1024 * 1024
     });
+    let inputError: Error | undefined;
+    if (input !== undefined) {
+      invocation.child.stdin?.on("error", (error: Error) => { inputError = error; });
+      invocation.child.stdin?.end(input);
+    }
+    const { stdout } = await invocation;
+    if (inputError) throw inputError;
     return stdout;
   }
 }
