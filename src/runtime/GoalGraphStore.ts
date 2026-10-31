@@ -983,6 +983,15 @@ export class GraphSupervisor {
         for (const node of graph.nodes) {
           if (node.status !== "running" || node.taskRunId === undefined) continue;
           const task = tasks.get(node.taskRunId);
+          // A paused restart may retain a running node after its TaskRun failed.
+          if (task?.status === "failed") {
+            const current = store.getGraph(graphId);
+            const owner = current?.nodes.find((candidate) => candidate.nodeId === node.nodeId);
+            if (current?.status !== "running" || owner?.status !== "running"
+              || owner.revision !== node.revision || owner.taskRunId !== node.taskRunId) continue;
+            store.completeNode(graphId, node.nodeId, "failed", { recovered: true, terminalStatus: task.status }, task.taskRunId);
+            continue;
+          }
           if (task?.status !== "completed" || !readTaskDefinition(task.task).reportOnly) continue;
           const result = await runTaskClosure({
             taskRuns: tasks,
