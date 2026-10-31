@@ -332,13 +332,23 @@ export class McpToolHost {
     }
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
+    let requestStarted = false;
     try {
       onDispatched?.();
-      const result = await this.requestWithCredentials(managed, (options) =>
-        client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, options), signal);
+      const result = await this.requestWithCredentials(managed, (options) => {
+        requestStarted = true;
+        return client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, options);
+      }, signal);
       return rawResult ? result : normalizeMcpResult(result);
     } catch (error) {
-      if (signal?.aborted || !isConnectionError(error)) throw error;
+      if (signal?.aborted) throw error;
+      if (requestStarted && error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+        throw new ToolOutcomeUnknownError(
+          "timeout",
+          `MCP ${serverName}/${toolName} request timed out after dispatch; the remote outcome cannot be confirmed.`
+        );
+      }
+      if (!isConnectionError(error)) throw error;
       if (managed.client === client) {
         markDisconnected(managed, error);
         this.emitChange();
