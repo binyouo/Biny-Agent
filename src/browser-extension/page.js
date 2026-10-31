@@ -2,6 +2,7 @@
 export async function pageOperation(operation, args, backendElement) {
   const roots = (root) => {
     const result = [root];
+    if (root.shadowRoot) result.push(root.shadowRoot);
     for (let i = 0; i < result.length && result.length < 200; i++) {
       for (const node of result[i].querySelectorAll("*")) if (node.shadowRoot) result.push(node.shadowRoot);
     }
