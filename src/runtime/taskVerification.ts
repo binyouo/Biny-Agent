@@ -6,7 +6,7 @@
  */
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, readdir, readlink } from "node:fs/promises";
+import { lstat, readdir, readlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { PlanReviewCandidate } from "./planWork.js";
 import type { SessionEvent } from "../session/recorder.js";
@@ -768,16 +768,19 @@ async function hashArtifactPath(
   workspaceRoot: string,
   absolute: string,
   ignore: readonly string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  ancestors: ReadonlySet<string> = new Set(),
+  symlinkTarget = false
 ): Promise<void> {
   signal?.throwIfAborted();
+  if (ancestors.has(absolute)) throw new Error("Task verification paths contain a symbolic-link cycle.");
   const relative = path.relative(workspaceRoot, absolute) || ".";
   let metadata;
   try {
     metadata = await lstat(absolute);
     signal?.throwIfAborted();
   } catch (error) {
-    if (isErrorCode(error, "ENOENT")) {
+    if (isErrorCode(error, "ENOENT") && !symlinkTarget) {
       hash.update(`missing\0${relative}\0`);
       return;
     }
@@ -786,6 +789,9 @@ async function hashArtifactPath(
   if (metadata.isSymbolicLink()) {
     hash.update(`symlink\0${relative}\0${await readlink(absolute)}\0`);
     signal?.throwIfAborted();
+    const canonicalRoot = await realpath(workspaceRoot);
+    const target = resolveWorkspaceDirectory(canonicalRoot, path.relative(canonicalRoot, absolute), [...ignore]);
+    await hashArtifactPath(hash, workspaceRoot, target, ignore, signal, new Set([...ancestors, absolute]), true);
     return;
   }
   if (metadata.isDirectory()) {
@@ -796,11 +802,12 @@ async function hashArtifactPath(
       const child = path.join(absolute, entry.name);
       const childRelative = path.relative(workspaceRoot, child);
       if (isIgnoredPath(childRelative, [...ignore])) continue;
-      await hashArtifactPath(hash, workspaceRoot, child, ignore, signal);
+      await hashArtifactPath(hash, workspaceRoot, child, ignore, signal, new Set([...ancestors, absolute]));
     }
     return;
   }
   if (!metadata.isFile()) {
+    if (symlinkTarget) throw new Error("Task verification symbolic links must resolve to a regular file or directory.");
     hash.update(`special\0${relative}\0${String(metadata.mode)}\0`);
     return;
   }
