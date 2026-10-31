@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { agentDir, ensureAgentDirs } from "./store.js";
+import { globalAgentDir, globalConfigDir } from "../config/paths.js";
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 
 const run = promisify(execFile);
@@ -84,7 +85,7 @@ export class CheckpointStore {
       const files = await this.trackedFilesNow(env);
       const statePaths = await this.excludedStatePaths([...files]);
       // --sparse 也清除稀疏范围外的状态；只改 index 副本，不改变用户暂存区。
-      await this.git(["rm", "-r", "--cached", "-f", "--ignore-unmatch", "--sparse", "--", ...statePaths], env);
+      await this.git(["--literal-pathspecs", "rm", "-r", "--cached", "-f", "--ignore-unmatch", "--sparse", "--", ...statePaths], env);
       const skipped = new Set((await this.gitPaths(["ls-files", "-t", "-z", "--", "."], env))
         .filter((entry) => entry.startsWith("S ")).map((entry) => entry.slice(2)));
       const updatedFiles: string[] = [];
@@ -174,7 +175,7 @@ export class CheckpointStore {
     try {
       const env = { ...process.env, GIT_INDEX_FILE: restoreIndex };
       await this.git(["read-tree", checkpoint.commit], env);
-      await this.git(["rm", "-r", "--cached", "-f", "--ignore-unmatch", "--sparse", "--", ...statePaths], env);
+      await this.git(["--literal-pathspecs", "rm", "-r", "--cached", "-f", "--ignore-unmatch", "--sparse", "--", ...statePaths], env);
       await this.git(["checkout-index", "-a", "-f"], env);
     } finally {
       await fs.rm(restoreIndex, { force: true });
@@ -199,9 +200,43 @@ export class CheckpointStore {
 
   private async excludedStatePaths(files: readonly string[]): Promise<string[]> {
     const excluded = new Set(agentStatePaths);
+    const canonicalWorkspace = await fs.realpath(this.workspaceRoot);
+    for (const root of new Set([globalAgentDir(), globalConfigDir()])) {
+      const canonicalRoot = await canonicalFuturePath(root);
+      if (isWithin(canonicalRoot, canonicalWorkspace)) throw new Error("Checkpoints cannot cover their own global state/configuration root.");
+      // Preserve both the storage itself and an in-workspace configured alias.
+      // An undo must not retarget the path through which the runtime finds state.
+      for (const [workspace, state] of [
+        [this.workspaceRoot, path.resolve(root)],
+        [canonicalWorkspace, path.resolve(root)],
+        [canonicalWorkspace, canonicalRoot]
+      ] as const) {
+        const relative = path.relative(workspace, state);
+        if (!isWithin(workspace, state)) continue;
+        const parts = relative.split(path.sep);
+        excluded.add(parts.join("/"));
+        // A symlink ancestor is itself a Git entry even when the configured
+        // storage root is several components below it.
+        for (let length = 1; length <= parts.length; length++) {
+          const prefix = parts.slice(0, length);
+          try {
+            if ((await fs.lstat(path.join(workspace, ...prefix))).isSymbolicLink()) {
+              excluded.add(prefix.join("/"));
+              break;
+            }
+          } catch (error) {
+            if (isMissingFile(error)) break;
+            throw error;
+          }
+        }
+      }
+    }
     let caseInsensitive: boolean | undefined;
-    for (const directory of new Set(files.map((file) => file.split("/")[0] ?? ""))) {
-      const canonical = agentStatePaths.find((state) => state !== directory && state.toLowerCase() === directory.toLowerCase());
+    const stateRoots = [...excluded];
+    const aliases = new Set<string>();
+    for (const file of files) for (const state of stateRoots) aliases.add(file.split("/").slice(0, state.split("/").length).join("/"));
+    for (const directory of aliases) {
+      const canonical = stateRoots.find((state) => state !== directory && state.toLowerCase() === directory.toLowerCase());
       if (!canonical) continue;
       const [state, alias] = await Promise.all([canonical, directory].map(async (name) => {
         try {
@@ -317,4 +352,25 @@ function isCheckpoint(value: unknown): value is Checkpoint {
     && typeof candidate.label === "string"
     && typeof candidate.commit === "string"
     && typeof candidate.createdAt === "string";
+}
+
+function isWithin(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/** Resolve existing ancestors too, so a not-yet-created state root is excluded. */
+async function canonicalFuturePath(input: string): Promise<string> {
+  let current = path.resolve(input);
+  const tail: string[] = [];
+  for (;;) {
+    try { return path.join(await fs.realpath(current), ...tail.reverse()); }
+    catch (error) {
+      if (!isMissingFile(error)) throw error;
+      const parent = path.dirname(current);
+      if (parent === current) throw error;
+      tail.push(path.basename(current));
+      current = parent;
+    }
+  }
 }
