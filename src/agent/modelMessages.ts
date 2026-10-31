@@ -15,6 +15,17 @@ export function withMessageSentAt(message: AgentUserMessage, source: { time?: st
   };
 }
 
+/** Resolve send-time only from the current canonical user message, never an audit record. */
+export function withReferencedMessageSentAt(
+  message: AgentUserMessage,
+  events: readonly { type: string; messageId?: string; auditOnly?: boolean; time?: string; metadata?: Record<string, unknown> }[],
+  messageId: string | undefined
+): AgentUserMessage {
+  if (messageId === undefined) return message;
+  const source = events.find((event) => event.type === "user_message" && !event.auditOnly && event.messageId === messageId);
+  return source ? withMessageSentAt(message, source) : message;
+}
+
 /** 时间锚点只进入模型投影，不能改写用户正文或沿用当前机器时区解释旧消息。 */
 export function projectMessageSentAt(message: AgentMessage): AgentMessage {
   if (message.role !== "user" || !message.sentAt || !Number.isFinite(Date.parse(message.sentAt))) return message;
