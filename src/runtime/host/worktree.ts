@@ -236,7 +236,7 @@ export class WorktreeManager {
         throw new WorktreeBaseBranchMismatchError(sessionId, record.baseBranch, currentBranch);
       }
       const strategy = options.strategy ?? "merge";
-      const sourceCommit = (await this.git(["rev-parse", record.branch])).trim();
+      const sourceCommit = (await this.git(["rev-parse", `refs/heads/${record.branch}`])).trim();
       try {
         if (strategy === "squash") {
           await this.git(["merge", "--squash", sourceCommit], targetRoot, 30_000);
@@ -358,7 +358,7 @@ export class WorktreeManager {
   private async removeRecord(records: WorktreeRecord[], record: WorktreeRecord, deleteBranch: boolean): Promise<void> {
     const branchExists = deleteBranch && await this.branchExists(record.branch);
     const squashMerged = branchExists && record.mergeStrategy === "squash" && await this.hasSquashMergeEvidence(record);
-    if (branchExists && !squashMerged && !(await this.isBranchAncestor(record.branch, record.baseBranch))) {
+    if (branchExists && !squashMerged && !(await this.isBranchAncestor(`refs/heads/${record.branch}`, record.baseBranch))) {
       throw new WorktreeUnmergedError(record.sessionId, record.branch);
     }
     if (await pathExists(record.worktreePath)) {
@@ -379,7 +379,8 @@ export class WorktreeManager {
 
   private async currentBranch(cwd = this.repoRoot): Promise<string> {
     if (!(await this.isRepository(cwd))) throw new WorktreeUnavailableError("The workspace is not a git repository.");
-    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)).trim();
+    const branchRef = (await this.git(["symbolic-ref", "--quiet", "HEAD"], cwd)).trim();
+    const branch = branchRef.startsWith("refs/heads/") ? branchRef.slice("refs/heads/".length) : "";
     if (!branch) throw new WorktreeUnavailableError("Worktree isolation requires a named base branch; the main checkout is detached.");
     return branch;
   }
@@ -395,7 +396,7 @@ export class WorktreeManager {
 
   private async isBranchAncestor(branch: string, baseBranch: string): Promise<boolean> {
     try {
-      await this.git(["merge-base", "--is-ancestor", branch, baseBranch]);
+      await this.git(["merge-base", "--is-ancestor", branch, `refs/heads/${baseBranch}`]);
       return true;
     } catch {
       return false;
@@ -403,7 +404,7 @@ export class WorktreeManager {
   }
 
   private async isMergedIntoBase(record: WorktreeRecord): Promise<boolean> {
-    return await this.isBranchAncestor(record.branch, record.baseBranch) || await this.hasSquashMergeEvidence(record);
+    return await this.isBranchAncestor(`refs/heads/${record.branch}`, record.baseBranch) || await this.hasSquashMergeEvidence(record);
   }
 
   private async hasSquashMergeEvidence(record: WorktreeRecord): Promise<boolean> {
@@ -411,7 +412,7 @@ export class WorktreeManager {
       && record.mergeStrategy === "squash"
       && record.mergedCommit !== undefined
       && record.mergedSourceCommit !== undefined
-      && (await this.git(["rev-parse", record.branch])).trim() === record.mergedSourceCommit
+      && (await this.git(["rev-parse", `refs/heads/${record.branch}`])).trim() === record.mergedSourceCommit
       && await this.isBranchAncestor(record.mergedCommit, record.baseBranch);
   }
 
