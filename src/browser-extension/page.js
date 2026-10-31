@@ -24,7 +24,7 @@ export async function pageOperation(operation, args, backendElement) {
   const role = (node) => {
     const explicit = node.getAttribute("role")?.trim().split(/\s+/u)[0];
     if (explicit) return explicit;
-    const implicit = { BUTTON: "button", A: "link", TEXTAREA: "textbox", SELECT: node.multiple ? "listbox" : "combobox", IMG: node.alt === "" ? "presentation" : "img", OPTION: "option", SUMMARY: "button", NAV: "navigation", MAIN: "main", ASIDE: "complementary", FORM: "form", UL: "list", OL: "list", LI: "listitem", TABLE: "table", TR: "row", TD: "cell", TH: node.scope === "row" ? "rowheader" : "columnheader", PROGRESS: "progressbar", METER: "meter" };
+    const implicit = { BUTTON: "button", A: "link", TEXTAREA: "textbox", SELECT: node.multiple || node.size > 1 ? "listbox" : "combobox", IMG: node.alt === "" ? "presentation" : "img", OPTION: "option", SUMMARY: "button", NAV: "navigation", MAIN: "main", ASIDE: "complementary", FORM: "form", UL: "list", OL: "list", LI: "listitem", TABLE: "table", TR: "row", TD: "cell", TH: node.scope === "row" ? "rowheader" : "columnheader", PROGRESS: "progressbar", METER: "meter" };
     if (implicit[node.tagName]) return implicit[node.tagName];
     if (node instanceof HTMLInputElement) return ({ checkbox: "checkbox", radio: "radio", button: "button", submit: "button", reset: "button", search: "searchbox" }[node.type] || "textbox");
     if (/^H[1-6]$/u.test(node.tagName)) return "heading";
