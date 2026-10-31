@@ -1010,7 +1010,7 @@ async function initializeCommandRuntime(
       });
       return { task: current, completion: Promise.resolve({ status: "blocked", reason }) };
     }
-    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.latestEvent(taskRunId))) {
+    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.latestEvent(taskRunId, { excludeMessageReceipts: true }))) {
       const reason = "This queued TaskRun has no persisted retry or verification-repair admission; replaying its Worker is unsafe.";
       current = taskRuns.transition(taskRunId, "blocked", {
         attemptId: current.attempts.at(-1)?.attemptId,
@@ -1150,7 +1150,7 @@ async function initializeCommandRuntime(
     if (existingAdmission) return await existingAdmission.promise;
 
     const latest = task.attempts.at(-1);
-    const latestEvent = taskRuns.latestEvent(taskRunId);
+    const latestEvent = taskRuns.latestEvent(taskRunId, { excludeMessageReceipts: true });
     const persistedVerification = task.status === "verifying"
       && latest?.status === "verifying"
       && latest.artifacts !== undefined;
