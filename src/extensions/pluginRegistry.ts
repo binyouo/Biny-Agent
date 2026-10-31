@@ -248,13 +248,13 @@ async function installManagedPlugin(options: {
   const fetcher = options.fetcher ?? getSharedProxyAwareFetch();
   const pluginDirectory = normalizeRepoDirectory(options.plugin.path);
   // files 清单优先：raw 下载不吃 api.github.com 的未认证限额；
-  // 缺省时退回 tree API 自动发现（main/master），限额耗尽会给出明确报错。
+  // 缺省时走 tree API：显式 branch 不回退，未声明时才自动发现 main/master。
   let files: Array<{ path: string; size?: number }>;
   let branch = options.plugin.branch ?? "main";
   if (options.plugin.files?.length) {
     files = options.plugin.files.map((relative) => ({ path: `${pluginDirectory}/${relative}` }));
   } else {
-    const discovered = await fetchPluginTreeWithFallback(repository, fetcher);
+    const discovered = await fetchPluginTreeWithFallback(repository, fetcher, options.plugin.branch);
     branch = discovered.branch;
     files = discovered.tree.filter((entry) =>
       entry.type === "blob"
@@ -363,10 +363,11 @@ interface GitTreeEntry {
 
 async function fetchPluginTreeWithFallback(
   repository: { owner: string; name: string },
-  fetcher: typeof globalThis.fetch
+  fetcher: typeof globalThis.fetch,
+  requestedBranch?: string
 ): Promise<{ tree: GitTreeEntry[]; branch: string }> {
   let lastError: unknown;
-  for (const branch of ["main", "master"]) {
+  for (const branch of requestedBranch === undefined ? ["main", "master"] : [requestedBranch]) {
     try {
       const url = `${githubApiBase}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
       const response = await fetcher(url, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "Biny PluginHub" } });
