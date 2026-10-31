@@ -117,7 +117,7 @@ export class TaskCommunication {
       for (const task of page.tasks) {
         if (task.sessionId !== receivingSessionId || notices.length >= 4 || remaining < 512) continue;
         const definition = task.task as { communication?: unknown; notifyParent?: unknown } | undefined;
-        if (definition?.communication !== true) continue;
+        if (!hasCommunicationAdmission(task)) continue;
         const attempt = task.attempts.at(-1);
         if (!attempt) continue;
         const state = mailbox(task);
@@ -136,7 +136,7 @@ export class TaskCommunication {
           if (!enqueue(content, message.id, [message.id], false)) break;
           included += 1;
         }
-        if (included < pending.length || !isTaskRunTerminal(task.status) || definition.notifyParent === false) continue;
+        if (included < pending.length || !isTaskRunTerminal(task.status) || definition?.notifyParent === false) continue;
         const id = `task-result:${task.terminalEventId ?? `${task.taskRunId}:${attempt.attemptId}:${task.status}`}`;
         if (this.tasks.hasMessageReceipt(task.taskRunId, id) || remaining < 512) continue;
         const output = artifacts(task).output;

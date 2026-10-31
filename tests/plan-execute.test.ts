@@ -231,6 +231,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
   const originalFetch = globalThis.fetch;
   let phase: "plan" | "supervision" | "simple" = "plan";
   let planCalls = 0;
+  let supervisionPrompt = "";
   globalThis.fetch = (async (_input, init): Promise<Response> => {
     const body = JSON.parse(String(init?.body ?? "{}")) as {
       messages?: Array<{ role?: string; content?: unknown }>;
@@ -238,7 +239,6 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     };
     const messages = body.messages ?? [];
     const system = textContent(messages[0]?.content);
-    const lastText = textContent(messages.at(-1)?.content);
     const names = new Set((body.tools ?? []).flatMap((tool) => tool.name ?? tool.function?.name ?? []));
     if (system.includes("tool search assistant")) return streamText('{"tools":["PlanStart"]}');
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
@@ -258,7 +258,17 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     if (phase === "supervision") {
       assert.equal(names.has("Bash"), true);
       assert.equal(names.has("PlanUpdate"), false);
-      assert.match(lastText, /Supervise durable plan/u);
+      assert.ok(messages.some((message) => {
+        if (message.role !== "user") return false;
+        const content = textContent(message.content);
+        return content === supervisionPrompt || (content.startsWith("<!-- biny-turn-context:start -->\n\n")
+          && content.endsWith(`<!-- biny-turn-context:end -->\n\n${supervisionPrompt}`));
+      }),
+        `the current supervision input must reach the model even when child notices follow it: ${JSON.stringify({
+          expected: supervisionPrompt, userMessages: messages.filter((message) => message.role === "user").slice(-8).map((message) => ({
+            role: message.role, contentHead: (typeof message.content === "string" ? message.content : JSON.stringify(message.content) ?? "").slice(0, 500), contentTail: (typeof message.content === "string" ? message.content : JSON.stringify(message.content) ?? "").slice(-2000)
+          }))
+        })}`);
       return streamText("supervision delivered");
     }
     if (phase === "simple") return streamText("普通回答");
@@ -285,15 +295,19 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     commands.graphs.pauseGraph(graphs[0]!.graphId);
     await runtime.waitForIdle();
     const before = await readSessionEvents(sessionFilePath(root, sessionId));
-    const beforeUsers = before.filter((event) => event.type === "user_message").length;
+    const beforeUsers = before.filter((event) => event.type === "user_message" && event.metadata?.source !== "subagent").length;
     phase = "supervision";
+    supervisionPrompt = `Supervise durable plan ${graphs[0]!.graphId} at settled revision ${String(graphs[0]!.revision)}.`;
     const internal = await runtime.submitSupervisionTurn!(
-      `Supervise durable plan ${graphs[0]!.graphId} at settled revision ${String(graphs[0]!.revision)}.`,
+      supervisionPrompt,
       { runId: "internal-supervision", turnId: "internal-supervision", parentRunId: `graph:${graphs[0]!.graphId}` }
     ).completion;
-    assert.equal(internal.status, "completed");
+    assert.equal(internal.status, "completed", JSON.stringify(internal));
     const after = await readSessionEvents(sessionFilePath(root, sessionId));
-    assert.equal(after.filter((event) => event.type === "user_message").length, beforeUsers, "supervision input must not become a user message");
+    assert.equal(after.filter((event) => event.type === "user_message" && event.metadata?.source !== "subagent").length, beforeUsers,
+      "supervision input must not become a user message; child notices retain their own source");
+    assert.ok(!after.some((event) => event.type === "user_message" && event.content === supervisionPrompt),
+      "the exact internal supervision input must not be persisted as a user message");
     assert.ok(after.some((event) => event.type === "assistant_message" && event.content.includes("supervision delivered")));
 
     phase = "simple";
