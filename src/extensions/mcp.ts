@@ -413,7 +413,8 @@ export class McpToolHost {
       uri,
       contents: result.contents.map((content) => {
         if ("text" in content && typeof content.text === "string") {
-          return { uri: content.uri, mimeType: content.mimeType, text: truncateUtf8(content.text, maxResourceTextBytes) };
+          const text = truncateUtf8(content.text, maxResourceTextBytes);
+          return { uri: content.uri, mimeType: content.mimeType, text, ...(text !== content.text ? { truncated: true } : {}) };
         }
         const bytes = "blob" in content && typeof content.blob === "string" ? Math.floor(content.blob.length * 3 / 4) : 0;
         return { uri: content.uri, mimeType: content.mimeType, bytes, note: "binary content omitted" };
