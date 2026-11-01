@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import net from "node:net";
 import { test, type TestContext } from "node:test";
-import { runtimeHostMaxBufferedSocketBytes } from "../src/runtime/host/socket-writer.js";
+import { BoundedHostSocketWriter, runtimeHostMaxBufferedSocketBytes } from "../src/runtime/host/socket-writer.js";
 import { RuntimeHostClient } from "../src/runtime/host/client.js";
 import { encodeHostFrame, runtimeHostProtocolVersion, type HostFrame, type HostRequestFrame } from "../src/runtime/host/protocol.js";
 import type { InteractiveRuntimeSnapshot } from "../src/runtime/agentEvents.js";
@@ -399,14 +399,21 @@ test("an acknowledged permission cache write remains protected even without a br
   assert.equal(client.getSnapshot().permissionMode, "read-only");
 });
 
-test("writer backpressure conservatively protects queued-period observations without blocking untouched progress", async (context) => {
+test("writer backpressure conservatively protects queued-period observations without blocking untouched progress", { timeout: 5_000 }, async (context) => {
   const { client, socket } = await fixture(context);
   socket.writeResult = false;
   const blocker = client.worktreeList();
   socket.deliver(reply(await socket.next("worktree.list"), []));
   await blocker;
+  const queued = deferred<void>();
+  const send = BoundedHostSocketWriter.prototype.send;
+  context.mock.method(BoundedHostSocketWriter.prototype, "send", function (this: BoundedHostSocketWriter, frame: HostFrame) {
+    const accepted = send.call(this, frame);
+    if (frame.kind === "request" && frame.operation === "session.list") queued.resolve(undefined);
+    return accepted;
+  });
   const list = client.listRuntimeSessions();
-  await Promise.resolve(); // Run request's openSocket continuation; writer still waits for drain.
+  await queued.promise;
   assert.equal(socket.requests.some((request) => request.operation === "session.list"), false);
   socket.deliver(event(snapshot("primary", 2)));
   socket.writeResult = true;
