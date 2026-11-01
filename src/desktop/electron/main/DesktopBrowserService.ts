@@ -29,6 +29,7 @@ import { browserRelayFile } from "../../../browser/relayClient.js";
 import { relayBinarySchema, relaySchemas } from "../../../browser/relayProtocol.js";
 import { browserLocatorActionSchema, browserLocatorReadSchema } from "../../../browser/locatorSchema.js";
 import { browserCuaSchema, browserDomActionSchema, browserDomSnapshotSchema, type BrowserCuaArgs } from "../../../browser/cuaSchema.js";
+import { describeBrowserKey } from "../../../browser/keyInput.js";
 import { browserDialogAutoReplySchema } from "../../../browser/dialogSchema.js";
 import { browserClipboardReadSchema, browserClipboardWriteSchema, maxBrowserClipboardImageBytes, maxBrowserClipboardReadCharacters } from "../../../browser/clipboardSchema.js";
 import { browserCdpSchema } from "../../../browser/cdpSchema.js";
@@ -1436,11 +1437,12 @@ export class DesktopBrowserService {
       await this.pageOperation("wait", { selector, state: "visible", timeoutMs: 8_000 }, signal, owner);
       await this.pageOperation("press", { selector }, signal, owner);
     }
-    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined }, signal, owner);
+    const { text, ...identity } = describeBrowserKey(key);
+    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", ...identity, text }, signal, owner);
     try {
-      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key }, undefined, owner, onAction);
+      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", ...identity }, undefined, owner, onAction);
     } catch (error) {
-      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key }, undefined, owner).catch(() => undefined);
+      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", ...identity }, undefined, owner).catch(() => undefined);
       throw error;
     }
     return await this.pageState(owner);
@@ -1504,14 +1506,15 @@ export class DesktopBrowserService {
     }
     const modifierBits = { Alt: 1, Control: 2, Meta: 4, Shift: 8 } as const;
     const modifiers = action.modifiers.reduce((bits, modifier) => bits | modifierBits[modifier], 0);
+    const { text, ...identity } = describeBrowserKey(action.key);
     await this.sendDebuggerCommand("Input.dispatchKeyEvent", {
-      type: "keyDown", key: action.key, modifiers,
-      text: modifiers === 0 && action.key.length === 1 ? action.key : undefined
+      type: "keyDown", ...identity, modifiers,
+      text: modifiers === 0 ? text : undefined
     }, signal, contents);
     try {
-      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key: action.key, modifiers }, undefined, contents, onAction);
+      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", ...identity, modifiers }, undefined, contents, onAction);
     } catch (error) {
-      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key: action.key, modifiers }, undefined, contents).catch(() => undefined);
+      await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", ...identity, modifiers }, undefined, contents).catch(() => undefined);
       throw error;
     }
     return await this.pageState(contents);
