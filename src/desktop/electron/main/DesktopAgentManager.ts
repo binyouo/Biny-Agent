@@ -1613,9 +1613,9 @@ export class DesktopAgentManager {
     input: DesktopChatPersonalizationOverride,
     expectedRevision: string
   ): Promise<DesktopSessionMetadataReceipt> {
-    this.assertNoRunningTasks("任务运行期间不能修改当前聊天的个性化设置。");
+    if (this.hasRunningTasks()) throw new Error("任务运行期间不能修改当前聊天的个性化设置。");
     const revision = (await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision)) ?? expectedRevision;
-    this.assertNoRunningTasks("任务运行期间不能修改当前聊天的个性化设置。");
+    if (this.hasRunningTasks()) throw new Error("任务运行期间不能修改当前聊天的个性化设置。");
     const record = await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { personalization: input }, revision);
     return sessionMetadataReceipt(projectId, record, { personalization: record.personalization });
   }
