@@ -81,12 +81,13 @@ const cases: Case[] = [
   { name: "explicitly select Chat", selected: "chat_completions", expected: "responses" },
   { name: "reset a model Chat override", modelApi: "chat_completions", selected: "provider_default", expected: "chat_completions" }
 ];
-for (const value of cases) {
-  test(`${value.name}: displayed effective format does not become a saved automatic override`, async () => {
+for (const id of ["gpt-6-astra", "gpt-5.2-pro", "gpt-5.4-pro"]) {
+ for (const value of cases) {
+  test(`${id}/${value.name}: displayed effective format does not become a saved automatic override`, async () => {
     const type = value.type ?? "openai";
     const baseUrl = value.baseUrl ?? "https://api.openai.com/v1";
     const model: ModelChoice = { alias: "astra", displayName: "Astra", provider: "official", providerType: type,
-      model: "gpt-6-astra", modelKey: "official\0gpt-6-astra", efforts: ["high"], defaultThinking: "high", thinkingLevelMap: { high: "high" },
+      model: id, modelKey: `official\0${id}`, efforts: ["high"], defaultThinking: "high", thinkingLevelMap: { high: "high" },
       apiBackend: value.modelApi, baseUrl, available: true, source: "configured" };
     let captured: Upsert | undefined;
     const profileTarget = { providerAlias: "official", model };
@@ -119,9 +120,12 @@ for (const value of cases) {
     assert.equal(routed.apiBackend, expectedAfter);
     assert.equal(model.apiBackend, value.modelApi);
   });
+ }
 }
 
 test("connection-level recommendation remains generic; only model display uses a model default", () => {
   assert.equal(recommendedApiFormat("openai"), "chat_completions");
-  assert.equal(recommendedApiFormat("openai", undefined, { model: "gpt-6-astra" }), "responses");
+  for (const model of ["gpt-6-astra", "gpt-5.2-pro", "gpt-5.4-pro"]) {
+    assert.equal(recommendedApiFormat("openai", undefined, { model }), "responses");
+  }
 });

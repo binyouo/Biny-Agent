@@ -6,6 +6,7 @@
  * 也避免把 endpoint/auth protocol 和 request body wire 混成一个字段。
  */
 import { providerProtocol } from "../ai/provider.js";
+import { officialOpenAIModelApiDefault } from "../ai/openAIModelDefaults.js";
 import type { ProviderDefinition } from "../ai/types.js";
 import type { ModelAliasConfig, ModelApiBackend, ProviderConfig } from "../config/schema.js";
 import type { ModelRequestContext } from "../agent/core/types.js";
@@ -29,13 +30,9 @@ export function resolveProviderRequestRoute(
   config: ProviderConfig,
   definition: ProviderDefinition
 ): ProviderRequestRoute {
-  // Astra supports Chat for text, but its function tools require Responses. Keep this
-  // default local to the official OpenAI route, never in shared catalog metadata:
-  // explicit model/provider formats (and the legacy Anthropic protocol) still win.
-  // https://developers.openai.com/api/docs/guides/latest-model
-  const modelDefault = config.type === "openai" && model?.model === "gpt-6-astra"
-    && (model.baseUrl ?? config.baseUrl ?? definition.baseUrl)?.replace(/\/+$/u, "") === "https://api.openai.com/v1"
-    ? "responses" : undefined;
+  const modelDefault = officialOpenAIModelApiDefault(
+    model?.model, config.type, model?.baseUrl ?? config.baseUrl ?? definition.baseUrl
+  );
   const apiBackend = model?.apiBackend
     ?? config.apiBackend
     ?? (config.protocol === "anthropic" ? "anthropic_messages" : undefined)

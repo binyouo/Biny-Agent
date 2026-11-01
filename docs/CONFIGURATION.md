@@ -42,11 +42,13 @@ pnpm desktop:dev
 
 ## 模型请求格式默认值
 
-普通 OpenAI 连接在有效地址为 `https://api.openai.com/v1`（可带尾斜杠）、模型 ID 精确为 `gpt-6-astra` 且未显式指定请求格式时，默认使用 Responses。原因是 [OpenAI 官方说明](https://developers.openai.com/api/docs/guides/latest-model)要求 Astra 的工具调用使用 Responses；纯文字支持 Chat 不代表 Chat 支持该模型的工具调用。这是固定模型的默认路由，不会在请求失败后自动切换格式。
+普通 OpenAI 连接在有效地址为 `https://api.openai.com/v1`（可带尾斜杠）、模型 ID 精确为 `gpt-6-astra`、`gpt-5.2-pro` 或 `gpt-5.4-pro` 且未显式指定请求格式时，默认使用 Responses。[OpenAI 官方说明](https://developers.openai.com/api/docs/guides/latest-model)要求 Astra 的工具调用使用 Responses；纯文字支持 Chat 不代表 Chat 支持该模型的工具调用。[GPT-5.2 Pro](https://developers.openai.com/api/docs/models/gpt-5.2-pro) 和 [GPT-5.4 Pro](https://developers.openai.com/api/docs/models/gpt-5.4-pro) 则仅支持 Responses。这是固定模型的默认路由，不会在请求失败后自动切换格式，也不按名称推断其他 Pro 或日期快照。
 
 优先级为模型 `apiBackend`、服务商 `apiBackend`、旧配置的 `protocol: "anthropic"`、上述模型默认值，再到服务商通用默认值。`protocol: "openai-compatible"` 同时适用于 Chat 与 Responses，不等同于显式选择 Chat。明确选择的 Chat 或其他格式保持不变，使用者仍需确保所选格式支持该模型及任务；已有显式选择不会自动迁移。其他模型、自定义端点及 `openai-compatible` 等其他服务商类型保持原默认值。
 
-Desktop 模型选项显示实际自动格式；保留“自动（连接设置与模型默认）”并保存不会把该推导结果写成模型覆盖，也不会修改共享模型目录。连接级通用默认仍可为 Chat，而 Astra 的模型级自动格式为 Responses。
+上述官方 Responses 路径的 GPT-5.2 Pro 和 GPT-5.4 Pro 只支持 `medium`、`high`、`xhigh` 推理档位。自动能力不再补出 `off`；全局思考关闭或旧全局档位会投影为模型支持的档位。显式模型 `reasoning`、`thinkingLevelMap` 和服务商 `modelProfiles` 的档位覆盖仍优先，包括已有显式 `off`；此类配置不会被擅自迁移，使用者需自行确保其符合供应商要求。其他格式、第三方端点和其他服务商类型不应用这项能力修正。
+
+Desktop 模型选项显示实际自动格式；保留“自动（连接设置与模型默认）”并保存不会把该推导结果写成模型覆盖，也不会修改共享模型目录。连接级通用默认仍可为 Chat，而这些固定模型的自动格式为 Responses。
 
 ## 发送前脱敏
 
