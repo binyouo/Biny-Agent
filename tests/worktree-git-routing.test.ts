@@ -122,3 +122,68 @@ for (const mode of modes) {
     }
   });
 }
+
+// Diagnostic seam: exercise the original private Git subprocess boundary with read-only git var.
+// This is not a merge/commit lifecycle test and does not create a worktree.
+for (const emptyAuthorName of [false, true]) {
+  test(`worktree Git preserves explicit author metadata; empty name=${emptyAuthorName}`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "biny-worktree-author-"));
+    const previous = { ...process.env };
+    const environment: NodeJS.ProcessEnv = { ...previous };
+    for (const key of Object.keys(environment)) {
+      if (key.startsWith("GIT_")) delete environment[key];
+    }
+    Object.assign(environment, {
+      LC_ALL: "C",
+      HOME: path.join(root, "home"),
+      XDG_CONFIG_HOME: path.join(root, "xdg"),
+      BINY_AGENT_DIR: path.join(root, "state"),
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: path.join(root, "empty.gitconfig"),
+      GIT_CONFIG_SYSTEM: path.join(root, "empty.gitconfig"),
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_AUTHOR_NAME: emptyAuthorName ? "" : "Synthetic Author",
+      GIT_AUTHOR_EMAIL: "author@example.invalid",
+      GIT_AUTHOR_DATE: "2001-02-03T04:05:06+00:00",
+      GIT_COMMITTER_NAME: "Synthetic Committer",
+      GIT_COMMITTER_EMAIL: "committer@example.invalid",
+      GIT_COMMITTER_DATE: "2004-05-06T07:08:09+00:00"
+    });
+    const repo = path.join(root, "repo");
+    const git = async (args: string[]): Promise<string> =>
+      (await run("git", args, { cwd: repo, env: environment })).stdout.trim();
+    try {
+      await mkdir(environment.HOME!, { recursive: true });
+      await mkdir(environment.XDG_CONFIG_HOME!, { recursive: true });
+      await mkdir(repo);
+      await writeFile(environment.GIT_CONFIG_GLOBAL!, "");
+      await git(["init", "-q", "--template="]);
+      await git(["config", "user.useConfigOnly", "true"]);
+      await git(["config", "core.hooksPath", path.join(root, "no-hooks")]);
+      if (emptyAuthorName) {
+        await git(["config", "user.name", "Local Fallback"]);
+        await git(["config", "user.email", "local@example.invalid"]);
+      }
+      const before = await readFile(path.join(repo, ".git", "config"));
+      for (const key of Object.keys(process.env)) delete process.env[key];
+      Object.assign(process.env, environment);
+      const manager = new WorktreeManager(repo, repo) as unknown as {
+        git(args: readonly string[]): Promise<string>;
+      };
+      if (emptyAuthorName) {
+        await assert.rejects(manager.git(["var", "GIT_AUTHOR_IDENT"]), /empty ident name/u);
+      } else {
+        assert.equal((await manager.git(["var", "GIT_AUTHOR_IDENT"])).trim(),
+          "Synthetic Author <author@example.invalid> 981173106 +0000");
+        assert.equal((await manager.git(["var", "GIT_COMMITTER_IDENT"])).trim(),
+          "Synthetic Committer <committer@example.invalid> 1083827289 +0000");
+      }
+      assert.deepEqual({ ...process.env }, environment);
+      assert.deepEqual(await readFile(path.join(repo, ".git", "config")), before);
+    } finally {
+      for (const key of Object.keys(process.env)) delete process.env[key];
+      Object.assign(process.env, previous);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
