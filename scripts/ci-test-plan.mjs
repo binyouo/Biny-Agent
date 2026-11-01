@@ -47,9 +47,25 @@ export async function resolveComparison(root, eventName, event, env = process.en
   let ancestorHead = head;
   let prBase;
   if (eventName === "pull_request") {
-    if (git(root, "rev-parse", "HEAD^2") !== event.pull_request.head.sha) throw new Error("Checkout is not the requested PR merge result");
-    ancestorHead = git(root, "rev-parse", "HEAD^1");
-    if (ancestorHead !== event.pull_request.base.sha) throw new Error("Checkout is not the requested PR merge result");
+    const pr = event.pull_request;
+    const number = event.number;
+    const sha = /^[a-f0-9]{40}$/u;
+    const parents = git(root, "show", "-s", "--format=%P", "HEAD").split(" ").filter(Boolean);
+    if (!Number.isSafeInteger(number) || number <= 0
+      || env.GITHUB_REF !== `refs/pull/${number}/merge`
+      || !sha.test(env.GITHUB_SHA ?? "") || head !== env.GITHUB_SHA
+      || !sha.test(pr?.head?.sha ?? "") || !sha.test(pr?.base?.sha ?? "")
+      || parents.length !== 2 || parents[1] !== pr.head.sha) {
+      throw new Error("Checkout is not the requested PR merge result");
+    }
+    ancestorHead = parents[0];
+    // GitHub can refresh refs/pull/N/merge after the event's base snapshot.
+    // Preserve exact merge/head identity and accept only a proven forward base.
+    try {
+      git(root, "merge-base", "--is-ancestor", pr.base.sha, ancestorHead);
+    } catch {
+      throw new Error("Checkout is not the requested PR merge result");
+    }
     prBase = ancestorHead;
     branch = event.pull_request.base.ref;
   } else if (eventName !== "push" && !full) {
