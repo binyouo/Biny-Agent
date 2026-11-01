@@ -11,6 +11,7 @@ import { completeThinkingLevelMap, effectiveThinkingSelection, isKimiAlwaysThink
 import { fetchModelCatalogSnapshot } from "../ai/modelCatalog.js";
 import { accessPathThinkingLevelMap, generatedProviderModels, inferThinkingLevelMap, lookupModelMetadata, metadataProviderForEndpoint, type ModelMetadata } from "../ai/modelMetadata.js";
 import { providerDefinition } from "../ai/provider.js";
+import { automaticAnthropicThinkingOptions, type AnthropicThinkingContext } from "../ai/anthropicThinkingDefaults.js";
 import type { ModelCatalogEntry, ProviderDefinition } from "../ai/types.js";
 import type { AgentConfig, ModelAliasConfig, ModelApiBackend, ModelCompatibility, ModelProfile, ProviderConfig, ThinkingLevelMap } from "../config/schema.js";
 import { resolveNativePatchProtocol } from "../tools/file/editingMode.js";
@@ -305,7 +306,8 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     const enabled = selection !== "off";
     const effort = enabled ? selection : undefined;
     const retry = this.config.retry ?? { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 };
-    const providerOptions = createProviderOptions(reasoningProtocol, this.config, normalizedModel, api, enabled, effort);
+    const thinkingContext: AnthropicThinkingContext = { providerType: this.config.type, baseUrl };
+    const providerOptions = createProviderOptions(reasoningProtocol, this.config, normalizedModel, api, enabled, effort, thinkingContext);
     const headers = {
       ...(this.config.type === "openai-codex" ? openAiCodexHeaders(apiKey) : {}),
       ...this.config.headers,
@@ -344,7 +346,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
         return {
           reasoning: selected,
           providerOptions: createProviderOptions(reasoningProtocol, { compatibility }, normalizedModel, api,
-            selected !== "off", selected === "off" ? undefined : selected)
+            selected !== "off", selected === "off" ? undefined : selected, thinkingContext)
         };
       },
       runtime: "provider",
@@ -638,14 +640,16 @@ function createProviderOptions(
   model: ModelAliasConfig,
   api: ModelApiBackend,
   enabled: boolean,
-  effort: AgentConfig["thinking"]["effort"] | undefined
+  effort: AgentConfig["thinking"]["effort"] | undefined,
+  thinkingContext?: AnthropicThinkingContext
 ): Record<string, unknown> | undefined {
   if (mergeCompatibility(provider.compatibility, model.compatibility)?.supportsReasoning === false) return undefined;
   if (!modelCapabilities(model).reasoning || modelReasoningConfig(model) === undefined) return undefined;
   const nativeEffort = effort === undefined ? undefined : nativeReasoningEffort(model, effort);
   const budgetTokens = effort === undefined ? 4_096 : reasoningBudgetTokens(model, effort);
   if (api === "anthropic_messages" || reasoningProtocol === "anthropic") {
-    return { anthropic: { thinking: enabled ? { type: "enabled", budgetTokens } : { type: "disabled" } } };
+    return { anthropic: automaticAnthropicThinkingOptions(model, api, enabled, effort, thinkingContext)
+      ?? { thinking: enabled ? { type: "enabled", budgetTokens } : { type: "disabled" } } };
   }
   if (reasoningProtocol === "deepseek") return { deepseek: { thinking: { type: enabled ? "enabled" : "disabled" }, reasoningEffort: enabled ? nativeEffort : undefined } };
   if (reasoningProtocol === "openai") return { openai: { reasoningEffort: enabled ? nativeEffort : "none" } };
