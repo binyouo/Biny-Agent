@@ -3431,7 +3431,10 @@ export class AgentSession {
           pluginMessages = replay.messages.flatMap((message, index) => {
             if (message.role !== "user" && message.role !== "assistant") return [];
             const id = replay.messageReferences[index]?.id;
-            const messageContent = messageText(message);
+            // Plugin history is visible conversation text, not reasoning or tool arguments.
+            const messageContent = message.role === "assistant"
+              ? message.content.filter((part) => part.type === "text").map((part) => part.text).join("")
+              : messageText(message);
             if (!id || !messageContent.trim()) return [];
             const node = nodes.get(id);
             const event = node ? events[node.eventIndex] : undefined;
