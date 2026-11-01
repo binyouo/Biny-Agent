@@ -298,7 +298,7 @@ export function Workspace({
           )}
           {showHero || keepHero ? (
             <ChatHero ref={heroRef} leaving={!showHero}>
-              {!writerConflict && !runtimeError && onSendActivitySuggestion
+              {showHero && !running && !visiblePendingPrompt && !writerConflict && !runtimeError && onSendActivitySuggestion
                 ? <ActivitySuggestions onSend={onSendActivitySuggestion} onError={onRuntimeError} /> : null}
             </ChatHero>
           ) : null}

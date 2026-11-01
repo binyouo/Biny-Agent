@@ -45,10 +45,14 @@ export function useChatStartTransition({ hero, projectId, sessionId, pendingProm
     const previous = source.current;
     source.current = undefined;
     if (!previous) return;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     if (!composer || !heroNode || !body || !pendingPrompt || previous.projectId !== projectId
-      || pendingPrompt.projectId !== projectId || reducedMotion.matches || previous.composer.width === 0
+      || pendingPrompt.projectId !== projectId || previous.composer.width === 0
       || typeof composer.animate !== "function") {
+      setKeepHero(false);
+      return;
+    }
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (reducedMotion.matches) {
       setKeepHero(false);
       return;
     }
