@@ -10,6 +10,7 @@ import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentMa
 import { DesktopConfigStore } from "../src/desktop/electron/main/DesktopConfigStore.js";
 import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProjectService.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
+import { DesktopSettingsTransaction } from "../src/desktop/electron/main/DesktopSettingsTransaction.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import type { DesktopAgentEventEnvelope } from "../src/desktop/protocol.js";
 import { HeartbeatScheduler } from "../src/agent/context/heartbeat.js";
@@ -69,7 +70,6 @@ try {
   manager = new DesktopAgentManager(state, projects, configStore, (projectId, update, meta) => updates.push({ ...update, projectId, ...meta }));
   const internals = manager as unknown as {
     ensureRuntime(projectId: string): Promise<{ runtime: RuntimeHostClient }>;
-    rebuildIdleManagedRuntimes(): Promise<void>;
   };
   const { runtime: client } = await internals.ensureRuntime(project.id);
   assert.ok(client instanceof RuntimeHostClient, "safeStorage 配置必须使用 Host 客户端");
@@ -124,10 +124,15 @@ try {
   assert.ok(updates.some((update) => update.event?.type === "run.cancelled" && update.event.sessionId === a.sessionId));
 
   // 刷新必须覆盖所有驻留 Session，而不只是 primary。
-  const config = await configStore.load(root);
-  await configStore.save({ ...config, permission: { ...config.permission, mode: "full-access" } }, root);
-  await internals.rebuildIdleManagedRuntimes();
-  assert.ok(client.runtimeSnapshots().every((entry) => entry.snapshot.permissionMode === "full-access"));
+  const transaction = new DesktopSettingsTransaction(state, manager);
+  const before = await transaction.snapshot(project.id);
+  const saved = await transaction.save(project.id, {
+    expectedPreferenceRevision: before.preferenceRevision,
+    expectedConfigRevision: before.configRevision,
+    permission: { ...before.permission, mode: "full-access" }
+  });
+  assert.equal(saved.status, "committed");
+  await waitFor(() => client.runtimeSnapshots().every((entry) => entry.snapshot.permissionMode === "full-access"));
 
   // 十个独立 Session 同时发送都应成功，跨过旧的 4 并发 / 8 常驻门槛。
   const markers = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L"];
