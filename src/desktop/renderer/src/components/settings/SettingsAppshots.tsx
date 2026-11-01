@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppshotsApi, AppshotsState } from "../../../../../computer/appshotsProtocol.js";
 import { NativeSelect } from "../NativeSelect.js";
 import { Icon } from "../Icon.js";
@@ -32,16 +32,34 @@ const SHORTCUTS = [
   { value: "Control+Alt+C", label: "⌃ + ⌥ + C", hint: "" }
 ] as const;
 const SHORTCUT_ALIASES = new Map([["DoubleCommand", "double-cmd"], ["DoubleOption", "double-option"], ["DoubleShift", "double-shift"]]);
+type AppshotOperation = "hotkey" | "target" | "capture" | "prewarm" | "accessibility";
 
 export function SettingsAppshots(): React.JSX.Element {
   const [state, setState] = useState<AppshotsState>();
   const [error, setError] = useState("");
-  const [pending, setPending] = useState<string>();
+  const [pending, setPending] = useState<ReadonlySet<AppshotOperation>>(new Set());
   const [warming, setWarming] = useState(false);
   const alive = useRef(false);
-  const busy = useRef(false);
+  const busy = useRef(new Set<AppshotOperation>());
   const revision = useRef(0);
+  const operationRevision = useRef(0);
+  const fields = useRef({ hotkey: 0, target: 0, monitor: 0, capture: 0 });
   const api = window.binyAppshots;
+  const applySnapshot = useCallback((next: AppshotsState, request: number, operation: AppshotOperation | "initial"): void => {
+    setState(previous => {
+      const current = previous ?? next;
+      const monitor = operation !== "target" && operation !== "capture" && request >= fields.current.monitor;
+      return {
+        active: monitor ? next.active : current.active,
+        capturing: (operation === "initial" || operation === "capture") && request >= fields.current.capture ? next.capturing : current.capturing,
+        error: monitor ? next.error : current.error,
+        settings: {
+          hotkey: (operation === "initial" || operation === "hotkey") && request >= fields.current.hotkey ? next.settings.hotkey : current.settings.hotkey,
+          target: (operation === "initial" || operation === "target") && request >= fields.current.target ? next.settings.target : current.settings.target
+        }
+      };
+    });
+  }, []);
 
   useEffect(() => {
     alive.current = true;
@@ -49,24 +67,28 @@ export function SettingsAppshots(): React.JSX.Element {
     let cancelled = false, prewarmApplied = false;
     const current = () => !cancelled && request === revision.current;
     if (!api) { setError("请重新启动 Biny 以加载 Appshot 服务。"); return () => { alive.current = false; }; }
-    void api.state().then(value => { if (current() && !prewarmApplied) setState(value); })
-      .catch(reason => { if (current() && !prewarmApplied) setError(String(reason)); });
+    void api.state().then(value => { if (current() && !prewarmApplied) applySnapshot(value, 0, "initial"); })
+      .catch(reason => { if (current() && !prewarmApplied && operationRevision.current === 0) setError(String(reason)); });
     if (typeof api.prewarm === "function") {
       setWarming(true);
-      void api.prewarm().then(value => { if (current()) { prewarmApplied = true; setState(value); setError(""); } })
-        .catch(reason => { if (current()) setError(String(reason)); })
+      void api.prewarm().then(value => { if (current()) { prewarmApplied = true; applySnapshot(value, 0, "initial"); if (operationRevision.current === 0) setError(""); } })
+        .catch(reason => { if (current() && operationRevision.current === 0) setError(String(reason)); })
         .finally(() => { if (!cancelled) setWarming(false); });
     }
-    return () => { cancelled = true; alive.current = false; revision.current++; };
-  }, [api]);
+    return () => { cancelled = true; alive.current = false; };
+  }, [api, applySnapshot]);
 
-  const perform = async (key: string, action: () => Promise<AppshotsState>): Promise<void> => {
-    if (busy.current || !api) return;
-    const request = ++revision.current;
-    busy.current = true; setPending(key); setError("");
-    try { const next = await action(); if (alive.current && request === revision.current) setState(next); }
-    catch (failure) { if (alive.current && request === revision.current) setError(failure instanceof Error ? failure.message : String(failure)); }
-    finally { busy.current = false; if (alive.current) setPending(undefined); }
+  const perform = async (key: AppshotOperation, action: () => Promise<AppshotsState>): Promise<void> => {
+    if (busy.current.has(key) || !api) return;
+    const lifetime = revision.current;
+    const request = ++operationRevision.current;
+    if (key === "hotkey" || key === "target") fields.current[key] = request;
+    if (key === "capture") fields.current.capture = request;
+    else if (key !== "target") fields.current.monitor = request;
+    busy.current.add(key); setPending(new Set(busy.current)); setError("");
+    try { const next = await action(); if (alive.current && lifetime === revision.current) { applySnapshot(next, request, key); if (key === "capture") setError(next.error ?? ""); } }
+    catch (failure) { if (alive.current && lifetime === revision.current) setError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { busy.current.delete(key); if (alive.current && lifetime === revision.current) setPending(new Set(busy.current)); }
   };
 
   const settings = state?.settings;
@@ -77,7 +99,7 @@ export function SettingsAppshots(): React.JSX.Element {
   const stale = !armed && hotkey !== "";
   const hint = SHORTCUTS.find(entry => entry.value === selectedHotkey)?.hint ?? "";
   const known = SHORTCUTS.some(entry => entry.value === selectedHotkey);
-  const spinner = warming || pending !== undefined;
+  const spinner = warming || pending.has("hotkey") || pending.has("prewarm") || pending.has("accessibility");
   const current = error || state?.error;
 
   return <div className="settings-sections appshot-settings">
@@ -104,7 +126,7 @@ export function SettingsAppshots(): React.JSX.Element {
           {current ? <p className="appshot-error" role="alert">
             {appshotError(current)}
             {/accessibility|ax_not_granted|appshot_tap_unavailable/.test(current) ? <button
-              className="settings-action settings-text-action appshot-link" type="button" disabled={!api || pending !== undefined}
+              className="settings-action settings-text-action appshot-link" type="button" disabled={!api || pending.has("accessibility")}
               onClick={() => void perform("accessibility", async () => { await window.binyComputer.requestAccessibility(); return await api.prewarm(); })}
             >打开辅助功能设置</button> : null}
           </p> : null}
@@ -113,9 +135,9 @@ export function SettingsAppshots(): React.JSX.Element {
           <span className="appshot-select">
             {spinner ? <Icon className="appshot-spin" name="loader" size={12} /> : null}
             <NativeSelect className="settings-field"
-              aria-labelledby="appshot-hotkey-label" disabled={!api || !settings || pending !== undefined}
+              aria-labelledby="appshot-hotkey-label" disabled={!api || !settings || pending.has("hotkey")}
               value={selectedHotkey}
-              onChange={event => void perform("hotkey", () => api.settings({ ...settings!, hotkey: event.target.value }))}
+              onChange={event => { const hotkey = event.target.value; void perform("hotkey", () => api.settings({ hotkey })); }}
             >
               {hotkey && !known ? <option value={hotkey}>{hotkey}</option> : null}
               {SHORTCUTS.map(entry => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
@@ -133,9 +155,9 @@ export function SettingsAppshots(): React.JSX.Element {
           label="截图目标"
           labelledBy="appshot-target-label"
           value={settings?.target ?? "current"}
-          disabled={!api || !settings || pending !== undefined}
+          disabled={!api || !settings || pending.has("target")}
           options={[{ value: "current", label: "当前聊天" }, { value: "new", label: "新聊天" }]}
-          onChange={target => void perform("target", () => api.settings({ ...settings!, target }))}
+          onChange={target => void perform("target", () => api.settings({ target }))}
         />
       </div>
 
@@ -145,9 +167,9 @@ export function SettingsAppshots(): React.JSX.Element {
           <p>截取前台窗口，检查权限是否可用。</p>
         </div>
         <button
-          type="button" className="settings-action settings-secondary-button" disabled={!api || pending !== undefined}
+          type="button" className="settings-action settings-secondary-button" disabled={!api || pending.has("capture")}
           onClick={() => void perform("capture", () => api.capture())}
-        >{pending === "capture" ? "正在截图…" : "立即截图"}</button>
+        >{pending.has("capture") ? "正在截图…" : "立即截图"}</button>
       </div>
     </section>
 
@@ -158,9 +180,9 @@ export function SettingsAppshots(): React.JSX.Element {
       </p>
       <div className="cu-button-row">
         <button
-          type="button" className="settings-action settings-secondary-button" disabled={!api || pending !== undefined}
+          type="button" className="settings-action settings-secondary-button" disabled={!api || pending.has("prewarm")}
           onClick={() => void perform("prewarm", () => api.prewarm())}
-        >{pending === "prewarm" ? "正在预处理…" : "预热与重试"}</button>
+        >{pending.has("prewarm") ? "正在预处理…" : "预热与重试"}</button>
         <button
           type="button" className="settings-action settings-secondary-button"
           onClick={() => void window.biny.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")}

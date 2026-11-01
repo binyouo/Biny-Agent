@@ -52,6 +52,7 @@ interface SettingsExtensionsViewProps {
   active?: boolean;
   kind: SettingsExtensionKind;
   onError(message: string): void;
+  onCapabilitiesChanged?(scope: "skills" | "tools" | "all", projectId?: string): void;
   projectId?: string;
 }
 
@@ -60,13 +61,16 @@ export function SettingsExtensionsView(props: SettingsExtensionsViewProps): Reac
   return <SettingsExtensionsContent key={JSON.stringify([props.projectId, props.kind])} {...props} />;
 }
 
-function SettingsExtensionsContent({ active = true, kind, onError, projectId }: SettingsExtensionsViewProps): React.JSX.Element {
+function SettingsExtensionsContent({ active = true, kind, onError, onCapabilitiesChanged, projectId }: SettingsExtensionsViewProps): React.JSX.Element {
   const settingsDraft = useSettingsDraft();
   const [snapshot, setSnapshot] = useState<DesktopSkillCatalogSnapshot>(EMPTY_SNAPSHOT);
   const [registry, setRegistry] = useState<DesktopPluginRegistrySnapshot>(EMPTY_REGISTRY);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [loading, setLoading] = useState(true);
+  const [registryLoading, setRegistryLoading] = useState(false);
+  const registryLoaded = useRef(false);
+  const registryGeneration = useRef(0);
   const [expandedSkillId, setExpandedSkillId] = useState<string>();
   const [skillContent, setSkillContent] = useState<Record<string, DesktopSkillFilePreview>>({});
   const [contentLoadingId, setContentLoadingId] = useState<string>();
@@ -82,7 +86,7 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
   const expandedSkillIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; loadGeneration.current += 1; contentGeneration.current += 1; };
+    return () => { mounted.current = false; loadGeneration.current += 1; contentGeneration.current += 1; registryGeneration.current += 1; };
   }, []);
   const reportError = useCallback((error: unknown): void => {
     if (mounted.current) onError(errorMessage(error));
@@ -95,16 +99,16 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
     if (!file) return;
     setContentLoadingId(skill.id);
     try {
-      const preview = await window.biny.readSkillFile(skill.id, file.path);
+      const preview = await window.biny.readSkillFile(skill.id, file.path, skill.scope === "project" ? projectId : undefined);
       if (isCurrent()) setSkillContent((current) => ({ ...current, [skill.id]: preview }));
     } catch (error) {
       if (isCurrent()) reportError(error);
     } finally {
       if (isCurrent()) setContentLoadingId(undefined);
     }
-  }, [reportError]);
+  }, [projectId, reportError]);
 
-  const load = useCallback(async (refreshRegistry = false, refreshSkillContent = false): Promise<void> => {
+  const load = useCallback(async (refreshSkillContent = false): Promise<void> => {
     if (!mounted.current) return;
     const generation = ++loadGeneration.current;
     const isCurrent = (): boolean => mounted.current && generation === loadGeneration.current;
@@ -127,13 +131,9 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
           }
         }
       } else {
-        const [next, nextRegistry] = await Promise.all([
-          window.biny.skillCatalog(projectId),
-          refreshRegistry ? window.biny.refreshPluginRegistry(projectId) : window.biny.pluginRegistry(projectId)
-        ]);
+        const next = await window.biny.pluginCatalog(projectId);
         if (!isCurrent()) return;
-        setSnapshot({ ...next, unmanagedSkills: next.unmanagedSkills ?? [] });
-        setRegistry(nextRegistry);
+        setSnapshot({ ...EMPTY_SNAPSHOT, ...next });
       }
     } catch (error) {
       if (isCurrent()) reportError(error);
@@ -142,11 +142,33 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
     }
   }, [kind, projectId, readSkillContent, reportError]);
 
+  const loadRegistry = useCallback(async (refresh = false): Promise<void> => {
+    if (!mounted.current || !projectId) return;
+    const generation = ++registryGeneration.current;
+    const isCurrent = (): boolean => mounted.current && generation === registryGeneration.current;
+    setRegistryLoading(true);
+    try {
+      const next = await (refresh ? window.biny.refreshPluginRegistry(projectId) : window.biny.pluginRegistry(projectId));
+      if (!isCurrent()) return;
+      registryLoaded.current = true;
+      setRegistry(next);
+    } catch (error) {
+      if (isCurrent()) reportError(error);
+    } finally {
+      if (isCurrent()) setRegistryLoading(false);
+    }
+  }, [projectId, reportError]);
+
   useEffect(() => {
     if (!active) return;
-    void load(false, true);
-    return () => { loadGeneration.current += 1; contentGeneration.current += 1; };
+    void load(true);
+    return () => { loadGeneration.current += 1; contentGeneration.current += 1; registryGeneration.current += 1; };
   }, [active, load]);
+  useEffect(() => {
+    if (!active || kind !== "plugins" || pluginTab !== "market") return;
+    if (!registryLoaded.current) void loadRegistry();
+    return () => { registryGeneration.current += 1; };
+  }, [active, kind, loadRegistry, pluginTab]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleSkills = useMemo(() => snapshot.skills.filter((skill) => {
@@ -211,13 +233,14 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
     setBusyPluginId(plugin.id);
     try {
       await window.biny.installPlugin(projectId, plugin.id, scope);
+      onCapabilitiesChanged?.("all", scope === "project" ? projectId : undefined);
       await load();
     } catch (error) {
       reportError(error);
     } finally {
       if (mounted.current) setBusyPluginId(undefined);
     }
-  }, [load, projectId, reportError]);
+  }, [load, onCapabilitiesChanged, projectId, reportError]);
 
   const setPluginEnabled = useCallback(async (plugin: DesktopPluginSummary): Promise<void> => {
     if (!projectId || !plugin.managed) return;
@@ -226,13 +249,14 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
     setBusyPluginId(pluginId);
     try {
       await window.biny.setPluginEnabled(projectId, pluginId, plugin.enabled !== true, plugin.scope);
+      onCapabilitiesChanged?.("all", plugin.scope === "project" ? projectId : undefined);
       await load();
     } catch (error) {
       reportError(error);
     } finally {
       if (mounted.current) setBusyPluginId(undefined);
     }
-  }, [load, projectId, reportError]);
+  }, [load, onCapabilitiesChanged, projectId, reportError]);
 
   const uninstallPlugin = useCallback(async (plugin: DesktopPluginSummary): Promise<void> => {
     if (!projectId || !plugin.managed) return;
@@ -242,19 +266,21 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
     setBusyPluginId(pluginId);
     try {
       await window.biny.uninstallPlugin(projectId, pluginId, plugin.scope);
+      onCapabilitiesChanged?.("all", plugin.scope === "project" ? projectId : undefined);
       await load();
     } catch (error) {
       reportError(error);
     } finally {
       if (mounted.current) setBusyPluginId(undefined);
     }
-  }, [load, projectId, reportError]);
+  }, [load, onCapabilitiesChanged, projectId, reportError]);
 
   const importExisting = useCallback(async (skillIds: string[]): Promise<void> => {
     if (!projectId) return;
     setImporting(true);
     try {
       await window.biny.importExistingSkills(skillIds);
+      onCapabilitiesChanged?.("skills");
       await load();
       if (mounted.current) setImportDialogOpen(false);
     } catch (error) {
@@ -262,7 +288,7 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
     } finally {
       if (mounted.current) setImporting(false);
     }
-  }, [load, projectId, reportError]);
+  }, [load, onCapabilitiesChanged, projectId, reportError]);
 
   if (!projectId) return <div className="settings-extension-view is-empty"><ExtensionSettingsEmpty icon={kind === "skills" ? "wand" : "puzzle"} title="请先打开一个项目" detail="Skill 和 Plugin 设置需要绑定当前项目。" /></div>;
 
@@ -271,6 +297,7 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
       {kind === "skills" ? <SkillsSettingsContent
         onError={reportError}
         onVersionChanged={(skillId) => {
+          onCapabilitiesChanged?.("skills", snapshot.skills.find(skill => skill.id === skillId)?.scope === "project" ? projectId : undefined);
           if (!mounted.current) return;
           if (expandedSkillIdRef.current === skillId) {
             contentGeneration.current += 1;
@@ -289,12 +316,13 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
         onImportExisting={() => setImportDialogOpen(true)}
         onInherit={inheritSkill}
         onSetGlobal={setGlobalSkill}
-        onOpenDirectory={(skill) => { void window.biny.openSkillDirectory(skill.id).catch(reportError); }}
+        onOpenDirectory={(skill) => { void window.biny.openSkillDirectory(skill.id, skill.scope === "project" ? projectId : undefined).catch(reportError); }}
         onQuery={setQuery}
-        onRefresh={() => void load(false, true)}
+        onRefresh={() => void load(true)}
         onToggle={toggleSkill}
         onToggleContent={(skill) => void toggleSkillContent(skill)}
         query={query}
+        projectId={projectId}
         skillContent={skillContent}
         contentLoadingId={contentLoadingId}
         skills={visibleSkills}
@@ -304,13 +332,13 @@ function SettingsExtensionsContent({ active = true, kind, onError, projectId }: 
         unmanagedSkills={snapshot.unmanagedSkills}
       /> : <PluginsSettingsContent
         category={category}
-        loading={loading}
+        loading={pluginTab === "market" ? registryLoading : loading}
         busyPluginId={busyPluginId}
         onCategory={setCategory}
         onInstall={(plugin, scope) => void installPlugin(plugin, scope)}
         onPluginTab={setPluginTab}
         onQuery={setQuery}
-        onRefresh={() => void load(true)}
+        onRefresh={() => { if (pluginTab === "market") void loadRegistry(true); else void load(); }}
         onSetEnabled={(plugin) => void setPluginEnabled(plugin)}
         onUninstall={(plugin) => void uninstallPlugin(plugin)}
         onOpenDirectory={() => { void window.biny.openPluginDirectory(projectId, pluginScope).catch(reportError); }}
@@ -343,6 +371,7 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
   onToggle,
   onToggleContent,
   projectOverrides,
+  projectId,
   query,
   skillContent,
   skills,
@@ -363,6 +392,7 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
   onRefresh(): void;
   onToggle(skill: DesktopSkillCatalogEntry): void;
   onToggleContent(skill: DesktopSkillCatalogEntry): void;
+  projectId?: string;
   projectOverrides: Record<string, boolean>;
   query: string;
   skillContent: Record<string, DesktopSkillFilePreview>;
@@ -395,6 +425,7 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
           <section className="settings-skill-group" aria-label={group.label} key={group.scope}>
             <div className="settings-extension-group-title"><Icon name={group.icon} size={19} /><h3>{group.label}</h3><span>{group.skills.length}</span></div>
             {group.skills.map((skill) => <SkillSettingsCard
+              projectId={skill.scope === "project" ? projectId : undefined}
               onError={onError}
               onVersionChanged={onVersionChanged}
               activation={activationFor(skill, globalDefaults, projectOverrides)}
@@ -441,7 +472,8 @@ function SkillExtractionSettings(): React.JSX.Element | null {
   </section>;
 }
 
-const SkillSettingsCard = memo(function SkillSettingsCard({ onError, onVersionChanged, activation, contentLoading, expanded, onInherit, onSetGlobal, onOpenDirectory, onToggle, onToggleContent, preview, skill }: {
+const SkillSettingsCard = memo(function SkillSettingsCard({ onError, onVersionChanged, activation, contentLoading, expanded, onInherit, onSetGlobal, onOpenDirectory, onToggle, onToggleContent, preview, skill, projectId }: {
+  projectId?: string;
   onError(message: string): void;
   onVersionChanged(skillId: string): void;
   activation: DesktopSkillActivation;
@@ -473,7 +505,7 @@ const SkillSettingsCard = memo(function SkillSettingsCard({ onError, onVersionCh
           {activation.projectOverride !== undefined ? <button className="settings-action settings-text-action settings-skill-content-toggle" onClick={onInherit} type="button">恢复继承</button> : null}
           {activation.projectOverride !== undefined ? <button className="settings-action settings-text-action settings-skill-content-toggle" onClick={onSetGlobal} type="button">设为全局默认</button> : null}
         </div>
-        <SkillVersionControls key={`version:${skill.id}`} skillId={skill.id} disabled={false} onChanged={onVersionChanged} onError={onError} />
+        <SkillVersionControls key={`version:${skill.id}`} skillId={skill.id} projectId={projectId} disabled={false} onChanged={onVersionChanged} onError={onError} />
         {contentLoading ? <span>正在读取内容…</span> : preview?.binary ? <span>无法预览二进制文件。</span> : <pre>{content || "暂无可显示内容。"}</pre>}
       </div> : null}
     </article>

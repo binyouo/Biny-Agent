@@ -1,5 +1,6 @@
 import type { DesktopSubagentSettings } from "../../../../protocol.js";
 import { catalogForConnection } from "../../providerCatalog.js";
+import { NativeSelect } from "../NativeSelect.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 
 const defaultChoices: Array<{ value: string; label: string; settings: DesktopSubagentSettings }> = [
@@ -9,10 +10,10 @@ const defaultChoices: Array<{ value: string; label: string; settings: DesktopSub
 ];
 
 export function SettingsSubagent({ onOpenProviders, busy = false }: { onOpenProviders(): void; busy?: boolean }): React.JSX.Element | null {
-  const { draft, snapshot, setSubagent, saveState } = useSettingsDraft();
+  const { draft, snapshot, setSubagent, saveState, modelSelectionSaving } = useSettingsDraft();
   if (!draft || !snapshot) return null;
   const settings = draft.subagent;
-  const disabled = busy || snapshot.hasRunningTasks || ["saving", "rolling_back", "recovery_required"].includes(saveState);
+  const disabled = busy || snapshot.hasRunningTasks || (saveState === "saving" && !modelSelectionSaving) || saveState === "rolling_back" || saveState === "recovery_required";
   const connections = snapshot.models.connections.filter(connection => connection.providerType === "acp");
   const choices = new Map(defaultChoices.map(choice => [choice.value, choice.settings]));
   const selectedProviderAlias = settings.providerAlias
@@ -38,14 +39,14 @@ export function SettingsSubagent({ onOpenProviders, busy = false }: { onOpenProv
     <div className="settings-form-group">
       <div className="settings-subagent-select-field">
         <label htmlFor="settings-subagent-default">默认 Coding Agent</label>
-        <select id="settings-subagent-default" aria-label="默认 Coding Agent" aria-describedby="settings-subagent-help" className="settings-field settings-subagent-select" disabled={disabled} value={selected}
+        <NativeSelect id="settings-subagent-default" aria-label="默认 Coding Agent" aria-describedby="settings-subagent-help" className="settings-field settings-subagent-select" disabled={disabled} value={selected}
           onChange={event => {
             const next = choices.get(event.currentTarget.value);
             if (!disabled && next) setSubagent(next);
           }}>
           {defaultChoices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
           {options.map(option => <option key={option.value} disabled={option.disabled} value={option.value}>{option.label}</option>)}
-        </select>
+        </NativeSelect>
       </div>
       <div className="settings-subagent-help" id="settings-subagent-help" aria-live="polite">
         <p>{selected === "auto" ? "优先使用本机 Claude Code 及其 CLI 默认模型，不可用时使用内置 Agent。"

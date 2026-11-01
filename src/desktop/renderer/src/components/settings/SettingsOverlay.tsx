@@ -37,6 +37,7 @@ import { SettingsCloseGuard } from "./SettingsCloseGuard.js";
 import { SettingsDetailHostContext } from "./SettingsDetailHostContext.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { SettingsDraftProvider } from "./SettingsDraftProvider.js";
+import { settingsPageNeedsSnapshot } from "./settingsData.js";
 import { SettingsMemory } from "./SettingsMemory.js";
 import { SettingsQuickChat } from "./SettingsQuickChat.js";
 import { SettingsPageFooter } from "./SettingsPageFooter.js";
@@ -56,8 +57,8 @@ interface SettingsOverlayProps {
   onFontPreference(font: DesktopFontPreference): void;
   appearancePreference?: AppearancePreference;
   onAppearancePreference?(preference: AppearancePreference): void;
-  onSettingsCommitted(snapshot: DesktopSettingsSnapshot): void;
-  onSessionImportComplete?(projectId: string): Promise<void>;
+  onSettingsCommitted(snapshot: DesktopSettingsSnapshot, scope?: "models" | "preferences" | "settings", appliedFields?: string[]): void;
+  onCapabilitiesChanged?(scope: "skills" | "tools" | "all", projectId?: string): void;
   onNotify(message: string): void;
   closeRequest?: DesktopSettingsCloseRequest;
   onResolveCloseRequest(requestId: string, response: DesktopSettingsCloseResponse): Promise<void>;
@@ -148,62 +149,52 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   关于: { description: "版本信息与项目链接。", keywords: "版本 更新 帮助" }
 };
 const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value }) => value));
-const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
-  通用: "模型选择与快速对话即时保存，Coding Agent 需保存",
-  导入: "导入与同步设置即时保存",
-  模型: "连接与模型配置即时保存",
-  ["Computer History"]: "采集设置即时保存", 浏览器: "连接操作即时生效",
-  Appshots: "截图设置即时保存", "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
-  插件: "安装与启停即时生效", "Token 节省": "本页只展示统计", 关于: "",
-  技能: "启用范围与自动提取需保存，导入操作即时生效",
-  记忆: "配置需保存，记忆管理操作即时生效", 网络搜索: "搜索偏好需保存，登录操作即时生效"
-};
-/**
- * 不写设置草稿的页面：没有待保存更改时不显示保存按钮，底栏只说明本页的生效方式。
- * 其他页面留下的草稿仍会让保存按钮出现，避免离开草稿页后无处提交。
- */
-const immediateOnlyTabs = new Set<SettingsTab>(["导入", "模型", "Computer History", "浏览器", "Appshots", "Computer Use", "MCP 服务器", "插件", "Token 节省", "关于"]);
 
 function normalizeSettingsTab(value: SettingsTab | string | undefined): SettingsTab {
   return value !== undefined && settingsTabValues.has(value as SettingsTab) ? value as SettingsTab : "通用";
 }
 
 export function SettingsOverlay(props: SettingsOverlayProps): React.JSX.Element | null {
-  const {
-    fontPreference,
-    onFontPreference,
-    onNotify,
-    onSettingsCommitted,
-    onThemePreference,
-    open,
-    sessionId,
-    sessionRunning,
-    themePreference,
-    workspace
-  } = props;
-  const scope = JSON.stringify([workspace?.project.id, sessionId]);
-  const [visitedScope, setVisitedScope] = useState(open ? scope : undefined);
-  useEffect(() => { if (open) setVisitedScope(scope); }, [open, scope]);
-  if (!open && visitedScope !== scope) return null;
+  const scope = JSON.stringify([props.workspace?.project.id, props.sessionId]);
+  const [visitedScope, setVisitedScope] = useState(props.open ? scope : undefined);
+  useEffect(() => { if (props.open) setVisitedScope(scope); }, [props.open, scope]);
+  if (!props.open && visitedScope !== scope) return null;
+  return <SettingsOverlayScope key={scope} {...props} />;
+}
+
+function SettingsOverlayScope(props: SettingsOverlayProps): React.JSX.Element {
+  const [navigation, setNavigation] = useState(() => ({
+    open: props.open, target: props.targetTab, tab: normalizeSettingsTab(props.targetTab)
+  }));
+  // 在子页发起读取前确定新入口，避免重开独立页时先加载上次分页的数据。
+  if (navigation.open !== props.open || navigation.target !== props.targetTab) {
+    setNavigation({ open: props.open, target: props.targetTab,
+      tab: props.open && props.targetTab ? normalizeSettingsTab(props.targetTab) : navigation.tab });
+  }
+  const setTab = useCallback((tab: SettingsTab): void => {
+    setNavigation(current => ({ ...current, tab }));
+  }, []);
   return (
     <SettingsDraftProvider
-      key={scope}
-      active={open}
-      onCommitted={onSettingsCommitted}
-      onFontPreview={onFontPreference}
+      active={props.open}
+      loadSnapshot={settingsPageNeedsSnapshot(navigation.tab)}
+      onCommitted={props.onSettingsCommitted}
+      onFontPreview={props.onFontPreference}
       onAppearancePreview={props.onAppearancePreference}
-      onNotify={onNotify}
-      onThemePreview={onThemePreference}
-      projectId={workspace?.project.id}
-      sessionId={sessionId}
-      sessionRunning={sessionRunning}
+      onNotify={props.onNotify}
+      onThemePreview={props.onThemePreference}
+      projectId={props.workspace?.project.id}
+      sessionId={props.sessionId}
+      sessionRunning={props.sessionRunning}
     >
-      <SettingsOverlayContent {...props} fontPreference={fontPreference} themePreference={themePreference} />
+      <SettingsOverlayContent {...props} tab={navigation.tab} setTab={setTab} />
     </SettingsDraftProvider>
   );
 }
 
 function SettingsOverlayContent({
+  tab,
+  setTab,
   open,
   version,
   projects,
@@ -215,7 +206,7 @@ function SettingsOverlayContent({
   appearancePreference,
   onNotify: _onNotify,
   onClose,
-  onSessionImportComplete,
+  onCapabilitiesChanged,
   onTestModelConfiguration,
   onFetchModelCatalog,
   onReadModelApiKey,
@@ -250,13 +241,12 @@ function SettingsOverlayContent({
   onCancelModelLogin,
   closeRequest,
   onResolveCloseRequest
-}: SettingsOverlayProps): React.JSX.Element | null {
+}: SettingsOverlayProps & { tab: SettingsTab; setTab(tab: SettingsTab): void }): React.JSX.Element | null {
   const appearance = useAppearance();
   const settingsDraft = useSettingsDraft();
   const settingsDraftRef = useRef(settingsDraft);
   useLayoutEffect(() => { settingsDraftRef.current = settingsDraft; });
   const runtimeBusy = sessionRunning || settingsDraft.snapshot?.hasRunningTasks === true;
-  const [tab, setTab] = useState<SettingsTab>("通用");
   const [memoryVisited, setMemoryVisited] = useState(false);
   const [importVisited, setImportVisited] = useState(false);
   // 技能/插件页每次挂载都会全量扫描所有 skill 与项目目录（还没有缓存），
@@ -274,12 +264,6 @@ function SettingsOverlayContent({
   const searchQuery = search.trim().toLocaleLowerCase();
   const searchResults = settingsRouteEntries
     .filter(({ value }) => `${value} ${settingsTabLabels[value] ?? ""} ${settingsPages[value].description} ${settingsPages[value].keywords}`.toLocaleLowerCase().includes(searchQuery));
-  useEffect(() => {
-    if (activeTab !== tab) {
-      activeTabRef.current = activeTab;
-      setTab(activeTab);
-    }
-  }, [activeTab, tab]);
   const notifyForTab = (sourceTab: SettingsTab, nextMessage: string | undefined): void => {
     if (activeTabRef.current === sourceTab) setMessage(nextMessage);
   };
@@ -316,7 +300,7 @@ function SettingsOverlayContent({
       if (nextTab === "记忆") setMemoryVisited(true);
       markVisited(nextTab);
     }
-  }, [markVisited, open, targetTab]);
+  }, [markVisited, open, targetTab, setTab]);
   const settingsModels = stagedModelChoices(
     settingsDraft.snapshot?.models.configured ?? workspace?.models ?? [],
     settingsDraft.draft?.models.upserts ?? [],
@@ -327,7 +311,8 @@ function SettingsOverlayContent({
     ?? settingsDraft.snapshot?.models.defaultModel;
   const selectTab = async (nextTab: SettingsTab): Promise<void> => {
     if (nextTab === activeTab) return;
-    if (settingsDraft.flushModelEdits && !await settingsDraft.flushModelEdits()) return;
+    if (activeTab === "模型" && settingsDraft.pendingModelEdits
+      && settingsDraft.flushModelEdits && !await settingsDraft.flushModelEdits()) return;
     activeTabRef.current = nextTab;
     setTab(nextTab);
     setMessage(undefined);
@@ -361,11 +346,9 @@ function SettingsOverlayContent({
     if (closeRequest) await onResolveCloseRequest(closeRequest.requestId, "cancelled");
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
-  const immediateOnly = immediateOnlyTabs.has(activeTab) && settingsDraft.dirtyCount === 0
-    && !settingsDraft.pendingModelEdits && settingsDraft.saveState === "clean" && !settingsDraft.saveError;
   const needsProject = !workspace && ["聊天", "网络搜索", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
   // 只有"从没读到过快照且这次也失败了"才拦整页；单纯在刷新不该把已经能用的界面遮起来。
-  const loadBlocked = Boolean((workspace && !["导入", "浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
+  const loadBlocked = Boolean((workspace && settingsPageNeedsSnapshot(activeTab) || activeTab === "Computer History") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
   const openSearchResult = async (nextTab: SettingsTab): Promise<void> => {
     setSearch("");
     await selectTab(nextTab);
@@ -455,22 +438,22 @@ function SettingsOverlayContent({
             }}
           /> : null}
           {activeTab === "用户界面" ? <SettingsAppearance
-            disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
+            disabled={(settingsDraft.saveState === "saving" && !settingsDraft.modelSelectionSaving) || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
             theme={settingsDraft.draft?.themePreference ?? themePreference}
             onThemeChange={settingsDraft.setThemePreference}
             font={settingsDraft.draft?.fontPreference ?? fontPreference}
             onFontChange={settingsDraft.setFontPreference}
           /> : null}
           {activeTab === "通用" ? <div className="settings-preferences settings-general">
-            <SettingsToolModel onTest={onTestModelConfiguration} />
-            <SettingsVisionModel />
+            <SettingsToolModel onTest={onTestModelConfiguration} onNotify={_onNotify} />
+            <SettingsVisionModel onNotify={_onNotify} />
             <SettingsSubagent busy={runtimeBusy} onOpenProviders={() => { void selectTab("模型"); }} />
             <SettingsQuickChat />
           </div> : null}
           {activeTab === "配色" ? <SettingsThemes
             preference={settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE}
             onChange={settingsDraft.setAppearancePreference}
-            disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
+            disabled={(settingsDraft.saveState === "saving" && !settingsDraft.modelSelectionSaving) || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
           /> : null}
           {activeTab === "Computer History" ? <SettingsActivity /> : null}
           {activeTab === "Token 节省" ? <SettingsToolOptimization /> : null}
@@ -503,9 +486,9 @@ function SettingsOverlayContent({
             onNotify={(nextMessage) => notifyForTab("记忆", nextMessage)}
             sessionRunning={runtimeBusy}
           /> : null}
-          {activeTab === "MCP 服务器" ? <McpServersView onError={_onNotify} onSuccess={(nextMessage) => notifyForTab("MCP 服务器", nextMessage)} projectId={workspace?.project.id} /> : null}
-          {extensionsVisited.skills ? <div className="settings-extension-page" hidden={activeTab !== "技能"}><SettingsExtensionsView active={open && activeTab === "技能"} kind="skills" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
-          {extensionsVisited.plugins ? <div className="settings-extension-page" hidden={activeTab !== "插件"}><SettingsExtensionsView active={open && activeTab === "插件"} kind="plugins" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
+          {activeTab === "MCP 服务器" ? <McpServersView onCapabilitiesChanged={projectId => onCapabilitiesChanged?.("tools", projectId)} onError={_onNotify} onSuccess={(nextMessage) => notifyForTab("MCP 服务器", nextMessage)} projectId={workspace?.project.id} /> : null}
+          {extensionsVisited.skills ? <div className="settings-extension-page" hidden={activeTab !== "技能"}><SettingsExtensionsView active={open && activeTab === "技能"} kind="skills" onCapabilitiesChanged={onCapabilitiesChanged} onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
+          {extensionsVisited.plugins ? <div className="settings-extension-page" hidden={activeTab !== "插件"}><SettingsExtensionsView active={open && activeTab === "插件"} kind="plugins" onCapabilitiesChanged={onCapabilitiesChanged} onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
           {activeTab === "关于" ? <SettingsAbout version={version} /> : null}
           {activeTab === "浏览器" ? <SettingsBrowser active={open} /> : null}
           {activeTab === "Computer Use" ? <SettingsComputerUse active={open} /> : null}
@@ -521,20 +504,18 @@ function SettingsOverlayContent({
           </>}
           {importVisited ? <SettingsImport projectId={workspace?.project.id} projects={projects} hidden={!open || activeTab !== "导入"}
             disabled={runtimeBusy || settingsDraft.dirtyCount > 0 || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
-            onImported={async projectId => { settingsDraft.retryLoad(); await onSessionImportComplete?.(projectId); }} /> : null}
+            /> : null}
           </div>
           <SettingsPageFooter
-            pendingModelEdits={settingsDraft.pendingModelEdits}
-            hideSave={immediateOnly}
-            hint={immediateOnly ? undefined : immediateSaveHints[activeTab]}
-            unavailable={loadBlocked ? settingsDraft.loading ? "正在加载设置…" : "设置尚未加载" : immediateOnly ? immediateSaveHints[activeTab] : !workspace && activeTab === "用户界面" ? settingsDraft.saveState === "saving" ? "正在保存外观偏好…" : "外观偏好即时保存" : !settingsDraft.draft ? "本页操作即时保存" : undefined}
-            blockedReason={settingsDraft.dirtyCount > 0 && runtimeBusy && !settingsDraft.preferencesOnly ? "任务运行中，共享设置暂不能保存。更改已保留。" : undefined}
+            unavailable={loadBlocked ? settingsDraft.loading ? "正在加载设置…" : "设置尚未加载" : !settingsDraft.draft ? "" : undefined}
+            blockedReason={settingsDraft.dirtyCount > 0 && settingsDraft.runtimeBlocked ? "任务运行中，共享设置暂不能保存。更改已保留。" : undefined}
             error={settingsDraft.saveError ?? settingsDraft.snapshot?.pendingRecovery?.message}
             dirtyCount={settingsDraft.dirtyCount}
-            disabled={settingsDraft.invalid || settingsDraft.draft === undefined || (runtimeBusy && !settingsDraft.preferencesOnly)}
+            disabled={settingsDraft.invalid || settingsDraft.draft === undefined || settingsDraft.runtimeBlocked || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back"}
             onCancel={requestCancel}
             onSave={() => { void settingsDraft.saveAll(); }}
-            state={settingsDraft.saveState}
+            state={settingsDraft.saveState === "recovery_required" ? "recovery_required"
+              : settingsDraft.manualSaving ? "saving" : settingsDraft.invalid ? "invalid" : settingsDraft.dirtyCount > 0 ? "dirty" : "clean"}
           />
         </main>
       </section>
@@ -548,6 +529,7 @@ function SettingsOverlayContent({
       {closeGuardOpen ? (
         <SettingsCloseGuard
           busy={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back"}
+          hasUnsavedChanges={settingsDraft.dirtyCount > 0 || settingsDraft.saveState === "recovery_required"}
           onCancel={() => { void cancelClose(); }}
           onDiscard={() => { void discardAndClose(); }}
         />

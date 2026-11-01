@@ -333,6 +333,37 @@ test("Appshots target-only changes update the result without restarting the pend
   } finally { await f.appshots.close(); }
 });
 
+test("Appshots target-only saves preserve the armed monitor and merge only supplied settings", async () => {
+  const f = fixture();
+  f.released.resolve();
+  try {
+    await f.appshots.prewarm();
+    const saved = await f.appshots.settings({ target: "new" });
+    assert.deepEqual(saved.settings, { hotkey: "Control+Alt+C", target: "new" });
+    assert.equal(saved.active, true);
+    assert.deepEqual(f.calls.map(call => call.cmd), ["appshot_monitor_start"]);
+    const changed = await f.appshots.settings({ hotkey: "double-shift" });
+    assert.deepEqual(changed.settings, { hotkey: "double-shift", target: "new" });
+    assert.equal(f.calls.length, 2);
+    const current = await f.store.loadVersioned!();
+    current.config.activity.sensitiveApplications = ["test.excluded"];
+    await f.store.saveVersioned!(current.config, current.revision);
+    await f.appshots.settings({ target: "current" });
+    assert.equal(f.calls.length, 3, "changed exclusions still reconfigure capture privacy");
+    assert.ok((f.calls[2]!.args.exclude_bundles as string[]).includes("test.excluded"));
+  } finally { await f.appshots.close(); }
+});
+
+test("a target-only save does not start a cold monitor", async () => {
+  const f = fixture();
+  try {
+    const saved = await f.appshots.settings({ target: "new" });
+    assert.deepEqual(saved.settings, { hotkey: "Control+Alt+C", target: "new" });
+    assert.equal(saved.active, false);
+    assert.deepEqual(f.calls, []);
+  } finally { await f.appshots.close(); }
+});
+
 test("Appshots a late save acknowledgement still applies settings as the prior start settles", async () => {
   const f = fixture({ holdSaveAcknowledgement: true });
   const initial = f.appshots.prewarm();

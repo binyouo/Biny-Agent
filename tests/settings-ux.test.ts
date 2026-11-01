@@ -231,7 +231,7 @@ test("设置加载失败持续显示重试入口，重试期间不声称已保�
   try {
     await h.overlay({ targetTab: "用户界面" });
     assert.match(document.querySelector('[role="alert"]')?.textContent ?? "", /读取失败/u);
-    assert.doesNotMatch(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+    assert.doesNotMatch(document.querySelector('.settings-page-footer')?.textContent ?? "", /无待保存更改/u);
     await h.click('[aria-label="重新加载设置"]');
     assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /加载/u);
     await h.React.act(async () => deferred.resolve(snapshot()));
@@ -241,21 +241,101 @@ test("设置加载失败持续显示重试入口，重试期间不声称已保�
   } finally { await h.close(); }
 });
 
-test("即时页面隐藏全局保存，跨页草稿仍能保存且关于页不显示已保存圆点", async () => {
+test("模型即时保存期间底栏文案和按钮保持稳定，关闭仍等待实际保存", async () => {
+  const gate = Promise.withResolvers<unknown>();
+  let closes = 0;
+  const h = await harness({ saveSettings: async () => await gate.promise });
+  try {
+    await h.overlay({ targetTab: "通用", onClose: () => { closes += 1; } });
+    const footer = document.querySelector('.settings-page-footer')!;
+    const controls = [...footer.querySelectorAll<HTMLButtonElement>('button')];
+    const before = footer.textContent;
+    assert.deepEqual(controls.map(button => button.textContent), ["关闭", "保存"]);
+    assert.equal(footer.querySelector('.settings-save-scope') === null, true, "底栏不再常驻每页保存规则");
+    await h.click('[aria-label="工具模型"]');
+    await h.click('.settings-model-picker-option');
+    assert.equal(footer.textContent, before, "局部模型保存不改变全局底栏文案");
+    assert.ok([...footer.querySelectorAll('button')].every((button, index) => button === controls[index]));
+    assert.equal(controls[0]!.disabled, false);
+    assert.equal(controls[1]!.disabled, true);
+    await h.click('[data-settings-tab="关于"]');
+    assert.equal(footer.textContent, before);
+    await h.click('.settings-footer-actions .settings-secondary-button');
+    assert.equal(closes, 0, "稳定的关闭入口仍等待已发出的事务");
+    await h.React.act(async () => gate.resolve({ status: "committed", journalId: "stable-footer", appliedFields: ["models"], snapshot: snapshot() }));
+    assert.equal(closes, 1);
+    assert.equal(h.confirmations.length, 0, "没有手动草稿时不用丢弃确认");
+  } finally { gate.resolve({ status: "rolled_back", snapshot: snapshot() }); await h.close(); }
+});
+
+for (const model of ["工具模型", "视觉模型"] as const) for (const outcome of ["rolled_back", "rejected"] as const) for (const navigation of ["page", "project", "session"] as const) test(`${model} 保存 ${outcome} 后 ${navigation} 的失败反馈归属正确`, async () => {
+  const gate = Promise.withResolvers<void>();
+  const notices: string[] = [];
+  const h = await harness({ settingsSnapshot: async (projectId: string) => ({ ...snapshot(), projectId }), saveSettings: async () => {
+    await gate.promise;
+    if (outcome === "rejected") throw new Error(`${model}保存失败`);
+    return { status: "rolled_back", snapshot: snapshot(), message: `${model}保存失败` };
+  } });
+  try {
+    const props = { targetTab: "通用", onNotify: (message: string) => { notices.push(message); } };
+    await h.overlay(props);
+    if (model === "视觉模型") await h.click('[aria-label="启用视觉模型"]');
+    else {
+      await h.click('[aria-label="工具模型"]');
+      await h.click('.settings-model-picker-option');
+    }
+    if (navigation === "page") await h.click('[data-settings-tab="关于"]');
+    else if (navigation === "project") await h.overlay({ ...props, workspace: { project: { id: "other", name: "Other" }, models: [], connections: [] } });
+    else await h.overlay({ ...props, sessionId: "other-session" });
+    const footer = document.querySelector('.settings-page-footer')?.textContent;
+    await h.React.act(async () => gate.resolve());
+    assert.deepEqual(notices, navigation === "page" ? [`${model}保存失败`] : [], "切页后仍反馈一次，旧项目或会话结果不能通知新范围");
+    assert.equal(document.querySelector('.settings-page-footer')?.textContent, footer);
+  } finally { gate.resolve(); await h.close(); }
+});
+
+for (const outcome of ["rolled_back", "rejected"] as const) test(`关闭等待中的模型保存 ${outcome} 后留在原页展示错误，再次关闭可退出`, async () => {
+  const gate = Promise.withResolvers<void>();
+  let closes = 0;
+  const h = await harness({ saveSettings: async () => {
+    await gate.promise;
+    if (outcome === "rejected") throw new Error("模型保存失败，请重试");
+    return { status: "rolled_back", journalId: "failed-footer-close", message: "模型保存失败，请重试", snapshot: snapshot() };
+  } });
+  try {
+    await h.overlay({ targetTab: "通用", onClose: () => { closes += 1; } });
+    await h.click('[aria-label="工具模型"]');
+    await h.click('.settings-model-picker-option');
+    await h.click('.settings-footer-actions .settings-secondary-button');
+    assert.equal(closes, 0);
+    await h.React.act(async () => gate.resolve());
+    assert.equal(closes, 0, "失败不能自动关闭并吞掉本项错误");
+    assert.match(document.querySelector('#tool-model [role="alert"]')?.textContent ?? "", /模型保存失败/u);
+    assert.equal(h.confirmations.length, 0);
+    assert.equal(document.querySelector('.settings-page-footer [role="alert"]'), null);
+    await h.click('.settings-footer-actions .settings-secondary-button');
+    assert.equal(closes, 1, "错误已展示后仍允许主动关闭，无需伪造手动草稿");
+  } finally { gate.resolve(); await h.close(); }
+});
+
+test("即时页面保留固定操作栏，跨页草稿仍能保存与确认关闭", async () => {
   const h = await harness();
   try {
     await h.overlay({ targetTab: "模型" });
-    assert.equal(document.querySelector(".settings-save-button"), null);
-    assert.match(document.querySelector(".settings-save-status")?.textContent ?? "", /即时保存/u);
+    const controls = [...document.querySelectorAll<HTMLButtonElement>('.settings-footer-actions button')];
+    assert.deepEqual(controls.map(button => button.textContent), ["关闭", "保存"]);
+    assert.equal(controls[1]!.disabled, true);
+    assert.equal(document.querySelector(".settings-save-status")?.textContent, "无待保存更改");
     await h.click('[data-settings-tab="关于"]');
-    assert.equal(document.querySelector(".settings-save-button"), null);
-    assert.equal(document.querySelector(".settings-save-status")?.textContent, "");
-    assert.ok(document.querySelector(".settings-save-status.is-idle"));
+    assert.ok([...document.querySelectorAll('.settings-footer-actions button')].every((button, index) => button === controls[index]));
+    assert.equal(controls[1]!.disabled, true);
+    assert.equal(document.querySelector(".settings-save-status")?.textContent, "无待保存更改");
     await h.click('[data-settings-tab="用户界面"]');
     await h.click('input[value="dark"]');
     await h.click('[data-settings-tab="关于"]');
     assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, false);
-    assert.match(document.querySelector(".settings-save-status")?.textContent ?? "", /未保存/u);
+    assert.equal(document.querySelector(".settings-save-status")?.textContent, "有未保存更改");
+    assert.deepEqual(controls.map(button => button.textContent), ["关闭", "保存"]);
     await h.click('[aria-label="关闭设置"]');
     assert.equal(h.confirmations.length, 1, "跨页后关闭仍需处理草稿");
   } finally { await h.close(); }
@@ -272,16 +352,17 @@ test("模型页首次读取失败或重试时优先说明加载状态", async ()
     await h.click('[aria-label="重新加载设置"]');
     assert.equal(document.querySelector(".settings-save-status")?.textContent, "正在加载设置…");
     await h.React.act(() => resolve(snapshot()));
-    assert.match(document.querySelector(".settings-save-status")?.textContent ?? "", /即时保存/u);
-    assert.equal(document.querySelector(".settings-save-button"), null);
+    assert.equal(document.querySelector(".settings-save-status")?.textContent, "无待保存更改");
+    assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, true);
   } finally { await h.close(); }
 });
 
-test("即时页面不能掩盖待恢复的设置事务", async () => {
+test("已发现的待恢复设置事务切到独立页后仍可见", async () => {
   const h = await harness({ settingsSnapshot: async () => ({ ...snapshot(),
     pendingRecovery: { journalId: "interrupted", message: "上次保存尚待恢复" } }) });
   try {
-    await h.overlay({ targetTab: "关于" });
+    await h.overlay({ targetTab: "通用" });
+    await h.click('[data-settings-tab="关于"]');
     assert.match(document.querySelector(".settings-save-status")?.textContent ?? "", /需要恢复/u);
     assert.match(document.querySelector(".settings-save-error")?.textContent ?? "", /上次保存尚待恢复/u);
     assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, true);
@@ -299,7 +380,7 @@ test("保存失败保留草稿并就地显示原因，重试提交同一组更�
     await h.overlay({ targetTab: "用户界面" });
     assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, true);
     await h.click('input[value="dark"]');
-    assert.equal(document.querySelector('.settings-footer-actions button')?.textContent, "取消");
+    assert.equal(document.querySelector('.settings-footer-actions button')?.textContent, "关闭");
     await h.click('.settings-save-button');
     assert.match(document.querySelector('.settings-page-footer [role="alert"]')?.textContent ?? "", /磁盘暂时不可写/u);
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
@@ -307,7 +388,41 @@ test("保存失败保留草稿并就地显示原因，重试提交同一组更�
     assert.equal(writes.length, 2);
     assert.equal(writes[1]?.themePreference, "dark");
     assert.ok(document.querySelector('.settings-page-footer [role="alert"]') === null, "保存成功后应清除页脚错误");
-    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /无待保存更改/u);
+  } finally { await h.close(); }
+});
+
+test("外观窄回执保留配置基线，冲突后保留草稿并按新偏好版本重试", async () => {
+  const writes: DesktopSettingsSaveInput[] = [];
+  const commits: Array<{ snapshot: DesktopSettingsSnapshot; scope?: string }> = [];
+  const previews: string[] = [];
+  const h = await harness({ saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+    writes.push(input);
+    const preferences = { projectId: "project", hasRunningTasks: false,
+      preferenceRevision: writes.length + 1, themePreference: writes.length === 1 ? "light" : "dark",
+      fontPreference: { family: "system", size: 14 } };
+    return writes.length === 1
+      ? { status: "rolled_back", draftRetained: true, preferences, message: "外观已在另一窗口更改" }
+      : { status: "committed", journalId: "appearance", appliedFields: ["themePreference"], preferences };
+  } });
+  try {
+    await h.overlay({ targetTab: "用户界面", onThemePreference: (theme: string) => previews.push(theme),
+      onSettingsCommitted: (next: DesktopSettingsSnapshot, scope?: string) => commits.push({ snapshot: next, scope }) });
+    await h.click('input[value="dark"]');
+    await h.click('.settings-save-button');
+    assert.match(document.querySelector('.settings-save-error')?.textContent ?? "", /另一窗口/u);
+    assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
+    assert.equal(previews.at(-1), "light", "冲突后恢复权威外观预览，草稿仍可重试");
+    await h.click('.settings-save-button');
+    assert.equal(writes[1]?.expectedPreferenceRevision, 2);
+    assert.equal(writes[1]?.expectedConfigRevision, "config:1");
+    assert.equal(writes[1]?.themePreference, "dark");
+    assert.equal(commits.length, 1);
+    assert.equal(commits[0]?.scope, "preferences", "父层只更新外观，不刷新项目运行时");
+    assert.equal(commits[0]?.snapshot.configRevision, "config:1");
+    assert.equal(commits[0]?.snapshot.models.defaultModel, "default");
+    assert.equal(commits[0]?.snapshot.preferenceRevision, 3);
+    assert.equal(document.querySelector('.settings-save-error'), null);
   } finally { await h.close(); }
 });
 
@@ -409,6 +524,29 @@ test("首次打开导入不等待其他设置或重跑 bootstrap，来源可立�
   }
 });
 
+test("Token 节省首屏独立于设置快照，数字读取前不阻塞页面", async () => {
+  let settingsReads = 0;
+  const statistics = Promise.withResolvers<import("../src/desktop/protocol.js").DesktopToolOptimizationStats>();
+  void statistics.promise.catch(() => undefined);
+  let reads = 0;
+  const h = await harness({ settingsSnapshot: async () => { settingsReads++; throw new Error("settings offline"); },
+    toolOptimizationStats: () => { reads++; return statistics.promise; } });
+  try {
+    await h.overlay({ targetTab: "Token 节省" });
+    assert.ok(!document.querySelector('.settings-load-state'), "统计页不依赖完整设置快照");
+    assert.ok(document.querySelector('.tool-optimization-page'));
+    assert.equal(document.querySelector('.savings-loading'), null);
+    assert.equal(reads, 1, "统计读取不等待完整设置返回");
+    assert.equal(settingsReads, 0, "统计页不发起无关设置请求");
+    assert.ok(document.querySelector('.tool-optimization-page'), "无关设置失败不阻塞统计页");
+    await h.React.act(() => statistics.reject(new Error("stats offline")));
+    assert.match(document.querySelector('.tool-optimization-page')?.textContent ?? "", /统计读取失败.*stats offline/u);
+  } finally {
+    await h.React.act(() => { statistics.reject(new Error("closed")); });
+    await h.close();
+  }
+});
+
 test("导入页切换后保留已读历史，隐藏时停止订阅；首次可见测试未覆盖页签卸载", async () => {
   const previous: ApplicationImportSnapshot = { sources: [], history: [{ id: "cached", source: "claude", label: "Claude Code",
     time: "2026-10-08T00:00:00Z", workspaceRoot: "/fixture", results: [{ id: "chat", category: "sessions", label: "Imported chat", status: "imported" }]
@@ -425,11 +563,11 @@ test("导入页切换后保留已读历史，隐藏时停止订阅；首次可�
     await h.overlay(props);
     const history = document.querySelector('.import-history');
     assert.ok(history);
-    assert.equal(listeners.size, 1);
+    assert.equal(listeners.size, 2, "历史读取与设置导入失效各自订阅");
     await h.overlay({ ...props, targetTab: "聊天" });
     assert.ok(history.isConnected, "切换设置页不丢弃已读取的导入历史");
     assert.ok(history.closest('[hidden]'));
-    assert.equal(listeners.size, 0);
+    assert.equal(listeners.size, 1, "隐藏只保留配置失效订阅，不再读取导入历史");
     assert.equal(reads, 1);
     await h.overlay(props);
     assert.equal(reads, 2);
@@ -655,6 +793,200 @@ test("工具模型即时保存保留未提交的供应商模型草稿", async ()
   } finally { await h.close(); }
 });
 
+test("工具与视觉模型分别保存，独立编辑不被禁用，窄回执保留其他域和草稿", async () => {
+  const base = snapshot();
+  const gates = [Promise.withResolvers<unknown>(), Promise.withResolvers<unknown>()];
+  const writes: DesktopSettingsSaveInput[] = [];
+  let reads = 0;
+  let previews = 0;
+  const h = await harness({
+    settingsSnapshot: async () => { reads += 1; return base; },
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(input);
+      return await gates[writes.length - 1]!.promise;
+    }
+  });
+  try {
+    const { SettingsDraftProvider } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftProvider.js");
+    const { useSettingsDraft } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    const { SettingsToolModel } = await import("../src/desktop/renderer/src/components/settings/SettingsToolModel.js");
+    const { SettingsVisionModel } = await import("../src/desktop/renderer/src/components/settings/SettingsVisionModel.js");
+    const { SettingsSubagent } = await import("../src/desktop/renderer/src/components/settings/SettingsSubagent.js");
+    let current!: ReturnType<typeof useSettingsDraft>;
+    function Probe() { current = useSettingsDraft(); return null; }
+    await h.render(h.React.createElement(SettingsDraftProvider, { active: true, projectId: "project", sessionRunning: false,
+      onCommitted() {}, onFontPreview() { previews += 1; }, onThemePreview() { previews += 1; },
+      onAppearancePreview() { previews += 1; }, onNotify() {}, children: h.React.createElement(h.React.Fragment, null,
+        h.React.createElement(Probe), h.React.createElement(SettingsToolModel, { onTest: async () => ({ ok: true, message: "ok" }), onNotify() {} }),
+        h.React.createElement(SettingsVisionModel, { onNotify() {} }), h.React.createElement(SettingsSubagent, { onOpenProviders() {} })) }));
+    const before = current.snapshot!;
+    const previewsBeforeSelection = previews;
+    await h.React.act(() => current.removeModel("unsaved-model"));
+    await h.click('[aria-label="工具模型"]');
+    await h.click('.settings-model-picker-option');
+    assert.equal(writes.length, 1);
+    assert.equal(document.querySelector<HTMLButtonElement>('[aria-label="工具模型"]')?.disabled, true);
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用视觉模型"]')?.disabled, false);
+    assert.equal(document.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.disabled, false);
+    await h.React.act(() => {
+      const select = document.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')!;
+      select.value = "claude-code";
+      select.dispatchEvent(new h.dom.window.Event("change", { bubbles: true }));
+    });
+    await h.click('[aria-label="启用视觉模型"]');
+    assert.equal(writes.length, 1, "独立选择沿已有队列提交，避免配置版本冲突");
+    const draftBeforeReceipts = current.draft;
+    await h.React.act(async () => gates[0]!.resolve({ status: "committed", journalId: "tool", appliedFields: ["models"],
+      modelSelection: { projectId: "project", hasRunningTasks: false, preferenceRevision: 1, configRevision: "config:2",
+        models: { toolModel: undefined, resolvedToolModel: "tool-selected", visionModel: undefined, visionModelEnabled: false } } }));
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1]!.expectedConfigRevision, "config:2");
+    assert.equal(document.querySelector<HTMLButtonElement>('[aria-label="工具模型"]')?.disabled, false);
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用视觉模型"]')?.disabled, true);
+    await h.React.act(async () => gates[1]!.resolve({ status: "committed", journalId: "vision", appliedFields: ["models"],
+      modelSelection: { projectId: "project", hasRunningTasks: false, preferenceRevision: 1, configRevision: "config:3",
+        models: { toolModel: undefined, resolvedToolModel: "tool-selected", visionModel: undefined, visionModelEnabled: true } } }));
+    assert.equal(current.snapshot?.configRevision, "config:3");
+    assert.equal(current.snapshot?.models.visionModelEnabled, true);
+    assert.equal(current.snapshot?.models.visionModel, undefined, "仅开启开关不能自动选择模型");
+    assert.equal(document.querySelector('[aria-label="视觉模型"]')?.textContent, "选择模型…");
+    assert.deepEqual(writes[1]!.models, { upserts: [], removeAliases: [], visionModelEnabled: true });
+    assert.equal(current.snapshot?.models.resolvedToolModel, "tool-selected");
+    assert.equal(current.snapshot?.models.configured, before.models.configured);
+    assert.equal(current.snapshot?.models.connections, before.models.connections);
+    assert.equal(current.snapshot?.memory, before.memory);
+    assert.equal(current.snapshot?.skills, before.skills);
+    assert.equal(current.draft?.subagent.runtime, "claude-code");
+    assert.deepEqual(current.draft?.models.removeAliases, ["unsaved-model"]);
+    assert.equal(current.draft, draftBeforeReceipts, "模型选择回执不重建其它设置草稿");
+    assert.equal(previews, previewsBeforeSelection, "模型选择不能重复触发外观预览");
+    assert.equal(reads, 1, "局部保存无需重新读取整份设置");
+  } finally {
+    for (const gate of gates) gate.resolve({ status: "rolled_back", snapshot: base });
+    await h.close();
+  }
+});
+
+test("独立设置页不读取完整配置，进入需要草稿的页才加载且同次打开复用", async () => {
+  let reads = 0;
+  const h = await harness({ settingsSnapshot: async () => { reads += 1; return snapshot(); } });
+  try {
+    await h.overlay({ targetTab: "关于" });
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "关于");
+    assert.equal(reads, 0);
+    await h.click('[data-settings-tab="聊天"]');
+    assert.equal(reads, 1);
+    await h.click('[aria-label="启用流式响应"]');
+    await h.click('[data-settings-tab="关于"]');
+    await h.click('[data-settings-tab="聊天"]');
+    assert.equal(reads, 1, "同次打开切换分页不重读配置");
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
+    await h.overlay({ open: false, targetTab: "关于" });
+    await h.overlay({ open: true, targetTab: "关于" });
+    assert.equal(reads, 1, "重新只看独立页不刷新完整设置");
+    await h.click('[data-settings-tab="聊天"]');
+    assert.equal(reads, 2, "重新进入配置页仍校验本次打开的配置");
+  } finally { await h.close(); }
+});
+
+for (const status of ["committed", "rolled_back"] as const) test(`非模型保存 ${status} 回执保留模型目录和保存期间的新草稿`, async () => {
+  const base = snapshot();
+  const gate = Promise.withResolvers<unknown>();
+  let reads = 0;
+  const commits: Array<{ scope?: string; fields?: string[] }> = [];
+  const h = await harness({ settingsSnapshot: async () => { reads += 1; return base; }, saveSettings: async () => await gate.promise });
+  try {
+    const { SettingsDraftProvider } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftProvider.js");
+    const { useSettingsDraft } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    let current!: ReturnType<typeof useSettingsDraft>;
+    function Probe() { current = useSettingsDraft(); return null; }
+    await h.render(h.React.createElement(SettingsDraftProvider, { active: true, projectId: "project", sessionRunning: false,
+      onCommitted(_next, scope, fields) { commits.push({ scope, fields }); }, onFontPreview() {}, onThemePreview() {}, onNotify() {},
+      children: h.React.createElement(Probe) }));
+    const models = current.snapshot!.models;
+    const changedChat = { ...base.chatParams, response: { ...base.chatParams.response, streaming: false } };
+    await h.React.act(() => current.setChatParams(changedChat));
+    let saving!: ReturnType<typeof current.saveAll>;
+    await h.React.act(() => { saving = current.saveAll(); });
+    await h.React.act(() => current.setFontPreference({ family: "system", size: 16 }));
+    const { models: _models, ...settings } = base;
+    await h.React.act(async () => {
+      gate.resolve({ status, journalId: "non-model", appliedFields: ["chatParams"],
+        settings: { ...settings, configRevision: "config:2", chatParams: status === "committed" ? changedChat : base.chatParams } });
+      await saving;
+    });
+    assert.equal(current.snapshot!.models, models);
+    assert.equal(current.snapshot!.configRevision, "config:2");
+    assert.equal(current.draft!.fontPreference.size, 16);
+    assert.equal(current.draft!.chatParams.response?.streaming, false);
+    assert.equal(reads, 1);
+    assert.deepEqual(commits, status === "committed" ? [{ scope: "settings", fields: ["chatParams"] }] : []);
+  } finally { gate.resolve({ status: "rolled_back", snapshot: base }); await h.close(); }
+});
+
+for (const kind of ["project", "global", "mixed", "current-running"] as const) test(`技能草稿 ${kind} 按实际修改范围检查运行门禁`, async () => {
+  const base = { ...snapshot(), hasRunningTasks: true };
+  let writes = 0;
+  const h = await harness({ settingsSnapshot: async () => base, saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+    writes += 1;
+    const { models: _models, ...settings } = base;
+    return { status: "committed", journalId: "project-skills", appliedFields: ["skills"], settings: { ...settings,
+      skills: { ...settings.skills, ...input.skills } } };
+  } });
+  try {
+    const { SettingsDraftProvider } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftProvider.js");
+    const { useSettingsDraft } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    let current!: ReturnType<typeof useSettingsDraft>;
+    function Probe() { current = useSettingsDraft(); return null; }
+    await h.render(h.React.createElement(SettingsDraftProvider, { active: true, projectId: "project", sessionRunning: kind === "current-running",
+      onCommitted() {}, onFontPreview() {}, onThemePreview() {}, onNotify() {}, children: h.React.createElement(Probe) }));
+    await h.React.act(() => {
+      current.setSkills({ globalDefaults: kind === "global" ? { "project:skill": false } : {}, projectOverrides: { "project:skill": false } });
+      if (kind === "mixed") current.setChatParams({ ...base.chatParams, temperature: 0.2 });
+    });
+    await h.React.act(async () => { await current.saveAll(); });
+    assert.equal(writes, kind === "project" ? 1 : 0);
+  } finally { await h.close(); }
+});
+
+for (const tab of ["插件", "MCP 服务器"]) test(`${tab} 直接打开只读取自身目录`, async () => {
+  let settingsReads = 0;
+  let ownReads = 0;
+  const h = await harness({
+    settingsSnapshot: async () => { settingsReads += 1; throw new Error("unrelated model catalog offline"); },
+    pluginCatalog: async () => { ownReads += 1; return { plugins: [], warnings: [] }; },
+    mcpSnapshot: async () => { ownReads += 1; return { servers: [], catalog: { status: "idle", source: "", entries: [], categories: [] }, configRevision: "mcp:1" }; }
+  });
+  try {
+    await h.overlay({ targetTab: tab });
+    assert.equal(settingsReads, 0);
+    assert.equal(ownReads, 1);
+    assert.equal(document.querySelector('.settings-load-state'), null);
+  } finally { await h.close(); }
+});
+
+test("工具模型保存不阻塞独立分页，切页后仍接收保存结果", async () => {
+  const gate = Promise.withResolvers<unknown>();
+  const commits: DesktopSettingsSnapshot[] = [];
+  let writes = 0;
+  const h = await harness({ saveSettings: async () => { writes += 1; return await gate.promise; } });
+  try {
+    await h.overlay({ targetTab: "通用", onSettingsCommitted: (next: DesktopSettingsSnapshot) => commits.push(next) });
+    await h.click('[aria-label="工具模型"]');
+    await h.click('.settings-model-picker-option');
+    assert.equal(writes, 1);
+    await h.click('[data-settings-tab="模型"]');
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "模型供应商");
+    await h.click('[data-settings-tab="关于"]');
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "关于");
+    await h.React.act(async () => gate.resolve({ status: "committed", journalId: "navigation", appliedFields: ["models"],
+      modelSelection: { projectId: "project", hasRunningTasks: false, preferenceRevision: 1, configRevision: "config:2",
+        models: { toolModel: undefined, visionModel: undefined, resolvedToolModel: "saved-tool" } } }));
+    assert.equal(commits.length, 1, "分页切换不丢失已提交回执");
+    assert.equal(commits[0]!.models.resolvedToolModel, "saved-tool");
+  } finally { await h.React.act(async () => gate.resolve({ status: "rolled_back", snapshot: snapshot() })); await h.close(); }
+});
+
 test("快速对话读取失败可重试，写入失败保留待保存值并提供明确重试", async () => {
   const saved = { autoHideOnBlur: true, injectScreenContext: false, clickThrough: false };
   let reads = 0;
@@ -692,7 +1024,8 @@ test("没有项目也能修改外观，偏好保存成功后才更新界面", as
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.closest('fieldset')?.disabled, true);
     await h.React.act(async () => saved.resolve("dark"));
     assert.deepEqual(previews, ["dark"]);
-    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /即时保存/u);
+    assert.equal(document.querySelector('.settings-save-status')?.textContent, "");
+    assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, true);
   } finally { await h.close(); }
 });
 
@@ -714,7 +1047,7 @@ test("设置模型菜单以单行模型 ID 展示，仍可按显示名搜索并�
     const models = [
       { alias: "first", displayName: "快速模型", model: "deepseek-v4-flash", provider: "直连" },
       { alias: "second", displayName: "备用模型", model: "deepseek-v4-flash", provider: "中转" }
-    ].map(model => ({ ...model, providerType: "openai-compatible", efforts: [], thinkingLevelMap: {}, defaultThinking: "off" as const }));
+    ].map(model => ({ ...model, providerType: "openai-compatible", available: true, efforts: [], thinkingLevelMap: {}, defaultThinking: "off" as const }));
     await h.render(h.React.createElement(SettingsModelPicker, {
       ariaLabel: "模型", groups: modelPickerGroups(models), inheritLabel: "使用默认工具模型",
       placeholder: "选择模型", value: "first", onChange: value => chosen.push(value)
@@ -746,16 +1079,21 @@ test("自动工具模型显示实际模型，打开菜单不保存也不发起�
   let tests = 0;
   const h = await harness({ settingsSnapshot: async () => ({ ...base, models: { ...base.models,
     configured: [{ alias: "auto-flash", displayName: "快速模型", provider: "relay", providerType: "openai-compatible",
-      model: "deepseek-v4-flash", efforts: [], thinkingLevelMap: {}, defaultThinking: "off" }], resolvedToolModel: "auto-flash"
+      model: "deepseek-v4-flash", available: true, efforts: [], thinkingLevelMap: {}, defaultThinking: "off" },
+    { alias: "old", displayName: "旧模型", provider: "disabled", providerType: "openai-compatible",
+      model: "old-model", available: false, efforts: [], thinkingLevelMap: {}, defaultThinking: "off" }], resolvedToolModel: "auto-flash"
   } }), saveSettings: async () => { saves++; } });
   try {
     await h.overlay({ targetTab: "通用", onTestModelConfiguration: async () => { tests++; return { ok: true }; } });
     assert.match(document.querySelector('#tool-model .settings-model-picker-trigger')?.textContent ?? "", /deepseek-v4-flash.*自动/u);
     await h.click('#tool-model [aria-label="工具模型"]');
+    assert.deepEqual([...document.querySelectorAll('.settings-model-picker-option:not(.is-inherit) strong')]
+      .map(node => node.textContent), ["deepseek-v4-flash"]);
     assert.equal(saves, 0);
     assert.equal(tests, 0);
     assert.equal(document.querySelector('.is-inherit')?.getAttribute("aria-selected"), "true");
-    assert.match(document.querySelector(".is-inherit")?.textContent ?? "", /自动选择.*deepseek-v4-flash/u);
+    assert.equal(document.querySelector(".is-inherit")?.textContent, "自动选择");
+    assert.match(document.querySelector(".is-inherit")?.getAttribute("title") ?? "", /deepseek-v4-flash/u);
     assert.equal(document.querySelectorAll('[role="option"][aria-selected="true"]').length, 1);
     const panel = document.querySelector('.settings-model-picker-panel');
     assert.ok(panel?.closest('.settings-modal'), "浮层保留设置主题作用域");
@@ -767,6 +1105,85 @@ test("自动工具模型显示实际模型，打开菜单不保存也不发起�
     assert.equal(saves, 0);
     assert.equal(tests, 0);
   } finally { await h.close(); }
+});
+
+test("继承模型不在可选列表时仍展示实际模型，并保留默认来源", async () => {
+  const h = await harness();
+  try {
+    const { SettingsModelPicker } = await import("../src/desktop/renderer/src/components/settings/SettingsModelPicker.js");
+    await h.render(h.React.createElement(SettingsModelPicker, {
+      ariaLabel: "模型", groups: [], inheritLabel: "使用默认工具模型", inheritDetail: "relay/deepseek-v4-flash",
+      placeholder: "使用默认工具模型", onChange() {}
+    }));
+    assert.equal(document.querySelector('.settings-model-picker-trigger-copy strong')?.textContent, "relay/deepseek-v4-flash");
+    assert.equal(document.querySelector('.settings-model-picker-trigger-copy small')?.textContent, "使用默认工具模型");
+    await h.click('[aria-label="模型"]');
+    assert.equal(document.querySelector('.is-inherit')?.textContent, "使用默认工具模型");
+    assert.equal(document.querySelectorAll('.settings-model-picker-option:not(.is-inherit)').length, 0);
+  } finally { await h.close(); }
+});
+
+test("模型菜单退场期间保留搜索结果并停止选择，重新展开取消退场，减少动态效果立即关闭", async context => {
+  const h = await harness();
+  const chosen: Array<string | undefined> = [];
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  const mediaListeners = new Set<() => void>();
+  const motion = { matches: false, addEventListener: (_: string, listener: () => void) => mediaListeners.add(listener),
+    removeEventListener: (_: string, listener: () => void) => mediaListeners.delete(listener) };
+  h.dom.window.matchMedia = () => motion as unknown as MediaQueryList;
+  h.dom.window.requestAnimationFrame = callback => { frames.set(++frameId, callback); return frameId; };
+  h.dom.window.cancelAnimationFrame = id => { frames.delete(id); };
+  document.documentElement.style.setProperty("--dropdown-close-dur", "180ms");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const frame = async () => { await h.React.act(() => {
+    const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0));
+  }); };
+  try {
+    const { SettingsModelPicker } = await import("../src/desktop/renderer/src/components/settings/SettingsModelPicker.js");
+    await h.render(h.React.createElement(SettingsModelPicker, {
+      ariaLabel: "模型", groups: [{ key: "local", label: "本地", iconTone: "local", options: [
+        { value: "first", label: "first-model" }, { value: "second", label: "second-model" }
+      ] }], inheritLabel: "使用默认工具模型", placeholder: "选择模型", value: "first", onChange: value => chosen.push(value)
+    }));
+    await h.click('[aria-label="模型"]');
+    await frame();
+    await h.input('[aria-label="搜索模型或服务商"]', "second");
+    await h.click('.settings-model-picker-option:not(.is-inherit)');
+    assert.deepEqual(chosen, ["second"]);
+    const panel = document.querySelector('.settings-model-picker-panel');
+    assert.ok(panel, "收起时保留浮层以播放退场");
+    assert.equal(panel.getAttribute("aria-hidden"), "true");
+    assert.ok(panel.hasAttribute("inert"), "退场期间不可再次操作");
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索模型或服务商"]')?.value, "second");
+    assert.equal(document.activeElement?.getAttribute("aria-label"), "模型");
+    await h.click('.settings-model-picker-option:not(.is-inherit)');
+    assert.deepEqual(chosen, ["second"]);
+    await h.React.act(() => context.mock.timers.tick(90));
+    await h.click('[aria-label="模型"]');
+    await frame();
+    await h.React.act(() => context.mock.timers.tick(180));
+    assert.equal(document.querySelector('.settings-model-picker-panel'), panel, "上次退场不能卸载重新展开的菜单");
+    assert.equal(panel.hasAttribute("inert"), false);
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索模型或服务商"]')?.value, "");
+    assert.equal(document.activeElement?.getAttribute("aria-label"), "搜索模型或服务商");
+    await h.input('[aria-label="搜索模型或服务商"]', "first");
+    await h.click('[aria-label="模型"]');
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索模型或服务商"]')?.value, "first", "点击触发器关闭也保留搜索结果直到退场结束");
+    await h.React.act(() => context.mock.timers.tick(179));
+    assert.equal(document.querySelector('.settings-model-picker-panel'), panel);
+    await h.React.act(() => context.mock.timers.tick(1));
+    assert.equal(document.querySelector('.settings-model-picker-panel'), null, "退场结束释放节点");
+    await h.click('[aria-label="模型"]');
+    await frame();
+    await h.React.act(() => { motion.matches = true; mediaListeners.forEach(listener => listener()); });
+    await h.click('[aria-label="模型"]');
+    assert.equal(document.querySelector('.settings-model-picker-panel'), null);
+    assert.deepEqual(chosen, ["second"]);
+    await h.render(null);
+    assert.equal(frames.size, 0);
+    assert.equal(mediaListeners.size, 0);
+  } finally { await h.close(); context.mock.timers.reset(); }
 });
 
 test("Coding Agent 仅解释所选后端，并按连接保存选择", async () => {
@@ -1193,7 +1610,7 @@ test("工具模型选择器只显示模型 ID 一行，并画服务商自己的�
   const model = {
     alias: "free-deepseek", displayName: "Deepseek-V4.1-Flash", provider: "free",
     providerType: "openai-compatible", model: "workbuddy-ai/deepseek-v4.1-flash",
-    baseUrl: "http://127.0.0.1:3425/v1", efforts: [], thinkingLevelMap: {}, defaultThinking: "off", showInPicker: true
+    baseUrl: "http://127.0.0.1:3425/v1", efforts: [], thinkingLevelMap: {}, defaultThinking: "off", showInPicker: true, available: true
   };
   const h = await harness({
     settingsSnapshot: async () => ({
@@ -1262,16 +1679,67 @@ test("视觉模型只列出可用且明确支持图片输入的已启用 API 模
   try {
     const { SettingsDraftContext } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
     const { SettingsVisionModel } = await import("../src/desktop/renderer/src/components/settings/SettingsVisionModel.js");
-    await h.render(h.React.createElement(SettingsDraftContext.Provider, { value: context as never }, h.React.createElement(SettingsVisionModel)));
+    await h.render(h.React.createElement(SettingsDraftContext.Provider, { value: context as never }, h.React.createElement(SettingsVisionModel, { onNotify() {} })));
     assert.equal(writes.length, 0, "打开设置不能自动清除旧的无视觉能力配置");
     await h.click('[aria-label="视觉模型"]');
     const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
-    assert.deepEqual(options.map(option => option.textContent?.trim()), ["跟随主模型", "vision-good"]);
+    assert.deepEqual(options.map(option => option.textContent?.trim()), ["vision-good"]);
     assert.ok(!options.some(option => option.textContent?.includes("text-only")), "旧的无视觉能力模型不得作为选项出现");
     await h.React.act(async () => options.find(option => option.textContent?.includes("vision-good"))?.click());
     assert.deepEqual(writes, [{ upserts: [], removeAliases: [], visionModel: { alias: "vision-good" } }]);
   } finally { await h.close(); }
 });
+test("视觉模型开关独立保存，关闭隐藏选择并在重新打开设置后保留模型，失败保留原状态", async () => {
+  const base = snapshot();
+  base.models.visionModel = "remembered-vision";
+  let enabled = false;
+  let fail = false;
+  const firstSave = Promise.withResolvers<void>();
+  const writes: DesktopSettingsSaveInput[] = [];
+  const current = () => ({ ...base, models: { ...base.models, visionModelEnabled: enabled } });
+  const h = await harness({ settingsSnapshot: async () => current(),
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(input);
+      if (writes.length === 1) await firstSave.promise;
+      if (fail) return { status: "rolled_back", message: "未能保存视觉开关", snapshot: current() };
+      enabled = input.models!.visionModelEnabled!;
+      return { status: "committed", journalId: "vision-switch", appliedFields: ["models"], modelSelection: {
+        projectId: base.projectId, hasRunningTasks: false, preferenceRevision: base.preferenceRevision,
+        configRevision: `switch:${writes.length}`, models: { toolModel: base.models.toolModel,
+          resolvedToolModel: base.models.resolvedToolModel, visionModel: "remembered-vision", visionModelEnabled: enabled }
+      } };
+    }
+  });
+  const toggle = () => document.querySelector<HTMLInputElement>('[role="switch"][aria-label="启用视觉模型"]')!;
+  try {
+    await h.overlay({ targetTab: "通用" });
+    assert.equal(toggle().checked, false);
+    assert.equal(document.querySelector('[role="combobox"][aria-label="视觉模型"]'), null);
+    await h.click('[aria-label="启用视觉模型"]');
+    assert.equal(toggle().disabled, true, "等待保存时不能重复切换");
+    assert.deepEqual(writes[0]!.models, { upserts: [], removeAliases: [], visionModelEnabled: true });
+    await h.React.act(async () => firstSave.resolve());
+    assert.equal(toggle().checked, true);
+    assert.equal(document.querySelector('[aria-label="视觉模型"]')?.textContent, "remembered-vision");
+    fail = true;
+    await h.click('[aria-label="启用视觉模型"]');
+    assert.equal(toggle().checked, true);
+    assert.equal(toggle().disabled, false);
+    assert.match(document.querySelector('#vision-model [role="alert"]')?.textContent ?? "", /未能保存视觉开关/u);
+    fail = false;
+    await h.click('[aria-label="启用视觉模型"]');
+    assert.equal(toggle().checked, false);
+    assert.equal(document.querySelector('[aria-label="视觉模型"]'), null);
+    assert.deepEqual(writes[2]!.models, { upserts: [], removeAliases: [], visionModelEnabled: false });
+    await h.render(null);
+    await h.overlay({ targetTab: "通用" });
+    assert.equal(toggle().checked, false);
+    await h.click('[aria-label="启用视觉模型"]');
+    assert.equal(toggle().checked, true);
+    assert.equal(document.querySelector('[aria-label="视觉模型"]')?.textContent, "remembered-vision");
+  } finally { firstSave.resolve(); await h.close(); }
+});
+
 test("通用设置按工具模型、视觉模型、Coding Agent 顺序显示模型卡片", async () => {
   const h = await harness();
   try {
@@ -1314,7 +1782,7 @@ test("保存响应保留等待期间修改的聊天草稿，再次保存使用�
     assert.equal(writes.length, 2);
     assert.equal(writes[1]?.expectedConfigRevision, "config:2");
     assert.equal(writes[1]?.chatParams?.response?.streaming, originalStreaming);
-    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /无待保存更改/u);
     assert.deepEqual(projections.at(-1), { dirty: false, canSave: false, open: true });
   } finally { await h.close(); }
 });
@@ -1349,7 +1817,7 @@ test("保存期间跨页编辑保留，已提交字段跟随后端归一化且�
     await h.click('[aria-label="关闭设置"]');
     assert.equal(closes, 1);
     assert.equal(document.querySelector('[aria-label="可视化 Agent 浏览"]')?.getAttribute("aria-checked"), String(initial.webSearch.visibleBrowsing));
-    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /无待保存更改/u);
     assert.equal(writes.length, 1, "明确丢弃不触发新保存");
   } finally { await h.close(); }
 });
@@ -1382,7 +1850,7 @@ test("跨页新编辑重试只保存剩余字段，不重复提交已归一化�
     assert.equal(writes[1]?.chatParams, undefined, "服务端归一化后的已提交组不应再次作为旧值提交");
     assert.equal(writes[1]?.webSearch?.visibleBrowsing, !initial.webSearch.visibleBrowsing);
     assert.equal(committed.chatParams.temperature, 0.4);
-    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /无待保存更改/u);
   } finally { await h.close(); }
 });
 
@@ -1413,7 +1881,7 @@ for (const response of ["rejected", "conflict"] as const) {
       assert.equal(writes.length, 2);
       assert.equal(writes[1]?.expectedConfigRevision, response === "conflict" ? "config:2" : "config:1");
       assert.equal(writes[1]?.chatParams?.response?.showTokenUsage, latest);
-      assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+      assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /无待保存更改/u);
     } finally { await h.close(); }
   });
 }

@@ -100,6 +100,7 @@ async function harness(options: {
   const reads: string[] = [];
   const catalogFetches: string[] = [];
   const released: string[][] = [];
+  const notices: string[] = [];
   let current = options.initialSnapshot ?? snapshot(options.withModel ?? true);
   Object.assign(dom.window, {
     biny: {
@@ -132,16 +133,17 @@ async function harness(options: {
       onTest: async () => { if (options.testConnection) return await options.testConnection(); throw new Error("Unexpected provider request"); },
       onStartLogin: async () => { throw new Error("Unexpected login"); },
       onCompleteLogin: async () => { throw new Error("Unexpected login"); },
-      onCancelLogin: async () => {}, onNotify: () => {}, onOpenExternal: async () => { throw new Error("Unexpected external URL"); }
+      onCancelLogin: async () => {}, onNotify: message => { notices.push(message); }, onOpenExternal: async () => { throw new Error("Unexpected external URL"); }
     });
     return React.createElement(SettingsDetailHostContext.Provider, { value: dom.window.document.getElementById("root") }, provider, React.createElement(SettingsPageFooter, {
-      dirtyCount: context.dirtyCount, pendingModelEdits: context.pendingModelEdits, disabled: context.invalid, state: context.saveState,
+      dirtyCount: context.dirtyCount, disabled: context.invalid || context.saveState === "saving",
+      state: context.manualSaving ? "saving" : context.saveState === "recovery_required" ? "recovery_required" : context.dirtyCount > 0 ? "dirty" : "clean",
       onCancel: () => { void context.discard(); }, onSave: () => { void context.saveAll(); }
     }));
   }
   await act(async () => root.render(React.createElement(SettingsDraftProvider, {
     active: true, projectId: "project", sessionRunning: false, onCommitted: () => {},
-    onFontPreview: () => {}, onThemePreview: () => {}, onNotify: () => {}, children: React.createElement(Content)
+    onFontPreview: () => {}, onThemePreview: () => {}, onNotify: message => { notices.push(message); }, children: React.createElement(Content)
   })));
   const document = dom.window.document;
   const keyInput = (): HTMLInputElement => {
@@ -150,7 +152,7 @@ async function harness(options: {
     return input;
   };
   return {
-    dom, writes, staged, reads, released, keyInput, catalogFetches,
+    dom, writes, staged, reads, released, keyInput, catalogFetches, notices,
     context: () => { assert.ok(draftContext); return draftContext; },
     click: async (selector: string) => {
       const button = document.querySelector<HTMLButtonElement>(selector);
@@ -410,13 +412,14 @@ test("queued immediate saves report saving until persistence completes; dirty dr
 });
 
 
-test("等待密钥防抖保存时显示待保存状态，不能提前显示所有更改已保存", async t => {
+test("密钥待保存由本项管理，底栏只显示手动草稿状态", async t => {
   const h = await harness();
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {
     await h.editKey("SYNTHETIC_PENDING_KEY");
     assert.equal(h.context().pendingModelEdits, true);
-    assert.doesNotMatch(dom.window.document.querySelector(".settings-save-status")!.textContent!, /所有更改已保存/u);
+    assert.equal(dom.window.document.querySelector(".settings-save-status")!.textContent, "无待保存更改");
+    assert.deepEqual([...dom.window.document.querySelectorAll(".settings-footer-actions button")].map(button => button.textContent), ["关闭", "保存"]);
     await act(async () => { t.mock.timers.tick(900); });
     assert.equal(h.context().pendingModelEdits, false);
   } finally { await h.close(); }
@@ -753,7 +756,9 @@ for (const outcome of ["rolled_back", "rejected"] as const) {
       assert.equal(dom.window.document.querySelector<HTMLInputElement>('#provider-example-base-url')?.value, address);
       assert.equal(h.context().pendingModelEdits, true);
       assert.equal(h.writes.length, 1);
-      assert.match(h.context().saveError ?? "", /SYNTHETIC_ENABLE_FAILURE/u);
+      if (outcome === "rolled_back") assert.ok(h.notices.some(message => message.includes("SYNTHETIC_ENABLE_FAILURE")), "the rollback remains visible as an operation notification");
+      assert.equal(dom.window.document.querySelector('.provider-inline-notice'), null, "OpenAI failure does not appear in Anthropic's editor");
+      assert.equal(h.context().saveError, undefined, "an immediate provider failure does not replace manual draft feedback");
       assert.deepEqual(h.catalogFetches, []);
       assert.deepEqual(h.staged, []);
       assert.equal(h.context().snapshot?.models.connections.some(connection => connection.providerAlias === "openai"), false);
@@ -762,6 +767,7 @@ for (const outcome of ["rolled_back", "rejected"] as const) {
       assert.deepEqual(h.writes[1]?.models?.customProviders, [{ alias: "example", baseUrl: address }]);
       await h.selectProvider("OpenAI");
       assert.ok(dom.window.document.querySelector('.provider-enable-card .settings-primary-button'), "failed enable remains retryable");
+      if (outcome === "rejected") assert.match(dom.window.document.querySelector('.provider-inline-notice')?.textContent ?? "", /SYNTHETIC_ENABLE_FAILURE/u, "the failure remains visible on its own provider");
     } finally {
       await act(async () => { gate.resolve(); });
       await h.close();

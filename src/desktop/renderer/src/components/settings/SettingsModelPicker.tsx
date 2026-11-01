@@ -1,6 +1,7 @@
 import { autoUpdate, computePosition, flip, offset, shift, size } from "@floating-ui/dom";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useDropdownPresence } from "../../useDropdownPresence.js";
 import { Icon } from "../Icon.js";
 import { ProviderBrandGlyph } from "../ProviderBrandGlyph.js";
 import { ProviderBrandIcon } from "../ProviderBrandIcon.js";
@@ -40,9 +41,12 @@ export function SettingsModelPicker({
   const searchRef = useRef<HTMLInputElement>(null);
   const listId = useId();
   const expanded = open && !disabled;
+  const presence = useDropdownPresence(expanded);
   const effectiveValue = value ?? resolvedValue;
   const selectedGroup = groups.find(group => group.options.some(option => option.value === effectiveValue));
   const selected = selectedGroup?.options.find(option => option.value === effectiveValue);
+  const triggerLabel = selected?.label ?? value ?? inheritDetail;
+  const triggerHint = selectionHint ?? (value === undefined && inheritDetail ? inheritLabel : undefined);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleGroups = groups.map(group => ({
     ...group,
@@ -50,8 +54,9 @@ export function SettingsModelPicker({
       || `${group.label} ${option.label} ${option.secondary ?? ""} ${option.trailing ?? ""}`.toLocaleLowerCase().includes(normalizedQuery))
   })).filter(group => group.options.length > 0);
 
-  const close = (): void => { setOpen(false); setQuery(""); };
+  const close = (): void => { setOpen(false); };
   const choose = (next: string | undefined): void => {
+    if (!expanded) return;
     onChange(next);
     close();
     triggerRef.current?.focus({ preventScroll: true });
@@ -72,7 +77,7 @@ export function SettingsModelPicker({
     const update = (): void => {
       void computePosition(anchor, panel, {
         strategy: "fixed", placement: "bottom-start",
-        middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 }), size({
+        middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 }), size({
           padding: 8,
           apply({ availableHeight, rects, elements }) {
             if (!active) return;
@@ -82,8 +87,9 @@ export function SettingsModelPicker({
             });
           }
         })]
-      }).then(({ x, y }) => {
+      }).then(({ x, y, placement }) => {
         if (!active) return;
+        panel.dataset.origin = placement.startsWith("top") ? "bottom-left" : "top-left";
         Object.assign(panel.style, { left: `${x}px`, top: `${y}px`, visibility: "visible" });
         if (!focused) { searchRef.current?.focus({ preventScroll: true }); focused = true; }
       });
@@ -101,11 +107,10 @@ export function SettingsModelPicker({
       event.preventDefault();
       event.stopPropagation();
       setOpen(false);
-      setQuery("");
       triggerRef.current?.focus({ preventScroll: true });
     };
     const closeOutside = (event: PointerEvent): void => {
-      if (!contains(event.target)) { setOpen(false); setQuery(""); }
+      if (!contains(event.target)) setOpen(false);
     };
     window.addEventListener("keydown", closeOnEscape, true);
     window.addEventListener("pointerdown", closeOutside);
@@ -134,7 +139,7 @@ export function SettingsModelPicker({
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || (searching && ["Home", "End"].includes(event.key))) return;
         event.preventDefault();
         event.stopPropagation();
-        if (!expanded) { setOpen(true); return; }
+        if (!expanded) { setQuery(""); setOpen(true); return; }
         if (!options.length) return;
         const current = options.indexOf(document.activeElement as HTMLButtonElement);
         const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
@@ -158,46 +163,49 @@ export function SettingsModelPicker({
         className="settings-model-picker-trigger"
         onClick={event => {
           event.preventDefault();
-          if (!disabled) { setOpen(!expanded); setQuery(""); }
+          if (!disabled) {
+            if (!expanded) setQuery("");
+            setOpen(!expanded);
+          }
         }}
         role="combobox"
         ref={triggerRef}
-        title={selected ? `${selectedGroup?.label} · ${selected.label}` : value ?? placeholder}
+        title={selected ? `${selectedGroup?.label} · ${selected.label}` : triggerLabel ?? placeholder}
       >
-        {selected || value !== undefined ? <ProviderMark iconId={selectedGroup?.iconId} iconTone={selectedGroup?.iconTone ?? "model"} /> : null}
-        {selected ? (
-          <>
-            <span className="settings-model-picker-trigger-copy">
-              <strong>{selected.label}</strong>
-              {selectionHint ? <small>（{selectionHint}）</small> : null}
-            </span>
-          </>
-        ) : <span className="settings-model-picker-placeholder">
-          {value ?? placeholder}
-          {value === undefined && inheritDetail ? <small>{inheritDetail}</small> : null}
-        </span>}
+        {triggerLabel ? <ProviderMark iconId={selectedGroup?.iconId} iconTone={selectedGroup?.iconTone ?? "model"} /> : null}
+        {triggerLabel ? (
+          <span className="settings-model-picker-trigger-copy">
+            <strong>{triggerLabel}</strong>
+            {triggerHint ? <small>{triggerHint}</small> : null}
+          </span>
+        ) : <span className="settings-model-picker-placeholder">{placeholder}</span>}
         <Icon className="settings-model-picker-chevron" name="chevron" size={14} />
       </button>
-      {expanded && portalTarget ? createPortal(
-        <div className="settings-model-picker-panel" ref={panelRef} style={{ visibility: "hidden" }}>
+      {presence.present && portalTarget ? createPortal(
+        <div
+          aria-hidden={!expanded || undefined}
+          className={`settings-model-picker-panel t-dropdown${expanded && presence.phase === "open" ? " is-open" : !expanded ? " is-closing" : ""}`}
+          inert={!expanded}
+          ref={panelRef}
+          style={{ visibility: "hidden" }}
+        >
           <label className="settings-model-picker-search">
             <Icon name="search" size={14} />
             <input className="settings-field" ref={searchRef} aria-label="搜索模型或服务商" onChange={event => setQuery(event.target.value)}
-              placeholder="搜索模型或服务商" type="search" value={query} />
+              placeholder="搜索模型…" type="search" value={query} />
           </label>
           <div className="settings-model-picker-options" id={listId} ref={listRef} role="listbox" aria-label={ariaLabel}>
             {inheritLabel ? (
               <button aria-selected={value === undefined}
                 className={`settings-model-picker-option is-inherit${value === undefined ? " is-selected" : ""}`}
-                onClick={() => choose(undefined)} role="option" type="button">
+                onClick={() => choose(undefined)} role="option" title={`${inheritLabel}${inheritDetail ? ` · ${inheritDetail}` : ""}`} type="button">
+                <span aria-hidden="true" className="settings-model-picker-option-check"><Icon name={value === undefined ? "check" : "close"} size={14} /></span>
                 <span className="settings-model-picker-option-copy"><strong>{inheritLabel}</strong></span>
-                {inheritDetail ? <small className="settings-model-picker-option-trailing">{inheritDetail}</small> : null}
-                <span aria-hidden="true" className="settings-model-picker-option-check">{value === undefined ? <Icon name="check" size={14} /> : null}</span>
               </button>
             ) : null}
             {visibleGroups.map(group => (
               <section className="settings-model-picker-group" key={group.key} role="group" aria-label={group.label}>
-                <div className="settings-model-picker-group-heading">
+                <div className="settings-model-picker-group-heading" title={group.label}>
                   <ProviderMark iconId={group.iconId} iconTone={group.iconTone} />
                   <strong>{group.label}</strong>
                 </div>
@@ -208,9 +216,9 @@ export function SettingsModelPicker({
                       className={`settings-model-picker-option${selectedOption ? " is-selected" : ""}`}
                       disabled={option.disabled} key={option.value} onClick={() => choose(option.value)} role="option" type="button"
                       title={`${group.label} · ${option.label}${option.secondary ? ` · ${option.secondary}` : ""}${option.disabled ? " · 未配置" : ""}`}>
+                      <span aria-hidden="true" className="settings-model-picker-option-check">{selectedOption ? <Icon name="check" size={14} /> : null}</span>
                       <span className="settings-model-picker-option-copy"><strong>{option.label}</strong></span>
                       {option.trailing || option.disabled ? <small className="settings-model-picker-option-trailing">{option.trailing ?? "未配置"}</small> : null}
-                      <span aria-hidden="true" className="settings-model-picker-option-check">{selectedOption ? <Icon name="check" size={14} /> : null}</span>
                     </button>
                   );
                 })}

@@ -8,8 +8,8 @@ import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
 const categoryLabels = { settings: "模型设置", mcp: "MCP 服务器", sessions: "会话" };
 const resultLabels = { imported: "已导入", skipped: "已跳过", failed: "失败", unknown: "结果待确认" };
 
-export function SettingsImport({ projectId, projects: allProjects, hidden = false, disabled, onImported }: {
-  projectId?: string; projects: DesktopProject[]; hidden?: boolean; disabled: boolean; onImported(projectId: string): Promise<void>;
+export function SettingsImport({ projectId, projects: allProjects, hidden = false, disabled }: {
+  projectId?: string; projects: DesktopProject[]; hidden?: boolean; disabled: boolean;
 }): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ApplicationImportSnapshot>();
   const projects = allProjects.filter(project => !project.missing);
@@ -73,15 +73,14 @@ export function SettingsImport({ projectId, projects: allProjects, hidden = fals
       else await window.biny.runApplicationImport(input);
       if (!alive.current) return;
       setPreview(undefined);
-      await reload();
-      if (!selectionOnly) await onImported(input.projectId);
+      if (selectionOnly) await reload();
     });
   };
   return <div hidden={hidden}>
     <SettingsImportContent snapshot={snapshot} error={error} busy={busy || disabled}
       onRetry={() => { void reload(); }} onChoose={choose} onCustomize={() => setCustomize(true)}
       onSyncChange={enabled => { void perform(async () => { const next = await window.biny.setApplicationImportSync(enabled); if (alive.current) { generation.current += 1; setSnapshot(next); } }); }}
-      onSync={() => { void perform(async () => { const next = await window.biny.syncApplicationImports(); if (alive.current) { generation.current += 1; setSnapshot(next); } for (const project of projects) await onImported(project.id); }); }} />
+      onSync={() => { void perform(async () => { const next = await window.biny.syncApplicationImports(); if (alive.current) { generation.current += 1; setSnapshot(next); } }); }} />
     {disabled ? <p role="status" className="import-warning">请先结束运行中的任务，并保存或取消其他设置更改，再导入内容。</p> : null}
     {!hidden && customize && snapshot ? <SettingsDetailLayer onClose={() => setCustomize(false)}><section className="model-dialog import-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="import-sync-title">
       <header><h3 id="import-sync-title">要同步的内容</h3><button type="button" aria-label="关闭同步范围" onClick={() => setCustomize(false)}><Icon name="close" size={16} /></button></header>

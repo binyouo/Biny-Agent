@@ -1799,7 +1799,7 @@ function ModelsSection({
         </button>
       </div>
       {models.length > 0 || query.trim() ? (
-        <label className="provider-model-search">
+        <label className="settings-search-field provider-model-search">
           <Icon name="search" size={13} />
           <input className="settings-field" aria-label="搜索模型" onChange={(event) => onQuery(event.target.value)} placeholder="搜索模型…" value={query} />
         </label>

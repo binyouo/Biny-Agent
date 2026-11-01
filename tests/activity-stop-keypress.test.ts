@@ -66,7 +66,7 @@ async function killAndWait({ child, closed }: TrackedChild): Promise<void> {
 
 async function fixture(
   t: TestContext,
-  options: { initialEvents?: FixtureEvent[]; tailEvents?: FixtureEvent[] } = {}
+  options: { initialEvents?: FixtureEvent[]; tailEvents?: FixtureEvent[]; stubborn?: boolean } = {}
 ): Promise<{
   service: ActivityRecorderService;
   database: DatabaseSync;
@@ -106,6 +106,7 @@ async function fixture(
   const script = [
     "#!" + process.execPath,
     "import { createInterface } from 'node:readline';",
+    ...(options.stubborn ? ["process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"] : []),
     "let generation;",
     "const initialEvents = " + JSON.stringify(options.initialEvents ?? []) + ";",
     "const tailEvents = " + JSON.stringify(options.tailEvents ?? []) + ";",
@@ -122,6 +123,7 @@ async function fixture(
     "    ];",
     "    process.stdout.write(messages.map(line).join(''));",
     "  } else if (command.type === 'stop') {",
+    ...(options.stubborn ? ["    return;"] : []),
     "    const messages = generation === 'Old' ? tailEvents.map(event) : [];",
     "    process.stdout.write(messages.map(line).join(''), () => process.exit(0));",
     "  }",
@@ -162,6 +164,13 @@ async function fixture(
   await service.search("stop-keypress-initial-queue-barrier");
   return { service, database, rows, trackCurrentChild, activeIdleTimers };
 }
+
+test("stop waits for an unresponsive input monitor to be killed", testOptions, async t => {
+  const f = await fixture(t, { stubborn: true });
+  const child = (f.service as unknown as { child: ChildProcessWithoutNullStreams }).child;
+  await f.service.stop();
+  assert.equal(child.signalCode, "SIGKILL");
+});
 
 function keyCount(rows: EventRow[]): number {
   return rows.filter(row => row.kind === "keypress").reduce((total, row) => {

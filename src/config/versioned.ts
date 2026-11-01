@@ -104,13 +104,17 @@ const RESTART_RELEVANT_CONFIG_FIELDS: readonly string[] = [
 ];
 
 /** 只保留"变了就必须重建 Runtime"的字段，其余键被剔除，使 revision 比较忽略它们。 */
-export function restartRelevantConfig(config: AgentConfig): AgentConfig {
+export function restartRelevantConfig(config: AgentConfig, skillProjectKey?: string): AgentConfig {
   const projection = structuredClone(config) as unknown as Record<string, unknown>;
   for (const key of Object.keys(projection)) {
     if (!RESTART_RELEVANT_CONFIG_FIELDS.includes(key)) delete projection[key];
   }
   // 图标由 Desktop 展示快照读取，不改变 Provider 请求或 Agent 执行。
   for (const provider of Object.values(projection.providers as AgentConfig["providers"])) delete provider.icon;
+  if (skillProjectKey !== undefined) {
+    const extensions = projection.extensions as AgentConfig["extensions"];
+    extensions.skillProjectOverrides = { [skillProjectKey]: extensions.skillProjectOverrides[skillProjectKey] ?? {} };
+  }
   return projection as unknown as AgentConfig;
 }
 
@@ -120,6 +124,14 @@ export function restartRelevantConfig(config: AgentConfig): AgentConfig {
  * 判据不能用"revision 变了"——那等于把所有设置都当成需要重启。
  * 用一个记忆开关把所有项目的 Host 拖去重启，正是"开关要等很久"的来源。
  */
-export function configChangeRequiresRuntimeRestart(before: AgentConfig, after: AgentConfig): boolean {
-  return configDocumentRevision(restartRelevantConfig(after)) !== configDocumentRevision(restartRelevantConfig(before));
+export function configChangeRequiresRuntimeRestart(before: AgentConfig, after: AgentConfig, skillProjectKey?: string): boolean {
+  return configDocumentRevision(restartRelevantConfig(after, skillProjectKey)) !== configDocumentRevision(restartRelevantConfig(before, skillProjectKey));
+}
+
+/** 项目覆盖虽存于共享文档，生效范围仍限定为该项目。 */
+export function isProjectSkillOverrideChange(before: AgentConfig, after: AgentConfig, projectKey: string): boolean {
+  const candidate = structuredClone(after);
+  if (before.extensions.skillProjectOverrides[projectKey] === undefined) delete candidate.extensions.skillProjectOverrides[projectKey];
+  else candidate.extensions.skillProjectOverrides[projectKey] = structuredClone(before.extensions.skillProjectOverrides[projectKey]);
+  return configDocumentRevision(before) === configDocumentRevision(candidate);
 }

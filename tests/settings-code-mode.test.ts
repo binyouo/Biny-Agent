@@ -60,8 +60,8 @@ test("Code Mode settings commit through real transactions to disk and the next m
       const saved = await transaction.save(project.id, settingsSaveInputSchema.parse(input));
       assert.equal(saved.status, "committed", JSON.stringify(saved));
       assert.deepEqual(saved.appliedFields, ["rtkEnabled", "toolExecutionMode"]);
-      assert.equal(saved.snapshot.rtkEnabled, rtkEnabled);
-      assert.equal(saved.snapshot.toolExecutionMode, mode);
+      assert.equal(saved.settings.rtkEnabled, rtkEnabled);
+      assert.equal(saved.settings.toolExecutionMode, mode);
       const stored = await loadConfigFile(configRoot);
       assert.deepEqual(stored.agent, { ...originalAgent, rtkEnabled, toolExecutionMode: mode });
       assert.equal((await transaction.snapshot(project.id)).toolExecutionMode, mode);

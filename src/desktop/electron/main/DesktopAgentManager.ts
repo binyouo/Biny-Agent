@@ -38,7 +38,7 @@ import { IdentityStorage } from "../../../agent/context/identityStorage.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ModelCatalogEntry } from "../../../ai/types.js";
-import { effectiveThinkingSelection, modelThinkingLevelMap, projectThinkingSelectionToModel } from "../../../ai/capabilities.js";
+import { effectiveThinkingSelection, modelCapabilities, modelThinkingLevelMap, projectThinkingSelectionToModel } from "../../../ai/capabilities.js";
 import { providerDefinition } from "../../../ai/provider.js";
 import { builtinProviderModels } from "../../../ai/builtinModels.js";
 import { loadProjectSettings } from "../../../config/projectSettings.js";
@@ -48,7 +48,7 @@ import { synchronizeCredentialRevisions, type DeferredCredentialTransactionStatu
 import { configSchema, reasoningEffortSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
 import { AcpClient, acpMcpServers } from "../../../acp/client.js";
 import type { AgentConfigStore } from "../../../config/store.js";
-import { configChangeRequiresRuntimeRestart, configDocumentRevision } from "../../../config/versioned.js";
+import { configChangeRequiresRuntimeRestart, configDocumentRevision, isProjectSkillOverrideChange } from "../../../config/versioned.js";
 import { createModelSettings, validateModelConfiguration } from "../../../llm/modelFactory.js";
 import { ModelRuntime } from "../../../llm/ModelRuntime.js";
 import { LocalEmbeddingManager, listLocalEmbeddingModels } from "../../../llm/embedding/LocalEmbeddingRuntime.js";
@@ -93,7 +93,7 @@ import {
 import { readSessionEvents } from "../../../session/events.js";
 import { openRecipeSuggestions, recipeIds, RecipeStateStore, type RecipeId } from "../../../session/recipes.js";
 import { resolveSessionFile } from "../../../session/store.js";
-import { AutomationStore, type AutomationRecord } from "../../../runtime/AutomationScheduler.js";
+import { AutomationStore } from "../../../runtime/AutomationScheduler.js";
 import { RuntimeEventAuthority } from "../../../runtime/RuntimeAuthority.js";
 import {
   defaultChatPersonalizationOverride,
@@ -132,6 +132,7 @@ import type {
   DesktopModelLoginStartResult,
   DesktopPersonalizationOverview,
   DesktopProject,
+  DesktopPermissionReceipt,
   DesktopRecipeId,
   DesktopRecipeState,
   DesktopRecipeSuggestion,
@@ -145,6 +146,7 @@ import type {
   DesktopSessionDeleteResult,
   DesktopSessionWriterConflict,
   DesktopSessionSummary,
+  DesktopSessionMetadataReceipt,
   DesktopSessionTreePage,
   DesktopSessionTreePageOptions,
   DesktopSlashResult,
@@ -180,7 +182,7 @@ interface ManagedRuntime {
 const SETTINGS_CREDENTIAL_TTL_MS = 30 * 60 * 1000;
 
 /** Desktop 预热的 Host 在窗口关闭/切走后最多驻留的宽限；活跃项目由 keepAlive 常驻。 */
-const DESKTOP_HOST_IDLE_GRACE_MS = 10 * 60 * 1000;
+const DESKTOP_HOST_IDLE_GRACE_MS = 30_000;
 
 type StagedSettingsCredential =
   | {
@@ -472,12 +474,23 @@ export class DesktopAgentManager {
 
   async mcpReconnect(projectId: string, serverName: string): Promise<McpServerStatus> {
     const managed = await this.ensureRuntime(projectId);
-    return await managed.runtime.mcpReconnect(serverName);
+    const existing = (await managed.runtime.mcpStatus()).find(server => server.name === serverName);
+    if (existing?.transport === "in-process") return await managed.runtime.mcpReconnect(serverName);
+    await managed.runtime.mcpConfigure([serverName], true);
+    const status = (await managed.runtime.mcpStatus()).find(server => server.name === serverName);
+    if (!status) throw new Error(`MCP server is not configured: ${serverName}`);
+    return status;
   }
 
-  /** MCP 配置保存后的统一刷新入口；调用方先检查全局运行态。 */
-  async refreshMcpRuntimes(): Promise<void> {
-    await this.rebuildIdleManagedRuntimes();
+  /** 配置已提交；只刷新变更的 MCP 连接，各项目失败分别收集。 */
+  async refreshMcpRuntimes(servers?: string[], force = false): Promise<void> {
+    const failures: string[] = [];
+    for (const [projectId, managed] of [...this.runtimes]) {
+      if (this.runtimes.get(projectId) !== managed || managed.runtime.isRetired) continue;
+      try { await managed.runtime.mcpConfigure(servers, force); }
+      catch (error) { failures.push(`${this.projects.requireProject(projectId).name}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    if (failures.length) throw new Error(failures.join("；"));
   }
 
   /**
@@ -609,14 +622,14 @@ export class DesktopAgentManager {
     return await this.startDraft(projectId);
   }
 
-  async setProjectPinned(projectId: string, pinned: boolean): Promise<DesktopWorkspaceSnapshot> {
+  async setProjectPinned(projectId: string, pinned: boolean): Promise<DesktopProject> {
     await this.state.setProjectPinned(projectId, pinned);
-    return await this.workspaceSnapshot(projectId);
+    return this.projects.requireProject(projectId);
   }
 
-  async renameProject(projectId: string, name: string): Promise<DesktopWorkspaceSnapshot> {
+  async renameProject(projectId: string, name: string): Promise<DesktopProject> {
     await this.state.setProjectName(projectId, name);
-    return await this.workspaceSnapshot(projectId);
+    return this.projects.requireProject(projectId);
   }
 
   async removeProject(projectId: string): Promise<void> {
@@ -679,34 +692,34 @@ export class DesktopAgentManager {
     await new RecipeStateStore(persistenceRoot).set(sessionId, recipeId as RecipeId, state);
   }
 
-  async renameSession(projectId: string, sessionId: string, title: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot> {
+  async renameSession(projectId: string, sessionId: string, title: string, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt> {
     const revision = (await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision)) ?? expectedRevision;
-    await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { title }, revision);
-    return await this.workspaceSnapshot(projectId);
+    const record = await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { title }, revision);
+    return sessionMetadataReceipt(projectId, record, { title: record.title });
   }
 
-  async pinSession(projectId: string, sessionId: string, pinned: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot> {
+  async pinSession(projectId: string, sessionId: string, pinned: boolean, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt> {
     const revision = await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision);
-    await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { pinned }, revision);
-    return await this.workspaceSnapshot(projectId);
+    const record = await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { pinned }, revision);
+    return sessionMetadataReceipt(projectId, record, { pinned: record.pinned });
   }
 
-  async archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot> {
+  async archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt> {
     const revision = await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision);
-    await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { archived }, revision);
-    return await this.workspaceSnapshot(projectId);
+    const record = await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { archived }, revision);
+    return sessionMetadataReceipt(projectId, record, { archived: record.archived });
   }
 
-  async setSessionFastMode(projectId: string, sessionId: string, fastMode: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot> {
+  async setSessionFastMode(projectId: string, sessionId: string, fastMode: boolean, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt> {
     const revision = await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision);
-    await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { fastMode }, revision);
-    return await this.workspaceSnapshot(projectId);
+    const record = await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { fastMode }, revision);
+    return sessionMetadataReceipt(projectId, record, { fastMode: record.fastMode });
   }
 
-  async markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot> {
+  async markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt> {
     const revision = await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision);
-    await this.projects.markSessionRead(this.projects.requireProject(projectId), sessionId, revision);
-    return await this.workspaceSnapshot(projectId);
+    const record = await this.projects.markSessionRead(this.projects.requireProject(projectId), sessionId, revision);
+    return sessionMetadataReceipt(projectId, record, { unread: record.unread === true });
   }
 
   async preparePrompt(projectId: string): Promise<void> {
@@ -1022,10 +1035,10 @@ export class DesktopAgentManager {
     await owner.runtime.answerUserInput(sessionId, runId, toolCallId, response);
   }
 
-  async setPermissionMode(projectId: string, mode: PermissionMode): Promise<DesktopWorkspaceSnapshot> {
+  async setPermissionMode(projectId: string, mode: PermissionMode): Promise<DesktopPermissionReceipt> {
     const { runtime } = await this.ensureRuntime(projectId);
     await runtime.setPermissionMode(mode);
-    return await this.workspaceSnapshot(projectId);
+    return { projectId, permissionMode: runtime.getSnapshot().permissionMode };
   }
 
   async switchModel(projectId: string, alias: string, thinking: ThinkingSelection): Promise<ModelRuntimeInfo> {
@@ -1064,11 +1077,15 @@ export class DesktopAgentManager {
     await (await this.ensureRuntime(projectId)).runtime.clearMaskRecords();
   }
 
-  async settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot> {
+  async settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot>;
+  async settingsConfigSnapshot(projectId: string, includeModels: false): Promise<Omit<DesktopSettingsConfigSnapshot, "models">>;
+  async settingsConfigSnapshot(projectId: string, includeModels = true): Promise<Omit<DesktopSettingsConfigSnapshot, "models"> | DesktopSettingsConfigSnapshot> {
     const project = this.projects.requireProject(projectId);
     const current = await this.requireVersionedConfig().loadVersioned!(project.path);
+    const settings = describeSettingsNonModelConfigSnapshot(current.config, current.revision, projectId, project.path);
+    if (!includeModels) return settings;
     const catalogs = await restoreProviderCatalogs(Object.keys(current.config.providers), this.modelsStore, current.config.providers);
-    return describeSettingsConfigSnapshot(current.config, current.revision, projectId, project.path, catalogs);
+    return { ...settings, models: describeSettingsModels(current.config, catalogs) };
   }
 
   async settingsChatSnapshot(projectId: string, sessionId: string): Promise<DesktopSettingsChatSnapshot> {
@@ -1097,8 +1114,7 @@ export class DesktopAgentManager {
       || input.subagent !== undefined
       || input.permission !== undefined
       || input.webSearch !== undefined
-      || input.redaction !== undefined
-      || input.skills !== undefined) {
+      || input.redaction !== undefined) {
       this.assertNoRunningTasks("任务运行期间不能提交全局设置。");
     }
     const project = this.projects.requireProject(projectId);
@@ -1324,11 +1340,14 @@ export class DesktopAgentManager {
         if (reference !== undefined && !alias) throw new Error(`未知视觉模型：${reference}`);
         if (alias) {
           validateModelConfiguration(next, alias);
-          const visionCatalogs = await restoreProviderCatalogs(Object.keys(next.providers), this.modelsStore, next.providers);
-          const choice = listConfiguredModelChoices(next, visionCatalogs).find(model => model.alias === alias);
-          if (choice?.providerType === "acp" || choice?.capabilities?.vision !== true) throw new Error("请选择支持图片输入的视觉模型。");
+          const visionCatalogs = await restoreProviderCatalogs([next.models[alias]!.provider], this.modelsStore, next.providers);
+          const selected = new ModelRuntime(next, visionCatalogs).resolve(alias);
+          if (next.providers[selected.providerAlias]?.type === "acp" || modelCapabilities(selected.model).vision !== true) throw new Error("请选择支持图片输入的视觉模型。");
         }
         next = configSchema.parse({ ...next, visionModel: alias });
+      }
+      if (input.models.visionModelEnabled !== undefined) {
+        next = configSchema.parse({ ...next, visionModelEnabled: input.models.visionModelEnabled });
       }
       if (input.models.toolModel !== undefined) {
         const reference = input.models.toolModel.alias;
@@ -1374,7 +1393,9 @@ export class DesktopAgentManager {
 
     synchronizeCredentialRevisions(next, current.config);
     if (!isModelSelectionChange(current.config, next)) {
-      this.assertNoRunningTasks("任务运行期间不能修改供应商或共享设置。");
+      if (isProjectSkillOverrideChange(current.config, next, createProjectSkillKey(project.path))) {
+        this.assertProjectSettingsIdle(projectId, "当前项目运行期间不能修改技能覆盖。");
+      } else this.assertNoRunningTasks("任务运行期间不能修改供应商或共享设置。");
     }
 
     return {
@@ -1390,7 +1411,9 @@ export class DesktopAgentManager {
 
   async commitSettingsConfig(prepared: PreparedDesktopSettingsConfig, transactionId: string): Promise<void> {
     if (!isModelSelectionChange(prepared.before, prepared.after)) {
-      this.assertNoRunningTasks("任务运行期间不能提交全局设置。");
+      if (isProjectSkillOverrideChange(prepared.before, prepared.after, createProjectSkillKey(prepared.workspaceRoot))) {
+        this.assertProjectSettingsIdle(prepared.projectId, "当前项目运行期间不能提交技能覆盖。");
+      } else this.assertNoRunningTasks("任务运行期间不能提交全局设置。");
     }
     const saved = await this.requireSettingsTransactionConfig().saveVersionedDeferred!(
       prepared.after,
@@ -1429,8 +1452,7 @@ export class DesktopAgentManager {
         transactionId,
         prepared.workspaceRoot
       );
-      if (result === "failed") return result;
-      await this.rebuildIdleManagedRuntimes();
+      // 事务提交尚未通知 Runtime；补偿只还原持久化段，不触碰未采用候选配置的驻留会话。
       return result;
     } catch {
       return "failed";
@@ -1442,9 +1464,7 @@ export class DesktopAgentManager {
     transactionId: string
   ): Promise<"not_needed" | "completed" | "failed"> {
     const project = this.projects.requireProject(projectId);
-    const result = await this.requireSettingsTransactionConfig().rollbackDeferredCredentials!(transactionId, project.path);
-    if (result !== "failed") await this.rebuildIdleManagedRuntimes();
-    return result;
+    return await this.requireSettingsTransactionConfig().rollbackDeferredCredentials!(transactionId, project.path);
   }
 
   async prepareSettingsChat(
@@ -1592,12 +1612,12 @@ export class DesktopAgentManager {
     sessionId: string,
     input: DesktopChatPersonalizationOverride,
     expectedRevision: string
-  ): Promise<DesktopWorkspaceSnapshot> {
+  ): Promise<DesktopSessionMetadataReceipt> {
     this.assertNoRunningTasks("任务运行期间不能修改当前聊天的个性化设置。");
     const revision = (await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision)) ?? expectedRevision;
     this.assertNoRunningTasks("任务运行期间不能修改当前聊天的个性化设置。");
-    await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { personalization: input }, revision);
-    return await this.workspaceSnapshot(projectId, false);
+    const record = await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { personalization: input }, revision);
+    return sessionMetadataReceipt(projectId, record, { personalization: record.personalization });
   }
 
   /** 单一记忆库条目与 revision；记忆是扁平全库视图。 */
@@ -1643,7 +1663,7 @@ export class DesktopAgentManager {
         ? this.currentPersonalizationState(projectId).then(state => ({ configRevision: requireConfigRevision(state), memory: state.memory }))
         : this.requireVersionedConfig().loadVersioned!(project.path).then(current => ({ configRevision: current.revision, memory: current.config.context.memory })),
       storage.getStats(),
-      storage.readMaintenanceStatus()
+      storage.readMaintenanceStatus({ historyLimit: 5 })
     ] as const;
     try {
       const [config, stats, maintenance] = await Promise.all(reads);
@@ -1822,15 +1842,19 @@ export class DesktopAgentManager {
   async memorySleepStatus(projectId: string): Promise<MemoryMaintenanceStatus> {
     const project = this.projects.requireProject(projectId);
     const managed = this.residentRuntime(projectId);
-    if (managed) return await managed.runtime.memory<MemoryMaintenanceStatus>("sleep-status", {});
+    if (managed) return await managed.runtime.memory<MemoryMaintenanceStatus>("sleep-status", { historyLimit: 5 });
     const storage = new MemoryStorage(project.path);
-    try { return await storage.readMaintenanceStatus(); }
+    try { return await storage.readMaintenanceStatus({ historyLimit: 5 }); }
     finally { storage.close(); }
   }
 
   async memorySleepRuns(projectId: string): Promise<import("../../../agent/context/memoryTypes.js").MemorySleepRun[]> {
-    const status = await this.memorySleepStatus(projectId);
-    return status.sleepRuns ?? [];
+    const project = this.projects.requireProject(projectId);
+    const managed = this.residentRuntime(projectId);
+    if (managed) return await managed.runtime.memory("sleep-runs", {});
+    const storage = new MemoryStorage(project.path);
+    try { return (await storage.readMaintenanceStatus()).sleepRuns ?? []; }
+    finally { storage.close(); }
   }
 
   async previewMemorySleep(projectId: string): Promise<import("../../protocol.js").DesktopMemorySleepPreview> {
@@ -1917,8 +1941,9 @@ export class DesktopAgentManager {
 
   /** 设置事务只提交配置；驻留 Runtime 的刷新仍在后台进行，向量索引按自身状态收敛。 */
   settingsCommitted(prepared: PreparedDesktopSettingsConfig): void {
-    if (prepared.beforeRevision !== prepared.targetRevision && configChangeRequiresRuntimeRestart(prepared.before, prepared.after)) {
-      this.scheduleIdleManagedRuntimeRebuild();
+    if (prepared.beforeRevision !== prepared.targetRevision && !isModelSelectionChange(prepared.before, prepared.after)
+      && configChangeRequiresRuntimeRestart(prepared.before, prepared.after)) {
+      this.scheduleIdleManagedRuntimeRebuild(prepared);
     }
   }
 
@@ -1933,7 +1958,7 @@ export class DesktopAgentManager {
     // 自定义/聚合端点不在本地 provider 表里，没有实时目录可言；回退到静态候选而不是抛错，
     // 调用方会把它和已配置模型合并展示（详情层会静默预取，不能让缺失配置刷错误日志）。
     if (!provider) return { providerAlias, source: "static", fetchedAt: new Date().toISOString(), models: [] };
-    const catalogs = await restoreProviderCatalogs(Object.keys(config.providers), this.modelsStore, config.providers);
+    const catalogs = await restoreProviderCatalogs([providerAlias], this.modelsStore, config.providers);
     const runtime = new ModelRuntime(config, catalogs, undefined, this.modelsStore, this.fetcher);
     try {
       const models = await runtime.refreshModels(providerAlias, undefined, force);
@@ -2355,19 +2380,6 @@ export class DesktopAgentManager {
     }
   }
 
-  /** 日期列表只需持久化任务；不得迁移数据库、加载模型或启动其他项目的调度器。 */
-  async scheduledAutomations(projectId: string): Promise<AutomationRecord[]> {
-    const project = this.projects.requireProject(projectId);
-    if (project.missing) return [];
-    const authority = await RuntimeEventAuthority.openReadOnly(project.path);
-    if (!authority) return [];
-    try {
-      const store = await AutomationStore.open(project.path, authority);
-      try { return store.list(); }
-      finally { store.close(); }
-    } finally { authority.close(); }
-  }
-
   async taskInspection(projectId: string, sessionId: string, taskRunId: string, options: TaskInspectionOptions = {}): Promise<TaskInspection> {
     const managed = await this.getRuntime(projectId, false);
     if (managed !== undefined) {
@@ -2447,31 +2459,18 @@ export class DesktopAgentManager {
     return await this.workspaceSnapshot(projectId);
   }
 
-  /**
-   * 导出会话到用户选定的文件。`targetPath` 由 IPC 层的保存对话框给出；用户取消时它是
-   * undefined，这里就只回一份快照、不写任何文件。
-   */
-  async exportSession(projectId: string, sessionId: string, format: "biny" | "claude", targetPath?: string): Promise<DesktopWorkspaceSnapshot> {
+  async exportSession(projectId: string, sessionId: string, format: "biny" | "claude", targetPath: string): Promise<void> {
     const project = this.projects.requireProject(projectId);
-    if (targetPath) {
-      this.assertNoRunningTasks("任务运行期间不能导出会话。");
-      const exported = await this.projects.buildSessionExport(project, sessionId, format);
-      await this.projects.writeSessionExport(targetPath, exported);
-    }
-    return await this.workspaceSnapshot(projectId);
+    this.assertProjectSettingsIdle(projectId, "任务运行期间不能导出会话。");
+    const exported = await this.projects.buildSessionExport(project, sessionId, format);
+    await this.projects.writeSessionExport(targetPath, exported);
   }
 
-  /**
-   * 从外部文件导入一条新会话并选中它。`sourcePath` 由 IPC 层的打开对话框给出；用户取消时
-   * 它是 undefined，这里只回一份快照。
-   */
-  async importSession(projectId: string, sourcePath?: string): Promise<DesktopWorkspaceSnapshot> {
+  async importSession(projectId: string, sourcePath: string): Promise<DesktopWorkspaceSnapshot> {
     const project = this.projects.requireProject(projectId);
-    if (sourcePath) {
-      this.assertNoRunningTasks("任务运行期间不能导入会话。");
-      const imported = await this.projects.importSessionFromFile(project, sourcePath);
-      await this.state.setSelectedSession(projectId, imported.sessionId);
-    }
+    this.assertProjectSettingsIdle(projectId, "任务运行期间不能导入会话。");
+    const imported = await this.projects.importSessionFromFile(project, sourcePath);
+    await this.state.setSelectedSession(projectId, imported.sessionId);
     return await this.workspaceSnapshot(projectId);
   }
 
@@ -2553,7 +2552,12 @@ export class DesktopAgentManager {
    * 运行时都不能写这些资源，否则另一个 Runtime 会在单次回合中读到两套状态。
    */
   assertNoRunningTasks(message = "任务运行期间不能修改全局共享状态。"): void {
-    if (this.hasRunningTasks()) throw new Error(message);
+    if (this.runtimeInitializations.size > 0 || this.hasRunningTasks()) throw new Error(message);
+  }
+
+  assertProjectSettingsIdle(projectId: string, message = "当前项目正在运行或初始化，不能修改项目设置。"): void {
+    this.projects.requireProject(projectId);
+    if (this.runtimeInitializations.has(projectId) || this.isProjectRunning(projectId)) throw new Error(message);
   }
 
   isProjectRunning(projectId: string): boolean {
@@ -2651,23 +2655,14 @@ export class DesktopAgentManager {
     return;
   }
 
-  /** 全局 config 对每个项目 Runtime 生效；显式事务提交与补偿会等待空闲实例刷新。 */
-  private async rebuildIdleManagedRuntimes(): Promise<void> {
-    const resident = [...this.runtimes.entries()];
-    for (const [projectId, managed] of resident) {
-      // 只处理快照中的原实例；并发导航若已经替换了它，不应误关新 Runtime。
-      if (this.runtimes.get(projectId) !== managed || this.runtimeSnapshots(projectId).some((snapshot) => runtimeIsBusy(snapshot))) continue;
-      await this.rebuildManagedRuntime(projectId, managed);
-      this.runtimeErrors.delete(projectId);
-    }
-  }
-
   /** 后台派生刷新逐个容错，单个项目的 Host 异常不能阻止其它项目收敛到新配置。 */
-  private async rebuildIdleManagedRuntimesInBackground(): Promise<void> {
+  private async rebuildIdleManagedRuntimesInBackground(change?: PreparedDesktopSettingsConfig): Promise<void> {
     const resident = [...this.runtimes.entries()];
     for (const [projectId, managed] of resident) {
       // 只处理快照中的原实例；并发导航若已经替换了它，不应误关新 Runtime。
       if (this.runtimes.get(projectId) !== managed || this.runtimeSnapshots(projectId).some((snapshot) => runtimeIsBusy(snapshot))) continue;
+      const project = this.state.projects().find(candidate => candidate.id === projectId);
+      if (change && project && !configChangeRequiresRuntimeRestart(change.before, change.after, createProjectSkillKey(project.path))) continue;
       try {
         await this.rebuildManagedRuntime(projectId, managed);
         this.runtimeErrors.delete(projectId);
@@ -2681,12 +2676,12 @@ export class DesktopAgentManager {
    * 全局即时设置只需先确认当前 Runtime 的写入；其它空闲实例的重建放到后台串行执行，
    * 避免一个项目的 Host 重启把所有项目的开关点击拖成可见延迟。
    */
-  private scheduleIdleManagedRuntimeRebuild(): void {
+  private scheduleIdleManagedRuntimeRebuild(change?: PreparedDesktopSettingsConfig): void {
     const scheduled = this.idleRuntimeRebuildTail
       .catch(() => undefined)
       .then(async () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        await this.rebuildIdleManagedRuntimesInBackground();
+        await this.rebuildIdleManagedRuntimesInBackground(change);
       });
     this.idleRuntimeRebuildTail = scheduled.catch(() => undefined);
   }
@@ -3173,6 +3168,18 @@ function sessionReadKey(projectId: string, sessionId: string): string {
   return `${projectId}\u0000${sessionId}`;
 }
 
+function sessionMetadataReceipt(
+  projectId: string,
+  record: SessionCatalogRecord,
+  changes: Omit<DesktopSessionMetadataReceipt["metadata"], "updatedAt" | "metadataRevision">
+): DesktopSessionMetadataReceipt {
+  return {
+    projectId,
+    sessionId: record.sessionId,
+    metadata: { ...changes, updatedAt: record.updatedAt, metadataRevision: sessionCatalogRecordRevision(record) }
+  };
+}
+
 function memoryStats(entries: MemoryEntriesResult): { total: number; autoGenerated: number; manualAdded: number } {
   let autoGenerated = 0;
   let manualAdded = 0;
@@ -3205,13 +3212,12 @@ function describeWebSearchSettings(search: AgentConfig["web"]["search"]): Deskto
   return { provider: search.provider, visibleBrowsing: search.visibleBrowsing, timeoutMs: search.timeoutMs, maxResults: search.maxResults };
 }
 
-function describeSettingsConfigSnapshot(
+function describeSettingsNonModelConfigSnapshot(
   config: AgentConfig,
   revision: string,
   projectId: string,
-  workspaceRoot: string,
-  catalogs: readonly [string, ModelCatalogEntry[]][]
-): DesktopSettingsConfigSnapshot {
+  workspaceRoot: string
+): Omit<DesktopSettingsConfigSnapshot, "models"> {
   return {
     revision,
     activity: structuredClone(config.activity),
@@ -3232,24 +3238,6 @@ function describeSettingsConfigSnapshot(
     permission: structuredClone(config.permission),
     webSearch: describeWebSearchSettings(config.web.search),
     redaction: structuredClone(config.redaction),
-    models: {
-      configured: listConfiguredModelChoices(config, catalogs),
-      connections: describeModelConnections(config),
-      catalogs: Object.fromEntries(catalogs.map(([providerAlias, models]) => [
-        providerAlias,
-        structuredClone(models)
-      ])),
-      embeddingModels: describeEmbeddingModels(config),
-      defaultModel: config.defaultModel,
-      toolModel: config.toolModel,
-      visionModel: config.visionModel,
-      resolvedToolModel: resolveToolModelAlias(config),
-      thinking: config.thinking.enabled ? config.thinking.effort : "off",
-      modelProfiles: Object.fromEntries(Object.entries(config.providers).map(([providerAlias, provider]) => [
-        providerAlias,
-        structuredClone(provider.modelProfiles ?? {})
-      ]))
-    },
     skills: {
       projectId,
       projectKey: createProjectSkillKey(workspaceRoot),
@@ -3257,6 +3245,28 @@ function describeSettingsConfigSnapshot(
       projectOverrides: { ...config.extensions.skillProjectOverrides[createProjectSkillKey(workspaceRoot)] },
       activations: []
     }
+  };
+}
+
+function describeSettingsModels(config: AgentConfig, catalogs: readonly [string, ModelCatalogEntry[]][]): DesktopSettingsModelsSnapshot {
+  return {
+    configured: listConfiguredModelChoices(config, catalogs),
+    connections: describeModelConnections(config),
+    catalogs: Object.fromEntries(catalogs.map(([providerAlias, models]) => [
+      providerAlias,
+      structuredClone(models)
+    ])),
+    embeddingModels: describeEmbeddingModels(config),
+    defaultModel: config.defaultModel,
+    toolModel: config.toolModel,
+    visionModel: config.visionModel,
+    visionModelEnabled: config.visionModelEnabled ?? Boolean(config.visionModel),
+    resolvedToolModel: resolveToolModelAlias(config),
+    thinking: config.thinking.enabled ? config.thinking.effort : "off",
+    modelProfiles: Object.fromEntries(Object.entries(config.providers).map(([providerAlias, provider]) => [
+      providerAlias,
+      structuredClone(provider.modelProfiles ?? {})
+    ]))
   };
 }
 
@@ -3561,6 +3571,7 @@ async function loadAgentAttachments(persistenceRoot: string, attachments: Deskto
 
 /** 选择只在回合入口读取；连接、凭据和其它共享资源仍要求空闲。 */
 function isModelSelectionChange(before: AgentConfig, after: AgentConfig): boolean {
-  return configDocumentRevision({ ...after, defaultModel: before.defaultModel, thinking: before.thinking, toolModel: before.toolModel, visionModel: before.visionModel })
+  return configDocumentRevision({ ...after, defaultModel: before.defaultModel, thinking: before.thinking,
+    toolModel: before.toolModel, visionModel: before.visionModel, visionModelEnabled: before.visionModelEnabled })
     === configDocumentRevision(before);
 }

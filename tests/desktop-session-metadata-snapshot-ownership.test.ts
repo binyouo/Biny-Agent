@@ -4,7 +4,7 @@ import { Socket } from "node:net";
 import { test, type TestContext } from "node:test";
 import type { JSDOM } from "jsdom";
 import type { Root } from "react-dom/client";
-import type { DesktopAgentEventEnvelope, DesktopSessionDeleteResult, DesktopSessionTarget, DesktopSessionTreePage, DesktopRunReceipt, DesktopSlashResult, DesktopSettingsSnapshot, DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopApplicationImportsChanged, DesktopAgentEventEnvelope, DesktopSessionDeleteResult, DesktopSessionTarget, DesktopSessionTreePage, DesktopSessionTreePageOptions, DesktopSessionMetadataReceipt, DesktopRunReceipt, DesktopSlashResult, DesktopSettingsSnapshot, DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 
 import { defaultConfig } from "../src/config/schema.js";
 
@@ -33,6 +33,12 @@ function workspace(id: string): DesktopWorkspaceSnapshot {
     models, pickerModels: models, selectedModel: { modelAlias: "inert", provider: "inert", modelLabel: "inert", thinking: "high", reasoningLabel: "high" }, connections: [] });
 }
 function withPage(snapshot:DesktopWorkspaceSnapshot,revision="catalog:initial"):DesktopWorkspaceSnapshot { return {...snapshot,sessionPage:{projectId:snapshot.project.id,revision,sessions:snapshot.sessions}}; }
+function metadataReceipt(snapshot: DesktopWorkspaceSnapshot, sessionId: string, field: "title" | "pinned" | "archived"): DesktopSessionMetadataReceipt {
+  const row = snapshot.sessions.find(item => item.id === sessionId);
+  assert.ok(row, "The mutation fixture includes its target metadata");
+  return { projectId: snapshot.project.id, sessionId,
+    metadata: { updatedAt: row.updatedAt, metadataRevision: row.metadataRevision!, [field]: row[field] } };
+}
 function documentFor(id: string, sessionId = `session-${id}`): DesktopSessionDocument {
   return { session: session(id, sessionId), events: [{ type: "user_message", content: `Discuss ${id}` }], liveEvents: [] };
 }
@@ -60,12 +66,12 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
   const metadata: Array<{ kind: string; projectId: string; sessionId: string; value: string | boolean; expectedRevision?: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const archives: Array<{ projectId: string; sessionId: string; archived: boolean; expectedRevision?: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const deletions: Array<{ targets: DesktopSessionTarget[]; start: () => void; gate: ReturnType<typeof deferred<DesktopSessionDeleteResult>> }> = [];
-  const refreshes: Array<{ projectId: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
+  const refreshes: Array<{ kind: "catalog" | "workspace"; projectId: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const pages: Array<{ projectId: string; parentSessionId: string; gate: ReturnType<typeof deferred<DesktopSessionTreePage>> }> = [];
   const removals: Array<{ id: string; gate: ReturnType<typeof deferred<DesktopBootstrap>> }> = [];
   const selections: Array<{ id: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const commitments: Array<{ projectId: string; sessionId?: string; activeView: string }> = [];
-  const listeners = new Map<string, (...args: never[]) => void>();
+  const listeners = new Map<string, Set<(...args: never[]) => void>>();
   let timersEnabled = false;
   t.after(async () => {
     const errors: unknown[] = [];
@@ -147,12 +153,20 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
     bootstrap: async (): Promise<DesktopBootstrap> => ({ version: "test", platform: "linux", projects: ids.map(project),
       sidebarSessions: ids.flatMap(id => workspace(id).sessions), workspace: workspace("a"), activeView: "chat",
       sidebarWidth: 240, filePanelWidth: 320, themePreference: "light", fontPreference: { family: "system", size: 14 } }),
-    pinSession(projectId: string, sessionId: string, value: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); metadata.push({kind:'pin',projectId,sessionId,value,expectedRevision,gate}); return gate.promise; },
-    renameSession(projectId: string, sessionId: string, value: string, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); metadata.push({kind:'rename',projectId,sessionId,value,expectedRevision,gate}); return gate.promise; },
-    archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); archives.push({projectId, sessionId, archived, expectedRevision, gate}); return gate.promise; },
+    pinSession(projectId: string, sessionId: string, value: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); metadata.push({kind:'pin',projectId,sessionId,value,expectedRevision,gate}); return gate.promise.then(snapshot => metadataReceipt(snapshot, sessionId, "pinned")); },
+    renameSession(projectId: string, sessionId: string, value: string, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); metadata.push({kind:'rename',projectId,sessionId,value,expectedRevision,gate}); return gate.promise.then(snapshot => metadataReceipt(snapshot, sessionId, "title")); },
+    archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); archives.push({projectId, sessionId, archived, expectedRevision, gate}); return gate.promise.then(snapshot => metadataReceipt(snapshot, sessionId, "archived")); },
     deleteSessions(targets: DesktopSessionTarget[], _confirm: boolean, start: () => void) { const gate = deferred<DesktopSessionDeleteResult>(); deletions.push({targets, start, gate}); start(); return gate.promise; },
-    refreshProject(projectId: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({projectId, gate}); return gate.promise; },
-    listSessionTreePage(projectId: string, options: {parentSessionId: string}) { const gate = deferred<DesktopSessionTreePage>(); pages.push({projectId, parentSessionId:options.parentSessionId, gate}); return gate.promise; },
+    refreshProject(projectId: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({kind: "workspace", projectId, gate}); return gate.promise; },
+    listSessionTreePage(projectId: string, options: DesktopSessionTreePageOptions = {}) {
+      if (options.parentSessionId) { const gate = deferred<DesktopSessionTreePage>(); pages.push({projectId, parentSessionId:options.parentSessionId, gate}); return gate.promise; }
+      const gate = deferred<DesktopWorkspaceSnapshot>();
+      refreshes.push({kind: "catalog", projectId, gate});
+      return gate.promise.then(snapshot => ({ projectId, revision: snapshot.sessionPage!.revision,
+        sessions: snapshot.sessionPage!.sessions.filter(row => !row.parentSessionId), nextCursor: snapshot.sessionPage?.nextCursor,
+        pinnedSessions: snapshot.sessions.filter(row => row.pinned),
+        supplementalSessions: snapshot.sessions.filter(row => options.sessionIds?.includes(row.id)) }));
+    },
     removeProject: (id: string) => { const gate = deferred<DesktopBootstrap>(); removals.push({ id, gate }); return gate.promise; },
     sendPrompt(projectId: string, sessionId: string | undefined, input: string) { actions.push({ kind: "send", projectId, sessionId, input }); const gate = deferred<DesktopRunReceipt>(); sends.push(gate); return gate.promise; },
     runSlashCommand(projectId: string, sessionId: string | undefined, input: string) { actions.push({ kind: "slash", projectId, sessionId, input }); const gate = deferred<DesktopSlashResult>(); slashes.push(gate); return gate.promise; },
@@ -167,7 +181,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
   };
   for (const name of ["onAppearanceChanged", "onApplicationImportsChanged", "onAgentEvent", "onSessionHandoff", "onMenuAction",
     "onSettingsCloseRequest", "onBrowserOpenRequest", "onReferenceOpen"]) {
-    api[name] = (listener: (...args: never[]) => void) => { listeners.set(name, listener); return () => listeners.delete(name); };
+    api[name] = (listener: (...args: never[]) => void) => { const entries = listeners.get(name) ?? new Set(); entries.add(listener); listeners.set(name, entries); return () => entries.delete(listener); };
   }
   replace(window, "biny", new Proxy(api, { get(target, name: string) {
     if (name in target) return target[name];
@@ -183,9 +197,9 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
     const target = document.querySelector<HTMLButtonElement>(selector); assert.ok(target, selector);
     await React.act(async () => target.click());
   };
-  const emit = async (name: string, value: DesktopAgentEventEnvelope | DesktopMenuAction | DesktopSessionHandoff | { uri: string; projectId?: string }): Promise<void> => {
+  const emit = async (name: string, value: DesktopApplicationImportsChanged | DesktopAgentEventEnvelope | DesktopMenuAction | DesktopSessionHandoff | { uri: string; projectId?: string }): Promise<void> => {
     assert.ok(listeners.has(name), `Production App subscribed to ${name}`);
-    await React.act(async () => listeners.get(name)!(value as never));
+    await React.act(async () => { for (const listener of listeners.get(name)!) listener(value as never); });
   };
   return { document, window, React, metadata,
     async tick(ms:number) { await React.act(async()=>t.mock.timers.tick(ms)); },
@@ -288,7 +302,73 @@ function bootstrapFor(ids: string[], activeId = ids[0]): DesktopBootstrap {
 
 
 type Harness = Awaited<ReturnType<typeof fixture>>;
+test("关闭未修改的设置不刷新技能和工具目录", async (t) => {
+  const h = await fixture(t);
+  const reads = { skills: 0, settings: 0, tools: 0 };
+  h.api.skillCatalog = async () => { reads.skills += 1; return { skills: [], warnings: [] }; };
+  h.api.skillSettings = async () => { reads.settings += 1; return { activations: [] }; };
+  h.api.toolCatalog = async () => { reads.tools += 1; throw new Error("unrelated tool refresh failure"); };
+  await h.emit("onMenuAction", "settings");
+  await h.click('[data-settings-tab="关于"]');
+  await h.click('[aria-label="关闭设置"]');
+  assert.deepEqual(reads, { skills: 0, settings: 0, tools: 0 });
+  assert.doesNotMatch(h.document.body.textContent ?? "", /unrelated tool refresh failure/);
+});
+
 type Kind = 'pin' | 'rename';
+test("导入状态通知不重读工作区，项目会话变动只刷新目标目录并保留其他页", async t => {
+  const h = await fixture(t);
+  let bootstraps = 0;
+  h.api.bootstrap = async () => { bootstraps += 1; return bootstrapFor(['a', 'b', 'c']); };
+  await h.expandSession('parent-c');
+  await h.React.act(async () => h.pages[0]!.gate.resolve({ projectId: 'c', parentSessionId: 'parent-c', revision: 'c:children',
+    sessions: [{ ...session('c', 'child-c'), parentSessionId: 'parent-c' }] }));
+  await h.fillDraft('keep this unsent draft');
+  await h.emit('onApplicationImportsChanged', { projects: [], settingsChanged: false, mcpChanged: false });
+  await h.tick(260);
+  assert.equal(bootstraps, 0);
+  assert.equal(h.refreshes.length, 0);
+  await h.emit('onApplicationImportsChanged', { projects: [{ projectId: 'b', sessionIds: ['imported-b', 'second-b'] }], settingsChanged: false, mcpChanged: false });
+  await h.tick(260);
+  assert.deepEqual(h.refreshes.map(read => [read.kind, read.projectId]), [['catalog', 'b']]);
+  const next = workspace('b'); next.sessions.push(session('b', 'imported-b'));
+  await h.React.act(async () => h.refreshes[0]!.gate.resolve(next));
+  assert.ok(h.hasSession('imported-b'));
+  assert.ok(h.hasSession('child-c'));
+  assert.ok(h.hasSession('session-a'));
+  assert.equal(h.document.querySelector<HTMLTextAreaElement>('.biny-chat-composer textarea')?.value, 'keep this unsent draft');
+  assert.equal(bootstraps, 0);
+});
+
+test("导入会话的迟到内容不覆盖已切换的会话", async t => {
+  const h = await fixture(t);
+  await h.chooseSession('session-a');
+  const gate = deferred<DesktopSessionDocument>();
+  let reads = 0;
+  h.api.openSession = async (projectId: string, sessionId: string) => {
+    if (sessionId === 'session-a') { reads += 1; return await gate.promise; }
+    return documentFor(projectId, sessionId);
+  };
+  await h.emit('onApplicationImportsChanged', { projects: [{ projectId: 'a', sessionIds: ['session-a'] }], settingsChanged: false, mcpChanged: false });
+  assert.equal(reads, 1);
+  await h.chooseSession('second-a');
+  await h.React.act(async () => gate.resolve({ ...documentFor('a'), events: [{ type: 'user_message', content: 'late imported content' }] }));
+  assert.doesNotMatch(h.document.body.textContent ?? '', /late imported content/);
+});
+
+test("导入配置的迟到回执不覆盖已经保存的会话标题", async t => {
+  const h = await fixture(t);
+  await h.emit('onApplicationImportsChanged', { projects: [], settingsChanged: true, mcpChanged: false });
+  assert.equal(h.refreshes[0]?.kind, 'workspace');
+  await begin(h, 'rename');
+  await h.React.act(async () => h.metadata[0]!.gate.resolve(savedSnapshot('rename')));
+  await h.tick(260);
+  assert.equal(h.refreshes[1]?.kind, 'catalog');
+  await h.React.act(async () => h.refreshes[1]!.gate.resolve(savedSnapshot('rename')));
+  await h.React.act(async () => h.refreshes[0]!.gate.resolve(workspace('a')));
+  assert.ok(h.document.querySelector('button.biny-sidebar-session-item[title="Renamed A"]'));
+});
+
 function savedSnapshot(kind: Kind): DesktopWorkspaceSnapshot {
   const value=workspace('a');
   value.sessions=value.sessions.map(x=>x.id==='session-a'?{...x, ...(kind==='pin'?{pinned:true}:{title:'Renamed A'}), metadataRevision:`revision:session-a:${kind}`}:x);
@@ -356,6 +436,7 @@ test('late pin cannot reverse a later successful Sidebar archive',async t=>{
 for(const kind of ['pin','rename'] as const)test(`ordinary ${kind} completion is visible`,async t=>{
   const h=await fixture(t);await begin(h,kind);await h.React.act(async()=>h.metadata[0]!.gate.resolve(savedSnapshot(kind)));
   await h.tick(260); assert.equal(h.refreshes.length,1,'Saved metadata demands one catalog-only read');
+  assert.equal(h.refreshes[0]!.kind, 'catalog', 'Metadata never requests models or runtime workspace state');
   await h.React.act(async()=>h.refreshes[0]!.gate.resolve(savedSnapshot(kind)));
   await h.tick(1040); assert.equal(h.refreshes.length,1,'Self-publication stops refresh demand');
   if(kind==='pin')assert.ok(h.document.querySelector('section[aria-label="置顶"] button[title="Conversation session-a"]'));
@@ -405,8 +486,8 @@ test('rename cancellation before saving has no write or reconciliation',async t=
 });
 for(const kind of ['pin','rename'] as const)test(`${kind} completion after project removal and recreation cannot revive old ownership`,async t=>{
   const h=await fixture(t);await begin(h,kind);
-  h.api.bootstrap=async()=>bootstrapFor(['b','c'],'b');await h.emit('onApplicationImportsChanged',undefined as never);assert.ok(!h.projectIds().includes('Project a 项目操作'));
-  h.api.bootstrap=async()=>bootstrapFor(['a','b','c'],'b');await h.emit('onApplicationImportsChanged',undefined as never);
+  await h.removeEntry('a');await h.resolveRemoval(0,bootstrapFor(['b','c'],'b'));assert.ok(!h.projectIds().includes('Project a 项目操作'));
+  h.api.openProject=async()=>workspace('a');await h.emit('onMenuAction','open-project');
   await h.React.act(async()=>h.metadata[0]!.gate.resolve(savedSnapshot(kind)));await h.tick(1040);assert.equal(h.refreshes.length,0);
   assert.ok(h.hasSession('session-a'));assert.equal(Boolean(h.document.querySelector('button.biny-sidebar-session-item[title="Renamed A"]')),false);
   assert.equal(Boolean(h.document.querySelector('section[aria-label="置顶"] button[title="Conversation session-a"]')),false);

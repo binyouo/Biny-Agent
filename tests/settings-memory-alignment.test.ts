@@ -97,7 +97,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     assert.match(document.body.textContent ?? "", /合成失败.*来源保留/u);
     assert.doesNotMatch(document.body.textContent ?? "", /合成失败（已进归档/u);
     const advancedDisclosure = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("相似度与 LLM 合并参数"));
-    const archiveDisclosure = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("归档记忆（26）"));
+    const archiveDisclosure = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("归档记忆"));
     assert.ok(advancedDisclosure);
     assert.ok(archiveDisclosure);
     const advancedPanel = document.getElementById(advancedDisclosure.getAttribute("aria-controls") ?? "");
@@ -143,6 +143,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     await act(async () => { runSummary.click(); runSummary.click(); });
     assert.equal(runDetails.open, true);
     await act(async () => { archiveDisclosure.click(); });
+    assert.match(archiveDisclosure.textContent ?? "", /归档记忆（26）/u, "展开后显示实际读取的归档数量");
     assert.equal(archiveDisclosure.getAttribute("aria-expanded"), "true");
     assert.equal(archivePanel.hidden, false);
     assert.match(document.body.textContent ?? "", /Archived fact 1/u);

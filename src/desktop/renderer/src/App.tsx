@@ -1,3 +1,4 @@
+import { WindowCapture } from "./components/capture/WindowCapture.js";
 import { ChatResponseContext } from "./chatResponseSettings.js";
 import { ComposerDraftState } from "./components/composer/composerDraft.js";
 import type { ChatResponseSettings } from "../../../config/schema.js";
@@ -29,6 +30,8 @@ import type {
   DesktopSessionMenuAction,
   DesktopSessionWriterConflict,
   DesktopSessionSummary,
+  DesktopSessionMetadataReceipt,
+  DesktopSessionTreePage,
   DesktopRunReceipt,
   DesktopSettingsCloseRequest,
   DesktopSettingsCloseResponse,
@@ -85,11 +88,11 @@ import { DesktopToast } from "./components/overlays/DesktopToast.js";
 import { RenameOverlay } from "./components/overlays/RenameOverlay.js";
 import { SearchOverlay } from "./components/overlays/SearchOverlay.js";
 import { SlashResultOverlay } from "./components/overlays/SlashResultOverlay.js";
-import { TimeCluesDialog } from "./components/overlays/TimeCluesDialog.js";
 import { MessageReferencesDialog } from "./components/overlays/MessageReferencesDialog.js";
 import { DateReferenceDetailDialog } from "./components/overlays/DateReferenceDetailDialog.js";
 import { SettingsOverlay, type SettingsTab } from "./components/settings/SettingsOverlay.js";
 import { warmSettingsSnapshot } from "./components/settings/SettingsDraftProvider.js";
+import { settingsPageNeedsSnapshot } from "./components/settings/settingsData.js";
 import { useWorkspaceInspector } from "./components/workspace/useWorkspaceInspector.js";
 import { RenderingPreviewContext } from "./components/RenderingPreviewContext.js";
 import { sessionGoalSlashFeedback } from "./components/workspace/sessionGoalControl.js";
@@ -140,7 +143,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     return labels;
   }, [composerSkills]);
-  const [composerCatalogNonce, setComposerCatalogNonce] = useState(0);
+  const [composerCatalogNonce, setComposerCatalogNonce] = useState({ skills: 0, tools: 0 });
   const [document, setDocument] = useState<DesktopSessionDocument>();
   const documentRef = useRef<DesktopSessionDocument | undefined>(undefined);
   const [writerConflict, setWriterConflict] = useState<DesktopSessionWriterConflict>();
@@ -176,7 +179,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [searchOpen, setSearchOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [timeCluesOpen, setTimeCluesOpen] = useState(false);
   const [settingsTargetTab, setSettingsTargetTab] = useState<SettingsTab>();
   const [temporalSourceTarget, setTemporalSourceTarget] = useState<{ sessionId: string; messageId: string }>();
   const [messageReferencesTarget, setMessageReferencesTarget] = useState<{ projectId: string; uri: string }>();
@@ -232,7 +234,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (!settingsEnabled) return;
     // 点击即预热快照 IPC，弹窗挂载时数据通常已就绪或在路上；dialog 绘制本身
     // 也要一帧时间，足以盖掉大部分可见加载态。设置本身不是静态的，仍会后台校验。
-    warmSettingsSnapshot(projectRef.current, selectedRef.current);
+    if (targetTab && settingsPageNeedsSnapshot(targetTab)) warmSettingsSnapshot(projectRef.current, selectedRef.current);
     setSettingsTargetTab(targetTab);
     setSettingsOpen(true);
   }, [settingsEnabled]);
@@ -324,35 +326,38 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = workspace?.project.id;
     if (!projectId) {
       setComposerCatalog(undefined);
-      return () => { active = false; };
+      return;
     }
-    // 设置关闭后统一刷新；打开设置时不再额外扫描一次相同目录。
-    if (settingsOpen) return () => { active = false; };
-    void Promise.all([
-      window.biny.skillCatalog(projectId),
-      window.biny.skillSettings(projectId),
-      window.biny.toolCatalog(projectId)
-    ]).then(([catalog, settings, tools]) => {
-      if (!active) return;
-      const enabledById = new Map(settings.activations.map((activation) => [activation.id, activation.enabled]));
-      setComposerCatalog({ projectId, warnings: catalog.warnings,
-        skills: catalog.skills.filter((skill) => enabledById.get(skill.id) !== false), tools });
-    }).catch((error) => {
-      if (!active) return;
-      setComposerCatalog(undefined);
-      setWarning(`无法加载技能补全：${errorMessage(error)}`);
-    });
+    void Promise.all([window.biny.skillCatalog(projectId), window.biny.skillSettings(projectId)])
+      .then(([catalog, settings]) => {
+        if (!active) return;
+        const enabledById = new Map(settings.activations.map(activation => [activation.id, activation.enabled]));
+        setComposerCatalog(current => ({ projectId, warnings: catalog.warnings,
+          skills: catalog.skills.filter(skill => enabledById.get(skill.id) !== false),
+          tools: current?.projectId === projectId ? current.tools : [] }));
+      }).catch(error => { if (active) setWarning(`无法加载技能补全：${errorMessage(error)}`); });
     return () => { active = false; };
-  }, [
-    composerCatalogNonce,
-    settingsOpen,
-    workspace?.project.id,
-    composerResourceRevision
-  ]);
+  }, [composerCatalogNonce.skills, workspace?.project.id, composerResourceRevision]);
 
-  /** 能力菜单的刷新按钮：强制重拉工具/技能目录（MCP 重连后目录可能变化）。 */
-  const refreshComposerCatalog = useCallback((): void => {
-    setComposerCatalogNonce((nonce) => nonce + 1);
+  useEffect(() => {
+    let active = true;
+    const projectId = workspace?.project.id;
+    if (!projectId) return;
+    void window.biny.toolCatalog(projectId).then(tools => {
+      if (!active) return;
+      setComposerCatalog(current => ({ projectId, tools,
+        skills: current?.projectId === projectId ? current.skills : [],
+        warnings: current?.projectId === projectId ? current.warnings : [] }));
+    }).catch(error => { if (active) setWarning(`无法加载工具目录：${errorMessage(error)}`); });
+    return () => { active = false; };
+  }, [composerCatalogNonce.tools, workspace?.project.id, composerResourceRevision]);
+
+  const refreshComposerCatalog = useCallback((scope: "skills" | "tools" | "all" = "all", projectId?: string): void => {
+    if (projectId !== undefined && projectId !== projectRef.current) return;
+    setComposerCatalogNonce(current => ({
+      skills: current.skills + (scope !== "tools" ? 1 : 0),
+      tools: current.tools + (scope !== "skills" ? 1 : 0)
+    }));
   }, []);
 
   const commitNavigation = useCallback((next: DesktopNavigationState): void => {
@@ -379,45 +384,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       : replaceProjectSessions(current, snapshot.project.id, snapshot.sessions));
     if (projectRef.current === snapshot.project.id) setWorkspace(snapshot);
   }, [adoptSessionRootPage, loadedRootIds, sessionTreePages]);
-
-  const changeFastMode = useCallback(async (fastMode: boolean): Promise<void> => {
-    setLastFastMode(fastMode);
-    try { window.localStorage.setItem("biny.lastFastMode", String(fastMode)); }
-    catch { /* The per-session setting remains available when local storage is unavailable. */ }
-    setFastModeOverride({ sessionId: selectedSession?.id, value: fastMode });
-    if (!selectedSession) return;
-    try {
-      mergeProjectSnapshot(await window.biny.setSessionFastMode(
-        selectedSession.projectId,
-        selectedSession.id,
-        fastMode,
-        selectedSession.metadataRevision
-      ));
-    } catch (error) {
-      setWarning(errorMessage(error));
-    } finally {
-      setFastModeOverride(undefined);
-    }
-  }, [mergeProjectSnapshot, selectedSession]);
-
-  useEffect(() => {
-    const subscribe = window.biny.onApplicationImportsChanged;
-    if (!subscribe) return;
-    let active = true;
-    let generation = 0;
-    const unsubscribe = subscribe(() => {
-      const request = ++generation;
-      void window.biny.bootstrap().then(bootstrap => {
-        if (!active || request !== generation) return;
-        setProjects(bootstrap.projects);
-        sessionTreePages.replaceAll(bootstrap.sidebarSessions, bootstrap.projects.map(project => project.id));
-        resetSessionRootPages(bootstrap.workspace);
-        setSidebarSessions(bootstrap.sidebarSessions);
-        if (bootstrap.workspace && projectRef.current === bootstrap.workspace.project.id) setWorkspace(bootstrap.workspace);
-      }).catch(error => { if (active && request === generation) setWarning(errorMessage(error)); });
-    });
-    return () => { active = false; unsubscribe(); };
-  }, [resetSessionRootPages, sessionTreePages]);
 
   const threadBriefState = useThreadBrief();
   const briefProjectIds = threadBriefState?.snapshot?.projects.map((project) => project.projectId).sort().join("\0") ?? "";
@@ -825,7 +791,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   useEffect(() => window.biny.onSettingsCloseRequest((request) => {
     if (!settingsEnabled) return;
-    warmSettingsSnapshot(projectRef.current, selectedRef.current);
     setSettingsCloseRequest(request);
     setSettingsOpen(true);
   }), [settingsEnabled]);
@@ -996,6 +961,100 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setTemporalSourceTarget(undefined);
   }, [document, temporalSourceTarget]);
 
+  const mergeSessionMetadata = useCallback((receipt: DesktopSessionMetadataReceipt, expectedRevision?: string): void => {
+    const merge = (session: DesktopSessionSummary): DesktopSessionSummary => session.projectId === receipt.projectId
+      && session.id === receipt.sessionId
+      && (session.metadataRevision === expectedRevision || session.metadataRevision === receipt.metadata.metadataRevision)
+      ? { ...session, ...receipt.metadata } : session;
+    invalidateProjectRefresh(receipt.projectId);
+    sessionTreePages.observe(receipt.projectId, []);
+    setSidebarSessions(current => current.map(merge));
+    setWorkspace(current => current?.project.id === receipt.projectId ? { ...current, sessions: current.sessions.map(merge) } : current);
+    setDocument(current => {
+      if (!current) return current;
+      const session = merge(current.session);
+      return session === current.session ? current : { ...current, session };
+    });
+  }, [invalidateProjectRefresh, sessionTreePages]);
+
+  const mergeSessionCatalog = useCallback((page: DesktopSessionTreePage): void => {
+    if (page.revisionChanged) throw new Error("会话列表已更新，请重新加载重试。");
+    const sessions = [...new Map([...page.sessions, ...(page.pinnedSessions ?? []), ...(page.supplementalSessions ?? [])]
+      .map(session => [session.id, session])).values()];
+    sessionTreePages.replaceProject(page.projectId, sessions);
+    adoptSessionRootPage({ project: { id: page.projectId }, sessions, sessionPage: page });
+    setSidebarSessions(current => replaceProjectSessionRoots(current, page.projectId, page.sessions, sessions, loadedRootIds(page.projectId)));
+    setWorkspace(current => current?.project.id === page.projectId ? { ...current, sessions, sessionPage: page } : current);
+    setDocument(current => {
+      if (current?.session.projectId !== page.projectId) return current;
+      const session = sessions.find(candidate => candidate.id === current.session.id);
+      return session ? { ...current, session } : current;
+    });
+  }, [adoptSessionRootPage, loadedRootIds, sessionTreePages]);
+
+  useEffect(() => {
+    let active = true;
+    let documentGeneration = 0;
+    let settingsGeneration = 0;
+    const unsubscribe = window.biny.onApplicationImportsChanged?.(change => {
+      for (const { projectId, sessionIds: importedIds } of change.projects) {
+        invalidateProjectRefresh(projectId);
+        for (const sessionId of importedIds) sessionTreePages.refreshCatalog(projectId,
+          sessionIds => window.biny.listSessionTreePage(projectId, { limit: 32, includeArchived: true, includePinnedSessions: true, sessionIds }),
+          mergeSessionCatalog, error => { if (active) setWarning(errorMessage(error)); }, sessionId);
+      }
+      if (change.mcpChanged) refreshComposerCatalog("tools");
+      const source = documentRef.current;
+      const projectId = projectRef.current;
+      const sessionId = selectedRef.current;
+      const navigation = loadRequestRef.current;
+      if (source && projectId && sessionId && change.projects.some(project => project.projectId === projectId && project.sessionIds.includes(sessionId))) {
+        const request = ++documentGeneration;
+        void window.biny.openSession(projectId, sessionId).then(next => {
+          if (!active || request !== documentGeneration || navigation !== loadRequestRef.current
+            || projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+          setDocument(current => current?.session.projectId === projectId && current.session.id === sessionId
+            && current.events === source.events && current.liveEvents === source.liveEvents
+            ? { ...next, session: current.session } : current);
+        }).catch(error => {
+          if (active && request === documentGeneration && navigation === loadRequestRef.current
+            && projectRef.current === projectId && selectedRef.current === sessionId) setWarning(errorMessage(error));
+        });
+      }
+      if (change.settingsChanged && projectId) {
+        const request = ++settingsGeneration;
+        const ownsProject = sessionTreePages.captureCatalogProject(projectId);
+        void window.biny.refreshProject(projectId).then(snapshot => {
+          if (!active || request !== settingsGeneration || !ownsProject()) return;
+          setWorkspace(current => current?.project.id === projectId ? { ...current,
+            memory: snapshot.memory, permissionMode: snapshot.permissionMode, capabilityDefaults: snapshot.capabilityDefaults,
+            models: snapshot.models, pickerModels: snapshot.pickerModels, selectedModel: snapshot.selectedModel,
+            connections: snapshot.connections, requiresModelConfiguration: snapshot.requiresModelConfiguration
+          } : current);
+        }).catch(error => { if (active && request === settingsGeneration) setWarning(errorMessage(error)); });
+      }
+    });
+    return () => { active = false; unsubscribe?.(); };
+  }, [invalidateProjectRefresh, mergeSessionCatalog, refreshComposerCatalog, sessionTreePages]);
+
+  const changeFastMode = useCallback(async (fastMode: boolean): Promise<void> => {
+    setLastFastMode(fastMode);
+    try { window.localStorage.setItem("biny.lastFastMode", String(fastMode)); }
+    catch { /* The per-session setting remains available when local storage is unavailable. */ }
+    const pending = { sessionId: selectedSession?.id, value: fastMode };
+    setFastModeOverride(pending);
+    if (!selectedSession) return;
+    const ownsProject = sessionTreePages.captureCatalogProject(selectedSession.projectId);
+    try {
+      const receipt = await window.biny.setSessionFastMode(selectedSession.projectId, selectedSession.id, fastMode, selectedSession.metadataRevision);
+      if (ownsProject()) mergeSessionMetadata(receipt, selectedSession.metadataRevision);
+    } catch (error) {
+      if (ownsProject()) setWarning(errorMessage(error));
+    } finally {
+      setFastModeOverride(current => current === pending ? undefined : current);
+    }
+  }, [mergeSessionMetadata, selectedSession, sessionTreePages]);
+
   const toggleSessionPinned = useCallback(async (session: DesktopSessionSummary, pinned = !session.pinned): Promise<void> => {
     const ownsProject = sessionTreePages.captureCatalogProject(session.projectId);
     try {
@@ -1004,15 +1063,16 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       if (ownsProject()) {
         sessionTreePages.refreshCatalog(
           session.projectId,
-          () => window.biny.refreshProject(session.projectId),
-          mergeProjectSnapshot,
-          error => setWarning(`置顶状态已保存，但会话列表刷新失败：${errorMessage(error)}`)
+          sessionIds => window.biny.listSessionTreePage(session.projectId, { limit: 32, includeArchived: true, includePinnedSessions: true, sessionIds }),
+          mergeSessionCatalog,
+          error => setWarning(`置顶状态已保存，但会话列表刷新失败：${errorMessage(error)}`),
+          session.id
         );
       }
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [invalidateProjectRefresh, mergeProjectSnapshot, sessionTreePages]);
+  }, [invalidateProjectRefresh, mergeSessionCatalog, sessionTreePages]);
 
   const deleteSidebarSessions = useCallback(async (sessions: DesktopSessionSummary[], confirm = true, onStarted?: () => void) => {
     const targets = sessions.map(session => ({ projectId: session.projectId, sessionId: session.id }));
@@ -1065,15 +1125,16 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         if (ownsProject()) {
           sessionTreePages.refreshCatalog(
             session.projectId,
-            () => window.biny.refreshProject(session.projectId),
-            mergeProjectSnapshot,
-            error => setWarning(`归档状态已保存，但会话列表刷新失败：${errorMessage(error)}`)
+            sessionIds => window.biny.listSessionTreePage(session.projectId, { limit: 32, includeArchived: true, includePinnedSessions: true, sessionIds }),
+            mergeSessionCatalog,
+            error => setWarning(`归档状态已保存，但会话列表刷新失败：${errorMessage(error)}`),
+            session.id
           );
         }
         return;
       }
       if (action === "export-bundle" || action === "export-claude") {
-        mergeProjectSnapshot(await window.biny.exportSession(session.projectId, session.id, action === "export-claude" ? "claude" : "biny"));
+        await window.biny.exportSession(session.projectId, session.id, action === "export-claude" ? "claude" : "biny");
         return;
       }
       if (action === "duplicate") {
@@ -1095,7 +1156,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, invalidateProjectRefresh, mergeProjectSnapshot, sessionTreePages, toggleSessionPinned]);
+  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, invalidateProjectRefresh, mergeSessionCatalog, sessionTreePages, toggleSessionPinned]);
 
   const importSessionIntoProject = useCallback(async (projectId: string): Promise<void> => {
     const projectLifetime = projectRemovalRef.current.get(projectId);
@@ -1465,21 +1526,43 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setWarning(files.length ? "当前消息的文件变更没有安全快照，暂不自动回滚" : "当前消息没有可回滚的文件");
   }, []);
 
-  const settingsCommitted = useCallback((snapshot: DesktopSettingsSnapshot): void => {
-    setChatResponse(snapshot.chatParams.response);
+  const settingsCommitted = useCallback((snapshot: DesktopSettingsSnapshot, scope?: "models" | "preferences" | "settings", appliedFields?: string[]): void => {
+    // 工具和视觉模型已由设置回执更新；不刷新不相关的侧栏会话树。
+    if (scope === "models") return;
     adoptAppearance({ themePreference: snapshot.themePreference, fontPreference: snapshot.fontPreference, appearancePreference: normalizeAppearancePreference(snapshot.appearancePreference) });
+    if (scope === "preferences") return;
+    if (snapshot.projectId === projectRef.current) setChatResponse(snapshot.chatParams.response);
+    if (scope === "settings") {
+      setWorkspace(current => current?.project.id === snapshot.projectId ? { ...current,
+        memory: snapshot.memory, permissionMode: snapshot.permission.mode,
+        capabilityDefaults: { tools: snapshot.chatParams.defaultToolSelection, skills: snapshot.chatParams.defaultSkillSelection }
+      } : current);
+      if (appliedFields?.includes("skills")) refreshComposerCatalog("skills");
+      return;
+    }
     void window.biny.refreshProject(snapshot.projectId)
       .then(mergeProjectSnapshot)
       .catch((error: unknown) => setWarning(errorMessage(error)));
-  }, [adoptAppearance, mergeProjectSnapshot]);
+  }, [adoptAppearance, mergeProjectSnapshot, refreshComposerCatalog]);
+
+  const mergeProjectMetadata = useCallback((project: DesktopProject, field: "name" | "pinned"): void => {
+    invalidateProjectRefresh(project.id);
+    setProjects(current => {
+      const existing = current.find(candidate => candidate.id === project.id);
+      return existing ? mergeProject(current, { ...existing, [field]: project[field] }) : current;
+    });
+    setWorkspace(current => current?.project.id === project.id ? { ...current, project: { ...current.project, [field]: project[field] } } : current);
+  }, [invalidateProjectRefresh]);
 
   const toggleProjectPinned = useCallback(async (projectId: string, pinned: boolean): Promise<void> => {
+    const lifetime = projectRemovalRef.current.get(projectId);
     try {
-      mergeProjectSnapshot(await window.biny.setProjectPinned(projectId, pinned));
+      const project = await window.biny.setProjectPinned(projectId, pinned);
+      if (projectRemovalRef.current.get(projectId) === lifetime) mergeProjectMetadata(project, "pinned");
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [mergeProjectSnapshot]);
+  }, [mergeProjectMetadata]);
 
   const reorderProjects = useCallback(async (projectIds: string[]): Promise<void> => {
     // Quiet optimistic reorder — this is a low-stakes UI preference, not a warnable action.
@@ -1551,8 +1634,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   // 聊天区状态变化很频繁；侧栏已经 memo，这些桥接回调必须保持引用稳定，避免每次输入/流式更新
   // 都把整棵项目树重新渲染一遍，触发 macOS 玻璃侧栏的重绘闪烁。
-  const openTimeClues = useCallback((): void => setTimeCluesOpen(true), []);
-
   const createSidebarProject = useCallback((): void => {
     void createEmptyProject();
   }, [createEmptyProject]);
@@ -1932,9 +2013,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         useMemories: enabled,
         contributeMemories: enabled
       };
-      const snapshot = await window.biny.saveChatPersonalization(projectId, sessionId, nextOverride, selectedSession.metadataRevision);
+      const receipt = await window.biny.saveChatPersonalization(projectId, sessionId, nextOverride, selectedSession.metadataRevision);
       if (!isCurrentRequest()) return;
-      mergeProjectSnapshot(snapshot);
+      mergeSessionMetadata(receipt, selectedSession.metadataRevision);
       setToast(enabled ? "当前聊天已开启记忆" : "当前聊天已关闭记忆");
       setDraftMemoryOverride(undefined);
     } catch (error) {
@@ -1945,7 +2026,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } finally {
       if (isCurrentRequest()) setMemoryToggleBusy(false);
     }
-  }, [chatMemoryEnabled, draftMemoryOverride, memoryPolicy, memoryToggleBusy, mergeProjectSnapshot, selectedSession]);
+  }, [chatMemoryEnabled, draftMemoryOverride, memoryPolicy, memoryToggleBusy, mergeSessionMetadata, selectedSession]);
   const prefillComposer = useCallback((input: string): void => {
     setComposerDraft(input);
     setFocusToken((value) => value + 1);
@@ -2181,6 +2262,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       starting={starting}
       overlays={(
         <>
+          <WindowCapture />
           <SearchOverlay
             onClose={closeSearch}
             onProject={(projectId) => void selectProject(projectId)}
@@ -2215,7 +2297,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
             onReadModelApiKey={readModelApiKey}
             onFontPreference={changeFontPreference}
             onSettingsCommitted={settingsCommitted}
-            onSessionImportComplete={async projectId => { mergeProjectSnapshot(await window.biny.refreshProject(projectId)); }}
+            onCapabilitiesChanged={refreshComposerCatalog}
             onResolveCloseRequest={resolveSettingsCloseRequest}
             onImportCookies={async () => await window.biny.importCookies()}
             onNotify={setWarning}
@@ -2246,13 +2328,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
             version={version}
             workspace={workspace}
           />
-          <TimeCluesDialog open={timeCluesOpen} currentSessionId={selectedSessionId}
-            refreshKey={`${document?.events.length ?? 0}`}
-            onClose={() => setTimeCluesOpen(false)} onSource={(projectId, sessionId, messageId) => {
-            setTimeCluesOpen(false);
-            setTemporalSourceTarget({ sessionId, messageId });
-            void navigateToSession(projectId, sessionId);
-          }} />
           {messageReferencesTarget && workspace?.project.id ? <MessageReferencesDialog projectId={messageReferencesTarget.projectId}
             uri={messageReferencesTarget.uri} onClose={() => { messageReferencesRequestRef.current += 1; setMessageReferencesTarget(undefined); }}
             onOpen={(uri) => void openDeepLink(uri, messageReferencesTarget.projectId)} /> : null}
@@ -2269,7 +2344,9 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
             onSave={async (title) => {
               if (!renameTarget) return;
               if (renameTarget.kind === "project") {
-                mergeProjectSnapshot(await window.biny.renameProject(renameTarget.projectId, title));
+                const lifetime = projectRemovalRef.current.get(renameTarget.projectId);
+                const project = await window.biny.renameProject(renameTarget.projectId, title);
+                if (projectRemovalRef.current.get(renameTarget.projectId) === lifetime) mergeProjectMetadata(project, "name");
               } else if (renameTarget.sessionId) {
                 const ownsProject = sessionTreePages.captureCatalogProject(renameTarget.projectId);
                 await window.biny.renameSession(renameTarget.projectId, renameTarget.sessionId, title, renameTarget.metadataRevision);
@@ -2277,9 +2354,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
                 if (ownsProject()) {
                   sessionTreePages.refreshCatalog(
                     renameTarget.projectId,
-                    () => window.biny.refreshProject(renameTarget.projectId),
-                    mergeProjectSnapshot,
-                    error => setWarning(`名称已保存，但会话列表刷新失败：${errorMessage(error)}`)
+                    sessionIds => window.biny.listSessionTreePage(renameTarget.projectId, { limit: 32, includeArchived: true, includePinnedSessions: true, sessionIds }),
+                    mergeSessionCatalog,
+                    error => setWarning(`名称已保存，但会话列表刷新失败：${errorMessage(error)}`),
+                    renameTarget.sessionId
                   );
                 }
               }
@@ -2320,7 +2398,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
           onSessionAction={runSidebarSessionAction}
           onDeleteSessions={deleteSidebarSessions}
           onSettings={settingsEnabled ? openSettings : undefined}
-          onTimeClues={openTimeClues}
           onToggleSidebar={toggleSidebar}
           layout={sidebarLayout}
           projects={projects}

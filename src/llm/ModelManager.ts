@@ -218,8 +218,9 @@ export class ModelManager {
     }
     const nextRuntime = new ModelRuntime(nextConfig, catalogs, this.ai, this.modelsStore, undefined, this.providerCredentials);
     const nextSettings = nextRuntime.createModelSettings();
-    // 自动工具模型和跟随主模型的视觉选择在磁盘中省略字段，仍需清除上一回合的显式选择。
-    Object.assign(this.config, nextConfig, { toolModel: nextConfig.toolModel, visionModel: nextConfig.visionModel });
+    // 磁盘中省略的模型选择和视觉开关仍需清除上一回合的显式值。
+    Object.assign(this.config, nextConfig, { toolModel: nextConfig.toolModel,
+      visionModel: nextConfig.visionModel, visionModelEnabled: nextConfig.visionModelEnabled });
     this.runtime = nextRuntime;
     this.activeSettings = nextSettings;
     this.observedConfigRevision = nextRevision;

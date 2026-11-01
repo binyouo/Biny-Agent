@@ -1,7 +1,7 @@
 /**
  * 桌面端扩展目录服务。
  *
- * Renderer 只拿 catalog 和文件内容，不直接接触绝对路径；每次读写前重新扫描并按 id
+ * Renderer 只拿 catalog 和文件内容；每次读写前重新扫描所属范围并按 id
  * 解析真实目录，避免把页面初始快照当成长期授权。插件展示只读取清单和文件统计，不会
  * 为了展示而 import 或执行代码；市场下载、解包和启停仍由受管目录服务负责。
  */
@@ -72,7 +72,7 @@ export class DesktopSkillService {
     const projectRoots = this.projectsFor(projectId).map((project) => project.path);
     const [skills, plugins] = await Promise.all([
       scanSkillCatalog({ projectRoots }),
-      this.listPlugins(projectId)
+      this.pluginCatalog(projectId)
     ]);
     return {
       skills: skills.skills,
@@ -118,32 +118,32 @@ export class DesktopSkillService {
     return await importUnmanagedSkills({ ids: skillIds, projectRoots: this.projectRoots() });
   }
 
-  async version(skillId: string): Promise<ManagedSkillVersion | undefined> {
-    const entry = await this.requireSkill(skillId);
+  async version(skillId: string, projectId?: string): Promise<ManagedSkillVersion | undefined> {
+    const entry = await this.requireSkill(skillId, projectId);
     if (entry.scope !== "global" || entry.source !== "biny") return undefined;
     return await readManagedSkillVersion(defaultManagedSkillRoot(), entry.name);
   }
 
-  async updateVersion(skillId: string, expectedVersion: string): Promise<SkillInstallResult> {
-    const current = await this.version(skillId);
+  async updateVersion(skillId: string, expectedVersion: string, projectId?: string): Promise<SkillInstallResult> {
+    const current = await this.version(skillId, projectId);
     if (!current || current.id !== expectedVersion) throw new Error("Skill 版本已变化，请刷新后重试。");
     return await updateDiscoveredSkill({ name: current.name, expectedVersion, fetcher: this.fetcher });
   }
 
-  async rollbackVersion(skillId: string, expectedVersion: string): Promise<ManagedSkillVersion> {
-    const current = await this.version(skillId);
+  async rollbackVersion(skillId: string, expectedVersion: string, projectId?: string): Promise<ManagedSkillVersion> {
+    const current = await this.version(skillId, projectId);
     if (!current || current.id !== expectedVersion) throw new Error("Skill 版本已变化，请刷新后重试。");
     return await rollbackSkillVersion(defaultManagedSkillRoot(), current.name, expectedVersion);
   }
 
-  async readFile(skillId: string, relativePath: string): Promise<DesktopSkillFilePreview> {
-    const entry = await this.requireSkill(skillId);
+  async readFile(skillId: string, relativePath: string, projectId?: string): Promise<DesktopSkillFilePreview> {
+    const entry = await this.requireSkill(skillId, projectId);
     const preview = await readSkillCatalogFile(entry, relativePath);
     return { path: preview.path, content: preview.content, bytes: preview.size, binary: preview.binary, truncated: preview.truncated };
   }
 
-  async directory(skillId: string): Promise<string> {
-    return (await this.requireSkill(skillId)).absolutePath;
+  async directory(skillId: string, projectId?: string): Promise<string> {
+    return (await this.requireSkill(skillId, projectId)).absolutePath;
   }
 
   async pluginRegistry(projectId: string, refresh = false): Promise<DesktopPluginRegistrySnapshot> {
@@ -244,9 +244,9 @@ export class DesktopSkillService {
     return projectPluginRoot(this.requireProject(projectId).path);
   }
 
-  private async requireSkill(skillId: string): Promise<SkillCatalogEntry> {
+  private async requireSkill(skillId: string, projectId?: string): Promise<SkillCatalogEntry> {
     if (!skillId.trim()) throw new Error("Skill id 不能为空。");
-    const snapshot = await scanSkillCatalog({ projectRoots: this.projectRoots() });
+    const snapshot = await scanSkillCatalog({ projectRoots: projectId === undefined ? [] : [this.requireProject(projectId).path] });
     const entry = snapshot.skills.find((skill) => skill.id === skillId);
     if (!entry) throw new Error("Skill 不存在，可能已经被移动或删除。");
     return entry;
@@ -267,7 +267,7 @@ export class DesktopSkillService {
     return project;
   }
 
-  private async listPlugins(projectId?: string): Promise<{ plugins: DesktopPluginSummary[]; warnings: string[] }> {
+  async pluginCatalog(projectId?: string): Promise<{ plugins: DesktopPluginSummary[]; warnings: string[] }> {
     const projects = this.projectsFor(projectId);
     const [global, ...results] = await Promise.all([
       this.listGlobalPlugins(),

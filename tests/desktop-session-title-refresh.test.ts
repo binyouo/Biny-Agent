@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { test, type TestContext } from "node:test";
-import type { DesktopAgentEventEnvelope, DesktopBootstrap, DesktopProject, DesktopSessionDocument, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopAgentEventEnvelope, DesktopBootstrap, DesktopProject, DesktopSessionDocument, DesktopSessionSummary, DesktopSessionMetadataReceipt, DesktopChatPersonalizationOverride, DesktopSessionTreePage, DesktopSessionTreePageOptions, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 
 function deferred<T>() {
@@ -18,6 +18,9 @@ function deferred<T>() {
 
 interface SidebarProbe {
   sessions: DesktopSessionSummary[];
+  projects: DesktopProject[];
+  onProjectPinned(projectId: string, pinned: boolean): void;
+  onRenameProject(projectId: string): void;
   activeProjectId?: string;
   selectedSessionId?: string;
 }
@@ -47,12 +50,13 @@ async function appModule() {
   }
   const actual = new Set(["react", "./app/desktopState.js", "./app/desktopApi.js", "./app/sessionTreePageLifetime.js", "./app/useSessionRootPages.js",
     "./app/useDesktopEventBridge.js", "./navigationHistory.js", "../../../runtime/agentEvents.js",
-    "./components/overlays/RenameOverlay.js"]);
+    "./components/overlays/RenameOverlay.js", "../../../personalization/index.js"]);
   const implementations: Record<string, string> = {
     ChatResponseContext: "createContext(undefined)", RenderingPreviewContext: "createContext(undefined)",
     AppearanceProvider: "({children}) => children",
     DesktopShell: "({sideNav, children, overlays}) => createElement('div', null, sideNav, children, overlays)",
-    Workspace: "(props) => createElement('output', {'data-current-title': true}, props.sessionTitle)",
+    Workspace: "(props) => createElement('div', null, createElement('output', {'data-current-title': true}, props.sessionTitle), props.children)",
+    Composer: "(props) => { window.__metadataComposer = props; return null; }",
     DesktopToast: "({message}) => message ? createElement('p', {role: 'status', 'data-title-toast': true}, message) : null",
     Sidebar: "(props) => { window.__titleSidebar = props; return createElement(RealSidebar, props); }",
     Tooltip: "({children}) => children",
@@ -230,15 +234,12 @@ async function fixture(context: TestContext) {
     selectedSessionId: sessionId, activeView: "chat"
   } as DesktopBootstrap;
   const refreshes: Array<{ projectId: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
-  const catalogRefreshes: Array<{ projectId: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
-  const pendingMetadataReads = new Map<string, number>();
-  const metadataCommitted = (projectId: string) => (snapshot: DesktopWorkspaceSnapshot) => {
-    pendingMetadataReads.set(projectId, (pendingMetadataReads.get(projectId) ?? 0) + 1);
-    return snapshot;
-  };
-  const renames: Array<{ projectId: string; sessionId: string; title: string; expectedRevision?: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
-  const pins: Array<{ projectId: string; sessionId: string; pinned: boolean; expectedRevision?: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
+  const catalogRefreshes: Array<{ projectId: string; result: Promise<DesktopSessionTreePage> }> = [];
+  const renames: Array<{ projectId: string; sessionId: string; title: string; expectedRevision?: string; result: Promise<DesktopSessionMetadataReceipt> }> = [];
+  const pins: Array<{ projectId: string; sessionId: string; pinned: boolean; expectedRevision?: string; result: Promise<DesktopSessionMetadataReceipt> }> = [];
   const opens: Promise<DesktopSessionDocument>[] = [];
+  const metadataWrites: Promise<DesktopSessionMetadataReceipt>[] = [];
+  const projectWrites: Promise<DesktopProject>[] = [];
   const gates: ReadGate[] = [];
   let armed: ReadGate | undefined;
   let subscriber: ((envelope: DesktopAgentEventEnvelope) => void) | undefined;
@@ -248,25 +249,39 @@ async function fixture(context: TestContext) {
     bootstrap: async () => bootstrap,
     refreshProject(projectId: string) {
       const result = manager.workspaceSnapshot(projectId, true);
-      const pending = pendingMetadataReads.get(projectId) ?? 0;
-      if (pending > 0) {
-        pendingMetadataReads.set(projectId, pending - 1);
-        catalogRefreshes.push({ projectId, result });
-      } else refreshes.push({ projectId, result });
+      refreshes.push({ projectId, result });
+      void result.catch(noop);
+      return result;
+    },
+    listSessionTreePage(projectId: string, options: DesktopSessionTreePageOptions) {
+      const result = manager.listSessionTreePage(projectId, options);
+      catalogRefreshes.push({ projectId, result });
       void result.catch(noop);
       return result;
     },
     renameSession(projectId: string, targetId: string, title: string, expectedRevision?: string) {
-      const result = manager.renameSession(projectId, targetId, title, expectedRevision).then(metadataCommitted(projectId));
+      const result = manager.renameSession(projectId, targetId, title, expectedRevision);
       renames.push({ projectId, sessionId: targetId, title, expectedRevision, result });
       void result.catch(noop);
       return result;
     },
     pinSession(projectId: string, targetId: string, pinned: boolean, expectedRevision?: string) {
-      const result = manager.pinSession(projectId, targetId, pinned, expectedRevision).then(metadataCommitted(projectId));
+      const result = manager.pinSession(projectId, targetId, pinned, expectedRevision);
       pins.push({ projectId, sessionId: targetId, pinned, expectedRevision, result });
       void result.catch(noop);
       return result;
+    },
+    setSessionFastMode(projectId: string, targetId: string, fastMode: boolean, expectedRevision?: string) {
+      const result = manager.setSessionFastMode(projectId, targetId, fastMode, expectedRevision); metadataWrites.push(result); return result;
+    },
+    saveChatPersonalization(projectId: string, targetId: string, input: DesktopChatPersonalizationOverride, expectedRevision: string) {
+      const result = manager.saveChatPersonalization(projectId, targetId, input, expectedRevision); metadataWrites.push(result); return result;
+    },
+    setProjectPinned(projectId: string, pinned: boolean) {
+      const result = manager.setProjectPinned(projectId, pinned); projectWrites.push(result); return result;
+    },
+    renameProject(projectId: string, name: string) {
+      const result = manager.renameProject(projectId, name); projectWrites.push(result); return result;
     },
     // Read the real project document without launching an unrelated Runtime Host.
     openSession(projectId: string, targetId: string) {
@@ -307,7 +322,7 @@ async function fixture(context: TestContext) {
     try { await unmount(); }
     finally {
       for (const gate of gates) gate.release.resolve();
-      await Promise.allSettled([...refreshes.map(call => call.result), ...renames.map(call => call.result), ...pins.map(call => call.result), ...opens]);
+      await Promise.allSettled([...refreshes.map(call => call.result), ...renames.map(call => call.result), ...pins.map(call => call.result), ...opens, ...metadataWrites, ...projectWrites, ...catalogRefreshes.map(call => call.result)]);
     }
   });
   await React.act(async () => { root.render(React.createElement(compiled.App)); });
@@ -364,12 +379,14 @@ async function fixture(context: TestContext) {
   const savePinned = async (pinned: boolean, targetId = sessionId) => {
     assert.notEqual(Boolean(summary(targetId).pinned), pinned, "the menu action must change the current pin state");
     const before = pins.length;
+    const workspaceReads = refreshes.length;
     await selectSessionAction(pinned ? "置顶" : "取消置顶", targetId);
     assert.equal(pins.length, before + 1, "the DOM action must reach the real pin API exactly once");
     const request = pins[before]!;
     await React.act(async () => { await request.result.catch(noop); });
     await tick(260);
     await React.act(async () => { await Promise.allSettled(catalogRefreshes.map(read => read.result)); });
+    assert.equal(refreshes.length, workspaceReads, "metadata changes do not reload the workspace");
     return request;
   };
   const enterTitle = async (title: string) => {
@@ -390,6 +407,7 @@ async function fixture(context: TestContext) {
   };
   const rename = async (title: string, targetId = sessionId) => {
     const before = renames.length;
+    const workspaceReads = refreshes.length;
     await openRename(targetId);
     await enterTitle(title);
     await submit();
@@ -398,11 +416,14 @@ async function fixture(context: TestContext) {
     await React.act(async () => { await request.result.catch(noop); });
     await tick(260);
     await React.act(async () => { await Promise.allSettled(catalogRefreshes.map(read => read.result)); });
+    assert.equal(refreshes.length, workspaceReads, "metadata changes do not reload the workspace");
     return request;
   };
   return {
     project, otherProject, dataRoot, otherRoot, sessionId, removableId, otherId, original,
-    refreshes, renames, pins, opens, probe, summary, tick, arm, event, settleRefresh, openRename, enterTitle, submit, rename, savePinned, unmount,
+    refreshes, catalogRefreshes, renames, pins, opens, metadataWrites, projectWrites, probe, summary,
+    composer: () => (dom.window as unknown as { __metadataComposer: { fastMode: boolean; memoryState: string; memoryToggleDisabled: boolean; onChangeFastMode(value: boolean): void; onToggleMemory(): Promise<void> } }).__metadataComposer,
+    act: React.act, tick, arm, event, settleRefresh, openRename, enterTitle, submit, rename, savePinned, unmount,
     document: dom.window.document,
     readTitle: async () => (await catalog.readSessionCatalogRecord(dataRoot, sessionId))?.title,
     readMetadata: async (targetId = sessionId) => {
@@ -547,7 +568,7 @@ for (const pinned of [true, false]) {
     await view.event();
     await gate.entered.promise;
     const request = await view.savePinned(pinned);
-    const confirmed = (await request.result).sessions.find(session => session.id === view.sessionId)!;
+    const confirmed = (await request.result).metadata;
     assert.equal(request.expectedRevision, initial.metadataRevision);
     assert.equal(confirmed.pinned, pinned);
     assert.notEqual(confirmed.metadataRevision, initial.metadataRevision);
@@ -610,4 +631,74 @@ test("a DOM pin in another project cannot invalidate this project's in-flight ti
   assert.equal(view.refreshes.length, 1);
   assert.equal(view.summary(view.otherId).pinned, true);
   assert.equal(view.summary(view.otherId).metadataRevision, (await view.readMetadata(view.otherId)).revision);
+});
+
+
+test("fast mode and chat memory merge their actual receipts without reading the workspace or session catalog", { timeout: 30_000 }, async context => {
+  const view = await fixture(context);
+  const initialRevision = view.summary().metadataRevision;
+  const otherSession = view.summary(view.otherId);
+  await view.act(async () => {
+    view.composer().onChangeFastMode(true);
+    await Promise.all(view.metadataWrites);
+  });
+  assert.equal(view.metadataWrites.length, 1);
+  assert.equal(view.composer().fastMode, true);
+  assert.equal(view.summary().fastMode, true);
+  assert.notEqual(view.summary().metadataRevision, initialRevision);
+  assert.equal(view.composer().memoryToggleDisabled, false);
+  const originalMemory = view.composer().memoryState;
+  await view.act(async () => { await view.composer().onToggleMemory(); });
+  assert.equal(view.metadataWrites.length, 2);
+  assert.notEqual(view.composer().memoryState, originalMemory);
+  assert.equal(view.summary().fastMode, true, "The later memory receipt preserves the confirmed fast mode");
+  assert.equal(view.summary().metadataRevision, (await view.metadataWrites[1]!).metadata.metadataRevision);
+  assert.equal(view.summary().title, "Generated title");
+  assert.equal(view.summary(view.otherId), otherSession);
+  await view.tick(1_000);
+  assert.equal(view.refreshes.length, 0);
+  assert.equal(view.catalogRefreshes.length, 0);
+});
+
+test("project pin and rename merge the changed project field without refreshing sessions", { timeout: 30_000 }, async context => {
+  const view = await fixture(context);
+  const originalSessions = view.probe().sessions;
+  await view.act(async () => {
+    view.probe().onProjectPinned(view.project.id, true);
+    await Promise.all(view.projectWrites);
+  });
+  assert.equal(view.probe().projects.find(project => project.id === view.project.id)?.pinned, true);
+  await view.act(async () => { view.probe().onRenameProject(view.project.id); });
+  await view.enterTitle("Renamed project");
+  await view.submit();
+  await view.act(async () => { await Promise.all(view.projectWrites); });
+  const updated = view.probe().projects.find(project => project.id === view.project.id)!;
+  assert.equal(updated.name, "Renamed project");
+  assert.equal(updated.pinned, true);
+  assert.equal(view.probe().projects.find(project => project.id === view.otherProject.id)?.name, view.otherProject.name);
+  assert.equal(view.projectWrites.length, 2);
+  assert.equal(view.probe().sessions, originalSessions);
+  await view.tick(1_000);
+  assert.equal(view.refreshes.length, 0);
+  assert.equal(view.catalogRefreshes.length, 0);
+});
+
+test("a delayed event workspace read cannot replace a confirmed project pin receipt", { timeout: 30_000 }, async context => {
+  const view = await fixture(context);
+  const gate = view.arm();
+  await view.event();
+  await gate.entered.promise;
+  await view.act(async () => {
+    view.probe().onProjectPinned(view.project.id, true);
+    await Promise.all(view.projectWrites);
+  });
+  assert.equal(view.refreshes.length, 1, "Pinning does not start an additional workspace read");
+  assert.equal(view.probe().projects.find(project => project.id === view.project.id)?.pinned, true);
+  gate.release.resolve();
+  await view.settleRefresh(0);
+  assert.equal(view.probe().projects.find(project => project.id === view.project.id)?.pinned, true);
+  await view.tick(260);
+  assert.equal(view.refreshes.length, 2, "The preexisting event demand obtains a current replacement");
+  await view.settleRefresh(1);
+  assert.equal(view.probe().projects.find(project => project.id === view.project.id)?.pinned, true);
 });

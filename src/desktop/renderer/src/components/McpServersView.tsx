@@ -31,6 +31,7 @@ interface McpServersViewProps {
   projectId?: string;
   onError(message: string): void;
   onSuccess(message: string): void;
+  onCapabilitiesChanged?(projectId?: string): void;
 }
 
 interface McpMarketInstallSelection {
@@ -38,7 +39,7 @@ interface McpMarketInstallSelection {
   installation: DesktopMcpCatalogInstallation;
 }
 
-export function McpServersView({ projectId, onError, onSuccess }: McpServersViewProps): React.JSX.Element {
+export function McpServersView({ projectId, onError, onSuccess, onCapabilitiesChanged }: McpServersViewProps): React.JSX.Element {
   const [tab, setTab] = useState<McpTab>("installed");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
@@ -136,8 +137,10 @@ export function McpServersView({ projectId, onError, onSuccess }: McpServersView
 
   const updateSnapshot = useCallback((next: DesktopMcpSnapshot): void => {
     applySnapshot(next);
+    if (next.saved?.runtimeRefresh !== "not_needed") onCapabilitiesChanged?.();
+    if (next.saved?.message) onError(next.saved.message);
     setDetails(undefined);
-  }, [applySnapshot]);
+  }, [applySnapshot, onCapabilitiesChanged, onError]);
 
   const openNew = useCallback((): void => {
     setEditingName(undefined);
@@ -277,6 +280,7 @@ export function McpServersView({ projectId, onError, onSuccess }: McpServersView
     try {
       setBusyName(server.name);
       const next = await window.biny.mcpReconnect(projectId, server.name);
+      onCapabilitiesChanged?.(projectId);
       setSnapshot((current) => current ? { ...current, servers: current.servers.map((item) => item.name === next.name ? next : item) } : current);
       onSuccess(next.state === "connected" ? `${server.name} 已连接。` : `${server.name} 仍未连接。`);
     } catch (error) {
@@ -284,7 +288,7 @@ export function McpServersView({ projectId, onError, onSuccess }: McpServersView
     } finally {
       setBusyName(undefined);
     }
-  }, [onError, onSuccess, projectId]);
+  }, [onCapabilitiesChanged, onError, onSuccess, projectId]);
 
   const openDetails = useCallback(async (server: DesktopMcpServerSummary): Promise<void> => {
     if (!projectId) {

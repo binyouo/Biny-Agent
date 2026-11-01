@@ -82,6 +82,93 @@ await test("local preview imports selected sessions and persists dedupe across c
   } finally { await f.close(); }
 });
 
+await test("selected execution ignores unrelated source files and shares one read across sync targets", async () => {
+  const f = await fixture();
+  const originalOpen = fs.open;
+  const secondWorkspace = path.join(f.root, "second-workspace");
+  try {
+    await mkdir(secondWorkspace);
+    const source = await f.source("zz-selected", claude("Selected"));
+    const preview = await f.service.preview("claude");
+    const item = preview.items[0]!;
+    for (let index = 0; index < 256; index++) await f.source(`aa-${index}`, claude("Unselected"));
+    const reads: string[] = [];
+    fs.open = async (...args: Parameters<typeof fs.open>) => {
+      if (String(args[0]).endsWith(".jsonl") && String(args[0]).startsWith(f.homeDir)) reads.push(String(args[0]));
+      return await originalOpen(...args);
+    };
+    const history = await f.service.run({ previewId: preview.id, itemIds: [item.id], workspaceRoot: f.workspaceRoot });
+    assert.equal(history.results[0]?.status, "imported");
+    assert.deepEqual(reads.splice(0), [source]);
+    await f.service.configureSyncSelection({ previewId: preview.id, itemIds: [item.id], workspaceRoot: secondWorkspace });
+    await f.service.setSyncEnabled(true);
+    await writeFile(source, claude("Updated selected"));
+    const synced = await f.service.syncWithEffects();
+    assert.deepEqual(reads.splice(0), [source]);
+    assert.deepEqual(synced.snapshot.history.slice(0, 2).map(entry => entry.results[0]?.status), ["imported", "imported"]);
+    const before = await readFile(path.join(f.stateRoot, "state.json"), "utf8");
+    const unchanged = await f.service.syncWithEffects();
+    assert.equal(unchanged.effects.stateChanged, false);
+    assert.deepEqual(unchanged.effects.sessions, []);
+    assert.equal(await readFile(path.join(f.stateRoot, "state.json"), "utf8"), before);
+    const legacy = JSON.parse(before);
+    for (const selection of legacy.sync.selections) delete selection.files;
+    await writeFile(path.join(f.stateRoot, "state.json"), JSON.stringify(legacy));
+    reads.length = 0;
+    await f.reopen().syncWithEffects();
+    assert.deepEqual(reads, [source], "legacy selections discover names but read only the selected content once");
+  } finally { fs.open = originalOpen; await refreshSessionIndex(secondWorkspace); await f.close(); }
+});
+
+await test("selected source references cannot follow a replacement link or escape their source root", async () => {
+  const f = await fixture();
+  const originalOpen = fs.open;
+  try {
+    const selected = await f.source("selected", claude("Selected"));
+    const outside = path.join(f.root, "outside.jsonl");
+    await writeFile(outside, claude("Outside"));
+    const preview = await f.service.preview("claude");
+    const input = { previewId: preview.id, itemIds: [preview.items[0]!.id], workspaceRoot: f.workspaceRoot };
+    await f.service.configureSyncSelection(input);
+    await f.service.setSyncEnabled(true);
+    let outsideReads = 0;
+    fs.open = async (...args: Parameters<typeof fs.open>) => { if (String(args[0]) === outside) outsideReads++; return await originalOpen(...args); };
+    await fs.unlink(selected); await symlink(outside, selected);
+    assert.equal((await f.service.run(input)).results[0]?.status, "failed");
+    const statePath = path.join(f.stateRoot, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.sync.selections[0].files[0].path = outside;
+    await writeFile(statePath, JSON.stringify(state));
+    const result = await f.reopen().syncWithEffects();
+    assert.ok(result.snapshot.sync.lastError);
+    assert.deepEqual(result.effects.sessions, []);
+    assert.equal(outsideReads, 0);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).receipts, []);
+  } finally { fs.open = originalOpen; await f.close(); }
+});
+
+await test("unchanged snapshots do not rewrite state but interrupted receipts remain durably recovered", async () => {
+  const f = await fixture();
+  const originalRename = fs.rename;
+  try {
+    await f.source("selected", claude("Selected"));
+    await f.service.preview("claude");
+    let writes = 0;
+    fs.rename = async (...args: Parameters<typeof fs.rename>) => { if (String(args[1]) === path.join(f.stateRoot, "state.json")) writes++; return await originalRename(...args); };
+    await f.service.snapshot(); await f.service.snapshot();
+    assert.equal(writes, 0);
+    const statePath = path.join(f.stateRoot, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.receipts.push({ key: "key", scope: "scope", status: "attempting", historyId: "history", itemId: "item" });
+    await writeFile(statePath, JSON.stringify(state));
+    await f.service.snapshot();
+    assert.equal(writes, 1);
+    assert.equal(JSON.parse(await readFile(statePath, "utf8")).receipts[0].status, "unknown");
+    await f.service.snapshot();
+    assert.equal(writes, 1);
+  } finally { fs.rename = originalRename; await f.close(); }
+});
+
 await test("configuration import is selected, preserves existing choices and leaves MCP disabled", async () => {
   const f = await fixture();
   try {
@@ -230,7 +317,7 @@ await test("ChatGPT explicit selection and sync do not duplicate an unchanged co
     await f.service.setSyncEnabled(true);
     await writeFile(file, JSON.stringify([chatConversation("first", "Original first"), chatConversation("second", "Changed unselected second")]));
     const synced = await f.reopen().sync();
-    assert.equal(synced.history[0]?.results[0]?.status, "skipped");
+    assert.deepEqual(synced.history, [imported], "an unchanged sync retains the confirmed history without another entry");
     assert.equal(synced.history[0]?.results[0]?.sessionId, imported.results[0]?.sessionId);
     assert.equal(synced.history[0]?.results.length, 1);
   } finally { await f.close(); }
@@ -277,14 +364,15 @@ for (const phase of ["writeFile", "sync"] as const) {
     const f = await fixture();
     const originalOpen = fs.open;
     try {
-      await f.service.snapshot();
+      await f.source("seed", claude("Seed"));
+      const preview = await f.service.preview("claude");
       const before = await readFile(path.join(f.stateRoot, "state.json"), "utf8");
       fs.open = async (...args: Parameters<typeof fs.open>) => {
         const handle = await originalOpen(...args);
         if (path.basename(String(args[0])).startsWith(".state-")) handle[phase] = async () => { throw new Error("simulated state publication failure"); };
         return handle;
       };
-      await assert.rejects(f.service.snapshot(), /simulated state publication failure/u);
+      await assert.rejects(f.service.configureSyncSelection({ previewId: preview.id, itemIds: [preview.items[0]!.id], workspaceRoot: f.workspaceRoot }), /simulated state publication failure/u);
       fs.open = originalOpen;
       assert.equal((await readdir(f.stateRoot)).some((file) => file.startsWith(".state-")), false, "failed publication must clean its own temporary file");
       assert.equal(await readFile(path.join(f.stateRoot, "state.json"), "utf8"), before);
@@ -463,7 +551,7 @@ await test("sync after restart processes changed selected content only and keeps
     assert.equal(synced.history[0]?.results[0]?.status, "imported");
     assert.equal(synced.history[0]?.results[0]?.label.includes("selected"), true);
     const stable = await f.reopen().sync();
-    assert.equal(stable.history[0]?.results[0]?.status, "skipped");
+    assert.deepEqual(stable.history, synced.history, "unchanged content does not create a redundant history entry");
   } finally { await f.close(); }
 });
 

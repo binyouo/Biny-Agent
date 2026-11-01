@@ -30,6 +30,7 @@ async function harness(api: Record<string, unknown> = {}) {
   } });
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "https://desktop.local", pretendToBeVisual: true });
+  dom.window.confirm = () => true;
   const React = await import("react");
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, React,
@@ -38,7 +39,7 @@ async function harness(api: Record<string, unknown> = {}) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value });
   }
-  Object.assign(dom.window, { biny: { skillCatalog: async () => catalog(), pluginRegistry: async () => registry(),
+  Object.assign(dom.window, { biny: { skillCatalog: async () => catalog(), pluginCatalog: async () => catalog(), pluginRegistry: async () => registry(),
     refreshPluginRegistry: async () => registry(), skillVersion: async () => undefined, ...api } });
   const { createRoot } = await import("react-dom/client");
   const { SettingsExtensionsView } = await import("../src/desktop/renderer/src/components/settings/SettingsExtensionsView.js");
@@ -71,7 +72,7 @@ async function harness(api: Record<string, unknown> = {}) {
 test("an inactive settings page ignores a late catalog failure and reloads when reactivated; unmount tests miss retained pages", async () => {
   const old = deferred<DesktopSkillCatalogSnapshot>();
   let reads = 0;
-  const h = await harness({ skillCatalog: () => ++reads === 1 ? old.promise : Promise.resolve(catalog("current-plugin")) });
+  const h = await harness({ pluginCatalog: () => ++reads === 1 ? old.promise : Promise.resolve(catalog("current-plugin")) });
   try {
     await h.render("project");
     await h.render("project", "plugins", false, false);
@@ -84,14 +85,40 @@ test("an inactive settings page ignores a late catalog failure and reloads when 
   } finally { await h.close(); }
 });
 
+test("installed plugins render without requesting skills or waiting for the unopened market", async () => {
+  const market = deferred<DesktopPluginRegistrySnapshot>();
+  let skillReads = 0;
+  let marketReads = 0;
+  const h = await harness({
+    skillCatalog: async () => { skillReads++; return catalog("local-installed"); },
+    pluginCatalog: async () => catalog("local-installed"),
+    pluginRegistry: () => { marketReads++; return market.promise; }
+  });
+  try {
+    await h.render("project");
+    assert.match(h.text(), /local-installed/u, "local plugins do not depend on a market receipt");
+    assert.equal(skillReads, 0);
+    assert.equal(marketReads, 0);
+    await h.click("应用市场");
+    assert.equal(marketReads, 1);
+    await h.click("已安装");
+    assert.match(h.text(), /local-installed/u);
+    await h.React.act(async () => market.resolve(registry("market-result")));
+    assert.match(h.text(), /local-installed/u);
+  } finally { await h.close(); }
+});
+
 test("a late initial catalog and registry cannot replace a newer plugin refresh", async () => {
   const oldCatalog = deferred<DesktopSkillCatalogSnapshot>();
   const oldRegistry = deferred<DesktopPluginRegistrySnapshot>();
   let reads = 0;
-  const h = await harness({ skillCatalog: () => ++reads === 1 ? oldCatalog.promise : Promise.resolve(catalog("new-installed")),
+  const h = await harness({ pluginCatalog: () => ++reads === 1 ? oldCatalog.promise : Promise.resolve(catalog("new-installed")),
     pluginRegistry: () => oldRegistry.promise, refreshPluginRegistry: async () => registry("new-market") });
   try {
     await h.render("project");
+    await h.click("应用市场");
+    await h.click("刷新");
+    await h.click("已安装");
     await h.click("刷新");
     assert.match(h.text(), /new-installed/);
     await h.React.act(async () => { oldCatalog.resolve(catalog("old-installed")); oldRegistry.resolve(registry("old-market")); });
@@ -110,6 +137,7 @@ test("obsolete refresh failures do not notify or release a newer refresh's loadi
   const h = await harness({ refreshPluginRegistry: () => ++refreshes === 1 ? first.promise : second.promise });
   try {
     await h.render("project");
+    await h.click("应用市场");
     await h.click("刷新"); await h.click("刷新");
     await h.React.act(async () => first.reject(new Error("obsolete refresh failed")));
     assert.deepEqual(h.errors, []);
@@ -124,7 +152,7 @@ test("switching project immediately clears old cards and ignores the old pending
   const oldRefresh = deferred<DesktopSkillCatalogSnapshot>();
   const nextCatalog = deferred<DesktopSkillCatalogSnapshot>();
   let oldReads = 0;
-  const h = await harness({ skillCatalog: (project: string) => project === "old"
+  const h = await harness({ pluginCatalog: (project: string) => project === "old"
     ? ++oldReads === 1 ? Promise.resolve(catalog("old-project")) : oldRefresh.promise : nextCatalog.promise });
   try {
     await h.render("old"); assert.match(h.text(), /old-project/);
@@ -143,7 +171,7 @@ for (const action of ["install", "enable", "uninstall"] as const) {
   test(`leaving settings prevents ${action} completion from starting another catalog request`, async () => {
     const mutation = deferred<DesktopPluginSummary>();
     let reads = 0;
-    const h = await harness({ skillCatalog: async () => { reads++; return catalog("inert-plugin"); },
+    const h = await harness({ pluginCatalog: async () => { reads++; return catalog("inert-plugin"); },
       pluginRegistry: async () => registry("inert-plugin"), installPlugin: () => mutation.promise,
       setPluginEnabled: () => mutation.promise, uninstallPlugin: () => mutation.promise });
     try {
@@ -165,7 +193,7 @@ for (const action of ["install", "enable", "uninstall"] as const) {
 
 test("leaving settings suppresses a pending catalog failure", async () => {
   const pending = deferred<DesktopSkillCatalogSnapshot>();
-  const h = await harness({ skillCatalog: () => pending.promise });
+  const h = await harness({ pluginCatalog: () => pending.promise });
   try {
     await h.render("project"); await h.leave();
     await h.React.act(async () => pending.reject(new Error("closed view failed")));
@@ -175,7 +203,7 @@ test("leaving settings suppresses a pending catalog failure", async () => {
 
 test("a current load failure releases loading and allows a successful retry", async () => {
   let reads = 0;
-  const h = await harness({ skillCatalog: async () => {
+  const h = await harness({ pluginCatalog: async () => {
     if (++reads === 1) throw new Error("current load failed");
     return catalog("recovered-plugin");
   } });
@@ -195,7 +223,7 @@ test("an older successful refresh cannot release the latest request's loading st
   let calls = 0;
   const h = await harness({ refreshPluginRegistry: () => ++calls === 1 ? old.promise : latest.promise });
   try {
-    await h.render("project"); await h.click("刷新"); await h.click("刷新");
+    await h.render("project"); await h.click("应用市场"); await h.click("刷新"); await h.click("刷新");
     await h.React.act(async () => old.resolve(registry()));
     assert.match(h.text(), /正在扫描本机扩展/);
     await h.React.act(async () => latest.resolve(registry()));
@@ -207,7 +235,7 @@ test("project changes isolate pending mutations and failures while current actio
   const old = deferred<DesktopPluginSummary>();
   const current = deferred<DesktopPluginSummary>();
   const calls: string[] = [];
-  const h = await harness({ skillCatalog: async (project: string) => { calls.push(project); return catalog(project); },
+  const h = await harness({ pluginCatalog: async (project: string) => { calls.push(project); return catalog(project); },
     setPluginEnabled: (project: string) => project === "old" ? old.promise : current.promise });
   const toggle = (): HTMLButtonElement => {
     const button = document.querySelector<HTMLButtonElement>('[role="switch"]');
@@ -234,6 +262,21 @@ function skillCatalog(): DesktopSkillCatalogSnapshot {
     files: [{ name: "SKILL.md", path: "SKILL.md", kind: "file" as const, size: 1 }] };
   return { ...catalog(), skills: [skill], inventory: [skill] };
 }
+
+test("project skill content and version requests retain their project scope", async () => {
+  const calls: unknown[][] = [];
+  const scoped = skillCatalog();
+  scoped.skills[0]!.scope = "project";
+  const h = await harness({ skillCatalog: async () => scoped,
+    readSkillFile: async (...args: unknown[]) => { calls.push(["file", ...args]); return { path: "SKILL.md", content: "scoped body", bytes: 11, binary: false, truncated: false }; },
+    skillVersion: async (...args: unknown[]) => { calls.push(["version", ...args]); return undefined; } });
+  try {
+    await h.render("selected", "skills");
+    await h.click("查看内容");
+    assert.deepEqual(calls, [["file", "shared-skill", "SKILL.md", "selected"], ["version", "shared-skill", "selected"]]);
+    assert.match(h.text(), /scoped body/u);
+  } finally { await h.close(); }
+});
 
 test("returning to or refreshing skills reloads expanded content; project-change tests miss a stale preview in the same project", async () => {
   let content = "old instructions";
@@ -303,7 +346,7 @@ test("project changes clear expanded skill previews and ignore obsolete preview 
 test("Strict Mode setup replay leaves only the current catalog result eligible", async () => {
   const old = deferred<DesktopSkillCatalogSnapshot>();
   let reads = 0;
-  const h = await harness({ skillCatalog: () => ++reads === 1 ? old.promise : Promise.resolve(catalog("current-strict")) });
+  const h = await harness({ pluginCatalog: () => ++reads === 1 ? old.promise : Promise.resolve(catalog("current-strict")) });
   try {
     await h.render("project", "plugins", true);
     assert.equal(reads, 2);
@@ -317,7 +360,7 @@ test("Strict Mode setup replay leaves only the current catalog result eligible",
 test("removing the selected project invalidates pending reads without starting another", async () => {
   const old = deferred<DesktopSkillCatalogSnapshot>();
   let reads = 0;
-  const h = await harness({ skillCatalog: () => { reads++; return old.promise; } });
+  const h = await harness({ pluginCatalog: () => { reads++; return old.promise; } });
   try {
     await h.render("old"); await h.render(undefined);
     assert.match(h.text(), /请先打开一个项目/);

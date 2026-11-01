@@ -29,8 +29,6 @@ import { sessionMessageMetadata } from "../session/messageTree.js";
 import { assertSessionFileSize } from "../session/limits.js";
 import { sessionFileFingerprint } from "../session/parseCache.js";
 import { SessionRecorder, type ReasoningBlock, type SessionEvent } from "../session/recorder.js";
-import { TemporalMemoryIndex, parseTemporalClues } from "../session/temporalMemory.js";
-import { createTemporalModelExtractor } from "../session/temporalModelExtractor.js";
 import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay } from "../session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot, snapshotToReplay, type SessionSnapshotData } from "../session/sessionSnapshot.js";
 import { runtimeEventsForRun, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
@@ -431,7 +429,6 @@ export class AgentSession {
   private readonly lingeringExternalTools = new Map<Promise<unknown>, { tool: string; toolCallId: string }>();
   private pendingSkillExtraction: Promise<void> = Promise.resolve();
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
-  private temporalIndexFlight: Promise<void> = Promise.resolve();
   /** Runtime 已接纳的普通发送；让 canonical user_message 先于前台 generating 状态落盘。 */
   private readonly admittedUserMessages = new Map<string, { input: string; reference: SessionMessageReference; identity: UserAdmissionOptions }>();
   private readonly pendingUserAdmissions = new Map<string, { input: string; identity: UserAdmissionOptions; promise: Promise<void> }>();
@@ -1291,21 +1288,6 @@ export class AgentSession {
     await this.sessionSearchIndex.indexSessionFile(this.recorder.sessionId, this.recorder.filePath, signal);
   }
 
-  private scheduleTemporalIndex(model?: AgentModel): void {
-    const recorder = this.recorder;
-    // 用户消息持久化后即可解析日期。串行化同一会话的规则索引与成功回合的模型升级，
-    // 防止后完成的旧扫描覆盖较新的投影；失败只影响可重建的派生索引。
-    const task = this.temporalIndexFlight.then(async () => {
-      const modelExtractor = model ? createTemporalModelExtractor(model) : undefined;
-      const index = new TemporalMemoryIndex(undefined, { extractClues: modelExtractor?.extractClues });
-      try { await index.indexSessionFile(recorder.sessionId, recorder.filePath); }
-      finally { index.close(); }
-    }).catch(() => undefined);
-    this.temporalIndexFlight = task;
-    this.pendingMemoryTasks.add(task);
-    void task.finally(() => this.pendingMemoryTasks.delete(task));
-  }
-
   /** 显式刷新聊天工作摘要；人格自省由正常 Agent 按 Skill 执行。 */
   async refreshDailyDiary(
     dateKey: string,
@@ -1372,8 +1354,8 @@ export class AgentSession {
     return this.memoryEmbeddingService.cancelSleep();
   }
 
-  memoryMaintenanceStatus() {
-    return this.memoryEmbeddingService.sleepStatus();
+  memoryMaintenanceStatus(historyLimit?: number) {
+    return this.memoryEmbeddingService.sleepStatus(historyLimit);
   }
 
   runMemoryMaintenance(): Promise<unknown> {
@@ -1841,7 +1823,6 @@ export class AgentSession {
       await this.turnStore.save(input, undefined, [...this.contextMemory.getHistory(), { role: "user", content: input }], 0,
         undefined, undefined, undefined, this.recorder.runtimeHighWater(), options.turnId);
       this.admittedUserMessages.set(options.runId, { input, reference, identity: options });
-      this.scheduleTemporalIndex();
     } finally {
       this.recorder.setRuntimeContext(previousContext);
       release();
@@ -2016,7 +1997,7 @@ export class AgentSession {
     const release = this.beginOperation("agent turn");
     try {
     let refreshError: Error | undefined;
-    try { await this.options.modelManager?.refreshFromDisk(); }
+    try { if (!runOptions.modelOverride) await this.options.modelManager?.refreshFromDisk(); }
     catch (error) { refreshError = new Error(errorMessage(error)); }
     const alias = this.options.modelManager?.getInfo().modelAlias ?? this.options.config.defaultModel;
     const selected = this.options.config.models[alias];
@@ -2180,7 +2161,6 @@ export class AgentSession {
         await this.turnStore.save(input, runOptions.retryOrigin ? runOptions.continueSystemPrompt : undefined, cancellationContext().messages, 0,
           undefined, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater(), runtimeTurnId, runOptions.retryOrigin, runOptions.retryWindow);
         if (runOptions.retryOrigin) this.retryScopedView = true;
-        this.scheduleTemporalIndex();
       } catch (error) {
         const message = `初始检查点持久化失败：${errorMessage(error)}`;
         const outcome = failedTurn(message, 0, "provider_error");
@@ -2252,7 +2232,7 @@ export class AgentSession {
     try {
       // 执行路径选择前已读取配置；失败仍通过本轮持久化入口报告。
       if (refreshError) throw refreshError;
-      await this.options.modelManager?.preparePrompt(abortSignal, false);
+      if (!runOptions.modelOverride) await this.options.modelManager?.preparePrompt(abortSignal, false);
     } catch (error) {
       recordUserMessage();
       const outcome = abortSignal.aborted
@@ -2332,7 +2312,7 @@ export class AgentSession {
     // 这样即使模型不支持图片、上下文构建失败或进程随后中断，恢复会话时仍能看到这次输入。
     try {
       const personalizationPerfStartedAt = perfNow();
-      const snapshot = await this.readPersonalizationState(this.options.modelManager
+      const snapshot = await this.readPersonalizationState(this.options.modelManager && !runOptions.modelOverride
         ? { config: structuredClone(this.options.config) }
         : undefined);
       recordPerfPhase("turn.personalization", personalizationPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
@@ -2992,7 +2972,7 @@ export class AgentSession {
       runContextCompacted = true;
     };
     let activeRequestContext = loopContext;
-    const visionAlias = this.activeConfig.visionModel;
+    const visionAlias = this.activeConfig.visionModelEnabled === false ? undefined : this.activeConfig.visionModel;
     const projectVision = visionAlias ? createVisionProjection({
       getModel: () => {
         const registry = new ProviderRegistry(this.activeConfig, [], undefined, undefined, undefined,
@@ -3020,7 +3000,7 @@ export class AgentSession {
         })
       });
       const pruned = boundComputerFrames(this.contextMemory.pruneToolResultsForStep(projectedMessages));
-      return projectVision ? await projectVision(pruned) : pruned;
+      return projectVision && activeModelSettings.model.supportsVision !== true ? await projectVision(pruned) : pruned;
     };
 
     recordPerfPhase("turn.loopPre", loopPerfStartedAt, { runId: runOptions.runId }, this.options.workspaceRoot);
@@ -3158,8 +3138,9 @@ export class AgentSession {
             .filter((result) => result.toolName === toolSearchToolName && !result.isError)
             .flatMap((result) => toolSearchResultNames(result.details));
           coordinator.allowTools(discovered);
-          await this.options.modelManager?.preparePrompt(abortSignal, false);
-          const settings = this.options.modelManager?.getModelSettings() ?? activeModelSettings;
+          if (!runOptions.modelOverride) await this.options.modelManager?.preparePrompt(abortSignal, false);
+          const settings = runOptions.modelOverride ? activeModelSettings
+            : this.options.modelManager?.getModelSettings() ?? activeModelSettings;
           activeModelSettings = settings;
           this.contextMemory.observePromptModel(activeModelSettings.model.provider, activeModelSettings.model.modelId);
           const tools = editingTools(settings);
@@ -3520,11 +3501,6 @@ export class AgentSession {
         }
         // 记忆整理是完成回合后的旁路；不等待模型请求，也不让它改变当前回合终态。
         void this.flushSessionSearchIndex().catch(() => undefined);
-        const mayUseModel = runOptions.source === undefined
-          && this.activePersonalization.contributeMemories
-          && !(this.activePersonalization.excludeExternalContext && (Boolean(runOptions.attachments?.length) || this.usedExternalContext(finalMessages)))
-          && parseTemporalClues(input).length > 0;
-        if (mayUseModel) this.scheduleTemporalIndex(this.toolModel());
         if (turnPersonalization.contributeMemories || finalAssistantReference?.id !== undefined) {
           const memoryRecorder = this.recorder;
           const memoryRuntime = memoryRecorder.runtimeContextSnapshot();
@@ -3914,8 +3890,8 @@ export class AgentSession {
     const capabilities = this.options.modelManager?.getCapabilities()
       ?? modelCapabilities(new ProviderRegistry(this.options.config).forModel(modelAlias).model);
     const image = attachments.find((attachment) => attachment.mimeType.startsWith("image/"));
-    if (image && capabilities.vision === false && !this.activeConfig.visionModel) {
-      throw new Error(`当前模型 ${modelAlias} 未启用图片输入。请在模型设置中将“图片输入”设为“启用”，或切换到支持图片的模型。`);
+    if (image && capabilities.vision === false && (!this.activeConfig.visionModel || this.activeConfig.visionModelEnabled === false)) {
+      throw new Error(`当前模型 ${modelAlias} 未启用图片输入。请在设置中开启并选择视觉模型，或切换到支持图片的模型。`);
     }
     const audio = attachments.find((attachment) => attachment.mimeType.startsWith("audio/"));
     if (audio && !capabilities.audio) {

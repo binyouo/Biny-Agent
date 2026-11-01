@@ -5,6 +5,7 @@
  * 实际长期连接仍由每个项目的 CommandRuntime 持有，避免 Desktop 管理页重复启动 MCP 进程。
  */
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { globalConfigDir } from "../../../config/paths.js";
 import { configSchema, defaultConfig, type AgentConfig, type McpServerConfig } from "../../../config/schema.js";
 import type { AgentConfigStore } from "../../../config/store.js";
@@ -20,7 +21,7 @@ import type {
   DesktopMcpSnapshot,
   DesktopMcpTestResult
 } from "../../protocol.js";
-import { McpToolHost, type McpServerStatus } from "../../../extensions/mcp.js";
+import { McpToolHost, redactMcpError, type McpServerStatus } from "../../../extensions/mcp.js";
 import { desktopComputerMcpName } from "../../../computer/desktopMcp.js";
 import { getSharedProxyAwareFetch } from "../../../network/proxyFetch.js";
 import { ToolRegistry } from "../../../tools/registry.js";
@@ -40,7 +41,7 @@ interface CatalogStateInternal extends DesktopMcpCatalogState {
 
 interface McpRuntimeBridge {
   assertNoRunningTasks(message?: string): void;
-  refreshMcpRuntimes(): Promise<void>;
+  refreshMcpRuntimes(servers: string[], force?: boolean): Promise<void>;
   mcpStatuses(projectId: string): Promise<McpServerStatus[] | undefined>;
   mcpReconnect(projectId: string, serverName: string): Promise<McpServerStatus>;
   mcpDetails(projectId: string, serverName: string): Promise<{
@@ -107,9 +108,7 @@ export class DesktopMcpService {
         const stored = await this.loadVersioned(this.workspaceRoot(projectId));
         if (JSON.stringify(stored.config.extensions.mcp[name]) !== JSON.stringify(pending.config)) throw new Error("MCP 配置已改变，请重新登录。");
       });
-      try { await this.agents.refreshMcpRuntimes(); }
-      catch (error) { throw new Error(`MCP 授权已保存，但运行时尚未刷新：${errorText(error)}。请在任务结束后点击连接。`); }
-      return await this.snapshot(projectId);
+      return await this.savedSnapshot(projectId, [name], true);
     } finally { this.loginServers.delete(id); }
   }
 
@@ -122,8 +121,7 @@ export class DesktopMcpService {
     if (!config?.oauth || !config.url) throw new Error("此 MCP 未使用 OAuth。");
     for (const [id, pending] of this.loginServers) if (pending.name === name) await this.loginCancel(id);
     await new McpOAuthProvider(config).logout();
-    await this.agents.refreshMcpRuntimes();
-    return await this.snapshot(projectId);
+    return await this.savedSnapshot(projectId, [name], true);
   }
 
   async dispose(): Promise<void> { await this.logins.dispose(); this.loginServers.clear(); }
@@ -188,8 +186,7 @@ export class DesktopMcpService {
     const parsed = configSchema.parse(next);
     for (const [id, pending] of this.loginServers) if (pending.name === name || pending.name === oldName) await this.loginCancel(id);
     await this.saveVersioned(parsed, current.revision, workspaceRoot, expectedConfigRevision);
-    await this.agents.refreshMcpRuntimes();
-    return await this.snapshot(projectId);
+    return await this.savedSnapshot(projectId, changedMcpServers(current.config, parsed));
   }
 
   async setEnabled(
@@ -208,8 +205,7 @@ export class DesktopMcpService {
     next.extensions.mcp = { ...next.extensions.mcp, [serverName]: { ...existing, enabled } };
     for (const [id, pending] of this.loginServers) if (pending.name === serverName) await this.loginCancel(id);
     await this.saveVersioned(configSchema.parse(next), current.revision, workspaceRoot, expectedConfigRevision);
-    await this.agents.refreshMcpRuntimes();
-    return await this.snapshot(projectId);
+    return await this.savedSnapshot(projectId, changedMcpServers(current.config, next));
   }
 
   async deleteServer(
@@ -229,8 +225,7 @@ export class DesktopMcpService {
     await this.saveVersioned(configSchema.parse(next), current.revision, workspaceRoot, expectedConfigRevision);
     const removed = current.config.extensions.mcp[serverName];
     if (removed?.oauth) await new McpOAuthProvider(removed).logout();
-    await this.agents.refreshMcpRuntimes();
-    return await this.snapshot(projectId);
+    return await this.savedSnapshot(projectId, changedMcpServers(current.config, next));
   }
 
   async testServer(projectId: string | undefined, draft: DesktopMcpServerDraft): Promise<DesktopMcpTestResult> {
@@ -303,6 +298,27 @@ export class DesktopMcpService {
     };
   }
 
+  private async savedSnapshot(projectId: string | undefined, servers: string[], force = false): Promise<DesktopMcpSnapshot> {
+    const errors: unknown[] = [];
+    if (servers.length) {
+      try { await this.agents.refreshMcpRuntimes(servers, force); }
+      catch (error) { errors.push(error); }
+    }
+    const stored = await this.loadVersioned(this.workspaceRoot(projectId));
+    let live: McpServerStatus[] | undefined;
+    if (projectId !== undefined) {
+      try { live = await this.agents.mcpStatuses(projectId); }
+      catch (error) { errors.push(error); }
+    }
+    return {
+      configRevision: stored.revision,
+      servers: [...Object.entries(stored.config.extensions.mcp).map(([name, server]) => describeServer(name, server, live)), describeBuiltinComputerServer(live)],
+      catalog: cloneCatalogState(this.catalogState),
+      saved: { runtimeRefresh: errors.length ? "failed" : servers.length ? "completed" : "not_needed",
+        message: errors.length ? `MCP 设置已保存，但连接刷新失败：${errors.map(error => redactMcpError(error, Object.values(stored.config.extensions.mcp))).join("；")}。请重试连接。` : undefined }
+    };
+  }
+
   private workspaceRoot(projectId: string | undefined): string {
     return projectId === undefined ? globalConfigDir() : this.projects.requireProject(projectId).path;
   }
@@ -324,6 +340,14 @@ export class DesktopMcpService {
     if (!this.configStore.saveVersioned) throw new Error("MCP 管理需要版本化配置存储。");
     await this.configStore.saveVersioned(config, expectedRevision, workspaceRoot);
   }
+}
+
+function changedMcpServers(before: AgentConfig, after: AgentConfig): string[] {
+  return [...new Set([...Object.keys(before.extensions.mcp), ...Object.keys(after.extensions.mcp)])].filter(name => {
+    const previous = before.extensions.mcp[name];
+    const next = after.extensions.mcp[name];
+    return (previous?.enabled || next?.enabled) && !isDeepStrictEqual(previous, next);
+  });
 }
 
 function buildServerConfig(existing: McpServerConfig | undefined, draft: DesktopMcpServerDraft): McpServerConfig {

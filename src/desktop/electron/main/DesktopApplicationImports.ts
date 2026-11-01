@@ -1,5 +1,5 @@
 import type { ApplicationImportService } from "../../../imports/service.js";
-import type { ApplicationImportHistory, ApplicationImportSnapshot, ApplicationImportSource } from "../../../imports/types.js";
+import type { ApplicationImportHistory, ApplicationImportSnapshot, ApplicationImportSource, ApplicationImportSyncOutcome } from "../../../imports/types.js";
 
 type ImportService = Pick<ApplicationImportService, "snapshot" | "preview" | "run" | "setSyncEnabled" | "configureSyncSelection" | "syncWithEffects">;
 
@@ -11,6 +11,7 @@ export class DesktopApplicationImports {
   private syncError?: string;
   private refreshError?: string;
   private closed = false;
+  private onChanged?: (effects: ApplicationImportSyncOutcome["effects"]) => Promise<void>;
   constructor(private readonly service: ImportService, private readonly assertReady: () => Promise<void>, private readonly afterMcpImport?: () => Promise<void>) {}
   assertIdle(): void {
     if (this.operation) throw new Error("导入正在进行，请等待完成后再启动任务。");
@@ -31,6 +32,14 @@ export class DesktopApplicationImports {
     return await this.mutate(async () => {
       const result = await this.service.run(input);
       await this.refreshImportedMcp([result]);
+      await this.onChanged?.({
+        stateChanged: true,
+        mcpImported: result.results.some(item => item.category === "mcp" && item.status === "imported"),
+        settingsImported: result.results.some(item => item.category === "settings" && item.status === "imported"),
+        sessions: result.results.some(item => item.category === "sessions" && item.status === "imported" && item.sessionId)
+          ? [{ workspaceRoot: result.workspaceRoot, sessionIds: result.results.flatMap(item => item.category === "sessions" && item.status === "imported" && item.sessionId ? [item.sessionId] : []) }]
+          : []
+      });
       return result;
     });
   }
@@ -40,19 +49,20 @@ export class DesktopApplicationImports {
     const result = await this.mutate(async () => {
       const { snapshot, effects } = await this.service.syncWithEffects();
       if (effects.mcpImported) await this.refreshMcp();
+      if (effects.stateChanged) await this.onChanged?.(effects);
       return snapshot;
     });
     this.syncError = undefined;
     return this.withErrors(result);
   }
-  start(onChanged: () => Promise<void>): void {
+  start(onChanged: (effects: ApplicationImportSyncOutcome["effects"]) => Promise<void>): void {
     if (this.timer || this.closed) return;
+    this.onChanged = onChanged;
     this.timer = setInterval(() => {
       if (this.operation || this.pendingAdmissions > 0) return;
       void this.snapshot().then(async snapshot => {
         if (!snapshot.sync.enabled || this.closed || this.operation || this.pendingAdmissions > 0) return;
         await this.sync();
-        await onChanged();
       }).catch(() => { this.syncError = "自动同步暂未完成。可在导入设置中立即检查或重试。"; });
     }, 60_000);
     this.timer.unref();
@@ -61,6 +71,7 @@ export class DesktopApplicationImports {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.onChanged = undefined;
     await Promise.allSettled([...this.requests]);
   }
   private withErrors(snapshot: ApplicationImportSnapshot): ApplicationImportSnapshot {

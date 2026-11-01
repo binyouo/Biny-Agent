@@ -4,7 +4,7 @@ import { Socket } from "node:net";
 import { test, type TestContext } from "node:test";
 import type { JSDOM } from "jsdom";
 import type { Root } from "react-dom/client";
-import type { DesktopSessionDeleteResult, DesktopSessionTarget, DesktopSessionTreePage, DesktopRunReceipt, DesktopSlashResult, DesktopSettingsSnapshot, DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopSessionDeleteResult, DesktopSessionTarget, DesktopSessionTreePage, DesktopSessionTreePageOptions, DesktopSessionMetadataReceipt, DesktopRunReceipt, DesktopSlashResult, DesktopSettingsSnapshot, DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 
 import { defaultConfig } from "../src/config/schema.js";
 
@@ -59,7 +59,7 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
   const actions: Array<{ kind: string; projectId: string; sessionId?: string; input: string }> = [];
   const archives: Array<{ projectId: string; sessionId: string; archived: boolean; expectedRevision?: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const deletions: Array<{ targets: DesktopSessionTarget[]; start: () => void; gate: ReturnType<typeof deferred<DesktopSessionDeleteResult>> }> = [];
-  const refreshes: Array<{ projectId: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
+  const refreshes: Array<{ projectId: string; kind: "workspace" | "catalog"; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const pages: Array<{ projectId: string; parentSessionId: string; gate: ReturnType<typeof deferred<DesktopSessionTreePage>> }> = [];
   const removals: Array<{ id: string; gate: ReturnType<typeof deferred<DesktopBootstrap>> }> = [];
   const selections: Array<{ id: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
@@ -145,10 +145,24 @@ async function fixture(t: TestContext, ids = ["a", "b", "c"]) {
     bootstrap: async (): Promise<DesktopBootstrap> => ({ version: "test", platform: "linux", projects: ids.map(project),
       sidebarSessions: ids.flatMap(id => workspace(id).sessions), workspace: workspace("a"), activeView: "chat",
       sidebarWidth: 240, filePanelWidth: 320, themePreference: "light", fontPreference: { family: "system", size: 14 } }),
-    archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); archives.push({projectId, sessionId, archived, expectedRevision, gate}); return gate.promise; },
+    archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); archives.push({projectId, sessionId, archived, expectedRevision, gate}); return gate.promise.then(snapshot => {
+      const saved = snapshot.sessions.find(item => item.id === sessionId) ?? session(projectId, sessionId);
+      return {projectId, sessionId, metadata: {updatedAt: saved.updatedAt, metadataRevision: saved.metadataRevision!, archived: saved.archived}} satisfies DesktopSessionMetadataReceipt;
+    }); },
     deleteSessions(targets: DesktopSessionTarget[], _confirm: boolean, start: () => void) { const gate = deferred<DesktopSessionDeleteResult>(); deletions.push({targets, start, gate}); start(); return gate.promise; },
-    refreshProject(projectId: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({projectId, gate}); return gate.promise; },
-    listSessionTreePage(projectId: string, options: {parentSessionId: string}) { const gate = deferred<DesktopSessionTreePage>(); pages.push({projectId, parentSessionId:options.parentSessionId, gate}); return gate.promise; },
+    refreshProject(projectId: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({projectId, kind: "workspace", gate}); return gate.promise; },
+    listSessionTreePage(projectId: string, options: DesktopSessionTreePageOptions) {
+      if (options.parentSessionId !== undefined) {
+        const gate = deferred<DesktopSessionTreePage>(); pages.push({projectId, parentSessionId:options.parentSessionId, gate}); return gate.promise;
+      }
+      const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({projectId, kind: "catalog", gate});
+      return gate.promise.then(snapshot => ({
+        projectId, revision: snapshot.sessionPage?.revision ?? "catalog:initial", nextCursor: snapshot.sessionPage?.nextCursor,
+        sessions: (snapshot.sessionPage?.sessions ?? snapshot.sessions).filter(item => !item.parentSessionId),
+        pinnedSessions: snapshot.sessions.filter(item => item.pinned),
+        supplementalSessions: snapshot.sessions.filter(item => options.sessionIds?.includes(item.id))
+      } satisfies DesktopSessionTreePage));
+    },
     removeProject: (id: string) => { const gate = deferred<DesktopBootstrap>(); removals.push({ id, gate }); return gate.promise; },
     sendPrompt(projectId: string, sessionId: string | undefined, input: string) { actions.push({ kind: "send", projectId, sessionId, input }); const gate = deferred<DesktopRunReceipt>(); sends.push(gate); return gate.promise; },
     runSlashCommand(projectId: string, sessionId: string | undefined, input: string) { actions.push({ kind: "slash", projectId, sessionId, input }); const gate = deferred<DesktopSlashResult>(); slashes.push(gate); return gate.promise; },
@@ -302,7 +316,7 @@ type View=Awaited<ReturnType<typeof fixture>>;
 async function finishArchive(h:View,index:number,result:DesktopWorkspaceSnapshot,fresh=result,beforeRead?:()=>void):Promise<void>{
  const start=h.refreshes.length;await h.React.act(async()=>h.archives[index]!.gate.resolve(result));beforeRead?.();await h.tick(260);
  const requests=h.refreshes.slice(start);assert.ok(requests.length<=1,'Archive work coalesces to one initial catalog read');
- if(requests.length)await h.React.act(async()=>requests[0]!.gate.resolve(fresh));
+ if(requests.length){assert.equal(requests[0]!.kind,'catalog','Archive reconciliation reads only the session page');await h.React.act(async()=>requests[0]!.gate.resolve(fresh));}
  await h.tick(1040);assert.equal(h.refreshes.length,start+requests.length,'Settled catalog reconciliation stops reading');
 }
 for(const crossProject of [false,true])test(`archive preserves ${crossProject?'other-project':'same-project'} newer conversation and draft`,async t=>{

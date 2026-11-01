@@ -69,8 +69,12 @@ export interface SettingsDraftContextValue {
   saveError?: string;
   dirtyCount: number;
   preferencesOnly: boolean;
+  runtimeBlocked: boolean;
   invalid: boolean;
   saveState: SettingsSaveState;
+  manualSaving: boolean;
+  /** 当前只在保存工具/视觉选择，其它设置仍可编辑。 */
+  modelSelectionSaving?: boolean;
   pendingModelEdits?: boolean;
   reportModelEditState?(pending: boolean): void;
   setThemePreference(value: DesktopThemePreference): void;

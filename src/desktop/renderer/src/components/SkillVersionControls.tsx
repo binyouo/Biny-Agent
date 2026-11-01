@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ManagedSkillVersion } from "../../../../extensions/skillVersions.js";
 
-export function SkillVersionControls({ skillId, disabled, onChanged, onError, refreshKey }: { skillId: string; disabled: boolean; onChanged(skillId: string): void; refreshKey?: unknown; onError(message: string): void }): React.JSX.Element | null {
+export function SkillVersionControls({ skillId, projectId, disabled, onChanged, onError, refreshKey }: { skillId: string; projectId?: string; disabled: boolean; onChanged(skillId: string): void; refreshKey?: unknown; onError(message: string): void }): React.JSX.Element | null {
   const [version, setVersion] = useState<ManagedSkillVersion>();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string>();
@@ -12,21 +12,21 @@ export function SkillVersionControls({ skillId, disabled, onChanged, onError, re
     let active = true;
     // Recheck a refreshed catalog entry before offering versioned actions.
     if (refreshKey !== undefined) setVersion(undefined);
-    void window.biny.skillVersion(skillId).then((next) => { if (active) setVersion(next); }).catch((error) => { if (active) onError(String(error)); });
+    void window.biny.skillVersion(skillId, projectId).then((next) => { if (active) setVersion(next); }).catch((error) => { if (active) onError(String(error)); });
     return () => { active = false; };
-  }, [skillId, onError, refreshKey]);
+  }, [skillId, projectId, onError, refreshKey]);
   const changeVersion = async (rollback: boolean): Promise<void> => {
     if (!version || busy) return;
     const current = ++generation.current;
     setBusy(true); setNotice(undefined);
     try {
       if (rollback) {
-        const restored = await window.biny.rollbackSkillVersion(skillId, version.id);
+        const restored = await window.biny.rollbackSkillVersion(skillId, version.id, projectId);
         if (current === generation.current) {
           setVersion(restored); setNotice("已回滚到上一版本。");
         }
       } else {
-        const updated = await window.biny.updateSkillVersion(skillId, version.id);
+        const updated = await window.biny.updateSkillVersion(skillId, version.id, projectId);
         if (current === generation.current) {
           setVersion(updated.version);
           setNotice(updated.version.id === version.id ? "已是最新版本。" : "已更新。");

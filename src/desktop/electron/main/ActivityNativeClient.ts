@@ -16,6 +16,8 @@ export class ActivityNativeClient {
   private child?: ChildProcess;
   private socket?: Socket;
   private starting?: Promise<void>;
+  private stopping?: Promise<void>;
+  private generation = 0;
   private readonly socketPath: string;
   private readonly pending = new Map<string, { resolve: (result: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   constructor(private readonly directory: string, private readonly tempDirectory: string) {
@@ -57,26 +59,47 @@ export class ActivityNativeClient {
     const { stdout } = await executeFile(path.join(this.directory, "activity-ocr"), [file, ...languages], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024, signal });
     return stdout.trim();
   }
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
+    this.generation++;
+    this.stopping = this.stopStarted().finally(() => { this.stopping = undefined; });
+    return this.stopping;
+  }
+  private async stopStarted(): Promise<void> {
+    await this.starting?.catch(() => undefined);
     for (const request of this.pending.values()) { clearTimeout(request.timer); request.reject(new Error("截图服务已停止")); }
     this.pending.clear();
     this.socket?.destroy();
     this.socket = undefined;
     const child = this.child;
-    this.child = undefined;
-    if (child && child.exitCode === null && child.signalCode === null) await new Promise<void>((resolve) => {
+    if (child && child.exitCode === null && child.signalCode === null) await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error): void => {
+        clearTimeout(timer); clearTimeout(deadline); child.off("close", onClose);
+        if (error) reject(error); else resolve();
+      };
+      const onClose = (): void => finish();
       const timer = setTimeout(() => child.kill("SIGKILL"), 1000);
-      child.once("close", () => { clearTimeout(timer); resolve(); });
+      const deadline = setTimeout(() => finish(new Error("截图 daemon 未能退出")), 2_000);
+      child.once("close", onClose);
       child.kill("SIGTERM");
     });
+    if (this.child === child) this.child = undefined;
     this.starting = undefined;
     if (child) await unlink(this.socketPath).catch(() => undefined);
   }
   private async ensureStarted(): Promise<void> {
+    if (this.stopping) throw new Error("截图服务正在停止");
     if (this.socket && !this.socket.destroyed) return;
-    if (this.starting) return await this.starting;
+    if (this.starting) {
+      const generation = this.generation;
+      await this.starting;
+      if (generation !== this.generation) throw new Error("截图服务已停止");
+      return;
+    }
+    const generation = this.generation;
     this.starting = (async () => {
       try { await this.connectSocket(); return; } catch { /* 尚无共享 daemon，启动本进程持有的实例。 */ }
+      if (generation !== this.generation) throw new Error("截图服务已停止");
       await new Promise<void>((resolve, reject) => {
         // daemon 随包发布为 .app（TCC 需要 bundle 身份）；开发期这里是软链。
         const screenBinary = [path.join(this.directory, "computer-use"), path.join(this.directory, "computer-use.app", "Contents", "MacOS", "computer-use")].find(candidate => existsSync(candidate)) ?? path.join(this.directory, "computer-use");
@@ -90,7 +113,10 @@ export class ActivityNativeClient {
       });
       await this.connectSocket();
     })();
-    try { await this.starting; } finally { this.starting = undefined; }
+    try {
+      await this.starting;
+      if (generation !== this.generation) throw new Error("截图服务已停止");
+    } finally { this.starting = undefined; }
   }
   private async connectSocket(): Promise<void> {
     await new Promise<void>((resolve, reject) => {

@@ -135,7 +135,7 @@ export async function exportSessionBundle(workspaceRoot: string, session: string
     attachments
   };
   return {
-    baseName: sanitizeBaseName(sessionId),
+    baseName: sessionExportBaseName(sessionId),
     extension: "json",
     content: `${JSON.stringify(bundle, null, 2)}\n`
   };
@@ -147,7 +147,7 @@ export async function exportSessionClaudeCode(workspaceRoot: string, session: st
   const lines = binyEventsToClaudeLines(events);
   if (!lines.length) throw new Error("会话里没有可导出的对话内容。");
   return {
-    baseName: sanitizeBaseName(sessionIdFromFile(filePath)),
+    baseName: sessionExportBaseName(sessionIdFromFile(filePath)),
     extension: "jsonl",
     content: `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`
   };
@@ -563,7 +563,7 @@ function toolResultText(result: unknown): string {
 }
 
 /** 文件名只保留安全字符，避免导出的默认文件名带路径分隔符或奇怪字符。 */
-function sanitizeBaseName(name: string): string {
+export function sessionExportBaseName(name: string): string {
   const cleaned = name.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[.-]+/, "").slice(0, 80);
   return cleaned.length > 0 ? cleaned : "session";
 }
