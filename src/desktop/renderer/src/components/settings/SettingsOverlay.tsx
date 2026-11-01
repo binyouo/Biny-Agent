@@ -402,7 +402,7 @@ function SettingsOverlayContent({
         <main className={`settings-content${extensionSettings ? " is-extension-settings" : ""}`}>
           <header className="settings-titlebar">
             <div>
-              <h2 ref={titleRef} tabIndex={-1}>{settingsTabLabels[activeTab] ?? activeTab}</h2>
+              <h2 ref={titleRef} data-autofocus tabIndex={-1}>{settingsTabLabels[activeTab] ?? activeTab}</h2>
             </div>
             <button aria-label="关闭设置" className="icon-button settings-close-button" onClick={requestCancel} title="关闭设置 · Esc" type="button">
               <Icon name="close" size={16} />

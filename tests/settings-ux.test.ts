@@ -97,6 +97,23 @@ async function harness(api: Record<string, unknown> = {}) {
   } };
 }
 
+test("打开和重开设置时聚焦页面标题，搜索仍可手动使用", async () => {
+  const h = await harness();
+  try {
+    await h.overlay();
+    const title = document.querySelector<HTMLElement>(".settings-titlebar h2")!;
+    const search = document.querySelector<HTMLInputElement>('[aria-label="搜索设置"]')!;
+    assert.ok(document.activeElement === title, "打开时焦点应位于页面标题");
+    search.focus();
+    await h.input('[aria-label="搜索设置"]', "流式");
+    assert.ok(document.activeElement === search, "输入搜索时应保留焦点");
+    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /聊天偏好/u);
+    await h.overlay({ open: false });
+    await h.overlay();
+    assert.ok(document.activeElement === title, "重开时焦点应回到页面标题");
+  } finally { await h.close(); }
+});
+
 test("设置详情优先聚焦可用输入而非关闭按钮，Escape 返回原入口；导航测试未覆盖详情焦点", async () => {
   const h = await harness();
   const host = document.createElement("div");
