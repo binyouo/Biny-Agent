@@ -33,7 +33,7 @@ export async function runSubagentCli(options: {
   if (codex && !options.model) throw new Error("Codex requires an explicit model.");
   const args = codex
     ? ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "workspace-write"]
-    : ["-p", "--verbose", "--output-format", "stream-json", "--no-session-persistence", "--permission-mode", "dontAsk"];
+    : ["-p", "--verbose", "--output-format", "stream-json", "--no-session-persistence", "--dangerously-skip-permissions"];
   if (options.model) args.push("--model", options.model);
   if (codex) args.push("-");
   const env: NodeJS.ProcessEnv = {};
