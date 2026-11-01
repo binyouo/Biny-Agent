@@ -171,7 +171,7 @@ export class ModelRegistry {
         const model = catalogEntryToModel(catalogEntry);
         return {
           alias: catalogModelAlias(providerAlias, modelId),
-          model: provider?.resolveModel(model) ?? model,
+          model: provider?.resolveModel(model, "catalog") ?? model,
           providerAlias,
           source: "catalog"
         };
@@ -183,7 +183,7 @@ export class ModelRegistry {
       if (entry) {
         const provider = this.providers.get(providerAlias);
         const model = catalogEntryToModel(entry);
-        return { alias: catalogModelAlias(providerAlias, entry.id), model: provider?.resolveModel(model) ?? model, providerAlias, source: "catalog" };
+        return { alias: catalogModelAlias(providerAlias, entry.id), model: provider?.resolveModel(model, "catalog") ?? model, providerAlias, source: "catalog" };
       }
     }
     return undefined;
@@ -192,7 +192,7 @@ export class ModelRegistry {
   private toChoice(alias: string, model: ModelAliasConfig, source: ModelSource, showInPicker: boolean): ModelChoice {
     const provider = this.config.providers[model.provider];
     const providerRuntime = this.providers.get(model.provider);
-    const normalized = providerRuntime?.resolveModel(model) ?? model;
+    const normalized = providerRuntime?.resolveModel(model, source) ?? model;
     const capabilities = modelCapabilities(normalized);
     const reasoning = modelReasoningConfig(normalized);
     const thinkingLevelMap = modelThinkingLevelMap(normalized);

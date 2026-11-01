@@ -8,6 +8,7 @@ import type { AgentModel, CacheMarkerPlan } from "../agent/core/types.js";
 import { cacheMarkerPlanFor } from "../agent/core/cacheMarkers.js";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import { completeThinkingLevelMap, effectiveThinkingSelection, isKimiAlwaysThinkingModel, isKimiK3Model, modelCapabilities, modelReasoningConfig, modelThinkingLevelMap, nativeReasoningEffort, normalizeModelMetadata, reasoningBudgetTokens, thinkingLevelMapForModel } from "../ai/capabilities.js";
+import { applyGoogleProThinkingDefaults } from "../ai/googleThinkingDefaults.js";
 import { fetchModelCatalogSnapshot } from "../ai/modelCatalog.js";
 import { accessPathThinkingLevelMap, generatedProviderModels, inferThinkingLevelMap, lookupModelMetadata, metadataProviderForEndpoint, type ModelMetadata } from "../ai/modelMetadata.js";
 import { providerDefinition } from "../ai/provider.js";
@@ -70,7 +71,7 @@ export interface ProviderRuntime {
   readonly definition: ProviderDefinition;
   readonly config: ProviderConfig;
   getModels(): ModelCatalogEntry[];
-  resolveModel(model: ModelAliasConfig): ModelAliasConfig;
+  resolveModel(model: ModelAliasConfig, source?: "configured" | "catalog"): ModelAliasConfig;
   restoreModels(models: readonly ModelCatalogEntry[]): void;
   refreshModels(signal?: AbortSignal, force?: boolean): Promise<ModelCatalogEntry[]>;
   isConfigured(model?: ModelAliasConfig): boolean;
@@ -201,7 +202,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     return this.resolveApiKey() !== undefined;
   }
 
-  resolveModel(model: ModelAliasConfig): ModelAliasConfig {
+  resolveModel(model: ModelAliasConfig, source: "configured" | "catalog" = "configured"): ModelAliasConfig {
     const endpoint = this.config.baseUrl ?? this.definition.baseUrl;
     // 单模型覆盖端点时，连接原端点的缓存/基线不能跨过去覆盖新路径的限制。
     const usesProviderEndpoint = model.baseUrl === undefined
@@ -237,9 +238,17 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     const profile = this.config.modelProfiles?.[model.model];
     const profiled = profile === undefined ? healed : applyModelProfile(healed, profile);
     const accessPathModel = recoverKnownReasoningModel(profiled, generatedModel, profile?.thinkingLevelMap !== undefined || profile?.capabilities?.reasoning === false);
-    return normalizeModelMetadata(
+    const normalized = normalizeModelMetadata(
       { ...accessPathModel, compatibility: mergeCompatibility(this.config.compatibility, accessPathModel.compatibility) },
       this.definition.modelDefaults
+    );
+    // Route-specific defaults belong to this projection, never the shared catalog.
+    return applyGoogleProThinkingDefaults(
+      normalized,
+      this.config.type,
+      resolveProviderRequestRoute(normalized, this.config, this.definition).apiBackend,
+      (source === "configured" && (model.thinkingLevelMap !== undefined || model.reasoning !== undefined))
+        || profile?.thinkingLevelMap !== undefined
     );
   }
 
