@@ -50,6 +50,7 @@ try {
   release();
   await Promise.all([waiting, query]);
   assert.deepEqual(queryResult, { value: [] });
+  assert.throws(() => clients[1]!.getSnapshot(), /snapshot is not ready/, "A cold query waits for execution readiness without subscribing to historical snapshots");
   assert.equal((await clients[0]!.getHostStatus()).lifecycle, "ready");
   assert.equal(clients[0]!.getSnapshot().info.sessionId, "initial-session");
   assert.equal(creations, 1);
@@ -87,7 +88,9 @@ console.log("Runtime Host initializing tests passed");
     await assert.rejects(raw.requestRaw("run.submit", { input: "must not dispatch" }), { code: "runtime_not_ready" });
     await assert.rejects(client.waitForReady(10), /readiness timed out/);
     assert.equal(factorySignal!.aborted, false, "client timeout cannot cancel shared initialization");
+    const pendingQuery = assert.rejects(client.graphList(), /shutting down|closed/u);
     await raw.requestRaw("host.close", {}, 500);
+    await pendingQuery;
     const closing = server.close();
     assert.equal(factorySignal!.aborted, true);
     assert.ok(await readRegistration(runtimeHostPaths(root)), "owner registration remains until late resources drain");
@@ -112,8 +115,9 @@ console.log("Runtime Host initializing tests passed");
   const client = (await connectRuntimeHost(root))!;
   try {
     const waiting = assert.rejects(client.waitForReady(), /Initialization failed: apiKey=\[redacted\]/);
+    const query = assert.rejects(client.graphList(), /Initialization failed: apiKey=\[redacted\]/);
     reject(new Error("Initialization failed: apiKey=synthetic-private-value"));
-    await waiting;
+    await Promise.all([waiting, query]);
     await server.close();
     await assert.rejects(client.waitForReady(), /Initialization failed: apiKey=\[redacted\]/);
     assert.equal(client.hostInfo?.lifecycle, "failed");
@@ -175,4 +179,15 @@ console.log("Runtime Host initializing tests passed");
     await server.close();
     await removeTestRoot(root, { recursive: true, force: true });
   }
+}
+
+{
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-host-invalid-start-")));
+  const factory = async (): Promise<never> => { throw new Error("Invalid startup must not create a Runtime"); };
+  try {
+    await assert.rejects(startRuntimeHost(root, factory, { createRuntime: factory, shutdownDrainMs: 0 }), /shutdownDrainMs/);
+    const next = await startRuntimeHost(root, factory, { createRuntime: factory });
+    await next.close();
+    assert.equal(await readRegistration(runtimeHostPaths(root)), undefined, "failed Server construction must release the owner lock");
+  } finally { await removeTestRoot(root, { recursive: true, force: true }); }
 }

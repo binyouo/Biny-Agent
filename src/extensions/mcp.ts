@@ -8,6 +8,7 @@
  */
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport, type StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -26,7 +27,7 @@ import { ToolAccesses } from "../tools/access.js";
 import { z } from "zod";
 import { McpOAuthProvider, McpAuthRequiredError } from "./mcpOAuth.js";
 import { getSharedProxyAwareFetch } from "../network/proxyFetch.js";
-import { isSensitiveFieldName } from "../utils/secrets.js";
+import { isSensitiveFieldName, redactSecrets } from "../utils/secrets.js";
 import { computerImageSchema } from "../computer/protocol.js";
 
 export type McpTransportKind = "stdio" | "http" | "in-process";
@@ -118,6 +119,7 @@ interface ManagedMcpServer {
   client?: Client;
   authProvider?: McpOAuthProvider;
   connecting?: Promise<void>;
+  startupController?: AbortController;
   refreshing?: Promise<void>;
   /** 刷新期间又收到 tools/list_changed 时，完成当前轮后补刷一次。 */
   refreshDirty?: boolean;
@@ -218,6 +220,53 @@ export class McpToolHost {
     }
     await Promise.all(pending);
     this.emitChange();
+  }
+
+  /** 已保存的配置只替换指定连接；旧连接的迟到通知不能发布到新目录。 */
+  async configureServers(workspaceRoot: string, config: AgentConfig, names: readonly string[], force = false): Promise<void> {
+    if (this.closing) throw new Error("MCP host is closing.");
+    const failures: unknown[] = [];
+    for (const name of new Set(names)) {
+      const previous = this.servers.get(name);
+      const next = config.extensions.mcp[name];
+      if (previous?.local) throw new Error(`MCP server name is reserved: ${name}`);
+      if (!force && isDeepStrictEqual(previous?.rawConfig, next)) continue;
+      try {
+        if (previous) {
+          this.servers.delete(name);
+          previous.status.enabled = false;
+          previous.status.connected = false;
+          previous.status.connecting = false;
+          previous.status.catalogCached = false;
+          previous.startupController?.abort(new Error(`MCP server configuration changed: ${name}`));
+          const client = previous.client;
+          previous.client = undefined;
+          for (const toolName of previous.status.toolNames) this.registry?.unregister(toolName);
+          this.emitChange();
+          try { await client?.close(); }
+          catch (error) { previous.client = client; throw error; }
+          finally {
+            await previous.connecting?.catch(() => undefined);
+            await previous.closeTransport?.();
+          }
+        }
+        if (!next) continue;
+        await this.connectConfiguredServers(workspaceRoot, {
+          ...config, extensions: { ...config.extensions, mcp: { [name]: next } }
+        }, this.registry);
+        const status = this.servers.get(name)?.status;
+        if (next.enabled && !status?.connected) throw new Error(status?.lastError ?? `MCP server connection failed: ${name}`);
+      } catch (error) {
+        const message = redactMcpError(error, [previous?.config, next].filter((server): server is McpServerConfig => server !== undefined));
+        if (previous && !this.servers.has(name)) {
+          previous.status.lastError = message;
+          this.servers.set(name, previous);
+        }
+        failures.push(new Error(message));
+      }
+    }
+    this.emitChange();
+    if (failures.length) throw new AggregateError(failures, failures.map(errorText).join("; "));
   }
 
   /** 为不同 session 创建指向同一 MCP 连接的工具代理。 */
@@ -569,6 +618,7 @@ export class McpToolHost {
   /** 串行化的重连：并发调用共享同一次连接尝试。 */
   private async reconnect(managed: ManagedMcpServer): Promise<void> {
     if (this.closing) throw new Error(`MCP host is closing; cannot reconnect ${managed.name}.`);
+    if (this.servers.get(managed.name) !== managed) throw new Error(`MCP server configuration changed: ${managed.name}`);
     if (!managed.status.enabled) throw new Error(`MCP server ${managed.name} is disabled in config.json.`);
     if (managed.connecting) {
       await managed.connecting;
@@ -591,6 +641,7 @@ export class McpToolHost {
       await managed.closeTransport?.();
       managed.closeTransport = undefined;
       if (this.closing) throw new Error(`MCP host is closing; cannot reconnect ${managed.name}.`);
+      if (this.servers.get(managed.name) !== managed || !managed.status.enabled) throw new Error(`MCP server configuration changed: ${managed.name}`);
       await this.startServer(managed);
     })();
     managed.connecting = attempt;
@@ -607,9 +658,11 @@ export class McpToolHost {
   }
 
   private async startServer(managed: ManagedMcpServer): Promise<void> {
+    if (this.closing || this.servers.get(managed.name) !== managed || !managed.status.enabled) throw new Error(`MCP server configuration changed: ${managed.name}`);
     managed.status.connecting = true;
     this.emitChange();
     const controller = new AbortController();
+    managed.startupController = controller;
     const timeoutMs = managed.rawConfig.startupTimeoutMs ?? defaultStartupTimeoutMs;
     const timer = setTimeout(() => controller.abort(new DOMException(`MCP startup timed out after ${timeoutMs}ms`, "TimeoutError")), timeoutMs);
     let openedClient: Client | undefined;
@@ -702,6 +755,7 @@ export class McpToolHost {
       throw error;
     } finally {
       clearTimeout(timer);
+      if (managed.startupController === controller) managed.startupController = undefined;
       managed.status.connecting = false;
       this.emitChange();
     }
@@ -893,7 +947,12 @@ export class McpToolHost {
       if (!closingClient) {
         // 重连或启动失败会先清空 managed.client；传输回收结束前仍须由 host 持有。
         this.closingClients.add(client);
-        closingClient = closeClient().finally(() => { this.closingClients.delete(client); });
+        closingClient = closeClient().then(
+          () => { this.closingClients.delete(client); },
+          error => { closingClient = undefined; throw error; }
+        );
+        // SDK 也可能不等待关闭；保留失败供显式调用者接收，并允许后续重试清理。
+        void closingClient.catch(() => undefined);
       }
       return closingClient;
     };
@@ -1060,6 +1119,16 @@ function isConnectionError(error: unknown): boolean {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** 管理回执沿用实际连接凭据的脱敏规则，包含环境变量展开后的值。 */
+export function redactMcpError(error: unknown, servers: readonly McpServerConfig[]): string {
+  const credentials = servers.flatMap(server => {
+    const values = mcpCredentialValues(server);
+    try { return [...values, ...mcpCredentialValues(expandServerConfig(server))]; }
+    catch { return values; }
+  });
+  return redactSecrets(scrubMcpCredentials(errorText(error), credentials) as string);
 }
 
 function mcpCredentialValues(config: McpServerConfig): string[] {

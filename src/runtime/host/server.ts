@@ -10,7 +10,7 @@ import { performance } from "node:perf_hooks";
 import { agentDir, sessionIdFromFile } from "../../session/store.js";
 import type { BrowserAutomationEndpoint } from "../../tools/browser.js";
 import { redactSecrets } from "../../utils/redaction.js";
-import { type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../agentEvents.js";
+import type { AgentRuntimeUpdate, InteractiveRuntimeSnapshot } from "../agentEvents.js";
 import type { CommandRuntime } from "../CommandRuntime.js";
 import type { AgentRunOutcome, InteractiveRuntimeHandle, SubmittedAgentRun } from "../InteractiveAgentRuntime.js";
 import { SessionWriterConflictError } from "../SessionLease.js";
@@ -23,7 +23,7 @@ import { RuntimeHostEventJournal } from "./journal.js";
 import { removeRegistration, secureRuntimeSocket } from "./lifecycle.js";
 import { OperationCompletion, OperationDispatcher, operationLane, operationLaneKey } from "./operations.js";
 import { decodeHostFrame, runtimeHostEventHistoryLimit as eventHistoryLimit, runtimeHostCapabilities as hostCapabilities, runtimeHostJournalFile as hostJournalFile, isHelloFrame, isRequestFrame, negotiateRuntimeHostCapabilities, runtimeHostProtocolVersion as protocolVersion, type HostFrame } from "./protocol.js";
-import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.js";
+import type { SessionRuntimeRegistry, ManagedSessionRuntime } from "./registry.js";
 import type { RuntimeHostResourceRegistry } from "./resources.js";
 import { BoundedHostSocketWriter } from "./socket-writer.js";
 import type { HostOperationResult, HostRegistration, HostSurface, RuntimeHostFactory, RuntimeHostInfo, RuntimeHostLock, RuntimeHostStatus } from "./types.js";
@@ -60,7 +60,7 @@ interface PendingOwnerNotification {
 export class RuntimeHostServer {
   private readonly server = net.createServer((socket) => this.accept(socket));
   readonly connections = new Set<HostConnection>();
-  readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface; pendingCompletions: number }>();
+  private readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface; pendingCompletions: number }>();
   private readonly history: Array<{ sequence: number; update: AgentRuntimeUpdate }> = [];
   sequence = 0;
   private eventSequenceError: RangeError | undefined;
@@ -70,12 +70,15 @@ export class RuntimeHostServer {
   private ownerNotificationSubscriber: HostConnection | undefined;
   private readonly pendingOwnerNotifications = new Map<string, PendingOwnerNotification>();
   private readonly journal: RuntimeHostEventJournal;
-  readonly initialRegistry: SessionRuntimeRegistry | undefined;
+  private initialUnsubscribe: (() => void) | undefined;
   private readonly initial: { runtime: InteractiveRuntimeHandle; commands: CommandRuntime } | undefined;
   private readonly createRuntimeFactory: RuntimeHostFactory;
   private readonly executionOptions: import("./composition.js").RuntimeHostExecutionOptions;
   private execution: import("./composition.js").RuntimeHostExecution | undefined;
-  private get registry(): SessionRuntimeRegistry { return this.execution?.registry ?? this.initialRegistry!; }
+  private get registry(): SessionRuntimeRegistry {
+    if (!this.execution) throw new Error("Runtime Host execution domain is not ready.");
+    return this.execution.registry;
+  }
   private get businessComposition() { return this.execution!.businessComposition; }
   private get conversationMirror() { return this.execution!.conversationMirror; }
   readonly admission: RuntimeHostAdmission;
@@ -87,9 +90,7 @@ export class RuntimeHostServer {
   closePromise: Promise<void> | undefined;
   private listening = false;
   private endpointReady = false;
-  private initialized = false;
   private initializationPromise: Promise<void> | undefined;
-  private journalReady = false;
   private sequenceRecovered = false;
   private lifecycle: import("./types.js").RuntimeHostLifecycle = "initializing";
   private initializationError: string | undefined;
@@ -135,49 +136,28 @@ export class RuntimeHostServer {
     this.onClosing = options.onClosing;
     this.onBrowserAutomationChange = options.onBrowserAutomationChange;
     if (!Number.isSafeInteger(this.shutdownDrainMs) || this.shutdownDrainMs < 1) throw new Error("shutdownDrainMs must be a positive safe integer.");
-    if (this.initial) this.initialRegistry = new SessionRuntimeRegistry(this.initial, {
-      createRuntime,
-      sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
-      onUpdate: (update, managed) => this.handleRuntimeUpdate(update, managed)
-    });
+    if (this.initial) this.initialUnsubscribe = this.initial.runtime.subscribe(update => this.handleRuntimeUpdate(update));
+  }
+
+  detachInitialRuntimeSubscription(): void {
+    this.initialUnsubscribe?.();
+    this.initialUnsubscribe = undefined;
   }
 
   startAutomationScheduler(): void {
-    if (this.closePromise || !this.initialized) return;
+    if (this.closePromise || this.lifecycle !== "ready") return;
     this.businessComposition.start();
     void this.conversationMirror.start().catch(() => undefined);
   }
 
-  /**
-   * 记忆 Sleep 是可中断的后台维护：启动时补扫，之后按调度周期运行。用户一旦开始新回合，
-   * handleRuntimeUpdate 会立即中断模型调用，让前台聊天始终优先；已有记忆仍留在事实库等待下次整理。
-   */
-
-
   setBrowserAutomation(endpoint: BrowserAutomationEndpoint | undefined, ownerClientId?: string): void {
     this.browserAutomationOwnerClientId = ownerClientId;
     this.onBrowserAutomationChange?.(endpoint);
-    for (const managed of (this.registry?.list() ?? [])) managed.commands.setBrowserAutomation?.(endpoint);
+    for (const managed of (this.execution?.registry.list() ?? [])) managed.commands.setBrowserAutomation?.(endpoint);
   }
 
   private detachBrowserAutomationForClient(clientId: string): void {
     if (this.browserAutomationOwnerClientId === clientId) this.setBrowserAutomation(undefined);
-  }
-
-  async runMemorySleep(): Promise<unknown> {
-    return await this.businessComposition.runMemorySleep();
-  }
-
-  async previewMemorySleep(): Promise<unknown> {
-    return await this.businessComposition.previewMemorySleep();
-  }
-
-  cancelMemorySleep(): Promise<boolean> {
-    return this.businessComposition.cancelMemorySleep();
-  }
-
-  async runAutomation(automationId: string): Promise<unknown> {
-    return await this.businessComposition.runAutomation(automationId);
   }
 
   get info(): RuntimeHostInfo {
@@ -208,7 +188,7 @@ export class RuntimeHostServer {
 
   /** 载入最近的持久事件；session JSONL 和 turnStore 仍是恢复事实来源。 */
   async initialize(createInitialRuntime?: (resources: RuntimeHostResourceRegistry, signal: AbortSignal) => Promise<import("../InteractiveAgentRuntime.js").InteractiveAgentHost>): Promise<void> {
-    if (this.initialized) return;
+    if (this.lifecycle === "ready") return;
     if (this.closePromise) throw new Error("Runtime Host is shutting down.");
     this.initializationPromise ??= this.initializeOnce(createInitialRuntime).catch(error => {
       if (!this.closePromise) {
@@ -222,27 +202,24 @@ export class RuntimeHostServer {
   }
 
   private async initializeOnce(createInitialRuntime?: (resources: RuntimeHostResourceRegistry, signal: AbortSignal) => Promise<import("../InteractiveAgentRuntime.js").InteractiveAgentHost>): Promise<void> {
-    if (!this.journalReady) {
-      const loaded = await this.journal.initialize();
-      if (this.closePromise) throw new Error("Runtime Host is shutting down.");
-      // 后台资源在 journal 读取期间也会发布快照；已有 bounded history 暂存这些更新，
-      // 恢复 high-water 后再分配最终序号，不能让临时序号覆盖旧 journal 或丢失更新。
-      const pendingSequence = this.sequence;
-      this.sequence = loaded.sequence;
-      this.sequenceRecovered = true;
-      this.assertEventSequenceAvailable();
-      if (pendingSequence > Number.MAX_SAFE_INTEGER - this.sequence) throw this.markEventSequenceExhausted();
-      const pending = this.history.splice(0).map((record) => ({ ...record, sequence: record.sequence + loaded.sequence }));
-      // 启动窗口已被裁剪时，旧 journal 与保留的新尾部之间有缺口；只保留连续尾部，
-      // 让现有 canReplay / gap 协议对过旧 cursor 明确走快照恢复。
-      if (pendingSequence === pending.length) this.history.push(...loaded.records);
-      this.history.push(...pending);
-      if (this.history.length > eventHistoryLimit) this.history.splice(0, this.history.length - eventHistoryLimit);
-      this.sequence += pendingSequence;
-      if (this.sequence === Number.MAX_SAFE_INTEGER) this.markEventSequenceExhausted();
-      this.journalReady = true;
-      if (pending.length) void this.journal.persist(this.sequence, () => this.history, true);
-    }
+    const loaded = await this.journal.initialize();
+    if (this.closePromise) throw new Error("Runtime Host is shutting down.");
+    // 后台资源在 journal 读取期间也会发布快照；已有 bounded history 暂存这些更新，
+    // 恢复 high-water 后再分配最终序号，不能让临时序号覆盖旧 journal 或丢失更新。
+    const pendingSequence = this.sequence;
+    this.sequence = loaded.sequence;
+    this.sequenceRecovered = true;
+    this.assertEventSequenceAvailable();
+    if (pendingSequence > Number.MAX_SAFE_INTEGER - this.sequence) throw this.markEventSequenceExhausted();
+    const pending = this.history.splice(0).map((record) => ({ ...record, sequence: record.sequence + loaded.sequence }));
+    // 启动窗口已被裁剪时，旧 journal 与保留的新尾部之间有缺口；只保留连续尾部，
+    // 让现有 canReplay / gap 协议对过旧 cursor 明确走快照恢复。
+    if (pendingSequence === pending.length) this.history.push(...loaded.records);
+    this.history.push(...pending);
+    if (this.history.length > eventHistoryLimit) this.history.splice(0, this.history.length - eventHistoryLimit);
+    this.sequence += pendingSequence;
+    if (this.sequence === Number.MAX_SAFE_INTEGER) this.markEventSequenceExhausted();
+    if (pending.length) void this.journal.persist(this.sequence, () => this.history, true);
     const { RuntimeHostExecution } = await import("./composition.js");
     this.initializationAbort.signal.throwIfAborted();
     const { RuntimeHostResourceRegistry } = await import("./resources.js");
@@ -258,11 +235,10 @@ export class RuntimeHostServer {
       this.initializationAbort.signal.throwIfAborted();
       if (this.resumeInterrupted) await this.resumeInterruptedTurn();
       this.initializationAbort.signal.throwIfAborted();
-      this.initialized = true;
       this.setLifecycle("ready");
     } catch (error) {
       if (!this.execution) {
-        const results = await Promise.allSettled([initial?.runtime.close(), resources.close()]);
+        const results = await Promise.allSettled([initial === this.initial ? undefined : initial?.runtime.close(), resources.close()]);
         const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
         if (failures.length) this.initializationCleanupError = new AggregateError(failures, "Runtime Host initialization cleanup failed; ownership remains held until process exit.");
       }
@@ -300,13 +276,13 @@ export class RuntimeHostServer {
 
   /** 退出权威留在 Host；客户端断开不等于后台任务结束，也不能误杀另一个 surface。 */
   async retireIfIdle(graceMs = 30_000): Promise<boolean> {
-    if (this.closePromise || !this.initialized) return false;
+    if (this.closePromise || this.lifecycle !== "ready") return false;
     if (this.hasRetainingConnections() || this.pendingRequests || this.businessComposition.hasActiveWork()) {
       this.idleSince = undefined;
       return false;
     }
     const revision = this.activityRevision;
-    if (await this.execution!.hasRetainingWork()) {
+    if (await this.execution!.hasRetainingWork(this.connections.size > 0)) {
       this.idleSince = undefined;
       return false;
     }
@@ -360,21 +336,19 @@ export class RuntimeHostServer {
           this.send(connection, { kind: "retired", hostEpoch: this.registration.hostEpoch, reason: "idle" });
         }
       }
-      this.execution?.businessComposition.stop();
+      this.execution?.beginDrain();
       this.ownerNotificationSubscriber = undefined;
-      for (const entry of (this.registry?.list() ?? [])) entry.commands.setOwnerNotificationSink?.(undefined);
       this.rejectPendingOwnerNotifications(new Error("Runtime Host is shutting down."));
-      for (const entry of (this.registry?.list() ?? [])) {
-        if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun("host_shutdown");
-      }
       // 执行者真正退出时由 Runtime 释放 lease，不能在取消刚发出时提前放行新 writer。
       this.sessionWriterOwners.clear();
-      this.execution?.sessionGoalOwners.clear();
       const runtimeClose = (async () => {
         await this.initializationPromise?.catch(() => undefined);
-        this.execution?.businessComposition.stop();
         if (this.execution) await this.execution.close();
-        else await this.initialRegistry?.closeAll();
+        else {
+          this.detachInitialRuntimeSubscription();
+          await this.initial?.runtime.close();
+          await this.executionOptions.resourceRegistry?.close();
+        }
         if (this.initializationCleanupError) throw this.initializationCleanupError;
       })();
       let shutdownError: unknown;
@@ -432,24 +406,24 @@ export class RuntimeHostServer {
     };
     this.connections.add(connection);
     socket.on("data", (chunk: string) => this.read(connection, chunk));
-    socket.once("close", () => {
+    const releaseConnection = () => {
+      if (!this.connections.delete(connection)) return;
       clearTimeout(handshakeTimeout);
       connection.writer.dispose();
-      this.connections.delete(connection);
       this.releaseOwnerNotificationConnection(connection);
       if (this.closePromise !== undefined) return;
       if (connection.authenticated && connection.surface === "desktop") this.detachBrowserAutomationForClient(connection.clientId);
-      if (connection.clientId && this.execution) this.commands.capabilities.releaseOwner(connection.clientId);
-      if (this.execution) void this.releaseSessionWriters(connection.clientId);
-    });
-    socket.once("error", () => {
-      connection.writer.dispose();
-      this.connections.delete(connection);
-      this.releaseOwnerNotificationConnection(connection);
-      if (this.closePromise !== undefined) return;
-      if (connection.clientId && this.execution) this.commands.capabilities.releaseOwner(connection.clientId);
-      if (this.execution) void this.releaseSessionWriters(connection.clientId);
-    });
+      if (this.execution) {
+        const releasing = this.execution.releaseConnection(connection.clientId);
+        this.requests.add(releasing);
+        void releasing.then(
+          () => { this.requests.delete(releasing); },
+          () => { this.requests.delete(releasing); }
+        );
+      }
+    };
+    socket.once("close", releaseConnection);
+    socket.once("error", releaseConnection);
   }
 
   handleRuntimeUpdate(update: AgentRuntimeUpdate, managed?: ManagedSessionRuntime): void {
@@ -566,7 +540,7 @@ export class RuntimeHostServer {
     try {
       if (this.closePromise && frame.operation !== "host.info" && frame.operation !== "host.subscribe") throw new Error("Runtime Host is shutting down.");
       const payload = asRecord(frame.payload);
-      if (["host.subscribe", "host.info", "client.keep-alive", "host.close"].includes(frame.operation) || !this.initialized) {
+      if (["host.subscribe", "host.info", "client.keep-alive", "host.close"].includes(frame.operation) || this.lifecycle !== "ready") {
         const result = await this.execute(connection, frame);
         this.send(connection, { kind: "response", requestId: frame.requestId, ok: true, result });
         return;
@@ -651,7 +625,7 @@ export class RuntimeHostServer {
       setImmediate(() => { void this.close().catch(() => undefined); });
       return;
     }
-    if (!this.initialized) throw Object.assign(new Error(this.initializationError ?? "Runtime Host execution domain is not ready."), { code: "runtime_not_ready" });
+    if (this.lifecycle !== "ready") throw Object.assign(new Error(this.initializationError ?? "Runtime Host execution domain is not ready."), { code: "runtime_not_ready" });
     return await this.execution!.execute(connection, frame);
   }
 
@@ -734,7 +708,7 @@ export class RuntimeHostServer {
     primary: boolean;
     lastActiveAt: number;
   }> {
-    return (this.registry?.list() ?? []).map((entry) => ({
+    return (this.execution?.registry.list() ?? []).map((entry) => ({
       sessionId: entry.sessionId,
       snapshot: entry.runtime.getSnapshot(),
       primary: entry.primary,
@@ -894,6 +868,31 @@ export class RuntimeHostServer {
     }
   }
 
+  hasSessionWriter(sessionId: string): boolean {
+    return this.sessionWriterOwners.has(sessionId);
+  }
+
+  ownsSessionWriter(clientId: string, sessionId: string): boolean {
+    return this.sessionWriterOwners.get(sessionId)?.clientId === clientId;
+  }
+
+  sessionWriterSessionIds(clientId: string): string[] {
+    return [...this.sessionWriterOwners.entries()]
+      .filter(([, owner]) => owner.clientId === clientId)
+      .map(([sessionId]) => sessionId);
+  }
+
+  registerSessionWriter(connection: HostConnection, sessionId: string): void {
+    this.assertSessionWriterAvailable(connection, sessionId);
+    if (this.ownsSessionWriter(connection.clientId, sessionId)) return;
+    this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
+  }
+
+  forgetClosedSessionWriter(sessionId: string): void {
+    if (this.registry.get(sessionId)) throw new Error(`Cannot forget the writer of a resident session: ${sessionId}.`);
+    this.sessionWriterOwners.delete(sessionId);
+  }
+
   async claimSessionWriter(connection: HostConnection, session: string): Promise<void> {
     const sessionId = sessionIdFromFile(session);
     this.assertSessionWriterAvailable(connection, sessionId);
@@ -901,7 +900,7 @@ export class RuntimeHostServer {
     if (foreignOwner?.clientId === connection.clientId) return;
     const managed = this.registry.get(sessionId) ?? await this.registry.ensure(sessionId, await this.execution!.factoryOptionsForSession(sessionId));
     await managed.runtime.claimSession(sessionId);
-    this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
+    this.registerSessionWriter(connection, sessionId);
   }
 
   /** 写入型协议即使没有先显式打开 session，也必须先进入同 session writer 互斥。 */
@@ -939,62 +938,14 @@ export class RuntimeHostServer {
     await this.releaseIdleSessionWriter(sessionId, managed);
   }
 
-  private async releaseSessionWriters(clientId: string): Promise<void> {
+  async releaseSessionWriters(clientId: string): Promise<void> {
     if (!clientId) return;
-    for (const [sessionId, prepared] of this.execution!.oneShotSessions) {
-      if (prepared.clientId !== clientId || prepared.started) continue;
-      await this.dispatcher.dispatch("run", async () => {
-        if (this.execution!.oneShotSessions.get(sessionId) !== prepared || prepared.started) return;
-        try { await this.registry.closeSession(sessionId); }
-        finally { this.execution!.oneShotSessions.delete(sessionId); }
-      }, sessionId);
-    }
-    const owned = [...this.sessionWriterOwners.entries()]
-      .filter(([, owner]) => owner.clientId === clientId)
-      .map(([sessionId]) => sessionId);
+    const owned = this.sessionWriterSessionIds(clientId);
     for (const sessionId of owned) {
       const managed = this.registry.get(sessionId);
       if (managed?.runtime.getSnapshot().state.kind !== "idle" || this.dispatcher.hasPendingSession(sessionId)) continue;
       await this.releaseIdleSessionWriter(sessionId, managed);
     }
-  }
-
-  async pauseOwnedRunsForExit(connection: HostConnection): Promise<Array<{ sessionId: string; runId: string }>> {
-    const writerSessions = [...this.sessionWriterOwners.entries()]
-      .filter(([, owner]) => owner.clientId === connection.clientId)
-      .map(([sessionId]) => sessionId);
-    const goalSessions = [...this.execution!.sessionGoalOwners.entries()]
-      .filter(([, owner]) => owner.clientId === connection.clientId)
-      .map(([sessionId]) => sessionId);
-    const ownedSessionIds = [...new Set([...writerSessions, ...goalSessions])];
-    const paused = await Promise.all(ownedSessionIds.map(async (sessionId) => await this.dispatcher.dispatch(
-      "run",
-      async () => {
-        // Queue behind earlier writes for this session, then recheck ownership before touching its run.
-        const goalOwner = this.execution!.sessionGoalOwners.get(sessionId);
-        const writerOwned = this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId;
-        if (!writerOwned && goalOwner?.clientId !== connection.clientId) return undefined;
-        const managed = this.registry.get(sessionId);
-        const goals = managed?.commands.sessionGoals ?? this.commands.sessionGoals;
-        const goal = goals?.get(sessionId);
-        const goalOwned = goalOwner?.goalId === goal?.goalId
-          ? goalOwner?.clientId === connection.clientId
-          : writerOwned;
-        if (goal?.status === "active" && goalOwned) {
-          goals.pause(sessionId, goal);
-          if (managed) this.publishSnapshot(managed.runtime);
-        }
-        const snapshot = managed?.runtime.getSnapshot();
-        if (!managed || snapshot?.state.kind !== "runs") return undefined;
-        const runId = snapshot.state.activeRun.runId;
-        const goalRun = managed.commands.runtimeAuthority.getRun(runId)?.continuationSource?.startsWith("goal:");
-        if (goalRun ? !goalOwned : !writerOwned) return undefined;
-        if (!managed.runtime.cancelRun(runId, "paused")) return undefined;
-        return { sessionId, runId };
-      },
-      sessionId
-    )));
-    return paused.filter((entry): entry is { sessionId: string; runId: string } => entry !== undefined);
   }
 
   private canReplay(afterSequence: number): boolean {
@@ -1024,7 +975,7 @@ export class RuntimeHostServer {
     }
     this.history.push({ sequence, update });
     if (this.history.length > eventHistoryLimit) this.history.splice(0, this.history.length - eventHistoryLimit);
-    if (this.journalReady) void this.journal.persist(sequence, () => this.history);
+    if (this.sequenceRecovered) void this.journal.persist(sequence, () => this.history);
     for (const connection of this.connections) {
       if (connection.authenticated && connection.subscribed && !connection.eventReplay && this.matchesSessionFilter(connection, update)) {
         this.sendEvent(connection, sequence, update);
@@ -1073,8 +1024,6 @@ export class RuntimeHostServer {
   }
 
   async restartRuntime(sessionId?: string) { return await this.execution!.restartRuntime(sessionId); }
-  async startDraftRuntime(sessionId?: string) { return await this.execution!.startDraftRuntime(sessionId); }
-  async rotatePrimaryRuntime() { return await this.execution!.rotatePrimaryRuntime(); }
 
   send(connection: HostConnection, frame: HostFrame): void {
     connection.writer.send(frame);

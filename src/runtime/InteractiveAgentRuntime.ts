@@ -144,6 +144,7 @@ interface AgentRun extends ActiveRunSnapshot {
   promptContext?: string;
   capabilitySelection?: AgentCapabilitySelection;
   fastMode?: boolean;
+  modelRoute?: "tool";
   modelOverride?: AgentModel;
   retryOfMessageId?: string;
   replaceUserMessageId?: string;
@@ -528,7 +529,7 @@ export class InteractiveAgentRuntime {
       promptContext,
       capabilitySelection,
       fastMode,
-      modelOverride: modelRoute === "tool" ? this.commandRuntime.resolveToolModelForRun?.() : undefined,
+      modelRoute,
       retryOfMessageId: requestIds?.retryOfMessageId,
       replaceUserMessageId: requestIds?.replaceUserMessageId,
       replacementUserMessageId: requestIds?.replaceUserMessageId === undefined ? undefined : randomUUID(),
@@ -1273,29 +1274,34 @@ export class InteractiveAgentRuntime {
         attachments: sessionAttachmentReferences(run.attachments)
       });
     }
-    this.emit({
-      ...this.eventBase(run),
-      type: "run.started",
-      messageId: run.messageId,
-      retryOfMessageId: run.retryOfMessageId,
-      input: run.input,
-      model: run.modelOverride ? {
-        alias: run.modelOverride.providerAlias ?? info.modelAlias,
-        provider: run.modelOverride.provider,
-        label: run.modelOverride.modelId,
-        reasoning: info.reasoningLabel
-      } : {
-        alias: info.modelAlias,
-        provider: info.provider,
-        label: info.modelLabel,
-        reasoning: info.reasoningLabel
-      },
-      skills: this.commandRuntime.runSkillPaths?.(run.runId) ?? info.skills ?? []
-    });
-
-    // 首批事件是前台时间线进入运行态的信号；账本落盘属于后台持久化，不能阻挡用户消息先展示。
-    this.runtimeAuthority?.markRunRunning(run.runId, run.startedAt);
     try {
+      if (run.modelRoute === "tool") {
+        signal.throwIfAborted();
+        run.modelOverride = await this.commandRuntime.resolveToolModelForRun?.();
+        signal.throwIfAborted();
+      }
+      this.emit({
+        ...this.eventBase(run),
+        type: "run.started",
+        messageId: run.messageId,
+        retryOfMessageId: run.retryOfMessageId,
+        input: run.input,
+        model: run.modelOverride ? {
+          alias: run.modelOverride.providerAlias ?? info.modelAlias,
+          provider: run.modelOverride.provider,
+          label: run.modelOverride.modelId,
+          reasoning: info.reasoningLabel
+        } : {
+          alias: info.modelAlias,
+          provider: info.provider,
+          label: info.modelLabel,
+          reasoning: info.reasoningLabel
+        },
+        skills: this.commandRuntime.runSkillPaths?.(run.runId) ?? info.skills ?? []
+      });
+
+      // 首批事件是前台时间线进入运行态的信号；账本落盘属于后台持久化，不能阻挡用户消息先展示。
+      this.runtimeAuthority?.markRunRunning(run.runId, run.startedAt);
       // Skill/MCP 清单已在 admission 时固定；慢速刷新只影响下一回合，不挡当前首个模型请求。
       this.commandRuntime.setUserInputRun?.(run.allowUserInput && run.source === undefined && !run.supervision
         ? { sessionId: run.sessionId, runId: run.runId } : undefined);

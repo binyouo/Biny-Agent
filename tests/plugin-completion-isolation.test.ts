@@ -46,14 +46,14 @@ const registryJs = ts.transpileModule(registrySource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }
 }).outputText;
 const registryExports = {};
-vm.runInNewContext(registryJs, { exports: registryExports });
+vm.runInNewContext(registryJs, { exports: registryExports, structuredClone });
 const { PluginLifecycleRegistry } = registryExports as { PluginLifecycleRegistry: typeof Registry };
 const bindingNames = [
   "retryCommitStarted", "recordAssistantAudit", "outcome", "runPluginLifecycle",
   "pluginToolSelectionAllowsCalls", "pluginLifecycle", "readSessionEvents", "replaySessionEvents",
   "messageText", "input", "turnPersonalization", "callPluginMcpTool", "content", "notification",
   "runOptions", "systemPrompt", "finalMessages", "coordinator", "autoAnalyzeForTurn",
-  "finalAssistantReference", "parseTemporalClues", "referenceByMessage", "sessionMessageMetadata",
+  "finalAssistantReference", "referenceByMessage", "sessionMessageMetadata",
   "pendingEvents", "errorMessage", "recordNativeTelemetry", "activeModelSettings", "observedSteps",
   "completedStepsBeforeRun", "abortSignal", "turnCancellationReason", "isTimeoutFailure",
   "usageAuditStarted", "stepUsageRecords", "sumSessionUsage", "loopContext", "streamFailureReported"
@@ -171,7 +171,7 @@ async function run(options: FaultOptions = {}) {
     callPluginMcpTool: () => { throw new Error("MCP execution forbidden"); },
     runOptions: { source: "fixture" }, systemPrompt: "", finalMessages: [], coordinator: {},
     autoAnalyzeForTurn: false, finalAssistantReference: undefined,
-    parseTemporalClues: () => [], referenceByMessage: new WeakMap(),
+    referenceByMessage: new WeakMap(),
     sessionMessageMetadata: () => ({}),
     pendingEvents: { drain: function* () {}, waitForEventOr: async <T>(operation: Promise<T>): Promise<T> => await operation },
     errorMessage: (error: unknown) => error instanceof Error ? error.message : String(error), recordNativeTelemetry: async () => undefined,

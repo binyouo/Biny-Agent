@@ -17,6 +17,23 @@ assert.equal(operationLane("run.cancel"), "run");
 assert.equal(operationLane("capability.fail"), "control");
 assert.equal(operationLane("graph.resume"), "admission");
 
+for (const input of ["/usage", "/status", "/skills", "/plugins", "/tasks", "/capabilities", "/automation", "/automation LIST", "/mcp", "/memories", "/soul", "/soul SHOW", "/soul edit", "/memory", "/memory list", "/memory SHOW one", "/memory search query", "/memory archived", "/undo list", "/graph inspect plan", "/graph events plan"]) {
+  assert.equal(operationLane("command", { input }), "query", input);
+}
+for (const input of ["/automation pause one", "/mcp reconnect one", "/memories off", "/soul SET changed", "/memory add note", "/memory forget one", "/memory restore one", "/undo", "/review"]) {
+  assert.equal(operationLane("command", { input }), "mutation", input);
+}
+for (const input of ["/soul set changed", "/soul append-trait trait", "/soul reset", "/soul delete", "/inspect task", "/compact"]) {
+  assert.equal(operationLane("command", { input }), "run", input);
+}
+
+assert.equal(operationLane("session.command", { command: "TodoShow" }), "query");
+for (const command of ["GoalGet", "PlanStatus"]) {
+  assert.equal(operationLane("session.command", { command }), "run");
+  assert.equal(operationLaneKey("session.command", { command, sessionId: "session-b" }), "session-b");
+}
+for (const command of ["ToolCall", "PlanStart", "GoalUpdate"]) assert.equal(operationLane("session.command", { command }), "mutation");
+
 const dispatcher = new OperationDispatcher();
 const order: string[] = [];
 let releaseFirst!: () => void;
