@@ -615,6 +615,80 @@ test("workflow runs independent lanes in parallel and retains full-run and packa
   }
 });
 
+
+
+function mergeIdentityFixture(t) {
+  const { root, base, head: parent } = history(t);
+  git(root, "checkout", "-b", "identity-feature", base);
+  writeFileSync(path.join(root, "tests/view.test.ts"), "// identity PR change");
+  git(root, "commit", "-am", "identity feature");
+  const feature = git(root, "rev-parse", "HEAD");
+  git(root, "checkout", "main");
+  git(root, "merge", "--no-ff", "identity-feature", "-m", "identity merge");
+  const head = git(root, "rev-parse", "HEAD");
+  return { root, base, parent, feature, head,
+    event: { number: 552, pull_request: { head: { sha: feature }, base: { ref: "main", sha: parent } } },
+    env: { GITHUB_SHA: head, GITHUB_REF: "refs/pull/552/merge" } };
+}
+
+for (const stale of [false, true]) {
+  test(`PR provenance accepts ${stale ? "forward base refresh" : "exact base"} without inheriting main changes`, async t => {
+    const f = mergeIdentityFixture(t);
+    if (stale) f.event.pull_request.base.sha = f.base;
+    for (const unavailable of [false, true]) {
+      const comparison = await resolveComparison(f.root, "pull_request", f.event, f.env, async () => {
+        if (unavailable) throw new Error("history unavailable");
+        return [];
+      });
+      assert.equal(comparison.base, f.parent);
+      assert.equal(comparison.head, f.head);
+      assert.equal(comparison.full, undefined);
+      assert.deepEqual(changedFilesBetween(f.root, comparison.base, comparison.head), ["tests/view.test.ts"]);
+    }
+  });
+}
+
+for (const [label, alter] of [
+  ["wrong checkout SHA", f => { f.env.GITHUB_SHA = f.feature; }],
+  ["missing checkout SHA", f => { delete f.env.GITHUB_SHA; }],
+  ["wrong PR number", f => { f.event.number = 553; }],
+  ["missing PR number", f => { delete f.event.number; }],
+  ["fractional PR number", f => { f.event.number = 552.5; }],
+  ["head ref instead of merge ref", f => { f.env.GITHUB_REF = "refs/pull/552/head"; }],
+  ["branch ref", f => { f.env.GITHUB_REF = "refs/heads/main"; }],
+  ["missing ref", f => { delete f.env.GITHUB_REF; }],
+  ["wrong second parent", f => { f.event.pull_request.head.sha = f.base; }],
+  ["nonancestor base", f => { f.event.pull_request.base.sha = f.feature; }],
+  ["base newer than first parent", f => { f.event.pull_request.base.sha = f.head; }],
+  ["invalid base SHA", f => { f.event.pull_request.base.sha = "main"; }],
+  ["missing PR payload", f => { delete f.event.pull_request; }],
+  ["one-parent checkout", f => {
+    git(f.root, "checkout", "--detach", f.feature);
+    f.env.GITHUB_SHA = f.feature;
+  }],
+  ["root checkout", f => {
+    git(f.root, "checkout", "--detach", f.base);
+    f.env.GITHUB_SHA = f.base;
+  }],
+  ["three-parent checkout", f => {
+    const tree = git(f.root, "rev-parse", "HEAD^{tree}");
+    const octopus = git(f.root, "commit-tree", tree, "-p", f.parent, "-p", f.feature, "-p", f.base, "-m", "invalid octopus");
+    git(f.root, "checkout", "--detach", octopus);
+    f.env.GITHUB_SHA = octopus;
+  }]
+]) {
+  test(`PR provenance rejects ${label} before fetching history`, async t => {
+    const f = mergeIdentityFixture(t);
+    alter(f);
+    let calls = 0;
+    await assert.rejects(resolveComparison(f.root, "pull_request", f.event, f.env, async () => {
+      calls++;
+      return [];
+    }), /merge result/u);
+    assert.equal(calls, 0);
+  });
+}
+
 test("Vite SSR consumers stay selected when an ordinary import already proves coverage", async t => {
   const root = fixture(t, {
     "tests/vite-view.test.ts": "import { createServer } from 'vite'; const server = await createServer(); await server.ssrLoadModule('/src/desktop/view.ts');",
@@ -730,76 +804,3 @@ test("a documentation-only success cannot hide an unverified main code change", 
   const full = await resolveComparison(root, "push", {}, { GITHUB_REF_NAME: "main" }, async () => [run(3, docs, "workflow_dispatch"), run(2, docs), run(1, base)]);
   assert.equal(full.base, docs, "explicit full validation of a docs commit is still a valid baseline");
 });
-
-
-function mergeIdentityFixture(t) {
-  const { root, base, head: parent } = history(t);
-  git(root, "checkout", "-b", "identity-feature", base);
-  writeFileSync(path.join(root, "tests/view.test.ts"), "// identity PR change");
-  git(root, "commit", "-am", "identity feature");
-  const feature = git(root, "rev-parse", "HEAD");
-  git(root, "checkout", "main");
-  git(root, "merge", "--no-ff", "identity-feature", "-m", "identity merge");
-  const head = git(root, "rev-parse", "HEAD");
-  return { root, base, parent, feature, head,
-    event: { number: 552, pull_request: { head: { sha: feature }, base: { ref: "main", sha: parent } } },
-    env: { GITHUB_SHA: head, GITHUB_REF: "refs/pull/552/merge" } };
-}
-
-for (const stale of [false, true]) {
-  test(`PR provenance accepts ${stale ? "forward base refresh" : "exact base"} without inheriting main changes`, async t => {
-    const f = mergeIdentityFixture(t);
-    if (stale) f.event.pull_request.base.sha = f.base;
-    for (const unavailable of [false, true]) {
-      const comparison = await resolveComparison(f.root, "pull_request", f.event, f.env, async () => {
-        if (unavailable) throw new Error("history unavailable");
-        return [];
-      });
-      assert.equal(comparison.base, f.parent);
-      assert.equal(comparison.head, f.head);
-      assert.equal(comparison.full, undefined);
-      assert.deepEqual(changedFilesBetween(f.root, comparison.base, comparison.head), ["tests/view.test.ts"]);
-    }
-  });
-}
-
-for (const [label, alter] of [
-  ["wrong checkout SHA", f => { f.env.GITHUB_SHA = f.feature; }],
-  ["missing checkout SHA", f => { delete f.env.GITHUB_SHA; }],
-  ["wrong PR number", f => { f.event.number = 553; }],
-  ["missing PR number", f => { delete f.event.number; }],
-  ["fractional PR number", f => { f.event.number = 552.5; }],
-  ["head ref instead of merge ref", f => { f.env.GITHUB_REF = "refs/pull/552/head"; }],
-  ["branch ref", f => { f.env.GITHUB_REF = "refs/heads/main"; }],
-  ["missing ref", f => { delete f.env.GITHUB_REF; }],
-  ["wrong second parent", f => { f.event.pull_request.head.sha = f.base; }],
-  ["nonancestor base", f => { f.event.pull_request.base.sha = f.feature; }],
-  ["base newer than first parent", f => { f.event.pull_request.base.sha = f.head; }],
-  ["invalid base SHA", f => { f.event.pull_request.base.sha = "main"; }],
-  ["missing PR payload", f => { delete f.event.pull_request; }],
-  ["one-parent checkout", f => {
-    git(f.root, "checkout", "--detach", f.feature);
-    f.env.GITHUB_SHA = f.feature;
-  }],
-  ["root checkout", f => {
-    git(f.root, "checkout", "--detach", f.base);
-    f.env.GITHUB_SHA = f.base;
-  }],
-  ["three-parent checkout", f => {
-    const tree = git(f.root, "rev-parse", "HEAD^{tree}");
-    const octopus = git(f.root, "commit-tree", tree, "-p", f.parent, "-p", f.feature, "-p", f.base, "-m", "invalid octopus");
-    git(f.root, "checkout", "--detach", octopus);
-    f.env.GITHUB_SHA = octopus;
-  }]
-]) {
-  test(`PR provenance rejects ${label} before fetching history`, async t => {
-    const f = mergeIdentityFixture(t);
-    alter(f);
-    let calls = 0;
-    await assert.rejects(resolveComparison(f.root, "pull_request", f.event, f.env, async () => {
-      calls++;
-      return [];
-    }), /merge result/u);
-    assert.equal(calls, 0);
-  });
-}
