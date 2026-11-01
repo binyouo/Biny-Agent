@@ -165,6 +165,13 @@ export function QuickChatApp(): React.JSX.Element {
   const runtimeModelAliasRef = useRef<string | undefined>(undefined);
   const runtimeThinkingRef = useRef<ThinkingSelection>("off");
   const settingsRef = useRef<DesktopQuickChatSettings | undefined>(undefined);
+  const settingsGenerationRef = useRef(0);
+
+  useEffect(() => window.biny.onQuickChatSettingsChanged((next) => {
+    settingsGenerationRef.current += 1;
+    settingsRef.current = next;
+    setSettings(next);
+  }), []);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -177,6 +184,7 @@ export function QuickChatApp(): React.JSX.Element {
 
   useEffect(() => {
     let cancelled = false;
+    const settingsGeneration = settingsGenerationRef.current;
     void (async () => {
       try {
         const [nextSettings, nextBootstrap, cachedContext, nextClickThrough] = await Promise.all([
@@ -186,8 +194,10 @@ export function QuickChatApp(): React.JSX.Element {
           window.biny.getQuickChatClickThrough()
         ]);
         if (cancelled) return;
-        setSettings(nextSettings);
-        settingsRef.current = nextSettings;
+        if (settingsGeneration === settingsGenerationRef.current) {
+          setSettings(nextSettings);
+          settingsRef.current = nextSettings;
+        }
         setBootstrap(nextBootstrap);
         setContext(cachedContext);
         setClickThrough(nextClickThrough);
@@ -270,8 +280,7 @@ export function QuickChatApp(): React.JSX.Element {
   const currentThinking = selectedModel?.efforts.length ? thinking : "off";
   const hasModel = selectedAlias !== undefined && models.length > 0;
   const noProject = projectId === undefined;
-  const includeContext = settings?.injectScreenContext ?? true;
-  const contextAttached = includeContext && Boolean(context.promptContext);
+  const includeContext = settings?.injectScreenContext === true;
   const windowTitle = context.frontApp?.url
     ? safeUrlHost(context.frontApp.url) ?? context.frontApp.windowTitle
     : context.frontApp?.windowTitle;
@@ -290,6 +299,7 @@ export function QuickChatApp(): React.JSX.Element {
         runtimeModelAliasRef.current = info.modelAlias;
         runtimeThinkingRef.current = info.thinking;
       }
+      const attachContext = settingsRef.current?.injectScreenContext === true && Boolean(context.promptContext);
       dispatch({
         type: "append-user",
         message: {
@@ -299,7 +309,7 @@ export function QuickChatApp(): React.JSX.Element {
           reasoning: "",
           reasoningStreaming: false,
           streaming: false,
-          withScreenContext: contextAttached
+          withScreenContext: attachContext
         }
       });
       setInput("");
@@ -311,7 +321,7 @@ export function QuickChatApp(): React.JSX.Element {
         undefined,
         undefined,
         undefined,
-        contextAttached ? context.promptContext : undefined
+        attachContext ? context.promptContext : undefined
       );
       sessionIdRef.current = receipt.sessionId;
       activeRunIdRef.current = receipt.runId;
@@ -325,7 +335,7 @@ export function QuickChatApp(): React.JSX.Element {
       setBusy(false);
       setError(errorText(sendError));
     }
-  }, [busy, context.promptContext, contextAttached, hasModel, input, selectedAlias, selectedModel, thinking]);
+  }, [busy, context.promptContext, hasModel, input, selectedAlias, selectedModel, thinking]);
 
   const chooseModel = useCallback((alias: string): void => {
     const next = models.find((model) => model.alias === alias);
@@ -343,14 +353,14 @@ export function QuickChatApp(): React.JSX.Element {
   const updateIncludeContext = useCallback(async (enabled: boolean): Promise<void> => {
     const current = settingsRef.current;
     if (!current) return;
+    settingsGenerationRef.current += 1;
     const next = { ...current, injectScreenContext: enabled };
     setSettings(next);
     settingsRef.current = next;
     try {
-      await window.biny.setQuickChatSettings(next);
+      await window.biny.setQuickChatSettings({ injectScreenContext: enabled });
     } catch (settingsError) {
-      setSettings(current);
-      settingsRef.current = current;
+      // Keep a requested opt-out on failure; a stale rollback must not re-enable context.
       setError(errorText(settingsError));
     }
   }, []);

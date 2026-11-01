@@ -41,7 +41,7 @@ import {
   thinkingSchema
 } from "./settingsSaveInputSchema.js";
 import { clampFontSize } from "../../fontPreference.js";
-import type { DesktopActiveView, DesktopBootstrap, DesktopQuickChatSettings, DesktopSettingsCloseResponse, DesktopSettingsDraftState, DesktopSettingsSaveInput, DesktopSystemSettingsPane, DesktopThemePreference } from "../../protocol.js";
+import type { DesktopActiveView, DesktopBootstrap, DesktopSettingsCloseResponse, DesktopSettingsDraftState, DesktopSettingsSaveInput, DesktopSystemSettingsPane, DesktopThemePreference } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 import { DesktopAgentManager } from "./DesktopAgentManager.js";
 import { ActivityRecorderService } from "./ActivityRecorderService.js";
@@ -570,6 +570,9 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
 
   handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown) => {
+    // The existing QuickChat renderer may hold stale settings (or be awaiting model selection).
+    // Enforce the current opt-out at this admission boundary, without changing other callers.
+    const parsedPromptContext = promptContextSchema.parse(promptContext);
     return await context.agents.sendPrompt(
       idSchema.parse(projectId),
       sessionId === undefined ? undefined : idSchema.parse(sessionId),
@@ -578,7 +581,8 @@ export function registerDesktopIpc(context: IpcContext): void {
       z.enum(["steer", "queue"]).optional().parse(delivery),
       chatPersonalizationSchema.optional().parse(personalization),
       idempotencyKeySchema.parse(idempotencyKey),
-      promptContextSchema.parse(promptContext),
+      context.getQuickChatWindow()?.ownsWebContents(_event.sender.id) && !context.state.quickChatSettings().injectScreenContext
+        ? undefined : parsedPromptContext,
       capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection)
     );
   });
@@ -1514,10 +1518,15 @@ export function registerDesktopIpc(context: IpcContext): void {
   handle(desktopIpc.quickChatSettings, async () => context.state.quickChatSettings());
 
   handle(desktopIpc.setQuickChatSettings, async (_event, value: unknown) => {
-    const settings: DesktopQuickChatSettings = quickChatSettingsSchema.parse(value);
-    await context.state.setQuickChatSettings(settings);
+    const patch = quickChatSettingsSchema.partial().parse(value);
+    await context.state.setQuickChatSettings({ ...context.state.quickChatSettings(), ...patch });
+    // A newer invocation may already have changed the current policy while this save awaited.
+    const settings = context.state.quickChatSettings();
     // 立即对现存窗口应用穿透/失焦隐藏；窗口未创建时下次创建读最新设置。
     context.getQuickChatWindow()?.applySettings(settings);
+    context.getQuickChatWindow()?.send(desktopIpc.quickChatSettingsChanged, settings);
+    const mainWindow = context.getWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(desktopIpc.quickChatSettingsChanged, settings);
     return settings;
   });
 

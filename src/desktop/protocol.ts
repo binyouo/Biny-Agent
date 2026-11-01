@@ -289,6 +289,7 @@ export const desktopIpc = {
   quickChatContext: "desktop:quickchat:context",
   quickChatFocusInput: "desktop:quickchat:focus-input",
   quickChatClickThroughChanged: "desktop:quickchat:clickthrough-changed",
+  quickChatSettingsChanged: "desktop:quickchat:settings-changed",
   quickChatSettings: "desktop:quickchat:settings",
   setQuickChatSettings: "desktop:quickchat:set-settings",
   createTerminal: "desktop:terminal:create",
@@ -1946,7 +1947,8 @@ export interface DesktopApi {
   closeQuickChat(): Promise<void>;
   /** 读取当前 QuickChat 偏好（三处 checkbox 的即时状态）。 */
   quickChatSettings(): Promise<DesktopQuickChatSettings>;
-  setQuickChatSettings(settings: DesktopQuickChatSettings): Promise<DesktopQuickChatSettings>;
+  setQuickChatSettings(settings: Partial<DesktopQuickChatSettings>): Promise<DesktopQuickChatSettings>;
+  onQuickChatSettingsChanged(listener: (settings: DesktopQuickChatSettings) => void): () => void;
   /** 读取当前 QuickChat 缓存；不触发系统采集。 */
   quickChatScreenContext(): Promise<DesktopQuickChatScreenContext>;
   /** 在唤起 QuickChat 前按需读取前台应用，并异步刷新 AX 内容。 */

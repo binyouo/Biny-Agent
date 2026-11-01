@@ -10,7 +10,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { createDesktopReadRequest } from "../../readRequests.js";
 import type { ActivityRuntimeSnapshot } from "../../../activity/types.js";
-import type { DesktopAgentEventEnvelope, DesktopApi, DesktopApplicationImportsChanged, DesktopBrowserSnapshot, DesktopMenuAction, DesktopQuickChatScreenContext, DesktopSessionHandoff, DesktopSettingsCloseRequest, DesktopTerminalEvent } from "../../protocol.js";
+import type { DesktopAgentEventEnvelope, DesktopApi, DesktopApplicationImportsChanged, DesktopBrowserSnapshot, DesktopMenuAction, DesktopQuickChatSettings, DesktopQuickChatScreenContext, DesktopSessionHandoff, DesktopSettingsCloseRequest, DesktopTerminalEvent } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 import "./computerUse.js";
 import "./appshots.js";
@@ -340,6 +340,11 @@ const api: DesktopApi = {
     const handler = (_event: Electron.IpcRendererEvent, envelope: DesktopAgentEventEnvelope): void => listener(envelope);
     ipcRenderer.on(desktopIpc.event, handler);
     return () => ipcRenderer.removeListener(desktopIpc.event, handler);
+  },
+  onQuickChatSettingsChanged(listener: (settings: DesktopQuickChatSettings) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, settings: DesktopQuickChatSettings): void => listener(settings);
+    ipcRenderer.on(desktopIpc.quickChatSettingsChanged, handler);
+    return () => ipcRenderer.removeListener(desktopIpc.quickChatSettingsChanged, handler);
   },
   onQuickChatContext(listener: (context: DesktopQuickChatScreenContext) => void) {
     const handler = (_event: Electron.IpcRendererEvent, context: DesktopQuickChatScreenContext): void => listener(context);

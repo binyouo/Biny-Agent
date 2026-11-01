@@ -47,6 +47,7 @@ async function harness(api: Record<string, unknown> = {}) {
       activityPermissions: async () => { throw new Error("offline"); },
       // 快速对话现在挂在通用页里，任何一次渲染设置外壳都会读它 —— 所以默认就要有桩。
       quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }),
+      onQuickChatSettingsChanged: () => () => {},
       setQuickChatSettings: async (value: unknown) => value, ...api }
   });
   dom.window.HTMLElement.prototype.scrollTo = () => {};

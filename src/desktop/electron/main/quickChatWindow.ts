@@ -24,6 +24,7 @@ export interface QuickChatWindowOptions {
 }
 
 export interface QuickChatWindowController {
+  ownsWebContents(id: number): boolean;
   isVisible(): boolean;
   isClickThrough(): boolean;
   show(): void;
@@ -183,6 +184,7 @@ export function createQuickChatWindow(
   applyClickThrough(clickThroughActive);
 
   return {
+    ownsWebContents: (id) => !destroyed && !window.isDestroyed() && window.webContents.id === id,
     isVisible: () => !destroyed && !window.isDestroyed() && window.isVisible(),
     isClickThrough: () => clickThroughActive,
     show,

@@ -3,7 +3,7 @@
  *
  * 三个开关都是纯 UI 行为偏好，走 DesktopStateStore 的逐字段直达通道（setQuickChatSettings），
  * 即时生效，不进跨页设置草稿事务——所以这里不读 useSettingsDraft，而是挂载时拉一次
- * quickChatSettings()，勾选后直接把整份设置回写。前台应用上下文由 QuickChat 唤起时按需读取，
+ * quickChatSettings()，勾选后只回写变更字段，并接收其他窗口的即时更新。前台应用上下文由 QuickChat 唤起时按需读取，
  * 与活动记录器完全分离。
  */
 import { useEffect, useRef, useState } from "react";
@@ -17,18 +17,28 @@ export function SettingsQuickChat(): React.JSX.Element {
   const [saveError, setSaveError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const mounted = useRef(false);
+  const settingsGeneration = useRef(0);
+  const pendingPatch = useRef<Partial<DesktopQuickChatSettings>>({});
+
+  useEffect(() => window.biny.onQuickChatSettingsChanged((next) => {
+    settingsGeneration.current += 1;
+    pendingPatch.current = {};
+    setSaveError(undefined);
+    setSettings(next);
+  }), []);
 
   useEffect(() => {
     let cancelled = false;
+    const generation = settingsGeneration.current;
     mounted.current = true;
     setLoadError(undefined);
     void window.biny.quickChatSettings()
       .then((nextSettings) => {
-        if (cancelled) return;
+        if (cancelled || generation !== settingsGeneration.current) return;
         setSettings(nextSettings);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
+        if (!cancelled && generation === settingsGeneration.current) setLoadError(error instanceof Error ? error.message : String(error));
       });
     return () => {
       cancelled = true;
@@ -38,12 +48,18 @@ export function SettingsQuickChat(): React.JSX.Element {
 
   const update = (patch: Partial<DesktopQuickChatSettings>): void => {
     if (!settings || saving) return;
-    const next = { ...settings, ...patch };
+    pendingPatch.current = Object.keys(patch).length ? patch : pendingPatch.current;
+    const submittedPatch = pendingPatch.current;
+    const generation = ++settingsGeneration.current;
+    const next = { ...settings, ...submittedPatch };
     setSaving(true);
     setSaveError(undefined);
     setSettings(next);
-    void window.biny.setQuickChatSettings(next).then((value) => { if (mounted.current) setSettings(value); }).catch((error: unknown) => {
-      if (!mounted.current) return;
+    void window.biny.setQuickChatSettings(submittedPatch).then((value) => {
+      if (pendingPatch.current === submittedPatch) pendingPatch.current = {};
+      if (mounted.current && generation === settingsGeneration.current) setSettings(value);
+    }).catch((error: unknown) => {
+      if (!mounted.current || generation !== settingsGeneration.current) return;
       setSaveError(error instanceof Error ? error.message : String(error));
     }).finally(() => { if (mounted.current) setSaving(false); });
   };
