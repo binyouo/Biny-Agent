@@ -124,7 +124,7 @@ TUI 与 CLI 发布同一份 npm 包：桌面构建生成 `tui-npm` 工作流产�
 
 凭据配置后，发版时保持 `unsigned=false`；electron-builder 导入证书、签署 App 及嵌套组件，启用 Hardened Runtime 并执行公证。签名、公证失败会阻止发布。下载产物后用 `codesign --verify --deep --strict --verbose=2 Biny.app`、`spctl --assess --verbose --type exec Biny.app` 和 `xcrun stapler validate Biny.app` 核验，安装与系统权限仍需人工验收。
 
-当前无 Apple 凭据时可显式选择 `unsigned=true`，仅允许 Beta；该模式使用 ad-hoc 签名并关闭 Hardened Runtime、公证与 Gatekeeper 构建评估，发布说明保留安装限制。稳定版不允许此模式。
+当前无 Apple 凭据时可显式选择 `unsigned=true`，适用于 Beta 或稳定版；该模式使用 ad-hoc 签名并关闭 Hardened Runtime、公证与 Gatekeeper 构建评估，发布说明保留安装限制。版本是否为稳定版不代表安装包已通过 Apple 签名或公证。
 
 ## 交付与问题反馈
 
