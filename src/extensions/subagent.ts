@@ -668,6 +668,9 @@ function sumNativeUsage(usages: readonly AgentUsage[]): AgentUsage {
 }
 
 function sumUsageField(usages: readonly AgentUsage[], field: keyof AgentUsage): number | undefined {
+  // Preserve missing required totals instead of presenting partial sums as complete.
+  if ((field === "inputTokens" || field === "outputTokens")
+    && usages.some((usage) => usage[field] === undefined)) return undefined;
   const values = usages.map((usage) => usage[field]).filter((value): value is number => typeof value === "number");
   return values.length ? values.reduce((total, value) => total + value, 0) : undefined;
 }
