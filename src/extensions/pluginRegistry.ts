@@ -367,10 +367,12 @@ async function fetchPluginTreeWithFallback(
 ): Promise<{ tree: GitTreeEntry[]; branch: string }> {
   let lastError: unknown;
   for (const branch of ["main", "master"]) {
+    let missingBranch = false;
     try {
       const url = `${githubApiBase}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
       const response = await fetcher(url, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "Biny PluginHub" } });
       if (!response.ok) {
+        missingBranch = response.status === 404;
         if (response.status === 403 || response.status === 429) {
           throw new Error("GitHub API 未认证限额耗尽（60 次/小时）。可在 registry 条目里声明 files 清单绕开，或稍后重试。");
         }
@@ -384,6 +386,7 @@ async function fetchPluginTreeWithFallback(
       const tree = (payload.tree as GitTreeEntry[]).filter((entry) => typeof entry?.path === "string");
       return { tree, branch };
     } catch (error) {
+      if (!missingBranch) throw error;
       lastError = error;
     }
   }
