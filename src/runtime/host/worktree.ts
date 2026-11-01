@@ -10,6 +10,7 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { gitInspectionEnvironment } from "../../tools/git/environment.js";
 import { listSessionCatalog, readSessionCatalogRecord } from "../../session/catalog.js";
 import { agentDir, listSessionFiles } from "../../session/store.js";
 import type { RuntimeHostFactoryOptions } from "./types.js";
@@ -493,7 +494,7 @@ export class WorktreeManager {
 
   private async git(args: readonly string[], cwd = this.repoRoot, timeout = 10_000): Promise<string> {
     try {
-      const result = await execFileAsync("git", [...args], { cwd, timeout, maxBuffer: 4 * 1024 * 1024 });
+      const result = await execFileAsync("git", [...args], { cwd, env: gitInspectionEnvironment(), timeout, maxBuffer: 4 * 1024 * 1024 });
       return result.stdout;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
