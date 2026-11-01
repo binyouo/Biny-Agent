@@ -291,8 +291,12 @@ export function apiFormatForConnection(protocol?: string, apiBackend?: string): 
 }
 
 /** 回显内置路由的实际默认值，不把缺省配置误显示为手动 Chat Completions。 */
-export function recommendedApiFormat(providerType: ModelProvider, protocol?: "anthropic" | "openai-compatible"): ApiFormatId {
-  const route = resolveProviderRequestRoute(undefined, { type: providerType, protocol }, providerDefinition(providerType));
+export function recommendedApiFormat(
+  providerType: ModelProvider,
+  protocol?: "anthropic" | "openai-compatible",
+  model?: Pick<ModelChoice, "model" | "baseUrl">
+): ApiFormatId {
+  const route = resolveProviderRequestRoute(model, { type: providerType, protocol }, providerDefinition(providerType));
   return apiFormatForConnection(route.protocol, route.apiBackend);
 }
 

@@ -1125,7 +1125,10 @@ export function ProviderSettings({
         <ModelOptionsDialog
           apiFormat={profileTarget.model.apiBackend !== undefined || connection?.apiBackend !== undefined
             ? apiFormatForConnection(connection?.protocol ?? catalog?.protocol, profileTarget.model.apiBackend ?? connection?.apiBackend)
-            : recommendedApiFormat(connection?.providerType ?? catalog?.value ?? "openai-compatible", connection?.protocol ?? catalog?.protocol)}
+            : recommendedApiFormat(connection?.providerType ?? catalog?.value ?? "openai-compatible", connection?.protocol ?? catalog?.protocol, {
+              model: profileTarget.model.model,
+              baseUrl: profileTarget.model.baseUrl ?? connection?.baseUrl ?? catalog?.baseUrl
+            })}
           apiFormatOptions={catalog?.id === "custom"
             ? apiFormatOptions
             : catalog
@@ -2426,10 +2429,10 @@ function ModelProfileEditorFields({ apiFormat, formatOptions, formatOverride, di
       <section className="provider-dialog-section">
         <div className="provider-dialog-section-head">
           <h5>请求格式</h5>
-          <p>连接当前使用 {apiFormatOption(apiFormat).label}，通常保持跟随即可。</p>
+          <p>当前模型使用 {apiFormatOption(apiFormat).label}，通常保持自动即可。</p>
         </div>
         <NativeSelect className="settings-field" disabled={disabled} aria-label="当前模型的请求格式" onChange={(event) => onApiFormat(event.target.value as ApiFormatId | "provider_default")} value={formatOverride}>
-          <option value="provider_default">跟随连接设置</option>
+          <option value="provider_default">自动（连接设置与模型默认）</option>
           {formatOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
         </NativeSelect>
       </section>

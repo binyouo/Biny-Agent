@@ -40,6 +40,14 @@ pnpm desktop:dev
 
 供应商总开关独立于模型选择。停用会保留连接、密钥和模型偏好，阻止该供应商的新模型与 embedding 请求；重新启用恢复原来的选择。配置字段 `providers.<别名>.enabled` 省略或为 `true` 表示启用，`false` 表示停用。单个模型开关控制它是否显示在模型选择器中，不删除模型配置。开关不会改变模型在列表中的位置；保存期间列表暂时禁用模型修改，完成后可以继续操作，失败时可重试。列表的状态圆点表示启用与本地凭据状态，不代表远端连接健康。更换或清除服务商图标只更新展示偏好。
 
+## 模型请求格式默认值
+
+普通 OpenAI 连接在有效地址为 `https://api.openai.com/v1`（可带尾斜杠）、模型 ID 精确为 `gpt-6-astra` 且未显式指定请求格式时，默认使用 Responses。原因是 [OpenAI 官方说明](https://developers.openai.com/api/docs/guides/latest-model)要求 Astra 的工具调用使用 Responses；纯文字支持 Chat 不代表 Chat 支持该模型的工具调用。这是固定模型的默认路由，不会在请求失败后自动切换格式。
+
+优先级为模型 `apiBackend`、服务商 `apiBackend`、旧配置的 `protocol: "anthropic"`、上述模型默认值，再到服务商通用默认值。`protocol: "openai-compatible"` 同时适用于 Chat 与 Responses，不等同于显式选择 Chat。明确选择的 Chat 或其他格式保持不变，使用者仍需确保所选格式支持该模型及任务；已有显式选择不会自动迁移。其他模型、自定义端点及 `openai-compatible` 等其他服务商类型保持原默认值。
+
+Desktop 模型选项显示实际自动格式；保留“自动（连接设置与模型默认）”并保存不会把该推导结果写成模型覆盖，也不会修改共享模型目录。连接级通用默认仍可为 Chat，而 Astra 的模型级自动格式为 Responses。
+
 ## 发送前脱敏
 
 在 Desktop「设置 → 隐私脱敏」开启并保存，或执行 `biny config set redaction.enabled true`；默认关闭。工作流程、回复还原、缓存与重启边界见 [隐私脱敏](PRIVACY.md)。

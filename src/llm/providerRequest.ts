@@ -21,17 +21,25 @@ export function modelRequestHeaders(context: ModelRequestContext | undefined, fa
 export interface ProviderRequestRoute {
   apiBackend: ModelApiBackend;
   protocol: "anthropic" | "openai-compatible";
-  source: "model" | "provider" | "definition" | "fallback";
+  source: "model" | "provider" | "model-default" | "definition" | "fallback";
 }
 
 export function resolveProviderRequestRoute(
-  model: Pick<ModelAliasConfig, "apiBackend"> | undefined,
+  model: (Pick<ModelAliasConfig, "apiBackend"> & Partial<Pick<ModelAliasConfig, "model" | "baseUrl">>) | undefined,
   config: ProviderConfig,
   definition: ProviderDefinition
 ): ProviderRequestRoute {
+  // Astra supports Chat for text, but its function tools require Responses. Keep this
+  // default local to the official OpenAI route, never in shared catalog metadata:
+  // explicit model/provider formats (and the legacy Anthropic protocol) still win.
+  // https://developers.openai.com/api/docs/guides/latest-model
+  const modelDefault = config.type === "openai" && model?.model === "gpt-6-astra"
+    && (model.baseUrl ?? config.baseUrl ?? definition.baseUrl)?.replace(/\/+$/u, "") === "https://api.openai.com/v1"
+    ? "responses" : undefined;
   const apiBackend = model?.apiBackend
     ?? config.apiBackend
     ?? (config.protocol === "anthropic" ? "anthropic_messages" : undefined)
+    ?? modelDefault
     ?? definition.api
     ?? (config.type === "openai-codex"
       ? "responses"
@@ -45,8 +53,10 @@ export function resolveProviderRequestRoute(
     ? "model"
     : config.apiBackend !== undefined || config.protocol === "anthropic"
       ? "provider"
-      : definition.api !== undefined
-        ? "definition"
-        : "fallback";
+      : modelDefault !== undefined
+        ? "model-default"
+        : definition.api !== undefined
+          ? "definition"
+          : "fallback";
   return { apiBackend, protocol, source };
 }
