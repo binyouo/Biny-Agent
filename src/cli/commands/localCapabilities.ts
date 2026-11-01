@@ -333,8 +333,7 @@ export async function historyDayCommand(dateInput: string, options: LocalCapabil
 }
 
 /** 日期检索直接读可重建的本地 Session 投影，公开文本与 JSON 使用同一份结果。 */
-export async function temporalMemoryCommand(
-  kind: "timeline" | "facts",
+export async function temporalFactsCommand(
   options: LocalCapabilityOutputOptions & { from: string; to: string; sessionId?: string; limit?: string; offset?: string }
 ): Promise<void> {
   const index = new TemporalMemoryIndex();
@@ -343,14 +342,10 @@ export async function temporalMemoryCommand(
     const query: TemporalQuery = {
       startDate: options.from, endDate: options.to, sessionId: options.sessionId,
       limit: options.limit === undefined ? undefined : Number(options.limit),
-      offset: options.offset === undefined ? undefined : Number(options.offset),
-      today: new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
+      offset: options.offset === undefined ? undefined : Number(options.offset)
     };
-    const result = kind === "timeline" ? index.queryClues(query) : index.queryFacts(query);
+    const result = index.queryFacts(query);
     printResult(result, options.json, () => {
-      if ("clues" in result) return result.clues.length
-        ? result.clues.map((row) => `[${String(row.date ?? "日期未定")}] ${row.expression} · ${row.sourceUri} · ${row.quote}`).join("\n")
-        : "没有匹配的原始用户消息。";
       return result.facts.length
         ? result.facts.map((row) => `[${row.state}] ${row.title} · ${row.sourceUri} · ${row.quote}`).join("\n")
         : "没有匹配的原始用户消息。";
@@ -369,16 +364,6 @@ export async function temporalCalendarCommand(options: LocalCapabilityOutputOpti
   printResult(result, options.json, () => result.events.length
     ? result.events.map((event) => `${event.startDate} · ${event.title}${event.calendar ? ` · ${event.calendar}` : ""}`).join("\n")
     : "此日期范围没有日历事件。");
-}
-
-export async function temporalClueActionCommand(kind: "ignore" | "seen", id: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
-  const index = new TemporalMemoryIndex();
-  try {
-    const result = kind === "ignore"
-      ? { ignored: index.ignoreClue(id) }
-      : { seen: index.markSeen([id], new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()), Intl.DateTimeFormat().resolvedOptions().timeZone) };
-    printResult(result, options.json, (value) => JSON.stringify(value));
-  } finally { index.close(); }
 }
 
 /** 显式按一条本机会话建立带引文的工作事实；请求模型前必须已选定原始 Session。 */

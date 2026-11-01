@@ -37,22 +37,20 @@ import { RuntimeHostClient } from ${source("src/runtime/host/client.ts")};
 import { LocalMemory } from ${source("src/agent/context/LocalMemory.ts")};
 import { executeRuntimeHostMemoryOperation } from ${source("src/runtime/host/memory-operations.ts")};
 const memory = new LocalMemory(process.cwd(), () => { throw new Error("Unexpected model request."); });
-const context = {
-  getCommands: () => ({ agent: { getLocalMemory: () => memory } }),
-  scheduleEmbeddingRebuild: () => { throw new Error("Unexpected embedding rebuild."); }
-};
+const commands = { agent: { getLocalMemory: () => memory } };
 let requests = 0;
 let closed = 0;
 mock.method(childProcess, "spawn", () => { throw new Error("Unexpected Runtime Host start."); });
 syncBuiltinESMExports();
 mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network request."); });
 mock.method(RuntimeHostClient, "connect", async () => ({
+  async waitForReady() {},
   memory: RuntimeHostClient.prototype.memory,
   async request(operation, payload) {
     requests++;
     assert.equal(operation, "memory");
     assert.equal(payload.action, "update");
-    const result = await executeRuntimeHostMemoryOperation(context, JSON.parse(JSON.stringify(payload)));
+    const result = await executeRuntimeHostMemoryOperation(commands, JSON.parse(JSON.stringify(payload)));
     return JSON.parse(JSON.stringify(result));
   },
   async close() { closed++; memory.close(); }
