@@ -592,7 +592,7 @@ test("workflow runs independent lanes in parallel and retains full-run and packa
   assert.equal(workflow.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
   assert.equal(workflow.concurrency.group, "ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}");
   assert.equal(workflow.on.pull_request, null, "required Validate must still be reported on documentation PRs");
-  assert.equal(workflow.jobs.test.strategy["max-parallel"], 8);
+  assert.equal(workflow.jobs.test.strategy["max-parallel"], 12);
   assert.equal(workflow.jobs.plan.outputs.shards, "${{ steps.plan.outputs.shards }}");
   assert.equal(workflow.jobs.test.strategy.matrix.shard, "${{ fromJSON(needs.plan.outputs.shards) }}");
   assert.ok(workflow.jobs.test.steps.some(step => step.run?.includes("--shard=${{ matrix.shard }}/${{ strategy.job-total }}")));
@@ -633,12 +633,29 @@ test("Vite SSR consumers stay selected when an ordinary import already proves co
 
 // The probe must work before pnpm install and compare the entire push/PR, not just HEAD.
 test("documentation probe skips only a verified documentation-only event", t => {
-  const { root, head } = history(t);
+  const { root: temporaryRoot, head } = history(t);
+  const root = realpathSync(temporaryRoot);
   writeFileSync(path.join(root, "README.md"), "docs");
   git(root, "add", "README.md");
   git(root, "commit", "-m", "docs only");
   const event = { before: head, after: git(root, "rev-parse", "HEAD") };
   assert.equal(documentationOnly(root, "push", event), true);
+  mkdirSync(path.join(root, "scripts"));
+  copyFileSync(new URL("ci-test-plan.mjs", import.meta.url), path.join(root, "scripts/ci-test-plan.mjs"));
+  const eventPath = path.join(root, "event.json");
+  const output = path.join(root, "output.txt");
+  writeFileSync(eventPath, JSON.stringify(event));
+  const env = { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: output,
+    GITHUB_API_URL: "http://127.0.0.1:1", GH_TOKEN: "" };
+  for (const flag of ["--probe-docs", "--ci"]) execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), flag], { cwd: root, env, stdio: "pipe", timeout: 5000 });
+  assert.match(readFileSync(output, "utf8"), /docs_only=true\n/);
+  assert.match(readFileSync(output, "utf8"), /static=false\n/);
+  assert.equal(JSON.parse(readFileSync(path.join(root, ".ci/plan.json"), "utf8")).documentationOnly, true);
+  execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), "--ci", "--full"], { cwd: root, env, stdio: "pipe", timeout: 5000 });
+  const fullPlan = JSON.parse(readFileSync(path.join(root, ".ci/plan.json"), "utf8"));
+  assert.equal(fullPlan.full, true);
+  assert.notEqual(fullPlan.documentationOnly, true);
+
   for (const name of ["schedule", "workflow_dispatch", "unknown"]) assert.equal(documentationOnly(root, name, event), false);
   assert.equal(documentationOnly(root, "push", { ...event, before: "0".repeat(40) }), false);
   assert.equal(documentationOnly(root, "push", { ...event, after: head }), false);
@@ -667,4 +684,43 @@ test("documentation Validate accepts only explicit skipped lanes and a successfu
     for (const result of ["failure", "cancelled", undefined]) assert.throws(() => checkResults(plan, { ...needs, [lane]: { result } }));
   }
   assert.throws(() => checkResults({ ...plan, documentationOnly: false }, needs), /static/);
+});
+
+test("thousand-file plans use twelve shards and keep each selected test exactly once", t => {
+  const { root: temporaryRoot, head } = history(t);
+  const root = realpathSync(temporaryRoot);
+  mkdirSync(path.join(root, "scripts"));
+  for (const name of ["ci-test-plan.mjs", "run-tests.mjs"]) copyFileSync(new URL(name, import.meta.url), path.join(root, "scripts", name));
+  for (let index = 0; index < 1000; index += 1) writeFileSync(path.join(root, `tests/large-${index}.test.ts`), "");
+  writeFileSync(path.join(root, "package.json"), "{}");
+  git(root, "add", "tests", "package.json");
+  git(root, "commit", "-m", "full validation");
+  const output = path.join(root, "outputs");
+  execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), "--base", head], {
+    cwd: root, env: { ...process.env, GITHUB_OUTPUT: output }, stdio: "pipe", timeout: 15000
+  });
+  const shards = JSON.parse(readFileSync(output, "utf8").split("\n").find(line => line.startsWith("shards=")).slice(7));
+  assert.deepEqual(shards, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  const plan = JSON.parse(readFileSync(path.join(root, ".ci/plan.json"), "utf8"));
+  const selected = shards.flatMap(shard => JSON.parse(execFileSync(process.execPath, [
+    path.join(root, "scripts/run-tests.mjs"), "--standard", "--plan=.ci/plan.json", `--shard=${shard}/12`, "--list"
+  ], { cwd: root, encoding: "utf8", timeout: 15000 })));
+  assert.deepEqual(selected.sort(), plan.standard);
+  assert.equal(new Set(selected).size, selected.length);
+});
+
+test("a documentation-only success cannot hide an unverified main code change", async t => {
+  const { root, base } = history(t);
+  writeFileSync(path.join(root, "README.md"), "documentation");
+  git(root, "add", "README.md");
+  git(root, "commit", "-m", "documentation only");
+  const docs = git(root, "rev-parse", "HEAD");
+  writeFileSync(path.join(root, "tests/view.test.ts"), "// new test change");
+  git(root, "commit", "-am", "next change");
+  const run = (id, sha, event = "push") => ({ id, head_sha: sha, head_branch: "main", event, conclusion: "success" });
+  const comparison = await resolveComparison(root, "push", {}, { GITHUB_REF_NAME: "main" }, async () => [run(2, docs), run(1, base)]);
+  assert.equal(comparison.base, base);
+  assert.ok(changedFilesBetween(root, comparison.base, comparison.head).includes("src/utils/format.ts"));
+  const full = await resolveComparison(root, "push", {}, { GITHUB_REF_NAME: "main" }, async () => [run(3, docs, "workflow_dispatch"), run(2, docs), run(1, base)]);
+  assert.equal(full.base, docs, "explicit full validation of a docs commit is still a valid baseline");
 });

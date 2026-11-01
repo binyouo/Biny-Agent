@@ -43,6 +43,14 @@ export function successfulAncestor(root, runs, head, branch, currentRunId) {
       || !["push", "schedule", "workflow_dispatch"].includes(run.event) || !/^[a-f0-9]{40}$/u.test(run.head_sha)) continue;
     try {
       git(root, "merge-base", "--is-ancestor", run.head_sha, head);
+      // 轻量文档成功不证明此前代码通过；保守排除文档 tip，避免截断 main 的累计验证。
+      if (run.event === "push") {
+        const parent = git(root, "rev-list", "--parents", "-n", "1", run.head_sha).split(" ")[1];
+        if (parent) {
+          const changed = changedFilesBetween(root, parent, run.head_sha);
+          if (changed.length && changed.every(file => documentation.test(file))) continue;
+        }
+      }
       return { sha: run.head_sha, runId: run.id };
     } catch { /* 已被重写或不在 checkout 中的成功提交不能成为基准。 */ }
   }
@@ -335,7 +343,7 @@ function readTimings(directory) {
     } catch (error) { console.error(`Ignoring unusable previous timings: ${error.message}`); }
   }
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^test-timings-[1-8]$/u.test(entry.name)) continue;
+    if (!entry.isDirectory() || !/^test-timings-[1-9]\d*$/u.test(entry.name)) continue;
     const file = path.join(directory, entry.name, "test-timings.json");
     if (!existsSync(file)) continue;
     try {
@@ -358,7 +366,7 @@ async function main() {
     return;
   }
   const event = (values.ci || values["probe-docs"]) ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")) : undefined;
-  const docsOnly = event && documentationOnly(repository, process.env.GITHUB_EVENT_NAME, event);
+  const docsOnly = !values.full && event && documentationOnly(repository, process.env.GITHUB_EVENT_NAME, event);
   if (values["probe-docs"]) {
     appendFileSync(process.env.GITHUB_OUTPUT, `docs_only=${Boolean(docsOnly)}\n`);
     return;
@@ -387,7 +395,7 @@ async function main() {
   if (process.env.GITHUB_OUTPUT) {
     const lanes = { static: !docsOnly, standard: plan.standard.length > 0, e2e: plan.e2e.length > 0, build: plan.build, renderer: plan.renderer, windows: plan.windows };
     appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(lanes).map(([key, value]) => `${key}=${value}\n`).join(""));
-    const maxShards = plan.standard.length >= 400 ? 8 : 4;
+    const maxShards = plan.standard.length >= 1000 ? 12 : plan.standard.length >= 400 ? 8 : 4;
     const shards = Array.from({ length: Math.max(1, Math.min(maxShards, plan.standard.length)) }, (_, index) => index + 1);
     appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\n`);
     appendFileSync(process.env.GITHUB_OUTPUT, `windows_package=${plan.windowsPackage}\n`);

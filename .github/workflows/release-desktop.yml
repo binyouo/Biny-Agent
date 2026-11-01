@@ -63,11 +63,11 @@ jobs:
           pnpm test:code-mode-runtime
 
   validate:
-    name: Validate tagged source (${{ matrix.shard }}/8)
+    name: Validate tagged source (${{ matrix.shard }}/12)
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -93,7 +93,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm exec install-electron --no
 
       - name: Test standard suite
-        run: xvfb-run -a node scripts/run-tests.mjs --standard --shard=${{ matrix.shard }}/8
+        run: xvfb-run -a node scripts/run-tests.mjs --standard --shard=${{ matrix.shard }}/12
 
   runtime:
     name: Release runtime and artifact checks

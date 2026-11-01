@@ -135,7 +135,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
-      max-parallel: 8
+      max-parallel: 12
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -314,6 +314,7 @@ jobs:
         run: pnpm exec electron-builder --config config/electron-builder.yml --win nsis zip --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          ELECTRON_BUILDER_COMPRESSION_LEVEL: "1"
       - uses: actions/upload-artifact@v7
         if: needs.plan.outputs.windows_package == 'true'
         with:
