@@ -12,7 +12,7 @@
   background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 .settings-search:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
-.settings-search:focus-within { border-color: var(--accent); background: var(--surface-raised); }
+.settings-search:focus-within { border-color: transparent; box-shadow: 0 0 0 2px var(--st-field-ring); }
 .settings-search > svg { flex: none; }
 .settings-search input {
   width: 100%;
@@ -28,24 +28,17 @@
 .settings-search input::placeholder { color: var(--text-tertiary); }
 .settings-search button { display: grid; place-items: center; flex: none; width: 24px; height: 24px; margin: -4px; padding: 4px; border: 0; border-radius: var(--st-button-radius); background: transparent; color: var(--text-secondary); }
 .settings-search button:hover { background: var(--surface-hover); color: var(--text); }
-.settings-search button:focus-visible { outline: 2px solid var(--accent, var(--biny-focus)); outline-offset: 1px; }
 .settings-search-results { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 20px; }
 .settings-search-count, .settings-search-empty { margin: 0 8px 12px; color: var(--text-tertiary); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5; }
 .settings-search-results button { display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 3px; padding: 10px 12px; border: 0; border-radius: var(--st-button-radius); text-align: left; color: var(--text); background: transparent; }
 .settings-search-results button:hover { background: var(--surface-hover); }
 .settings-search-results button strong { font-size: calc(13px * var(--font-scale, 1)); font-weight: 500; }
-.settings-search-results button:focus-visible, .settings-search button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.settings-search-results button:focus-visible, .settings-search button:focus-visible { outline: 2px solid var(--st-field-ring); outline-offset: -2px; }
 
 /* 底栏说明与状态同行展示，只保留一行，超出时先省略说明。 */
-.settings-save-scope { min-width: 0; overflow: hidden; color: var(--text-tertiary); font-size: calc(11px * var(--font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
 
-.settings-preferences { display: grid; align-content: start; gap: var(--st-stack-gap); }
 .settings-preferences { min-width: 0; margin: 0; padding: 0; border: 0; }
-.settings-preference-section { min-width: 0; padding: 0; border: 0; background: transparent; }
-.settings-preference-section > h3 { margin: 0 2px 8px; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); font-weight: 600; }
 .settings-row-group { min-width: 0; overflow: hidden; border: 0; border-radius: var(--st-radius); background: var(--st-card); }
-.settings-form-group { display: flex; min-width: 0; flex-direction: column; gap: var(--st-card-gap); padding: var(--st-row-padding); border-radius: var(--st-radius); background: var(--st-card); }
-.settings-form-group > p { margin: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5; }
 .desktop-settings-dialog .settings-modal .settings-form-group > .settings-switch-row { padding-inline: 0; }
 .settings-form-group > .compaction-threshold-field { margin-top: 0; }
 .settings-row-group > * { position: relative; }
@@ -67,7 +60,7 @@
 }
 .settings-preferences select { width: 220px; flex: 0 1 220px; }
 .settings-preferences :is(select, input[type="number"]):hover { border-color: var(--st-field-border-hover); }
-.settings-preferences :is(select, input[type="number"]):focus-visible { border-color: var(--accent); outline: none; }
+.settings-preferences :is(select, input[type="number"]):focus-visible { border-color: var(--st-field-border); outline: none; box-shadow: 0 0 0 2px var(--st-field-ring); }
 .settings-preferences .font-size-row { display: flex; align-items: center; gap: 8px; flex: none; }
 .settings-preferences .font-size-input { width: 72px; text-align: center; }
 .settings-preferences .font-size-unit { color: var(--text-tertiary); font-size: calc(12px * var(--font-scale, 1)); }
@@ -98,7 +91,6 @@
 .settings-advanced > summary strong { font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; }
 .settings-advanced > summary small { color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
 .settings-advanced[open] > summary { border-bottom: 1px solid var(--border-subtle); border-radius: var(--st-radius) var(--st-radius) 0 0; }
-.desktop-settings-dialog .settings-modal .settings-chat-page .settings-sections { display: grid; gap: var(--st-stack-gap); }
 .desktop-settings-dialog .settings-modal .settings-chat-page .setting-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; justify-content: stretch; gap: 8px; min-height: 0; margin: 0; padding: 0; border: 0; }
 .desktop-settings-dialog .settings-modal .settings-chat-page .setting-row > .activity-number-input { width: min(100%, 180px); }
 .desktop-settings-dialog .settings-modal .settings-chat-page .chat-params-settings .activity-number-input { width: 100%; }
@@ -122,7 +114,6 @@
   .settings-footer-actions { flex-wrap: wrap; }
   .desktop-settings-dialog .settings-modal .settings-page-footer { flex-wrap: wrap; }
   .desktop-settings-dialog .settings-modal .settings-save-feedback { flex: 1 1 100%; }
-  .desktop-settings-dialog .settings-modal .settings-save-scope { white-space: normal; }
 }
 
 /* 低频选项用原生折叠区，保留键盘操作和表单值。 */

@@ -1018,7 +1018,6 @@ button:disabled { opacity: 0.42; }
 .login-code-panel code { font: inherit; color: var(--text); }
 .login-error { margin: 10px 0 0; color: var(--danger); font-size: calc(11px * var(--font-scale)); line-height: 1.45; }
 .login-code-panel textarea { width: 100%; min-height: 96px; resize: vertical; padding: 9px; border: 1px solid var(--border-strong); border-radius: 8px; outline: 0; color: var(--text); background: var(--surface); font-size: calc(12px * var(--font-scale)); line-height: 1.45; }
-.login-code-panel textarea:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .login-code-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .login-code-actions > button:last-child { min-height: 30px; padding: 0 6px; color: var(--text-secondary); font-size: calc(11.5px * var(--font-scale)); }
 .about-settings { display: flex; flex-direction: column; align-items: center; padding-top: 40px; text-align: center; }

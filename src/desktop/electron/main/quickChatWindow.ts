@@ -6,8 +6,7 @@
  * 服务和 renderer 组件处理，避免窗口控制器继续承载业务逻辑。
  */
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { BrowserWindow, screen } from "electron";
+import { app, BrowserWindow, screen } from "electron";
 import type { DesktopQuickChatSettings } from "../../protocol.js";
 import type { DesktopWindowBounds } from "./DesktopStateStore.js";
 import { sendToDesktopWindow } from "./window.js";
@@ -68,7 +67,7 @@ export function createQuickChatWindow(
     show: false,
     title: "Biny Quick Chat",
     webPreferences: {
-      preload: path.join(fileURLToPath(new URL(".", import.meta.url)), "../preload/index.cjs"),
+      preload: path.join(app.getAppPath(), "out/preload/index.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -176,7 +175,7 @@ export function createQuickChatWindow(
   if (developmentUrl) {
     void window.loadURL(`${developmentUrl}#/quick-chat`);
   } else {
-    void window.loadFile(path.join(fileURLToPath(new URL(".", import.meta.url)), "../renderer/index.html"), {
+    void window.loadFile(path.join(app.getAppPath(), "out/renderer/index.html"), {
       hash: "#/quick-chat"
     });
   }

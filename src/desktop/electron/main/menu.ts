@@ -51,6 +51,8 @@ export function installApplicationMenu(getWindow: () => BrowserWindow | undefine
         { label: "显示或隐藏侧边栏", accelerator: "CommandOrControl+B", click: () => send("toggle-sidebar") },
         { label: "聚焦任务输入", accelerator: "CommandOrControl+Enter", click: () => send("focus-composer") },
         { type: "separator" },
+        { label: "截取窗口…", accelerator: "CommandOrControl+Shift+S", click: () => send("capture-window") },
+        { type: "separator" },
         { role: "resetZoom" },
         { role: "zoomIn" },
         { role: "zoomOut" },

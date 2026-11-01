@@ -975,7 +975,7 @@ button.chat-think-chip:focus-visible {
 }
 .is-critical .permission-confirmation input { border-color: color-mix(in srgb, var(--permission-danger) 35%, transparent); }
 .permission-confirmation input::placeholder { color: color-mix(in srgb, var(--permission-muted-foreground) 70%, transparent); }
-.permission-confirmation input:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.permission-confirmation input:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--field-focus-ring); }
 .permission-reason { margin: 8px 0 0; color: var(--permission-muted-foreground); font-size: calc(.75 * var(--permission-unit)); }
 .permission-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: calc(.5 * var(--permission-unit)); margin-top: calc(.625 * var(--permission-unit)); }
 .biny-chat-scroll .permission-actions button {
@@ -2191,7 +2191,7 @@ button.chat-think-chip:focus-visible {
 }
 
 .user-message-editor:focus-within {
-  border-color: color-mix(in srgb, var(--biny-focus) 65%, var(--biny-border));
+  box-shadow: 0 0 0 2px var(--field-focus-ring), var(--biny-shadow);
 }
 
 .biny-chat-scroll .user-message-editor textarea {

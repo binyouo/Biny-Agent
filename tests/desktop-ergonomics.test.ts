@@ -309,3 +309,69 @@ test("模型菜单无需悬停即可进入推理选项，Escape 逐层返回且�
     assert.ok(document.activeElement === anchor);
   } finally { anchor.remove(); await h.close(); }
 });
+
+test("聊天模型菜单显示模型 ID，保留显示名搜索，子菜单独立退场且快速重开可继续选择", async context => {
+  const h = await harness();
+  const anchor = document.createElement("button");
+  document.body.append(anchor);
+  Object.defineProperty(h.dom.window.HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => 320 });
+  h.dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
+  document.documentElement.style.setProperty("--dropdown-close-dur", "180ms");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  h.dom.window.requestAnimationFrame = callback => { frames.set(++frameId, callback); return frameId; };
+  h.dom.window.cancelAnimationFrame = id => { frames.delete(id); };
+  Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: h.dom.window.requestAnimationFrame });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: h.dom.window.cancelAnimationFrame });
+  const frame = async () => { await h.React.act(async () => {
+    const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0));
+  }); };
+  const chosen: string[] = [];
+  const search = async (value: string) => { await h.React.act(async () => {
+    const input = document.querySelector<HTMLInputElement>('[aria-label="搜索模型"]')!;
+    Object.getOwnPropertyDescriptor(h.dom.window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new h.dom.window.Event("input", { bubbles: true }));
+  }); };
+  try {
+    const { ModelPickerMenu } = await import("../src/desktop/renderer/src/components/composer/ModelPickerMenu.js");
+    function Example(): React.ReactNode {
+      const [open, setOpen] = h.React.useState(true);
+      return h.React.createElement(ModelPickerMenu, { anchorRef: { current: anchor }, open, currentAlias: "first",
+        currentModelName: "快速模型", thinkingLevels: [], onClose: () => setOpen(false), onSelectThinking() {},
+        onSelectModel: alias => { chosen.push(alias); setOpen(false); },
+        models: [{ alias: "first", displayName: "快速模型", model: "first-model" },
+          { alias: "second", displayName: "备用模型", model: "second-model" }].map(model => ({ ...model,
+          provider: "local", providerType: "openai-compatible", available: true, efforts: [], thinkingLevelMap: {}, defaultThinking: "off" }))
+      });
+    }
+    await h.render(h.React.createElement(Example));
+    await frame();
+    await h.click('[data-section="model"]');
+    await frame();
+    assert.deepEqual([...document.querySelectorAll('.model-picker-option-label strong')].map(node => node.textContent), ["first-model", "second-model"]);
+    await search("备用");
+    assert.equal(document.querySelectorAll('.model-picker-submenu-option').length, 1);
+    await h.React.act(async () => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    const submenu = document.querySelector('[aria-label="选择模型"]');
+    assert.ok(submenu, "子菜单保留节点完成退场");
+    assert.ok(submenu.hasAttribute("inert"));
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索模型"]')?.value, "备用");
+    await h.React.act(async () => context.mock.timers.tick(90));
+    await h.click('[data-section="model"]');
+    await frame();
+    await h.React.act(async () => context.mock.timers.tick(180));
+    assert.equal(document.querySelector('[aria-label="选择模型"]'), submenu);
+    assert.equal(submenu.hasAttribute("inert"), false);
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索模型"]')?.value, "");
+    await search("备用");
+    await h.React.act(async () => document.querySelector('[aria-label="搜索模型"]')!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    assert.deepEqual(chosen, ["second"]);
+    assert.ok(submenu.hasAttribute("inert"));
+    await h.click('.model-picker-submenu-option');
+    assert.deepEqual(chosen, ["second"]);
+    await h.React.act(async () => context.mock.timers.tick(180));
+    assert.equal(document.querySelector('.model-picker-popover'), null);
+    assert.equal(document.querySelector('[aria-label="选择模型"]'), null);
+  } finally { anchor.remove(); await h.close(); context.mock.timers.reset(); }
+});

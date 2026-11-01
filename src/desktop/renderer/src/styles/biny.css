@@ -1260,10 +1260,6 @@
   flex: 1 1 auto;
 }
 
-.biny-sidebar-time-clues-button {
-  flex: 0 0 28px;
-}
-
 .biny-sidebar-settings-item {
   display: flex;
   min-width: 0;
@@ -2347,7 +2343,8 @@
 }
 
 .biny-workspace-context-create > input:focus {
-  border-color: var(--biny-focus);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--field-focus-ring);
 }
 
 .biny-workspace-context-create > div {
@@ -4399,7 +4396,7 @@ button.capability-check[aria-checked="true"] {
 /* ---------------------------------------------------------------------------
    hero 态：hero 内容 + 输入框收进同一条居中窄列，发送后输入框铺满并落回底部。
    欢迎区最大宽度为 42rem = 672px；发送时输入框宽度与位置同步变化，
-   duration 0.5s / ease [0.32,0.72,0,1]，跨态位移交给 View Transition 补间。
+   首发位移由工作区按真实几何补间，输入控件保持原尺寸比例。
    注意不能用 justify-content:center —— 顶栏 toolbar 也是 .biny-workspace-main 的子元素，
    那样会把顶栏一起推到中间。改用 auto margin 只把 body+composer 这一组居中。
    --------------------------------------------------------------------------- */
@@ -4746,7 +4743,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-queued-message-row > textarea:focus {
-  border-color: color-mix(in srgb, var(--biny-focus) 50%, transparent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--field-focus-ring);
 }
 
 .biny-queued-messages .biny-queued-message-steer {
@@ -5010,12 +5008,12 @@ button.capability-check[aria-checked="true"] {
   max-width: 42rem;
   flex-direction: column;
   align-items: center;
-  transition: opacity 200ms ease-out;
 }
 
-.biny-hero-inner.is-leaving {
+.biny-hero.is-leaving {
+  position: absolute;
+  z-index: 1;
   pointer-events: none;
-  opacity: 0;
 }
 
 .biny-hero-avatar {
@@ -5082,10 +5080,6 @@ button.capability-check[aria-checked="true"] {
   .biny-hero-fade {
     opacity: 1;
     animation: none;
-  }
-
-  .biny-hero-inner {
-    transition: none;
   }
 }
 
@@ -5392,8 +5386,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-project-create-dialog input:focus-visible {
-  border-color: var(--biny-accent);
-  box-shadow: none;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--field-focus-ring);
 }
 
 .biny-project-create-hint { margin: -10px 0 0; }
@@ -5756,7 +5750,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-mcp-search:focus-within {
-  border-color: var(--biny-focus);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--field-focus-ring);
 }
 
 .biny-mcp-search input {
@@ -6545,7 +6540,8 @@ button.capability-check[aria-checked="true"] {
 .biny-mcp-field textarea:focus,
 .biny-mcp-field select:focus,
 .biny-mcp-secret-row input:focus {
-  border-color: var(--biny-focus);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--field-focus-ring);
 }
 
 .biny-mcp-field input::placeholder,
@@ -6990,7 +6986,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 .settings-extension-search:focus-within {
-  border-color: var(--biny-focus);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--field-focus-ring);
 }
 
 .settings-extension-search input {
@@ -7615,7 +7612,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-mcp-install-fields > select:focus {
-  border-color: var(--biny-focus);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--field-focus-ring);
 }
 
 .biny-mcp-install-prerequisites,
@@ -7681,7 +7679,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-mcp-install-parameters input:focus {
-  border-color: var(--biny-focus);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--field-focus-ring);
 }
 
 .biny-mcp-install-validation {
@@ -8150,16 +8149,6 @@ button.capability-check[aria-checked="true"] {
   min-height: calc(4 * var(--st-rem, 13px));
 }
 
-.desktop-settings-dialog .settings-modal .biny-mcp-field input:focus,
-.desktop-settings-dialog .settings-modal .biny-mcp-field select:focus,
-.desktop-settings-dialog .settings-modal .biny-mcp-field textarea:focus,
-.desktop-settings-dialog .settings-modal .biny-mcp-install-fields > select:focus,
-.desktop-settings-dialog .settings-modal .biny-mcp-install-parameters input:focus,
-.desktop-settings-dialog .settings-modal .biny-mcp-search:focus-within,
-.desktop-settings-dialog .settings-modal .settings-extension-search:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  outline: none;
-}
 /* default（主要操作）。 */
 .desktop-settings-dialog .settings-modal .biny-mcp-add-button,
 .desktop-settings-dialog .settings-modal .biny-mcp-primary-button,
@@ -8627,6 +8616,7 @@ button.capability-check[aria-checked="true"] {
 .savings-metric > div { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; line-height: 16px; }
 .savings-metric svg, .savings-card h3 svg { display: block; flex-shrink: 0; }
 .savings-metric strong { display: block; margin-top: 4px; font-size: 20px; font-weight: 700; line-height: 28px; font-variant-numeric: tabular-nums; }
+.savings-metric strong.savings-rose, .savings-table-scroll td.savings-rose { color: var(--red-text); }
 .savings-overview { display: grid; grid-template-columns: 1fr 2fr; align-items: center; gap: 24px; }
 .savings-rtk-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .savings-gauge { display: flex; flex-direction: column; align-items: center; gap: 8px; }
@@ -8675,9 +8665,6 @@ button.capability-check[aria-checked="true"] {
 .savings-empty p { max-width: 448px; margin: 8px 0 0; font-size: 14px; color: var(--text-secondary); opacity: .7; line-height: 1.5; }
 .savings-notice { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 .savings-notice button { margin-left: 8px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
-.savings-loading { min-height: 256px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
-.savings-spinner { width: 32px; height: 32px; border: 2px solid transparent; border-bottom-color: var(--accent); border-radius: 50%; animation: savings-spin 1s linear infinite; }
-@keyframes savings-spin { to { transform: rotate(360deg); } }
 @container (max-width: 640px) {
   .savings-overview { grid-template-columns: 1fr; }
   .savings-gauge { padding: 8px 0 16px; }
@@ -8688,7 +8675,6 @@ button.capability-check[aria-checked="true"] {
   .savings-card > header, .savings-card-content { padding: 0 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .savings-spinner { animation: none; }
   .savings-column { transition: none; }
 }
 

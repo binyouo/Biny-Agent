@@ -31,6 +31,7 @@ import type { CompactionCommandState } from "../app/useCompactionCommand.js";
 import { CompactionStatus } from "./chat/CompactionStatus.js";
 import { ActivitySuggestions } from "./workspace/ActivitySuggestions.js";
 import { ChatHero } from "./workspace/ChatHero.js";
+import { useChatStartTransition } from "./workspace/useChatStartTransition.js";
 
 /** 发送消息的临时投影；真实消息或队列接管后由 App 清掉。 */
 export interface PendingPrompt {
@@ -190,13 +191,15 @@ export function Workspace({
     : runtimeProjection?.worktrees.find((worktree) => worktree.sessionId === sessionId);
   const worktreeView = sessionIsolation === "worktree" ? desktopWorktreeView(selectedWorktree) : undefined;
   const hasConversation = (turns.length > 0 || streaming || compacting) && Boolean(projectId);
+  const showHero = heroStart && !hasConversation && !loading;
+  const { bodyRef, composerRef, heroRef, keepHero } = useChatStartTransition({ hero: showHero, projectId, sessionId, pendingPrompt });
   const branchFromTimeline = useCallback((): void => {
     void onCreateBranch().catch(onRuntimeError);
   }, [onCreateBranch, onRuntimeError]);
 
   return (
     <WidgetContext.Provider value={widgetContext}><div className="workspace biny-workspace biny-workspace-chat">
-      <div className={`biny-workspace-main${heroStart ? " is-hero" : ""}`}>
+      <div className={`biny-workspace-main${showHero ? " is-hero" : ""}`}>
         {runtimePanelOpen ? null : inspectorRail}
         <header className={`biny-chat-toolbar${chatScrolled ? " is-scrolled" : ""}`}>
           <div className="biny-chat-drag-region">
@@ -249,7 +252,7 @@ export function Workspace({
           selectedSessionId={sessionId}
           worktreeSession={sessionIsolation === "worktree"}
         />
-        <div className="biny-chat-body">
+        <div className="biny-chat-body" ref={bodyRef}>
           {showLimitBanner && sessionLimits && sessionId ? (
             <div className="biny-session-limit-banner" role="status">
               <span>
@@ -290,16 +293,17 @@ export function Workspace({
                 turns={turns}
               />
             </ChatScroll>
-          ) : heroStart ? (
-            <ChatHero leaving={Boolean(visiblePendingPrompt)}>
-              {!loading && !hasConversation && !running && !visiblePendingPrompt && !writerConflict && !runtimeError && onSendActivitySuggestion
-                ? <ActivitySuggestions onSend={onSendActivitySuggestion} onError={onRuntimeError} /> : null}
-            </ChatHero>
-          ) : (
+          ) : showHero ? null : (
             <div className="biny-chat-empty"><Icon name="message" size={20} /><span>开始一段新的对话</span></div>
           )}
+          {showHero || keepHero ? (
+            <ChatHero ref={heroRef} leaving={!showHero}>
+              {!writerConflict && !runtimeError && onSendActivitySuggestion
+                ? <ActivitySuggestions onSend={onSendActivitySuggestion} onError={onRuntimeError} /> : null}
+            </ChatHero>
+          ) : null}
         </div>
-        <div className={`biny-chat-composer${writerConflict || runtimeError ? " has-runtime-recovery" : ""}`} inert={loading} aria-busy={loading}>
+        <div ref={composerRef} className={`biny-chat-composer${writerConflict || runtimeError ? " has-runtime-recovery" : ""}`} inert={loading} aria-busy={loading}>
             {sessionId && !writerConflict && !runtimeError ? <>
               <SessionGoalPanel key={`${sessionId}:${planProjection?.goal?.goalId ?? ""}`} sessionId={sessionId} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} />
               <TodoProgressPanel sessionId={sessionId} projection={planProjection} running={running} />

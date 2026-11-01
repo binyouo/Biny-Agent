@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import { computerDesktopConnection } from "../../computer/desktopActivity.js";
@@ -10,6 +11,19 @@ export async function requestDesktopCommand(action: string, input: Record<string
 }
 
 export function registerDesktopCommands(program: Command, session: Command, workspaceRoot: string, wrap: (action: () => Promise<void>) => () => Promise<void>): void {
+  program.command("capture").description("Capture the current Biny window to a PNG")
+    .option("--scope <scope>", "window or content", "window")
+    .option("--no-privacy", "include project and session titles")
+    .option("--rect <x,y,width,height>", "capture a rectangle in viewport coordinates")
+    .option("-o, --out <path>", "save PNG to this new file")
+    .option("--json", "print capture metadata as JSON")
+    .action((options: { scope: string; privacy: boolean; rect?: string; out?: string; json?: boolean }) => wrap(async () => {
+      const values = options.rect?.split(",").map(Number);
+      if (values && (values.length !== 4 || values.some(value => !Number.isFinite(value)))) throw new Error("rect must be x,y,width,height");
+      const outputPath = path.resolve(options.out ?? path.join(os.tmpdir(), `biny-capture-${Date.now()}.png`));
+      const result = await requestDesktopCommand("capture", { outputPath, options: { scope: options.scope, privacy: options.privacy, rect: values ? { x: values[0], y: values[1], width: values[2], height: values[3] } : undefined } }) as { path: string; width: number; height: number };
+      console.log(options.json ? JSON.stringify(result) : result.path);
+    })());
   const project = program.command("project").description("Manage projects registered in Desktop");
   project.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(async () => {
     console.log(JSON.stringify(await requestDesktopCommand("project.list"), null, options.json ? undefined : 2));

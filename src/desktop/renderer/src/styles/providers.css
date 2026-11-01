@@ -92,7 +92,7 @@
 .acp-provider-fields label { display: flex; flex-direction: column; gap: 7px; color: var(--text-secondary); font-size: calc(0.8125 * var(--st-rem)); }
 .acp-provider-fields input:not([type="checkbox"]), .acp-provider-fields textarea, .acp-provider-fields select { width: 100%; box-sizing: border-box; min-height: var(--st-control-h); padding: var(--st-control-py) var(--st-control-px); border: 1px solid var(--st-field-border); border-radius: var(--st-button-radius); background: var(--st-field-bg); color: var(--text); font: inherit; }
 .acp-provider-fields textarea { resize: vertical; }
-.acp-provider-fields input:focus-visible, .acp-provider-fields textarea:focus-visible, .acp-provider-fields select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.acp-provider-fields input:focus-visible, .acp-provider-fields textarea:focus-visible, .acp-provider-fields select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--field-focus-ring); }
 .acp-provider-fields p { margin: 0; color: var(--text-secondary); font-size: calc(0.8125 * var(--st-rem)); line-height: 1.5; }
 .acp-provider-fields .settings-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .acp-setup-step { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
