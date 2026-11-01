@@ -11,8 +11,8 @@ on:
       - master
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.run_id || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -26,6 +26,7 @@ jobs:
       contents: read
       actions: read
     outputs:
+      static: ${{ steps.plan.outputs.static }}
       standard: ${{ steps.plan.outputs.standard }}
       shards: ${{ steps.plan.outputs.shards }}
       e2e: ${{ steps.plan.outputs.e2e }}
@@ -37,14 +38,20 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - id: docs
+        name: Detect documentation-only changes
+        run: node scripts/ci-test-plan.mjs --probe-docs
       - uses: pnpm/action-setup@v6
+        if: steps.docs.outputs.docs_only != 'true'
         with:
           version: 10.6.5
       - uses: actions/setup-node@v7
+        if: steps.docs.outputs.docs_only != 'true'
         with:
           node-version: 22
           cache: pnpm
       - name: Install dependencies
+        if: steps.docs.outputs.docs_only != 'true'
         run: pnpm install --frozen-lockfile
       - id: plan
         name: Select affected tests
@@ -60,6 +67,8 @@ jobs:
           retention-days: 7
 
   static:
+    needs: [plan]
+    if: needs.plan.outputs.static == 'true'
     name: Static checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -113,13 +122,13 @@ jobs:
         run: pnpm lint
 
       - name: Test CI selection, runner, model metadata and release policy
-        run: node --test scripts/ci-test-plan.test.mjs scripts/run-tests.test.mjs scripts/sync-model-metadata.test.mjs scripts/release-desktop.test.mjs
+        run: node --test scripts/build-project.test.mjs scripts/ci-test-plan.test.mjs scripts/run-tests.test.mjs scripts/sync-model-metadata.test.mjs scripts/release-desktop.test.mjs
 
       - name: Test Code Mode runtime
         run: pnpm test:code-mode-runtime
 
   test:
-    needs: [plan, static]
+    needs: [plan]
     if: needs.plan.outputs.standard == 'true'
     name: Tests (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
@@ -160,7 +169,7 @@ jobs:
           retention-days: 7
 
   e2e:
-    needs: [plan, static]
+    needs: [plan]
     if: needs.plan.outputs.e2e == 'true'
     name: Runtime E2E
     runs-on: ubuntu-latest
@@ -190,7 +199,7 @@ jobs:
         run: xvfb-run -a node scripts/run-tests.mjs --e2e --plan=.ci/plan.json
 
   build:
-    needs: [plan, static]
+    needs: [plan]
     if: needs.plan.outputs.build == 'true'
     name: Build
     runs-on: ubuntu-latest
@@ -217,7 +226,7 @@ jobs:
         run: pnpm test:code-mode-package
 
   renderer:
-    needs: [plan, static]
+    needs: [plan]
     if: needs.plan.outputs.renderer == 'true'
     name: Renderer UI
     runs-on: ubuntu-latest
@@ -263,7 +272,7 @@ jobs:
           retention-days: 7
 
   windows:
-    needs: [plan, static]
+    needs: [plan]
     if: needs.plan.outputs.windows == 'true'
     name: Windows compatibility
     runs-on: windows-2025
@@ -288,6 +297,12 @@ jobs:
           node scripts/run-tests.mjs runtime-host-connection-options
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/run-tests.mjs runtime-host-lifecycle
+      - uses: actions/cache@v5
+        with:
+          path: |
+            node_modules/node-pty/build
+            node_modules/.cache/biny/desktop-prepare.json
+          key: windows-electron-pty-v1-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'scripts/prepare-desktop.mjs') }}
       - name: Prepare Electron native dependencies
         run: pnpm desktop:prepare
       - name: Build Desktop and CLI
@@ -303,6 +318,7 @@ jobs:
         if: needs.plan.outputs.windows_package == 'true'
         with:
           name: windows-x64
+          compression-level: 0
           path: |
             release/*.exe
             release/*.zip

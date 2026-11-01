@@ -18,6 +18,25 @@ export function changedFilesBetween(root, base, head = "HEAD") {
   return git(root, "diff", "--no-renames", "--name-only", "-z", base, head).split("\0").filter(Boolean);
 }
 
+// Only event-local docs may bypass CI; missing history or a mismatched checkout runs normal validation.
+export function documentationOnly(root, eventName, event) {
+  if (!["push", "pull_request"].includes(eventName)) return false;
+  try {
+    const head = git(root, "rev-parse", "HEAD");
+    let base;
+    if (eventName === "pull_request") {
+      base = git(root, "rev-parse", "HEAD^1");
+      if (base !== event.pull_request.base.sha || git(root, "rev-parse", "HEAD^2") !== event.pull_request.head.sha) return false;
+    } else {
+      if (head !== event.after || !/^[a-f0-9]{40}$/u.test(event.before) || /^0+$/u.test(event.before)) return false;
+      base = event.before;
+      git(root, "merge-base", "--is-ancestor", base, head);
+    }
+    const changed = changedFilesBetween(root, base, head);
+    return changed.length > 0 && changed.every(file => documentation.test(file));
+  } catch { return false; }
+}
+
 export function successfulAncestor(root, runs, head, branch, currentRunId) {
   for (const run of runs) {
     if (run.conclusion !== "success" || run.head_branch !== branch || String(run.id) === String(currentRunId)
@@ -295,7 +314,7 @@ export async function createPlan(root, changedFiles, { full = false } = {}) {
 }
 
 export function checkResults(plan, needs) {
-  const required = { plan: true, static: true, test: plan.standard.length > 0, e2e: plan.e2e.length > 0,
+  const required = { plan: true, static: plan.documentationOnly !== true, test: plan.standard.length > 0, e2e: plan.e2e.length > 0,
     build: plan.build, renderer: plan.renderer, windows: plan.windows };
   for (const [lane, selected] of Object.entries(required)) {
     const expected = selected ? "success" : "skipped";
@@ -332,18 +351,25 @@ async function main() {
   const { parseArgs } = await import("node:util");
   const { values } = parseArgs({ options: { base: { type: "string" },
     full: { type: "boolean" }, ci: { type: "boolean" }, output: { type: "string", default: ".ci/plan.json" },
-    "check-results": { type: "boolean" } } });
+    "probe-docs": { type: "boolean" }, "check-results": { type: "boolean" } } });
   if (values["check-results"]) {
     checkResults(JSON.parse(readFileSync(values.output, "utf8")), JSON.parse(process.env.NEEDS_JSON));
     console.log("All selected validation lanes passed; unselected lanes were skipped.");
     return;
   }
+  const event = (values.ci || values["probe-docs"]) ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")) : undefined;
+  const docsOnly = event && documentationOnly(repository, process.env.GITHUB_EVENT_NAME, event);
+  if (values["probe-docs"]) {
+    appendFileSync(process.env.GITHUB_OUTPUT, `docs_only=${Boolean(docsOnly)}\n`);
+    return;
+  }
   if (!values.ci && !values.full && !values.base) throw new Error("Use --base <commit>, --full, or --ci");
-  const comparison = values.ci
-    ? await resolveComparison(repository, process.env.GITHUB_EVENT_NAME, JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")))
+  const comparison = docsOnly ? { base: git(repository, "rev-parse", "HEAD"), head: git(repository, "rev-parse", "HEAD"), reason: "documentation-only event" } : values.ci
+    ? await resolveComparison(repository, process.env.GITHUB_EVENT_NAME, event)
     : { base: values.base, head: git(repository, "rev-parse", "HEAD") };
   if (comparison.base) git(repository, "merge-base", "--is-ancestor", comparison.base, comparison.head);
   const plan = await createPlan(repository, comparison.base ? changedFilesBetween(repository, comparison.base, comparison.head) : [], { full: values.full || comparison.full || !comparison.base });
+  if (docsOnly) plan.documentationOnly = true;
   if (comparison.reason) plan.reasons.unshift(comparison.reason);
   let timings = {};
   if (values.ci && comparison.runId) {
@@ -359,9 +385,9 @@ async function main() {
   writeFileSync(values.output, JSON.stringify(output, null, 2) + "\n");
   console.log(JSON.stringify({ ...output, standard: output.standard.length, e2e: output.e2e.length, timings: Object.keys(timings).length }, null, 2));
   if (process.env.GITHUB_OUTPUT) {
-    const lanes = { standard: plan.standard.length > 0, e2e: plan.e2e.length > 0, build: plan.build, renderer: plan.renderer, windows: plan.windows };
+    const lanes = { static: !docsOnly, standard: plan.standard.length > 0, e2e: plan.e2e.length > 0, build: plan.build, renderer: plan.renderer, windows: plan.windows };
     appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(lanes).map(([key, value]) => `${key}=${value}\n`).join(""));
-    const maxShards = process.env.GITHUB_EVENT_NAME === "pull_request" && plan.standard.length >= 400 ? 8 : 4;
+    const maxShards = plan.standard.length >= 400 ? 8 : 4;
     const shards = Array.from({ length: Math.max(1, Math.min(maxShards, plan.standard.length)) }, (_, index) => index + 1);
     appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\n`);
     appendFileSync(process.env.GITHUB_OUTPUT, `windows_package=${plan.windowsPackage}\n`);

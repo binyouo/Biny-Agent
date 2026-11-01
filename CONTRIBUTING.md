@@ -24,7 +24,7 @@ pnpm build:cli
 pnpm build
 ```
 
-`build:cli` 只构建 CLI；`build` 包含 CLI、Desktop 及原生依赖构建。在其他项目使用当前 CLI 时，先执行 `pnpm link --global`，再切到目标项目运行 `biny`。
+`build:cli` 只构建 CLI；`build` 包含 CLI、Desktop 及原生依赖构建。构建入口在本地检查源码、依赖、工具链及产物；输入和输出均未变化时复用已有结果，文件变更、删除或产物缺失时重新构建。缓存只保存在 `node_modules/.cache/biny/build`，不上传 Actions 缓存；`pnpm build:cli --force` 或 `pnpm build:desktop --force` 可强制重建。在其他项目使用当前 CLI 时，先执行 `pnpm link --global`，再切到目标项目运行 `biny`。
 
 Windows 使用相同的 `pnpm desktop:dev` 开发入口，`pnpm desktop:pack` 生成应用目录，`pnpm desktop:dist` 生成 NSIS 安装程序与 ZIP；安装包尚未配置 Windows 代码签名。这些命令先准备 Electron 与 PTY 原生依赖。macOS 的 `desktop:pack` 生成应用目录，`desktop:dist` 生成 DMG 安装包。
 
@@ -58,11 +58,11 @@ CI 根据 Git 改动及源码反向依赖选择标准测试。PR 在实际合并
 
 仅导入创建/清理临时目录及写文件的函数，不会让测试被所有源码改动触发。未知文件读取、读取函数转交、子进程、Vite SSR、VM、未解析的动态导入或 require 仍保守保留。选择器声明了两个已核对的外部输入边界：插件加载器从用户工作区 pluginRoot 导入插件，测试 owner 清理助手只读取经过临时根目录校验的记录和诊断；两者的普通源码依赖仍照常追踪。修改这些读取边界时须同步选择器和回归测试，不能把新增项目输入沿用为外部数据。
 
-权限、Agent、Runtime、Session、配置、Provider/扩展等源码变更同样按反向依赖选择测试，不因所属目录直接触发全量。依赖、工作流、构建/测试脚本、共享测试夹具、删除/重命名、未知路径、无法解析的依赖或没有测试依赖的源码变更，运行全量。push 无法取得成功祖先时也运行全量；PR 的历史运行查询失败只失去耗时信息，不改变其比较范围。纯 README、贡献指南和 Markdown 文档变更只保留静态门禁。每日北京时间 03:17 的定时 CI 和手动 `workflow_dispatch` 均运行全量（包含 Windows 打包）；GitHub 调度实际启动时间可能延迟。发布前可手动运行完整 CI，不用局部验证代替发布检查。
+权限、Agent、Runtime、Session、配置、Provider/扩展等源码变更同样按反向依赖选择测试，不因所属目录直接触发全量。依赖、工作流、构建/测试脚本、共享测试夹具、删除/重命名、未知路径、无法解析的依赖或没有测试依赖的源码变更，运行全量。push 无法取得成功祖先时也运行全量；PR 的历史运行查询失败只失去耗时信息，不改变其比较范围。纯 README、贡献指南和 `docs/**/*.md` 变更通过事件范围的路径判断跳过依赖安装、静态检查、测试与构建，只保留轻量计划和 `Validate`。不使用整个 PR 工作流的 `paths-ignore`，以免必需检查缺失而阻塞合并；分支保护应只要求汇总的 `Validate`，不要要求条件执行的单个任务。无法确认变更范围时仍执行正常校验。每日北京时间 03:17 的定时 CI 和手动 `workflow_dispatch` 均运行全量（包含 Windows 打包）；GitHub 调度实际启动时间可能延迟。发布前可手动运行完整 CI，不用局部验证代替发布检查。
 
-测试计划与静态检查并行生成；标准测试、Runtime E2E、Linux 构建、Renderer 和 Windows 验证仅在两者均成功且计划选中后启动。静态检查失败或取消时，不启动这些高成本任务，最终 Validate 仍须报告失败。
+计划生成后，静态检查、标准测试、Runtime E2E、Linux 构建、Renderer 和 Windows 验证按所选范围并行运行；它们不相互传递产物，不等待静态检查结束。任何必需任务失败或取消，最终 `Validate` 仍报告失败。同一 PR 的新运行取消旧运行；main/master 的 push、定时和手动运行按 run ID 隔离，不会互相取消或替换排队中的提交。
 
-PR 的标准测试选中 400 个及以上文件时最多分为 8 个任务，其余情况最多 4 个；只有一个测试文件时只启动一个任务，没有标准测试时整组跳过。增加分片会消耗更多并行 runner；每片仍执行完整计划中的一部分，不跳过测试。每个任务内逐文件执行并保留独立进程和数据目录。CI 从成功祖先的产物继承历史耗时，按长任务优先、当前累计耗时最少的分片分配；新测试使用已知测试耗时中位数。没有可用耗时则按名称排序轮流分配，不会因此减少测试。所有任务下载同一份计划，避免各自读取不同历史而造成漏项或重复。计划绑定 checkout 提交，提交变化后须重新生成。
+标准测试选中 400 个及以上文件时最多分为 8 个任务，其余情况最多 4 个；只有一个测试文件时只启动一个任务，没有标准测试时整组跳过。增加分片会消耗更多并行 runner；每片仍执行完整计划中的一部分，不跳过测试。每个任务内逐文件执行并保留独立进程和数据目录。CI 从成功祖先的产物继承历史耗时，按长任务优先、当前累计耗时最少的分片分配；新测试使用已知测试耗时中位数。没有可用耗时则按名称排序轮流分配，不会因此减少测试。所有任务下载同一份计划，避免各自读取不同历史而造成漏项或重复。计划绑定 checkout 提交，提交变化后须重新生成。
 
 `pnpm test` 仍默认运行完整测试集。可以检查或执行一个分片：
 
@@ -102,7 +102,7 @@ Beta 使用 `<major>.<minor>.<patch>-beta.N`，同一版本线每次新发布递
 
 桌面版公开下载只提供 macOS Apple Silicon 的 DMG；TUI 与 CLI 使用同一个 npm 包，在 macOS 和 Windows 安装。`pnpm build:desktop` 先从应用原稿生成平台图标，打包使用同一批资源。发布工作流只构建、上传 DMG，不额外提供 ZIP 或校验和文件。
 
-版本来源为 `package.json`。通过 [Prepare release](.github/workflows/prepare-release.yml) 手动输入新版本，工作流提交版本、创建 `v<version>` tag，再启动 [Release Desktop and TUI](.github/workflows/release-desktop.yml)。后者验证标签对应源码，构建 Apple Silicon 并创建 GitHub Release；已有标签的失败构建可通过其 `tag` 输入重试。只有 Actions 成功且 Release 安装包实际上传完成，才算发布完成。
+版本来源为 `package.json`。通过 [Prepare release](.github/workflows/prepare-release.yml) 手动输入新版本，工作流提交版本、创建 `v<version>` tag，再启动 [Release Desktop and TUI](.github/workflows/release-desktop.yml)。后者并行执行标签源码的静态检查、8 片标准测试、运行时及产物校验和 Apple Silicon 构建；审计、类型检查、lint 和前置测试只在独立 Ubuntu 任务中执行一次，macOS 只承担原生构建和安装验证。全部校验与 TUI 安装验证通过后才能创建 GitHub Release；已有标签的失败构建可通过其 `tag` 输入重试。只有 Actions 成功且 Release 安装包实际上传完成，才算发布完成。
 
 TUI 与 CLI 发布同一份 npm 包：桌面构建生成 `tui-npm` 工作流产物，并在 macOS 与 Windows 安装验证。发布完成后下载该产物，使用 `npm publish <包文件> --tag latest --ignore-scripts` 发布；确认 npm 账号已登录且版本与 Git 标签一致。
 

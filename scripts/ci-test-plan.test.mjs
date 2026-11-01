@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { changedFilesBetween, checkResults, createPlan, resolveComparison } from "./ci-test-plan.mjs";
+import { changedFilesBetween, checkResults, createPlan, resolveComparison, documentationOnly } from "./ci-test-plan.mjs";
 
 function fixture(t, extra = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "biny-ci-plan-"));
@@ -471,7 +471,7 @@ test("large standard plans use eight shards without gaps or duplicates", t => {
   writeFileSync(path.join(root, "tests/scale-395.test.ts"), "");
   git(root, "add", "--", "tests/scale-395.test.ts");
   git(root, "commit", "-m", "cross shard threshold");
-  assert.deepEqual(plan("push"), [1, 2, 3, 4], "push verification retains four shards");
+  for (const event of ["push", "workflow_dispatch", "schedule"]) assert.deepEqual(plan(event), [1, 2, 3, 4, 5, 6, 7, 8]);
   const shards = plan();
   assert.deepEqual(shards, [1, 2, 3, 4, 5, 6, 7, 8]);
   const planPath = path.join(root, ".ci/plan.json");
@@ -575,19 +575,23 @@ test("Validate command fails for a static-blocked run or cancelled test matrix",
   }
 });
 
-test("workflow gates selected lanes on static checks and retains full-run and packaging gates", async () => {
+test("workflow runs independent lanes in parallel and retains full-run and packaging gates", async () => {
   const { parse } = await import("yaml");
   const workflow = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
   assert.ok("workflow_dispatch" in workflow.on);
   assert.ok(workflow.on.schedule.length);
   const outputs = { test: "standard", e2e: "e2e", build: "build", renderer: "renderer", windows: "windows" };
   for (const [lane, output] of Object.entries(outputs)) {
-    assert.deepEqual(workflow.jobs[lane].needs, ["plan", "static"]);
+    assert.deepEqual(workflow.jobs[lane].needs, ["plan"]);
     assert.equal(workflow.jobs[lane].if, `needs.plan.outputs.${output} == 'true'`);
     assert.ok(workflow.jobs.validate.needs.includes(lane));
   }
   assert.equal(workflow.jobs.plan.needs, undefined);
-  assert.equal(workflow.jobs.static.needs, undefined);
+  assert.deepEqual(workflow.jobs.static.needs, ["plan"]);
+  assert.equal(workflow.jobs.static.if, "needs.plan.outputs.static == 'true'");
+  assert.equal(workflow.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
+  assert.equal(workflow.concurrency.group, "ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}");
+  assert.equal(workflow.on.pull_request, null, "required Validate must still be reported on documentation PRs");
   assert.equal(workflow.jobs.test.strategy["max-parallel"], 8);
   assert.equal(workflow.jobs.plan.outputs.shards, "${{ steps.plan.outputs.shards }}");
   assert.equal(workflow.jobs.test.strategy.matrix.shard, "${{ fromJSON(needs.plan.outputs.shards) }}");
@@ -625,4 +629,42 @@ test("Vite SSR consumers stay selected when an ordinary import already proves co
   const docsOnly = await createPlan(root, ["README.md"]);
   assert.equal(docsOnly.full, false);
   assert.deepEqual(docsOnly.standard, [], "documentation-only changes remain static-only");
+});
+
+// The probe must work before pnpm install and compare the entire push/PR, not just HEAD.
+test("documentation probe skips only a verified documentation-only event", t => {
+  const { root, head } = history(t);
+  writeFileSync(path.join(root, "README.md"), "docs");
+  git(root, "add", "README.md");
+  git(root, "commit", "-m", "docs only");
+  const event = { before: head, after: git(root, "rev-parse", "HEAD") };
+  assert.equal(documentationOnly(root, "push", event), true);
+  for (const name of ["schedule", "workflow_dispatch", "unknown"]) assert.equal(documentationOnly(root, name, event), false);
+  assert.equal(documentationOnly(root, "push", { ...event, before: "0".repeat(40) }), false);
+  assert.equal(documentationOnly(root, "push", { ...event, after: head }), false);
+  writeFileSync(path.join(root, "src/utils/format.ts"), "export const format = () => 'changed';");
+  git(root, "add", "src/utils/format.ts");
+  git(root, "commit", "-m", "code and docs");
+  assert.equal(documentationOnly(root, "push", { ...event, after: git(root, "rev-parse", "HEAD") }), false);
+  git(root, "checkout", "-b", "docs-pr", head);
+  writeFileSync(path.join(root, "README.md"), "PR docs");
+  git(root, "add", "README.md");
+  git(root, "commit", "-m", "PR docs");
+  const prHead = git(root, "rev-parse", "HEAD");
+  git(root, "checkout", "-b", "merge-result", head);
+  git(root, "merge", "--no-ff", "docs-pr", "-m", "PR merge");
+  const pr = { pull_request: { base: { sha: head }, head: { sha: prHead } } };
+  assert.equal(documentationOnly(root, "pull_request", pr), true);
+  pr.pull_request.base.sha = prHead;
+  assert.equal(documentationOnly(root, "pull_request", pr), false);
+});
+
+test("documentation Validate accepts only explicit skipped lanes and a successful plan", async t => {
+  const plan = { ...await createPlan(fixture(t), ["README.md"]), documentationOnly: true };
+  const needs = Object.fromEntries(["plan", "static", "test", "e2e", "build", "renderer", "windows"].map(lane => [lane, { result: lane === "plan" ? "success" : "skipped" }]));
+  assert.doesNotThrow(() => checkResults(plan, needs));
+  for (const lane of Object.keys(needs)) {
+    for (const result of ["failure", "cancelled", undefined]) assert.throws(() => checkResults(plan, { ...needs, [lane]: { result } }));
+  }
+  assert.throws(() => checkResults({ ...plan, documentationOnly: false }, needs), /static/);
 });
