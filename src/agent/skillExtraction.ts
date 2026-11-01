@@ -106,6 +106,9 @@ export async function runSkillExtraction(input: SkillExtractionInput): Promise<S
         throw new Error("技能在生成期间已改变，跳过覆盖。");
       }
       const updated = await fileExists(documentPath);
+      if (existingContent === undefined && updated) {
+        throw new Error("同名技能已存在，跳过新建以避免覆盖。");
+      }
       input.onNotice?.({ stage: "saving", skillName: name, skillDescription: description, updated });
       // 同目录临时文件 + 原子 rename，避免半写文件被下一回合扫描当成坏技能。
       const temporary = path.join(skillDirectory, `.skill-write-${process.pid}-${randomBytes(6).toString("hex")}.md`);
