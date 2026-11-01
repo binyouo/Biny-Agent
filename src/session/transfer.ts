@@ -28,7 +28,8 @@ import type { SessionEvent } from "./recorder.js";
 import { createSessionId } from "./recorder.js";
 import { rebaseForkedSessionEvents } from "./fork.js";
 import { createSessionFile, sessionIdFromFile } from "./store.js";
-import { refreshSessionIndex } from "./catalog.js";
+import { readSessionCatalogRecord, refreshSessionIndex, SESSION_CATALOG_MISSING_REVISION, writeSessionCatalogRecord } from "./catalog.js";
+import { chatPersonalizationOverrideSchema, type ChatPersonalizationOverride } from "../personalization/index.js";
 import { publicAssistantMessage } from "./publicMessage.js";
 import { activeSessionEventsForPath } from "./messageTree.js";
 import { codexLinesToBinyEvents } from "./import/codex.js";
@@ -39,6 +40,8 @@ import { claudeLinesToBinyEvents, type ClaudeContentBlock, type ClaudeLine } fro
 /** bundle 的格式标识与版本号；导入时据此拒绝不兼容的文件。 */
 export const BINY_BUNDLE_FORMAT = "biny-session-bundle" as const;
 export const BINY_BUNDLE_VERSION = 2 as const;
+/** Older readers must reject rather than silently discard an explicit memory policy. Version 3 is reserved for attachment context. */
+export const BINY_POLICY_BUNDLE_VERSION = 4 as const;
 export type SessionTransferFormat = "biny" | "claude" | "codex" | "chatgpt";
 
 /** 单个附件超过这个体积就不内嵌进 bundle，导入时记为 skipped（不阻塞整体导入）。 */
@@ -71,7 +74,8 @@ export interface BinySessionBundleAttachment {
 
 export interface BinySessionBundle {
   format: typeof BINY_BUNDLE_FORMAT;
-  version: typeof BINY_BUNDLE_VERSION;
+  version: typeof BINY_BUNDLE_VERSION | typeof BINY_POLICY_BUNDLE_VERSION;
+  personalization?: ChatPersonalizationOverride;
   manifest: BinySessionBundleManifest;
   events: SessionEvent[];
   attachments: BinySessionBundleAttachment[];
@@ -119,6 +123,8 @@ export class SessionImportCleanupError extends AttachmentImportCleanupError {
 export async function exportSessionBundle(workspaceRoot: string, session: string): Promise<ExportedSessionFile> {
   const { events, filePath } = await readStoredSessionEvents(workspaceRoot, session);
   const sessionId = sessionIdFromFile(filePath);
+  const storedPersonalization = (await readSessionCatalogRecord(workspaceRoot, sessionId))?.personalization;
+  const personalization = storedPersonalization === undefined ? undefined : chatPersonalizationOverrideSchema.parse(storedPersonalization);
   const { attachments, skipped } = await collectBundleAttachments(workspaceRoot, events);
   const manifest: BinySessionBundleManifest = {
     sessionId,
@@ -129,7 +135,8 @@ export async function exportSessionBundle(workspaceRoot: string, session: string
   };
   const bundle: BinySessionBundle = {
     format: BINY_BUNDLE_FORMAT,
-    version: BINY_BUNDLE_VERSION,
+    version: personalization === undefined ? BINY_BUNDLE_VERSION : BINY_POLICY_BUNDLE_VERSION,
+    ...(personalization === undefined ? {} : { personalization }),
     manifest,
     events,
     attachments
@@ -214,6 +221,7 @@ export interface ParsedSessionImport {
   format: SessionTransferFormat;
   events: SessionEvent[];
   attachments: BinySessionBundleAttachment[];
+  personalization?: ChatPersonalizationOverride;
   sourceConversationId?: string;
   sourceTitle?: string;
   skippedContentCount: number;
@@ -227,7 +235,9 @@ export function parseSessionImport(raw: string, sourcePath: string, options: Ses
     : { events: importEventsFromSource(raw, format, sourcePath), sourceConversationId: undefined, sourceTitle: undefined,
       skippedContentCount: 0, skippedContentIssues: [] };
   const events = validateImportedEvents(source.events);
-  return { format, ...source, events, attachments: format === "biny" ? parseBinyBundleAttachments(raw) : [] };
+  const personalization = format === "biny" ? parseBinyBundlePersonalization(raw, sourcePath) : undefined;
+  return { format, ...source, events, attachments: format === "biny" ? parseBinyBundleAttachments(raw) : [],
+    ...(personalization === undefined ? {} : { personalization }) };
 }
 
 /** Internal adapter for a selected conversation from the current scanned snapshot. */
@@ -255,6 +265,9 @@ export async function persistImportedSession(
   source: ParsedSessionImport
 ): Promise<ImportedSession> {
   const { events, format, attachments: bundleAttachments } = source;
+  const personalization = format === "biny" && source.personalization !== undefined
+    ? chatPersonalizationOverrideSchema.parse(source.personalization)
+    : undefined;
   let batch: AttachmentImportBatch | undefined;
   try {
     const restored = await restoreBundleAttachments(bundleAttachments, async () => {
@@ -266,7 +279,16 @@ export async function persistImportedSession(
     const content = `${rebased.map((event) => JSON.stringify(event)).join("\n")}\n`;
     const validated = parseSessionEvents(content);
     const sessionId = createSessionId();
-    const filePath = await createSessionFile(workspaceRoot, sessionId, Buffer.from(content, "utf8"));
+    const filePath = await createSessionFile(workspaceRoot, sessionId, Buffer.from(content, "utf8"), {
+      beforeWrite: personalization === undefined ? undefined : async () => {
+        // Reserve the new file first, then commit its policy before writing any transcript
+        // content. A failed policy write must never expose an opted-in imported conversation.
+        const now = new Date().toISOString();
+        await writeSessionCatalogRecord(workspaceRoot, {
+          version: 1, sessionId, rootSessionId: sessionId, personalization, createdAt: now, updatedAt: now
+        }, { expectedRevision: SESSION_CATALOG_MISSING_REVISION });
+      }
+    });
     batch?.commit();
     refreshSessionIndex(workspaceRoot);
     return {
@@ -354,10 +376,19 @@ function parseBinyBundleEnvelope(raw: string, sourcePath: string): Record<string
   if (!isRecord(parsed) || parsed.format !== BINY_BUNDLE_FORMAT) {
     throw new Error(`不是 Biny 会话包（缺少 format: "${BINY_BUNDLE_FORMAT}"）：${path.basename(sourcePath)}`);
   }
-  if (parsed.version !== BINY_BUNDLE_VERSION) {
+  if (parsed.version !== BINY_BUNDLE_VERSION && parsed.version !== BINY_POLICY_BUNDLE_VERSION) {
     throw new Error(`不支持的 Biny 会话包版本：${String(parsed.version)}`);
   }
   return parsed;
+}
+
+function parseBinyBundlePersonalization(raw: string, sourcePath: string): ChatPersonalizationOverride | undefined {
+  const parsed = parseBinyBundleEnvelope(raw, sourcePath);
+  // Legacy packages did not carry policy; do not reinterpret their incidental fields.
+  if (parsed.version !== BINY_POLICY_BUNDLE_VERSION) return undefined;
+  const policy = chatPersonalizationOverrideSchema.safeParse(parsed.personalization);
+  if (!policy.success) throw new Error("Biny 会话包缺少有效的聊天记忆设置。", { cause: policy.error });
+  return policy.data;
 }
 
 /** 读 bundle 内嵌的附件段；缺失（旧格式 / 外部 JSONL）时按空处理。 */
