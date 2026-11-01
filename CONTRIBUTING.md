@@ -24,7 +24,7 @@ pnpm build:cli
 pnpm build
 ```
 
-`build:cli` 只构建 CLI；`build` 包含 CLI、Desktop 及原生依赖构建。构建入口在本地检查源码、依赖、工具链及产物；输入和输出均未变化时复用已有结果，文件变更、删除或产物缺失时重新构建。缓存只保存在 `node_modules/.cache/biny/build`，不上传 Actions 缓存；`pnpm build:cli --force` 或 `pnpm build:desktop --force` 可强制重建。在其他项目使用当前 CLI 时，先执行 `pnpm link --global`，再切到目标项目运行 `biny`。
+`build:cli` 只构建 CLI；`build` 包含 CLI、Desktop 及原生依赖构建。构建入口在本地检查源码、依赖、工具链及产物；输入和输出均未变化时复用已有结果，文件变更、删除或产物缺失时重新构建。缓存只保存在 `node_modules/.cache/biny/build`，不上传 Actions 缓存，也不替代类型检查或测试。`CI=true` 时始终完整构建；`pnpm build:cli --force` 或 `pnpm build:desktop --force` 可强制重建。在其他项目使用当前 CLI 时，先执行 `pnpm link --global`，再切到目标项目运行 `biny`。
 
 Windows 使用相同的 `pnpm desktop:dev` 开发入口，`pnpm desktop:pack` 生成应用目录，`pnpm desktop:dist` 生成 NSIS 安装程序与 ZIP；安装包尚未配置 Windows 代码签名。这些命令先准备 Electron 与 PTY 原生依赖。macOS 的 `desktop:pack` 生成应用目录，`desktop:dist` 生成 DMG 安装包。
 
