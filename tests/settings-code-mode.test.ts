@@ -95,11 +95,11 @@ test("Code Mode settings commit through real transactions to disk and the next m
       statsRecorder.record({ type: "tool_result", tool: "run_script", toolCallId: "a", result: { value: 1 }, optimization });
       statsRecorder.record({ type: "tool_result", tool: "run_script", toolCallId: "a", result: { value: 1 }, optimization });
       await statsRecorder.flush();
-      const stats = await projects.toolOptimizationStats(7, project.id, "optimization-stats");
-      assert.equal(stats.entries.length, 1, "stored duplicate receipts must not increase statistics");
-      assert.equal(stats.entries[0]?.optimization.savedTokens, 800);
+      const stats = await projects.toolOptimizationOverview(7, project.id, "optimization-stats");
+      assert.equal(stats.ptc.runs, 1, "stored duplicate receipts must not increase statistics");
+      assert.equal(stats.ptc.savedTokens, 800);
       assert.equal(stats.incompleteSessions, 0);
-      assert.deepEqual(stats.entries[0]?.origin, { projectId: project.id, sessionId: "optimization-stats", toolCallId: "a" });
+      assert.deepEqual(stats.recent, [], "recent commands contain RTK calls while PTC contributes to its aggregate");
       const detail = await projects.toolOptimizationDetail(project.id, "optimization-stats", "a");
       assert.ok(detail.events.some(event => event.type === "tool_call" && (event.args as { code?: string } | undefined)?.code === "return 1"));
       assert.ok(detail.events.every(event => event.type !== "user_message"));
@@ -108,10 +108,12 @@ test("Code Mode settings commit through real transactions to disk and the next m
       statsRecorder.record({ type: "tool_call", time: "2000-01-01T00:00:00.000Z", tool: "Bash", toolCallId: "old", args: { command: 'git log --oneline -5' } });
       statsRecorder.record({ type: "tool_result", time: "2000-01-01T00:00:01.000Z", tool: "Bash", toolCallId: "old", result: {}, optimization: { ...optimization, id: "old-operation", kind: "rtk", command: "git log" } });
       await statsRecorder.flush();
-      assert.equal((await projects.toolOptimizationStats(30, project.id, "optimization-stats")).entries.length, 1);
-      const cumulative = await projects.toolOptimizationStats("all", project.id, "optimization-stats");
-      assert.equal(cumulative.entries.length, 2);
-      assert.equal(cumulative.entries.find(entry => entry.optimization.id === "old-operation")?.optimization.originalCommand, "git log --oneline -5");
+      const recent = await projects.toolOptimizationOverview(30, project.id, "optimization-stats");
+      assert.equal(recent.ptc.runs + recent.rtk.runs, 1);
+      const cumulative = await projects.toolOptimizationOverview("all", project.id, "optimization-stats");
+      assert.equal(cumulative.ptc.runs + cumulative.rtk.runs, 2);
+      assert.deepEqual(cumulative.recent[0]?.origin, { projectId: project.id, sessionId: "optimization-stats", toolCallId: "old" });
+      assert.equal(cumulative.recent.find(entry => entry.optimization.id === "old-operation")?.optimization.originalCommand, "git log --oneline -5");
     } finally { await statsRecorder.close(); }
   } finally {
     await manager?.closeAll();
