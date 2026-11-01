@@ -311,7 +311,8 @@ function SettingsOverlayContent({
     ?? settingsDraft.snapshot?.models.defaultModel;
   const selectTab = async (nextTab: SettingsTab): Promise<void> => {
     if (nextTab === activeTab) return;
-    if (activeTab === "模型" && settingsDraft.pendingModelEdits
+    if (activeTab === "模型" && (settingsDraft.pendingModelEdits
+      || settingsDraft.saveState === "saving" && !settingsDraft.modelSelectionSaving)
       && settingsDraft.flushModelEdits && !await settingsDraft.flushModelEdits()) return;
     activeTabRef.current = nextTab;
     setTab(nextTab);
