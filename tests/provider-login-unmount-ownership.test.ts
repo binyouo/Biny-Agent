@@ -143,7 +143,7 @@ function noSave(h: ReturnType<typeof fixture>): void { assert.deepEqual([...h.ad
 
 test("actual source has conditional model tab and keyed scope, not a retained model tab", () => {
   const overlay = readFileSync(new URL("../src/desktop/renderer/src/components/settings/SettingsOverlay.tsx", import.meta.url), "utf8");
-  assert.match(overlay, /<SettingsDraftProvider\s+key=\{scope\}/u);
+  assert.match(overlay, /<SettingsOverlayScope key=\{scope\}/u);
   assert.match(overlay, /\{activeTab === "模型" \? <ProviderSettings/u);
   const navigation = between(overlay, "  const selectTab = async", "  const discardAndClose");
   assert.match(navigation, /flushModelEdits/u);
