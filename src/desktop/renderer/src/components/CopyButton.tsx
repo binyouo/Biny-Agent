@@ -76,7 +76,10 @@ export function CopyButton({
       type="button"
     >
       <Icon name={copied ? "check" : "copy"} size={size} />
-      {showLabel ? <span className="copy-button-text" data-copied={copied || undefined}>{copied ? "已复制" : label}</span> : null}
+      {showLabel ? <span className="copy-button-text button-state-label" data-copied={copied || undefined}>
+        <span aria-hidden={copied}>{label}</span>
+        <span aria-hidden={!copied}>已复制</span>
+      </span> : null}
     </button>
   );
 }

@@ -308,17 +308,13 @@
   background: transparent;
   color: var(--biny-text-secondary);
   cursor: pointer;
-  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+  transition: background 160ms ease, color 160ms ease;
 }
 
 .desktop-inspector-close:hover,
 .desktop-inspector-close:focus-visible {
   background: var(--biny-surface-hover);
   color: var(--biny-text);
-}
-
-.desktop-inspector-close:active {
-  transform: translateY(1px);
 }
 
 /* 工具栏与右缘提示条共享定位，面板打开后一起让出交互区域。 */
@@ -437,16 +433,12 @@
   background: transparent;
   color: var(--biny-text-secondary);
   cursor: pointer;
-  transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+  transition: background 140ms ease, color 140ms ease;
 }
 
 .biny-inspector-rail-btn:hover {
   background: var(--biny-surface-hover);
   color: var(--biny-text);
-}
-
-.biny-inspector-rail-btn:active {
-  transform: scale(0.94);
 }
 
 .biny-inspector-rail-btn.is-active {
@@ -482,7 +474,7 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+  transition: background 140ms ease, color 140ms ease;
 }
 
 .biny-inspector-tab.is-compact {
@@ -501,8 +493,6 @@
   background: var(--biny-surface-hover);
   color: var(--biny-text);
 }
-
-.biny-inspector-tab:active { transform: scale(0.96); }
 
 .biny-inspector-tab.is-active {
   background: var(--biny-surface-selected);
@@ -1140,7 +1130,7 @@
   border: 0;
   font: inherit;
   cursor: pointer;
-  transition: background 160ms ease, color 160ms ease, opacity 160ms ease, transform 160ms ease;
+  transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
 }
 
 .biny-composer-action-content {
@@ -1160,10 +1150,6 @@
 .biny-composer-action[data-active="true"] {
   background: var(--biny-accent-soft);
   color: var(--biny-accent);
-}
-
-.biny-composer-action:active:not(:disabled):not([aria-disabled="true"]) {
-  transform: translateY(1px);
 }
 
 .biny-composer-action:focus-visible {
@@ -1193,16 +1179,12 @@
   background: transparent;
   color: var(--biny-text-secondary);
   cursor: pointer;
-  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+  transition: background 160ms ease, color 160ms ease;
 }
 .biny-chrome-button:hover:not(:disabled),
 .biny-composer-add:hover:not(:disabled) {
   background: var(--biny-surface-hover);
   color: var(--biny-text);
-}
-.biny-chrome-button:active:not(:disabled),
-.biny-composer-add:active:not(:disabled) {
-  transform: translateY(1px);
 }
 .biny-chrome-button:focus-visible,
 .biny-composer-add:focus-visible,
@@ -1471,16 +1453,12 @@
   border-radius: 7px;
   color: var(--biny-text-secondary);
   cursor: pointer;
-  transition: background var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease), color var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease), transform var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease);
+  transition: background var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease), color var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease);
 }
 
 .biny-sidebar-section-action:hover {
   color: var(--biny-text);
   background: var(--biny-surface-hover);
-}
-
-.biny-sidebar-section-action:active {
-  transform: translateY(1px);
 }
 
 /* 高度折叠容器（chat 行折叠与侧栏分区/项目/子会话树共用）。
@@ -1651,8 +1629,7 @@
   gap: 1px;
   opacity: 0;
   pointer-events: none;
-  transform: translateX(4px);
-  transition: opacity var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease), transform var(--biny-sidebar-row-duration) var(--biny-sidebar-hover-ease);
+  transition: opacity var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease);
 }
 
 .biny-project-row-wrap:hover .biny-project-row-actions,
@@ -1660,7 +1637,6 @@
 .biny-project-row-actions.is-open {
   opacity: 1;
   pointer-events: auto;
-  transform: translateX(0);
 }
 
 .biny-project-row-action {
@@ -1672,16 +1648,12 @@
   border-radius: 7px;
   color: var(--biny-text-secondary);
   cursor: pointer;
-  transition: background var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease), color var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease), transform var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease);
+  transition: background var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease), color var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease);
 }
 
 .biny-project-row-action:hover {
   color: var(--biny-text);
   background: var(--biny-surface-hover);
-}
-
-.biny-project-row-action:active {
-  transform: translateY(1px);
 }
 
 /* 这些图标按钮跨越不同的布局父级，显式固定基础控制样式，避免主题/浏览器默认样式改变其颜色。 */
@@ -2022,7 +1994,7 @@
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
-  transition: background var(--biny-motion-quick) ease, color var(--biny-motion-quick) ease, transform var(--biny-motion-quick) ease;
+  transition: background var(--biny-motion-quick) ease, color var(--biny-motion-quick) ease;
 }
 
 .biny-sidebar-menu button:hover,
@@ -2037,10 +2009,6 @@
 
 .biny-sidebar-menu button > svg { flex: none; }
 .biny-sidebar-menu button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: -2px; }
-
-.biny-sidebar-menu button:active {
-  transform: translateY(1px);
-}
 
 .biny-sidebar-menu button.is-danger {
   color: var(--biny-danger);
@@ -2063,7 +2031,6 @@
 
 .biny-sidebar-menu.is-session button:active {
   background: var(--biny-surface-hover);
-  transform: none;
 }
 
 .biny-sidebar-menu-heading {
@@ -3164,7 +3131,7 @@ button.capability-check[aria-checked="true"] {
   background: var(--biny-send-bg);
   color: var(--biny-send-icon);
   cursor: pointer;
-  transition: transform var(--biny-motion-quick) ease, opacity var(--biny-motion-quick) ease, background var(--biny-motion-quick) ease, color var(--biny-motion-quick) ease;
+  transition: opacity var(--biny-motion-quick) ease, background var(--biny-motion-quick) ease, color var(--biny-motion-quick) ease;
 }
 
 .biny-send-button.is-stop {
@@ -3174,11 +3141,6 @@ button.capability-check[aria-checked="true"] {
 
 .biny-send-button:not(:disabled):not([aria-disabled="true"]):hover {
   background: var(--accent-hover);
-  transform: translateY(-1px);
-}
-
-.biny-send-button:not(:disabled):not([aria-disabled="true"]):active {
-  transform: translateY(1px);
 }
 
 .biny-send-button.is-stop:not(:disabled):not([aria-disabled="true"]):hover {
@@ -4114,7 +4076,7 @@ button.capability-check[aria-checked="true"] {
   background: transparent;
   color: var(--biny-text-secondary);
   cursor: pointer;
-  transition: background var(--biny-motion-quick) ease, color var(--biny-motion-quick) ease, transform var(--biny-motion-quick) ease;
+  transition: background var(--biny-motion-quick) ease, color var(--biny-motion-quick) ease;
 }
 
 .biny-runtime-panel-icon {
@@ -4129,11 +4091,6 @@ button.capability-check[aria-checked="true"] {
 .biny-runtime-row-action:hover:not(:disabled) {
   color: var(--biny-text);
   background: var(--biny-surface-hover);
-}
-
-.biny-runtime-panel-icon:active:not(:disabled),
-.biny-runtime-row-action:active:not(:disabled) {
-  transform: translateY(1px);
 }
 
 .biny-runtime-panel-icon:disabled,
@@ -4525,8 +4482,7 @@ button.capability-check[aria-checked="true"] {
   background-clip: padding-box;
 }
 
-/* 回到底部按钮（scroll-to-bottom-button 原文）：w-10 h-10 圆形，bg-background/70 +
-   backdrop-blur-lg，border-border/60，shadow-2xl，hover:scale-110；任务运行时箭头换思考球。 */
+/* 任务运行时，回到底部按钮的箭头替换为思考球。 */
 .biny-jump-bottom {
   position: absolute;
   bottom: 14px;
@@ -4559,7 +4515,6 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-jump-bottom.is-visible:hover {
-  transform: translate(-50%, 0) scale(1.1);
   color: var(--biny-text);
 }
 
@@ -4961,11 +4916,10 @@ button.capability-check[aria-checked="true"] {
   line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: all 200ms ease-out;
+  transition: border-color 200ms ease-out, background-color 200ms ease-out, color 200ms ease-out, box-shadow 200ms ease-out, opacity 200ms ease-out;
 }
 
 .biny-activity-suggestions .suggestion-chip:hover {
-  transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--biny-border) 70%, transparent);
   background: var(--biny-surface-soft);
   color: var(--biny-text);
@@ -4977,7 +4931,6 @@ button.capability-check[aria-checked="true"] {
   outline-offset: 2px;
 }
 
-.biny-activity-suggestions .suggestion-chip:active { transform: translateY(0) scale(.98); }
 .biny-activity-suggestions .suggestion-chip:disabled { pointer-events: none; opacity: .5; }
 .biny-activity-suggestions .suggestion-chip {
   opacity: 0;
@@ -5721,7 +5674,6 @@ button.capability-check[aria-checked="true"] {
 .biny-mcp-tabs button.is-active {
   color: var(--biny-text);
   background: var(--biny-surface);
-  font-weight: 650;
   box-shadow: 0 1px 2px var(--shadow-soft);
 }
 
@@ -8560,27 +8512,32 @@ button.capability-check[aria-checked="true"] {
   top: 50%;
   transform: translateY(-50%);
   z-index: 2;
-  display: inline-flex;
+  display: inline-grid;
   align-items: center;
   justify-content: center;
-  gap: 4px;
   min-width: 21px;
   height: 21px;
-  padding: 0 4px;
+  padding: 0 6px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: color-mix(in srgb, var(--session-delete-muted) 40%, transparent);
   opacity: 0;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   transition: opacity 200ms, color 200ms, background-color 200ms;
+.biny-session-delete > span { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
+.biny-session-delete > span[aria-hidden="true"] { visibility: hidden; }
 }
 .biny-sidebar-session-tree-row:hover .biny-session-delete,
 .biny-sidebar-session-tree-row:focus-within .biny-session-delete,
 .biny-session-delete.is-confirming { opacity: 1; }
-.biny-sidebar-session-tree-row:has(.biny-session-delete) .biny-sidebar-session-entry { padding-right: 24px; }
+.biny-sidebar-session-tree-row:has(.biny-session-delete) .biny-sidebar-session-entry { padding-right: 56px; }
 .biny-session-delete:hover { color: color-mix(in srgb, var(--session-delete-danger) 75%, transparent); }
-.biny-session-delete.is-confirming { padding: 0 6px; background: var(--session-delete-danger); color: var(--session-delete-foreground); font-size: 10.5px; font-weight: 500; line-height: 1; white-space: nowrap; box-shadow: 0 1px 2px var(--shadow); }
+.biny-session-delete.is-confirming { background: var(--session-delete-danger); color: var(--session-delete-foreground); box-shadow: 0 1px 2px var(--shadow); }
 .biny-session-delete:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 1px; }
 .biny-sidebar-session-tree-row:has(.biny-session-delete):hover .biny-sidebar-session-meta,
 .biny-sidebar-session-tree-row:has(.biny-session-delete):focus-within .biny-sidebar-session-meta { visibility: hidden; }

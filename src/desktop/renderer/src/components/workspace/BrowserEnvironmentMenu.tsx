@@ -118,7 +118,7 @@ export function BrowserEnvironmentMenu({ current, disabled, onOpen, onNotice }: 
           <label>代理规则<input disabled={busy} placeholder="http=127.0.0.1:7890;https=127.0.0.1:7890" value={proxyRules} onChange={(event) => setProxyRules(event.target.value)} /></label>
           <label>绕过规则<input disabled={busy} placeholder="localhost;127.0.0.1" value={proxyBypassRules} onChange={(event) => setProxyBypassRules(event.target.value)} /></label>
         </> : null}
-        <div><button type="button" disabled={busy || !name.trim()} onClick={() => void save()}>{busy ? "保存中…" : "保存"}</button><button type="button" disabled={busy} onClick={() => setEditing(undefined)}>取消</button></div>
+        <div><button aria-busy={busy} type="button" disabled={busy || !name.trim()} onClick={() => void save()}>保存</button><button type="button" disabled={busy} onClick={() => setEditing(undefined)}>取消</button></div>
       </div> : <button className="inspector-browser-environment-create" type="button" disabled={busy} onClick={() => beginEdit("new")}><Icon name="add" size={15} />新建环境</button>}
       {error ? <div className="inspector-error" role="alert">{error}</div> : null}
     </div> : null}

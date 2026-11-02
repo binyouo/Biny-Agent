@@ -41,7 +41,7 @@ export function SkillVersionControls({ skillId, projectId, disabled, onChanged, 
   if (!version) return null;
   return <section className="biny-skill-version" aria-label="Skill 版本">
     <p>{version.source.owner}/{version.source.repository} · {version.revision.slice(0, 12)}</p>
-    <div className="biny-skill-detail-actions"><button disabled={busy || disabled} onClick={() => void changeVersion(false)} type="button">{busy ? "处理中…" : "检查并更新"}</button><button disabled={busy || disabled || !version.previous} onClick={() => void changeVersion(true)} type="button">回滚上一版本</button></div>
+    <div className="biny-skill-detail-actions"><button aria-busy={busy} disabled={busy || disabled} onClick={() => void changeVersion(false)} type="button">检查并更新</button><button disabled={busy || disabled || !version.previous} onClick={() => void changeVersion(true)} type="button">回滚上一版本</button></div>
     {notice ? <p role="status">{notice}</p> : null}
   </section>;
 }

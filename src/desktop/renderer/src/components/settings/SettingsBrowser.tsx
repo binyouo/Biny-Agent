@@ -97,8 +97,8 @@ export function SettingsBrowser({ active = true }: { active?: boolean }): React.
   const installGuide = <>
     <p>需要 Chrome 125 或更新版本，可使用已有网页与登录状态。</p>
     <div className="settings-button-row">
-      <button type="button" className="settings-action settings-secondary-button" disabled={disabled} onClick={() => void perform("install")}><Icon name="folder" size={14} />{busy === "install" ? "打开中…" : "打开扩展目录"}</button>
-      <button type="button" className="settings-action settings-secondary-button" disabled={disabled} onClick={() => void perform("open-chrome")}><Icon name="external" size={14} />{busy === "open-chrome" ? "启动中…" : "打开 Chrome 扩展管理"}</button>
+      <button aria-busy={busy === "install"} type="button" className="settings-action settings-secondary-button" disabled={disabled} onClick={() => void perform("install")}><Icon name="folder" size={14} />打开扩展目录</button>
+      <button aria-busy={busy === "open-chrome"} type="button" className="settings-action settings-secondary-button" disabled={disabled} onClick={() => void perform("open-chrome")}><Icon name="external" size={14} />打开 Chrome 扩展管理</button>
     </div>
     {extensionPath ? <code className="browser-extension-path" aria-label="扩展目录">{extensionPath}</code> : null}
     <ol>
@@ -129,8 +129,8 @@ export function SettingsBrowser({ active = true }: { active?: boolean }): React.
       <div className="settings-section-body">
         <p>复制配对地址，在扩展设置中粘贴并选择“保存并连接”。地址包含访问凭据，请保密。</p>
         <div className="settings-button-row">
-          <button type="button" className="settings-action settings-primary-button" disabled={disabled || connection.kind === "loading"} onClick={() => void perform("pair")}><Icon name="copy" size={14} />{busy === "pair" ? "复制中…" : "复制配对地址"}</button>
-          <button type="button" className="settings-action settings-secondary-button" disabled={disabled || connection.kind === "loading"} onClick={() => setConfirmation("regenerate")}><Icon name="refresh" size={14} />{busy === "regenerate" ? "重新生成中…" : "重新生成配对地址"}</button>
+          <button aria-busy={busy === "pair"} type="button" className="settings-action settings-primary-button" disabled={disabled || connection.kind === "loading"} onClick={() => void perform("pair")}><Icon name="copy" size={14} />复制配对地址</button>
+          <button aria-busy={busy === "regenerate"} type="button" className="settings-action settings-secondary-button" disabled={disabled || connection.kind === "loading"} onClick={() => setConfirmation("regenerate")}><Icon name="refresh" size={14} />重新生成配对地址</button>
           <button type="button" className="settings-action settings-secondary-button is-danger" disabled={disabled || connection.kind !== "ready" || !connection.status.running} onClick={() => setConfirmation("disconnect")}>撤销全部连接</button>
         </div>
         {confirmation ? <div className="browser-pairing-confirm" role="group" aria-labelledby="browser-confirm-title">

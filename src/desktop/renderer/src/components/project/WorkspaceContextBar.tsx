@@ -335,7 +335,7 @@ function BranchMenu({
             <input id="workspace-new-branch" onChange={(event) => setNewBranch(event.target.value)} placeholder="feature/short-name" ref={createRef} value={newBranch} />
             <div>
               <button onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); setCreating(false); }} type="button">取消</button>
-              <button disabled={!newBranch.trim() || submitting} onPointerDown={(event) => { event.stopPropagation(); }} type="submit">{submitting ? "创建中…" : "创建并检出"}</button>
+              <button aria-busy={submitting} disabled={!newBranch.trim() || submitting} onPointerDown={(event) => { event.stopPropagation(); }} type="submit">创建并检出</button>
             </div>
           </form>
         ) : (

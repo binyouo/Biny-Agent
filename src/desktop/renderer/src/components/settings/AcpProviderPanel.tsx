@@ -123,7 +123,7 @@ export function AcpProviderPanel({ catalog, connection, currentModel, onSave, on
       <SettingsSwitch label="允许此 Agent 接收 Biny 记忆" checked={allowMemory} onChange={setAllowMemory} disabled={busy} detail="还需开启聊天记忆。关闭后停止新注入，已发送的内容仍可能保留在外部历史中。" />
       <p>仅连接可信程序。外部 Agent 可访问本机文件；Biny 只能处理它主动发出的审批。</p>
       <div className="settings-row-actions">
-        <button type="button" className="settings-action settings-primary-button" disabled={!command.trim()} onClick={execute}>{busy ? "正在连接并保存…" : "连接并保存"}</button>
+        <button aria-busy={busy} type="button" className="settings-action settings-primary-button" disabled={!command.trim()} onClick={execute}>连接并保存</button>
         {onDelete ? <button type="button" className="settings-action settings-secondary-button" onClick={onDelete}>删除连接</button> : null}
       </div>
     </fieldset>

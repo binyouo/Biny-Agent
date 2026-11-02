@@ -166,10 +166,10 @@ export function SettingsAppshots(): React.JSX.Element {
           <strong>测试截图</strong>
           <p>截取前台窗口，检查权限是否可用。</p>
         </div>
-        <button
+        <button aria-busy={pending.has("capture")}
           type="button" className="settings-action settings-secondary-button" disabled={!api || pending.has("capture")}
           onClick={() => void perform("capture", () => api.capture())}
-        >{pending.has("capture") ? "正在截图…" : "立即截图"}</button>
+        >立即截图</button>
       </div>
     </section>
 
@@ -179,10 +179,10 @@ export function SettingsAppshots(): React.JSX.Element {
         需要辅助功能与屏幕录制权限。
       </p>
       <div className="cu-button-row">
-        <button
+        <button aria-busy={pending.has("prewarm")}
           type="button" className="settings-action settings-secondary-button" disabled={!api || pending.has("prewarm")}
           onClick={() => void perform("prewarm", () => api.prewarm())}
-        >{pending.has("prewarm") ? "正在预处理…" : "预热与重试"}</button>
+        >预热与重试</button>
         <button
           type="button" className="settings-action settings-secondary-button"
           onClick={() => void window.biny.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")}

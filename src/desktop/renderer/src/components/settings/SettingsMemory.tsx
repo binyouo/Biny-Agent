@@ -845,7 +845,7 @@ export function SettingsMemory({
           <h3>添加记忆</h3>
           <div className="settings-section-body">
             <textarea className="settings-field" aria-label="输入您希望 AI 记住的内容..." disabled={sessionRunning || saving || editor?.id !== undefined} onChange={(event) => setEditor({ value: event.target.value })} placeholder="输入您希望 AI 记住的内容..." rows={4} value={editor?.id ? "" : editor?.value ?? ""} />
-            <button className="settings-action settings-primary-button" disabled={saving || editor?.id !== undefined || !editor?.value.trim()} onClick={() => { void saveText(); }} type="button">{saving && !editor?.id ? "添加中…" : "添加记忆"}</button>
+            <button aria-busy={saving && !editor?.id} className="settings-action settings-primary-button" disabled={saving || editor?.id !== undefined || !editor?.value.trim()} onClick={() => { void saveText(); }} type="button">添加记忆</button>
           </div>
         </section>
 
@@ -942,7 +942,7 @@ export function SettingsMemory({
                 {lastRun.error ? <div role="alert">整理失败：{lastRun.error}{lastRun.status === "failed" ? <button className="settings-action settings-text-action text-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void runSleep(); }} type="button">重试整理</button> : null}</div> : null}
               </div> : null}
               <div className="activity-memory-sleep-actions">
-                <button className="settings-action settings-secondary-button ghost-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void runSleep(); }} type="button">{sleepRunning ? "运行中…" : "立即运行睡眠周期"}</button>
+                <button aria-busy={sleepRunning} className="settings-action settings-secondary-button ghost-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void runSleep(); }} type="button">立即运行睡眠周期</button>
                 <button className="settings-action settings-text-action text-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void previewSleep(); }} type="button">预览下一次周期</button>
                 {sleepRunning ? <button className="settings-action settings-text-action text-button" onClick={() => { void cancelSleep(); }} type="button">取消</button> : null}
               </div>
@@ -1019,7 +1019,7 @@ export function SettingsMemory({
                 </> : null}
               </div>
               <div className="activity-memory-sleep-footer">
-                <button className="settings-action settings-secondary-button ghost-button" disabled={exporting} onClick={() => { void exportSnapshot(); }} type="button">{exporting ? "正在导出…" : "导出记忆快照"}</button>
+                <button aria-busy={exporting} className="settings-action settings-secondary-button ghost-button" disabled={exporting} onClick={() => { void exportSnapshot(); }} type="button">导出记忆快照</button>
               </div>
               <button aria-controls={`${disclosureId}-archive`} aria-expanded={archiveOpen} className="activity-memory-disclosure" onClick={() => setArchiveOpen((open) => !open)} type="button">
                 <Icon className="activity-memory-disclosure-chevron" name="chevron" size={12} />

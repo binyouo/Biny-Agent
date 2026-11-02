@@ -410,7 +410,7 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
       <div className="settings-extension-list-heading">
         <span>{query.trim() ? `${skills.length} / ${totalSkills} 个技能` : `${totalSkills} 个技能可用`}</span>
         <div>
-          <button className="settings-action settings-secondary-button" disabled={loading} onClick={onRefresh} type="button"><Icon name="refresh" size={16} />{loading ? "刷新中…" : "刷新"}</button>
+          <button aria-busy={loading} className="settings-action settings-secondary-button" disabled={loading} onClick={onRefresh} type="button"><Icon name="refresh" size={16} />刷新</button>
           {unmanagedSkills.length > 0 ? <button className="settings-action settings-secondary-button" onClick={onImportExisting} type="button"><Icon name="archive" size={16} />导入已有 ({unmanagedSkills.length})</button> : null}
           {skills[0] ? <button className="settings-action settings-secondary-button" onClick={() => onOpenDirectory(skills[0]!)} type="button"><Icon name="folder-open" size={16} />打开文件夹</button> : null}
         </div>
@@ -561,7 +561,7 @@ const PluginsSettingsContent = memo(function PluginsSettingsContent({ busyPlugin
 });
 
 const PluginMarketCard = memo(function PluginMarketCard({ busy, onInstall, plugin }: { busy: boolean; onInstall(plugin: DesktopPluginMarketEntry): void; plugin: DesktopPluginMarketEntry }): React.JSX.Element {
-  return <article className="settings-plugin-card"><span className="settings-plugin-card-icon"><Icon name="puzzle" size={23} /></span><div className="settings-plugin-card-main"><h3><span className="settings-plugin-card-name">{plugin.name}</span>{plugin.featured ? <span className="settings-plugin-featured">精选</span> : null}</h3><p>{plugin.category} · v{plugin.version}{plugin.author ? ` · ${plugin.author.name}` : ""}</p><span className="settings-plugin-description">{plugin.description}</span>{plugin.tags.length ? <p className="settings-plugin-tags">{plugin.tags.map((tag) => `#${tag}`).join(" ")}</p> : null}</div><button className="settings-action settings-primary-button settings-plugin-install-button" disabled={busy} onClick={() => onInstall(plugin)} type="button">{busy ? "安装中…" : "安装"}</button></article>;
+  return <article className="settings-plugin-card"><span className="settings-plugin-card-icon"><Icon name="puzzle" size={23} /></span><div className="settings-plugin-card-main"><h3><span className="settings-plugin-card-name">{plugin.name}</span>{plugin.featured ? <span className="settings-plugin-featured">精选</span> : null}</h3><p>{plugin.category} · v{plugin.version}{plugin.author ? ` · ${plugin.author.name}` : ""}</p><span className="settings-plugin-description">{plugin.description}</span>{plugin.tags.length ? <p className="settings-plugin-tags">{plugin.tags.map((tag) => `#${tag}`).join(" ")}</p> : null}</div><button aria-busy={busy} className="settings-action settings-primary-button settings-plugin-install-button" disabled={busy} onClick={() => onInstall(plugin)} type="button">安装</button></article>;
 });
 
 const PluginSettingsCard = memo(function PluginSettingsCard({ busy, onSetEnabled, onUninstall, plugin }: { busy: boolean; onSetEnabled(plugin: DesktopPluginSummary): void; onUninstall(plugin: DesktopPluginSummary): void; plugin: DesktopPluginSummary }): React.JSX.Element {
