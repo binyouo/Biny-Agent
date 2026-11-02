@@ -8,6 +8,7 @@ import type { AgentModel, CacheMarkerPlan } from "../agent/core/types.js";
 import { cacheMarkerPlanFor } from "../agent/core/cacheMarkers.js";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import { completeThinkingLevelMap, effectiveThinkingSelection, isKimiAlwaysThinkingModel, isKimiK3Model, modelCapabilities, modelReasoningConfig, modelThinkingLevelMap, nativeReasoningEffort, normalizeModelMetadata, reasoningBudgetTokens, thinkingLevelMapForModel } from "../ai/capabilities.js";
+import { applyZaiThinkingDefaults, automaticZaiThinkingOptions, type ZaiThinkingContext } from "../ai/zaiThinkingDefaults.js";
 import { fetchModelCatalogSnapshot } from "../ai/modelCatalog.js";
 import { accessPathThinkingLevelMap, generatedProviderModels, inferThinkingLevelMap, lookupModelMetadata, metadataProviderForEndpoint, type ModelMetadata } from "../ai/modelMetadata.js";
 import { providerDefinition } from "../ai/provider.js";
@@ -70,7 +71,7 @@ export interface ProviderRuntime {
   readonly definition: ProviderDefinition;
   readonly config: ProviderConfig;
   getModels(): ModelCatalogEntry[];
-  resolveModel(model: ModelAliasConfig): ModelAliasConfig;
+  resolveModel(model: ModelAliasConfig, source?: "configured" | "catalog"): ModelAliasConfig;
   restoreModels(models: readonly ModelCatalogEntry[]): void;
   refreshModels(signal?: AbortSignal, force?: boolean): Promise<ModelCatalogEntry[]>;
   isConfigured(model?: ModelAliasConfig): boolean;
@@ -201,7 +202,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     return this.resolveApiKey() !== undefined;
   }
 
-  resolveModel(model: ModelAliasConfig): ModelAliasConfig {
+  resolveModel(model: ModelAliasConfig, source: "configured" | "catalog" = "configured"): ModelAliasConfig {
     const endpoint = this.config.baseUrl ?? this.definition.baseUrl;
     // 单模型覆盖端点时，连接原端点的缓存/基线不能跨过去覆盖新路径的限制。
     const usesProviderEndpoint = model.baseUrl === undefined
@@ -237,9 +238,16 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     const profile = this.config.modelProfiles?.[model.model];
     const profiled = profile === undefined ? healed : applyModelProfile(healed, profile);
     const accessPathModel = recoverKnownReasoningModel(profiled, generatedModel, profile?.thinkingLevelMap !== undefined || profile?.capabilities?.reasoning === false);
-    return normalizeModelMetadata(
+    const normalized = normalizeModelMetadata(
       { ...accessPathModel, compatibility: mergeCompatibility(this.config.compatibility, accessPathModel.compatibility) },
       this.definition.modelDefaults
+    );
+    return applyZaiThinkingDefaults(
+      normalized,
+      resolveProviderRequestRoute(normalized, this.config, this.definition).apiBackend,
+      { providerType: this.config.type, baseUrl: normalized.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl },
+      (source === "configured" && (model.thinkingLevelMap !== undefined || model.reasoning !== undefined))
+        || profile?.thinkingLevelMap !== undefined
     );
   }
 
@@ -305,7 +313,8 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     const enabled = selection !== "off";
     const effort = enabled ? selection : undefined;
     const retry = this.config.retry ?? { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 };
-    const providerOptions = createProviderOptions(reasoningProtocol, this.config, normalizedModel, api, enabled, effort);
+    const thinkingContext = { providerType: this.config.type, baseUrl };
+    const providerOptions = createProviderOptions(reasoningProtocol, this.config, normalizedModel, api, enabled, effort, thinkingContext);
     const headers = {
       ...(this.config.type === "openai-codex" ? openAiCodexHeaders(apiKey) : {}),
       ...this.config.headers,
@@ -344,7 +353,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
         return {
           reasoning: selected,
           providerOptions: createProviderOptions(reasoningProtocol, { compatibility }, normalizedModel, api,
-            selected !== "off", selected === "off" ? undefined : selected)
+            selected !== "off", selected === "off" ? undefined : selected, thinkingContext)
         };
       },
       runtime: "provider",
@@ -638,7 +647,8 @@ function createProviderOptions(
   model: ModelAliasConfig,
   api: ModelApiBackend,
   enabled: boolean,
-  effort: AgentConfig["thinking"]["effort"] | undefined
+  effort: AgentConfig["thinking"]["effort"] | undefined,
+  thinkingContext?: ZaiThinkingContext
 ): Record<string, unknown> | undefined {
   if (mergeCompatibility(provider.compatibility, model.compatibility)?.supportsReasoning === false) return undefined;
   if (!modelCapabilities(model).reasoning || modelReasoningConfig(model) === undefined) return undefined;
@@ -648,7 +658,11 @@ function createProviderOptions(
     return { anthropic: { thinking: enabled ? { type: "enabled", budgetTokens } : { type: "disabled" } } };
   }
   if (reasoningProtocol === "deepseek") return { deepseek: { thinking: { type: enabled ? "enabled" : "disabled" }, reasoningEffort: enabled ? nativeEffort : undefined } };
-  if (reasoningProtocol === "openai") return { openai: { reasoningEffort: enabled ? nativeEffort : "none" } };
+  if (reasoningProtocol === "openai") return {
+    openai: { reasoningEffort: enabled ? nativeEffort : "none" },
+    ...(thinkingContext?.providerType === "zai"
+      ? automaticZaiThinkingOptions(model, api, enabled, effort, thinkingContext) : undefined)
+  };
   if (reasoningProtocol === "google") {
     return {
       google: {
