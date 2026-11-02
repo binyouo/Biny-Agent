@@ -13,7 +13,7 @@ import type { AgentModel } from "../agent/core/types.js";
 import type { AgentTurnOutcome, AgentPermissionRequest, AgentPermissionResult } from "../agent/types.js";
 import { ModelManager } from "../llm/ModelManager.js";
 import type { ToolModelSelectionState } from "../llm/toolModelRequest.js";
-import { resolveToolModel, resolveToolModelCandidates } from "../llm/toolModel.js";
+import { resolveToolModel, resolveToolModelAlias, resolveToolModelCandidates } from "../llm/toolModel.js";
 import { runSkillExtraction } from "../agent/skillExtraction.js";
 import { preselectCapabilities } from "../agent/capabilityPreselection.js";
 import { SessionRecorder, type SessionEvent } from "../session/recorder.js";
@@ -107,7 +107,7 @@ export interface CommandRuntime {
   taskRuns: DurableTaskRunStore;
   automationStore: AutomationStore;
   heartbeat: HeartbeatScheduler;
-  resolveToolModelForRun?(): Promise<AgentModel | undefined>;
+  resolveToolModelForRun?(signal?: AbortSignal): Promise<ModelManager | undefined>;
   graphs: GoalGraphStore;
   sessionGoals: SessionGoalStore;
   capabilities: CapabilityStore;
@@ -784,6 +784,12 @@ async function initializeCommandRuntime(
   if (!agent) throw new Error("Failed to initialize Biny agent runtime.");
 
   const heartbeatNotificationDeduper = new HeartbeatNotificationDeduper();
+  const runModelManager = async (currentConfig: AgentConfig, alias: string, signal?: AbortSignal): Promise<ModelManager> => {
+    signal?.throwIfAborted();
+    const manager = await ModelManager.create(workspaceRoot, { ...structuredClone(currentConfig), defaultModel: alias }, configStore, ai);
+    signal?.throwIfAborted();
+    return manager;
+  };
   let ownerNotificationSink: ((notification: string) => Promise<void>) | undefined;
   let heartbeatAgent: Promise<AgentSession> | undefined;
   const initializeHeartbeatAgent = async (model: AgentModel): Promise<AgentSession> => {
@@ -856,10 +862,10 @@ async function initializeCommandRuntime(
       const heartbeatPrompt = taskReview ? `${prompt}\n\n${taskReview}` : prompt;
       const diary = /(?:DAILY DIARY TIME|MISSED DIARY CATCH-UP)/u.test(heartbeatPrompt);
       const currentConfig = await configStore.load(workspaceRoot);
-      const model = (!diary ? resolveToolModel(currentConfig, providerCredentials) : undefined)
-        ?? createModelSettings(currentConfig, currentConfig.defaultModel, undefined, providerCredentials).model;
+      const alias = (!diary ? resolveToolModelAlias(currentConfig) : undefined) ?? currentConfig.defaultModel;
+      const model = await runModelManager(currentConfig, alias, signal);
       signal.throwIfAborted();
-      const session = await (heartbeatAgent ??= initializeHeartbeatAgent(model).catch((error: unknown) => {
+      const session = await (heartbeatAgent ??= initializeHeartbeatAgent(model.getModel()).catch((error: unknown) => {
         heartbeatAgent = undefined;
         throw error;
       }));
@@ -874,8 +880,8 @@ async function initializeCommandRuntime(
       });
       let outcome = await runWithModel(model);
       if (!diary && outcome.status === "failed" && outcome.steps === 0) {
-        const primaryModel = createModelSettings(currentConfig, currentConfig.defaultModel, undefined, providerCredentials).model;
-        if (model.provider !== primaryModel.provider || model.modelId !== primaryModel.modelId) {
+        const primaryModel = await runModelManager(currentConfig, currentConfig.defaultModel, signal);
+        if (model.getModel().provider !== primaryModel.getModel().provider || model.getModel().modelId !== primaryModel.getModel().modelId) {
           outcome = await runWithModel(primaryModel);
         }
       }
@@ -1428,7 +1434,11 @@ async function initializeCommandRuntime(
     persistenceRoot,
     config,
     agent,
-    resolveToolModelForRun: async () => resolveToolModel(await configStore.load(workspaceRoot), providerCredentials),
+    resolveToolModelForRun: async (signal) => {
+      const currentConfig = await configStore.load(workspaceRoot);
+      const alias = resolveToolModelAlias(currentConfig);
+      return alias ? await runModelManager(currentConfig, alias, signal) : undefined;
+    },
     managedProcesses,
     checkpoints,
     mcp: mcpHost,

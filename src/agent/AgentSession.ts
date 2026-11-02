@@ -247,8 +247,8 @@ export interface AgentSessionOptions {
 
 export interface AgentRunOptions {
   abortSignal?: AbortSignal;
-  /** Host-owned internal sessions may select the model for one run without changing user model state. */
-  modelOverride?: AgentModel;
+  /** Selects one run's model and metadata without changing the saved chat selection. */
+  modelOverride?: ModelManager;
   fastMode?: boolean;
   /** 后台发起的消息保留来源，防止被当成用户原话建立日期索引。 */
   source?: "heartbeat" | "auto";
@@ -442,6 +442,7 @@ export class AgentSession {
   private nextSessionMessageIndex = 0;
   /** 新 root turn 开始时替换；同一 turn 的所有 model step 固定使用这份快照。 */
   private activeConfig: AgentConfig;
+  private activeModelOverride?: ModelManager;
   private activePersonalization: ResolvedChatPersonalization;
   constructor(private readonly options: AgentSessionOptions) {
     this.activeConfig = options.config;
@@ -456,12 +457,12 @@ export class AgentSession {
       options.config.context.instructionsMaxBytes
     );
     const getModel = (): AgentModel => {
-      const model = options.modelManager?.getModel() ?? options.model;
+      const model = this.currentModel();
       if (!model) throw new Error("Agent model is not configured.");
       return model;
     };
     const currentModel = (): AgentModel | undefined => {
-      const model = options.modelManager?.getModel() ?? options.model;
+      const model = this.currentModel();
       if (model?.provider === "acp") return undefined;
       if (model) this.auxiliaryUsageModels.set(model, this.usageModelInfo(undefined, this.options.config, model));
       return model;
@@ -477,7 +478,7 @@ export class AgentSession {
     const providerCredentials = options.configStore ? createProviderCredentialPersistence(options.configStore, options.workspaceRoot) : undefined;
     const auxiliaryModel = (alias: string | undefined): AgentModel | undefined => {
       if (!alias) return undefined;
-      const activeAlias = options.modelManager?.getInfo().modelAlias ?? this.activeConfig.defaultModel;
+      const activeAlias = this.currentModelManager()?.getInfo().modelAlias ?? this.activeConfig.defaultModel;
       if (alias === activeAlias) {
         const model = getModel();
         this.auxiliaryUsageModels.set(model, this.usageModelInfo(undefined, this.options.config, model));
@@ -617,7 +618,8 @@ export class AgentSession {
       options.config.context.instructionsMaxBytes,
       onUsage,
       () => {
-        if (options.modelManager) return options.modelManager.getContextBudget();
+        const manager = this.currentModelManager();
+        if (manager) return manager.getContextBudget();
         // 直接注入 AgentModel 的宿主没有 ModelManager，只能使用显式上下文上限；这里不猜测模型能力。
         const fallback = options.config.context.maxInputTokens ?? defaultModelContextWindow;
         return { contextWindow: fallback, contextWindowIsFallback: true, maxInputTokens: fallback, maxOutputTokens: undefined };
@@ -1995,17 +1997,19 @@ export class AgentSession {
     } = {}
   ): AsyncGenerator<AgentSessionEvent> {
     const release = this.beginOperation("agent turn");
+    this.activeModelOverride = runOptions.modelOverride;
     try {
     let refreshError: Error | undefined;
     try { if (!runOptions.modelOverride) await this.options.modelManager?.refreshFromDisk(); }
     catch (error) { refreshError = new Error(errorMessage(error)); }
-    const alias = this.options.modelManager?.getInfo().modelAlias ?? this.options.config.defaultModel;
-    const selected = this.options.config.models[alias];
+    const turnConfig = this.currentModelManager()?.getConfigSnapshot() ?? this.options.config;
+    const alias = this.currentModelManager()?.getInfo().modelAlias ?? turnConfig.defaultModel;
+    const selected = turnConfig.models[alias];
     await this.recorder.flush();
     const executionEvents = await readSessionEvents(this.recorder.filePath);
     const acpProviders = executionEvents.flatMap((event) => (event.type === "message_metadata" || event.type === "user_message")
       && typeof event.metadata?.acpProvider === "string" ? [event.metadata.acpProvider] : []);
-    if (acpProviders.some((provider) => provider !== selected?.provider || this.options.config.providers[selected.provider]?.type !== "acp")) {
+    if (acpProviders.some((provider) => provider !== selected?.provider || turnConfig.providers[selected.provider]?.type !== "acp")) {
       const outcome = failedTurn("当前聊天已绑定外部 Agent，切换执行引擎或连接请新建聊天。", 0, "provider_error");
       this.recordError(outcome.error);
       await this.recordTurnOutcome(outcome);
@@ -2015,7 +2019,7 @@ export class AgentSession {
       return;
     }
 
-    if (!refreshError && selected && this.options.config.providers[selected.provider]?.type === "acp") {
+    if (!refreshError && this.currentModel()?.provider === "acp" && selected && turnConfig.providers[selected.provider]?.type === "acp") {
       yield* this.runExternalAcp(input, runOptions, selected.provider, selected.model);
       return;
     }
@@ -2232,7 +2236,7 @@ export class AgentSession {
     try {
       // 执行路径选择前已读取配置；失败仍通过本轮持久化入口报告。
       if (refreshError) throw refreshError;
-      if (!runOptions.modelOverride) await this.options.modelManager?.preparePrompt(abortSignal, false);
+      await this.currentModelManager()?.preparePrompt(abortSignal, false);
     } catch (error) {
       recordUserMessage();
       const outcome = abortSignal.aborted
@@ -2251,7 +2255,7 @@ export class AgentSession {
       return;
     }
     recordPerfPhase("turn.preparePrompt", preparePromptPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
-    const model = runOptions.modelOverride ?? this.options.modelManager?.getModel() ?? this.options.model;
+    const model = this.currentModel();
     if (!model) {
       recordUserMessage();
       const outcome = failedTurn("Model runtime is not configured.", completedStepsBeforeRun);
@@ -2312,8 +2316,8 @@ export class AgentSession {
     // 这样即使模型不支持图片、上下文构建失败或进程随后中断，恢复会话时仍能看到这次输入。
     try {
       const personalizationPerfStartedAt = perfNow();
-      const snapshot = await this.readPersonalizationState(this.options.modelManager && !runOptions.modelOverride
-        ? { config: structuredClone(this.options.config) }
+      const snapshot = await this.readPersonalizationState(this.currentModelManager()
+        ? { config: this.currentModelManager()!.getConfigSnapshot() }
         : undefined);
       recordPerfPhase("turn.personalization", personalizationPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
       this.activeConfig = snapshot.config;
@@ -2509,7 +2513,7 @@ export class AgentSession {
         this.runSessionGoalId = undefined;
       }
     }
-    } finally { release(); }
+    } finally { this.activeModelOverride = undefined; release(); }
   }
 
   private async *runExternalAcp(input: string, options: AgentRunOptions, providerAlias: string, model: string): AsyncGenerator<AgentSessionEvent> {
@@ -2640,18 +2644,8 @@ export class AgentSession {
       return next;
     };
     let systemPrompt = initialSystemPrompt;
-    const activeModel = runOptions.modelOverride ?? this.options.modelManager?.getModel() ?? this.options.model;
-    const modelSettings: ModelSettings | undefined = runOptions.modelOverride
-      ? {
-        model: runOptions.modelOverride,
-        vercelModel: runOptions.modelOverride.vercelModel,
-        providerOptions: runOptions.modelOverride.vercelOptions?.providerOptions,
-        maxOutputTokens: runOptions.modelOverride.vercelOptions?.maxOutputTokens,
-        timeoutMs: runOptions.modelOverride.vercelOptions?.timeoutMs,
-        maxRetries: runOptions.modelOverride.vercelOptions?.maxRetries,
-        contextWindow: undefined
-      }
-      : this.options.modelManager?.getModelSettings()
+    const activeModel = this.currentModel();
+    const modelSettings: ModelSettings | undefined = this.currentModelManager()?.getModelSettings()
       ?? (activeModel ? {
         model: activeModel,
         vercelModel: activeModel.vercelModel,
@@ -2978,7 +2972,7 @@ export class AgentSession {
         const registry = new ProviderRegistry(this.activeConfig, [], undefined, undefined, undefined,
           this.options.configStore ? createProviderCredentialPersistence(this.options.configStore, this.options.workspaceRoot) : undefined);
         const resolved = registry.forModel(visionAlias);
-        const capabilities = this.options.modelManager?.listModels().find(model => model.alias === visionAlias)?.capabilities ?? modelCapabilities(resolved.model);
+        const capabilities = this.currentModelManager()?.listModels().find(model => model.alias === visionAlias)?.capabilities ?? modelCapabilities(resolved.model);
         if (resolved.provider.config.type === "acp" || capabilities.vision !== true) throw new Error("配置的视觉模型不支持图片输入。");
         return registry.createModelSettings(visionAlias).model;
       }, signal: abortSignal,
@@ -3138,9 +3132,8 @@ export class AgentSession {
             .filter((result) => result.toolName === toolSearchToolName && !result.isError)
             .flatMap((result) => toolSearchResultNames(result.details));
           coordinator.allowTools(discovered);
-          if (!runOptions.modelOverride) await this.options.modelManager?.preparePrompt(abortSignal, false);
-          const settings = runOptions.modelOverride ? activeModelSettings
-            : this.options.modelManager?.getModelSettings() ?? activeModelSettings;
+          await this.currentModelManager()?.preparePrompt(abortSignal, false);
+          const settings = this.currentModelManager()?.getModelSettings() ?? activeModelSettings;
           activeModelSettings = settings;
           this.contextMemory.observePromptModel(activeModelSettings.model.provider, activeModelSettings.model.modelId);
           const tools = editingTools(settings);
@@ -3857,7 +3850,7 @@ export class AgentSession {
   }
 
   sessionGoalUnavailableReason(): string | undefined {
-    const model = this.options.modelManager?.getModel() ?? this.options.model;
+    const model = this.currentModel();
     if (!model) return "No model is configured for this session.";
     if (model.supportsTools === false) return "The selected model cannot execute goal commands.";
     if (this.activeConfig.chat.defaultToolSelection === "none") return "Session tools are disabled; goal commands cannot record completion.";
@@ -3883,11 +3876,12 @@ export class AgentSession {
     const unsupported = attachments.find((attachment) => !attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("audio/")
       && (this.options.attachmentRoot === undefined || !attachment.path || attachmentFilePath(this.options.attachmentRoot, attachment.path) === undefined));
     if (unsupported) throw new Error(`不支持的附件类型：${unsupported.mimeType}。当前只接受图片和 MP3/WAV 音频。`);
-    const modelAlias = this.options.modelManager?.getInfo().modelAlias ?? this.options.config.defaultModel;
-    const model = this.options.config.models[modelAlias];
-    if (!model) throw new Error(`当前模型配置不存在：${modelAlias}`);
+    const manager = this.currentModelManager();
+    const modelAlias = manager?.getInfo().modelAlias ?? this.options.config.defaultModel;
+    const model = this.activeConfig.models[modelAlias];
+    if (!manager && !model) throw new Error(`当前模型配置不存在：${modelAlias}`);
     // 原始配置可以省略能力；附件检查必须与请求端使用同一份补全后的元数据。
-    const capabilities = this.options.modelManager?.getCapabilities()
+    const capabilities = manager?.getCapabilities()
       ?? modelCapabilities(new ProviderRegistry(this.options.config).forModel(modelAlias).model);
     const image = attachments.find((attachment) => attachment.mimeType.startsWith("image/"));
     if (image && capabilities.vision === false && (!this.activeConfig.visionModel || this.activeConfig.visionModelEnabled === false)) {
@@ -4153,8 +4147,16 @@ export class AgentSession {
     }
   }
 
+  private currentModelManager(): ModelManager | undefined {
+    return this.activeModelOverride ?? this.options.modelManager;
+  }
+
+  private currentModel(): AgentModel | undefined {
+    return this.currentModelManager()?.getModel() ?? this.options.model;
+  }
+
   getInfo(): AgentSessionInfo {
-    const model = this.options.modelManager?.getInfo() ?? modelRuntimeInfo(this.options.config);
+    const model = this.currentModelManager()?.getInfo() ?? modelRuntimeInfo(this.options.config);
     return {
       workspaceRoot: this.options.workspaceRoot,
       sessionId: this.recorder.sessionId,
@@ -4549,8 +4551,8 @@ export class AgentSession {
 
   private usageModelInfo(
     modelAlias?: string,
-    config = this.options.config,
-    model = this.options.modelManager?.getModel() ?? this.options.model,
+    config = this.activeConfig,
+    model = this.currentModel(),
     resolvedModel?: ModelAliasConfig
   ): UsageModelInfo {
     if (resolvedModel && model) {
@@ -4561,7 +4563,7 @@ export class AgentSession {
         pricing: resolvedModel.pricing === undefined ? undefined : { ...resolvedModel.pricing }
       };
     }
-    const managedInfo = this.options.modelManager?.getInfo();
+    const managedInfo = this.currentModelManager()?.getInfo();
     if (!managedInfo && modelAlias === undefined && model) {
       // Injected adapters can be usable without any configured default. Optional metadata
       // resolution must not gate the request or borrow prices from a different adapter.
@@ -4588,7 +4590,7 @@ export class AgentSession {
     }
     const resolvedAlias = modelAlias ?? info.modelAlias;
     const resolved = resolvedModel ?? config.models[resolvedAlias];
-    const catalogPricing = this.options.modelManager?.listModels().find((choice) => choice.alias === resolvedAlias
+    const catalogPricing = this.currentModelManager()?.listModels().find((choice) => choice.alias === resolvedAlias
       && (!resolved || choice.provider === resolved.provider && choice.model === resolved.model))?.pricing;
     const provider = resolved ? config.providers[resolved.provider] : undefined;
     // A different, unpriced auxiliary alias cannot inherit the chat model's price.
@@ -4623,11 +4625,11 @@ export class AgentSession {
   }
 
   private runtimeContext(runOptions: AgentRunOptions): AgentRuntimeContext {
-    const model = this.options.modelManager?.getModel() ?? this.options.model;
+    const model = this.currentModel();
     if (!model) throw new Error("Model runtime is not configured.");
     return {
       workspaceRoot: this.options.workspaceRoot,
-      config: this.options.config,
+      config: this.activeConfig,
       model,
       recorder: this.recorder,
       contextMemory: this.contextMemory,
