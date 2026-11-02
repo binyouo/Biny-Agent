@@ -242,13 +242,16 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       { ...accessPathModel, compatibility: mergeCompatibility(this.config.compatibility, accessPathModel.compatibility) },
       this.definition.modelDefaults
     );
+    const hasExplicitGoogleThinkingConfiguration = (source === "configured"
+      && (model.thinkingLevelMap !== undefined || model.reasoning !== undefined))
+      || profile?.thinkingLevelMap !== undefined;
     // Route-specific defaults belong to this projection, never the shared catalog.
     return applyGoogleProThinkingDefaults(
       normalized,
       this.config.type,
       resolveProviderRequestRoute(normalized, this.config, this.definition).apiBackend,
-      (source === "configured" && (model.thinkingLevelMap !== undefined || model.reasoning !== undefined))
-        || profile?.thinkingLevelMap !== undefined
+      hasExplicitGoogleThinkingConfiguration,
+      normalized.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl
     );
   }
 
