@@ -176,7 +176,6 @@ export function SettingsMemory({
   const [embeddingStatus, setEmbeddingStatus] = useState<DesktopMemoryEmbeddingStatus>();
   const [embeddingWorking, setEmbeddingWorking] = useState<"download" | "rebuild">();
   const [embeddingError, setEmbeddingError] = useState<string>();
-  const [sleepAdvancedOpen, setSleepAdvancedOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveLoaded, setArchiveLoaded] = useState(false);
   const [archiveLoading, setArchiveLoading] = useState(false);
@@ -976,11 +975,8 @@ export function SettingsMemory({
                   value={policy.archiveRetentionDays}
                 />
               </div>
-              <button aria-controls={`${disclosureId}-sleep-advanced`} aria-expanded={sleepAdvancedOpen} className="activity-memory-disclosure" onClick={() => setSleepAdvancedOpen((open) => !open)} type="button">
-                <Icon className="activity-memory-disclosure-chevron" name="chevron" size={12} />
-                <span>相似度与 LLM 合并参数</span>
-              </button>
-              <div className="activity-memory-advanced-content" hidden={!sleepAdvancedOpen} id={`${disclosureId}-sleep-advanced`}>
+              <div className="activity-memory-advanced">
+                <h4>相似度与 LLM 合并参数</h4>
                 <MemoryRange
                   ariaLabel="相似度合并阈值"
                   description="高于此值直接合并，不调用模型。"

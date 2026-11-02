@@ -8324,8 +8324,7 @@ button.capability-check[aria-checked="true"] {
 .web-search-settings .settings-switch-row { padding: 0; align-items: flex-start; }
 .web-search-settings .settings-switch-copy strong { font-size: 18px; }
 .web-search-settings .settings-switch-copy small { line-height: 1.6; }
-.web-search-cookie-actions { margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--border); }
-.web-search-cookie-actions h4 { margin: 0; }
+.web-search-cookie-actions { margin-top: var(--st-stack-gap); }
 
 /* 次要操作用淡填充胶囊，辅助操作只在悬停时显底色，避免与保存、连接争夺注意力。 */
 .desktop-settings-dialog .settings-modal :is(
@@ -8523,15 +8522,15 @@ button.capability-check[aria-checked="true"] {
   background: transparent;
   color: color-mix(in srgb, var(--session-delete-muted) 40%, transparent);
   opacity: 0;
+  cursor: pointer;
   font-size: 10.5px;
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
-  cursor: pointer;
   transition: opacity 200ms, color 200ms, background-color 200ms;
+}
 .biny-session-delete > span { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
 .biny-session-delete > span[aria-hidden="true"] { visibility: hidden; }
-}
 .biny-sidebar-session-tree-row:hover .biny-session-delete,
 .biny-sidebar-session-tree-row:focus-within .biny-session-delete,
 .biny-session-delete.is-confirming { opacity: 1; }

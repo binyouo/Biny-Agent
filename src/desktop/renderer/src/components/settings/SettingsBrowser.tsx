@@ -119,11 +119,9 @@ export function SettingsBrowser({ active = true }: { active?: boolean }): React.
           : <p role="status" className={`browser-connection-status${connected ? " is-connected" : ""}`}><span aria-hidden="true" />{connection.kind === "loading" ? "正在读取连接状态…" : !connection.status.running ? "连接服务未启动，复制配对地址时会启动服务。" : connection.status.connected ? `${connection.status.browsers.map(browser => browser.browserName).join("、")} 已连接` : "Chrome 扩展未连接"}</p>}
       </div>
     </section>
-    {connected ? <details className="settings-disclosure settings-install-guide browser-install-guide"><summary>安装到其他 Chrome 配置</summary>{installGuide}</details>
-      : <section className="settings-section settings-install-guide browser-install-guide"><h3>1. 安装扩展</h3>
-        <div className="settings-section-body">{installGuide}
-        </div>
-      </section>}
+    <section className="settings-section settings-install-guide browser-install-guide"><h3>{connected ? "安装到其他 Chrome 配置" : "1. 安装扩展"}</h3>
+      <div className="settings-section-body">{installGuide}</div>
+    </section>
     <section className="settings-section" aria-labelledby="browser-pairing-title">
       <h3 id="browser-pairing-title">{connected ? "配对管理" : "2. 连接 Biny"}</h3>
       <div className="settings-section-body">
@@ -140,10 +138,10 @@ export function SettingsBrowser({ active = true }: { active?: boolean }): React.
         </div> : null}
         {notice ? <p role="status">{notice}</p> : null}
         {actionError ? <p role="alert">{actionError}</p> : null}
-        <details className="settings-disclosure"><summary>多个 Chrome 配置与连接范围</summary>
+        <section className="settings-static-group"><h4>多个 Chrome 配置与连接范围</h4>
           <p>最多同时连接 8 个 Chrome 配置。每个配置需分别安装扩展、粘贴配对地址，并填写不同的连接名称。</p>
           <p>连接覆盖该 Chrome 配置的普通网页。</p>
-        </details>
+        </section>
       </div>
     </section>
   </div>;

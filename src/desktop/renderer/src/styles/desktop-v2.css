@@ -2568,7 +2568,7 @@ select option:disabled {
 .activity-memory-embedding-progress,
 .activity-memory-embedding-hint { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .activity-memory-embedding-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--red-text); font-size: 11px; line-height: 1.45; }
-.activity-memory-advanced-content { display: flex; flex-direction: column; gap: 13px; margin-top: 13px; }
+.activity-memory-advanced { display: flex; flex-direction: column; gap: var(--st-card-gap); }
 
 /* 记忆设置与 ，
    状态与索引细节留在后端，不把实现信息变成设置页的主视觉。 */
@@ -2602,15 +2602,14 @@ select option:disabled {
 .activity-memory-row input[type="time"] { width: 128px; flex: 0 0 auto; }
 .activity-memory-number-row input[type="number"] { width: 76px; flex: 0 0 auto; }
 .activity-memory-retention { display: flex; flex-direction: column; gap: 16px; }
-.activity-memory-retention h4 { margin: 0; color: var(--text); font-size: calc(14px * var(--font-scale)); font-weight: 500; }
+.activity-memory-retention h4,
+.activity-memory-advanced > h4 { margin: 0; color: var(--text); font-size: calc(14px * var(--font-scale)); font-weight: 500; }
 .activity-memory-disclosure { display: inline-flex; align-items: center; align-self: flex-start; gap: calc(6px * var(--font-scale)); padding: 0; border: 0; color: var(--text-tertiary); background: transparent; font: inherit; font-size: calc(12px * var(--font-scale)); text-align: left; cursor: pointer; }
 .activity-memory-disclosure > svg { width: 1em; height: 1em; flex: 0 0 auto; }
 .activity-memory-disclosure[aria-expanded="true"] > .activity-memory-disclosure-chevron,
 .activity-memory-run-details[open] > summary > .activity-memory-disclosure-chevron { transform: rotate(180deg); }
 .activity-memory-disclosure:hover { color: var(--text); }
 .activity-memory-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.activity-memory-advanced-content { width: 100%; margin-top: -4px; padding-left: 14px; border-left: 1px solid var(--border); }
-.activity-memory-advanced-content[hidden],
 .activity-memory-archive-list[hidden] { display: none; }
 .activity-memory-sleep-preview,
 .activity-memory-embedding-progress,
@@ -4078,18 +4077,14 @@ select option:disabled {
 .provider-dialog > header strong { font-size: calc(16px * var(--font-scale, 1)); font-weight: 600; }
 .provider-dialog > header small { display: block; margin-top: 3px; overflow-wrap: anywhere; color: var(--text-tertiary); font-size: calc(0.75 * var(--st-rem)); }
 .provider-dialog-hint { margin: 0; color: var(--text-tertiary); font-size: calc(0.75 * var(--st-rem)); }
-.provider-dialog-body,
-.provider-dialog-advanced-body { display: flex; flex-direction: column; gap: 18px; }
+.provider-dialog-body { display: flex; flex-direction: column; gap: 18px; }
 .provider-dialog-body { min-height: 0; padding: 16px 20px; overflow-y: auto; overscroll-behavior: contain; }
-.provider-dialog-advanced { border-top: 1px solid var(--border); }
-.provider-dialog-advanced > summary { padding: 14px 0; color: var(--text); font-size: calc(0.8125 * var(--st-rem)); cursor: pointer; }
-.provider-dialog-advanced > summary > span { margin-left: 8px; color: var(--text-tertiary); font-size: calc(0.6875 * var(--st-rem)); }
 
-/* 弹窗内分区：标题行 + 说明 + 内容块，与成熟产品的设置弹窗一致。 */
 .provider-dialog-section { display: flex; flex-direction: column; gap: 8px; }
 
 .provider-dialog-section-head { display: flex; flex-direction: column; gap: 2px; }
-.provider-dialog-section-head h5 { margin: 0; color: var(--text); font-size: calc(0.8125 * var(--st-rem)); font-weight: 560; }
+.provider-dialog-section-head :is(h4, h5) { margin: 0; color: var(--text); font-size: calc(0.8125 * var(--st-rem)); font-weight: 560; }
+.provider-dialog-section-head h4 > span { margin-left: 8px; color: var(--text-tertiary); font-size: calc(0.6875 * var(--st-rem)); font-weight: 400; }
 .provider-dialog-section-head p { margin: 0; color: var(--text-tertiary); font-size: calc(0.6875 * var(--st-rem)); }
 
 /* 能力按行展示，同一列对齐开关，不让重复的自动标记挤占功能名。 */

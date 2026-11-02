@@ -177,7 +177,6 @@ test("主列表先显示，归档与完整运行历史只在展开时读取", as
     assert.deepEqual(reads, ["stats", "entries:0"]);
     assert.match(document.querySelector("#memory-list")?.textContent ?? "", /初始 0/u);
     state.deferArchived = true;
-    await click('.activity-memory-disclosure[aria-controls$="-sleep-advanced"]');
     await click('.activity-memory-disclosure[aria-controls$="-archive"]');
     assert.equal(pendingArchived.length, 1);
     assert.match(document.querySelector("#memory-list")?.textContent ?? "", /初始 0/u);
@@ -309,7 +308,6 @@ test("普通翻页只请求对应列表，显式刷新更新已展开区域并�
     await click(nextPage);
     assert.deepEqual(reads, ["entries:20"], "活动列表翻页不读取全库统计、维护与归档");
     assert.equal(pageLabel(), "2 / 6");
-    await click('.activity-memory-disclosure[aria-controls$="-sleep-advanced"]');
     await click('.activity-memory-disclosure[aria-controls$="-archive"]');
     reads.length = 0;
     await click(nextArchivePage);
@@ -330,7 +328,6 @@ test("列表在外部缩短时分页回到有效末页，只补读目标列表",
     await click(nextPage);
     assert.deepEqual(reads, ["entries:40", "entries:20"]);
     assert.equal(pageLabel(), "2 / 2");
-    await click('.activity-memory-disclosure[aria-controls$="-sleep-advanced"]');
     await click('.activity-memory-disclosure[aria-controls$="-archive"]');
     await click(nextArchivePage);
     state.archiveTotal = 26;
@@ -346,7 +343,6 @@ for (const kind of ["entries", "archived"] as const) {
     await withMemoryPanel(async ({ state, pendingEntries, pendingArchived, click, render, settle }) => {
       const archive = kind === "archived";
       if (archive) {
-        await click('.activity-memory-disclosure[aria-controls$="-sleep-advanced"]');
         await click('.activity-memory-disclosure[aria-controls$="-archive"]');
         state.deferArchived = true;
       } else state.deferEntries = true;

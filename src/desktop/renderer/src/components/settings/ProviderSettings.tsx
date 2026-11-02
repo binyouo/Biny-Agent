@@ -1525,10 +1525,10 @@ function ConnectedProviderPanel({
             </div>
           )}
           {catalog.connectionMode === "api" ? (
-            <details className="provider-endpoint-details">
-              <summary><Icon name="sliders" size={15} /><span>API 端点</span><Icon name="chevron" size={13} /></summary>
+            <section className="provider-connection-section">
+              <h4>API 端点</h4>
               {connectionFields}
-            </details>
+            </section>
           ) : null}
           <div className="provider-row-item">
             <div className="provider-row-heading">
@@ -2087,7 +2087,7 @@ function hostnameSlug(baseUrl: string): string {
   }
 }
 
-/** 模型设置：默认展示能力，高级覆盖按需展开；所有编辑仍在保存时一次提交。 */
+/** 模型设置直接展示参数；所有编辑仍在保存时一次提交。 */
 function ModelOptionsDialog({
   apiFormat,
   apiFormatOptions: formatOptions,
@@ -2195,7 +2195,6 @@ function ModelOptionsDialog({
         aria-label="模型设置"
         aria-modal="true"
         className="provider-dialog"
-        onInvalid={(event) => { if (event.target instanceof HTMLInputElement) event.target.closest("details")?.setAttribute("open", ""); }}
         onSubmit={(event) => { event.preventDefault(); void save(); }}
         role="dialog"
       >
@@ -2237,24 +2236,22 @@ function ModelOptionsDialog({
             onApiFormat={setFormatOverride}
             onDraft={setDraft}
           />
-          <details className="provider-dialog-advanced">
-            <summary>自定义请求头{headersText.trim() ? <span>已自定义</span> : null}</summary>
-            <div className="provider-dialog-advanced-body">
-              <section className="provider-dialog-section">
-                <p className="provider-dialog-hint">按服务商要求填写 JSON，仅用于当前模型。</p>
-                <textarea
-                  aria-label="自定义请求头（JSON）"
-                  disabled={saving}
-                  className="settings-field provider-json-editor"
-                  onChange={(event) => { setHeadersText(event.target.value); setHeadersError(undefined); }}
-                  placeholder={'{\n  "X-Custom-Header": "value"\n}'}
-                  rows={5}
-                  spellCheck={false}
-                  value={headersText}
-                />
-              </section>
+          <section className="provider-dialog-section">
+            <div className="provider-dialog-section-head">
+              <h4>自定义请求头{headersText.trim() ? <span>已自定义</span> : null}</h4>
+              <p>按服务商要求填写 JSON，仅用于当前模型。</p>
             </div>
-          </details>
+            <textarea
+              aria-label="自定义请求头（JSON）"
+              disabled={saving}
+              className="settings-field provider-json-editor"
+              onChange={(event) => { setHeadersText(event.target.value); setHeadersError(undefined); }}
+              placeholder={'{\n  "X-Custom-Header": "value"\n}'}
+              rows={5}
+              spellCheck={false}
+              value={headersText}
+            />
+          </section>
           {saveError ? <p className="provider-json-error" role="alert">{saveError}</p> : null}
           {headersError ? <p className="provider-json-error" role="alert">{headersError}</p> : null}
         </div>

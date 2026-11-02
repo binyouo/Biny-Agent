@@ -60,7 +60,7 @@ export function AcpProviderPanel({ catalog, connection, currentModel, onSave, on
     setBusy(true); setMessage("正在连接…"); setFailed(false);
     try {
       const configuration = input();
-      if (!configuration.providerAlias) throw new Error("请在高级设置中填写连接名称。");
+      if (!configuration.providerAlias) throw new Error("请填写连接名称。");
       const response = await onTest(configuration);
       if (!active.current) return;
       setResult(response);
@@ -82,8 +82,8 @@ export function AcpProviderPanel({ catalog, connection, currentModel, onSave, on
     <fieldset disabled={busy} className="acp-provider-fields">
       {setup ? <>
         <p>已在本机登录？直接连接，无需填写 API Key。</p>
-        <details className="provider-endpoint-details acp-setup" open={!connection}>
-          <summary><span>首次使用：安装与登录</span></summary>
+        <section className="provider-connection-section acp-setup">
+          <h4>首次使用：安装与登录</h4>
           <div className="provider-connection-fields">
             <p>在终端依次执行，登录完成后回到这里连接。安装需要 Node.js 和 npm。</p>
             {[
@@ -95,10 +95,10 @@ export function AcpProviderPanel({ catalog, connection, currentModel, onSave, on
             </div>)}
             <button type="button" className="settings-action settings-secondary-button" onClick={() => void window.biny.openExternal(setup.docsUrl).catch(() => { setMessage("无法打开安装说明，请检查系统浏览器。"); setFailed(true); })}>安装说明</button>
           </div>
-        </details>
+        </section>
       </> : null}
-      <details className="provider-endpoint-details acp-advanced" open={!catalog.acpSetup}>
-        <summary><span>{catalog.acpSetup ? "高级设置" : "启动配置"}</span></summary>
+      <section className="provider-connection-section acp-advanced">
+        <h4>启动配置</h4>
         <div className="provider-connection-fields">
           <label>连接名称<input className="settings-field" value={alias} disabled={Boolean(connection)} onChange={(event) => setAlias(event.target.value)} /></label>
           <label>启动命令<input className="settings-field" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="可执行文件或绝对路径" spellCheck={false} /></label>
@@ -107,7 +107,7 @@ export function AcpProviderPanel({ catalog, connection, currentModel, onSave, on
           <label>认证方式 ID（可选）<input className="settings-field" value={auth} onChange={(event) => setAuth(event.target.value)} spellCheck={false} /></label>
           <label>MCP 服务名（每行一个，完全访问模式下授权整个服务）<textarea className="settings-field" value={mcp} onChange={(event) => setMcp(event.target.value)} rows={3} spellCheck={false} /></label>
         </div>
-      </details>
+      </section>
       {result?.acp || model !== "default" || mode ? <>
         <label>模型<NativeSelect className="settings-field" value={model} onChange={(event) => setModel(event.target.value)}>
           <option value="default">Agent 默认模型</option>
