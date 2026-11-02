@@ -11,7 +11,7 @@ import { completeThinkingLevelMap, effectiveThinkingSelection, isKimiAlwaysThink
 import { fetchModelCatalogSnapshot } from "../ai/modelCatalog.js";
 import { accessPathThinkingLevelMap, generatedProviderModels, inferThinkingLevelMap, lookupModelMetadata, metadataProviderForEndpoint, type ModelMetadata } from "../ai/modelMetadata.js";
 import { providerDefinition } from "../ai/provider.js";
-import { automaticAnthropicThinkingOptions, type AnthropicThinkingContext } from "../ai/anthropicThinkingDefaults.js";
+import { applyAnthropicThinkingDefaults, automaticAnthropicThinkingOptions, type AnthropicThinkingContext } from "../ai/anthropicThinkingDefaults.js";
 import type { ModelCatalogEntry, ProviderDefinition } from "../ai/types.js";
 import type { AgentConfig, ModelAliasConfig, ModelApiBackend, ModelCompatibility, ModelProfile, ProviderConfig, ThinkingLevelMap } from "../config/schema.js";
 import { resolveNativePatchProtocol } from "../tools/file/editingMode.js";
@@ -71,7 +71,7 @@ export interface ProviderRuntime {
   readonly definition: ProviderDefinition;
   readonly config: ProviderConfig;
   getModels(): ModelCatalogEntry[];
-  resolveModel(model: ModelAliasConfig): ModelAliasConfig;
+  resolveModel(model: ModelAliasConfig, source?: "configured" | "catalog"): ModelAliasConfig;
   restoreModels(models: readonly ModelCatalogEntry[]): void;
   refreshModels(signal?: AbortSignal, force?: boolean): Promise<ModelCatalogEntry[]>;
   isConfigured(model?: ModelAliasConfig): boolean;
@@ -202,7 +202,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     return this.resolveApiKey() !== undefined;
   }
 
-  resolveModel(model: ModelAliasConfig): ModelAliasConfig {
+  resolveModel(model: ModelAliasConfig, source: "configured" | "catalog" = "configured"): ModelAliasConfig {
     const endpoint = this.config.baseUrl ?? this.definition.baseUrl;
     // 单模型覆盖端点时，连接原端点的缓存/基线不能跨过去覆盖新路径的限制。
     const usesProviderEndpoint = model.baseUrl === undefined
@@ -238,9 +238,19 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     const profile = this.config.modelProfiles?.[model.model];
     const profiled = profile === undefined ? healed : applyModelProfile(healed, profile);
     const accessPathModel = recoverKnownReasoningModel(profiled, generatedModel, profile?.thinkingLevelMap !== undefined || profile?.capabilities?.reasoning === false);
-    return normalizeModelMetadata(
+    const normalized = normalizeModelMetadata(
       { ...accessPathModel, compatibility: mergeCompatibility(this.config.compatibility, accessPathModel.compatibility) },
       this.definition.modelDefaults
+    );
+    const hasExplicitAnthropicThinkingConfiguration = (source === "configured"
+      && (model.thinkingLevelMap !== undefined || model.reasoning !== undefined))
+      || profile?.thinkingLevelMap !== undefined;
+    // Final-route defaults must not be written back to shared catalog entries.
+    return applyAnthropicThinkingDefaults(
+      normalized,
+      resolveProviderRequestRoute(normalized, this.config, this.definition).apiBackend,
+      { providerType: this.config.type, baseUrl: normalized.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl },
+      hasExplicitAnthropicThinkingConfiguration
     );
   }
 
