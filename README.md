@@ -4,7 +4,7 @@
 
 Biny 帮你在本地项目中对话、处理开发任务，并把会话和记忆带到后续工作中。模型由你配置，工具与工作流可通过 MCP、插件和 Skills 扩展。
 
-> Biny 是一个研究型实现：系统性调研了主流 Agent 产品在记忆体系、工具面、权限模型与会话交互上的设计取舍，并在本地优先的约束下验证这些架构思路的取舍与组合。
+> Biny 出于学习目的而开发：逐一拆解、复刻主流 Agent 产品在记忆、工具、权限与会话交互上的做法，在实践中理解这些设计的取舍，而非提供另一个生产级选项。
 
 [GitHub](https://github.com/binyouo/Biny-Agent) · [Issues](https://github.com/binyouo/Biny-Agent/issues)
 
