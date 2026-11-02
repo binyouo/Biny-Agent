@@ -6,14 +6,6 @@ Biny 帮你在本地项目中对话、处理开发任务，并把会话和记忆
 
 [GitHub](https://github.com/binyouo/Biny-Agent) · [Issues](https://github.com/binyouo/Biny-Agent/issues)
 
-## 架构
-
-![Biny 架构总览动画](architecture-panels/assets/overview.gif)
-
-Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 提供一次性任务入口。会话与记忆保存在本机。
-
-动画中的状态、日志与计数为示意值。可查看 [静态图](architecture-panels/assets/overview.png)，模块职责与数据流见 [架构说明](docs/ARCHITECTURE.md)。
-
 ## 核心能力
 
 | 能力 | Biny 提供 |
