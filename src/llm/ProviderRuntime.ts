@@ -16,6 +16,7 @@ import type { AgentConfig, ModelAliasConfig, ModelApiBackend, ModelCompatibility
 import { resolveNativePatchProtocol } from "../tools/file/editingMode.js";
 import { createVercelLanguageModel } from "./vercelModel.js";
 import { resolveProviderRequestRoute } from "./providerRequest.js";
+import { modelChatUnavailabilityReason } from "./modelChatAvailability.js";
 import { openAiCodexHeaders, refreshSubscriptionOAuthTokens, SubscriptionOAuthRefreshError } from "./subscriptionAuth.js";
 import { AiRegistry } from "./AiRegistry.js";
 import { modelCatalogCacheKey, readProviderCatalog, type ModelsStore } from "./ModelsStore.js";
@@ -189,6 +190,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   }
 
   isConfigured(model?: ModelAliasConfig): boolean {
+    if (modelChatUnavailabilityReason(model, this.config, this.definition)) return false;
     if (this.config.enabled === false) return false;
     if (this.config.type === "acp") return Boolean(this.config.acp?.command);
     const endpoint = model?.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl;
@@ -244,6 +246,8 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   }
 
   validate(model?: ModelAliasConfig): void {
+    const unavailable = modelChatUnavailabilityReason(model, this.config, this.definition);
+    if (unavailable) throw new Error(unavailable);
     if (this.config.enabled === false) throw new Error(`服务商 ${this.id} 已停用，请在模型供应商设置中启用。`);
     if (this.config.type === "acp") {
       if (!this.config.acp?.command) throw new Error(`ACP provider ${this.id} requires a launch command.`);

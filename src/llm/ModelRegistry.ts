@@ -18,6 +18,7 @@ import type {
 import { isRemovedModelId } from "../config/schema.js";
 import { providerDefinition } from "../ai/provider.js";
 import { ProviderRegistry } from "./ProviderRuntime.js";
+import { modelChatUnavailabilityReason } from "./modelChatAvailability.js";
 import type { EmbeddingModelDescriptor } from "./embedding/index.js";
 
 export type ModelSource = "configured" | "catalog";
@@ -193,6 +194,9 @@ export class ModelRegistry {
     const provider = this.config.providers[model.provider];
     const providerRuntime = this.providers.get(model.provider);
     const normalized = providerRuntime?.resolveModel(model) ?? model;
+    const unavailable = provider && providerRuntime
+      ? modelChatUnavailabilityReason(normalized, provider, providerRuntime.definition)
+      : undefined;
     const capabilities = modelCapabilities(normalized);
     const reasoning = modelReasoningConfig(normalized);
     const thinkingLevelMap = modelThinkingLevelMap(normalized);
@@ -234,7 +238,7 @@ export class ModelRegistry {
       headers: normalized.headers,
       compatibility: normalized.compatibility ?? provider?.compatibility,
       pricing: normalized.pricing,
-      showInPicker: provider?.modelProfiles?.[model.model]?.showInPicker ?? showInPicker,
+      showInPicker: !unavailable && (provider?.modelProfiles?.[model.model]?.showInPicker ?? showInPicker),
       available: providerRuntime?.isConfigured(normalized) ?? false,
       source
     };
