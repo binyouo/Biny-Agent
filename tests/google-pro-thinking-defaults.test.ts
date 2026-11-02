@@ -42,7 +42,7 @@ for (const id of ["gemini-2.5-pro", "gemini-3.1-pro-preview"]) {
 }
 
 for (const id of ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.2-pro", "models/gemini-2.5-pro", "other/gemini-3.1-pro-preview", "GEMINI-2.5-PRO", "gemini-2.5-pro-other", "unknown"]) {
-  test(`${id}: unverified IDs and Flash retain current metadata`, () => {
+  test(`${id}: other IDs retain metadata without verified endpoint context`, () => {
     const model = automaticModel(id);
     assert.equal(applyGoogleProThinkingDefaults(model, "gemini", "chat_completions"), model);
   });

@@ -17,7 +17,9 @@ import { toVercelReasoning } from "../src/agent/core/vercelModelAdapter.js";
 
 type ProviderOptions = Record<string, { reasoningEffort?: string; [field: string]: unknown } | undefined> | undefined;
 type Selection = "off" | ReasoningEffort;
-const modern = ["gemini-3.7-flash", "gemini-3.8-flash"];
+// Endpoint-gated IDs, including the documented 3.1 Pro custom-tool version.
+const customTools = "gemini-3.1-pro-preview-customtools";
+const modern = ["gemini-3.7-flash", "gemini-3.8-flash", customTools];
 const nativeEndpoint = "https://generativelanguage.googleapis.com/v1beta";
 const endpoint = `${nativeEndpoint}/openai`;
 const source = readFileSync(new URL("../src/llm/ProviderRuntime.ts", import.meta.url), "utf8");
@@ -182,22 +184,22 @@ for (const id of modern) {
     }
   });
 }
-for (const native of [false, true]) {
+for (const id of [modern[0]!, customTools]) for (const native of [false, true]) {
   const official = native ? nativeEndpoint : endpoint;
   for (const baseUrl of [official, `${official}/`]) {
-    test(`${baseUrl}: exact official endpoint with optional single slash is supported`, () => {
-      const f = fixture(modern[0]!, undefined, { provider: { apiBackend: native ? "google_generative_ai" : "chat_completions", baseUrl } });
+    test(`${id}/${baseUrl}: exact official endpoint with optional single slash is supported`, () => {
+      const f = fixture(id, undefined, { provider: { apiBackend: native ? "google_generative_ai" : "chat_completions", baseUrl } });
       assert.equal(f.normalizedModel.thinkingLevelMap?.off, null);
     });
   }
   for (const baseUrl of [`${official}//`, `${official}?version=1`, `${official}/other`, official.replace("https:", "http:"), official.replace(".com", ".com:443"), native ? endpoint : nativeEndpoint]) {
-    test(`${native ? "native" : "Chat"}/${baseUrl}: other endpoint contracts remain unchanged`, () => {
-      const f = fixture(modern[0]!, undefined, { provider: { apiBackend: native ? "google_generative_ai" : "chat_completions", baseUrl } });
+    test(`${id}/${native ? "native" : "Chat"}/${baseUrl}: other endpoint contracts remain unchanged`, () => {
+      const f = fixture(id, undefined, { provider: { apiBackend: native ? "google_generative_ai" : "chat_completions", baseUrl } });
       assert.equal(f.normalizedModel.thinkingLevelMap?.off, "none");
     });
   }
 }
-for (const id of ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.8-flash-preview", "gemini-3.8-flash-extra", "gemini-3.9-flash", "GEMINI-3.8-FLASH", "models/gemini-3.8-flash"]) {
+for (const id of ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.8-flash-preview", "gemini-3.8-flash-extra", "gemini-3.9-flash", "GEMINI-3.8-FLASH", "models/gemini-3.8-flash", "gemini-3.1-pro-preview-customtools-extra", "GEMINI-3.1-PRO-PREVIEW-CUSTOMTOOLS", "models/gemini-3.1-pro-preview-customtools", "gemini-3.1-pro-customtools"]) {
   test(`${id}: earlier Flash and unverified identifiers retain automatic off`, () => {
     for (const native of [false, true]) assert.equal(fixture(id, undefined, routeOptions(native)).normalizedModel.thinkingLevelMap?.off, "none");
   });
@@ -216,6 +218,7 @@ interface WireBody {
   generationConfig?: { thinkingConfig?: { thinkingLevel?: string; thinkingBudget?: number } };
   extra_body?: { google?: { thinking_config?: { thinking_level?: string } } };
   reasoning_effort?: string;
+  tools?: { functionDeclarations?: { name: string }[]; function?: { name: string } }[];
 }
 function response(native: boolean, streaming: boolean): Response {
   const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
@@ -237,13 +240,14 @@ async function wire(id: string, native: boolean, streaming: boolean, mode: "defa
     bodies.push(JSON.parse(String(init?.body)) as WireBody); assert.equal(bodies.length, 1);
     return response(native, streaming);
   } });
-  const params: LanguageModelV4CallOptions = { prompt: [{ role: "user", content: [{ type: "text", text: "Return OK." }] }], reasoning: toVercelReasoning(selection), providerOptions: providerOptions as LanguageModelV4CallOptions["providerOptions"] };
+  const params: LanguageModelV4CallOptions = { ...(id === customTools ? { tools: [{ type: "function" as const, name: "Inspect", inputSchema: { type: "object", properties: {} } }] } : {}), prompt: [{ role: "user", content: [{ type: "text", text: "Return OK." }] }], reasoning: toVercelReasoning(selection), providerOptions: providerOptions as LanguageModelV4CallOptions["providerOptions"] };
   const before = JSON.stringify(params);
   let text = "";
   if (streaming) { const result = await model.doStream(params); for await (const part of result.stream) { assert.notEqual(part.type, "error"); if (part.type === "text-delta") text += part.delta; } }
   else { const result = await model.doGenerate(params); text = result.content.filter(part => part.type === "text").map(part => part.text).join(""); }
   assert.equal(text, "OK"); assert.equal(JSON.stringify(params), before); assert.equal(bodies.length, 1);
   const body = bodies[0]!;
+  if (id === customTools) assert.equal(native ? body.tools?.[0]?.functionDeclarations?.[0]?.name : body.tools?.[0]?.function?.name, "Inspect");
   if (native) assert.equal(body.generationConfig?.thinkingConfig?.thinkingLevel, shouldBeOff ? "minimal" : "high");
   // Both the current compatible SDK and the #523 composed projection are valid
   // test targets. Check the actual emitted control rather than assume a wrapper.
