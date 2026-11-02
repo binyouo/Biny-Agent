@@ -30,22 +30,40 @@ export function createWindowCaptureService(getWindow: () => BrowserWindow | unde
         document.head.append(style);
         const privacyRegions = [];
         const activeDialog = Array.from(document.querySelectorAll('dialog[open]:not([data-window-capture])')).at(-1);
-        const titles = document.querySelectorAll('.biny-sidebar-session-title, .biny-thread-title-text');
-        for (const title of titles) {
-          const r = title.getBoundingClientRect();
-          if (r.width <= 0 || r.height <= 0 || r.right < 0 || r.bottom < 0 || r.x >= innerWidth || r.y >= innerHeight || getComputedStyle(title).visibility === 'hidden') continue;
-          if (activeDialog && !activeDialog.contains(title)) {
+        const occluded = (r, el) => {
+          if (activeDialog && !activeDialog.contains(el)) {
             const dialogRect = activeDialog.getBoundingClientRect();
-            if (r.x + r.width > dialogRect.x && r.x < dialogRect.x + dialogRect.width && r.y + r.height > dialogRect.y && r.y < dialogRect.y + dialogRect.height) continue;
+            if (r.x + r.width > dialogRect.x && r.x < dialogRect.x + dialogRect.width && r.y + r.height > dialogRect.y && r.y < dialogRect.y + dialogRect.height) return true;
           }
           const hit = document.elementFromPoint?.(Math.max(0, Math.min(innerWidth - 1, r.x + r.width / 2)), Math.max(0, Math.min(innerHeight - 1, r.y + r.height / 2)));
-          if (hit && hit !== title && !title.contains(hit)) continue;
-          let background = '#202020';
-          for (let parent = title; parent; parent = parent.parentElement) {
-            const color = getComputedStyle(parent).backgroundColor;
-            if (color.startsWith('rgb(') && !color.includes('/')) { background = color; break; }
+          return !!(hit && hit !== el && !el.contains(hit));
+        };
+        for (const title of document.querySelectorAll('.biny-sidebar-session-title, .biny-thread-title-text')) {
+          const r = title.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0 || r.right < 0 || r.bottom < 0 || r.x >= innerWidth || r.y >= innerHeight || getComputedStyle(title).visibility === 'hidden') continue;
+          if (occluded(r, title)) continue;
+          privacyRegions.push({ x:r.x, y:r.y, width:r.width, height:r.height, kind:'title' });
+        }
+        // 邮箱只测量文字本身，遮盖区域与标题分别返回。
+        const EMAIL = /[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+/g;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        const seen = [];
+        for (let node; (node = walker.nextNode());) {
+          const parent = node.parentElement;
+          if (!parent || ['SCRIPT','STYLE','TEXTAREA','OPTION'].includes(parent.tagName) || parent.closest('[data-window-capture]')) continue;
+          const text = node.data;
+          for (const m of text.matchAll(EMAIL)) {
+            const range = document.createRange();
+            range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
+            for (const r of range.getClientRects()) {
+              if (r.width <= 0 || r.height <= 0 || r.right < 0 || r.bottom < 0 || r.x >= innerWidth || r.y >= innerHeight) continue;
+              if (seen.some(e => Math.abs(e.x - r.x) < 2 && Math.abs(e.y - r.y) < 2 && Math.abs(e.width - r.width) < 2 && Math.abs(e.height - r.height) < 2)) continue;
+              if (occluded(r, parent)) continue;
+              seen.push(r);
+              privacyRegions.push({ x:r.x, y:r.y, width:r.width, height:r.height, kind:'account' });
+            }
+            range.detach();
           }
-          privacyRegions.push({ x:r.x, y:r.y, width:r.width, height:r.height, background });
         }
         const target = ${JSON.stringify(options.scope)} === 'content'
           ? document.querySelector('.desktop-settings-dialog[open] .settings-content') || document.querySelector('.biny-chat-scroll')
@@ -72,9 +90,9 @@ export function createWindowCaptureService(getWindow: () => BrowserWindow | unde
       const size = image.getSize();
       const scaleX = size.width / region.width;
       const scaleY = size.height / region.height;
-      const privacyRegions = surface.privacyRegions.map((item: { x: number; y: number; width: number; height: number; background: string }) => ({
+      const privacyRegions = surface.privacyRegions.map((item: { x: number; y: number; width: number; height: number; kind: "title" | "account" }) => ({
         x: (item.x - region.x) * scaleX, y: (item.y - region.y) * scaleY,
-        width: item.width * scaleX, height: item.height * scaleY, background: item.background
+        width: item.width * scaleX, height: item.height * scaleY, kind: item.kind
       }));
       let dataUrl = image.toDataURL();
       if (options.privacy && privacyRegions.length) {
