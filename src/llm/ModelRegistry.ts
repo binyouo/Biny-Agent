@@ -1,3 +1,5 @@
+import { isOrdinaryCatalogModelSupported } from "../ai/ordinaryModelCatalog.js";
+import { resolveProviderRequestRoute } from "./providerRequest.js";
 /**
  * 统一模型注册表。
  *
@@ -116,6 +118,7 @@ export class ModelRegistry {
     for (const [providerAlias, entries] of this.catalogs) {
       for (const entry of entries) {
         if (configuredKeys.has(modelKey(providerAlias, entry.id))) continue;
+        if (!this.supportsCatalogEntry(providerAlias, entry)) continue;
         const alias = catalogModelAlias(providerAlias, entry.id);
         choices.push(this.toChoice(
           alias,
@@ -166,7 +169,7 @@ export class ModelRegistry {
         return { alias: configuredEntry[0], model: provider?.resolveModel(configuredEntry[1]) ?? configuredEntry[1], providerAlias, source: "configured" };
       }
       const catalogEntry = this.catalogs.get(providerAlias)?.find((entry) => entry.id === modelId);
-      if (catalogEntry) {
+      if (catalogEntry && this.supportsCatalogEntry(providerAlias, catalogEntry)) {
         const provider = this.providers.get(providerAlias);
         const model = catalogEntryToModel(catalogEntry);
         return {
@@ -180,13 +183,26 @@ export class ModelRegistry {
 
     for (const [providerAlias, entries] of this.catalogs) {
       const entry = entries.find((candidate) => catalogModelAlias(providerAlias, candidate.id) === aliasOrReference);
-      if (entry) {
+      if (entry && this.supportsCatalogEntry(providerAlias, entry)) {
         const provider = this.providers.get(providerAlias);
         const model = catalogEntryToModel(entry);
         return { alias: catalogModelAlias(providerAlias, entry.id), model: provider?.resolveModel(model) ?? model, providerAlias, source: "catalog" };
       }
     }
     return undefined;
+  }
+
+  private supportsCatalogEntry(providerAlias: string, entry: ModelCatalogEntry): boolean {
+    const provider = this.config.providers[providerAlias];
+    if (!provider) return true;
+    const definition = this.providers.get(providerAlias)?.definition ?? providerDefinition(provider.type);
+    // Visibility preferences do not add an Interactions transport. Configured
+    // model aliases are handled before these automatic catalog branches.
+    return isOrdinaryCatalogModelSupported(
+      entry.id,
+      resolveProviderRequestRoute(catalogEntryToModel(entry), provider, definition).apiBackend,
+      entry.baseUrl ?? provider.baseUrl ?? definition.baseUrl
+    );
   }
 
   private toChoice(alias: string, model: ModelAliasConfig, source: ModelSource, showInPicker: boolean): ModelChoice {

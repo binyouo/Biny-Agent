@@ -1,3 +1,4 @@
+import { isOrdinaryCatalogModelSupported } from "../ai/ordinaryModelCatalog.js";
 /**
  * Provider 运行时。
  *
@@ -115,15 +116,20 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
 
   getModels(): ModelCatalogEntry[] {
     const models = this.mergedCatalog().map((model) => this.normalizeCatalogEntry(model));
+    const supported = (entry: ModelCatalogEntry) => isOrdinaryCatalogModelSupported(
+      entry.id,
+      resolveProviderRequestRoute(catalogEntryToModel(entry), this.config, this.definition).apiBackend,
+      entry.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl
+    );
     try {
       const filtered = this.definition.filterModels?.(models, {
         configured: this.isConfigured(),
         authMode: this.config.authMode ?? this.definition.authModes[0]
       }) ?? models;
-      return [...filtered].map((model) => ({ ...model }));
+      return [...filtered].filter(supported).map((model) => ({ ...model }));
     } catch {
-      // 一个扩展过滤器异常不能让整个模型菜单消失，退回完整目录。
-      return models.map((model) => ({ ...model }));
+      // 一个扩展过滤器异常不能让整个模型菜单消失，退回仍适用于当前 API 的目录。
+      return models.filter(supported).map((model) => ({ ...model }));
     }
   }
 
