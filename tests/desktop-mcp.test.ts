@@ -159,6 +159,17 @@ try {
   const file = JSON.parse(await readFile(path.join(root, "config.json"), "utf8"));
   assert.equal(file.extensions.mcp.remote.startupTimeoutMs, 12_000);
   assert.equal(file.extensions.mcp.remote.timeoutMs, 90_000);
+  const created = await store.loadVersioned!();
+  const restricted = structuredClone(created.config);
+  restricted.extensions.mcp.remote!.exposure = "codemode";
+  restricted.extensions.mcp.remote!.toolExposure = { erase: "hidden", read: "deferred" };
+  await store.saveVersioned!(restricted, created.revision);
+  const configured = await store.loadVersioned!();
+  await persisted.upsertServer(undefined, "remote", toProtocolDraft({ ...deadlines, name: "renamed" }), configured.revision);
+  const renamed = JSON.parse(await readFile(path.join(root, "config.json"), "utf8"));
+  assert.equal(renamed.extensions.mcp.remote, undefined);
+  assert.equal(renamed.extensions.mcp.renamed.exposure, "codemode");
+  assert.deepEqual(renamed.extensions.mcp.renamed.toolExposure, { erase: "hidden", read: "deferred" });
 } finally { await rm(root, { recursive: true, force: true }); }
 
 console.log("desktop MCP service tests passed");
