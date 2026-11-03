@@ -25,6 +25,10 @@ export async function evalRunCommand(workspaceRoot: string, options: EvalRunOpti
     throw new Error(`No matching eval tasks. Available: ${builtinEvalTasks.map((task) => task.id).join(", ")}`);
   }
 
+  const knownIds = new Set(builtinEvalTasks.map((task) => task.id));
+  const unknownIds = [...new Set(options.tasks?.filter((id) => !knownIds.has(id)) ?? [])];
+  if (unknownIds.length) throw new Error(`Unknown eval task IDs: ${unknownIds.join(", ")}. Available: ${[...knownIds].join(", ")}`);
+
   const { createFileConfigStore } = await import("../../config/store.js");
   const config = await createFileConfigStore(workspaceRoot).load();
   const report = await runEvalSuite({

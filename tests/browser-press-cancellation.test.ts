@@ -195,7 +195,7 @@ for (const key of ["Enter", "x"]) {
       const f = fixture({ key }); await (selector ? f.request() : f.noSelectorRequest());
       assert.deepEqual(f.events, selector ? ["reveal", "wait", "focus", "keyDown", "keyUp", "state"] : ["keyDown", "keyUp", "state"]);
       const down = f.commands.find(command => command.params.type === "keyDown");
-      assert.equal(down?.params.text, key.length === 1 ? key : undefined);
+      assert.equal(down?.params.text, key === "Enter" ? "\r" : key.length === 1 ? key : undefined);
       assert.equal(f.responses[0]?.ok, true);
       assert.equal(f.listenerCount(), 0);
     });

@@ -218,15 +218,18 @@ async function skillCreateCommand(name: string, source: string): Promise<void> {
   assertSkillDirectoryName(name);
   const content = source === "-" ? await readStdin() : await fs.readFile(source, "utf8");
   parseManagedSkillMetadata(content, name);
-  const target = path.join(defaultManagedSkillRoot(), name);
-  await fs.mkdir(defaultManagedSkillRoot(), { recursive: true });
-  await fs.mkdir(target);
-  try {
-    await fs.writeFile(path.join(target, "SKILL.md"), content, { encoding: "utf8", flag: "wx", mode: 0o644 });
-  } catch (error) {
-    await fs.rm(target, { recursive: true, force: true });
-    throw error;
-  }
+  const root = defaultManagedSkillRoot();
+  const target = path.join(root, name);
+  await withGlobalConfigWriteLock(root, async () => {
+    // Keep reservation, publication and failure cleanup exclusive with other managed-root writers.
+    await fs.mkdir(target);
+    try {
+      await fs.writeFile(path.join(target, "SKILL.md"), content, { encoding: "utf8", flag: "wx", mode: 0o644 });
+    } catch (error) {
+      await fs.rm(target, { recursive: true, force: true });
+      throw error;
+    }
+  });
   console.log(`Installed personal Skill "${name}" at ${target}`);
 }
 

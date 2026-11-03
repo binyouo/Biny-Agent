@@ -8,6 +8,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { withCompatibleToolMetadata } from "./compatibleToolMetadata.js";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import type { ModelApiBackend, ModelCompatibility, ProviderConfig } from "../config/schema.js";
 import { createPrivacyFetch, type PrivacyFetchContext } from "../privacy/privacyFetch.js";
@@ -102,5 +103,9 @@ export function createVercelLanguageModel(input: VercelModelInput): LanguageMode
       };
     }
   });
-  return withChatToolImages(provider(input.modelId), input.supportsVision);
+  const model = provider(input.modelId);
+  return withChatToolImages(
+    input.providerType === "gemini" ? withCompatibleToolMetadata(model) : model,
+    input.supportsVision
+  );
 }
