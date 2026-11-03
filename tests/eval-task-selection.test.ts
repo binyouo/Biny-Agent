@@ -6,6 +6,20 @@ import path from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { evalRunCommand as runActualEval } from "../src/cli/commands/evals.js";
+import { builtinEvalTasks } from "../src/evals/suite.js";
+
+test("public eval command rejects a partly unknown selection before model work", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-eval-selection-entry-"));
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => { requests += 1; throw new Error("Unexpected network request"); });
+  try {
+    assert.ok(builtinEvalTasks[0]);
+    await assert.rejects(runActualEval(root, { tasks: [builtinEvalTasks[0].id, "not-a-real-eval"] }), /Unknown eval task IDs: not-a-real-eval/u);
+    assert.equal(requests, 0);
+    assert.deepEqual(await fs.readdir(root), []);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
 
 // Execute the actual CLI function and report writes. Only configuration loading and
 // the expensive model-suite boundary are inert; no model/runtime is imported.
