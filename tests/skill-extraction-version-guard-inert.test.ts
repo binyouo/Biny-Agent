@@ -178,10 +178,18 @@ test("candidate storage is entirely under the shared lock; refresh and terminal 
   assert.deepEqual(f.noticeLocks, [false, false, true, false]);
 });
 
-test("ordinary directory creation and same-name update retain existing behavior", async () => {
+test("ordinary creation succeeds while an unrequested same-name replacement is rejected", async () => {
   for (const entry of ["missing", "directory"] as const) {
-    const f = fixture(entry), outcome = await f.run();
-    assert.equal(outcome.stage, "done"); assert.equal(outcome.updated, entry === "directory");
+    const f = fixture(entry);
+    if (entry === "directory") {
+      await assert.rejects(f.run(), /同名技能已存在/u);
+      assert.equal(f.files.get(f.document), "old");
+      assert.equal(f.refreshes, 0);
+      assert.deepEqual(f.notices.map((item) => item.stage), ["analyzing", "extracting", "failed"]);
+      continue;
+    }
+    const outcome = await f.run();
+    assert.equal(outcome.stage, "done"); assert.equal(outcome.updated, false);
     assert.equal(outcome.installedPath, f.document); assert.equal(f.files.get(f.document), "new");
     assert.equal(f.refreshes, 1);
     assert.deepEqual(f.notices.map((item) => item.stage), ["analyzing", "extracting", "saving", "done"]);
