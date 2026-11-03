@@ -124,8 +124,19 @@ if (process.argv[2] === "paused-report-crash-child") {
       await client.waitForIdle();
       assert.equal(repeatedA, 0);
       assert.equal(secondReports, 1);
-      assert.deepEqual(jsonValue(commands!.taskRuns.get(boundary.taskRunId)), boundary.completedTask,
-        "reconciliation preserves every JSON-representable task/attempt field, including output");
+      const restoredTask = commands!.taskRuns.get(boundary.taskRunId)!;
+      const receiptId = `task-result:${boundary.completedTask.terminalEventId}`;
+      const receipts = commands!.taskRuns.events(boundary.taskRunId).filter(event => event.eventType === "task.message.received");
+      assert.equal(receipts.length, 1, "the resumed parent acknowledges the persisted report exactly once");
+      assert.deepEqual(receipts[0]!.payload, {
+        taskRunId: boundary.taskRunId, attemptId: boundary.completedTask.attempts[0]!.attemptId, messageId: receiptId
+      });
+      assert.equal(commands!.taskRuns.hasMessageReceipt(boundary.taskRunId, receiptId), true);
+      assert.equal(restoredTask.revision, boundary.completedTask.revision + 1);
+      assert.equal(restoredTask.updatedAt, receipts[0]!.createdAt);
+      assert.deepEqual(jsonValue({ ...restoredTask,
+        revision: boundary.completedTask.revision, updatedAt: boundary.completedTask.updatedAt
+      }), boundary.completedTask, "report delivery changes only its receipt metadata; task/attempt facts and output remain intact");
       const secondTask = commands!.taskRuns.get(observed.nodes[1]!.taskRunId!)!;
       assert.equal(secondTask.attempts.length, 1);
       assert.equal(secondTask.status, "completed");
