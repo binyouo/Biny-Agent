@@ -493,6 +493,7 @@ function readCandidateArtifacts(artifacts: unknown): TaskCandidateArtifacts | un
     || !isStringArray(repairScope.changedPaths)
     || !isStringArray(repairScope.violationPaths)) return undefined;
   return {
+    ...record,
     output: record.output,
     communication: record.communication,
     definitionFingerprint: record.definitionFingerprint,
