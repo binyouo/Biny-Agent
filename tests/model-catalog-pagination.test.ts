@@ -1,3 +1,6 @@
+import { fetchModelCatalogSnapshot as actualCatalogSnapshot } from "../src/ai/modelCatalog.js";
+import { providerDefinition } from "../src/ai/provider.js";
+import type { ProviderConfig } from "../src/config/schema.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -179,4 +182,32 @@ test("reverse pagination is rejected explicitly rather than mixing before_id and
   const f = fixture(() => page("first", true), "anthropic", "https://catalog.fixture.invalid/v1/models?before_id=last");
   await assert.rejects(f.publish(), /before_id|reverse/i);
   assert.equal(f.calls.length, 1); assert.equal(f.writes.length, 0);
+});
+
+const actualConfig: ProviderConfig = { type: "anthropic", apiKey: "synthetic-test-key", modelsEndpoint: "https://catalog.example/v1/models?limit=1", retry: { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 } };
+const actualRequest = { alias: "fixture", config: actualConfig, definition: providerDefinition("anthropic") };
+
+test("complete model-catalog module follows opaque cursors and does not reuse page validators", async () => {
+  const calls: Array<{ url: URL; headers: Headers }> = [];
+  const result = await actualCatalogSnapshot(actualRequest, undefined, { etag: '"old-page"' }, async (input, init) => {
+    calls.push({ url: new URL(String(input)), headers: new Headers(init?.headers) });
+    return new Response(JSON.stringify(calls.length === 1
+      ? { data: [{ id: "claude-fixture-a", display_name: "Fixture A" }], has_more: true, last_id: "cursor /+" }
+      : { data: [{ id: "claude-fixture-b", display_name: "Fixture B" }], has_more: false, last_id: "claude-fixture-b" }));
+  });
+  assert.deepEqual(result.models?.map(model => model.id), ["claude-fixture-a", "claude-fixture-b"]);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.url.searchParams.get("after_id"), null);
+  assert.equal(calls[1]!.url.searchParams.get("after_id"), "cursor /+");
+  assert.ok(calls.every(call => call.headers.get("if-none-match") === null));
+  assert.equal(result.etag, undefined);
+});
+
+test("complete model-catalog module rejects a failed continuation instead of returning a prefix", async () => {
+  let calls = 0;
+  await assert.rejects(actualCatalogSnapshot(actualRequest, undefined, {}, async () => {
+    if (++calls === 2) throw new Error("continuation unavailable");
+    return new Response(JSON.stringify({ data: [{ id: "claude-fixture-a" }], has_more: true, last_id: "claude-fixture-a" }));
+  }), /continuation unavailable/u);
+  assert.equal(calls, 2);
 });
