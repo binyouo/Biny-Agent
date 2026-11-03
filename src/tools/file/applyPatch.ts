@@ -20,7 +20,18 @@ export const patchArgsSchema = z.object({
 export type PatchArgs = z.infer<typeof patchArgsSchema>;
 
 export function patchContent(content: string, operation: PatchArgs["operation"]): string {
-  return operation.type === "delete_file" ? "" : applyDiff(content, operation.diff, operation.type === "create_file" ? "create" : "default");
+  if (operation.type === "delete_file") return "";
+  // Match against the original text: removing a BOM first can change which
+  // repeated context wins the SDK's exact-before-fuzzy matching priority.
+  const result = applyDiff(content, operation.diff, operation.type === "create_file" ? "create" : "default");
+  if (operation.type === "update_file" && content.startsWith("\uFEFF")
+    && !content.includes("\uFEFF", 1) && !operation.diff.includes("\uFEFF")) {
+    // With one original marker and none in the diff, any surviving marker is
+    // the encoding preamble. Restore its position after patching, including an
+    // empty update (BOM-only). Explicit or ambiguous multi-BOM edits stay raw.
+    return "\uFEFF" + result.replace("\uFEFF", "");
+  }
+  return result;
 }
 
 export function createApplyPatchTool(context: ToolContext): Tool<PatchArgs, FileChangeResult> {
