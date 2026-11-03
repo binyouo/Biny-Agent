@@ -1,33 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { z } from "zod";
+import { applyDiff } from "@openai/agents-core/utils";
+import { createApplyPatchTool, patchContent, patchArgsSchema as schema } from "../src/tools/file/applyPatch.js";
 
-type Operation = { type: "create_file" | "update_file"; path: string; diff: string } | { type: "delete_file"; path: string };
-type Args = { callId: string; operation: Operation };
-type ApplyDiff = (input: string, diff: string, mode?: "default" | "create") => string;
-type PatchContent = (content: string, operation: Operation) => string;
-const require = createRequire(import.meta.url);
-// Load the pinned pure leaf, not the utils barrel's unrelated lifecycle exports.
-const { applyDiff } = require(join(dirname(require.resolve("@openai/agents-core/utils")), "applyDiff.js")) as { applyDiff: ApplyDiff };
-const source = readFileSync(new URL("../src/tools/file/applyPatch.ts", import.meta.url), "utf8");
-const ast = ts.createSourceFile("applyPatch.ts", source, ts.ScriptTarget.Latest, true);
-const functions = ast.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "patchContent");
-const schemas = ast.statements.filter((node): node is ts.VariableStatement => ts.isVariableStatement(node)
-  && node.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === "patchArgsSchema"));
-assert.equal(functions.length, 1);
-assert.equal(schemas.length, 1);
-function evaluate<T>(code: string, scope: Record<string, unknown>): T {
-  return runInNewContext(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText, scope) as T;
-}
-// Only the complete pure declaration and actual schema are selected. No tool
-// constructor, file preparation, writer, permission or execution callback runs.
-const patchContent = evaluate<PatchContent>(functions[0]!.getText(ast).replace(/^export /u, "") + "\npatchContent;", { applyDiff });
-const schema = evaluate<z.ZodType<Args>>(schemas[0]!.getText(ast).replace(/^export /u, "") + "\npatchArgsSchema;", { z });
 const bom = "\uFEFF";
 function update(content: string, diff: string): string {
   const args = schema.parse({ callId: "synthetic-call", operation: { type: "update_file", path: "sample.ps1", diff } });
@@ -39,22 +17,20 @@ function update(content: string, diff: string): string {
   return result;
 }
 
-test("the existing prepared-content expression uses the corrected pure projection", () => {
-  const calls: ts.CallExpression[] = [];
-  function find(node: ts.Node): void {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "patchContent") calls.push(node);
-    ts.forEachChild(node, find);
-  }
-  find(ast);
-  assert.equal(calls.length, 1);
-  const call = calls[0]!;
-  assert.ok(ts.isPropertyAssignment(call.parent));
-  assert.equal(call.parent.name.getText(ast), "content");
-  assert.deepEqual(call.arguments.map(argument => argument.getText(ast)), ["before.content", "operation"]);
-  const before = Object.freeze({ content: bom + "one\n" });
-  const operation = Object.freeze({ type: "update_file", path: "sample.ps1", diff: "@@\n+comment\n one\n" });
-  // Evaluate only the content value; the surrounding prepared tool is never built.
-  assert.equal(evaluate<string>(call.getText(ast), { before, operation, patchContent }), bom + "comment\none\n");
+test("prepared patch execution preserves the BOM in committed file bytes", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-native-patch-bom-"));
+  try {
+    const file = path.join(root, "sample.ps1");
+    await fs.writeFile(file, bom + "one\n");
+    const tool = createApplyPatchTool({ workspaceRoot: root, ignore: [] });
+    const prepared = await tool.resolveExecution(schema.parse({ callId: "bom-update", operation: {
+      type: "update_file", path: "sample.ps1", diff: "@@\n+comment\n one\n"
+    } }));
+    assert.ok(!("isError" in prepared));
+    const result = await prepared.execute({ toolCallId: "bom-update" });
+    assert.equal(result.change.committed, true);
+    assert.deepEqual(await fs.readFile(file), Buffer.from(bom + "comment\none\n"));
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 for (const eol of ["\n", "\r\n"]) for (const terminal of [false, true]) for (const first of ["# old", " \t# old \t"]) {
