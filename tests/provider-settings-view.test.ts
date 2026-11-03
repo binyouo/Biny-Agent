@@ -80,16 +80,18 @@ for (const enabled of [true, false]) {
   });
 }
 
-test("空模型面板只呈现添加引导，连接地址与协议默认收起；保护紧凑的首次配置流程", () => {
+test("空模型面板呈现添加引导，连接地址与协议直接可见", () => {
   const html = renderConnection(true);
   assert.doesNotMatch(html, /aria-label="搜索模型"/u);
-  assert.match(html, /<details class="provider-endpoint-details">/u);
+  assert.match(html, /<section class="provider-connection-section">/u);
+  assert.doesNotMatch(html, /<details|<summary/u);
   assert.match(html, /API 端点/u);
 });
 
-test("内置服务商也提供默认收起的端点设置，常用密钥和模型保持可见", () => {
+test("内置服务商的端点设置、常用密钥和模型直接可见", () => {
   const html = renderConnection(true, "deepseek");
-  assert.ok(/<details class="provider-endpoint-details">/u.test(html), "built-in endpoints should be accessible in a disclosure");
+  assert.match(html, /<section class="provider-connection-section">/u);
+  assert.doesNotMatch(html, /<details|<summary/u);
   assert.ok(/服务地址/u.test(html));
   assert.ok(/API 格式/u.test(html));
 });

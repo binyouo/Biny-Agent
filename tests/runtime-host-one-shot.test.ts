@@ -97,6 +97,11 @@ test("one-shot Host runs isolate overrides, persist one terminal and support ver
     let abandoned: string;
     try {
       await assert.rejects(other.executeRun(prepared.sessionId, "finish", [], options, "foreign"), /fresh prepared session/u);
+      const released = (await other.ensureSession({ runOptions: options, writeIntent: true })).sessionId;
+      await other.releaseSessionClaim();
+      const resident = await other.request<Array<{ sessionId: string }>>("session.list");
+      assert.equal(resident.some(entry => entry.sessionId === released), false, "explicit release closes this client's unstarted preparation");
+      assert.equal(resident.some(entry => entry.sessionId === prepared.sessionId), true, "explicit release preserves another client's preparation");
       abandoned = (await other.ensureSession({ runOptions: options, writeIntent: true })).sessionId;
     } finally { await other.close(); }
     const expiry = Date.now() + 5_000;

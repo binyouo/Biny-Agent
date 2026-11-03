@@ -56,7 +56,6 @@ for (const mutation of ["before-read", "during-extraction"] as const) {
       }
       await index.indexSessionFile("shared-session", aliasFile);
       assert.equal(swapped, true);
-      assert.deepEqual(index.queryClues({ ...range, sourcePaths: [firstFile] }).clues.map(clue => clue.quote), [firstText]);
       assert.deepEqual(index.queryFacts({ ...range, sourcePaths: [firstFile] }).facts.map(fact => fact.quote), [firstText]);
       assert.deepEqual(index.queryFacts({ ...range, sourcePaths: [secondFile] }).facts.map(fact => fact.quote), [secondText]);
       assert.equal(await readFile(firstFile, "utf8"), message(firstText));
@@ -91,22 +90,20 @@ test("date details and temporal projections isolate same-named sessions by sourc
     await index.refreshAll();
     for (const [position, project] of projects.entries()) {
       const detail = await service.query(range, [project]);
-      assert.deepEqual(detail.clues.map((clue) => clue.quote), [texts[position]], "project clues must come from its own file");
       assert.deepEqual(detail.facts.map((fact) => fact.quote), [texts[position]], "project facts must come from its own file");
       assert.deepEqual(detail.conversations.map((hit) => hit.quote), [texts[position]]);
     }
-    assert.deepEqual(index.queryClues(range).clues.map((clue) => clue.quote).sort(), [...texts].sort());
     assert.deepEqual(index.queryFacts(range).facts.map((fact) => fact.quote).sort(), [...texts].sort());
-    const originalIds = index.queryClues(range).clues.map((clue) => clue.id);
+    const originalIds = index.queryFacts(range).facts.map((fact) => fact.id);
     assert.equal(new Set(originalIds).size, 2);
     await index.indexSessionFile("shared-session", files[0]!);
-    assert.deepEqual(index.queryClues(range).clues.map((clue) => clue.id), originalIds);
+    assert.deepEqual(index.queryFacts(range).facts.map((fact) => fact.id), originalIds);
     service.close();
     const reopened = new DateReferenceDetailService(root);
     try {
       assert.deepEqual((await reopened.query(range, [projects[1]!])).facts.map((fact) => fact.quote), [texts[1]]);
       await rm(files[0]!);
-      assert.deepEqual((await reopened.query(range, [projects[0]!])).clues, []);
+      assert.deepEqual((await reopened.query(range, [projects[0]!])).facts, []);
       assert.deepEqual((await reopened.query(range, [projects[1]!])).facts.map((fact) => fact.quote), [texts[1]]);
       assert.equal(await readFile(files[1]!, "utf8"), message(texts[1]!));
     } finally { reopened.close(); }
@@ -166,17 +163,14 @@ test("legacy temporal state migrates only with matching file and text while unbo
     assert.equal(index.queryFacts({ ...range, sourcePaths: [files[1]!] }).facts.length, 0, "a same-text copy must not inherit the owner's explicit facts");
     assert.equal(index.queryFacts(range).facts.length, 3, "global queries retain legacy facts before source verification");
     const ownerDetail = await service.query({ ...range, endDate: "2026-10-05" }, [projects[0]!]);
-    assert.deepEqual(ownerDetail.clues.map((clue) => clue.date), ["2026-10-03"], "migration preserves the ignored clue");
     assert.deepEqual(ownerDetail.facts.map((fact) => fact.title), ["开会"]);
-    const ownerPage = index.queryClues({ ...range, today: "2026-10-03", sourcePaths: [files[0]!] });
-    assert.equal(ownerPage.clues[0]?.seen, true);
-    assert.equal(ownerPage.unread, 0);
-    assert.equal(index.queryClues({ ...range, today: "2026-10-03", sourcePaths: [files[1]!] }).unread, 1);
-    assert.deepEqual(index.queryClues({ ...range, sourcePaths: [] }).clues, []);
     assert.deepEqual(index.queryFacts({ ...range, sourcePaths: [files[1]!] }).facts, []);
+    assert.deepEqual(index.queryFacts({ ...range, sourcePaths: [] }).facts, []);
+    assert.deepEqual(database.prepare("SELECT name FROM sqlite_master WHERE name IN ('temporal_seen','temporal_clues')").all(), [],
+      "retired clue tables are removed without deleting explicit work facts");
+    assert.equal((database.prepare("PRAGMA table_info(temporal_sources)").all() as Array<{ name: string }>).some(column => column.name === "parser"), false);
     index.close();
     await index.refreshAll();
-    assert.equal(index.queryClues({ ...range, today: "2026-10-03", sourcePaths: [files[0]!] }).clues[0]?.seen, true);
     assert.equal(index.queryFacts(range).facts.length, 3);
     assert.equal(index.queryFacts(range).facts.find((fact) => fact.id === "unbound-fact")?.sourcePath, undefined);
     assert.equal(index.queryFacts(range).facts.find((fact) => fact.id === "edited-fact")?.sourcePath, undefined);

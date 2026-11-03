@@ -177,41 +177,46 @@ test("quick chat uses the same message surfaces and primary-button foreground", 
   assert.match(read("App.tsx"), /QuickChatApp/u);
 });
 
-test("focused text fields and input wrappers do not add edge halos", () => {
-  for (const entry of [...styles, { name: "quickchat", source: quickchat }]) {
-    for (const rule of entry.source.matchAll(/([^{}]+)\{([^{}]+)\}/gu)) {
-      const selector = rule[1]!.replace(/\/\*[\s\S]*?\*\//gu, "").trim();
-      if (!selector.includes(":focus")) continue;
-      if (/button:focus-visible|settings-switch-row:focus-visible|settings-model-picker-option:focus-visible|input\[type="range"\]/u.test(selector)) continue;
-      const shadow = /(?:^|;)\s*box-shadow:\s*([^;]+)/u.exec(rule[2]!);
-      if (shadow) assert.doesNotMatch(shadow[1]!, /\b0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+\S+/u, `${entry.name}: ${selector}`);
-    }
-  }
+test("field focus rings share the theme accent and remain translucent", () => {
+  assert.equal(declaration(theme, ":root", "--field-focus-ring"), "color-mix(in srgb, var(--accent) 40%, transparent)");
+  assert.equal(declaration(desktop, ".desktop-settings-dialog", "--st-field-ring"), "var(--field-focus-ring)");
+  for (const selector of [
+    ".biny-workspace-context-create > input:focus",
+    ".biny-queued-message-row > textarea:focus",
+    ".biny-mcp-search:focus-within",
+    ".biny-mcp-field input:focus",
+    ".biny-mcp-field textarea:focus",
+    ".biny-mcp-install-fields > select:focus",
+    ".biny-mcp-install-parameters input:focus",
+    ".settings-extension-search:focus-within",
+    ".inspector-file-filter:focus-within",
+    ".provider-manual-row input:focus",
+    ".provider-json-editor:focus",
+    ".permission-confirmation input:focus-visible"
+  ]) assert.equal(declaration(desktop, selector, "box-shadow"), "0 0 0 2px var(--field-focus-ring)", selector);
 });
 
-test("search, preference and dialog fields use focus borders without outer outlines", () => {
-  for (const selector of [
-    ".settings-search:focus-within",
-    '.settings-preferences :is(select, input[type="number"]):focus-visible',
-    ".provider-dialog input:focus-visible",
-    ".provider-dialog select:focus-visible",
-    ".inspector-browser-address:focus-within",
-    ".user-message-editor:focus-within"
-  ]) {
-    assert.ok(declaration(desktop, selector, "border-color"), selector);
+test("search, preference and dialog fields use attached rings without offset outlines", () => {
+  for (const [selector, token] of [
+    [".settings-search:focus-within", "--st-field-ring"],
+    ['.settings-preferences :is(select, input[type="number"]):focus-visible', "--st-field-ring"],
+    [".provider-dialog input:focus-visible", "--field-focus-ring"],
+    [".provider-dialog select:focus-visible", "--field-focus-ring"],
+    [".inspector-browser-address:focus-within", "--field-focus-ring"],
+    [".desktop-dialog-content .astryx-text-input:focus-within", "--field-focus-ring"]
+  ] as const) {
+    assert.equal(declaration(desktop, selector, "box-shadow"), `0 0 0 2px var(${token})`, selector);
     const outline = declaration(desktop, selector, "outline");
     assert.ok(outline === undefined || outline === "none" || outline === "0", `${selector}: ${outline}`);
   }
-  assert.ok(declaration(quickchat, ".quickchat-input:focus", "border-color"));
-  assert.equal(declaration(desktop, ".desktop-dialog-content .astryx-text-input:focus-within", "box-shadow"), "none");
-  assert.ok(declaration(desktop, ".desktop-dialog-content .astryx-text-input:focus-within", "border-color"));
+  assert.equal(declaration(quickchat, ".quickchat-input:focus", "box-shadow"), "0 0 0 2px var(--field-focus-ring)");
+  assert.equal(declaration(quickchat, ".quickchat-input", "border"), "1px solid var(--quickchat-border)");
 });
 
-test("Appshot shortcut select draws its own idle border and accent focus border without an outer halo", () => {
-  // 可见外框落在 select 本身，外框与可点击范围完全重合。
+test("Appshot shortcut select keeps its neutral border with a translucent keyboard focus ring", () => {
   assert.equal(declaration(desktop, ".appshot-settings .appshot-select select", "border"), "1px solid var(--border-subtle)");
-  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus", "border-color"), "var(--accent)");
-  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus", "box-shadow"), undefined);
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "border-color"), undefined);
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "box-shadow"), "0 0 0 2px var(--field-focus-ring)");
   assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "outline"), "none");
 });
 
@@ -238,23 +243,20 @@ test("client chat input retains its neutral border when the textarea receives fo
   }
 });
 
-test("other input focus preserves normal elevation rather than replacing it with a glow", () => {
-  for (const [base, focused] of [
-    [".user-message-editor", ".user-message-editor:focus-within"],
-    [".desktop-settings-dialog .settings-modal .settings-model-picker-trigger", ".desktop-settings-dialog .settings-modal .settings-model-picker-trigger:focus-visible"]
-  ]) {
-    const shadow = declaration(desktop, base!, "box-shadow");
-    assert.ok(shadow, base);
-    assert.equal(declaration(desktop, focused!, "box-shadow") ?? shadow, shadow, focused);
-  }
+test("field focus retains editor elevation and keeps picker rings attached", () => {
+  assert.equal(declaration(desktop, ".user-message-editor", "box-shadow"), "var(--biny-shadow)");
+  assert.equal(declaration(desktop, ".user-message-editor:focus-within", "box-shadow"), "0 0 0 2px var(--field-focus-ring), var(--biny-shadow)");
+  const picker = ".desktop-settings-dialog .settings-modal .settings-model-picker-trigger:focus-visible";
+  assert.equal(declaration(desktop, picker, "box-shadow"), "0 0 0 2px var(--st-field-ring)");
+  assert.equal(declaration(desktop, picker, "outline"), "none");
 });
 
-test("removing field halos retains keyboard focus indicators on action controls", () => {
-  for (const selector of [
-    ".biny-composer-action:focus-visible",
-    ".settings-search button:focus-visible",
-    ".provider-dialog summary:focus-visible"
-  ]) assert.match(declaration(desktop, selector, "outline") ?? "", /^\d+px solid var\(--(?:biny-focus|accent)\)$/u, selector);
+test("action controls retain explicit keyboard focus indicators", () => {
+  for (const [selector, expected] of [
+    [".biny-composer-action:focus-visible", "2px solid var(--biny-focus)"],
+    [".settings-search button:focus-visible", "2px solid var(--st-field-ring)"],
+    [".provider-dialog summary:focus-visible", "2px solid var(--accent)"]
+  ] as const) assert.equal(declaration(desktop, selector, "outline"), expected, selector);
 });
 
 test("all product styles use the shared palette rather than local literals or missing aliases", () => {
@@ -348,9 +350,9 @@ test("terminal UI palettes share the neutral surfaces and emphasis family", () =
   }
 });
 
-test("project creation keeps a focus border and shared primary foreground without a halo", () => {
-  assert.equal(declaration(desktop, ".biny-project-create-dialog input:focus-visible", "border-color"), "var(--biny-accent)");
-  assert.equal(declaration(desktop, ".biny-project-create-dialog input:focus-visible", "box-shadow"), "none");
+test("project creation uses the shared field ring and primary foreground", () => {
+  assert.equal(declaration(desktop, ".biny-project-create-dialog input", "border"), "1px solid var(--biny-border)");
+  assert.equal(declaration(desktop, ".biny-project-create-dialog input:focus-visible", "box-shadow"), "0 0 0 2px var(--field-focus-ring)");
   assert.equal(declaration(desktop, ".biny-project-create-dialog footer button.is-primary", "color"), "var(--accent-foreground)");
   assert.doesNotMatch(read("styles/biny.css"), /--biny-on-accent/u);
 });

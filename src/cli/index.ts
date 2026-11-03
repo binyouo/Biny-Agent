@@ -100,10 +100,9 @@ import {
   memorySearchCommand,
   memoryStatsCommand,
   memorySleepCommand,
-  temporalMemoryCommand,
+  temporalFactsCommand,
   temporalDateReferenceCommand,
   temporalCalendarCommand,
-  temporalClueActionCommand,
   temporalIndexFactsCommand,
   historySearchCommand,
   historyDayCommand,
@@ -317,13 +316,10 @@ memory.command("delete").argument("<id>").requiredOption("--yes", "confirm perma
 memory.command("restore").argument("<id>", "archive id").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "restore", id, options))());
 memory.command("archived").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "archived", undefined, options))());
 memory.command("grep").argument("<query...>", "literal text in conversation history").option("--json", "print JSON").action((query: string[], options: { json?: boolean }) => wrap(() => historySearchCommand(query.join(" "), { json: options.json, literal: true }))());
-for (const kind of ["timeline", "facts"] as const) {
-  memory.command(kind).requiredOption("--from <day>", "inclusive YYYY-MM-DD").requiredOption("--to <day>", "exclusive YYYY-MM-DD")
-    .option("--session-id <id>", "filter one session").option("--limit <n>", "maximum results, up to 50")
-    .option("--offset <n>", "pagination offset").option("--json", "print JSON")
-    .action((options: { from: string; to: string; sessionId?: string; limit?: string; offset?: string; json?: boolean }) => wrap(() => temporalMemoryCommand(kind, options))());
-}
-memory.command("ignore-clue").argument("<id>").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => temporalClueActionCommand("ignore", id, options))());
+memory.command("facts").requiredOption("--from <day>", "inclusive YYYY-MM-DD").requiredOption("--to <day>", "exclusive YYYY-MM-DD")
+  .option("--session-id <id>", "filter one session").option("--limit <n>", "maximum results, up to 50")
+  .option("--offset <n>", "pagination offset").option("--json", "print JSON")
+  .action((options: { from: string; to: string; sessionId?: string; limit?: string; offset?: string; json?: boolean }) => wrap(() => temporalFactsCommand(options))());
 memory.command("date-ref").requiredOption("--from <day>", "inclusive YYYY-MM-DD").requiredOption("--to <day>", "exclusive YYYY-MM-DD")
   .requiredOption("--time-zone <zone>", "IANA time zone").option("--label <text>", "display label").option("--json", "print JSON")
   .action((options: { from: string; to: string; timeZone: string; label?: string; json?: boolean }) => wrap(() => temporalDateReferenceCommand(options))());
@@ -331,7 +327,6 @@ memory.command("calendar").requiredOption("--from <day>", "inclusive YYYY-MM-DD"
   .requiredOption("--time-zone <zone>", "IANA time zone").option("--allow-calendar", "explicitly request macOS Calendar access")
   .option("--json", "print JSON")
   .action((options: { from: string; to: string; timeZone: string; allowCalendar?: boolean; json?: boolean }) => wrap(() => temporalCalendarCommand(options))());
-memory.command("seen-clue").argument("<id>").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => temporalClueActionCommand("seen", id, options))());
 memory.command("index-facts").argument("<session-id>").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => temporalIndexFactsCommand(workspaceRoot, sessionId, options))());
 memory.command("clear").requiredOption("--yes", "confirm clear").option("--thread-id <id>", "clear active memories for one thread only").option("--json", "print JSON").action((options: { yes?: boolean; threadId?: string; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
 const history = program.command("history").description("Search past conversation transcripts");

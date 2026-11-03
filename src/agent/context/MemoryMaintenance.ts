@@ -80,14 +80,14 @@ export class MemoryMaintenance {
     });
   }
 
-  maintenanceStatus(): MemoryMaintenanceStatus {
+  maintenanceStatus(historyLimit?: number): MemoryMaintenanceStatus {
     const copyRun = (run: MemorySleepRun): MemorySleepRun => ({
       ...run,
       progressEvents: run.progressEvents?.map((event) => ({ ...event }))
     });
     return {
       ...this.maintenance,
-      sleepRuns: this.maintenance.sleepRuns?.map(copyRun),
+      sleepRuns: (historyLimit === undefined ? this.maintenance.sleepRuns : this.maintenance.sleepRuns?.slice(-historyLimit))?.map(copyRun),
       lastRun: this.maintenance.lastRun ? copyRun(this.maintenance.lastRun) : undefined
     };
   }
@@ -228,15 +228,20 @@ export class MemoryMaintenance {
     }
   }
 
-  async loadMaintenanceStatus(options: MemoryReadOptions = {}): Promise<MemoryMaintenanceStatus> {
+  async loadMaintenanceStatus(options: MemoryReadOptions & { historyLimit?: number } = {}): Promise<MemoryMaintenanceStatus> {
     options.signal?.throwIfAborted();
+    if (options.historyLimit !== undefined && (!Number.isSafeInteger(options.historyLimit) || options.historyLimit <= 0)) throw new Error("Invalid memory history limit.");
     // owner 一直持有到终态写入结束；期间磁盘仍可能保留上一阶段的 running 快照。
-    if (this.maintenanceOwnerToken) return this.maintenanceStatus();
+    if (this.maintenanceOwnerToken) return this.maintenanceStatus(options.historyLimit);
     const previous = this.maintenance;
-    const loaded = await this.storage.recoverInterruptedMaintenanceStatus(options.signal);
+    const loaded = await this.storage.recoverInterruptedMaintenanceStatus(options.signal, options.historyLimit);
     // 恢复读取期间可能已启动甚至完成新一轮 Sleep；终态释放 owner 后也不能被旧快照覆盖。
-    if (this.maintenance === previous) this.maintenance = loaded;
-    return this.maintenanceStatus();
+    if (this.maintenance === previous) {
+      // 有界读取仅返回投影，不能让并发完整历史读取误把它当作新的运行状态。
+      if (options.historyLimit !== undefined) return loaded;
+      this.maintenance = loaded;
+    }
+    return this.maintenanceStatus(options.historyLimit);
   }
 
   private async runMemoryMaintenanceImpl(

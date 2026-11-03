@@ -1,10 +1,9 @@
-/** 自动化只创建和读取快照；日期详情与时间线索按真实时刻排序，不执行任务。 */
+/** 自动化只创建和读取快照；日期详情按真实时刻排序，不执行任务。 */
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { scheduledTemporalRows } from "../src/desktop/temporalMemoryService.js";
 import { AutomationStore, type AutomationRecord } from "../src/runtime/AutomationScheduler.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { readAutomationCreateInput } from "../src/runtime/host/validation.js";
@@ -52,7 +51,7 @@ async function withAutomations(inputs: Array<{ id: string; at: string }>, run: (
   }
 }
 
-await test("both scheduled displays order persisted offsets and optional fractions by instant", async () => {
+await test("date details order persisted offsets and optional fractions by instant", async () => {
   await withAutomations([
     { id: "earlier", at: "2035-06-12T20:00:00+08:00" },
     { id: "whole-second", at: "2035-06-12T12:30:00Z" },
@@ -60,11 +59,9 @@ await test("both scheduled displays order persisted offsets and optional fractio
     { id: "later", at: "2035-06-12T09:00:00-04:00" }
   ], async (snapshot, service) => {
     const detail = await service.query(range, [], { automations: snapshot });
-    const rows = scheduledTemporalRows([{ projectId: "p1", automations: snapshot }], range, range.timeZone, 0);
     const expected = ["earlier", "whole-second", "plus-100ms", "later"];
     assert.deepEqual(detail.scheduled.map((hit) => hit.automationId), expected);
-    assert.deepEqual(rows.map((hit) => hit.automationId), expected);
-    for (const hit of [...detail.scheduled, ...rows]) {
+    for (const hit of detail.scheduled) {
       assert.equal(hit.dueAt, snapshot.find((record) => record.automationId === hit.automationId)?.schedule.at);
       assert.equal("instant" in hit, false, "parsed sort keys are private to this query");
     }
@@ -74,7 +71,7 @@ await test("both scheduled displays order persisted offsets and optional fractio
 });
 
 for (const sameSpelling of [false, true]) {
-  await test(`scheduled ties preserve each surface's existing policy (${sameSpelling ? "same spelling" : "equivalent instants"})`, async () => {
+  await test(`scheduled ties preserve stable snapshot order (${sameSpelling ? "same spelling" : "equivalent instants"})`, async () => {
     await withAutomations([
       { id: "z-first", at: sameSpelling ? "2035-06-12T12:00:00Z" : "2035-06-12T20:00:00+08:00" },
       { id: "a-second", at: "2035-06-12T12:00:00Z" },
@@ -83,19 +80,11 @@ for (const sameSpelling of [false, true]) {
       const detail = await service.query(range, [], { automations: snapshot });
       assert.deepEqual(detail.scheduled.map((hit) => hit.automationId), snapshot.map((record) => record.automationId),
         "date detail preserves stable snapshot order for equal instants");
-      const rows = scheduledTemporalRows([{ projectId: "p1", automations: snapshot }], range, range.timeZone, 0);
-      assert.deepEqual(rows.map((hit) => hit.automationId), ["a-second", "m-third", "z-first"],
-        "Time Clues retains its row-ID tie-breaker");
-      const projects = scheduledTemporalRows([{ projectId: "z-project", automations: snapshot },
-        { projectId: "a-project", automations: snapshot }], range, range.timeZone, 0);
-      assert.deepEqual(projects.map((hit) => hit.id), ["a-project", "z-project"].flatMap((projectId) =>
-        ["a-second", "m-third", "z-first"].map((automationId) => `automation:${projectId}:${automationId}`)),
-      "the existing tie key includes project identity");
     });
   });
 }
 
-await test("date detail caps the earliest 100 schedules while Time Clues remains uncapped", async () => {
+await test("date detail caps the earliest 100 schedules", async () => {
   await withAutomations([
     ...Array.from({ length: 100 }, (_, index) => ({ id: `later-${String(index).padStart(3, "0")}`, at: "2035-06-12T08:00:00-04:00" })),
     { id: "first", at: "2035-06-12T17:00:00+08:00" }
@@ -106,14 +95,10 @@ await test("date detail caps the earliest 100 schedules while Time Clues remains
     const full = await service.query(range, [], { automations: snapshot.slice(0, 100) });
     assert.equal(full.scheduled.length, 100);
     assert.equal(full.hasMore.scheduled, false);
-    const rows = scheduledTemporalRows([{ projectId: "p1", automations: snapshot }], range, range.timeZone, 0);
-    assert.equal(rows.length, 101);
-    assert.equal(rows[0]?.automationId, "first");
-    assert.deepEqual(scheduledTemporalRows([{ projectId: "p1", automations: snapshot }], range, range.timeZone, 50), []);
   });
 });
 
-await test("scheduled displays keep half-open local-day bounds and skip unusable snapshot rows", async () => {
+await test("date details keep half-open local-day bounds and skip unusable snapshot rows", async () => {
   await withAutomations([
     { id: "before", at: "2035-06-12T07:59:59.999+08:00" },
     { id: "start", at: "2035-06-12T08:00:00+08:00" },
@@ -128,12 +113,8 @@ await test("scheduled displays keep half-open local-day bounds and skip unusable
     ];
     const detail = await service.query(range, [], { automations: rows });
     assert.deepEqual(detail.scheduled.map((hit) => hit.automationId), ["start", "last"]);
-    const clues = scheduledTemporalRows([{ projectId: "p1", automations: rows }], range, range.timeZone, 0);
-    assert.deepEqual(clues.map((hit) => hit.automationId), ["start", "last"]);
     const localRange = { startDate: "2035-06-12", endDate: "2035-06-13", timeZone: "Asia/Shanghai" };
     const localDetail = await service.query(localRange, [], { automations: snapshot });
     assert.deepEqual(localDetail.scheduled.map((hit) => hit.automationId), ["before", "start"]);
-    assert.deepEqual(scheduledTemporalRows([{ projectId: "p1", automations: snapshot }], localRange, localRange.timeZone, 0)
-      .map((hit) => hit.automationId), ["before", "start"]);
   });
 });

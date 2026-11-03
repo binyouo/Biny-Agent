@@ -5,6 +5,8 @@ import { test, type TestContext } from "node:test";
 import type { ModelChoice, ModelRuntimeInfo, ThinkingSelection } from "../src/llm/ModelManager.js";
 import type { JSDOM } from "jsdom";
 import type { Root } from "react-dom/client";
+import { defaultConfig } from "../src/config/schema.js";
+import type { DesktopSettingsSnapshot, DesktopSettingsSaveInput } from "../src/desktop/protocol.js";
 import type { DesktopBootstrap, DesktopMenuAction, DesktopProject, DesktopSessionDocument, DesktopSessionHandoff, DesktopSessionSummary, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 
 function deferred<T>() {
@@ -44,7 +46,7 @@ function cancelFrame(id: number): void { frameHost?.cancel(id); }
 // Mount the complete production App and its own views/hooks. Only IPC, native
 // DOM facilities, assets and the dependency ESM entry resolution are adapted.
 // The callbacks below are the real App subscriptions, not extracted handlers.
-async function fixture(t: TestContext, options: { recovery?: boolean } = {}) {
+async function fixture(t: TestContext, options: { recovery?: boolean; settings?: boolean } = {}) {
   const resources: { dom?: JSDOM; root?: Root; React?: typeof import("react"); imports?: ReturnType<typeof registerHooks> } = {};
   const restore: Array<() => void> = [];
   const frames = new Map<number, FrameRequestCallback>();
@@ -54,6 +56,7 @@ async function fixture(t: TestContext, options: { recovery?: boolean } = {}) {
   const refreshes: Array<{ projectId: string; gate: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>> }> = [];
   const actions: Array<{ kind: "send" | "slash" | "resume"; projectId: string; sessionId: string | undefined; input?: string }> = [];
   const commitments: Array<{ projectId: string; sessionId?: string; activeView: string }> = [];
+  const settingsWrites: DesktopSettingsSaveInput[] = [];
   const listeners = new Map<string, (...args: never[]) => void>();
   let timersEnabled = false;
   t.after(async () => {
@@ -127,6 +130,29 @@ async function fixture(t: TestContext, options: { recovery?: boolean } = {}) {
   t.mock.method(globalThis, "fetch", async () => { network.push("fetch"); throw new Error("Unexpected fetch"); });
   t.mock.method(Socket.prototype, "connect", () => { network.push("socket"); throw new Error("Unexpected socket"); });
   const api: Record<string, unknown> = {
+    settingsSnapshot: async (): Promise<DesktopSettingsSnapshot> => ({
+      projectId: "a", hasRunningTasks: false, preferenceRevision: 1, configRevision: "1",
+      themePreference: "light", fontPreference: { family: "system", size: 14 },
+      activity: defaultConfig.activity, identity: defaultConfig.identity, memory: defaultConfig.context.memory,
+      compaction: defaultConfig.context.compaction, chatParams: defaultConfig.chat, toolExecutionMode: "code_mode",
+      subagent: { enabled: false, runtime: "builtin" }, externalSubagentBlockers: [], permission: defaultConfig.permission,
+      webSearch: defaultConfig.web.search, redaction: defaultConfig.redaction,
+      models: { configured: models, connections: [], embeddingModels: [], defaultModel: "alpha", thinking: "high",
+        modelProfiles: {}, toolModel: "alpha", resolvedToolModel: "alpha" },
+      skills: { projectId: "a", projectKey: "a", globalDefaults: {}, projectOverrides: {}, activations: [] }
+    }),
+    saveSettings: async (_projectId: string, input: DesktopSettingsSaveInput) => {
+      settingsWrites.push(input);
+      const snapshot = await (api.settingsSnapshot as () => Promise<DesktopSettingsSnapshot>)();
+      snapshot.models.toolModel = input.models?.toolModel?.alias;
+      snapshot.models.resolvedToolModel = snapshot.models.toolModel ?? "alpha";
+      return { status: "committed", snapshot };
+    },
+    updateSettingsDraftState: async () => {}, releaseSettingsCredentials: async () => {},
+    previewAppearance: async () => {},
+    quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }),
+    onActivityEvent: () => () => {}, activitySnapshot: async () => { throw new Error("offline"); },
+    activityPermissions: async () => { throw new Error("offline"); },
     switchModel(projectId: string, alias: string, thinking: ThinkingSelection) { const gate = deferred<ModelRuntimeInfo>(); switches.push({ projectId, alias, thinking, gate }); return gate.promise; },
     refreshProject(projectId: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({ projectId, gate }); return gate.promise; },
     preparePrompt: async (projectId: string) => { assert.ok(["a", "b"].includes(projectId)); },
@@ -158,7 +184,7 @@ async function fixture(t: TestContext, options: { recovery?: boolean } = {}) {
   const { createRoot } = await import("react-dom/client");
   const { App } = await import("../src/desktop/renderer/src/App.js");
   const root = createRoot(document.getElementById("root")!); resources.root = root;
-  await React.act(async () => root.render(React.createElement(App, { settingsEnabled: false })));
+  await React.act(async () => root.render(React.createElement(App, { settingsEnabled: options.settings ?? false })));
   const click = async (selector: string): Promise<void> => {
     const target = document.querySelector<HTMLButtonElement>(selector); assert.ok(target, selector);
     await React.act(async () => target.click());
@@ -197,9 +223,34 @@ async function fixture(t: TestContext, options: { recovery?: boolean } = {}) {
     body: () => document.querySelector(".biny-chat-body")?.textContent ?? "",
     loading: () => document.querySelector('.biny-chat-composer')?.getAttribute("aria-busy"),
     projectName: () => document.querySelector('button[title="选择项目"]')?.textContent,
-    text: () => document.body.textContent ?? ""
+    text: () => document.body.textContent ?? "",
+    settingsWrites
   };
 }
+
+test("辅助模型保存不刷新项目或替换侧栏会话", async t => {
+  const h = await fixture(t, { settings: true });
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const before = [...document.querySelectorAll('.biny-sidebar-session-entry')];
+  const titles = before.map(node => node.textContent);
+  await h.emit("onMenuAction", "settings");
+  const general = [...document.querySelectorAll<HTMLButtonElement>('.settings-nav-list button')].find(button => button.textContent?.includes("通用"));
+  assert.ok(general);
+  await h.React.act(async () => general.click());
+  const click = async (selector: string) => {
+    const element = document.querySelector<HTMLElement>(selector);
+    assert.ok(element, selector);
+    await h.React.act(async () => element.click());
+  };
+  await click('[aria-label="工具模型"]');
+  await click('.settings-model-picker-option[title*="beta"]');
+  assert.equal(h.settingsWrites.length, 1);
+  assert.equal(h.settingsWrites[0]?.models?.toolModel?.alias, "beta");
+  assert.match(document.querySelector('[aria-label="工具模型"]')?.textContent ?? "", /beta/u);
+  assert.equal(h.refreshes.length, 0);
+  assert.deepEqual([...document.querySelectorAll('.biny-sidebar-session-entry')].map(node => node.textContent), titles);
+  assert.ok([...document.querySelectorAll('.biny-sidebar-session-entry')].every((node, index) => node === before[index]));
+});
 
 type ActionKind = "send" | "slash" | "resume";
 type NavigationKind = "same-project" | "other-project" | "blank-task" | "return-source";

@@ -20,8 +20,9 @@ test("网络搜索呈现五个设置区和两种引擎，移除 API 服务控件
     assert.ok(html.indexOf('id="web-search-provider"') < html.indexOf('可视化 Agent 浏览'),
       "先选择搜索来源，再配置展示方式；旧覆盖仅检查控件存在");
     for (const title of ["可视化 Agent 浏览", "搜索引擎", "Google 搜索设置", "小红书设置", "网站登录"]) assert.ok(html.includes(title));
-    assert.match(html, /<details class="settings-disclosure web-search-cookie-actions"><summary>Cookie 管理<\/summary>/u);
-    assert.equal((html.match(/<section/g) ?? []).length, 5);
+    assert.match(html, /<section class="settings-static-group web-search-cookie-actions"><h4>Cookie 管理<\/h4>/u);
+    assert.doesNotMatch(html, /<details|<summary/u);
+    assert.equal((html.match(/<section/g) ?? []).length, 6);
     assert.ok(html.includes('value="google"'));
     assert.ok(html.includes('value="xiaohongshu"'));
     assert.ok(!/AnySearch|Tavily|Brave Search|API Key|返回结果数|请求超时|清除全部/.test(html));

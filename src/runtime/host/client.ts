@@ -233,16 +233,24 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     }
   }
 
-  private waitForLifecycleReady(): Promise<void> {
+  private waitForLifecycleReady(timeoutMs?: number): Promise<void> {
+    if (this.closed) return Promise.reject(new Error("Runtime Host client is closed."));
+    if (this.retired) return Promise.reject(new Error("Runtime Host client is retired."));
     if (this.initializationError) return Promise.reject(this.initializationError);
     if (this.lifecycle === "closing") return Promise.reject(new Error("Runtime Host is shutting down."));
     if (this.lifecycle === "ready") return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = (error?: Error): void => {
+        if (timer) clearTimeout(timer);
         this.readinessWaiters.delete(finish);
         if (error) reject(error); else resolve();
       };
       this.readinessWaiters.add(finish);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => finish(new Error(`Runtime Host execution readiness timed out after ${String(timeoutMs)}ms.`)), timeoutMs);
+        timer.unref?.();
+      }
     });
   }
 
@@ -1175,6 +1183,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("mcp.reconnect", { server, sessionId: this.focusedSessionId });
   }
 
+  async mcpConfigure(servers?: string[], force = false): Promise<void> {
+    await this.request("mcp.configure", { servers, force });
+  }
+
   async memory<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
     return await this.request<T>("memory", { action, ...payload });
   }
@@ -1793,7 +1805,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   private request<T>(operation: string, payload: unknown, timeoutMs?: number, onDispatch?: (socket: net.Socket) => void): Promise<T> {
     if (["host.info", "host.subscribe", "host.close", "client.keep-alive"].includes(operation)) return this.requestRaw(operation, payload, timeoutMs, onDispatch);
-    if (this.lifecycle === "ready" && operationLane(operation, asRecord(payload)) === "query") return this.requestRaw(operation, payload, timeoutMs, onDispatch);
+    if (operationLane(operation, asRecord(payload)) === "query") {
+      // 单次读取只等执行域可用；历史同步仍由 observer 和需要 revision 的写操作负责。
+      return this.waitForLifecycleReady(60_000).then(() => this.requestRaw<T>(operation, payload, timeoutMs, onDispatch));
+    }
     if (this.lifecycle === "ready" && this.socket && !this.socket.destroyed && this.synchronizedSocket === this.socket) return this.requestRaw(operation, payload, timeoutMs, onDispatch);
     return this.waitForReady().then(() => this.requestRaw<T>(operation, payload, timeoutMs, onDispatch));
   }

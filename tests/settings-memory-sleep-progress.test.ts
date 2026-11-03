@@ -25,7 +25,7 @@ test("设置页轮询显示定时 Sleep 的阶段和累计归档数，完成后�
   const { act, createElement } = React;
   const { createRoot } = await import("react-dom/client");
   const { createServer } = await import("vite");
-  const vite = await createServer({ configFile: false, server: { middlewareMode: true }, appType: "custom",
+  const vite = await createServer({ configFile: false, server: { middlewareMode: true, hmr: false }, appType: "custom",
     optimizeDeps: { noDiscovery: true, entries: [] } });
   const { SettingsMemory } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsMemory.tsx") as typeof import("../src/desktop/renderer/src/components/settings/SettingsMemory.js");
   const { SettingsDraftContext } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsDraftContext.ts") as typeof import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
@@ -33,7 +33,7 @@ test("设置页轮询显示定时 Sleep 的阶段和累计归档数，完成后�
   const originalSetInterval = dom.window.setInterval.bind(dom.window);
   let poll: (() => void) | undefined;
   dom.window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-    if (timeout === 1_000 && typeof handler === "function") { poll = () => handler(...args); return 42; }
+    if ((timeout === 1_000 || timeout === 10_000) && typeof handler === "function") { poll = () => handler(...args); return 42; }
     return originalSetInterval(handler, timeout, ...args);
   }) as typeof dom.window.setInterval;
   const policy = { ...defaultConfig.context.memory, sleepEnabled: true };
@@ -95,6 +95,10 @@ test("设置页轮询显示定时 Sleep 的阶段和累计归档数，完成后�
     await act(async () => { poll?.(); });
     assert.doesNotMatch(document.body.textContent ?? "", /当前阶段：/u);
     assert.match(document.body.textContent ?? "", /上次：completed/u);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[aria-controls$="-archive"]')!.click();
+      document.querySelector<HTMLElement>('.activity-memory-run-details summary')!.click();
+    });
     const missedRun = { ...running, id: "missed-run", status: "completed", trigger: "scheduled",
       archived: 11, finishedAt: "2026-09-26T00:02:00.000Z" } as MemorySleepRun;
     current = { ...current, lastRun: missedRun };

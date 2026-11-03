@@ -83,7 +83,7 @@ const selected = [...operations, ...goals, "permission"].map((operation) => {
   }
   return clauses[0]!.getText(parsed);
 });
-const methods = ["assertRequestAdmission", "executeAdmission", "ensureSessionWriter", "claimSessionWriter"];
+const methods = ["assertRequestAdmission", "executeAdmission", "ensureSessionWriter", "claimSessionWriter", "registerSessionWriter", "ownsSessionWriter"];
 const validationSource = readFileSync(new URL("../src/runtime/host/validation.ts", import.meta.url), "utf8");
 const validationParsed = ts.createSourceFile("validation.ts", validationSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const validationHelpers = ["readModelRoute", "readFastMode"].map((name) => {

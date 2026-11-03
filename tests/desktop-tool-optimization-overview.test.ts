@@ -77,8 +77,8 @@ test("real cumulative queries skip catalog metadata and scoped queries do not op
     context.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
       opened.push(String(args[0])); return await original(...args);
     });
-    const scoped = await projects.toolOptimizationStats("all", first.id, "target");
-    assert.equal(scoped.entries[0]?.optimization.savedTokens, 700);
+    const scoped = await projects.toolOptimizationOverview("all", first.id, "target");
+    assert.equal(scoped.ptc.savedTokens, 700);
     assert.equal(opened.some(file => /(?:unrelated|other-project)\.jsonl$/u.test(file)), false);
     assert.equal(opened.some(file => file.includes(`${path.sep}.catalog${path.sep}`)), false);
     opened.length = 0;
@@ -87,13 +87,25 @@ test("real cumulative queries skip catalog metadata and scoped queries do not op
     assert.equal(all.incompleteSessions, 0);
     assert.equal("entries" in all, false, "Renderer receives the overview, not the whole receipt history");
     assert.equal(opened.some(file => file.includes(`${path.sep}.catalog${path.sep}`)), false);
-    assert.equal(opened.filter(file => /target\.jsonl$/u.test(file)).length, 1, "summary and statistics must not each open the same log");
+    assert.equal(opened.filter(file => /target\.jsonl$/u.test(file)).length, 0, "history parsing must run outside the Desktop main thread");
+    opened.length = 0;
+    const reopened = new DesktopProjectService(state, storage, config);
+    const cached = await reopened.toolOptimizationOverview("all");
+    assert.equal(cached.ptc.savedTokens, 730);
+    assert.equal(cached.stale, true, "a new service reads the persisted overview before reconciliation");
+    assert.equal(opened.filter(file => file.endsWith(".jsonl")).length, 0);
+    const updating = reopened.toolOptimizationOverview("all", undefined, undefined, true);
+    try {
+      const immediate = await reopened.toolOptimizationOverview("all");
+      assert.equal(immediate.stale, true, "an in-flight scan must not block the persisted snapshot");
+      assert.equal(immediate.ptc.savedTokens, 730);
+    } finally { await updating; }
     const dated = await projects.toolOptimizationOverview(30, first.id, "target");
     assert.equal(dated.ptc.runs, 0, "date filtering still applies to an explicitly selected session");
     await fs.unlink(recorders[1]!.filePath);
-    assert.equal((await projects.toolOptimizationOverview("all")).ptc.savedTokens, 680, "refresh observes deleted history");
+    assert.equal((await projects.toolOptimizationOverview("all", undefined, undefined, true)).ptc.savedTokens, 680, "refresh observes deleted history");
     await fs.writeFile(recorders[0]!.filePath, "{bad json}\n");
-    const partial = await projects.toolOptimizationOverview("all");
+    const partial = await projects.toolOptimizationOverview("all", undefined, undefined, true);
     assert.equal(partial.incompleteSessions, 1);
     assert.equal(partial.ptc.savedTokens, -20);
   } finally {

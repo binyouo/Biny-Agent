@@ -88,14 +88,14 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
   };
   collect(composerNode);
   assert.equal(attributes.length, selectedProps.size - (attributes.some(attribute => attribute.startsWith("draftProjectId=")) ? 0 : 1));
-  let catalogEffect: ts.Node | undefined;
+  const catalogEffects: ts.Node[] = [];
   const findCatalogEffect = (node: ts.Node): void => {
     if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
-      && node.expression.expression.getText(app) === "useEffect" && node.getText(app).includes("window.biny.skillCatalog(projectId)")) catalogEffect = node;
+      && node.expression.expression.getText(app) === "useEffect" && (node.getText(app).includes("window.biny.skillCatalog(projectId)") || node.getText(app).includes("window.biny.toolCatalog(projectId)"))) catalogEffects.push(node);
     ts.forEachChild(node, findCatalogEffect);
   };
   findCatalogEffect(app);
-  assert.ok(catalogEffect, "Missing production catalog effect");
+  assert.equal(catalogEffects.length, 2, "Both production catalog effects are required");
   const source = `
     import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
     import { z } from 'zod';
@@ -126,7 +126,7 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
       ${declaration(app, "composerSkills")}
       ${declaration(app, "composerCatalogNonce")}
       ${declaration(app, "refreshComposerCatalog")}
-      ${catalogEffect.getText(app)}
+      ${catalogEffects.map(node => node.getText(app)).join("\n")}
       const [reference, setReference] = useState();
       const openInspector = noop;
       ${declaration(inspectorSource, "previewReference")}

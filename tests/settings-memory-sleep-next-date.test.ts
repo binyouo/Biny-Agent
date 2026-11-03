@@ -33,7 +33,7 @@ test("当天手动 Sleep 已完成时设置页显示明天为下次运行日期"
   const { act, createElement } = React;
   const { createRoot } = await import("react-dom/client");
   const { createServer } = await import("vite");
-  const vite = await createServer({ configFile: false, server: { middlewareMode: true }, appType: "custom",
+  const vite = await createServer({ configFile: false, server: { middlewareMode: true, hmr: false }, appType: "custom",
     optimizeDeps: { noDiscovery: true, entries: [] } });
   const { SettingsMemory } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsMemory.tsx") as typeof import("../src/desktop/renderer/src/components/settings/SettingsMemory.js");
   const { SettingsDraftContext } = await vite.ssrLoadModule("/src/desktop/renderer/src/components/settings/SettingsDraftContext.ts") as typeof import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
@@ -54,12 +54,12 @@ test("当天手动 Sleep 已完成时设置页显示明天为下次运行日期"
   let currentRuns: MemorySleepRun[] = [completedRun, failedRun]; // Biny 持久层按开始时间升序返回。
   const props = {
     models: [], embeddingModels: [], workspaceAvailable: true, sessionRunning: false,
-    onLoadStats: async () => stats,
+    onLoadStats: async () => ({ ...stats, maintenance: { ...currentStatus, sleepRuns: currentRuns.slice(-5) } }),
     onLoadEntries: async () => ({ revision: 1, entries: [], total: 0, offset: 0, limit: 20 }),
     onSearch: async () => [], onAdd: async () => stats, onUpdate: async () => stats,
     onDeleteEntry: async () => stats, onArchiveEntry: async () => stats,
     onLoadArchived: async () => ({ revision: 1, entries: [], total: 0, offset: 0, limit: 25 }),
-    onRunSleep: async () => stats, onSleepStatus: async () => currentStatus,
+    onRunSleep: async () => stats, onSleepStatus: async () => ({ ...currentStatus, sleepRuns: currentRuns.slice(-5) }),
     onSleepRuns: async () => currentRuns, onPreviewSleep: async () => ({ available: false }),
     onCancelSleep: async () => ({ cancelled: false }), onClearMemory: async () => stats,
     onTestModelConfiguration: async () => ({ ok: false }),

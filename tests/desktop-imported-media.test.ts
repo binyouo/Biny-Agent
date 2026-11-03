@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, symlink, unlink, writeFile } from "node:fs/promises";
+import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";

@@ -204,8 +204,8 @@ function PermissionCard({
               void onResolve({ approved: false, action: "deny_with_reason", scope: "once", message: reason, confirmation: undefined });
             }}
             type="button"
-          >{showDenialReason ? "提交拒绝理由" : "拒绝并说明理由"}</button>
-          <button className="is-primary" disabled={disabled || (request.requireFullYes && !fullYesProvided)} onClick={() => void onResolve({ approved: true, action: "allow_once", scope: "once", confirmation: request.requireFullYes ? confirmation : undefined })} type="button">{disabled ? "正在提交…" : "允许一次"}</button>
+          ><span className="button-state-label"><span aria-hidden={showDenialReason}>拒绝并说明理由</span><span aria-hidden={!showDenialReason}>提交拒绝理由</span></span></button>
+          <button aria-busy={disabled} className="is-primary" disabled={disabled || (request.requireFullYes && !fullYesProvided)} onClick={() => void onResolve({ approved: true, action: "allow_once", scope: "once", confirmation: request.requireFullYes ? confirmation : undefined })} type="button">允许一次</button>
           {request.canRemember !== false ? <button className="is-session" disabled={disabled || (request.requireFullYes && !fullYesProvided)} onClick={() => void onResolve({ approved: true, action: "allow_always", scope: permissionScopeForAlways(request), confirmation: request.requireFullYes ? confirmation : undefined })} type="button" title="仅记住当前会话中相同命令、路径或工具的授权">本会话允许</button> : null}
         </div>
       </div>

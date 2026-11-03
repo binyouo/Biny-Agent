@@ -47,6 +47,19 @@ async function cache(store: ModelsStore, config: AgentConfig, contextWindow: num
   await store.write(key, { models: catalog(contextWindow) });
 }
 
+test("refreshFromDisk applies vision enablement without losing the saved model or retaining a removed flag", async () => {
+  const initial = configSchema.parse({ ...configuration(), visionModel: "selected", visionModelEnabled: false });
+  const store = configurationStore(initial);
+  const manager = await ModelManager.create("/synthetic", initial, store, new AiRegistry(), new InMemoryModelsStore());
+  for (const enabled of [true, false, undefined]) {
+    await store.save(configSchema.parse({ ...configuration(), visionModel: "selected", visionModelEnabled: enabled }));
+    await manager.refreshFromDisk();
+    assert.equal(initial.visionModelEnabled, enabled);
+    assert.equal(initial.visionModel, "selected");
+    assert.equal(manager.getInfo().modelAlias, "selected");
+  }
+});
+
 for (const batch of [true, false]) {
 test(`refreshFromDisk restores the matching scoped catalog across A → B → A (${batch ? "batch" : "single"})`, async () => {
   const initial = configuration();

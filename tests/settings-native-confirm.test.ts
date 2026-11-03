@@ -23,7 +23,7 @@ test("未保存更改使用原生确认，忙碌时等待，StrictMode 只询问
   dom.window.confirm = (message) => { assert.match(message, /未保存.*丢失/u); prompts++; return answer; };
   const render = async (key: string, busy: boolean): Promise<void> => {
     await act(async () => { root.render(createElement(StrictMode, {}, createElement(SettingsCloseGuard, {
-      key, busy, onCancel: () => { cancelled++; }, onDiscard: () => { discarded++; }
+      key, busy, hasUnsavedChanges: true, onCancel: () => { cancelled++; }, onDiscard: () => { discarded++; }
     }))); });
   };
   try {

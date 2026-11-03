@@ -28,6 +28,7 @@ export const AGENT_DATABASE_FILE = "agent.sqlite";
 // 直接运行的测试也要把身份传给派生 CLI/Host；不能只依赖测试总入口设置目录。
 if (process.env.NODE_TEST_CONTEXT !== undefined || /\.test\.[cm]?[jt]s$/u.test(process.argv[1] ?? "")) {
   process.env.BINY_TEST_PROCESS = "1";
+  process.env.BINY_TEST_SUPERVISOR_PID ??= String(process.pid);
 }
 
 // 固定进程启动时的用户目录，测试注入的临时 HOME 不改变受保护的真实路径。

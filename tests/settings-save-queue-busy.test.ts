@@ -18,25 +18,35 @@ const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTa
 const component = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "SettingsDraftProvider");
 assert.ok(component?.body);
 const statements = component.body.statements;
-function declaration(name: string): string {
-  const matches = statements.filter(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(item => ts.isIdentifier(item.name) && item.name.text === name));
+function declaration(name: string, scope = statements): string {
+  const matches = scope.filter(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(item => ts.isIdentifier(item.name) && item.name.text === name));
   assert.equal(matches.length, 1, `unique actual declaration: ${name}`);
+  return matches[0]!.getText(source);
+}
+function helper(name: string): string {
+  const matches = source.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.equal(matches.length, 1, `unique actual helper: ${name}`);
   return matches[0]!.getText(source);
 }
 const effects = statements.filter(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
   && node.expression.expression.getText(source) === "useEffect"
   && node.getText(source).includes('setSaveState(invalid ? "invalid"'));
 assert.equal(effects.length, 1);
-const extracted = [declaration("modelsSaveTailRef"), declaration("pendingModelSavesRef"), declaration("saveModels"), effects[0]!.getText(source)].join("\n");
+const extracted = [declaration("persistedSnapshots", source.statements), helper("bucket"), helper("writePersistedSnapshot"),
+  helper("isModelSelectionUpdate"), helper("committedSettingsSnapshot"), declaration("cacheKeyRef"),
+  declaration("modelsSaveTailRef"), declaration("modelSaveFailuresRef"), declaration("pendingModelSavesRef"), declaration("pendingModelSelectionSavesRef"),
+  declaration("saveModels"), effects[0]!.getText(source)].join("\n");
 const calls = new Set(["useRef", "Promise.resolve", "useCallback", "useEffect", "onNotify", "setSaveError", "setSaveState",
   "modelsSaveTailRef.current.then", "update", "Object.keys", "Object.keys(models).every", "window.biny.saveSettings",
   "setSnapshot", "setDraft", "rebaseUneditedFields", "draftFromSnapshot", "current.models.oauthCredentialHandles.filter",
-  "models.oauthCredentialHandles?.includes", "structuredClone", "onCommitted", "operation.then", "String"]);
+  "models.oauthCredentialHandles?.includes", "structuredClone", "onCommitted", "operation.then", "String",
+  "isModelSelectionUpdate", "committedSettingsSnapshot", "setModelSelectionSaving", "writePersistedSnapshot",
+  "store.map.clear", "bucket", "bucket(persistedSnapshots, owner).set"]);
 const ast = ts.createSourceFile("queue-extracted.ts", extracted, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 function validate(node: ts.Node): void {
   assert.ok(!ts.isImportDeclaration(node) && !ts.isImportEqualsDeclaration(node) && !ts.isExportDeclaration(node));
   if (ts.isCallExpression(node)) assert.ok(calls.has(node.expression.getText(ast)), `unexpected call: ${node.expression.getText(ast)}`);
-  if (ts.isNewExpression(node)) assert.equal(node.expression.getText(ast), "Error");
+  if (ts.isNewExpression(node)) assert.ok(["Error", "Map"].includes(node.expression.getText(ast)));
   ts.forEachChild(node, validate);
 }
 validate(ast);
@@ -68,10 +78,11 @@ function fixture(dirtyCount = 0) {
   const forbidden = () => { throw new Error("draft/model helpers must not execute"); };
   const context: ReturnType<typeof createContext> = createContext({
     snapshotRef: base, loadGenerationRef: generation, dirtyCount, invalid: false, saveState: "clean",
-    active: true, draft: {}, runtimeBlocked: false,
+    active: true, draft: {}, runtimeBlocked: false, cacheKey: "synthetic-project::",
     useRef: (current: unknown) => ({ current }), useCallback: <T>(callback: T) => callback,
     useEffect: (callback: () => void) => { normalize = callback; },
     setSaveState: (value: string) => { state.value = value; context.saveState = value; },
+    setModelSelectionSaving: () => {},
     setSaveError: (value?: string) => { state.error = value; },
     setSnapshot: () => {}, setDraft: () => {}, onCommitted: () => {},
     onNotify: (value: string) => { state.notifications.push(value); },
@@ -115,16 +126,26 @@ for (const first of ["rolled_back", "reject"] as const) for (const last of ["com
     const h = fixture(dirty);
     try {
       const a = h.enqueue(); const b = h.enqueue();
-      await h.entered(1); h.settle(0, first); await a; await h.entered(2);
+      await h.entered(1); h.settle(0, first); const firstResult = await a; await h.entered(2);
       assert.equal(h.pending(), 1);
       assert.equal(h.state.value, "saving", "failed first save must not clear busy while second is pending");
-      assert.ok(h.state.error, "first failure remains visible");
+      assert.equal(h.state.error, undefined, "即时模型失败不占用手动保存错误");
+      if (first === "reject") assert.match(String(firstResult.error), /synthetic failure 0/u);
+      else {
+        assert.equal(firstResult.result?.status, "rolled_back");
+        assert.ok(h.state.notifications.includes("synthetic result 0"), "详情保存失败仍明确通知调用者");
+      }
       h.normalize(); assert.equal(h.state.value, "saving"); assert.equal(h.canSave(), false);
-      h.settle(1, last, "config:3"); await b;
+      h.settle(1, last, "config:3"); const lastResult = await b;
       assert.equal(h.pending(), 0); h.normalize();
       assert.equal(h.state.value, dirty ? "dirty" : "clean");
       assert.equal(h.canSave(), dirty > 0);
-      if (last !== "committed") assert.match(h.state.error!, /synthetic/u);
+      if (last === "reject") assert.match(String(lastResult.error), /synthetic failure 1/u);
+      else if (last === "rolled_back") {
+        assert.equal(lastResult.result?.status, "rolled_back");
+        assert.ok(h.state.notifications.includes("synthetic result 1"));
+      }
+      assert.equal(h.state.error, undefined);
       h.normalize(dirty, true); assert.equal(h.state.value, "invalid");
     } finally { await h.close(); }
   });
@@ -170,5 +191,6 @@ test("single recovery_required remains a dedicated status", async () => {
     const a = h.enqueue(); await h.entered(1);
     h.writes[0]!.gate.resolve({ status: "recovery_required", message: "synthetic recovery" }); await a; h.normalize();
     assert.equal(h.state.value, "recovery_required"); assert.equal(h.canSave(), false); assert.equal(h.pending(), 0);
+    assert.equal(h.state.error, "synthetic recovery");
   } finally { await h.close(); }
 });

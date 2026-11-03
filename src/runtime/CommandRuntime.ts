@@ -13,7 +13,7 @@ import type { AgentModel } from "../agent/core/types.js";
 import type { AgentTurnOutcome, AgentPermissionRequest, AgentPermissionResult } from "../agent/types.js";
 import { ModelManager } from "../llm/ModelManager.js";
 import type { ToolModelSelectionState } from "../llm/toolModelRequest.js";
-import { resolveToolModel, resolveToolModelCandidates } from "../llm/toolModel.js";
+import { resolveToolModel, resolveToolModelAlias, resolveToolModelCandidates } from "../llm/toolModel.js";
 import { runSkillExtraction } from "../agent/skillExtraction.js";
 import { preselectCapabilities } from "../agent/capabilityPreselection.js";
 import { SessionRecorder, type SessionEvent } from "../session/recorder.js";
@@ -102,11 +102,12 @@ export interface CommandRuntime {
   managedProcesses: ManagedProcessService;
   checkpoints: CheckpointStore | undefined;
   mcp: McpToolHost;
+  configureMcp(servers?: string[], force?: boolean): Promise<void>;
   runtimeAuthority: RuntimeEventAuthority;
   taskRuns: DurableTaskRunStore;
   automationStore: AutomationStore;
   heartbeat: HeartbeatScheduler;
-  resolveToolModelForRun?(): AgentModel | undefined;
+  resolveToolModelForRun?(signal?: AbortSignal): Promise<ModelManager | undefined>;
   graphs: GoalGraphStore;
   sessionGoals: SessionGoalStore;
   capabilities: CapabilityStore;
@@ -329,11 +330,12 @@ async function initializeCommandRuntime(
   cleanup.recorder = () => recorder.close();
   const taskCommunication = new TaskCommunication(taskRuns, recorder.sessionId);
   cleanup.communication = () => taskCommunication.close();
-  const managedProcesses = new ManagedProcessService({
+  const managedProcessOptions = {
     workspaceRoot,
     persistenceRoot,
     processLifetime: options.processLifetime
-  });
+  };
+  const managedProcesses = options.resourceRegistry?.createManagedProcesses(managedProcessOptions) ?? new ManagedProcessService(managedProcessOptions);
   cleanup.processes = () => managedProcesses.close();
   await managedProcesses.initialize();
   // 选择状态只属于本 Runtime；配置变更替换状态，迟到请求不能污染新配置。
@@ -781,11 +783,16 @@ async function initializeCommandRuntime(
   await agent.initialize();
   if (!agent) throw new Error("Failed to initialize Biny agent runtime.");
 
-  const heartbeatToolModel = resolveToolModel(config, providerCredentials);
   const heartbeatNotificationDeduper = new HeartbeatNotificationDeduper();
+  const runModelManager = async (currentConfig: AgentConfig, alias: string, signal?: AbortSignal): Promise<ModelManager> => {
+    signal?.throwIfAborted();
+    const manager = await ModelManager.create(workspaceRoot, { ...structuredClone(currentConfig), defaultModel: alias }, configStore, ai);
+    signal?.throwIfAborted();
+    return manager;
+  };
   let ownerNotificationSink: ((notification: string) => Promise<void>) | undefined;
   let heartbeatAgent: Promise<AgentSession> | undefined;
-  const initializeHeartbeatAgent = async (): Promise<AgentSession> => {
+  const initializeHeartbeatAgent = async (model: AgentModel): Promise<AgentSession> => {
     const heartbeatRecorder = new SessionRecorder(persistenceRoot, "heartbeat", undefined, runtimeAuthority.asSink());
     const heartbeatCommunication = new TaskCommunication(taskRuns, heartbeatRecorder.sessionId);
     cleanup.heartbeatCommunication = () => heartbeatCommunication.close();
@@ -796,7 +803,7 @@ async function initializeCommandRuntime(
         persistenceRoot,
         configStore,
         config,
-        model: heartbeatToolModel ?? modelManager.getModel(),
+        model,
         toolRegistry,
         permissionManager,
         recorder: heartbeatRecorder,
@@ -854,10 +861,11 @@ async function initializeCommandRuntime(
       const taskReview = await buildHeartbeatTaskReview(persistenceRoot, agent.getSessionRecorder().sessionId, sessionGoals, graphs, taskRuns);
       const heartbeatPrompt = taskReview ? `${prompt}\n\n${taskReview}` : prompt;
       const diary = /(?:DAILY DIARY TIME|MISSED DIARY CATCH-UP)/u.test(heartbeatPrompt);
-      const primaryModel = modelManager.getModel();
-      const model = diary ? primaryModel : heartbeatToolModel ?? primaryModel;
+      const currentConfig = await configStore.load(workspaceRoot);
+      const alias = (!diary ? resolveToolModelAlias(currentConfig) : undefined) ?? currentConfig.defaultModel;
+      const model = await runModelManager(currentConfig, alias, signal);
       signal.throwIfAborted();
-      const session = await (heartbeatAgent ??= initializeHeartbeatAgent().catch((error: unknown) => {
+      const session = await (heartbeatAgent ??= initializeHeartbeatAgent(model.getModel()).catch((error: unknown) => {
         heartbeatAgent = undefined;
         throw error;
       }));
@@ -871,10 +879,11 @@ async function initializeCommandRuntime(
         modelOverride: selectedModel
       });
       let outcome = await runWithModel(model);
-      const isDifferentModel = model && primaryModel
-        && (model.provider !== primaryModel.provider || model.modelId !== primaryModel.modelId);
-      if (!diary && isDifferentModel && outcome.status === "failed" && outcome.steps === 0) {
-        outcome = await runWithModel(primaryModel);
+      if (!diary && outcome.status === "failed" && outcome.steps === 0) {
+        const primaryModel = await runModelManager(currentConfig, currentConfig.defaultModel, signal);
+        if (model.getModel().provider !== primaryModel.getModel().provider || model.getModel().modelId !== primaryModel.getModel().modelId) {
+          outcome = await runWithModel(primaryModel);
+        }
       }
       if (outcome.status !== "completed") throw new Error(outcome.error ?? "Heartbeat did not complete.");
       const heartbeatNotification = isHeartbeatQuietOutput(outcome.output) ? undefined : outcome.notification;
@@ -1425,10 +1434,26 @@ async function initializeCommandRuntime(
     persistenceRoot,
     config,
     agent,
-    resolveToolModelForRun: () => heartbeatToolModel,
+    resolveToolModelForRun: async (signal) => {
+      const currentConfig = await configStore.load(workspaceRoot);
+      const alias = resolveToolModelAlias(currentConfig);
+      return alias ? await runModelManager(currentConfig, alias, signal) : undefined;
+    },
     managedProcesses,
     checkpoints,
     mcp: mcpHost,
+    configureMcp: async (servers, force) => {
+      const current = await configStore.load(workspaceRoot);
+      const names = servers ?? [...new Set([...Object.keys(current.extensions.mcp),
+        ...mcpHost.listServers().filter(server => server.transport !== "in-process").map(server => server.name)])];
+      try {
+        if (options.resourceRegistry) await options.resourceRegistry.configureMcp(resourceScope, current, names, force);
+        else await resourceScope.configureMcp(current, names, force);
+      } finally {
+        config.extensions.mcp = structuredClone(current.extensions.mcp);
+        refreshExtensionTools();
+      }
+    },
     runtimeAuthority,
     taskRuns,
     automationStore,

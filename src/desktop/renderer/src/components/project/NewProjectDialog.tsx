@@ -40,7 +40,7 @@ export function NewProjectDialog({ open, onClose, onCreate }: {
       <label>项目网址（可选）<input autoFocus disabled={creating} inputMode="url" onChange={(event) => setSiteUrl(event.target.value)} placeholder="https://example.com" type="text" value={siteUrl} /></label>
       <p className="biny-project-create-hint">填写网址后会尝试使用网站图标；读取失败时项目仍会正常创建。</p>
       {error ? <p className="biny-project-create-error" role="alert">{error}</p> : null}
-      <footer><button disabled={creating} onClick={onClose} type="button">取消</button><button className="is-primary" disabled={creating} type="submit">{creating ? "正在创建…" : "选择文件夹并创建"}</button></footer>
+      <footer><button disabled={creating} onClick={onClose} type="button">取消</button><button aria-busy={creating} className="is-primary" disabled={creating} type="submit">选择文件夹并创建</button></footer>
     </form>
   </Dialog>;
 }

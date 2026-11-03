@@ -4,7 +4,11 @@
  * 费用计算仍由 observability 层负责，这里只把时间线记录汇总成界面需要的形态，并统一
  * 金额与 token 的显示精度，避免不同入口展示出互相矛盾的数字。
  */
-import type { ContextTokenBreakdown, UsageSummary } from "../../../session/metadata.js";
+import type { ModelChoice } from "../../../llm/ModelRegistry.js";
+import type { InteractiveRuntimeSnapshot } from "../../../runtime/agentEvents.js";
+import type { ContextTokenBreakdown, SessionContextUsage, UsageSummary } from "../../../session/metadata.js";
+import type { DesktopSessionDocument } from "../../protocol.js";
+import { lastReportedInputTokens } from "./app/desktopState.js";
 
 export interface ContextUsage {
   usedTokens: number;
@@ -13,6 +17,45 @@ export interface ContextUsage {
   source?: "estimated" | "provider";
   breakdown?: ContextTokenBreakdown;
   cacheHitRate?: number;
+}
+
+export function resolveSessionContextUsage({ sessionId, document, runtimeInfo, models, liveBudget }: {
+  sessionId: string | undefined;
+  document?: DesktopSessionDocument;
+  runtimeInfo?: Pick<InteractiveRuntimeSnapshot["info"], "sessionId" | "modelAlias" | "contextWindow" | "contextWindowIsFallback">;
+  models: readonly Pick<ModelChoice, "alias" | "provider" | "providerType" | "model" | "contextWindow" | "contextWindowIsFallback">[];
+  liveBudget?: SessionContextUsage;
+}): ContextUsage | undefined {
+  const info = sessionId === undefined || runtimeInfo?.sessionId === sessionId ? runtimeInfo : undefined;
+  const currentDocument = document?.session.id === sessionId ? document : undefined;
+  const persisted = currentDocument?.events.slice().reverse().find((event) => (
+    (event.type === "assistant_message" || event.type === "user_message") && !event.auditOnly && event.contextState !== undefined
+  ));
+  const budget = liveBudget ?? (persisted && "contextState" in persisted ? persisted.contextState?.budget : undefined);
+  let budgetModelAlias = budget?.modelAlias;
+  if (!liveBudget && !budgetModelAlias && persisted?.type === "assistant_message") {
+    const { usage, contextState } = persisted;
+    // 旧注入模型没有预算 alias；只用同条请求的连接身份恢复，不能借当前聊天选择或跨网关猜测。
+    if (usage?.operation === "agent" && usage.provider === contextState?.promptProvider && usage.model === contextState?.promptModel) {
+      const matching = models.filter((model) => model.providerType === usage.provider && model.model === usage.model
+        && (model.alias === usage.modelAlias || `${model.provider}/${model.model}` === usage.modelAlias));
+      if (matching.length === 1) budgetModelAlias = matching[0]!.alias;
+    }
+  }
+  const activeModelAlias = info?.modelAlias ?? budgetModelAlias;
+  const selectedModel = models.find((model) => model.alias === activeModelAlias);
+  const sameModel = !info?.modelAlias || !budgetModelAlias || info.modelAlias === budgetModelAlias;
+  const capacity = resolveContextCapacity(info, selectedModel, sameModel ? budget : undefined);
+  const contextWindow = capacity?.contextWindow;
+  if (!contextWindow) return undefined;
+  return {
+    usedTokens: (sameModel ? budget?.usedTokens : budget?.estimatedTokens) ?? lastReportedInputTokens(currentDocument) ?? 0,
+    contextWindow,
+    contextWindowIsFallback: capacity?.contextWindowIsFallback ?? true,
+    source: sameModel ? budget?.source : "estimated",
+    breakdown: budget?.breakdown,
+    cacheHitRate: budget?.cacheHitRate
+  };
 }
 
 /** 历史请求只提供用量；容量优先取当前声明，并将容量数值与来源标记成对传递。 */

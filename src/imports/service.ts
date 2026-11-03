@@ -25,7 +25,8 @@ const historySchema = z.object({ id: z.string().uuid(), source: sourceSchema, la
 const itemSchema = z.object({ id: z.string().max(256), category: categorySchema, label: z.string().max(512), detail: z.string().max(2_048),
   sourceHash: z.string().regex(/^[a-f0-9]{64}$/u), digest: z.string().regex(/^[a-f0-9]{64}$/u), sourcePath: z.string().max(4_096).optional(), conversationId: z.string().max(256).optional(), configurationId: z.string().max(256).optional() });
 const previewSchema = z.object({ id: z.string().uuid(), source: sourceSchema, label: z.string(), filePath: z.string().max(4_096).optional(), items: z.array(itemSchema).max(maxItems), warnings: z.array(z.string().max(2_048)).max(256) });
-const selectionSchema = z.object({ source: sourceSchema, filePath: z.string().max(4_096).optional(), workspaceRoot: z.string().max(4_096), itemIds: z.array(z.string().max(256)).max(maxItems) });
+const selectedFileSchema = z.object({ id: z.string().max(256), path: z.string().max(4_096) });
+const selectionSchema = z.object({ source: sourceSchema, filePath: z.string().max(4_096).optional(), workspaceRoot: z.string().max(4_096), itemIds: z.array(z.string().max(256)).max(maxItems), files: z.array(selectedFileSchema).max(maxItems).optional() });
 const stateSchema = z.object({ version: z.literal(1), previews: z.array(previewSchema).max(12), history: z.array(historySchema).max(50),
   receipts: z.array(z.object({ key: z.string(), scope: z.string(), status: z.enum(["attempting", "imported", "skipped", "unknown"]), historyId: z.string(), itemId: z.string(), sessionId: z.string().optional() })).max(maxReceipts),
   sync: z.object({ enabled: z.boolean(), selections: z.array(selectionSchema).max(256), lastError: z.string().max(2_048).optional() }) });
@@ -65,9 +66,9 @@ export class ApplicationImportService {
       if (!preview) throw new Error("导入预览已失效，请重新预览。");
       const ids = [...new Set(options.itemIds)];
       if (!ids.length || ids.length > maxItems || ids.some((id) => !preview.items.some((item) => item.id === id))) throw new Error("请选择当前预览中的导入项目。");
-      const selection = { source: preview.source, filePath: preview.filePath, workspaceRoot, itemIds: ids };
+      const selection = { source: preview.source, filePath: preview.filePath, workspaceRoot, itemIds: ids, files: selectedFiles(preview, ids) };
       const current = state.sync.selections.find((entry) => entry.source === selection.source && entry.filePath === selection.filePath && entry.workspaceRoot === workspaceRoot);
-      if (current) current.itemIds = ids;
+      if (current) { current.itemIds = ids; current.files = selection.files; }
       else {
         if (state.sync.selections.length >= 256) throw new Error("导入同步选择已达上限。");
         state.sync.selections.push(selection);
@@ -95,7 +96,7 @@ export class ApplicationImportService {
       state.sync.selections = state.sync.selections.filter((entry) => entry.source !== preview.source || entry.filePath !== preview.filePath || entry.workspaceRoot !== workspaceRoot);
       if (ids.length) {
         if (state.sync.selections.length >= 256) throw new Error("导入同步选择已达上限。");
-        state.sync.selections.push({ source: preview.source, filePath: preview.filePath, workspaceRoot, itemIds: ids });
+        state.sync.selections.push({ source: preview.source, filePath: preview.filePath, workspaceRoot, itemIds: ids, files: selectedFiles(preview, ids) });
       }
       if (!state.sync.selections.length) state.sync.enabled = false;
       return await this.toSnapshot(state);
@@ -107,22 +108,33 @@ export class ApplicationImportService {
   }
 
   async syncWithEffects(): Promise<ApplicationImportSyncOutcome> {
-    const effects: ApplicationImportSyncOutcome["effects"] = { mcpImported: false };
+    const effects: ApplicationImportSyncOutcome["effects"] = { mcpImported: false, settingsImported: false, sessions: [], stateChanged: false };
     const snapshot = await this.withState(async (state) => {
       if (!state.sync.enabled) return await this.toSnapshot(state);
+      const previous = JSON.stringify(state);
+      const sources = new Map<string, ScannedSource>();
       state.sync.lastError = undefined;
       for (const selection of state.sync.selections) {
         try {
           const workspaceRoot = await canonicalWorkspace(selection.workspaceRoot);
-          const scanned = await this.scan(selection.source, selection.filePath);
+          const sourceKey = JSON.stringify([selection.source, selection.filePath]);
+          let scanned = sources.get(sourceKey);
+          if (!scanned) {
+            const matching = state.sync.selections.filter(item => item.source === selection.source && item.filePath === selection.filePath);
+            scanned = await this.scan(selection.source, selection.filePath, matching.flatMap(item => item.itemIds), matching.flatMap(item => item.files ?? []));
+            sources.set(sourceKey, scanned);
+          }
           // A newly discovered conversation is not authorization to import it.
           const items = scanned.preview.items.filter((item) => selection.itemIds.includes(item.id));
           if (!items.length) { state.sync.lastError = "已选择的来源项目不可用，请重新预览。"; continue; }
-          scanned.preview.items = items;
-          const history = await this.execute(state, scanned.preview, items.map((item) => item.id), workspaceRoot, scanned, effects);
+          const previousHistory = state.history;
+          const receiptCount = state.receipts.length;
+          const history = await this.execute(state, { ...scanned.preview, items }, items.map((item) => item.id), workspaceRoot, scanned, effects);
+          if (state.receipts.length === receiptCount && history.results.every(result => result.status === "skipped")) state.history = previousHistory;
           if (history.results.some((result) => result.status === "unknown" || result.status === "failed")) state.sync.lastError = "部分同步项目未完成，请查看导入历史。";
         } catch { state.sync.lastError = "同步来源或目标不可用，请重新预览并检查导入历史。"; }
       }
+      effects.stateChanged = previous !== JSON.stringify(state);
       return await this.toSnapshot(state);
     });
     // The enclosing state publication and lock release must succeed before effects escape.
@@ -133,7 +145,7 @@ export class ApplicationImportService {
     const history: ApplicationImportHistory = { id: randomUUID(), source: preview.source, label: preview.label, time: new Date().toISOString(), workspaceRoot, results: [] };
     state.history = [history, ...state.history].slice(0, 50);
     let scanned: ScannedSource | undefined;
-    try { scanned = scannedSource ?? await this.scan(preview.source, preview.filePath); } catch { /* Each selected item receives a source-unavailable result. */ }
+    try { scanned = scannedSource ?? await this.scan(preview.source, preview.filePath, ids, selectedFiles(preview, ids)); } catch { /* Each selected item receives a source-unavailable result. */ }
     for (const id of ids) {
       const selected = preview.items.find((item) => item.id === id)!;
       const result: ApplicationImportResult = { id, category: selected.category, label: selected.label, status: "failed" };
@@ -189,7 +201,15 @@ export class ApplicationImportService {
         receipt.status = result.status === "skipped" ? "skipped" : "imported";
         await this.writeState(state);
         // Preserve confirmed effects even if a later item's admission write throws.
-        if (effects && result.category === "mcp" && result.status === "imported") effects.mcpImported = true;
+        if (effects && result.status === "imported") {
+          if (result.category === "mcp") effects.mcpImported = true;
+          else if (result.category === "settings") effects.settingsImported = true;
+          else if (result.sessionId) {
+            let project = effects.sessions.find(item => item.workspaceRoot === workspaceRoot);
+            if (!project) { project = { workspaceRoot, sessionIds: [] }; effects.sessions.push(project); }
+            project.sessionIds.push(result.sessionId);
+          }
+        }
       } catch (error) {
         receipt.status = "unknown";
         result.status = "unknown";
@@ -207,17 +227,19 @@ export class ApplicationImportService {
     return history;
   }
 
-  private async scan(source: ApplicationImportSource, filePath?: string): Promise<ScannedSource> {
+  private async scan(source: ApplicationImportSource, filePath?: string, itemIds?: string[], knownFiles: Array<z.infer<typeof selectedFileSchema>> = []): Promise<ScannedSource> {
+    const itemLimit = itemIds?.length ?? maxItems;
     const preview: StoredPreview = { id: randomUUID(), source,
       label: source === "chatgpt" && filePath !== undefined ? `${applicationImportSources.chatgpt.label} · ${path.basename(filePath).slice(0, 256)}` : applicationImportSources[source].label,
       filePath: filePath === undefined ? undefined : path.resolve(filePath), items: [], warnings: [] };
     const configurations = new Map<string, ConfigurationImportCandidate>();
     const contents = new Map<string, Buffer>();
     let preparedChatGpt: PreparedChatGptSource | undefined;
-    if (source !== "chatgpt") {
+    if (source !== "chatgpt" && (!itemIds || itemIds.some(id => id.startsWith("configuration:")))) {
       try {
         for (const candidate of await discoverConfigurationImports(source, this.homeDir)) {
-          if (preview.items.length >= maxItems) { preview.warnings.push("设置项目超过 256 项，只显示前 256 项。"); break; }
+          if (itemIds && !itemIds.includes(`configuration:${candidate.id}`)) continue;
+          if (preview.items.length >= itemLimit) { preview.warnings.push("设置项目超过 256 项，只显示前 256 项。"); break; }
           const id = `configuration:${candidate.id}`;
           configurations.set(candidate.id, candidate);
           preview.items.push({ id, category: candidate.category, label: candidate.label, detail: candidate.detail, configurationId: candidate.id, sourceHash: candidate.fingerprint, digest: candidate.fingerprint });
@@ -226,10 +248,10 @@ export class ApplicationImportService {
     }
     const files = source === "chatgpt"
       ? filePath === undefined ? [] : [path.resolve(filePath)]
-      : await this.localSessionFiles(source, preview.warnings);
+      : await this.localSessionFiles(source, preview.warnings, itemIds, knownFiles);
     let totalBytes = 0;
     for (const sourcePath of files) {
-      if (preview.items.length >= maxItems) { preview.warnings.push("来源项目超过 256 项，请缩小来源范围后重试。"); break; }
+      if (preview.items.length >= itemLimit) { preview.warnings.push("来源项目超过 256 项，请缩小来源范围后重试。"); break; }
       try {
         const bytes = await readRegularFile(sourcePath, maxSourceBytes);
         totalBytes += bytes.length;
@@ -239,11 +261,12 @@ export class ApplicationImportService {
         if (source === "chatgpt") {
           preparedChatGpt = prepareChatGptSource(bytes.toString("utf8"), sourcePath);
           for (const { summary: conversation, stableId, contentHash: hashRecord } of preparedChatGpt.records(digest)) {
-            if (preview.items.length >= maxItems) { preview.warnings.push("对话超过 256 项，只显示前 256 项。"); break; }
+            if (preview.items.length >= itemLimit) { preview.warnings.push("对话超过 256 项，只显示前 256 项。"); break; }
             const contentHash = hashRecord();
             if (!stableId) preview.warnings.push("部分对话缺少稳定来源身份；内容变化后需重新选择，不自动同步其他记录。");
             if (conversation.importError) preview.warnings.push(`对话不可导入：${conversation.title.slice(0, 256)}`);
-            preview.items.push({ id: `session:${digest(`${sourcePath}\0${conversation.id}\0${stableId ? "" : contentHash}`)}`, category: "sessions", label: conversation.title.slice(0, 512), detail: `${conversation.messageCount} 条消息 · ${path.basename(sourcePath).slice(0, 256)}`, sourcePath, conversationId: conversation.id, sourceHash, digest: contentHash });
+            const id = `session:${digest(`${sourcePath}\0${conversation.id}\0${stableId ? "" : contentHash}`)}`;
+            if (!itemIds || itemIds.includes(id)) preview.items.push({ id, category: "sessions", label: conversation.title.slice(0, 512), detail: `${conversation.messageCount} 条消息 · ${path.basename(sourcePath).slice(0, 256)}`, sourcePath, conversationId: conversation.id, sourceHash, digest: contentHash });
           }
         } else {
           preview.items.push({ id: `session:${digest(sourcePath)}`, category: "sessions", label: path.basename(sourcePath, ".jsonl").slice(0, 512), detail: sourcePath.slice(0, 2_048), sourcePath, sourceHash, digest: sourceHash });
@@ -254,10 +277,22 @@ export class ApplicationImportService {
     return { preview, configurations, contents, preparedChatGpt };
   }
 
-  private async localSessionFiles(source: "claude" | "codex", warnings: string[]): Promise<string[]> {
+  private async localSessionFiles(source: "claude" | "codex", warnings: string[], itemIds?: string[], knownFiles: Array<z.infer<typeof selectedFileSchema>> = []): Promise<string[]> {
     const sourceRoot = path.join(this.homeDir, source === "claude" ? ".claude" : ".codex");
     const root = path.join(sourceRoot, source === "claude" ? "projects" : "sessions");
     const files: string[] = [];
+    const selected = itemIds && new Set(itemIds.filter(id => id.startsWith("session:")));
+    if (selected?.size === 0) return files;
+    for (const file of knownFiles) {
+      if (!selected?.has(file.id)) continue;
+      const relative = path.relative(root, file.path);
+      const parts = relative.split(path.sep);
+      if (!path.isAbsolute(file.path) || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)
+        || parts.length > (source === "claude" ? 2 : 9) || !file.path.endsWith(".jsonl") || (source === "codex" && !path.basename(file.path).startsWith("rollout-"))
+        || file.id !== `session:${digest(file.path)}`) throw new Error("已选择的来源身份无效，请重新预览。");
+      if (!files.includes(file.path)) files.push(file.path);
+    }
+    if (selected && files.length === selected.size) return files;
     let scanned = 0;
     const visit = async (directory: string, depth: number): Promise<void> => {
       if (depth > (source === "claude" ? 1 : 8) || scanned >= maxScanEntries || files.length >= maxItems) return;
@@ -269,7 +304,8 @@ export class ApplicationImportService {
         const file = path.join(directory, entry.name);
         if (entry.isSymbolicLink()) { warnings.push("跳过来源中的符号链接。"); continue; }
         if (entry.isDirectory()) await visit(file, depth + 1);
-        else if (entry.isFile() && entry.name.endsWith(".jsonl") && (source === "claude" || entry.name.startsWith("rollout-"))) files.push(file);
+        else if (entry.isFile() && entry.name.endsWith(".jsonl") && (source === "claude" || entry.name.startsWith("rollout-"))
+          && (!selected || selected.has(`session:${digest(file)}`)) && !files.includes(file)) files.push(file);
       }
     };
     try {
@@ -288,6 +324,7 @@ export class ApplicationImportService {
     this.stateRoot = await fs.realpath(this.stateRoot);
     return await withLocalFileWriteLock(this.stateRoot, ".imports.lock", async () => {
       const state = await this.readState();
+      const previous = JSON.stringify(state);
       for (const receipt of state.receipts) {
         if (receipt.status !== "attempting") continue;
         receipt.status = "unknown";
@@ -295,7 +332,7 @@ export class ApplicationImportService {
         if (result) { result.status = "unknown"; result.detail = "上次导入中断，写入结果未知，禁止自动重试。"; }
       }
       const result = await action(state);
-      await this.writeState(state);
+      if (previous !== JSON.stringify(state)) await this.writeState(state);
       return structuredClone(result);
     });
   }
@@ -350,6 +387,9 @@ export class ApplicationImportService {
 
 function publicPreview(preview: StoredPreview): ApplicationImportPreview {
   return { id: preview.id, source: preview.source, label: preview.label, items: preview.items.map(({ id, category, label, detail }) => ({ id, category, label, detail })), warnings: preview.warnings };
+}
+function selectedFiles(preview: StoredPreview, ids: string[]): Array<z.infer<typeof selectedFileSchema>> {
+  return preview.items.filter(item => ids.includes(item.id) && item.sourcePath !== undefined).map(item => ({ id: item.id, path: item.sourcePath! }));
 }
 function digest(value: string | Buffer): string { return createHash("sha256").update(value).digest("hex"); }
 function isNotFound(error: unknown): boolean { return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"; }

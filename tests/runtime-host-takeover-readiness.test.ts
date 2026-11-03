@@ -1,6 +1,7 @@
 import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -72,6 +73,7 @@ for (const replacementSessionId of ["original-session", "replacement-session"]) 
     const subscription = deferred<{ socket: MemorySocket; request: HostRequestFrame }>();
     const focusedRead = deferred<HostRequestFrame>();
     const sockets: MemorySocket[] = [];
+    let subscriptions = 0;
     context.mock.method(Math, "random", () => 0.5);
     context.mock.timers.enable({ apis: ["setTimeout"] });
     context.mock.method(net, "createServer", () => { throw new Error("Real listeners forbidden in takeover readiness regression"); });
@@ -84,6 +86,7 @@ for (const replacementSessionId of ["original-session", "replacement-session"]) 
           queueMicrotask(() => transport.deliver({ kind: "response", requestId: frame.requestId, ok: true,
             result: { hostEpoch: epoch, sequence: replacing ? 0 : 10, capabilities: [] } }));
         } else if (frame.operation === "subscribe") {
+          subscriptions += 1;
           if (replacing) subscription.resolve({ socket: transport, request: frame });
           else queueMicrotask(() => transport.deliver(reply(frame, { hostEpoch: epoch, sequence: 10,
             capabilities: [], snapshot: original, sessions: summaries(original) })));
@@ -139,9 +142,17 @@ for (const replacementSessionId of ["original-session", "replacement-session"]) 
       assert.deepEqual(client.getSnapshot(), replacement);
       assert.equal(client.getSnapshot().info.workspaceRoot, root);
 
+      let synchronized = false;
+      const ready = client.waitForReady().then(() => { synchronized = true; });
+      void ready.catch(() => undefined);
+      await nextTurn();
+      assert.equal(subscriptions, 2, "readiness must share the pending reconnect subscription instead of opening a second replay");
+      assert.equal(synchronized, false, "a gap cannot complete synchronization before the subscribe response");
+
       const subscribed = { ...replacement, revision: 1 };
       held.socket.deliver(reply(held.request, { hostEpoch: "replacement-epoch", sequence: 3, replayed: false,
         capabilities: [], snapshot: subscribed, sessions: summaries(subscribed) }));
+      await ready;
       const focused = client.focusSession(client.getSnapshot().info.sessionId);
       // Keep cleanup rejection handled if an assertion fails before the held read is answered.
       void focused.catch(() => undefined);

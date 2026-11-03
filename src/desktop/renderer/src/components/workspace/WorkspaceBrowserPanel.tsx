@@ -347,7 +347,7 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
       <BrowserEnvironmentMenu current={selected?.environmentId ? { id: selected.environmentId, name: selected.environmentName ?? "默认", color: selected.environmentColor ?? "#aeb5c2" } : undefined} disabled={busy} onOpen={(environmentId) => void perform({ type: "new", environmentId })} onNotice={setServerNotice} />
     </div>
     <form className="inspector-subtoolbar inspector-browser-navigation" onSubmit={(event) => { event.preventDefault(); navigate(); }}>
-      <button className="inspector-browser-preview-action" type="button" title={previewUnavailable && previewAvailability?.available === false ? previewAvailability.reason : "运行或停止项目预览"} disabled={serverBusy || previewUnavailable} onClick={() => void toggleServer()}><Icon name={serverId || staticUrl ? "stop" : "play"} size={16} />{serverBusy ? "处理中…" : serverStarting ? "停止启动" : previewRunning ? "停止预览" : "运行预览"}</button>
+      <button aria-busy={serverBusy} className="inspector-browser-preview-action" type="button" title={previewUnavailable && previewAvailability?.available === false ? previewAvailability.reason : "运行或停止项目预览"} disabled={serverBusy || previewUnavailable} onClick={() => void toggleServer()}><Icon name={serverId || staticUrl ? "stop" : "play"} size={16} />{serverStarting ? "停止启动" : previewRunning ? "停止预览" : "运行预览"}</button>
       <button type="button" aria-label="重新检查预览入口" title="重新检查预览入口" disabled={availabilityChecking || serverBusy} onClick={() => void refreshAvailability()}><Icon name="refresh" size={16} /></button>
       <div className="inspector-browser-history" role="group" aria-label="网页导航">
         <button type="button" aria-label="后退" title="后退" disabled={busy || !selected?.canGoBack} onClick={() => selected && void perform({ type: "back", tabId: selected.id })}><Icon name="arrow-left" size={16} /></button>
@@ -359,8 +359,8 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
         {profilePickerOpen ? <div className="inspector-profile-picker" role="dialog" aria-label="复用浏览器登录态">
           <strong>复用浏览器登录态</strong>
           <p>从本机浏览器配置导入 Cookie。macOS 首次可能请求钥匙串权限。</p>
-          {profilesLoading ? <small>正在查找浏览器配置…</small> : profiles.length ? profiles.map((profile) => <button type="button" key={profile.id} disabled={Boolean(importingProfileId)} onClick={() => void importProfile(profile.id)}>
-            <Icon name="person" size={18} /><span><strong>{profile.appName} · {profile.profileName}</strong>{profile.userName ? <small>{profile.userName}</small> : null}</span>{importingProfileId === profile.id ? <small>导入中…</small> : null}
+          {profilesLoading ? <small>正在查找浏览器配置…</small> : profiles.length ? profiles.map((profile) => <button aria-busy={importingProfileId === profile.id} type="button" key={profile.id} disabled={Boolean(importingProfileId)} onClick={() => void importProfile(profile.id)}>
+            <Icon name="person" size={18} /><span><strong>{profile.appName} · {profile.profileName}</strong>{profile.userName ? <small>{profile.userName}</small> : null}</span>
           </button>) : <small>未找到 Chrome、Edge、Brave 等浏览器配置。</small>}
           {profileError ? <div className="inspector-error" role="alert">{profileError}</div> : null}
         </div> : null}

@@ -216,7 +216,7 @@ async function fixture(t: TestContext, run: (f: Fixture) => Promise<void>): Prom
     t.mock.method(globalThis, "fetch", async () => { counts.network++; throw new Error("NETWORK_NOT_ALLOWED"); }),
     t.mock.method(RuntimeHostClient, "connect", async () => {
       counts.connection++;
-      return { request: rpc, taskGet: RuntimeHostClient.prototype.taskGet, taskEvents: RuntimeHostClient.prototype.taskEvents, close: async () => undefined } as unknown as RuntimeHostClient;
+      return { waitForReady: async () => undefined, request: rpc, taskGet: RuntimeHostClient.prototype.taskGet, taskEvents: RuntimeHostClient.prototype.taskEvents, close: async () => undefined } as unknown as RuntimeHostClient;
     })
   ];
   const output: Fixture["output"] = async (operation) => {

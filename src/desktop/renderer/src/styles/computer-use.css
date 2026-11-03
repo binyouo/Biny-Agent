@@ -148,8 +148,7 @@
   transition: border-color .12s ease, background .12s ease;
 }
 .appshot-settings .appshot-select select:hover { background: var(--surface-hover); }
-.appshot-settings .appshot-select select:focus { border-color: var(--accent); outline: none; }
-.appshot-settings .appshot-select select:focus-visible { outline: none; }
+.appshot-settings .appshot-select select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--field-focus-ring); }
 /* 自绘下拉箭头，叠在右侧、不吃 flex 宽度，避免原生箭头随平台字体重排。 */
 .appshot-settings .appshot-select::after {
   content: "";

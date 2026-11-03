@@ -19,6 +19,7 @@ import { createSessionEventBuffer } from "./sessionEventBuffer.js";
 import { appendLiveTimelineEvents, liveTimelineEvents } from "../sessionTimeline.js";
 import { createDesktopEventBatcher } from "./desktopEventBatcher.js";
 import { applyUpdatesToSidebarSessions, applyUpdatesToWorkspace, hasContextStatus } from "./desktopState.js";
+import { invalidateToolOptimizationStats } from "../components/settings/toolOptimizationState.js";
 
 /** 聊天内 Recipe 提示卡的数据；从 `recipe.ready` host event 提取。 */
 export interface RecipeNotice extends DesktopRecipeSuggestion {
@@ -225,7 +226,14 @@ export function useDesktopEventBridge({
         ? batch.filter((envelope) => envelope.projectId === activeProjectId)
         : [];
       if (projectBatch.length) {
-        if (projectBatch.some(({ event }) => !event || event.type === "tool.completed" || event.type === "tool.failed" || isTerminalRunEvent(event))) {
+        if (projectBatch.some(({ event, snapshot }) => {
+          const sessionId = event?.sessionId ?? snapshot.info.sessionId;
+          if (sessionId !== selectedSessionIdRef.current) return false;
+          return !event || isTerminalRunEvent(event)
+            || (event.type === "tool.completed" || event.type === "tool.failed")
+              && (event.tool === "TodoWrite" || event.tool === "PlanDraft" || event.tool === "PlanStart"
+                || event.tool === "PlanUpdate" || event.tool === "GoalUpdate");
+        })) {
           void onRuntimeProjectionChanged?.().catch(onError);
         }
         setWorkspace((current) => current && current.project.id === activeProjectId
@@ -234,6 +242,8 @@ export function useDesktopEventBridge({
       }
 
       flushSelectedEvents(projectBatch);
+
+      if (batch.some(({ event }) => event && isTerminalRunEvent(event))) invalidateToolOptimizationStats(window.biny);
 
       const completedSessions = new Map<string, { projectId: string; sessionId: string }>();
       for (const envelope of batch) {

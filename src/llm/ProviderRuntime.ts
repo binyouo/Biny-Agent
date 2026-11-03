@@ -350,6 +350,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       runtime: "provider",
       dataResidency: normalizedModel.dataResidency ?? this.config.dataResidency,
       supportsTools: capabilities.tools,
+      supportsVision: capabilities.vision,
       serviceTiers: capabilities.serviceTiers,
       vercelModel,
       vercelOptions: {

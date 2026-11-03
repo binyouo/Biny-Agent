@@ -59,7 +59,7 @@ for (const scope of ["project", "global"] as const) {
         load: async () => configSchema.parse(defaultConfig),
         save: async () => { throw new Error("Unexpected configuration write"); }
       }, async () => { throw new Error("Unexpected network request"); });
-      const snapshot = async () => (await service.snapshot("project")).plugins.filter((plugin) => plugin.scope === scope);
+      const snapshot = async () => (await service.pluginCatalog("project")).plugins.filter((plugin) => plugin.scope === scope);
       const enabledPaths = async () => scope === "global"
         ? await listEnabledGlobalPluginPaths()
         : await listEnabledProjectPluginPaths(projectRoot);

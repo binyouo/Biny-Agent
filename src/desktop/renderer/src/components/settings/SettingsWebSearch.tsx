@@ -68,14 +68,14 @@ export function SettingsWebSearch({ onOpenBrowser, onExportCookies, onImportCook
       <div className="settings-section-body">
         <p>登录小红书以使用账户的搜索结果。</p>
         <button className="settings-action settings-secondary-button web-search-action" disabled={disabled} onClick={() => open("https://www.xiaohongshu.com/", "xiaohongshu")} type="button">打开小红书设置</button>
-        <details className="settings-disclosure web-search-cookie-actions"><summary>Cookie 管理</summary>
+        <section className="settings-static-group web-search-cookie-actions"><h4>Cookie 管理</h4>
           <p>通过剪贴板导入或导出 Cookie，共享登录状态。</p>
           <div className="settings-button-row">
             <button className="settings-action settings-secondary-button web-search-action" disabled={disabled} onClick={() => void run(onExportCookies, "小红书 Cookie 已复制到剪贴板")} type="button"><Icon name="download" />导出</button>
             <button className="settings-action settings-secondary-button web-search-action" disabled={disabled} onClick={() => void run(onImportCookies, "已从剪贴板导入小红书 Cookie")} type="button"><Icon name="arrow-up" />导入</button>
             <button className="settings-action settings-secondary-button web-search-action" disabled={disabled} onClick={() => void run(onClearCookies, "小红书 Cookie 操作已完成")} type="button"><Icon name="trash" />清除</button>
           </div>
-        </details>
+        </section>
       </div>
     </section>
     <section className="settings-section">
