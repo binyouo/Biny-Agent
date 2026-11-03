@@ -3,21 +3,17 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { CheckpointStore, type Checkpoint } from "../src/session/checkpointStore.js";
 
 const run = promisify(execFile);
-async function repository(operation: (store: CheckpointStore, root: string, git: (...args: string[]) => Promise<string>) => Promise<void>): Promise<void> {
+async function repository(context: TestContext, operation: (store: CheckpointStore, root: string, git: (...args: string[]) => Promise<string>) => Promise<void>): Promise<void> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "biny-checkpoint-retained-ref-"));
   const root = path.join(directory, "repo");
-  const keys = ["BINY_AGENT_DIR", "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"] as const;
+  const keys = ["BINY_AGENT_DIR"] as const;
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   process.env.BINY_AGENT_DIR = path.join(directory, "state");
-  // Commit identity has second resolution. Freeze native Git dates so identical
-  // snapshots reliably exercise the same-second collision without timing sleeps.
-  process.env.GIT_AUTHOR_DATE = "2026-10-31T00:00:00Z";
-  process.env.GIT_COMMITTER_DATE = "2026-10-31T00:00:00Z";
   const git = async (...args: string[]): Promise<string> => (await run("git", args, { cwd: root })).stdout.trim();
   try {
     await fs.mkdir(root);
@@ -29,6 +25,7 @@ async function repository(operation: (store: CheckpointStore, root: string, git:
     await git("commit", "-qm", "initial");
     const store = await CheckpointStore.open(root);
     assert.ok(store);
+    freezeGitClock(context, store);
     await operation(store, root, git);
   } finally {
     for (const key of keys) {
@@ -38,6 +35,16 @@ async function repository(operation: (store: CheckpointStore, root: string, git:
     await fs.rm(directory, { recursive: true, force: true });
   }
 }
+function freezeGitClock(context: TestContext, store: CheckpointStore): void {
+  const commands = store as unknown as { git(args: string[], env?: NodeJS.ProcessEnv, input?: string): Promise<string> };
+  const nativeGit = commands.git.bind(store);
+  // Inherited GIT_* variables are intentionally stripped. Control the external
+  // Git clock at its command boundary while still executing real commit-tree.
+  context.mock.method(commands, "git", async (args: string[], env?: NodeJS.ProcessEnv, input?: string) =>
+    await nativeGit(args, args[0] === "commit-tree" ? {
+      ...env, GIT_AUTHOR_DATE: "2026-10-31T00:00:00Z", GIT_COMMITTER_DATE: "2026-10-31T00:00:00Z"
+    } : env, input));
+}
 async function later(store: CheckpointStore, count: number): Promise<void> {
   for (let index = 0; index < count; index++) await store.create(`later-${index}`);
 }
@@ -45,7 +52,7 @@ async function protectedRef(git: (...args: string[]) => Promise<string>, checkpo
   return await git("rev-parse", "--verify", `refs/biny/checkpoints/${checkpoint.id}`);
 }
 
-test("pruning one duplicate entry preserves the retained checkpoint ref", async () => repository(async (store, _root, git) => {
+test("pruning one duplicate entry preserves the retained checkpoint ref", async context => repository(context, async (store, _root, git) => {
   const first = await store.create("before Write");
   const duplicate = await store.create("before Write");
   assert.equal(first.commit, duplicate.commit);
@@ -56,7 +63,7 @@ test("pruning one duplicate entry preserves the retained checkpoint ref", async 
   assert.equal(await protectedRef(git, duplicate), duplicate.commit);
 }));
 
-test("a retained duplicate remains restorable after native Git garbage collection", async () => repository(async (store, root, git) => {
+test("a retained duplicate remains restorable after native Git garbage collection", async context => repository(context, async (store, root, git) => {
   const first = await store.create("before Write");
   const duplicate = await store.create("before Write");
   assert.equal(first.id, duplicate.id);
@@ -72,7 +79,7 @@ test("a retained duplicate remains restorable after native Git garbage collectio
   assert.deepEqual(await fs.readFile(path.join(root, ".git", "index")), originalIndex);
 }));
 
-test("the ref is removed once every duplicate entry has expired", async () => repository(async (store, _root, git) => {
+test("the ref is removed once every duplicate entry has expired", async context => repository(context, async (store, _root, git) => {
   const first = await store.create("before Write");
   assert.equal((await store.create("before Write")).id, first.id);
   await later(store, 50);
@@ -81,7 +88,7 @@ test("the ref is removed once every duplicate entry has expired", async () => re
   await assert.rejects(protectedRef(git, first));
 }));
 
-test("ordinary distinct checkpoints retain the fifty-entry cap and prune only expired refs", async () => repository(async (store, _root, git) => {
+test("ordinary distinct checkpoints retain the fifty-entry cap and prune only expired refs", async context => repository(context, async (store, _root, git) => {
   const expired = await store.create("oldest");
   await later(store, 50);
   const entries = await store.list();
@@ -91,11 +98,12 @@ test("ordinary distinct checkpoints retain the fifty-entry cap and prune only ex
   for (const entry of entries) assert.equal(await protectedRef(git, entry), entry.commit);
 }));
 
-test("a pending publication protects its ref after another publisher expires the old entry", async context => repository(async (store, root, git) => {
+test("a pending publication protects its ref after another publisher expires the old entry", async context => repository(context, async (store, root, git) => {
   const old = await store.create("before Write");
   await later(store, 49);
   const pendingStore = await CheckpointStore.open(root);
   assert.ok(pendingStore);
+  freezeGitClock(context, pendingStore);
   // Only schedule the publication boundary. The original create, Git commands,
   // index publication and cross-process lock implementations all execute.
   const scheduled = pendingStore as unknown as { appendIndexEntry(checkpoint: Checkpoint): Promise<void> };
