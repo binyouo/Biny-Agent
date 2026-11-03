@@ -5,6 +5,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { parseCookieJar as parseActualCookies, serializeCookieJar as serializeActualCookies, cookieHeaderFor as actualCookieHeader } from "../src/tools/web/cookieJar.js";
 
 type Cookie = Record<string, unknown>;
 interface Api {
@@ -34,6 +35,17 @@ const api = runInNewContext(stripTypeScriptTypes(code, { mode: "strip" }) + "\n(
 }) as Api;
 const parse = (changes: Cookie = {}): Cookie => api.parseCookieJar(JSON.stringify({ cookies: [{ name: "sid", value: "synthetic", domain: "app.example", path: "/", secure: true, httpOnly: true, sameSite: "Lax", expires: 20, ...changes }], origins: [] }))[0]!;
 const header = (cookie: Cookie, host = "app.example", now = 10_000): string | undefined => api.cookieHeaderFor([cookie], new URL(`https://${host}/`), now);
+
+test("complete cookie module preserves imported lifetime and host scope across persistence", () => {
+  const cookies = parseActualCookies(JSON.stringify({ cookies: [{ name: "sid", value: "synthetic", domain: "app.example", path: "/", secure: true, expires: 20 }], origins: [] }));
+  assert.equal(cookies[0]!.expirationDate, 20);
+  assert.equal(cookies[0]!.hostOnly, true);
+  assert.equal(actualCookieHeader(cookies, new URL("https://app.example/"), 10_000), "sid=synthetic");
+  assert.equal(actualCookieHeader(cookies, new URL("https://child.app.example/"), 10_000), undefined);
+  const restored = parseActualCookies(serializeActualCookies(cookies));
+  assert.equal(actualCookieHeader(restored, new URL("https://app.example/"), 20_000), undefined);
+  assert.equal(restored[0]!.hostOnly, true);
+});
 
 for (const [label, expires] of [["future", 20], ["fractional", 10.001], ["zero", 0], ["expired", 9], ["boundary", 10]] as const) {
   test(`Playwright ${label} expiry survives normalization and Electron conversion`, () => {
