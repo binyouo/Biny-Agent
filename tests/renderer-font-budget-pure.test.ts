@@ -37,7 +37,7 @@ test("CJK dependency setup has its own budget below the Renderer job budget", ()
 });
 
 test("font budgeting preserves real rendering and native keyboard validation", () => {
-  assert.deepEqual(renderer.needs, ["plan", "static"]);
+  assert.deepEqual(renderer.needs, ["plan"]);
   assert.equal(renderer.if, "needs.plan.outputs.renderer == 'true'");
   assert.equal(renderer["continue-on-error"], undefined);
   assert.deepEqual(fixture, {

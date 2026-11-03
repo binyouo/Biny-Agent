@@ -1099,8 +1099,8 @@ export function ProviderSettings({
             <div className="provider-enable-card">
               <strong>启用 {catalog.label}</strong>
               <p>{catalog.requiresApiKey ? "正式使用前需要在下方粘贴 API Key。" : "该服务无需密钥。"}</p>
-              <button className="settings-action settings-primary-button" disabled={saving} onClick={() => void enableProvider(catalog)} type="button">
-                {saving ? "启用中…" : "启用服务商"}
+              <button aria-busy={saving} className="settings-action settings-primary-button" disabled={saving} onClick={() => void enableProvider(catalog)} type="button">
+                启用服务商
               </button>
               {apiKeyUrl ? (
                 <a className="settings-link provider-key-link" href={apiKeyUrl} onClick={(event) => { event.preventDefault(); void onOpenExternal(apiKeyUrl); }} rel="noreferrer">获取密钥<Icon name="external" size={11} /></a>
@@ -1525,10 +1525,10 @@ function ConnectedProviderPanel({
             </div>
           )}
           {catalog.connectionMode === "api" ? (
-            <details className="provider-endpoint-details">
-              <summary><Icon name="sliders" size={15} /><span>API 端点</span><Icon name="chevron" size={13} /></summary>
+            <section className="provider-connection-section">
+              <h4>API 端点</h4>
               {connectionFields}
-            </details>
+            </section>
           ) : null}
           <div className="provider-row-item">
             <div className="provider-row-heading">
@@ -1794,8 +1794,8 @@ function ModelsSection({
       <CatalogFeedback />
       <div className="provider-models-head">
         <div className="provider-models-heading"><h4>模型</h4><span className="provider-model-count">{query.trim() ? `${String(models.length)} 个结果` : `${String(models.length)} 个 · 已选择 ${String(enabledChoiceByModel.size)} 个`}</span></div>
-        <button className="settings-action settings-secondary-button ghost-button" disabled={fetchingCatalog} onClick={onRefreshCatalog} type="button" aria-label="获取模型">
-          <Icon name="refresh" size={13} />{fetchingCatalog ? "获取中…" : "获取"}
+        <button aria-busy={fetchingCatalog} className="settings-action settings-secondary-button ghost-button" disabled={fetchingCatalog} onClick={onRefreshCatalog} type="button" aria-label="获取模型">
+          <Icon name="refresh" size={13} />获取
         </button>
       </div>
       {models.length > 0 || query.trim() ? (
@@ -1874,8 +1874,8 @@ function ModelsSection({
         <button className="settings-action settings-text-action settings-link" type="button" disabled={adding || saving} aria-label={manualOpen ? "收起手动添加" : "手动添加模型"} aria-expanded={manualOpen} onClick={() => {
           focusManualRef.current = !manualOpen;
           setManualOpen(!manualOpen);
-        }}><Icon name="add" size={12} />{manualOpen ? "收起手动添加" : "手动添加"}</button>
-        {models.length > 0 ? <button className="settings-action settings-text-action settings-link" type="button" disabled={fetchingCatalog || saving} aria-busy={saving} onClick={() => void onToggleMany(models, !allVisibleEnabled)}>{saving ? "正在保存…" : `${allVisibleEnabled ? "取消全选" : "全选"}${query.trim() ? "搜索结果" : ""}`}</button> : null}
+        }}><Icon name="add" size={12} /><span className="button-state-label"><span aria-hidden={manualOpen}>手动添加</span><span aria-hidden={!manualOpen}>收起手动添加</span></span></button>
+        {models.length > 0 ? <button className="settings-action settings-text-action settings-link" type="button" disabled={fetchingCatalog || saving} aria-busy={saving} onClick={() => void onToggleMany(models, !allVisibleEnabled)}><span className="button-state-label"><span aria-hidden={allVisibleEnabled}>全选{query.trim() ? "搜索结果" : ""}</span><span aria-hidden={!allVisibleEnabled}>取消全选{query.trim() ? "搜索结果" : ""}</span></span></button> : null}
       </div>
       {manualOpen ? <div className="provider-manual-row">
         <input className="settings-field"
@@ -1896,9 +1896,9 @@ function ModelsSection({
           placeholder="显示名称（可选）"
           value={manualDisplayName}
         />
-        <button className="settings-action settings-secondary-button ghost-button" disabled={adding || saving || !manualModelId.trim()} onClick={() => void submitManual()} type="button">
+        <button aria-busy={adding} className="settings-action settings-secondary-button ghost-button" disabled={adding || saving || !manualModelId.trim()} onClick={() => void submitManual()} type="button">
           <Icon name="add" size={13} />
-          {adding ? "添加中…" : "添加"}
+          添加
         </button>
       </div> : null}
     </section>
@@ -2041,7 +2041,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
 
         <footer>
           <button className="settings-action settings-secondary-button ghost-button" disabled={creating} onClick={onCancel} type="button">取消</button>
-          <button className="settings-action settings-primary-button" disabled={!canSubmit} type="submit">{creating ? "添加中…" : "添加"}</button>
+          <button aria-busy={creating} className="settings-action settings-primary-button" disabled={!canSubmit} type="submit">添加</button>
         </footer>
       </form>
     </SettingsDetailLayer>
@@ -2087,7 +2087,7 @@ function hostnameSlug(baseUrl: string): string {
   }
 }
 
-/** 模型设置：默认展示能力，高级覆盖按需展开；所有编辑仍在保存时一次提交。 */
+/** 模型设置直接展示参数；所有编辑仍在保存时一次提交。 */
 function ModelOptionsDialog({
   apiFormat,
   apiFormatOptions: formatOptions,
@@ -2195,7 +2195,6 @@ function ModelOptionsDialog({
         aria-label="模型设置"
         aria-modal="true"
         className="provider-dialog"
-        onInvalid={(event) => { if (event.target instanceof HTMLInputElement) event.target.closest("details")?.setAttribute("open", ""); }}
         onSubmit={(event) => { event.preventDefault(); void save(); }}
         role="dialog"
       >
@@ -2237,24 +2236,22 @@ function ModelOptionsDialog({
             onApiFormat={setFormatOverride}
             onDraft={setDraft}
           />
-          <details className="provider-dialog-advanced">
-            <summary>自定义请求头{headersText.trim() ? <span>已自定义</span> : null}</summary>
-            <div className="provider-dialog-advanced-body">
-              <section className="provider-dialog-section">
-                <p className="provider-dialog-hint">按服务商要求填写 JSON，仅用于当前模型。</p>
-                <textarea
-                  aria-label="自定义请求头（JSON）"
-                  disabled={saving}
-                  className="settings-field provider-json-editor"
-                  onChange={(event) => { setHeadersText(event.target.value); setHeadersError(undefined); }}
-                  placeholder={'{\n  "X-Custom-Header": "value"\n}'}
-                  rows={5}
-                  spellCheck={false}
-                  value={headersText}
-                />
-              </section>
+          <section className="provider-dialog-section">
+            <div className="provider-dialog-section-head">
+              <h4>自定义请求头{headersText.trim() ? <span>已自定义</span> : null}</h4>
+              <p>按服务商要求填写 JSON，仅用于当前模型。</p>
             </div>
-          </details>
+            <textarea
+              aria-label="自定义请求头（JSON）"
+              disabled={saving}
+              className="settings-field provider-json-editor"
+              onChange={(event) => { setHeadersText(event.target.value); setHeadersError(undefined); }}
+              placeholder={'{\n  "X-Custom-Header": "value"\n}'}
+              rows={5}
+              spellCheck={false}
+              value={headersText}
+            />
+          </section>
           {saveError ? <p className="provider-json-error" role="alert">{saveError}</p> : null}
           {headersError ? <p className="provider-json-error" role="alert">{headersError}</p> : null}
         </div>
@@ -2273,7 +2270,7 @@ function ModelOptionsDialog({
             >恢复推荐配置</button>
           ) : null}
           <button className="settings-action settings-secondary-button ghost-button" disabled={saving} onClick={onClose} type="button">取消</button>
-          <button className="settings-action settings-primary-button" disabled={saving} type="submit">{saving ? "保存中…" : "保存"}</button>
+          <button aria-busy={saving} className="settings-action settings-primary-button" disabled={saving} type="submit">保存</button>
         </footer>
       </form>
     </SettingsDetailLayer>

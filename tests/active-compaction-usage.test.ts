@@ -50,7 +50,7 @@ const code = `
   ${pureFunction(agent, "modelIdentifier")}
   ${sessionUsage.getText(replay).replace(/^export /u, "")}
   class Accounting {
-    ${["usageModelInfo", "recordModelUsage", "takeRelatedUsage", "recordError", "recordHostedToolResult"].map(name => method(name).getText(agent)).join("\n")}
+    ${["currentModelManager", "currentModel", "usageModelInfo", "recordModelUsage", "takeRelatedUsage", "recordError", "recordHostedToolResult"].map(name => method(name).getText(agent)).join("\n")}
     async settle(mode, stepUsageRecords) {
       ${variable("usageAuditStarted").getText(agent)}
       const content = "done", finalContextStatus = {}, lastStepReasoningOutput = "";
@@ -103,10 +103,11 @@ function fixture(operation: string | undefined = "agent turn") {
   const events: Event[] = [{ type: "user_message", preparationUsage: [] }];
   const pricing = { inputPerMillionTokens: 2, outputPerMillionTokens: 4, cacheReadPerMillionTokens: 0.5 };
   const info = { modelAlias: "fixture", provider: "fixture", modelLabel: "fixture", pricing };
+  const config = { models: { fixture: { provider: "fixture", model: "fixture", pricing } }, providers: { fixture: { type: "fixture" } } };
   const state: Accounting = Object.assign(Object.create(extracted.prototype) as Accounting, {
-    activeOperation: operation, usageRecords: [], unpersistedRelatedUsage: [], modelRequestRecords: [],
+    activeOperation: operation, activeConfig: config, usageRecords: [], unpersistedRelatedUsage: [], modelRequestRecords: [],
     options: { modelManager: { getModel: () => ({ provider: "fixture", modelId: "fixture" }), getInfo: () => info, listModels: () => [] },
-      config: { models: { fixture: { provider: "fixture", model: "fixture", pricing } }, providers: { fixture: { type: "fixture" } } } },
+      config },
     recorder: { record: (event: Event) => { events.push(json(event)); } },
     contextMemory: { snapshot: () => ({}) }
   });

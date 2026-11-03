@@ -23,7 +23,7 @@ function functions(file: ts.SourceFile, names: readonly string[]): ts.FunctionDe
   });
 }
 const analysisFunctions = functions(analysisSource, ["analyzeContextEmotion", "normalizeMessages"]);
-const storageFunctions = functions(storageSource, ["renderEmotionDocument", "safeFileName"]);
+const storageFunctions = functions(storageSource, ["renderEmotionDocument", "parseEmotionDocument", "safeFileName"]);
 const owners = storageSource.statements.filter((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "EmotionStorage");
 assert.equal(owners.length, 1);
 const storageMethods = ["writeContext", "writeState", "writeBase"].map((name) => {
@@ -63,11 +63,12 @@ const calls = new Set([
   "randomUUID", "fs.open", "handle.writeFile", "renderEmotionDocument", "handle.sync", "handle.close",
   "signal?.throwIfAborted", "fs.rename", "handle?.close", "handle?.close().catch", "fs.unlink",
   "fs.unlink(temporary).catch", "withGlobalConfigWriteLock", "state.trigger?.trim", "state.mood.trim",
+  "parseEmotionDocument", "content.replace", "normalized.match", "match[1]?.split", "line.trim", "line.indexOf", "line.slice", "line.slice(0, separator).trim", "line.slice(separator + 1).trim", "Number", "Number.isFinite", "Date.parse", "match[2]?.trim",
   "String", "frontmatter.join", "value.replace(/[^a-zA-Z0-9._-]/gu, \"-\").slice"
 ]);
 function audit(node: ts.Node, file: ts.SourceFile): void {
   assert.notEqual(node.kind, ts.SyntaxKind.ImportKeyword, "dynamic imports are forbidden");
-  if (ts.isNewExpression(node)) assert.equal(node.expression.getText(file), "Date", "only an inert Date allocation is allowed");
+  if (ts.isNewExpression(node)) assert.ok(["Date", "Error"].includes(node.expression.getText(file)), "only inert Date/Error allocations are allowed");
   if (ts.isCallExpression(node)) {
     const callee = node.expression.getText(file);
     // Array literal joins and the exact normalization chain are pure; no

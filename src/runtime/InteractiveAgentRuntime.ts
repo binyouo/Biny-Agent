@@ -3,7 +3,7 @@ import { validateRunOptions, parseRunVerification, withRunTaskGuidance, resolveR
 import type { ToolOptimization } from "../session/toolOptimization.js";
 import { randomUUID } from "node:crypto";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../agent/AgentSession.js";
-import type { AgentModel } from "../agent/core/types.js";
+import type { ModelManager } from "../llm/ModelManager.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import type { AgentCapabilitySelection } from "../agent/capabilitySelection.js";
 import {
@@ -145,7 +145,7 @@ interface AgentRun extends ActiveRunSnapshot {
   capabilitySelection?: AgentCapabilitySelection;
   fastMode?: boolean;
   modelRoute?: "tool";
-  modelOverride?: AgentModel;
+  modelOverride?: ModelManager;
   retryOfMessageId?: string;
   replaceUserMessageId?: string;
   replacementUserMessageId?: string;
@@ -1277,25 +1277,21 @@ export class InteractiveAgentRuntime {
     try {
       if (run.modelRoute === "tool") {
         signal.throwIfAborted();
-        run.modelOverride = await this.commandRuntime.resolveToolModelForRun?.();
+        run.modelOverride = await this.commandRuntime.resolveToolModelForRun?.(signal);
         signal.throwIfAborted();
       }
+      const runModelInfo = run.modelOverride?.getInfo() ?? info;
       this.emit({
         ...this.eventBase(run),
         type: "run.started",
         messageId: run.messageId,
         retryOfMessageId: run.retryOfMessageId,
         input: run.input,
-        model: run.modelOverride ? {
-          alias: run.modelOverride.providerAlias ?? info.modelAlias,
-          provider: run.modelOverride.provider,
-          label: run.modelOverride.modelId,
-          reasoning: info.reasoningLabel
-        } : {
-          alias: info.modelAlias,
-          provider: info.provider,
-          label: info.modelLabel,
-          reasoning: info.reasoningLabel
+        model: {
+          alias: runModelInfo.modelAlias,
+          provider: runModelInfo.provider,
+          label: runModelInfo.modelLabel,
+          reasoning: runModelInfo.reasoningLabel
         },
         skills: this.commandRuntime.runSkillPaths?.(run.runId) ?? info.skills ?? []
       });
@@ -1341,6 +1337,9 @@ export class InteractiveAgentRuntime {
         if (event.type === "done") {
           terminalEvents += 1;
           turn = event.outcome;
+          // 在 generator 释放本轮临时模型前采样，终态仍属于刚完成的请求。
+          const context = await agent.contextStatus();
+          this.emit({ ...this.eventBase(run), type: "context.updated", context });
         }
       }
       // AgentSession 在输出 terminal done 前已经写入 canonical turn_status。取消若发生在
@@ -1352,8 +1351,6 @@ export class InteractiveAgentRuntime {
           : streamFailure ?? "Agent stream ended without a terminal result.");
       }
       const durationMs = Date.now() - startedAtMs;
-      const context = await agent.contextStatus();
-      this.emit({ ...this.eventBase(run), type: "context.updated", context });
       if (turn.status === "completed") {
         if (turn.stopReason !== "model_stop") {
           return this.failRun(

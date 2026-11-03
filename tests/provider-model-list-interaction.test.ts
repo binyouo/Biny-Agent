@@ -178,7 +178,7 @@ async function harness(options: { gate?: Promise<void>; firstFailure?: "rejected
     .map(element => element.textContent ?? "");
   const toggles = (): HTMLButtonElement[] => [...document.querySelectorAll<HTMLButtonElement>(".provider-model-row .model-toggle")];
   const selectAll = (): HTMLButtonElement | undefined => [...document.querySelectorAll<HTMLButtonElement>(".settings-link")]
-    .find(button => /全选|正在保存/u.test(button.textContent ?? ""));
+    .find(button => /全选/u.test(button.textContent ?? ""));
   return {
     writes: () => writes,
     feedback: () => [...notifications, ...document.querySelectorAll(".provider-inline-notice")].map(value => typeof value === "string" ? value : value.textContent ?? ""),
@@ -214,7 +214,7 @@ test("开关一个模型不改变它在列表里的位置", async () => {
   }
 });
 
-test("批量写入期间显示进行中并挡住重复触发", async () => {
+test("批量写入期间保留操作名、标记忙碌并挡住重复触发", async () => {
   let release: (() => void) | undefined;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const h = await harness({ gate });
@@ -225,7 +225,7 @@ test("批量写入期间显示进行中并挡住重复触发", async () => {
     const busy = h.selectAll();
     assert.equal(busy?.disabled, true, "写入进行中必须挡住重复点击");
     assert.equal(busy?.getAttribute("aria-busy"), "true", "进行中状态对辅助技术可见");
-    assert.match(busy?.textContent ?? "", /正在保存/u, "进行中有可见文案");
+    assert.equal(busy?.querySelector('[aria-hidden="false"]')?.textContent, "全选", "写入期间不替换操作名，避免按钮宽度随临时文案变化");
     const writesDuringFlight = h.writes().length;
     assert.equal(writesDuringFlight, 1);
     // 再点一次不应排入第二个事务。
@@ -236,7 +236,7 @@ test("批量写入期间显示进行中并挡住重复触发", async () => {
     assert.equal(h.writes().length, 1, "保存队列排空后仍只提交一次");
     const settled = h.selectAll();
     assert.equal(settled?.disabled, false, "写入结束后恢复可点");
-    assert.match(settled?.textContent ?? "", /取消全选/u, "整份目录启用后入口变为取消全选");
+    assert.equal(settled?.querySelector('[aria-hidden="false"]')?.textContent, "取消全选", "整份目录启用后入口变为取消全选");
   } finally {
     release?.();
     await act(async () => { await h.draftContext().flushModelEdits(); });

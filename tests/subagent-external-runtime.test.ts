@@ -7,6 +7,7 @@ import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { acpConfigSchema } from "../src/acp/config.js";
 import { loadSubagentDefinitions } from "../src/extensions/agents.js";
 import { createCommandRuntime } from "../src/runtime/CommandRuntime.js";
+import { PermissionManager } from "../src/permission/PermissionManager.js";
 
 test("named ACP worker uses its own model, persists a child result and never resolves a native model", { timeout: 20000 }, async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-external-worker-")));
@@ -59,6 +60,11 @@ process.stdin.on('end', () => {
     return;
   }
   if (prompt.includes('missing-terminal')) { console.log(JSON.stringify({ type: 'system' })); return; }
+  if (!process.argv.includes('exec') && !process.argv.includes('--dangerously-skip-permissions')) {
+    console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'permission required', permission_denials: [{}] }));
+    return;
+  }
+  if (prompt.includes('denied-path-fixture')) fs.writeFileSync('.env', 'fixture');
   if (process.argv.includes('exec')) {
     console.log(JSON.stringify({ type: 'item.completed', item: { id: 'tool', type: 'command_execution', command: 'pwd', aggregated_output: 'workspace', exit_code: 1, status: 'failed' } }));
     console.log(JSON.stringify({ type: 'item.completed', item: { id: 'a', type: 'agent_message', text: 'CLI result' } }));
@@ -76,6 +82,7 @@ process.stdin.on('end', () => {
       const config = configSchema.parse({ ...defaultConfig, permission: { ...defaultConfig.permission, mode: "full-access", denyPaths: [] },
         extensions: { ...defaultConfig.extensions, subagent: { enabled: true, runtime: kind, model: "test-model" } } });
       const options = { workspaceRoot: root, config, toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("native model must not be resolved"); } };
+      if (kind === "claude-code") config.permission.denyPaths = [".env"];
       assert.equal(await runSubagentTask(options, "finite task", undefined, "workspace", undefined, { taskId: "cli-worker", persistenceRoot: root }), "CLI result");
       const { readSessionEvents } = await import("../src/session/events.js");
       const { sessionFilePath } = await import("../src/session/store.js");
@@ -87,12 +94,19 @@ process.stdin.on('end', () => {
       assert.ok(invocation.args.includes("test-model"));
       assert.match(invocation.prompt, /finite task/);
       assert.equal(invocation.injected, undefined);
-      assert.ok(!invocation.args.some((arg: string) => arg.includes("dangerously")));
       if (kind === "claude-code") {
+        assert.ok(invocation.args.includes("--dangerously-skip-permissions"));
+        assert.ok(!invocation.args.includes("--permission-mode"));
+        assert.equal(await runSubagentTask(options, "denied-path-fixture", undefined, "workspace"), "CLI result");
+        assert.equal(await readFile(path.join(root, ".env"), "utf8"), "fixture");
+        const parentPermission = new PermissionManager(config.permission);
+        assert.equal(parentPermission.evaluate({ toolName: "Read", actionType: "read", riskLevel: "low", targetPath: ".env", sessionId: "parent", projectRoot: root }).decision, "deny");
         config.extensions.subagent.model = undefined;
         assert.equal(await runSubagentTask(options, "CLI default task", undefined, "workspace"), "CLI result");
         const defaultInvocation = JSON.parse(await readFile(path.join(root, "invocation.json"), "utf8"));
         assert.ok(!defaultInvocation.args.includes("--model"));
+      } else {
+        assert.ok(!invocation.args.some((arg: string) => arg.includes("dangerously")));
       }
       await assert.rejects(runSubagentTask(options, "missing-terminal", undefined, "workspace"), /terminal/);
       await assert.rejects(runSubagentTask(options, "crash-fixture", undefined, "workspace"), /code 7/);
@@ -115,15 +129,20 @@ test("external worker admission rejects restrictions before launching a process"
   const { ToolRegistry } = await import("../src/tools/registry.js");
   const base = configSchema.parse({ ...defaultConfig, permission: { ...defaultConfig.permission, mode: "full-access", denyPaths: [] },
     extensions: { ...defaultConfig.extensions, subagent: { enabled: true, runtime: "codex", model: "test-model" } } });
-  for (const [change, expected] of [
-    [(c: typeof base) => { c.permission.mode = "ask"; }, /full-access/],
-    [(c: typeof base) => { c.permission.denyPaths = ["secret"]; }, /denyPaths/],
-    [(c: typeof base) => { c.sandbox.allowNetwork = false; }, /sandbox/],
-    [(c: typeof base) => { c.extensions.subagent.maxSteps = 2; }, /budgets/],
-    [(c: typeof base) => { c.extensions.subagent.maxCostUsd = 1; }, /budgets/]
-  ] as const) {
-    const config = structuredClone(base); change(config);
-    await assert.rejects(prepareSubagentTask({ workspaceRoot: os.tmpdir(), config, toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("native"); } }, "task", "workspace"), expected);
+  for (const kind of ["codex", "claude-code", "acp"] as const) {
+    for (const [change, expected] of [
+      [(c: typeof base) => { c.permission.mode = "ask"; }, /full-access/],
+      [(c: typeof base) => { c.sandbox.allowNetwork = false; }, /sandbox/],
+      [(c: typeof base) => { c.extensions.subagent.maxSteps = 2; }, /budgets/],
+      [(c: typeof base) => { c.extensions.subagent.maxCostUsd = 1; }, /budgets/]
+    ] as const) {
+      const config = structuredClone(base); config.extensions.subagent.runtime = kind; change(config);
+      await assert.rejects(prepareSubagentTask({ workspaceRoot: os.tmpdir(), config, toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("native"); } }, "task", "workspace"), expected);
+    }
+    if (kind !== "claude-code") {
+      const config = structuredClone(base); config.extensions.subagent.runtime = kind; config.permission.denyPaths = ["secret"];
+      await assert.rejects(prepareSubagentTask({ workspaceRoot: os.tmpdir(), config, toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("native"); } }, "task", "workspace"), /denyPaths/);
+    }
   }
   await assert.rejects(prepareSubagentTask({ workspaceRoot: os.tmpdir(), config: base, toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("native"); } }, "task", "workspace", undefined,
     { taskId: "old", persistenceRoot: os.tmpdir(), resume: true }), /not replayed/);

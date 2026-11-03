@@ -140,10 +140,14 @@ test("配对不撤销现有连接，重新生成和撤销需确认，重复操�
     await h.invoke("复制配对地址");
     assert.equal(h.button("打开扩展目录").disabled, true);
     assert.equal(h.button("重新生成配对地址").disabled, true);
-    await h.invoke("复制中…");
+    assert.equal(h.button("复制配对地址").getAttribute("aria-busy"), "true");
+    assert.equal(h.button("复制配对地址").disabled, true);
+    await h.invoke("复制配对地址");
     assert.deepEqual(resets, [false]);
     await h.React.act(async () => finish?.());
     assert.match(document.body.textContent ?? "", /配对地址已复制/);
+    assert.equal(h.button("复制配对地址").getAttribute("aria-busy"), "false");
+    assert.equal(h.button("复制配对地址").disabled, false);
     assert.equal(disconnects, 0);
     await h.invoke("重新生成配对地址");
     assert.match(document.body.textContent ?? "", /旧配对地址.*失效/);
@@ -171,7 +175,7 @@ test("操作中的旧状态响应被丢弃，刷新仅按真实连接结果完�
     assert.match(document.body.textContent ?? "", /工作 Chrome.*已连接/);
     await h.React.act(async () => finishOldRead?.({ running: true, connected: false, browsers: [] }));
     assert.doesNotMatch(document.body.textContent ?? "", /Chrome 扩展未连接/);
-    assert.ok(h.button("打开扩展目录").closest("details"), "已连接后安装操作按需展开");
+    assert.equal(h.button("打开扩展目录").closest("details"), null, "已连接后安装操作仍直接可用");
     await h.invoke("刷新状态");
     assert.ok(reads >= 3);
     assert.match(document.body.textContent ?? "", /工作 Chrome.*已连接/);

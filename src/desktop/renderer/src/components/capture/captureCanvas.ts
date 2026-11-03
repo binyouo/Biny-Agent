@@ -1,16 +1,29 @@
 import { drawCapturePrivacy, type CaptureRect, type CapturePrivacyRegion } from "../../../../windowCapture.js";
 export const captureBackgrounds = [
-  { value: "mist", label: "雾蓝", colors: ["#d9e1ed", "#8397a6"] },
-  { value: "dusk", label: "暮色", colors: ["#b0a6d4", "#50678d"] },
-  { value: "sand", label: "暖沙", colors: ["#e5d1b7", "#b18f80"] },
-  { value: "#f2f2f2", label: "浅灰" },
-  { value: "#24262b", label: "深灰" },
-  { value: "transparent", label: "透明" }
+  { value: "sea", label: "海岸", src: "./capture-backgrounds/sea.jpg" },
+  { value: "canyon", label: "峡谷", src: "./capture-backgrounds/canyon.jpg" },
+  { value: "highland", label: "山野", src: "./capture-backgrounds/highland.jpg" },
+  { value: "forest", label: "薄雾", src: "./capture-backgrounds/mist.jpg" },
+  { value: "ocean", label: "地球", src: "./capture-backgrounds/ocean.jpg" },
+  { value: "mist", label: "银灰", colors: ["#eef0f3", "#cbd4e1"] },
+  { value: "azure", label: "蔚蓝", colors: ["#638ae1", "#123aa4"] },
+  { value: "indigo", label: "靛青", colors: ["#7962bf", "#241958"] },
+  { value: "ember", label: "暖橙", colors: ["#e3b68a", "#a84e4b"] },
+  { value: "graphite", label: "石墨", colors: ["#4c525b", "#20242a"] }
 ] as const;
-export interface CaptureComposition { privacyRegions?: CapturePrivacyRegion[]; crop: CaptureRect; regions: CaptureRect[]; padding: number; background: string; shadow: boolean }
+export interface CaptureComposition { privacyRegions?: CapturePrivacyRegion[]; crop: CaptureRect; regions: CaptureRect[]; padding: number; background: string; backgroundImage?: HTMLImageElement; shadow: boolean }
+
+export async function loadCaptureImage(source: string): Promise<HTMLImageElement> {
+  const image = new Image();
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve(); image.onerror = () => reject(new Error("图片读取失败")); image.src = source;
+  });
+  if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth * image.naturalHeight > 32_000_000) throw new Error("图片尺寸无效或超过 3200 万像素");
+  return image;
+}
 
 export function composeCapture(image: HTMLImageElement, options: CaptureComposition): HTMLCanvasElement {
-  const { crop, regions, padding, background, shadow, privacyRegions = [] } = options;
+  const { crop, regions, padding, background, backgroundImage, shadow, privacyRegions = [] } = options;
   const canvas = document.createElement("canvas");
   canvas.width = crop.width + padding * 2;
   canvas.height = crop.height + padding * 2;
@@ -18,11 +31,20 @@ export function composeCapture(image: HTMLImageElement, options: CaptureComposit
   if (!ctx) throw new Error("无法创建截图画布");
   if (background !== "transparent") {
     const preset = captureBackgrounds.find(item => item.value === background);
-    if (preset && "colors" in preset) {
+    if (backgroundImage) {
+      const scale = Math.max(canvas.width / backgroundImage.naturalWidth, canvas.height / backgroundImage.naturalHeight);
+      const width = canvas.width / scale;
+      const height = canvas.height / scale;
+      ctx.drawImage(backgroundImage, (backgroundImage.naturalWidth - width) / 2, (backgroundImage.naturalHeight - height) / 2, width, height, 0, 0, canvas.width, canvas.height);
+    } else if (preset && "colors" in preset) {
       const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
       gradient.addColorStop(0, preset.colors[0]); gradient.addColorStop(1, preset.colors[1]); ctx.fillStyle = gradient;
-    } else ctx.fillStyle = background;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    } else {
+      if (!/^#[0-9a-f]{6}$/i.test(background)) throw new Error("背景图片尚未就绪");
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
   }
   ctx.save();
   if (shadow && padding > 0) { ctx.shadowColor = "rgba(0,0,0,.3)"; ctx.shadowBlur = padding / 2; ctx.shadowOffsetY = padding / 5; }

@@ -104,8 +104,8 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
       const caseSensitive = args.caseSensitive ?? true;
       if (Buffer.byteLength(args.query, "utf8") > maxSearchQueryBytes) throw new RipgrepError("Grep query exceeds its 64 KiB limit.");
       if (args.query.includes("\n") || args.query.includes("\0")) throw new RipgrepError("Grep queries must be a single line without NUL bytes.");
-      const glob = args.glob?.trim();
-      if (args.glob !== undefined && !glob) throw new Error("Grep requires a non-empty glob.");
+      const glob = args.glob;
+      if (args.glob !== undefined && !glob?.trim()) throw new Error("Grep requires a non-empty glob.");
       if (glob) path.matchesGlob("validation-path", glob);
       return {
         accesses: ToolAccesses.searchTree(searchRoot),

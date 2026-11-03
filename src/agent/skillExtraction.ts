@@ -225,6 +225,9 @@ async function authorWithModel(model: AgentModel, material: TurnMaterial, analys
     maxOutputTokens: 4096,
     reasoning: "off"
   });
+  if (response.finishReason === "length" || response.finishReason === "content-filter" || response.finishReason === "error") {
+    throw new Error(`技能生成未完整完成（${response.finishReason}），已跳过保存。`);
+  }
   const raw = response.text.trim();
   const parsed = parseSkillDocument(raw);
   // 复用运行时的加载校验：name 规则、description 存在性和诊断项全部通过才落盘。

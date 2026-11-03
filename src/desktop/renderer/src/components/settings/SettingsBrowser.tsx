@@ -97,8 +97,8 @@ export function SettingsBrowser({ active = true }: { active?: boolean }): React.
   const installGuide = <>
     <p>需要 Chrome 125 或更新版本，可使用已有网页与登录状态。</p>
     <div className="settings-button-row">
-      <button type="button" className="settings-action settings-secondary-button" disabled={disabled} onClick={() => void perform("install")}><Icon name="folder" size={14} />{busy === "install" ? "打开中…" : "打开扩展目录"}</button>
-      <button type="button" className="settings-action settings-secondary-button" disabled={disabled} onClick={() => void perform("open-chrome")}><Icon name="external" size={14} />{busy === "open-chrome" ? "启动中…" : "打开 Chrome 扩展管理"}</button>
+      <button aria-busy={busy === "install"} type="button" className="settings-action settings-secondary-button" disabled={disabled} onClick={() => void perform("install")}><Icon name="folder" size={14} />打开扩展目录</button>
+      <button aria-busy={busy === "open-chrome"} type="button" className="settings-action settings-secondary-button" disabled={disabled} onClick={() => void perform("open-chrome")}><Icon name="external" size={14} />打开 Chrome 扩展管理</button>
     </div>
     {extensionPath ? <code className="browser-extension-path" aria-label="扩展目录">{extensionPath}</code> : null}
     <ol>
@@ -119,18 +119,16 @@ export function SettingsBrowser({ active = true }: { active?: boolean }): React.
           : <p role="status" className={`browser-connection-status${connected ? " is-connected" : ""}`}><span aria-hidden="true" />{connection.kind === "loading" ? "正在读取连接状态…" : !connection.status.running ? "连接服务未启动，复制配对地址时会启动服务。" : connection.status.connected ? `${connection.status.browsers.map(browser => browser.browserName).join("、")} 已连接` : "Chrome 扩展未连接"}</p>}
       </div>
     </section>
-    {connected ? <details className="settings-disclosure settings-install-guide browser-install-guide"><summary>安装到其他 Chrome 配置</summary>{installGuide}</details>
-      : <section className="settings-section settings-install-guide browser-install-guide"><h3>1. 安装扩展</h3>
-        <div className="settings-section-body">{installGuide}
-        </div>
-      </section>}
+    <section className="settings-section settings-install-guide browser-install-guide"><h3>{connected ? "安装到其他 Chrome 配置" : "1. 安装扩展"}</h3>
+      <div className="settings-section-body">{installGuide}</div>
+    </section>
     <section className="settings-section" aria-labelledby="browser-pairing-title">
       <h3 id="browser-pairing-title">{connected ? "配对管理" : "2. 连接 Biny"}</h3>
       <div className="settings-section-body">
         <p>复制配对地址，在扩展设置中粘贴并选择“保存并连接”。地址包含访问凭据，请保密。</p>
         <div className="settings-button-row">
-          <button type="button" className="settings-action settings-primary-button" disabled={disabled || connection.kind === "loading"} onClick={() => void perform("pair")}><Icon name="copy" size={14} />{busy === "pair" ? "复制中…" : "复制配对地址"}</button>
-          <button type="button" className="settings-action settings-secondary-button" disabled={disabled || connection.kind === "loading"} onClick={() => setConfirmation("regenerate")}><Icon name="refresh" size={14} />{busy === "regenerate" ? "重新生成中…" : "重新生成配对地址"}</button>
+          <button aria-busy={busy === "pair"} type="button" className="settings-action settings-primary-button" disabled={disabled || connection.kind === "loading"} onClick={() => void perform("pair")}><Icon name="copy" size={14} />复制配对地址</button>
+          <button aria-busy={busy === "regenerate"} type="button" className="settings-action settings-secondary-button" disabled={disabled || connection.kind === "loading"} onClick={() => setConfirmation("regenerate")}><Icon name="refresh" size={14} />重新生成配对地址</button>
           <button type="button" className="settings-action settings-secondary-button is-danger" disabled={disabled || connection.kind !== "ready" || !connection.status.running} onClick={() => setConfirmation("disconnect")}>撤销全部连接</button>
         </div>
         {confirmation ? <div className="browser-pairing-confirm" role="group" aria-labelledby="browser-confirm-title">
@@ -140,10 +138,10 @@ export function SettingsBrowser({ active = true }: { active?: boolean }): React.
         </div> : null}
         {notice ? <p role="status">{notice}</p> : null}
         {actionError ? <p role="alert">{actionError}</p> : null}
-        <details className="settings-disclosure"><summary>多个 Chrome 配置与连接范围</summary>
+        <section className="settings-static-group"><h4>多个 Chrome 配置与连接范围</h4>
           <p>最多同时连接 8 个 Chrome 配置。每个配置需分别安装扩展、粘贴配对地址，并填写不同的连接名称。</p>
           <p>连接覆盖该 Chrome 配置的普通网页。</p>
-        </details>
+        </section>
       </div>
     </section>
   </div>;
