@@ -207,7 +207,12 @@ export async function duplicateSessionFile(workspaceRoot: string, sourceSession:
   }
 }
 
-export async function createSessionFile(workspaceRoot: string, targetSessionId: string, bytes: Uint8Array): Promise<string> {
+export async function createSessionFile(
+  workspaceRoot: string,
+  targetSessionId: string,
+  bytes: Uint8Array,
+  options: { beforeWrite?: () => Promise<void> } = {}
+): Promise<string> {
   const location = await resolveSessionStorage(workspaceRoot);
   const targetPath = sessionFilePath(location.workspace.path, targetSessionId);
   let handle: FileHandle | undefined;
@@ -220,6 +225,9 @@ export async function createSessionFile(workspaceRoot: string, targetSessionId: 
     const stat = await assertSessionBinding(location, targetPath, handle);
     identity = { dev: stat.dev, ino: stat.ino };
     await handle.chmod(0o600);
+    // Reserve the new identity before associated metadata is committed, but do not
+    // expose conversation contents until that commit succeeds.
+    await options.beforeWrite?.();
     await handle.writeFile(bytes);
     await handle.sync();
     await assertSessionBinding(location, targetPath, handle);
