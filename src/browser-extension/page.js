@@ -21,6 +21,8 @@ export async function pageOperation(operation, args, backendElement) {
     if (node instanceof HTMLInputElement && ["button", "submit", "reset"].includes(node.type)) return normalizeText(node.value || node.title);
     return normalizeText(node.getAttribute("placeholder") || node.getAttribute("title") || node.innerText || node.textContent);
   };
+  const hasLabelSource = (node) => Boolean(node.labels?.length || node.getAttribute("aria-label")?.trim()
+    || node.getAttribute("aria-labelledby")?.split(/\s+/u).some(id => node.getRootNode().getElementById?.(id) || document.getElementById(id)));
   const role = (node) => {
     const explicit = node.getAttribute("role")?.trim().split(/\s+/u)[0];
     if (explicit) return explicit;
@@ -62,7 +64,7 @@ export async function pageOperation(operation, args, backendElement) {
       if (step.m === "locator") matches = queryWithin(matches, step.selector);
       else if (step.m === "getByRole") matches = descendants(matches).filter(node => role(node) === step.role && (step.name === undefined || matchesText(name(node), step.name, step.exact === true)));
       else if (step.m === "getByText") matches = descendants(matches).filter(node => matchesText(node.innerText || node.textContent, step.text, step.exact === true));
-      else if (step.m === "getByLabel") matches = descendants(matches).filter(node => node.matches("input:not([type=hidden]),textarea,select,button,meter,output,progress,[contenteditable=true],[role=textbox],[role=combobox],[role=checkbox],[role=radio],[role=searchbox]") && (name(node) === normalizeText(step.label) || [...(node.labels || [])].some(label => matchesText(label.textContent, step.label, true))));
+      else if (step.m === "getByLabel") matches = descendants(matches).filter(node => node.matches("input:not([type=hidden]),textarea,select,button,meter,output,progress,[contenteditable=true],[role=textbox],[role=combobox],[role=checkbox],[role=radio],[role=searchbox]") && hasLabelSource(node) && (name(node) === normalizeText(step.label) || [...(node.labels || [])].some(label => matchesText(label.textContent, step.label, true))));
       else if (step.m === "getByPlaceholder") matches = descendants(matches).filter(node => matchesText(node.getAttribute("placeholder"), step.placeholder, step.exact === true));
       else if (step.m === "getByTestId") matches = descendants(matches).filter(node => node.getAttribute("data-testid") === step.testId);
       else if (step.m === "first") matches = matches.slice(0, 1);
