@@ -591,7 +591,7 @@ async function initializeCommandRuntime(
       maxConcurrentSubagents: config.extensions.subagent.maxConcurrentSubagents,
       maxPendingSubagents: config.extensions.subagent.maxPendingSubagents,
       timeoutMs: config.extensions.subagent.timeoutMs,
-      onSnapshot: (snapshot) => {
+      onSnapshot: (snapshot, output) => {
         if (snapshot.status === "queued" && !workerGoalBindings.has(snapshot.taskId)) {
           const binding = durableSubagentBindings.get(snapshot.taskId);
           const admittedTask = taskRuns.get(binding?.taskRunId ?? snapshot.taskId);
@@ -602,7 +602,7 @@ async function initializeCommandRuntime(
             communication: admittedTask?.sessionId === recorder.sessionId });
         }
         taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId)
-          ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId });
+          ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId }, output);
         taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
         if (snapshot.status !== "queued" && snapshot.status !== "running") workerGoalBindings.delete(snapshot.taskId);
       },
