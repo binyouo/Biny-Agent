@@ -95,7 +95,9 @@ export function parseCookieJar(raw: string): StoredCookie[] {
     ? payload
     : isRecord(payload) && Array.isArray(payload.cookies) ? payload.cookies : undefined;
   if (!entries) throw new Error("Cookie 文件应是一个 cookie 数组（Cookie-Editor 导出格式）。");
-  const cookies = entries.map(normalizeCookie).filter((cookie): cookie is StoredCookie => cookie !== undefined);
+  const playwrightStorageState = isRecord(payload) && Array.isArray(payload.origins);
+  const cookies = entries.map((entry) => normalizeCookie(entry, playwrightStorageState))
+    .filter((cookie): cookie is StoredCookie => cookie !== undefined);
   if (!cookies.length) throw new Error("Cookie 文件里没有可用的 cookie。");
   return cookies;
 }
@@ -159,14 +161,22 @@ function pathMatches(requestPath: string, cookiePath: string): boolean {
 }
 
 /** 逐条校验并补齐缺省字段；缺少 name/domain 的条目直接丢弃，不让半条 cookie 污染 jar。 */
-function normalizeCookie(value: unknown): StoredCookie | undefined {
+function normalizeCookie(value: unknown, playwrightStorageState = false): StoredCookie | undefined {
   if (!isRecord(value)) return undefined;
   const name = typeof value.name === "string" ? value.name : undefined;
   const domain = typeof value.domain === "string" ? value.domain.trim() : undefined;
   if (!name || !domain) return undefined;
+  // Playwright exports expires (seconds, -1 for session cookies) and encodes
+  // host-only scope by the absence of a leading dot. Preserve explicit
+  // Cookie-Editor metadata wins, including an explicit session lifetime. Do not
+  // reinterpret an extension's unknown expires field outside storageState.
+  const playwrightExpires = playwrightStorageState && value.expirationDate === undefined
+    && value.session === undefined && value.storeId === undefined
+    && typeof value.expires === "number" && Number.isFinite(value.expires)
+    && (value.expires === -1 || value.expires >= 0) ? value.expires : undefined;
   const expirationDate = typeof value.expirationDate === "number" && Number.isFinite(value.expirationDate)
     ? value.expirationDate
-    : undefined;
+    : playwrightExpires !== undefined && playwrightExpires >= 0 ? playwrightExpires : undefined;
   return {
     ...value,
     name,
@@ -177,7 +187,8 @@ function normalizeCookie(value: unknown): StoredCookie | undefined {
     httpOnly: value.httpOnly === true,
     sameSite: normalizeSameSite(value.sameSite),
     expirationDate,
-    hostOnly: typeof value.hostOnly === "boolean" ? value.hostOnly : undefined,
+    hostOnly: typeof value.hostOnly === "boolean" ? value.hostOnly
+      : playwrightExpires !== undefined ? !domain.startsWith(".") : undefined,
     session: typeof value.session === "boolean" ? value.session : expirationDate === undefined,
     storeId: typeof value.storeId === "string" ? value.storeId : undefined
   };
