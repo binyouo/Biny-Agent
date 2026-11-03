@@ -295,7 +295,13 @@ function isRedirectStatus(status: number): boolean {
 }
 
 function isHtml(contentType: string | undefined): boolean {
-  return Boolean(contentType && /\b(?:text\/html|application\/xhtml\+xml)\b/i.test(contentType));
+  if (!contentType) return false;
+  try {
+    const essence = new MIMEType(contentType).essence;
+    return essence === "text/html" || essence === "application/xhtml+xml";
+  } catch {
+    return false;
+  }
 }
 
 function insideSurrogatePair(value: string, offset: number): boolean {
