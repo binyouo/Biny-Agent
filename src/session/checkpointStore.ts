@@ -93,6 +93,7 @@ export class CheckpointStore {
       const skipped = new Set((await this.gitPaths(["ls-files", "-t", "-z", "--", "."], env))
         .filter((entry) => entry.startsWith("S ")).map((entry) => entry.slice(2)));
       const updatedFiles: string[] = [];
+      const presentSkipped: string[] = [];
       for (const file of withoutStateFiles([...files], statePaths)) {
         if (skipped.has(file)) {
           try {
@@ -102,9 +103,12 @@ export class CheckpointStore {
             if (isMissingFile(error)) continue;
             throw error;
           }
+          presentSkipped.push(file);
         }
         updatedFiles.push(file);
       }
+      // Present sparse entries are worktree files; only absent projections retain cached content.
+      if (presentSkipped.length) await this.git(["update-index", "--no-skip-worktree", "-z", "--stdin"], env, `${presentSkipped.join("\0")}\0`);
       if (updatedFiles.length) {
         // 显式清单避免 ignored 目录的排除 pathspec 报错；文件名按 NUL 分隔且不解释为 pathspec。
         await fs.writeFile(temporaryPaths, `${updatedFiles.join("\0")}\0`, { mode: 0o600 });
