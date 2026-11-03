@@ -154,7 +154,10 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
       const references = new Set([reviewCandidate!.taskRunId, reviewCandidate!.attemptId, ...reviewCandidate!.contract.artifactPaths]);
       if (review.evidenceReferences.some((reference) => !references.has(reference))) throw new Error("Review refers to evidence outside the candidate.");
       if (!isLatestNonCancelledAttempt(input.taskRuns, input.taskRunId, attempt.attemptId)) return { status: "cancelled", reason: "A stale review result was ignored." };
-      input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output, review, candidate: reviewCandidate } });
+      input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: {
+        ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
+        output, review, candidate: reviewCandidate
+      } });
       return { status: "completed", output, review };
     } catch (error) {
       if (input.signal?.aborted) return cancelCurrentTask(input);
