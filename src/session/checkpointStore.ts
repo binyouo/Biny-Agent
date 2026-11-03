@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { agentDir, ensureAgentDirs } from "./store.js";
+import { gitInspectionEnvironment } from "../tools/git/environment.js";
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 
 const run = promisify(execFile);
@@ -58,7 +59,7 @@ export class CheckpointStore {
   /** 不是 git 仓库时返回 undefined —— 快照能力就是不可用，不去伪造一个。 */
   static async open(workspaceRoot: string): Promise<CheckpointStore | undefined> {
     try {
-      const { stdout } = await run("git", ["rev-parse", "--absolute-git-dir"], { cwd: workspaceRoot });
+      const { stdout } = await run("git", ["rev-parse", "--absolute-git-dir"], { cwd: workspaceRoot, env: gitInspectionEnvironment() });
       return new CheckpointStore(path.resolve(workspaceRoot), stdout.trim());
     } catch {
       return undefined;
@@ -73,7 +74,7 @@ export class CheckpointStore {
     try {
       // 从真实 index 复制文件集合，再在副本上更新工作区内容。空 index 会漏掉
       // 已跟踪但后来命中 .gitignore 的路径，使恢复误把它们当成新增文件。
-      const env = { ...process.env, GIT_INDEX_FILE: temporaryIndex };
+      const env = { ...gitInspectionEnvironment(), GIT_INDEX_FILE: temporaryIndex };
       const indexPath = (await this.git(["rev-parse", "--git-path", "index"])).trim();
       try {
         await fs.copyFile(path.resolve(this.workspaceRoot, indexPath), temporaryIndex);
@@ -172,7 +173,7 @@ export class CheckpointStore {
     // 而 `checkout-index` 只认给它的索引文件，用户暂存了什么完全不受影响。
     const restoreIndex = path.join(os.tmpdir(), `biny-restore-index-${process.pid}-${Date.now().toString(36)}-${randomUUID()}`);
     try {
-      const env = { ...process.env, GIT_INDEX_FILE: restoreIndex };
+      const env = { ...gitInspectionEnvironment(), GIT_INDEX_FILE: restoreIndex };
       await this.git(["read-tree", checkpoint.commit], env);
       await this.git(["rm", "-r", "--cached", "-f", "--ignore-unmatch", "--sparse", "--", ...statePaths], env);
       await this.git(["checkout-index", "-a", "-f"], env);
@@ -240,7 +241,7 @@ export class CheckpointStore {
 
   private async gitPaths(args: string[], env?: NodeJS.ProcessEnv): Promise<string[]> {
     // -z 禁止 Git 对非 ASCII、换行和边界空格做引用/转义；文件名不可 trim。
-    const { stdout } = await run("git", args, { cwd: this.workspaceRoot, env, encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await run("git", args, { cwd: this.workspaceRoot, env: env ?? gitInspectionEnvironment(), encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
     return stdout.toString("utf8").split("\0").filter(Boolean);
   }
 
@@ -291,7 +292,7 @@ export class CheckpointStore {
   private async git(args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
     const { stdout } = await run("git", args, {
       cwd: this.workspaceRoot,
-      env: env ?? process.env,
+      env: env ?? gitInspectionEnvironment(),
       maxBuffer: 64 * 1024 * 1024
     });
     return stdout;
