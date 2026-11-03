@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Real Host, shell CLI and persistence; the model endpoint stays local. */
 import assert from "node:assert/strict";
@@ -92,7 +93,7 @@ for (const executionMode of ["direct", "code_mode"] as const) {
       return entry;
     }, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
     for (const name of removed) assert.ok(!catalog.includes(name), `${name} must be absent from the runtime catalog`);
-    client = await connectRuntimeHost(root, { surface: "cli", clientId: "cli-consolidation" });
+    client = await readyHostClient(await connectRuntimeHost(root, { surface: "cli", clientId: "cli-consolidation" }));
     assert.ok(client);
     const optimizations: unknown[] = [];
     const stop = client.subscribe(update => {

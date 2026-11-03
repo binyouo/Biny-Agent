@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TemporalMemoryIndex, parseTemporalClues } from "../src/session/temporalMemory.js";
+import { TemporalMemoryIndex } from "../src/session/temporalMemory.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-temporal-active-path-"));
+const extractFacts = (source: { text: string }) => [{ title: source.text, quote: source.text,
+  state: "planned", eventDate: source.text.slice(0, 10), dueDate: null, completedDate: null }];
 try {
   const directory = path.join(root, "sessions", "project");
   await mkdir(directory, { recursive: true });
@@ -20,27 +22,27 @@ try {
   const write = async (selected?: string) => await writeFile(file, [original, oldBranch, newBranch,
     ...(selected ? [{ type: "message_version_selected", slotId: "branch", messageId: selected }] : [])
   ].map((event) => JSON.stringify(event)).join("\n") + "\n");
-  const index = new TemporalMemoryIndex(root);
+  const index = new TemporalMemoryIndex(root, { extractFacts });
   try {
     await write();
     await index.indexSessionFile("thread", file);
-    assert.equal(index.queryClues({ startDate: "2026-10-10", endDate: "2026-10-13" }).clues.length, 2);
-    assert.equal(index.queryClues({ startDate: "2026-10-11", endDate: "2026-10-12" }).clues.length, 0);
+    assert.equal(index.queryFacts({ startDate: "2026-10-10", endDate: "2026-10-13" }).facts.length, 2);
+    assert.equal(index.queryFacts({ startDate: "2026-10-11", endDate: "2026-10-12" }).facts.length, 0);
     await write("old");
     await index.indexSessionFile("thread", file);
-    assert.equal(index.queryClues({ startDate: "2026-10-11", endDate: "2026-10-12" }).clues.length, 1);
-    assert.equal(index.queryClues({ startDate: "2026-10-12", endDate: "2026-10-13" }).clues.length, 0);
+    assert.equal(index.queryFacts({ startDate: "2026-10-11", endDate: "2026-10-12" }).facts.length, 1);
+    assert.equal(index.queryFacts({ startDate: "2026-10-12", endDate: "2026-10-13" }).facts.length, 0);
   } finally {
     index.close();
   }
   await write("new");
-  const racing = new TemporalMemoryIndex(root, { extractClues: async (source) => {
+  const racing = new TemporalMemoryIndex(root, { extractFacts: async (source) => {
     if (source.messageId === "new") await write("old");
-    return parseTemporalClues(source.text, source.sentAt, source.timeZone);
+    return extractFacts(source);
   } });
   try {
     await racing.indexSessionFile("thread", file);
-    assert.equal(racing.queryClues({ startDate: "2026-10-12", endDate: "2026-10-13" }).clues.length, 0,
+    assert.equal(racing.queryFacts({ startDate: "2026-10-12", endDate: "2026-10-13" }).facts.length, 0,
       "a branch change during extraction must not commit the old selected path");
   } finally {
     racing.close();
@@ -62,12 +64,12 @@ try {
   const editedAnswer = nativeAnswer("edited-answer", "u2");
   const nativeHistory: unknown[] = [u1, a1];
   const writeNative = async () => await writeFile(file, nativeHistory.map(event => JSON.stringify(event)).join("\n") + "\n");
-  const nativeIndex = new TemporalMemoryIndex(root);
+  const nativeIndex = new TemporalMemoryIndex(root, { extractFacts });
   const nativeQuery = { startDate: "2026-10-20", endDate: "2026-10-22" };
   const expectNative = async (expected: string[], label: string) => {
     await writeNative();
     await nativeIndex.indexSessionFile("thread", file);
-    assert.deepEqual(nativeIndex.queryClues(nativeQuery).clues.map(clue => clue.messageId), expected, label);
+    assert.deepEqual(nativeIndex.queryFacts(nativeQuery).facts.map(fact => fact.messageId), expected, label);
   };
   try {
     await expectNative(["u1"], "ordinary native prompt is indexed");
@@ -89,18 +91,20 @@ try {
     nativeIndex.close();
   }
 
-  // The same rule must hold in the post-await source freshness guard.
+  // 改变原文以触发一次新的显式提取，并检查 await 后的来源校验。
+  u1.content += " updated";
+  await writeNative();
   let nativeExtractions = 0;
-  const selectingDuringExtraction = new TemporalMemoryIndex(root, { extractClues: async source => {
+  const selectingDuringExtraction = new TemporalMemoryIndex(root, { extractFacts: async source => {
     nativeExtractions += 1;
     nativeHistory.push(select("a1"));
     await writeNative();
-    return parseTemporalClues(source.text, source.sentAt, source.timeZone);
+    return extractFacts(source);
   } });
   try {
     await selectingDuringExtraction.indexSessionFile("thread", file);
     assert.equal(nativeExtractions, 1);
-    assert.deepEqual(selectingDuringExtraction.queryClues(nativeQuery).clues.map(clue => clue.messageId), ["u1"],
+    assert.deepEqual(selectingDuringExtraction.queryFacts(nativeQuery).facts.map(fact => fact.messageId), ["u1"],
       "assistant selection during extraction must not retract a still-active original user");
   } finally {
     selectingDuringExtraction.close();

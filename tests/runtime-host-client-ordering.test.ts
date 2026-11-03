@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -27,6 +28,11 @@ class MemorySocket extends EventEmitter {
   constructor(private readonly respond: (frame: HostFrame) => HostFrame[]) { super(); }
   setEncoding(): this { return this; }
   write(data: string): boolean {
+    const lifecycleFrame = JSON.parse(data.trim()) as { kind: string; operation?: string; requestId: string };
+    if (lifecycleFrame.kind === "request" && lifecycleFrame.operation === "host.subscribe") {
+      queueMicrotask(() => this.emit("data", JSON.stringify({ kind: "response", requestId: lifecycleFrame.requestId, ok: true, result: { lifecycle: "ready" } }) + "\n"));
+      return true;
+    }
     const frames = this.respond(JSON.parse(data) as HostFrame);
     queueMicrotask(() => this.emit("data", frames.map(encodeHostFrame).join("")));
     return true;
@@ -74,7 +80,8 @@ for (const phase of ["subscribe", "snapshot", "session.ensure"] as const) {
         queueMicrotask(() => socket.emit("connect"));
         return socket as unknown as net.Socket;
       });
-      const client = await RuntimeHostClient.connect({ registration });
+      const client = await readyHostClient(await RuntimeHostClient.connect({ registration }));
+
       try {
         if (phase === "snapshot") await client.focusSession("primary");
         if (phase === "session.ensure") await client.ensureSession({ sessionId: "primary" });
@@ -110,7 +117,8 @@ for (const responseKind of ["target", "summaries", "restart"] as const) {
       queueMicrotask(() => socket.emit("connect"));
       return socket as unknown as net.Socket;
     });
-    const client = await RuntimeHostClient.connect({ registration });
+    const client = await readyHostClient(await RuntimeHostClient.connect({ registration }));
+
     try {
       if (responseKind === "restart") await client.restartRuntime("secondary");
       else if (responseKind === "target") await client.focusSession("secondary");
@@ -135,7 +143,8 @@ test("unsubscribe and resubscribe keep the latest cache and continue receiving e
     queueMicrotask(() => socket.emit("connect"));
     return socket as unknown as net.Socket;
   });
-  const client = await RuntimeHostClient.connect({ registration });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration }));
+
   try {
     const seen: number[] = [];
     const stop = client.subscribe((update) => seen.push(update.snapshot.revision));
@@ -181,7 +190,7 @@ for (const newEpoch of [false, true]) {
     });
     let client: RuntimeHostClient | undefined;
     try {
-      client = await RuntimeHostClient.connect({ registration: hostRegistration });
+      client = await readyHostClient(await RuntimeHostClient.connect({ registration: hostRegistration }));
       assert.equal(client.getSnapshot().revision, 10);
       const changedRegistration = { ...hostRegistration, hostEpoch: newEpoch ? "epoch-b" : "epoch-a" };
       await writeFile(paths.registrationPath, JSON.stringify(changedRegistration), { mode: 0o600 });
@@ -230,7 +239,8 @@ for (const alreadyKnown of [false, true]) {
       queueMicrotask(() => socket.emit("connect"));
       return socket as unknown as net.Socket;
     });
-    const client = await RuntimeHostClient.connect({ registration });
+    const client = await readyHostClient(await RuntimeHostClient.connect({ registration }));
+
     try {
       await client.focusSession("primary");
       assert.equal(client.getSnapshot("secondary").revision, 2);
@@ -259,7 +269,8 @@ test("session.list keeps its cursorless wire contract", async (context) => {
     queueMicrotask(() => socket.emit("connect"));
     return socket as unknown as net.Socket;
   });
-  const client = await RuntimeHostClient.connect({ registration });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration }));
+
   try {
     assert.deepEqual(await client.listRuntimeSessions(), summaries(later));
     assert.deepEqual(operations, ["subscribe", "session.list"]);

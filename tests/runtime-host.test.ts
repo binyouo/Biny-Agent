@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { maskJson } from "../src/privacy/json.js";
 import { recordMask, maskingDetail, resetMaskRecordsForTest } from "../src/privacy/record.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
@@ -376,6 +377,7 @@ async function main(): Promise<void> {
   await fs.mkdir(path.dirname(mirrorSource), { recursive: true });
   await fs.writeFile(mirrorSource, JSON.stringify({ type: "user_message", content: "宿主启动前的会话", time: new Date().toISOString() }) + "\n");
   const host = await startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
+  await host.initialize();
   const mirrorDeadline = Date.now() + 2_000;
   while (Date.now() < mirrorDeadline && !await fs.access(mirrorTarget).then(() => true, () => false)) {
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -390,7 +392,8 @@ async function main(): Promise<void> {
   // registration 落盘前 lock 就必须携带 owner pid；注册窗口内的竞争进程据此判活。
   const ownerRegistration = JSON.parse(await readFile(hostPaths.registrationPath, "utf8")) as { pid?: unknown };
   assert.equal((await readFile(hostPaths.lockPath, "utf8")).trim(), String(ownerRegistration.pid));
-  const client = await connectRuntimeHost(workspace, { clientId: "test-client", surface: "tui" });
+  const client = await readyHostClient(await connectRuntimeHost(workspace, { clientId: "test-client", surface: "tui" }));
+
   assert.ok(client);
   resetMaskRecordsForTest();
   const privacyInput = maskJson(JSON.stringify({ messages: [{ content: "sk-proj-0123456789abcdefghijklmnop" }] }), { enabled: true });
@@ -516,10 +519,11 @@ async function main(): Promise<void> {
       }),
       /Cannot replace a Runtime Host owned by the current process/u
     );
-    const legacyClient = await connectRuntimeHost(workspace, {
+    const legacyClient = await readyHostClient(await connectRuntimeHost(workspace, {
       clientId: "legacy-environment-client",
       surface: "cli"
-    });
+    }));
+
     assert.equal(legacyClient, undefined);
   } finally {
     if (previousAgentRoot === undefined) delete process.env.BINY_AGENT_DIR;
@@ -812,7 +816,8 @@ async function main(): Promise<void> {
     runtime.startInterruptedTurn = originalStartInterrupted;
   }
 
-  const secondClient = await connectRuntimeHost(workspace, { clientId: "test-client-2", surface: "desktop" });
+  const secondClient = await readyHostClient(await connectRuntimeHost(workspace, { clientId: "test-client-2", surface: "desktop" }));
+
   assert.ok(secondClient);
   assert.equal(secondClient.getSnapshot().info.sessionId, "session-host-test");
   runtime.publish({ snapshot: { ...currentSnapshot, state: { kind: "runs", activeRun: { runId: "owned-run", status: "thinking" } } } });
@@ -845,9 +850,10 @@ async function main(): Promise<void> {
   assert.match(await readFile(mirrorTarget, "utf8"), /宿主退出前的会话/u);
   currentSnapshot = snapshot;
   const explicitResumeHost = await startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands }), {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  resumeInterrupted: true });
+  await explicitResumeHost.initialize();
   assert.equal(interruptedStarts, 1, "只有显式恢复开关才允许启动中断回合");
   await explicitResumeHost.close();
-  assert.equal(await connectRuntimeHost(workspace, { clientId: "after-close", surface: "tui" }), undefined);
+  assert.equal(await readyHostClient(await connectRuntimeHost(workspace, { clientId: "after-close", surface: "tui" })), undefined);
 
   // 注册窗口回归：registration 尚未落盘时，lock 内的活 pid 必须阻止第二个 owner 接管。
   await fs.writeFile(hostPaths.lockPath, `${String(process.pid)}\n`, { mode: 0o600 });
@@ -870,7 +876,7 @@ async function main(): Promise<void> {
   assert.notEqual(incompatibleRegistration.protocolVersion, runtimeHostProtocolVersion, "fixture must represent an incompatible live owner");
   await assert.rejects(
     connectRuntimeHost(workspace, { clientId: "incompatible-client", surface: "tui" }),
-    /protocol 2 is incompatible with 16/u
+    /protocol 2 is incompatible with 17/u
   );
   assert.deepEqual(JSON.parse(await readFile(hostPaths.registrationPath, "utf8")), incompatibleRegistration);
   await removeTestRoot(hostPaths.registrationPath);
@@ -897,13 +903,14 @@ async function main(): Promise<void> {
       }
     }
   }, { globalDir: configDir });
-  const spawned = await spawnRuntimeHost(spawnedWorkspace, {
+  const spawned = await readyHostClient(await spawnRuntimeHost(spawnedWorkspace, {
     workspaceRoot: spawnedWorkspace,
     configDir,
     resumeInterrupted: false,
     clientId: "process-client",
     surface: "cli"
-  });
+  }));
+
   assert.equal(spawned.client.getSnapshot().info.workspaceRoot, spawnedWorkspace);
   const initialEpoch = spawned.client.hostInfo?.hostEpoch;
   await spawned.client.close();
@@ -916,7 +923,7 @@ async function main(): Promise<void> {
     // 它不是配置数据，复制整个目录会与锁的释放形成 TOCTOU，替换环境只复制稳定配置文件。
     await fs.mkdir(replacementConfigRoot, { recursive: true });
     await fs.copyFile(path.join(configDir, "config.json"), path.join(replacementConfigRoot, "config.json"));
-    const replacementClient = await connectRuntimeHost(spawnedWorkspace, {
+    const replacementClient = await readyHostClient(await connectRuntimeHost(spawnedWorkspace, {
       clientId: "environment-replacement-client",
       surface: "desktop",
       spawnOptions: {
@@ -924,7 +931,8 @@ async function main(): Promise<void> {
         configDir: replacementConfigRoot,
         resumeInterrupted: false
       }
-    });
+    }));
+
     assert.ok(replacementClient);
     const replacementRegistration = JSON.parse(
       await readFile(runtimeHostPaths(spawnedWorkspace).registrationPath, "utf8")
@@ -939,7 +947,7 @@ async function main(): Promise<void> {
   const replacementConfig = replacementConfigRoot;
   const replacementAgent = replacementAgentRoot;
   process.env.BINY_AGENT_DIR = replacementAgent;
-  const reattached = await connectRuntimeHost(spawnedWorkspace, {
+  const reattached = await readyHostClient(await connectRuntimeHost(spawnedWorkspace, {
     clientId: "post-environment-replacement-client",
     surface: "cli",
     spawnOptions: {
@@ -947,7 +955,8 @@ async function main(): Promise<void> {
       configDir: replacementConfig,
       resumeInterrupted: false
     }
-  });
+  }));
+
   assert.ok(reattached);
   await reattached.restartOwner();
   const restartedEpoch = reattached.hostInfo?.hostEpoch;

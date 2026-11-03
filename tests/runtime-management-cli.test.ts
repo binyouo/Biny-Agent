@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Foreground CLI management reaches the owning Host without a second session writer. */
 import assert from "node:assert/strict";
@@ -152,7 +153,8 @@ for (const executionMode of ["direct", "code_mode"] as const) {
     return runtime;
   }, { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
   try {
-    const client = await connectRuntimeHost(root, { surface: "cli", clientId: "management-fixture" });
+    const client = await readyHostClient(await connectRuntimeHost(root, { surface: "cli", clientId: "management-fixture" }));
+
     assert.ok(client);
     try {
       const outcome = await client.submitPrompt("Use CLI to maintain the Todo list").completion;

@@ -63,7 +63,8 @@ function renderActivityDigest(
   if (recent.length > 0) {
     lines.push(`**Recent sessions (last ${String(lookbackMin)} min):**`);
     for (const row of recent) {
-      const startedAt = new Date(row.startedAt).toISOString().slice(11, 16);
+      const started = new Date(row.startedAt);
+      const startedAt = `${String(started.getHours()).padStart(2, "0")}:${String(started.getMinutes()).padStart(2, "0")}`;
       const minutes = Math.round((row.durationMs ?? 0) / 60_000);
       lines.push(`- \`${row.id}\` — ${startedAt} (${String(minutes)}m) **${row.analysisTitle}**`);
       if (row.analysisDescription) lines.push(`  - ${row.analysisDescription.replace(/\s+/gu, " ")}`);

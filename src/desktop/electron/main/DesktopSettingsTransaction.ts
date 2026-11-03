@@ -13,6 +13,7 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { DeferredCredentialTransactionStatus } from "../../../config/credentials.js";
 import { configSchema, type AgentConfig } from "../../../config/schema.js";
+import { resolveToolModelAlias } from "../../../llm/toolModel.js";
 import { configDocumentRevision } from "../../../config/versioned.js";
 import { ConfigRevisionConflictError } from "../../../config/versioned.js";
 import {
@@ -28,6 +29,9 @@ import type {
   DesktopSettingsChatSnapshot,
   DesktopSettingsSaveInput,
   DesktopSettingsSaveResult,
+  DesktopSettingsModelSelectionReceipt,
+  DesktopSettingsPreferencesReceipt,
+  DesktopSettingsNonModelReceipt,
   DesktopSettingsSnapshot,
   DesktopSettingsPendingRecovery
 } from "../../protocol.js";
@@ -118,6 +122,7 @@ export interface DesktopSettingsTransactionAgents {
   hasRunningTasks(): boolean;
   settingsConfigRevision(projectId: string): Promise<string>;
   settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot>;
+  settingsConfigSnapshot(projectId: string, includeModels: false): Promise<Omit<DesktopSettingsConfigSnapshot, "models">>;
   settingsChatSnapshot(projectId: string, sessionId: string): Promise<DesktopSettingsChatSnapshot>;
   prepareSettingsConfig(projectId: string, input: DesktopSettingsSaveInput): Promise<PreparedDesktopSettingsConfig>;
   prepareSettingsChat(
@@ -180,19 +185,21 @@ export class DesktopSettingsTransaction {
 
   async save(projectId: string, input: DesktopSettingsSaveInput): Promise<DesktopSettingsSaveResult> {
     return await this.runExclusive(async () => {
+      const preferencesOnly = isPreferencesOnly(input);
+      const readback = preferencesOnly ? "preferences" : input.models === undefined ? "settings" : "snapshot";
       const pendingRecovery = await this.recoverPendingJournal();
       if (pendingRecovery) {
         return {
           status: "recovery_required",
           journalId: pendingRecovery.journalId,
           message: pendingRecovery.message,
-          snapshot: await this.safeSnapshot(projectId, input.chat?.sessionId, pendingRecovery)
+          ...await this.saveReadback(projectId, input.chat?.sessionId, readback, pendingRecovery)
         };
       }
 
       const preferences = this.state.settingsPreferences();
       const [configRevision, chatSnapshot] = await Promise.all([
-        this.agents.settingsConfigRevision(projectId),
+        preferencesOnly ? undefined : this.agents.settingsConfigRevision(projectId),
         input.chat === undefined
           ? undefined
           : this.agents.settingsChatSnapshot(projectId, input.chat.sessionId)
@@ -203,14 +210,14 @@ export class DesktopSettingsTransaction {
           status: "rolled_back",
           conflicts: preflightConflicts,
           draftRetained: true,
-          snapshot: await this.buildSnapshot(projectId, input.chat?.sessionId)
+          ...await this.saveReadback(projectId, input.chat?.sessionId, readback)
         };
       }
 
-      let preparedConfig: PreparedDesktopSettingsConfig;
+      let preparedConfig: PreparedDesktopSettingsConfig | undefined;
       let preparedChat: PreparedDesktopSettingsChat | undefined;
       try {
-        preparedConfig = await this.agents.prepareSettingsConfig(projectId, input);
+        preparedConfig = preferencesOnly ? undefined : await this.agents.prepareSettingsConfig(projectId, input);
         preparedChat = input.chat === undefined
           ? undefined
           : await this.agents.prepareSettingsChat(projectId, input.chat);
@@ -219,7 +226,7 @@ export class DesktopSettingsTransaction {
           status: "rolled_back",
           message: safeMessage(error),
           draftRetained: true,
-          snapshot: await this.buildSnapshot(projectId, input.chat?.sessionId)
+          ...await this.saveReadback(projectId, input.chat?.sessionId, readback)
         };
       }
 
@@ -229,7 +236,7 @@ export class DesktopSettingsTransaction {
           status: "rolled_back",
           conflicts,
           draftRetained: true,
-          snapshot: await this.buildSnapshot(projectId, input.chat?.sessionId)
+          ...await this.saveReadback(projectId, input.chat?.sessionId, readback)
         };
       }
 
@@ -240,7 +247,7 @@ export class DesktopSettingsTransaction {
           status: "committed",
           journalId: journal.id,
           appliedFields,
-          snapshot: await this.buildSnapshot(projectId, input.chat?.sessionId)
+          ...await this.saveReadback(projectId, input.chat?.sessionId, readback)
         };
       }
 
@@ -265,7 +272,7 @@ export class DesktopSettingsTransaction {
           journal.segments.preferences.state = "committed";
           await this.writeJournal(journal);
         }
-        if (journal.segments.config.included) {
+        if (preparedConfig && journal.segments.config.included) {
           configAttempted = true;
           await this.agents.commitSettingsConfig(preparedConfig, journal.id);
           journal.segments.config.state = "committed";
@@ -277,8 +284,31 @@ export class DesktopSettingsTransaction {
           journal.segments.chatMetadata.state = "committed";
           await this.writeJournal(journal);
         }
-        const snapshot = await this.buildSnapshot(projectId, input.chat?.sessionId);
-        assertCommittedSnapshot(journal, snapshot);
+        // 选择不改变目录或能力；复读版本证明候选已落盘后，只返回这次选择。
+        // 若偏好被其它入口更新，仍返回完整快照，避免新 revision 配上旧偏好。
+        const savedPreferences = this.state.settingsPreferences();
+        const modelSelection: DesktopSettingsModelSelectionReceipt | undefined = isAuxiliaryModelSelection(input)
+          && preparedConfig && samePreferences(savedPreferences, preferences) ? {
+            projectId,
+            hasRunningTasks: this.agents.hasRunningTasks(),
+            preferenceRevision: savedPreferences.revision,
+            configRevision: await this.agents.settingsConfigRevision(projectId),
+            models: {
+              toolModel: preparedConfig.after.toolModel,
+              visionModel: preparedConfig.after.visionModel,
+              visionModelEnabled: preparedConfig.after.visionModelEnabled ?? Boolean(preparedConfig.after.visionModel),
+              resolvedToolModel: resolveToolModelAlias(preparedConfig.after)
+            }
+          } : undefined;
+        const settings = readback === "settings" ? await this.buildSnapshot(projectId, input.chat?.sessionId, undefined, false) : undefined;
+        const snapshot = modelSelection === undefined && readback === "snapshot" ? await this.buildSnapshot(projectId, input.chat?.sessionId) : undefined;
+        assertCommittedSnapshot(journal, snapshot ?? settings ?? {
+          preferenceRevision: savedPreferences.revision,
+          themePreference: savedPreferences.themePreference,
+          fontPreference: savedPreferences.fontPreference,
+          appearancePreference: savedPreferences.appearancePreference,
+          configRevision: modelSelection?.configRevision ?? ""
+        });
         try {
           if (journal.segments.config.included) {
             await this.agents.finalizeSettingsConfig(projectId, journal.id);
@@ -290,23 +320,33 @@ export class DesktopSettingsTransaction {
             status: "recovery_required",
             journalId: journal.id,
             message,
-            snapshot: await this.safeSnapshot(projectId, input.chat?.sessionId, {
+            ...await this.saveReadback(projectId, input.chat?.sessionId, readback, {
               journalId: journal.id,
               message
             })
           };
         }
-        this.agents.consumeSettingsCredentials(preparedConfig.credentialHandles);
-        try {
-          this.agents.settingsCommitted?.(preparedConfig);
-        } catch {
-          // 索引重建等派生任务不属于设置事务；提交已验证成功，不能再伪装成保存失败。
+        if (preparedConfig) {
+          this.agents.consumeSettingsCredentials(preparedConfig.credentialHandles);
+          try {
+            this.agents.settingsCommitted?.(preparedConfig);
+          } catch {
+            // 索引重建等派生任务不属于设置事务；提交已验证成功，不能再伪装成保存失败。
+          }
         }
-        return {
+        if (preferencesOnly) return { status: "committed", journalId: journal.id, appliedFields,
+          preferences: this.preferenceReceipt(projectId) };
+        if (settings) return { status: "committed", journalId: journal.id, appliedFields, settings };
+        return modelSelection === undefined ? {
           status: "committed",
           journalId: journal.id,
           appliedFields,
-          snapshot
+          snapshot: snapshot!
+        } : {
+          status: "committed",
+          journalId: journal.id,
+          appliedFields,
+          modelSelection
         };
       } catch (error) {
         // 初始 journal 都没落下且任何分段都未触碰时，没有需要恢复的外部状态。
@@ -317,7 +357,7 @@ export class DesktopSettingsTransaction {
             journalId: journal.id,
             message: safeMessage(error),
             draftRetained: true,
-            snapshot: await this.buildSnapshot(projectId, input.chat?.sessionId)
+            ...await this.saveReadback(projectId, input.chat?.sessionId, readback)
           };
         }
         const rollback = await this.rollback({
@@ -335,7 +375,7 @@ export class DesktopSettingsTransaction {
             status: "recovery_required",
             journalId: journal.id,
             message,
-            snapshot: await this.safeSnapshot(projectId, input.chat?.sessionId, {
+            ...await this.saveReadback(projectId, input.chat?.sessionId, readback, {
               journalId: journal.id,
               message
             })
@@ -349,7 +389,7 @@ export class DesktopSettingsTransaction {
             status: "recovery_required",
             journalId: journal.id,
             message,
-            snapshot: await this.safeSnapshot(projectId, input.chat?.sessionId, {
+            ...await this.saveReadback(projectId, input.chat?.sessionId, readback, {
               journalId: journal.id,
               message
             })
@@ -362,7 +402,7 @@ export class DesktopSettingsTransaction {
           conflicts: conflict === undefined ? undefined : [conflict],
           message: safeMessage(error),
           draftRetained: true,
-          snapshot: await this.buildSnapshot(projectId, input.chat?.sessionId)
+          ...await this.saveReadback(projectId, input.chat?.sessionId, readback)
         };
       }
     });
@@ -370,7 +410,7 @@ export class DesktopSettingsTransaction {
 
   private async rollback(options: {
     journal: DesktopSettingsJournal;
-    preparedConfig: PreparedDesktopSettingsConfig;
+    preparedConfig?: PreparedDesktopSettingsConfig;
     preparedChat?: PreparedDesktopSettingsChat;
     preferencesCommitted: boolean;
     configAttempted: boolean;
@@ -393,7 +433,7 @@ export class DesktopSettingsTransaction {
         }
       }
     }
-    if (options.configAttempted) {
+    if (options.configAttempted && options.preparedConfig) {
       // saveVersioned 的 CAS 预检失败意味着候选配置从未写入；外部 revision 必须原样保留。
       if (options.failure instanceof ConfigRevisionConflictError) {
         options.journal.segments.config.state = "rolled_back";
@@ -447,7 +487,9 @@ export class DesktopSettingsTransaction {
     }
     try {
       const preferences = this.state.settingsPreferences();
-      const config = await this.agents.settingsConfigSnapshot(journal.projectId);
+      const config = journal.segments.config.included
+        ? { revision: await this.agents.settingsConfigRevision(journal.projectId) }
+        : { revision: journal.segments.config.beforeRevision };
       const credentialStatus = journal.segments.config.included
         ? await this.agents.settingsConfigTransactionStatus(journal.projectId, journal.id)
         : "missing";
@@ -583,7 +625,7 @@ export class DesktopSettingsTransaction {
   private async tryRecoverWithPayload(options: {
     journal: DesktopSettingsJournal;
     preferences: DesktopPreferenceSnapshot;
-    config: DesktopSettingsConfigSnapshot;
+    config: Pick<DesktopSettingsConfigSnapshot, "revision">;
     credentialStatus: DeferredCredentialTransactionStatus;
     chat?: DesktopSettingsChatSnapshot;
   }): Promise<"not_applicable" | DesktopSettingsPendingRecovery | undefined> {
@@ -662,7 +704,7 @@ export class DesktopSettingsTransaction {
           const result = await this.agents.rollbackPendingSettingsConfig(journal.projectId, journal.id);
           if (result === "failed") throw new Error("全局配置凭据补偿失败。");
         }
-        const restored = await this.agents.settingsConfigSnapshot(journal.projectId);
+        const restored = { revision: await this.agents.settingsConfigRevision(journal.projectId) };
         const restoredCredentialStatus = await this.agents.settingsConfigTransactionStatus(journal.projectId, journal.id);
         if (restored.revision !== journal.segments.config.beforeRevision || restoredCredentialStatus === "target") {
           throw new Error("全局配置补偿后的 revision 或凭据方向不匹配。");
@@ -693,17 +735,54 @@ export class DesktopSettingsTransaction {
     }
   }
 
+  private preferenceReceipt(projectId: string, pendingRecovery?: DesktopSettingsPendingRecovery): DesktopSettingsPreferencesReceipt {
+    const preferences = this.state.settingsPreferences();
+    return {
+      projectId,
+      hasRunningTasks: this.agents.hasRunningTasks(),
+      preferenceRevision: preferences.revision,
+      themePreference: preferences.themePreference,
+      fontPreference: preferences.fontPreference,
+      appearancePreference: preferences.appearancePreference,
+      pendingRecovery
+    };
+  }
+
+  private saveReadback(projectId: string, sessionId: string | undefined, mode: "preferences" | "settings" | "snapshot"): Promise<
+    { snapshot: DesktopSettingsSnapshot; preferences?: undefined; settings?: undefined }
+    | { snapshot?: undefined; preferences: DesktopSettingsPreferencesReceipt; settings?: undefined }
+    | { snapshot?: undefined; preferences?: undefined; settings: DesktopSettingsNonModelReceipt }
+  >;
+  private saveReadback(projectId: string, sessionId: string | undefined, mode: "preferences" | "settings" | "snapshot", pendingRecovery: DesktopSettingsPendingRecovery): Promise<
+    { snapshot?: DesktopSettingsSnapshot; preferences?: DesktopSettingsPreferencesReceipt; settings?: DesktopSettingsNonModelReceipt }
+  >;
+  private async saveReadback(projectId: string, sessionId: string | undefined, mode: "preferences" | "settings" | "snapshot", pendingRecovery?: DesktopSettingsPendingRecovery): Promise<
+    { snapshot?: DesktopSettingsSnapshot; preferences?: DesktopSettingsPreferencesReceipt; settings?: DesktopSettingsNonModelReceipt }
+  > {
+    if (mode === "preferences") return { preferences: this.preferenceReceipt(projectId, pendingRecovery) };
+    if (mode === "settings") {
+      const settings = this.buildSnapshot(projectId, sessionId, pendingRecovery, false);
+      return { settings: pendingRecovery ? await settings.catch(() => undefined) : await settings };
+    }
+    return { snapshot: pendingRecovery
+      ? await this.safeSnapshot(projectId, sessionId, pendingRecovery)
+      : await this.buildSnapshot(projectId, sessionId) };
+  }
+
+  private buildSnapshot(projectId: string, sessionId?: string, pendingRecovery?: DesktopSettingsPendingRecovery): Promise<DesktopSettingsSnapshot>;
+  private buildSnapshot(projectId: string, sessionId: string | undefined, pendingRecovery: DesktopSettingsPendingRecovery | undefined, includeModels: false): Promise<DesktopSettingsNonModelReceipt>;
   private async buildSnapshot(
     projectId: string,
     sessionId?: string,
-    pendingRecovery?: DesktopSettingsPendingRecovery
-  ): Promise<DesktopSettingsSnapshot> {
+    pendingRecovery?: DesktopSettingsPendingRecovery,
+    includeModels = true
+  ): Promise<DesktopSettingsNonModelReceipt | DesktopSettingsSnapshot> {
     const [config, chat] = await Promise.all([
-      this.agents.settingsConfigSnapshot(projectId),
+      includeModels ? this.agents.settingsConfigSnapshot(projectId) : this.agents.settingsConfigSnapshot(projectId, false),
       sessionId === undefined ? undefined : this.agents.settingsChatSnapshot(projectId, sessionId)
     ]);
     const preferences = this.state.settingsPreferences();
-    return {
+    const settings: DesktopSettingsNonModelReceipt = {
       projectId,
       hasRunningTasks: this.agents.hasRunningTasks(),
       preferenceRevision: preferences.revision,
@@ -723,7 +802,6 @@ export class DesktopSettingsTransaction {
       permission: structuredClone(config.permission),
       webSearch: config.webSearch,
       redaction: config.redaction,
-      models: config.models,
       skills: config.skills ?? {
         projectId,
         projectKey: "",
@@ -734,6 +812,7 @@ export class DesktopSettingsTransaction {
       chat,
       pendingRecovery
     };
+    return includeModels && "models" in config ? { ...settings, models: (config as DesktopSettingsConfigSnapshot).models } : settings;
   }
 
   private async safeSnapshot(
@@ -870,7 +949,7 @@ export class DesktopSettingsTransaction {
 function createJournal(
   projectId: string,
   preferences: DesktopPreferenceSnapshot,
-  config: PreparedDesktopSettingsConfig,
+  config: PreparedDesktopSettingsConfig | undefined,
   chat: PreparedDesktopSettingsChat | undefined,
   input: DesktopSettingsSaveInput
 ): DesktopSettingsJournal {
@@ -916,10 +995,10 @@ function createJournal(
       config: {
         included: configIncluded,
         state: "pending",
-        beforeRevision: config.beforeRevision,
-        targetRevision: config.targetRevision,
+        beforeRevision: config?.beforeRevision ?? "",
+        targetRevision: config?.targetRevision ?? "",
         rollbackRevision: undefined,
-        credentialHandles: [...config.credentialHandles]
+        credentialHandles: [...(config?.credentialHandles ?? [])]
       },
       chatMetadata: {
         included: chat !== undefined,
@@ -935,7 +1014,7 @@ function createJournal(
 
 function createRecoveryPayload(
   id: string,
-  config: PreparedDesktopSettingsConfig,
+  config: PreparedDesktopSettingsConfig | undefined,
   chat: PreparedDesktopSettingsChat | undefined,
   journal: DesktopSettingsJournal
 ): DesktopSettingsRecoveryPayload | undefined {
@@ -943,7 +1022,7 @@ function createRecoveryPayload(
   return {
     version: recoveryPayloadVersion,
     id,
-    config: journal.segments.config.included
+    config: journal.segments.config.included && config !== undefined
       ? {
           projectId: config.projectId,
           workspaceRoot: config.workspaceRoot,
@@ -1115,7 +1194,8 @@ function parseRecoveryChatRecord(value: SessionCatalogRecord): SessionCatalogRec
 
 function assertCommittedSnapshot(
   journal: DesktopSettingsJournal,
-  snapshot: DesktopSettingsSnapshot
+  snapshot: Pick<DesktopSettingsSnapshot, "preferenceRevision" | "themePreference" | "fontPreference"
+    | "appearancePreference" | "configRevision" | "chat">
 ): void {
   if (journal.segments.preferences.included && !samePreferences({
     revision: snapshot.preferenceRevision,
@@ -1136,7 +1216,7 @@ function assertCommittedSnapshot(
 
 function settingsConflicts(
   preferences: DesktopPreferenceSnapshot,
-  config: PreparedDesktopSettingsConfig,
+  config: PreparedDesktopSettingsConfig | undefined,
   chat: PreparedDesktopSettingsChat | undefined,
   input: DesktopSettingsSaveInput
 ): DesktopSettingsConflict[] {
@@ -1148,7 +1228,7 @@ function settingsConflicts(
       actualRevision: String(preferences.revision)
     });
   }
-  if (config.beforeRevision !== input.expectedConfigRevision) {
+  if (config && config.beforeRevision !== input.expectedConfigRevision) {
     conflicts.push({
       segment: "config",
       expectedRevision: input.expectedConfigRevision,
@@ -1167,7 +1247,7 @@ function settingsConflicts(
 
 function inputConflicts(
   preferences: DesktopPreferenceSnapshot,
-  configRevision: string,
+  configRevision: string | undefined,
   chat: DesktopSettingsChatSnapshot | undefined,
   input: DesktopSettingsSaveInput
 ): DesktopSettingsConflict[] {
@@ -1179,7 +1259,7 @@ function inputConflicts(
       actualRevision: String(preferences.revision)
     });
   }
-  if (configRevision !== input.expectedConfigRevision) {
+  if (configRevision !== undefined && configRevision !== input.expectedConfigRevision) {
     conflicts.push({
       segment: "config",
       expectedRevision: input.expectedConfigRevision,
@@ -1216,6 +1296,20 @@ function listAppliedFields(input: DesktopSettingsSaveInput): string[] {
   if (input.skills !== undefined) fields.push("skills");
   if (input.chat !== undefined) fields.push("chat.personalization");
   return fields;
+}
+
+function isPreferencesOnly(input: DesktopSettingsSaveInput): boolean {
+  const fields = listAppliedFields(input);
+  return fields.length > 0 && fields.every(field => field === "themePreference" || field === "fontPreference" || field === "appearancePreference");
+}
+
+function isAuxiliaryModelSelection(input: DesktopSettingsSaveInput): boolean {
+  const models = input.models;
+  return listAppliedFields(input).join(",") === "models" && models !== undefined
+    && (models.toolModel !== undefined || models.visionModel !== undefined || models.visionModelEnabled !== undefined)
+    && models.upserts.length === 0 && models.removeAliases.length === 0
+    && Object.entries(models).every(([key, value]) => value === undefined
+      || key === "upserts" || key === "removeAliases" || key === "toolModel" || key === "visionModel" || key === "visionModelEnabled");
 }
 
 function samePreferences(left: DesktopPreferenceSnapshot, right: DesktopPreferenceSnapshot): boolean {

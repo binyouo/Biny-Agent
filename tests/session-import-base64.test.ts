@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import { attachmentRoot, readAttachmentBytes, saveAttachment, type AttachmentReference } from "../src/attachments/store.js";
+import { attachmentFilePath, attachmentRoot, readAttachmentBytes, saveAttachment, type AttachmentReference } from "../src/attachments/store.js";
 import { refreshSessionIndex } from "../src/session/catalog.js";
 import { readStoredSessionEvents } from "../src/session/events.js";
 import { SessionRecorder } from "../src/session/recorder.js";
@@ -62,6 +62,9 @@ async function checkGrammar(t: TestContext, values: readonly string[]): Promise<
   const f = await fixture(t);
   const entries = values.map(attachment);
   const accepted = values.map(oldGrammar);
+  const rejected = entries.find((_, index) => !accepted[index]);
+  const previousBytes = Buffer.from("unrelated pre-existing attachment");
+  if (rejected) await fs.writeFile(attachmentFilePath(attachmentRoot(f.target), rejected.sourcePath)!, previousBytes);
   await fs.writeFile(f.file, JSON.stringify(bundle(entries)));
   const imported = await importSessionFile(f.target, f.file);
   assert.equal(imported.attachmentsRestored, accepted.filter(Boolean).length);
@@ -79,10 +82,13 @@ async function checkGrammar(t: TestContext, values: readonly string[]): Promise<
       assert.notEqual(reference.path, entry.sourcePath);
       assert.deepEqual(await readAttachmentBytes(f.target, reference.path), Buffer.from(entry.data, "base64"));
     } else {
-      assert.equal(reference.path, entry.sourcePath, `invalid case ${JSON.stringify(values[index])} must not be remapped`);
+      assert.notEqual(reference.path, entry.sourcePath, `invalid case ${JSON.stringify(values[index])} must not bind its old source path`);
+      assert.match(reference.path, /^@attachments\/import-[a-f0-9]{32}\/[^/]+$/u);
+      await assert.rejects(fs.lstat(attachmentFilePath(attachmentRoot(f.target), reference.path)!), { code: "ENOENT" });
       assert.equal(await readAttachmentBytes(f.target, reference.path), undefined);
     }
   }
+  if (rejected) assert.deepEqual(await readAttachmentBytes(f.target, rejected.sourcePath), previousBytes);
 }
 
 test("public import matches the old grammar exhaustively for short alphabet/padding/whitespace strings", async (t) => {
@@ -197,12 +203,24 @@ test("encoded data above the existing cap stays too-large before Base64 decoding
   const f = await fixture(t);
   const encodedLimit = Math.ceil(BINY_BUNDLE_ATTACHMENT_LIMIT / 3) * 4;
   const item = { ...attachment("", 0), data: "!".repeat(encodedLimit + 4) };
+  const previousBytes = Buffer.from("unrelated pre-existing attachment");
+  await fs.writeFile(attachmentFilePath(attachmentRoot(f.target), item.sourcePath)!, previousBytes);
   await fs.writeFile(f.file, JSON.stringify(bundle([item])));
   const imported = await importSessionFile(f.target, f.file);
   assert.equal(imported.attachmentsRestored, 0);
   assert.equal(imported.attachmentsSkipped, 1);
   assert.deepEqual(imported.skippedAttachmentIssues, [{ name: item.name, reason: "too-large" }]);
-  assert.deepEqual(await fs.readdir(attachmentRoot(f.target)), []);
+  const event = (await readStoredSessionEvents(f.target, imported.sessionId)).events.find(entry => entry.type === "user_message");
+  assert.ok(event?.type === "user_message");
+  const reference = event.attachments?.[0];
+  assert.ok(reference);
+  assert.notEqual(reference.path, item.sourcePath);
+  assert.match(reference.path, /^@attachments\/import-[a-f0-9]{32}\/[^/]+$/u);
+  const directory = path.dirname(attachmentFilePath(attachmentRoot(f.target), reference.path)!);
+  assert.deepEqual((await fs.readdir(attachmentRoot(f.target))).sort(), [path.basename(item.sourcePath), path.basename(directory)].sort());
+  assert.deepEqual(await fs.readdir(directory), [], "only an empty unavailable-reference namespace is retained");
+  assert.equal(await readAttachmentBytes(f.target, reference.path), undefined);
+  assert.deepEqual(await readAttachmentBytes(f.target, item.sourcePath), previousBytes);
 });
 
 test("session creation failure rolls back a provisionally restored 6 MiB attachment and preserves history", async (t) => {

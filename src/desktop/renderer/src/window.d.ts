@@ -1,3 +1,4 @@
+import type { WindowCaptureApi } from "../../windowCapture.js";
 /**
  * 渲染进程的全局类型声明。
  *
@@ -9,6 +10,7 @@ import type { DesktopApi } from "../../protocol.js";
 declare global {
   interface Window {
     biny: DesktopApi;
+    binyCapture?: WindowCaptureApi;
   }
 }
 

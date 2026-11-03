@@ -132,7 +132,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
   const release = Promise.withResolvers<void>();
   const runtime: EmbeddingModelRuntime = {
     fingerprint: "activity-test",
-    descriptor: { ref: { kind: "local", model: "multilingual-e5-small" }, fingerprint: "activity-test", displayName: "test", source: "local", dimensions: 2, recommendedThresholds: { currentWorkspace: 0.3, crossWorkspace: 0.2 }, available: true, installed: true },
+    descriptor: { ref: { kind: "local", model: "multilingual-e5-small" }, fingerprint: "activity-test", displayName: "test", source: "local", dimensions: 2, recommendedThreshold: 0.3, available: true, installed: true },
     embed: async (request) => {
       if (request.inputType === "query") { started.resolve(); await release.promise; }
       return { embeddings: request.texts.map(() => new Float32Array([1, 0])), dimensions: 2, fingerprint: "activity-test", model: { kind: "local", model: "multilingual-e5-small" } };
@@ -194,7 +194,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
     release.resolve();
     await rejected;
     assert.equal(modelCalls, 1, "关闭采集后不能再发送记忆语义去重请求");
-    assert.equal((await memory.listEntries({ origins: ["current_workspace"] })).entries.length, 1);
+    assert.equal((await memory.listEntries()).entries.length, 1);
     assert.ok(store.getAnalysis(id), "已提交的分析仍保留");
   } finally { release.resolve(); memory.close(); }
 });

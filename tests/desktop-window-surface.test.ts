@@ -2,34 +2,38 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { registerHooks } from "node:module";
+import path from "node:path";
 import { test } from "node:test";
 import type { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 
 test("macOS 窗口从创建到切换主题保持透明底，避免填满渲染层圆角", async () => {
   const nativeTheme = Object.assign(new EventEmitter(), { shouldUseDarkColors: false, themeSource: "system" });
   let options: Record<string, unknown> = {};
+  let loadedFile: string | undefined;
   const backgrounds: string[] = [];
   class Window extends EventEmitter {
     webContents = Object.assign(new EventEmitter(), { setWindowOpenHandler() {} });
     constructor(value: Record<string, unknown>) { super(); options = value; }
     isDestroyed() { return false; }
     setBackgroundColor(value: string) { backgrounds.push(value); }
-    async loadFile() {}
+    async loadFile(file: string) { loadedFile = file; }
     async loadURL() {}
   }
-  const boundary = { BrowserWindow: Window, nativeTheme, screen: {} };
+  const boundary = { app: { getAppPath: () => "/biny-app" }, BrowserWindow: Window, nativeTheme, screen: {} };
   Object.assign(globalThis, { __windowSurfaceTest: boundary });
   const hook = registerHooks({ resolve(specifier, context, next) {
     if (specifier === "electron") return { url: "test:window-surface-electron", shortCircuit: true };
     return next(specifier, context);
   }, load(url, context, next) {
-    if (url === "test:window-surface-electron") return { format: "module", source: "export const {BrowserWindow,nativeTheme,screen}=globalThis.__windowSurfaceTest;", shortCircuit: true };
+    if (url === "test:window-surface-electron") return { format: "module", source: "export const {app,BrowserWindow,nativeTheme,screen}=globalThis.__windowSurfaceTest;", shortCircuit: true };
     return next(url, context);
   } });
   try {
     const { createDesktopWindow } = await import("../src/desktop/electron/main/window.js");
     const state = { themePreference: () => "light", appearancePreference: () => undefined, fontPreference: () => ({ family: "system", size: 14 }), windowBounds: () => undefined };
     const window = createDesktopWindow(state as unknown as DesktopStateStore, async () => "cancel");
+    assert.equal((options.webPreferences as { preload: string }).preload, path.join("/biny-app", "out/preload/index.cjs"));
+    if (!process.env.ELECTRON_RENDERER_URL) assert.equal(loadedFile, path.join("/biny-app", "out/renderer/index.html"));
     if (process.platform === "darwin") {
       assert.equal(options.transparent, true);
       assert.equal(options.backgroundColor, "#00000000");

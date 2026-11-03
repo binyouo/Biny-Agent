@@ -1,8 +1,8 @@
 /**
  * Runtime-owned long-lived process manager.
  *
- * Unlike `Bash`, managed processes have no command deadline. They write
- * directly to a durable log file and stay addressable by an opaque process ID
+ * Unlike `Bash`, managed processes have no command deadline. Their output is
+ * collected into bounded log segments and stays addressable by an opaque process ID
  * until they exit or the owning runtime closes. Runtime owns every process by
  * default. Callers may explicitly assign lifetime to an enclosing disposable
  * execution environment.
@@ -10,20 +10,19 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { defaultShell, shellCommandInvocation, type ShellPlan } from "../tools/shell/shell.js";
-import { constants } from "node:fs";
-import { appendFile, open, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { CancellableRegexMatcher, maxRegexQueryBytes } from "../tools/search/regexMatcher.js";
 import { agentDir, ensureAgentDirs } from "../session/store.js";
-import { bindManagedProcessLog, readManagedProcessLog, type ManagedProcessLogBinding } from "./managedProcessLog.js";
+import { ManagedProcessLogStore, managedProcessLogLimits, type ManagedProcessLog } from "./managedProcessLogStore.js";
 
 const defaultReadinessTimeoutMs = 30_000;
 const defaultReadinessIntervalMs = 250;
 const defaultProbeTimeoutMs = 2_000;
 const defaultTerminationGraceMs = 2_000;
 const defaultKillSettleMs = 1_000;
-const maxReadinessLogBytes = 1024 * 1024;
+const maxReadinessLogBytes = managedProcessLogLimits.processBytes;
 
 export type ManagedProcessState = "starting" | "running" | "exited" | "failed" | "stopped";
 
@@ -117,6 +116,9 @@ export interface ManagedProcessOutput {
   hasMore: boolean;
   /** Unconsumed live UTF-8 prefix; wait for output or exit, then retry nextOffset. */
   pendingUtf8Bytes?: number;
+  gap?: { startOffset: number; endOffset: number };
+  droppedBytes?: number;
+  logError?: string;
 }
 
 export interface ManagedProcessServiceOptions {
@@ -125,16 +127,21 @@ export interface ManagedProcessServiceOptions {
   processLifetime?: ManagedProcessLifetime;
   terminationGraceMs?: number;
   killSettleMs?: number;
+  logStore?: ManagedProcessLogStore;
+  onClosed?: () => void;
 }
 
 export type ManagedProcessLifetime = "runtime" | "execution-environment";
 
 interface ManagedProcessRecord {
   snapshot: ManagedProcessSnapshot;
-  logBinding: ManagedProcessLogBinding;
+  log: ManagedProcessLog;
   child: ChildProcess;
   stopRequested: boolean;
   leaderExitObserved: boolean;
+  outputClosed: boolean;
+  outputCompletion?: Promise<void>;
+  outputDeadline?: ReturnType<typeof setTimeout>;
 }
 
 interface ProbeObservation {
@@ -163,6 +170,10 @@ export class ManagedProcessService {
   private initialization: Promise<void> | undefined;
   private closePromise: Promise<ManagedProcessCleanupResult[]> | undefined;
   private closing = false;
+  private lifecycleError?: string;
+  private readonly logs: ManagedProcessLogStore;
+  private readonly ownsLogs: boolean;
+  private readonly onClosed?: () => void;
 
   constructor(options: ManagedProcessServiceOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
@@ -171,6 +182,9 @@ export class ManagedProcessService {
     this.processRoot = path.join(agentDir(persistenceRoot), "processes");
     this.lifecycleLogPath = path.join(this.processRoot, "lifecycle.jsonl");
     this.processLifetime = options.processLifetime ?? "runtime";
+    this.logs = options.logStore ?? new ManagedProcessLogStore(path.join(this.processRoot, "logs-v1"));
+    this.ownsLogs = options.logStore === undefined;
+    this.onClosed = options.onClosed;
     this.terminationGraceMs = options.terminationGraceMs ?? defaultTerminationGraceMs;
     this.killSettleMs = options.killSettleMs ?? defaultKillSettleMs;
     if (![this.terminationGraceMs, this.killSettleMs].every((value) => Number.isFinite(value) && value >= 0)) {
@@ -179,7 +193,7 @@ export class ManagedProcessService {
   }
 
   async initialize(): Promise<void> {
-    if (!this.initialization) this.initialization = ensureAgentDirs(this.persistenceRoot);
+    if (!this.initialization) this.initialization = (async () => { await ensureAgentDirs(this.persistenceRoot); await this.logs.initialize(); })();
     await this.initialization;
   }
 
@@ -189,17 +203,16 @@ export class ManagedProcessService {
     if (!options.command.trim()) throw new Error("Managed process command must not be empty.");
     validateReadinessProbe(options.readiness);
     await this.initialize();
+    if (this.closing) throw new Error("Managed process service is closing.");
+    options.signal?.throwIfAborted();
 
     const processId = randomUUID();
     const cwd = await resolveManagedCwd(this.workspaceRoot, options.cwd);
-    const logPath = path.join(await realpath(this.processRoot), `${processId}.log`);
     const startedAt = new Date().toISOString();
-    const logFile = await open(logPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0));
+    const log = await this.logs.create(processId, () => { this.records.delete(processId); });
     let record: ManagedProcessRecord;
     let spawned: Promise<void>;
     try {
-      await logFile.writeFile(`[biny] ${startedAt} starting managed process ${processId}\n`, "utf8");
-      const logBinding = await bindManagedProcessLog(logPath, logFile);
       // Shutdown may have completed while the filesystem preparation was pending.
       if (this.closing) throw new Error("Managed process service is closing.");
       options.signal?.throwIfAborted();
@@ -209,12 +222,12 @@ export class ManagedProcessService {
         cwd,
         shell: invocation?.shell ?? invocation === undefined,
         detached: process.platform !== "win32",
-        stdio: ["ignore", logFile.fd, logFile.fd] as ["ignore", number, number],
+        stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
         windowsHide: true,
         env: invocation?.env
       };
       const child = invocation ? spawn(invocation.executable, invocation.args, spawnOptions) : spawn(options.command, spawnOptions);
-      // Closing a FileHandle yields to the event loop; install spawn/error listeners first.
+      // Install spawn/error listeners before yielding to the event loop.
       spawned = waitForSpawn(child, options.signal);
       void spawned.catch(() => undefined);
 
@@ -230,7 +243,7 @@ export class ManagedProcessService {
         command: options.displayCommand ?? options.command,
         cwd,
         state: "starting",
-        logPath,
+        logPath: log.directory,
         startedAt,
         url: options.url ?? (options.readiness?.type === "http" ? options.readiness.url : undefined),
         readiness: options.readiness
@@ -246,11 +259,16 @@ export class ManagedProcessService {
         cleanup: { status: "pending" }
       };
       // Publish ownership before yielding again so close() cannot miss a spawned child.
-      record = { snapshot, logBinding, child, stopRequested: false, leaderExitObserved: false };
+      record = { snapshot, log, child, stopRequested: false, leaderExitObserved: false, outputClosed: false };
       this.records.set(processId, record);
+      child.stdout.on("data", (bytes: Buffer) => log.accept(bytes));
+      child.stderr.on("data", (bytes: Buffer) => log.accept(bytes));
+      child.stdout.on("error", error => log.recordError(error));
+      child.stderr.on("error", error => log.recordError(error));
       this.observeChild(record);
-    } finally {
-      await logFile.close();
+    } catch (error) {
+      await log.finish();
+      throw error;
     }
 
     const { snapshot, child } = record;
@@ -298,7 +316,7 @@ export class ManagedProcessService {
   }
 
   outputPath(processId: string): string {
-    return this.requireRecord(processId).logBinding.path;
+    return this.requireRecord(processId).log.directory;
   }
 
   async readOutput(processId: string, options: ReadManagedProcessOutputOptions = {}, signal?: AbortSignal): Promise<ManagedProcessOutput> {
@@ -306,7 +324,8 @@ export class ManagedProcessService {
     this.refreshRecord(record);
     // Freeze before any log await: exit after the size snapshot cannot finalize that snapshot.
     const final = !isRunningState(record.snapshot.state);
-    return { processId, ...await readManagedProcessLog(record.logBinding, options, signal, { final }) };
+    const output = await record.log.read(options, signal, final && record.outputClosed);
+    return { processId, ...output, logError: output.logError ?? this.lifecycleError };
   }
 
   async stop(processId: string, reason = "KillShell requested"): Promise<ManagedProcessSnapshot> {
@@ -352,7 +371,10 @@ export class ManagedProcessService {
 
     const now = new Date().toISOString();
     if (stopped) {
+      await this.drainOutput(record);
       record.snapshot.state = "stopped";
+      await record.log.finish();
+      await this.releaseIfDrained();
       record.snapshot.exitedAt ??= now;
       record.snapshot.cleanup = {
         status: "stopped",
@@ -380,12 +402,17 @@ export class ManagedProcessService {
       try {
         await this.initialize();
       } catch (error) {
-        if (this.records.size === 0) return [];
+        if (this.records.size === 0) {
+          if (this.ownsLogs) await this.logs.close();
+          this.onClosed?.();
+          return [];
+        }
         throw error;
       }
-      return await Promise.all([...this.records.values()].map(async (record): Promise<ManagedProcessCleanupResult> => {
+      const results = await Promise.all([...this.records.values()].map(async (record): Promise<ManagedProcessCleanupResult> => {
         this.refreshRecord(record);
         if (!isRunningState(record.snapshot.state)) {
+          await this.drainOutput(record);
           if (record.snapshot.cleanup.status === "pending") {
             record.snapshot.cleanup = {
               status: "not_needed",
@@ -410,8 +437,71 @@ export class ManagedProcessService {
         const stopped = await this.stop(record.snapshot.processId, "runtime close");
         return { ...stopped.cleanup };
       }));
+      if (!this.hasRetainingWork()) {
+        if (this.ownsLogs) await this.logs.close();
+        this.onClosed?.();
+      }
+      if (this.lifecycleError) results.push({ status: "failed", message: this.lifecycleError });
+      return results;
     })();
     return this.closePromise;
+  }
+
+  hasRetainingWork(): boolean {
+    for (const record of this.records.values()) {
+      this.refreshRecord(record);
+      if (isRunningState(record.snapshot.state) || !record.outputClosed) return true;
+    }
+    return false;
+  }
+
+  async shutdown(): Promise<void> {
+    await this.close();
+    const results = await Promise.allSettled([...this.records.values()].map(async record => {
+      const stopped = await this.stop(record.snapshot.processId, "host shutdown");
+      if (stopped.cleanup.status === "failed") throw new Error(stopped.cleanup.message);
+      await this.drainOutput(record);
+    }));
+    if (!this.hasRetainingWork()) {
+      if (this.ownsLogs) await this.logs.close();
+      this.onClosed?.();
+    }
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "Managed process cleanup failed.");
+  }
+
+  private async drainOutput(record: ManagedProcessRecord): Promise<void> {
+    let timedOut = false;
+    if (!record.outputCompletion) {
+      await new Promise<void>(resolve => {
+        const finish = (): void => { clearTimeout(timer); record.child.removeListener("close", finish); resolve(); };
+        const timer = setTimeout(() => { timedOut = true; finish(); }, 2_000);
+        record.child.once("close", finish);
+        if (record.outputCompletion) finish();
+      });
+    }
+    await this.finishOutput(record, timedOut);
+  }
+
+  private async releaseIfDrained(): Promise<void> {
+    if (this.closing && !this.hasRetainingWork()) {
+      if (this.ownsLogs) await this.logs.close();
+      this.onClosed?.();
+    }
+  }
+
+  private finishOutput(record: ManagedProcessRecord, timedOut = false): Promise<void> {
+    return record.outputCompletion ??= (async () => {
+      if (record.outputDeadline) clearTimeout(record.outputDeadline);
+      if (timedOut) record.log.recordError(new Error("Output pipes did not close within the 2 second drain deadline; remaining output may be unavailable."));
+      record.child.stdout?.destroy();
+      record.child.stderr?.destroy();
+      await record.log.seal();
+      record.outputClosed = true;
+      this.refreshRecord(record);
+      if (!isRunningState(record.snapshot.state)) await record.log.finish();
+      await this.releaseIfDrained();
+    })();
   }
 
   private requireRecord(processId: string): ManagedProcessRecord {
@@ -421,6 +511,7 @@ export class ManagedProcessService {
   }
 
   private observeChild(record: ManagedProcessRecord): void {
+    record.child.once("close", () => { void this.finishOutput(record).catch(error => { record.snapshot.cleanup = { status: "failed", message: errorMessage(error) }; }); });
     record.child.once("error", (error) => {
       record.snapshot.state = "failed";
       record.snapshot.exitedAt = new Date().toISOString();
@@ -429,7 +520,8 @@ export class ManagedProcessService {
         at: record.snapshot.exitedAt,
         message: error.message
       };
-      void this.recordLifecycle("process_error", record.snapshot, error.message);
+      void this.recordLifecycle("process_error", record.snapshot, error.message).catch(error => { record.snapshot.cleanup = { status: "failed", message: errorMessage(error) }; });
+      void this.finishOutput(record).catch(error => { record.snapshot.cleanup = { status: "failed", message: errorMessage(error) }; });
     });
     record.child.once("exit", (code, signal) => {
       record.leaderExitObserved = true;
@@ -438,6 +530,9 @@ export class ManagedProcessService {
         record.snapshot.state = "running";
         return;
       }
+      // 孙进程可能继承管道；等待排空有明确期限，不能把 shell 退出当成 stdout 已关闭。
+      record.outputDeadline = setTimeout(() => { void this.finishOutput(record, true).catch(error => { record.snapshot.cleanup = { status: "failed", message: errorMessage(error) }; }); }, 2_000);
+      record.outputDeadline.unref();
       record.snapshot.exitCode = code ?? undefined;
       record.snapshot.signal = signal ?? undefined;
       record.snapshot.exitedAt = new Date().toISOString();
@@ -449,7 +544,7 @@ export class ManagedProcessService {
           reason: "process exited"
         };
       }
-      void this.recordLifecycle("exited", record.snapshot);
+      void this.recordLifecycle("exited", record.snapshot).catch(error => { record.snapshot.cleanup = { status: "failed", message: errorMessage(error) }; });
     });
   }
 
@@ -469,6 +564,11 @@ export class ManagedProcessService {
           at: record.snapshot.exitedAt,
           reason: "process exited"
         };
+      }
+      if (record.outputClosed) {
+        void record.log.finish().then(() => this.releaseIfDrained()).catch(error => {
+          record.snapshot.cleanup = { status: "failed", message: errorMessage(error) };
+        });
       }
     }
   }
@@ -491,7 +591,9 @@ export class ManagedProcessService {
       this.refreshRecord(record);
       attempts += 1;
       if (isRunningState(record.snapshot.state) && !record.stopRequested) {
-        lastObservation = await runReadinessProbe(record.snapshot.logPath, probe, Math.max(1, deadline - Date.now()), signal);
+        lastObservation = probe.type === "log"
+          ? await this.probeLog(record, probe, undefined, signal)
+          : await runReadinessProbe(probe, Math.max(1, deadline - Date.now()), signal);
         // A probe can finish after exit, stop, or cancellation. Revalidate its owner
         // before accepting either readiness or timeout from that observation.
         signal?.throwIfAborted();
@@ -595,7 +697,7 @@ export class ManagedProcessService {
         attempts += 1;
         if (!isRunningState(record.snapshot.state) || record.stopRequested) break;
         checkDeadline();
-        lastObservation = await probeLog(record.snapshot.logPath, probe, matchLog);
+        lastObservation = await this.probeLog(record, probe, matchLog, probeSignal);
         signal?.throwIfAborted();
         this.refreshRecord(record);
         if (!isRunningState(record.snapshot.state) || record.stopRequested) break;
@@ -652,7 +754,16 @@ export class ManagedProcessService {
       cleanup: snapshot.cleanup,
       message
     });
-    await appendFile(this.lifecycleLogPath, `${entry}\n`, "utf8").catch(() => undefined);
+    try { await this.logs.recordLifecycle(this.lifecycleLogPath, entry); }
+    catch (error) { this.lifecycleError = errorMessage(error); }
+  }
+
+  private async probeLog(record: ManagedProcessRecord, probe: LogReadinessProbe, matcher?: (pattern: string, contents: string) => Promise<boolean>, signal?: AbortSignal): Promise<ProbeObservation> {
+    let contents: string;
+    try { contents = await record.log.tail(signal); }
+    catch (error) { signal?.throwIfAborted(); return { ready: false, message: `Log readiness failed: ${errorMessage(error)}` }; }
+    const ready = matcher ? await matcher(probe.pattern, contents) : contents.includes(probe.pattern);
+    return { ready, message: ready ? `Log readiness matched ${JSON.stringify(probe.pattern)}.` : `Log readiness is waiting for ${JSON.stringify(probe.pattern)}.` };
   }
 }
 
@@ -706,15 +817,13 @@ function validateReadinessProbe(probe: ManagedProcessReadinessProbe | undefined)
 }
 
 async function runReadinessProbe(
-  logPath: string,
-  probe: ManagedProcessReadinessProbe,
+  probe: HttpReadinessProbe | TcpReadinessProbe,
   remainingMs: number,
   signal?: AbortSignal
 ): Promise<ProbeObservation> {
   const probeTimeoutMs = Math.max(1, Math.min(defaultProbeTimeoutMs, remainingMs));
   if (probe.type === "http") return await probeHttp(probe, probeTimeoutMs, signal);
-  if (probe.type === "tcp") return await probeTcp(probe, probeTimeoutMs, signal);
-  return await probeLog(logPath, probe);
+  return await probeTcp(probe, probeTimeoutMs, signal);
 }
 
 async function probeHttp(probe: HttpReadinessProbe, timeoutMs: number, signal?: AbortSignal): Promise<ProbeObservation> {
@@ -758,33 +867,6 @@ async function probeTcp(probe: TcpReadinessProbe, timeoutMs: number, signal?: Ab
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) onAbort();
   });
-}
-
-async function probeLog(
-  logPath: string,
-  probe: LogReadinessProbe,
-  matchLog?: (pattern: string, contents: string) => Promise<boolean>
-): Promise<ProbeObservation> {
-  let contents: string;
-  try {
-    const metadata = await stat(logPath);
-    const file = await open(logPath, "r");
-    try {
-      const start = Math.max(0, metadata.size - maxReadinessLogBytes);
-      const buffer = Buffer.alloc(Math.min(maxReadinessLogBytes, metadata.size));
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
-      contents = buffer.subarray(0, bytesRead).toString("utf8");
-    } finally {
-      await file.close();
-    }
-  } catch (error) {
-    return { ready: false, message: `Log readiness failed: ${errorMessage(error)}` };
-  }
-  const matched = matchLog ? await matchLog(probe.pattern, contents) : contents.includes(probe.pattern);
-  return {
-    ready: matched,
-    message: matched ? `Log readiness matched ${JSON.stringify(probe.pattern)}.` : `Log readiness is waiting for ${JSON.stringify(probe.pattern)}.`
-  };
 }
 
 function waitForSpawn(child: ChildProcess, signal?: AbortSignal): Promise<void> {

@@ -1,4 +1,4 @@
-/** 日期详情从当前 Session、线索、工作事实和 Host 任务状态汇集，覆盖口径逐类声明。 */
+/** 日期详情从当前 Session、工作事实和 Host 任务状态汇集，覆盖口径逐类声明。 */
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -36,8 +36,7 @@ try {
   assert.equal(detail.conversations.some((item) => item.messageId === "old"), false);
   assert.equal(detail.conversations.some((item) => item.messageId === "new"), true);
   assert.equal(detail.conversations.some((item) => item.messageId === "agent-1" && item.quote === "已记录新版"), true);
-  assert.equal(detail.clues[0]?.expression, "2026-10-03");
-  assert.equal(detail.clues.length, 1);
+  assert.equal("clues" in detail, false);
   assert.equal(detail.scheduled[0]?.name, "交付提醒");
   assert.equal(detail.runs.some((item) => item.status === "running"), true);
   assert.match(detail.coverage.facts, /显式|explicit/u);

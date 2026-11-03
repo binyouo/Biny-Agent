@@ -22,7 +22,7 @@ export function OptimizationCallDetail({ origin, optimizationId, onClose }: {
     return () => { current = false; };
   }, [origin, optimizationId]);
   return <SettingsDetailLayer onClose={onClose}><section className="model-dialog savings-call-detail" role="dialog" aria-modal="true" aria-label="工具调用详情">
-    <header><h3>工具调用详情</h3><button type="button" onClick={onClose}>关闭</button></header>
+    <header><h3>工具调用详情</h3><button className="settings-action settings-secondary-button" type="button" onClick={onClose}>关闭</button></header>
     <p className="savings-notice">会话 {origin.sessionId} · {origin.toolCallId}</p>
     {error ? <p role="alert">{error}</p> : tool ? <ToolActivityDetail projectId={origin.projectId} tool={tool}
       onPreviewFile={file => { void window.biny.openWorkspaceFile(origin.projectId, file).catch(failure => setError(String(failure))); }}

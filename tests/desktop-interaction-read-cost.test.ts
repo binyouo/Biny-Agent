@@ -46,7 +46,7 @@ async function fixture(run: (f: { root: string; projectId: string; state: Deskto
   }
 }
 
-test("单字段设置保存只为返回快照读取一次模型目录，仍复核版本并返回新目录", async () => {
+test("纯偏好保存与冲突不读取模型目录，显式设置快照仍返回新目录", async () => {
   await fixture(async ({ projectId, state, agents, models, catalogKey }) => {
     const settings = new DesktopSettingsTransaction(state, agents);
     const initial = await settings.snapshot(projectId);
@@ -56,8 +56,9 @@ test("单字段设置保存只为返回快照读取一次模型目录，仍复�
     const input = { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, themePreference: "light" as const };
     const result = await settings.save(projectId, input);
     assert.equal(result.status, "committed");
-    assert.equal(result.snapshot?.themePreference, "light");
-    assert.equal(catalogReads, 1, "CAS 预检不能恢复全部模型目录");
+    assert.equal(result.preferences?.themePreference, "light");
+    assert.equal(result.snapshot, undefined);
+    assert.equal(catalogReads, 0, "偏好保存不依赖模型目录");
     const current = await models.read(catalogKey);
     assert.ok(current);
     await models.write(catalogKey, {
@@ -67,7 +68,10 @@ test("单字段设置保存只为返回快照读取一次模型目录，仍复�
     const conflict = await settings.save(projectId, input);
     assert.equal(conflict.status, "rolled_back");
     assert.equal(conflict.conflicts?.[0]?.segment, "preferences");
-    assert.deepEqual(conflict.snapshot?.models.catalogs?.isolated?.map(model => model.id), ["catalog-two"], "不复用过期目录");
+    assert.equal(conflict.preferences?.themePreference, "light");
+    assert.equal(conflict.snapshot, undefined);
+    assert.equal(catalogReads, 0);
+    assert.deepEqual((await settings.snapshot(projectId)).models.catalogs?.isolated?.map(model => model.id), ["catalog-two"], "显式读取不复用过期目录");
     assert.equal(catalogReads, 1);
   });
 });

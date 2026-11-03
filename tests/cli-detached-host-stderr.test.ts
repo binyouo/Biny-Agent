@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
@@ -72,10 +73,11 @@ for (const closeReader of [false, true]) {
         ""
       ].join("\n"));
       phase = "start real detached Host";
-      const spawned = await spawnRuntimeHost(root, {
+      const spawned = await readyHostClient(await spawnRuntimeHost(root, {
         workspaceRoot: root, configDir: agentDir, entryPath,
         clientId: "stderr-observer", surface: "cli"
-      });
+      }));
+
       child = spawned.process;
       client = spawned.client;
       assert.ok(child.pid && child.pid !== process.pid);

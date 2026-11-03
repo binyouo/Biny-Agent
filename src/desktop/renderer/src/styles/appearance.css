@@ -1,12 +1,8 @@
-/* 紧凑间距：与 Alma 紧凑档的 rem 值一致，rem 以根字号（默认 13px）为基准。 */
+/* 紧凑间距：rem 以根字号（默认 13px）为基准，控件高度随用户字号一起缩放。 */
 .biny-root { line-height: 1.4; }
-.settings-row-group { gap: 0.4rem; }
-.settings-preference-row { padding-block: 0.4rem; }
-:is(.settings-preference-row, .theme-page-toolbar, .theme-editor) :is(input:not([type="radio"]):not([type="checkbox"]):not([type="color"]), select) { min-height: 2.25rem; }
 .biny-sidebar-session-item { min-height: 2rem; }
 .theme-page-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-block-end: 20px; }
 .theme-page-toolbar input[type="search"] { flex: 1; min-width: 180px; }
-.theme-page-toolbar :is(input, button), .theme-editor :is(input, select, button) { padding: 6px 10px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 6px; }
 .theme-mode-section { margin-block: 16px; padding: var(--st-card-padding); border: 1px solid var(--border); border-radius: var(--st-radius); background: var(--st-card); }
 .theme-mode-section > h3 { margin: 0 0 14px; font-size: calc(14px * var(--font-scale, 1)); font-weight: 600; }
 .theme-mode-section > p { color: var(--text-secondary); font-size: 12px; margin-block: 4px 12px; }
@@ -23,16 +19,10 @@
 .theme-swatches > span { width: 16px; height: 16px; border-radius: 2px; border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); }
 .theme-default-swatches > span { border: 1px dashed color-mix(in srgb, var(--text-secondary) 50%, transparent); }
 .theme-card-actions { display: flex; gap: 8px; padding: 5px 2px; }
-.theme-card-actions button { border: 0; background: none; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
-.theme-card-actions button:hover { color: var(--accent); }
-.theme-trail-option { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
-.theme-trail-option span { flex-basis: 100%; color: var(--text-secondary); font-size: 12px; padding-left: 22px; }
 .theme-delete-dialog h2 { margin-block-end: 12px; }
 .theme-delete-dialog p { margin-block: 12px; }
 .theme-delete-dialog [role="alert"] { color: var(--red-text); }
 .theme-delete-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-block-start: 20px; }
-.theme-delete-dialog button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface-raised); }
-.theme-delete-dialog button[aria-label="确认删除主题"] { color: var(--accent-foreground); background: var(--accent); }
 .theme-editor { width: min(780px, 90vw); max-height: 90vh; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 40px var(--shadow-heavy); }
 .theme-editor::backdrop { background: var(--dialog-overlay); }
 .theme-editor form { display: flex; flex-direction: column; max-height: 90vh; }
@@ -40,7 +30,6 @@
 .theme-editor header { justify-content: space-between; border-bottom: 1px solid var(--border); }
 .theme-editor footer { justify-content: flex-end; border-top: 1px solid var(--border); }
 .theme-editor footer p { margin-right: auto; color: var(--red-text); }
-.theme-editor .primary { color: var(--accent-foreground); background: var(--accent); }
 .theme-editor-scroll { overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
 .theme-name-field { display: flex; align-items: center; gap: 10px; }
 .theme-name-field input { flex: 1; min-width: 0; }

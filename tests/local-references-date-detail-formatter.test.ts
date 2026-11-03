@@ -114,8 +114,7 @@ try {
       assert.equal(hit.fired, index % 2 === 1);
       assert.equal(hit.status, "active");
     }
-    assert.deepEqual(detail.hasMore, { conversations: false, clues: false, facts: false, scheduled: false, runs: false });
-    assert.deepEqual(detail.clues, []);
+    assert.deepEqual(detail.hasMore, { conversations: false, facts: false, scheduled: false, runs: false });
     assert.deepEqual(detail.facts, []);
   }
   constructions.length = 0;

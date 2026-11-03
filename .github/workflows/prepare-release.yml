@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       unsigned:
-        description: Publish a Beta without Developer ID signing or notarization
+        description: Publish without Developer ID signing or notarization
         type: boolean
         default: false
 

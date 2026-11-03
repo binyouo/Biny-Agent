@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-// Alma 把 PiP 定义为「3fps 的连续画面，目的是可注视而非流畅」。
+// PiP 是 3fps 的连续画面，目的是可注视而非流畅。
 // 这里断言窗口的对外契约：连续刷新 + 用户随时能夺回控制权。
 test("preview window presents a live 3fps surface with takeover controls", async () => {
   const source = await readFile(new URL("../src/desktop/electron/main/ComputerPreviewWindow.ts", import.meta.url), "utf8");

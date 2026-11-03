@@ -17,7 +17,7 @@ const runHelp = (...args: string[]): string => {
 };
 
 const cu = runHelp();
-// 对 Alma 的 cu：命令行层独有的动词必须在（模型侧那 13 个工具里没有它们）
+// 命令行层独有的动词必须在（模型侧那 13 个工具里没有它们）
 for (const verb of ["status", "doctor", "grant", "list_apps", "apps", "windows", "snap", "shot",
                     "click", "type", "type_text", "press", "press_key", "scroll", "drag", "menu",
                     "set_value", "launch_app", "raise", "lens", "intent", "shutdown"]) {
@@ -44,8 +44,7 @@ assert.ok(runHelp("appshot").length > 0);
 assert.match(runHelp("press_key"), /--pid\s+<n>/u);
 // scroll 现在两种用法都认：参照式 `scroll <ref> <direction>` 与原式 `scroll <direction> --pid`。
 // 断言契约（两种形式都出现在 usage 里），不是断言某一个措辞。
-// 参照 CLI 的动词名本身就是给 agent 的契约（它的 help 写着
-// "start every turn with `alma cu get_app_state <bundle>`"）。
+// CLI 的动词名本身就是给 agent 的契约，help 会让 agent 每轮先跑 get_app_state。
 // 本实现原先这两个能力叫 `snap` / `menu` —— 能力在、名字不对，而 agent 是按名字找的。
 assert.match(runHelp("get_app_state"), /bundle\|pid/u);
 assert.match(runHelp("perform_secondary_action"), /pixel/u);

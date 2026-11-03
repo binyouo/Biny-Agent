@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import childProcess, { type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
@@ -38,6 +39,7 @@ async function fixture(t: TestContext, processLifetime: ManagedProcessLifetime =
   const inspecting = deferred();
   const releaseInspection = deferred();
   const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(),
     pid: 987654321,
     exitCode: null as number | null,
     signalCode: null as NodeJS.Signals | null,
@@ -49,11 +51,12 @@ async function fixture(t: TestContext, processLifetime: ManagedProcessLifetime =
     child.exitCode = code;
     child.signalCode = signal;
     child.emit("exit", code, signal);
+    child.stdout.end(); child.stderr.end(); child.emit("close", code, signal);
   }
   t.mock.method(childProcess, "spawn", (requested: string) => {
     if (requested === command) {
       alive = true;
-      queueMicrotask(() => child.emit("spawn"));
+      queueMicrotask(() => { child.emit("spawn"); child.stdout.write("ready"); });
       return child as unknown as ChildProcess;
     }
     assert.ok(requested === "ps" || requested === "taskkill", `unexpected command: ${requested}`);
@@ -165,7 +168,7 @@ await test("abort during an uncancellable log read rejects start and cleans the 
   const realOpen = fs.open;
   t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
     const handle = await realOpen(...args);
-    if (args[1] === "r" && String(args[0]).endsWith(".log")) {
+    if (String(args[0]).endsWith(".seg")) {
       const read = handle.read.bind(handle);
       t.mock.method(handle, "read", async (...readArgs: Parameters<typeof handle.read>) => {
         entered.resolve(); await release.promise;
@@ -178,7 +181,7 @@ await test("abort during an uncancellable log read rejects start and cleans the 
   const controller = new AbortController();
   const reason = new Error("fixture start cancelled");
   const pending = f.service.start({ command, signal: controller.signal,
-    readiness: { type: "log", pattern: "starting managed process", timeoutMs: 4_000, intervalMs: 1 } });
+    readiness: { type: "log", pattern: "ready", timeoutMs: 4_000, intervalMs: 1 } });
   const outcome = pending.then(value => ({ value }), error => ({ error }));
   try {
     await withinDeadline(entered.promise);

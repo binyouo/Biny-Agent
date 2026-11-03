@@ -34,10 +34,12 @@ async function fixture(context: TestContext, deferProject = false) {
   const errors: unknown[] = [];
   const merges: DesktopWorkspaceSnapshot[] = [];
   const conflicts: unknown[] = [];
+  const projectionRefreshes: Array<string | undefined> = [];
   const noop = () => {};
   const onError = (error: unknown) => { errors.push(error); };
   const mergeProjectSnapshot = (snapshot: DesktopWorkspaceSnapshot) => { merges.push(snapshot); };
   const setWriterConflict = (conflict: unknown) => { conflicts.push(conflict); };
+  const onRuntimeProjectionChanged = async () => { projectionRefreshes.push(selectedSessionIdRef.current); };
   let subscriber: ((envelope: DesktopAgentEventEnvelope) => void) | undefined;
   const snapshot = { project: { id: "project" }, sessions: [initial.session] } as DesktopWorkspaceSnapshot;
   Object.assign(dom.window, { biny: {
@@ -58,6 +60,7 @@ async function fixture(context: TestContext, deferProject = false) {
     useEffect(() => { documentRef.current = document; }, [document]);
     useDesktopEventBridge({
       activeProjectIdRef, selectedSessionIdRef, documentRef, setDocument, mergeProjectSnapshot, onError,
+      onRuntimeProjectionChanged,
       setContextBudget: noop, setRecipeNotices: noop, setSkillExtraction, setWriterConflict,
       setSidebarSessions: noop, setWorkspace: noop, onGenerationStarted: noop, onGenerationError: noop
     });
@@ -83,7 +86,8 @@ async function fixture(context: TestContext, deferProject = false) {
     await tick(16);
     await tick(260);
   };
-  return { base, initial, documentRef, selectedSessionIdRef, reads, projectReads, snapshot, errors, merges, conflicts, send, tick, startRefresh, unmount,
+  return { base, initial, documentRef, selectedSessionIdRef, reads, projectReads, snapshot, errors, merges, conflicts, projectionRefreshes, send, tick, startRefresh, unmount,
+    sendSnapshot: (sessionId: string) => subscriber?.({ projectId: "project", snapshot: { info: { sessionId } } } as DesktopAgentEventEnvelope),
     queueDocument: (document: DesktopSessionDocument) => replaceDocument(document),
     replaceDocument: async (document: DesktopSessionDocument) => { await act(() => replaceDocument(document)); },
     text: () => dom.window.document.getElementById("root")!.textContent };
@@ -235,4 +239,53 @@ test("the newest read wins when overlapping refreshes capture the same document"
     view.reads[0]!.resolve(view.initial);
   });
   assert.equal(view.documentRef.current, fresh);
+});
+
+test("plan refresh follows the selected session's mutations and terminal reconciliation", async (context) => {
+  const view = await fixture(context);
+  for (const sessionId of ["session", "background-session"]) {
+    view.send({ ...view.base, sessionId, type: "tool.completed", toolCallId: `read-${sessionId}`, tool: "Read", result: "content" });
+    view.send({ ...view.base, sessionId, type: "tool.failed", toolCallId: `failed-${sessionId}`, tool: "Read", error: "unavailable" });
+    await view.tick(16);
+  }
+  view.send({ ...view.base, sessionId: "background-session", type: "tool.completed", toolCallId: "other-todo", tool: "TodoWrite", result: {} });
+  view.send({ ...view.base, sessionId: "background-session", type: "run.completed", durationMs: 1 });
+  view.sendSnapshot("background-session");
+  await view.tick(16);
+  assert.deepEqual(view.projectionRefreshes, [], "unrelated tools and sessions do not reread the selected plan");
+  for (const tool of ["TodoWrite", "PlanDraft", "PlanStart", "PlanUpdate", "GoalUpdate"]) {
+    view.send({ ...view.base, type: "tool.completed", toolCallId: tool, tool, result: {} });
+    await view.tick(16);
+  }
+  view.send({ ...view.base, type: "tool.failed", toolCallId: "failed-plan", tool: "PlanUpdate", error: "outcome unknown" });
+  await view.tick(16);
+  view.sendSnapshot("session");
+  await view.tick(16);
+  view.send({ ...view.base, type: "run.completed", durationMs: 1 });
+  await view.tick(16);
+  assert.deepEqual(view.projectionRefreshes, Array(8).fill("session"), "persisted changes and terminal reconciliation remain visible");
+});
+
+test("completed runs invalidate an already-open statistics view through the shared event bridge", async context => {
+  const view = await fixture(context);
+  const { toolOptimizationState } = await import("../src/desktop/renderer/src/components/settings/toolOptimizationState.js");
+  const { buildToolOptimizationOverview } = await import("../src/session/toolOptimizationOverview.js");
+  let reads = 0;
+  window.biny.toolOptimizationStats = async () => { reads++; return { ...buildToolOptimizationOverview([]), incompleteSessions: 0 }; };
+  // 普通事件不为未访问的统计页创建状态或启动读取。
+  view.send({ ...view.base, type: "run.completed", durationMs: 1 });
+  await view.tick(16);
+  assert.equal(reads, 0);
+  const state = toolOptimizationState(window.biny);
+  const release = state.subscribe(() => {});
+  try {
+    await state.refresh();
+    assert.equal(reads, 1);
+    view.send({ ...view.base, type: "session.title", title: "renamed" });
+    await view.tick(16);
+    assert.equal(reads, 1, "unrelated metadata does not reread statistics");
+    view.send({ ...view.base, type: "run.completed", durationMs: 1 });
+    await view.tick(16);
+    assert.equal(reads, 2, "a persisted terminal run updates visible statistics automatically");
+  } finally { release(); }
 });

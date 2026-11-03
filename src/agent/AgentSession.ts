@@ -29,8 +29,6 @@ import { sessionMessageMetadata } from "../session/messageTree.js";
 import { assertSessionFileSize } from "../session/limits.js";
 import { sessionFileFingerprint } from "../session/parseCache.js";
 import { SessionRecorder, type ReasoningBlock, type SessionEvent } from "../session/recorder.js";
-import { TemporalMemoryIndex, parseTemporalClues } from "../session/temporalMemory.js";
-import { createTemporalModelExtractor } from "../session/temporalModelExtractor.js";
 import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay } from "../session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot, snapshotToReplay, type SessionSnapshotData } from "../session/sessionSnapshot.js";
 import { runtimeEventsForRun, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
@@ -145,7 +143,7 @@ import { AgentMemoryClient } from "../runtime/memory/client.js";
 import type { EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
 import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
-import { messageText, withMessageSentAt } from "./modelMessages.js";
+import { messageText, withMessageSentAt, withReferencedMessageSentAt } from "./modelMessages.js";
 import { PluginLifecycleRegistry, type PluginMcpToolCaller, type PluginTurnMessage } from "../extensions/pluginLifecycle.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
 import { archiveToolResult } from "../session/toolResultArchive.js";
@@ -249,8 +247,8 @@ export interface AgentSessionOptions {
 
 export interface AgentRunOptions {
   abortSignal?: AbortSignal;
-  /** Host-owned internal sessions may select the model for one run without changing user model state. */
-  modelOverride?: AgentModel;
+  /** Selects one run's model and metadata without changing the saved chat selection. */
+  modelOverride?: ModelManager;
   fastMode?: boolean;
   /** 后台发起的消息保留来源，防止被当成用户原话建立日期索引。 */
   source?: "heartbeat" | "auto";
@@ -431,7 +429,6 @@ export class AgentSession {
   private readonly lingeringExternalTools = new Map<Promise<unknown>, { tool: string; toolCallId: string }>();
   private pendingSkillExtraction: Promise<void> = Promise.resolve();
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
-  private temporalIndexFlight: Promise<void> = Promise.resolve();
   /** Runtime 已接纳的普通发送；让 canonical user_message 先于前台 generating 状态落盘。 */
   private readonly admittedUserMessages = new Map<string, { input: string; reference: SessionMessageReference; identity: UserAdmissionOptions }>();
   private readonly pendingUserAdmissions = new Map<string, { input: string; identity: UserAdmissionOptions; promise: Promise<void> }>();
@@ -445,6 +442,7 @@ export class AgentSession {
   private nextSessionMessageIndex = 0;
   /** 新 root turn 开始时替换；同一 turn 的所有 model step 固定使用这份快照。 */
   private activeConfig: AgentConfig;
+  private activeModelOverride?: ModelManager;
   private activePersonalization: ResolvedChatPersonalization;
   constructor(private readonly options: AgentSessionOptions) {
     this.activeConfig = options.config;
@@ -459,12 +457,12 @@ export class AgentSession {
       options.config.context.instructionsMaxBytes
     );
     const getModel = (): AgentModel => {
-      const model = options.modelManager?.getModel() ?? options.model;
+      const model = this.currentModel();
       if (!model) throw new Error("Agent model is not configured.");
       return model;
     };
     const currentModel = (): AgentModel | undefined => {
-      const model = options.modelManager?.getModel() ?? options.model;
+      const model = this.currentModel();
       if (model?.provider === "acp") return undefined;
       if (model) this.auxiliaryUsageModels.set(model, this.usageModelInfo(undefined, this.options.config, model));
       return model;
@@ -480,7 +478,7 @@ export class AgentSession {
     const providerCredentials = options.configStore ? createProviderCredentialPersistence(options.configStore, options.workspaceRoot) : undefined;
     const auxiliaryModel = (alias: string | undefined): AgentModel | undefined => {
       if (!alias) return undefined;
-      const activeAlias = options.modelManager?.getInfo().modelAlias ?? this.activeConfig.defaultModel;
+      const activeAlias = this.currentModelManager()?.getInfo().modelAlias ?? this.activeConfig.defaultModel;
       if (alias === activeAlias) {
         const model = getModel();
         this.auxiliaryUsageModels.set(model, this.usageModelInfo(undefined, this.options.config, model));
@@ -620,7 +618,8 @@ export class AgentSession {
       options.config.context.instructionsMaxBytes,
       onUsage,
       () => {
-        if (options.modelManager) return options.modelManager.getContextBudget();
+        const manager = this.currentModelManager();
+        if (manager) return manager.getContextBudget();
         // 直接注入 AgentModel 的宿主没有 ModelManager，只能使用显式上下文上限；这里不猜测模型能力。
         const fallback = options.config.context.maxInputTokens ?? defaultModelContextWindow;
         return { contextWindow: fallback, contextWindowIsFallback: true, maxInputTokens: fallback, maxOutputTokens: undefined };
@@ -1291,21 +1290,6 @@ export class AgentSession {
     await this.sessionSearchIndex.indexSessionFile(this.recorder.sessionId, this.recorder.filePath, signal);
   }
 
-  private scheduleTemporalIndex(model?: AgentModel): void {
-    const recorder = this.recorder;
-    // 用户消息持久化后即可解析日期。串行化同一会话的规则索引与成功回合的模型升级，
-    // 防止后完成的旧扫描覆盖较新的投影；失败只影响可重建的派生索引。
-    const task = this.temporalIndexFlight.then(async () => {
-      const modelExtractor = model ? createTemporalModelExtractor(model) : undefined;
-      const index = new TemporalMemoryIndex(undefined, { extractClues: modelExtractor?.extractClues });
-      try { await index.indexSessionFile(recorder.sessionId, recorder.filePath); }
-      finally { index.close(); }
-    }).catch(() => undefined);
-    this.temporalIndexFlight = task;
-    this.pendingMemoryTasks.add(task);
-    void task.finally(() => this.pendingMemoryTasks.delete(task));
-  }
-
   /** 显式刷新聊天工作摘要；人格自省由正常 Agent 按 Skill 执行。 */
   async refreshDailyDiary(
     dateKey: string,
@@ -1372,8 +1356,8 @@ export class AgentSession {
     return this.memoryEmbeddingService.cancelSleep();
   }
 
-  memoryMaintenanceStatus() {
-    return this.memoryEmbeddingService.sleepStatus();
+  memoryMaintenanceStatus(historyLimit?: number) {
+    return this.memoryEmbeddingService.sleepStatus(historyLimit);
   }
 
   runMemoryMaintenance(): Promise<unknown> {
@@ -1841,7 +1825,6 @@ export class AgentSession {
       await this.turnStore.save(input, undefined, [...this.contextMemory.getHistory(), { role: "user", content: input }], 0,
         undefined, undefined, undefined, this.recorder.runtimeHighWater(), options.turnId);
       this.admittedUserMessages.set(options.runId, { input, reference, identity: options });
-      this.scheduleTemporalIndex();
     } finally {
       this.recorder.setRuntimeContext(previousContext);
       release();
@@ -2014,17 +1997,19 @@ export class AgentSession {
     } = {}
   ): AsyncGenerator<AgentSessionEvent> {
     const release = this.beginOperation("agent turn");
+    this.activeModelOverride = runOptions.modelOverride;
     try {
     let refreshError: Error | undefined;
-    try { await this.options.modelManager?.refreshFromDisk(); }
+    try { if (!runOptions.modelOverride) await this.options.modelManager?.refreshFromDisk(); }
     catch (error) { refreshError = new Error(errorMessage(error)); }
-    const alias = this.options.modelManager?.getInfo().modelAlias ?? this.options.config.defaultModel;
-    const selected = this.options.config.models[alias];
+    const turnConfig = this.currentModelManager()?.getConfigSnapshot() ?? this.options.config;
+    const alias = this.currentModelManager()?.getInfo().modelAlias ?? turnConfig.defaultModel;
+    const selected = turnConfig.models[alias];
     await this.recorder.flush();
     const executionEvents = await readSessionEvents(this.recorder.filePath);
     const acpProviders = executionEvents.flatMap((event) => (event.type === "message_metadata" || event.type === "user_message")
       && typeof event.metadata?.acpProvider === "string" ? [event.metadata.acpProvider] : []);
-    if (acpProviders.some((provider) => provider !== selected?.provider || this.options.config.providers[selected.provider]?.type !== "acp")) {
+    if (acpProviders.some((provider) => provider !== selected?.provider || turnConfig.providers[selected.provider]?.type !== "acp")) {
       const outcome = failedTurn("当前聊天已绑定外部 Agent，切换执行引擎或连接请新建聊天。", 0, "provider_error");
       this.recordError(outcome.error);
       await this.recordTurnOutcome(outcome);
@@ -2034,7 +2019,7 @@ export class AgentSession {
       return;
     }
 
-    if (!refreshError && selected && this.options.config.providers[selected.provider]?.type === "acp") {
+    if (!refreshError && this.currentModel()?.provider === "acp" && selected && turnConfig.providers[selected.provider]?.type === "acp") {
       yield* this.runExternalAcp(input, runOptions, selected.provider, selected.model);
       return;
     }
@@ -2180,7 +2165,6 @@ export class AgentSession {
         await this.turnStore.save(input, runOptions.retryOrigin ? runOptions.continueSystemPrompt : undefined, cancellationContext().messages, 0,
           undefined, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater(), runtimeTurnId, runOptions.retryOrigin, runOptions.retryWindow);
         if (runOptions.retryOrigin) this.retryScopedView = true;
-        this.scheduleTemporalIndex();
       } catch (error) {
         const message = `初始检查点持久化失败：${errorMessage(error)}`;
         const outcome = failedTurn(message, 0, "provider_error");
@@ -2252,7 +2236,7 @@ export class AgentSession {
     try {
       // 执行路径选择前已读取配置；失败仍通过本轮持久化入口报告。
       if (refreshError) throw refreshError;
-      await this.options.modelManager?.preparePrompt(abortSignal, false);
+      await this.currentModelManager()?.preparePrompt(abortSignal, false);
     } catch (error) {
       recordUserMessage();
       const outcome = abortSignal.aborted
@@ -2271,7 +2255,7 @@ export class AgentSession {
       return;
     }
     recordPerfPhase("turn.preparePrompt", preparePromptPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
-    const model = runOptions.modelOverride ?? this.options.modelManager?.getModel() ?? this.options.model;
+    const model = this.currentModel();
     if (!model) {
       recordUserMessage();
       const outcome = failedTurn("Model runtime is not configured.", completedStepsBeforeRun);
@@ -2332,8 +2316,8 @@ export class AgentSession {
     // 这样即使模型不支持图片、上下文构建失败或进程随后中断，恢复会话时仍能看到这次输入。
     try {
       const personalizationPerfStartedAt = perfNow();
-      const snapshot = await this.readPersonalizationState(this.options.modelManager
-        ? { config: structuredClone(this.options.config) }
+      const snapshot = await this.readPersonalizationState(this.currentModelManager()
+        ? { config: this.currentModelManager()!.getConfigSnapshot() }
         : undefined);
       recordPerfPhase("turn.personalization", personalizationPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
       this.activeConfig = snapshot.config;
@@ -2399,9 +2383,8 @@ export class AgentSession {
       systemPrompt = prepared.systemPrompt;
       messages = prepared.messages;
       const currentUser = messages.at(-1);
-      const currentUserEvent = events.find(event => event.type === "user_message" && event.messageId === userMessageReference?.id);
-      if (!runOptions.emptyTurn && currentUser?.role === "user" && currentUserEvent?.type === "user_message") {
-        messages[messages.length - 1] = withMessageSentAt(currentUser, currentUserEvent);
+      if (!runOptions.emptyTurn && currentUser?.role === "user") {
+        messages[messages.length - 1] = withReferencedMessageSentAt(currentUser, events, userMessageReference?.id);
       }
       const selectedHistoryCount = runOptions.emptyTurn ? messages.length : Math.max(0, messages.length - 1);
       messageReferences = [
@@ -2529,7 +2512,7 @@ export class AgentSession {
         this.runSessionGoalId = undefined;
       }
     }
-    } finally { release(); }
+    } finally { this.activeModelOverride = undefined; release(); }
   }
 
   private async *runExternalAcp(input: string, options: AgentRunOptions, providerAlias: string, model: string): AsyncGenerator<AgentSessionEvent> {
@@ -2660,18 +2643,8 @@ export class AgentSession {
       return next;
     };
     let systemPrompt = initialSystemPrompt;
-    const activeModel = runOptions.modelOverride ?? this.options.modelManager?.getModel() ?? this.options.model;
-    const modelSettings: ModelSettings | undefined = runOptions.modelOverride
-      ? {
-        model: runOptions.modelOverride,
-        vercelModel: runOptions.modelOverride.vercelModel,
-        providerOptions: runOptions.modelOverride.vercelOptions?.providerOptions,
-        maxOutputTokens: runOptions.modelOverride.vercelOptions?.maxOutputTokens,
-        timeoutMs: runOptions.modelOverride.vercelOptions?.timeoutMs,
-        maxRetries: runOptions.modelOverride.vercelOptions?.maxRetries,
-        contextWindow: undefined
-      }
-      : this.options.modelManager?.getModelSettings()
+    const activeModel = this.currentModel();
+    const modelSettings: ModelSettings | undefined = this.currentModelManager()?.getModelSettings()
       ?? (activeModel ? {
         model: activeModel,
         vercelModel: activeModel.vercelModel,
@@ -2992,13 +2965,13 @@ export class AgentSession {
       runContextCompacted = true;
     };
     let activeRequestContext = loopContext;
-    const visionAlias = this.activeConfig.visionModel;
+    const visionAlias = this.activeConfig.visionModelEnabled === false ? undefined : this.activeConfig.visionModel;
     const projectVision = visionAlias ? createVisionProjection({
       getModel: () => {
         const registry = new ProviderRegistry(this.activeConfig, [], undefined, undefined, undefined,
           this.options.configStore ? createProviderCredentialPersistence(this.options.configStore, this.options.workspaceRoot) : undefined);
         const resolved = registry.forModel(visionAlias);
-        const capabilities = this.options.modelManager?.listModels().find(model => model.alias === visionAlias)?.capabilities ?? modelCapabilities(resolved.model);
+        const capabilities = this.currentModelManager()?.listModels().find(model => model.alias === visionAlias)?.capabilities ?? modelCapabilities(resolved.model);
         if (resolved.provider.config.type === "acp" || capabilities.vision !== true) throw new Error("配置的视觉模型不支持图片输入。");
         return registry.createModelSettings(visionAlias).model;
       }, signal: abortSignal,
@@ -3020,7 +2993,7 @@ export class AgentSession {
         })
       });
       const pruned = boundComputerFrames(this.contextMemory.pruneToolResultsForStep(projectedMessages));
-      return projectVision ? await projectVision(pruned) : pruned;
+      return projectVision && activeModelSettings.model.supportsVision !== true ? await projectVision(pruned) : pruned;
     };
 
     recordPerfPhase("turn.loopPre", loopPerfStartedAt, { runId: runOptions.runId }, this.options.workspaceRoot);
@@ -3158,8 +3131,8 @@ export class AgentSession {
             .filter((result) => result.toolName === toolSearchToolName && !result.isError)
             .flatMap((result) => toolSearchResultNames(result.details));
           coordinator.allowTools(discovered);
-          await this.options.modelManager?.preparePrompt(abortSignal, false);
-          const settings = this.options.modelManager?.getModelSettings() ?? activeModelSettings;
+          await this.currentModelManager()?.preparePrompt(abortSignal, false);
+          const settings = this.currentModelManager()?.getModelSettings() ?? activeModelSettings;
           activeModelSettings = settings;
           this.contextMemory.observePromptModel(activeModelSettings.model.provider, activeModelSettings.model.modelId);
           const tools = editingTools(settings);
@@ -3450,7 +3423,10 @@ export class AgentSession {
           pluginMessages = replay.messages.flatMap((message, index) => {
             if (message.role !== "user" && message.role !== "assistant") return [];
             const id = replay.messageReferences[index]?.id;
-            const messageContent = messageText(message);
+            // Plugin history is visible conversation text, not reasoning or tool arguments.
+            const messageContent = message.role === "assistant"
+              ? message.content.filter((part) => part.type === "text").map((part) => part.text).join("")
+              : messageText(message);
             if (!id || !messageContent.trim()) return [];
             const node = nodes.get(id);
             const event = node ? events[node.eventIndex] : undefined;
@@ -3520,11 +3496,6 @@ export class AgentSession {
         }
         // 记忆整理是完成回合后的旁路；不等待模型请求，也不让它改变当前回合终态。
         void this.flushSessionSearchIndex().catch(() => undefined);
-        const mayUseModel = runOptions.source === undefined
-          && this.activePersonalization.contributeMemories
-          && !(this.activePersonalization.excludeExternalContext && (Boolean(runOptions.attachments?.length) || this.usedExternalContext(finalMessages)))
-          && parseTemporalClues(input).length > 0;
-        if (mayUseModel) this.scheduleTemporalIndex(this.toolModel());
         if (turnPersonalization.contributeMemories || finalAssistantReference?.id !== undefined) {
           const memoryRecorder = this.recorder;
           const memoryRuntime = memoryRecorder.runtimeContextSnapshot();
@@ -3881,7 +3852,7 @@ export class AgentSession {
   }
 
   sessionGoalUnavailableReason(): string | undefined {
-    const model = this.options.modelManager?.getModel() ?? this.options.model;
+    const model = this.currentModel();
     if (!model) return "No model is configured for this session.";
     if (model.supportsTools === false) return "The selected model cannot execute goal commands.";
     if (this.activeConfig.chat.defaultToolSelection === "none") return "Session tools are disabled; goal commands cannot record completion.";
@@ -3907,15 +3878,16 @@ export class AgentSession {
     const unsupported = attachments.find((attachment) => !attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("audio/")
       && (this.options.attachmentRoot === undefined || !attachment.path || attachmentFilePath(this.options.attachmentRoot, attachment.path) === undefined));
     if (unsupported) throw new Error(`不支持的附件类型：${unsupported.mimeType}。当前只接受图片和 MP3/WAV 音频。`);
-    const modelAlias = this.options.modelManager?.getInfo().modelAlias ?? this.options.config.defaultModel;
-    const model = this.options.config.models[modelAlias];
-    if (!model) throw new Error(`当前模型配置不存在：${modelAlias}`);
+    const manager = this.currentModelManager();
+    const modelAlias = manager?.getInfo().modelAlias ?? this.options.config.defaultModel;
+    const model = this.activeConfig.models[modelAlias];
+    if (!manager && !model) throw new Error(`当前模型配置不存在：${modelAlias}`);
     // 原始配置可以省略能力；附件检查必须与请求端使用同一份补全后的元数据。
-    const capabilities = this.options.modelManager?.getCapabilities()
+    const capabilities = manager?.getCapabilities()
       ?? modelCapabilities(new ProviderRegistry(this.options.config).forModel(modelAlias).model);
     const image = attachments.find((attachment) => attachment.mimeType.startsWith("image/"));
-    if (image && capabilities.vision === false && !this.activeConfig.visionModel) {
-      throw new Error(`当前模型 ${modelAlias} 未启用图片输入。请在模型设置中将“图片输入”设为“启用”，或切换到支持图片的模型。`);
+    if (image && capabilities.vision === false && (!this.activeConfig.visionModel || this.activeConfig.visionModelEnabled === false)) {
+      throw new Error(`当前模型 ${modelAlias} 未启用图片输入。请在设置中开启并选择视觉模型，或切换到支持图片的模型。`);
     }
     const audio = attachments.find((attachment) => attachment.mimeType.startsWith("audio/"));
     if (audio && !capabilities.audio) {
@@ -4177,8 +4149,16 @@ export class AgentSession {
     }
   }
 
+  private currentModelManager(): ModelManager | undefined {
+    return this.activeModelOverride ?? this.options.modelManager;
+  }
+
+  private currentModel(): AgentModel | undefined {
+    return this.currentModelManager()?.getModel() ?? this.options.model;
+  }
+
   getInfo(): AgentSessionInfo {
-    const model = this.options.modelManager?.getInfo() ?? modelRuntimeInfo(this.options.config);
+    const model = this.currentModelManager()?.getInfo() ?? modelRuntimeInfo(this.options.config);
     return {
       workspaceRoot: this.options.workspaceRoot,
       sessionId: this.recorder.sessionId,
@@ -4573,8 +4553,8 @@ export class AgentSession {
 
   private usageModelInfo(
     modelAlias?: string,
-    config = this.options.config,
-    model = this.options.modelManager?.getModel() ?? this.options.model,
+    config = this.activeConfig,
+    model = this.currentModel(),
     resolvedModel?: ModelAliasConfig
   ): UsageModelInfo {
     if (resolvedModel && model) {
@@ -4585,7 +4565,7 @@ export class AgentSession {
         pricing: resolvedModel.pricing === undefined ? undefined : { ...resolvedModel.pricing }
       };
     }
-    const managedInfo = this.options.modelManager?.getInfo();
+    const managedInfo = this.currentModelManager()?.getInfo();
     if (!managedInfo && modelAlias === undefined && model) {
       // Injected adapters can be usable without any configured default. Optional metadata
       // resolution must not gate the request or borrow prices from a different adapter.
@@ -4612,7 +4592,7 @@ export class AgentSession {
     }
     const resolvedAlias = modelAlias ?? info.modelAlias;
     const resolved = resolvedModel ?? config.models[resolvedAlias];
-    const catalogPricing = this.options.modelManager?.listModels().find((choice) => choice.alias === resolvedAlias
+    const catalogPricing = this.currentModelManager()?.listModels().find((choice) => choice.alias === resolvedAlias
       && (!resolved || choice.provider === resolved.provider && choice.model === resolved.model))?.pricing;
     const provider = resolved ? config.providers[resolved.provider] : undefined;
     // A different, unpriced auxiliary alias cannot inherit the chat model's price.
@@ -4647,11 +4627,11 @@ export class AgentSession {
   }
 
   private runtimeContext(runOptions: AgentRunOptions): AgentRuntimeContext {
-    const model = this.options.modelManager?.getModel() ?? this.options.model;
+    const model = this.currentModel();
     if (!model) throw new Error("Model runtime is not configured.");
     return {
       workspaceRoot: this.options.workspaceRoot,
-      config: this.options.config,
+      config: this.activeConfig,
       model,
       recorder: this.recorder,
       contextMemory: this.contextMemory,

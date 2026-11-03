@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /** 真实 Host/socket/session 链路：慢维护和重建只影响目标会话，消息准入保留持久身份。 */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -69,7 +70,7 @@ let other: RuntimeHostClient | undefined;
 let slow: Promise<unknown> | undefined;
 let restart: Promise<unknown> | undefined;
 try {
-  client = await connectRuntimeHost(root, { configDir, clientId: "sender", surface: "desktop" });
+  client = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "sender", surface: "desktop" }));
   assert.ok(client);
   slow = client.mcpReconnect("controlled-external-server");
   await bounded(slowStarted.promise);
@@ -95,7 +96,7 @@ try {
 
   // 空闲会话的可写性探测不长期占用写入权；只读连接仍可读取。
   await client.ensureSession({ sessionId: target.sessionId, writeIntent: true });
-  other = await connectRuntimeHost(root, { configDir, clientId: "other-surface", surface: "tui" });
+  other = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "other-surface", surface: "tui" }));
   assert.ok(other);
   assert.equal((await other.ensureSession({ sessionId: target.sessionId, writeIntent: true })).sessionId, target.sessionId);
   assert.equal((await other.ensureSession({ sessionId: target.sessionId })).sessionId, target.sessionId);

@@ -9,6 +9,7 @@ import ts from "typescript";
 // provider, SDK, Recorder, or process is imported or instantiated.
 const operationsSource = readFileSync(new URL("../src/runtime/host/operations.ts", import.meta.url), "utf8");
 const serverSource = readFileSync(new URL("../src/runtime/host/server.ts", import.meta.url), "utf8");
+const executionSource = readFileSync(new URL("../src/runtime/host/composition.ts", import.meta.url), "utf8");
 const operations = ts.createSourceFile("operations.ts", operationsSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const server = ts.createSourceFile("server.ts", serverSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 function declaration(name: string): string {
@@ -27,7 +28,8 @@ function method(name: string): ts.MethodDeclaration {
   assert.ok(node?.body, name);
   return node;
 }
-const execute = method("execute");
+const execution = ts.createSourceFile("composition.ts", executionSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const execute = execution.statements.filter(ts.isClassDeclaration).flatMap(node => [...node.members]).find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && node.name.getText(execution) === "execute")!;
 let selectedSwitch: ts.SwitchStatement | undefined;
 function visit(node: ts.Node): void {
   if (ts.isSwitchStatement(node) && node.caseBlock.clauses.some(clause =>
@@ -49,7 +51,7 @@ const extracted = [
   method("executeAdmission").getText(server),
   method("executeControl").getText(server),
   "async executeAutomation(operation, payload) { const runtime = this.runtime; const commands = this.commands; switch (operation) {",
-  ...clauses.map(clause => clause.getText(server)),
+  ...clauses.map(clause => clause.getText(execution).replaceAll("this.host.", "this.")),
   'default: throw new Error("Unexpected extracted operation");',
   "} } }",
   "({ OperationDispatcher, operationLane, ExtractedHost });"

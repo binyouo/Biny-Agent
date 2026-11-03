@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Real Desktop/Runtime model isolation with a controlled post-turn title race; only transport and provider I/O are in memory. */
 import assert from "node:assert/strict";
@@ -162,7 +163,8 @@ test("next model-selection turn survives a real background-title revision race",
       assert.equal(hostSocket.destroyed, false, "Host must accept the fixture connection after endpoint setup");
       queueMicrotask(() => clientSocket.emit("connect")); return clientSocket as unknown as net.Socket;
     });
-    const client = await RuntimeHostClient.connect({ registration, clientId:"desktop-probe", surface:"desktop", configDir:path.dirname(f.configStore.configPath!()) });
+    const client = await readyHostClient(await RuntimeHostClient.connect({ registration, clientId:"desktop-probe", surface:"desktop", configDir:path.dirname(f.configStore.configPath!()) }));
+
     const managed = { runtime:client, host, unsubscribe:(agents as any).wireRuntimeEvents(project.id, client, true) };
     (agents as any).runtimes.set(project.id, managed);
     const selection = { tools: ["Read", "ToolSearch"], skills: "none" as const };

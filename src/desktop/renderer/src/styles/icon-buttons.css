@@ -36,10 +36,6 @@
   .biny-session-limit-dismiss,
   .biny-recipe-ready-dismiss,
   .biny-skill-extraction-dismiss,
-  .biny-extension-search button,
-  .biny-extension-refresh,
-  .biny-extension-success button,
-  .biny-skill-discovery-back,
   .biny-skill-dialog-heading > button,
   .biny-skill-repository-row > button,
   .biny-mcp-search button,
@@ -122,12 +118,11 @@
 
 .biny-attachment-remove { --biny-icon-button-size: 18px; }
 :is(.rendering-preview-tab-close, .biny-sidebar-session-toggle) { --biny-icon-button-size: 16px; }
-:is(.desktop-top-toast-close, .biny-extension-search button, .biny-mcp-search button) { --biny-icon-button-size: 20px; }
+:is(.desktop-top-toast-close, .biny-mcp-search button) { --biny-icon-button-size: 20px; }
 :is(.composer-edit-banner button, .biny-generation-error button, .biny-recipe-ready-dismiss, .file-preview-meta-actions > button:not(.file-preview-run)) { --biny-icon-button-size: 22px; }
 :is(.attachment-card-remove, .capabilities-mcp-action) { --biny-icon-button-size: 26px; }
-:is(.biny-send-button, .biny-extension-refresh, .biny-mcp-icon-button, .biny-mcp-link-button, .biny-mcp-row-actions button) { --biny-icon-button-size: 30px; }
+:is(.biny-send-button, .biny-mcp-icon-button, .biny-mcp-link-button, .biny-mcp-row-actions button) { --biny-icon-button-size: 30px; }
 :is(.biny-composer-add, .biny-memory-toggle, .biny-capabilities-pill:not(:has(.biny-capabilities-count)), .biny-jump-bottom, .biny-sidebar.is-compact .biny-sidebar-section-trigger, .biny-sidebar.is-compact .biny-sidebar-settings-item, .markdown-image-lightbox-controls button, .inspector-browser-history > button, .inspector-browser-actions button, .inspector-browser-address button, .inspector-browser-tab > button:last-child, .inspector-browser-new-tab, .inspector-browser-navigation .inspector-profile-anchor > button) { --biny-icon-button-size: 32px; }
-.biny-skill-discovery-back { --biny-icon-button-size: 34px; }
 .file-media-central-play { --biny-icon-button-size: 64px; }
 .markdown-code-copy { --biny-icon-button-size: calc(var(--markdown-code-unit, 13px) * 1.5); }
 .markdown-pattern-header .copy-button { --biny-icon-button-size: calc(var(--pattern-unit) * 1.5); }

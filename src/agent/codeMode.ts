@@ -24,7 +24,8 @@ export const codeModePolicy = Object.freeze({
   maxSourceBytes: 64 * 1024,
   maxToolInputBytes: 1024 * 1024,
   maxToolOutputBytes: 1024 * 1024,
-  maxBridgeRequests: 32,
+  /** Zero disables the aggregate bridge count in the pinned runtime. */
+  maxBridgeRequests: 0,
   maxInFlightBridgeRequests: 8
 });
 export type CodeModeLimits = Readonly<{ [Limit in keyof typeof codeModePolicy]: number }>;
@@ -51,7 +52,7 @@ export const codeModeDescription = [
   "Execution example after inspecting Read:\n```javascript\nconst results = [];\nfor (const path of [\"README.md\", \"package.json\"]) {\n  const page = await tools.Read({path, startLine: 1, lineCount: 8});\n  results.push({path, content: page.content, hasMore: page.hasMore});\n}\nreturn results;\n```",
   "Output: return a JSON-serializable value or console.log selected final data. The result has ok, value when returned, stdout when printed, and childCalls; failures include error. Intermediate tool results stay in the script. Stdout beyond 16000 characters is archived for Read; console capture is capped at 1 MiB / 4096 chunks and omitted output is marked.",
   "Errors: catch parameter-validation errors and safe built-in read failures for local recovery. Uncaught errors fail the script. Permission, cancellation, deadline, uncertain-outcome, and other tool failures stop subsequent calls even when caught. Never retry an entire script after partial failure; inspect child outcomes first.",
-  `All nested calls use normal permissions. Each script allows up to ${String(codeModePolicy.maxBridgeRequests)} bridge requests, including tool calls and discovery, with up to ${String(codeModePolicy.maxInFlightBridgeRequests)} in flight. No direct filesystem, process, module imports, or unrestricted network access. Supply a short description in the user's language. timeout_ms defaults to 120000, maximum 600000.`
+  `All nested calls use normal permissions. Up to ${String(codeModePolicy.maxInFlightBridgeRequests)} bridge requests can be in flight. No direct filesystem, process, module imports, or unrestricted network access. Supply a short description in the user's language. timeout_ms defaults to 120000, maximum 600000.`
 ].join("\n\n");
 const hostDrainTimeoutMs = 500;
 
@@ -134,6 +135,10 @@ export async function executeCodeModeCell(input: {
   const policy = { ...(input.executionPolicy ?? codeModePolicy) };
   if (input.timeoutMs !== undefined && (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > codeModePolicy.maxCellDurationMs)) throw new Error("Invalid script timeout_ms.");
   for (const key of Object.keys(codeModePolicy) as Array<keyof typeof codeModePolicy>) {
+    if (key === "maxBridgeRequests") {
+      if (!Number.isSafeInteger(policy[key]) || policy[key] < 0) throw new Error(`Invalid Code Mode limit: ${key}`);
+      continue;
+    }
     if (!Number.isSafeInteger(policy[key]) || policy[key] < 1 || policy[key] > codeModePolicy[key]) {
       throw new Error(`Invalid Code Mode limit: ${key}`);
     }

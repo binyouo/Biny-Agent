@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -65,8 +66,10 @@ async function fixture(context: TestContext) {
       return runtime;
     }
   });
-  const desktop = await connectRuntimeHost(root, { configDir, clientId: "desktop-owner", surface: "desktop" });
-  const terminal = await connectRuntimeHost(root, { configDir, clientId: "terminal-observer", surface: "tui" });
+  const desktop = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "desktop-owner", surface: "desktop" }));
+
+  const terminal = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "terminal-observer", surface: "tui" }));
+
   assert.ok(desktop && terminal);
   context.after(async () => {
     for (const response of responses.values()) response.destroy();

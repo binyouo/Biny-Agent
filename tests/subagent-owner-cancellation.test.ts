@@ -273,6 +273,7 @@ async function fixture(t: TestContext, config: AgentConfig, fetch: (_input: unkn
   const paths = runtimeHostPaths(root);
   const registration = { ...paths, ...currentRuntimeHostIdentity({}), protocolVersion: runtimeHostProtocolVersion, persistenceRoot: root, hostEpoch: "owner-fixture", token: "synthetic-fixture-token", pid: process.pid, createdAt: new Date().toISOString() };
   const server = new RuntimeHostServer(primary.runtime, primary.commands, registration, { close: async () => undefined }, async (sessionId) => { assert.equal(sessionId, "secondary"); return secondary; });
+  await server.initialize();
   const host = server as unknown as InternalServer;
   let request = 0;
   try {

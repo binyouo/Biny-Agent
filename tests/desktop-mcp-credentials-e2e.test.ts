@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -83,7 +84,7 @@ test("built Desktop Host reloads encrypted MCP authentication and continues a pe
     delete env.ELECTRON_RUN_AS_NODE;
     await promisify(execFile)(createRequire(import.meta.url)("electron") as string, [setupEntry], { env, timeout: 8_000 });
     const selection = { tools: "all" as const, skills: "none" as const };
-    host = await spawnRuntimeHost(root, { workspaceRoot: root, configDir: globalConfigDir(), clientId: "mcp-observer", surface: "cli" });
+    host = await readyHostClient(await spawnRuntimeHost(root, { workspaceRoot: root, configDir: globalConfigDir(), clientId: "mcp-observer", surface: "cli" }));
     const session = await host.client.startDraft();
     assert.equal((await host.client.mcpReconnect("secured")).connected, true);
     const first = host.client.submitPrompt("First local message", [], undefined, undefined, selection);
@@ -93,7 +94,7 @@ test("built Desktop Host reloads encrypted MCP authentication and continues a pe
     host = undefined;
 
     // A fresh Electron owner must reload both authentication and the same session.
-    host = await spawnRuntimeHost(root, { workspaceRoot: root, configDir: globalConfigDir(), sessionId: session.sessionId, clientId: "mcp-restarted-observer", surface: "cli" });
+    host = await readyHostClient(await spawnRuntimeHost(root, { workspaceRoot: root, configDir: globalConfigDir(), sessionId: session.sessionId, clientId: "mcp-restarted-observer", surface: "cli" }));
     await host.client.focusSession(session.sessionId);
     assert.equal((await host.client.mcpReconnect("secured")).connected, true);
     await host.client.submitPrompt("Continue the local session", [], undefined, undefined, selection).completion;

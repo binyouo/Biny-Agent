@@ -319,6 +319,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       api,
       modelId: normalizedModel.model,
       supportsReasoning: capabilities.reasoning,
+      supportsVision: capabilities.vision,
       compatibility,
       baseUrl,
       apiKey,
@@ -350,6 +351,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       runtime: "provider",
       dataResidency: normalizedModel.dataResidency ?? this.config.dataResidency,
       supportsTools: capabilities.tools,
+      supportsVision: capabilities.vision,
       serviceTiers: capabilities.serviceTiers,
       vercelModel,
       vercelOptions: {

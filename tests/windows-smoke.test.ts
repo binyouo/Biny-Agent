@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, realpath, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -44,12 +45,12 @@ test("Desktop and TUI connect to one real Host, authenticate, retire, and restar
   const paths = runtimeHostPaths(root);
   let phase = "initial Desktop spawn";
   try {
-    launched = await spawnRuntimeHost(root, { workspaceRoot: root, configDir, clientId: "desktop-smoke", surface: "desktop", idleGraceMs: 250 });
+    launched = await readyHostClient(await spawnRuntimeHost(root, { workspaceRoot: root, configDir, clientId: "desktop-smoke", surface: "desktop", idleGraceMs: 250 }));
     const registration = await readRegistration(paths);
     assert.ok(registration);
     assert.equal(registration.pid, launched.process.pid);
     phase = "TUI attach";
-    tui = await connectRuntimeHost(root, { configDir, clientId: "tui-smoke", surface: "tui" });
+    tui = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "tui-smoke", surface: "tui" }));
     phase = "connected-client authentication and retirement";
     assert.ok(tui, "TUI must attach to the owner elected by Desktop");
     assert.equal(tui.getSnapshot().info.sessionId, launched.client.getSnapshot().info.sessionId);
@@ -65,7 +66,7 @@ test("Desktop and TUI connect to one real Host, authenticate, retire, and restar
     await assert.rejects(access(paths.registrationPath), { code: "ENOENT" });
     await assert.rejects(access(paths.lockPath), { code: "ENOENT" });
     phase = "restarted Host spawn";
-    launched = await spawnRuntimeHost(root, { workspaceRoot: root, configDir, clientId: "restarted-smoke", surface: "tui", idleGraceMs: 250 });
+    launched = await readyHostClient(await spawnRuntimeHost(root, { workspaceRoot: root, configDir, clientId: "restarted-smoke", surface: "tui", idleGraceMs: 250 }));
     phase = "restarted Host retirement";
     assert.notEqual((await launched.client.getHostStatus()).hostEpoch, registration.hostEpoch);
     await launched.client.close();

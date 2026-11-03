@@ -82,7 +82,7 @@ test("failed destruction after a preview finishes reports the error and retains 
   } finally { window.rejectDestroy = false; preview.close(); t.mock.timers.reset(); }
 });
 
-// Alma 设计：PiP 是 3fps 的「可注视」画面，而非仅在动作后刷新一帧。
+// PiP 是 3fps 的「可注视」画面，而非仅在动作后刷新一帧。
 test("preview drives a repeating 3fps refresh and stops when disabled", async () => {
   let refreshes = 0;
   const driver = {

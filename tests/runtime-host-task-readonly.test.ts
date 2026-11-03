@@ -1,3 +1,4 @@
+import { RuntimeHostExecution } from "../src/runtime/host/composition.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 /** Task RPC facts do not need owner startup. CLI Host lifecycle/recovery stays separate. */
 import assert from "node:assert/strict";
@@ -204,7 +205,9 @@ async function fixture(t: TestContext, run: (f: Fixture) => Promise<void>): Prom
   const server = new RuntimeHostServer(fakeRuntime(root, "primary", 7), commands, registration, { close: async () => undefined }, async () => {
     counts.factory++; throw new Error("FACTORY_NOT_ALLOWED");
   });
-  const internal = server as unknown as Fixture["internal"];
+  const execution = new RuntimeHostExecution(server, fakeRuntime(root, "primary", 7), commands, registration, async () => { counts.factory++; throw new Error("FACTORY_NOT_ALLOWED"); });
+  Object.assign(server, { execution });
+  const internal = execution as unknown as Fixture["internal"];
   const rpc: Fixture["rpc"] = async (operation, payload) => wire(await internal.execute({ surface: "cli" }, { kind: "request", requestId: "fixture", operation, payload }));
   const guards = [
     t.mock.method(RuntimeHostResourceScope.prototype, "start", async () => { counts.resources++; throw new Error("RESOURCE_NOT_ALLOWED"); }),
@@ -213,7 +216,7 @@ async function fixture(t: TestContext, run: (f: Fixture) => Promise<void>): Prom
     t.mock.method(globalThis, "fetch", async () => { counts.network++; throw new Error("NETWORK_NOT_ALLOWED"); }),
     t.mock.method(RuntimeHostClient, "connect", async () => {
       counts.connection++;
-      return { request: rpc, taskGet: RuntimeHostClient.prototype.taskGet, taskEvents: RuntimeHostClient.prototype.taskEvents, close: async () => undefined } as unknown as RuntimeHostClient;
+      return { waitForReady: async () => undefined, request: rpc, taskGet: RuntimeHostClient.prototype.taskGet, taskEvents: RuntimeHostClient.prototype.taskEvents, close: async () => undefined } as unknown as RuntimeHostClient;
     })
   ];
   const output: Fixture["output"] = async (operation) => {

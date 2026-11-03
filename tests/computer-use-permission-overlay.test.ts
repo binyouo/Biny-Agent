@@ -70,9 +70,9 @@ test("the guide window is an unfocusable floating panel", async () => {
   assert.match(source, /focusable: false/, "引导窗绝不能抢焦点——用户正要去操作系统设置");
   assert.match(source, /alwaysOnTop: true/);
   assert.match(source, /type: "panel"/, "mac 上要取 floating 层级");
-  assert.match(source, /setOpacity\(0\.9\)/, "Alma 的引导窗是 0.9 透明度");
+  assert.match(source, /setOpacity\(0\.9\)/, "引导窗保持 0.9 透明度，看得见又不压住系统设置");
   assert.match(source, /showInactive\(\)/, "显示时不能激活自己");
-  assert.match(source, /TRACK_INTERVAL_MS = 250/, "Alma 的跟踪节奏是 250ms");
+  assert.match(source, /TRACK_INTERVAL_MS = 250/, "引导窗以 250ms 节奏跟随目标控件");
   // locate 比 tick 间隔慢时（截屏+OCR 要一秒），没有重入保护就会堆成请求风暴。
   assert.match(source, /let running = false/, "跟踪必须防重入");
   assert.match(source, /辅助功能/);

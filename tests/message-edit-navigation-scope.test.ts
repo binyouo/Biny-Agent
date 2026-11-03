@@ -296,6 +296,7 @@ async function setupFixture(t: TestContext, twoTurns: boolean) {
     onApplicationImportsChanged: subscribe, onSessionHandoff: subscribe,
     onAgentEvent: subscribe, onMenuAction: subscribe, onSettingsCloseRequest: subscribe,
     onBrowserOpenRequest: subscribe, onReferenceOpen: subscribe,
+    preparePrompt: async (projectId: string) => { assert.ok([PROJECT, PROJECT_C].includes(projectId)); },
     editPrompt: (...args: Parameters<DesktopApi["editPrompt"]>) => tracked(async () => {
       const [projectId, sessionId, index, input, attachments, key] = args;
       assert.equal(projectId, sessionInfo(sessionId).projectId);

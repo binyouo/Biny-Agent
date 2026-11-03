@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter, once } from "node:events";
@@ -53,7 +54,7 @@ function observeWire(client: RuntimeHostClient) {
       const existing = frames.find(predicate);
       if (existing) return existing;
       return await new Promise<HostFrame>((resolve, reject) => {
-        const timer = setTimeout(() => { changed.off("frame", listener); reject(new Error("Expected Host frame was not received.")); }, 5_000);
+        const timer = setTimeout(() => { changed.off("frame", listener); reject(new Error(`Expected Host frame was not received: ${String(predicate)}`)); }, 5_000);
         const listener = (frame: HostFrame): void => {
           if (!predicate(frame)) return;
           clearTimeout(timer);
@@ -67,8 +68,8 @@ function observeWire(client: RuntimeHostClient) {
 }
 
 async function connect(fixture: Fixture): Promise<RuntimeHostClient> {
-  return await RuntimeHostClient.connect({ registration: fixture.registration, configDir: fixture.configDir,
-    spawnOptions: { workspaceRoot: fixture.root, configDir: fixture.configDir }, handshakeTimeoutMs: 5_000 });
+  return await readyHostClient(await RuntimeHostClient.connect({ registration: fixture.registration, configDir: fixture.configDir,
+    spawnOptions: { workspaceRoot: fixture.root, configDir: fixture.configDir }, handshakeTimeoutMs: 5_000 }));
 }
 
 async function disconnect(client: RuntimeHostClient): Promise<void> {

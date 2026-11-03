@@ -248,7 +248,7 @@ async function setupFixture(t: TestContext, gate: Gate) {
   const calls = { source: [] as Array<Parameters<DesktopApi["referenceForMessage"]>>,
     capture: [] as Array<Parameters<DesktopApi["referenceCaptureSelectionQuote"]>>,
     selection: [] as Array<Parameters<DesktopApi["commitSelection"]>>,
-    opened: [] as Array<Parameters<DesktopApi["openSession"]>>, bootstrap: 0 };
+    opened: [] as Array<Parameters<DesktopApi["openSession"]>>, bootstrap: 0, refresh: 0 };
   const subscriptions = new Set<symbol>();
   const subscribe = (): (() => void) => {
     const token = Symbol("subscription");
@@ -257,9 +257,9 @@ async function setupFixture(t: TestContext, gate: Gate) {
   };
   const data = snapshots();
   let bootstrap = data.bootstrap;
-  let importsChanged: (() => void) | undefined;
   const api = {
     bootstrap: async () => { calls.bootstrap += 1; return bootstrap; },
+    refreshProject: async (projectId: string) => { assert.equal(projectId, PROJECT); calls.refresh += 1; return bootstrap.workspace!; },
     openSession: async (projectId: string, sessionId: string) => {
       calls.opened.push([projectId, sessionId]);
       assert.equal(projectId, PROJECT);
@@ -278,11 +278,7 @@ async function setupFixture(t: TestContext, gate: Gate) {
       return { sessionId, plans: [] };
     },
     onAppearanceChanged: subscribe,
-    onApplicationImportsChanged: (listener: () => void) => {
-      importsChanged = listener;
-      const unsubscribe = subscribe();
-      return () => { if (importsChanged === listener) importsChanged = undefined; unsubscribe(); };
-    },
+    onApplicationImportsChanged: subscribe,
     onAgentEvent: subscribe,
     onSessionHandoff: subscribe,
     onMenuAction: subscribe,
@@ -462,14 +458,24 @@ async function setupFixture(t: TestContext, gate: Gate) {
     await focusSentinel();
   };
   const rerenderMetadata = async (): Promise<void> => {
-    assert.equal(typeof importsChanged, "function");
     const original = bootstrap.workspace!;
     const updatedName = "Updated quote fixture metadata";
     const project = { ...original.project, name: updatedName };
     bootstrap = { ...bootstrap, projects: [project], workspace: { ...original, project } };
-    const before = calls.bootstrap;
-    await act(async () => { importsChanged!(); });
-    assert.equal(calls.bootstrap, before + 1);
+    const before = calls.refresh;
+    const bootstrapReads = calls.bootstrap;
+    const menu = document.querySelector<HTMLButtonElement>('button[aria-label="' + original.project.name + ' 项目操作"]');
+    assert.ok(menu);
+    await act(async () => menu.click());
+    await drainFrames();
+    const refresh = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find(button => button.textContent?.includes("刷新项目状态"));
+    assert.ok(refresh);
+    await act(async () => refresh.click());
+    await act(() => t.mock.timers.tick(150));
+    assert.equal(document.querySelectorAll('[role="menu"]').length, 0);
+    assert.equal(calls.refresh, before + 1);
+    assert.equal(calls.bootstrap, bootstrapReads);
     assert.equal(document.body.textContent?.includes(updatedName), true, "Observe the real metadata update, not a synthetic root render");
     assertCurrent(SESSION);
   };

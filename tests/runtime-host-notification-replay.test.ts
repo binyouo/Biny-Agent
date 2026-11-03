@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Reconnect must request missed Host events before the hello high-water, without native notifications. */
@@ -88,13 +89,14 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = [], sur
       }
       assert.equal(frame.kind, "request");
       assert.ok(frame.kind === "request");
-      requests.push(frame);
-      assert.ok(["subscribe", "host.info", "snapshot", "session.ensure", "owner-notification.subscribe", "owner-notification.unsubscribe",
+      if (frame.operation !== "host.subscribe") requests.push(frame);
+      assert.ok(["host.subscribe", "subscribe", "host.info", "snapshot", "session.ensure", "owner-notification.subscribe", "owner-notification.unsubscribe",
         "owner-notification.send", "owner-notification.ack"].includes(frame.operation),
         "recovery and navigation must not submit a run or another side effect");
       const result = await internals.execute(connection, frame);
       const response: HostFrame = { kind: "response", requestId: frame.requestId, ok: true, result };
-      connection.writer.send(response);
+      if (frame.operation === "host.subscribe") socket.deliver(response);
+      else connection.writer.send(response);
       if (frame.operation === "subscribe") subscribed.emit("settled");
     });
     const connection = { socket: socket as unknown as net.Socket, authenticated: true, subscribed: false, clientId: "notification-fixture", surface,
@@ -114,7 +116,8 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = [], sur
     current = snapshot(root, current.revision + 1);
     publish({ snapshot: current, event });
   }
-  const client = await RuntimeHostClient.connect({ registration, surface });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration, surface }));
+
   const delivered: AgentHostEvent[] = [];
   const updates: AgentRuntimeUpdate[] = [];
   client.subscribeAllRuntimeEvents((update) => {
@@ -193,6 +196,10 @@ for (const read of ["focus", "ensure"] as const) {
           ? await f.client.focusSession("primary")
           : (await f.client.ensureSession({ sessionId: "primary", focus: false })).snapshot;
         assert.equal(current.revision, 3);
+        if (read === "ensure") {
+          assert.deepEqual(f.delivered, [terminal(type, "missed-before-read")], "execution preparation synchronizes missed events before ensuring a Session");
+          assert.equal((f.requests.findLast(request => request.operation === "subscribe")?.payload as { afterSequence: number }).afterSequence, 1);
+        } else {
         assert.deepEqual(f.delivered, [], "navigation reads snapshots without receiving the missing event");
         const cached: number[] = [];
         const observed: AgentRuntimeUpdate[] = [];
@@ -215,6 +222,7 @@ for (const read of ["focus", "ensure"] as const) {
           "all-session subscribers must receive the adopted state together with the old terminal event");
         assert.deepEqual(focused.map((update) => update.snapshot.revision), [3, 3]);
         assert.deepEqual(focused.flatMap((update) => update.event ? [update.event] : []), [terminal(type, "missed-before-read")]);
+        }
         await f.disconnect();
         await f.reconnect(500);
         assert.deepEqual(f.delivered, [terminal(type, "missed-before-read")], "consumed replay is not requested again");

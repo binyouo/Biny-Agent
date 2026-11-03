@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /** CI-only production client/JSONL integration; in-memory sockets, no Host or model execution. */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -26,6 +27,11 @@ class MemorySocket extends EventEmitter {
   constructor(private readonly respond: (frame: HostFrame, socket: MemorySocket) => void) { super(); }
   setEncoding(): this { return this; }
   write(data: string): boolean {
+    const lifecycleFrame = JSON.parse(data.trim()) as { kind: string; operation?: string; requestId: string };
+    if (lifecycleFrame.kind === "request" && lifecycleFrame.operation === "host.subscribe") {
+      queueMicrotask(() => this.emit("data", JSON.stringify({ kind: "response", requestId: lifecycleFrame.requestId, ok: true, result: { lifecycle: "ready" } }) + "\n"));
+      return true;
+    }
     const frame = JSON.parse(data) as HostFrame;
     queueMicrotask(() => { if (!this.destroyed) this.respond(frame, this); });
     return true;
@@ -75,7 +81,8 @@ async function fixture(t: TestContext, scenario: Scenario) {
     return socket as unknown as net.Socket;
   });
   t.mock.method(net, "createServer", () => { throw new Error("Real listeners forbidden"); });
-  const client = await RuntimeHostClient.connect({ registration, surface: "desktop" });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration, surface: "desktop" }));
+
   const internal = client as unknown as Internal;
   let completion: Promise<AgentRunOutcome> | undefined;
   let safetyObservation: Promise<void> | undefined;

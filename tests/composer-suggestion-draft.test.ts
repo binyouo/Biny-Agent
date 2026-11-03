@@ -226,3 +226,46 @@ test("chat model icon follows its provider connection when changed or cleared wi
     }
   } finally { await h.close(); }
 });
+
+test("preparation retains the original draft and attachments, blocks duplicate submit, then sends once", { timeout: 10_000 }, async () => {
+  const h = await fixture();
+  const preparing = deferred();
+  let prepares = 0;
+  await h.render({ onPrepare: async () => { prepares += 1; await preparing.promise; } });
+  try {
+    await h.React.act(async () => { h.input().onSubmit(); });
+    assert.deepEqual(h.draft.getSnapshot().draft, h.original.draft);
+    assert.deepEqual(h.draft.getSnapshot().attachments, h.original.attachments);
+    assert.equal(h.sends.length, 0);
+    assert.match(document.body.textContent ?? "", /正在准备运行环境/);
+    await h.React.act(async () => { h.input().onSubmit(); });
+    assert.equal(prepares, 1);
+    await h.React.act(async () => { preparing.resolve(); await preparing.promise; });
+    assert.equal(h.sends.length, 1);
+    assert.deepEqual(h.draft.getSnapshot().attachments, []);
+    await h.React.act(async () => { h.result.resolve(); await h.result.promise; });
+    assert.equal(h.sends.length, 1);
+  } finally { preparing.resolve(); h.result.resolve(); await h.close(); }
+});
+
+for (const outcome of ["failure", "navigation", "unmount"] as const) {
+  test(`preparation ${outcome} preserves the draft and never dispatches`, { timeout: 10_000 }, async () => {
+    const h = await fixture();
+    const preparing = deferred();
+    let current = true;
+    await h.render({ onPrepare: async () => preparing.promise, isSubmissionCurrent: () => current });
+    try {
+      await h.React.act(async () => { h.input().onSubmit(); });
+      if (outcome === "navigation") current = false;
+      if (outcome === "unmount") await h.render({ draftKey: "another-chat" });
+      await h.React.act(async () => {
+        if (outcome === "failure") preparing.reject(new Error("preparation failed")); else preparing.resolve();
+        await preparing.promise.catch(() => undefined);
+      });
+      assert.equal(h.sends.length, 0);
+      assert.deepEqual(h.draft.getSnapshot().draft, h.original.draft);
+      assert.deepEqual(h.draft.getSnapshot().attachments, h.original.attachments);
+      assert.deepEqual(h.errors, outcome === "failure" ? ["preparation failed"] : []);
+    } finally { preparing.resolve(); h.result.resolve(); await h.close(); }
+  });
+}

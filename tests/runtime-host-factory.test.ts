@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
@@ -69,7 +70,8 @@ test("Host registry rejects a writer conflict, closes the unregistered runtime o
   const factory = createRuntimeHostFactory(f.root, () => f.options, host => { f.hosts.push(host); });
   const server = await startRuntimeHost(f.root, registry => factory("primary-session", { fresh: true, resourceRegistry: registry }), { createRuntime: factory });
   f.closers.unshift(async () => { await server.close(); });
-  const client = await connectRuntimeHost(f.root);
+  const client = await readyHostClient(await connectRuntimeHost(f.root));
+
   assert.ok(client);
   f.closers.unshift(async () => { await client.close(); });
   await assert.rejects(client.ensureSession({ sessionId: "blocked-session", focus: false }), /writer|lease|another process/iu);

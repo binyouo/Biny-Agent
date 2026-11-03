@@ -80,19 +80,19 @@ await test("RPC, client wrappers, CLI and selected-session slash graph reads nev
 
 await test("graph read barriers retain owner restart ordering, current resident revisions, and cold supplied-revision fallback", async (t) => {
   await fixture(t, async (f) => {
-    const routing = deferred(); f.internal.runtimeRestartPromises.set("primary", routing.promise);
+    const routing = deferred(); f.internal.execution.runtimeRestartPromises.set("primary", routing.promise);
     const get = t.mock.method(f.graphs, "getGraph");
     let settled = false;
     const read = f.rpc("graph.events", { graphId }).finally(() => { settled = true; });
     await tick(); assert.equal(settled, false); assert.equal(get.mock.callCount(), 0);
-    f.internal.runtimeRestartPromises.delete("primary"); routing.resolve(); await read;
+    f.internal.execution.runtimeRestartPromises.delete("primary"); routing.resolve(); await read;
     get.mock.restore();
 
-    const target = deferred(); f.internal.runtimeRestartPromises.set("cold-owner", target.promise);
+    const target = deferred(); f.internal.execution.runtimeRestartPromises.set("cold-owner", target.promise);
     settled = false;
     const pending = f.rpc("graph.inspect", { graphId }).finally(() => { settled = true; });
     await tick(); assert.equal(settled, false); assert.equal(f.counts.factory, 0);
-    f.internal.runtimeRestartPromises.delete("cold-owner"); target.resolve(); await pending;
+    f.internal.execution.runtimeRestartPromises.delete("cold-owner"); target.resolve(); await pending;
 
     // A restart may close the borrowed connection. Resolve against the replacement entry,
     // not a CommandRuntime captured before its barrier completed.
@@ -100,12 +100,12 @@ await test("graph read barriers retain owner restart ordering, current resident 
     const previousCommands = entry.commands;
     const reopenedAuthority = await RuntimeEventAuthority.openReadOnly(f.root); assert.ok(reopenedAuthority);
     const reopenedGraphs = await GoalGraphStore.open(f.root, reopenedAuthority);
-    const replacement = deferred(); f.internal.runtimeRestartPromises.set("primary", replacement.promise);
+    const replacement = deferred(); f.internal.execution.runtimeRestartPromises.set("primary", replacement.promise);
     const replacingRead = f.rpc("graph.inspect", { graphId, sessionId: "cold-owner" });
     await tick();
     entry.commands = { ...f.commands, graphs: reopenedGraphs };
     const stale = t.mock.method(f.graphs, "inspectGraph", () => { throw new Error("STALE_CONNECTION"); });
-    f.internal.runtimeRestartPromises.delete("primary"); replacement.resolve();
+    f.internal.execution.runtimeRestartPromises.delete("primary"); replacement.resolve();
     try { assert.equal((await replacingRead as { graphId: string }).graphId, graphId); }
     finally { stale.mock.restore(); entry.commands = previousCommands; reopenedGraphs.close(); reopenedAuthority.close(); }
     const oldRuntime = entry.runtime;
@@ -129,7 +129,7 @@ await test("cold revision-bearing slash fallback ignores unrelated pending and r
       const restart = deferred();
       const promise = rejected ? Promise.reject(new Error("UNRELATED_PRIMARY_RESTART")) : restart.promise;
       void promise.catch(() => undefined);
-      f.internal.runtimeRestartPromises.set("primary", promise);
+      f.internal.execution.runtimeRestartPromises.set("primary", promise);
       const before = f.counts.factory;
       const result = f.rpc("command", { input: `/graph events ${graphId}`, source: "tui", sessionId: "cold-owner", expectedRevision: 7 })
         .then(() => "unexpected success", (error: unknown) => (error as Error).message);
@@ -141,7 +141,7 @@ await test("cold revision-bearing slash fallback ignores unrelated pending and r
         })]);
       } finally {
         if (timeout) clearTimeout(timeout);
-        f.internal.runtimeRestartPromises.delete("primary"); restart.resolve();
+        f.internal.execution.runtimeRestartPromises.delete("primary"); restart.resolve();
         await result;
       }
       outcomes.push({ restart: rejected ? "rejected" : "pending", outcome, factory: f.counts.factory - before });
@@ -223,7 +223,7 @@ interface Fixture {
   temporary: string; root: string; authority: RuntimeEventAuthority; graphs: GoalGraphStore;
   commands: CommandRuntime; runtime: InteractiveRuntimeHandle;
   internal: { execute(connection: unknown, frame: HostRequestFrame): Promise<unknown>;
-    registry: { primary(): ManagedSessionRuntime }; runtimeRestartPromises: Map<string, Promise<unknown>> };
+    registry: { primary(): ManagedSessionRuntime }; execution: { runtimeRestartPromises: Map<string, Promise<unknown>> } };
   counts: { factory: number; resources: number; tools: number; models: number; network: number; connection: number };
   rpc(operation: string, payload: Record<string, unknown>): Promise<unknown>;
   output(operation: () => Promise<void>): Promise<string>;
@@ -249,6 +249,7 @@ async function fixture(t: TestContext, run: (f: Fixture) => Promise<void>): Prom
   const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => {
     counts.factory++; throw new Error("FACTORY_NOT_ALLOWED");
   });
+  await server.initialize();
   const internal = server as unknown as Fixture["internal"];
   const rpc: Fixture["rpc"] = async (operation, payload) => wire(await internal.execute({ surface: "cli" }, { kind: "request", requestId: "fixture", operation, payload }));
   const guards = [

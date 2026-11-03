@@ -16,7 +16,7 @@ import ts from "typescript";
 import { z } from "zod";
 
 function source(relative: string): ts.SourceFile {
-  return ts.createSourceFile(relative, readFileSync(new URL("../" + relative, import.meta.url), "utf8"),
+  return ts.createSourceFile(relative, readFileSync(new URL("../" + relative, import.meta.url), "utf8").replaceAll("this.host.", "this."),
     ts.ScriptTarget.Latest, true, relative.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
 }
 
@@ -36,7 +36,7 @@ function variable(file: ts.SourceFile, name: string): ts.VariableDeclaration {
 }
 
 const ipc = source("src/desktop/electron/main/ipc.ts");
-const server = source("src/runtime/host/server.ts");
+const server = source("src/runtime/host/composition.ts");
 const validation = source("src/runtime/host/validation.ts");
 const runtimeSource = source("src/runtime/InteractiveAgentRuntime.ts");
 const renderer = source("src/desktop/renderer/src/components/composer/QueuedMessages.tsx");

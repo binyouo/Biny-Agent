@@ -12,7 +12,7 @@ import { listSessionCatalog } from "../src/session/catalog.js";
 import { readStoredSessionEvents } from "../src/session/events.js";
 import { maxSessionEventLineBytes, maxSessionEvents, maxSessionFileBytes } from "../src/session/limits.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
-import { summarizeToolOptimizations, type ToolOptimization } from "../src/session/toolOptimization.js";
+import { type ToolOptimization } from "../src/session/toolOptimization.js";
 
 const receipt = (id: string, savedTokens = 70): ToolOptimization => ({
   id, kind: "rtk", estimator: "rtk", beforeTokens: 100, afterTokens: 100 - savedTokens, savedTokens, toolCalls: 1
@@ -65,7 +65,8 @@ async function fixture(t: TestContext) {
   async function session(project: DesktopProject, id: string, contents: string): Promise<string> {
     return createSessionFile(project.path, id, Buffer.from(contents));
   }
-  return { root, state, service, project, session };
+  const overview = (days: number | "all", projectId?: string, sessionId?: string) => service.toolOptimizationOverview(days, projectId, sessionId, true);
+  return { root, state, service, project, session, overview };
 }
 
 test("statistics mark malformed histories as incomplete while healthy recovery stays available", async t => {
@@ -79,9 +80,9 @@ test("statistics mark malformed histories as incomplete while healthy recovery s
   assert.deepEqual((await listSessionCatalog(p.path)).map(item => item.id), ["healthy"], "Recovery catalog intentionally excludes unreadable sessions");
   await assert.rejects(readStoredSessionEvents(p.path, "bad-json"), /Invalid JSONL/);
   await assert.rejects(readStoredSessionEvents(p.path, "bad-schema"), /Invalid session event/);
-  const stats = await h.service.toolOptimizationStats("all");
-  assert.deepEqual(stats.entries.map(entry => entry.optimization.id), ["healthy"]);
-  assert.equal(summarizeToolOptimizations(stats.entries).savedTokens, 70);
+  const stats = await h.overview("all");
+  assert.deepEqual(stats.recent.map(entry => entry.optimization.id), ["healthy"]);
+  assert.equal(stats.rtk.savedTokens, 70);
   assert.equal(stats.incompleteSessions, 2, "Omitted unreadable histories must not look like complete statistics");
 });
 
@@ -91,9 +92,9 @@ test("statistics count valid receipt-only histories and ignore empty histories",
   await h.session(p, "receipt-only", jsonl(events("receipt-only").slice(1)));
   await h.session(p, "empty", "");
   assert.deepEqual(await listSessionCatalog(p.path), []);
-  const stats = await h.service.toolOptimizationStats("all");
+  const stats = await h.overview("all");
   assert.equal(stats.incompleteSessions, 0);
-  assert.deepEqual(stats.entries.map(entry => entry.optimization.id), ["receipt-only"]);
+  assert.deepEqual(stats.recent.map(entry => entry.optimization.id), ["receipt-only"]);
 });
 
 test("statistics expose rejected file and line budgets without trusting partial receipts", async t => {
@@ -103,8 +104,8 @@ test("statistics expose rejected file and line budgets without trusting partial 
   const oversized = await h.session(p, "oversized", jsonl(events("oversized")));
   await truncate(oversized, maxSessionFileBytes + 1);
   await h.session(p, "long-line", jsonl(events("long-line")) + "x".repeat(maxSessionEventLineBytes + 1) + "\n");
-  const stats = await h.service.toolOptimizationStats("all");
-  assert.deepEqual(stats.entries.map(entry => entry.optimization.id), ["healthy"]);
+  const stats = await h.overview("all");
+  assert.deepEqual(stats.recent.map(entry => entry.optimization.id), ["healthy"]);
   assert.equal(stats.incompleteSessions, 2);
 });
 
@@ -114,10 +115,10 @@ test("event-count admission includes the exact limit and rejects one more event"
   const rows = events("bounded");
   const filler = { type: "assistant_message", content: "synthetic", time: day() };
   const file = await h.session(p, "bounded", jsonl(rows) + jsonl([filler]).repeat(maxSessionEvents - rows.length));
-  assert.equal((await h.service.toolOptimizationStats("all")).entries.length, 1);
+  assert.equal((await h.overview("all")).recent.length, 1);
   await writeFile(file, jsonl(rows) + jsonl([filler]).repeat(maxSessionEvents - rows.length + 1));
-  const stats = await h.service.toolOptimizationStats("all");
-  assert.deepEqual(stats.entries, []);
+  const stats = await h.overview("all");
+  assert.deepEqual(stats.recent, []);
   assert.equal(stats.incompleteSessions, 1);
 });
 
@@ -126,20 +127,21 @@ test("interrupted final fragments retain committed receipts but invalid timestam
   const p = await h.project("project");
   await h.session(p, "partial-tail", jsonl(events("partial-tail")) + '{"type":');
   await h.session(p, "invalid-time", jsonl(events("invalid-time", "not-a-date")));
-  const stats = await h.service.toolOptimizationStats("all");
-  assert.deepEqual(stats.entries.map(entry => entry.optimization.id), ["partial-tail"]);
+  const stats = await h.overview("all");
+  assert.deepEqual(stats.recent.map(entry => entry.optimization.id), ["partial-tail"]);
   assert.equal(stats.incompleteSessions, 1);
 });
 
 test("all-time statistics enumerate beyond catalog page sizes and retain exact detail origins", async t => {
   const h = await fixture(t);
   const p = await h.project("project");
-  for (let index = 0; index < 55; index++) await h.session(p, `session-${index}`, jsonl(events(`operation-${index}`)));
-  const stats = await h.service.toolOptimizationStats("all");
+  for (let index = 0; index < 55; index++) await h.session(p, `session-${index}`, jsonl(events(`operation-${index}`, new Date(Date.parse(day()) + index * 1000).toISOString())));
+  const stats = await h.overview("all");
   assert.equal(stats.incompleteSessions, 0);
-  assert.equal(stats.entries.length, 55);
-  assert.equal(summarizeToolOptimizations(stats.entries).savedTokens, 55 * 70);
-  const last = stats.entries.find(entry => entry.optimization.id === "operation-54")!;
+  assert.equal(stats.rtk.runs, 55);
+  assert.equal(stats.recent.length, 20);
+  assert.equal(stats.rtk.savedTokens, 55 * 70);
+  const last = stats.recent.find(entry => entry.optimization.id === "operation-54")!;
   assert.deepEqual(last.origin, { projectId: p.id, sessionId: "session-54", toolCallId: "call-operation-54" });
   assert.equal(last.optimization.originalCommand, "git status operation-54");
   const detail = await h.service.toolOptimizationDetail(last.origin!.projectId, last.origin!.sessionId, last.origin!.toolCallId);
@@ -156,11 +158,11 @@ test("replayed and cross-project receipts deduplicate by operation, not by tool-
   await h.session(a, "fork", jsonl(shared));
   await h.session(b, "imported", jsonl(shared));
   await h.session(b, "distinct", jsonl(events("distinct", day(), "same-call")));
-  const stats = await h.service.toolOptimizationStats("all");
+  const stats = await h.overview("all");
   assert.equal(stats.incompleteSessions, 0);
-  assert.deepEqual(stats.entries.map(entry => entry.optimization.id).sort(), ["distinct", "shared"]);
-  assert.equal(summarizeToolOptimizations(stats.entries).savedTokens, 140);
-  for (const entry of stats.entries) {
+  assert.deepEqual(stats.recent.map(entry => entry.optimization.id).sort(), ["distinct", "shared"]);
+  assert.equal(stats.rtk.savedTokens, 140);
+  for (const entry of stats.recent) {
     const origin = entry.origin!;
     const detail = await h.service.toolOptimizationDetail(origin.projectId, origin.sessionId, origin.toolCallId);
     assert.equal(detail.events.some(event => event.type === "tool_result" && event.optimization?.id === entry.optimization.id), true);
@@ -173,13 +175,16 @@ test("project and session scopes exclude unrelated damage and range admission pr
   await h.session(a, "selected", jsonl([...events("shared", day(-2)), ...events("shared", day())]));
   await h.session(a, "unrelated", '{"type":\n');
   await h.session(b, "other", jsonl(events("other")));
-  const selected = await h.service.toolOptimizationStats(1, a.id, "selected");
+  const selected = await h.overview(1, a.id, "selected");
   assert.equal(selected.incompleteSessions, 0);
-  assert.equal(selected.entries.length, 1);
-  assert.equal(selected.entries[0]!.time, day());
-  assert.deepEqual(await h.service.toolOptimizationStats("all", a.id, "missing-session"), { entries: [], incompleteSessions: 0 });
-  const scoped = await h.service.toolOptimizationStats("all", a.id);
-  assert.deepEqual(scoped.entries.map(entry => entry.optimization.id), ["shared"]);
+  assert.equal(selected.recent.length, 1);
+  assert.equal(selected.recent[0]!.time, day());
+  const missing = await h.overview("all", a.id, "missing-session");
+  assert.equal(missing.rtk.runs, 0);
+  assert.deepEqual(missing.recent, []);
+  assert.equal(missing.incompleteSessions, 0);
+  const scoped = await h.overview("all", a.id);
+  assert.deepEqual(scoped.recent.map(entry => entry.optimization.id), ["shared"]);
   assert.equal(scoped.incompleteSessions, 1);
 });
 
@@ -187,16 +192,16 @@ test("receipt range filtering does not use an unrelated final event timestamp as
   const h = await fixture(t);
   const p = await h.project("project");
   await h.session(p, "out-of-order", jsonl([...events("recent"), { type: "assistant_message", content: "imported older timestamp", time: day(-10) }]));
-  const stats = await h.service.toolOptimizationStats(1);
+  const stats = await h.overview(1);
   assert.equal(stats.incompleteSessions, 0);
-  assert.deepEqual(stats.entries.map(entry => entry.optimization.id), ["recent"]);
+  assert.deepEqual(stats.recent.map(entry => entry.optimization.id), ["recent"]);
 });
 
 test("refresh observes append, rewrite, replacement, removal and restored files", async t => {
   const h = await fixture(t);
   const p = await h.project("project");
   const file = await h.session(p, "changing", jsonl(events("first")));
-  const ids = async () => (await h.service.toolOptimizationStats("all")).entries.map(entry => entry.optimization.id).sort();
+  const ids = async () => (await h.overview("all")).recent.map(entry => entry.optimization.id).sort();
   assert.deepEqual(await ids(), ["first"]);
   await writeFile(file, jsonl([...events("first"), ...events("second")]));
   assert.deepEqual(await ids(), ["first", "second"]);
@@ -218,7 +223,7 @@ test("missing projects are counted without preventing healthy-project statistics
   const p = await h.project("healthy");
   await h.project("missing", true);
   await h.session(p, "healthy", jsonl(events("healthy")));
-  const stats = await h.service.toolOptimizationStats("all");
-  assert.deepEqual(stats.entries.map(entry => entry.optimization.id), ["healthy"]);
+  const stats = await h.overview("all");
+  assert.deepEqual(stats.recent.map(entry => entry.optimization.id), ["healthy"]);
   assert.equal(stats.incompleteSessions, 1);
 });

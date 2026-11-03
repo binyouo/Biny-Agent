@@ -50,5 +50,10 @@ export interface ApplicationImportSnapshot {
 /** Effects confirmed during this invocation, independent of retained display history. */
 export interface ApplicationImportSyncOutcome {
   snapshot: ApplicationImportSnapshot;
-  effects: { mcpImported: boolean };
+  effects: {
+    mcpImported: boolean;
+    settingsImported: boolean;
+    sessions: Array<{ workspaceRoot: string; sessionIds: string[] }>;
+    stateChanged: boolean;
+  };
 }

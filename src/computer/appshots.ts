@@ -4,7 +4,7 @@ import { open, unlink } from "node:fs/promises";
 import { z } from "zod";
 import type { NativeProcessDriver } from "./nativeDriver.js";
 import { updateConfig, type AgentConfigStore } from "../config/store.js";
-import { appshotsSettingsSchema, type AppshotEvent, type AppshotsSettings, type AppshotsState } from "./appshotsProtocol.js";
+import { appshotsSettingsPatchSchema, type AppshotEvent, type AppshotsSettings, type AppshotsState } from "./appshotsProtocol.js";
 const captureSchema = z.object({ path: z.string().min(1), bundleId: z.string().min(1), appName: z.string().default("应用"), pid: z.number().int().positive(), windowId: z.number().int().positive(), title: z.string().optional(), axText: z.string().max(64000).optional(), axError: z.string().optional(), axPending: z.boolean().optional(), frame: z.unknown().optional(), appIcon: z.unknown().optional() });
 const contextSchema = z.object({ axText: z.string().max(64000).optional(), axError: z.string().max(4000).optional() });
 type Capture = { bytes: Buffer; context: string; name: string; bundle: string; at: number; contextPending?: boolean; onContext?: (context: string) => void };
@@ -15,6 +15,7 @@ const ownBundles = ["com.biny.desktop", "com.biny.computer-use", "com.github.Ele
 export class Appshots {
   private snapshot: AppshotsState = { settings: { hotkey: "", target: "current" }, active: false, capturing: false };
   private readonly pending = new Map<string, Capture>();
+  private readonly expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly contexts = new Map<string, Capture>();
   private readonly earlyContexts = new Map<string, z.infer<typeof contextSchema>>();
   private readonly requests = new Map<string, AppshotsSettings["target"]>();
@@ -24,34 +25,53 @@ export class Appshots {
   private healthProbe = 0;
   private arming?: Promise<AppshotsState>;
   private rearmRequested = false;
+  private forceRequested = false;
+  private monitorKey?: string;
   private closed = false;
   private events: Promise<void> = Promise.resolve();
   constructor(private readonly driver: NativeProcessDriver, private readonly store: AgentConfigStore, private readonly emit: (event: AppshotEvent, feedback?: AppshotFeedback) => void) {
     this.unsubscribe = driver.onNativeEvent((event, raw) => { if (event === "appshot") this.events = this.events.then(() => this.receive(raw)); });
   }
   async state(): Promise<AppshotsState> { this.snapshot.settings = (await this.store.load()).appshots; return { ...this.snapshot, settings: { ...this.snapshot.settings } }; }
-  async settings(value: AppshotsSettings): Promise<AppshotsState> {
-    value = appshotsSettingsSchema.parse(value);
-    await updateConfig(this.store, undefined, config => ({ ...config, appshots: value }));
-    return await this.prewarm();
-  }
-  async prewarm(): Promise<AppshotsState> {
+  async settings(value: Partial<AppshotsSettings>): Promise<AppshotsState> {
     if (this.closed) throw new Error("appshots_closed");
-    this.monitorGeneration++;
+    value = appshotsSettingsPatchSchema.parse(value);
+    let hotkeyChanged = false;
+    const saved = await updateConfig(this.store, undefined, config => {
+      const appshots = { hotkey: value.hotkey ?? config.appshots.hotkey, target: value.target ?? config.appshots.target };
+      hotkeyChanged = appshots.hotkey !== config.appshots.hotkey;
+      return { ...config, appshots };
+    });
+    if (this.closed) throw new Error("appshots_closed");
+    if (!hotkeyChanged && this.monitorKey === undefined && !this.arming) {
+      this.snapshot.settings = saved.appshots;
+      return { ...this.snapshot, settings: { ...this.snapshot.settings } };
+    }
+    return await this.refresh(false);
+  }
+  async prewarm(): Promise<AppshotsState> { return await this.refresh(true); }
+  private async refresh(force: boolean): Promise<AppshotsState> {
+    if (this.closed) throw new Error("appshots_closed");
+    this.forceRequested ||= force;
     this.rearmRequested = true;
     if (this.arming) return await this.arming;
-    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = undefined; }
     // Publish the flight before work starts, and clear it before exposing the final result.
     this.arming = Promise.resolve().then(async () => {
       try {
         let attempted: string | undefined;
+        let reconfigured = false;
         do {
           this.rearmRequested = false;
+          const forced = this.forceRequested; this.forceRequested = false;
           const config = await this.store.load(); this.snapshot.settings = config.appshots;
           if (this.closed) break;
           const monitor = JSON.stringify([config.appshots.hotkey, config.activity.sensitiveApplications]);
-          if (monitor === attempted) continue;
+          if (monitor === attempted || (!forced && monitor === this.monitorKey)) continue;
           attempted = monitor;
+          this.monitorKey = monitor;
+          reconfigured = true;
+          this.monitorGeneration++;
+          if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = undefined; }
           try {
             if (!config.appshots.hotkey) { if (this.snapshot.active) await this.driver.daemonCommand("appshot_monitor_stop"); this.snapshot.active = false; }
             else {
@@ -67,8 +87,7 @@ export class Appshots {
             this.snapshot.error = config.appshots.hotkey ? message : `appshot_monitor_stop_failed: 无法确认监听已停止。${message}`;
           }
         } while (this.rearmRequested && !this.closed);
-        if (this.heartbeat) clearInterval(this.heartbeat);
-        if (this.snapshot.active && !this.closed) {
+        if (reconfigured && this.snapshot.active && !this.closed) {
           const generation = this.monitorGeneration;
           const hotkey = this.snapshot.settings.hotkey;
           this.heartbeat = setInterval(() => {
@@ -153,12 +172,15 @@ export class Appshots {
     const config = await this.store.load();
     if (this.closed) { bytes.fill(0); return; }
     if ([...ownBundles, ...config.activity.sensitiveApplications].includes(data.bundleId)) { bytes.fill(0); throw new Error("appshot_application_excluded"); }
-    for (const [key, value] of this.pending) if (Date.now() - value.at > 300_000 || this.pending.size >= 8) { value.bytes.fill(0); this.pending.delete(key); this.contexts.delete(key); }
+    for (const [key, value] of this.pending) if (Date.now() - value.at > 300_000 || this.pending.size >= 8) this.discard(key, value);
     for (const [key, value] of this.contexts) if (Date.now() - value.at > 300_000 || this.contexts.size >= 8) this.contexts.delete(key);
     const source = { appName: data.appName, bundleId: data.bundleId, pid: data.pid, windowId: data.windowId, title: data.title };
     const context = JSON.stringify({ source, accessibility: data.axText?.slice(0, 24000) ?? "", accessibilityError: data.axPending ? "accessibility_pending" : data.axError });
     const capture: Capture = { bytes, context, name: `${data.appName}.jpg`, bundle: data.bundleId, at: Date.now(), contextPending: data.axPending };
     this.pending.set(id, capture);
+    const timer = setTimeout(() => { if (this.pending.get(id) === capture) this.discard(id, capture); }, 300_000);
+    timer.unref?.();
+    this.expiryTimers.set(id, timer);
     if (data.axPending) this.contexts.set(id, capture);
     this.requests.delete(id);
     const early = this.earlyContexts.get(id); this.earlyContexts.delete(id);
@@ -181,13 +203,18 @@ export class Appshots {
   }
   async take(id: string): Promise<Capture> {
     const capture = this.pending.get(id);
-    if (!capture || Date.now() - capture.at > 300_000) { if (capture) capture.bytes.fill(0); this.pending.delete(id); this.contexts.delete(id); throw new Error("appshot_capture_expired"); }
+    if (!capture || Date.now() - capture.at >= 300_000) { if (capture) this.discard(id, capture); throw new Error("appshot_capture_expired"); }
     const config = await this.store.load();
     // Privacy reads yield; only the pending owner may transfer or clear bytes.
     if (this.pending.get(id) !== capture) throw new Error("appshot_capture_expired");
-    if (this.closed || Date.now() - capture.at > 300_000) { capture.bytes.fill(0); this.pending.delete(id); this.contexts.delete(id); throw new Error("appshot_capture_expired"); }
-    if (config.activity.sensitiveApplications.includes(capture.bundle)) { capture.bytes.fill(0); this.pending.delete(id); this.contexts.delete(id); throw new Error("appshot_application_excluded"); }
+    if (this.closed || Date.now() - capture.at >= 300_000) { this.discard(id, capture); throw new Error("appshot_capture_expired"); }
+    if (config.activity.sensitiveApplications.includes(capture.bundle)) { this.discard(id, capture); throw new Error("appshot_application_excluded"); }
+    const timer = this.expiryTimers.get(id); if (timer) clearTimeout(timer); this.expiryTimers.delete(id);
     this.pending.delete(id); return capture;
+  }
+  private discard(id: string, capture: Capture): void {
+    const timer = this.expiryTimers.get(id); if (timer) clearTimeout(timer); this.expiryTimers.delete(id);
+    capture.bytes.fill(0); this.pending.delete(id); this.contexts.delete(id);
   }
   async close(): Promise<void> {
     this.closed = true; this.monitorGeneration++; this.unsubscribe(); if (this.heartbeat) clearInterval(this.heartbeat);
@@ -196,7 +223,7 @@ export class Appshots {
     try { await this.arming; } catch (error) { armingFailed = true; armingError = error; }
     try { if (this.snapshot.active) await this.driver.daemonCommand("appshot_monitor_stop"); }
     catch (error) { if (armingFailed) throw new AggregateError([armingError, error], "appshot_shutdown_failed"); throw error; }
-    finally { this.driver.detach(); for (const value of this.pending.values()) value.bytes.fill(0); this.pending.clear(); this.contexts.clear(); this.earlyContexts.clear(); this.requests.clear(); }
+    finally { this.driver.detach(); for (const [id, value] of this.pending) this.discard(id, value); this.contexts.clear(); this.earlyContexts.clear(); this.requests.clear(); }
     if (armingFailed) throw armingError;
   }
 }

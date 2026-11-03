@@ -166,7 +166,7 @@ export function ProviderIconPicker({ value, onChange, className, defaultIcon, di
         >
           <div className="provider-icon-search">
             <Icon name="search" size={16} />
-            <input
+            <input className="settings-field"
               aria-label="搜索图标…"
               autoFocus
               disabled={!interactive}

@@ -7,6 +7,8 @@ The existing ai 7.0.93 dependency is unchanged by the runtime timing patch.
 run changes add an optional cumulative synchronous QuickJS execution-time budget,
 exclude bridge/host waits from that budget, retain the independent wall-clock
 limit, and expose executionTimeoutBudgetVersion 1 for fail-closed compatibility.
+An explicit zero for maxBridgeRequests disables the aggregate bridge count;
+concurrency, deadlines, serialization and continuation size limits remain active.
 The worker is rebuilt from the patched run source with its embedded serializer
 and the unchanged quickjs-wasi 3.6.0 WebAssembly artifact.
 
@@ -29,6 +31,7 @@ Upstream run source:
 Patched source files (paths relative to their recorded source inputs):
 
 run:
+  packages/run/src/continuation-validation.ts
   packages/run/src/run.ts
   packages/run/src/runtime/execution-budget.ts
   packages/run/src/runtime/manager.ts

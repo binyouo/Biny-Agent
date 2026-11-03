@@ -133,10 +133,6 @@
     font-size: 12px;
 }
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list button.is-selected {
-    font-weight: 700;
-    padding-bottom: 6px;
-    margin-top: -2px;
-    margin-left: -3px;
     z-index: 8;
 }
 
@@ -198,7 +194,6 @@
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark'])
     button:not([data-button-variant='ghost']):not([data-button-variant='link']):not(:where(.theme-card, .settings-switch-row, .biny-sidebar-session-item, .biny-project-row, .biny-project-row-action, .biny-chrome-button, .biny-composer-action, .settings-nav-list button)):not(:disabled):active {
     box-shadow: var(--w98-border-sunken);
-    padding-top: 2px;
 }
 
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark'])
@@ -238,7 +233,6 @@
     box-shadow: none !important;
     border-radius: 0 !important;
 }
-
 
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .biny-sidebar-session-tree-row {
     position: relative;
@@ -466,10 +460,6 @@
         inset 1px 1px var(--w98-button-shadow);
 }
 
-:root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list button:not(:disabled):active {
-    padding-top: 2px;
-}
-
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list button:focus,
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list button:active,
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .biny-inspector-tabs button:focus,
@@ -614,7 +604,6 @@
 }
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .win98-window-controls button:active {
     box-shadow: var(--w98-border-sunken);
-    padding-top: 1px;
 }
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .win98-window-controls .win98-close {
     margin-left: 2px;
@@ -983,7 +972,6 @@
     background-color: var(--w98-surface);
     background-image: repeating-conic-gradient(var(--w98-button-highlight) 0% 25%, var(--w98-surface) 0% 50%);
     background-size: 2px 2px;
-    font-weight: 700;
 }
 
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .artifact-rail {
@@ -1232,7 +1220,6 @@
 :root[data-appearance-skin='winxp'] button:not([data-button-variant='ghost']):not([data-button-variant='link']):not(:where(.theme-card, .settings-switch-row, .biny-sidebar-session-item, .biny-project-row, .biny-project-row-action, .biny-chrome-button, .biny-composer-action, .settings-nav-list button)):not(:disabled):active {
     background: linear-gradient(180deg, #cdcac3, #e3e3db 8%, #e5e5de 94%, #f2f2f1);
     box-shadow: none;
-    padding-top: 0;
 }
 :root[data-appearance-skin='winxp'] button:focus-visible {
     outline: 1px dotted #000000;
@@ -1382,11 +1369,8 @@
     border-color: #919b9c;
     border-top: 1px solid #e68b2c;
     box-shadow: inset 0 2px #ffc73c;
-    font-weight: 400;
     position: relative;
     z-index: 8;
-    margin-top: -2px;
-    padding-bottom: 6px;
 }
 
 :root[data-appearance-skin='winxp'] [role='menu'],
@@ -1582,7 +1566,6 @@
     background: linear-gradient(180deg, #cdcac3, #e3e3db 8%, #e5e5de 94%, #f2f2f1);
     background-image: linear-gradient(180deg, #cdcac3, #e3e3db 8%, #e5e5de 94%, #f2f2f1);
     box-shadow: none;
-    font-weight: 700;
 }
 
 :root[data-appearance-skin='winxp'] .artifact-rail {
@@ -1782,7 +1765,6 @@
 :root[data-appearance-skin='longhorn'] button:not([data-button-variant='ghost']):not([data-button-variant='link']):not(:where(.theme-card, .settings-switch-row, .biny-sidebar-session-item, .biny-project-row, .biny-project-row-action, .biny-chrome-button, .biny-composer-action, .settings-nav-list button)):not(:disabled):active {
     background: linear-gradient(180deg, #d5e0f2, #e4ecf9);
     box-shadow: none;
-    padding-top: 0;
 }
 :root[data-appearance-skin='longhorn'] button:focus-visible {
     outline: 1px dotted #4c5468;
@@ -1911,8 +1893,6 @@
     box-shadow: inset 0 2px #a9c6ef;
     position: relative;
     z-index: 8;
-    margin-top: -2px;
-    padding-bottom: 6px;
 }
 
 :root[data-appearance-skin='longhorn'] [role='menu'],
@@ -1970,7 +1950,6 @@
     background: linear-gradient(180deg, #d5e0f2, #e4ecf9);
     background-image: linear-gradient(180deg, #d5e0f2, #e4ecf9);
     box-shadow: inset 0 0 3px 2px #d0e2ff;
-    font-weight: 700;
 }
 
 :root[data-appearance-skin='longhorn'] .artifact-rail {
@@ -2154,7 +2133,6 @@
 :root[data-appearance-skin='longhorn-dark'] button:not([data-button-variant='ghost']):not([data-button-variant='link']):not(:where(.theme-card, .settings-switch-row, .biny-sidebar-session-item, .biny-project-row, .biny-project-row-action, .biny-chrome-button, .biny-composer-action, .settings-nav-list button)):not(:disabled):active {
     background: linear-gradient(180deg, #1a1a1a, #242424);
     box-shadow: none;
-    padding-top: 0;
 }
 :root[data-appearance-skin='longhorn-dark'] button:focus-visible {
     outline: 1px dotted #9c9c9c;
@@ -2283,8 +2261,6 @@
     box-shadow: inset 0 2px #2e4258;
     position: relative;
     z-index: 8;
-    margin-top: -2px;
-    padding-bottom: 6px;
 }
 
 :root[data-appearance-skin='longhorn-dark'] [role='menu'],
@@ -2342,7 +2318,6 @@
     background: linear-gradient(180deg, #294968, #223a51);
     background-image: linear-gradient(180deg, #294968, #223a51);
     box-shadow: inset 0 0 3px 2px rgba(116, 182, 251, 0.45);
-    font-weight: 700;
 }
 
 :root[data-appearance-skin='longhorn-dark'] .artifact-rail {
@@ -2392,26 +2367,7 @@
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M20 6 9 17l-5-5' fill='none' stroke='%23d5d5d5' stroke-width='3'/%3E%3C/svg%3E");
 }
 
-/* ---------------------------------------------------------------------------
- * 设置弹窗的页签条：**不要折行**。
- *
- * 参照（Alma）那套是给一个专门的 `.win98-tab-strip` 写的：页签是那个容器的直接
- * 子元素，条带按窗口宽度铺开，`.win98-tab { flex-grow: 1 }` 让它们均分剩余空间。
- * 这里我们没有那个专用容器，是把现成的设置侧栏就地改成条带，于是页签比参照多、
- * 宽度还更窄（设置弹窗约 990px，15 个页签 + 搜索框的自然宽度约 1235px）。
- *
- * `flex-wrap: wrap` 一折行，末行就只剩两三个页签，而 `flex-grow: 1` 会把它们
- * 撑成 270~435px 的巨块 —— 看上去就是"炸开"。同一份 CSS 在参照那里看不出来，
- * 是因为它的条带更宽/页签更少，恰好不折。
- *
- * 所以：页签要**可压缩**（min-width: 0 + flex: 1 1 auto）—— 压得住就不会折行，
- * 而折行正是「末行被撑开」的入口。这里**不写 flex-wrap: nowrap**：页签能压到 0
- * 时本来就不会折，反过来 nowrap 会跟 tests/desktop-themes.test.ts 那条契约断言打架
- * （那条契约要求导航仍是可折行的横向条，由另一路工作在维护）。
- * 字距按 Win98 原作收到 11px，让 15 个页签在一行里放得下并均分。
- * 只改 padding-inline，不动 padding 简写 —— 各皮肤的 `.is-selected` 靠
- * padding-bottom 做"抬高"效果，别把它冲掉。
- * ------------------------------------------------------------------------- */
+/* 页签按可用宽度收缩，选中状态不改变占位。 */
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list {
     flex: 1 1 auto;
     min-width: 0;

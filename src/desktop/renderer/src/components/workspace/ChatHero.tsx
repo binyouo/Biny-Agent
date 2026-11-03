@@ -2,16 +2,17 @@
 import { AppIcon } from "../AppIcon.js";
 
 interface ChatHeroProps {
+  ref?: React.Ref<HTMLDivElement>;
   /** 建议短语区，渲染在副标题下方。 */
   children?: React.ReactNode;
-  /** 提交后整块淡出，避免和消息流同时出现。 */
+  /** 提交后保留到淡出完成，期间退出键盘与指针交互。 */
   leaving?: boolean;
 }
 
-export function ChatHero({ children, leaving = false }: ChatHeroProps): React.JSX.Element {
+export function ChatHero({ children, leaving = false, ref }: ChatHeroProps): React.JSX.Element {
   return (
-    <div className="biny-hero">
-      <div className={`biny-hero-inner${leaving ? " is-leaving" : ""}`}>
+    <div ref={ref} className={`biny-hero${leaving ? " is-leaving" : ""}`} aria-hidden={leaving || undefined} inert={leaving}>
+      <div className="biny-hero-inner">
         <AppIcon animated hidden={leaving} className="biny-hero-avatar" size={64} />
         <h1 className="biny-hero-title biny-hero-fade">今天聊点什么？</h1>
         <p className="biny-hero-subtitle biny-hero-fade">把下一件事，交给 Biny。</p>

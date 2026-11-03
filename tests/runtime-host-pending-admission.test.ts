@@ -7,7 +7,16 @@ import ts from "typescript";
 
 // Product source is inert text: no Host constructor, imports, sockets, stores or
 // model code are loaded. Only the reviewed request/barrier methods execute below.
-const source = readFileSync(new URL("../src/runtime/host/server.ts", import.meta.url), "utf8");
+const kernel = readFileSync(new URL("../src/runtime/host/server.ts", import.meta.url), "utf8");
+const execution = readFileSync(new URL("../src/runtime/host/composition.ts", import.meta.url), "utf8").replaceAll("this.host.", "this.");
+const kernelAst = ts.createSourceFile("server.ts", kernel, ts.ScriptTarget.Latest, true);
+const executionAst = ts.createSourceFile("composition.ts", execution, ts.ScriptTarget.Latest, true);
+const members = new Map<string, string>();
+for (const ast of [kernelAst, executionAst]) {
+  const declaration = ast.statements.find(ts.isClassDeclaration)!;
+  for (const member of declaration.members) if (member.name) members.set(member.name.getText(ast), member.getText(ast));
+}
+const source = `class RuntimeHostServer { ${[...members.values()].join("\n")} }`.replaceAll("this.execution!.", "this.");
 const parsed = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const server = parsed.statements.find((node): node is ts.ClassDeclaration =>
   ts.isClassDeclaration(node) && node.name?.text === "RuntimeHostServer");
@@ -29,11 +38,13 @@ assert.equal(guards.length, 1, "Expected one inspect barrier at execute's top le
 const guard = guards[0]!;
 const routing = executeStatements[executeStatements.indexOf(guard) + 1];
 assert.ok(routing);
-assert.equal(routing.getText(parsed), "const managed = await this.runtimeEntry(frame.operation, payload);",
-  "The inspect barrier must immediately precede common runtime routing");
+assert.ok(ts.isIfStatement(routing));
+assert.equal(routing.expression.getText(parsed), 'frame.operation === "run.inspect" || frame.operation === "run.list" || frame.operation === "runtime.events"',
+  "The inspect barrier must immediately precede persistent read routing");
+assert.match(routing.getText(parsed), /await this\.runReadAuthority\(payload,/u);
 const inspect = `${guard.getText(parsed)}\n${routing.getText(parsed)}`;
 assert.match(source, /private readonly pendingRunAdmissions = new Map<string, Set<Promise<void>>>\(\);/u);
-// Keep the real inspect guard and the immediately following routing call intact;
+// Keep the real inspect guard and the immediately following persistent read routing intact;
 // the rest of execute is replaced by an in-memory boundary, never evaluated.
 const isolated = stripTypeScriptTypes(`class PendingAdmissionHarness {
 ${handleFrame}
@@ -41,7 +52,6 @@ ${register}
 ${wait}
 async inspect(frame: unknown, payload: unknown): Promise<unknown> {
 ${inspect}
-return managed;
 }
 }
 PendingAdmissionHarness.prototype;`, { mode: "strip" });
@@ -64,6 +74,7 @@ interface Managed {
   runtime: { getSnapshot(): { state: { kind: "idle" | "runs" } } };
 }
 interface FixtureState {
+  lifecycle: "ready";
   pendingRunAdmissions: Map<string, Set<Promise<void>>>;
   pendingRequests: number;
   activityRevision: number;
@@ -74,7 +85,7 @@ interface FixtureState {
   dispatcher: { dispatch(lane: Lane, work: () => Promise<unknown>, key?: string): Promise<unknown> };
   businessComposition: { scheduleGraphs(): void };
   execute(connection: Connection, frame: RequestFrame): Promise<unknown>;
-  runtimeEntry(operation: string, payload: Record<string, unknown>): Promise<Managed>;
+  runReadAuthority(payload: Record<string, unknown>, runId?: string): Promise<{ getRun(runId: string): unknown }>;
   releaseSessionWriter(connection: Connection, sessionId: string): Promise<void>;
   send(connection: Connection, response: Record<string, unknown>): void;
   registerPendingRunAdmission(runId: string): () => void;
@@ -84,7 +95,7 @@ interface Extracted {
   handleFrame(this: FixtureState, connection: Connection, frame: unknown): Promise<void>;
   registerPendingRunAdmission(this: FixtureState, runId: string): () => void;
   waitForPendingRunAdmissions(this: FixtureState, runId: string): Promise<void>;
-  inspect(this: FixtureState, frame: RequestFrame, payload: Record<string, unknown>): Promise<Managed>;
+  inspect(this: FixtureState, frame: RequestFrame, payload: Record<string, unknown>): Promise<unknown>;
 }
 const record = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
@@ -141,6 +152,7 @@ function fixture(options: FixtureOptions = {}) {
   };
   let nextId = 0;
   const state: FixtureState = {
+    lifecycle: "ready",
     pendingRunAdmissions: new Map(), pendingRequests: 0, activityRevision: 0,
     registry: { primary: () => managed, get: (sessionId) => sessionId === managed.sessionId ? managed : undefined },
     sessionWriterOwners: new Map(),
@@ -166,9 +178,9 @@ function fixture(options: FixtureOptions = {}) {
       if (frame.operation === "snapshot") return { state: "readable" };
       return await options.execute?.(frame);
     },
-    runtimeEntry: async (operation, payload) => {
-      events.push(`route:${operation}:${String(payload.runId)}`);
-      return managed;
+    runReadAuthority: async (_payload, runId) => {
+      events.push(`route:run.inspect:${String(runId)}`);
+      return { getRun: (id) => records.get(id) };
     },
     releaseSessionWriter: async () => {
       events.push("release-writer");

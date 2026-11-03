@@ -34,6 +34,7 @@ export function registerUserInputCommands(program: Command, wrap: (action: () =>
       const client = await connectRuntimeHost(process.cwd(), { surface: "cli", clientId: `input-${process.pid}` });
       if (!client) throw new Error("Runtime Host is not running.");
       try {
+        await client.waitForReady();
         const pending = await client.pendingUserInput(sessionId);
         console.log(options.json ? JSON.stringify(pending) : pending.length ? pending.map((request) => [
           `${request.toolCallId} (run: ${request.runId})`,

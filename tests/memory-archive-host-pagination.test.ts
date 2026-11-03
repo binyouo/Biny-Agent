@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Host 的归档分页契约：无参数 CLI 保持全量，带参数只传输请求页。 */
 import assert from "node:assert/strict";
@@ -44,7 +45,8 @@ try {
     close: async () => undefined
   } as unknown as InteractiveRuntimeHandle;
   host = await startRuntimeHost(root, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-  const client = await connectRuntimeHost(root, { surface: "cli", clientId: "archive-page" });
+  const client = await readyHostClient(await connectRuntimeHost(root, { surface: "cli", clientId: "archive-page" }));
+
   assert.ok(client);
   try {
     const page = await client.memory<{ entries: Array<{ content: string }>; total: number }>("archive-list", { offset: 1, limit: 1 });

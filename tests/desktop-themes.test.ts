@@ -108,9 +108,9 @@ test("structural skins address the actual sidebar, composer and message roles", 
 test("grouped preferences have one surface and shared row spacing, while a disabled save stays neutral", async () => {
   const { JSDOM } = await import("jsdom");
   const renderer = new URL("../src/desktop/renderer/src/", import.meta.url);
-  const sources = await Promise.all(["biny", "desktop-v2", "settings"].map(name =>
+  const sources = await Promise.all(["biny", "desktop-v2", "settings", "settings-controls"].map(name =>
     readFile(new URL(`styles/${name}.css`, renderer), "utf8")));
-  const dom = new JSDOM('<dialog open class="desktop-settings-dialog"><section class="settings-modal"><main class="settings-content"><div class="settings-scroll"><div class="settings-preferences"><section class="settings-preference-section"><h3>回复显示</h3><div class="settings-row-group"><div class="settings-switch-row"><span class="settings-switch-copy"><strong>流式响应</strong></span><input class="settings-switch" role="switch" type="checkbox" checked /></div><div class="settings-preference-row">字体</div></div></section></div></div><footer class="settings-page-footer"><button class="settings-save-button" disabled>保存</button></footer></main></section></dialog>');
+  const dom = new JSDOM('<dialog open class="desktop-settings-dialog"><section class="settings-modal"><main class="settings-content"><div class="settings-scroll"><div class="settings-preferences"><section class="settings-preference-section"><h3>回复显示</h3><div class="settings-row-group"><div class="settings-switch-row"><span class="settings-switch-copy"><strong>流式响应</strong></span><input class="settings-switch" role="switch" type="checkbox" checked /></div><div class="settings-preference-row">字体</div></div></section></div></div><footer class="settings-page-footer"><button class="settings-action settings-save-button" disabled>保存</button></footer></main></section></dialog>');
   try {
     for (const source of sources) {
       const style = dom.window.document.createElement("style");
@@ -179,10 +179,10 @@ test("retro settings navigation stays horizontal and releases space for the acti
       dom.window.document.documentElement.dataset.appearanceSkin = "default";
       settings.classList.remove("is-retro-settings");
       assert.equal(computed(".settings-tabs").flexDirection, "column", skin);
-      assert.equal(computed(".settings-tabs").height, "calc(100% - 16px)", skin);
-      assert.equal(computed(".settings-tabs").marginTop, "8px", skin);
-      assert.equal(computed(".settings-tabs").borderRadius, "var(--biny-radius-card)", skin);
-      assert.equal(computed(".settings-tabs").minWidth, "208px", skin);
+      assert.equal(computed(".settings-tabs").height, "100%", skin);
+      assert.equal(computed(".settings-tabs").marginTop, "0px", skin);
+      assert.equal(computed(".settings-tabs").borderRadius, "0px", skin);
+      assert.equal(computed(".settings-tabs").minWidth, "212px", skin);
       assert.equal(computed(".settings-nav-list").flexDirection, "column", skin);
     }
   } finally { dom.window.close(); }

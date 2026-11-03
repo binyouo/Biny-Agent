@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm, type CapturedTestFailure } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
@@ -87,8 +88,8 @@ try {
     });
   };
   host = await startRuntimeHost(root, async resources => await createRuntime("primary-session", { resourceRegistry: resources }), { createRuntime });
-  client = await connectRuntimeHost(root);
-  ownerClient = await connectRuntimeHost(root);
+  client = await readyHostClient(await connectRuntimeHost(root));
+  ownerClient = await readyHostClient(await connectRuntimeHost(root));
   await client.request("session.ensure", { sessionId: "other-session" });
   await ownerClient.request("session.ensure", { sessionId: "owned-session" });
 

@@ -16,11 +16,8 @@ await test("Host rejects non-boolean archive states before changing active or ar
   process.env.BINY_AGENT_DIR = path.join(root, "agent");
   const memory = new LocalMemory(root, () => { throw new Error("Manual archive must not call a model"); });
   const verifier = new MemoryStorage(root);
-  const context = {
-    getCommands: () => ({ agent: { getLocalMemory: () => memory } }) as unknown as CommandRuntime,
-    scheduleEmbeddingRebuild: () => { throw new Error("Manual archive must not schedule a rebuild"); }
-  };
-  const execute = async (payload: Record<string, unknown>) => await executeRuntimeHostMemoryOperation(context, payload);
+  const commands = { agent: { getLocalMemory: () => memory } } as unknown as CommandRuntime;
+  const execute = async (payload: Record<string, unknown>) => await executeRuntimeHostMemoryOperation(commands, payload);
   try {
     const active = (await memory.writeEntry({ content: "Keep this active fact unchanged", threadId: "thread-a" })).entry!;
     const storedActive = await verifier.getEntry(active.id);

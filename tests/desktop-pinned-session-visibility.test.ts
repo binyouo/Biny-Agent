@@ -50,8 +50,9 @@ async function fixture(context: TestContext) {
   })}\n`));
   const pinnedFile = await create("older-pin", 0);
   const original = await readFile(pinnedFile, "utf8");
-  const initial = await manager.pinSession(project.id, "older-pin", true);
-  assert.equal(initial.sessions.find((session) => session.id === "older-pin")?.pinned, true);
+  const pinned = await manager.pinSession(project.id, "older-pin", true);
+  assert.equal(pinned.metadata.pinned, true);
+  const initial = await manager.workspaceSnapshot(project.id, false);
   for (let index = 1; index <= 32; index += 1) await create(`recent-${index}`, index);
   return { root, project, projects, manager, initial, pinnedFile, original };
 }
@@ -84,7 +85,9 @@ for (const surface of ["refresh", "selected-project bootstrap", "other-project b
 test("older pin feedback follows archive, rejected stale writes, unpin, repin and deletion", async (context) => {
   const { project, manager, initial, pinnedFile, original } = await fixture(context);
   const oldRevision = initial.sessions.find((session) => session.id === "older-pin")!.metadataRevision;
-  const archived = await manager.archiveSession(project.id, "older-pin", true, oldRevision);
+  const archiveReceipt = await manager.archiveSession(project.id, "older-pin", true, oldRevision);
+  assert.equal(archiveReceipt.metadata.archived, true);
+  const archived = await manager.workspaceSnapshot(project.id, false);
   const archivedSession = archived.sessions.find((session) => session.id === "older-pin")!;
   assert.equal(archivedSession.archived, true);
   assert.equal((await manager.sidebarSessions(archived)).find((session) => session.id === "older-pin")?.archived, true,
@@ -105,14 +108,14 @@ test("older pin feedback follows archive, rejected stale writes, unpin, repin an
   assert.equal(cliPin?.metadataRevision, archivedSession.metadataRevision);
 
   const unarchived = await manager.archiveSession(project.id, "older-pin", false, archivedSession.metadataRevision);
-  const unpinned = await manager.pinSession(project.id, "older-pin", false,
-    unarchived.sessions.find((session) => session.id === "older-pin")!.metadataRevision);
+  const unpinReceipt = await manager.pinSession(project.id, "older-pin", false, unarchived.metadata.metadataRevision);
+  const unpinned = await manager.workspaceSnapshot(project.id, false);
   let sidebar = replaceProjectSessionRoots(archived.sessions, project.id, unpinned.sessionPage!.sessions, unpinned.sessions);
   assert.equal(sidebar.some((session) => session.id === "older-pin"), false,
     "unpinning must remove the out-of-page shortcut rather than retain its stale flag");
   assert.equal((await manager.sidebarSessions()).some((session) => session.id === "older-pin"), false);
-  const repinned = await manager.pinSession(project.id, "older-pin", true,
-    unpinned.sessions.find((session) => session.id === "older-pin")!.metadataRevision);
+  await manager.pinSession(project.id, "older-pin", true, unpinReceipt.metadata.metadataRevision);
+  const repinned = await manager.workspaceSnapshot(project.id, false);
   sidebar = replaceProjectSessionRoots(sidebar, project.id, repinned.sessionPage!.sessions, repinned.sessions);
   assert.equal(sidebar.find((session) => session.id === "older-pin")?.pinned, true,
     "pinning an older session from search must add it without needing a preloaded sidebar entry");
@@ -136,11 +139,13 @@ test("pin summaries do not replace same-ID sessions in another project or duplic
   assert.equal(sidebar.find((session) => session.id === "older-pin" && session.projectId === project.id)?.pinned, true);
   assert.equal(sidebar.find((session) => session.id === "older-pin" && session.projectId === other.id)?.pinned, false);
   const otherRow = sidebar.find((session) => session.projectId === other.id)!;
-  snapshot = await manager.pinSession(project.id, "recent-32", true);
+  await manager.pinSession(project.id, "recent-32", true);
+  snapshot = await manager.workspaceSnapshot(project.id, false);
   sidebar = replaceProjectSessionRoots(sidebar, project.id, snapshot.sessionPage!.sessions, snapshot.sessions);
   assert.equal(sidebar.filter((session) => session.id === "recent-32").length, 1);
   assert.strictEqual(sidebar.find((session) => session.projectId === other.id), otherRow);
-  const otherPinned = await manager.pinSession(other.id, "older-pin", true, otherRow.metadataRevision);
+  await manager.pinSession(other.id, "older-pin", true, otherRow.metadataRevision);
+  const otherPinned = await manager.workspaceSnapshot(other.id, false);
   sidebar = await manager.sidebarSessions(otherPinned);
   assert.equal(sidebar.filter((session) => session.id === "older-pin" && session.pinned).length, 2);
 });

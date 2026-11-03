@@ -12,6 +12,8 @@ const declaration = source.statements.find((node): node is ts.ClassDeclaration =
 assert.ok(declaration);
 const execute = declaration.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "execute");
 assert.ok(execute);
+const selectedFiles = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "selectedFiles");
+assert.ok(selectedFiles);
 const transfer = ts.createSourceFile("transfer.ts", readFileSync(path.join(process.cwd(), "src/session/transfer.ts"), "utf8"), ts.ScriptTarget.Latest, true);
 const importer = transfer.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "importSessionFile");
 assert.ok(importer);
@@ -21,7 +23,8 @@ const allowedCalls = new Set([
   "scanned?.contents.get", "parsePreparedChatGptImport", "parseSessionImport", "bytes.toString", "state.receipts.push", "this.writeState",
   "ensureAgentDirs", "path.join", "fs.writeFile", "persistImportedSession", "importSessionFile", "scanned?.configurations.get", "candidate.apply",
   "error.retainedAttachmentPaths.slice", "error.retainedAttachmentPaths.slice(0, 8).map", "JSON.stringify", "file.slice", "retained.join",
-  "result.detail.slice", "fs.rm", "stagedPath.slice", "result.detail?.slice", "fs.readFile"
+  "result.detail.slice", "fs.rm", "stagedPath.slice", "result.detail?.slice", "fs.readFile", "selectedFiles", "effects.sessions.find", "effects.sessions.push", "project.sessionIds.push",
+  "preview.items.filter", "ids.includes", "preview.items.filter(item => ids.includes(item.id) && item.sourcePath !== undefined).map"
 ]);
 function audit(node: ts.Node, file: ts.SourceFile): void {
   if (ts.isCallExpression(node)) assert.ok(allowedCalls.has(node.expression.getText(file)), `Unreviewed call: ${node.expression.getText(file)}`);
@@ -29,9 +32,9 @@ function audit(node: ts.Node, file: ts.SourceFile): void {
   if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node)) assert.fail("Imports cannot enter the extracted closure");
   ts.forEachChild(node, child => audit(child, file));
 }
-audit(execute, source); audit(importer, transfer);
+audit(execute, source); audit(selectedFiles, source); audit(importer, transfer);
 const wrapper = importer.getText(transfer).replace(/^export\s+/u, "");
-const extracted = `${wrapper}\nclass ExtractedService { ${execute.getText(source)} }\nglobalThis.ExtractedService = ExtractedService;`;
+const extracted = `${wrapper}\n${selectedFiles.getText(source)}\nclass ExtractedService { ${execute.getText(source)} }\nglobalThis.ExtractedService = ExtractedService;`;
 assert.equal(/constructor|require\s*\(|import\s*\(|process|setTimeout|setInterval/u.test(extracted), false);
 const emitted = ts.transpileModule(extracted, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }, reportDiagnostics: true });
 assert.equal(emitted.diagnostics?.length ?? 0, 0);

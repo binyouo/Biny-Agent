@@ -76,8 +76,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     document.body.append(dialogHost);
     await act(async () => { root.render(createElement(SettingsDetailHostContext.Provider, { value: dialogHost },
       createElement(SettingsDraftContext.Provider, { value: context }, createElement(SettingsMemory, props)))); });
-    const mascotState = () => document.querySelector('#memory-add .app-icon')?.getAttribute('data-state');
-    assert.equal(mascotState(), 'idle', '读取已有记忆不播放保存动画');
+    assert.equal(document.querySelector('#memory-add .app-icon'), null, '添加记忆标题不展示萌宠图标');
     const memoryInput = document.querySelector<HTMLTextAreaElement>('#memory-add textarea')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!.call(memoryInput, '喜欢本地保存');
@@ -85,11 +84,10 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     });
     const addMemoryButton = document.querySelector<HTMLButtonElement>('#memory-add button')!;
     await act(async () => { addMemoryButton.click(); });
-    assert.equal(mascotState(), 'idle', '写入失败不收纳记忆');
     assert.ok(notices.includes('保存失败'));
     rejectMemorySave = false;
     await act(async () => { addMemoryButton.click(); });
-    assert.equal(mascotState(), 'remember', '写入成功回执驱动收纳动作');
+    assert.equal(notices.at(-1), '记忆已添加');
     const button = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("清空全部"));
     assert.deepEqual([...document.querySelectorAll('.activity-memory-settings > section')].slice(0, 6).map(node => node.id),
       ["memory-feature", "memory-retrieval", "memory-summarization", "memory-search", "memory-list", "memory-add"],
@@ -99,39 +97,24 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     assert.match(document.body.textContent ?? "", /合成失败.*来源保留/u);
     assert.doesNotMatch(document.body.textContent ?? "", /合成失败（已进归档/u);
     const advancedDisclosure = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("相似度与 LLM 合并参数"));
-    const archiveDisclosure = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("归档记忆（26）"));
-    assert.ok(advancedDisclosure);
+    const archiveDisclosure = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("归档记忆"));
+    assert.equal(advancedDisclosure, undefined, "合并参数没有折叠入口");
     assert.ok(archiveDisclosure);
-    const advancedPanel = document.getElementById(advancedDisclosure.getAttribute("aria-controls") ?? "");
+    const advancedPanel = document.querySelector<HTMLElement>(".activity-memory-advanced");
     const archivePanel = document.getElementById(archiveDisclosure.getAttribute("aria-controls") ?? "");
     assert.ok(advancedPanel);
     assert.ok(archivePanel);
-    assert.notEqual(advancedPanel.id, archivePanel.id);
-    for (const disclosure of [advancedDisclosure, archiveDisclosure]) {
-      assert.equal(disclosure.type, "button");
-      assert.equal(disclosure.getAttribute("aria-expanded"), "false");
-      assert.equal(disclosure.querySelector(".activity-memory-disclosure-chevron")?.getAttribute("aria-hidden"), "true");
-      assert.doesNotMatch(disclosure.textContent ?? "", /[⌃⌄]/u, "箭头应使用共享 SVG，不依赖字体字符");
-    }
-    assert.equal(advancedPanel.hidden, true);
-    assert.equal(archivePanel.hidden, true);
-    const advancedChevron = advancedDisclosure.querySelector("svg");
-    assert.ok(advancedChevron);
-    await act(async () => { advancedChevron.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-    assert.equal(advancedDisclosure.getAttribute("aria-expanded"), "true", "点击箭头只切换一次");
-    assert.equal(advancedPanel.hidden, false);
-    assert.equal(archivePanel.hidden, true, "相邻折叠区域不应被一起切换");
+    assert.equal(archiveDisclosure.type, "button");
+    assert.equal(archiveDisclosure.getAttribute("aria-expanded"), "false");
+    assert.equal(archiveDisclosure.querySelector(".activity-memory-disclosure-chevron")?.getAttribute("aria-hidden"), "true");
+    assert.doesNotMatch(archiveDisclosure.textContent ?? "", /[⌃⌄]/u, "箭头应使用共享 SVG，不依赖字体字符");
+    assert.equal(advancedPanel.hidden, false, "合并参数初始直接可用");
+    assert.equal(advancedPanel.closest("details, [hidden]"), null);
+    assert.equal(archivePanel.hidden, true, "配置直接展示不触发相邻历史列表展开");
     const mergeRange = advancedPanel.querySelector<HTMLInputElement>('input[aria-label="相似度合并阈值"]');
     assert.ok(mergeRange);
     await act(async () => { mergeRange.click(); });
-    assert.equal(advancedDisclosure.getAttribute("aria-expanded"), "true", "内部控件点击不应收起父区域");
-    await act(async () => { advancedDisclosure.click(); advancedDisclosure.click(); });
-    assert.equal(advancedDisclosure.getAttribute("aria-expanded"), "true", "连续两次点击应回到原状态");
-    const advancedLabel = advancedDisclosure.querySelector("span");
-    assert.ok(advancedLabel);
-    await act(async () => { advancedLabel.click(); });
-    assert.equal(advancedDisclosure.getAttribute("aria-expanded"), "false", "文字和箭头使用同一点击入口");
-    assert.equal(advancedPanel.hidden, true);
+    assert.equal(advancedPanel.hidden, false, "内部控件点击不改变参数可见性");
     const runDetails = document.querySelector<HTMLDetailsElement>(".activity-memory-run-details");
     const runSummary = runDetails?.querySelector("summary");
     assert.ok(runDetails);
@@ -145,6 +128,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     await act(async () => { runSummary.click(); runSummary.click(); });
     assert.equal(runDetails.open, true);
     await act(async () => { archiveDisclosure.click(); });
+    assert.match(archiveDisclosure.textContent ?? "", /归档记忆（26）/u, "展开后显示实际读取的归档数量");
     assert.equal(archiveDisclosure.getAttribute("aria-expanded"), "true");
     assert.equal(archivePanel.hidden, false);
     assert.match(document.body.textContent ?? "", /Archived fact 1/u);

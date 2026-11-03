@@ -674,6 +674,8 @@ const canonicalConfigSchema = z.object({
   /** 活动分析、摘要与建议共用的工具模型；省略时从可用配置自动选择。 */
   toolModel: z.string().trim().min(1).max(240).optional(),
   visionModel: z.string().trim().min(1).max(240).optional(),
+  /** 省略时沿用已有视觉模型的启用状态；显式关闭保留模型选择。 */
+  visionModelEnabled: z.boolean().optional(),
   providers: z.record(z.string(), providerConfigSchema),
   /** 凭据正文保存在 Keychain；这里仅保存并发 CAS 使用的非机密版本 nonce。 */
   credentialRevisions: z.record(z.string(), z.string().min(1).max(128)).optional(),

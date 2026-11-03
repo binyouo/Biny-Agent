@@ -278,3 +278,14 @@ Locator 操作使用链式查询，页面动作要求唯一目标；存在重复
 | 常驻运行与评测 | `daemon`、`runtime-host`、`eval` | [架构](ARCHITECTURE.md)、[评测](EVALUATION.md)。 |
 
 源码入口：[命令注册](../src/cli/index.ts)、[配置操作](../src/config/commands.ts)、[Desktop 命令服务](../src/desktop/electron/main/DesktopCommandService.ts)。
+
+## 截取 Biny 窗口
+
+在 Desktop 的「视图」菜单选择「截取窗口…」（`Cmd/Ctrl+Shift+S`）。可截整个窗口或当前内容区域；设置打开时，当前内容只包含右侧设置页。预览支持拖动、滚轮缩放、裁剪和框选打码，裁剪与打码均可撤销、重做。可选择照片、色彩、透明或本地图片背景，调整边距与阴影，再复制图片或保存 PNG。本地背景图片支持 PNG、JPEG、WebP，最大 20 MB、3200 万像素，仅在内存中使用。「隐私」中的开关分别控制会话标题打码和邮箱模糊，即时切换，不重拍、不清空已有编辑。重拍重新读取当前画面；遮盖直接写进导出图片。
+
+```bash
+biny capture --scope content --out ./biny-content.png --json
+biny capture --rect 240,60,900,600 --out ./biny-region.png
+```
+
+命令连接正在运行的 Desktop，默认截整个窗口并将侧栏和顶部会话标题替换为灰条；`--no-privacy` 保留标题。项目名称和 Computer History 数据保持原样。矩形使用窗口内容区坐标，只截当前可见部分。CLI 保存原始截图，不添加预览中的背景与边距；不覆盖已有文件，省略 `--out` 时保存到临时目录并输出路径。不需要屏幕录制权限，不读取其他应用。正文中的敏感内容需在预览中自行遮盖，隐藏标题不等于全文脱敏。

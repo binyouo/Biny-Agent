@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Permission answers retain displayed ownership; only explicit rejection permits a manual retry. */
 import assert from "node:assert/strict";
@@ -249,6 +250,7 @@ async function hostFixture(t: TestContext) {
   const registration = { protocolVersion: runtimeHostProtocolVersion, endpoint: path.join(root, "unused.sock"), registrationPath: path.join(root, "unused.json"), lockPath: path.join(root, "unused.lock"), rootHash: "synthetic", persistenceRoot: root, configRoot: path.join(root, "config"), agentRoot: process.env.BINY_AGENT_DIR,
     hostEpoch: randomUUID(), token: "synthetic-token", pid: process.pid, createdAt: new Date().toISOString() };
   const host = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
+  await host.initialize();
   const internal = host as unknown as { handleFrame(connection: any, frame: HostFrame): Promise<void>; connections: Set<any>; publishSnapshot(runtime: InteractiveRuntimeHandle): void };
   const calls: HostRequestFrame[] = [];
   const sockets: MemorySocket[] = [];
@@ -280,7 +282,8 @@ async function hostFixture(t: TestContext) {
   const run = runtime.submitPrompt("synthetic");
   await until(() => Boolean(pendingPermission(runtime.getSnapshot())));
   const request = pendingPermission(runtime.getSnapshot())!;
-  const client = await RuntimeHostClient.connect({ registration, clientId: "tui", surface: "tui", configDir: registration.configRoot });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration, clientId: "tui", surface: "tui", configDir: registration.configRoot }));
+
   const app = new BinyTui(new TUI(terminal()), root);
   app["runtime"] = client; app["runtimeSnapshot"] = client.getSnapshot(); app["subscribeRuntime"](client); app["syncPermissionDialog"]();
   t.after(async () => {

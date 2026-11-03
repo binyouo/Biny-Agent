@@ -110,7 +110,7 @@ async function fixture(save?: Projects["saveAttachment"], options: { captureByte
     zod: { z },
     "../config/store.js": { updateConfig: forbidden },
     "./appshotsProtocol.js": protocol
-  }, options.now ? { Date: { now: options.now } } : {});
+  }, { setTimeout, clearTimeout, ...(options.now ? { Date: { now: options.now } } : {}) });
   const serviceModule = load<ServiceModule>(serviceCode, {
     electron: { ipcMain: {
       handle: (channel: string, handler: Handler) => handlers.set(channel, handler),
@@ -153,6 +153,18 @@ async function fixture(save?: Projects["saveAttachment"], options: { captureByte
     }
   };
 }
+
+test("an unclaimed screenshot is wiped at expiry without another operation", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const bytes = Buffer.from("private pixels"), f = await fixture(undefined, { captureBytes: bytes });
+  try {
+    f.appshots.requests.set(firstId, "current");
+    await f.appshots.accept(firstId, { path: "/in-memory/capture.jpg", bundleId: "test.notes", appName: "Notes", pid: 12, windowId: 42 });
+    t.mock.timers.tick(300_000);
+    assert.ok(bytes.every(byte => byte === 0));
+    await assert.rejects(f.appshots.take(firstId), /appshot_capture_expired/);
+  } finally { await f.service.close(); t.mock.timers.reset(); }
+});
 
 test("deferred window text survives attachment saving and freezes on first model read", { timeout: 15_000 }, async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "biny-deferred-appshot-"));

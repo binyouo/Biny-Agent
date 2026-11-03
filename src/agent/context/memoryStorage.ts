@@ -601,11 +601,12 @@ export class MemoryStorage {
     });
   }
 
-  async readMaintenanceStatus(options: MemoryReadOptions = {}): Promise<MemoryMaintenanceStatus> {
+  async readMaintenanceStatus(options: MemoryReadOptions & { historyLimit?: number } = {}): Promise<MemoryMaintenanceStatus> {
     options.signal?.throwIfAborted();
+    if (options.historyLimit !== undefined && (!Number.isSafeInteger(options.historyLimit) || options.historyLimit <= 0)) throw new Error("Invalid memory history limit.");
     const database = await this.openDatabase(false);
     if (database === undefined) return emptyMaintenanceStatus();
-    return readMaintenanceStatusFromDb(database);
+    return readMaintenanceStatusFromDb(database, options.historyLimit);
   }
 
   /** 共享事实库上的执行权；长模型请求期间由 owner 定期续期。 */
@@ -634,13 +635,17 @@ export class MemoryStorage {
   }
 
   /** 只有 owner 已失效，才把遗留的 running 审计改成 interrupted。 */
-  async recoverInterruptedMaintenanceStatus(signal?: AbortSignal): Promise<MemoryMaintenanceStatus> {
-    const current = await this.readMaintenanceStatus({ signal });
+  async recoverInterruptedMaintenanceStatus(signal?: AbortSignal, historyLimit?: number): Promise<MemoryMaintenanceStatus> {
+    const current = await this.readMaintenanceStatus({ signal, historyLimit });
+    const database = await this.openDatabase(false);
+    const historicalRunning = historyLimit !== undefined && database?.prepare("SELECT 1 FROM memory_sleep_runs WHERE status = 'running' LIMIT 1").get() !== undefined;
     if (current.state !== "running" && current.lastRun?.status !== "running"
-      && !current.sleepRuns?.some((run) => run.status === "running")) return current;
+      && !current.sleepRuns?.some((run) => run.status === "running") && !historicalRunning) return current;
     return await this.withWrite(signal, (database) => {
       const owner = readSleepOwner(database);
-      return recoverInterruptedMaintenanceStatusInTransaction(database, owner);
+      if (owner && owner.expiresAt > Date.now()) return readMaintenanceStatusFromDb(database, historyLimit);
+      const recovered = recoverInterruptedMaintenanceStatusInTransaction(database, owner);
+      return historyLimit === undefined ? recovered : { ...recovered, sleepRuns: recovered.sleepRuns?.slice(-historyLimit) };
     });
   }
 
@@ -773,7 +778,9 @@ async function initializeDatabase(database: DatabaseSync): Promise<void> {
     "archived_llm INTEGER NOT NULL DEFAULT 0, synthesis_failed INTEGER NOT NULL DEFAULT 0, " +
     "input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, " +
     "started_at TEXT NOT NULL, finished_at TEXT, ended_at TEXT, error TEXT" +
-    ");"
+    "); " +
+    "CREATE INDEX IF NOT EXISTS memory_sleep_runs_started_idx ON memory_sleep_runs(started_at DESC, id DESC); " +
+    "CREATE INDEX IF NOT EXISTS memory_sleep_runs_running_idx ON memory_sleep_runs(status) WHERE status = 'running';"
   );
   database.exec(`PRAGMA user_version = ${String(memorySchemaVersion)};`);
 }
@@ -841,10 +848,10 @@ function assertExpectedEntries(database: DatabaseSync, expected?: readonly Memor
   }
 }
 
-function readMaintenanceStatusFromDb(database: DatabaseSync): MemoryMaintenanceStatus {
+function readMaintenanceStatusFromDb(database: DatabaseSync, historyLimit?: number): MemoryMaintenanceStatus {
   const row = database.prepare("SELECT * FROM memory_maintenance WHERE id = 1").get() as MaintenanceDbRow | undefined;
   if (!row) {
-    const sleepRuns = readSleepRuns(database);
+    const sleepRuns = readSleepRuns(database, undefined, historyLimit);
     return { ...emptyMaintenanceStatus(), sleepRuns: sleepRuns.length ? sleepRuns : undefined };
   }
   const state = memoryStateSchema.safeParse({
@@ -860,7 +867,7 @@ function readMaintenanceStatusFromDb(database: DatabaseSync): MemoryMaintenanceS
   });
   if (!state.success) throw new Error("Invalid memory maintenance status.");
   const lastRun = parseSleepRun(row.last_run_json);
-  const sleepRuns = readSleepRuns(database);
+  const sleepRuns = readSleepRuns(database, undefined, historyLimit);
   return {
     ...state.data,
     progressStage: state.data.state === "running" ? lastRun?.progressStage : undefined,
@@ -1269,13 +1276,15 @@ function sanitizeSleepRun(run: MemorySleepRun): MemorySleepRun {
   };
 }
 
-function readSleepRuns(database: DatabaseSync, id?: string): MemorySleepRun[] {
+function readSleepRuns(database: DatabaseSync, id?: string, limit?: number): MemorySleepRun[] {
   const rows = database.prepare(
     "SELECT id, status, trigger, examined, written, failed, archived, exact, expired, similarity, llm, " +
     "archived_exact, archived_expired, archived_orphan, archived_similarity, archived_llm, synthesis_failed, input_tokens, output_tokens, " +
     "started_at, finished_at, ended_at, error " +
-    "FROM memory_sleep_runs " + (id === undefined ? "ORDER BY started_at ASC, id ASC" : "WHERE id = ?")
-  ).all(...(id === undefined ? [] : [id])) as unknown as SleepRunDbRow[];
+    "FROM memory_sleep_runs " + (id !== undefined ? "WHERE id = ?" : limit === undefined
+      ? "ORDER BY started_at ASC, id ASC" : "ORDER BY started_at DESC, id DESC LIMIT ?")
+  ).all(...(id !== undefined ? [id] : limit === undefined ? [] : [limit])) as unknown as SleepRunDbRow[];
+  if (limit !== undefined) rows.reverse();
   return rows.map((row) => {
     const parsed = memorySleepRunSchema.safeParse({
       id: stringValue(row.id, "sleep run id"),

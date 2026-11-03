@@ -436,6 +436,47 @@ if (process.argv[2] === workerFlag) {
     });
   });
 
+  await test("a dead owner recovers after the persisted authority device changes", async () => {
+    await fixture(async (root, workers) => {
+      const owner = launch(root, "owner");
+      workers.push(owner);
+      assert.equal((await result(owner)).entered, true);
+      owner.child.kill("SIGKILL");
+      await owner.finished;
+      const lockPath = path.join(root, "state.lock");
+      const gatePath = `${lockPath}.authority.sqlite`;
+      const identity = await fs.stat(gatePath);
+      const marker = JSON.parse(await fs.readFile(lockPath, "utf8")) as { authority: { dev: number; ino: number } };
+      marker.authority.dev = identity.dev + 1;
+      await fs.writeFile(lockPath, JSON.stringify(marker));
+      let entered = false;
+      await withLocalFileWriteLock(root, "state.lock", async () => { entered = true; });
+      assert.equal(entered, true);
+      assert.equal(existsSync(lockPath), false);
+      assert.equal((await fs.stat(gatePath)).ino, identity.ino, "recovery preserves the current kernel gate");
+    });
+  });
+
+  await test("mismatched authorities with live, unknown or malformed owners stay untouched", async () => {
+    await fixture(async (root) => {
+      await withLocalFileWriteLock(root, "state.lock", async () => undefined);
+      const lockPath = path.join(root, "state.lock");
+      const identity = await fs.stat(`${lockPath}.authority.sqlite`);
+      for (const record of [
+        { pid: process.pid, authority: { dev: identity.dev + 1, ino: identity.ino } },
+        { authority: { dev: identity.dev + 1, ino: identity.ino } },
+        { pid: 2147483647, authority: { dev: "invalid", ino: identity.ino } }
+      ]) {
+        const marker = JSON.stringify(record);
+        await fs.writeFile(lockPath, marker, { mode: 0o600 });
+        await assert.rejects(withLocalFileWriteLock(root, "state.lock", async () => {
+          assert.fail("an unconfirmed stale owner must not be reclaimed");
+        }), /authority changed/u);
+        assert.equal(await fs.readFile(lockPath, "utf8"), marker);
+      }
+    });
+  });
+
   await test("authority replacement fails closed without admitting a new operation", async () => {
     await fixture(async (root) => {
       const lockPath = path.join(root, "state.lock");

@@ -1,6 +1,5 @@
-import { ToolOptimizationIndex } from "../../../session/toolOptimizationIndex.js";
-import { buildToolOptimizationOverview } from "../../../session/toolOptimizationOverview.js";
-import type { ToolOptimizationEntry } from "../../../session/toolOptimization.js";
+import { readToolOptimizationSnapshot, type StoredToolOptimizationOverview } from "../../../session/toolOptimizationStore.js";
+import { refreshToolOptimizationSnapshot } from "../../../session/toolOptimizationWorkerClient.js";
 /**
  * 桌面端项目与会话服务。
  *
@@ -44,7 +43,7 @@ import { deleteSessionArtifacts } from "../../../session/cleanup.js";
 import { rebaseForkedSessionEvents } from "../../../session/fork.js";
 import { createSessionId, type SessionTurnStatus } from "../../../session/recorder.js";
 import { RuntimeEventAuthority, type RuntimeRunRecord } from "../../../runtime/RuntimeAuthority.js";
-import { createSessionFile, ensureAgentDirs, listSessionFiles } from "../../../session/store.js";
+import { createSessionFile, ensureAgentDirs } from "../../../session/store.js";
 import { TurnStore } from "../../../session/turnStore.js";
 import { replaySessionEvents } from "../../../session/replay.js";
 import { pausedTurnAvailable, resolveContinuationPlan } from "../../../session/recoveryPlan.js";
@@ -102,7 +101,6 @@ const imageMediaTypes: Record<string, string> = {
 };
 
 export class DesktopProjectService {
-  private readonly optimizationIndex = new ToolOptimizationIndex();
   private readonly gitMutations = new Set<string>();
   constructor(
     private readonly state: DesktopStateStore,
@@ -379,43 +377,22 @@ export class DesktopProjectService {
     return availability.command;
   }
 
-  async toolOptimizationStats(days: number | "all", projectId?: string, sessionId?: string): Promise<{ entries: ToolOptimizationEntry[]; incompleteSessions: number }> {
-    const entries: ToolOptimizationEntry[] = [];
-    let incompleteSessions = 0;
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    if (days !== "all") start.setDate(start.getDate() - days + 1);
-    const projects = projectId ? [this.requireProject(projectId)] : this.state.projects();
-    const seen = new Set<string>();
-    for (const project of projects) {
-      if (project.missing) { incompleteSessions++; continue; }
-      try {
-        const dataRoot = await this.storage.ensureProjectData(project);
-        // The recovery catalog omits unreadable or message-less histories; statistics
-        // must inspect every stored session to report incomplete reads honestly.
-        const files = await listSessionFiles(dataRoot);
-        for (const file of files) {
-          const id = file.replace(/\.jsonl$/u, "");
-          if (sessionId && id !== sessionId) continue;
-          try {
-            const stored = await this.optimizationIndex.read(dataRoot, id);
-            for (const entry of stored) {
-              if (seen.has(entry.optimization.id)) continue;
-              if (days !== "all" && Date.parse(entry.time) < start.getTime()) continue;
-              seen.add(entry.optimization.id);
-              entries.push({ optimization: entry.optimization, time: entry.time,
-                origin: entry.toolCallId ? { projectId: project.id, sessionId: id, toolCallId: entry.toolCallId } : undefined });
-            }
-          } catch { incompleteSessions++; }
-        }
-      } catch { incompleteSessions++; }
-    }
-    return { entries, incompleteSessions };
-  }
+  private readonly optimizationRefreshes = new Map<string, Promise<StoredToolOptimizationOverview>>();
 
-  async toolOptimizationOverview(days: number | "all", projectId?: string, sessionId?: string) {
-    const { entries, incompleteSessions } = await this.toolOptimizationStats(days, projectId, sessionId);
-    return { ...buildToolOptimizationOverview(entries), incompleteSessions };
+  async toolOptimizationOverview(days: number | "all", projectId?: string, sessionId?: string, refresh = false): Promise<StoredToolOptimizationOverview & { stale?: boolean }> {
+    const projects = projectId ? [this.requireProject(projectId)] : this.state.projects();
+    const scope = { days, sessionId, projects: projects.map(project => ({ id: project.id, path: project.path, missing: project.missing })) };
+    const file = path.join(this.storage.root, "tool-optimization-v1.sqlite");
+    const key = JSON.stringify(scope);
+    if (!refresh) {
+      const cached = readToolOptimizationSnapshot(file, scope);
+      if (cached) return { ...cached, stale: true };
+    }
+    const inflight = this.optimizationRefreshes.get(key);
+    if (inflight) return await inflight;
+    const pending = refreshToolOptimizationSnapshot(file, scope).finally(() => { this.optimizationRefreshes.delete(key); });
+    this.optimizationRefreshes.set(key, pending);
+    return await pending;
   }
 
   async toolOptimizationDetail(projectId: string, sessionId: string, toolCallId: string): Promise<{ events: import("../../../session/recorder.js").SessionEvent[] }> {
@@ -517,6 +494,7 @@ export class DesktopProjectService {
         parentSessionId: options.parentSessionId,
         revision: "sha256:empty",
         sessions: [],
+        supplementalSessions: options.sessionIds === undefined ? undefined : [],
         nextCursor: undefined,
         revisionChanged: false
       };
@@ -528,7 +506,11 @@ export class DesktopProjectService {
     const pinnedItems = options.includePinnedSessions && !page.revisionChanged
       ? catalog.filter((item) => item.pinned)
       : undefined;
-    const visible = new Map([...page.items, ...(pinnedItems ?? [])].map((item) => [item.id, item]));
+    const requestedSessionIds = options.sessionIds === undefined ? undefined : new Set(options.sessionIds);
+    const supplementalItems = requestedSessionIds && !page.revisionChanged
+      ? catalog.filter(item => requestedSessionIds.has(item.id))
+      : undefined;
+    const visible = new Map([...page.items, ...(pinnedItems ?? []), ...(supplementalItems ?? [])].map((item) => [item.id, item]));
     const latestRuns = await RuntimeEventAuthority.readLatestSessionRuns(dataRoot, [...visible.keys()]);
     const summaries = new Map([...visible].map(([id, item]) => [id, desktopSessionSummary(
       project.id, item, runtime, liveEvents, latestRuns.get(id)
@@ -541,6 +523,7 @@ export class DesktopProjectService {
       revision: page.revision,
       sessions,
       pinnedSessions,
+      supplementalSessions: supplementalItems?.map(item => summaries.get(item.id)!),
       nextCursor: page.nextCursor,
       revisionChanged: page.revisionChanged
     };

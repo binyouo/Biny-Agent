@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /** Natural Host polling must discover independent work behind a busy session's durable queue. */
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -140,7 +141,8 @@ async function fixture() {
         return local;
       }
     });
-    const client = await connectRuntimeHost(root, { configDir, clientId: "automation-discovery-observer", surface: "cli" });
+    const client = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "automation-discovery-observer", surface: "cli" }));
+
     assert.ok(client);
     resources.client = client;
     return { client, entered, release, calls, transportFailures, close };

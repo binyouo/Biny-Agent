@@ -13,7 +13,7 @@ export interface OcrLine { text: string; rect: OverlayRect }
 /** macOS 辅助功能授权页；打开后系统会把申请过权限的应用列出来。 */
 export const ACCESSIBILITY_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
-/** Alma 的引导窗尺寸：520×76（alma-reverse notes/01-main-process.md）。 */
+/** 引导窗尺寸：520×76，足够放一行说明和授权路径。 */
 export const PERMISSION_OVERLAY_WIDTH = 520;
 export const PERMISSION_OVERLAY_HEIGHT = 76;
 const MARGIN = 8;

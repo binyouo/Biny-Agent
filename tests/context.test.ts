@@ -26,7 +26,6 @@ import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { recordNativeTelemetry } from "../src/observability/telemetry.js";
 import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
-import { TemporalMemoryIndex } from "../src/session/temporalMemory.js";
 import { maxSessionEventLineBytes, maxSessionEvents, maxSessionFileBytes } from "../src/session/limits.js";
 import { replaySession, sessionEventsToConversation } from "../src/session/replay.js";
 import {
@@ -168,7 +167,6 @@ async function main(): Promise<void> {
     await testContextPreparationAbortStopsAutoCompaction();
     await testRestoreWithoutPersistedBudgetUsesHistoryEstimate();
     await testSessionReplayAndAgentResume();
-    await testTemporalCluesFromDurableFailedAndCancelledMessages();
     await testCheckpointIsResumeTruthSource();
     await testCheckpointPersistenceFailureStopsSession();
     await testLegacyAgentStateIsIgnored();
@@ -2016,10 +2014,9 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
     await datedAgent.initialize();
     await datedAgent.runTask("2026-10-13审查计划");
     await datedAgent.close();
-    const temporal = new TemporalMemoryIndex();
-    assert.equal(temporal.queryClues({ startDate: "2026-10-13", endDate: "2026-10-14", sessionId: datedRecorder.sessionId }).clues.length, 1,
-      "a completed human turn indexes its persisted original message without a CLI refresh");
-    temporal.close();
+    await assert.rejects(fs.access(path.join(globalAgentDir(), "temporal-memory.sqlite")), { code: "ENOENT" },
+      "completed chat turns must not create a date-clue index");
+
   });
   } finally {
     if (previousRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV]; else process.env[BINY_AGENT_DIR_ENV] = previousRoot;
@@ -2238,57 +2235,6 @@ function hasToolCall(message: AgentMessage | undefined, toolCallId: string): boo
 
 function hasToolResult(message: AgentMessage | undefined, toolCallId: string): boolean {
   return message?.role === "toolResult" && message.toolCallId === toolCallId;
-}
-
-async function testTemporalCluesFromDurableFailedAndCancelledMessages(): Promise<void> {
-  for (const status of ["failed", "cancelled"] as const) {
-    await withTempWorkspace(async (workspaceRoot) => {
-      await ensureAgentDirs(workspaceRoot);
-      const config = testConfig();
-      config.context.memory.useMemories = false;
-      config.context.memory.generateMemories = false;
-      const recorder = new SessionRecorder(workspaceRoot, `temporal-${status}`);
-      const model: AgentModel = testModel({ provider: "test", modelId: "temporal-failure", stream: async () => { throw new Error("Model unavailable"); } });
-      const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder });
-      await agent.initialize();
-      const controller = new AbortController();
-      if (status === "cancelled") controller.abort();
-      try {
-        assert.equal((await agent.runTask(`2026-10-13 ${status} appointment`, { abortSignal: controller.signal })).status, status);
-      } finally {
-        await agent.close();
-      }
-      const events = await readSessionEvents(recorder.filePath);
-      assert.equal(events.filter((event) => event.type === "user_message" && !event.auditOnly).length, 1);
-      const temporal = new TemporalMemoryIndex();
-      try {
-        assert.equal(temporal.queryClues({ startDate: "2026-10-13", endDate: "2026-10-14", sessionId: recorder.sessionId }).clues.length, 1,
-          "a durable original message is indexed even when the turn does not complete");
-      } finally {
-        temporal.close();
-      }
-    });
-  }
-  await withTempWorkspace(async (workspaceRoot) => {
-    await ensureAgentDirs(workspaceRoot);
-    const config = testConfig();
-    const recorder = new SessionRecorder(workspaceRoot, "temporal-admitted");
-    const agent = new AgentSession({ workspaceRoot, config, model: new ContextTestModel().model,
-      toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder });
-    await agent.initialize();
-    try {
-      await agent.admitUserMessage("2026-10-14 admitted appointment", { runId: "run-1", turnId: "turn-1", messageId: "message-1" });
-    } finally {
-      await agent.close();
-    }
-    const temporal = new TemporalMemoryIndex();
-    try {
-      assert.equal(temporal.queryClues({ startDate: "2026-10-14", endDate: "2026-10-15", sessionId: recorder.sessionId }).clues.length, 1,
-        "Host admission indexes a durable original message before model execution");
-    } finally {
-      temporal.close();
-    }
-  });
 }
 
 function testConfig(): AgentConfig {

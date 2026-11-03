@@ -12,7 +12,8 @@ const parsed = ts.createSourceFile("client.ts", source, ts.ScriptTarget.Latest, 
 const declaration = parsed.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "RuntimeHostClient");
 assert.ok(declaration);
 const methodNames = ["open", "openSocket", "close", "disconnectSocket", "request", "send", "readClientData", "handleClientFrame",
-  "noteConnectionEstablished", "noteConnectionDropped", "scheduleReconnect", "reconnect", "rejectPendingRequests", "rejectCompletions", "reportError"];
+  "requestRaw", "applyHostStatus", "waitForReady", "waitForLifecycleReady", "synchronizeExecution", "retryConnection",
+  "noteConnectionEstablished", "noteConnectionDropped", "scheduleReconnect", "reconnect", "performReconnect", "rejectPendingRequests", "rejectCompletions", "reportError"];
 const methods = methodNames.map((name) => {
   const method = declaration.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
   assert.ok(method, `Missing reviewed method ${name}`);
@@ -20,7 +21,7 @@ const methods = methodNames.map((name) => {
 });
 const protocolSource = readFileSync(path.join(root, "src/runtime/host/protocol.ts"), "utf8");
 const protocolParsed = ts.createSourceFile("protocol.ts", protocolSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const protocolHelpers = ["asRecord", "isOwnerNotificationFrame"].map((name) => {
+const protocolHelpers = ["asRecord", "isOwnerNotificationFrame", "isHostStatusFrame"].map((name) => {
   const matches = protocolParsed.statements.filter((node): node is ts.FunctionDeclaration =>
     ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.equal(matches.length, 1, `Expected actual protocol helper ${name}`);
@@ -142,6 +143,7 @@ function fixture(scenario: Scenario, synchronousClose = false) {
   const snapshot: Snapshot = { info: { sessionId: "session-a" }, state: { kind: "idle" } };
   const forbidden = (): never => { throw new Error("Unexpected external boundary: discovery mutation, spawn, process or lease"); };
   const prototype = runInNewContext(compiled, {
+    operationLane: () => "mutation",
     Error, Promise, randomUUID: () => `request-${++ids}`,
     setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     net: { createConnection: (endpoint: string) => {
@@ -158,13 +160,13 @@ function fixture(scenario: Scenario, synchronousClose = false) {
           return;
         }
         assert.equal(frame.kind, "request"); requests.push(frame);
-        assert.ok(frame.operation === "subscribe" || frame.operation === "snapshot" || frame.operation === "probe");
+        assert.ok(frame.operation === "host.subscribe" || frame.operation === "subscribe" || frame.operation === "snapshot" || frame.operation === "probe");
         if (frame.operation === "probe") return;
         if (!ownerReady && scenario === "subscribe-reject") {
           transport.deliver({ kind: "response", requestId: frame.requestId, ok: false, error: "subscribe rejected" }); return;
         }
         if (!ownerReady && scenario === "subscribe-timeout") return;
-        reply({ hostEpoch: "epoch-a", sequence: 1, capabilities: [], snapshot, sessions: [] });
+        reply({ hostEpoch: "epoch-a", sequence: 1, lifecycle: "ready", capabilities: [], snapshot, sessions: [] });
       }, synchronousClose);
       sockets.push(socket);
       void Promise.resolve().then(() => {
@@ -202,6 +204,7 @@ function fixture(scenario: Scenario, synchronousClose = false) {
   const state = Object.assign(Object.create(prototype) as State, {
     options: { registration, surface: "desktop", keepAlive: true }, persistenceRoot: "/inert", clientId: "fixture",
     ownerNotificationsSubscribed: false,
+    readinessWaiters: new Set(), lifecycle: "initializing",
     closed: false, retired: false, reconnectInProgress: false, reconnectAttempts: 0,
     handshakeTimeoutMs: 10_000, environmentTakeoverHandshake: false,
     pending: new Map<string, Pending>(), completions: new Map<string, Pending>(), idleWaiters: new Set<() => void>(),
@@ -238,7 +241,7 @@ for (const scenario of ["timeout", "hello-reject", "connect-error", "early-close
       if (scenario === "connect-error") assert.equal(callerError, f.originalFailure);
       else if (scenario === "hello-reject" || scenario === "subscribe-reject") assert.equal(callerError, f.failures[0]);
       else assert.match(String(callerError), scenario === "timeout" ? /handshake timed out after 10000ms/u
-        : scenario === "subscribe-timeout" ? /request "subscribe" timed out after 10000ms/u : /closed during handshake/u);
+        : scenario === "subscribe-timeout" ? /request "host.subscribe" timed out after 10000ms/u : /closed during handshake/u);
       const closedAtFailure = f.state.closed;
       const closeCountAtFailure = f.closes();
       const timerCountAtFailure = f.clock.timers.size;
@@ -300,6 +303,8 @@ test("successful client remains open and reconnects after a later disconnect", a
   const f = fixture("success");
   try {
     await f.state.open();
+    assert.equal(f.state.snapshot, undefined, "connection does not manufacture a Session snapshot");
+    await f.state.waitForReady();
     assert.equal(f.closes(), 0); assert.equal(f.state.closed, false);
     assert.equal(f.state.snapshot?.info.sessionId, "session-a");
     const pending = f.state.request("probe", {}, 7_000);

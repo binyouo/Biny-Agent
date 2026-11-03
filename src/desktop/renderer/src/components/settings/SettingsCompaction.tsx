@@ -45,7 +45,7 @@ export function OptionalNumberField({
   return (
     <label className="setting-row" htmlFor={id}>
       <span><strong>{label}</strong>{hint ? <small>{hint}</small> : null}</span>
-      <div className="activity-number-input"><input id={id} inputMode="numeric" max={max} min={min} onBlur={commit} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") commit(); }} placeholder="自动" type="number" value={text} />{unit ? <em>{unit}</em> : null}</div>
+      <div className="activity-number-input"><input className="settings-field" id={id} inputMode="numeric" max={max} min={min} onBlur={commit} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") commit(); }} placeholder="自动" type="number" value={text} />{unit ? <em>{unit}</em> : null}</div>
     </label>
   );
 }
@@ -69,7 +69,7 @@ export function SettingsCompaction(): React.JSX.Element {
           <SettingsSwitch checked={compaction.enabled} detail="关闭后需手动压缩。" label="启用自动压缩" onChange={(enabled) => update({ enabled })} />
           <label className="compaction-threshold-field">
             <span><strong>触发阈值</strong><em>{percent}%</em></span>
-            <input aria-label="压缩阈值" disabled={!compaction.enabled} max={95} min={50} onChange={(event) => update({ triggerPercent: Number(event.target.value) / 100 })} style={{ "--range-progress": thresholdProgress } as React.CSSProperties} type="range" value={percent} />
+            <input className="settings-range" aria-label="压缩阈值" disabled={!compaction.enabled} max={95} min={50} onChange={(event) => update({ triggerPercent: Number(event.target.value) / 100 })} style={{ "--range-progress": thresholdProgress } as React.CSSProperties} type="range" value={percent} />
           </label>
           <OptionalNumberField id="compaction-keep-messages" label="保留最近消息数" max={500} min={1} onCommit={(keepRecentMessages) => update({ keepRecentMessages })} unit="条" value={compaction.keepRecentMessages} />
           <div className="setting-row">

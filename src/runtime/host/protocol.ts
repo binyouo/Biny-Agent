@@ -11,7 +11,7 @@ import type {
 } from "../CapabilityStore.js";
 import type { HostSurface } from "./types.js";
 
-export const runtimeHostProtocolVersion = 16 as const;
+export const runtimeHostProtocolVersion = 17 as const;
 export const runtimeHostEventHistoryLimit = 4_000;
 export const runtimeHostMaxFrameBytes = 8 * 1024 * 1024;
 /** 旧名保留：重连基准延迟。实际退避曲线（minMs/maxMs/stableConnectionMs）见 reconnect.ts。 */
@@ -25,6 +25,7 @@ export const runtimeHostMemoryMaintenanceIntervalMs = 60 * 1_000;
 export const runtimeHostDirectoryName = "biny-runtime-host";
 
 export const runtimeHostCapabilities = [
+  "host.lifecycle",
   "runtime.authority",
   "runtime.events.cursor",
   "runtime.run.admission",
@@ -137,7 +138,13 @@ export interface HostOwnerNotificationFrame {
   text: string;
 }
 
+export interface HostStatusFrame {
+  kind: "host-status";
+  status: import("./types.js").RuntimeHostInfo;
+}
+
 export type HostFrame =
+  | HostStatusFrame
   | HostHelloFrame
   | HostRetiredFrame
   | HostRequestFrame
@@ -265,4 +272,11 @@ export function asRecord(value: unknown): Record<string, unknown> {
 
 export function isSurface(value: unknown): value is HostSurface {
   return value === "desktop" || value === "tui" || value === "cli";
+}
+
+export function isHostStatusFrame(value: unknown): value is HostStatusFrame {
+  const record = asRecord(value);
+  const status = asRecord(record.status);
+  return record.kind === "host-status" && typeof status.hostEpoch === "string"
+    && ["initializing", "ready", "failed", "closing"].includes(String(status.lifecycle));
 }

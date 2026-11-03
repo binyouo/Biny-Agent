@@ -82,7 +82,7 @@ export function WorkspaceCommitPanel({ projectId, active, onCount, onSwitchBranc
     <div className="inspector-empty inspector-git-setup">
       <Icon name="branch" size={44} />
       <p>不是 Git 仓库</p>
-      <button type="button" disabled={busy} onClick={() => void initialize()}>{busy ? "初始化中…" : "初始化仓库"}</button>
+      <button aria-busy={busy} type="button" disabled={busy} onClick={() => void initialize()}>初始化仓库</button>
       {error ? <div className="inspector-error" role="alert">{error}</div> : null}
     </div>
   </section>;
@@ -99,7 +99,7 @@ export function WorkspaceCommitPanel({ projectId, active, onCount, onSwitchBranc
     </div>
     <form className="inspector-commit-form" onSubmit={(event) => { event.preventDefault(); void run("commit"); }}>
       <textarea aria-label="提交说明" placeholder="提交说明…" value={message} onChange={(event) => { messageRevisionRef.current += 1; setMessage(event.target.value); }} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && message.trim() && selected.size) { event.preventDefault(); void run("commit"); } }} />
-      <button type="submit" disabled={busy || !message.trim() || selected.size === 0}>{busy ? "处理中…" : `提交${selected.size ? ` ${selected.size} 个文件` : ""}`}</button>
+      <button aria-busy={busy} type="submit" disabled={busy || !message.trim() || selected.size === 0}>{`提交${selected.size ? ` ${selected.size} 个文件` : ""}`}</button>
       <small>提交勾选文件的当前完整内容，其他暂存文件保留。</small>
     </form>
     {error ? <div className="inspector-error" role="alert">{error}</div> : null}

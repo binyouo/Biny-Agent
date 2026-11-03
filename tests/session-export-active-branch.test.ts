@@ -240,13 +240,12 @@ test("Biny bundle remains archival, including inactive versions and the selectio
   const before = JSON.stringify(events);
   const bundle = evaluate<{
     exportSessionBundle(root: string, session: string): Promise<{ content: string }>;
-  }>(declarations("src/session/transfer.ts", ["exportSessionBundle"]), {
+  }>(declarations("src/session/transfer.ts", ["exportSessionBundle", "sessionExportBaseName"]), {
     BINY_BUNDLE_FORMAT: "biny-session-bundle", BINY_BUNDLE_VERSION: 2,
     readStoredSessionEvents: async () => ({ events }),
     resolveSessionFile: async () => "fixture.jsonl",
     sessionIdFromFile: () => "fixture",
     collectBundleAttachments: async () => ({ attachments: [], skipped: [] }),
-    sanitizeBaseName: (name: string) => name
   });
   const exported = JSON.parse((await bundle.exportSessionBundle("unused", "fixture")).content) as {
     events: SessionEvent[]; manifest: { eventCount: number };

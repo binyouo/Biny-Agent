@@ -33,7 +33,14 @@ class OwnerMarkerChangedError extends Error {
   constructor() { super("Local file lock changed during access."); }
 }
 
-export async function withLocalFileWriteLock<T>(root: string, lockFileName: string, operation: () => Promise<T>): Promise<T> {
+export interface LocalFileWriteLockOptions {
+  /** Compatibility window for legacy markers that publish neither a PID nor an authority. */
+  unownedLegacyMarkerGraceMs?: number;
+}
+
+export async function withLocalFileWriteLock<T>(root: string, lockFileName: string, operation: () => Promise<T>, options: LocalFileWriteLockOptions = {}): Promise<T> {
+  const legacyGraceMs = options.unownedLegacyMarkerGraceMs ?? 0;
+  if (!Number.isSafeInteger(legacyGraceMs) || legacyGraceMs < 0) throw new Error("Legacy lock grace must be a non-negative integer.");
   if (!lockFileName || lockFileName === "." || lockFileName === ".." || path.basename(lockFileName) !== lockFileName) throw new Error("Lock name must be a file name.");
   await ensureRealDirectory(root);
   const directory = await fs.realpath(path.resolve(root));
@@ -55,7 +62,7 @@ export async function withLocalFileWriteLock<T>(root: string, lockFileName: stri
         handle = await fs.open(lockPath, writeNewFlags(), 0o600);
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
-        if (await removeDeadOwnerLock(lockPath, authority)) continue;
+        if (await removeDeadOwnerLock(lockPath, authority, legacyGraceMs)) continue;
         await waitForLock(deadline);
       }
     }
@@ -174,7 +181,7 @@ async function ensureRealDirectory(root: string): Promise<void> {
   else await fs.chmod(root, 0o700);
 }
 
-async function removeDeadOwnerLock(lockPath: string, authority: LockAuthority): Promise<boolean> {
+async function removeDeadOwnerLock(lockPath: string, authority: LockAuthority, legacyGraceMs: number): Promise<boolean> {
   authority.assertBinding();
   const initial = await safeLockStat(lockPath);
   if (!initial) return true;
@@ -194,9 +201,17 @@ async function removeDeadOwnerLock(lockPath: string, authority: LockAuthority): 
   }
   const ownerAuthority = parseIdentity(owner?.authority);
   if (owner?.authority !== undefined && (!ownerAuthority || !sameIdentity(ownerAuthority, authority.identity))) {
-    throw new Error("Local file lock authority changed; refusing to reclaim the owner marker.");
+    // 重启或重新挂载后设备号可能变化；仅在旧 owner 已确认退出时恢复遗留标记。
+    if (!ownerAuthority || !Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0 || processIsAlive(Number(owner.pid))) {
+      throw new Error("Local file lock authority changed; refusing to reclaim the owner marker.");
+    }
   }
   if (!ownerAuthority && Number.isSafeInteger(owner?.pid) && Number(owner?.pid) > 0 && processIsAlive(Number(owner?.pid))) return false;
+  // Some older callers published empty markers without a kernel gate. Respect
+  // their original freshness window before reclaiming an otherwise unowned marker.
+  // This policy is opt-in; it cannot protect legacy writers beyond that window.
+  const hasOwnerPid = Number.isSafeInteger(owner?.pid) && Number(owner?.pid) > 0;
+  if (legacyGraceMs > 0 && !ownerAuthority && !hasOwnerPid && Date.now() - initial.mtimeMs <= legacyGraceMs) return false;
   // The unchanged kernel gate proves a gated or partially published owner no
   // longer holds this lock. Do not rely on its PID, which may have been reused.
   const current = await safeLockStat(lockPath);

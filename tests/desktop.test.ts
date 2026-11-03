@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
@@ -846,7 +847,7 @@ async function testDesktopHostVersionConflict(): Promise<void> {
     await writeFile(paths.lockPath, `${process.pid}\n`, { mode: 0o600 });
     const agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     try {
-      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []), /protocol 2 is incompatible with 16/);
+      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []), /protocol 2 is incompatible with 17/);
       assert.deepEqual(JSON.parse(await readFile(paths.registrationPath, "utf8")), registration);
       assert.equal(await readFile(paths.lockPath, "utf8"), `${process.pid}\n`, "a failed client must not disturb the live owner");
     } finally {
@@ -922,7 +923,7 @@ async function testDesktopClearsTerminalLiveEvents(): Promise<void> {
     Object.assign(commands, await createHostTestStores(desktopRoot));
     const runtime = new InteractiveAgentRuntime(commands);
     host = await startRuntimeHost(desktopRoot, async () => ({ runtime, commands }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
-    client = await connectRuntimeHost(desktopRoot);
+    client = await readyHostClient(await connectRuntimeHost(desktopRoot));
     assert.ok(client);
     const internals = agents as unknown as {
       wireRuntimeEvents(projectId: string, runtime: RuntimeHostClient): () => void;
@@ -1774,13 +1775,15 @@ async function testDesktopGlobalWriteGateAndRuntimeRefresh(): Promise<void> {
     const transactionId = "global-runtime-refresh";
     await agents.commitSettingsConfig(prepared, transactionId);
     assert.deepEqual(rebuilt, [], "配置提交本身不应等待派生 Runtime 刷新");
+    assert.equal(await agents.rollbackSettingsConfig(prepared, transactionId), "completed");
+    assert.deepEqual(rebuilt, [], "未确认事务的补偿不通知驻留 Runtime");
+    assert.equal((await configStore.load(first.path)).context.memory.useMemories, before.memory.useMemories);
+
+    await agents.commitSettingsConfig(prepared, "confirmed-runtime-refresh");
+    await agents.finalizeSettingsConfig(first.id, "confirmed-runtime-refresh");
     agents.settingsCommitted(prepared);
     await (agents as unknown as { idleRuntimeRebuildTail: Promise<void> }).idleRuntimeRebuildTail;
     assert.deepEqual(new Set(rebuilt), new Set([first.id, second.id]), "提交确认后应刷新每个 resident idle Runtime");
-
-    rebuilt.length = 0;
-    assert.equal(await agents.rollbackSettingsConfig(prepared, transactionId), "completed");
-    assert.deepEqual(new Set(rebuilt), new Set([first.id, second.id]), "config rollback must refresh the same resident runtimes");
     internals.rebuildManagedRuntime = originalRebuild;
 
     // 模拟第二个项目正在运行：当前项目本身空闲也必须拒绝所有共享写入口。
@@ -2644,7 +2647,9 @@ async function testDesktopDoesNotResumePersistedIdleSession(): Promise<void> {
     await state.setSelectedSession(project.id, "session-owner");
     owner.acquire("session-owner");
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
-    const snapshot = await agents.setPermissionMode(project.id, "read-only");
+    const permission = await agents.setPermissionMode(project.id, "read-only");
+    assert.equal(permission.permissionMode, "read-only");
+    const snapshot = await agents.workspaceSnapshot(project.id);
     assert.notEqual(snapshot.runtime?.info.sessionId, "session-owner");
     assert.equal(snapshot.runtimeError, undefined);
     assert.equal(snapshot.runtime?.permissionMode, "read-only");
@@ -2673,7 +2678,7 @@ async function testDesktopPermissionModePersistsInIdleSnapshot(): Promise<void> 
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
 
     const selected = await agents.setPermissionMode(project.id, "auto");
-    assert.equal(selected.runtime?.permissionMode, "auto");
+    assert.equal(selected.permissionMode, "auto");
     await agents.closeAll();
 
     // 新一轮 Desktop 尚未创建 runtime 时，也必须从共享配置展示上次选择，而不是回退到 ask。
@@ -2840,8 +2845,10 @@ async function testDesktopMemoryChangesKeepPermissionMode(): Promise<void> {
       },
       document.session.metadataRevision
     );
-    assert.equal(chat.permissionMode, "full-access");
-    assert.equal(chat.runtime?.permissionMode, "full-access");
+    assert.equal(chat.metadata.personalization?.useMemories, initial.memory.useMemories);
+    const afterChat = await agents.workspaceSnapshot(project.id);
+    assert.equal(afterChat.permissionMode, "full-access");
+    assert.equal(afterChat.runtime?.permissionMode, "full-access");
     assert.equal((await configStore.load(project.path)).permission.mode, "full-access");
   } finally {
     await agents?.closeAll();
@@ -2944,7 +2951,7 @@ async function testDesktopPersonalizationCasAndChatOverride(): Promise<void> {
 
     const document = await agents.openSession(project.id, recorder.sessionId);
     const markedWorkspace = await agents.markSessionRead(project.id, recorder.sessionId, document.session.metadataRevision);
-    const markedSummary = markedWorkspace.sessions.find((session) => session.id === recorder.sessionId);
+    const markedSummary = markedWorkspace.metadata;
     assert.ok(markedSummary?.metadataRevision);
     const override = {
       useMemories: false,
@@ -2956,7 +2963,7 @@ async function testDesktopPersonalizationCasAndChatOverride(): Promise<void> {
       override,
       markedSummary.metadataRevision
     );
-    const summary = workspace.sessions.find((session) => session.id === recorder.sessionId);
+    const summary = workspace.metadata;
     assert.deepEqual(summary?.personalization, override);
     assert.notEqual(summary?.metadataRevision, markedSummary.metadataRevision);
 
@@ -3555,7 +3562,8 @@ async function commitDesktopSettings(
   if (result.status !== "committed") {
     throw new Error(`Expected settings commit, received ${result.status}: ${result.message ?? ""}`);
   }
-  return result.snapshot;
+  // 此组场景检查完整持久化投影；局部回执的字段与读取范围由 isolation 回归单独验证。
+  return result.snapshot ?? await settings.snapshot(projectId);
 }
 
 function testProviderCatalogResolution(): void {

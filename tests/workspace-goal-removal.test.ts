@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { DatabaseSync } from "node:sqlite";
 import assert from "node:assert/strict";
@@ -57,7 +58,8 @@ test("Host and CLI reject workspace goal operations and expose independent graph
   }, { globalDir: configDir });
   const local = await createInteractiveAgentHost(root, { configStore: createFileConfigStore(root, { globalDir: configDir }) });
   const server = await startRuntimeHost(root, async () => local, {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir });
-  const client = await connectRuntimeHost(root, { spawnOptions: { workspaceRoot: root, configDir } });
+  const client = await readyHostClient(await connectRuntimeHost(root, { spawnOptions: { workspaceRoot: root, configDir } }));
+
   try {
     assert.ok(client);
     for (const action of ["create", "get", "list", "pause", "resume", "cancel"]) {

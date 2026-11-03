@@ -1,9 +1,10 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 /** Production client and JSONL decoder, deterministic in-memory transport only. */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import net from "node:net";
 import { test, type TestContext } from "node:test";
-import { runtimeHostMaxBufferedSocketBytes } from "../src/runtime/host/socket-writer.js";
+import { BoundedHostSocketWriter, runtimeHostMaxBufferedSocketBytes } from "../src/runtime/host/socket-writer.js";
 import { RuntimeHostClient } from "../src/runtime/host/client.js";
 import { encodeHostFrame, runtimeHostProtocolVersion, type HostFrame, type HostRequestFrame } from "../src/runtime/host/protocol.js";
 import type { InteractiveRuntimeSnapshot } from "../src/runtime/agentEvents.js";
@@ -41,6 +42,11 @@ class MemorySocket extends EventEmitter {
   constructor(readonly epoch: string, readonly initial: RuntimeHostSessionSummary[]) { super(); }
   setEncoding(): this { return this; }
   write(data: string): boolean {
+    const lifecycleFrame = JSON.parse(data.trim()) as { kind: string; operation?: string; requestId: string };
+    if (lifecycleFrame.kind === "request" && lifecycleFrame.operation === "host.subscribe") {
+      queueMicrotask(() => this.emit("data", JSON.stringify({ kind: "response", requestId: lifecycleFrame.requestId, ok: true, result: { lifecycle: "ready" } }) + "\n"));
+      return true;
+    }
     const frame = JSON.parse(data) as HostFrame;
     assert.ok(frame.kind === "hello" || frame.kind === "request");
     if (frame.kind === "hello") {
@@ -82,11 +88,12 @@ async function fixture(context: TestContext, initial = summaries(snapshot("prima
     return socket as unknown as net.Socket;
   });
   context.mock.method(net, "createServer", () => { throw new Error("Real listeners forbidden"); });
-  const client = await RuntimeHostClient.connect({ registration: {
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration: {
     protocolVersion: runtimeHostProtocolVersion, endpoint: "/test/no-socket", registrationPath: "/test/no-registration",
     lockPath: "/test/no-lock", rootHash: "test-root", persistenceRoot: "/test", hostEpoch: "epoch-a",
     token: "synthetic-test-token", pid: process.pid, createdAt: "2026-10-05T00:00:00.000Z"
-  } });
+  } }));
+
   context.after(async () => {
     await client.close();
     assert.equal((client as unknown as { sessionListReads?: Set<unknown> }).sessionListReads?.size ?? 0, 0,
@@ -202,6 +209,7 @@ for (const epoch of ["epoch-a", "epoch-b"]) {
     socket.destroy();
     await rejected;
     const list = client.listRuntimeSessions();
+    await new Promise<void>(resolve => setImmediate(resolve));
     const replacement = sockets[1]!;
     replacement.deliver(reply(await replacement.next("session.list"), summaries(snapshot("primary", 0))));
     await list;
@@ -391,14 +399,21 @@ test("an acknowledged permission cache write remains protected even without a br
   assert.equal(client.getSnapshot().permissionMode, "read-only");
 });
 
-test("writer backpressure conservatively protects queued-period observations without blocking untouched progress", async (context) => {
+test("writer backpressure conservatively protects queued-period observations without blocking untouched progress", { timeout: 5_000 }, async (context) => {
   const { client, socket } = await fixture(context);
   socket.writeResult = false;
   const blocker = client.worktreeList();
   socket.deliver(reply(await socket.next("worktree.list"), []));
   await blocker;
+  const queued = deferred<void>();
+  const send = BoundedHostSocketWriter.prototype.send;
+  context.mock.method(BoundedHostSocketWriter.prototype, "send", function (this: BoundedHostSocketWriter, frame: HostFrame) {
+    const accepted = send.call(this, frame);
+    if (frame.kind === "request" && frame.operation === "session.list") queued.resolve(undefined);
+    return accepted;
+  });
   const list = client.listRuntimeSessions();
-  await Promise.resolve(); // Run request's openSocket continuation; writer still waits for drain.
+  await queued.promise;
   assert.equal(socket.requests.some((request) => request.operation === "session.list"), false);
   socket.deliver(event(snapshot("primary", 2)));
   socket.writeResult = true;

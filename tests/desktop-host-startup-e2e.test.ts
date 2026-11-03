@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
@@ -38,7 +39,7 @@ test("构建后的 Desktop 后台入口提供真实 Host socket，并在空闲�
   try {
     const registration = await waitForHostRegistration(root, child);
     assert.equal(registration.pid, child.pid);
-    client = await connectRuntimeHost(root, { configDir, clientId: "built-host-probe", surface: "desktop", keepAlive: true });
+    client = await readyHostClient(await connectRuntimeHost(root, { configDir, clientId: "built-host-probe", surface: "desktop", keepAlive: true }));
     assert.ok(client, "the built Host must accept the Desktop protocol");
     assert.equal(client.getSnapshot().state.kind, "idle");
     await client.close(); client = undefined;

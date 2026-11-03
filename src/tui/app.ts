@@ -58,6 +58,7 @@ import { modelThinkingOptions, selectedThinkingForModel } from "./modelOptions.j
 import { createInitialTuiState, tuiReducer } from "./reducer.js";
 import { availableThemes, editorTheme, getTheme, setTheme, theme } from "./theme/index.js";
 import { formatSessionAge } from "./transcriptText.js";
+import { sanitizeTerminalText } from "./terminalText.js";
 import type { PermissionChoice, TuiLaunchMode, TuiState, TuiStatus } from "./types.js";
 import type { AgentAttachment } from "../agent/AgentSession.js";
 import type { SkillDefinition } from "../extensions/skills.js";
@@ -274,6 +275,8 @@ export class BinyTui {
       if (!runtime) throw new Error("Runtime Host is unavailable.");
       if (this.exiting) { await runtime.close(); return; }
       this.runtime = runtime;
+      await runtime.waitForReady();
+      if (this.exiting) return;
       this.startupError = undefined;
       // 补全器要的是不带斜杠的命令名，它自己会补上 `/`；带斜杠会补出 `//resume`。
       // 提前设置 autocomplete：即使模型未配置或 skills 加载失败，slash 命令补全也必须可用。
@@ -1408,7 +1411,7 @@ export class BinyTui {
       items: summaries.map((summary) => ({
         value: summary.fileName.replace(/\.jsonl$/, ""),
         label: sessionLabel(summary, nowMs),
-        description: summary.firstUserMessage.replace(/\s+/g, " ").slice(0, 80)
+        description: sanitizeTerminalText(summary.firstUserMessage.replace(/\s+/g, " ")).slice(0, 80)
       })),
       onSelect: (item) => {
         // resumeSession 会把非 writer-conflict 错误（runtime 忙、会话损坏）重抛，必须就地提示。

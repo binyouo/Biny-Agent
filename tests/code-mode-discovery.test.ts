@@ -95,22 +95,11 @@ const bridgeBoundary = async (count: number) => await executeCodeModeCell({
   code: `for (let i = 0; i < ${count}; i++) await tools.mcp__bridge__read({}); return 'done';`,
   parentToolCallId: `bridge-${count}`, tools: [], admittedTools: [bridgeTool], isCurrent: () => true
 });
-const bridgeAtLimit = await bridgeBoundary(32);
-assert.equal(bridgeAtLimit.ok, true, bridgeAtLimit.error);
-assert.equal(bridgeCalls, 32);
-bridgeCalls = 0;
-const bridgeAboveLimit = await bridgeBoundary(33);
-assert.equal(bridgeAboveLimit.ok, false);
-assert.match(bridgeAboveLimit.error ?? "", /32 bridge request limit/iu);
-assert.equal(bridgeCalls, 32, "the 33rd request is not dispatched");
-bridgeCalls = 0;
-const caughtBridgeLimit = await executeCodeModeCell({
-  code: "for (let i = 0; i < 32; i++) await tools.mcp__bridge__read({}); try { await tools.mcp__bridge__read({}); } catch {} try { await tools.mcp__bridge__read({}); } catch {} return 'caught';",
-  parentToolCallId: "bridge-caught", tools: [], admittedTools: [bridgeTool], isCurrent: () => true
-});
-assert.equal(caughtBridgeLimit.ok, false);
-assert.match(caughtBridgeLimit.error ?? "", /32 bridge request limit/iu);
-assert.equal(bridgeCalls, 32, "catch cannot dispatch another request after the bridge limit");
+const manyBridges = await bridgeBoundary(300);
+assert.equal(manyBridges.ok, true, manyBridges.error);
+assert.equal(manyBridges.value, "done");
+assert.equal(bridgeCalls, 300, "all calls beyond both former runtime limits are dispatched");
+assert.equal(manyBridges.childCalls.length, 300);
 
 let searchAborted = false;
 const cancelled = await executeCodeModeCell({

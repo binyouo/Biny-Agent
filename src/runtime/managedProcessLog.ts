@@ -11,7 +11,14 @@ export interface ManagedProcessLogBinding {
   readonly inode: bigint;
 }
 
-/** Bind the descriptor used for creation, before it is handed to the child process. */
+/** A stable logical byte range; segmented storage supplies its own bound reads. */
+export interface ManagedProcessLogSource {
+  path: string;
+  totalBytes: number;
+  read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
+}
+
+/** Bind a creation-time descriptor before another operation can replace its path. */
 export async function bindManagedProcessLog(logPath: string, handle: FileHandle): Promise<ManagedProcessLogBinding> {
   const metadata = await handle.stat({ bigint: true });
   const binding = Object.freeze({ path: path.resolve(logPath), device: metadata.dev, inode: metadata.ino });
@@ -19,15 +26,44 @@ export async function bindManagedProcessLog(logPath: string, handle: FileHandle)
   return binding;
 }
 
+export async function assertManagedLogBinding(binding: ManagedProcessLogBinding, file: FileHandle): Promise<void> {
+  await assertLogBinding(binding, file);
+}
+
+export async function readBoundManagedLogBytes(binding: ManagedProcessLogBinding, position: number, length: number, signal?: AbortSignal): Promise<Buffer> {
+  signal?.throwIfAborted();
+  await assertLogPath(binding);
+  const file = await fs.open(binding.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    await assertLogBinding(binding, file);
+    const bytes = Buffer.alloc(length);
+    let filled = 0;
+    while (filled < length) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await file.read(bytes, filled, length - filled, position + filled);
+      if (!bytesRead) throw new Error("Managed process log changed while reading.");
+      filled += bytesRead;
+      signal?.throwIfAborted();
+    }
+    await assertLogBinding(binding, file);
+    return bytes;
+  } finally { await file.close(); }
+}
+
+export async function removeBoundManagedLog(binding: ManagedProcessLogBinding): Promise<void> {
+  await assertLogPath(binding);
+  await fs.unlink(binding.path);
+}
+
 export async function readManagedProcessLog(
-  binding: ManagedProcessLogBinding,
+  binding: ManagedProcessLogBinding | ManagedProcessLogSource,
   options: ReadManagedProcessOutputOptions = {},
   signal?: AbortSignal,
-  context: { final: boolean } = { final: true }
+  context: { final: boolean; maximumBytes?: number } = { final: true }
 ): Promise<Omit<ManagedProcessOutput, "processId">> {
   const maxBytes = options.maxBytes ?? 64 * 1024;
   const requestedOffset = options.offset ?? 0;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 256 * 1024) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > (context.maximumBytes ?? 256 * 1024)) {
     throw new RangeError("maxBytes must be an integer between 1 and 262144.");
   }
   if (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0) {
@@ -35,11 +71,13 @@ export async function readManagedProcessLog(
   }
   signal?.throwIfAborted();
   // Validate before opening, and use nonblocking open so a raced-in FIFO cannot stall the host.
-  await assertLogPath(binding);
-  const file = await fs.open(binding.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  const segmented = "read" in binding;
+  if (!segmented) await assertLogPath(binding);
+  const file = segmented ? binding : await fs.open(binding.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  const validate = async (): Promise<{ size: bigint }> => segmented ? { size: BigInt(binding.totalBytes) } : assertLogBinding(binding, file as FileHandle);
   let output: Omit<ManagedProcessOutput, "processId">;
   try {
-    const metadata = await assertLogBinding(binding, file);
+    const metadata = await validate();
     signal?.throwIfAborted();
     const totalBytes = Number(metadata.size);
     if (!Number.isSafeInteger(totalBytes)) throw new Error("Managed process log is too large to paginate safely.");
@@ -56,14 +94,14 @@ export async function readManagedProcessLog(
       filled += bytesRead;
     }
     const page = buffer.subarray(0, filled);
-    const { consumedBytes, pendingUtf8Bytes } = await completeUtf8PageBytes(binding, file, page, startOffset, totalBytes, context.final, signal);
-    await assertLogBinding(binding, file);
+    const { consumedBytes, pendingUtf8Bytes } = await completeUtf8PageBytes(file, validate, page, startOffset, totalBytes, context.final, signal);
+    await validate();
     const nextOffset = startOffset + consumedBytes;
     output = { logPath: binding.path, content: page.subarray(0, consumedBytes).toString("utf8"), startOffset, nextOffset,
       totalBytes, omittedBefore: startOffset > 0, hasMore: nextOffset + (pendingUtf8Bytes ?? 0) < totalBytes,
       ...(pendingUtf8Bytes === undefined ? {} : { pendingUtf8Bytes }) };
   } finally {
-    await file.close();
+    if (!segmented) await (file as FileHandle).close();
   }
   // Validation and handle release can yield after the last read-time check.
   signal?.throwIfAborted();
@@ -77,8 +115,8 @@ export async function readManagedProcessLog(
  * Malformed bytes, explicit starting offsets, and final EOF retain decoding.
  */
 async function completeUtf8PageBytes(
-  binding: ManagedProcessLogBinding,
-  file: FileHandle,
+  file: Pick<ManagedProcessLogSource, "read">,
+  validate: () => Promise<{ size: bigint }>,
   page: Buffer,
   startOffset: number,
   totalBytes: number,
@@ -101,7 +139,7 @@ async function completeUtf8PageBytes(
 
   // Never inspect bytes appended after the initial size snapshot.
   const peekEnd = pageEnd + needed;
-  const before = await assertLogBinding(binding, file);
+  const before = await validate();
   signal?.throwIfAborted();
   if (before.size < BigInt(peekEnd)) throw new Error("Managed process log changed during boundary inspection; retry the page.");
   const character = Buffer.alloc(prefixBytes + needed);
@@ -114,7 +152,7 @@ async function completeUtf8PageBytes(
     if (bytesRead === 0) throw new Error("Managed process log changed during boundary inspection; retry the page.");
     inspected += bytesRead;
   }
-  const after = await assertLogBinding(binding, file);
+  const after = await validate();
   signal?.throwIfAborted();
   if (after.size < BigInt(peekEnd)) throw new Error("Managed process log changed during boundary inspection; retry the page.");
   if (character.length < width) {

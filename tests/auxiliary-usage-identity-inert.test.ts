@@ -56,7 +56,7 @@ const wiring = statements.filter(statement => ts.isVariableStatement(statement)
 assert.equal(wiring.length, variables.length + 3, "exact production memory wiring");
 const memoryMethods = ["summarizeAndStoreMemories", "findSemanticMemoryEntries", "cleanupTemporaryMemories"];
 const memoryConstructor = one(cls(memory, "LocalMemory").members.filter(ts.isConstructorDeclaration), "memory constructor");
-const sessionMethods = ["recordModelUsage", "takeRelatedUsage", "usageSummary", "analyzeContextEmotion", "refreshDailyDiary"];
+const sessionMethods = ["currentModelManager", "currentModel", "recordModelUsage", "takeRelatedUsage", "usageSummary", "analyzeContextEmotion", "refreshDailyDiary"];
 if (cls(session, "AgentSession").members.some(node => node.name?.getText(session) === "usageModelInfo")) sessionMethods.push("usageModelInfo");
 function nested(source: ts.SourceFile, scope: ts.Node, name: string): ts.VariableStatement {
   const found: ts.VariableStatement[] = [];
@@ -130,6 +130,8 @@ const allowedCalls = new Set([
   "this.memoryEmbeddingService.findSimilarInScope", "this.sideModelRequestContext", "this.usageModelInfo", "this.auxiliaryUsageModels.set", "this.auxiliaryUsageModels.get",
   "this.options.modelManager?.getModel", "this.options.modelManager?.getInfo", "modelRuntimeInfo", "this.options.modelManager?.listModels",
   "this.options.modelManager?.listModels().find", "modelIdentifier", "createSessionUsage", "new Date().toISOString", "this.modelRequestRecords.at",
+  "this.currentModel", "this.currentModelManager", "this.currentModelManager()?.getModel", "this.currentModelManager()?.getInfo",
+  "this.currentModelManager()?.listModels", "this.currentModelManager()?.listModels().find",
   "this.usageRecords.push", "this.unpersistedRelatedUsage.push", "this.unpersistedRelatedUsage.splice", "summarizeUsage",
   "options.signal?.throwIfAborted", "messages.slice", "messages.slice(-4).filter", "normalizeMemoryOriginAnchors", "this.getToolModel",
   "this.getUsageModelInfo", "this.getUsageModelInfo?.", "generateNativeText", "formatMemoryExtractionMessages", "originAnchors.map", "originAnchors.map((anchor) =>\n            `- messageId: ${anchor.messageId}; sentAt: ${anchor.sentAt}; timeZone: ${anchor.timeZone}`\n          ).join",

@@ -14,6 +14,9 @@ import { createMcpPromptTools } from "../../extensions/mcpPrompts.js";
 import { loadSkills, type SkillBundle, type SkillDefinition } from "../../extensions/skills.js";
 import type { Tool } from "../../tools/types.js";
 import { attachNativeComputerMcp, desktopComputerMcpName } from "../../computer/desktopMcp.js";
+import { agentDir } from "../../session/store.js";
+import { ManagedProcessService, type ManagedProcessServiceOptions } from "../ManagedProcessService.js";
+import { ManagedProcessLogStore } from "../managedProcessLogStore.js";
 
 export type RuntimeResourceState = "loading" | "ready" | "degraded";
 
@@ -57,12 +60,14 @@ export class RuntimeHostResourceScope {
   private closePromise: Promise<void> | undefined;
   private readonly discoveryClosed = new AbortController();
   private references = 0;
+  private readonly config: AgentConfig;
 
   constructor(
     readonly workspaceRoot: string,
-    private readonly config: AgentConfig,
+    config: AgentConfig,
     catalogCache?: McpToolCatalogCache,
   ) {
+    this.config = structuredClone(config);
     this.mcpHost = new McpToolHost(catalogCache);
     this.mcpHost.subscribe(() => {
       this.refreshState();
@@ -76,6 +81,20 @@ export class RuntimeHostResourceScope {
 
   get skills(): SkillBundle {
     return this.skillBundle;
+  }
+
+  get configurationKey(): string {
+    return resourceScopeKey(this.workspaceRoot, this.config);
+  }
+
+  async configureMcp(config: AgentConfig, names: readonly string[], force = false): Promise<void> {
+    for (const name of names) {
+      const server = config.extensions.mcp[name];
+      if (server === undefined) delete this.config.extensions.mcp[name];
+      else this.config.extensions.mcp[name] = structuredClone(server);
+    }
+    try { await this.mcpHost.configureServers(this.workspaceRoot, this.config, names, force); }
+    finally { this.refreshState(); this.publish(); }
   }
 
   retain(): void {
@@ -292,10 +311,28 @@ export class RuntimeHostResourceScope {
 }
 
 export class RuntimeHostResourceRegistry {
-  private readonly scopes = new Map<string, RuntimeHostResourceScope>();
+  private readonly scopes = new Map<string | symbol, RuntimeHostResourceScope>();
   private readonly catalogCache = new McpToolCatalogCache();
+  private readonly processServices = new Set<ManagedProcessService>();
+  private readonly processLogs = new Map<string, ManagedProcessLogStore>();
+  private closing = false;
+
+  createManagedProcesses(options: ManagedProcessServiceOptions): ManagedProcessService {
+    if (this.closing) throw new Error("Runtime Host resources are closing.");
+    const root = path.join(agentDir(path.resolve(options.persistenceRoot ?? options.workspaceRoot)), "processes", "logs-v1");
+    let logs = this.processLogs.get(root);
+    if (!logs) { logs = new ManagedProcessLogStore(root); this.processLogs.set(root, logs); }
+    const service = new ManagedProcessService({ ...options, logStore: logs, onClosed: () => { this.processServices.delete(service); } });
+    this.processServices.add(service);
+    return service;
+  }
+
+  hasManagedProcesses(): boolean {
+    return [...this.processServices].some(service => service.hasRetainingWork());
+  }
 
   acquire(workspaceRoot: string, config: AgentConfig): RuntimeHostResourceScope {
+    if (this.closing) throw new Error("Runtime Host resources are closing.");
     const key = resourceScopeKey(workspaceRoot, config);
     let scope = this.scopes.get(key);
     if (!scope) {
@@ -313,11 +350,31 @@ export class RuntimeHostResourceRegistry {
     await scope.close();
   }
 
+  async configureMcp(scope: RuntimeHostResourceScope, config: AgentConfig, names: readonly string[], force = false): Promise<void> {
+    const entry = [...this.scopes.entries()].find(([, candidate]) => candidate === scope);
+    const configuring = scope.configureMcp(config, names, force);
+    // 配置替换在首次 await 前完成；同时撤销旧 key，不能让后来的旧配置借到新连接。
+    if (entry && this.scopes.get(entry[0]) === scope) {
+      this.scopes.delete(entry[0]);
+      const key = this.scopes.has(scope.configurationKey) ? Symbol("mcp-reconfigured") : scope.configurationKey;
+      this.scopes.set(key, scope);
+    }
+    await configuring;
+  }
+
   async close(): Promise<void> {
+    this.closing = true;
     const scopes = [...this.scopes.values()];
     this.scopes.clear();
-    await Promise.all(scopes.map((scope) => scope.close()));
+    const results = await Promise.allSettled([...scopes.map((scope) => scope.close()), ...[...this.processServices].map(service => service.shutdown())]);
+    const logResults = this.hasManagedProcesses() ? [] : await Promise.allSettled([...this.processLogs.values()].map(logs => logs.close()));
+    if (!this.hasManagedProcesses()) {
+      this.processServices.clear();
+      this.processLogs.clear();
+    }
     this.catalogCache.clear();
+    const failures = [...results, ...logResults].filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "Runtime Host resource cleanup failed.");
   }
 }
 
@@ -328,7 +385,7 @@ function resourceScopeKey(workspaceRoot: string, config: AgentConfig): string {
       computerEnabled: config.computer.enabled,
       skills: config.extensions.skills,
       skillDefaults: config.extensions.skillDefaults,
-      skillProjectOverrides: config.extensions.skillProjectOverrides,
+      skillProjectOverrides: config.extensions.skillProjectOverrides[createProjectSkillKey(workspaceRoot)] ?? {},
     }))
     .digest("hex");
   return `${path.resolve(workspaceRoot)}\0${digest}`;

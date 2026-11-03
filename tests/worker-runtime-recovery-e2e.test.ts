@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -51,11 +52,12 @@ if (process.argv[2] === "crash-worker") {
       assert.equal(taskBefore.attempts.length, 1);
       const interactive = new InteractiveAgentRuntime(runtime);
       host = await startRuntimeHost(root, async () => ({ commands: runtime!, runtime: interactive }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
+      await host.initialize();
       assert.equal(runtime.taskRuns.get("crashed-task")?.status, "blocked");
       assert.equal((runtime.taskRuns.get("crashed-task")?.attempts[0]?.failure as { failureClass?: string }).failureClass, "worker_interrupted");
       assert.equal(requests, 0, "Host startup must not execute a parked Worker");
       assert.equal(runtime.graphs.inspectGraph("worker-graph").nodes[0]?.status, "running", "the graph must retain its parked claim without dispatching another worker");
-      client = await connectRuntimeHost(root, { clientId: "worker-recovery-test", surface: "tui" });
+      client = await readyHostClient(await connectRuntimeHost(root, { clientId: "worker-recovery-test", surface: "tui" }));
       assert.ok(client);
       const admissions = await Promise.all([client.taskResume("crashed-task"), client.taskResume("crashed-task")]);
       for (const accepted of admissions) assert.equal(accepted.accepted, true, JSON.stringify(accepted));
@@ -103,6 +105,7 @@ if (process.argv[2] === "crash-worker") {
         globalThis.fetch = (async () => { requests += 1; throw new Error("No provider execution is allowed at this boundary."); }) as typeof fetch;
         runtime = await createCommandRuntime(root, { configStore: configStore(), sessionId: "parent-session" });
         host = await startRuntimeHost(root, async () => ({ commands: runtime!, runtime: new InteractiveAgentRuntime(runtime!) }), { createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); } });
+        await host.initialize();
         const parked = runtime.taskRuns.get("crashed-task")!;
         assert.equal(parked.status, "blocked");
         const failure = parked.attempts[0]?.failure as { failureClass?: string };

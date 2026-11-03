@@ -55,7 +55,7 @@ test("Subagent defaults round-trip through real settings transactions without lo
     const saved = await transaction.save(project.id, settingsSaveInputSchema.parse(input));
     assert.equal(saved.status, "committed", JSON.stringify(saved));
     assert.deepEqual(saved.appliedFields, ["subagent"]);
-    assert.deepEqual(saved.snapshot.subagent, { ...input.subagent, providerAlias: undefined });
+    assert.deepEqual(saved.settings.subagent, { ...input.subagent, providerAlias: undefined });
     const stored = await loadConfigFile(configRoot);
     assert.deepEqual(stored.extensions.subagent, { ...originalSubagent, ...input.subagent });
     assert.deepEqual((await transaction.snapshot(project.id)).subagent, { ...input.subagent, providerAlias: undefined });
@@ -76,7 +76,7 @@ test("Subagent defaults round-trip through real settings transactions without lo
     const selected = await transaction.save(project.id, { expectedPreferenceRevision: current.preferenceRevision,
       expectedConfigRevision: current.configRevision, subagent: { enabled: true, runtime: "acp", providerAlias: "worker", model: "worker" } });
     assert.equal(selected.status, "committed", JSON.stringify(selected));
-    assert.equal(selected.snapshot.subagent.providerAlias, "worker");
+    assert.equal(selected.settings.subagent.providerAlias, "worker");
     const worker = await prepareSubagentTask({ workspaceRoot: workspace, config: await store.load(workspace),
       toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("Must use selected ACP runtime"); } }, "Inspect settings", "workspace");
     try { assert.match(await worker.run(), /Reply 1/); } finally { await worker.close(); }
@@ -85,7 +85,7 @@ test("Subagent defaults round-trip through real settings transactions without lo
       expectedConfigRevision: providerDefaultBefore.configRevision,
       subagent: { enabled: true, runtime: "acp", providerAlias: "worker" } });
     assert.equal(providerDefault.status, "committed", JSON.stringify(providerDefault));
-    assert.deepEqual(providerDefault.snapshot.subagent, { enabled: true, runtime: "acp", providerAlias: "worker", model: undefined });
+    assert.deepEqual(providerDefault.settings.subagent, { enabled: true, runtime: "acp", providerAlias: "worker", model: undefined });
     assert.equal((await loadConfigFile(configRoot)).extensions.subagent.model, undefined);
     const defaultModelWorker = await prepareSubagentTask({ workspaceRoot: workspace, config: await store.load(workspace),
       toolRegistry: new ToolRegistry(), getModelSettings: () => { throw new Error("Must use the selected ACP provider default model"); } }, "Inspect settings", "workspace");
@@ -103,12 +103,12 @@ test("Subagent defaults round-trip through real settings transactions without lo
       expectedConfigRevision: claudeBefore.configRevision, subagent: { enabled: true, runtime: "claude-code" } }));
     assert.equal(claude.status, "committed", JSON.stringify(claude));
     assert.equal((await loadConfigFile(configRoot)).extensions.subagent.model, undefined);
-    assert.equal(claude.snapshot.subagent.runtime, "claude-code");
+    assert.equal(claude.settings.subagent.runtime, "claude-code");
     const autoBefore = await transaction.snapshot(project.id);
     const auto = await transaction.save(project.id, settingsSaveInputSchema.parse({ expectedPreferenceRevision: autoBefore.preferenceRevision,
       expectedConfigRevision: autoBefore.configRevision, subagent: { enabled: true, runtime: "auto" } }));
     assert.equal(auto.status, "committed", JSON.stringify(auto));
-    assert.equal(auto.snapshot.subagent.runtime, "auto");
+    assert.equal(auto.settings.subagent.runtime, "auto");
     assert.equal((await loadConfigFile(configRoot)).extensions.subagent.runtime, "auto");
   } finally {
     await manager?.closeAll();

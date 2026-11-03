@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** Real TUI/client/Host shutdown over memory sockets, with no provider or database. */
 import assert from "node:assert/strict";
@@ -15,6 +16,7 @@ import { RuntimeHostClient } from "../src/runtime/host/client.js";
 import { encodeHostFrame, runtimeHostProtocolVersion, type HostFrame } from "../src/runtime/host/protocol.js";
 import { SessionRuntimeRegistry } from "../src/runtime/host/registry.js";
 import { RuntimeHostServer } from "../src/runtime/host/server.js";
+import { RuntimeHostExecution } from "../src/runtime/host/composition.js";
 import type { HostRegistration } from "../src/runtime/host/types.js";
 import { BinyTui } from "../src/tui/app.js";
 
@@ -30,6 +32,11 @@ class MemorySocket extends EventEmitter {
   constructor(readonly snapshot: InteractiveRuntimeSnapshot) { super(); }
   setEncoding(): this { return this; }
   write(data: string): boolean {
+    const lifecycleFrame = JSON.parse(data.trim()) as { kind: string; operation?: string; requestId: string };
+    if (lifecycleFrame.kind === "request" && lifecycleFrame.operation === "host.subscribe") {
+      queueMicrotask(() => this.emit("data", JSON.stringify({ kind: "response", requestId: lifecycleFrame.requestId, ok: true, result: { lifecycle: "ready" } }) + "\n"));
+      return true;
+    }
     const frame = JSON.parse(data) as HostFrame;
     assert.ok(frame.kind === "hello" || (frame.kind === "request" && frame.operation === "subscribe"));
     const result = { hostEpoch: "synthetic-epoch", sequence: 1, capabilities: [], snapshot: this.snapshot,
@@ -76,7 +83,8 @@ async function fixture(t: TestContext, options: { stallOwner?: boolean; shared?:
     return socket as unknown as net.Socket;
   });
   t.mock.method(net, "createServer", () => { throw new Error("Real sockets forbidden"); });
-  const client = await RuntimeHostClient.connect({ registration, surface: "tui" });
+  const client = await readyHostClient(await RuntimeHostClient.connect({ registration, surface: "tui" }));
+
   const clientClose = t.mock.method(client, "close");
   const releaseOwner = deferred();
   const owner = localRuntime(snapshot, async () => { if (options.stallOwner) await releaseOwner.promise; });
@@ -87,14 +95,19 @@ async function fixture(t: TestContext, options: { stallOwner?: boolean; shared?:
   // Exercise the actual Host.close and registry.closeAll implementations. Avoid
   // the Host constructor's unrelated storage/business services; only these inert
   // dependencies and the synthetic owner runtime are needed by its close path.
-  const host: RuntimeHostServer = Object.assign(Object.create(RuntimeHostServer.prototype) as RuntimeHostServer, {
-    registration, lock, admission: { beginDrain: () => undefined }, businessComposition: { stop: () => undefined }, registry,
-    pendingOwnerNotifications: new Map(),
-    sessionWriterOwners: new Map(), sessionGoalOwners: new Map(), shutdownDrainMs: 10,
+  const execution = Object.assign(Object.create(RuntimeHostExecution.prototype) as RuntimeHostExecution, {
+    businessComposition: { stop: () => undefined }, registry, sessionGoalOwners: new Map(), oneShotSessions: new Map(),
+    creations: new Set(), cleanupFailures: [],
     conversationMirror: { close: async () => undefined },
-    resourceRegistry: { close: async () => { if (options.resourceFailure) throw options.resourceFailure; } },
+    resourceRegistry: { close: async () => { if (options.resourceFailure) throw options.resourceFailure; } }
+  });
+  const host: RuntimeHostServer = Object.assign(Object.create(RuntimeHostServer.prototype) as RuntimeHostServer, {
+    registration, lock, admission: { beginDrain: () => undefined }, execution,
+    initializationAbort: new AbortController(), requests: new Set(), pendingOwnerNotifications: new Map(),
+    sessionWriterOwners: new Map(), shutdownDrainMs: 10,
     connections: new Set([{ socket }]), listening: false, journal: { close: async () => undefined }
   });
+  Object.assign(execution, { host });
   const hostClose = t.mock.method(host, "close");
   let stops = 0;
   const terminal: Terminal = { start: () => undefined, stop: () => { stops++; }, drainInput: async () => undefined,
@@ -136,7 +149,8 @@ function assertClientDisposed(f: Awaited<ReturnType<typeof fixture>>): void {
 }
 
 test("client cleanup keeps its existing one-second socket-close deadline after Host failure", async t => {
-  const f = await fixture(t, { resourceFailure: new Error("Synthetic resource cleanup failure") });
+  const resourceFailure = new Error("Synthetic resource cleanup failure");
+  const f = await fixture(t, { resourceFailure });
   const rejectedNotifications: Error[] = [];
   f.host["pendingOwnerNotifications"].set("pending-notification", {
     connection: [...f.host["connections"]][0]!,
@@ -147,7 +161,7 @@ test("client cleanup keeps its existing one-second socket-close deadline after H
   // A socket that never emits close must use the real client's bounded fallback.
   t.mock.method(f.socket, "destroy", () => { f.socket.destroyed = true; return f.socket; });
   // The detached owner fails independently; TUI exit only owns its client.
-  await assert.rejects(f.host.close(), /Synthetic resource cleanup failure/u);
+  await assert.rejects(f.host.close(), (error: unknown) => error instanceof AggregateError && error.errors.includes(resourceFailure));
   assert.equal(f.hostClose.mock.callCount(), 1);
   const exiting = f.app.exit();
   await flush();

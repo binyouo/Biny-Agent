@@ -226,6 +226,7 @@ export interface AgentModel {
   /** 这是显式元数据，不是由 provider 名称或 URL 推导出的结论。 */
   dataResidency?: ActivityDataResidency;
   supportsTools?: boolean;
+  supportsVision?: boolean;
   serviceTiers?: Array<"priority">;
 
 }

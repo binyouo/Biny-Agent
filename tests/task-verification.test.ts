@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -1154,13 +1155,14 @@ async function testHostRestartApprovalResumesVerificationAndUnlocksGraph(): Prom
     }
 
     await saveConfig(root, hostApprovalConfig(), { globalDir: configDir });
-    const spawned = await spawnRuntimeHost(root, {
+    const spawned = await readyHostClient(await spawnRuntimeHost(root, {
       workspaceRoot: root,
       configDir,
       resumeInterrupted: false,
       clientId: "verification-approval-process",
       surface: "cli"
-    });
+    }));
+
     client = spawned.client;
     const waiting = await waitForHostTaskStatus(client, taskRunId!, "needs_approval");
     assert.equal((waiting.attempts as unknown[]).length, 1);

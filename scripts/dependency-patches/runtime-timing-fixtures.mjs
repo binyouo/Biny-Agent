@@ -8,7 +8,7 @@ const runtimeArgument = process.argv.indexOf('--runtime');
 const runtimePath = runtimeArgument === -1
   ? createRequire(require.resolve('@ai-sdk/code-mode/package.json')).resolve('run')
   : resolve(process.argv[runtimeArgument + 1]);
-const { run, createRunner } = await import(pathToFileURL(runtimePath).href);
+const { run, createRunner, getHostFunctionContext } = await import(pathToFileURL(runtimePath).href);
 const delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms));
 const limits = { timeoutMs: 3_000, executionTimeoutMs: 80 };
 const results = [];
@@ -144,10 +144,43 @@ await fixture('aggregate bridge bound stays active', () => expectCode(() => run(
   limits: { ...limits, maxBridgeRequests: 2 },
 }), 'RUN_BRIDGE_LIMIT'));
 
+await fixture('zero disables the aggregate bridge bound', async () => {
+  let calls = 0;
+  const result = await run({
+    source: 'for (let i = 0; i < 300; i++) await tools.echo(i); return "done";',
+    hostFunctions: { tools: { echo: value => { calls++; return value; } } },
+    limits: { timeoutMs: 10_000, executionTimeoutMs: 5_000, maxBridgeRequests: 0 },
+  });
+  assert.deepEqual(result, { status: 'completed', value: 'done' });
+  assert.equal(calls, 300);
+});
+
+await fixture('unlimited bridge continuations preserve completed host calls', async () => {
+  let calls = 0;
+  const source = 'for (let i = 0; i < 33; i++) await tools.echo(i); return await tools.pause();';
+  const hostFunctions = { tools: {
+    echo: value => { calls++; return value; },
+    pause: () => {
+      const context = getHostFunctionContext();
+      if (!context.resume) context.interrupt({ kind: 'pause' });
+      return context.resume?.resolution;
+    },
+  } };
+  const limits = { timeoutMs: 10_000, executionTimeoutMs: 5_000, maxBridgeRequests: 0 };
+  const runner = createRunner({ continuationSecret: 'isolated-test-secret-32-characters' });
+  const interrupted = await runner.run({ source, hostFunctions, limits });
+  assert.equal(interrupted.status, 'interrupted');
+  assert.equal(calls, 33);
+  const resumed = await runner.run({ source, hostFunctions, limits, continuation: interrupted.continuation,
+    resolutions: [{ interruptionId: interrupted.interruptions[0].id, value: 'done' }] });
+  assert.deepEqual(resumed, { status: 'completed', value: 'done' });
+  assert.equal(calls, 33, 'continuation must not repeat completed calls');
+});
+
 await fixture('parallel bridge admission bound stays active', () => expectCode(() => run({
   source: 'return await Promise.all([tools.wait(), tools.wait()]);',
   hostFunctions: { tools: { wait: () => delay(100) } },
-  limits: { ...limits, maxInFlightBridgeRequests: 1 },
+  limits: { ...limits, maxBridgeRequests: 0, maxInFlightBridgeRequests: 1 },
 }), 'RUN_BRIDGE_LIMIT'));
 
 await fixture('VM memory bound stays active independently of timing', () => assert.rejects(() => run({

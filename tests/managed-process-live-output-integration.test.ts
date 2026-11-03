@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { mock, test } from "node:test";
 import { ManagedProcessService, type ManagedProcessSnapshot } from "../src/runtime/ManagedProcessService.js";
+import { ManagedProcessLog, ManagedProcessLogStore, managedProcessLogLimits } from "../src/runtime/managedProcessLogStore.js";
 import { createProcessStatusTool } from "../src/tools/process/managedProcesses.js";
 import { projectSingleToolResultForModel } from "../src/agent/toolResultProjection.js";
 
@@ -12,9 +13,15 @@ await test("ProcessStatus freezes live state before stat and preserves pending m
   const snapshot: ManagedProcessSnapshot = { processId, pid: 83, command: "inert", cwd: "/", state: "running",
     logPath, startedAt: "2026-10-10T00:00:00Z", cleanup: { status: "not_needed" } };
   const service = new ManagedProcessService({ workspaceRoot: "/" });
+  const binding = { path: logPath, device: 1n, inode: 2n };
+  const log = new ManagedProcessLog(new ManagedProcessLogStore("/inert"), logPath,
+    { version: 1, id: processId, pid: 83, createdAt: 0 }, binding, managedProcessLogLimits);
+  log.segments.push({ binding, start: 0, end: 3 });
+  log.totalBytes = 3;
+  (log as unknown as { settledThrough: number }).settledThrough = 3;
   // Retained record injection avoids launching a child or writing lifecycle/config files.
   (service as unknown as { records: Map<string, unknown> }).records.set(processId, {
-    snapshot, logBinding: { path: logPath, device: 1n, inode: 2n }, child: { exitCode: 0 }, stopRequested: false
+    snapshot, log, child: { exitCode: 0 }, stopRequested: false, outputClosed: false
   });
   let bytes = Buffer.from([0x41, 0xe4, 0xbd]);
   let firstRead = true;
@@ -30,6 +37,9 @@ await test("ProcessStatus freezes live state before stat and preserves pending m
       if (firstRead) {
         firstRead = false;
         bytes = Buffer.concat([bytes, Buffer.from([0xa0])]);
+        log.segments[0]!.end = 4;
+        log.totalBytes = 4;
+        (log as unknown as { settledThrough: number }).settledThrough = 4;
         snapshot.state = "exited";
       }
       return { bytesRead, buffer };

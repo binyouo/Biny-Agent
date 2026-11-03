@@ -24,7 +24,7 @@ export function SettingsChatParams(): React.JSX.Element {
               <strong>温度</strong>
               <em>{temperatureSet ? chatParams.temperature?.toFixed(1) : "模型默认"}</em>
             </span>
-            <input
+            <input className="settings-range"
               aria-label="温度"
               max={200}
               min={0}
@@ -37,7 +37,7 @@ export function SettingsChatParams(): React.JSX.Element {
           </label>
           {temperatureSet ? (
             <small className="compaction-hint">
-              <button className="chat-temperature-reset" onClick={() => update({ temperature: undefined })} type="button">恢复模型默认</button>
+              <button className="settings-action settings-text-action chat-temperature-reset" onClick={() => update({ temperature: undefined })} type="button">恢复模型默认</button>
             </small>
           ) : null}
           <OptionalNumberField
@@ -54,7 +54,7 @@ export function SettingsChatParams(): React.JSX.Element {
             {chatParams.maxOutputTokens === undefined ? "自动跟随当前模型；实际输出仍受服务商限制。" : (
               <>
                 当前使用全局输出额度。
-                <button aria-label="恢复自动输出额度" className="chat-temperature-reset" onClick={() => update({ maxOutputTokens: undefined })} type="button">恢复自动</button>
+                <button aria-label="恢复自动输出额度" className="settings-action settings-text-action chat-temperature-reset" onClick={() => update({ maxOutputTokens: undefined })} type="button">恢复自动</button>
               </>
             )}
           </small>

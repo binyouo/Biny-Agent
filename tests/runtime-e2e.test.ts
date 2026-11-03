@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
@@ -162,13 +163,13 @@ async function testRuntimeHostProviderCrash(): Promise<void> {
   try {
     process.env.BINY_AGENT_DIR = agentDir;
     await saveConfig(root, testConfig(server.endpoint), { globalDir: configDir });
-    spawned = await spawnRuntimeHost(root, {
+    spawned = await readyHostClient(await spawnRuntimeHost(root, {
       workspaceRoot: root,
       configDir,
       resumeInterrupted: false,
       clientId: "provider-crash-e2e",
       surface: "cli"
-    });
+    }));
     sessionId = spawned.client.getSnapshot().info.sessionId;
     const outcome = await withTimeout(
       spawned.client.submitPrompt("exercise a provider crash through Runtime Host").completion,

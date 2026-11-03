@@ -10,7 +10,7 @@ export async function runMemoryOwnerProcess(argv = process.argv.slice(2), create
   const root = await canonicalMemoryRoot(globalAgentDir());
   const configRoot = path.resolve(configArgument >= 0 ? argv[configArgument + 1]! : globalConfigDir());
   const owner = new AgentMemoryOwner(root, createStore?.(root, configRoot) ?? createFileConfigStore(root, { globalDir: configRoot }));
-  const server = await serveMemoryOwner(root, configRoot, owner);
+  const server = await serveMemoryOwner(root, configRoot, owner, { idleGraceMs: 30_000, onIdle: () => close() });
   let closing = false;
   const close = () => {
     if (closing) return;
@@ -20,6 +20,16 @@ export async function runMemoryOwnerProcess(argv = process.argv.slice(2), create
   };
   process.once("SIGTERM", close);
   process.once("SIGINT", close);
+  const supervisor = Number(process.env.BINY_TEST_SUPERVISOR_PID);
+  if (process.env.BINY_TEST_PROCESS === "1" && Number.isSafeInteger(supervisor) && supervisor > 1 && supervisor !== process.pid) {
+    const timer = setInterval(() => {
+      try { process.kill(supervisor, 0); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") { clearInterval(timer); close(); }
+      }
+    }, 1_000);
+    timer.unref();
+  }
   owner.start();
 }
 

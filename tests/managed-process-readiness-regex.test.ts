@@ -8,6 +8,8 @@ import net from "node:net";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import workerThreads from "node:worker_threads";
+import { PassThrough } from "node:stream";
+import { ManagedProcessLog, ManagedProcessLogStore, managedProcessLogLimits } from "../src/runtime/managedProcessLogStore.js";
 import {
   ManagedProcessService, type ManagedProcessReadinessProbe, type ManagedProcessReadinessResult,
   type ManagedProcessSnapshot
@@ -44,7 +46,7 @@ function observe<T>(promise: Promise<T>) {
 
 interface TestRecord {
   snapshot: ManagedProcessSnapshot;
-  logBinding: { path: string; device: bigint; inode: bigint };
+  log: ManagedProcessLog;
   child: ChildProcess;
   stopRequested: boolean;
 }
@@ -95,30 +97,35 @@ function fixture(t: TestContext) {
   const signals: Array<string | number> = [];
   const spawns: string[] = [];
   const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(),
     pid: 987654321, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
     unref() {}, kill() { exit(0); return true; }
   });
-  function exit(code: number): void { alive = false; child.exitCode = code; child.emit("exit", code, null); }
+  function exit(code: number): void { alive = false; child.exitCode = code; child.emit("exit", code, null); child.emit("close", code, null); }
   const metadata = () => ({ size: contents.length, dev: 1n, ino: 2n, nlink: 1n,
     isDirectory: () => true, isFile: () => true, isSymbolicLink: () => false });
   t.mock.method(fs, "stat", async () => metadata());
   t.mock.method(fs, "lstat", async () => metadata());
   t.mock.method(fs, "realpath", async (value: string) => value);
+  t.mock.method(fs, "mkdir", async () => undefined);
+  t.mock.method(fs, "readdir", async () => []);
   t.mock.method(fs, "appendFile", async () => { assert.fail("Lifecycle persistence must be replaced before start"); });
-  t.mock.method(fs, "open", async (_file: string, mode: unknown) => ({
-    fd: 123, stat: async () => metadata(), writeFile: async () => undefined,
+  t.mock.method(fs, "open", async () => { let read = false; return ({
+    fd: 123, stat: async () => metadata(), writeFile: async () => undefined, truncate: async () => undefined,
+    write: async (_bytes: Buffer, _offset: number, length: number) => ({ bytesWritten: length }),
     read: async (buffer: Buffer, offset: number, length: number, position: number) => {
       reads++;
+      read = true;
       const bytesRead = contents.copy(buffer, offset, position, position + length);
       afterRead();
       return { buffer, bytesRead };
     },
-    close: async () => { if (mode === "r") logCloses++; }
-  }));
+    close: async () => { if (read) logCloses++; }
+  }); });
   t.mock.method(childProcess, "spawn", (requested: string) => {
     spawns.push(requested);
     if (requested === command) {
-      queueMicrotask(() => child.emit("spawn"));
+      queueMicrotask(() => { child.emit("spawn"); child.stdout.write(contents); });
       return child as unknown as ChildProcess;
     }
     assert.ok(requested === "ps" || requested === "taskkill", "No unexpected process may start");
@@ -139,15 +146,25 @@ function fixture(t: TestContext) {
   const internal = service as unknown as ServiceBoundary;
   const initialization = t.mock.method(service, "initialize", async () => undefined);
   const lifecycle = t.mock.method(internal, "recordLifecycle", async () => undefined);
+  const binding = { path: path.join(root, "fixture.log"), device: 1n, inode: 2n };
+  const log = new ManagedProcessLog(new ManagedProcessLogStore(root), root,
+    { version: 1, id: "fake-readiness", pid: child.pid, createdAt: 0 }, binding, managedProcessLogLimits);
+  function updateLog(): void {
+    log.totalBytes = contents.length;
+    log.segments.splice(0, log.segments.length, { binding, start: 0, end: contents.length });
+    (log as unknown as { settledThrough: number }).settledThrough = contents.length;
+  }
+  updateLog();
   const record: TestRecord = {
     snapshot: { processId: "fake-readiness", pid: child.pid, command, cwd: root, state: "running",
       logPath: path.join(root, "fixture.log"), startedAt: new Date().toISOString(), cleanup: { status: "pending" } },
-    logBinding: { path: path.join(root, "fixture.log"), device: 1n, inode: 2n },
+    log,
     child: child as unknown as ChildProcess, stopRequested: false
   };
   t.after(async () => {
     for (const pending of terminations) pending.resolve(0);
     await Promise.resolve();
+    await (service as unknown as { logs: ManagedProcessLogStore }).logs.close();
     workerThreads.Worker = originalWorker;
     t.mock.restoreAll();
     t.mock.timers.reset();
@@ -155,7 +172,7 @@ function fixture(t: TestContext) {
   });
   return { workers, service, record, initialization, lifecycle, spawns, signals, exit,
     get reads() { return reads; }, get logCloses() { return logCloses; },
-    log(value: string | Buffer) { contents = Buffer.isBuffer(value) ? value : Buffer.from(value); },
+    log(value: string | Buffer) { contents = Buffer.isBuffer(value) ? value : Buffer.from(value); updateLog(); },
     configure(options: { ready?: boolean; holdTermination?: boolean; constructionError?: Error }) {
       autoReady = options.ready ?? autoReady;
       deferTermination = options.holdTermination ?? deferTermination;
@@ -398,7 +415,7 @@ await test("readiness keeps only the final raw MiB and closes the log before wor
 await test("unreadable log reaches readiness timeout without ever allocating a worker", async (t) => {
   const f = fixture(t);
   let stats = 0;
-  t.mock.method(fs, "stat", async () => { stats++; throw new Error("fake unreadable log"); });
+  t.mock.method(fs, "lstat", async () => { stats++; throw new Error("fake unreadable log"); });
   syncBuiltinESMExports();
   const pending = f.wait({ ...regexProbe, timeoutMs: 1 });
   await until(() => stats === 1);

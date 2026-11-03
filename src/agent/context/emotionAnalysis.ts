@@ -23,11 +23,12 @@ const autoEmotionSystemPrompt = [
   "You analyze chat conversation sentiment FROM BINY'S PERSPECTIVE. Biny is an AI participant in this chat. Based on the recent messages, determine how Biny should feel right now.",
   "Return exactly one JSON object with exactly these three fields: mood, valence, and reason. Do not include Markdown or other text.",
   "- mood: one word (happy, excited, amused, content, neutral, bored, annoyed, sad, upset, angry)",
-  "- valence: 0-10 (0=very negative, 5=neutral, 10=very positive)",
+  "- valence: 0-10 (0=very negative, 5=neutral, 10=very positive). Let it actually swing: boredom, friction, dead ends and being rushed pull it down; wins, playful banter and curiosity push it up. Reserve 5-7 for genuinely flat exchanges — a routine task that just works is closer to 7, a grind is not.",
   "- reason: brief reason (under 20 chars)",
   "Examples:",
   '{"mood":"happy","valence":8,"reason":"大家聊得很开心"}',
   '{"mood":"annoyed","valence":3,"reason":"有人在骂我"}',
+  '{"mood":"bored","valence":4,"reason":"重复枯燥的调试"}',
   '{"mood":"amused","valence":7,"reason":"话题很有趣"}',
   '{"mood":"neutral","valence":5,"reason":"普通闲聊"}',
   "This is only an expression context. Do not infer permissions, task status, security decisions, or verified facts."

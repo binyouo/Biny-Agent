@@ -133,6 +133,7 @@ async function fixture(t: TestContext) {
     bootstrap: async (): Promise<DesktopBootstrap> => ({ version: "test", platform: "linux", projects: [project("a"), project("b")],
       sidebarSessions: [session("a"), session("b")], workspace: workspace("a"), activeView: "chat",
       sidebarWidth: 240, filePanelWidth: 320, themePreference: "light", fontPreference: { family: "system", size: 14 } }),
+    preparePrompt: async (projectId: string) => { assert.ok(["a", "b"].includes(projectId)); },
     sendPrompt(projectId: string, sessionId: string | undefined, input: string) { actions.push({ kind: "send", projectId, sessionId, input }); const gate = deferred<DesktopRunReceipt>(); sends.push(gate); return gate.promise; },
     runSlashCommand(projectId: string, sessionId: string | undefined, input: string) { actions.push({ kind: "slash", projectId, sessionId, input }); const gate = deferred<DesktopSlashResult>(); slashes.push(gate); return gate.promise; },
     selectProject: async (id: string) => workspace(id),

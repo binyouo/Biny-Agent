@@ -1,4 +1,4 @@
-import { createServer, request, type Server } from "node:http";
+import { createServer, request, type ClientRequest, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { globalAgentDir, globalConfigDir } from "../../config/paths.js";
 import { secureLocalIpcEndpoint } from "../../utils/localIpc.js";
 import {
-  acquireHostLock, ensureRuntimeHostDirectory, isProcessAlive, readRegistration, removeRegistration,
+  acquireHostLock, desktopApplicationLaunch, ensureRuntimeHostDirectory, isProcessAlive, readRegistration, removeRegistration,
   removeSocketIfStale, runtimeHostLaunchPlan, runtimeHostPaths, terminateSpawnedHost, writeRegistration
 } from "../host/lifecycle.js";
 import { runtimeHostProtocolVersion } from "../host/protocol.js";
@@ -25,7 +25,10 @@ export function memoryOwnerPaths(root: string) {
   return runtimeHostPaths(path.join(root, ".memory-owner"));
 }
 
-export async function serveMemoryOwner(root: string, configRoot: string, owner: AgentMemoryOwner): Promise<{ close(): Promise<void> }> {
+export async function serveMemoryOwner(root: string, configRoot: string, owner: AgentMemoryOwner, lifecycle?: {
+  idleGraceMs: number;
+  onIdle(): void;
+}): Promise<{ close(): Promise<void> }> {
   const paths = memoryOwnerPaths(root);
   const lock = await (async () => {
     await ensureRuntimeHostDirectory(path.dirname(paths.registrationPath));
@@ -40,6 +43,9 @@ export async function serveMemoryOwner(root: string, configRoot: string, owner: 
     pid: process.pid, createdAt: new Date().toISOString()
   };
   let closing = false;
+  let activeRequests = 0;
+  let idleSince: number | undefined;
+  const clients = new Set<import("node:http").ServerResponse>();
   const server = createServer((req, res) => {
     void (async () => {
       if (closing) throw new Error("Memory owner is closing.");
@@ -47,25 +53,37 @@ export async function serveMemoryOwner(root: string, configRoot: string, owner: 
         res.writeHead(401).end();
         return;
       }
+      if (req.method === "GET" && req.url === "/lease") {
+        idleSince = undefined;
+        clients.add(res);
+        res.once("close", () => { clients.delete(res); });
+        res.writeHead(200, { "content-type": "application/octet-stream" });
+        res.flushHeaders();
+        return;
+      }
       if (req.method !== "POST" || req.url !== "/memory") {
         res.writeHead(404).end();
         return;
       }
-      const body = JSON.parse(await readBody(req)) as unknown;
-      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid memory request.");
-      const input = body as Record<string, unknown>;
-      if (typeof input.action !== "string" || !input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
-        throw new Error("Invalid memory request.");
-      }
-      const controller = new AbortController();
-      // 维护任务归 owner；客户端退出只取消本次检索/推理，不取消全局维护。
-      const maintenance = ["sleep.run", "embedding.rebuild", "embedding.download", "embedding.remove", "maintain"].includes(input.action);
-      const disconnect = () => { if (!res.writableEnded && !maintenance) controller.abort(); };
-      res.once("close", disconnect);
+      activeRequests += 1;
+      idleSince = undefined;
       try {
-        const result = await owner.execute(input.action, input.payload as Record<string, unknown>, controller.signal);
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ result: result ?? null }));
-      } finally { res.off("close", disconnect); }
+        const body = JSON.parse(await readBody(req)) as unknown;
+        if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid memory request.");
+        const input = body as Record<string, unknown>;
+        if (typeof input.action !== "string" || !input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
+          throw new Error("Invalid memory request.");
+        }
+        const controller = new AbortController();
+        // 维护任务归 owner；客户端退出只取消本次检索/推理，不取消全局维护。
+        const maintenance = ["sleep.run", "embedding.rebuild", "embedding.download", "embedding.remove", "maintain"].includes(input.action);
+        const disconnect = () => { if (!res.writableEnded && !maintenance) controller.abort(); };
+        res.once("close", disconnect);
+        try {
+          const result = await owner.execute(input.action, input.payload as Record<string, unknown>, controller.signal);
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ result: result ?? null }));
+        } finally { res.off("close", disconnect); }
+      } finally { activeRequests -= 1; }
     })().catch((error: unknown) => {
       if (!res.headersSent) res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
@@ -82,11 +100,21 @@ export async function serveMemoryOwner(root: string, configRoot: string, owner: 
     await Promise.allSettled([closeServer(server), owner.close(), lock.close()]);
     throw error;
   }
+  const idleTimer = lifecycle && setInterval(() => {
+    if (closing) return;
+    if (clients.size || activeRequests || owner.hasPendingWork) { idleSince = undefined; return; }
+    idleSince ??= performance.now();
+    if (performance.now() - idleSince < lifecycle.idleGraceMs) return;
+    closing = true;
+    lifecycle.onIdle();
+  }, Math.min(1_000, Math.max(10, lifecycle.idleGraceMs)));
+  idleTimer?.unref();
   let closingPromise: Promise<void> | undefined;
   return {
     close() {
       closingPromise ??= (async () => {
         closing = true;
+        if (idleTimer) clearInterval(idleTimer);
         const closed = closeServer(server);
         // 收回模型任务后关闭残余连接；任一清理失败不阻止其余资源释放。
         const ownerResult = await Promise.allSettled([owner.close()]);
@@ -117,7 +145,51 @@ async function readBody(stream: AsyncIterable<Buffer | string>): Promise<string>
   return Buffer.concat(chunks).toString("utf8");
 }
 
+const leases = new Map<string, { epoch: string; request: ClientRequest; ready: Promise<void> }>();
+
+async function retainMemoryOwner(registration: HostRegistration): Promise<void> {
+  const key = registration.endpoint;
+  const existing = leases.get(key);
+  if (existing?.epoch === registration.hostEpoch) return existing.ready;
+  existing?.request.destroy();
+  let resolveReady!: () => void;
+  let rejectReady!: (error: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  const req = request({ socketPath: key, method: "GET", path: "/lease",
+    headers: { authorization: `Bearer ${registration.token}` } }, res => {
+    req.setTimeout(0);
+    if (res.statusCode !== 200) {
+      res.resume();
+      rejectReady(new Error(`Memory owner cannot retain clients (HTTP ${res.statusCode}); restart the owner.`));
+      return;
+    }
+    res.resume();
+    req.socket?.unref();
+    resolveReady();
+  });
+  const lease = { epoch: registration.hostEpoch, request: req, ready };
+  leases.set(key, lease);
+  req.on("error", rejectReady);
+  req.on("close", () => { if (leases.get(key) === lease) leases.delete(key); });
+  req.setTimeout(5_000, () => { req.destroy(new Error("Memory owner client retention timed out.")); });
+  req.end();
+  return ready;
+}
+
 export async function memoryRequest<T>(registration: HostRegistration, action: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  const retention = retainMemoryOwner(registration);
+  if (signal) {
+    let abort!: () => void;
+    try {
+      await Promise.race([retention, new Promise<never>((_, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      })]);
+    } finally { signal.removeEventListener("abort", abort); }
+  } else await retention;
+  signal?.throwIfAborted();
   return new Promise<T>((resolve, reject) => {
     const req = request({ socketPath: registration.endpoint, method: "POST", path: "/memory", signal,
       headers: { authorization: `Bearer ${registration.token}`, "content-type": "application/json" }
@@ -164,7 +236,9 @@ async function spawnMemoryOwner(root: string, configRoot: string): Promise<HostR
   const currentFile = fileURLToPath(import.meta.url);
   const entryPath = path.join(path.dirname(currentFile), `../memoryProcess${currentFile.endsWith(".ts") ? ".ts" : ".js"}`);
   const plan = runtimeHostLaunchPlan(path.join(root, ".memory-owner"), {
-    workspaceRoot: root, configDir: configRoot, entryPath, lifecycleMode: "service"
+    workspaceRoot: root, configDir: configRoot, entryPath, lifecycleMode: "service",
+    // Desktop 打包会合并模块，复用应用入口以保留真实入口与加密凭据能力。
+    electronAppPath: process.versions.electron === undefined ? undefined : desktopApplicationLaunch(configRoot).appPath
   });
   const args = plan.args.map(arg => arg === "--biny-runtime-host" ? "--biny-memory-owner" : arg);
   const child = spawn(plan.executable, args, { env: { ...plan.env, BINY_AGENT_DIR: root }, detached: true, stdio: "ignore", windowsHide: true });

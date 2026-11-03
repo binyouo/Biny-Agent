@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, realpathSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { changedFilesBetween, checkResults, createPlan, resolveComparison } from "./ci-test-plan.mjs";
+import { changedFilesBetween, checkResults, createPlan, resolveComparison, documentationOnly } from "./ci-test-plan.mjs";
 
 function fixture(t, extra = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "biny-ci-plan-"));
@@ -59,6 +59,49 @@ test("literal file reads track source inputs while unknown reads stay conservati
   const other = await createPlan(root, ["src/utils/other.ts"]);
   assert.ok(other.standard.includes("url-reader.test.ts"));
   assert.ok(!other.standard.includes("source.test.ts"));
+});
+
+test("filesystem promise namespaces track literal reads and temporary writers", async t => {
+  const root = fixture(t, {
+    "tests/named-promises.test.ts": "import { promises as fs } from 'node:fs'; fs.readFile('src/utils/other.ts');",
+    "tests/namespace-promises.test.ts": "import * as fs from 'node:fs/promises'; fs.readFile('src/utils/other.ts');",
+    "tests/namespace-writer.test.ts": "import * as fs from 'node:fs/promises'; fs.mkdir('/tmp/fixture'); fs.writeFile('/tmp/fixture/file', 'data');"
+  });
+  const format = await createPlan(root, ["src/utils/format.ts"]);
+  for (const file of ["named-promises.test.ts", "namespace-promises.test.ts", "namespace-writer.test.ts"]) assert.ok(!format.standard.includes(file));
+  const other = await createPlan(root, ["src/utils/other.ts"]);
+  for (const file of ["named-promises.test.ts", "namespace-promises.test.ts"]) assert.ok(other.standard.includes(file));
+});
+
+for (const code of [
+  "fs.readFile(process.env.PATH_TO_SOURCE!);",
+  "const read = fs.readFile; read(process.env.PATH_TO_SOURCE!);",
+  "const name = process.env.METHOD!; fs[name]('source');",
+  "fs.copyFile('src/utils/format.ts', '/tmp/fixture');",
+  "function load(fs: any) { return fs.readFile(process.env.PATH_TO_SOURCE); }"
+]) {
+  test(`unbounded filesystem namespace use stays conservative: ${code}`, async t => {
+    const root = fixture(t, { "tests/namespace-unknown.test.ts": `import * as fs from 'node:fs/promises'; ${code}` });
+    assert.ok((await createPlan(root, ["src/utils/other.ts"])).standard.includes("namespace-unknown.test.ts"));
+  });
+}
+
+test("literal reads through a symlink track the target source", async t => {
+  const root = fixture(t, { "tests/symlink-reader.test.ts": "import * as fs from 'node:fs/promises'; fs.readFile('tests/source-link');" });
+  symlinkSync(path.join(root, "src/utils/format.ts"), path.join(root, "tests/source-link"));
+  const format = await createPlan(root, ["src/utils/format.ts"]);
+  const other = await createPlan(root, ["src/utils/other.ts"]);
+  assert.ok(format.standard.includes("symlink-reader.test.ts"));
+  assert.ok(!other.standard.includes("symlink-reader.test.ts"));
+});
+
+test("literal reads through a symlink outside the repository stay conservative", async t => {
+  const root = fixture(t, { "tests/external-link.test.ts": "import { readFileSync } from 'node:fs'; readFileSync('tests/external-link');" });
+  const outside = mkdtempSync(path.join(os.tmpdir(), "biny-ci-external-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  writeFileSync(path.join(outside, "source.ts"), "export const value = 1;");
+  symlinkSync(path.join(outside, "source.ts"), path.join(root, "tests/external-link"));
+  assert.ok((await createPlan(root, ["src/utils/other.ts"])).standard.includes("external-link.test.ts"));
 });
 
 test("directory inputs include their source descendants, including the repository root", async t => {
@@ -195,6 +238,19 @@ test("test files invoked as subprocess fixtures retain their calling regressions
   assert.deepEqual(plan.standard, ["computed-driver.test.ts", "direct-driver.test.ts", "other.test.ts"]);
 });
 
+test("ordinary labels do not create dependencies on equally named test files", async t => {
+  const root = fixture(t, {
+    "tests/labels.test.ts": "const section = 'other'; const feature = 'view';",
+    "tests/joined-driver.test.ts": "import { spawn } from 'node:child_process'; for (const suite of ['other']) spawn('node', ['tests/' + suite + '.test.ts']);"
+  });
+  const testChange = await createPlan(root, ["tests/other.test.ts"]);
+  assert.deepEqual(testChange.standard, ["joined-driver.test.ts", "other.test.ts"]);
+  const sourceChange = await createPlan(root, ["src/utils/other.ts"]);
+  assert.ok(sourceChange.standard.includes("other.test.ts"));
+  assert.ok(sourceChange.standard.includes("joined-driver.test.ts"));
+  assert.ok(!sourceChange.standard.includes("labels.test.ts"));
+});
+
 test("documentation keeps the static gate but selects no runtime lanes", async t => {
   const plan = await createPlan(fixture(t), ["README.md", "docs/CONFIGURATION.md"]);
   assert.equal(plan.full, false);
@@ -299,27 +355,136 @@ test("cancelled and failed pushes remain in the next comparison; PR success is n
   assert.deepEqual(changedFilesBetween(root, comparison.base, comparison.head), ["src/utils/format.ts", "tests/other.test.ts"]);
 });
 
-test("PR comparison includes unverified base changes and validates the merge head", async t => {
+test("PR comparison uses the current base without inheriting main validation debt", async t => {
   const { root, base } = history(t);
+  mkdirSync(path.join(root, "benchmarks"));
+  writeFileSync(path.join(root, "benchmarks/changed.ts"), "// unverified main input");
+  git(root, "add", "benchmarks/changed.ts");
+  git(root, "commit", "-m", "main validation debt");
+  const parent = git(root, "rev-parse", "HEAD");
   git(root, "checkout", "-b", "feature", base);
-  writeFileSync(path.join(root, "src/utils/other.ts"), "export const other = false;");
+  writeFileSync(path.join(root, "tests/view.test.ts"), "import '../src/desktop/view.js'; // PR change");
   git(root, "commit", "-am", "feature");
   const feature = git(root, "rev-parse", "HEAD");
   git(root, "checkout", "main");
   git(root, "merge", "--no-ff", "feature", "-m", "merge fixture");
-  const event = { pull_request: { head: { sha: feature }, base: { ref: "main" } } };
-  const comparison = await resolveComparison(root, "pull_request", event, {}, async () => [
-    { id: 1, head_sha: base, head_branch: "main", event: "push", conclusion: "success" }
-  ]);
-  assert.equal(comparison.base, base);
-  assert.deepEqual(changedFilesBetween(root, comparison.base, comparison.head), ["src/utils/format.ts", "src/utils/other.ts", "tests/other.test.ts"]);
-  const parent = git(root, "rev-parse", "HEAD^1");
-  const latest = await resolveComparison(root, "pull_request", event, {}, async () => [
-    { id: 2, head_sha: parent, head_branch: "main", event: "push", conclusion: "success" }
-  ]);
-  assert.equal(latest.base, parent);
+  const event = { pull_request: { head: { sha: feature }, base: { ref: "main", sha: parent } } };
+  for (const fetchRuns of [
+    async () => [{ id: 1, head_sha: base, head_branch: "main", event: "push", conclusion: "success" }],
+    async () => [],
+    async () => { throw new Error("API unavailable"); }
+  ]) {
+    const comparison = await resolveComparison(root, "pull_request", event, {}, fetchRuns);
+    assert.equal(comparison.base, parent);
+    assert.equal(comparison.head, git(root, "rev-parse", "HEAD"));
+    const changes = changedFilesBetween(root, comparison.base, comparison.head);
+    assert.deepEqual(changes, ["tests/view.test.ts"]);
+    const plan = await createPlan(root, changes);
+    assert.equal(plan.full, false);
+    assert.deepEqual(plan.standard, ["view.test.ts"]);
+    assert.deepEqual(plan.e2e, []);
+    for (const lane of ["build", "renderer", "windows", "windowsPackage"]) assert.equal(plan[lane], false);
+  }
   event.pull_request.head.sha = base;
   await assert.rejects(resolveComparison(root, "pull_request", event, {}, async () => []), /merge result/u);
+  event.pull_request.head.sha = feature;
+  event.pull_request.base.sha = base;
+  await assert.rejects(resolveComparison(root, "pull_request", event, {}, async () => []), /merge result/u);
+});
+
+test("PR plans include dependency changes introduced by the merge result", async t => {
+  const { root, base } = history(t);
+  const parent = git(root, "rev-parse", "HEAD");
+  git(root, "checkout", "-b", "feature", base);
+  writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+  git(root, "add", "package.json");
+  git(root, "commit", "-m", "dependency change");
+  const feature = git(root, "rev-parse", "HEAD");
+  git(root, "checkout", "main");
+  git(root, "merge", "--no-ff", "feature", "-m", "merge fixture");
+  const comparison = await resolveComparison(root, "pull_request", {
+    pull_request: { head: { sha: feature }, base: { ref: "main", sha: parent } }
+  }, {}, async () => []);
+  assert.equal(comparison.base, parent);
+  const plan = await createPlan(root, changedFilesBetween(root, comparison.base, comparison.head));
+  assert.equal(plan.full, true);
+  assert.match(plan.reasons.join(" "), /package.json/u);
+});
+
+for (const [files, expectedShards] of [
+  [["README.md"], [1]],
+  [["tests/view.test.ts"], [1]],
+  [["tests/view.test.ts", "tests/other.test.ts"], [1, 2]],
+  [["package.json"], [1, 2, 3, 4]]
+]) {
+  test(`plan command emits a complete matrix for ${files.join(", ")}`, async t => {
+    const { root: temporaryRoot, head } = history(t);
+    const root = realpathSync(temporaryRoot);
+    mkdirSync(path.join(root, "scripts"));
+    for (const name of ["ci-test-plan.mjs", "run-tests.mjs"]) {
+      copyFileSync(new URL(name, import.meta.url), path.join(root, "scripts", name));
+    }
+    symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), path.join(root, "node_modules"), "dir");
+    for (const file of files) writeFileSync(path.join(root, file), file === "package.json" ? "{}" : "// changed");
+    git(root, "add", "--", ...files);
+    git(root, "commit", "-m", "selected change");
+    const output = path.join(root, "outputs");
+    execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), "--base", head], {
+      cwd: root, env: { ...process.env, GITHUB_OUTPUT: output }, stdio: "pipe", timeout: 15_000
+    });
+    const outputs = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map(line => {
+      const at = line.indexOf("=");
+      return [line.slice(0, at), line.slice(at + 1)];
+    }));
+    const shards = JSON.parse(outputs.shards);
+    assert.deepEqual(shards, expectedShards);
+    const plan = JSON.parse(readFileSync(path.join(root, ".ci/plan.json"), "utf8"));
+    assert.equal(outputs.standard, String(plan.standard.length > 0));
+    const selected = shards.flatMap(shard => JSON.parse(execFileSync(process.execPath, [
+      path.join(root, "scripts/run-tests.mjs"), "--standard", "--plan=.ci/plan.json", `--shard=${shard}/${shards.length}`, "--list"
+    ], { cwd: root, encoding: "utf8", timeout: 15_000 })));
+    assert.deepEqual(selected.sort(), plan.standard);
+    assert.equal(new Set(selected).size, selected.length);
+  });
+}
+
+test("large standard plans use eight shards without gaps or duplicates", t => {
+  const { root: temporaryRoot, head } = history(t);
+  const root = realpathSync(temporaryRoot);
+  mkdirSync(path.join(root, "scripts"));
+  for (const name of ["ci-test-plan.mjs", "run-tests.mjs"]) copyFileSync(new URL(name, import.meta.url), path.join(root, "scripts", name));
+  symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), path.join(root, "node_modules"), "dir");
+  for (let index = 0; index < 395; index += 1) writeFileSync(path.join(root, `tests/scale-${index}.test.ts`), "");
+  writeFileSync(path.join(root, "package.json"), "{}");
+  git(root, "add", "--", "tests", "package.json");
+  git(root, "commit", "-m", "large test set");
+  const output = path.join(root, "outputs");
+  const plan = (eventName = "pull_request") => {
+    writeFileSync(output, "");
+    execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), "--base", head], {
+      cwd: root, env: { ...process.env, GITHUB_EVENT_NAME: eventName, GITHUB_OUTPUT: output }, stdio: "pipe", timeout: 20_000
+    });
+    const line = readFileSync(output, "utf8").split("\n").find(entry => entry.startsWith("shards="));
+    return JSON.parse(line.slice("shards=".length));
+  };
+  assert.deepEqual(plan(), [1, 2, 3, 4], "399 files retain four shards");
+  writeFileSync(path.join(root, "tests/scale-395.test.ts"), "");
+  git(root, "add", "--", "tests/scale-395.test.ts");
+  git(root, "commit", "-m", "cross shard threshold");
+  for (const event of ["push", "workflow_dispatch", "schedule"]) assert.deepEqual(plan(event), [1, 2, 3, 4, 5, 6, 7, 8]);
+  const shards = plan();
+  assert.deepEqual(shards, [1, 2, 3, 4, 5, 6, 7, 8]);
+  const planPath = path.join(root, ".ci/plan.json");
+  const actualPlan = JSON.parse(readFileSync(planPath, "utf8"));
+  assert.equal(actualPlan.standard.length, 400);
+  for (const timings of [{}, Object.fromEntries(actualPlan.standard.map((name, index) => [name, (index + 1) * 13]))]) {
+    writeFileSync(planPath, JSON.stringify({ ...actualPlan, timings }));
+    const selected = shards.flatMap(shard => JSON.parse(execFileSync(process.execPath, [
+      path.join(root, "scripts/run-tests.mjs"), "--standard", "--plan=.ci/plan.json", `--shard=${shard}/${shards.length}`, "--list"
+    ], { cwd: root, encoding: "utf8", timeout: 15_000 })));
+    assert.deepEqual(selected.sort(), actualPlan.standard);
+    assert.equal(new Set(selected).size, selected.length);
+  }
 });
 
 test("missing history, wrong-branch success, rewritten history and API failure request full validation", async t => {
@@ -410,19 +575,27 @@ test("Validate command fails for a static-blocked run or cancelled test matrix",
   }
 });
 
-test("workflow gates selected lanes on static checks and retains full-run and packaging gates", async () => {
+test("workflow runs independent lanes in parallel and retains full-run and packaging gates", async () => {
   const { parse } = await import("yaml");
   const workflow = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
   assert.ok("workflow_dispatch" in workflow.on);
   assert.ok(workflow.on.schedule.length);
   const outputs = { test: "standard", e2e: "e2e", build: "build", renderer: "renderer", windows: "windows" };
   for (const [lane, output] of Object.entries(outputs)) {
-    assert.deepEqual(workflow.jobs[lane].needs, ["plan", "static"]);
+    assert.deepEqual(workflow.jobs[lane].needs, ["plan"]);
     assert.equal(workflow.jobs[lane].if, `needs.plan.outputs.${output} == 'true'`);
     assert.ok(workflow.jobs.validate.needs.includes(lane));
   }
   assert.equal(workflow.jobs.plan.needs, undefined);
-  assert.equal(workflow.jobs.static.needs, undefined);
+  assert.deepEqual(workflow.jobs.static.needs, ["plan"]);
+  assert.equal(workflow.jobs.static.if, "needs.plan.outputs.static == 'true'");
+  assert.equal(workflow.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
+  assert.equal(workflow.concurrency.group, "ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}");
+  assert.equal(workflow.on.pull_request, null, "required Validate must still be reported on documentation PRs");
+  assert.equal(workflow.jobs.test.strategy["max-parallel"], 12);
+  assert.equal(workflow.jobs.plan.outputs.shards, "${{ steps.plan.outputs.shards }}");
+  assert.equal(workflow.jobs.test.strategy.matrix.shard, "${{ fromJSON(needs.plan.outputs.shards) }}");
+  assert.ok(workflow.jobs.test.steps.some(step => step.run?.includes("--shard=${{ matrix.shard }}/${{ strategy.job-total }}")));
   assert.equal(workflow.jobs.test.strategy["fail-fast"], "${{ github.event_name == 'pull_request' }}");
   assert.equal(workflow.jobs.validate.if, "${{ always() }}");
   assert.ok(workflow.jobs.validate.needs.includes("static"));
@@ -456,4 +629,98 @@ test("Vite SSR consumers stay selected when an ordinary import already proves co
   const docsOnly = await createPlan(root, ["README.md"]);
   assert.equal(docsOnly.full, false);
   assert.deepEqual(docsOnly.standard, [], "documentation-only changes remain static-only");
+});
+
+// The probe must work before pnpm install and compare the entire push/PR, not just HEAD.
+test("documentation probe skips only a verified documentation-only event", t => {
+  const { root: temporaryRoot, head } = history(t);
+  const root = realpathSync(temporaryRoot);
+  writeFileSync(path.join(root, "README.md"), "docs");
+  git(root, "add", "README.md");
+  git(root, "commit", "-m", "docs only");
+  const event = { before: head, after: git(root, "rev-parse", "HEAD") };
+  assert.equal(documentationOnly(root, "push", event), true);
+  mkdirSync(path.join(root, "scripts"));
+  copyFileSync(new URL("ci-test-plan.mjs", import.meta.url), path.join(root, "scripts/ci-test-plan.mjs"));
+  const eventPath = path.join(root, "event.json");
+  const output = path.join(root, "output.txt");
+  writeFileSync(eventPath, JSON.stringify(event));
+  const env = { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: output,
+    GITHUB_API_URL: "http://127.0.0.1:1", GH_TOKEN: "" };
+  for (const flag of ["--probe-docs", "--ci"]) execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), flag], { cwd: root, env, stdio: "pipe", timeout: 5000 });
+  assert.match(readFileSync(output, "utf8"), /docs_only=true\n/);
+  assert.match(readFileSync(output, "utf8"), /static=false\n/);
+  assert.equal(JSON.parse(readFileSync(path.join(root, ".ci/plan.json"), "utf8")).documentationOnly, true);
+  execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), "--ci", "--full"], { cwd: root, env, stdio: "pipe", timeout: 5000 });
+  const fullPlan = JSON.parse(readFileSync(path.join(root, ".ci/plan.json"), "utf8"));
+  assert.equal(fullPlan.full, true);
+  assert.notEqual(fullPlan.documentationOnly, true);
+
+  for (const name of ["schedule", "workflow_dispatch", "unknown"]) assert.equal(documentationOnly(root, name, event), false);
+  assert.equal(documentationOnly(root, "push", { ...event, before: "0".repeat(40) }), false);
+  assert.equal(documentationOnly(root, "push", { ...event, after: head }), false);
+  writeFileSync(path.join(root, "src/utils/format.ts"), "export const format = () => 'changed';");
+  git(root, "add", "src/utils/format.ts");
+  git(root, "commit", "-m", "code and docs");
+  assert.equal(documentationOnly(root, "push", { ...event, after: git(root, "rev-parse", "HEAD") }), false);
+  git(root, "checkout", "-b", "docs-pr", head);
+  writeFileSync(path.join(root, "README.md"), "PR docs");
+  git(root, "add", "README.md");
+  git(root, "commit", "-m", "PR docs");
+  const prHead = git(root, "rev-parse", "HEAD");
+  git(root, "checkout", "-b", "merge-result", head);
+  git(root, "merge", "--no-ff", "docs-pr", "-m", "PR merge");
+  const pr = { pull_request: { base: { sha: head }, head: { sha: prHead } } };
+  assert.equal(documentationOnly(root, "pull_request", pr), true);
+  pr.pull_request.base.sha = prHead;
+  assert.equal(documentationOnly(root, "pull_request", pr), false);
+});
+
+test("documentation Validate accepts only explicit skipped lanes and a successful plan", async t => {
+  const plan = { ...await createPlan(fixture(t), ["README.md"]), documentationOnly: true };
+  const needs = Object.fromEntries(["plan", "static", "test", "e2e", "build", "renderer", "windows"].map(lane => [lane, { result: lane === "plan" ? "success" : "skipped" }]));
+  assert.doesNotThrow(() => checkResults(plan, needs));
+  for (const lane of Object.keys(needs)) {
+    for (const result of ["failure", "cancelled", undefined]) assert.throws(() => checkResults(plan, { ...needs, [lane]: { result } }));
+  }
+  assert.throws(() => checkResults({ ...plan, documentationOnly: false }, needs), /static/);
+});
+
+test("thousand-file plans use twelve shards and keep each selected test exactly once", t => {
+  const { root: temporaryRoot, head } = history(t);
+  const root = realpathSync(temporaryRoot);
+  mkdirSync(path.join(root, "scripts"));
+  for (const name of ["ci-test-plan.mjs", "run-tests.mjs"]) copyFileSync(new URL(name, import.meta.url), path.join(root, "scripts", name));
+  for (let index = 0; index < 1000; index += 1) writeFileSync(path.join(root, `tests/large-${index}.test.ts`), "");
+  writeFileSync(path.join(root, "package.json"), "{}");
+  git(root, "add", "tests", "package.json");
+  git(root, "commit", "-m", "full validation");
+  const output = path.join(root, "outputs");
+  execFileSync(process.execPath, [path.join(root, "scripts/ci-test-plan.mjs"), "--base", head], {
+    cwd: root, env: { ...process.env, GITHUB_OUTPUT: output }, stdio: "pipe", timeout: 15000
+  });
+  const shards = JSON.parse(readFileSync(output, "utf8").split("\n").find(line => line.startsWith("shards=")).slice(7));
+  assert.deepEqual(shards, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  const plan = JSON.parse(readFileSync(path.join(root, ".ci/plan.json"), "utf8"));
+  const selected = shards.flatMap(shard => JSON.parse(execFileSync(process.execPath, [
+    path.join(root, "scripts/run-tests.mjs"), "--standard", "--plan=.ci/plan.json", `--shard=${shard}/12`, "--list"
+  ], { cwd: root, encoding: "utf8", timeout: 15000 })));
+  assert.deepEqual(selected.sort(), plan.standard);
+  assert.equal(new Set(selected).size, selected.length);
+});
+
+test("a documentation-only success cannot hide an unverified main code change", async t => {
+  const { root, base } = history(t);
+  writeFileSync(path.join(root, "README.md"), "documentation");
+  git(root, "add", "README.md");
+  git(root, "commit", "-m", "documentation only");
+  const docs = git(root, "rev-parse", "HEAD");
+  writeFileSync(path.join(root, "tests/view.test.ts"), "// new test change");
+  git(root, "commit", "-am", "next change");
+  const run = (id, sha, event = "push") => ({ id, head_sha: sha, head_branch: "main", event, conclusion: "success" });
+  const comparison = await resolveComparison(root, "push", {}, { GITHUB_REF_NAME: "main" }, async () => [run(2, docs), run(1, base)]);
+  assert.equal(comparison.base, base);
+  assert.ok(changedFilesBetween(root, comparison.base, comparison.head).includes("src/utils/format.ts"));
+  const full = await resolveComparison(root, "push", {}, { GITHUB_REF_NAME: "main" }, async () => [run(3, docs, "workflow_dispatch"), run(2, docs), run(1, base)]);
+  assert.equal(full.base, docs, "explicit full validation of a docs commit is still a valid baseline");
 });

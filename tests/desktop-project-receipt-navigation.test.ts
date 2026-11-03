@@ -140,6 +140,7 @@ async function fixture(t: TestContext) {
     refreshProject(projectId: string) { const gate = deferred<DesktopWorkspaceSnapshot>(); refreshes.push({ projectId, gate }); return gate.promise; },
     createEmptyProject() { const gate = deferred<DesktopWorkspaceSnapshot | undefined>(); creations.push(gate); return gate.promise; },
     openProject() { const gate = deferred<DesktopWorkspaceSnapshot | undefined>(); opens.push(gate); return gate.promise; },
+    preparePrompt: async (projectId: string) => { assert.ok(projectId); },
     sendPrompt: async (projectId: string, sessionId: string | undefined, input: string) => { actions.push({ kind: "send", projectId, sessionId, input }); const gate = deferred<DesktopRunReceipt>(); sends.push(gate); return await gate.promise; },
     runSlashCommand: async (projectId: string, sessionId: string | undefined, input: string) => { actions.push({ kind: "slash", projectId, sessionId, input }); const gate = deferred<DesktopSlashResult>(); slashes.push(gate); return await gate.promise; },
     resumeInterruptedTurn: async (projectId: string, sessionId: string) => { actions.push({ kind: "resume", projectId, sessionId }); return { sessionId, runId: "run-inert", messageId: "message-inert" }; },

@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
@@ -65,7 +66,7 @@ test("cold TUI Host reads Desktop encrypted credentials and persists a reply", {
 
     // This is the same public election path used by a cold TUI; credentials stay
     // in the owner while the Node client only receives runtime snapshots/events.
-    host = await spawnRuntimeHost(root, { workspaceRoot: root, configDir: globalConfigDir(), clientId: "cipher-observer", surface: "cli" });
+    host = await readyHostClient(await spawnRuntimeHost(root, { workspaceRoot: root, configDir: globalConfigDir(), clientId: "cipher-observer", surface: "cli" }));
     const terminal: Terminal = {
       start: () => undefined, stop: () => undefined, drainInput: async () => undefined,
       write: () => undefined, columns: 80, rows: 24, kittyProtocolActive: false,

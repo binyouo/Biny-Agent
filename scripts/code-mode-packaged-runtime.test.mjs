@@ -340,20 +340,38 @@ async function desktopArtifact(projectRoot) {
     assert.equal(sha256(await readFile(path.join(mainRoot, relative))), hash, `Desktop output checksum: ${relative}`);
   }
   const main = await readFile(path.join(mainRoot, "index.js"), "utf8");
-  const runtimeImport = /from\s*["'](\.\/chunks\/code-mode-runtime-[^"']+\.js)["']/u.exec(main);
-  assert.ok(runtimeImport, "Actual Desktop main must import its dedicated bundled runtime");
   const hostImport = /import\(["'](\.\/chunks\/hostProcess-[^"']+\.js)["']\)/u.exec(main);
+  const desktopImport = /import\(["'](\.\/chunks\/desktopMain-[^"']+\.js)["']\)/u.exec(main);
   assert.ok(hostImport, "Normal --biny-runtime-host reentry must resolve a real generated host chunk");
+  assert.ok(desktopImport, "Desktop entry must resolve a real generated Desktop chunk");
   assert.match(main, /process\.argv\.indexOf\(["']--biny-runtime-host["']\)/u);
-  const host = await readFile(path.resolve(mainRoot, hostImport[1]), "utf8");
-  assert.match(host, /from\s*["']\.\.\/index\.js["']/u, "Reentry host must use the same generated main graph");
-  const runtimePath = path.resolve(mainRoot, runtimeImport[1]);
+  async function reachableRuntime(entry) {
+    const pending = [path.resolve(mainRoot, entry)];
+    const seen = new Set();
+    const runtimes = new Set();
+    while (pending.length) {
+      const file = pending.pop();
+      if (seen.has(file)) continue;
+      seen.add(file);
+      if (/^code-mode-runtime-.*\.js$/u.test(path.basename(file))) { runtimes.add(file); continue; }
+      const contents = await readFile(file, "utf8");
+      for (const match of contents.matchAll(/(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)["'](\.[^"']+\.js)["']/gu)) {
+        pending.push(path.resolve(path.dirname(file), match[1]));
+      }
+    }
+    return runtimes;
+  }
+  const desktopRuntimes = await reachableRuntime(desktopImport[1]);
+  const hostRuntimes = await reachableRuntime(hostImport[1]);
+  assert.equal(desktopRuntimes.size, 1, "Desktop graph must use one dedicated bundled runtime");
+  assert.deepEqual(hostRuntimes, desktopRuntimes, "Host and Desktop must use the same bundled runtime");
+  const runtimePath = [...desktopRuntimes][0];
   const runtime = await readFile(runtimePath, "utf8");
   for (const localPath of [sourceRoot, temporary]) assert.ok(!runtime.includes(localPath), "Generated Desktop runtime must not leak actual local build/test roots");
   validateBundledRuntime(runtime, provenance.embeddedWasmSha256);
   assert.ok(provenance.outputs[path.relative(mainRoot, runtimePath).split(path.sep).join("/")]);
   await runFixture(projectRoot, ["--module", runtimePath, "--adapter-only", "--deny-external-runtime"]);
-  checks.push({ name: "Desktop execution scope", normalMain: "out/main/index.js", reentryHost: hostImport[1], runtimeChunk: runtimeImport[1],
+  checks.push({ name: "Desktop execution scope", normalMain: "out/main/index.js", reentryHost: hostImport[1], runtimeChunk: path.relative(mainRoot, runtimePath),
     actuallyExecuted: "unmodified generated runtime chunk with plain Node", macOSApplicationLaunch: "not performed" });
 }
 

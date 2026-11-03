@@ -81,6 +81,7 @@ interface ComposerProps {
   capabilityDefaults: DesktopCapabilityDefaults;
   skills: DesktopSkillCatalogEntry[];
   toolCatalog: DesktopToolCatalogEntry[];
+  onPrepare?(): Promise<void>;
   onSend(input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection, fastMode?: boolean): Promise<void>;
   onMutateQueuedMessage(action: "update" | "remove" | "move" | "steer" | "send-all", mutation?: { messageId?: string; input?: string; targetMessageId?: string; placeAfter?: boolean }): Promise<void>;
   /** 正在编辑的历史消息；nonce 变化时把 value 回填进输入框并聚焦。 */
@@ -149,6 +150,7 @@ export const Composer = memo(function Composer({
   capabilityDefaults,
   skills,
   toolCatalog,
+  onPrepare,
   onSend,
   onMutateQueuedMessage,
   editingMessage,
@@ -280,6 +282,7 @@ export const Composer = memo(function Composer({
   const modelSwitchPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const modelSwitchRequestRef = useRef(0);
   const submitFlightRef = useRef(false);
+  const [preparing, setPreparing] = useState(false);
   const addingFiles = useRef(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const defaultToolSelection = capabilityDefaults.tools;
@@ -371,6 +374,9 @@ export const Composer = memo(function Composer({
       submitFlightRef.current = true;
       setBusy(true);
       try {
+        setPreparing(true);
+        try { await onPrepare?.(); } finally { if (mounted.current) setPreparing(false); }
+        if (!mounted.current || isSubmissionCurrent?.() === false || editingMessageRef.current !== editingMessage) return;
         clearHistory();
         setDraft({ value: "", tokens: [] });
         await onSubmitEdit(value);
@@ -407,11 +413,16 @@ export const Composer = memo(function Composer({
       if (!mounted.current || isSubmissionCurrent?.() === false) return;
       const [slashName] = value.split(/\s+/, 1);
       const slashCommand = DESKTOP_SLASH_COMMANDS.find((command) => command.name === slashName);
+      if (sessionWriterConflict) return;
+      setPreparing(true);
+      try { await onPrepare?.(); }
+      catch (error) { if (mounted.current) onSubmitError(errorMessage(error)); return; }
+      finally { if (mounted.current) setPreparing(false); }
+      if (!mounted.current || isSubmissionCurrent?.() === false) return;
       if (!resume && slashCommand && (value === slashCommand.name || slashCommand.acceptsArgs)) {
         await runSlash(value, suggestion === undefined);
         return;
       }
-      if (sessionWriterConflict) return;
       const sentHistory = draftState.getSnapshot().history;
       setBusy(true);
       try {
@@ -693,6 +704,7 @@ export const Composer = memo(function Composer({
             />
           </div>
         ) : null}
+        {preparing && <div role="status" className="composer-preparing">正在准备运行环境…</div>}
         <PromptInput
           inputRef={inputRef}
           projectId={draftProjectId}

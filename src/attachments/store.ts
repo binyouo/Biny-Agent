@@ -112,6 +112,8 @@ interface ImportedAttachmentFile {
 
 export interface AttachmentImportBatch {
   save(name: string, mimeType: string, bytes: Uint8Array): Promise<AttachmentReference>;
+  /** Reserve an unavailable imported reference without creating substitute bytes. */
+  reserveMissing(name: string): Promise<string>;
   commit(): void;
   /** Returns files retained because their ownership or cleanup could not be confirmed. */
   rollback(): Promise<string[]>;
@@ -130,6 +132,7 @@ export async function createAttachmentImportBatch(persistenceRoot: string): Prom
   try { identity = await fs.lstat(directory); }
   catch (error) { throw new AttachmentImportCleanupError(error, [directory]); }
   const files: ImportedAttachmentFile[] = [];
+  const reserved = new Set<string>();
   let active = true;
   const isOwnedDirectory = async (): Promise<boolean> => {
     try {
@@ -143,6 +146,10 @@ export async function createAttachmentImportBatch(persistenceRoot: string): Prom
       const safeName = sanitizeAttachmentName(name);
       for (let attempt = 1; ; attempt += 1) {
         const leaf = attachmentStorageName(safeName);
+        if (reserved.has(leaf)) {
+          if (attempt >= 10) throw new Error("attachment_import_reference_collision");
+          continue;
+        }
         const file = path.join(directory, leaf);
         let handle: FileHandle;
         try { handle = await fs.open(file, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); }
@@ -165,6 +172,21 @@ export async function createAttachmentImportBatch(persistenceRoot: string): Prom
         if (!entry || !await isOwnedDirectory() || !await sameImportedFile(file, entry)) throw new Error("attachment_import_file_replaced");
         return { name: safeName, mimeType, path: `${attachmentPathPrefix}${path.basename(directory)}/${leaf}`, size: bytes.byteLength };
       }
+    },
+    async reserveMissing(name) {
+      if (!active || !await isOwnedDirectory()) throw new Error("attachment_import_batch_unavailable");
+      for (let attempt = 1; attempt <= 10; attempt += 1) {
+        const leaf = attachmentStorageName(sanitizeAttachmentName(name));
+        if (reserved.has(leaf)) continue;
+        try { await fs.lstat(path.join(directory, leaf)); }
+        catch (error) {
+          if (!isNotFound(error)) throw error;
+          if (!await isOwnedDirectory()) throw new Error("attachment_import_batch_unavailable");
+          reserved.add(leaf);
+          return `${attachmentPathPrefix}${path.basename(directory)}/${leaf}`;
+        }
+      }
+      throw new Error("attachment_import_reference_collision");
     },
     commit() { active = false; },
     async rollback() {

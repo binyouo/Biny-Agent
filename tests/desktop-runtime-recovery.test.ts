@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import os from "node:os";
@@ -152,7 +153,8 @@ test("恢复目标会话后释放先前空闲会话的写入权，不把别的�
   await manager.openSession(project.id, recorder.sessionId);
   const recovered = await manager.retryRuntime(project.id, recorder.sessionId);
   assert.equal(recovered.document?.runtimeSnapshot?.info.sessionId, recorder.sessionId);
-  const client = await connectRuntimeHost(dataRoot, { configDir, clientId: "other-writer", surface: "tui", keepAlive: false });
+  const client = await readyHostClient(await connectRuntimeHost(dataRoot, { configDir, clientId: "other-writer", surface: "tui", keepAlive: false }));
+
   assert.ok(client);
   try {
     await client.claimSession(sessionId);

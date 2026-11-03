@@ -25,6 +25,7 @@ export async function runCommand(workspaceRoot: string, input: string, options: 
   const client = await connectOrSpawnRuntimeHost(workspaceRoot, { workspaceRoot, resumeInterrupted: false, surface: "cli", clientId: `run-${process.pid}` });
   if (!client) throw new Error("Runtime Host is unavailable.");
   try {
+    await client.waitForReady();
     const config = await createFileConfigStore(workspaceRoot).load(workspaceRoot);
     const attachments = await loadRunAttachments(workspaceRoot, client.persistenceRoot, config.workspace.ignore, options.attachment);
     const { sessionId } = await client.ensureSession({ isolation: options.isolated ? "worktree" : "shared", writeIntent: true,

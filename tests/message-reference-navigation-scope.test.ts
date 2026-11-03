@@ -230,7 +230,7 @@ async function setupFixture(t: TestContext) {
   const calls = { source: [] as Array<Parameters<DesktopApi["referenceForMessage"]>>,
     selection: [] as Array<Parameters<DesktopApi["commitSelection"]>>,
     opened: [] as Array<Parameters<DesktopApi["openSession"]>>,
-    projects: [] as string[], network: [] as string[], bootstrap: 0 };
+    projects: [] as string[], network: [] as string[], bootstrap: 0, refresh: 0 };
   t.mock.method(globalThis, "fetch", async () => {
     calls.network.push("fetch"); throw new Error("Unexpected fetch in message-reference fixture");
   });
@@ -242,10 +242,10 @@ async function setupFixture(t: TestContext) {
     return () => { subscriptions.delete(token); };
   };
   let bootstrap = data.bootstrap;
-  let importsChanged: (() => void) | undefined;
   let handoff: Parameters<DesktopApi["onSessionHandoff"]>[0] | undefined;
   const api = {
     bootstrap: async () => { calls.bootstrap += 1; return bootstrap; },
+    refreshProject: async (projectId: string) => { assert.equal(projectId, PROJECT); calls.refresh += 1; return bootstrap.workspace!; },
     selectProject: async (projectId: string) => {
       calls.projects.push(projectId);
       const workspace = data.workspaces.get(projectId); assert.ok(workspace);
@@ -266,10 +266,7 @@ async function setupFixture(t: TestContext) {
     toolCatalog: async () => [], listProjectBranches: async () => [],
     planProjection: async (_projectId: string, sessionId: string) => ({ sessionId, plans: [] }),
     onAppearanceChanged: subscribe,
-    onApplicationImportsChanged: (listener: () => void) => {
-      importsChanged = listener; const unsubscribe = subscribe();
-      return () => { if (importsChanged === listener) importsChanged = undefined; unsubscribe(); };
-    },
+    onApplicationImportsChanged: subscribe,
     onSessionHandoff: (listener: Parameters<DesktopApi["onSessionHandoff"]>[0]) => {
       handoff = listener; const unsubscribe = subscribe();
       return () => { if (handoff === listener) handoff = undefined; unsubscribe(); };
@@ -454,15 +451,25 @@ async function setupFixture(t: TestContext) {
     assert.deepEqual(calls.selection.at(-1), [PROJECT, SESSION_B, "chat"]);
   };
   const rerenderMetadata = async (): Promise<void> => {
-    assert.equal(typeof importsChanged, "function");
     const original = bootstrap.workspace!;
     const name = "Updated reference fixture metadata";
     const project = { ...original.project, name };
     bootstrap = { ...bootstrap, projects: [project, ...bootstrap.projects.filter(item => item.id !== PROJECT)],
       workspace: { ...original, project } };
-    const before = calls.bootstrap;
-    await act(async () => { importsChanged!(); });
-    assert.equal(calls.bootstrap, before + 1);
+    const before = calls.refresh;
+    const bootstrapReads = calls.bootstrap;
+    const menu = document.querySelector<HTMLButtonElement>('button[aria-label="' + original.project.name + ' 项目操作"]');
+    assert.ok(menu);
+    await act(async () => menu.click());
+    await drainFrames();
+    const refresh = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find(button => button.textContent?.includes("刷新项目状态"));
+    assert.ok(refresh);
+    await act(async () => refresh.click());
+    await act(() => t.mock.timers.tick(150));
+    assert.equal(document.querySelectorAll('[role="menu"]').length, 0);
+    assert.equal(calls.refresh, before + 1);
+    assert.equal(calls.bootstrap, bootstrapReads);
     assert.ok(document.body.textContent?.includes(name)); assertCurrent(SESSION);
   };
   const settle = async (error?: Error): Promise<void> => {

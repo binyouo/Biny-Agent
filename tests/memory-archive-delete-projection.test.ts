@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 import { testModel } from "./helpers/model.js";
 /** Archive-row deletion must not invalidate the separately active version of the fact. */
@@ -233,7 +234,7 @@ async function fixture() {
       close: async () => undefined
     } as unknown as InteractiveRuntimeHandle;
     host = await startRuntimeHost(root, async () => ({ runtime: interactive, commands }), { workspaceRoot: root });
-    client = await connectRuntimeHost(root, { clientId: "archive-delete", surface: "cli" });
+    client = await readyHostClient(await connectRuntimeHost(root, { clientId: "archive-delete", surface: "cli" }));
     assert.ok(client);
     assert.equal((await localMemory.listMemoryEntries()).total, 0, "each case starts with an empty isolated active store");
     assert.equal((await localMemory.listArchivedEntries()).total, 0, "each case starts with an empty isolated archive");

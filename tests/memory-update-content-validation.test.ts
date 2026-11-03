@@ -72,9 +72,8 @@ async function withMemory(run: (memory: LocalMemory, reader: MemoryStorage, upda
   const reader = new MemoryStorage(root);
   try {
     const commands = { agent: { getLocalMemory: () => memory } } as unknown as CommandRuntime;
-    const context = { getCommands: () => commands, scheduleEmbeddingRebuild: () => undefined };
     await run(memory, reader, async (id, patch, activeOnly) =>
-      await executeRuntimeHostMemoryOperation(context, { action: "update", id, patch, activeOnly }) as MemoryWriteResult | null);
+      await executeRuntimeHostMemoryOperation(commands, { action: "update", id, patch, activeOnly }) as MemoryWriteResult | null);
   } finally {
     reader.close();
     memory.close();

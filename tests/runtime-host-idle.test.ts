@@ -1,3 +1,4 @@
+import { readyHostClient } from "./helpers/readyHostClient.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 /** 真实 Host、socket 和持久化目录上的生命周期契约；时间等待只用于验证空闲宽限窗口。 */
 import assert from "node:assert/strict";
@@ -22,9 +23,12 @@ await saveConfig(root, {
 const local = await createInteractiveAgentHost(root, { configStore: createFileConfigStore(root, { globalDir: configDir }) });
 const server = await startRuntimeHost(root, async () => local, {createRuntime: async () => { throw new Error("Unexpected session runtime creation in this fixture."); },  configDir });
 const clientOptions = { spawnOptions: { workspaceRoot: root, configDir } };
-let first = await connectRuntimeHost(root, { ...clientOptions, clientId: "first" });
-let second = await connectRuntimeHost(root, { ...clientOptions, clientId: "second" });
-const observer = await connectRuntimeHost(root, { ...clientOptions, clientId: "desktop-observer", surface: "desktop", keepAlive: false });
+let first = await readyHostClient(await connectRuntimeHost(root, { ...clientOptions, clientId: "first" }));
+
+let second = await readyHostClient(await connectRuntimeHost(root, { ...clientOptions, clientId: "second" }));
+
+const observer = await readyHostClient(await connectRuntimeHost(root, { ...clientOptions, clientId: "desktop-observer", surface: "desktop", keepAlive: false }));
+
 try {
   assert.ok(first && second && observer);
   await first.close();

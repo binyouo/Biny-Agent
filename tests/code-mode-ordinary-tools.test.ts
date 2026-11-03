@@ -49,6 +49,19 @@ function fixture(options: { selected?: string[]; ask?: () => Promise<{ approved:
 }
 
 try {
+  await test("one script can complete more than 256 real tool calls with audit records", { timeout: 30_000 }, async () => {
+    const current = fixture({ selected: ["Read"] });
+    await writeFile(path.join(root, "many-reads.txt"), "record\n");
+    const result = await current.coordinator.createCodeModeTool().execute("many-reads", {
+      description: "Read records repeatedly",
+      code: "for (let i = 0; i < 300; i++) await tools.Read({path:'many-reads.txt'}); return 'done';"
+    });
+    assert.equal(result.isError, false, JSON.stringify(result.details));
+    assert.equal((result.details as { value: unknown }).value, "done");
+    await current.recorder.flush();
+    const events = await readSessionEvents(current.recorder.filePath);
+    assert.equal(events.filter((event) => event.type === "tool_result" && event.tool === "Read" && event.executionStatus === "succeeded").length, 300);
+  });
   await test("script Write and Edit use real file commits and persisted child events, matching direct calls", { timeout: 15_000 }, async () => {
     for (const mode of ["direct", "code_mode"] as const) {
       const current = fixture();
@@ -151,7 +164,7 @@ try {
       ` });
       assert.equal(result.isError, false, JSON.stringify(result.details));
       const value = (result.details as { value: { pid: number; output: string; state: string; cleanup: string } }).value;
-      assert.match(value.output, /\nBACKGROUND_READY$/u);
+      assert.equal(value.output, "BACKGROUND_READY");
       assert.equal(value.state, "stopped");
       assert.equal(value.cleanup, "stopped");
       assert.throws(() => process.kill(value.pid, 0), { code: "ESRCH" });

@@ -3,6 +3,12 @@ import type { MaskSegment } from "../privacy/engine.js";
 import type { ToolOptimizationOverview } from "../session/toolOptimizationOverview.js";
 import type { TaskInspection, TaskInspectionOptions } from "../runtime/TaskCommunication.js";
 import type { ApplicationImportSource, ApplicationImportSnapshot, ApplicationImportPreview, ApplicationImportHistory } from "../imports/types.js";
+
+export interface DesktopApplicationImportsChanged {
+  projects: Array<{ projectId: string; sessionIds: string[] }>;
+  settingsChanged: boolean;
+  mcpChanged: boolean;
+}
 /**
  * 桌面端 IPC 协议。
  *
@@ -52,7 +58,6 @@ import { slashCommandsForSurface, type SlashCommandDefinition } from "../runtime
 import type { SessionBranchPoint, SessionIsolation } from "../session/catalog.js";
 import type { SessionEvent } from "../session/recorder.js";
 import type { RuntimeRunStatus } from "../runtime/RuntimeAuthority.js";
-import type { DesktopTemporalPage, DesktopTemporalQuery } from "./temporalMemoryService.js";
 import type { LocalReferenceKind, LocalReferenceResult } from "../session/localReferences.js";
 import type { LocalReferenceLink } from "../session/referenceGraph.js";
 import type { DateReferenceDetail } from "../session/dateReferenceDetail.js";
@@ -136,6 +141,7 @@ export const desktopIpc = {
   setApplicationImportSync: "desktop:imports:sync:set",
   configureApplicationImportSync: "desktop:imports:sync:selection",
   syncApplicationImports: "desktop:imports:sync:run",
+  preparePrompt: "desktop:agent:prepare-prompt",
   sendPrompt: "desktop:agent:send",
   mutateQueuedMessage: "desktop:agent:queue:mutate",
   toolCatalog: "desktop:agent:tool-catalog",
@@ -194,10 +200,6 @@ export const desktopIpc = {
   memoryOverview: "desktop:memory:overview",
   memoryStats: "desktop:memory:stats",
   memoryEntries: "desktop:memory:entries",
-  temporalClues: "desktop:memory:temporal-clues",
-  temporalIgnoreClue: "desktop:memory:temporal-ignore",
-  temporalMarkSeen: "desktop:memory:temporal-seen",
-  temporalMarkTodaySeen: "desktop:memory:temporal-today-seen",
   referenceKinds: "desktop:references:kinds",
   referenceSearch: "desktop:references:search",
   referenceResolve: "desktop:references:resolve",
@@ -225,7 +227,6 @@ export const desktopIpc = {
   maskingOverview: "desktop:masking:overview",
   maskingDetail: "desktop:masking:detail",
   maskingClear: "desktop:masking:clear",
-  activityRetryFailedAnalysis: "desktop:activity:retry-failed-analysis",
   activityPermissions: "desktop:activity:permissions",
   activitySettings: "desktop:activity:settings",
   activityApplications: "desktop:activity:applications",
@@ -310,6 +311,7 @@ export const desktopIpc = {
   skillOpenDirectory: "desktop:skill:open-directory",
   skillSettings: "desktop:skill:settings",
   pluginRegistry: "desktop:plugin:registry",
+  pluginCatalog: "desktop:plugin:catalog",
   pluginRegistryRefresh: "desktop:plugin:registry-refresh",
   pluginInstall: "desktop:plugin:install",
   pluginSetEnabled: "desktop:plugin:set-enabled",
@@ -502,6 +504,19 @@ export interface DesktopSessionSummary {
   latestRun?: DesktopSessionRunSummary;
 }
 
+export interface DesktopSessionMetadataReceipt {
+  projectId: string;
+  sessionId: string;
+  metadata: Pick<DesktopSessionSummary, "updatedAt"> & {
+    metadataRevision: string;
+  } & Partial<Pick<DesktopSessionSummary, "title" | "pinned" | "archived" | "unread" | "fastMode" | "personalization">>;
+}
+
+export interface DesktopPermissionReceipt {
+  projectId: string;
+  permissionMode: PermissionMode;
+}
+
 export interface DesktopSessionRunSummary {
   runId: string;
   status: RuntimeRunStatus;
@@ -574,6 +589,8 @@ export interface DesktopSessionTreePageOptions {
   limit?: number;
   includeArchived?: boolean;
   includePinnedSessions?: boolean;
+  /** 同一 catalog 中需要核对的已加载会话；补充结果不参与页面游标。 */
+  sessionIds?: string[];
 }
 
 export interface DesktopSessionTreePage {
@@ -583,6 +600,7 @@ export interface DesktopSessionTreePage {
   sessions: DesktopSessionSummary[];
   /** 子页首屏携带同一 catalog 快照中的置顶摘要，供游标重置后恢复独立置顶入口。 */
   pinnedSessions?: DesktopSessionSummary[];
+  supplementalSessions?: DesktopSessionSummary[];
   nextCursor?: string;
   revisionChanged?: boolean;
 }
@@ -837,6 +855,8 @@ export interface DesktopSkillCatalogSnapshot {
   diagnostics: DesktopSkillDiagnostic[];
 }
 
+export type DesktopPluginCatalogSnapshot = Pick<DesktopSkillCatalogSnapshot, "plugins" | "warnings">;
+
 export type DesktopMcpTransport = "stdio" | "remote";
 export type DesktopMcpRemoteProtocol = "streamable-http" | "sse";
 export type DesktopMcpServerState = "connected" | "connecting" | "disconnected" | "not-started" | "disabled";
@@ -961,6 +981,7 @@ export interface DesktopMcpSnapshot {
   configRevision: string;
   servers: DesktopMcpServerSummary[];
   catalog: DesktopMcpCatalogState;
+  saved?: { runtimeRefresh: "not_needed" | "completed" | "failed"; message?: string };
 }
 
 export interface DesktopSkillFilePreview {
@@ -1327,6 +1348,7 @@ export interface DesktopSettingsModelsSnapshot {
   defaultModel: string;
   toolModel?: string;
   visionModel?: string;
+  visionModelEnabled?: boolean;
   resolvedToolModel?: string;
   thinking: ThinkingSelection;
   /** provider alias -> 原始模型 ID -> 用户声明的元数据覆盖。 */
@@ -1405,6 +1427,7 @@ export interface DesktopSettingsModelsInput {
   /** 省略表示不修改，空对象表示恢复自动选择。 */
   toolModel?: { alias?: string };
   visionModel?: { alias?: string };
+  visionModelEnabled?: boolean;
   defaultModel?: {
     alias: string;
     thinking: ThinkingSelection;
@@ -1473,12 +1496,56 @@ export interface DesktopSettingsConflict {
   actualRevision: string;
 }
 
+export interface DesktopSettingsModelSelectionReceipt {
+  projectId: string;
+  hasRunningTasks: boolean;
+  preferenceRevision: number;
+  configRevision: string;
+  models: Pick<DesktopSettingsModelsSnapshot, "toolModel" | "visionModel" | "visionModelEnabled" | "resolvedToolModel">;
+}
+
+export type DesktopSettingsPreferencesReceipt = Pick<DesktopSettingsSnapshot,
+  "projectId" | "hasRunningTasks" | "preferenceRevision" | "themePreference" | "fontPreference" | "appearancePreference" | "pendingRecovery">;
+
+/** 非模型配置回执保留真实版本，不重新投影无关的 Provider 目录。 */
+export type DesktopSettingsNonModelReceipt = Omit<DesktopSettingsSnapshot, "models">;
+
 export type DesktopSettingsSaveResult =
   | {
       status: "committed";
       journalId: string;
       appliedFields: string[];
       snapshot: DesktopSettingsSnapshot;
+      modelSelection?: undefined;
+      preferences?: undefined;
+      settings?: undefined;
+    }
+  | {
+      status: "committed";
+      journalId: string;
+      appliedFields: string[];
+      snapshot?: undefined;
+      modelSelection: DesktopSettingsModelSelectionReceipt;
+      preferences?: undefined;
+      settings?: undefined;
+    }
+  | {
+      status: "committed";
+      journalId: string;
+      appliedFields: string[];
+      snapshot?: undefined;
+      modelSelection?: undefined;
+      preferences: DesktopSettingsPreferencesReceipt;
+      settings?: undefined;
+    }
+  | {
+      status: "committed";
+      journalId: string;
+      appliedFields: string[];
+      snapshot?: undefined;
+      modelSelection?: undefined;
+      preferences?: undefined;
+      settings: DesktopSettingsNonModelReceipt;
     }
   | {
       status: "rolled_back";
@@ -1487,12 +1554,36 @@ export type DesktopSettingsSaveResult =
       message?: string;
       draftRetained: true;
       snapshot: DesktopSettingsSnapshot;
+      preferences?: undefined;
+      settings?: undefined;
+    }
+  | {
+      status: "rolled_back";
+      journalId?: string;
+      conflicts?: DesktopSettingsConflict[];
+      message?: string;
+      draftRetained: true;
+      snapshot?: undefined;
+      preferences: DesktopSettingsPreferencesReceipt;
+      settings?: undefined;
+    }
+  | {
+      status: "rolled_back";
+      journalId?: string;
+      conflicts?: DesktopSettingsConflict[];
+      message?: string;
+      draftRetained: true;
+      snapshot?: undefined;
+      preferences?: undefined;
+      settings: DesktopSettingsNonModelReceipt;
     }
   | {
       status: "recovery_required";
       journalId: string;
       message: string;
       snapshot?: DesktopSettingsSnapshot;
+      preferences?: DesktopSettingsPreferencesReceipt;
+      settings?: DesktopSettingsNonModelReceipt;
     };
 
 export interface DesktopMemoryEntryInput {
@@ -1592,7 +1683,7 @@ export type DesktopRuntimeMutation =
   | "worktree.merge"
   | "worktree.remove";
 
-export type DesktopMenuAction = "new-task" | "open-project" | "search" | "settings" | "activity-settings" | "toggle-sidebar" | "focus-composer";
+export type DesktopMenuAction = "capture-window" | "new-task" | "open-project" | "search" | "settings" | "activity-settings" | "toggle-sidebar" | "focus-composer";
 /** 侧栏会话右键菜单的动作；菜单本身由渲染进程绘制。 */
 export interface DesktopSessionTarget {
   projectId: string;
@@ -1635,19 +1726,20 @@ export type DesktopTerminalEvent =
 /**
  * 渲染进程可用的全部主进程能力，运行时挂在 `window.biny` 上。
  *
- * 大部分方法返回更新后的 `DesktopWorkspaceSnapshot`，渲染层直接整体替换状态即可，
- * 不需要自己推算改动结果。`on*` 系列返回取消订阅函数。
+ * 首屏和显式刷新返回 `DesktopWorkspaceSnapshot`；局部写入返回所属字段的权威回执，
+ * 渲染层按项目/会话身份合并。`on*` 系列返回取消订阅函数。
  */
 export interface DesktopToolOptimizationStats extends ToolOptimizationOverview {
   incompleteSessions: number;
+  stale?: boolean;
 }
 
 export interface DesktopApi {
   rtkStatus(): Promise<{ path?: string; version?: string; reason?: string }>;
   toolOptimizationDetail(projectId: string, sessionId: string, toolCallId: string): Promise<{ events: SessionEvent[] }>;
-  toolOptimizationStats(days: 1 | 7 | 30 | "all", projectId?: string, sessionId?: string): Promise<DesktopToolOptimizationStats>;
+  toolOptimizationStats(days: 1 | 7 | 30 | "all", projectId?: string, sessionId?: string, refresh?: boolean): Promise<DesktopToolOptimizationStats>;
   applicationImports(): Promise<ApplicationImportSnapshot>;
-  onApplicationImportsChanged(listener: () => void): () => void;
+  onApplicationImportsChanged(listener: (changes: DesktopApplicationImportsChanged) => void): () => void;
   previewApplicationImport(source: ApplicationImportSource): Promise<ApplicationImportPreview | undefined>;
   runApplicationImport(input: { previewId: string; itemIds: string[]; projectId: string }): Promise<ApplicationImportHistory>;
   setApplicationImportSync(enabled: boolean): Promise<ApplicationImportSnapshot>;
@@ -1660,9 +1752,9 @@ export interface DesktopApi {
   selectProject(projectId: string): Promise<DesktopWorkspaceSnapshot>;
   commitSelection(projectId: string, sessionId: string | undefined, activeView: DesktopActiveView): Promise<void>;
   setActiveView(activeView: DesktopActiveView): Promise<void>;
-  setProjectPinned(projectId: string, pinned: boolean): Promise<DesktopWorkspaceSnapshot>;
+  setProjectPinned(projectId: string, pinned: boolean): Promise<DesktopProject>;
   reorderProjects(projectIds: string[]): Promise<DesktopProject[]>;
-  renameProject(projectId: string, name: string): Promise<DesktopWorkspaceSnapshot>;
+  renameProject(projectId: string, name: string): Promise<DesktopProject>;
   removeProject(projectId: string): Promise<DesktopBootstrap>;
   refreshProject(projectId: string): Promise<DesktopWorkspaceSnapshot>;
   projectGitStatus(projectId: string): Promise<DesktopGitStatus>;
@@ -1679,17 +1771,18 @@ export interface DesktopApi {
   openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument>;
   retryRuntime(projectId: string, sessionId?: string): Promise<DesktopRuntimeRetryResult>;
   listSessionTreePage(projectId: string, options?: DesktopSessionTreePageOptions): Promise<DesktopSessionTreePage>;
-  renameSession(projectId: string, sessionId: string, title: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
-  pinSession(projectId: string, sessionId: string, pinned: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
-  archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
-  setSessionFastMode(projectId: string, sessionId: string, fastMode: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
-  markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
+  renameSession(projectId: string, sessionId: string, title: string, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt>;
+  pinSession(projectId: string, sessionId: string, pinned: boolean, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt>;
+  archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt>;
+  setSessionFastMode(projectId: string, sessionId: string, fastMode: boolean, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt>;
+  markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt>;
   duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot>;
   deleteSessions(targets: DesktopSessionTarget[], confirm?: boolean, onStarted?: () => void): Promise<DesktopSessionDeleteResult>;
   /** 导出为 Biny bundle（无损 JSON）或外部 JSONL；用户在保存对话框里选位置。 */
-  exportSession(projectId: string, sessionId: string, format: "biny" | "claude"): Promise<DesktopWorkspaceSnapshot>;
+  exportSession(projectId: string, sessionId: string, format: "biny" | "claude"): Promise<void>;
   /** 从 Biny bundle 或外部 rollout 文件导入一条新会话并选中它。 */
-  importSession(projectId: string): Promise<DesktopWorkspaceSnapshot>;
+  importSession(projectId: string): Promise<DesktopWorkspaceSnapshot | undefined>;
+  preparePrompt(projectId: string): Promise<void>;
   sendPrompt(
     projectId: string,
     sessionId: string | undefined,
@@ -1718,7 +1811,7 @@ export interface DesktopApi {
   runInspectorCommand(projectId: string, owner: string, kind: "review" | "side-chat", input: string, history: import("./inspectorTask.js").InspectorMessage[]): Promise<DesktopSlashResult>;
   resolvePermission(projectId: string, requestId: string, result: PermissionResult): Promise<void>;
   answerUserInput(projectId: string, sessionId: string, runId: string, toolCallId: string, response: UserInputResponse): Promise<void>;
-  setPermissionMode(projectId: string, mode: PermissionMode): Promise<DesktopWorkspaceSnapshot>;
+  setPermissionMode(projectId: string, mode: PermissionMode): Promise<DesktopPermissionReceipt>;
   switchModel(projectId: string, alias: string, thinking: ThinkingSelection): Promise<ModelRuntimeInfo>;
   testModelConfiguration(projectId: string, configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult>;
   readModelApiKey(projectId: string, providerAlias: string): Promise<string | undefined>;
@@ -1762,16 +1855,12 @@ export interface DesktopApi {
   importBrowserProfile(profileId: string): Promise<{ imported: number; failed: number; appName: string }>;
   clearCookies(): Promise<DesktopCookieJarStatus>;
   personalizationOverview(projectId: string, sessionId?: string): Promise<DesktopPersonalizationOverview>;
-  saveChatPersonalization(projectId: string, sessionId: string, input: DesktopChatPersonalizationOverride, expectedRevision: string): Promise<DesktopWorkspaceSnapshot>;
+  saveChatPersonalization(projectId: string, sessionId: string, input: DesktopChatPersonalizationOverride, expectedRevision: string): Promise<DesktopSessionMetadataReceipt>;
   memoryOverview(projectId: string): Promise<DesktopMemoryOverview>;
   /** 记忆库统计（不含条目内容）；条目增删后用于刷新头部与翻页控件。 */
   memoryStats(projectId: string): Promise<DesktopMemoryStats>;
   /** 记忆条目分页读取；offset 分页，revision 变化时调用方应回第 0 页。 */
   memoryEntries(projectId: string, offset: number, limit: number, includeArchived?: boolean): Promise<DesktopMemoryEntriesPage>;
-  temporalClues(query: DesktopTemporalQuery): Promise<DesktopTemporalPage>;
-  temporalIgnoreClue(id: string): Promise<boolean>;
-  temporalMarkSeen(ids: string[], day: string, timeZone: string): Promise<number>;
-  temporalMarkTodaySeen(day: string, timeZone: string): Promise<number>;
   referenceKinds(): Promise<Array<{ kind: LocalReferenceKind; label: string }>>;
   referenceSearch(projectId: string, query: string, kind?: LocalReferenceKind, timeZone?: string): Promise<LocalReferenceResult[]>;
   referenceResolve(projectId: string, uri: string): Promise<LocalReferenceResult>;
@@ -1794,7 +1883,6 @@ export interface DesktopApi {
   maskingOverview(projectId: string): Promise<DesktopMaskingOverview>;
   maskingDetail(projectId: string, id: string): Promise<DesktopMaskRecord | undefined>;
   maskingClear(projectId: string): Promise<void>;
-  retryFailedActivityAnalysis(): Promise<{ queued: number; snapshot: ActivityRuntimeSnapshot }>;
   activityPermissions(): Promise<ActivityPermissionStatus>;
   activitySettings(): Promise<DesktopActivitySettingsUpdate>;
   activityApplications(): Promise<DesktopActivityApplication[]>;
@@ -1880,11 +1968,12 @@ export interface DesktopApi {
   skillCatalog(projectId?: string): Promise<DesktopSkillCatalogSnapshot>;
   skillSettings(projectId: string): Promise<DesktopSkillSettings>;
   importExistingSkills(skillIds: string[]): Promise<DesktopSkillImportResult[]>;
-  skillVersion(skillId: string): Promise<import("../extensions/skillVersions.js").ManagedSkillVersion | undefined>;
-  updateSkillVersion(skillId: string, expectedVersion: string): Promise<import("../extensions/skillDiscovery.js").SkillInstallResult>;
-  rollbackSkillVersion(skillId: string, expectedVersion: string): Promise<import("../extensions/skillVersions.js").ManagedSkillVersion>;
-  readSkillFile(skillId: string, relativePath: string): Promise<DesktopSkillFilePreview>;
-  openSkillDirectory(skillId: string): Promise<void>;
+  skillVersion(skillId: string, projectId?: string): Promise<import("../extensions/skillVersions.js").ManagedSkillVersion | undefined>;
+  updateSkillVersion(skillId: string, expectedVersion: string, projectId?: string): Promise<import("../extensions/skillDiscovery.js").SkillInstallResult>;
+  rollbackSkillVersion(skillId: string, expectedVersion: string, projectId?: string): Promise<import("../extensions/skillVersions.js").ManagedSkillVersion>;
+  readSkillFile(skillId: string, relativePath: string, projectId?: string): Promise<DesktopSkillFilePreview>;
+  openSkillDirectory(skillId: string, projectId?: string): Promise<void>;
+  pluginCatalog(projectId: string): Promise<DesktopPluginCatalogSnapshot>;
   pluginRegistry(projectId: string): Promise<DesktopPluginRegistrySnapshot>;
   refreshPluginRegistry(projectId: string): Promise<DesktopPluginRegistrySnapshot>;
   installPlugin(projectId: string, pluginId: string, scope?: "project" | "global"): Promise<DesktopPluginSummary>;
