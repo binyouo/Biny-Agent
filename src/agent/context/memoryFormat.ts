@@ -41,8 +41,13 @@ function sanitizeMemoryInput(input: MemoryEntryInput, validatedTimeZones?: Set<s
   if (input.accessCount !== undefined && (!Number.isSafeInteger(input.accessCount) || input.accessCount < 0)) {
     throw new Error("Memory accessCount must be a non-negative safe integer.");
   }
+  const content = input.content.trim();
+  const previous = content.charCodeAt(maxMemoryContentChars - 1);
+  const next = content.charCodeAt(maxMemoryContentChars);
+  // Keep the UTF-16 budget, but never cut between a valid surrogate pair.
+  const end = previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? maxMemoryContentChars - 1 : maxMemoryContentChars;
   return {
-    content: input.content.trim().slice(0, maxMemoryContentChars),
+    content: content.slice(0, end),
     source: input.source ?? "manual",
     tags: sanitizeStringArray(input.tags, 12, 120),
     rationale: input.rationale,
