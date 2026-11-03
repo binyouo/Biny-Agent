@@ -17,6 +17,7 @@ import { createProxyAwareFetch } from "../network/proxyFetch.js";
 import { resolveProviderRequestRoute } from "../llm/providerRequest.js";
 
 const catalogTimeoutMs = 15_000;
+const maxModelCatalogPages = 100;
 
 export interface ModelCatalogValidators {
   etag?: string;
@@ -89,36 +90,65 @@ export async function fetchModelCatalogSnapshot(
     : { Authorization: apiKey ? `Bearer ${apiKey}` : "" };
   if (protocol === "anthropic" && authMode === "oauth-bearer") headers["anthropic-version"] = "2023-06-01";
   Object.assign(headers, request.config.headers);
-  if (validators.etag) headers["If-None-Match"] = validators.etag;
-  if (validators.lastModified) headers["If-Modified-Since"] = new Date(validators.lastModified).toUTCString();
+  // Anthropic validators describe one page, not the assembled catalog. Even a
+  // first-page 304 cannot prove that later pages (or an old partial cache) are current.
+  const paginated = protocol === "anthropic";
+  if (!paginated && validators.etag) headers["If-None-Match"] = validators.etag;
+  if (!paginated && validators.lastModified) headers["If-Modified-Since"] = new Date(validators.lastModified).toUTCString();
   const retry = request.config.retry ?? { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 };
   const timeoutSignal = AbortSignal.timeout(catalogTimeoutMs);
   const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-  const response = await createRetryFetch(retry, fetcher)(catalogEndpoint, {
-    headers,
-    signal: requestSignal
-  });
-  const notModified = response.status === 304;
-  // 只有 304 继续使用旧正文；新正文缺少校验信息时，不能继承旧正文的 validators。
-  const responseValidators = {
-    etag: response.headers.get("etag") ?? (notModified ? validators.etag : undefined),
-    lastModified: httpTimestamp(response.headers.get("last-modified")) ?? (notModified ? validators.lastModified : undefined)
-  };
-  if (notModified) return { notModified: true, ...responseValidators };
-  if (!response.ok) {
-    const responseBody = await readErrorPrefix(response, requestSignal);
-    throw new ModelCatalogRequestError(`Model catalog request failed (${String(response.status)}).`, {
-      statusCode: response.status,
-      url: catalogEndpoint,
-      responseBody
-    });
+  const requestFetch = createRetryFetch(retry, fetcher);
+  const models: ModelCatalogEntry[] = [];
+  const cursors = new Set<string>();
+  let pageEndpoint = catalogEndpoint;
+  if (paginated) {
+    const initialCursor = new URL(catalogEndpoint).searchParams.get("after_id");
+    if (initialCursor) cursors.add(initialCursor);
   }
-  const body = await response.json() as unknown;
-  return {
-    models: parseModelCatalog(body, request.alias, protocol, request.definition.modelDefaults?.inferReasoningFromId === true),
-    notModified: false,
-    ...responseValidators
-  };
+  for (let page = 0; page < maxModelCatalogPages; page += 1) {
+    requestSignal.throwIfAborted();
+    const response = await requestFetch(pageEndpoint, { headers, signal: requestSignal });
+    const notModified = response.status === 304;
+    // Only unpaginated protocols can reuse a cached body's validators.
+    const responseValidators = paginated ? {} : {
+      etag: response.headers.get("etag") ?? (notModified ? validators.etag : undefined),
+      lastModified: httpTimestamp(response.headers.get("last-modified")) ?? (notModified ? validators.lastModified : undefined)
+    };
+    if (notModified && !paginated) return { notModified: true, ...responseValidators };
+    if (!response.ok) {
+      const responseBody = await readErrorPrefix(response, requestSignal);
+      throw new ModelCatalogRequestError(`Model catalog request failed (${String(response.status)}).`, {
+        statusCode: response.status,
+        url: catalogEndpoint,
+        responseBody
+      });
+    }
+    const body = await response.json() as unknown;
+    requestSignal.throwIfAborted();
+    const validPage = isRecord(body) && typeof body.has_more === "boolean"
+      && (Array.isArray(body.data) || body.has_more === false && Array.isArray(body.models));
+    if (paginated && (page > 0 || isRecord(body) && body.has_more !== undefined)
+      && !validPage) {
+      throw new Error("Model catalog pagination returned an invalid page.");
+    }
+    models.push(...parseModelCatalog(body, request.alias, protocol, request.definition.modelDefaults?.inferReasoningFromId === true));
+    if (!paginated || !isRecord(body) || body.has_more === undefined || body.has_more === false) {
+      return { models, notModified: false, ...responseValidators };
+    }
+    const cursor = body.last_id;
+    if (typeof cursor !== "string" || !cursor || cursor.length > 1_024 || cursors.has(cursor)) {
+      throw new Error("Model catalog pagination has a missing, invalid or repeated cursor.");
+    }
+    const next = new URL(catalogEndpoint);
+    if (next.searchParams.has("before_id")) throw new Error("Model catalog reverse pagination (before_id) is not supported.");
+    cursors.add(cursor);
+    // A continuation is an opaque query value, never a server-controlled URL.
+    next.searchParams.set("after_id", cursor);
+    pageEndpoint = next.href;
+  }
+  // No prefix escapes to ProviderRuntime, so it cannot replace the previous cache.
+  throw new Error(`Model catalog pagination is incomplete after ${maxModelCatalogPages} pages.`);
 }
 
 async function readErrorPrefix(response: Response, signal: AbortSignal): Promise<string | undefined> {
