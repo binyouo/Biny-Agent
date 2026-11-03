@@ -32,7 +32,7 @@ const sessionMethods = ["close", "analyzeContextEmotion", "startNewSession", "re
   .map(name => method(sessionSource, "AgentSession", name)).join("\n");
 const analysisCode = ["analysisDelayMs", "recentMessageLimit", "recentMessageMaxChars", "autoEmotionResultSchema", "analyzeContextEmotion", "normalizeMessages", "EmotionAnalysisScheduler"]
   .map(name => declaration(analysisSource, name)).join("\n");
-const storageCode = ["contextDirectoryName", "renderEmotionDocument", "safeFileName"].map(name => declaration(storageSource, name)).join("\n");
+const storageCode = ["contextDirectoryName", "renderEmotionDocument", "parseEmotionDocument", "safeFileName"].map(name => declaration(storageSource, name)).join("\n");
 const selectedCode = `${analysisCode}\n${storageCode}\nclass Storage {${["writeContext", "writeState"].map(name => method(storageSource, "EmotionStorage", name)).join("\n")}}\nclass Session {${sessionMethods}}`;
 const selectedAst = ts.createSourceFile("selected.ts", selectedCode, ts.ScriptTarget.Latest, true);
 function audit(node: ts.Node): void {

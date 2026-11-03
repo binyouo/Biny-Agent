@@ -52,17 +52,21 @@ async function check(index, open) {
   const value = await evaluate(index => {
     const element = window.__disclosureQa.elements()[index];
     const icon = element.querySelector(".activity-memory-disclosure-chevron");
-    const panel = index < 2 ? document.getElementById(element.getAttribute("aria-controls")) : element.nextElementSibling;
+    const panel = index < 1 ? document.getElementById(element.getAttribute("aria-controls")) : element.nextElementSibling;
+    const tuning = document.querySelector('input[aria-label="相似度合并阈值"]');
     return {
       expanded: element.getAttribute("aria-expanded"),
-      hidden: index < 2 ? document.getElementById(element.getAttribute("aria-controls")).hidden : null,
+      hidden: index < 1 ? document.getElementById(element.getAttribute("aria-controls")).hidden : null,
+      tuningVisible: tuning.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+        && tuning.closest("details") === null,
       visible: panel.checkVisibility({ visibilityProperty: true, opacityProperty: true })
         && panel.getBoundingClientRect().height > 0,
       transform: getComputedStyle(icon).transform,
       path: icon.querySelector("path")?.getAttribute("d")
     };
   }, index);
-  if (index < 2) { assert.equal(value.expanded, String(open)); assert.equal(value.hidden, !open); }
+  if (index < 1) { assert.equal(value.expanded, String(open)); assert.equal(value.hidden, !open); }
+  assert.equal(value.tuningVisible, true, "merge settings stay available while archive and history toggle");
   assert.equal(value.visible, open, "the panel must actually render only while expanded");
   assert.equal(value.transform, open ? "matrix(-1, 0, 0, -1, 0, 0)" : "none", `direction of disclosure ${index}`);
   assert.equal(value.path, "m6 9 6 6 6-6", "the unrotated SVG points down");
@@ -150,11 +154,11 @@ try {
     await evaluate(() => {
       const elements = () => {
         const buttons = [...document.querySelectorAll("button.activity-memory-disclosure")];
-        return [buttons.find(el => el.textContent.includes("相似度与 LLM")),
-          buttons.find(el => el.textContent.includes("归档记忆")), document.querySelector(".activity-memory-run-details > summary")];
+        return [buttons.find(el => el.textContent.includes("归档记忆")),
+          document.querySelector(".activity-memory-run-details > summary")];
       };
-      window.__disclosureQa = { elements, events: [], errors: [], open: index => index === 2
-        ? elements()[2].parentElement.open : elements()[index].getAttribute("aria-expanded") === "true" };
+      window.__disclosureQa = { elements, events: [], errors: [], open: index => index === 1
+        ? elements()[1].parentElement.open : elements()[index].getAttribute("aria-expanded") === "true" };
       for (const type of ["keydown", "keyup", "click"]) document.addEventListener(type, event => {
         window.__disclosureQa.events.push({ type, key: event.key, trusted: event.isTrusted });
       }, true);
@@ -164,10 +168,10 @@ try {
     await capture(`${phase}-dark-100-collapsed`);
     if (phase === "before") {
       results.before = await metrics();
-      for (let i = 0; i < 3; i++) await click(i);
+      for (let i = 0; i < 2; i++) await click(i);
       await capture("before-dark-100-expanded");
     } else {
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 2; i++) {
         console.log(`Testing disclosure ${i + 1}: native Enter/Space and pointer input`);
         await check(i, false);
         await focus(i); await key("Enter"); await check(i, true);
@@ -184,15 +188,15 @@ try {
       await check(0, true);
       await evaluate(() => { window.__disclosureQa.slider = document.querySelector('input[aria-label="相似度合并阈值"]'); });
       await click(0); await check(0, false); await click(0); await check(0, true);
-      assert.equal(await evaluate(() => document.querySelector('input[aria-label="相似度合并阈值"]').value), "95", "child value survives collapse");
+      assert.equal(await evaluate(() => document.querySelector('input[aria-label="相似度合并阈值"]').value), "95", "merge value survives archive collapse");
       assert.equal(await evaluate(() => window.__disclosureQa.slider.isConnected
-        && window.__disclosureQa.slider === document.querySelector('input[aria-label="相似度合并阈值"]')), true, "child DOM survives collapse");
+        && window.__disclosureQa.slider === document.querySelector('input[aria-label="相似度合并阈值"]')), true, "merge control DOM survives archive collapse");
       const loads = await evaluate(() => Number(document.getElementById("root").dataset.loads));
       await evaluate(() => document.querySelector('button[aria-label="刷新记忆"]').focus());
       await key("Enter");
       await waitFor(loads => Number(document.getElementById("root").dataset.loads) > loads
         && !document.querySelector('button[aria-label="刷新记忆"]').disabled, loads);
-      for (let i = 0; i < 3; i++) await check(i, true);
+      for (let i = 0; i < 2; i++) await check(i, true);
       for (const theme of ["dark", "light"]) {
         for (const scale of [1, 1.5]) {
           win.setContentSize(scale === 1 ? 900 : 440, 2200);
@@ -202,17 +206,17 @@ try {
           }, theme, scale);
           await painted();
           const geometry = await metrics();
-          assert.equal(geometry.length, 3);
-          for (const [index, item] of geometry.entries()) {
-            assert.equal(item.icons.length, index === 0 ? 1 : 2);
+          assert.equal(geometry.length, 2);
+          for (const item of geometry) {
+            assert.equal(item.icons.length, 2);
             for (const icon of item.icons) {
               assert.ok(Math.abs(icon.width - item.fontSize) < 0.1, "icon width follows font size");
               assert.ok(Math.abs(icon.height - item.fontSize) < 0.1, "icon height follows font size");
               assert.ok(icon.centerDelta < 0.6, "icon is centered on its label");
             }
           }
-          assert.equal(geometry[2].listStyle, "none");
-          assert.equal(geometry[2].marker, '""');
+          assert.equal(geometry[1].listStyle, "none");
+          assert.equal(geometry[1].marker, '""');
           results.variants.push({ theme, scale, geometry });
           console.log(`Verified ${theme} ${scale * 100}% geometry`);
           await capture(`after-${theme}-${scale * 100}-expanded`);

@@ -76,7 +76,7 @@ export function UserInputCard({ tool, projectId, sessionId, running }: {
       {error || tool.error ? <p className="user-input-error" role="alert">{error ?? tool.error}</p> : null}
       {pending ? <div className="user-input-actions">
         <button type="button" disabled={disabled} onClick={() => void submit({ status: "skipped" })}>跳过</button>
-        <button type="submit" disabled={disabled || !canSubmit}>{submitting ? "提交中…" : "提交回答"}</button>
+        <button aria-busy={submitting} type="submit" disabled={disabled || !canSubmit}>提交回答</button>
       </div> : null}
     </form>
   </details><ToolPermission tool={tool} onResolvePermission={async (requestId, result) => await window.biny.resolvePermission(projectId, requestId, result)} /></>;

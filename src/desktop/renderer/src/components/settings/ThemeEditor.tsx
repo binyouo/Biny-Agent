@@ -56,7 +56,7 @@ export function ThemeEditor({ theme, initialMode, onSave, onClose }: { theme?: C
         </div><div className="theme-color-fields">{([["background", "背景颜色"], ["foreground", "文本颜色"], ["accent", "主强调色"], ["secondary", "辅助强调色"]] as const).map(([key, label]) => colorField(label, simple[key], color => setSimple(current => ({ ...current, [key]: color }))))}</div></>
           : <>{([ ["界面颜色 · Base30", "base_30", BASE30_KEYS], ["语法颜色 · Base16", "base_16", BASE16_KEYS] ] as const).map(([label, group, keys]) => <section key={group}><h3>{label}</h3><div className="theme-color-fields">{keys.map(key => colorField(key, (manual[group] as Record<string, string>)[key] ?? "#000000", color => setManual(current => ({ ...current, [group]: { ...current[group], [key]: color } }))))}</div></section>)}</>}
       </div>
-      <footer>{error ? <p role="alert">{error}</p> : null}<button className="settings-action settings-secondary-button" type="button" disabled={saving} onClick={onClose}>取消</button><button type="submit" disabled={saving} className="settings-action settings-primary-button primary">{saving ? "保存中…" : "保存主题"}</button></footer>
+      <footer>{error ? <p role="alert">{error}</p> : null}<button className="settings-action settings-secondary-button" type="button" disabled={saving} onClick={onClose}>取消</button><button aria-busy={saving} type="submit" disabled={saving} className="settings-action settings-primary-button primary">保存主题</button></footer>
     </form>
   </dialog>;
 }

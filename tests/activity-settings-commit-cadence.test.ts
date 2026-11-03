@@ -89,10 +89,10 @@ test("数字与语言输入只在提交时机落盘，逐键编辑不重复重�
   };
   try {
     await render();
-    // 展开折叠的采集参数区，数字字段在其中。
-    const capture = document.getElementById("activity-capture") as HTMLDetailsElement;
-    capture.open = true;
-    await render();
+    const capture = document.getElementById("activity-capture");
+    assert.ok(capture);
+    assert.equal(capture.tagName, "SECTION", "采集参数直接展示，不再提供折叠入口");
+    assert.equal(capture.querySelector("summary"), null);
 
     // 输入五位数：逐键期间不得提交，提交时机（blur）才落一次。
     await type("#activity-debounce", "1");

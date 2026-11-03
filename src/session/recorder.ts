@@ -850,9 +850,10 @@ function redactAgentMessage(message: Exclude<AgentMessage, { role: "user" }>): E
     }
     return {
       ...message,
+      // Image data is encoded binary; text redaction can corrupt otherwise valid media.
       content: message.content.map((part) => part.type === "text"
         ? { ...part, text: redactSecrets(part.text) }
-        : { ...part, data: redactSecrets(part.data) }),
+        : { ...part }),
       details: message.details === undefined ? undefined : redactSensitiveValue(message.details)
     };
   }

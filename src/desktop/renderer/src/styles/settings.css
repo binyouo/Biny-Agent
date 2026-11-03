@@ -116,16 +116,10 @@
   .desktop-settings-dialog .settings-modal .settings-save-feedback { flex: 1 1 100%; }
 }
 
-/* 低频选项用原生折叠区，保留键盘操作和表单值。 */
-.settings-disclosure { min-width: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
-.settings-disclosure > summary { display: flex; align-items: center; gap: 8px; min-height: var(--st-control-h); padding-block: 8px; color: var(--text); cursor: pointer; list-style: none; font-weight: 500; }
-.settings-disclosure > summary::-webkit-details-marker { display: none; }
-.settings-disclosure > summary::after { content: ""; width: 6px; height: 6px; margin-left: auto; margin-right: 3px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
-.settings-disclosure[open] > summary::after { transform: rotate(45deg); }
-.settings-disclosure > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
-.settings-disclosure > :not(summary) { margin-top: 12px; }
-.settings-disclosure code { display: block; overflow-wrap: anywhere; white-space: normal; }
-.settings-disclosure-body { display: grid; gap: var(--st-card-gap); }
+.settings-static-group { display: grid; min-width: 0; gap: 8px; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
+.settings-static-group > h4 { margin: 0; color: var(--text); font-size: inherit; font-weight: 500; }
+.settings-static-group > :is(p, ol) { margin-block: 0; }
+.settings-plugin-card-main > code { display: block; overflow-wrap: anywhere; white-space: normal; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
 .settings-install-guide ol { padding-left: 20px; line-height: 1.8; }
 .browser-connection-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--st-card-gap); }
 .desktop-settings-dialog .settings-modal .browser-connection-heading h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: calc(15px * var(--font-scale, 1)); font-weight: 550; }
