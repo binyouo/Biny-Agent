@@ -10,6 +10,7 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { gitInspectionEnvironment } from "../../tools/git/environment.js";
 import { listSessionCatalog, readSessionCatalogRecord } from "../../session/catalog.js";
 import { agentDir, listSessionFiles } from "../../session/store.js";
 import type { RuntimeHostFactoryOptions } from "./types.js";
@@ -492,8 +493,14 @@ export class WorktreeManager {
   }
 
   private async git(args: readonly string[], cwd = this.repoRoot, timeout = 10_000): Promise<string> {
+    const env = gitInspectionEnvironment();
+    // Keep caller commit metadata without restoring Git routing or configuration overrides.
+    for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"] as const) {
+      const value = process.env[key];
+      if (value !== undefined) env[key] = value;
+    }
     try {
-      const result = await execFileAsync("git", [...args], { cwd, timeout, maxBuffer: 4 * 1024 * 1024 });
+      const result = await execFileAsync("git", [...args], { cwd, env, timeout, maxBuffer: 4 * 1024 * 1024 });
       return result.stdout;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
