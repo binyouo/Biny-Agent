@@ -261,6 +261,8 @@ function stringValue(value: unknown): string | undefined {
  * 只覆盖 tsconfig 的官方语法子集,不追求完整 JSONC 规范。
  */
 function parseJsonc(text: string): unknown {
+  // UTF-8 BOM is an encoding marker, not JSON content. Preserve all interior text.
+  if (text.startsWith("\uFEFF")) text = text.slice(1);
   let output = "";
   let inString = false;
   // output 中最近一次字符串外逗号的下标;遇到闭合括号且其间只有空白时回收该逗号。
