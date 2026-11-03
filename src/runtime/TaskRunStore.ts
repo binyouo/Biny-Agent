@@ -609,13 +609,13 @@ export class DurableTaskRunStore {
     };
   }
 
-  /** Recovery needs the newest append, independently of the public history page size. */
-  latestEvent(taskRunId: string): TaskRunEvent | undefined {
+  /** Recovery may ignore delivery receipts, which do not change execution admission. */
+  latestEvent(taskRunId: string, options: { excludeMessageReceipts?: boolean } = {}): TaskRunEvent | undefined {
     this.assertOpen();
     this.require(taskRunId);
     const row = this.database.prepare(`
       SELECT event_id, task_run_id, attempt_id, event_type, payload_json, created_at
-      FROM task_events WHERE task_run_id = ? ORDER BY rowid DESC LIMIT 1
+      FROM task_events WHERE task_run_id = ? ${options.excludeMessageReceipts ? "AND event_type != 'task.message.received'" : ""} ORDER BY rowid DESC LIMIT 1
     `).get(taskRunId) as unknown as TaskEventRow | undefined;
     return row ? toTaskEvent(row) : undefined;
   }

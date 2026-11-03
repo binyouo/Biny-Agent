@@ -123,7 +123,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
   let workerAttempt = input.resumeWorker && initial.status === "running" ? initial.attempts.at(-1) : undefined;
   if (input.resumeWorker && !workerAttempt) throw new Error("Worker continuation requires the current running Attempt.");
   const latestAttempt = initial.attempts.at(-1);
-  const latestEvent = input.taskRuns.latestEvent(input.taskRunId);
+  const latestEvent = input.taskRuns.latestEvent(input.taskRunId, { excludeMessageReceipts: true });
   const persistedRepairEvidence = initial.status === "queued"
     && latestAttempt?.status === "failed"
     && latestEvent?.eventType === "task.verification.repair"
