@@ -377,7 +377,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
             setAddingQuote(false);
             setQuoteSelection((current) => current?.owner === owner ? undefined : current);
           });
-        }} type="button"><Icon name="quote" size={14} />{addingQuote ? "正在添加…" : "添加到对话"}</button>, document.body) : null}
+        }} type="button"><Icon name="quote" size={14} />添加到对话</button>, document.body) : null}
     </div>
   );
 });
@@ -1037,10 +1037,10 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
           {hasContent ? (
             <>
               <button aria-label="复制为 Markdown" aria-busy={copyingKind === "markdown"} disabled={copyingKind !== undefined} className={`message-menu-item${copiedKind === "markdown" ? " is-success" : ""}`} onClick={() => { void copyAs("markdown"); }} role="menuitem" type="button">
-                <Icon name={copiedKind === "markdown" ? "check" : "copy"} size={14} /><span>{copyingKind === "markdown" ? "正在复制…" : "复制为 Markdown"}</span>
+                <Icon name={copiedKind === "markdown" ? "check" : "copy"} size={14} /><span>复制为 Markdown</span>
               </button>
               <button aria-label="复制为纯文本" aria-busy={copyingKind === "plain"} disabled={copyingKind !== undefined} className={`message-menu-item${copiedKind === "plain" ? " is-success" : ""}`} onClick={() => { void copyAs("plain"); }} role="menuitem" type="button">
-                <Icon name={copiedKind === "plain" ? "check" : "file-text"} size={14} /><span>{copyingKind === "plain" ? "正在复制…" : "复制为纯文本"}</span>
+                <Icon name={copiedKind === "plain" ? "check" : "file-text"} size={14} /><span>复制为纯文本</span>
               </button>
             </>
           ) : null}

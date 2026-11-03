@@ -213,19 +213,19 @@ export class PermissionDialog extends Container {
   private refresh(): void {
     const details: string[] = [];
     const view = permissionPresentation(this.request);
-    if (this.request.command) details.push(theme.fg("accent", this.request.command));
-    if (this.request.targetPath && !this.request.secondaryTargetPath) details.push(theme.fg("accent", this.request.targetPath));
-    if (view.details) details.push(...view.details.split(/\r?\n/u));
-    if (view.reason) details.push(view.reason);
+    if (this.request.command) details.push(theme.fg("accent", escapePermissionText(this.request.command)));
+    if (this.request.targetPath && !this.request.secondaryTargetPath) details.push(theme.fg("accent", escapePermissionText(this.request.targetPath)));
+    if (view.details) details.push(...escapePermissionText(view.details).split(/\r?\n/u));
+    if (view.reason) details.push(escapePermissionText(view.reason));
     if (this.request.diff) {
-      const diffLines = this.request.diff.split(/\r?\n/u);
+      const diffLines = escapePermissionText(this.request.diff).split(/\r?\n/u);
       const visibleDiff = this.detailsExpanded ? diffLines : diffLines.slice(0, 6);
       details.push(...visibleDiff.map((line) => theme.fg(
         line.startsWith("+") ? "toolDiffAdded" : line.startsWith("-") ? "toolDiffRemoved" : "dim", line
       )));
       if (visibleDiff.length < diffLines.length) details.push("… diff 已收起，按 Ctrl+O 展开");
     }
-    if (this.detailsExpanded && this.request.preview) details.push(...this.request.preview.split(/\r?\n/u));
+    if (this.detailsExpanded && this.request.preview) details.push(...escapePermissionText(this.request.preview).split(/\r?\n/u));
 
     const actionLines: string[] = [];
     const selectedChoice = permissionChoiceAt(this.selectedIndex);
@@ -246,14 +246,14 @@ export class PermissionDialog extends Container {
     if (selectedChoice === "deny_with_reason") {
       actionLines.push("");
       actionLines.push(theme.fg("warning", "输入拒绝理由，再按 Enter 提交。"));
-      actionLines.push(`${theme.fg("muted", "> ")}${this.denialReason}${theme.fg("warning", "█")}`);
+      actionLines.push(`${theme.fg("muted", "> ")}${escapePermissionText(this.denialReason)}${theme.fg("warning", "█")}`);
       if (this.denialReasonAttempted && !this.denialReason.trim()) {
         actionLines.push(theme.fg("error", "请填写拒绝理由。"));
       }
     } else if (this.request.requireFullYes && (selectedChoice === "allow_once" || selectedChoice === "allow_always")) {
       actionLines.push("");
       actionLines.push(theme.fg("warning", "输入 yes，再按 Enter 批准。"));
-      actionLines.push(`${theme.fg("muted", "> ")}${this.confirmation}${theme.fg("warning", "█")}`);
+      actionLines.push(`${theme.fg("muted", "> ")}${escapePermissionText(this.confirmation)}${theme.fg("warning", "█")}`);
       if (this.confirmationAttempted) {
         actionLines.push(theme.fg("error", "请输入完整的 yes。"));
       }
@@ -288,4 +288,14 @@ function isPrintableChar(data: string): boolean {
   if ([...data].length !== 1) return false;
   const code = data.codePointAt(0) ?? 0;
   return code >= 0x20 && code !== 0x7f;
+}
+
+/** Show control characters in approval text rather than silently hiding them.
+ * LF/TAB retain layout; every CR reaching this boundary is visible, even in CRLF.
+ * This is display notation, not reversible encoding: literal backslash-u text
+ * can look identical. Never rewrite the request or filter already styled text.
+ */
+function escapePermissionText(text: string): string {
+  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu,
+    char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }

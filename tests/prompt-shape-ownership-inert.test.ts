@@ -76,7 +76,7 @@ const nativeTry = one(fn(native, "consumeVercelText").body!.statements.filter(ts
 const nativeReturn = one(nativeTry.tryBlock.statements.filter(ts.isReturnStatement), "native return");
 const nativeReport = nativeTry.tryBlock.statements[nativeTry.tryBlock.statements.indexOf(nativeReturn) - 1]!;
 assert.ok(nativeReport.getText(native).startsWith("await reportVercelMetrics("));
-const sessionMethods = ["recordModelRequest", "recordModelUsage", "observeModelUsage", "usageSummary", "usageReport"];
+const sessionMethods = ["currentModelManager", "currentModel", "recordModelRequest", "recordModelUsage", "observeModelUsage", "usageSummary", "usageReport"];
 if (cls(session, "AgentSession").members.some(node => node.name?.getText(session) === "usageModelInfo")) sessionMethods.push("usageModelInfo");
 const pure = [
   ...[prompt, errors].flatMap(file => file.statements.filter(node => ts.isVariableStatement(node)
@@ -148,10 +148,11 @@ function fixture(options: { holdOperation?: string; telemetryThrows?: boolean; s
   }, { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } });
   const model = { provider: "fixture-provider", modelId: "fixture-model" };
   const info = { modelAlias: "fixture", provider: model.provider, model: model.modelId, modelLabel: model.modelId };
+  const config = { telemetry: { enabled: true }, defaultModel: "fixture",
+    models: { fixture: { provider: "fixture", model: model.modelId } }, providers: { fixture: { type: model.provider } } };
   const state = Object.assign(new bindings.InertAccounting(), {
-    activeOperation: "agent turn", modelRequestRecords: [], usageRecords: [], unpersistedRelatedUsage: [],
-    options: { workspaceRoot: "/inert", config: { telemetry: { enabled: true }, defaultModel: "fixture",
-      models: { fixture: { provider: "fixture", model: model.modelId } }, providers: { fixture: { type: model.provider } } },
+    activeOperation: "agent turn", activeConfig: config, modelRequestRecords: [], usageRecords: [], unpersistedRelatedUsage: [],
+    options: { workspaceRoot: "/inert", config,
       modelManager: { getModel: () => model, getInfo: () => info, listModels: () => [] } },
     recorder: { sessionId: "fixture-session", recordWithRuntimeContext: (event: any) => { records.push(event); }, flush: async () => undefined }
   });

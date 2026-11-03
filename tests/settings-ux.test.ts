@@ -181,7 +181,7 @@ test("外观分段选择支持原生单选语义，自定义字体与字号重�
 test("搜索按设置内容定位子页，空结果可清除，跨页草稿继续保留", async () => {
   const h = await harness();
   try {
-    await h.overlay({ targetTab: "用户界面" });
+    await h.overlay({ targetTab: "通用" });
     await h.click('input[type="radio"][value="dark"]');
     await h.input('[aria-label="搜索设置"]', "流式");
     assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /聊天偏好/u);
@@ -199,22 +199,29 @@ test("搜索按设置内容定位子页，空结果可清除，跨页草稿继�
     await h.input('[aria-label="搜索设置"]', "no_such_setting");
     assert.match(document.querySelector('[role="status"]')?.textContent ?? "", /没有找到/u);
     await h.click('[aria-label="清除设置搜索"]');
-    await h.click('[data-settings-tab="用户界面"]');
+    await h.click('[data-settings-tab="通用"]');
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
     assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
+    await h.input('[aria-label="搜索设置"]', "字体");
+    assert.equal(document.querySelector('[aria-label="设置搜索结果"] strong')?.textContent, "通用");
+    await h.click('[aria-label="设置搜索结果"] button');
+    assert.ok(document.querySelector('#appearance-font-family'));
+    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "通用");
+    assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
   } finally { await h.close(); }
 });
 
 test("独立页面切换保留未保存主题和关闭确认，Activity Record 搜索别名仍定位中文页面", async () => {
   const h = await harness({ quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }) });
   try {
-    await h.overlay({ targetTab: "用户界面" });
+    await h.overlay({ targetTab: "通用" });
     await h.click('input[value="dark"]');
     const navLabels = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].map(button => button.textContent);
-    assert.deepEqual(navLabels.slice(0, 8), ["通用", "模型供应商", "聊天偏好", "Token 节省", "用户界面", "配色", "记忆", "技能"], "日常偏好应先于扩展与系统工具，旧覆盖只检查入口存在");
+    assert.deepEqual(navLabels.slice(0, 7), ["通用", "模型供应商", "聊天偏好", "Token 节省", "配色", "记忆", "技能"], "日常偏好应先于扩展与系统工具，旧覆盖只检查入口存在");
     assert.ok(!navLabels.includes("快速对话"), "快速对话不再是独立页面，已并入通用");
     assert.ok(!navLabels.includes("工具模型"), "工具模型不再是独立页面，已并入通用");
     const general = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].find(button => button.textContent === "通用");
+    await h.click('[data-settings-tab="配色"]');
     assert.ok(general); general.focus();
     await h.React.act(() => general.click());
     assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "通用");
@@ -223,6 +230,7 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     assert.ok(document.querySelector("#subagent")!.compareDocumentPosition(quickChat) & 4, "工具模型、视觉模型和 Coding Agent 设置先于快速对话");
     assert.equal(document.querySelector("#tool-execution"), null, "工具编排设置已归属 Token 节省页");
     assert.ok(document.querySelector("#tool-model"), "工具模型卡片在通用页里");
+    assert.ok(document.querySelector("#appearance-theme")!.compareDocumentPosition(document.querySelector("#tool-model")!) & 4, "外观设置位于工具模型之前");
     assert.ok(document.querySelector("#quickchat-behavior"), "快速对话卡片在通用页里");
     assert.ok(document.querySelector("#quickchat-shortcut") === null, "移除没有配置入口的快捷键展示块");
     assert.ok(document.activeElement === general, "切换页面后应保留导航按钮焦点");
@@ -231,7 +239,7 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /Computer History/u);
     await h.click('[aria-label="设置搜索结果"] button');
     assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "Computer History");
-    await h.click('[data-settings-tab="用户界面"]');
+    await h.click('[data-settings-tab="通用"]');
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
     assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /未保存/u);
     await h.click('[aria-label="关闭设置"]');
@@ -246,7 +254,7 @@ test("设置加载失败持续显示重试入口，重试期间不声称已保�
   const deferred = Promise.withResolvers<DesktopSettingsSnapshot>();
   const h = await harness({ settingsSnapshot: async () => { if (++attempt === 1) throw new Error("读取失败"); return await deferred.promise; } });
   try {
-    await h.overlay({ targetTab: "用户界面" });
+    await h.overlay({ targetTab: "通用" });
     assert.match(document.querySelector('[role="alert"]')?.textContent ?? "", /读取失败/u);
     assert.doesNotMatch(document.querySelector('.settings-page-footer')?.textContent ?? "", /无待保存更改/u);
     await h.click('[aria-label="重新加载设置"]');
@@ -347,7 +355,7 @@ test("即时页面保留固定操作栏，跨页草稿仍能保存与确认关�
     assert.ok([...document.querySelectorAll('.settings-footer-actions button')].every((button, index) => button === controls[index]));
     assert.equal(controls[1]!.disabled, true);
     assert.equal(document.querySelector(".settings-save-status")?.textContent, "无待保存更改");
-    await h.click('[data-settings-tab="用户界面"]');
+    await h.click('[data-settings-tab="通用"]');
     await h.click('input[value="dark"]');
     await h.click('[data-settings-tab="关于"]');
     assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, false);
@@ -394,7 +402,7 @@ test("保存失败保留草稿并就地显示原因，重试提交同一组更�
     return { status: "committed", journalId: "test", appliedFields: ["themePreference"], snapshot: { ...snapshot(), themePreference: input.themePreference } };
   } });
   try {
-    await h.overlay({ targetTab: "用户界面" });
+    await h.overlay({ targetTab: "通用" });
     assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, true);
     await h.click('input[value="dark"]');
     assert.equal(document.querySelector('.settings-footer-actions button')?.textContent, "关闭");
@@ -423,7 +431,7 @@ test("外观窄回执保留配置基线，冲突后保留草稿并按新偏好�
       : { status: "committed", journalId: "appearance", appliedFields: ["themePreference"], preferences };
   } });
   try {
-    await h.overlay({ targetTab: "用户界面", onThemePreference: (theme: string) => previews.push(theme),
+    await h.overlay({ targetTab: "通用", onThemePreference: (theme: string) => previews.push(theme),
       onSettingsCommitted: (next: DesktopSettingsSnapshot, scope?: string) => commits.push({ snapshot: next, scope }) });
     await h.click('input[value="dark"]');
     await h.click('.settings-save-button');
@@ -476,7 +484,7 @@ test("聊天偏好仅开关改变草稿，点击行和说明不切换；原保�
 test("运行中允许保存外观，但共享设置更改明确说明禁用原因", async () => {
   const h = await harness({ settingsSnapshot: async () => ({ ...snapshot(), hasRunningTasks: true }) });
   try {
-    await h.overlay({ targetTab: "用户界面" });
+    await h.overlay({ targetTab: "通用" });
     await h.click('input[value="dark"]');
     assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, false);
     await h.input('[aria-label="搜索设置"]', "流式");
@@ -622,7 +630,7 @@ test("关闭再打开设置直接显示已读取内容；仅测 Provider 未覆�
   const refresh = Promise.withResolvers<DesktopSettingsSnapshot>();
   let reads = 0;
   const h = await harness({ settingsSnapshot: async () => ++reads === 1 ? snapshot() : await refresh.promise });
-  const props = { targetTab: "用户界面", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  const props = { targetTab: "通用", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
   try {
     await h.overlay(props);
     assert.ok(document.querySelector('input[type="radio"][value="system"]'));
@@ -644,7 +652,7 @@ test("关闭设置不读取新项目，首次打开其他项目不展示旧项�
     reads.push(projectId);
     return projectId === "project" ? snapshot() : await refresh.promise;
   } });
-  const props = { targetTab: "用户界面", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  const props = { targetTab: "通用", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
   const other = { project: { id: "other", name: "Other" }, models: [], connections: [] };
   try {
     await h.overlay({ ...props, open: false });
@@ -729,7 +737,7 @@ test("设置后台刷新保留刚修改的草稿并更新未编辑字段；重�
   const refresh = Promise.withResolvers<DesktopSettingsSnapshot>();
   let reads = 0;
   const h = await harness({ settingsSnapshot: async () => ++reads === 1 ? snapshot() : await refresh.promise });
-  const props = { targetTab: "用户界面", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  const props = { targetTab: "通用", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
   try {
     await h.overlay(props);
     await h.overlay({ ...props, open: false });
@@ -751,7 +759,7 @@ test("丢弃外观草稿并关闭设置恢复已保存预览；保留缓存不�
     function Host() {
       const [open, setOpen] = h.React.useState(true);
       const [theme, setTheme] = h.React.useState("system");
-      const props = { ...callbacks, open, version: "test", targetTab: "用户界面",
+      const props = { ...callbacks, open, version: "test", targetTab: "通用",
         workspace: { project: { id: "project", name: "Project" }, models: [], connections: [] },
         themePreference: theme, fontPreference: { family: "system", size: 14 }, sessionRunning: false,
         onThemePreference: setTheme, onClose: () => setOpen(false)
@@ -1034,7 +1042,7 @@ test("没有项目也能修改外观，偏好保存成功后才更新界面", as
   const h = await harness({ activitySettings: async () => ({ activity: snapshot().activity, configRevision: "config:1" }),
     setThemePreference: async (value: string) => { writes.push(value); return await saved.promise; } });
   try {
-    await h.overlay({ workspace: undefined, onThemePreference: (value: string) => previews.push(value), targetTab: "用户界面" });
+    await h.overlay({ workspace: undefined, onThemePreference: (value: string) => previews.push(value), targetTab: "通用" });
     await h.click('input[value="dark"]');
     assert.deepEqual(writes, ["dark"]);
     assert.deepEqual(previews, []);

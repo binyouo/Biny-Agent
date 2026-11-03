@@ -85,10 +85,11 @@ test("records list filters, pages, inspects a request and returns without mutati
     ]
   };
   let reads = 0, details = 0, clears = 0;
+  let refreshGate = Promise.resolve();
   Object.assign(dom.window, {
     matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
     biny: {
-      maskingOverview: async () => { reads++; return { records, summary: { total: records.reduce((sum, r) => sum + r.count, 0), requests: records.length, byKind: {}, byProvider: {} } }; },
+      maskingOverview: async () => { reads++; await refreshGate; return { records, summary: { total: records.reduce((sum, r) => sum + r.count, 0), requests: records.length, byKind: {}, byProvider: {} } }; },
       maskingDetail: async (_projectId: string, id: string) => { details++; return id === "record-0" ? detail : undefined; },
       maskingClear: async () => { clears++; }, onAgentEvent: () => () => {}
     }
@@ -138,4 +139,22 @@ test("records list filters, pages, inspects a request and returns without mutati
   assert.equal(reads, 1);
   assert.ok(details >= 1);
   assert.equal(clears, 0);
+
+  let finishRefresh!: () => void;
+  refreshGate = new Promise<void>(resolve => { finishRefresh = resolve; });
+  const refresh = button("刷新");
+  const actionsBefore = refresh.parentElement!.textContent;
+  const listBefore = document.querySelector(".privacy-record-list")!.innerHTML;
+  await click(refresh);
+  assert.equal(refresh.textContent, "刷新", "refresh keeps its action label while awaiting the result");
+  assert.equal(refresh.parentElement!.textContent, actionsBefore, "refresh does not insert or resize action content");
+  assert.equal(refresh.getAttribute("aria-busy"), "true");
+  assert.equal(refresh.disabled, true);
+  assert.equal(document.querySelector(".privacy-record-list")!.innerHTML, listBefore, "existing records remain visible during refresh");
+  await click(refresh);
+  assert.equal(reads, 2, "another click cannot queue a duplicate refresh");
+  await act(async () => finishRefresh());
+  assert.equal(refresh.textContent, "刷新");
+  assert.equal(refresh.disabled, false);
+  assert.equal(refresh.getAttribute("aria-busy"), "false");
 });

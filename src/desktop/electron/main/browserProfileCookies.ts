@@ -115,11 +115,14 @@ export async function readBrowserProfileHistory(
     sourceDatabase = new DatabaseSync(source, { readOnly: true });
     await backup(sourceDatabase, copy);
     database = new DatabaseSync(copy, { readOnly: true });
+    // SQLite lower() only folds ASCII; titles and URLs may contain other scripts.
+    database.function("biny_history_lower", { deterministic: true },
+      (value) => typeof value === "string" ? value.toLowerCase() : value);
     const needle = query?.trim() ?? null;
     const rows = database.prepare(`
       SELECT urls.url, urls.title, CAST(visits.visit_time AS TEXT) AS visit_time
       FROM visits INNER JOIN urls ON urls.id = visits.url
-      WHERE ? IS NULL OR instr(lower(urls.url), lower(?)) > 0 OR instr(lower(urls.title), lower(?)) > 0
+      WHERE ? IS NULL OR instr(biny_history_lower(urls.url), biny_history_lower(?)) > 0 OR instr(biny_history_lower(urls.title), biny_history_lower(?)) > 0
       ORDER BY visits.visit_time DESC
       LIMIT ?
     `).all(needle, needle, needle, limit) as Array<Record<string, unknown>>;

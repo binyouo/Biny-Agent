@@ -89,6 +89,11 @@ export class EmotionStorage {
   }
 
   private async writeState(filePath: string, state: EmotionState, includeEnergy = true, signal?: AbortSignal): Promise<void> {
+    const document = renderEmotionDocument(state, includeEnergy);
+    // Never replace a readable snapshot with a document our own reader rejects.
+    if (!parseEmotionDocument(document, DEFAULT_EMOTION_STATE.energy, includeEnergy)) {
+      throw new Error("Invalid emotion state: mood must contain 1–32 characters, trigger at most 200 characters, and numeric/time fields must be valid.");
+    }
     const directory = path.dirname(filePath);
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     await fs.chmod(directory, 0o700);
@@ -96,7 +101,7 @@ export class EmotionStorage {
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
       handle = await fs.open(temporary, "w", 0o600);
-      await handle.writeFile(renderEmotionDocument(state, includeEnergy), "utf8");
+      await handle.writeFile(document, "utf8");
       await handle.sync();
       await handle.close();
       handle = undefined;

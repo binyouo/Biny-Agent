@@ -62,7 +62,6 @@ import {
   applyProjectOrder,
   eventsBeforeUserMessage,
   eventsThroughUserMessage,
-  lastReportedInputTokens,
   mergeProject,
   mergeProjectSessionPage,
   replaceProjectSessions,
@@ -80,7 +79,7 @@ import { useSidebarLayout } from "./app/useSidebarLayout.js";
 import { Composer, type ComposerHandle, type ComposerMemoryState } from "./components/Composer.js";
 import { WorkspaceContextBar } from "./components/project/WorkspaceContextBar.js";
 import { NewProjectDialog } from "./components/project/NewProjectDialog.js";
-import { resolveContextCapacity, type ContextUsage } from "./usagePresentation.js";
+import { resolveSessionContextUsage, type ContextUsage } from "./usagePresentation.js";
 import { DesktopShell } from "./components/DesktopShell.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { Workspace, type PendingPrompt } from "./components/Workspace.js";
@@ -1860,27 +1859,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const externalAgent = workspace?.selectedModel?.provider === "acp" || selectedRuntimeSnapshot?.info.provider === "acp"
     || Boolean(document?.events.some((event) => event.type === "message_metadata" && typeof event.metadata.acpProvider === "string"));
   // 展示最近请求的完整输入 / 模型完整窗口；压缩预算继续由后端独立控制。
-  const contextUsage = useMemo<ContextUsage | undefined>(() => {
-    const info = selectedRuntimeSnapshot?.info;
-    const persisted = document?.events.slice().reverse().find((event) => (
-      (event.type === "assistant_message" || event.type === "user_message") && !event.auditOnly && event.contextState !== undefined
-    ));
-    const budget = contextBudget ?? (persisted && "contextState" in persisted ? persisted.contextState?.budget : undefined);
-    const activeModelAlias = info?.modelAlias ?? budget?.modelAlias;
-    const selectedModel = workspace?.models.find((model) => model.alias === activeModelAlias);
-    const sameModel = !info?.modelAlias || !budget?.modelAlias || info.modelAlias === budget.modelAlias;
-    const capacity = resolveContextCapacity(info, selectedModel, sameModel ? budget : undefined);
-    const contextWindow = capacity?.contextWindow;
-    if (!contextWindow) return undefined;
-    return {
-      usedTokens: (sameModel ? budget?.usedTokens : budget?.estimatedTokens) ?? lastReportedInputTokens(document) ?? 0,
-      contextWindow,
-      contextWindowIsFallback: capacity?.contextWindowIsFallback ?? true,
-      source: sameModel ? budget?.source : "estimated",
-      breakdown: budget?.breakdown,
-      cacheHitRate: budget?.cacheHitRate
-    };
-  }, [contextBudget, document, selectedRuntimeSnapshot?.info, workspace?.models]);
+  const contextUsage = useMemo<ContextUsage | undefined>(() => resolveSessionContextUsage({
+    sessionId: selectedSessionId,
+    document,
+    runtimeInfo: selectedRuntimeSnapshot?.info,
+    models: workspace?.models ?? [],
+    liveBudget: contextBudget
+  }), [contextBudget, document, selectedSessionId, selectedRuntimeSnapshot?.info, workspace?.models]);
   const appshotNavigation = useRef(openNavigationTarget);
   useEffect(() => { appshotNavigation.current = openNavigationTarget; }, [openNavigationTarget]);
   useEffect(() => {

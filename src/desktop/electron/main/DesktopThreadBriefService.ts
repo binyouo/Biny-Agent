@@ -33,7 +33,7 @@ const requestSchema = z.discriminatedUnion("action", [
 
 export class DesktopThreadBriefService {
   readonly engine: ThreadBriefService;
-  private readonly accepting = new Set<string>();
+  private readonly mutationOwners = new Map<string, symbol>();
   // Only the original generation input owns this transient proof. Stored references
   // used by suggestions/rewrite do not inherit it or change their visibility policy.
   private readonly sources = new WeakMap<BriefThreadReference, { projectPath: string; file: string; fingerprint: string }>();
@@ -60,6 +60,22 @@ export class DesktopThreadBriefService {
 
   async request(input: DesktopThreadBriefRequest): Promise<DesktopThreadBriefSnapshot> {
     const request = requestSchema.parse(input);
+    // Visibility checks and native dialogs yield. Own the suggestion before either
+    // can let a second renderer request enter with the same stale open snapshot.
+    const id = "id" in request ? request.id : undefined;
+    const owner = id === undefined ? undefined : Symbol(id);
+    if (id !== undefined && owner !== undefined) {
+      if (this.mutationOwners.has(id)) throw new Error("正在处理这个项目建议，请稍候。");
+      this.mutationOwners.set(id, owner);
+    }
+    try {
+      return await this.executeRequest(request);
+    } finally {
+      if (id !== undefined && this.mutationOwners.get(id) === owner) this.mutationOwners.delete(id);
+    }
+  }
+
+  private async executeRequest(request: z.infer<typeof requestSchema>): Promise<DesktopThreadBriefSnapshot> {
     const store = this.engine.store;
     let history: BriefThreadReference[] | undefined;
     switch (request.action) {
@@ -121,22 +137,19 @@ export class DesktopThreadBriefService {
       case "accept": {
         const suggestion = this.requireOpen(request.id);
         if (!await this.isVisibleSuggestion(suggestion)) throw new Error("项目建议已处理或不存在。");
-        this.accepting.add(request.id);
-        try {
-          let projectId = suggestion.projectId;
-          if (suggestion.kind === "create" && !projectId) {
-            const directory = suggestion.location ?? await this.options.chooseProjectDirectory(suggestion);
-            if (!directory) break;
-            // 只有原生对话框确认后才创建实际工作区；取消不创建目录或关联。
-            const project = await this.options.projects.createEmptyProject(directory);
-            projectId = project.id;
-            // 先记住已创建的目标；若后续关联失败，重试不会重复创建目录。
-            store.putSuggestion({ ...suggestion, projectId });
-          }
-          if (!projectId) throw new Error("缺少目标项目。");
-          this.options.projects.requireProject(projectId);
-          store.accept(request.id, projectId);
-        } finally { this.accepting.delete(request.id); }
+        let projectId = suggestion.projectId;
+        if (suggestion.kind === "create" && !projectId) {
+          const directory = suggestion.location ?? await this.options.chooseProjectDirectory(suggestion);
+          if (!directory) break;
+          // 只有原生对话框确认后才创建实际工作区；取消不创建目录或关联。
+          const project = await this.options.projects.createEmptyProject(directory);
+          projectId = project.id;
+          // 先记住已创建的目标；若后续关联失败，重试不会重复创建目录。
+          store.putSuggestion({ ...suggestion, projectId });
+        }
+        if (!projectId) throw new Error("缺少目标项目。");
+        this.options.projects.requireProject(projectId);
+        store.accept(request.id, projectId);
         break;
       }
     }
@@ -156,7 +169,6 @@ export class DesktopThreadBriefService {
   }
 
   private requireOpen(id: string): BriefProjectSuggestion {
-    if (this.accepting.has(id)) throw new Error("正在确认这个项目建议，请稍候。");
     const suggestion = this.engine.store.suggestion(id);
     if (!suggestion || suggestion.status !== "open") throw new Error("项目建议已处理或不存在。");
     return suggestion;

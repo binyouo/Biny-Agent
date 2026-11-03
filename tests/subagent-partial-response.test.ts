@@ -121,7 +121,7 @@ for (const response of [
       assert.deepEqual(serverErrors, []);
       assert.equal(statusResult?.status, response.status);
       assert.equal(statusResult?.reason, response.reason);
-      assert.equal(statusResult?.output, response.status === "completed" ? partial : undefined);
+      assert.equal(statusResult?.output, response.status === "completed" || response.status === "incomplete" ? partial : undefined);
       const requestMetrics = commands.runtimeAuthority.readEvents({ limit: 1000 }).events
         .filter((event) => event.eventType === "session.model_request")
         .map((event) => (event.payload as { metrics: ModelRequestMetrics }).metrics)
@@ -141,6 +141,7 @@ for (const response of [
         assert.equal((await channel.inspect(taskRunId)).status, response.status);
         assert.equal((await channel.inspect(taskRunId)).reason, response.reason);
         assert.equal((await channel.inspect(taskRunId)).stopReason, response.stopReason);
+        assert.equal((await channel.inspect(taskRunId)).output, response.status === "completed" || response.status === "incomplete" ? partial : undefined);
         assert.deepEqual(stored.get(taskRunId)?.attempts[0]?.failure, failure);
       } finally { channel.close(); stored.close(); authority.close(); }
     } finally {

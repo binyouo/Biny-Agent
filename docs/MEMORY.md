@@ -92,7 +92,7 @@ Desktop 记忆列表和归档列表按页读取，翻页不会重读全库统计
 
 直接调用 Runtime Host 的 `archive` 操作时，`archived` 必须明确使用布尔值：`true` 归档，`false` 恢复；缺省、字符串或其他类型会被拒绝，不改变已保存的事实。
 
-`memory archive` 是另一种操作：将会话 transcript 导出为本地 Markdown，不归档长期事实，也不删除会话。`memory clear --yes` 的缺省范围是整个共享事实库；按会话清理需要明确传入 `--thread-id`。执行前确认范围，不能把项目目录当作全局清空的边界。
+`memory archive` 是另一种操作：将会话 transcript 导出为本地 Markdown，不归档长期事实，也不删除会话。同名 Markdown 若没有生成标记会保留并报告冲突；移走或重命名该文件后可重试。`memory clear --yes` 的缺省范围是整个共享事实库；按会话清理需要明确传入 `--thread-id`。执行前确认范围，不能把项目目录当作全局清空的边界。
 
 ## 自动处理
 

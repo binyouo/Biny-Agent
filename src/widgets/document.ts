@@ -57,6 +57,9 @@ function setContent(html,complete){
   root.querySelectorAll('script').forEach(old=>{
    if(old.hasAttribute('src')){send('widget-error',{message:'不支持远程脚本，请使用内联脚本。'});return}
    const script=document.createElement('script');
+   for(const attr of Array.from(old.attributes)){
+    if(attr.name!=='type' && attr.name!=='data-widget-type')script.setAttribute(attr.name,attr.value);
+   }
    if(old.dataset.widgetType)script.type=old.dataset.widgetType;
    script.textContent=old.textContent;old.replaceWith(script);
   });

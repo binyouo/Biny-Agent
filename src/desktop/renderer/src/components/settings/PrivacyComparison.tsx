@@ -68,7 +68,7 @@ function ChangedGroup({ group, mode }: { group: DesktopMaskRecord["preview"][num
       {mode !== "masked" ? <div><pre>{highlighted(shown.original, shown.segments, true)}</pre></div> : null}
       {mode !== "original" ? <div><pre>{highlighted(shown.masked, shown.segments, false)}</pre></div> : null}
     </div>
-    {long ? <button type="button" className="settings-action settings-text-action" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : "显示全部"}</button> : null}
+    {long ? <button type="button" className="settings-action settings-text-action" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><span className="button-state-label"><span aria-hidden={expanded}>显示全部</span><span aria-hidden={!expanded}>收起</span></span></button> : null}
     {group.truncated ? <p className="privacy-note">此字段超出保留预算，内容不完整。</p> : null}
   </article>;
 }

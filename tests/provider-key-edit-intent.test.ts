@@ -529,6 +529,9 @@ test("模型选项保存失败保留对话框和填写值，只有提交成功�
     const capacity = dom.window.document.querySelector('[aria-label="模型设置"] input[type="number"]');
     assert.ok(capacity, "模型容量应直接展示；原保存用例未覆盖参数被折叠隐藏");
     assert.ok(!capacity.closest("details"), "常用容量参数无需展开高级设置");
+    const headers = dom.window.document.querySelector('[aria-label="自定义请求头（JSON）"]');
+    assert.ok(headers, "自定义请求头字段应直接展示");
+    assert.equal(headers.closest("details"), null, "请求头无需展开参数组");
     await h.click('[aria-label="模型设置"] button[type="submit"]');
     assert.ok(dom.window.document.querySelector('[aria-label="模型设置"]'));
     assert.match(dom.window.document.querySelector('[aria-label="模型设置"] [role="alert"]')!.textContent!, /SYNTHETIC_CONFLICT/u);

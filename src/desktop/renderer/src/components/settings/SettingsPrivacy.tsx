@@ -97,8 +97,8 @@ function PrivacyRecords({ projectId, enabled }: { projectId: string; enabled: bo
       </div>
       <div className="privacy-toolbar privacy-filters"><select className="settings-field" aria-label="筛选供应商" value={provider} onChange={(e) => { setProvider(e.target.value); setPage(0); }}><option value="">所有供应商</option>{providers.map((p) => <option key={p}>{p}</option>)}</select>
         <select className="settings-field" aria-label="筛选会话" value={session} onChange={(e) => { setSession(e.target.value); setPage(0); }}><option value="">所有会话</option>{sessions.map((s) => <option key={s} value={s}>会话 {s.slice(-6)}</option>)}</select>
-        <div className="privacy-actions"><button type="button" className="settings-action settings-text-action" disabled={loading || clearing} onClick={() => void state.refresh(true)}>{loading ? "刷新中…" : "刷新"}</button>
-          <button type="button" className="settings-action settings-text-action" disabled={clearing || !records.length} onClick={() => void clear()}>清除</button></div>
+        <div className="privacy-actions"><button type="button" className="settings-action settings-text-action" aria-busy={loading} disabled={loading || clearing} onClick={() => void state.refresh(true)}>刷新</button>
+          <button type="button" className="settings-action settings-text-action" aria-busy={clearing} disabled={clearing || !records.length} onClick={() => void clear()}>清除</button></div>
       </div>
       <div className="settings-choice-tabs privacy-type-filters" role="group" aria-label="筛选敏感类型"><button type="button" aria-pressed={!kind} onClick={() => { setKind(""); setPage(0); }}>全部</button>
         {kinds.map(value => <button type="button" key={value} aria-pressed={kind === value} onClick={() => { setKind(kind === value ? "" : value); setPage(0); }}>{privacyKinds[value] ?? value}</button>)}

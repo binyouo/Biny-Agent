@@ -129,7 +129,13 @@ export class HeartbeatFileStore {
     } catch (error) {
       if (!isNotFound(error)) throw error;
       await mkdir(path.dirname(this.path), { recursive: true, mode: 0o700 });
-      await writeFile(this.path, defaultHeartbeatDocument(), { encoding: "utf8", mode: 0o600 });
+      try {
+        await writeFile(this.path, defaultHeartbeatDocument(), { encoding: "utf8", mode: 0o600, flag: "wx" });
+      } catch (writeError) {
+        // Another initializer or the owner may have created the checklist after the read.
+        if (!(typeof writeError === "object" && writeError !== null && "code" in writeError && writeError.code === "EEXIST")) throw writeError;
+        await readFile(this.path, "utf8");
+      }
     }
   }
 

@@ -32,13 +32,16 @@ test("减少动态效果关闭布局和内容过渡", () => {
   assert.ok(/@media\s*\(prefers-reduced-motion: reduce\)\s*\{[^}]*\.desktop-root\.biny-root[^}]*transition: none !important;/s.test(css));
 });
 
-test("工具按钮保留轻量反馈，rail 不使用模糊滤镜过渡", () => {
+test("工具按钮使用稳定的颜色反馈，rail 不使用模糊滤镜过渡", () => {
   const dom = new JSDOM(`<style>${styles.join("\n")}</style><div class="biny-root"><div class="biny-inspector-rail is-visible"><button class="biny-inspector-rail-btn"></button></div><button class="biny-inspector-tab"></button></div>`);
   try {
     const get = (selector: string): CSSStyleDeclaration => dom.window.getComputedStyle(dom.window.document.querySelector(selector)!);
     assert.equal(get(".biny-inspector-rail").filter, "none");
     assert.doesNotMatch(get(".biny-inspector-rail").transition, /filter/u);
-    assert.match(get(".biny-inspector-tab").transition, /transform/u);
+    const transition = get(".biny-inspector-tab").transition;
+    assert.match(transition, /background/u);
+    assert.match(transition, /color/u);
+    assert.doesNotMatch(transition, /transform|\ball\b/u);
   } finally { dom.window.close(); }
 });
 

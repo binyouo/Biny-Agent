@@ -102,7 +102,7 @@ export function SettingsImport({ projectId, projects: allProjects, hidden = fals
         </label>) : <p>没有可导入的内容。</p>}</div>
         {error ? <p role="alert">{error}</p> : null}
         </div>
-        <footer><span>{selected.length} 项已选</span><button className="settings-action settings-primary-button" disabled={busy || disabled || !target || (!selected.length && !selectionOnly)} type="button" onClick={run}>{busy ? "正在保存…" : selectionOnly ? "保存同步选择" : "导入所选内容"}</button></footer>
+        <footer><span>{selected.length} 项已选</span><button aria-busy={busy} className="settings-action settings-primary-button" disabled={busy || disabled || !target || (!selected.length && !selectionOnly)} type="button" onClick={run}>{selectionOnly ? "保存同步选择" : "导入所选内容"}</button></footer>
       </section>
     </SettingsDetailLayer> : null}
   </div>;
