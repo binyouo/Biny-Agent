@@ -5,6 +5,7 @@ import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import { test } from "node:test";
 import { Script } from "node:vm";
+import { MIMEType } from "node:util";
 import ts from "typescript";
 
 const root = process.env.BINY_XHTML_SOURCE_ROOT ?? process.cwd();
@@ -156,7 +157,7 @@ const predicate = predicates[0]; assert.ok(predicate);
 assert.match(fetchSource, /const readable = !args\.raw && isHtml\(fetched\.contentType\)\s*\? await extractReadableHtml\(fetched\.body, fetched\.finalUrl\)/);
 test("actual WebFetch consumer accepts XHTML as markup", () => {
   const script = stripTypeScriptTypes(`${predicate.getText(fetchAst)}\nisHtml("application/xhtml+xml")`, { mode: "strip" });
-  assert.equal(new Script(script).runInNewContext({}, { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }), true);
+  assert.equal(new Script(script).runInNewContext({ MIMEType }, { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }), true);
 });
 
 const readableStatements: ts.VariableStatement[] = [];
@@ -182,7 +183,7 @@ for (const fixture of [
       const value = read({ mime: fixture.mime, html: xhtml, text: "<b>X</b>" });
       assert.ok(value.selected);
       const calls: Array<{ html: string; url: string }> = [];
-      const result = await consumerScript.runInNewContext({ args: Object.freeze({ raw }), fetched: Object.freeze(value.selected),
+      const result = await consumerScript.runInNewContext({ MIMEType, args: Object.freeze({ raw }), fetched: Object.freeze(value.selected),
         extractReadableHtml(html: string, url: string) {
           calls.push({ html, url });
           return Promise.resolve({ title: "inert extraction", text: "inert result" });
