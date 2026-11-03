@@ -9,6 +9,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { globalConfigDir } from "../config/paths.js";
+import { withGlobalConfigWriteLock } from "../config/versioned.js";
 import { scanSkillCatalog, type SkillCatalogEngine, type SkillCatalogEntry, type SkillCatalogSnapshot } from "./skillCatalog.js";
 
 const maxImportedFileCount = 1_024;
@@ -50,20 +51,22 @@ export async function importUnmanagedSkills(options: {
 }): Promise<SkillImportResult[]> {
   if (!options.ids.length) return [];
   const homeDir = options.homeDir ?? os.homedir();
-  const snapshot = await scanSkillCatalog({ homeDir: options.homeDir, projectRoots: options.projectRoots });
-  const selected = new Set(options.ids);
-  const candidates = listUnmanagedSkillCandidates(snapshot).filter((candidate) => selected.has(candidate.id));
   const managedRoot = options.homeDir === undefined
     ? path.join(globalConfigDir(), "skills")
     : path.join(globalConfigDir({ env: {}, homeDir }), "skills");
-  await ensureManagedRoot(managedRoot);
-  const results: SkillImportResult[] = [];
-  for (const candidate of candidates) {
-    const entry = snapshot.inventory.find((item) => item.id === candidate.id);
-    if (!entry) continue;
-    results.push(await importSkillDirectory(entry, managedRoot));
-  }
-  return results;
+  return await withGlobalConfigWriteLock(managedRoot, async () => {
+    const snapshot = await scanSkillCatalog({ homeDir: options.homeDir, projectRoots: options.projectRoots });
+    const selected = new Set(options.ids);
+    const candidates = listUnmanagedSkillCandidates(snapshot).filter((candidate) => selected.has(candidate.id));
+    await ensureManagedRoot(managedRoot);
+    const results: SkillImportResult[] = [];
+    for (const candidate of candidates) {
+      const entry = snapshot.inventory.find((item) => item.id === candidate.id);
+      if (!entry) continue;
+      results.push(await importSkillDirectory(entry, managedRoot));
+    }
+    return results;
+  });
 }
 
 async function importSkillDirectory(entry: SkillCatalogEntry, managedRoot: string): Promise<SkillImportResult> {

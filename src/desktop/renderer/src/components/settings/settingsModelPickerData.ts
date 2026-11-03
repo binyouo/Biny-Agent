@@ -40,7 +40,7 @@ export function modelPickerGroups(
   // 而不是模型上，所以要按 providerAlias 反查一次。
   const iconByAlias = new Map(connections.map((connection) => [connection.providerAlias, connection.icon]));
   for (const model of models) {
-    if (model.showInPicker === false) continue;
+    if (!model.available || model.showInPicker === false) continue;
     const presentation = modelProviderPresentation(model, iconByAlias.get(model.provider));
     const key = `${model.providerType}:${model.provider}:${model.baseUrl ?? ""}`;
     const group = groups.get(key) ?? {

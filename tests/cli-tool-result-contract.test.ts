@@ -43,6 +43,7 @@ function fixture(options: { value?: unknown; error?: Error; unavailable?: boolea
   let closed = 0;
   const client = {
     persistenceRoot: "/inert/workspace",
+    waitForReady: async () => {},
     listRuntimeSessions: async () => [{ sessionId: "target-session" }],
     focusSession: async (id: string) => { focused.push(id); if (options.focusError) throw options.focusError; },
     sessionCommand: async (...args: unknown[]) => {

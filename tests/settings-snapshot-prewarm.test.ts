@@ -8,7 +8,7 @@ import { after, test } from "node:test";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { defaultConfig } from "../src/config/schema.js";
-import type { DesktopSettingsSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopSettingsSaveResult, DesktopSettingsSnapshot } from "../src/desktop/protocol.js";
 import type { SettingsDraftContextValue } from "../src/desktop/renderer/src/components/settings/SettingsDraftContext.js";
 
 const imports = registerHooks({ load(url, context, next) {
@@ -222,3 +222,52 @@ test("Provider 卸载重挂后用模块缓存先渲染，不发 loading 态", as
   assert.equal(secondView.context().revalidating, false);
   await secondView.unmount();
 });
+
+for (const status of ["committed", "rolled_back"] as const) {
+  test(`偏好 ${status} 窄回执保留保存期间已刷新到的新配置版本`, async () => {
+    const refresh = deferred<DesktopSettingsSnapshot>();
+    const saved = deferred<DesktopSettingsSaveResult>();
+    const initial = snapshot("project");
+    let reads = 0;
+    let saves = 0;
+    binyFor([], {
+      settingsSnapshot: async () => ++reads === 1 ? initial : await refresh.promise,
+      saveSettings: async () => { saves += 1; return await saved.promise; }
+    });
+    const view = mount("project", "session");
+    let pending: Promise<DesktopSettingsSaveResult | undefined> | undefined;
+    const preferences = {
+      projectId: "project", hasRunningTasks: false, preferenceRevision: 3,
+      themePreference: status === "committed" ? "dark" as const : "system" as const,
+      fontPreference: { family: "system" as const, size: 14 }
+    };
+    const receipt: DesktopSettingsSaveResult = status === "committed"
+      ? { status, journalId: "preferences", appliedFields: ["themePreference"], preferences }
+      : { status, draftRetained: true, message: "preference conflict", preferences };
+    try {
+      await view.render(true);
+      await view.render(false);
+      await view.render(true);
+      assert.equal(view.context().revalidating, true);
+      await act(async () => view.context().setThemePreference("dark"));
+      await act(async () => { pending = view.context().saveAll(); });
+      assert.equal(saves, 1);
+      const next = { ...initial, configRevision: "config:new-external",
+        models: { ...initial.models, defaultModel: "new-external-model" },
+        memory: { ...initial.memory, maxRecalled: initial.memory.maxRecalled + 1 } };
+      await act(async () => refresh.resolve(next));
+      assert.equal(view.context().snapshot?.configRevision, "config:new-external");
+      await act(async () => { saved.resolve(receipt); await pending; });
+      assert.equal(view.context().snapshot?.configRevision, "config:new-external", "preferences cannot restore an obsolete config CAS base");
+      assert.equal(view.context().snapshot?.models, next.models);
+      assert.equal(view.context().snapshot?.memory, next.memory);
+      assert.equal(view.context().snapshot?.preferenceRevision, 3);
+      assert.equal(view.context().draft?.themePreference, "dark", "failed preference saves retain the editable draft");
+    } finally {
+      refresh.resolve(initial);
+      saved.resolve(receipt);
+      await act(async () => { await pending; });
+      await view.unmount();
+    }
+  });
+}

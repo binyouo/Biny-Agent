@@ -249,7 +249,7 @@ Plugin 的 JavaScript 在 Biny 进程中运行。受管安装、路径校验和�
 
 步数、期限、并发与允许工具继续在配置文件中管理；Desktop 修改默认执行后端不会覆盖这些限制。外部运行方式有不兼容的权限、沙箱或额度配置时，设置页显示限制原因，保存不会自动放宽它们；启动前仍执行完整校验。
 
-子代理的工具范围与全局允许集合求交集，不能扩大父任务权限。任务结果以持久 TaskRun、Attempt 和可选验证记录为准；子代理的文字报告不代替文件或测试证据。管理与恢复见 [目标与自动化](AUTOMATION.md)。
+内置子代理的工具范围与全局允许集合求交集，并受父任务权限约束；外部运行方式的限制见下方说明。任务结果以持久 TaskRun、Attempt 和可选验证记录为准；子代理的文字报告不代替文件或测试证据。管理与恢复见 [目标与自动化](AUTOMATION.md)。
 
 具名定义放在 `.biny/agents/<name>.md`（项目级）或 `~/.config/biny/agents/`（全局）；项目级同名优先。`runtime` 可选 `auto`、`builtin`、`codex`、`claude-code`、`acp`，省略时使用 `extensions.subagent.runtime`，默认 `builtin`。`model` 优先使用定义值，其次使用 `extensions.subagent.model`；内置运行时最终可沿用主模型。显式 ACP 定义可用 `providerAlias` 选择连接并沿用 Agent 默认模型，也可设置该 Provider 下的模型别名；Codex CLI 仍需指定外部模型 ID。不自动安装或在执行失败后切换后端。
 
@@ -267,7 +267,7 @@ Keep changes within the assigned task. Report the changes and verification resul
 
 `builtin` 的 `model` 是 Biny 模型别名；`acp` 也使用 Biny 模型别名，该模型必须属于已启用的 ACP Provider，实际启动命令、环境变量引用及 MCP 选择复用该连接配置。`codex` 和 `claude-code` 的 `model` 是对应 CLI 接受的原始模型 ID，分别从 PATH 启动 `codex exec` 和 `claude -p`。CLI 使用自己的本地登录与配置；Biny 不转发 Provider 密钥、主会话历史、记忆或工具。ACP 只转交连接中明确选择的 MCP 服务，子任务不自动检索或发送 Biny 记忆。
 
-外部进程拥有自己的工具与授权机制，Biny 的 `allowedTools` 仅约束内置 Worker。外部任务要求父会话为 `full-access`、任务为 `workspace`，且不能附带 Biny 的拒绝路径、沙箱/禁网限制或具名 `tools` 限制；不满足时在启动前拒绝，不自动降低策略。CLI 启动不使用跳过权限的参数：Codex 使用 `workspace-write`，Claude Code 使用 `dontAsk`，外部工具可能被其自身权限拒绝。独立子 Session 不等于操作系统隔离，外部工具也不经过 Biny 的逐次批准。
+外部进程拥有自己的工具与授权机制，Biny 的 `allowedTools` 仅约束内置 Worker。外部任务要求父会话为 `full-access`、任务为 `workspace`，且不能附带沙箱/禁网或具名 `tools` 限制；不满足时在启动前拒绝。Codex CLI 和 ACP 无法执行 Biny 的拒绝路径规则，存在拒绝路径时拒绝启动；Codex CLI 使用 `workspace-write`。Claude Code CLI 使用 `--dangerously-skip-permissions`，跳过其交互式权限审批，也不受 Biny 拒绝路径规则限制；主 Agent 和内置子代理仍执行这些规则。自动模式选中 Claude Code 时同样适用。独立子 Session 不等于操作系统隔离，外部工具不经过 Biny 的逐次批准。
 
 外部 Worker 暂不支持 Biny 的 `maxSteps`、`maxCostUsd` 或绑定 session goal 的任务，存在这些要求时拒绝启动；内置 `maxOutputTokens` 不控制外部生成额度。总时限 `timeoutMs`、空闲时限 `inactivityTimeoutMs`、父取消和 Runtime 关闭仍有效。CLI 输出限制为 16 MiB、单条消息 1 MiB；ACP 沿用连接限制。完成必须同时有协议终态，CLI 还须正常退出，不能仅凭输出文本报成功。
 

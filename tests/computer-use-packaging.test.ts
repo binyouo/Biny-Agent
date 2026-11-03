@@ -28,7 +28,9 @@ test("build config no longer externalizes or bundles the cua process entry", asy
 
 test("desktop commands use the grouped config files", async () => {
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.match(manifest.scripts["build:desktop"], /electron-vite build --config config\/electron\.vite\.config\.ts/);
+  assert.equal(manifest.scripts["build:desktop"], "node scripts/build-project.mjs desktop");
+  const build = await readFile(new URL("../scripts/build-project.mjs", import.meta.url), "utf8");
+  assert.match(build, /"electron-vite", "build", "--config", "config\/electron\.vite\.config\.ts"/);
   assert.match(manifest.scripts["desktop:dev"], /electron-vite dev --watch --config config\/electron\.vite\.config\.ts/);
   assert.match(manifest.scripts["desktop:preview"], /electron-vite preview --config config\/electron\.vite\.config\.ts/);
   assert.match(manifest.scripts["desktop:pack"], /electron-builder --config config\/electron-builder\.yml/);

@@ -25,17 +25,17 @@ export function installApplicationMenu(getWindow: () => BrowserWindow | undefine
         { type: "separator" },
         { label: "设置…", accelerator: "CommandOrControl+,", click: () => send("settings") },
         { type: "separator" },
-        { role: "services" },
+        { role: "services", label: "服务" },
         { type: "separator" },
         { role: "hide", label: "隐藏 Biny" },
-        { role: "hideOthers" },
-        { role: "unhide" },
+        { role: "hideOthers", label: "隐藏其他应用" },
+        { role: "unhide", label: "显示全部" },
         { type: "separator" },
         { role: "quit", label: "退出 Biny" }
       ]
     },
     {
-      label: "File",
+      label: "文件",
       submenu: [
         { label: "新建任务", accelerator: "CommandOrControl+N", click: () => send("new-task") },
         { label: "打开项目…", accelerator: "CommandOrControl+O", click: () => send("open-project") },
@@ -43,25 +43,61 @@ export function installApplicationMenu(getWindow: () => BrowserWindow | undefine
         { role: "close", label: "关闭窗口" }
       ]
     },
-    { role: "editMenu", label: "Edit" },
     {
-      label: "View",
+      role: "editMenu",
+      label: "编辑",
+      submenu: [
+        { role: "undo", label: "撤销" },
+        { role: "redo", label: "重做" },
+        { type: "separator" },
+        { role: "cut", label: "剪切" },
+        { role: "copy", label: "复制" },
+        { role: "paste", label: "粘贴" },
+        { role: "pasteAndMatchStyle", label: "粘贴并匹配样式" },
+        { role: "delete", label: "删除" },
+        { role: "selectAll", label: "全选" },
+        ...(process.platform === "darwin" ? [
+          { type: "separator" as const },
+          { label: "语音", submenu: [
+            { role: "startSpeaking" as const, label: "开始朗读" },
+            { role: "stopSpeaking" as const, label: "停止朗读" }
+          ] }
+        ] : [])
+      ]
+    },
+    {
+      label: "视图",
       submenu: [
         { label: "快速搜索", accelerator: "CommandOrControl+K", click: () => send("search") },
         { label: "显示或隐藏侧边栏", accelerator: "CommandOrControl+B", click: () => send("toggle-sidebar") },
         { label: "聚焦任务输入", accelerator: "CommandOrControl+Enter", click: () => send("focus-composer") },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
+        { label: "截取窗口…", accelerator: "CommandOrControl+Shift+S", click: () => send("capture-window") },
         { type: "separator" },
-        { role: "togglefullscreen" }
+        { role: "resetZoom", label: "实际大小" },
+        { role: "zoomIn", label: "放大" },
+        { role: "zoomOut", label: "缩小" },
+        { type: "separator" },
+        { role: "togglefullscreen", label: "切换全屏" }
       ]
     },
-    { role: "windowMenu", label: "Window" },
+    {
+      role: "windowMenu",
+      label: "窗口",
+      submenu: [
+        { role: "minimize", label: "最小化" },
+        { role: "zoom", label: "缩放" },
+        ...(process.platform === "darwin" ? [
+          { type: "separator" as const },
+          { role: "front" as const, label: "前置全部窗口" }
+        ] : [
+          { role: "close" as const, label: "关闭窗口" }
+        ])
+      ]
+    },
     {
       role: "help",
-      label: "Help",
+      label: "帮助",
       submenu: [
         {
           label: "Biny 版本",

@@ -104,7 +104,6 @@ async function harness() {
     let nextPreviewGate: PreviewGate | undefined;
     let previewCalls = 0;
     let selectionCalls = 0;
-    let importedCalls = 0;
     const track = <T,>(operation: () => Promise<T>): Promise<T> => {
       const pending = operation();
       requests.add(pending);
@@ -168,8 +167,7 @@ async function harness() {
     const render = async (disabled = false): Promise<void> => {
       await act(async () => {
         root.render(createElement(SettingsDetailHostContext.Provider, { value: document.getElementById("details") },
-          createElement(SettingsImport, { projectId: "project-a", projects, disabled,
-            onImported: async () => { importedCalls += 1; } })));
+          createElement(SettingsImport, { projectId: "project-a", projects, disabled })));
       });
       await act(async () => { while (requests.size) await Promise.allSettled([...requests]); });
     };
@@ -247,7 +245,6 @@ async function harness() {
         assert.equal(syncCalls, 0);
         assert.equal(configCalls, 0);
         assert.equal(networkCalls, 0);
-        assert.equal(importedCalls, 0);
       }
     };
   } catch (error) {

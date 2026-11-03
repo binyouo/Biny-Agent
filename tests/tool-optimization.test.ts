@@ -154,30 +154,33 @@ test("RTK discovery continues past an incompatible executable", async () => {
 });
 
 test("statistics projection reuses unchanged history and invalidates on append or rewrite", async () => {
-  const { ToolOptimizationIndex } = await import("../src/session/toolOptimizationIndex.js");
+  const { ToolOptimizationStore } = await import("../src/session/toolOptimizationStore.js");
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-optimization-index-"));
   const oldRoot = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "state");
   let recorder: SessionRecorder | undefined;
+  let index: InstanceType<typeof ToolOptimizationStore> | undefined;
   try {
     await ensureAgentDirs(root);
     recorder = new SessionRecorder(root, "index-case");
     recorder.record({ type: "tool_result", tool: "Bash", toolCallId: "first", result: {}, optimization: record });
     await recorder.flush();
-    const index = new ToolOptimizationIndex();
-    const first = await index.read(root, "index-case");
-    assert.equal(first.length, 1);
-    assert.equal(await index.read(root, "index-case"), first, "unchanged files reuse the projection");
+    index = new ToolOptimizationStore(path.join(root, "statistics.sqlite"));
+    const scope = { days: "all" as const, projects: [{ id: "project", path: root }], sessionId: "index-case" };
+    const first = await index.refresh(scope);
+    assert.equal(first.ptc.runs, 1);
+    assert.deepEqual(await index.refresh(scope), first);
     recorder.record({ type: "tool_result", tool: "Bash", toolCallId: "second", result: {}, optimization: { ...record, id: "second" } });
     await recorder.close();
-    assert.equal((await index.read(root, "index-case")).length, 2);
+    assert.equal((await index.refresh(scope)).ptc.runs, 2);
     await writeFile(recorder.filePath, JSON.stringify({ type: "tool_result", tool: "Bash", toolCallId: "replacement", time: new Date().toISOString(), optimization: { ...record, id: "replacement" } }) + "\n");
-    const rewritten = await index.read(root, "index-case");
-    assert.equal(rewritten.length, 1);
-    assert.equal(rewritten[0]?.optimization.id, "replacement");
+    const rewritten = await index.refresh(scope);
+    assert.equal(rewritten.ptc.runs, 1);
+    assert.equal(rewritten.ptc.savedTokens, 700);
     await rm(recorder.filePath);
-    await assert.rejects(index.read(root, "index-case"));
+    assert.equal((await index.refresh(scope)).ptc.runs, 0);
   } finally {
+    index?.close();
     await recorder?.close();
     if (oldRoot === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = oldRoot;
     await rm(root, { recursive: true, force: true });

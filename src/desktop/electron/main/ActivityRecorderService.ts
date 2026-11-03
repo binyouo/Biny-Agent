@@ -304,12 +304,16 @@ export class ActivityRecorderService {
     this.stopEpoch++;
     // 立即撤销旧监听和分析；排队中的初始化/刷新仍可能创建新一轮资源。
     this.stopBackgroundResources();
-    await this.enqueue(async () => {
-      // 与设置应用共享队列，在它完成后再次收口，不能遗留新建的监听和调度器。
-      this.stopBackgroundResources();
-      await this.stopInternal();
-    });
-    await this.nativeClient?.stop();
+    const failures: unknown[] = [];
+    try {
+      await this.enqueue(async () => {
+        // 与设置应用共享队列，在它完成后再次收口，不能遗留新建的监听和调度器。
+        this.stopBackgroundResources();
+        await this.stopInternal();
+      });
+    } catch (error) { failures.push(error); }
+    try { await this.nativeClient?.stop(); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Activity 清理失败");
   }
 
   private stopBackgroundResources(): void {
@@ -814,15 +818,17 @@ export class ActivityRecorderService {
     this.inputMonitorStopping = child !== undefined;
     try {
       if (child) {
-        await new Promise<void>((resolve) => {
-          const timeout = setTimeout(() => {
-            if (!child.killed) child.kill("SIGTERM");
-            resolve();
-          }, 1_000);
-          child.once("close", () => {
-            clearTimeout(timeout);
-            resolve();
-          });
+        await new Promise<void>((resolve, reject) => {
+          const finish = (error?: Error): void => {
+            clearTimeout(termTimer); clearTimeout(killTimer); clearTimeout(deadline);
+            child.off("close", onClose);
+            if (error) reject(error); else resolve();
+          };
+          const onClose = (): void => finish();
+          const termTimer = setTimeout(() => { child.kill("SIGTERM"); }, 1_000);
+          const killTimer = setTimeout(() => { child.kill("SIGKILL"); }, 2_000);
+          const deadline = setTimeout(() => finish(new Error("输入监听进程未能退出")), 3_000);
+          child.once("close", onClose);
           if (!child.killed) this.send({ type: "stop" }, child);
           // 关闭 stdin 让输入进程在处理完 stop 后走 EOF 收口；只发命令而不关 stdin
           // 会让它一直阻塞在 readLine，最后一段 keypress 也来不及读入。

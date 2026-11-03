@@ -271,7 +271,8 @@ test("duplicate same-turn root clicks coalesce and keep pending feedback", async
   assert.ok(Boolean(more), "The expanded first page needs a continuation control");
   await h.React.act(async () => { more!.click(); more!.click(); });
   assert.equal(h.pages.length, 1); assertRootRequest(h, 0);
-  const busy = h.button("加载中…", h.group()); assert.ok(Boolean(busy)); assert.equal(busy!.disabled, true);
+  const busy = h.button("加载更早会话", h.group()); assert.ok(Boolean(busy)); assert.equal(busy!.disabled, true);
+  assert.equal(busy!.getAttribute("aria-busy"), "true");
   await h.settle(0, page("a", catalog("a").slice(32, 64), "a:catalog-v1:64"));
   assert.equal(h.rowTitles().length, 65); assert.equal(h.pages.length, 1);
 });
@@ -330,7 +331,8 @@ test("a stale failure cannot clear newer loading state or replace its retry feed
   const h = await fixture(t); await h.load(); await h.refresh(workspace("a", catalog("a"), "catalog-v2"));
   await h.load(); assert.equal(h.pages.length, 2);
   await h.React.act(async () => h.pages[0]!.gate.reject(new Error("Obsolete failure")));
-  const busy = h.button("加载中…", h.group()); assert.ok(Boolean(busy)); assert.equal(busy!.disabled, true);
+  const busy = h.button("加载更早会话", h.group()); assert.ok(Boolean(busy)); assert.equal(busy!.disabled, true);
+  assert.equal(busy!.getAttribute("aria-busy"), "true");
   assert.equal(h.group().textContent?.includes("加载失败，请重试。"), false);
   await h.settle(1, page("a", catalog("a").slice(32, 64), "a:catalog-v2:64", "catalog-v2"));
   assert.equal(h.rowTitles().length, 65);

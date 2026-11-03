@@ -17,6 +17,7 @@ export default defineConfig({
         input: {
           index: path.join(root, "src/desktop/electron/main/index.ts"),
           searchIndexWorker: path.join(root, "src/session/searchIndexWorker.ts"),
+          toolOptimizationWorker: path.join(root, "src/session/toolOptimizationWorker.ts"),
         },
         output: {
           manualChunks: (id) => id === path.join(root, "src/agent/codeMode.ts") ? "code-mode-runtime" : undefined

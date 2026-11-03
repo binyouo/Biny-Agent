@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DesktopApplicationImports } from "../src/desktop/electron/main/DesktopApplicationImports.js";
-import type { ApplicationImportHistory, ApplicationImportSnapshot } from "../src/imports/types.js";
+import type { ApplicationImportHistory, ApplicationImportSnapshot, ApplicationImportSyncOutcome } from "../src/imports/types.js";
 
 const snapshot: ApplicationImportSnapshot = { sources: [], history: [], sync: { enabled: false, hasSelection: false } };
 const history: ApplicationImportHistory = { id: "batch", source: "claude", label: "Claude Code", time: "2026-10-07T01:00:00Z", workspaceRoot: "/fixture", results: [] };
@@ -13,7 +13,7 @@ test("Desktop import rejects busy or recovering runtime before dispatching side 
     run: async () => { dispatched = true; return history; },
     setSyncEnabled: async () => snapshot,
     configureSyncSelection: async () => snapshot,
-    syncWithEffects: async () => { dispatched = true; return { snapshot, effects: { mcpImported: false } }; }
+    syncWithEffects: async () => { dispatched = true; return { snapshot, effects: { mcpImported: false, settingsImported: false, sessions: [], stateChanged: true } }; }
   }, async () => { throw new Error("runtime busy"); });
   await assert.rejects(controller.run({ previewId: "preview", itemIds: ["one"], workspaceRoot: "/fixture" }), /runtime busy/u);
   await assert.rejects(controller.sync(), /runtime busy/u);
@@ -32,7 +32,7 @@ test("admitted imports fence new work, concurrent imports and shutdown without r
     run: async () => { writes += 1; entered(); await pending; return history; },
     setSyncEnabled: async () => snapshot,
     configureSyncSelection: async () => snapshot,
-    syncWithEffects: async () => ({ snapshot, effects: { mcpImported: false } })
+    syncWithEffects: async () => ({ snapshot, effects: { mcpImported: false, settingsImported: false, sessions: [], stateChanged: true } })
   }, async () => undefined);
   const input = { previewId: "preview", itemIds: ["one"], workspaceRoot: "/fixture" };
   const running = controller.run(input);
@@ -65,7 +65,7 @@ test("automatic sync schedules the same guarded service and cancels on close", a
     run: async () => history,
     setSyncEnabled: async () => active,
     configureSyncSelection: async () => active,
-    syncWithEffects: async () => { writes += 1; return { snapshot: active, effects: { mcpImported: false } }; }
+    syncWithEffects: async () => { writes += 1; return { snapshot: active, effects: { mcpImported: false, settingsImported: false, sessions: [], stateChanged: true } }; }
   }, async () => undefined);
   try {
     controller.start(async () => changed());
@@ -87,7 +87,7 @@ test("closing also waits for an admitted preview state write", async () => {
     run: async () => history,
     setSyncEnabled: async () => snapshot,
     configureSyncSelection: async () => snapshot,
-    syncWithEffects: async () => ({ snapshot, effects: { mcpImported: false } })
+    syncWithEffects: async () => ({ snapshot, effects: { mcpImported: false, settingsImported: false, sessions: [], stateChanged: true } })
   }, async () => undefined);
   const preview = controller.preview("claude");
   let closed = false;
@@ -99,4 +99,29 @@ test("closing also waits for an admitted preview state write", async () => {
   await closing;
   assert.equal(closed, true);
   await assert.rejects(controller.snapshot(), /已关闭/u);
+});
+
+test("import notifications contain only committed scopes and unchanged sync emits nothing", async () => {
+  const changes: ApplicationImportSyncOutcome["effects"][] = [];
+  let effects: ApplicationImportSyncOutcome["effects"] = { mcpImported: false, settingsImported: false, sessions: [], stateChanged: false };
+  const result: ApplicationImportHistory = { ...history, results: [
+    { id: "session", category: "sessions", label: "session", status: "imported", sessionId: "new-session" },
+    { id: "old", category: "sessions", label: "old", status: "skipped", sessionId: "old-session" },
+    { id: "mcp", category: "mcp", label: "mcp", status: "unknown" }
+  ] };
+  const controller = new DesktopApplicationImports({
+    snapshot: async () => snapshot, preview: async () => ({ id: "preview", source: "claude", label: "Claude", items: [], warnings: [] }),
+    run: async () => result, setSyncEnabled: async () => snapshot, configureSyncSelection: async () => snapshot,
+    syncWithEffects: async () => ({ snapshot, effects })
+  }, async () => undefined);
+  controller.start(async change => { changes.push(change); });
+  try {
+    await controller.sync();
+    assert.deepEqual(changes, []);
+    await controller.run({ previewId: "preview", itemIds: ["session"], workspaceRoot: "/fixture" });
+    assert.deepEqual(changes, [{ mcpImported: false, settingsImported: false, stateChanged: true, sessions: [{ workspaceRoot: "/fixture", sessionIds: ["new-session"] }] }]);
+    effects = { mcpImported: true, settingsImported: true, sessions: [], stateChanged: true };
+    await controller.sync();
+    assert.deepEqual(changes[1], effects);
+  } finally { await controller.close(); }
 });

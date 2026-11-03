@@ -44,8 +44,8 @@ const inspectText = method("src/desktop/electron/main/DesktopProjectService.ts",
 ]);
 const servicePageText = method("src/desktop/electron/main/DesktopProjectService.ts", "DesktopProjectService", "listSessionTreePage", [
   "this.storage.ensureProjectData", "ensureAgentDirs", "listSessionCatalog", "querySessionCatalogItems", "catalog.filter",
-  "Map", "[...page.items, ...(pinnedItems ?? [])].map", "RuntimeEventAuthority.readLatestSessionRuns", "visible.keys", "[...visible].map", "desktopSessionSummary",
-  "latestRuns.get", "page.items.map", "summaries.get", "pinnedItems?.map"
+  "Set", "requestedSessionIds.has", "Map", "[...page.items, ...(pinnedItems ?? []), ...(supplementalItems ?? [])].map", "RuntimeEventAuthority.readLatestSessionRuns", "visible.keys", "[...visible].map", "desktopSessionSummary",
+  "latestRuns.get", "page.items.map", "summaries.get", "pinnedItems?.map", "supplementalItems?.map"
 ]);
 const managerText = method("src/desktop/electron/main/DesktopAgentManager.ts", "DesktopAgentManager", "listSessionTreePage", [
   "this.projects.inspectProject", "this.projects.requireProject", "this.projects.listSessionTreePage", "this.runtimeSnapshots", "this.projectEvents"

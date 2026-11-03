@@ -46,6 +46,7 @@ export function registerSessionInspectionCommands(program: Command, session: Com
 }
 
 async function focusExistingSession(client: RuntimeHostClient, sessionId: string): Promise<void> {
+  await client.waitForReady();
   if (!(await client.listRuntimeSessions()).some(session => session.sessionId === sessionId)) await resolveSessionFile(client.persistenceRoot, sessionId);
   await client.focusSession(sessionId);
 }

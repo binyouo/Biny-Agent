@@ -24,7 +24,7 @@ function fixture(afterMcpImport: () => Promise<void>) {
     run: async () => { current = snapshot([nextHistory, ...current.history]); return nextHistory; },
     configureSyncSelection: async () => current,
     setSyncEnabled: async () => current,
-    syncWithEffects: async () => ({ snapshot: current, effects: { mcpImported: false } })
+    syncWithEffects: async () => ({ snapshot: current, effects: { mcpImported: false, settingsImported: false, sessions: [], stateChanged: true } })
   }, async () => undefined, afterMcpImport);
   return { controller, setNext: (next: ApplicationImportHistory) => { nextHistory = next; }, setSnapshot: (next: ApplicationImportSnapshot) => { current = next; } };
 }
@@ -80,7 +80,7 @@ test("sync refreshes once only for newly committed MCP history, without replayin
       current = next;
       const mcpImported = nextMcpImported;
       nextMcpImported = false;
-      return { snapshot: current, effects: { mcpImported } };
+      return { snapshot: current, effects: { mcpImported, settingsImported: false, sessions: [], stateChanged: mcpImported } };
     }
   }, async () => undefined, async () => { refreshes += 1; });
   await controller.sync();

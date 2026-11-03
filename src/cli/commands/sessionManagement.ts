@@ -17,7 +17,10 @@ export async function executeSessionCommand(workspaceRoot: string, command: stri
     ? await connectRuntimeHost(workspaceRoot, options)
     : await connectOrSpawnRuntimeHost(workspaceRoot, { ...options, workspaceRoot, resumeInterrupted: false });
   if (!client) throw new Error("The owning Runtime Host is unavailable; the foreground command context cannot be recreated.");
-  try { return unwrapHostOperationResult(await client.sessionCommand(command, input, sessionId, scope, revision)); }
+  try {
+    await client.waitForReady();
+    return unwrapHostOperationResult(await client.sessionCommand(command, input, sessionId, scope, revision));
+  }
   finally { await client.close(); }
 }
 

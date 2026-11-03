@@ -1,3 +1,4 @@
+import { createWindowCaptureService } from "./windowCapture.js";
 import { promises as fs } from "node:fs";
 import { computerDesktopEndpoint } from "../../../computer/desktopActivity.js";
 import { ApplicationImportService } from "../../../imports/service.js";
@@ -27,7 +28,6 @@ import { AppearancePreviewCoordinator } from "../../appearanceCoordinator.js";
 import { BrowserEnvironmentStore } from "../../browserEnvironments.js";
 import type { DesktopBootstrap, DesktopSessionHandoff } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
-import { DesktopTemporalMemoryService } from "../../temporalMemoryService.js";
 import { captureActivityDesktopScreen, encodeActivityFrame, recompressActivitySnapshot } from "./activityCapture.js";
 import { createDesktopActivityHttpDependencies } from "./activityHttpApi.js";
 import { ActivityRecorderService, defaultActivityInputMonitorPath } from "./ActivityRecorderService.js";
@@ -256,7 +256,6 @@ async function startDesktopApplication(): Promise<void> {
   powerMonitor.on("suspend", () => activity.handlePowerEvent("suspend"));
   powerMonitor.on("resume", () => activity.handlePowerEvent("resume"));
 
-  const temporalMemory = new DesktopTemporalMemoryService();
   const settings = new DesktopSettingsTransaction(state, agents);
   // 恢复检查必须早于 IPC 注册和窗口开放；无法自动恢复时保留应用可用来展示设置错误，
   // 但同一个 transaction 实例会阻止所有新工作入口。
@@ -277,7 +276,8 @@ async function startDesktopApplication(): Promise<void> {
   });
   const staticPreview = new StaticPreviewServer();
   const preview = new DesktopPreviewService(projects, terminals, staticPreview);
-  const desktopCommands = new DesktopCommandService({ state, projects, agents, terminals, preview, appearance, configStore, browser });
+  const windowCapture = createWindowCaptureService(() => mainWindow);
+  const desktopCommands = new DesktopCommandService({ state, projects, agents, terminals, preview, appearance, configStore, browser }, windowCapture.exportFile);
   browser.attachDesktopCommands(async args => await desktopCommands.execute(args));
   await activity.initialize();
   // REST 与设置页 IPC 共用同一实时系统读取器；采集门禁仍由采集器独立判断。
@@ -417,13 +417,19 @@ async function startDesktopApplication(): Promise<void> {
     await settings.assertRuntimeReady();
     agents.assertNoRunningTasks("任务运行期间不能导入内容。");
   }, async () => { await agents.refreshMcpRuntimes(); });
-  applicationImports.start(async () => { broadcastToWindows(desktopIpc.applicationImportsChanged, undefined); });
+  applicationImports.start(async effects => {
+    broadcastToWindows(desktopIpc.applicationImportsChanged, {
+      projects: effects.sessions.flatMap(changed => state.projects().filter(project => project.path === changed.workspaceRoot)
+        .map(project => ({ projectId: project.id, sessionIds: changed.sessionIds }))),
+      settingsChanged: effects.settingsImported,
+      mcpChanged: effects.mcpImported
+    });
+  });
 
   registerDesktopIpc({
     preview,
     applicationImports,
     appearance,
-    temporalMemory,
     threadBriefs,
     state,
     projects,
@@ -567,6 +573,7 @@ async function startDesktopApplication(): Promise<void> {
           await applicationImports.close();
           await threadBriefs.close();
           await fs.unlink(computerDesktopEndpoint()).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+          windowCapture.close();
           await appshots.close();
           await computerUse?.close();
           terminals.disposeAll();
@@ -583,7 +590,6 @@ async function startDesktopApplication(): Promise<void> {
           await browser.dispose();
           await mcp.dispose();
           mainWindow?.destroy();
-          await temporalMemory.close();
           await Promise.race([
             agents.closeAll(),
             new Promise<void>((resolve) => setTimeout(resolve, 5_000))

@@ -101,6 +101,7 @@ export async function telegramRunCommand(workspaceRoot: string): Promise<void> {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
+    await client.waitForReady();
     const transcribeAudio = await createTelegramAudioTranscriber(workspaceRoot);
     await runTelegramBridge({
       ownerId,
@@ -135,7 +136,7 @@ export async function telegramDmOwnerCommand(workspaceRoot: string, message: str
       resumeInterrupted: false
     });
     if (!client) throw new Error("Runtime Host is unavailable. Start it with `biny daemon run` and retry.");
-    try { await client.sendOwnerNotification(message); }
+    try { await client.waitForReady(); await client.sendOwnerNotification(message); }
     finally { await client.close(); }
   }
   console.log("Telegram DM sent to owner.");

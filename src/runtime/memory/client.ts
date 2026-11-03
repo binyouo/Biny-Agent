@@ -29,7 +29,7 @@ export class AgentMemoryClient {
   rebuild(): Promise<void> { return this.call("embedding.rebuild"); }
   cancelRebuild(): Promise<boolean> { return this.call("embedding.cancel-rebuild"); }
   indexEntry(entry: MemoryEntry): Promise<void> { return this.call("embedding.index", { id: entry.id }); }
-  sleepStatus(): Promise<MemoryMaintenanceStatus> { return this.call("sleep.status"); }
+  sleepStatus(historyLimit?: number): Promise<MemoryMaintenanceStatus> { return this.call("sleep.status", { historyLimit }); }
   runSleep(): Promise<unknown> { return this.call("sleep.run"); }
   previewSleep(): Promise<MemorySleepPreview> { return this.call("sleep.preview"); }
   cancelSleep(): Promise<boolean> { return this.call("sleep.cancel"); }

@@ -10,10 +10,11 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { createDesktopReadRequest } from "../../readRequests.js";
 import type { ActivityRuntimeSnapshot } from "../../../activity/types.js";
-import type { DesktopAgentEventEnvelope, DesktopApi, DesktopBrowserSnapshot, DesktopMenuAction, DesktopQuickChatScreenContext, DesktopSessionHandoff, DesktopSettingsCloseRequest, DesktopTerminalEvent } from "../../protocol.js";
+import type { DesktopAgentEventEnvelope, DesktopApi, DesktopApplicationImportsChanged, DesktopBrowserSnapshot, DesktopMenuAction, DesktopQuickChatScreenContext, DesktopSessionHandoff, DesktopSettingsCloseRequest, DesktopTerminalEvent } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 import "./computerUse.js";
 import "./appshots.js";
+import "./windowCapture.js";
 
 const pendingReferenceOpens: Array<{ uri: string; projectId: string }> = [];
 let referenceOpenListener: ((target: { uri: string; projectId: string }) => void) | undefined;
@@ -27,10 +28,10 @@ const readRequest = createDesktopReadRequest((channel, ...args) => ipcRenderer.i
 const api: DesktopApi = {
   rtkStatus: async () => await ipcRenderer.invoke(desktopIpc.rtkStatus),
   toolOptimizationDetail: async (projectId, sessionId, toolCallId) => await ipcRenderer.invoke(desktopIpc.toolOptimizationDetail, projectId, sessionId, toolCallId),
-  toolOptimizationStats: async (days, projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.toolOptimizationStats, days, projectId, sessionId),
+  toolOptimizationStats: async (days, projectId, sessionId, refresh) => await ipcRenderer.invoke(desktopIpc.toolOptimizationStats, days, projectId, sessionId, refresh),
   applicationImports: async () => await ipcRenderer.invoke(desktopIpc.applicationImports),
   onApplicationImportsChanged(listener) {
-    const handler = (): void => listener();
+    const handler = (_event: Electron.IpcRendererEvent, changes: DesktopApplicationImportsChanged): void => listener(changes);
     ipcRenderer.on(desktopIpc.applicationImportsChanged, handler);
     return () => ipcRenderer.removeListener(desktopIpc.applicationImportsChanged, handler);
   },
@@ -165,10 +166,6 @@ const api: DesktopApi = {
   memoryOverview: async (projectId) => await ipcRenderer.invoke(desktopIpc.memoryOverview, projectId),
   memoryStats: async (projectId) => await ipcRenderer.invoke(desktopIpc.memoryStats, projectId),
   memoryEntries: async (projectId, offset, limit, includeArchived) => await ipcRenderer.invoke(desktopIpc.memoryEntries, projectId, offset, limit, includeArchived),
-  temporalClues: async (query) => await readRequest(desktopIpc.temporalClues, query),
-  temporalIgnoreClue: async (id) => await ipcRenderer.invoke(desktopIpc.temporalIgnoreClue, id),
-  temporalMarkSeen: async (ids, day, timeZone) => await ipcRenderer.invoke(desktopIpc.temporalMarkSeen, ids, day, timeZone),
-  temporalMarkTodaySeen: async (day, timeZone) => await ipcRenderer.invoke(desktopIpc.temporalMarkTodaySeen, day, timeZone),
   referenceKinds: async () => await ipcRenderer.invoke(desktopIpc.referenceKinds),
   referenceSearch: async (projectId, query, kind, timeZone) => await ipcRenderer.invoke(desktopIpc.referenceSearch, projectId, query, kind, timeZone),
   referenceResolve: async (projectId, uri) => await ipcRenderer.invoke(desktopIpc.referenceResolve, projectId, uri),
@@ -262,11 +259,12 @@ const api: DesktopApi = {
   skillCatalog: async (projectId) => await readRequest(desktopIpc.skillCatalog, projectId),
   skillSettings: async (projectId) => await readRequest(desktopIpc.skillSettings, projectId),
   importExistingSkills: async (skillIds) => await ipcRenderer.invoke(desktopIpc.skillImportExisting, skillIds),
-  readSkillFile: async (skillId, relativePath) => await ipcRenderer.invoke(desktopIpc.skillFileRead, skillId, relativePath),
-  skillVersion: async (skillId) => await ipcRenderer.invoke(desktopIpc.skillVersion, skillId),
-  updateSkillVersion: async (skillId, expectedVersion) => await ipcRenderer.invoke(desktopIpc.skillVersionUpdate, skillId, expectedVersion),
-  rollbackSkillVersion: async (skillId, expectedVersion) => await ipcRenderer.invoke(desktopIpc.skillVersionRollback, skillId, expectedVersion),
-  openSkillDirectory: async (skillId) => await ipcRenderer.invoke(desktopIpc.skillOpenDirectory, skillId),
+  readSkillFile: async (skillId, relativePath, projectId) => await ipcRenderer.invoke(desktopIpc.skillFileRead, skillId, relativePath, projectId),
+  skillVersion: async (skillId, projectId) => await ipcRenderer.invoke(desktopIpc.skillVersion, skillId, projectId),
+  updateSkillVersion: async (skillId, expectedVersion, projectId) => await ipcRenderer.invoke(desktopIpc.skillVersionUpdate, skillId, expectedVersion, projectId),
+  rollbackSkillVersion: async (skillId, expectedVersion, projectId) => await ipcRenderer.invoke(desktopIpc.skillVersionRollback, skillId, expectedVersion, projectId),
+  openSkillDirectory: async (skillId, projectId) => await ipcRenderer.invoke(desktopIpc.skillOpenDirectory, skillId, projectId),
+  pluginCatalog: async (projectId) => await readRequest(desktopIpc.pluginCatalog, projectId),
   pluginRegistry: async (projectId) => await ipcRenderer.invoke(desktopIpc.pluginRegistry, projectId),
   refreshPluginRegistry: async (projectId) => await ipcRenderer.invoke(desktopIpc.pluginRegistryRefresh, projectId),
   installPlugin: async (projectId, pluginId, scope) => await ipcRenderer.invoke(desktopIpc.pluginInstall, projectId, pluginId, scope),

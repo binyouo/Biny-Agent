@@ -30,7 +30,7 @@ export function useSessionRootPages(
     pages.current.set(projectId, state);
     setStates(new Map(pages.current));
   }, []);
-  const adopt = useCallback((snapshot: DesktopWorkspaceSnapshot): void => {
+  const adopt = useCallback((snapshot: { project: { id: string }; sessions: DesktopSessionSummary[]; sessionPage?: DesktopSessionTreePage }): void => {
     requests.current.delete(snapshot.project.id);
     const existing = pages.current.get(snapshot.project.id);
     const liveIds = new Set(snapshot.sessions.map(session => session.id));

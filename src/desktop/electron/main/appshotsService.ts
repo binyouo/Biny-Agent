@@ -1,7 +1,7 @@
 import { ipcMain, type BrowserWindow } from "electron";
 import { z } from "zod";
 import { Appshots } from "../../../computer/appshots.js";
-import { appshotsIpc, appshotsSettingsSchema } from "../../../computer/appshotsProtocol.js";
+import { appshotsIpc, appshotsSettingsPatchSchema } from "../../../computer/appshotsProtocol.js";
 import { NativeProcessDriver } from "../../../computer/nativeDriver.js";
 import { AppshotFeedback } from "./AppshotFeedback.js";
 import type { AgentConfigStore } from "../../../config/store.js";
@@ -43,7 +43,7 @@ export async function createAppshotsService(store: AgentConfigStore, projects: D
     if (closed || !contents || event.sender !== contents || event.senderFrame !== contents.mainFrame) throw new Error("Untrusted Appshots IPC sender");
   };
   ipcMain.handle(appshotsIpc.state, event => { assertSender(event); return appshots.state(); });
-  ipcMain.handle(appshotsIpc.settings, (event, value: unknown) => { assertSender(event); return appshots.settings(appshotsSettingsSchema.parse(value)); });
+  ipcMain.handle(appshotsIpc.settings, (event, value: unknown) => { assertSender(event); return appshots.settings(appshotsSettingsPatchSchema.parse(value)); });
   ipcMain.handle(appshotsIpc.prewarm, event => { assertSender(event); return appshots.prewarm(); });
   ipcMain.handle(appshotsIpc.capture, async event => {
     assertSender(event); const window = getWindow(); window?.hide();

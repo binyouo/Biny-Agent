@@ -41,7 +41,7 @@ async function fixture(t: TestContext, scenario: Scenario, rewriteRejection?: (r
   const commands = await createHostTestStores() as unknown as CommandRuntime;
   const server = new RuntimeHostServer(runtime, commands, registration, { close: async () => undefined }, async () => { throw new Error("Unexpected session runtime creation in this fixture."); });
   const execution = new RuntimeHostExecution(server, runtime, commands, registration, async () => { throw new Error("Unexpected creation"); });
-  Object.assign(server, { execution, initialized: true });
+  Object.assign(server, { execution, lifecycle: "ready" });
   const internal = server as unknown as { ensureSessionWriter(): Promise<void>; execute(connection: unknown, frame: HostRequestFrame): Promise<unknown> };
   internal.ensureSessionWriter = async () => { writerChecks += 1; };
   const event = (epoch: string) => ({ kind: "event", hostEpoch: epoch, sequence: 3, update: { snapshot: snapshot(revision, kind) } }) as HostFrame;

@@ -42,7 +42,7 @@ export const SkillImportDialog = memo(function SkillImportDialog({ candidates, i
       <section className="biny-skill-import-dialog">
         <div className="biny-skill-dialog-heading"><div><h2>导入已有</h2><p>选择要导入到 Biny 统一管理的技能</p></div><button aria-label="关闭导入已有" disabled={importing} onClick={onClose} type="button"><Icon name="close" size={18} /></button></div>
         {candidates.length ? <>
-          <button className="biny-skill-import-select-all" disabled={importing} onClick={() => setSelected(allSelected ? new Set() : new Set(candidates.map((candidate) => candidate.id)))} type="button">{allSelected ? "取消全选" : "全选"}</button>
+          <button className="biny-skill-import-select-all" disabled={importing} onClick={() => setSelected(allSelected ? new Set() : new Set(candidates.map((candidate) => candidate.id)))} type="button"><span className="button-state-label"><span aria-hidden={allSelected}>全选</span><span aria-hidden={!allSelected}>取消全选</span></span></button>
           <div className="biny-skill-import-list">
             {candidates.map((candidate) => <label className="biny-skill-import-item" key={candidate.id}>
               <input checked={selected.has(candidate.id)} disabled={importing} onChange={() => toggle(candidate.id)} type="checkbox" />
@@ -55,7 +55,7 @@ export const SkillImportDialog = memo(function SkillImportDialog({ candidates, i
             </label>)}
           </div>
         </> : <div className="biny-skill-import-empty"><Icon name="check" size={22} /><strong>没有发现待导入的技能</strong><span>已有全局技能都已被 Biny 管理，或当前目录没有可识别的 SKILL.md。</span></div>}
-        <div className="biny-skill-dialog-footer"><button disabled={importing} onClick={onClose} type="button">取消</button><button className="is-primary" disabled={!selectedCount || importing} onClick={() => onImport([...selected])} type="button">{importing ? "导入中…" : `导入已选 (${String(selectedCount)})`}</button></div>
+        <div className="biny-skill-dialog-footer"><button disabled={importing} onClick={onClose} type="button">取消</button><button aria-busy={importing} className="is-primary" disabled={!selectedCount || importing} onClick={() => onImport([...selected])} type="button">{`导入已选 (${String(selectedCount)})`}</button></div>
       </section>
     </Dialog>, document.body
   );

@@ -4,19 +4,28 @@
  * 布局沿用成熟的模型设置模式：标题与说明在上，选择器与测试按钮同行，
  * 测试结果以状态卡片展示；避免把动态状态混进说明文案后居中悬空。
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { SettingsModelPicker } from "./SettingsModelPicker.js";
 import { modelPickerGroups } from "./settingsModelPickerData.js";
 import { ModelTestButton, ModelTestResult } from "./ModelTestButton.js";
 import type { DesktopModelConfigurationInput, DesktopModelConnectionTestResult } from "../../../../protocol.js";
 
-export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult> }): React.JSX.Element | null {
-  const { draft, snapshot, saveModels, saveState } = useSettingsDraft();
+export function SettingsToolModel({ onTest, onNotify }: {
+  onTest(configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult>;
+  onNotify(message: string): void;
+}): React.JSX.Element | null {
+  const { draft, snapshot, saveModels, saveState, modelSelectionSaving } = useSettingsDraft();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<DesktopModelConnectionTestResult>();
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const reportError = (message: string): void => {
+    if (mounted.current) setError(message);
+    else onNotify(message);
+  };
   if (!draft || !snapshot) return null;
   const active = snapshot.models.configured.find((model) => model.alias === snapshot.models.resolvedToolModel);
   const selectModel = (alias: string | undefined): void => {
@@ -24,8 +33,10 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
     setSaving(true);
     setError(undefined);
     setTestResult(undefined);
-    void saveModels({ upserts: [], removeAliases: [], toolModel: { alias } }).catch((reason: unknown) => {
-      setError(reason instanceof Error ? reason.message : "工具模型保存失败，请重试。");
+    void saveModels({ upserts: [], removeAliases: [], toolModel: { alias } }).then(result => {
+      if (result && result.status !== "committed" && (mounted.current || result.status !== "recovery_required")) reportError(result.message ?? "工具模型保存失败，请重试。");
+    }).catch((reason: unknown) => {
+      reportError(reason instanceof Error ? reason.message : "工具模型保存失败，请重试。");
     }).finally(() => setSaving(false));
   };
   const runTest = (): void => {
@@ -42,12 +53,12 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
     <section className="settings-preference-section" id="tool-model" tabIndex={-1}>
         <h3>工具模型</h3>
         <div className="settings-form-group">
-          <p>用于标题、记忆、工具筛选与活动分析。</p>
+          <p>在保证生成质量的前提下尽可能快的模型，用于对话标题生成、记忆相关操作等自动化任务。</p>
           {snapshot.hasRunningTasks ? <p>下回合生效。</p> : null}
           <div className="tool-model-row">
             <SettingsModelPicker
               ariaLabel="工具模型"
-              disabled={saving || testing || saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required"}
+              disabled={saving || testing || (saveState === "saving" && !modelSelectionSaving) || saveState === "rolling_back" || saveState === "recovery_required"}
               groups={modelPickerGroups(snapshot.models.configured.filter((model) => model.providerType !== "acp"), snapshot.models.connections)}
               inheritLabel="自动选择"
               inheritDetail={active?.model}

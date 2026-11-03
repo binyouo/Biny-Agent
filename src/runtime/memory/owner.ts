@@ -32,6 +32,8 @@ export class AgentMemoryOwner {
   private maintenanceAction: string | undefined;
   private rebuildState: string | undefined;
 
+  get hasPendingWork(): boolean { return this.pending.size > 0 || this.ticking; }
+
   constructor(private readonly root: string, private readonly store: AgentConfigStore, local?: LocalEmbeddingManager) {
     this.local = local ?? new LocalEmbeddingManager(path.join(root, "models", "embeddings"));
     const model = () => {
@@ -182,7 +184,7 @@ export class AgentMemoryOwner {
         const entries = await this.entries(payload.entries, signal);
         return entries ? this.embeddings.findSimilarPairs(entries, number(payload.minimumSimilarity), signal) : { examined: 0, pairs: [] };
       }
-      case "sleep.status": return this.maintenance.loadMaintenanceStatus({ signal });
+      case "sleep.status": return this.maintenance.loadMaintenanceStatus({ signal, historyLimit: payload.historyLimit === undefined ? undefined : number(payload.historyLimit) });
       case "sleep.preview": return this.maintenance.previewMaintenance({ ...this.config().context.memory, signal }, {
         findSimilarPairs: (entries, threshold, abort) => this.embeddings.findSimilarPairs(entries, threshold, abort)
       });

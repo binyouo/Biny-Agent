@@ -54,7 +54,6 @@ try {
   const memoryIndex = new AgentMemoryClient(canonical, canonical);
   const pipeline = await createActivityMemoryPipeline({
     workspaceRoot: root,
-    agentDir,
     findSimilarEntries: async (query, options) => await memoryIndex.findSimilarInScope(query, options),
     indexEntry: async (entry) => await memoryIndex.indexEntry(entry)
   });

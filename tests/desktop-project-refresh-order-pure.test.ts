@@ -1,3 +1,4 @@
+import { invalidateToolOptimizationStats } from "../src/desktop/renderer/src/components/settings/toolOptimizationState.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -33,7 +34,7 @@ const allowedCalls = new Set([
   "refreshTimers.get", "clearTimeout", "setTimeout", "refreshTimers.delete", "refreshTimers.set", "refreshTimers.values", "refreshTimers.clear",
   "projectRefreshOrder.get", "projectRefreshOrder.set", "window.biny.refreshProject", "window.biny.openSession",
   "scheduleRefresh", "mergeProjectSnapshot", "isCurrent", "setPendingRefresh", "onError",
-  "setSidebarSessions", "applyUpdatesToSidebarSessions", "batch.filter", "projectBatch.some", "isTerminalRunEvent",
+  "setSidebarSessions", "applyUpdatesToSidebarSessions", "batch.filter", "batch.some", "invalidateToolOptimizationStats", "projectBatch.some", "isTerminalRunEvent",
   "onRuntimeProjectionChanged", "setWorkspace", "applyUpdatesToWorkspace",
   "currentEvents.push", "pendingEvents.current.hold", "pendingEvents.current.take", "flushSelectedEvents",
   "currentEvents.unshift", "currentEvents.filter", "setRecipeNotices", "current.map", "recipeNotices.filter", "seen.has",
@@ -93,7 +94,7 @@ function fixture() {
   const documentRef = { current: { session: { id: "a" }, events: [], liveEvents: [] } as Document };
   const noop = () => {};
   const sandbox: Record<string, unknown> = {
-    activeProjectIdRef, selectedSessionIdRef, documentRef, projectRefreshEpochs: { current: new Map<string, number>() }, pendingRefresh: undefined,
+    invalidateToolOptimizationStats, activeProjectIdRef, selectedSessionIdRef, documentRef, projectRefreshEpochs: { current: new Map<string, number>() }, pendingRefresh: undefined,
     setTimeout(callback: () => void, delay: number) { assert.equal(delay, 260); const id = ++timerId; timers.set(id, { at: now + delay, callback }); return id; },
     clearTimeout(id: number) { timers.delete(id); },
     mergeProjectSnapshot(value: Snapshot) { merges.push(value); }, onError(error: unknown) { errors.push(error); },

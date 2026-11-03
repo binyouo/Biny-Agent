@@ -132,7 +132,8 @@ async function harness(options: {
       onCancelLogin: async () => {}, onNotify: () => {}, onOpenExternal: async () => { throw new Error("Unexpected external URL"); }
     });
     return React.createElement(React.Fragment, null, provider, React.createElement(SettingsPageFooter, {
-      dirtyCount: context.dirtyCount, disabled: context.invalid, state: context.saveState,
+      dirtyCount: context.dirtyCount, disabled: context.invalid || context.saveState === "saving",
+      state: context.manualSaving ? "saving" : context.saveState === "recovery_required" ? "recovery_required" : context.dirtyCount > 0 ? "dirty" : "clean",
       onCancel: () => { void context.discard(); }, onSave: () => { void context.saveAll(); }
     }));
   }

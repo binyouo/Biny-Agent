@@ -21,13 +21,13 @@ interface Subject {
 const subjects: Subject[] = [
   {
     name: "temporal memory", file: "temporal-memory.sqlite",
-    incompatibleSchema: "CREATE TABLE temporal_clues(id TEXT PRIMARY KEY,source_id TEXT NOT NULL,session_id TEXT NOT NULL,message_id TEXT NOT NULL,expression TEXT NOT NULL,end_date TEXT,time TEXT,offset INTEGER NOT NULL,quote TEXT NOT NULL,ignored INTEGER NOT NULL DEFAULT 0)",
-    missingColumn: /no such column: date/u,
+    incompatibleSchema: "CREATE TABLE temporal_facts(id TEXT PRIMARY KEY,source_id TEXT NOT NULL,session_id TEXT NOT NULL,message_id TEXT NOT NULL,title TEXT NOT NULL,quote TEXT NOT NULL,state TEXT NOT NULL,due_date TEXT,completed_date TEXT)",
+    missingColumn: /no such column: event_date/u,
     schemaMarker: "CREATE TABLE IF NOT EXISTS temporal_sources",
     create(root) {
       const index = new TemporalMemoryIndex(root);
       return {
-        read: async () => index.queryClues({ startDate: "2026-10-01", endDate: "2026-10-02" }).clues,
+        read: async () => index.queryFacts({ startDate: "2026-10-01", endDate: "2026-10-02" }).facts,
         close: () => index.close()
       };
     }

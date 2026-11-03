@@ -8,8 +8,7 @@
  * 地址，避免页面被引导到外部站点。
  */
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { BrowserWindow, nativeTheme, screen } from "electron";
+import { app, BrowserWindow, nativeTheme, screen } from "electron";
 import type { DesktopThemePreference } from "../../protocol.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import { resolveAppearance } from "../../../appearance/resolve.js";
@@ -70,7 +69,7 @@ export function createDesktopWindow(
     titleBarOverlay: process.platform === "darwin" ? true : undefined,
     trafficLightPosition: process.platform === "darwin" ? { x: 20, y: 24 } : undefined,
     webPreferences: {
-      preload: path.join(fileURLToPath(new URL(".", import.meta.url)), "../preload/index.cjs"),
+      preload: path.join(app.getAppPath(), "out/preload/index.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -149,7 +148,7 @@ export function createDesktopWindow(
     const joiner = developmentUrl.includes("?") ? "&" : "?";
     void window.loadURL(`${developmentUrl}${joiner}theme=${encodeURIComponent(preference)}`);
   } else {
-    void window.loadFile(path.join(fileURLToPath(new URL(".", import.meta.url)), "../renderer/index.html"), {
+    void window.loadFile(path.join(app.getAppPath(), "out/renderer/index.html"), {
       query: { theme: preference }
     });
   }

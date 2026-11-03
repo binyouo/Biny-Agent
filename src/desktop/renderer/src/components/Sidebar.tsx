@@ -5,7 +5,6 @@
  * 和未归类对话三段树。项目与会话的业务操作通过回调返回上层，避免把 IPC 和持久化状态
  * 复制到视觉组件中。
  */
-import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { createPortal } from "react-dom";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SidebarLayoutSnapshot } from "../../../sidebarLayout.js";
@@ -84,7 +83,6 @@ interface SidebarProps {
   onImportSession(projectId: string): void;
   onRemoveProject(projectId: string): void;
   onSearch(): void;
-  onTimeClues(): void;
   onSettings?(): void;
   onToggleSidebar(): void;
 }
@@ -118,7 +116,6 @@ export const Sidebar = memo(function Sidebar({
   onImportSession,
   onRemoveProject,
   onSearch,
-  onTimeClues,
   onSettings,
   onToggleSidebar
 }: SidebarProps): React.JSX.Element {
@@ -661,11 +658,6 @@ export const Sidebar = memo(function Sidebar({
           <Icon name="settings" size={16} />
           <span>设置</span>
         </button>
-        <Tooltip content="时间线索" delay={150} placement="above">
-          <button aria-label="时间线索" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-time-clues-button" onClick={onTimeClues} type="button">
-            <Icon name="calendar" size={16} />
-          </button>
-        </Tooltip>
       </div>
       </div>
       {resizable ? <SidebarResizer width={layout.contentWidth} {...resizeHandlers} /> : null}
@@ -855,8 +847,8 @@ function CollapsibleSessionList({ limit, rootPage, canLoadRoots, onLoadRoots, ..
       <SessionList {...props} sessions={visibleSessions} />
       {(expanded || !shouldCollapse) && canLoadRoots ? <>
         {rootPage?.error ? <div className="biny-sidebar-empty-row" role="alert">{rootPage.error}</div> : null}
-        <button className="biny-sidebar-session-expand" disabled={rootPage?.loading} onClick={onLoadRoots} type="button">
-          {rootPage?.loading ? "加载中…" : "加载更早会话"}
+        <button aria-busy={rootPage?.loading} className="biny-sidebar-session-expand" disabled={rootPage?.loading} onClick={onLoadRoots} type="button">
+          加载更早会话
         </button>
       </> : null}
       {shouldCollapse ? (

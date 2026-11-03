@@ -63,10 +63,9 @@ export class PluginLifecycleRegistry {
   }
 
   async beforeTurn(context: PluginBeforeTurnContext, callMcpTool?: PluginMcpToolCaller): Promise<string[]> {
-    const isolatedContext = { ...context, callMcpTool };
     const results = await Promise.all(this.lifecycles.map(async ({ lifecycle, pluginPath }) => {
       try {
-        return await lifecycle.beforeTurn?.(isolatedContext);
+        return await lifecycle.beforeTurn?.({ ...context, callMcpTool });
       } catch (error) {
         this.reportError(pluginPath, "beforeTurn", error);
         return undefined;
@@ -78,14 +77,14 @@ export class PluginLifecycleRegistry {
   }
 
   async afterTurn(context: PluginAfterTurnContext, callMcpTool?: PluginMcpToolCaller): Promise<void> {
-    const isolatedContext = {
-      ...context,
-      messages: context.messages.map((message) => ({ ...message })),
-      callMcpTool
-    };
     await Promise.all(this.lifecycles.map(async ({ lifecycle, pluginPath }) => {
       try {
-        await lifecycle.afterTurn?.(isolatedContext);
+        await lifecycle.afterTurn?.({
+          ...context,
+          outcome: structuredClone(context.outcome),
+          messages: context.messages.map((message) => ({ ...message })),
+          callMcpTool
+        });
       } catch (error) {
         this.reportError(pluginPath, "afterTurn", error);
       }

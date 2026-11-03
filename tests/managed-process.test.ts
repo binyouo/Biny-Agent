@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { test } from "node:test";
 import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
 import { agentDir } from "../src/session/store.js";
 import {
@@ -23,7 +24,7 @@ async function main(): Promise<void> {
       "  if (request.url === '/health') { response.writeHead(200); response.end('ready'); return; }",
       "  response.writeHead(404); response.end('missing');",
       "});",
-      "server.listen(port, '127.0.0.1', () => console.log(`READY ${process.pid}`));",
+      "server.listen(port, '127.0.0.1', () => { console.log(`READY ${process.pid}`); console.log('server startup output for pagination'); });",
       "process.on('SIGTERM', () => server.close(() => process.exit(0)));"
     ].join("\n"), "utf8");
 
@@ -411,4 +412,4 @@ async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-await main();
+await test("managed process service and public tools preserve lifecycle, readiness and path boundaries", { timeout: 30_000 }, main);

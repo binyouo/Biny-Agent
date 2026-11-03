@@ -77,14 +77,24 @@ test("tree-page IPC carries authoritative pins only when requested without start
     assert.equal(withPins.revision, plain.revision);
     assert.deepEqual(withPins.pinnedSessions?.map((row) => row.id), ["child-00"]);
     assert.equal(withPins.sessions.some((row) => row.id === "child-00"), false);
+    const targeted = await api.listSessionTreePage(project.id, { ...options, sessionIds: ["child-00", "child-00", "deleted-child"] });
+    assert.deepEqual(targeted.sessions, plain.sessions, "supplemental rows must not change pagination");
+    assert.equal(targeted.nextCursor, plain.nextCursor);
+    assert.deepEqual(targeted.supplementalSessions?.map(row => row.id), ["child-00"]);
+    assert.equal(targeted.supplementalSessions?.[0]?.pinned, true);
     await updateSessionCatalogMetadata(project.path, "child-00", { pinned: false });
-    const invalid = await api.listSessionTreePage(project.id, { ...options, cursor: plain.nextCursor, includePinnedSessions: true });
+    const invalid = await api.listSessionTreePage(project.id, { ...options, cursor: plain.nextCursor, includePinnedSessions: true, sessionIds: ["child-00"] });
     assert.equal(invalid.revisionChanged, true);
     assert.deepEqual(invalid.sessions, []);
     assert.equal(invalid.pinnedSessions, undefined);
+    assert.equal(invalid.supplementalSessions, undefined, "a stale page cannot confirm requested rows were removed");
     const fresh = await api.listSessionTreePage(project.id, { ...options, includePinnedSessions: true });
     assert.deepEqual(fresh.pinnedSessions, []);
     await assert.rejects(api.listSessionTreePage(project.id, { ...options, includePinnedSessions: "yes" as unknown as boolean }), /boolean/);
+    await assert.rejects(api.listSessionTreePage(project.id, { sessionIds: [""] }));
+    await assert.rejects(api.listSessionTreePage(project.id, { sessionIds: ["x".repeat(241)] }));
+    const many = await api.listSessionTreePage(project.id, { sessionIds: ["child-00", ...Array.from({ length: 501 }, (_, index) => `missing-${index}`)] });
+    assert.deepEqual(many.supplementalSessions?.map(row => row.id), ["child-00"], "loaded rows are not capped at a single page or mutation batch");
     assert.equal((await manager.workspaceSnapshot(project.id, false)).runtime, undefined);
   } finally {
     await manager.closeAll(); hooks.deregister(); Reflect.deleteProperty(globalThis, "__pinIpcElectron");

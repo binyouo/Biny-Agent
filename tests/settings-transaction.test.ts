@@ -363,7 +363,8 @@ async function testAppearanceTransaction(): Promise<void> {
     const appearancePreference = { ...DEFAULT_APPEARANCE, lightTheme: "win98", darkTheme: "longhorn-dark" };
     const result = await transaction.save("project", { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, appearancePreference, themePreference: "light" });
     assert.equal(result.status, "committed", JSON.stringify(result));
-    assert.deepEqual(result.snapshot.appearancePreference, appearancePreference);
+    assert.equal(result.snapshot, undefined);
+    assert.deepEqual(result.preferences?.appearancePreference, appearancePreference);
     assert.ok(result.appliedFields.includes("appearancePreference"));
     const reloaded = new DesktopStateStore(path.join(root, "desktop-state.json"));
     await reloaded.load();
@@ -407,8 +408,8 @@ async function testChatParamsOnlySaveCommits(): Promise<void> {
     assert.equal(result.status, "committed", JSON.stringify(result));
     assert.deepEqual(result.appliedFields, ["chatParams"]);
     assert.deepEqual(agents.config.chat, { temperature: 0.4, maxOutputTokens: 8_192, hashlineEdit: true, response: { markdown: false, streaming: false } });
-    assert.equal(result.snapshot.chatParams.temperature, 0.4);
-    assert.equal(result.snapshot.chatParams.hashlineEdit, true);
+    assert.equal(result.settings.chatParams.temperature, 0.4);
+    assert.equal(result.settings.chatParams.hashlineEdit, true);
     assert.deepEqual((await transaction.snapshot("project")).chatParams.response, { markdown: false, streaming: false });
   });
 }

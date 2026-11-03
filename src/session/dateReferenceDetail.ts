@@ -6,7 +6,7 @@ import { validateDateReferenceRange, type DateReferenceRange } from "./dateRefer
 import { readSessionEvents } from "./events.js";
 import { activeSessionEventsForPath } from "./messageTree.js";
 import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
-import { TemporalMemoryIndex, type TemporalClueHit, type TemporalFactHit } from "./temporalMemory.js";
+import { TemporalMemoryIndex, type TemporalFactHit } from "./temporalMemory.js";
 
 export interface DateConversationHit { projectId: string; sessionId: string; messageId: string; time: string; quote: string }
 export interface DateScheduledHit { automationId: string; name: string; dueAt: string; status: string; fired: boolean }
@@ -14,12 +14,11 @@ export interface DateRunHit { id: string; occurredAt: string; status: string; ki
 export interface DateReferenceDetail {
   range: DateReferenceRange;
   conversations: DateConversationHit[];
-  clues: TemporalClueHit[];
   facts: TemporalFactHit[];
   scheduled: DateScheduledHit[];
   runs: DateRunHit[];
-  coverage: { conversations: string; clues: string; facts: string; scheduled: string; runs: string };
-  hasMore: { conversations: boolean; clues: boolean; facts: boolean; scheduled: boolean; runs: boolean };
+  coverage: { conversations: string; facts: string; scheduled: string; runs: string };
+  hasMore: { conversations: boolean; facts: boolean; scheduled: boolean; runs: boolean };
 }
 
 function rows(value: unknown, key?: string): Record<string, unknown>[] {
@@ -59,7 +58,6 @@ export class DateReferenceDetailService {
     }
     const query = { startDate: range.startDate, endDate: range.endDate, limit: 50,
       sourcePaths: ownedFiles.map((item) => item.file) };
-    const cluePage = this.index.queryClues(query);
     const factPage = this.index.queryFacts(query);
     const instantDay = createInstantDayFormatter(range.timeZone);
     const conversations: DateConversationHit[] = [];
@@ -116,11 +114,11 @@ export class DateReferenceDetailService {
       .sort((left, right) => left.instant - right.instant);
     const orderedRuns = runs.map((hit) => ({ hit, instant: Date.parse(hit.occurredAt) }))
       .sort((left, right) => left.instant - right.instant);
-    return { range, conversations: orderedConversations.slice(0, 100).map(({ hit }) => hit), clues: cluePage.clues, facts: factPage.facts,
+    return { range, conversations: orderedConversations.slice(0, 100).map(({ hit }) => hit), facts: factPage.facts,
       scheduled: orderedScheduled.slice(0, 100).map(({ hit }) => hit), runs: orderedRuns.slice(0, 100).map(({ hit }) => hit),
-      coverage: { conversations: "有时间戳的本机 Session 用户及助手消息", clues: cluePage.coverage,
+      coverage: { conversations: "有时间戳的本机 Session 用户及助手消息",
         facts: "仅显式索引的原始用户文本与原文引文", scheduled: "Host 当前一次性定时任务快照", runs: "Host 当前任务及自动化触发记录" },
-      hasMore: { conversations: conversations.length > 100, clues: cluePage.hasMore, facts: factPage.hasMore,
+      hasMore: { conversations: conversations.length > 100, facts: factPage.hasMore,
         scheduled: scheduled.length > 100, runs: runs.length > 100 } };
   }
 }

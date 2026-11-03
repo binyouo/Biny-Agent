@@ -53,7 +53,7 @@ await test("close rejects a background start still preparing its filesystem", as
 });
 
 for (const processLifetime of ["runtime", "execution-environment"] as const) {
-  await test(`close owns a spawned ${processLifetime} process before the log descriptor closes`, async () => {
+  await test(`close owns a spawned ${processLifetime} process while startup persistence is pending`, async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-managed-close-spawned-"));
     const service = new ManagedProcessService({ workspaceRoot: root, processLifetime, terminationGraceMs: 200, killSettleMs: 200 });
     const entered = Promise.withResolvers<void>();
@@ -64,12 +64,14 @@ for (const processLifetime of ["runtime", "execution-environment"] as const) {
       await service.initialize();
       mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
         const handle = await realOpen(...args);
-        if (String(args[0]).endsWith(".log")) {
-          const close = handle.close.bind(handle);
-          mock.method(handle, "close", async () => {
-            entered.resolve();
-            await release.promise;
-            await close();
+        if (String(args[0]).endsWith("lifecycle.jsonl")) {
+          const write = handle.writeFile.bind(handle);
+          mock.method(handle, "writeFile", async (...parameters: Parameters<typeof handle.writeFile>) => {
+            if (String(parameters[0]).includes('"event":"started"')) {
+              entered.resolve();
+              await release.promise;
+            }
+            return write(...parameters);
           });
         }
         return handle;
@@ -77,8 +79,10 @@ for (const processLifetime of ["runtime", "execution-environment"] as const) {
       syncBuiltinESMExports();
       pending = service.start({ command });
       await withinDeadline(entered.promise);
-      const closed = await withinDeadline(service.close());
+      const closing = service.close();
+      assert.equal((await service.list()).length, 1, "ownership is published before startup persistence");
       release.resolve();
+      const closed = await withinDeadline(closing);
       const started = await pending;
       assert.equal(closed.length, 1, "close must include a child that has already spawned");
       const expected = processLifetime === "runtime" ? "stopped" : "transferred";

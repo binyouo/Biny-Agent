@@ -12,7 +12,7 @@ import type { ModelChoice } from "../../../../../llm/ModelManager.js";
 import type { ThinkingSelection } from "../../../../../llm/modelThinking.js";
 import { catalogForConnection } from "../../providerCatalog.js";
 import { resolveProviderIconId } from "../../providerIconIds.js";
-import { useClosingPresence } from "../../useClosingPresence.js";
+import { useDropdownPresence } from "../../useDropdownPresence.js";
 import { useFluidHoverItems } from "../../useFluidHoverItems.js";
 import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import { Icon } from "../Icon.js";
@@ -36,9 +36,6 @@ interface ModelGroup {
 interface SubmenuPosition {
   left: number;
   top: number;
-}
-
-interface ParentPosition extends SubmenuPosition {
   origin: "bottom-left" | "bottom-right" | "top-left" | "top-right";
 }
 
@@ -71,10 +68,12 @@ export function ModelPickerMenu({
   thinkingLevels: ThinkingSelection[];
   unsetLabel?: string;
 }): React.JSX.Element | null {
-  const presence = useClosingPresence(open);
+  const presence = useDropdownPresence(open);
   const [activeSection, setActiveSection] = useState<PickerSection>();
+  const [renderedSection, setRenderedSection] = useState<PickerSection>();
+  const submenuPresence = useDropdownPresence(open && activeSection !== undefined);
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-  const [parentPosition, setParentPosition] = useState<ParentPosition>();
+  const [parentPosition, setParentPosition] = useState<SubmenuPosition>();
   const [submenuPosition, setSubmenuPosition] = useState<SubmenuPosition>();
   const [focusSubmenu, setFocusSubmenu] = useState(false);
   const primaryRef = useRef<HTMLDivElement>(null);
@@ -85,6 +84,10 @@ export function ModelPickerMenu({
   const primaryHover = useFluidHoverItems(primaryRef, ".model-picker-entry");
   const parentPositioned = Boolean(parentPosition);
   const submenuPositioned = Boolean(submenuPosition);
+
+  useLayoutEffect(() => {
+    if (activeSection) setRenderedSection(activeSection);
+  }, [activeSection]);
 
   useEffect(() => {
     if (!open || !parentPositioned) return;
@@ -98,14 +101,14 @@ export function ModelPickerMenu({
   }, [anchorRef, open, parentPositioned]);
 
   useEffect(() => {
-    if (!open || !focusSubmenu || !submenuPositioned || !activeSection) return;
+    if (!open || !focusSubmenu || !submenuPositioned || !activeSection || activeSection !== renderedSection || !submenuPresence.present) return;
     const submenu = submenuRef.current;
     const target = submenu?.querySelector<HTMLElement>('input[type="search"]')
       ?? submenu?.querySelector<HTMLElement>('[aria-checked="true"]')
       ?? submenu?.querySelector<HTMLElement>('[role="menuitemradio"]');
     target?.focus({ preventScroll: true });
     setFocusSubmenu(false);
-  }, [activeSection, focusSubmenu, open, submenuPositioned]);
+  }, [activeSection, focusSubmenu, open, renderedSection, submenuPositioned, submenuPresence.present]);
 
   useLayoutEffect(() => {
     if (typeof document === "undefined") return;
@@ -116,6 +119,7 @@ export function ModelPickerMenu({
     if (!open) return;
     // 在浏览器绘制新一轮菜单前清空上一次的子菜单，避免重新打开时先闪过模型列表。
     setActiveSection(undefined);
+    setRenderedSection(undefined);
     setParentPosition(undefined);
     setSubmenuPosition(undefined);
   }, [open]);
@@ -170,9 +174,9 @@ export function ModelPickerMenu({
       const maxTop = Math.max(VIEWPORT_PADDING, window.innerHeight - height - VIEWPORT_PADDING);
       const preferredLeft = anchorRect.right - width;
       const preferredTop = placeAbove ? anchorRect.top - height - gap : anchorRect.bottom + gap;
-      const next: ParentPosition = {
+      const next: SubmenuPosition = {
         left: clamp(preferredLeft, VIEWPORT_PADDING, maxLeft),
-        origin: `${placeAbove ? "bottom" : "top"}-left`,
+        origin: `${placeAbove ? "bottom" : "top"}-right`,
         top: clamp(preferredTop, VIEWPORT_PADDING, maxTop)
       };
       setParentPosition((current) => current?.left === next.left && current.origin === next.origin && current.top === next.top ? current : next);
@@ -193,7 +197,7 @@ export function ModelPickerMenu({
   useLayoutEffect(() => {
     // 一级菜单还没有完成定位时，不给子菜单计算临时坐标；否则子菜单会被 clamp
     // 到视口左上角，并在关闭退场时出现一次错误闪烁。
-    if (!presence.present || !parentPosition || !activeSection) {
+    if (!submenuPresence.present || !parentPosition || !renderedSection) {
       setSubmenuPosition(undefined);
       return;
     }
@@ -220,11 +224,12 @@ export function ModelPickerMenu({
       // 只在自身内部滚动，避免出现截图中“父面板在底部、列表跑到顶部”的断裂。
       const preferredTop = parentRect.top;
       setSubmenuPosition((current) => {
-        const next = {
+        const next: SubmenuPosition = {
           left: clamp(preferredLeft, VIEWPORT_PADDING, maxLeft),
+          origin: preferredLeft === rightLeft ? "top-left" : "top-right",
           top: clamp(preferredTop, VIEWPORT_PADDING, maxTop)
         };
-        return current?.left === next.left && current.top === next.top ? current : next;
+        return current?.left === next.left && current.top === next.top && current.origin === next.origin ? current : next;
       });
     };
     const primary = primaryRef.current;
@@ -236,7 +241,7 @@ export function ModelPickerMenu({
       elementResize: true,
       layoutShift: true
     });
-  }, [activeSection, models, open, parentPosition, portalTarget, presence.present, thinkingLevels]);
+  }, [renderedSection, models, open, parentPosition, portalTarget, submenuPresence.present, thinkingLevels]);
 
   if (typeof document === "undefined" || !presence.present) return null;
 
@@ -265,8 +270,8 @@ export function ModelPickerMenu({
     <>
       {createPortal(
         <div
-          className={`composer-popover biny-composer-popover model-picker-popover ${presenceClass(presence.phase)}`}
-          data-origin={parentPosition?.origin ?? "bottom-left"}
+          className={`composer-popover t-dropdown model-picker-popover ${presenceClass(presence.phase)}`}
+          data-origin={parentPosition?.origin ?? "bottom-right"}
           data-popover-phase={presence.phase}
           ref={parentSurfaceRef}
           inert={!open}
@@ -314,16 +319,18 @@ export function ModelPickerMenu({
         </div>,
         portalTarget ?? document.body
       )}
-      {activeSection
+      {renderedSection && submenuPresence.present
         ? createPortal(
             <div
-              aria-label={activeSection === "model" ? "选择模型" : "选择推理强度"}
-              className={`composer-popover biny-composer-popover model-picker-submenu-portal ${presenceClass(presence.phase)}`}
+              aria-label={renderedSection === "model" ? "选择模型" : "选择推理强度"}
+              aria-hidden={!open || !activeSection || undefined}
+              className={`composer-popover t-dropdown model-picker-submenu-portal ${presenceClass(submenuPresence.phase)}`}
               data-composer-menu="model"
-              data-popover-phase={presence.phase}
+              data-origin={submenuPosition?.origin ?? "top-left"}
+              data-popover-phase={submenuPresence.phase}
               ref={submenuRef}
               role="menu"
-              inert={!open}
+              inert={!open || !activeSection}
               onKeyDown={event => {
                 if (event.nativeEvent.isComposing) return;
                 if (event.key === "ArrowLeft" && !(event.target instanceof HTMLInputElement)) {
@@ -335,10 +342,12 @@ export function ModelPickerMenu({
               }}
               style={submenuStyle}
             >
-              {activeSection === "model" ? (
-                <ModelSubmenu currentAlias={currentAlias} groups={groups} onSelect={onSelectModel} unsetLabel={unsetLabel} />
+              {renderedSection === "model" ? (
+                <ModelSubmenu active={open && activeSection === "model"} currentAlias={currentAlias} groups={groups}
+                  onSelect={alias => { if (open && activeSection === "model") onSelectModel(alias); }} unsetLabel={unsetLabel} />
               ) : (
-                <ThinkingSubmenu current={currentThinking} levels={thinkingLevels} onSelect={onSelectThinking} />
+                <ThinkingSubmenu current={currentThinking} levels={thinkingLevels}
+                  onSelect={level => { if (open && activeSection === "thinking") onSelectThinking(level); }} />
               )}
             </div>,
             portalTarget ?? document.body
@@ -362,8 +371,9 @@ function moveMenuFocus(event: React.KeyboardEvent<HTMLElement>): boolean {
   return true;
 }
 
-function ModelSubmenu({ currentAlias, groups, onSelect, unsetLabel }: { currentAlias?: string; groups: ModelGroup[]; onSelect(alias: string): void; unsetLabel?: string }): React.JSX.Element {
+function ModelSubmenu({ active, currentAlias, groups, onSelect, unsetLabel }: { active: boolean; currentAlias?: string; groups: ModelGroup[]; onSelect(alias: string): void; unsetLabel?: string }): React.JSX.Element {
   const [query, setQuery] = useState("");
+  useEffect(() => { if (active) setQuery(""); }, [active]);
   // 流动悬停：容器内按选择器自动注册模型选项，搜索过滤后自动重注册。
   const listRef = useRef<HTMLDivElement>(null);
   const hover = useFluidHoverItems(listRef, ".model-picker-submenu-option");
@@ -376,12 +386,20 @@ function ModelSubmenu({ currentAlias, groups, onSelect, unsetLabel }: { currentA
 
   return (
     <div className="model-picker-submenu">
-      <div className="model-picker-submenu-heading">模型</div>
       <label className="model-picker-search">
         <Icon name="search" size={13} />
         <input
           aria-label="搜索模型"
           onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={event => {
+            if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const options = [...(listRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])];
+            const candidate = query.trim() ? options.find(option => !option.classList.contains("is-unset"))
+              : options.find(option => option.getAttribute("aria-checked") === "true") ?? options[0];
+            candidate?.click();
+          }}
           placeholder="搜索模型…"
           type="search"
           value={query}
@@ -394,12 +412,12 @@ function ModelSubmenu({ currentAlias, groups, onSelect, unsetLabel }: { currentA
         {unsetLabel ? (
           <button
             aria-checked={currentAlias === undefined}
-            className={`model-picker-submenu-option${currentAlias === undefined ? " is-selected" : ""}`}
+            className={`model-picker-submenu-option is-unset${currentAlias === undefined ? " is-selected" : ""}`}
             onClick={() => onSelect("")}
             role="menuitemradio"
             type="button"
           >
-            <span className="model-picker-option-check">{currentAlias === undefined ? <Icon name="check" size={14} /> : null}</span>
+            <span className="model-picker-option-check"><Icon name={currentAlias === undefined ? "check" : "close"} size={14} /></span>
             <span className="model-picker-option-label"><strong>{unsetLabel}</strong></span>
           </button>
         ) : null}
@@ -425,14 +443,14 @@ function ModelSubmenu({ currentAlias, groups, onSelect, unsetLabel }: { currentA
                   key={model.alias}
                   onClick={() => onSelect(model.alias)}
                   role="menuitemradio"
+                  title={`${group.label} · ${model.model} · ${model.displayName} · ${model.alias}`}
                   type="button"
                 >
                   <span className="model-picker-option-check">{selected ? <Icon name="check" size={14} /> : null}</span>
                   <span className="model-picker-option-label">
-                    <strong>{model.displayName}</strong>
-                    <ModelOptionBadges model={model} />
+                    <strong>{model.model}</strong>
                   </span>
-                  {model.alias !== model.displayName ? <small className="model-picker-option-alias">{model.alias}</small> : null}
+                  <ModelOptionBadges model={model} />
                 </button>
               );
             })}
@@ -486,8 +504,8 @@ function ThinkingSubmenu({ current, levels, onSelect }: { current?: ThinkingSele
             role="menuitemradio"
             type="button"
           >
+            <span className="model-picker-option-check">{level === current ? <Icon name="check" size={14} /> : null}</span>
             <span>{level}</span>
-            {level === current ? <Icon name="check" size={14} /> : null}
           </button>
         ))}
       </div>

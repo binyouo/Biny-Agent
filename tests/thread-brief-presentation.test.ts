@@ -35,7 +35,7 @@ const sidebarProps: ComponentProps<typeof Sidebar> = {
   onProjectPinned: unexpected, onReorderProjects: unexpected, onRefreshProject: unexpected,
   onRevealProject: unexpected, onOpenTerminalProject: unexpected, onRenameProject: unexpected,
   onNewTask: unexpected, onNewTopLevelTask: unexpected, onImportSession: unexpected,
-  onRemoveProject: unexpected, onSearch: unexpected, onTimeClues: unexpected,
+  onRemoveProject: unexpected, onSearch: unexpected,
   onToggleSidebar: unexpected
 };
 const assertSidebar = (message: string): void => {
@@ -48,6 +48,7 @@ const assertSidebar = (message: string): void => {
     if (previousReact) Object.defineProperty(globalThis, "React", previousReact);
     else Reflect.deleteProperty(globalThis, "React");
   }
+  assert.doesNotMatch(html, /时间线索|time-clues/u);
   assert.match(html, /biny-sidebar-session-title[^>]*>编辑器发布/u, "the actual session row must render");
   assert.doesNotMatch(html, /biny-brief-session-status|自动标记待办|aria-label="(?:待办|已完成)"/u, message);
 };

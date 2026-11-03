@@ -50,12 +50,12 @@ test("new-chat suggestions appear only once loaded, submit, and survive empty or
     await React.act(async () => button!.click());
     assert.deepEqual(submitted, ["继续检查本地索引"]);
     await React.act(async () => root.render(React.createElement(Workspace, { ...props, running: true })));
-    assert.equal(document.querySelector(".biny-activity-suggestions"), null);
+    assert.equal(document.querySelectorAll(".biny-activity-suggestions").length, 0);
     await React.act(async () => root.render(React.createElement(Workspace, props)));
     assert.equal(calls, 1, "returning within five minutes reuses the request result");
     assert.equal(document.querySelectorAll(".suggestion-chip").length, 2);
     await React.act(async () => root.render(React.createElement(Workspace, { ...props, loading: true })));
-    assert.equal(document.querySelector(".biny-activity-suggestions"), null);
+    assert.equal(document.querySelectorAll(".biny-activity-suggestions").length, 0);
     let now = Date.now() + 5 * 60_000;
     t.mock.method(Date, "now", () => now);
     await React.act(async () => root.render(React.createElement(Workspace, props)));
