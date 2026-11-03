@@ -68,13 +68,14 @@ async function harness(t: TestContext) {
   t.mock.method(globalThis, 'fetch', async () => { external.push('fetch'); throw new Error('Unexpected fetch'); });
   t.mock.method(Socket.prototype, 'connect', () => { external.push('socket'); throw new Error('Unexpected network'); });
   set(dom.window, 'biny', {
-    toolOptimizationStats(...args: unknown[]) { assert.deepEqual(args, ['all']); const gate = deferred<DesktopToolOptimizationStats>(); statsReads.push(gate); return gate.promise; },
+    toolOptimizationStats(...args: unknown[]) { assert.deepEqual(args, statsReads.length === 0 ? ['all'] : ['all', undefined, undefined, true]); const gate = deferred<DesktopToolOptimizationStats>(); statsReads.push(gate); return gate.promise; },
     toolOptimizationDetail(...args: string[]) { const gate = { ...deferred<{ events: SessionEvent[] }>(), args }; detailReads.push(gate); return gate.promise; },
     openWorkspaceFile() { external.push('openWorkspaceFile'); throw new Error('Unexpected file open'); },
     openExternal() { external.push('openExternal'); throw new Error('Unexpected external navigation'); }
   });
   const { createRoot } = await import('react-dom/client');
   const { SettingsToolOptimization } = await import('../src/desktop/renderer/src/components/settings/SettingsToolOptimization.js');
+  const { invalidateToolOptimizationStats } = await import('../src/desktop/renderer/src/components/settings/toolOptimizationState.js');
   const { OptimizationCallDetail } = await import('../src/desktop/renderer/src/components/settings/OptimizationCallDetail.js');
   const { SettingsDetailHostContext } = await import('../src/desktop/renderer/src/components/settings/SettingsDetailHostContext.js');
   const host = document.getElementById('detail-host')!;
@@ -84,6 +85,7 @@ async function harness(t: TestContext) {
   const click = async (text: string) => { const button = [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === text); assert.ok(button, `Missing button ${text}`); await React.act(() => { button.focus(); button.click(); }); };
   const detailText = () => host.textContent ?? '';
   return { statsReads, detailReads, document, React, render, click, detailText,
+    invalidate: async () => React.act(() => invalidateToolOptimizationStats(window.biny)),
     settleStats: async (index: number, value: DesktopToolOptimizationStats) => React.act(async () => statsReads[index]!.resolve(value)),
     settleDetail: async (index: number, value: SessionEvent[] | Error) => React.act(async () => value instanceof Error ? detailReads[index]!.reject(value) : detailReads[index]!.resolve({ events: value })),
     escape: async () => React.act(() => document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))),
@@ -126,7 +128,7 @@ test('current failed or unrenderable call is explicit, reopen retries and Escape
 
 test('refresh begun before opening detail does not rebind the open source snapshot', async t => {
   const h = await harness(t); await h.render(); await h.settleStats(0, stats(row('alpha')));
-  await h.click('刷新'); await h.click('git status -- alpha');
+  await h.invalidate(); await h.click('git status -- alpha');
   await h.settleStats(1, stats(row('replacement', origin('other-project', 'other-session', 'other-call'))));
   assert.equal(h.detailReads.length, 1); await h.settleDetail(0, events(origin('alpha'), 'alpha')); assert.match(h.detailText(), /alpha-result/);
   assert.equal(h.document.querySelector('.tool-details')?.getAttribute('data-project-id'), 'alpha');
@@ -135,7 +137,7 @@ test('refresh begun before opening detail does not rebind the open source snapsh
 
 for (const failure of [false, true]) test(`whole settings unmount/reopen ignores prior detail ${failure ? 'failure' : 'success'}`, async t => {
   const h = await harness(t); await h.render(); await h.settleStats(0, stats(row('alpha'))); await h.click('git status -- alpha');
-  await h.leave(); await h.render(); await h.click('刷新'); await h.settleStats(1, stats(row('beta'))); await h.click('git status -- beta');
+  await h.leave(); await h.invalidate(); await h.render(); await h.settleStats(1, stats(row('beta'))); await h.click('git status -- beta');
   await h.settleDetail(1, events(origin('beta'), 'beta')); await h.settleDetail(0, failure ? new Error('old-unmounted-error') : events(origin('alpha'), 'alpha'));
   assert.match(h.detailText(), /beta-result/); assert.doesNotMatch(h.detailText(), /alpha-result|old-unmounted-error/);
 });

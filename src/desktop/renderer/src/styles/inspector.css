@@ -38,7 +38,7 @@
 .biny-root .file-browser-tree { padding-top: 0; background: var(--biny-surface); }
 .file-explorer-tools { position: sticky; top: 0; z-index: 2; background: var(--biny-surface); }
 .inspector-file-filter { display: flex; align-items: center; gap: 5px; margin: 6px 8px; padding: 0 5px; border: 1px solid var(--biny-border); border-radius: 6px; color: var(--biny-text-secondary); }
-.inspector-file-filter:focus-within { border-color: var(--biny-focus); }
+.inspector-file-filter:focus-within { box-shadow: 0 0 0 2px var(--field-focus-ring); }
 .inspector-file-filter input { min-width: 0; width: 100%; padding: 6px 0; border: 0; outline: none; background: transparent; color: var(--biny-text); font: inherit; font-size: 12px; }
 .biny-root .file-browser-current-path { display: flex; align-items: center; gap: 7px; font-size: 11px; }
 .file-browser-current-path > svg, .file-browser-current-path > button { flex-shrink: 0; }
@@ -229,7 +229,7 @@
 .inspector-browser-history, .inspector-browser-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 2px; }
 .inspector-browser-history { border-left: 1px solid var(--biny-border); padding-left: 6px; }
 .inspector-browser-address { display: flex; align-items: center; flex: 1 1 180px; min-width: 140px; gap: 4px; padding-left: 10px; border: 1px solid var(--biny-border); border-radius: 9px; background: var(--biny-surface-elevated); }
-.inspector-browser-address:focus-within { border-color: var(--biny-focus); }
+.inspector-browser-address:focus-within { box-shadow: 0 0 0 2px var(--field-focus-ring); }
 .inspector-browser-address > svg { flex-shrink: 0; }
 .inspector-browser-address input { min-height: 30px; padding: 0 4px; outline: none; }
 .inspector-browser-navigation .inspector-profile-anchor > button { width: 32px; height: 32px; }

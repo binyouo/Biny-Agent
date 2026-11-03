@@ -72,20 +72,21 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function contextAt(root: unknown, path: string[]): { args: boolean; signed: boolean; defs: boolean } {
+function contextAt(root: unknown, path: string[]): { args: boolean; signed: boolean; defs: boolean; structuredToolData: boolean } {
   let node: unknown = root;
-  let args = false, signed = false;
+  let args = false, signed = false, structuredToolResult = false;
   for (let i = 0; i < path.length; i++) {
     const parent = object(node);
     const key = path[i]!;
     if (parent) {
       if ((key === "input" && ["tool_use", "server_tool_use"].includes(String(parent.type)))
         || (key === "args" && ["functionCall", "function_call"].includes(path[i - 1] ?? ""))) args = true;
+      if (key === "response" && path[i - 1] === "functionResponse") structuredToolResult = true;
       if (!args && SIGNATURE_KEYS.some((name) => typeof parent[name] === "string" && parent[name] !== "")) signed = true;
     }
     node = node !== null && typeof node === "object" ? (node as Record<string, unknown>)[key] : undefined;
   }
-  return { args, signed: signed && !args, defs: !args && DEF_KEYS.has(path[0] ?? "") };
+  return { args, signed: signed && !args, defs: !args && DEF_KEYS.has(path[0] ?? ""), structuredToolData: args || structuredToolResult };
 }
 
 export interface MaskJsonSegment { path: string; original: string; masked: string; segments: MaskSegment[]; role?: string; truncated?: boolean }
@@ -111,7 +112,12 @@ function maskRequestJson(source: string, settings: RedactionSettings, store: Red
     // 工具参数中的键属于工具领域，不能套用 Provider 的 name/id 等保留规则。
     if (key === "arguments") {
       const nested = walkJsonValues(value, (text, nestedPath) => apply(text, [...path, ...nestedPath]));
-      if (nested === undefined) throw new Error("Privacy cannot mask malformed tool arguments.");
+      if (nested === undefined) {
+        // Structured tool data can legitimately name a plain string "arguments".
+        // Preserve existing JSON-string masking and reject malformed protocol arguments.
+        if (context.structuredToolData) return apply(value, path);
+        throw new Error("Privacy cannot mask malformed tool arguments.");
+      }
       return nested;
     }
     return apply(value, path);

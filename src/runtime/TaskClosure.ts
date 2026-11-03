@@ -123,7 +123,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
   let workerAttempt = input.resumeWorker && initial.status === "running" ? initial.attempts.at(-1) : undefined;
   if (input.resumeWorker && !workerAttempt) throw new Error("Worker continuation requires the current running Attempt.");
   const latestAttempt = initial.attempts.at(-1);
-  const latestEvent = input.taskRuns.latestEvent(input.taskRunId);
+  const latestEvent = input.taskRuns.latestEvent(input.taskRunId, { excludeMessageReceipts: true });
   const persistedRepairEvidence = initial.status === "queued"
     && latestAttempt?.status === "failed"
     && latestEvent?.eventType === "task.verification.repair"
@@ -154,7 +154,10 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
       const references = new Set([reviewCandidate!.taskRunId, reviewCandidate!.attemptId, ...reviewCandidate!.contract.artifactPaths]);
       if (review.evidenceReferences.some((reference) => !references.has(reference))) throw new Error("Review refers to evidence outside the candidate.");
       if (!isLatestNonCancelledAttempt(input.taskRuns, input.taskRunId, attempt.attemptId)) return { status: "cancelled", reason: "A stale review result was ignored." };
-      input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output, review, candidate: reviewCandidate } });
+      input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: {
+        ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
+        output, review, candidate: reviewCandidate
+      } });
       return { status: "completed", output, review };
     } catch (error) {
       if (input.signal?.aborted) return cancelCurrentTask(input);
@@ -493,6 +496,7 @@ function readCandidateArtifacts(artifacts: unknown): TaskCandidateArtifacts | un
     || !isStringArray(repairScope.changedPaths)
     || !isStringArray(repairScope.violationPaths)) return undefined;
   return {
+    ...record,
     output: record.output,
     communication: record.communication,
     definitionFingerprint: record.definitionFingerprint,

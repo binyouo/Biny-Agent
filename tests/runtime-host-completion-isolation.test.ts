@@ -33,7 +33,7 @@ async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
   } finally { clearTimeout(timer); }
 }
 
-async function fixture() {
+async function fixture(onCreate?: (sessionId: string | undefined) => Promise<void>) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-host-completion-"));
   const configDir = path.join(root, "config");
   await saveConfig(root, {
@@ -46,9 +46,12 @@ async function fixture() {
   }, { globalDir: configDir });
   const configStore = createFileConfigStore(root, { globalDir: configDir });
   const local = await createInteractiveAgentHost(root, { configStore, sessionId: "session-a" });
-  const createRuntime: RuntimeHostFactory = async (sessionId, options) => await createInteractiveAgentHost(root, {
-    configStore, sessionId, resourceRegistry: options?.resourceRegistry
-  });
+  const creations: Array<string | undefined> = [];
+  const createRuntime: RuntimeHostFactory = async (sessionId, options) => {
+    creations.push(sessionId);
+    await onCreate?.(sessionId);
+    return await createInteractiveAgentHost(root, { configStore, sessionId, resourceRegistry: options?.resourceRegistry });
+  };
   const host = new RuntimeHostServer(local.runtime, local.commands, {
     protocolVersion: runtimeHostProtocolVersion, endpoint: path.join(root, "unused.sock"),
     registrationPath: path.join(root, "registration.json"), lockPath: path.join(root, "host.lock"),
@@ -83,7 +86,7 @@ async function fixture() {
     return invocation.invocationId;
   };
   return {
-    root, local, host, request, capability,
+    root, local, host, request, capability, creations,
     close: async () => { await host.close(); await rm(root, { recursive: true, force: true }); }
   };
 }
@@ -221,6 +224,216 @@ async function cancellationBypassesSlowMutation(): Promise<void> {
   } finally { release.resolve(); await slow; await f.close(); }
 }
 
+async function toolCatalogBypassesUnrelatedMaintenance(): Promise<void> {
+  const f = await fixture();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  await f.request("session.ensure", { sessionId: "session-b" });
+  let finished = false;
+  f.local.commands.mcp.reconnectServer = async () => {
+    entered.resolve();
+    await release.promise;
+    finished = true;
+    throw new Error("controlled maintenance failure");
+  };
+  const slow = f.request("mcp.reconnect", { sessionId: "session-a", server: "controlled" }).catch(() => undefined);
+  let catalog: Promise<Array<{ name: string }>> | undefined;
+  try {
+    await bounded(entered.promise, "maintenance start");
+    catalog = f.request("tools.list", { sessionId: "session-b" });
+    const tools = await bounded(catalog, "other session tool catalog");
+    assert.ok(tools.some(tool => tool.name === "Read"));
+    assert.ok(tools.some(tool => tool.name === "Bash"));
+    assert.equal(finished, false, "catalog reads do not wait for another session's maintenance");
+  } finally {
+    release.resolve();
+    await Promise.all([slow, catalog]);
+    await f.close();
+  }
+}
+
+async function readOnlyCommandsBypassUnrelatedMaintenance(): Promise<void> {
+  const f = await fixture();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  await f.request("session.ensure", { sessionId: "session-b" });
+  f.local.commands.mcp.reconnectServer = async () => {
+    entered.resolve();
+    await release.promise;
+    throw new Error("controlled maintenance failure");
+  };
+  const maintenance = f.request("mcp.reconnect", { sessionId: "session-a", server: "controlled" }).catch(() => undefined);
+  const reads: Promise<unknown>[] = [];
+  try {
+    await bounded(entered.promise, "maintenance start");
+    for (const input of ["/usage", "/status", "/skills", "/plugins", "/tasks", "/automation list", "/capabilities", "/mcp", "/memories", "/soul"]) {
+      const read = f.request<{ command: string }>("command", { input, source: "tui", sessionId: "session-b" });
+      reads.push(read);
+      assert.equal((await bounded(read, `read-only ${input}`)).command, input.split(" ")[0]);
+    }
+  } finally {
+    release.resolve();
+    await Promise.allSettled([maintenance, ...reads]);
+    await f.close();
+  }
+}
+
+async function structuredReadsBypassUnrelatedMaintenance(): Promise<void> {
+  const f = await fixture();
+  const entered = deferred<void>(), release = deferred<void>();
+  const reads: Promise<unknown>[] = [];
+  await f.request("session.ensure", { sessionId: "session-b" });
+  f.local.commands.mcp.reconnectServer = async () => { entered.resolve(); await release.promise; throw new Error("controlled maintenance failure"); };
+  const maintenance = f.request("mcp.reconnect", { sessionId: "session-a", server: "controlled" }).catch(() => undefined);
+  try {
+    await bounded(entered.promise, "maintenance start");
+    for (const command of ["TodoShow", "GoalGet"]) {
+      const read = f.request("session.command", { sessionId: "session-b", command, input: {} });
+      reads.push(read);
+      const result = await bounded(read, command);
+      if (command === "TodoShow") assert.deepEqual(result, { sessionId: "session-b", todos: [] });
+      else assert.equal((result as { goal: unknown }).goal, null);
+    }
+  } finally { release.resolve(); await Promise.allSettled([maintenance, ...reads]); await f.close(); }
+}
+
+async function todoReadDoesNotPublishUnchangedSnapshot(): Promise<void> {
+  const f = await fixture();
+  try {
+    const sequence = f.host.sequence;
+    assert.deepEqual(await f.request("session.command", { sessionId: "session-a", command: "TodoShow", input: {} }), { sessionId: "session-a", todos: [] });
+    assert.equal(f.host.sequence, sequence, "Reading Todo cannot emit a state-change snapshot or trigger another Plan refresh");
+    await assert.rejects(f.request("session.command", { sessionId: "session-a", command: "TodoShow", input: {}, scope: "expired-scope" }), /context expired/u);
+    assert.equal(f.host.sequence, sequence);
+  } finally { await f.close(); }
+}
+
+async function auditedStatusReadsRetainSessionOrdering(): Promise<void> {
+  const f = await fixture();
+  const entered = deferred<void>(), release = deferred<void>();
+  const dispatcher = (f.host as unknown as { dispatcher: OperationDispatcher }).dispatcher;
+  const holding = dispatcher.dispatch("run", async () => { entered.resolve(); await release.promise; }, "session-a");
+  let status: Promise<unknown> | undefined;
+  try {
+    await entered.promise;
+    let settled = false;
+    status = f.request("session.command", { sessionId: "session-a", command: "GoalGet", input: {} }).then(result => { settled = true; return result; });
+    assert.deepEqual(await bounded(f.request("session.command", { sessionId: "session-a", command: "TodoShow", input: {} }), "pure Todo query"), { sessionId: "session-a", todos: [] });
+    assert.equal(settled, false, "GoalGet audit must remain behind its own session's causal operation");
+    release.resolve();
+    assert.equal((await bounded(status, "ordered GoalGet") as { goal: unknown }).goal, null);
+  } finally { release.resolve(); await Promise.allSettled([holding, status]); await f.close(); }
+}
+
+async function coldRunReadsDoNotInitializeSessions(): Promise<void> {
+  const f = await fixture();
+  const authority = f.local.commands.runtimeAuthority;
+  authority.startRun({ runId: "cold-run", sessionId: "cold-session", turnId: "cold-turn" });
+  authority.finishRun({ runId: "cold-run", status: "completed", payload: { output: "persisted output" } });
+  authority.startRun({ runId: "other-run", sessionId: "other-session", turnId: "other-turn" });
+  const sequence = authority.readEvents({ limit: 100 }).events.at(-1)!.sequence;
+  try {
+    const inspected = await f.request<{ runId: string; sessionId: string; status: string; terminalPayload: unknown }>("run.inspect", { runId: "cold-run" });
+    assert.equal(inspected.runId, "cold-run");
+    assert.equal(inspected.sessionId, "cold-session");
+    assert.equal(inspected.status, "completed");
+    assert.deepEqual(inspected.terminalPayload, { output: "persisted output" });
+    assert.deepEqual(f.creations, [], "a persisted terminal run does not need an execution runtime");
+    for (const target of [{ sessionId: "cold-session" }, { session: "cold-session.jsonl" }]) {
+      assert.equal((await f.request<{ runId: string }>("run.inspect", { ...target, runId: "cold-run" })).runId, "cold-run");
+    }
+    const page = await f.request<{ runs: Array<{ runId: string }>; hasMore: boolean }>("run.list", { sessionId: "cold-session", status: "completed", limit: 1 });
+    assert.deepEqual(page.runs.map(run => run.runId), ["cold-run"]);
+    assert.equal(page.hasMore, false);
+    const events = await f.request<{ events: Array<{ runId: string; sessionId: string; sequence: number }>; hasMore: boolean }>("runtime.events", { sessionId: "cold-session", runId: "cold-run", limit: 1 });
+    assert.equal(events.events.length, 1);
+    assert.equal(events.events[0]!.runId, "cold-run");
+    assert.equal(events.events[0]!.sessionId, "cold-session");
+    assert.equal(events.hasMore, true);
+    assert.deepEqual((await f.request<{ events: unknown[] }>("runtime.events", { sessionId: "cold-session", afterSequence: sequence })).events, []);
+    await assert.rejects(f.request("run.inspect", { runId: "cold-run", sessionId: "other-session" }), /belongs to session cold-session, not other-session/u);
+    assert.equal(await f.request("run.inspect", { runId: "missing", sessionId: "absent" }), undefined);
+    assert.deepEqual(f.creations, []);
+    assert.deepEqual(f.host.sessionSummaries().map(session => session.sessionId), ["session-a"]);
+    assert.equal(authority.readEvents({ limit: 100 }).events.at(-1)!.sequence, sequence, "reads do not append runtime facts");
+  } finally { await f.close(); }
+}
+
+async function coldRunReadWaitsForBorrowedAuthorityRestart(): Promise<void> {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const f = await fixture(async () => { entered.resolve(); await release.promise; });
+  f.local.commands.runtimeAuthority.startRun({ runId: "cold-run", sessionId: "cold-session", turnId: "cold-turn" });
+  const restart = f.request("runtime.restart", { sessionId: "session-a" });
+  let settled = false;
+  let read: Promise<unknown> | undefined;
+  try {
+    await bounded(entered.promise, "restart factory entry");
+    read = f.request<{ runId: string }>("run.inspect", { runId: "cold-run" }).finally(() => { settled = true; });
+    await bounded(f.request("host.info"), "host status during restart");
+    assert.equal(settled, false, "reads wait for the authority connection they borrow");
+    release.resolve();
+    await restart;
+    assert.equal((await bounded(read, "read after restart") as { runId: string }).runId, "cold-run");
+    assert.deepEqual(f.creations, ["session-a"], "reading the cold owner must not create another runtime");
+  } finally {
+    release.resolve();
+    await Promise.allSettled([restart, read]);
+    await f.close();
+  }
+}
+
+async function runReadWaitsForSameRunAdmission(): Promise<void> {
+  const f = await fixture();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const blocked = f.host.dispatcher.dispatch("run", async () => { entered.resolve(); await release.promise; }, "session-a");
+  let submission: Promise<unknown> | undefined;
+  let inspection: Promise<{ runId: string; sessionId: string }> | undefined;
+  let inspected = false;
+  try {
+    await entered.promise;
+    submission = f.request("run.submit", { sessionId: "session-a", input: "queued admission", runId: "queued-run", turnId: "queued-turn", messageId: "queued-message" });
+    inspection = f.request<{ runId: string; sessionId: string }>("run.inspect", { runId: "queued-run" }).then(result => { inspected = true; return result; });
+    assert.equal(await f.request("run.inspect", { runId: "unrelated-missing" }), undefined);
+    assert.equal(inspected, false, "a missing record is not final while the same run's admission is pending");
+    release.resolve();
+    await blocked;
+    await submission;
+    const record = await bounded(inspection, "inspect after durable admission");
+    assert.equal(record.runId, "queued-run");
+    assert.equal(record.sessionId, "session-a");
+  } finally {
+    release.resolve();
+    await Promise.allSettled([blocked, submission, inspection]);
+    await f.close();
+  }
+}
+
+async function runReadDuringRestartRejectsShutdown(): Promise<void> {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const f = await fixture(async () => { entered.resolve(); await release.promise; });
+  f.local.commands.runtimeAuthority.startRun({ runId: "cold-run", sessionId: "cold-session", turnId: "cold-turn" });
+  const restart = f.request("runtime.restart", { sessionId: "session-a" });
+  void restart.catch(() => undefined);
+  let read: Promise<unknown> | undefined;
+  try {
+    await bounded(entered.promise, "restart factory entry");
+    read = f.request("run.inspect", { runId: "cold-run" });
+    void read.catch(() => undefined);
+    await f.request("host.info");
+    const closing = f.host.close();
+    release.resolve();
+    await assert.rejects(read, /shutting down/u);
+    await Promise.allSettled([restart, closing]);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([restart, read]);
+    await f.close();
+  }
+}
+
 async function diaryDoesNotHoldAdmission(): Promise<void> {
   const f = await fixture();
   const entered = deferred<void>();
@@ -335,7 +548,7 @@ async function approvalDoesNotHoldMutationOrAdmission(): Promise<void> {
     assert.equal(starts, 1, "duplicate approval cannot start another verifier");
     assert.equal(f.local.commands.taskRuns.get(task.taskRunId)?.attempts.length, 1);
     await bounded(f.request("session.ensure", { sessionId: "session-b" }), "other session during approval");
-    await bounded(f.request("tools.list", { sessionId: "session-b" }), "mutation during approval");
+    await bounded(f.request("tools.list", { sessionId: "session-b" }), "tool catalog during approval");
     const invocationId = f.capability();
     const result = await bounded(f.request<HostOperationResult>("capability.result", { invocationId, result: "done" }), "capability during approval");
     assert.equal(result.accepted, true);
@@ -351,7 +564,7 @@ async function approvalDoesNotHoldMutationOrAdmission(): Promise<void> {
 }
 
 const failures: string[] = [];
-for (const test of [taskCompletionDoesNotHoldAdmission, cancellationBeforeAndAfterDurableAdmission, terminalTaskWithPendingRpcPreventsRetirement, cancellationBypassesSlowMutation, diaryDoesNotHoldAdmission, heartbeatCompletionAndErrorsKeepRpcSemantics, queuedDiaryRechecksDrainAndRuntime, approvalDoesNotHoldMutationOrAdmission]) {
+for (const test of [taskCompletionDoesNotHoldAdmission, cancellationBeforeAndAfterDurableAdmission, terminalTaskWithPendingRpcPreventsRetirement, cancellationBypassesSlowMutation, toolCatalogBypassesUnrelatedMaintenance, readOnlyCommandsBypassUnrelatedMaintenance, structuredReadsBypassUnrelatedMaintenance, todoReadDoesNotPublishUnchangedSnapshot, auditedStatusReadsRetainSessionOrdering, coldRunReadsDoNotInitializeSessions, coldRunReadWaitsForBorrowedAuthorityRestart, runReadWaitsForSameRunAdmission, runReadDuringRestartRejectsShutdown, diaryDoesNotHoldAdmission, heartbeatCompletionAndErrorsKeepRpcSemantics, queuedDiaryRechecksDrainAndRuntime, approvalDoesNotHoldMutationOrAdmission]) {
   try { await test(); console.log(`PASS ${test.name}`); }
   catch (error) { failures.push(`${test.name}: ${error instanceof Error ? error.stack : String(error)}`); }
 }

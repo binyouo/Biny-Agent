@@ -145,6 +145,7 @@ export const settingsSaveInputSchema = z.object({
     providerApiFormats: z.record(idSchema, z.union([modelApiBackendSchema, z.literal("auto")])).optional(),
     toolModel: z.object({ alias: idSchema.optional() }).strict().optional(),
     visionModel: z.object({ alias: idSchema.optional() }).strict().optional(),
+    visionModelEnabled: z.boolean().optional(),
     defaultModel: z.object({ alias: idSchema, thinking: thinkingSchema }).strict().optional(),
     oauthCredentialHandles: z.array(z.string().uuid()).max(20).optional(),
     modelProfiles: z.record(idSchema, z.record(z.string().trim().min(1).max(240), modelProfileSchema)).optional()

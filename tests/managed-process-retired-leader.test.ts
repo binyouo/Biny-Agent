@@ -1,13 +1,15 @@
 /** Real service methods with synthetic OS adapters: no shell, process, socket or Host runs. */
 import assert from "node:assert/strict";
+import { isUtf8 } from "node:buffer";
+import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
-import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import type { ManagedProcessService, ManagedProcessServiceOptions } from "../src/runtime/ManagedProcessService.js";
+import type { ManagedProcessLogStore } from "../src/runtime/managedProcessLogStore.js";
 
 const file = new URL("../src/runtime/ManagedProcessService.ts", import.meta.url);
 const source = readFileSync(file, "utf8");
@@ -16,8 +18,8 @@ const imports = parsed.statements.filter(ts.isImportDeclaration);
 assert.deepEqual(imports.map(node => {
   assert.ok(ts.isStringLiteral(node.moduleSpecifier));
   return node.moduleSpecifier.text;
-}), ["node:crypto", "node:child_process", "../tools/shell/shell.js", "node:fs", "node:fs/promises",
-  "node:net", "node:path", "../tools/search/regexMatcher.js", "../session/store.js", "./managedProcessLog.js"],
+}), ["node:crypto", "node:child_process", "../tools/shell/shell.js", "node:fs/promises",
+  "node:net", "node:path", "../tools/search/regexMatcher.js", "../session/store.js", "./managedProcessLogStore.js"],
 "new dependencies require an explicitly reviewed inert adapter");
 // Import declarations are never evaluated. Unknown dynamic imports/requires are forbidden.
 function inspect(node: ts.Node): void {
@@ -28,9 +30,15 @@ function inspect(node: ts.Node): void {
   ts.forEachChild(node, inspect);
 }
 inspect(parsed);
-let body = source;
-for (const node of [...imports].reverse()) body = body.slice(0, node.getStart(parsed)) + body.slice(node.end);
-const javascript = stripTypeScriptTypes(body.replace(/^export /gmu, ""), { mode: "transform" });
+function compile(text: string): string {
+  const tree = ts.createSourceFile("fixture.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let body = text;
+  for (const node of tree.statements.filter(ts.isImportDeclaration).reverse()) body = body.slice(0, node.getStart(tree)) + body.slice(node.end);
+  return ts.transpileModule(body.replace(/^export /gmu, ""), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
+}
+// Execute the real log reader/store too; only filesystem and process syscalls are inert.
+const javascript = ["managedProcessLog.ts", "managedProcessLogStore.ts", "ManagedProcessService.ts"]
+  .map(name => compile(readFileSync(new URL(`../src/runtime/${name}`, import.meta.url), "utf8"))).join("\n");
 type Service = Pick<ManagedProcessService, "start" | "status" | "stop" | "close">;
 type Signal = 0 | "SIGTERM" | "SIGKILL";
 type Operation = { kind: "kill"; pid: number; signal: Signal; foreign: boolean }
@@ -48,6 +56,7 @@ function fixture(platform: "linux" | "win32" = "linux") {
   let foreign = false;
   let groupError: string | undefined;
   const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(),
     pid: P, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
     unref() {}, kill: forbidden("child.kill")
   });
@@ -63,19 +72,24 @@ function fixture(platform: "linux" | "win32" = "linux") {
       if (pid === -P) group = false;
       else if (pid === C) descendant = false;
       else positive = false;
+      queueMicrotask(() => child.emit("close", 0, null));
     }
     return true;
   } });
+  const metadata = () => ({ dev: 1n, ino: 2n, nlink: 1n, size: 0n, isFile: () => true, isDirectory: () => true, isSymbolicLink: () => false });
+  const filesystem = {
+    mkdir: async () => {}, readdir: async () => [], lstat: async () => metadata(), stat: async () => metadata(),
+    realpath: async (value: string) => value, unlink: async () => {}, rmdir: async () => {}, rename: async () => {}, appendFile: async () => {},
+    open: async () => ({ stat: async () => metadata(), writeFile: async () => {}, truncate: async () => {}, close: async () => {},
+      write: async (_bytes: Buffer, _offset: number, length: number) => ({ bytesWritten: length }) })
+  };
   const adapters = {
-    process: processAdapter, path, Buffer, Date, Error, RangeError,
+    process: { ...processAdapter, pid: 12345 }, path, Buffer, isUtf8, Date, Error, RangeError,
+    fs: filesystem, ...filesystem, setInterval, clearInterval,
     DOMException, AbortController, AbortSignal, setTimeout, clearTimeout,
     randomUUID: () => "00000000-0000-4000-8000-000000000001",
     constants: { O_CREAT: 1, O_EXCL: 2, O_WRONLY: 4, O_APPEND: 8, O_NOFOLLOW: 16 },
     agentDir: () => "/synthetic/state", ensureAgentDirs: async () => {},
-    realpath: async (value: string) => value, stat: async () => ({ isDirectory: () => true }),
-    open: async () => ({ fd: 123, writeFile: async () => {}, close: async () => {} }),
-    appendFile: async () => {}, bindManagedProcessLog: async (value: string) => ({ path: value }),
-    readManagedProcessLog: forbidden("readManagedProcessLog"),
     defaultShell: () => ({ kind: "posix", executable: "/synthetic/sh" }),
     shellCommandInvocation: forbidden("shellCommandInvocation"),
     CancellableRegexMatcher: { create: forbidden("regex worker") }, maxRegexQueryBytes: 65536,
@@ -98,20 +112,21 @@ function fixture(platform: "linux" | "win32" = "linux") {
       return helper;
     }
   };
-  const Subject = runInNewContext(javascript + "\nManagedProcessService;", adapters, {
+  const { Subject, Store } = runInNewContext(javascript + "\n({ Subject: ManagedProcessService, Store: ManagedProcessLogStore });", adapters, {
     timeout: 1000, contextCodeGeneration: { strings: false, wasm: false }
-  }) as new (options: ManagedProcessServiceOptions) => Service;
-  const service = new Subject({ workspaceRoot: "/synthetic/workspace", terminationGraceMs: 0, killSettleMs: 0 });
+  }) as { Subject: new (options: ManagedProcessServiceOptions) => Service; Store: typeof ManagedProcessLogStore };
+  const logs = new Store("/synthetic/logs", { completedLogs: 1 });
+  const service = new Subject({ workspaceRoot: "/synthetic/workspace", terminationGraceMs: 0, killSettleMs: 0, logStore: logs });
   return {
-    service, events,
+    service, events, logs,
     async start() { return await service.start({ command }); },
     exitLeader(code: number | null = 0, signal: NodeJS.Signals | null = null) {
-      positive = false; child.exitCode = code; child.signalCode = signal; child.emit("exit", code, signal);
+      positive = false; child.exitCode = code; child.signalCode = signal; child.emit("exit", code, signal); child.emit("close", code, signal);
     },
     replacePid() { group = false; positive = true; descendant = true; foreign = true; },
     noGroup() { group = false; },
     inaccessibleGroup(code: string) { groupError = code; },
-    async cleanup() { groupError = undefined; group = false; positive = false; descendant = false; await service.close(); }
+    async cleanup() { groupError = undefined; group = false; positive = false; descendant = false; await service.close(); await logs.close(); }
   };
 }
 
@@ -147,6 +162,20 @@ test("surviving group after known leader exit remains cleanable", async () => {
     assert.equal((await f.service.status(started.processId)).state, "running");
     assert.equal((await f.service.stop(started.processId)).cleanup.status, "stopped");
     assert.ok(f.events.some(event => event.kind === "kill" && event.pid === -P && event.signal === "SIGTERM"));
+  } finally { await f.cleanup(); }
+});
+
+test("closed output pipes cannot make a surviving process group eligible for completed-log eviction", async () => {
+  const f = fixture();
+  try {
+    const started = await f.start(); f.exitLeader();
+    const record = (f.service as unknown as { records: Map<string, { outputCompletion?: Promise<void> }> }).records.get(started.processId)!;
+    await record.outputCompletion;
+    for (const id of ["00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003"]) {
+      await (await f.logs.create(id, () => {})).finish();
+    }
+    assert.equal((await f.service.status(started.processId)).state, "running");
+    assert.equal((await f.service.stop(started.processId)).cleanup.status, "stopped");
   } finally { await f.cleanup(); }
 });
 

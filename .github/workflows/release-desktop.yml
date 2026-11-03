@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       unsigned:
-        description: Publish a Beta without Developer ID signing or notarization
+        description: Publish without Developer ID signing or notarization
         type: boolean
         default: false
 
@@ -23,12 +23,51 @@ env:
   RELEASE_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && inputs.unsigned || false }}
 
 jobs:
+  static:
+    name: Release static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Load release validation fixture
+        run: |
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/code-mode-runtime-artifact-fixture.mjs" > scripts/code-mode-runtime-artifact-fixture.mjs
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.6.5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Test runner, model metadata, release policy and Code Mode runtime
+        run: |
+          pnpm test:runner
+          pnpm test:models
+          node --test scripts/release-desktop.test.mjs
+          pnpm test:code-mode-runtime
+
   validate:
-    name: Validate tagged source (${{ matrix.shard }}/4)
+    name: Validate tagged source (${{ matrix.shard }}/12)
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -53,29 +92,44 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile && pnpm exec install-electron --no
 
-      - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level high
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Lint
-        run: pnpm lint
-
       - name: Test standard suite
-        run: xvfb-run -a pnpm test:standard --shard=${{ matrix.shard }}/4
+        run: xvfb-run -a node scripts/run-tests.mjs --standard --shard=${{ matrix.shard }}/12
 
-      - name: Test runtime and release packaging
-        if: matrix.shard == 1
-        run: xvfb-run -a pnpm test:e2e && node --test scripts/release-desktop.test.mjs
+  runtime:
+    name: Release runtime and artifact checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
+      - name: Load release validation fixture
+        run: |
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/code-mode-runtime-artifact-fixture.mjs" > scripts/code-mode-runtime-artifact-fixture.mjs
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.6.5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile && pnpm exec install-electron --no
+
+      - name: Build Desktop and CLI
+        run: pnpm build:desktop
+      - name: Test runtime end to end
+        run: xvfb-run -a node scripts/run-tests.mjs --e2e
       - name: Validate bundled Code Mode runtime
-        if: matrix.shard == 1
-        run: pnpm build:desktop && pnpm test:code-mode-package
+        run: pnpm test:code-mode-package
 
   build:
     name: Build ${{ matrix.arch }}
-    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -119,8 +173,7 @@ jobs:
       - name: Verify macOS signing configuration
         run: |
           if [[ "$RELEASE_UNSIGNED" == "true" ]]; then
-            [[ "$RELEASE_TAG" == *-beta.* ]] || { echo "Unsigned releases must be Beta versions" >&2; exit 1; }
-            echo "Building a Beta without Developer ID signing or notarization"
+            echo "Building without Developer ID signing or notarization"
             exit 0
           fi
           test -n "$CSC_LINK" || { echo "Missing MACOS_CERTIFICATE_BASE64" >&2; exit 1; }
@@ -146,12 +199,14 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: tui-npm
+          compression-level: 0
           path: tui-package/*.tgz
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
+          compression-level: 0
           path: release/*.dmg
           if-no-files-found: error
 
@@ -185,7 +240,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: [build, tui]
+    needs: [static, validate, runtime, build, tui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -207,11 +262,11 @@ jobs:
             cat > release-notes.md <<'EOF'
           Biny 是本地优先、记忆优先的开发协作 Agent，提供 macOS Desktop、TUI 与 CLI，支持通过 MCP、Skills 和插件扩展。
 
-          ### macOS Beta 安装
+          ### macOS 安装
           - Apple Silicon 下载 `arm64.dmg`。打开 DMG 后将 Biny 拖入 Applications。
-          - 此 Beta 未使用 Apple Developer ID 签名或公证。首次打开可能被 macOS 拦截；确认下载来源后，在“系统设置 → 隐私与安全性”中选择“仍要打开”。[Apple 操作说明](https://support.apple.com/en-us/102445)
+          - 此安装包未使用 Apple Developer ID 签名或公证。首次打开可能被 macOS 拦截；确认下载来源后，在“系统设置 → 隐私与安全性”中选择“仍要打开”。[Apple 操作说明](https://support.apple.com/en-us/102445)
           - 首次使用请配置模型服务商；桌面观察与操作需要相应的 macOS 权限。配置入口见 [用户文档](https://github.com/binyouo/Biny-Agent/blob/main/docs/README.md)。
-          - 此版本供测试使用；安装、首次启动及界面交互待人工验收。
+          - 安装、首次启动及界面交互待人工验收。
           EOF
             notes+=(--notes-file release-notes.md)
           fi
@@ -221,6 +276,6 @@ jobs:
             if [[ "$RELEASE_TAG" == *-* ]]; then
               gh release create "$RELEASE_TAG" release-assets/*-arm64.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes --prerelease "${notes[@]}"
             else
-              gh release create "$RELEASE_TAG" release-assets/*-arm64.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes
+              gh release create "$RELEASE_TAG" release-assets/*-arm64.dmg --title "Biny ${RELEASE_TAG#v}" --generate-notes --latest "${notes[@]}"
             fi
           fi

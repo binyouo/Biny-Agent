@@ -7,6 +7,8 @@ import type { OperationLane } from "./types.js";
 import { sessionIdFromFile } from "../../session/store.js";
 import { runtimeCommandOperation } from "../commands.js";
 
+const queryCommands = new Set(["/status", "/usage", "/tasks", "/capabilities", "/skills", "/plugins"]);
+
 export const memoryQueryActions = new Set(["overview", "list", "get", "search", "archive-list", "archive-chains", "sleep-status", "sleep-runs", "sleep-preview"]);
 
 export function commandWritesSession(input: string): boolean {
@@ -73,12 +75,27 @@ export function operationLaneKey(operation: string, payload: Record<string, unkn
 }
 
 export function operationLane(operation: string, payload: Record<string, unknown> = {}): OperationLane {
+  if (operation === "session.command") {
+    if (payload.command === "TodoShow") return "query";
+    // GoalGet/PlanStatus retain audit and per-run inspection state, so keep their
+    // ordering with their own session without blocking unrelated maintenance.
+    if (payload.command === "GoalGet" || payload.command === "PlanStatus") return "run";
+  }
   if (operation === "command" && typeof payload.input === "string") {
     const commandOperation = runtimeCommandOperation(payload.input);
     if (commandOperation?.startsWith("session.goal.") || commandOperation?.startsWith("goal.")) {
       return operationLane(commandOperation, payload);
     }
+    if (commandOperation === "graph.inspect" || commandOperation === "graph.events") return "query";
     if (commandWritesSession(payload.input)) return "run";
+    const [command = "", action] = payload.input.trim().replace(/^\/+/, "/").split(/\s+/u);
+    if (queryCommands.has(command)
+      || command === "/automation" && (action === undefined || action.toLowerCase() === "list")
+      || command === "/mcp" && action?.toLowerCase() !== "reconnect"
+      || command === "/memories" && action === undefined
+      || command === "/soul" && (action === undefined || ["show", "edit"].includes(action.toLowerCase()))
+      || command === "/memory" && (action === undefined || ["list", "show", "search", "archived"].includes(action.toLowerCase()))
+      || command === "/undo" && action === "list") return "query";
   }
   if (operation === "memory" && memoryQueryActions.has(String(payload.action))) return "query";
   // 会话的创建、替换、写入者和准入共用短因果队列；重建与权限写入不能交错，
@@ -138,6 +155,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "personalization.get"
     || operation === "memory.embedding.status"
     || operation === "skills.list"
+    || operation === "tools.list"
     || operation === "mcp.status"
     || operation === "mcp.details"
     || operation === "run.inspect"

@@ -23,9 +23,8 @@ try {
       { now: new Date(2026, 8, 3, 0, index) });
   }
   const commands = { agent: { getLocalMemory: () => memory } } as unknown as CommandRuntime;
-  const context = { getCommands: () => commands, scheduleEmbeddingRebuild: () => undefined };
   const list = async (payload: Record<string, unknown>): Promise<MemoryEntriesResult> =>
-    await executeRuntimeHostMemoryOperation(context, { action: "list", ...payload }) as MemoryEntriesResult;
+    await executeRuntimeHostMemoryOperation(commands, { action: "list", ...payload }) as MemoryEntriesResult;
 
   const first = await list({});
   assert.equal(first.entries.length, 100, "public list defaults to 100 entries");

@@ -91,7 +91,7 @@ export function SettingsActivityApplications({ excluded, onChange }: {
         <ul aria-label="可选应用" className="activity-application-list activity-application-choices">
           {choices.map(app => <li data-application-choice={app.bundleId} key={app.bundleId}>
             <div className="activity-application-copy"><span>{app.name}</span><small>{app.path ?? app.bundleId}</small></div>
-            <button aria-label={`不记录 ${app.name}（${app.bundleId}）`} className="settings-action settings-secondary-button ghost-button" disabled={saving || selected.has(app.bundleId) || excluded.length >= 256} onClick={() => void save([...excluded, app.bundleId], true)} type="button">{selected.has(app.bundleId) ? "已添加" : "添加"}</button>
+            <button aria-label={`不记录 ${app.name}（${app.bundleId}）`} className="settings-action settings-secondary-button ghost-button" disabled={saving || selected.has(app.bundleId) || excluded.length >= 256} onClick={() => void save([...excluded, app.bundleId], true)} type="button"><span className="button-state-label"><span aria-hidden={selected.has(app.bundleId)}>添加</span><span aria-hidden={!selected.has(app.bundleId)}>已添加</span></span></button>
           </li>)}
         </ul>
         {!loading && !loadError && choices.length === 0 ? <p className="activity-section-description" role="status">{search ? "没有匹配的应用。" : "未找到可添加的应用，请刷新列表。"}</p> : null}

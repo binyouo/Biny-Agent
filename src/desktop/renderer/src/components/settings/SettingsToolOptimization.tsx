@@ -4,6 +4,7 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react
 import { toolOptimizationState } from "./toolOptimizationState.js";
 
 type MetricIcon = "code" | "zap" | "sparkles" | "layers" | "down" | "input" | "output" | "clock" | "terminal";
+const iconColor: Record<MetricIcon, string> = { code: "emerald", zap: "emerald", sparkles: "cyan", layers: "blue", down: "cyan", input: "violet", output: "fuchsia", clock: "amber", terminal: "blue" };
 function SavingsIcon({ name, size = 16 }: { name: MetricIcon; size?: number }): React.JSX.Element {
   const paths: Record<MetricIcon, ReactNode> = {
     code: <><path d="m18 16 4-4-4-4M6 8l-4 4 4 4m8-12-4 16" /></>,
@@ -19,10 +20,10 @@ function SavingsIcon({ name, size = 16 }: { name: MetricIcon; size?: number }): 
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 function SavingsCard({ title, description, icon, children }: { title: string; description?: string; icon?: MetricIcon; children: ReactNode }): React.JSX.Element {
-  return <section className="settings-section savings-card"><header><h3>{icon ? <span><SavingsIcon name={icon} size={18} /></span> : null}{title}</h3>{description ? <p>{description}</p> : null}</header><div className="settings-section-body savings-card-content">{children}</div></section>;
+  return <section className="settings-section savings-card"><header><h3>{icon ? <span className="savings-emerald"><SavingsIcon name={icon} size={18} /></span> : null}{title}</h3>{description ? <p>{description}</p> : null}</header><div className="settings-section-body savings-card-content">{children}</div></section>;
 }
-function Metric({ icon, label, value, title }: { icon: MetricIcon; label: string; value: string; title?: string }): React.JSX.Element {
-  return <div className="savings-metric" title={title}><div><span><SavingsIcon name={icon} /></span>{label}</div><strong className={value.startsWith("-") ? "savings-rose" : undefined}>{value}</strong></div>;
+function Metric({ icon, label, value, title, color = iconColor[icon] }: { icon: MetricIcon; label: string; value: string; title?: string; color?: string }): React.JSX.Element {
+  return <div className="savings-metric" title={title}><div><span className={`savings-${color}`}><SavingsIcon name={icon} /></span>{label}</div><strong className={value.startsWith("-") ? "savings-rose" : undefined}>{value}</strong></div>;
 }
 const number = (value: number): string => new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 const percent = (value: number): string => `${value.toFixed(1)}%`;
@@ -34,26 +35,24 @@ export function SettingsToolOptimization(): React.JSX.Element {
   const state = toolOptimizationState(window.biny);
   const { data: stats, error } = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
   useEffect(() => { void state.refresh(); }, [state]);
-  if (!stats && !error) return <div className="savings-loading" role="status"><span className="savings-spinner" />加载中…</div>;
-  if (!stats) return <div className="savings-loading" role="alert"><p>统计读取失败：{error}</p><button className="settings-action settings-secondary-button" type="button" onClick={() => { void state.refresh(true); }}>重试</button></div>;
-  const compression = rate(stats.rtk.beforeTokens, stats.rtk.savedTokens);
-  const maxCommand = Math.max(1, ...stats.commands.map(command => Math.abs(command.savedTokens)));
+  const compression = stats ? rate(stats.rtk.beforeTokens, stats.rtk.savedTokens) : 0;
+  const maxCommand = Math.max(1, ...(stats?.commands ?? []).map(command => Math.abs(command.savedTokens)));
   const colors = ["emerald", "cyan", "blue", "violet", "fuchsia", "amber", "rose", "teal"];
-  const positiveMax = Math.max(0, ...stats.daily.map(day => day.savedTokens));
-  const negativeMax = Math.max(0, ...stats.daily.map(day => -day.savedTokens));
+  const positiveMax = Math.max(0, ...(stats?.daily ?? []).map(day => day.savedTokens));
+  const negativeMax = Math.max(0, ...(stats?.daily ?? []).map(day => -day.savedTokens));
   const chartRange = Math.max(1, positiveMax + negativeMax);
   const baseline = negativeMax === 0 ? 160 : positiveMax / chartRange * 160;
-  return <div className="tool-optimization-page">
+  return <div className="tool-optimization-page" aria-busy={!stats && !error}>
     {detail ? <OptimizationCallDetail origin={detail.origin} optimizationId={detail.optimizationId} onClose={() => setDetail(undefined)} /> : null}
     <SavingsCard title="编程式工具调用" description="在沙箱内筛选工具结果，减少上下文占用。" icon="code">
       <div className="savings-ptc-metrics">
-        <Metric icon="zap" label="节省 Token" value={number(stats.ptc.savedTokens)} />
-        <Metric icon="sparkles" label="脚本运行次数" value={number(stats.ptc.runs)} />
-        <Metric icon="layers" label="工具调用次数" value={number(stats.toolCalls)} />
-        <Metric icon="down" label="已处理结果" value={number(stats.ptc.beforeTokens)} />
+        <Metric icon="zap" label="节省 Token" value={stats ? number(stats.ptc.savedTokens) : "—"} />
+        <Metric icon="sparkles" label="脚本运行次数" value={stats ? number(stats.ptc.runs) : "—"} />
+        <Metric icon="layers" label="工具调用次数" value={stats ? number(stats.toolCalls) : "—"} />
+        <Metric icon="down" color="violet" label="已处理结果" value={stats ? number(stats.ptc.beforeTokens) : "—"} />
       </div>
     </SavingsCard>
-    {stats.rtk.runs ? <>
+    {stats && stats.rtk.runs > 0 ? <>
       <SavingsCard title="RTK 压缩概览" icon="sparkles">
         <div className="savings-overview">
           <div className={`savings-gauge savings-${tier(compression)}`} role="img" aria-label={`压缩率 ${percent(compression)}`}>
@@ -87,9 +86,9 @@ export function SettingsToolOptimization(): React.JSX.Element {
           <td>{new Date(time).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>{origin ? <button type="button" className="savings-command-link" onClick={() => setDetail({ origin, optimizationId: item.id })} title="查看原调用参数和结果"><code title={item.originalCommand ?? item.command}>{item.originalCommand ?? item.command ?? "未知命令"}</code></button> : <code title={item.originalCommand ?? item.command}>{item.originalCommand ?? item.command ?? "未知命令"}</code>}</td><td>{number(item.savedTokens)}</td><td className={`savings-${tier(rate(item.beforeTokens, item.savedTokens))}`}>{percent(rate(item.beforeTokens, item.savedTokens))}</td>
         </tr>)}</tbody></table></div>
       </SavingsCard>
-    </> : <section className="savings-card savings-empty"><SavingsIcon name="zap" size={48} /><h3>暂无节省数据</h3><p>执行支持的命令后显示统计。</p></section>}
-    {stats.incompleteSessions ? <p className="savings-notice" role="status">有 {stats.incompleteSessions} 个会话或项目无法读取，当前显示部分统计。</p> : null}
-    <p className="savings-notice">全部项目累计估算；负数表示上下文增加。不含脚本生成、缓存和原文回查，不代表账单节省。<button className="settings-action settings-secondary-button" type="button" onClick={() => { void state.refresh(true); }}>刷新</button></p>
-    {error ? <p className="savings-notice" role="alert">刷新失败：{error}</p> : null}
+    </> : stats ? <section className="savings-card savings-empty"><SavingsIcon name="zap" size={48} /><h3>暂无节省数据</h3><p>执行支持的命令后显示统计。</p></section> : null}
+    {stats?.incompleteSessions ? <p className="savings-notice" role="status">有 {stats.incompleteSessions} 个会话或项目无法读取，当前显示部分统计。</p> : null}
+    <p className="savings-notice">全部项目累计估算；负数表示上下文增加。不含脚本生成、缓存和原文回查，不代表账单节省。</p>
+    {error ? <p className="savings-notice" role="alert">{stats ? "更新失败" : "统计读取失败"}：{error}<button className="settings-action settings-secondary-button" type="button" onClick={() => { void state.refresh(true); }}>重试</button></p> : null}
   </div>;
 }

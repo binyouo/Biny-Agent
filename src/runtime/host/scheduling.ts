@@ -16,10 +16,6 @@ export interface RuntimeHostBusinessComposition {
   start(): void;
   stop(): void;
   handleRuntimeUpdate(update: AgentRuntimeUpdate): void;
-  scheduleMemoryEmbeddingRebuild(): void;
-  runMemorySleep(): Promise<unknown>;
-  previewMemorySleep(): Promise<unknown>;
-  cancelMemorySleep(): Promise<boolean>;
   runAutomation(automationId: string): Promise<unknown>;
   recoverGraphs(): void;
   scheduleGraphs(): void;
@@ -94,18 +90,6 @@ export function createRuntimeHostBusinessComposition(
         graphSupervisor.requestTick();
         goalRunner.requestTick();
       }
-    },
-    scheduleMemoryEmbeddingRebuild(): void {
-      void options.getCommands().agent.maintainMemory().catch(() => undefined);
-    },
-    runMemorySleep(): Promise<unknown> {
-      return options.getCommands().agent.runMemoryMaintenance();
-    },
-    previewMemorySleep(): Promise<unknown> {
-      return options.getCommands().agent.previewMemoryMaintenance();
-    },
-    cancelMemorySleep(): Promise<boolean> {
-      return options.getCommands().agent.cancelMemoryMaintenance();
     },
     async runAutomation(automationId: string): Promise<unknown> {
       return await automationScheduler.runNow(automationId);

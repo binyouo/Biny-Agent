@@ -10,6 +10,7 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { gitInspectionEnvironment } from "../../tools/git/environment.js";
 import { listSessionCatalog, readSessionCatalogRecord } from "../../session/catalog.js";
 import { agentDir, listSessionFiles } from "../../session/store.js";
 import type { RuntimeHostFactoryOptions } from "./types.js";
@@ -224,6 +225,7 @@ export class WorktreeManager {
       const record = records.find((candidate) => candidate.sessionId === sessionId);
       if (!record) throw new Error(`No worktree is registered for session ${sessionId}.`);
       if (!(await pathExists(record.worktreePath))) throw new WorktreeUnavailableError(`Worktree path is missing: ${record.worktreePath}`);
+      await this.assertRegisteredBranch(record);
       if ((await this.git(["status", "--porcelain", "--ignore-submodules=all"], record.worktreePath)).trim()) {
         throw new WorktreeDirtyError(record.worktreePath);
       }
@@ -356,6 +358,7 @@ export class WorktreeManager {
   }
 
   private async removeRecord(records: WorktreeRecord[], record: WorktreeRecord, deleteBranch: boolean): Promise<void> {
+    if (await pathExists(record.worktreePath)) await this.assertRegisteredBranch(record);
     const branchExists = deleteBranch && await this.branchExists(record.branch);
     const squashMerged = branchExists && record.mergeStrategy === "squash" && await this.hasSquashMergeEvidence(record);
     if (branchExists && !squashMerged && !(await this.isBranchAncestor(record.branch, record.baseBranch))) {
@@ -403,7 +406,20 @@ export class WorktreeManager {
   }
 
   private async isMergedIntoBase(record: WorktreeRecord): Promise<boolean> {
+    if (!(await this.hasRegisteredBranch(record))) return false;
     return await this.isBranchAncestor(record.branch, record.baseBranch) || await this.hasSquashMergeEvidence(record);
+  }
+
+  private async hasRegisteredBranch(record: WorktreeRecord): Promise<boolean> {
+    try {
+      return (await this.git(["symbolic-ref", "--quiet", "HEAD"], record.worktreePath)).trim() === `refs/heads/${record.branch}`;
+    } catch { return false; }
+  }
+
+  private async assertRegisteredBranch(record: WorktreeRecord): Promise<void> {
+    if (!(await this.hasRegisteredBranch(record))) {
+      throw new WorktreeUnavailableError(`Worktree ${record.sessionId} is detached or no longer on its registered branch ${record.branch}; restore that branch before merging or removing it. The checkout was kept.`);
+    }
   }
 
   private async hasSquashMergeEvidence(record: WorktreeRecord): Promise<boolean> {
@@ -492,8 +508,14 @@ export class WorktreeManager {
   }
 
   private async git(args: readonly string[], cwd = this.repoRoot, timeout = 10_000): Promise<string> {
+    const env = gitInspectionEnvironment();
+    // Keep caller commit metadata without restoring Git routing or configuration overrides.
+    for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"] as const) {
+      const value = process.env[key];
+      if (value !== undefined) env[key] = value;
+    }
     try {
-      const result = await execFileAsync("git", [...args], { cwd, timeout, maxBuffer: 4 * 1024 * 1024 });
+      const result = await execFileAsync("git", [...args], { cwd, env, timeout, maxBuffer: 4 * 1024 * 1024 });
       return result.stdout;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);

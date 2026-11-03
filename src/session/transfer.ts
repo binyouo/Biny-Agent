@@ -22,7 +22,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { attachmentFilePath, attachmentRoot, readAttachmentBytes, createAttachmentImportBatch, type AttachmentImportBatch, AttachmentImportCleanupError, AttachmentReadLimitError } from "../attachments/store.js";
-import { rewriteAttachmentReferences } from "../attachments/references.js";
+import { rewriteAttachmentReferences, splitAttachmentReferences } from "../attachments/references.js";
 import { parseSessionEvents, readStoredSessionEvents } from "./events.js";
 import type { SessionEvent } from "./recorder.js";
 import { createSessionId } from "./recorder.js";
@@ -86,7 +86,7 @@ export interface ExportedSessionFile {
 
 export interface ImportedSessionAttachmentIssue {
   name: string;
-  reason: "too-large" | "invalid";
+  reason: "too-large" | "invalid" | "missing";
 }
 
 export interface ImportedSession {
@@ -135,7 +135,7 @@ export async function exportSessionBundle(workspaceRoot: string, session: string
     attachments
   };
   return {
-    baseName: sanitizeBaseName(sessionId),
+    baseName: sessionExportBaseName(sessionId),
     extension: "json",
     content: `${JSON.stringify(bundle, null, 2)}\n`
   };
@@ -147,7 +147,7 @@ export async function exportSessionClaudeCode(workspaceRoot: string, session: st
   const lines = binyEventsToClaudeLines(events);
   if (!lines.length) throw new Error("会话里没有可导出的对话内容。");
   return {
-    baseName: sanitizeBaseName(sessionIdFromFile(filePath)),
+    baseName: sessionExportBaseName(sessionIdFromFile(filePath)),
     extension: "jsonl",
     content: `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`
   };
@@ -261,6 +261,21 @@ export async function persistImportedSession(
       batch ??= await createAttachmentImportBatch(workspaceRoot);
       return batch;
     });
+    // Every imported reference belongs to this import, including unavailable files.
+    // Never let a skipped source path resolve to an unrelated destination file.
+    const suppliedPaths = new Set(bundleAttachments.map(attachment => attachment.sourcePath));
+    if (format === "biny") {
+      for (const event of events) {
+        if (event.type !== "user_message") continue;
+        const references = [...(event.attachments ?? []), ...splitAttachmentReferences(event.content).attachments];
+        for (const reference of references) {
+          if (restored.pathBySource.has(reference.path)) continue;
+          batch ??= await createAttachmentImportBatch(workspaceRoot);
+          restored.pathBySource.set(reference.path, await batch.reserveMissing(reference.name));
+          if (!suppliedPaths.has(reference.path)) restored.skipped.push({ name: reference.name, reason: "missing" });
+        }
+      }
+    }
     const remapped = restored.pathBySource.size > 0 ? rewriteAttachmentPaths(events, restored.pathBySource) : events;
     const rebased = rebaseForkedSessionEvents(remapped);
     const content = `${rebased.map((event) => JSON.stringify(event)).join("\n")}\n`;
@@ -370,8 +385,13 @@ function parseBinyBundleAttachments(raw: string): BinySessionBundleAttachment[] 
   }
   if (!isRecord(parsed) || parsed.format !== BINY_BUNDLE_FORMAT || !Array.isArray(parsed.attachments)) return [];
   const result: BinySessionBundleAttachment[] = [];
+  const sourcePaths = new Set<string>();
   for (const entry of parsed.attachments) {
     if (!isRecord(entry)) continue;
+    if (typeof entry.sourcePath === "string") {
+      if (sourcePaths.has(entry.sourcePath)) throw new Error("Biny 会话包包含重复的附件来源路径。");
+      sourcePaths.add(entry.sourcePath);
+    }
     if (typeof entry.name !== "string" || typeof entry.sourcePath !== "string" || typeof entry.data !== "string") continue;
     result.push({
       name: entry.name,
@@ -448,13 +468,13 @@ function isStrictBase64(value: string): boolean {
 /** 撞名后附件实际路径变了，把事件里的引用从旧 sourcePath 回填到新路径。 */
 function rewriteAttachmentPaths(events: readonly SessionEvent[], pathBySource: ReadonlyMap<string, string>): SessionEvent[] {
   return events.map((event) => {
-    if (event.type !== "user_message" || !Array.isArray(event.attachments)) return event;
-    const next = event.attachments.map((reference) => {
+    if (event.type !== "user_message") return event;
+    const next = event.attachments?.map((reference) => {
       if (!isRecord(reference) || typeof reference.path !== "string") return reference;
       const renamed = pathBySource.get(reference.path);
       return renamed === undefined ? reference : { ...reference, path: renamed };
     });
-    return { ...event, content: rewriteAttachmentReferences(event.content, pathBySource), attachments: next };
+    return { ...event, content: rewriteAttachmentReferences(event.content, pathBySource), ...(next === undefined ? {} : { attachments: next }) };
   });
 }
 
@@ -563,7 +583,7 @@ function toolResultText(result: unknown): string {
 }
 
 /** 文件名只保留安全字符，避免导出的默认文件名带路径分隔符或奇怪字符。 */
-function sanitizeBaseName(name: string): string {
+export function sessionExportBaseName(name: string): string {
   const cleaned = name.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[.-]+/, "").slice(0, 80);
   return cleaned.length > 0 ? cleaned : "session";
 }

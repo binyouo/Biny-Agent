@@ -109,13 +109,13 @@ export function RuntimePanel({ open, onClose, projection, selectedSessionId, wor
           return (
             <div key={id}><RuntimeRow label={id} status={status}>
               {action ? (
-                <button
+                <button aria-busy={busyAction === `${action.operation}:${id}`}
                   className="biny-runtime-row-action"
                   disabled={busyAction !== undefined}
                   onClick={() => void runAction(`${action.operation}:${id}`, action.operation, { taskRunId: id })}
                   type="button"
                 >
-                  {busyAction === `${action.operation}:${id}` ? "处理中…" : action.label}
+                  {action.label}
                 </button>
               ) : null}
             </RuntimeRow>
@@ -178,23 +178,23 @@ function WorktreeSection({
         </div>
         <div className="biny-runtime-row-actions">
           {view.canMerge ? (
-            <button
+            <button aria-busy={busyAction === mergeKey}
               className="biny-runtime-row-action"
               disabled={busyAction !== undefined}
               onClick={() => onAction("worktree.merge", { sessionId, strategy: "merge", deleteAfter: true }, mergeKey)}
               type="button"
             >
-              {busyAction === mergeKey ? "处理中…" : "合并到项目"}
+              合并到项目
             </button>
           ) : null}
           {view.canRemove ? (
-            <button
+            <button aria-busy={busyAction === removeKey}
               className="biny-runtime-row-action"
               disabled={busyAction !== undefined}
               onClick={() => onAction("worktree.remove", { sessionId, deleteBranch: view.deleteBranchOnRemove }, removeKey)}
               type="button"
             >
-              {busyAction === removeKey ? "处理中…" : "清理隔离环境"}
+              清理隔离环境
             </button>
           ) : null}
         </div>

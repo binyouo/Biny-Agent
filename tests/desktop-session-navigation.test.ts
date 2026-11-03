@@ -195,7 +195,7 @@ test("会话分页只检查目录，不重复刷新 Git，目录消失仍返回�
   await rm(project.path, { recursive: true });
   const missing = await manager.listSessionTreePage(project.id, { parentSessionId: "paging-one" });
   assert.deepEqual(missing, { projectId: project.id, parentSessionId: "paging-one", revision: "sha256:empty",
-    sessions: [], nextCursor: undefined, revisionChanged: false });
+    sessions: [], supplementalSessions: undefined, nextCursor: undefined, revisionChanged: false });
   assert.equal(inspection.mock.callCount(), 3);
   await assert.rejects(stat(project.path), { code: "ENOENT" });
 });

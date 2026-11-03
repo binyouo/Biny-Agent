@@ -44,8 +44,8 @@ export interface SubagentTaskManagerOptions {
   maxPendingSubagents?: number;
   timeoutMs?: number;
   shutdownDrainMs?: number;
-  /** 将内存调度快照投影到 durable TaskRun；观察者失败不能破坏调度。 */
-  onSnapshot?(snapshot: SubagentTaskSnapshot): void;
+  /** 将内存调度快照投影到 durable TaskRun；未完成输出单独传给持久层，不放大公开快照。观察者失败不能破坏调度。 */
+  onSnapshot?(snapshot: SubagentTaskSnapshot, output?: string): void;
   persistCompletion?(snapshot: SubagentTaskSnapshot, output: string): Promise<void> | void;
   execute(task: string, context: { taskId: string; parentRunId: string; signal: AbortSignal; deadline?: string; accessMode: SubagentAccessMode; agent?: string }): Promise<string>;
 }
@@ -299,7 +299,7 @@ export class SubagentTaskManager {
     task.completedAt = new Date().toISOString();
     this.cleanup(task);
     task.reject(error);
-    this.emit(task);
+    this.emit(task, error instanceof SubagentTaskIncompleteError ? error.output : undefined);
     this.rememberTerminalTask(task.taskId);
   }
 
@@ -309,10 +309,10 @@ export class SubagentTaskManager {
     task.removeParentAbortListener = undefined;
   }
 
-  private emit(task: ManagedSubagentTask): void {
+  private emit(task: ManagedSubagentTask, output?: string): void {
     const snapshot = publicSnapshot(task);
     try {
-      this.options.onSnapshot?.(snapshot);
+      this.options.onSnapshot?.(snapshot, output);
     } catch {
       // Durable projection is best effort at this boundary; the foreground
       // task still reports its own execution result and cleanup state.

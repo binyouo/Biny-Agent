@@ -804,7 +804,7 @@ async function hashArtifactPath(
     hash.update(`special\0${relative}\0${String(metadata.mode)}\0`);
     return;
   }
-  hash.update(`file\0${relative}\0${String(metadata.size)}\0`);
+  hash.update(`file\0${relative}\0${String(metadata.size)}\0${String(metadata.mode & 0o7777)}\0`);
   await new Promise<void>((resolve, reject) => {
     const stream = createReadStream(absolute, { signal });
     stream.on("data", (chunk) => { hash.update(chunk); });
@@ -846,6 +846,7 @@ async function snapshotWorkspacePath(
   const hash = createHash("sha256");
   if (metadata.isSymbolicLink()) hash.update(`symlink\0${await readlink(absolute)}`);
   else if (metadata.isFile()) {
+    hash.update(`mode\0${String(metadata.mode & 0o7777)}\0`);
     await new Promise<void>((resolve, reject) => {
       const stream = createReadStream(absolute, { signal });
       stream.on("data", (chunk) => { hash.update(chunk); });

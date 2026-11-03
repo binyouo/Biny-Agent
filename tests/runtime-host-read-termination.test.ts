@@ -29,8 +29,8 @@ function fixture(maxBytes = 256) {
     requests: new Set(),
     pendingRequests: 0,
     activityRevision: 0,
-    initialized: true,
-    initialRegistry: { primary: () => ({ sessionId: "primary" }) },
+    lifecycle: "ready",
+    execution: { registry: { primary: () => ({ sessionId: "primary" }) } },
     sessionWriterOwners: new Map(),
     dispatcher: {
       dispatch: (_lane: string, work: () => Promise<unknown>) => {

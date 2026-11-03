@@ -96,7 +96,7 @@ async function fixture(t: TestContext, options: { stallOwner?: boolean; shared?:
   // the Host constructor's unrelated storage/business services; only these inert
   // dependencies and the synthetic owner runtime are needed by its close path.
   const execution = Object.assign(Object.create(RuntimeHostExecution.prototype) as RuntimeHostExecution, {
-    businessComposition: { stop: () => undefined }, registry, sessionGoalOwners: new Map(),
+    businessComposition: { stop: () => undefined }, registry, sessionGoalOwners: new Map(), oneShotSessions: new Map(),
     creations: new Set(), cleanupFailures: [],
     conversationMirror: { close: async () => undefined },
     resourceRegistry: { close: async () => { if (options.resourceFailure) throw options.resourceFailure; } }

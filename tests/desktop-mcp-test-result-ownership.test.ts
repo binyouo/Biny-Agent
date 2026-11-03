@@ -51,9 +51,10 @@ function result(label: string, success = true): DesktopMcpTestResult {
 type Outcome = "success" | "failure" | "throw";
 type CloseMethod = "cancel" | "close" | "escape" | "backdrop";
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, overrides: Partial<Pick<DesktopApi, "mcpReconnect" | "mcpSetEnabled">> = {}) {
   type Call = ReturnType<typeof deferred<DesktopMcpTestResult>> & { projectId?: string; draft: DesktopMcpServerDraft; settled: boolean };
   const calls: Call[] = [];
+  const capabilities: Array<string | undefined> = [];
   const notices: Array<{ kind: "error" | "success"; message: string }> = [];
   const api = {
     mcpSnapshot: async () => structuredClone(snapshot),
@@ -64,7 +65,8 @@ async function fixture(t: TestContext) {
       calls.push(call);
       void gate.promise.then(() => { call.settled = true; }, () => { call.settled = true; });
       return gate.promise;
-    }
+    },
+    ...overrides
   } satisfies Pick<DesktopApi, "mcpSnapshot" | "mcpRefreshCatalog" | "mcpTestServer">;
   Object.assign(dom.window, { biny: new Proxy(api, { get(target, key, receiver) {
     if (Object.hasOwn(target, key)) return Reflect.get(target, key, receiver);
@@ -127,12 +129,13 @@ async function fixture(t: TestContext) {
   };
   const onError = (message: string) => { notices.push({ kind: "error", message }); };
   const onSuccess = (message: string) => { notices.push({ kind: "success", message }); };
+  const onCapabilitiesChanged = (projectId?: string) => { capabilities.push(projectId); };
   const render = async (host: HTMLElement | null = document.getElementById("details"), projectId = "project-A") => {
     await step(() => root.render(React.createElement(SettingsDetailHostContext.Provider,
-      { value: host }, React.createElement(McpServersView, { projectId, onError, onSuccess }))));
+      { value: host }, React.createElement(McpServersView, { projectId, onError, onSuccess, onCapabilitiesChanged }))));
   };
   await render();
-  return { calls, notices, click, fill, field, close, settle, unmount, render,
+  return { calls, notices, capabilities, click, fill, field, close, settle, unmount, render,
     presentation: () => dialog()?.querySelector(".biny-mcp-test-result")?.textContent ?? "",
     async start() { await click("测试连接"); assert.ok(calls.at(-1)); return calls.at(-1)!; }
   };
@@ -242,3 +245,26 @@ for (const outcome of ["success", "failure", "throw"] as const) {
     assert.match(h.presentation(), /current project B/); assert.deepEqual(h.notices, [{ kind: "success", message: "current project B" }]);
   });
 }
+
+
+test("MCP 重连迟到完成仍只失效原项目工具目录", async t => {
+  const gate = deferred<DesktopMcpServerSummary>();
+  const h = await fixture(t, { mcpReconnect: async () => await gate.promise });
+  t.after(() => gate.resolve(server("A")));
+  await h.click("连接 A");
+  await h.render(undefined, "project-B");
+  await React.act(async () => gate.resolve({ ...server("A"), state: "connected" }));
+  assert.deepEqual(h.capabilities, ["project-A"]);
+});
+
+for (const runtimeRefresh of ["not_needed", "failed"] as const) test(`MCP 保存 ${runtimeRefresh} 按真实刷新结果通知`, async t => {
+  const h = await fixture(t, { mcpSetEnabled: async () => ({ ...snapshot,
+    servers: snapshot.servers.map(item => item.name === "A" ? { ...item, enabled: false, state: "disabled" } : item),
+    saved: { runtimeRefresh, message: runtimeRefresh === "failed" ? "MCP 设置已保存，但连接刷新失败" : undefined }
+  }) });
+  await h.click("禁用 A");
+  assert.deepEqual(h.capabilities, runtimeRefresh === "failed" ? [undefined] : []);
+  assert.deepEqual(h.notices.filter(notice => notice.kind === "error").map(notice => notice.message),
+    runtimeRefresh === "failed" ? ["MCP 设置已保存，但连接刷新失败"] : []);
+  assert.ok(document.querySelector('[aria-label="启用 A"]'), "已提交的禁用状态不会伪装成保存失败");
+});

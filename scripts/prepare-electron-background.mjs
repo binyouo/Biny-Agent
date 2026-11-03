@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -7,5 +7,8 @@ import path from "node:path";
 if (process.platform === "darwin") {
   const executable = createRequire(import.meta.url)("electron");
   const plist = path.join(path.dirname(path.dirname(executable)), "Info.plist");
-  execFileSync("/usr/bin/plutil", ["-replace", "LSUIElement", "-bool", "true", plist]);
+  const value = spawnSync("/usr/bin/plutil", ["-extract", "LSUIElement", "raw", plist], { encoding: "utf8" });
+  if (value.status !== 0 || value.stdout.trim() !== "true") {
+    execFileSync("/usr/bin/plutil", ["-replace", "LSUIElement", "-bool", "true", plist]);
+  }
 }

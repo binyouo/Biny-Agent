@@ -111,7 +111,7 @@ export function createProcessStatusTool(service: ManagedProcessService): Tool<Pr
       "Inspect background processes started by Bash: list their IDs, or retrieve one process's lifecycle state and output. This reads status; use KillShell to stop a process.",
       "List: omit processId; optionally set includeExited (default true). Returns {processes: [...]}, including each processId and state.",
       "Inspect: pass processId; optionally set offset, maxBytes, or fromEnd. Returns {process, output}; process includes state, command, and available exitCode/readiness/cleanup evidence. output.content is a bounded page of the merged stdout/stderr log.",
-      "Continue with offset: output.nextOffset while output.hasMore is true. Offsets count bytes. If output.pendingUtf8Bytes is present, wait for more output or process exit, then retry the same nextOffset. hasMore=false means no further log bytes now; it does not mean the process has exited."
+      "Continue with offset: output.nextOffset while output.hasMore is true. Offsets count bytes. output.gap reports an unavailable byte range before this page; output.droppedBytes and logError report collection or storage loss. Logs retain a bounded tail, so old output may be unavailable. If output.pendingUtf8Bytes is present, wait for more output or process exit, then retry the same nextOffset. hasMore=false means no further log bytes now; it does not mean the process has exited."
     ].join("\n\n"),
     promptSnippet: "List background Bash processes or read paginated process output",
     promptGuidelines: ["Omit processId to recover recent process IDs; use fromEnd for a tail or nextOffset for incremental reads"],

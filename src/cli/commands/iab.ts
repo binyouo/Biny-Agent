@@ -246,7 +246,10 @@ export function registerInAppBrowserCommands(program: Command, dependencies = de
           pages.push({ url: target.href, finalUrl: page.finalUrl, title: page.title || undefined, status: page.status, content, truncatedAtByteLimit: page.truncatedAtByteLimit });
         }
         if (options.json) console.log(JSON.stringify(pages));
-        else for (const page of pages) console.log(`${page.title ? `# ${page.title}\n` : ""}${page.finalUrl}\n\n${page.content}`);
+        else for (const page of pages) {
+          console.log(`${page.title ? `# ${page.title}\n` : ""}${page.finalUrl}\n\n${page.content}`);
+          if (page.truncatedAtByteLimit) console.error(`[iab fetch] ${page.finalUrl}: 页面内容达到读取字节上限，结果不完整。`);
+        }
       } catch (error) { printError(error, options.json); }
     });
 

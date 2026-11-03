@@ -110,7 +110,7 @@ export function stagedModelChoices(
       headers: input.headers ?? existing?.headers,
       compatibility: input.compatibility,
       showInPicker: profile?.showInPicker ?? existing?.showInPicker ?? true,
-      available: true,
+      available: previousContext?.available ?? false,
       source: "configured"
     });
   }

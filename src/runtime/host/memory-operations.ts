@@ -13,16 +13,10 @@ import {
   requiredString
 } from "./validation.js";
 
-export interface RuntimeHostMemoryOperationContext {
-  getCommands(): CommandRuntime;
-  scheduleEmbeddingRebuild(): void;
-}
-
 export async function executeRuntimeHostMemoryOperation(
-  context: RuntimeHostMemoryOperationContext,
+  commands: CommandRuntime,
   payload: Record<string, unknown>
 ): Promise<unknown> {
-  const commands = context.getCommands();
   const memory = commands.agent.getLocalMemory();
   const action = requiredString(payload.action, "action");
   if (action === "overview") {
@@ -77,7 +71,7 @@ export async function executeRuntimeHostMemoryOperation(
     );
   }
   if (action === "sleep-status") {
-    return await commands.agent.memoryMaintenanceStatus();
+    return await commands.agent.memoryMaintenanceStatus(optionalSafeInteger(payload.historyLimit));
   }
   if (action === "sleep-runs") {
     return (await commands.agent.memoryMaintenanceStatus()).sleepRuns ?? [];

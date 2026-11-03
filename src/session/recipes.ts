@@ -156,15 +156,39 @@ export function collectRecipeFacts(events: readonly SessionEvent[]): RecipeFacts
     successfulCalls.push({ tool, args: call?.args, result: event.result });
   }
 
+  const filesWritten = new Set<string>();
   for (const call of successfulCalls) {
     const name = call.tool;
     if (isMcpTool(name)) facts.mcpToolNames.add(name);
     else facts.toolNames.add(name);
-    if (name === "Write" || name === "Edit") {
-      const filePath = stringField(call.args, "path") ?? stringField(call.args, "filePath") ?? stringField(call.result, "path");
-      if (filePath && !facts.filesWritten.includes(filePath)) facts.filesWritten.push(filePath);
+    if (name !== "Write" && name !== "Edit" && name !== "apply_patch") continue;
+    const result = isRecord(call.result) ? call.result : undefined;
+    let operation: unknown;
+    let filePath: string | undefined;
+    let destination: string | undefined;
+    if (result && "change" in result) {
+      // Modern receipts, not requested arguments, identify the committed local path.
+      const change = isRecord(result.change) ? result.change : undefined;
+      if (!change || change.committed !== true || change.server !== undefined) continue;
+      operation = change.operation;
+      filePath = stringField(change, "path");
+      destination = stringField(change, "destinationPath");
+      if (!filePath || !["create", "update", "delete", "move"].includes(String(operation))
+        || (operation === "move" ? !destination : destination !== undefined)) continue;
+    } else {
+      // Preserve historical Write/Edit transcripts without modern change receipts.
+      if (name === "apply_patch") continue;
+      operation = name === "Write" ? "create" : stringField(call.args, "operation") ?? "update";
+      filePath = stringField(call.result, "path") ?? stringField(call.args, "path") ?? stringField(call.args, "filePath");
+      destination = stringField(call.args, "to");
+      if (!filePath || !["create", "update", "delete", "move"].includes(String(operation))
+        || (operation === "move" && !destination)) continue;
     }
+    if (operation === "delete" || operation === "move") filesWritten.delete(filePath);
+    if (operation === "create" || operation === "update") filesWritten.add(filePath);
+    else if (operation === "move") filesWritten.add(destination!);
   }
+  facts.filesWritten = [...filesWritten];
   return facts;
 }
 

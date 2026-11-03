@@ -82,14 +82,15 @@ interface RegistryOptions {
   onUpdate(): void;
 }
 interface RetiringHost {
-  initialized: boolean;
+  lifecycle: "ready";
   closePromise?: Promise<void>;
   pendingRequests: number;
   activityRevision: number;
   idleSince?: number;
   retiring: boolean;
+  connections: Set<unknown>;
   registry: { list(): Entry[] };
-  execution: { hasRetainingWork(): Promise<boolean> };
+  execution: { hasRetainingWork(retainScheduled?: boolean): Promise<boolean> };
   businessComposition: { hasActiveWork(): boolean };
   hasRetainingConnections(): boolean;
   closeOwner(): Promise<void>;
@@ -97,7 +98,7 @@ interface RetiringHost {
 interface Extracted {
   Registry: new (initial: { runtime: Runtime; commands: Entry["commands"] }, options: RegistryOptions) => Registry;
   retire: (this: RetiringHost, graceMs?: number) => Promise<boolean>;
-  retaining: (this: { registry: { list(): Entry[] } }) => Promise<boolean>;
+  retaining: (this: { registry: { list(): Entry[] }; resourceRegistry: { hasManagedProcesses(): boolean } }, retainScheduled?: boolean) => Promise<boolean>;
 }
 function subject() {
   let now = 0;
@@ -135,7 +136,7 @@ function registryFixture(target?: number) {
   });
   return { registry, primary, runtimes };
 }
-const retainingSignals = ["process", "background", "heartbeat-running", "heartbeat-enabled",
+const retainingSignals = ["process", "host-process", "background", "heartbeat-running", "heartbeat-enabled",
   "automation-running", "automation-active", "task-queued", "task-running", "task-verifying", "graph", "goal"] as const;
 type RetainingSignal = typeof retainingSignals[number];
 interface RetirementCommands {
@@ -180,14 +181,26 @@ function retirementFixture(queuedIndex: number | undefined, signal?: RetainingSi
     sessionId: item.snapshot.info.sessionId, runtime: item, commands: retirementCommands(index === 0 ? signal : undefined), primary: index === 0, lastActiveAt: 0
   }));
   const host: RetiringHost = {
-    initialized: true, pendingRequests: 0, activityRevision: 0, retiring: false,
+    lifecycle: "ready", pendingRequests: 0, activityRevision: 0, retiring: false, connections: new Set([{}]),
     registry: { list: () => entries },
-    execution: { hasRetainingWork: () => loaded.retaining.call({ registry: { list: () => entries } }) },
+    execution: { hasRetainingWork: (retainScheduled) => loaded.retaining.call({
+      registry: { list: () => entries },
+      resourceRegistry: { hasManagedProcesses: () => signal === "host-process" }
+    }, retainScheduled) },
     businessComposition: { hasActiveWork: () => false },
     hasRetainingConnections: () => false,
     closeOwner: async () => { closes += 1; }
   };
   return { ...loaded, runtimes, entries, host, closes: () => closes };
+}
+
+for (const signal of ["heartbeat-enabled", "automation-active", "task-queued", "graph", "goal"] as const) {
+  test(`${signal} alone does not retain an unobserved Host`, async () => {
+    const f = retirementFixture(undefined, signal);
+    f.host.connections.clear();
+    assert.equal(await f.retire.call(f.host, 0), true);
+    assert.equal(f.closes(), 1);
+  });
 }
 
 test("default cache pressure retains queued secondary sessions without blocking admission", async () => {

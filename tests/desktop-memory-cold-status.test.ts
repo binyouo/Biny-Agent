@@ -72,9 +72,10 @@ test("cold chat memory toggle persists without model credentials or Runtime; sta
     const record = await readSessionCatalogRecord(dataRoot, recorder.sessionId);
     assert.ok(record);
     assert.deepEqual(record.personalization, disabled);
-    assert.deepEqual(saved.sessions.find(session => session.id === recorder.sessionId)?.personalization, disabled);
-    assert.equal(saved.runtime, undefined);
-    assert.equal(saved.permissionMode, "full-access");
+    assert.deepEqual(saved.metadata.personalization, disabled);
+    const afterSave = await agents.workspaceSnapshot(project.id, false);
+    assert.equal(afterSave.runtime, undefined);
+    assert.equal(afterSave.permissionMode, "full-access");
     assert.equal(await readFile(recorder.filePath, "utf8"), transcript);
     assert.deepEqual(await configStore.load(), initialConfig);
     await projects.updateSessionMetadata(project, recorder.sessionId, { title: "Changed elsewhere" });

@@ -29,7 +29,7 @@ export function SessionDeleteButton({ title, onDelete }: { title: string; onDele
     onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); cancel(); } }}
     type="button"
   >
-    <Icon name={confirming ? "trash" : "circle-close"} size={confirming ? 11 : 13} />
-    {confirming ? <span>删除</span> : null}
+    <span aria-hidden={confirming}><Icon name="circle-close" size={13} /></span>
+    <span aria-hidden={!confirming}><Icon name="trash" size={13} />删除</span>
   </button>;
 }

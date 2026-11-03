@@ -128,6 +128,12 @@ export function SettingsMemory({
   onNotify
 }: SettingsMemoryProps): React.JSX.Element {
   const { draft, setMemory, snapshot, dirtyCount } = useSettingsDraft();
+  const sleepDetailsAvailable = draft?.memory.sleepEnabled === true;
+  const visibleRef = useRef(false);
+  useEffect(() => {
+    visibleRef.current = !hidden && workspaceAvailable;
+    return () => { visibleRef.current = false; };
+  }, [hidden, workspaceAvailable]);
   const [currentPage, setCurrentPage] = useState(0);
   const [totalEntries, setTotalEntries] = useState(0);
   const [stats, setStats] = useState<DesktopMemoryStats>();
@@ -156,6 +162,9 @@ export function SettingsMemory({
   const [editor, setEditor] = useState<{ id?: string; value: string }>();
   const [error, setError] = useState<string>();
   const [sleepRuns, setSleepRuns] = useState<MemorySleepRun[]>([]);
+  const [runsOpen, setRunsOpen] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsError, setRunsError] = useState<string>();
   const [sleepPreview, setSleepPreview] = useState<DesktopMemorySleepPreview>();
   const [sleepStatus, setSleepStatus] = useState<DesktopMemoryStats["maintenance"]>();
   const [sleepStatusError, setSleepStatusError] = useState<string>();
@@ -167,8 +176,10 @@ export function SettingsMemory({
   const [embeddingStatus, setEmbeddingStatus] = useState<DesktopMemoryEmbeddingStatus>();
   const [embeddingWorking, setEmbeddingWorking] = useState<"download" | "rebuild">();
   const [embeddingError, setEmbeddingError] = useState<string>();
-  const [sleepAdvancedOpen, setSleepAdvancedOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveLoaded, setArchiveLoaded] = useState(false);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveError, setArchiveError] = useState<string>();
   const disclosureId = useId();
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
   const [archivePage, setArchivePage] = useState(0);
@@ -203,26 +214,65 @@ export function SettingsMemory({
   const currentPageRef = useRef(currentPage);
   const archivePageRef = useRef(archivePage);
   const loadRequestRef = useRef(0);
-  const reload = useCallback(async (pageIndex?: number, archivePageIndex?: number): Promise<void> => {
-    if (!workspaceAvailable) return;
+  const archiveRequestRef = useRef(0);
+  const runsRequestRef = useRef(0);
+  const statusRequestRef = useRef(0);
+
+  const loadArchive = useCallback(async (pageIndex = archivePageRef.current): Promise<void> => {
+    if (!visibleRef.current) return;
+    const request = ++archiveRequestRef.current;
+    const previousPage = archivePageRef.current;
+    archivePageRef.current = pageIndex;
+    setArchiveLoading(true);
+    try {
+      let page = await onLoadArchived(pageIndex * ARCHIVE_PAGE_SIZE, ARCHIVE_PAGE_SIZE, true);
+      if (request !== archiveRequestRef.current) return;
+      const nextPage = Math.min(pageIndex, Math.max(0, Math.ceil(page.total / ARCHIVE_PAGE_SIZE) - 1));
+      if (nextPage !== pageIndex) page = await onLoadArchived(nextPage * ARCHIVE_PAGE_SIZE, ARCHIVE_PAGE_SIZE, true);
+      if (request !== archiveRequestRef.current) return;
+      archivePageRef.current = nextPage;
+      setArchivePage(nextPage);
+      setArchivedEntries(page.entries);
+      setArchiveChains(page.chains ?? {});
+      setArchivedTotal(page.total);
+      setArchiveLoaded(true);
+      setArchiveError(undefined);
+    } catch (cause) {
+      if (request !== archiveRequestRef.current) return;
+      archivePageRef.current = previousPage;
+      setArchiveError(errorMessage(cause));
+    } finally {
+      if (request === archiveRequestRef.current) setArchiveLoading(false);
+    }
+  }, [onLoadArchived]);
+
+  const loadRuns = useCallback(async (): Promise<void> => {
+    if (!visibleRef.current) return;
+    const request = ++runsRequestRef.current;
+    setRunsLoading(true);
+    try {
+      const runs = await onSleepRuns();
+      if (request !== runsRequestRef.current) return;
+      setSleepRuns(runs);
+      setRunsError(undefined);
+    } catch (cause) {
+      if (request === runsRequestRef.current) setRunsError(errorMessage(cause));
+    } finally {
+      if (request === runsRequestRef.current) setRunsLoading(false);
+    }
+  }, [onSleepRuns]);
+
+  const reload = useCallback(async (pageIndex?: number): Promise<void> => {
+    if (!visibleRef.current) return;
     const request = ++loadRequestRef.current;
     const requestedPage = pageIndex ?? currentPageRef.current;
-    const requestedArchivePage = archivePageIndex ?? archivePageRef.current;
+    const statusRequest = ++statusRequestRef.current;
     setLoading(true);
     try {
-      const [nextStats, page, status, runs, initialArchive] = await Promise.all([
+      const [nextStats, page] = await Promise.all([
         onLoadStats(),
-        onLoadEntries(requestedPage * PAGE_SIZE, PAGE_SIZE),
-        onSleepStatus(),
-        onSleepRuns(),
-        onLoadArchived(requestedArchivePage * ARCHIVE_PAGE_SIZE, ARCHIVE_PAGE_SIZE, true)
+        onLoadEntries(requestedPage * PAGE_SIZE, PAGE_SIZE)
       ]);
-      if (request !== loadRequestRef.current) return;
-      const lastArchivePage = Math.max(0, Math.ceil(initialArchive.total / ARCHIVE_PAGE_SIZE) - 1);
-      const nextArchivePage = Math.min(requestedArchivePage, lastArchivePage);
-      const archived = nextArchivePage === requestedArchivePage
-        ? initialArchive
-        : await onLoadArchived(nextArchivePage * ARCHIVE_PAGE_SIZE, ARCHIVE_PAGE_SIZE, true);
       if (request !== loadRequestRef.current) return;
       // 删掉末页最后一条后该页会空掉：回退到仍存在的最后一页，而不是显示空列表。
       const lastEntryPage = Math.max(0, Math.ceil(page.total / PAGE_SIZE) - 1);
@@ -231,62 +281,55 @@ export function SettingsMemory({
         : page;
       if (request !== loadRequestRef.current) return;
       currentPageRef.current = Math.floor(entries.offset / PAGE_SIZE);
-      archivePageRef.current = nextArchivePage;
       setStats(nextStats);
       setEntries(entries.entries);
       setTotalEntries(entries.total);
       setCurrentPage(Math.floor(entries.offset / PAGE_SIZE));
-      setSleepStatus(status);
-      lastSleepState.current = status.state;
-      lastSleepRun.current = status.lastRun ? `${status.lastRun.id}:${status.lastRun.status}:${status.lastRun.finishedAt ?? ""}` : undefined;
-      setSleepStatusError(undefined);
-      setSleepRuns(runs);
-      setArchivedEntries(archived.entries);
-      setArchiveChains(archived.chains ?? {});
-      setArchivedTotal(archived.total);
-      setArchivePage(nextArchivePage);
+      if (statusRequest === statusRequestRef.current) {
+        const status = nextStats.maintenance;
+        setSleepStatus(status);
+        lastSleepState.current = status.state;
+        lastSleepRun.current = status.lastRun ? `${status.lastRun.id}:${status.lastRun.status}:${status.lastRun.finishedAt ?? ""}` : undefined;
+        setSleepStatusError(undefined);
+      }
       setError(undefined);
     } catch (cause) {
       if (request === loadRequestRef.current) setError(errorMessage(cause));
     } finally {
       if (request === loadRequestRef.current) setLoading(false);
     }
-  }, [onLoadArchived, onLoadEntries, onLoadStats, onSleepRuns, onSleepStatus, workspaceAvailable]);
+  }, [onLoadEntries, onLoadStats]);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    if (!visibleRef.current) return;
+    if (sleepDetailsAvailable && archiveOpen) void loadArchive(); else setArchiveLoaded(false);
+    if (sleepDetailsAvailable && runsOpen) void loadRuns();
+    await reload();
+  }, [archiveOpen, runsOpen, loadArchive, loadRuns, reload, sleepDetailsAvailable]);
 
   const loadPage = async (pageIndex: number, kind: "entries" | "archive" = "entries"): Promise<void> => {
     if (!workspaceAvailable) return;
+    if (kind === "archive") return await loadArchive(pageIndex);
     const request = ++loadRequestRef.current;
-    const archived = kind === "archive";
-    const pageRef = archived ? archivePageRef : currentPageRef;
-    const previousPage = archived ? archivePage : currentPage;
+    const previousPage = currentPage;
     // 完整刷新可能由维护完成触发；沿用正在前往的页，避免抢回旧位置。
-    pageRef.current = pageIndex;
-    const pageSize = archived ? ARCHIVE_PAGE_SIZE : PAGE_SIZE;
-    const readPage = async (index: number): Promise<DesktopMemoryArchivePage> => archived
-      ? onLoadArchived(index * pageSize, pageSize, true)
-      : onLoadEntries(index * pageSize, pageSize);
+    currentPageRef.current = pageIndex;
+    const readPage = async (index: number): Promise<DesktopMemoryEntriesPage> => onLoadEntries(index * PAGE_SIZE, PAGE_SIZE);
     setLoading(true);
     try {
       let page = await readPage(pageIndex);
       if (request !== loadRequestRef.current) return;
-      const nextPage = Math.min(pageIndex, Math.max(0, Math.ceil(page.total / pageSize) - 1));
+      const nextPage = Math.min(pageIndex, Math.max(0, Math.ceil(page.total / PAGE_SIZE) - 1));
       if (nextPage !== pageIndex) page = await readPage(nextPage);
       if (request !== loadRequestRef.current) return;
-      pageRef.current = nextPage;
-      if (archived) {
-        setArchivedEntries(page.entries);
-        setArchiveChains(page.chains ?? {});
-        setArchivedTotal(page.total);
-        setArchivePage(nextPage);
-      } else {
-        setEntries(page.entries);
-        setTotalEntries(page.total);
-        setCurrentPage(nextPage);
-      }
+      currentPageRef.current = nextPage;
+      setEntries(page.entries);
+      setTotalEntries(page.total);
+      setCurrentPage(nextPage);
       setError(undefined);
     } catch (cause) {
       if (request !== loadRequestRef.current) return;
-      pageRef.current = previousPage;
+      currentPageRef.current = previousPage;
       setError(errorMessage(cause));
     } finally {
       if (request === loadRequestRef.current) setLoading(false);
@@ -294,9 +337,17 @@ export function SettingsMemory({
   };
 
   useEffect(() => {
-    if (!hidden) void reload();
-    return () => { loadRequestRef.current += 1; };
-  }, [hidden, reload]);
+    if (!hidden && workspaceAvailable) void reload();
+    return () => { loadRequestRef.current += 1; statusRequestRef.current += 1; };
+  }, [hidden, reload, workspaceAvailable]);
+  useEffect(() => {
+    if (!hidden && sleepDetailsAvailable && archiveOpen) void loadArchive();
+    return () => { archiveRequestRef.current += 1; };
+  }, [hidden, archiveOpen, loadArchive, sleepDetailsAvailable, workspaceAvailable]);
+  useEffect(() => {
+    if (!hidden && sleepDetailsAvailable && runsOpen) void loadRuns();
+    return () => { runsRequestRef.current += 1; };
+  }, [hidden, runsOpen, loadRuns, sleepDetailsAvailable, workspaceAvailable]);
   useEffect(() => { if (!hidden) void refreshEmbeddingStatus(); }, [hidden, refreshEmbeddingStatus]);
   useEffect(() => {
     if (hidden || !workspaceAvailable) return;
@@ -305,8 +356,9 @@ export function SettingsMemory({
     const timer = window.setInterval(() => {
       if (pending) return;
       pending = true;
+      const request = ++statusRequestRef.current;
       void onSleepStatus().then((next) => {
-        if (cancelled) return;
+        if (cancelled || request !== statusRequestRef.current) return;
         const nextRun = next.lastRun ? `${next.lastRun.id}:${next.lastRun.status}:${next.lastRun.finishedAt ?? ""}` : undefined;
         const finished = next.state !== "running"
           && (lastSleepState.current === "running" || lastSleepRun.current !== nextRun);
@@ -314,16 +366,16 @@ export function SettingsMemory({
         lastSleepRun.current = nextRun;
         setSleepStatus(next);
         setSleepStatusError(undefined);
-        if (finished) void reload();
+        if (finished) void refresh();
       }).catch((cause: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && request === statusRequestRef.current) {
           setSleepStatus(undefined);
           setSleepStatusError(errorMessage(cause));
         }
       }).finally(() => { pending = false; });
-    }, 1_000);
+    }, sleepStatus?.state === "running" ? 1_000 : 10_000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [hidden, onSleepStatus, reload, workspaceAvailable]);
+  }, [hidden, onSleepStatus, refresh, sleepStatus?.state, workspaceAvailable]);
   useEffect(() => {
     if (hidden || !embeddingWorking || !workspaceAvailable) return;
     let cancelled = false;
@@ -438,7 +490,7 @@ export function SettingsMemory({
         : await onAdd({ content: value, importance: 0.5 });
       setStats(next);
       setEditor((current) => current === editor ? undefined : current);
-      await reload();
+      await refresh();
       onNotify(editId ? "记忆已更新" : "记忆已添加");
     } catch (cause) {
       onNotify(errorMessage(cause));
@@ -455,7 +507,7 @@ export function SettingsMemory({
       const next = await onArchiveEntry(entry.id, archived);
       setStats(next);
       // 归档同样只影响一条记录，保留当前页；该页被清空时由 reload 回退到最后一页。
-      await reload(undefined, archivePage);
+      await refresh();
       const mergedNotice = !archived && next.mergedTarget
         ? entry.archivedReason === "updated"
           ? `当前版本「${next.mergedTarget.content}」仍在使用，请核对是否需要保留。`
@@ -501,7 +553,7 @@ export function SettingsMemory({
     try {
       const next = await onRunSleep();
       setStats(next);
-      await reload();
+      await refresh();
       const run = next.maintenance.lastRun;
       onNotify(run?.status === "failed" ? `记忆整理失败：${run.error ?? "请查看近期运行"}`
         : run?.status === "cancelled" ? "记忆整理已取消"
@@ -520,7 +572,7 @@ export function SettingsMemory({
     try {
       const next = await onDeleteEntry(entry.id);
       setStats(next);
-      await reload();
+      await refresh();
       onNotify("记忆已删除");
     } catch (cause) {
       onNotify(errorMessage(cause));
@@ -530,7 +582,7 @@ export function SettingsMemory({
   };
 
   const clearAll = async (): Promise<void> => {
-    if (!stats || saving || (totalEntries === 0 && archivedTotal === 0)) return;
+    if (!stats || saving || (totalEntries === 0 && archiveLoaded && archivedTotal === 0)) return;
     if (!window.confirm("确定要删除所有记忆吗？此操作无法撤销。")) return;
     setSaving(true);
     try {
@@ -541,7 +593,7 @@ export function SettingsMemory({
       setSearching(false);
       setStats(next);
       setSearchResults([]);
-      await reload();
+      await refresh();
     } catch (cause) {
       onNotify(errorMessage(cause));
     } finally {
@@ -756,8 +808,8 @@ export function SettingsMemory({
           <div className="section-heading-row">
             <h3>记忆列表</h3>
             <div className="activity-memory-list-actions">
-              <button aria-label="刷新记忆" className="icon-button" disabled={loading || saving} onClick={() => { void reload(); }} type="button"><Icon name="refresh" size={14} /></button>
-              <button className="settings-action settings-secondary-button ghost-button" disabled={saving || (totalEntries === 0 && archivedTotal === 0)} onClick={() => { void clearAll(); }} type="button">清空全部</button>
+              <button aria-label="刷新记忆" className="icon-button" disabled={loading || saving} onClick={() => { void refresh(); }} type="button"><Icon name="refresh" size={14} /></button>
+              <button className="settings-action settings-secondary-button ghost-button" disabled={!stats || saving || (totalEntries === 0 && archiveLoaded && archivedTotal === 0)} onClick={() => { void clearAll(); }} type="button">清空全部</button>
             </div>
           </div>
           <div className="settings-section-body">
@@ -792,20 +844,21 @@ export function SettingsMemory({
           <h3>添加记忆</h3>
           <div className="settings-section-body">
             <textarea className="settings-field" aria-label="输入您希望 AI 记住的内容..." disabled={sessionRunning || saving || editor?.id !== undefined} onChange={(event) => setEditor({ value: event.target.value })} placeholder="输入您希望 AI 记住的内容..." rows={4} value={editor?.id ? "" : editor?.value ?? ""} />
-            <button className="settings-action settings-primary-button" disabled={saving || editor?.id !== undefined || !editor?.value.trim()} onClick={() => { void saveText(); }} type="button">{saving && !editor?.id ? "添加中…" : "添加记忆"}</button>
+            <button aria-busy={saving && !editor?.id} className="settings-action settings-primary-button" disabled={saving || editor?.id !== undefined || !editor?.value.trim()} onClick={() => { void saveText(); }} type="button">添加记忆</button>
           </div>
         </section>
 
         <section className="settings-section activity-memory-group" id="memory-tool-model" tabIndex={-1}>
           <h3>记忆工具模型</h3>
           <div className="settings-section-body">
-            <p>留空使用通用工具模型。</p>
+            <p>为记忆操作指定专用工具模型。留空则使用通用工具模型。</p>
             <div className="activity-memory-model-picker-row">
               <SettingsModelPicker
                 ariaLabel="记忆工具模型"
                 groups={modelPickerGroups(models.filter((model) => model.providerType !== "acp"), snapshot?.models.connections)}
                 inheritDetail={models.find((model) => model.alias === snapshot?.models.resolvedToolModel)?.model}
                 inheritLabel="使用默认工具模型"
+                resolvedValue={snapshot?.models.resolvedToolModel}
                 onChange={(memoryModel) => setMemory({ ...policy, memoryModel })}
                 placeholder="使用默认工具模型"
                 value={policy.memoryModel}
@@ -868,7 +921,7 @@ export function SettingsMemory({
         <section className="settings-section activity-memory-group activity-memory-sleep-card" id="memory-sleep" tabIndex={-1}>
           <div className="activity-memory-heading-row">
             <h3>记忆睡眠</h3>
-          {sleepStatus ? <span>已归档 {archivedTotal} · 下次：{nextSleepDate(policy.sleepTime, sleepRuns, lastRun)} {policy.sleepTime}</span> : null}
+          {sleepStatus ? <span>{archiveLoaded ? `已归档 ${archivedTotal} · ` : ""}下次：{nextSleepDate(policy.sleepTime, sleepStatus.sleepRuns ?? [], lastRun)} {policy.sleepTime}</span> : null}
           </div>
           <div className="settings-section-body">
             <SettingsSwitch
@@ -888,7 +941,7 @@ export function SettingsMemory({
                 {lastRun.error ? <div role="alert">整理失败：{lastRun.error}{lastRun.status === "failed" ? <button className="settings-action settings-text-action text-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void runSleep(); }} type="button">重试整理</button> : null}</div> : null}
               </div> : null}
               <div className="activity-memory-sleep-actions">
-                <button className="settings-action settings-secondary-button ghost-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void runSleep(); }} type="button">{sleepRunning ? "运行中…" : "立即运行睡眠周期"}</button>
+                <button aria-busy={sleepRunning} className="settings-action settings-secondary-button ghost-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void runSleep(); }} type="button">立即运行睡眠周期</button>
                 <button className="settings-action settings-text-action text-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void previewSleep(); }} type="button">预览下一次周期</button>
                 {sleepRunning ? <button className="settings-action settings-text-action text-button" onClick={() => { void cancelSleep(); }} type="button">取消</button> : null}
               </div>
@@ -922,11 +975,8 @@ export function SettingsMemory({
                   value={policy.archiveRetentionDays}
                 />
               </div>
-              <button aria-controls={`${disclosureId}-sleep-advanced`} aria-expanded={sleepAdvancedOpen} className="activity-memory-disclosure" onClick={() => setSleepAdvancedOpen((open) => !open)} type="button">
-                <Icon className="activity-memory-disclosure-chevron" name="chevron" size={12} />
-                <span>相似度与 LLM 合并参数</span>
-              </button>
-              <div className="activity-memory-advanced-content" hidden={!sleepAdvancedOpen} id={`${disclosureId}-sleep-advanced`}>
+              <div className="activity-memory-advanced">
+                <h4>相似度与 LLM 合并参数</h4>
                 <MemoryRange
                   ariaLabel="相似度合并阈值"
                   description="高于此值直接合并，不调用模型。"
@@ -965,16 +1015,18 @@ export function SettingsMemory({
                 </> : null}
               </div>
               <div className="activity-memory-sleep-footer">
-                <button className="settings-action settings-secondary-button ghost-button" disabled={exporting} onClick={() => { void exportSnapshot(); }} type="button">{exporting ? "正在导出…" : "导出记忆快照"}</button>
+                <button aria-busy={exporting} className="settings-action settings-secondary-button ghost-button" disabled={exporting} onClick={() => { void exportSnapshot(); }} type="button">导出记忆快照</button>
               </div>
               <button aria-controls={`${disclosureId}-archive`} aria-expanded={archiveOpen} className="activity-memory-disclosure" onClick={() => setArchiveOpen((open) => !open)} type="button">
                 <Icon className="activity-memory-disclosure-chevron" name="chevron" size={12} />
                 <Icon name="archive" size={12} />
-                <span>归档记忆（{archivedTotal}）</span>
+                <span>归档记忆{archiveLoaded ? `（${archivedTotal}）` : ""}</span>
               </button>
               {restoreNotice ? <p className="activity-memory-sleep-preview" role="status">{restoreNotice}</p> : null}
               <div className="activity-memory-archive-list" hidden={!archiveOpen} id={`${disclosureId}-archive`}>
-                {archivedEntries.length === 0 ? <p>暂无归档记忆。</p> : archivedEntries.map((entry) => (
+                {archiveError ? <p role="alert">{archiveError}<button className="settings-action settings-text-action" onClick={() => { void loadArchive(); }} type="button">重试</button></p> : null}
+                {archiveLoading ? <p role="status">正在读取归档…</p> : null}
+                {archiveLoaded && archivedEntries.length === 0 ? <p>暂无归档记忆。</p> : archivedEntries.map((entry) => (
                   <article className="activity-memory-entry" key={entry.id}>
                     <div className="activity-memory-entry-content"><p>{entry.content}</p><small>{entry.archivedReason === "updated" ? "更新前版本" : entry.archivedReason ?? "手动"} · {entry.archivedAt ? formatDate(entry.archivedAt) : ""}{entry.mergedInto ? (() => {
                       const chain = archiveChains[entry.id] ?? { finalId: entry.mergedInto, depth: 0 };
@@ -985,19 +1037,20 @@ export function SettingsMemory({
                   </article>
                 ))}
                 {archivePages > 1 ? <div className="activity-memory-archive-pagination">
-                  <button aria-label="上一页归档记忆" className="settings-action settings-secondary-button ghost-button" disabled={loading || visibleArchivePage === 0} onClick={() => { void loadPage(visibleArchivePage - 1, "archive"); }} type="button">←</button>
+                  <button aria-label="上一页归档记忆" className="settings-action settings-secondary-button ghost-button" disabled={archiveLoading || visibleArchivePage === 0} onClick={() => { void loadPage(visibleArchivePage - 1, "archive"); }} type="button">←</button>
                   <span>{visibleArchivePage + 1} / {archivePages}</span>
-                  <button aria-label="下一页归档记忆" className="settings-action settings-secondary-button ghost-button" disabled={loading || visibleArchivePage + 1 >= archivePages} onClick={() => { void loadPage(visibleArchivePage + 1, "archive"); }} type="button">→</button>
+                  <button aria-label="下一页归档记忆" className="settings-action settings-secondary-button ghost-button" disabled={archiveLoading || visibleArchivePage + 1 >= archivePages} onClick={() => { void loadPage(visibleArchivePage + 1, "archive"); }} type="button">→</button>
                 </div> : null}
               </div>
-              {sleepRuns.length > 0 ? <details className="activity-memory-run-details">
-                <summary className="activity-memory-disclosure">
+              <details className="activity-memory-run-details" open={runsOpen}>
+                <summary className="activity-memory-disclosure" onClick={event => { event.preventDefault(); setRunsOpen(open => !open); }}>
                   <Icon className="activity-memory-disclosure-chevron" name="chevron" size={12} />
                   <Icon name="trash" size={12} />
-                  <span>近期运行（{sleepRuns.length}）</span>
+                  <span>近期运行{runsOpen && !runsLoading && !runsError ? `（${sleepRuns.length}）` : ""}</span>
                 </summary>
-                <div>{sleepRuns.map((run) => <p key={run.id}>{formatDate(run.startedAt)} · {run.status} · {run.trigger} · {run.archived} archived{run.synthesisFailed > 0 ? ` · ⚠ ${run.synthesisFailed} 合成失败` : ""}</p>)}</div>
-              </details> : null}
+                {runsError ? <p role="alert">{runsError}<button className="settings-action settings-text-action" onClick={() => { void loadRuns(); }} type="button">重试</button></p> : null}
+                {runsLoading ? <p role="status">正在读取运行历史…</p> : <div>{sleepRuns.map((run) => <p key={run.id}>{formatDate(run.startedAt)} · {run.status} · {run.trigger} · {run.archived} archived{run.synthesisFailed > 0 ? ` · ⚠ ${run.synthesisFailed} 合成失败` : ""}</p>)}</div>}
+              </details>
             </div> : null}
           </div>
         </section>

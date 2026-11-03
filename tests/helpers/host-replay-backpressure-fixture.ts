@@ -118,7 +118,7 @@ export async function createReplayFixture(t: TestContext) {
         await writeFile(paths.registrationPath, JSON.stringify(registration), { mode: 0o600 });
       } else {
         const execution = new RuntimeHostExecution(server, runtime, commands, registration, async () => { throw new Error("Unexpected runtime creation"); });
-        Object.assign(server, { execution, initialized: true, sequenceRecovered: true });
+        Object.assign(server, { execution, lifecycle: "ready", sequenceRecovered: true });
       }
       const internals = server as unknown as ReplayInternals;
       return { runtime, server, internals,

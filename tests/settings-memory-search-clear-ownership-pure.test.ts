@@ -23,7 +23,7 @@ assert.ok(errorMessage);
 const extracted = `${errorMessage.getText(source)}\n${["searchRequestRef", "pendingSearchRef", "search", "clearAll"].map(declaration).join("\n")}`;
 const allowedCalls = new Set([
   "String", "useRef", "query.trim", "window.confirm", "onSearch", "onNotify", "errorMessage",
-  "setSearchResults", "setSearching", "onClearMemory", "setStats", "reload", "setSaving"
+  "setSearchResults", "setSearching", "onClearMemory", "setStats", "refresh", "setSaving"
 ]);
 const extractedAst = ts.createSourceFile("handlers.ts", extracted, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 function inspectCalls(node: ts.Node): void {
@@ -66,12 +66,12 @@ function fixture(options: { confirm?: boolean; holdReload?: boolean } = {}) {
   const context = createContext({
     Error,
     hidden: false, workspaceAvailable: true, query: "same-query", stats: { total: 1 },
-    saving: false, totalEntries: 1, archivedTotal: 0,
+    saving: false, totalEntries: 1, archivedTotal: 0, archiveLoaded: true,
     useRef: <T>(value: T) => ({ current: value }),
     window: { confirm: () => options.confirm !== false },
     onSearch: (query: string) => { const gate = deferred<Match[]>(); searches.push({ query, gate }); return gate.promise; },
     onClearMemory: () => { state.clearCalls++; return clear.promise; },
-    reload: () => { state.reloadCalls++; return options.holdReload ? reload.promise : Promise.resolve(); },
+    refresh: () => { state.reloadCalls++; return options.holdReload ? reload.promise : Promise.resolve(); },
     setStats: (value: unknown) => { context.stats = value; },
     setSearchResults: (value: Match[]) => { state.results = Array.from(value); },
     setSearching: (value: boolean) => { state.searching = value; },

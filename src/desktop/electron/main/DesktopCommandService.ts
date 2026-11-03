@@ -29,11 +29,15 @@ const preferencesSchema = z.object({ themePreference: themePreferenceSchema, fon
 const nameSchema = z.string().trim().min(1).max(240);
 
 export class DesktopCommandService {
-  constructor(private readonly services: DesktopCommandServices) {}
+  constructor(private readonly services: DesktopCommandServices, private readonly captureWindow?: (options: unknown) => Promise<unknown>) {}
 
   async execute(args: Record<string, unknown>): Promise<unknown> {
     const { state, projects, agents, terminals, preview, appearance, browser } = this.services;
     const action = z.string().parse(args.action);
+    if (action === "capture") {
+      if (!this.captureWindow) throw new Error("Window capture is unavailable");
+      return await this.captureWindow({ options: args.options, outputPath: args.outputPath });
+    }
     if (action === "configuration") {
       return await executeConfigurationCommand(this.services.configStore, z.string().parse(args.operation), z.record(z.string(), z.unknown()).parse(args.input));
     }

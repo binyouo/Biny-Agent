@@ -8,7 +8,7 @@ import path from "node:path";
 import { globalAgentDir, globalConfigDir } from "../../config/paths.js";
 import type { InteractiveAgentHost } from "../InteractiveAgentRuntime.js";
 import { issueRuntimeHostAccessCredential } from "./credentials.js";
-import { acquireHostLock, ensureRuntimeHostDirectory, removeSocketIfStale, runtimeHostPaths, writeRegistration } from "./lifecycle.js";
+import { acquireHostLock, ensureRuntimeHostDirectory, removeRegistration, removeSocketIfStale, runtimeHostPaths, writeRegistration } from "./lifecycle.js";
 import { runtimeHostProtocolVersion as protocolVersion } from "./protocol.js";
 import type { RuntimeHostResourceRegistry } from "./resources.js";
 import { RuntimeHostServer } from "./server.js";
@@ -38,8 +38,10 @@ export async function startRuntimeHost(
     pid: process.pid,
     createdAt: new Date().toISOString()
   };
-  const server = new RuntimeHostServer(undefined, undefined, registration, lock, options.createRuntime, options);
+  let owner: RuntimeHostServer | undefined;
   try {
+    const server = new RuntimeHostServer(undefined, undefined, registration, lock, options.createRuntime, options);
+    owner = server;
     await removeSocketIfStale(paths.endpoint);
     await server.listen();
     await writeRegistration(registration);
@@ -48,7 +50,11 @@ export async function startRuntimeHost(
     }).catch(() => undefined);
     return server;
   } catch (error) {
-    await server.close().catch(() => undefined);
+    if (owner) await owner.close().catch(() => undefined);
+    else {
+      try { await removeRegistration(registration); }
+      finally { await lock.close(); }
+    }
     throw error;
   }
 }

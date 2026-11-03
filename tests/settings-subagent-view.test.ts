@@ -35,9 +35,12 @@ test("Coding Agent settings show configured ACP providers and keep disabled or b
     const acp = render("acp", true, false, undefined, "worker");
     assert.equal(acp.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "acp:worker");
     assert.match(acp.body.textContent!, /沙箱测试限制/);
+    assert.match(acp.body.textContent!, /无法执行拒绝路径限制/);
     assert.match(acp.querySelector(".settings-subagent-help")!.textContent!, /通过所选 ACP 连接/u);
     assert.doesNotMatch(acp.querySelector(".settings-subagent-help")!.textContent!, /内置 Agent/u);
     assert.match(render("claude-code").querySelector(".settings-subagent-help")!.textContent!, /CLI 默认模型/u);
+    assert.match(render("claude-code").body.textContent!, /Claude Code.*不受拒绝路径限制/u);
+    assert.match(render("auto").body.textContent!, /Claude Code.*不受拒绝路径限制/u);
     assert.equal(render("acp", true, false, undefined, "other-worker").querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "acp:other-worker");
     assert.doesNotMatch(render("builtin", true, false, undefined, undefined, false).body.textContent!, /已配置 [1-9] 个 ACP 连接/u);
     const cli = render("codex", true, false, "custom-id");

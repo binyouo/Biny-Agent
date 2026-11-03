@@ -9,6 +9,7 @@ import type { DesktopApplicationImports } from "./DesktopApplicationImports.js";
  * 这一层只做「校验 + 转发 + 系统对话框/菜单」，项目、会话、agent 的实际逻辑都在各服务里。
  */
 import { spawn } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import { interactiveShellInvocation } from "../../../tools/shell/shell.js";
 import { launchDetached } from "../../../utils/launchDetached.js";
 import {
@@ -62,11 +63,10 @@ import { fetchSiteIconDataUrl } from "./siteIcon.js";
 import { QuickChatContextService } from "./QuickChatContextService.js";
 import type { QuickChatWindowController } from "./quickChatWindow.js";
 import { runtimeMutationStartsWork } from "./settingsRuntimeGate.js";
-import { exportSessionBundle, exportSessionClaudeCode } from "../../../session/transfer.js";
+import { sessionExportBaseName } from "../../../session/transfer.js";
 import { activitySettingsPatchSchema } from "../../../activity/settings.js";
 import { resolveActivityReportRange } from "../../../activity/analyzer.js";
 import { readDailyMemoryNote } from "../../../activity/dailyNotes.js";
-import { DesktopTemporalMemoryService, readScheduledTemporalSources } from "../../temporalMemoryService.js";
 import { LocalReferenceGraph, LocalReferenceService, localReferenceKinds } from "../../../session/localReferences.js";
 import { globalAgentDir } from "../../../config/paths.js";
 import { runtimeReferenceEntries } from "../../../session/runtimeReferenceEntries.js";
@@ -82,7 +82,6 @@ import { resolveSessionFile } from "../../../session/store.js";
 interface IpcContext {
   applicationImports: DesktopApplicationImports;
   appearance: AppearancePreviewCoordinator;
-  temporalMemory: DesktopTemporalMemoryService;
   threadBriefs: DesktopThreadBriefService;
   state: DesktopStateStore;
   projects: DesktopProjectService;
@@ -126,7 +125,8 @@ const sessionTreePageOptionsSchema = z.object({
   cursor: z.string().max(4_000).optional(),
   limit: z.number().int().min(1).max(50).optional(),
   includeArchived: z.boolean().optional(),
-  includePinnedSessions: z.boolean().optional()
+  includePinnedSessions: z.boolean().optional(),
+  sessionIds: z.array(idSchema).transform(ids => [...new Set(ids)]).optional()
 }).optional();
 const permissionModeSchema = z.enum(["ask", "read-only", "auto", "full-access"]);
 const activeViewSchema = z.enum(["chat", "runtime"]);
@@ -172,11 +172,6 @@ const memoryContentSchema = z.string().trim().min(1).max(4_000);
 const memoryTagListSchema = z.array(z.string().trim().min(1).max(120)).max(12);
 const memoryQuerySchema = z.string().trim().min(1).max(2_000);
 const memoryEntryIdSchema = z.string().min(1).max(512);
-const temporalDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u);
-const temporalQuerySchema = z.object({ startDate: temporalDaySchema, endDate: temporalDaySchema,
-  sessionId: z.string().min(1).max(128).optional(), currentSessionId: z.string().min(1).max(128).optional(),
-  limit: z.number().int().min(1).max(50).optional(), offset: z.number().int().min(0).optional(),
-  today: temporalDaySchema.optional(), timeZone: z.string().min(1).max(100).optional(), includeScheduled: z.boolean().optional() });
 const localEmbeddingModelSchema = z.enum(localEmbeddingModelIds);
 const memorySettingsInputSchema = z.object({
   expectedRevision: configRevisionSchema,
@@ -257,7 +252,6 @@ function settingsSaveRequiresIdleRuntime(input: DesktopSettingsSaveInput): boole
     || input.permission !== undefined
     || input.webSearch !== undefined
     || input.models !== undefined
-    || input.skills !== undefined
     || input.chat !== undefined;
 }
 
@@ -316,12 +310,12 @@ export function registerDesktopIpc(context: IpcContext): void {
   handle(desktopIpc.toolOptimizationDetail, async (_event, projectId: unknown, sessionId: unknown, toolCallId: unknown) =>
     await context.projects.toolOptimizationDetail(idSchema.parse(projectId), idSchema.parse(sessionId), idSchema.parse(toolCallId)));
 
-  handle(desktopIpc.toolOptimizationStats, async (_event, days: unknown, projectId: unknown, sessionId: unknown) => {
+  handle(desktopIpc.toolOptimizationStats, async (_event, days: unknown, projectId: unknown, sessionId: unknown, refresh: unknown) => {
     const range = z.union([z.literal(1), z.literal(7), z.literal(30), z.literal("all")]).parse(days);
     const project = idSchema.optional().parse(projectId);
     const session = idSchema.optional().parse(sessionId);
     if (session && !project) throw new Error("Session statistics require a project.");
-    return await context.projects.toolOptimizationOverview(range, project, session);
+    return await context.projects.toolOptimizationOverview(range, project, session, z.boolean().optional().parse(refresh));
   });
 
   handle(desktopIpc.selectProject, async (_event, projectId: unknown) => {
@@ -514,13 +508,9 @@ export function registerDesktopIpc(context: IpcContext): void {
     const parsedProjectId = idSchema.parse(projectId);
     const parsedSessionId = idSchema.parse(sessionId);
     const exportFormat = z.enum(["biny", "claude"]).parse(format);
-    const project = context.projects.requireProject(parsedProjectId);
-    const dataRoot = await context.projects.dataRoot(project);
-    // 先在主进程拿到导出内容，用内容里的会话 id 给保存对话框一个可读、不重复的默认文件名。
-    const exported = exportFormat === "claude"
-      ? await exportSessionClaudeCode(dataRoot, parsedSessionId)
-      : await exportSessionBundle(dataRoot, parsedSessionId);
-    const defaultFileName = exportFormat === "claude" ? `${exported.baseName}.claude.jsonl` : `${exported.baseName}.biny.json`;
+    context.projects.requireProject(parsedProjectId);
+    const baseName = sessionExportBaseName(parsedSessionId);
+    const defaultFileName = exportFormat === "claude" ? `${baseName}.claude.jsonl` : `${baseName}.biny.json`;
     const options: SaveDialogOptions = {
       title: exportFormat === "claude" ? "导出为 Claude Code 会话" : "导出会话包",
       defaultPath: defaultFileName,
@@ -530,7 +520,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     };
     const window = context.getWindow();
     const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
-    if (result.canceled || !result.filePath) return await context.agents.workspaceSnapshot(parsedProjectId);
+    if (result.canceled || !result.filePath) return;
     return await context.agents.exportSession(parsedProjectId, parsedSessionId, exportFormat, result.filePath);
   });
 
@@ -571,7 +561,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     const window = context.getWindow();
     const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
     const sourcePath = result.filePaths[0];
-    if (result.canceled || !sourcePath) return await context.agents.workspaceSnapshot(parsedProjectId);
+    if (result.canceled || !sourcePath) return;
     return await context.agents.importSession(parsedProjectId, sourcePath);
   });
 
@@ -927,21 +917,6 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  // 索引由主进程生命周期持有，查询之间共享文件指纹和在途扫描。
-  handleRecoveryGated(desktopIpc.temporalClues, async (_event, query: unknown) => {
-    const parsed = temporalQuerySchema.parse(query);
-    const projects = context.state.projects();
-    const scheduled = await readScheduledTemporalSources(parsed, projects,
-      async (projectId) => await context.agents.scheduledAutomations(projectId));
-    const page = await context.temporalMemory.query(parsed, projects, scheduled.sources);
-    return scheduled.warnings.length ? { ...page, scheduledWarnings: scheduled.warnings } : page;
-  });
-  handleRecoveryGated(desktopIpc.temporalIgnoreClue, async (_event, id: unknown) =>
-    context.temporalMemory.ignore(memoryEntryIdSchema.parse(id)));
-  handleRecoveryGated(desktopIpc.temporalMarkSeen, async (_event, ids: unknown, day: unknown, timeZone: unknown) =>
-    context.temporalMemory.markSeen(z.array(memoryEntryIdSchema).max(50).parse(ids), temporalDaySchema.parse(day), z.string().min(1).max(100).parse(timeZone)));
-  handleRecoveryGated(desktopIpc.temporalMarkTodaySeen, async (_event, day: unknown, timeZone: unknown) =>
-    context.temporalMemory.markTodaySeen(temporalDaySchema.parse(day), z.string().min(1).max(100).parse(timeZone)));
   const referenceService = (): LocalReferenceService => new LocalReferenceService({ projects: context.state.projects(), runtimeEntries: async (id) => {
     const [projection, tools] = await Promise.all([context.agents.runtimeProjection(id), context.agents.toolCatalog(id)]);
     return runtimeReferenceEntries(projection, tools);
@@ -1117,20 +1092,26 @@ export function registerDesktopIpc(context: IpcContext): void {
     if (settingsSaveRequiresIdleRuntime(parsedInput)) {
       context.agents.assertNoRunningTasks("任务运行期间不能保存设置。");
     }
+    const previousPreferences = context.state.settingsPreferences();
     const result = await settings.save(idSchema.parse(projectId), parsedInput);
     if (result.status === "committed" && result.appliedFields.includes("activity")) {
       // 配置已经完成事务提交；Activity sidecar 的停启是派生刷新，不应阻塞保存响应。
       void context.activity.refresh().catch(() => undefined);
     }
-    const preference = result.snapshot?.themePreference;
-    if (preference !== undefined) {
+    const snapshot = result.snapshot ?? result.preferences ?? result.settings;
+    if (snapshot && (parsedInput.themePreference !== undefined || parsedInput.fontPreference !== undefined
+      || parsedInput.appearancePreference !== undefined
+      || snapshot.themePreference !== previousPreferences.themePreference
+      || !isDeepStrictEqual(snapshot.fontPreference, previousPreferences.fontPreference)
+      || !isDeepStrictEqual(snapshot.appearancePreference, previousPreferences.appearancePreference))) {
+      const preference = snapshot.themePreference;
       applyNativeThemePreference(preference);
       const window = context.getWindow();
       if (window && !window.isDestroyed()) {
         window.setBackgroundColor(themeBackgroundColor(preference));
       }
+      context.appearance.committed();
     }
-    if (result.snapshot) context.appearance.committed();
     return result;
   }));
 
@@ -1342,36 +1323,46 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.skills.importExistingSkills(skillImportIdsSchema.parse(skillIds));
   });
 
-  handle(desktopIpc.skillFileRead, async (_event, skillId: unknown, relativePath: unknown) => {
-    return await context.skills.readFile(skillIdSchema.parse(skillId), skillFilePathSchema.parse(relativePath));
+  handle(desktopIpc.skillFileRead, async (_event, skillId: unknown, relativePath: unknown, projectId: unknown) => {
+    return await context.skills.readFile(skillIdSchema.parse(skillId), skillFilePathSchema.parse(relativePath), skillProjectIdSchema.optional().parse(projectId));
   });
 
-  handle(desktopIpc.skillVersion, async (_event, skillId: unknown) => await context.skills.version(skillIdSchema.parse(skillId)));
-  handleRecoveryGated(desktopIpc.skillVersionUpdate, async (_event, skillId: unknown, expectedVersion: unknown) => {
-    return await context.skills.updateVersion(skillIdSchema.parse(skillId), z.string().uuid().parse(expectedVersion));
+  handle(desktopIpc.skillVersion, async (_event, skillId: unknown, projectId: unknown) => await context.skills.version(skillIdSchema.parse(skillId), skillProjectIdSchema.optional().parse(projectId)));
+  handleRecoveryGated(desktopIpc.skillVersionUpdate, async (_event, skillId: unknown, expectedVersion: unknown, projectId: unknown) => {
+    return await context.skills.updateVersion(skillIdSchema.parse(skillId), z.string().uuid().parse(expectedVersion), skillProjectIdSchema.optional().parse(projectId));
   });
-  handleRecoveryGated(desktopIpc.skillVersionRollback, async (_event, skillId: unknown, expectedVersion: unknown) => {
-    return await context.skills.rollbackVersion(skillIdSchema.parse(skillId), z.string().uuid().parse(expectedVersion));
+  handleRecoveryGated(desktopIpc.skillVersionRollback, async (_event, skillId: unknown, expectedVersion: unknown, projectId: unknown) => {
+    return await context.skills.rollbackVersion(skillIdSchema.parse(skillId), z.string().uuid().parse(expectedVersion), skillProjectIdSchema.optional().parse(projectId));
   });
 
-  handle(desktopIpc.skillOpenDirectory, async (_event, skillId: unknown) => {
-    const error = await shell.openPath(await context.skills.directory(skillIdSchema.parse(skillId)));
+  handle(desktopIpc.skillOpenDirectory, async (_event, skillId: unknown, projectId: unknown) => {
+    const error = await shell.openPath(await context.skills.directory(skillIdSchema.parse(skillId), skillProjectIdSchema.optional().parse(projectId)));
     if (error) throw new Error(error);
   });
 
+  handle(desktopIpc.pluginCatalog, async (_event, projectId: unknown) => await context.skills.pluginCatalog(idSchema.parse(projectId)));
   handle(desktopIpc.pluginRegistry, async (_event, projectId: unknown) => await context.skills.pluginRegistry(idSchema.parse(projectId)));
   handle(desktopIpc.pluginRegistryRefresh, async (_event, projectId: unknown) => await context.skills.pluginRegistry(idSchema.parse(projectId), true));
   handleRecoveryGated(desktopIpc.pluginInstall, async (_event, projectId: unknown, pluginId: unknown, scope: unknown) => {
-    context.agents.assertNoRunningTasks("任务运行期间不能安装 Plugin。");
-    return await context.skills.installPlugin(idSchema.parse(projectId), idSchema.parse(pluginId), pluginScopeSchema.parse(scope));
+    const targetProjectId = idSchema.parse(projectId);
+    const targetScope = pluginScopeSchema.parse(scope);
+    if (targetScope === "global") context.agents.assertNoRunningTasks("任务运行期间不能安装 Plugin。");
+    else context.agents.assertProjectSettingsIdle(targetProjectId, "任务运行期间不能安装 Plugin。");
+    return await context.skills.installPlugin(targetProjectId, idSchema.parse(pluginId), targetScope);
   });
   handleRecoveryGated(desktopIpc.pluginSetEnabled, async (_event, projectId: unknown, pluginId: unknown, enabled: unknown, scope: unknown) => {
-    context.agents.assertNoRunningTasks("任务运行期间不能切换 Plugin。");
-    return await context.skills.setPluginEnabled(idSchema.parse(projectId), idSchema.parse(pluginId), z.boolean().parse(enabled), pluginScopeSchema.parse(scope));
+    const targetProjectId = idSchema.parse(projectId);
+    const targetScope = pluginScopeSchema.parse(scope);
+    if (targetScope === "global") context.agents.assertNoRunningTasks("任务运行期间不能切换 Plugin。");
+    else context.agents.assertProjectSettingsIdle(targetProjectId, "任务运行期间不能切换 Plugin。");
+    return await context.skills.setPluginEnabled(targetProjectId, idSchema.parse(pluginId), z.boolean().parse(enabled), targetScope);
   });
   handleRecoveryGated(desktopIpc.pluginUninstall, async (_event, projectId: unknown, pluginId: unknown, scope: unknown) => {
-    context.agents.assertNoRunningTasks("任务运行期间不能卸载 Plugin。");
-    await context.skills.uninstallPlugin(idSchema.parse(projectId), idSchema.parse(pluginId), pluginScopeSchema.parse(scope));
+    const targetProjectId = idSchema.parse(projectId);
+    const targetScope = pluginScopeSchema.parse(scope);
+    if (targetScope === "global") context.agents.assertNoRunningTasks("任务运行期间不能卸载 Plugin。");
+    else context.agents.assertProjectSettingsIdle(targetProjectId, "任务运行期间不能卸载 Plugin。");
+    await context.skills.uninstallPlugin(targetProjectId, idSchema.parse(pluginId), targetScope);
   });
   handle(desktopIpc.pluginOpenDirectory, async (_event, projectId: unknown, scope: unknown) => {
     const error = await shell.openPath(await context.skills.pluginDirectory(idSchema.parse(projectId), pluginScopeSchema.parse(scope)));

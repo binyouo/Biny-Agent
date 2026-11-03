@@ -188,5 +188,10 @@ function resolveGoogleUrl(rawUrl: string): string | undefined {
 }
 
 function cleanHtmlText(value: string): string {
-  return decodeHtmlEntities(value.replace(/<br\s*\/?\s*>/gi, " ").replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim().slice(0, 800);
+  const text = decodeHtmlEntities(value.replace(/<br\s*\/?\s*>/gi, " ").replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
+  let end = Math.min(800, text.length);
+  const previous = text.charCodeAt(end - 1);
+  const next = text.charCodeAt(end);
+  if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+  return text.slice(0, end);
 }

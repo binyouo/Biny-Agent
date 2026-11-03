@@ -63,19 +63,91 @@ export class RuntimeHostExecution {
   private readonly creations = new Set<Promise<import("../InteractiveAgentRuntime.js").InteractiveAgentHost>>();
   private readonly cleanupFailures: unknown[] = [];
 
-  async close(): Promise<void> {
+  beginDrain(): void {
     this.businessComposition.stop();
+    for (const entry of this.registry.list()) {
+      entry.commands.setOwnerNotificationSink?.(undefined);
+      if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun("host_shutdown");
+    }
+    this.sessionGoalOwners.clear();
+  }
+
+  async releaseConnection(clientId: string): Promise<void> {
+    if (!clientId) return;
+    try {
+      try { this.commands.capabilities.releaseOwner(clientId); }
+      finally {
+        try { await this.releasePreparedSessions(clientId); }
+        finally { await this.host.releaseSessionWriters(clientId); }
+      }
+    } catch (error) {
+      this.cleanupFailures.push(error);
+      throw error;
+    }
+  }
+
+  private async releasePreparedSessions(clientId: string): Promise<void> {
+    for (const [sessionId, prepared] of this.oneShotSessions) {
+      if (prepared.clientId !== clientId || prepared.started) continue;
+      await this.host.dispatcher.dispatch("run", async () => {
+        if (this.oneShotSessions.get(sessionId) !== prepared || prepared.started) return;
+        try { await this.registry.closeSession(sessionId); }
+        finally { this.oneShotSessions.delete(sessionId); }
+      }, sessionId);
+    }
+  }
+
+  private async pauseOwnedRunsForExit(connection: HostConnection): Promise<Array<{ sessionId: string; runId: string }>> {
+    const writerSessions = this.host.sessionWriterSessionIds(connection.clientId);
+    const goalSessions = [...this.sessionGoalOwners.entries()]
+      .filter(([, owner]) => owner.clientId === connection.clientId)
+      .map(([sessionId]) => sessionId);
+    const ownedSessionIds = [...new Set([...writerSessions, ...goalSessions])];
+    const paused = await Promise.all(ownedSessionIds.map(async (sessionId) => await this.host.dispatcher.dispatch(
+      "run",
+      async () => {
+        // Queue behind earlier writes for this session, then recheck ownership before touching its run.
+        const goalOwner = this.sessionGoalOwners.get(sessionId);
+        const writerOwned = this.host.ownsSessionWriter(connection.clientId, sessionId);
+        if (!writerOwned && goalOwner?.clientId !== connection.clientId) return undefined;
+        const managed = this.registry.get(sessionId);
+        const goals = managed?.commands.sessionGoals ?? this.commands.sessionGoals;
+        const goal = goals?.get(sessionId);
+        const goalOwned = goalOwner?.goalId === goal?.goalId
+          ? goalOwner?.clientId === connection.clientId
+          : writerOwned;
+        if (goal?.status === "active" && goalOwned) {
+          goals.pause(sessionId, goal);
+          if (managed) this.host.publishSnapshot(managed.runtime);
+        }
+        const snapshot = managed?.runtime.getSnapshot();
+        if (!managed || snapshot?.state.kind !== "runs") return undefined;
+        const runId = snapshot.state.activeRun.runId;
+        const goalRun = managed.commands.runtimeAuthority.getRun(runId)?.continuationSource?.startsWith("goal:");
+        if (goalRun ? !goalOwned : !writerOwned) return undefined;
+        if (!managed.runtime.cancelRun(runId, "paused")) return undefined;
+        return { sessionId, runId };
+      },
+      sessionId
+    )));
+    return paused.filter((entry): entry is { sessionId: string; runId: string } => entry !== undefined);
+  }
+
+  async close(): Promise<void> {
+    this.beginDrain();
     const failures: unknown[] = [];
     await this.registry.closeAll().catch(error => { failures.push(error); });
     await Promise.allSettled([...this.creations]);
     await this.host.waitForRequests();
+    this.oneShotSessions.clear();
     await this.conversationMirror.close().catch(() => undefined);
     await this.resourceRegistry.close().catch(error => { failures.push(error); });
     failures.push(...this.cleanupFailures);
     if (failures.length) throw new AggregateError(failures, "Runtime Host execution cleanup failed.");
   }
 
-  async hasRetainingWork(): Promise<boolean> {
+  async hasRetainingWork(retainScheduled = true): Promise<boolean> {
+    if (this.resourceRegistry.hasManagedProcesses()) return true;
     for (const { runtime, commands } of this.registry.list()) {
       const processes = await commands.managedProcesses.list({ includeExited: false });
       const heartbeat = commands.heartbeat.status();
@@ -87,12 +159,13 @@ export class RuntimeHostExecution {
         || Boolean(processes.length)
         || heartbeat.running
         || commands.automationStore.listPending().some((entry) => entry.status === "running")
-        || (["queued", "running", "verifying"] as const).some((status) => Boolean(commands.taskRuns.list({ status, limit: 1 }).tasks.length));
-      // 定时职责保留进程，但历史终态和等待人工处理的记录并不是执行中的工作。
-      const scheduledWork = heartbeat.enabled
+        || (retainScheduled ? ["queued", "running", "verifying"] as const : ["running", "verifying"] as const)
+          .some((status) => Boolean(commands.taskRuns.list({ status, limit: 1 }).tasks.length));
+      // 仅有客户端时为未来的定时职责保留进程；已开始的工作仍须排空。
+      const scheduledWork = retainScheduled && (heartbeat.enabled
         || commands.automationStore.list().some((entry) => entry.status === "active")
-        || commands.graphs.listGraphs().some((entry) => entry.status === "running");
-      const activeGoals = commands.sessionGoals.list({ status: "active" }).length;
+        || commands.graphs.listGraphs().some((entry) => entry.status === "running"));
+      const activeGoals = retainScheduled && commands.sessionGoals.list({ status: "active" }).length > 0;
       if (activeWork || scheduledWork || activeGoals) {
         return true;
       }
@@ -143,10 +216,11 @@ export class RuntimeHostExecution {
       registration.persistenceRoot
     );
     this.host.attachOwnerNotificationSink(commands);
-    this.registry = host.initialRegistry ?? new SessionRuntimeRegistry({ runtime, commands }, {
+    host.detachInitialRuntimeSubscription();
+    this.registry = new SessionRuntimeRegistry({ runtime, commands }, {
       createRuntime: this.createRuntime,
       sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
-      canEvict: (entry) => !this.oneShotSessions.has(entry.sessionId) && !this.host.sessionWriterOwners.has(entry.sessionId) && !this.host.dispatcher.hasPendingSession(entry.sessionId),
+      canEvict: (entry) => !this.oneShotSessions.has(entry.sessionId) && !this.host.hasSessionWriter(entry.sessionId) && !this.host.dispatcher.hasPendingSession(entry.sessionId),
       onUpdate: (update, managed) => this.host.handleRuntimeUpdate(update, managed)
     });
     this.businessComposition = createRuntimeHostBusinessComposition({
@@ -187,25 +261,25 @@ export class RuntimeHostExecution {
     });
 
   }
-  readonly oneShotSessions = new Map<string, { options: RunCommandOptions; started: boolean; clientId: string }>();
+  private readonly oneShotSessions = new Map<string, { options: RunCommandOptions; started: boolean; clientId: string }>();
 
-  readonly sessionGoalOwners = new Map<string, { clientId: string; goalId: string }>();
+  private readonly sessionGoalOwners = new Map<string, { clientId: string; goalId: string }>();
 
-  primaryGoalSchedulingReady = true;
+  private primaryGoalSchedulingReady = true;
 
-  readonly diaryDispatcher = new OperationDispatcher();
+  private readonly diaryDispatcher = new OperationDispatcher();
 
   readonly businessComposition: RuntimeHostBusinessComposition;
 
   readonly conversationMirror: ConversationMarkdownMirror;
 
-  readonly worktrees: WorktreeManager;
+  private readonly worktrees: WorktreeManager;
 
-  readonly resourceRegistry: RuntimeHostResourceRegistry;
+  private readonly resourceRegistry: RuntimeHostResourceRegistry;
 
-  readonly createRuntime: RuntimeHostFactory;
+  private readonly createRuntime: RuntimeHostFactory;
 
-  readonly runtimeRestartPromises = new Map<string, Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }>>();
+  private readonly runtimeRestartPromises = new Map<string, Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }>>();
 
   async execute(connection: HostConnection, frame: HostRequestFrame): Promise<unknown> {
     if (this.host.closePromise) throw new Error("Runtime Host is shutting down.");
@@ -225,7 +299,7 @@ export class RuntimeHostExecution {
       return await forkSession(this.host.registration.persistenceRoot, optionalString(payload.session), { upToEvent: optionalSafeInteger(payload.upToEvent) });
     }
     if (frame.operation === "session.list") return this.host.sessionSummaries();
-    if (frame.operation === "client.pause-owned-runs") return await this.host.pauseOwnedRunsForExit(connection);
+    if (frame.operation === "client.pause-owned-runs") return await this.pauseOwnedRunsForExit(connection);
     if (frame.operation.startsWith("owner-notification.")) {
       return await this.host.executeOwnerNotificationRequest(connection, frame.operation, payload);
     }
@@ -300,7 +374,7 @@ export class RuntimeHostExecution {
         if (sessionFileExists) {
           await this.host.claimSessionWriter(connection, managed.sessionId);
         } else {
-          this.host.sessionWriterOwners.set(managed.sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
+          this.host.registerSessionWriter(connection, managed.sessionId);
         }
       }
       return {
@@ -316,9 +390,7 @@ export class RuntimeHostExecution {
       this.host.assertSessionWriterAvailable(connection, sessionId);
       await this.registry.closeSession(sessionId);
       this.oneShotSessions.delete(sessionId);
-      if (this.host.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) {
-        this.host.sessionWriterOwners.delete(sessionId);
-      }
+      this.host.forgetClosedSessionWriter(sessionId);
       try {
         await this.worktrees.remove(sessionId, true);
       } catch (error) {
@@ -348,9 +420,7 @@ export class RuntimeHostExecution {
       if (deleteAfter && managed && !managed.primary) {
         this.host.assertSessionWriterAvailable(connection, sessionId);
         await this.registry.closeSession(sessionId);
-        if (this.host.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) {
-          this.host.sessionWriterOwners.delete(sessionId);
-        }
+        this.host.forgetClosedSessionWriter(sessionId);
       }
       return await this.worktrees.merge(sessionId, { strategy, deleteAfter });
     }
@@ -363,9 +433,7 @@ export class RuntimeHostExecution {
       if (managed?.primary) throw new Error("The primary Runtime Host session cannot remove its worktree runtime.");
       if (managed) {
         await this.registry.closeSession(sessionId);
-        if (this.host.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId) {
-          this.host.sessionWriterOwners.delete(sessionId);
-        }
+        this.host.forgetClosedSessionWriter(sessionId);
       }
       await this.worktrees.remove(sessionId, payload.deleteBranch === true);
       return undefined;
@@ -446,6 +514,22 @@ export class RuntimeHostExecution {
       // 先排空已收到的同 run 准入，再让持久 authority 确定真实 owner 和运行状态。
       await this.host.waitForPendingRunAdmissions(requiredString(payload.runId, "runId"));
     }
+    if (frame.operation === "run.inspect" || frame.operation === "run.list" || frame.operation === "runtime.events") {
+      const authority = await this.runReadAuthority(payload, frame.operation === "run.inspect" ? requiredString(payload.runId, "runId") : undefined);
+      if (frame.operation === "run.inspect") return authority?.getRun(requiredString(payload.runId, "runId"));
+      if (frame.operation === "run.list") return authority?.listRuns({
+        sessionId: optionalString(payload.sessionId),
+        status: readOptionalRunStatus(payload.status),
+        limit: optionalSafeInteger(payload.limit),
+        cursor: optionalString(payload.cursor)
+      }) ?? { runs: [], hasMore: false };
+      return authority?.readEvents({
+        afterSequence: optionalSafeInteger(payload.afterSequence),
+        limit: optionalSafeInteger(payload.limit),
+        runId: optionalString(payload.runId),
+        sessionId: optionalString(payload.sessionId)
+      }) ?? { events: [], hasMore: false, gap: false };
+    }
     const managed = await this.runtimeEntry(frame.operation, payload);
     this.host.assertRequestAdmission(connection, admissionOperation);
     const runtime = managed.runtime;
@@ -460,7 +544,7 @@ export class RuntimeHostExecution {
         }
         const execute = async (signal?: AbortSignal) => {
           const result = await commands.sessionCommand(command, payload.input, scope, optionalSafeInteger(payload.revision), signal);
-          this.host.publishSnapshot(runtime);
+          if (command !== "TodoShow") this.host.publishSnapshot(runtime);
           return result;
         };
         if (scope !== undefined && command !== "ToolCall" || command === "TodoShow" || command === "GoalGet" || command === "PlanStatus") return await execute();
@@ -651,9 +735,12 @@ export class RuntimeHostExecution {
       case "session.claim":
         await this.host.claimSessionWriter(connection, requiredString(payload.session, "session"));
         return undefined;
-      case "session.release":
-        await this.host.releaseSessionWriter(connection, optionalString(payload.session));
+      case "session.release": {
+        const session = optionalString(payload.session);
+        if (session === undefined) await this.releasePreparedSessions(connection.clientId);
+        await this.host.releaseSessionWriter(connection, session);
         return undefined;
+      }
       case "resume":
         this.assertRevision(payload, runtime);
         await this.host.claimSessionWriter(connection, requiredString(payload.session, "session"));
@@ -715,31 +802,6 @@ export class RuntimeHostExecution {
           this.host.assertRequestAdmission(connection, admissionOperation);
           return await this.continueRun(payload, runtime, commands);
         }, runtime);
-      case "run.inspect": {
-        const authority = commands.runtimeAuthority;
-        if (!authority) return undefined;
-        return authority.getRun(requiredString(payload.runId, "runId"));
-      }
-      case "run.list": {
-        const authority = commands.runtimeAuthority;
-        if (!authority) return { runs: [], hasMore: false };
-        return authority.listRuns({
-          sessionId: optionalString(payload.sessionId),
-          status: readOptionalRunStatus(payload.status),
-          limit: optionalSafeInteger(payload.limit),
-          cursor: optionalString(payload.cursor)
-        });
-      }
-      case "runtime.events": {
-        const authority = commands.runtimeAuthority;
-        if (!authority) return { events: [], hasMore: false, gap: false };
-        return authority.readEvents({
-          afterSequence: optionalSafeInteger(payload.afterSequence),
-          limit: optionalSafeInteger(payload.limit),
-          runId: optionalString(payload.runId),
-          sessionId: optionalString(payload.sessionId)
-        });
-      }
       case "task.create":
         return await this.host.executeAdmission(async () => {
           const task = commands.taskRuns;
@@ -1059,13 +1121,36 @@ export class RuntimeHostExecution {
           "mcp",
           async () => await commands.mcp.reconnectServer(requiredString(payload.server, "server"))
         );
+      case "mcp.configure": {
+        if (payload.servers !== undefined && (!Array.isArray(payload.servers) || !payload.servers.every(name => typeof name === "string" && name.length > 0 && name.length <= 120))) {
+          throw new Error("MCP server names are invalid.");
+        }
+        const names = payload.servers === undefined ? undefined : [...new Set(payload.servers as string[])];
+        const groups = new Map<CommandRuntime["mcp"], ReturnType<SessionRuntimeRegistry["list"]>>();
+        for (const entry of this.registry.list()) {
+          const group = groups.get(entry.commands.mcp) ?? [];
+          group.push(entry);
+          groups.set(entry.commands.mcp, group);
+        }
+        const failures: unknown[] = [];
+        for (const entries of groups.values()) {
+          // 同一连接的所有借用者先进入空闲独占，避免活动回合看到半套目录。
+          const configure = async (index: number): Promise<void> => {
+            const entry = entries[index];
+            if (entry) return await entry.runtime.runExclusiveOperation("mcp", async () => await configure(index + 1));
+            try { await entries[0]!.commands.configureMcp(names, payload.force === true); }
+            finally { for (const owner of entries) owner.commands.refreshExtensionTools?.(); }
+          };
+          try { await configure(0); }
+          catch (error) { failures.push(error); }
+        }
+        if (failures.length) throw new AggregateError(failures, failures.map(error => error instanceof Error ? error.message : String(error)).join("; "));
+        return undefined;
+      }
       case "memory":
-        return await executeRuntimeHostMemoryOperation({
-          getCommands: () => commands,
-          scheduleEmbeddingRebuild: () => this.businessComposition.scheduleMemoryEmbeddingRebuild()
-        }, payload);
+        return await executeRuntimeHostMemoryOperation(commands, payload);
       case "memory.sleep.cancel":
-        return { cancelled: await this.businessComposition.cancelMemorySleep() };
+        return { cancelled: await this.commands.agent.cancelMemoryMaintenance() };
       case "memory.embedding.status":
         return await commands.agent.memoryEmbeddingStatus();
       case "memory.embedding.download":
@@ -1101,7 +1186,7 @@ export class RuntimeHostExecution {
           if (sessionId !== undefined) await this.host.claimSessionWriter(connection, sessionId);
           const result = await this.restartRuntime(sessionId);
           if (sessionId !== undefined) {
-            this.host.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
+            this.host.registerSessionWriter(connection, sessionId);
           }
           return result;
         }
@@ -1123,14 +1208,14 @@ export class RuntimeHostExecution {
     }
   }
 
-  pauseGoalForRun(runtime: InteractiveRuntimeHandle, commands: CommandRuntime, runId: string): void {
+  private pauseGoalForRun(runtime: InteractiveRuntimeHandle, commands: CommandRuntime, runId: string): void {
     const snapshot = runtime.getSnapshot();
     if (snapshot.state.kind !== "runs" || snapshot.state.activeRun.runId !== runId) return;
     const goal = commands.sessionGoals.get(snapshot.info.sessionId);
     if (goal?.status === "active") commands.sessionGoals.pause(goal.sessionId, goal);
   }
 
-  withCapabilityOwner<T>(connection: HostConnection, invocationId: string, execute: (capabilities: CapabilityStore, invocationId: string) => T): T {
+  private withCapabilityOwner<T>(connection: HostConnection, invocationId: string, execute: (capabilities: CapabilityStore, invocationId: string) => T): T {
     const invocation = this.commands.capabilities.getInvocation(invocationId);
     if (!invocation) throw new Error(`Capability invocation ${invocationId} was not found.`);
     const registration = this.commands.capabilities.get(invocation.registrationId);
@@ -1140,7 +1225,7 @@ export class RuntimeHostExecution {
     return execute(this.commands.capabilities, invocationId);
   }
 
-  withCapabilityRegistrationOwner<T>(
+  private withCapabilityRegistrationOwner<T>(
     connection: HostConnection,
     registrationId: string,
     execute: (capabilities: CapabilityStore, registrationId: string) => T
@@ -1152,11 +1237,11 @@ export class RuntimeHostExecution {
     return execute(this.commands.capabilities, registrationId);
   }
 
-  async cancelGraph(graphId: string, runtime = this.runtime, commands = this.commands): Promise<unknown> {
+  private async cancelGraph(graphId: string, runtime = this.runtime, commands = this.commands): Promise<unknown> {
     return await cancelRuntimeGraph(runtime, commands, graphId);
   }
 
-  async continueRun(
+  private async continueRun(
     payload: Record<string, unknown>,
     runtime = this.runtime,
     commands = this.commands
@@ -1198,7 +1283,27 @@ export class RuntimeHostExecution {
     }
   }
 
-  async taskReadEntry(payload: Record<string, unknown>, taskRunId: string): Promise<CommandRuntime> {
+  private async runReadAuthority(payload: Record<string, unknown>, runId?: string): Promise<CommandRuntime["runtimeAuthority"]> {
+    const requestedSessionId = optionalString(payload.sessionId)
+      ?? (typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined);
+    const routingSessionId = this.registry.get(requestedSessionId ?? "")?.sessionId ?? this.registry.primary().sessionId;
+    await this.runtimeRestartPromises.get(routingSessionId);
+    if (this.host.closePromise) throw new Error("Runtime Host is shutting down.");
+    const routing = this.registry.get(routingSessionId) ?? this.registry.primary();
+    const runSessionId = runId === undefined ? undefined : routing.commands.runtimeAuthority?.getRun(runId)?.sessionId;
+    if (requestedSessionId !== undefined && runSessionId !== undefined && requestedSessionId !== runSessionId) {
+      throw new Error(`Run ${runId} belongs to session ${runSessionId}, not ${requestedSessionId}.`);
+    }
+    const sessionId = requestedSessionId ?? runSessionId ?? this.registry.primary().sessionId;
+    await this.runtimeRestartPromises.get(sessionId);
+    const sourceSessionId = (this.registry.get(sessionId) ?? this.registry.get(routingSessionId) ?? this.registry.primary()).sessionId;
+    // 冷会话只借用持久 authority；等待期间连接可能被替换，不能保留旧实例。
+    await this.runtimeRestartPromises.get(sourceSessionId);
+    if (this.host.closePromise) throw new Error("Runtime Host is shutting down.");
+    return (this.registry.get(sessionId) ?? this.registry.get(sourceSessionId) ?? this.registry.primary()).commands.runtimeAuthority;
+  }
+
+  private async taskReadEntry(payload: Record<string, unknown>, taskRunId: string): Promise<CommandRuntime> {
     const requestedSessionId = optionalString(payload.sessionId)
       ?? (typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined);
     const routingSessionId = this.registry.get(requestedSessionId ?? "")?.sessionId ?? this.registry.primary().sessionId;
@@ -1216,7 +1321,7 @@ export class RuntimeHostExecution {
     return (this.registry.get(sessionId) ?? this.registry.get(sourceSessionId) ?? this.registry.primary()).commands;
   }
 
-  async graphReadEntry(payload: Record<string, unknown>, graphId?: string): Promise<{
+  private async graphReadEntry(payload: Record<string, unknown>, graphId?: string): Promise<{
     commands: CommandRuntime; runtime?: InteractiveRuntimeHandle;
   }> {
     const requestedSessionId = optionalString(payload.sessionId)
@@ -1240,7 +1345,7 @@ export class RuntimeHostExecution {
     };
   }
 
-  async runtimeEntry(operation: string, payload: Record<string, unknown>): Promise<ManagedSessionRuntime> {
+  private async runtimeEntry(operation: string, payload: Record<string, unknown>): Promise<ManagedSessionRuntime> {
     const explicitSessionId = optionalString(payload.sessionId);
     if (operation === "session.command" && optionalString(payload.scope) !== undefined) {
       const owner = explicitSessionId === undefined ? undefined : this.registry.get(explicitSessionId);
@@ -1252,7 +1357,7 @@ export class RuntimeHostExecution {
     const graphId = operation.startsWith("graph.") || operation.startsWith("plan.") ? optionalString(payload.graphId) : undefined;
     const sourceRunId = operation === "run.continue"
       ? optionalString(payload.sourceRunId)
-      : operation === "cancel" || operation === "run.cancel" || operation === "run.inspect"
+      : operation === "cancel" || operation === "run.cancel"
         ? optionalString(payload.runId)
         : undefined;
     // 各会话连接同一份 authority 数据库；优先用目标会话的连接读取身份映射，
@@ -1301,7 +1406,7 @@ export class RuntimeHostExecution {
     return await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
   }
 
-  async assertTaskWorktreeIdle(sessionId: string) {
+  private async assertTaskWorktreeIdle(sessionId: string) {
     const record = await this.worktrees.get(sessionId);
     if (record?.taskRunId) {
       const taskRunId = record.taskRunId;
@@ -1314,7 +1419,7 @@ export class RuntimeHostExecution {
     return record;
   }
 
-  async prepareWorktreeSession(
+  private async prepareWorktreeSession(
     sessionId: string,
     catalog: Awaited<ReturnType<typeof readSessionCatalogRecord>>,
     fresh: boolean
@@ -1342,7 +1447,7 @@ export class RuntimeHostExecution {
     return { workspaceRoot: worktree.worktreePath, sessionId, fresh, isolation: "worktree" };
   }
 
-  assertRevision(payload: Record<string, unknown>, runtime = this.runtime): void {
+  private assertRevision(payload: Record<string, unknown>, runtime = this.runtime): void {
     const expected = optionalSafeInteger(payload.expectedRevision);
     if (expected === undefined) return;
     const current = runtime.getSnapshot().revision;
@@ -1364,13 +1469,13 @@ export class RuntimeHostExecution {
     }
   }
 
-  async startDraftRuntime(_targetSessionId?: string): Promise<AgentSessionInfo> {
+  private async startDraftRuntime(_targetSessionId?: string): Promise<AgentSessionInfo> {
     const managed = await this.registry.createFresh({ isolation: "shared", resourceRegistry: this.resourceRegistry });
     this.host.publishSnapshot(managed.runtime);
     return managed.runtime.getSnapshot().info;
   }
 
-  async rotatePrimaryRuntime(): Promise<InteractiveRuntimeSnapshot> {
+  private async rotatePrimaryRuntime(): Promise<InteractiveRuntimeSnapshot> {
     const current = this.registry.primary();
     if (runtimeIsBusy(current.runtime.getSnapshot())) {
       throw new Error(`Cannot replace the primary session while it is busy: ${current.sessionId}.`);
@@ -1384,7 +1489,7 @@ export class RuntimeHostExecution {
       resourceRegistry: this.resourceRegistry
     });
     const managed = await this.registry.replacePrimary(next);
-    this.host.sessionWriterOwners.delete(previousSessionId);
+    this.host.forgetClosedSessionWriter(previousSessionId);
     this.primaryGoalSchedulingReady = true;
     this.businessComposition.recoverGraphs();
     this.businessComposition.scheduleGoals();
@@ -1392,7 +1497,7 @@ export class RuntimeHostExecution {
     return managed.runtime.getSnapshot();
   }
 
-  async performRuntimeRestart(sessionId?: string): Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }> {
+  private async performRuntimeRestart(sessionId?: string): Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }> {
     const target = sessionId === undefined
       ? this.registry.primary()
       : await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
@@ -1407,8 +1512,7 @@ export class RuntimeHostExecution {
     const next = await this.createRuntime(previousSessionId, factoryOptions);
     const managed = await this.registry.replace(previousSessionId, next);
     if (managed.primary) this.primaryGoalSchedulingReady = true;
-    const owner = this.host.sessionWriterOwners.get(previousSessionId);
-    if (owner) await managed.runtime.claimSession(previousSessionId);
+    if (this.host.hasSessionWriter(previousSessionId)) await managed.runtime.claimSession(previousSessionId);
     this.businessComposition.recoverGraphs();
     this.businessComposition.scheduleGoals();
     this.host.publishSnapshot(managed.runtime);
@@ -1438,7 +1542,7 @@ export class RuntimeHostExecution {
     };
   }
 
-  runtimeMatchesIsolation(runtime: InteractiveRuntimeHandle, isolation: "shared" | "worktree", worktree: Awaited<ReturnType<WorktreeManager["get"]>>): boolean {
+  private runtimeMatchesIsolation(runtime: InteractiveRuntimeHandle, isolation: "shared" | "worktree", worktree: Awaited<ReturnType<WorktreeManager["get"]>>): boolean {
     const workspaceRoot = path.resolve(runtime.getSnapshot().info.workspaceRoot);
     if (isolation === "worktree") return worktree !== undefined && workspaceRoot === path.resolve(worktree.worktreePath);
     return workspaceRoot === path.resolve(this.worktrees.repoRoot);

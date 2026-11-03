@@ -3,7 +3,7 @@
   --st-rem: calc(14px * var(--font-scale, 1));
   --st-content-inset: calc(16px * var(--font-scale, 1));
   --st-card-padding: calc(20px * var(--font-scale, 1));
-  --st-card-gap: calc(0.75 * var(--st-rem));
+  --st-card-gap: calc(12px * var(--font-scale, 1));
   --st-control-h: max(var(--biny-control-height), calc(32px * var(--font-scale, 1)));
   --st-control-h-sm: calc(2 * var(--st-rem));
   --st-control-px: calc(0.9 * var(--st-rem));
@@ -27,6 +27,7 @@
   --st-primary-active: color-mix(in srgb, var(--text) 72%, var(--surface-raised));
   --st-ring: color-mix(in srgb, var(--accent) 25%, transparent);
   --st-ring-weak: color-mix(in srgb, var(--accent) 22%, transparent);
+  --st-field-ring: var(--field-focus-ring);
   --st-action-border: transparent;
   --st-action-border-hover: transparent;
   --st-action-bg: color-mix(in srgb, var(--text) 7%, transparent);
@@ -43,11 +44,6 @@
   --st-field-border-hover: var(--border);
   --st-sidebar-bg: var(--sidebar);
   --st-sidebar-border: var(--border-subtle);
-  /* 浮层（模型选择器、原生下拉弹出层）：深色下比卡片再亮一档，两层阴影给出高度。 */
-  --st-popover: light-dark(var(--surface-raised), color-mix(in srgb, var(--surface-raised) 93%, var(--text)));
-  --st-popover-border: color-mix(in srgb, var(--text) 10%, transparent);
-  --st-popover-shadow: 0 2px 6px -2px var(--shadow-soft), 0 18px 40px -12px var(--shadow-heavy);
-  --st-menu-hover: color-mix(in srgb, var(--text) 7%, transparent);
   --st-ease: cubic-bezier(0.4, 0, 0.2, 1);
   --st-scrollbar-thumb: color-mix(in srgb, var(--text) 30%, transparent);
 }
@@ -105,7 +101,7 @@
   line-height: 1.4;
 }
 .settings-field:hover:not(:disabled) { border-color: var(--st-field-border-hover); }
-.settings-field:focus-visible { border-color: var(--accent); outline: none; box-shadow: none; }
+.settings-field:focus-visible { border-color: var(--st-field-border); outline: none; box-shadow: 0 0 0 2px var(--st-field-ring); }
 .settings-field:disabled { opacity: .5; cursor: default; }
 .settings-field::placeholder { color: var(--text-tertiary); }
 textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize: vertical; }
@@ -122,7 +118,8 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   background: var(--st-field-bg);
   box-shadow: none;
 }
-.settings-search-field:focus-within { border-color: var(--accent); }
+.settings-search-field:focus-within { border-color: var(--st-field-border); box-shadow: 0 0 0 2px var(--st-field-ring); }
+.settings-model-picker-search:focus-within { color: var(--text-secondary); }
 .settings-search-field > .settings-field,
 .settings-model-picker-search > .settings-field,
 .settings-search > .settings-field {
@@ -136,6 +133,7 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   box-shadow: none;
   outline: none;
 }
+.settings-search > .settings-field { padding: 0; }
 
 /* 原生复选框与 button 开关共用同一轨道，不再分别维护滑块子节点。 */
 .settings-switch {
@@ -227,7 +225,7 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   line-height: 1.35;
 }
 .settings-segmented input:checked + span,
-.settings-choice-tabs > button:is(.is-active, [aria-pressed="true"]) { color: var(--text); background: var(--st-card); border-color: var(--border-subtle); box-shadow: 0 1px 2px var(--shadow); font-weight: 500; }
+.settings-choice-tabs > button:is(.is-active, [aria-pressed="true"]) { color: var(--text); background: var(--st-card); border-color: var(--border-subtle); box-shadow: 0 1px 2px var(--shadow); }
 .settings-choice-tabs > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .settings-choice-tabs > button:hover { color: var(--text); }
 .settings-choice-tabs > button > svg { width: 14px; height: 14px; }
@@ -236,12 +234,23 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   .settings-action, .settings-switch, .settings-switch::before { transition: none; }
 }
 
+/* 组间距由容器统一管理，不叠加卡片自身的 margin。 */
+.settings-sections:not([hidden]),
+.settings-preferences:not([hidden]) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--st-stack-gap);
+}
+.settings-sections > *,
+.settings-preferences > * { margin-block: 0; }
+
 /* 标题位于分组外；同一组内容只保留一个表面。 */
-.desktop-settings-dialog .settings-modal .settings-section,
-.desktop-settings-dialog .settings-modal .theme-mode-section {
+.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section, .theme-mode-section) {
   display: flex;
+  min-width: 0;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--st-control-gap);
   margin-block: 0;
   padding: 0;
   border: 0;
@@ -249,29 +258,39 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   background: transparent;
   box-shadow: none;
 }
-.settings-section-body {
+.settings-section-body,
+.settings-form-group {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: var(--st-card-gap);
-  padding: var(--st-card-padding);
+  padding: var(--st-row-padding);
   border: 0;
   border-radius: var(--st-radius);
   background: var(--st-card);
 }
-.settings-section-body > p:not([role="alert"]):not(.is-error):not(.settings-effective-hint):not(.cu-feedback):not(.activity-feedback) {
+:is(.settings-section-body, .settings-form-group) > p:not([role="alert"]):not(.is-error):not(.settings-effective-hint):not(.cu-feedback):not(.activity-feedback) {
   margin: 0;
   color: var(--text-secondary);
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.5;
 }
-.desktop-settings-dialog .settings-modal :is(.settings-section, .theme-mode-section) > h3,
+.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section, .theme-mode-section) > h3,
+.settings-preference-heading > h3,
 .settings-section > :is(header, .section-heading-row, .activity-section-heading, .activity-section-title, .activity-memory-heading-row, .browser-connection-heading, .cu-approvals-heading) h3 {
   margin: 0;
   color: var(--text-secondary);
   font-size: calc(12px * var(--font-scale, 1));
   font-weight: 600;
   line-height: 1.5;
+}
+.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section, .theme-mode-section) > h3 { padding-inline: 2px; }
+.settings-preference-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--st-control-gap);
+  padding-inline: 2px;
 }
 .settings-section > :is(header, .section-heading-row, .activity-section-heading, .activity-section-title, .activity-memory-heading-row, .browser-connection-heading, .cu-approvals-heading) {
   margin: 0;

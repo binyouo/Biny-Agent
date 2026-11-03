@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { test, type TestContext } from "node:test";
 import { ManagedProcessService } from "../src/runtime/ManagedProcessService.js";
 import { agentDir } from "../src/session/store.js";
@@ -40,7 +41,8 @@ async function reportProcessDirectoryEquality(context: TestContext, workspace: s
 test("failed Windows tree cleanup is reported even when the shell itself has exited", async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), "biny-windows-cleanup-"));
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-  const child = Object.assign(new EventEmitter(), { pid: 987654321, exitCode: null as number | null, signalCode: null, unref() {}, kill() { return true; } });
+  const child = Object.assign(new EventEmitter(), { pid: 987654321, exitCode: null as number | null, signalCode: null,
+    stdout: new PassThrough(), stderr: new PassThrough(), unref() {}, kill() { return true; } });
   let alive = true;
   const service = new ManagedProcessService({ workspaceRoot: root });
   const spawn = context.mock.method(childProcess, "spawn", (command: string) => {
@@ -54,6 +56,7 @@ test("failed Windows tree cleanup is reported even when the shell itself has exi
       alive = false;
       child.exitCode = 0;
       child.emit("exit", 0, null);
+      child.stdout.end(); child.stderr.end(); child.emit("close", 0, null);
       helper.emit("close", 5);
     });
     return helper as unknown as childProcess.ChildProcess;
@@ -99,11 +102,12 @@ test("Windows managed process uses the initialized state partition for an ordina
     assert.ok(realpathSync.native(workspaceAlias) === canonicalWorkspace, "native alias must identify the created workspace");
     assert.ok(await realpath(workspaceAlias) === canonicalWorkspace, "async alias must identify the created workspace");
     process.env.BINY_AGENT_DIR = await realpath(stateRoot);
-    const child = Object.assign(new EventEmitter(), { pid: 987654322, exitCode: null as number | null, signalCode: null, unref() {}, kill() { return true; } });
+    const child = Object.assign(new EventEmitter(), { pid: 987654322, exitCode: null as number | null, signalCode: null,
+      stdout: new PassThrough(), stderr: new PassThrough(), unref() {}, kill() { return true; } });
     let alive = true;
     context.mock.method(childProcess, "spawn", (command: string) => {
       if (command === "synthetic-workspace-alias-command") {
-        queueMicrotask(() => child.emit("spawn"));
+        queueMicrotask(() => { child.emit("spawn"); child.stdout.write("workspace alias process ready\n"); });
         return child as unknown as childProcess.ChildProcess;
       }
       assert.equal(command, "taskkill");
@@ -112,6 +116,7 @@ test("Windows managed process uses the initialized state partition for an ordina
         alive = false;
         child.exitCode = 0;
         child.emit("exit", 0, null);
+        child.stdout.end(); child.stderr.end(); child.emit("close", 0, null);
         helper.emit("close", 0);
       });
       return helper as unknown as childProcess.ChildProcess;
@@ -127,10 +132,10 @@ test("Windows managed process uses the initialized state partition for an ordina
       await reportProcessDirectoryEquality(context, workspaceAlias);
       throw error;
     });
-    const expectedProcessDirectory = path.join(agentDir(canonicalWorkspace), "processes");
+    const expectedProcessDirectory = path.join(agentDir(canonicalWorkspace), "processes", "logs-v1");
     assert.ok(path.dirname(started.logPath) === expectedProcessDirectory, "process log must use the partition established during initialization");
     assert.ok(await realpath(path.dirname(started.logPath)) === expectedProcessDirectory, "process log parent must remain canonical");
-    assert.match((await service.readOutput(started.processId)).content, /starting managed process/u);
+    assert.equal((await service.readOutput(started.processId)).content, "workspace alias process ready\n");
     const stopped = await service.stop(started.processId);
     assert.equal(stopped.cleanup.status, "stopped");
   } finally {

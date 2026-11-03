@@ -96,8 +96,9 @@ const paste = (id: string): Request => ({ authRequestId: id, method: "paste-code
 
 test("source binding: normal settings dialog retains its provider component across close/reopen", () => {
   const overlay = readFileSync(new URL("../src/desktop/renderer/src/components/settings/SettingsOverlay.tsx", import.meta.url), "utf8");
-  assert.match(overlay, /if \(!open && visitedScope !== scope\) return null;/u);
-  assert.match(overlay, /<SettingsDraftProvider\s+key=\{scope\}\s+active=\{open\}/u);
+  assert.match(overlay, /if \(!props\.open && visitedScope !== scope\) return null;/u);
+  assert.match(overlay, /<SettingsOverlayScope key=\{scope\} \{\.\.\.props\} \/>/u);
+  assert.match(overlay, /<SettingsDraftProvider\s+active=\{props\.open\}/u);
   assert.match(overlay, /activeTab === "模型" \? <ProviderSettings\s+active=\{open\}/u);
   assert.match(overlay, /<Dialog[\s\S]*?isOpen=\{open\}/u);
   const require = createRequire(import.meta.url);

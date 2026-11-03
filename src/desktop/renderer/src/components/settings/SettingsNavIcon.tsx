@@ -46,13 +46,6 @@ function pathFor(page: SettingsTab): React.JSX.Element {
       <path {...S} d="M15.5 8H18v2.5" />
       <circle {...F} cx="6" cy="15.5" r="1.3" />
     </>;
-    // 用户界面：窗口框架（顶栏 + 两栏）。
-    case "用户界面": return <>
-      <rect {...S} height="15" rx="2.5" width="17" x="3.5" y="4.5" />
-      <path {...S} d="M3.5 8.5h17" opacity="0.7" />
-      <rect {...S} height="7" rx="1.5" width="6" x="6" y="10.5" fill="currentColor" fillOpacity="0.12" />
-      <path {...S} d="M15 11h2.5M15 14h2.5M15 17h2.5" />
-    </>;
     // 配色：调色盘 + 三个色点。
     case "配色": return <>
       <path {...S} d="M12 3.8a8.2 8.2 0 1 0 0 16.4c1.5 0 2.2-.9 2.2-1.9 0-.9-.6-1.5-.6-2.4 0-1 .8-1.7 1.9-1.7h2.3a2.4 2.4 0 0 0 2.4-2.4C20.2 7.4 16.5 3.8 12 3.8Z" fill="currentColor" fillOpacity="0.1" />

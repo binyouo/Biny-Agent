@@ -164,7 +164,7 @@ try {
       ` });
       assert.equal(result.isError, false, JSON.stringify(result.details));
       const value = (result.details as { value: { pid: number; output: string; state: string; cleanup: string } }).value;
-      assert.match(value.output, /\nBACKGROUND_READY$/u);
+      assert.equal(value.output, "BACKGROUND_READY");
       assert.equal(value.state, "stopped");
       assert.equal(value.cleanup, "stopped");
       assert.throws(() => process.kill(value.pid, 0), { code: "ESRCH" });

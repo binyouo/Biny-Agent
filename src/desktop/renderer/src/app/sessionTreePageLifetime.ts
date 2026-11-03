@@ -1,4 +1,4 @@
-import type { DesktopSessionSummary, DesktopSessionTreePage, DesktopWorkspaceSnapshot } from "../../../protocol.js";
+import type { DesktopSessionSummary, DesktopSessionTreePage } from "../../../protocol.js";
 
 /** Renderer-only reset receipt; IPC revisionChanged still means an invalid/empty page. */
 export interface LoadedSessionTreePage extends DesktopSessionTreePage {
@@ -7,8 +7,9 @@ export interface LoadedSessionTreePage extends DesktopSessionTreePage {
 }
 
 interface CatalogRefresh {
-  read(): Promise<DesktopWorkspaceSnapshot>;
-  publish(snapshot: DesktopWorkspaceSnapshot): void;
+  read(sessionIds: string[]): Promise<DesktopSessionTreePage>;
+  publish(snapshot: DesktopSessionTreePage): void;
+  sessionIds: Set<string>;
   onError(error: unknown): void;
   running: boolean;
   timer?: ReturnType<typeof setTimeout>;
@@ -44,9 +45,9 @@ export function createSessionTreePageLifetime() {
       refresh.running = true;
       const publication = project.publication;
       void (async () => {
-        let snapshot: DesktopWorkspaceSnapshot;
+        let snapshot: DesktopSessionTreePage;
         try {
-          snapshot = await refresh.read();
+          snapshot = await refresh.read([...new Set([...(parents.get(projectId)?.keys() ?? []), ...refresh.sessionIds])]);
         } catch (error) {
           if (!ownsRequest()) return;
           refresh.running = false;
@@ -98,14 +99,16 @@ export function createSessionTreePageLifetime() {
       projectId: string,
       read: CatalogRefresh["read"],
       publish: CatalogRefresh["publish"],
-      onError: CatalogRefresh["onError"]
+      onError: CatalogRefresh["onError"],
+      sessionId?: string
     ): void {
       const project = catalogProjects.get(projectId);
       if (!project) return;
       // A later successful write invalidates a read even before another catalog
       // response has been accepted. Keep one flight and one coalesced demand.
       project.publication = {};
-      const refresh = project.refresh ?? { read, publish, onError, running: false };
+      const refresh = project.refresh ?? { read, publish, onError, sessionIds: new Set<string>(), running: false };
+      if (sessionId !== undefined) refresh.sessionIds.add(sessionId);
       refresh.onError = onError;
       project.refresh = refresh;
       scheduleCatalogRefresh(projectId, project, refresh);

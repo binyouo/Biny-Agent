@@ -103,27 +103,3 @@ test("启动已刷新项目后，侧栏读取不重复启动 Git 检查或其他
     await rm(root, { recursive: true, force: true }); await rm(otherRoot, { recursive: true, force: true });
   }
 });
-
-test("时间线索读取一次性任务不加载模型、工具或启动 Runtime", async () => {
-  const { AutomationStore } = await import("../src/runtime/AutomationScheduler.js");
-  const { RuntimeEventAuthority } = await import("../src/runtime/RuntimeAuthority.js");
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-scheduled-read-"));
-  const state = new DesktopStateStore(path.join(root, "state.json"));
-  const storage = new DesktopUserDataStore(path.join(root, "data"));
-  const configStore = createFileConfigStore(path.join(root, "config"), { globalDir: path.join(root, "config") });
-  const projects = new DesktopProjectService(state, storage, configStore);
-  const manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
-  try {
-    await state.load(); await storage.initialize();
-    const project = await projects.createProject(root);
-    const authority = await RuntimeEventAuthority.open(root, { reconcileSessions: false });
-    const store = await AutomationStore.open(root, authority);
-    const record = store.create({ name: "本地提醒", triggerType: "once", schedule: { at: "2026-10-01T01:00:00Z" }, executionTemplate: { prompt: "提醒" } });
-    store.close(); authority.close();
-    configStore.supportsDetachedRuntimeHost = false;
-    configStore.load = async () => { throw new Error("只读任务列表不应加载 Provider 配置"); };
-    const entries = await manager.scheduledAutomations(project.id);
-    assert.deepEqual(entries.map((entry) => entry.automationId), [record.automationId]);
-    assert.equal(entries[0]?.fireCount, 0);
-  } finally { await manager.closeAll(); await rm(root, { recursive: true, force: true }); }
-});

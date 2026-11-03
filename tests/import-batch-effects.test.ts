@@ -59,7 +59,7 @@ async function fixture(count: number, position: 'early' | 'late', outcome: 'impo
   // Actual public admission, sync, execute, receipt and withState logic are retained.
   service.readState = async () => structuredClone(persisted);
   service.writeState = async (state: any) => {
-    if (syncStarted && !failureUsed && failure === 'later-admission' && state.receipts.some((r: any) => r.itemId === 'effect' && r.status === 'imported') && state.receipts.some((r: any) => r.itemId === 'skip' && r.status === 'attempting')) {
+    if (syncStarted && !failureUsed && failure === 'later-admission' && state.receipts.some((r: any) => r.itemId === 'effect' && r.status === 'imported') && state.receipts.some((r: any) => r.itemId === 'skip-0' && r.status === 'attempting')) {
       failureUsed = true; throw new Error('synthetic later admission failure');
     }
     if (syncStarted && !failureUsed && failure === 'final-persistence' && state.receipts.some((r: any) => r.status === 'imported') && JSON.stringify(state) === JSON.stringify(persisted)) {
@@ -67,8 +67,9 @@ async function fixture(count: number, position: 'early' | 'late', outcome: 'impo
     }
  assert.ok(state.history.length <= 50); assert.ok(state.sync.selections.length <= 256); persisted = structuredClone(state); };
   const item = (id: string) => ({ id, configurationId: id, category: 'mcp', label: id, detail: 'synthetic', sourceHash: 'a'.repeat(64), digest: 'a'.repeat(64) });
-  service.scan = async () => { syncStarted = true; return ({ preview: { id: crypto.randomUUID(), source: 'claude', label: 'fixture', items: [item('effect'), item('skip')], warnings: [] }, contents: new Map(), configurations: new Map([
-    ['skip', { apply: async () => ({ status: 'skipped' }) }],
+  const skippedIds = Array.from({ length: count }, (_, index) => `skip-${index}`);
+  service.scan = async () => { syncStarted = true; return ({ preview: { id: crypto.randomUUID(), source: 'claude', label: 'fixture', items: [item('effect'), ...skippedIds.map(item)], warnings: [] }, contents: new Map(), configurations: new Map([
+    ...skippedIds.map(id => [id, { apply: async () => ({ status: 'skipped' }) }]),
     ['effect', { apply: async (_workspace: string, store: any) => {
       applications++;
       if (outcome === 'unknown') throw new Error('synthetic uncertain write');
@@ -79,7 +80,7 @@ async function fixture(count: number, position: 'early' | 'late', outcome: 'impo
     } }]
   ]) }); };
   const preview = await service.preview('claude');
-  for (let i = 0; i < count; i++) await service.configureSyncSelection({ previewId: preview.id, itemIds: failure === 'later-admission' ? ['effect', 'skip'] : [position === 'early' || i === count - 1 ? 'effect' : 'skip'], workspaceRoot: `${fakeRoot}/workspace-${i}` });
+  for (let i = 0; i < count; i++) await service.configureSyncSelection({ previewId: preview.id, itemIds: failure === 'later-admission' ? ['effect', 'skip-0'] : [...(position === 'early' || i === count - 1 ? ['effect'] : []), `skip-${i}`], workspaceRoot: `${fakeRoot}/workspace-${i}` });
   await service.setSyncEnabled(true);
   const controller = new DesktopApplicationImports(service, async () => {}, async () => { assert.equal(persisted.receipts.some((r: any) => r.status === 'imported'), true); refreshes++; });
   return { controller, read: () => ({ persisted, config, writes, refreshes, applications }) };
