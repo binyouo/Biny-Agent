@@ -223,7 +223,7 @@ async function readGitStatus(workspaceRoot: string, signal?: AbortSignal): Promi
       "--ignore-submodules=all"
     ], { cwd: workspaceRoot, env: gitInspectionEnvironment(), timeout: 10_000, signal });
     signal?.throwIfAborted();
-    return result.stdout.trim();
+    return result.stdout.replace(/\r?\n$/u, "");
   } catch {
     signal?.throwIfAborted();
     return "(not a git repository)";
