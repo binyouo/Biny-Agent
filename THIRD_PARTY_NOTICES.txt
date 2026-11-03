@@ -256,3 +256,17 @@ RTK 0.29.0
 Source: https://github.com/rtk-ai/rtk/tree/v0.29.0
 License: MIT; copyright (c) 2024 Patrick Szymkowiak.
 Desktop distributions include the complete license in resources/rtk/LICENSE.
+
+Window capture background photographs
+
+License: Unsplash License (https://unsplash.com/license)
+Images may be downloaded, copied, modified, distributed, performed, and used
+for free, including for commercial purposes, without permission or attribution.
+They may not be sold without significant modification or compiled to replicate
+a similar or competing image service.
+
+sea.jpg: Rosan Harmens — https://unsplash.com/photos/Sd8O2SgKDJA
+canyon.jpg: Sebastian Boguszewicz — https://unsplash.com/photos/YG_Fxyqz9xg
+highland.jpg: Andrew Ridley — https://unsplash.com/photos/Kt5hRENuotI
+mist.jpg: Forrest Cavale — https://unsplash.com/photos/qfmd9bu7IgA
+ocean.jpg: NASA — https://unsplash.com/photos/6-jTZysYY_U

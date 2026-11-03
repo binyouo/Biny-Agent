@@ -67,8 +67,8 @@ test("权限刷新读取实时系统权限，不沿用采集器的上次状态�
     assert.doesNotMatch(document.body.textContent ?? "", /old-model|Insufficient Balance|待分析|上次失败模型|后台分析|工具模型设置/u);
     assert.equal(document.querySelector('button[aria-label="重试失败分析"]'), null);
     const capture = document.getElementById("activity-capture");
-    assert.equal(capture?.tagName, "DETAILS");
-    assert.equal(capture?.hasAttribute("open"), false);
+    assert.equal(capture?.tagName, "SECTION");
+    assert.equal(capture?.querySelector("summary"), null);
     assert.ok(capture?.querySelector("#activity-debounce"));
     assert.match(document.getElementById("activity-permissions")?.textContent ?? "", /屏幕录制需授权/u);
     granted = true;

@@ -99,7 +99,10 @@ export class DiagnosticsRunner {
     if (!existsSync(path.join(this.workspaceRoot, "tsconfig.json"))) return undefined;
     const binary = path.join(this.workspaceRoot, "node_modules", ".bin", "tsc");
     if (!existsSync(binary)) return undefined;
-    return { command: `"${binary}" --noEmit`, timeoutMs: this.config.autoDetectTimeoutMs };
+    const quotedBinary = process.platform === "win32"
+      ? `"${binary}"`
+      : `'${binary.replace(/'/gu, "'\\''")}'`;
+    return { command: `${quotedBinary} --noEmit`, timeoutMs: this.config.autoDetectTimeoutMs };
   }
 }
 

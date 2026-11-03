@@ -90,7 +90,7 @@ test("复制等待期间禁用两个格式入口并合并重复点击，成功�
     await act(() => { h.button("复制为 Markdown").click(); h.button("复制为 Markdown").click(); h.button("复制为纯文本").click(); });
     assert.deepEqual(writes, [content], "等待中的同一复制不能重复写入或被另一格式覆盖");
     assert.equal(h.button("复制为 Markdown").disabled, true);
-    assert.equal(h.button("复制为 Markdown").textContent, "正在复制…");
+    assert.equal(h.button("复制为 Markdown").textContent, "复制为 Markdown", "复制等待时保留操作名称");
     assert.equal(h.button("复制为纯文本").disabled, true);
     assert.equal(h.button("复制为 Markdown").getAttribute("aria-busy"), "true");
     assert.equal(Boolean(h.dom.window.document.querySelector(".is-success")), false);

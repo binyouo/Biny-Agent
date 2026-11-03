@@ -90,6 +90,10 @@ export class ModelManager {
     return this.activeSettings;
   }
 
+  getConfigSnapshot(): AgentConfig {
+    return structuredClone(this.config);
+  }
+
   getCapabilities(): ReturnType<typeof modelCapabilities> {
     return modelCapabilities(this.runtime.resolve(this.config.defaultModel).model);
   }

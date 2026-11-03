@@ -42,6 +42,13 @@ export type IconName =
   | "database"
   | "diff"
   | "display"
+  | "hand"
+  | "crop"
+  | "undo"
+  | "redo"
+  | "zoom-in"
+  | "zoom-out"
+  | "image"
   | "camera"
   | "monitor"
   | "computer-history"
@@ -200,8 +207,15 @@ function pathFor(name: IconName): React.JSX.Element {
     case "database": return <><ellipse {...common} cx="12" cy="5.5" rx="7.5" ry="2.8" /><path {...common} d="M4.5 5.5v6.5c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V5.5M4.5 12v6.5c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V12" /></>;
     case "diff": return <><path {...common} d="M7 4v16M17 4v16M4 8h6M14 16h6" /><path {...common} d="m17 6 2 2-2 2M17 14l-2 2 2 2" /></>;
     case "display": return <><rect {...common} height="13" rx="2" width="18" x="3" y="4" /><path {...common} d="M9 21h6M12 17v4" /></>;
-    // 显示器 + 指针：Computer Use 的桌面操控语义，和外框式的 display 区分开。
+    case "hand": return <><path {...common} d="M8 13V5a2 2 0 0 1 4 0v7-9a2 2 0 0 1 4 0v9-7a2 2 0 0 1 4 0v10c0 4-3 7-7 7h-1c-2 0-3.5-1-5-3l-4-5a2 2 0 0 1 3-3l2 2Z" /></>;
+    case "crop": return <path {...common} d="M6 3v13a2 2 0 0 0 2 2h13M3 6h13a2 2 0 0 1 2 2v13" />;
+    case "undo": return <path {...common} d="M9 5 4 10l5 5M4 10h10a6 6 0 0 1 0 12" />;
+    case "redo": return <path {...common} d="m15 5 5 5-5 5M20 10H10a6 6 0 0 0 0 12" />;
+    case "zoom-in": return <><circle {...common} cx="10" cy="10" r="7" /><path {...common} d="m15 15 6 6M7 10h6M10 7v6" /></>;
+    case "zoom-out": return <><circle {...common} cx="10" cy="10" r="7" /><path {...common} d="m15 15 6 6M7 10h6" /></>;
+    case "image": return <><rect {...common} x="3" y="3" width="18" height="18" rx="2" /><circle {...common} cx="8" cy="8" r="2" /><path {...common} d="m3 17 5-5 4 4 4-6 5 7" /></>;
     case "camera": return <><rect {...common} height="14" rx="2" width="19" x="2.5" y="6" /><path {...common} d="M8.5 6 10 3.5h4L15.5 6" /><circle {...common} cx="12" cy="13" r="3.6" /></>;
+    // 显示器 + 指针：Computer Use 的桌面操控语义，和外框式的 display 区分开。
     case "monitor": return <><rect {...common} height="12" rx="2" width="18" x="3" y="5" /><path {...common} d="M12 17v4M9 21h6" /><path {...common} d="m10 9 2 2 2.6-1.3L16 14l-4.6 2.6L10 12z" /></>;
     // 显示器外框 + 屏幕内的时钟指针：Computer History（屏幕/输入回溯）。
     // 与 display（纯显示器）、monitor（显示器 + 指针）区分：这个图标里屏幕是时钟表盘。

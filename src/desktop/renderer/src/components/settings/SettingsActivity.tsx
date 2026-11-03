@@ -206,7 +206,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
             {screenPermission === "需授权" ? (
               <button aria-busy={requestingPermission === "screen-recording"} aria-label="申请并在 macOS 系统设置中管理屏幕录制权限" className="settings-action settings-secondary-button activity-secondary-button" disabled={requestingPermission !== undefined} onClick={openScreenRecordingSettings} type="button">
                 <Icon name="external" size={13} />
-                {requestingPermission === "screen-recording" ? "申请中…" : "申请并打开设置"}
+                申请并打开设置
               </button>
             ) : null}
           </div>
@@ -215,7 +215,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
             {accessibilityPermission === "需授权" ? (
               <button aria-busy={requestingPermission === "accessibility"} aria-label="申请并在 macOS 系统设置中管理辅助功能权限" className="settings-action settings-secondary-button activity-secondary-button" disabled={requestingPermission !== undefined} onClick={openAccessibilitySettings} type="button">
                 <Icon name="external" size={13} />
-                {requestingPermission === "accessibility" ? "申请中…" : "申请并打开设置"}
+                申请并打开设置
               </button>
             ) : null}
           </div>
@@ -257,7 +257,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
         </div>
       </ActivitySection>
 
-      <ActivitySection collapsible id="activity-capture" icon="activity" title="采集参数">
+      <ActivitySection id="activity-capture" icon="activity" title="采集参数">
         <div className="activity-field-grid">
           <ActivityNumberField disabled={!activity.enabled} id="activity-debounce" label="截图防抖" hint="范围：3000–30000" unit="ms" max={30_000} min={3_000} step={100} value={activity.captureDebounceMs} onCommit={(value) => updateActivity({ captureDebounceMs: value })} />
           <ActivityNumberField disabled={!activity.enabled} id="activity-heartbeat" label="心跳间隔" hint="画面不变时仍按此间隔保留时间锚点" unit="ms" max={300_000} min={60_000} step={1_000} value={activity.heartbeatMs} onCommit={(value) => updateActivity({ heartbeatMs: value })} />
@@ -293,7 +293,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
         <div className="activity-section-title is-danger"><Icon name="trash" size={15} /><h3>危险区</h3></div>
         <div className="settings-section-body">
           <p className="activity-section-description">删除活动会话、事件、OCR、截图、分析和摘要。此操作不可撤销。</p>
-          <button className="settings-action settings-danger-button activity-danger-button" disabled={clearing || runtime?.sessions === 0 || runtime === undefined} onClick={clearActivity} type="button"><Icon name="trash" size={14} />{clearing ? "清除中…" : "清除全部活动数据"}</button>
+          <button aria-busy={clearing} className="settings-action settings-danger-button activity-danger-button" disabled={clearing || runtime?.sessions === 0 || runtime === undefined} onClick={clearActivity} type="button"><Icon name="trash" size={14} />清除全部活动数据</button>
           <small className="activity-disabled-hint">{runtime?.sessions ? undefined : runtime?.collectorAvailable === false ? "采集服务尚未接入，清除操作暂不可用。" : "暂无可清除的活动数据。"}</small>
         </div>
       </section>
@@ -305,7 +305,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
           <section aria-describedby="activity-clear-description" aria-labelledby="activity-clear-title" aria-modal="true" className="settings-confirm-panel activity-clear-panel" role="dialog">
             <h3 id="activity-clear-title">清除全部 Computer History 数据？</h3>
             <p id="activity-clear-description">将永久删除 {runtime?.sessions ?? 0} 个会话、{runtime?.events ?? 0} 个事件，以及截图、OCR、分析和摘要。此操作不可撤销。已沉淀的长期记忆和已导出日报不会删除。</p>
-            <div className="settings-confirm-actions"><button className="settings-action settings-secondary-button ghost-button" disabled={clearing} onClick={() => setClearOpen(false)} type="button">取消</button><button className="settings-action settings-secondary-button ghost-button is-danger" disabled={clearing} onClick={confirmClearActivity} type="button"><Icon name="trash" size={14} />{clearing ? "清除中…" : "永久清除"}</button></div>
+            <div className="settings-confirm-actions"><button className="settings-action settings-secondary-button ghost-button" disabled={clearing} onClick={() => setClearOpen(false)} type="button">取消</button><button aria-busy={clearing} className="settings-action settings-secondary-button ghost-button is-danger" disabled={clearing} onClick={confirmClearActivity} type="button"><Icon name="trash" size={14} />永久清除</button></div>
           </section>
         </SettingsDetailLayer>
       ) : null}
@@ -348,8 +348,7 @@ function activityErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Computer History 操作失败，请稍后重试。";
 }
 
-function ActivitySection({ action, children, collapsible, icon, id, title }: { collapsible?: boolean; action?: React.ReactNode; children: React.ReactNode; icon: IconName; id: string; title: string }): React.JSX.Element {
-  if (collapsible) return <details className="activity-card settings-disclosure" id={id} tabIndex={-1}><summary><Icon name={icon} size={15} />{title}</summary><div className="settings-disclosure-body">{children}</div></details>;
+function ActivitySection({ action, children, icon, id, title }: { action?: React.ReactNode; children: React.ReactNode; icon: IconName; id: string; title: string }): React.JSX.Element {
   return (
     <section className="settings-section activity-card" id={id} tabIndex={-1}>
       <div className="activity-section-heading">

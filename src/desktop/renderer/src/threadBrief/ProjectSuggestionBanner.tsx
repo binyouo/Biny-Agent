@@ -50,7 +50,7 @@ function ProjectSuggestionDialog({ suggestion, state, onClose }: { suggestion: B
       {!isLink ? <label>项目名<input value={draft.name} maxLength={120} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label> : null}
       <label>Biny 对这件事的理解<textarea value={draft.brief} maxLength={2000} rows={3} disabled={isLink} onChange={(event) => setDraft({ ...draft, brief: event.target.value })} /></label>
       {!isLink ? <label>目前进展<textarea value={draft.focus} maxLength={500} rows={2} onChange={(event) => setDraft({ ...draft, focus: event.target.value })} /></label> : null}
-      <div className="biny-suggestion-threads"><strong>包含的对话（{kept.length}）</strong>{draft.threads.map((thread) => <div key={thread.sessionId} className={dropped.has(thread.sessionId) ? "is-dropped" : ""}><Icon name="message" size={13} /><span>{thread.title}<small>{state.snapshot?.briefs.find((brief) => brief.sessionId === thread.sessionId)?.brief.topic}</small></span><button type="button" onClick={() => setDropped((previous) => { const next = new Set(previous); if (next.has(thread.sessionId)) next.delete(thread.sessionId); else next.add(thread.sessionId); return next; })}>{dropped.has(thread.sessionId) ? "放回来" : "不是这件事"}</button></div>)}</div>
+      <div className="biny-suggestion-threads"><strong>包含的对话（{kept.length}）</strong>{draft.threads.map((thread) => <div key={thread.sessionId} className={dropped.has(thread.sessionId) ? "is-dropped" : ""}><Icon name="message" size={13} /><span>{thread.title}<small>{state.snapshot?.briefs.find((brief) => brief.sessionId === thread.sessionId)?.brief.topic}</small></span><button type="button" onClick={() => setDropped((previous) => { const next = new Set(previous); if (next.has(thread.sessionId)) next.delete(thread.sessionId); else next.add(thread.sessionId); return next; })}><span className="button-state-label"><span aria-hidden={dropped.has(thread.sessionId)}>不是这件事</span><span aria-hidden={!dropped.has(thread.sessionId)}>放回来</span></span></button></div>)}</div>
       {conclusions.length ? <div><strong>已有结论</strong><ul>{conclusions.slice(0, 12).map((text) => <li key={text}>{text}</li>)}</ul></div> : null}
       <label>保存位置<div className="biny-suggestion-location"><input readOnly value={draft.location ?? ""} placeholder={isLink ? "已有项目目录" : "选择项目保存位置"} />{!isLink ? <button type="button" onClick={() => void run(async () => {
         const next = await state.request({ action: "choose-location", id: draft.id });
@@ -66,10 +66,10 @@ function ProjectSuggestionDialog({ suggestion, state, onClose }: { suggestion: B
       })}>重写</button></div></div>
     </fieldset>
     {error ? <p role="alert">{error}</p> : null}
-    <footer><button type="button" disabled={busy} onClick={() => void run(async () => { await state.request({ action: "dismiss", id: draft.id }); onClose(); })}>先不处理</button><button type="button" disabled={busy || !kept.length || !draft.name.trim() || !draft.brief.trim()} onClick={() => void run(async () => {
+    <footer><button type="button" disabled={busy} onClick={() => void run(async () => { await state.request({ action: "dismiss", id: draft.id }); onClose(); })}>先不处理</button><button type="button" aria-busy={busy} disabled={busy || !kept.length || !draft.name.trim() || !draft.brief.trim()} onClick={() => void run(async () => {
       await saveDraft();
       const next = await state.request({ action: "accept", id: draft.id });
       if (!next.suggestions.some((item) => item.id === draft.id)) onClose();
-    })}>{busy ? "处理中…" : isLink ? "归入项目" : "创建项目"}</button></footer>
+    })}>{isLink ? "归入项目" : "创建项目"}</button></footer>
   </dialog>;
 }

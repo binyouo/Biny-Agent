@@ -5,13 +5,14 @@
  * 不产生错误提示，也不会阻塞 TUI 启动。
  */
 import { execFile } from "node:child_process";
+import { gitInspectionEnvironment } from "../../tools/git/environment.js";
 
 export async function readGitBranch(cwd: string): Promise<string | undefined> {
   return await new Promise((resolve) => {
     execFile(
       "git",
       ["rev-parse", "--abbrev-ref", "HEAD"],
-      { cwd, timeout: 1000, windowsHide: true },
+      { cwd, env: gitInspectionEnvironment(), timeout: 1000, windowsHide: true },
       (error, stdout) => {
         if (error) {
           resolve(undefined);

@@ -17,10 +17,13 @@ const members = dialogClass.members.filter(member => ts.isConstructorDeclaration
 assert.equal(members.length, 11);
 const truncate = dialogSource.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "truncatePermissionDetails");
 assert.ok(truncate);
+const escape = dialogSource.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "escapePermissionText");
+assert.ok(escape);
 const calls = new Set(["super", "String", "this.addChild", "this.refresh", "super.render", "permissionPresentation", "permissionChoiceAt",
-  "theme.fg", "theme.bold", "details.push", "view.details.split", "this.request.diff.split", "diffLines.slice", "visibleDiff.map", "line.startsWith",
-  "this.request.preview.split", "actionLines.push", "permissionOptions.forEach", "this.denialReason.trim", "this.maxBodyLines", "Math.max",
-  "wrapTextWithAnsi", "actionLines.join", "details.flatMap", "truncatePermissionDetails", "this.body.setText", "visibleDetails.map", "truncateToWidth", "details.slice"]);
+  "theme.fg", "theme.bold", "details.push", "escapePermissionText", "escapePermissionText(view.details).split", "escapePermissionText(this.request.diff).split", "diffLines.slice", "visibleDiff.map", "line.startsWith",
+  "escapePermissionText(this.request.preview).split", "actionLines.push", "permissionOptions.forEach", "this.denialReason.trim", "this.maxBodyLines", "Math.max",
+  "wrapTextWithAnsi", "actionLines.join", "details.flatMap", "truncatePermissionDetails", "this.body.setText", "visibleDetails.map", "truncateToWidth", "details.slice",
+  "text.replace", "char.charCodeAt", "char.charCodeAt(0).toString", "char.charCodeAt(0).toString(16).padStart"]);
 function check(node: ts.Node): void {
   if (ts.isCallExpression(node)) {
     const target = node.expression.getText();
@@ -31,6 +34,7 @@ function check(node: ts.Node): void {
 }
 for (const member of members) check(member);
 check(truncate);
+check(escape);
 const appSource = readSource("src/tui/app.ts");
 const budgetArguments: ts.Expression[] = [];
 function findBudget(node: ts.Node): void {
@@ -50,7 +54,7 @@ function checkBudget(node: ts.Node): void {
   ts.forEachChild(node, checkBudget);
 }
 checkBudget(budgetArgument);
-const source = `class PermissionDialog extends Container {\n${members.map(member => member.getText(dialogSource)).join("\n")}\n}\n${truncate.getText(dialogSource)}\nfunction appBudget() { return ${budgetArgument.getText(appSource)}; }\nglobalThis.layout = { PermissionDialog, appBudget };`;
+const source = `class PermissionDialog extends Container {\n${members.map(member => member.getText(dialogSource)).join("\n")}\n}\n${truncate.getText(dialogSource)}\n${escape.getText(dialogSource)}\nfunction appBudget() { return ${budgetArgument.getText(appSource)}; }\nglobalThis.layout = { PermissionDialog, appBudget };`;
 assert.equal(/handleInput|setRequest|answerPermission|confirmedPermissionChoice|matchesKey/u.test(source), false);
 const emitted = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }, reportDiagnostics: true });
 assert.equal(emitted.diagnostics?.length ?? 0, 0);

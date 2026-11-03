@@ -319,6 +319,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       api,
       modelId: normalizedModel.model,
       supportsReasoning: capabilities.reasoning,
+      supportsVision: capabilities.vision,
       compatibility,
       baseUrl,
       apiKey,
