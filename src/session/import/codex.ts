@@ -129,9 +129,8 @@ export function codexLinesToBinyEvents(lines: readonly unknown[]): SessionEvent[
       const text = (Array.isArray(payload.content) ? payload.content : [])
         .filter((part): part is CodexContentPart => isRecord(part) && typeof part.text === "string")
         .map((part) => part.text ?? "")
-        .join("\n")
-        .trim();
-      if (!text) continue;
+        .join("\n");
+      if (!text.trim()) continue;
       if (payload.role === "user") {
         events.push({ type: "user_message", ...identity(), content: text, time, importSource });
       } else if (payload.role === "assistant") {
