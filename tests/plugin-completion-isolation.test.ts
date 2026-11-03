@@ -158,7 +158,7 @@ async function run(options: FaultOptions = {}) {
       if (options.emptyHistory) return { messageTree: [], messages: [], messageReferences: [] };
       return {
         messageTree: [{ id: "u1", eventIndex: 0 }, { id: "a1", eventIndex: 1 }],
-        messages: [{ role: "user", content: "synthetic question" }, { role: "assistant", content: "synthetic answer" }],
+        messages: [{ role: "user", content: "synthetic question" }, { role: "assistant", content: [{ type: "text", text: "synthetic answer" }] }],
         messageReferences: [{ id: "u1" }, { id: "a1" }]
       };
     },

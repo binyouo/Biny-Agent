@@ -591,7 +591,7 @@ async function initializeCommandRuntime(
       maxConcurrentSubagents: config.extensions.subagent.maxConcurrentSubagents,
       maxPendingSubagents: config.extensions.subagent.maxPendingSubagents,
       timeoutMs: config.extensions.subagent.timeoutMs,
-      onSnapshot: (snapshot) => {
+      onSnapshot: (snapshot, output) => {
         if (snapshot.status === "queued" && !workerGoalBindings.has(snapshot.taskId)) {
           const binding = durableSubagentBindings.get(snapshot.taskId);
           const admittedTask = taskRuns.get(binding?.taskRunId ?? snapshot.taskId);
@@ -602,7 +602,7 @@ async function initializeCommandRuntime(
             communication: admittedTask?.sessionId === recorder.sessionId });
         }
         taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId)
-          ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId });
+          ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId }, output);
         taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
         if (snapshot.status !== "queued" && snapshot.status !== "running") workerGoalBindings.delete(snapshot.taskId);
       },
@@ -1019,7 +1019,7 @@ async function initializeCommandRuntime(
       });
       return { task: current, completion: Promise.resolve({ status: "blocked", reason }) };
     }
-    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.latestEvent(taskRunId))) {
+    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.latestEvent(taskRunId, { excludeMessageReceipts: true }))) {
       const reason = "This queued TaskRun has no persisted retry or verification-repair admission; replaying its Worker is unsafe.";
       current = taskRuns.transition(taskRunId, "blocked", {
         attemptId: current.attempts.at(-1)?.attemptId,
@@ -1159,7 +1159,7 @@ async function initializeCommandRuntime(
     if (existingAdmission) return await existingAdmission.promise;
 
     const latest = task.attempts.at(-1);
-    const latestEvent = taskRuns.latestEvent(taskRunId);
+    const latestEvent = taskRuns.latestEvent(taskRunId, { excludeMessageReceipts: true });
     const persistedVerification = task.status === "verifying"
       && latest?.status === "verifying"
       && latest.artifacts !== undefined;

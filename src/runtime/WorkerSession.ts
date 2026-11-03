@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { z } from "zod";
 import type { AgentAssistantMessage, AgentMessage, AgentToolResult, AgentLoopTurnContext, AgentUsage, ModelRequestContext, ModelRequestMetrics, ModelRequestObserver } from "../agent/core/types.js";
-import { readSessionEvents } from "../session/events.js";
+import { readSessionEvents, type SessionEvent } from "../session/events.js";
 import { SessionRecorder } from "../session/recorder.js";
 import { replaySessionEvents } from "../session/replay.js";
 import { sessionFilePath } from "../session/store.js";
@@ -112,7 +112,7 @@ export class WorkerSession {
           || checkpoint.turnId !== `worker-turn:${execution.taskId}` || checkpoint.completedSteps !== stored.startedSteps) {
           throw new Error("Worker checkpoint identity or capability policy changed; unsafe recovery is blocked.");
         }
-        stored.usages = events.flatMap((event) => event.type === "agent_message" && event.message.role === "assistant" && event.message.usage ? [event.message.usage] : []);
+        stored.usages = recoverWorkerUsages(events);
         session = new WorkerSession(execution, task, systemPrompt, replay.messages, stored, leases, lease);
         session.recorder.restoreToolCallSequence(events.reduce((maximum, event) => event.type === "tool_call" && typeof event.sequence === "number" ? Math.max(maximum, event.sequence) : maximum, 0));
         for (const event of events) if (event.type === "tool_call" && event.toolCallId) session.callIds.add(event.toolCallId);
@@ -236,7 +236,8 @@ export class WorkerSession {
 
   async persistStep(turn: AgentLoopTurnContext): Promise<void> {
     await this.enqueue(async () => {
-      await this.recorder.recordAndFlush({ type: "agent_message", message: turn.message });
+      await this.recorder.recordAndFlush({ type: "agent_message", message: turn.message,
+        ...(turn.requestId ? { metadata: { workerRequestId: turn.requestId } } : {}) });
       for (const message of turn.toolResults) await this.recorder.recordAndFlush({ type: "agent_message", message });
       if (turn.message.usage) this.facts.usages.push(turn.message.usage);
       this.messages.splice(0, this.messages.length, ...turn.context.messages);
@@ -280,4 +281,34 @@ export class WorkerSession {
     this.tail = current.catch((error: unknown) => { this.failure ??= error instanceof Error ? error : new Error(String(error)); });
     return current;
   }
+}
+
+/** Request facts own cost; assistant usage is only a fallback, never a second bill. */
+function recoverWorkerUsages(events: readonly SessionEvent[]): AgentUsage[] {
+  const usages: AgentUsage[] = [];
+  let runId: string | undefined;
+  const stepRequests = new Set<string>();
+  for (const event of events) {
+    const eventRunId = event.runtime?.runId;
+    if (eventRunId !== runId || eventRunId === undefined) {
+      stepRequests.clear();
+      runId = eventRunId;
+    }
+    if (event.type === "model_request" && event.metrics.usage) {
+      usages.push(event.metrics.usage);
+      stepRequests.add(event.metrics.requestId);
+    } else if (event.type === "agent_message" && event.message.role === "assistant") {
+      const requestId = event.metadata?.workerRequestId;
+      // Older native Workers committed every step before starting the next call.
+      // Their recorder runId changes on reopen: an orphan request from a previous
+      // invocation must not suppress a later assistant-only usage fallback.
+      // Without a run identity, do not infer that two usage records are duplicates.
+      const requestAlreadyCounted = typeof requestId === "string"
+        ? stepRequests.has(requestId)
+        : runId !== undefined && stepRequests.size > 0;
+      if (event.message.usage && !requestAlreadyCounted) usages.push(event.message.usage);
+      stepRequests.clear();
+    }
+  }
+  return usages;
 }
