@@ -771,6 +771,13 @@ button.chat-think-chip:focus-visible {
   color: var(--biny-success);
 }
 
+.copy-button:has(.copy-button-text) {
+  display: inline-flex;
+  width: auto;
+  align-items: center;
+  gap: 6px;
+}
+
 .copy-button-text {
   white-space: nowrap;
 }

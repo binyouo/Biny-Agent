@@ -5,9 +5,9 @@
  * 返回给模型的始终是文本，不暴露网页提供的 HTML。
  */
 const strippedBlocks = /<(script|style|noscript|template|svg)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
-const lineBreakTags = /<(?:br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article|\/header|\/footer)\b[^>]*>/gi;
+const lineBreakTags = /<(?:br|\/p|\/div|\/li|\/?dl|\/?dt|\/?dd|\/h[1-6]|\/tr|\/section|\/article|\/header|\/footer)\b[^>]*>/gi;
 const listItemTags = /<li\b[^>]*>/gi;
-const readableBlockTags = new Set(["p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "section", "article", "header", "footer", "blockquote", "pre", "ul", "ol", "table"]);
+const readableBlockTags = new Set(["p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "section", "article", "header", "footer", "blockquote", "pre", "ul", "ol", "dl", "dt", "dd", "table"]);
 const unreadableTags = new Set(["script", "style", "noscript", "template", "svg"]);
 
 export function htmlToText(html: string): string {

@@ -19,7 +19,7 @@ export async function prepareExternalSubagent(
   if (permission.getStatus().mode !== "full-access" || accessMode !== "workspace") {
     throw new Error("External subagents require full-access permission and a workspace assignment.");
   }
-  if (config.permission.denyPaths.length || config.sandbox.mode !== "off" || !config.sandbox.allowNetwork || definition?.tools) {
+  if ((runtime !== "claude-code" && config.permission.denyPaths.length) || config.sandbox.mode !== "off" || !config.sandbox.allowNetwork || definition?.tools) {
     throw new Error("External subagents cannot enforce Biny denyPaths, sandbox or named tool restrictions.");
   }
   if (settings.maxCostUsd !== undefined || settings.maxSteps !== undefined || execution?.sessionGoalId) {

@@ -31,7 +31,9 @@ export function SettingsSubagent({ onOpenProviders, busy = false }: { onOpenProv
   const external = settings.enabled && settings.runtime !== "builtin";
   const restrictions = external ? [
     ...(draft.permission.mode !== "full-access" ? ["外部子代理需要自动批准工具请求。"] : []),
-    ...(draft.permission.denyPaths.length ? ["外部子代理无法执行拒绝路径限制。"] : []),
+    ...(draft.permission.denyPaths.length ? [settings.runtime === "auto" || settings.runtime === "claude-code"
+      ? "使用 Claude Code 时不受拒绝路径限制。"
+      : "外部子代理无法执行拒绝路径限制。"] : []),
     ...snapshot.externalSubagentBlockers
   ] : [];
   return <section className="settings-preference-section" id="subagent" tabIndex={-1}>

@@ -2,6 +2,7 @@
 export async function pageOperation(operation, args, backendElement) {
   const roots = (root) => {
     const result = [root];
+    if (root.shadowRoot) result.push(root.shadowRoot);
     for (let i = 0; i < result.length && result.length < 200; i++) {
       for (const node of result[i].querySelectorAll("*")) if (node.shadowRoot) result.push(node.shadowRoot);
     }
@@ -10,23 +11,25 @@ export async function pageOperation(operation, args, backendElement) {
   const normalizeText = (value) => String(value || "").replace(/\s+/gu, " ").trim();
   const name = (node) => {
     const ariaLabel = node.getAttribute("aria-label");
-    if (ariaLabel) return normalizeText(ariaLabel);
     const labelledBy = node.getAttribute("aria-labelledby");
     if (labelledBy) {
       const labels = labelledBy.split(/\s+/u).map(id => node.getRootNode().getElementById?.(id) || document.getElementById(id)).filter(Boolean);
-      if (labels.length) return normalizeText(labels.map(label => label.textContent).join(" "));
+      if (labels.length) return normalizeText(labels.map(label => normalizeText(label.getAttribute("aria-label")) || label.textContent).join(" "));
     }
+    if (ariaLabel) return normalizeText(ariaLabel);
     if (node.labels?.length) return normalizeText([...node.labels].map(label => label.textContent).join(" "));
     if (node instanceof HTMLImageElement) return normalizeText(node.alt || node.title);
     if (node instanceof HTMLInputElement && ["button", "submit", "reset"].includes(node.type)) return normalizeText(node.value || node.title);
     return normalizeText(node.getAttribute("placeholder") || node.getAttribute("title") || node.innerText || node.textContent);
   };
+  const hasLabelSource = (node) => Boolean(node.labels?.length || node.getAttribute("aria-label")?.trim()
+    || node.getAttribute("aria-labelledby")?.split(/\s+/u).some(id => node.getRootNode().getElementById?.(id) || document.getElementById(id)));
   const role = (node) => {
     const explicit = node.getAttribute("role")?.trim().split(/\s+/u)[0];
     if (explicit) return explicit;
-    const implicit = { BUTTON: "button", A: "link", TEXTAREA: "textbox", SELECT: node.multiple ? "listbox" : "combobox", IMG: node.alt === "" ? "presentation" : "img", OPTION: "option", SUMMARY: "button", NAV: "navigation", MAIN: "main", ASIDE: "complementary", FORM: "form", UL: "list", OL: "list", LI: "listitem", TABLE: "table", TR: "row", TD: "cell", TH: node.scope === "row" ? "rowheader" : "columnheader", PROGRESS: "progressbar", METER: "meter" };
+    const implicit = { BUTTON: "button", A: "link", TEXTAREA: "textbox", SELECT: node.multiple || node.size > 1 ? "listbox" : "combobox", IMG: node.alt === "" ? "presentation" : "img", OPTION: "option", SUMMARY: "button", NAV: "navigation", MAIN: "main", ASIDE: "complementary", FORM: "form", UL: "list", OL: "list", LI: "listitem", TABLE: "table", TR: "row", TD: "cell", TH: node.scope === "row" ? "rowheader" : "columnheader", PROGRESS: "progressbar", METER: "meter" };
     if (implicit[node.tagName]) return implicit[node.tagName];
-    if (node instanceof HTMLInputElement) return ({ checkbox: "checkbox", radio: "radio", button: "button", submit: "button", reset: "button", search: "searchbox" }[node.type] || "textbox");
+    if (node instanceof HTMLInputElement) return ({ checkbox: "checkbox", radio: "radio", button: "button", submit: "button", reset: "button", search: "searchbox", number: "spinbutton", range: "slider" }[node.type] || "textbox");
     if (/^H[1-6]$/u.test(node.tagName)) return "heading";
     return "";
   };
@@ -62,7 +65,7 @@ export async function pageOperation(operation, args, backendElement) {
       if (step.m === "locator") matches = queryWithin(matches, step.selector);
       else if (step.m === "getByRole") matches = descendants(matches).filter(node => role(node) === step.role && (step.name === undefined || matchesText(name(node), step.name, step.exact === true)));
       else if (step.m === "getByText") matches = descendants(matches).filter(node => matchesText(node.innerText || node.textContent, step.text, step.exact === true));
-      else if (step.m === "getByLabel") matches = descendants(matches).filter(node => node.matches("input:not([type=hidden]),textarea,select,button,meter,output,progress,[contenteditable=true],[role=textbox],[role=combobox],[role=checkbox],[role=radio],[role=searchbox]") && (name(node) === normalizeText(step.label) || [...(node.labels || [])].some(label => matchesText(label.textContent, step.label, true))));
+      else if (step.m === "getByLabel") matches = descendants(matches).filter(node => node.matches("input:not([type=hidden]),textarea,select,button,meter,output,progress,[contenteditable=true],[role=textbox],[role=combobox],[role=checkbox],[role=radio],[role=searchbox]") && hasLabelSource(node) && (name(node) === normalizeText(step.label) || [...(node.labels || [])].some(label => matchesText(label.textContent, step.label, true))));
       else if (step.m === "getByPlaceholder") matches = descendants(matches).filter(node => matchesText(node.getAttribute("placeholder"), step.placeholder, step.exact === true));
       else if (step.m === "getByTestId") matches = descendants(matches).filter(node => node.getAttribute("data-testid") === step.testId);
       else if (step.m === "first") matches = matches.slice(0, 1);
@@ -248,6 +251,9 @@ export async function pageOperation(operation, args, backendElement) {
     window.scrollBy(args.x ?? 0, args.y ?? 0);
     return { x: scrollX, y: scrollY };
   }
+  if (operation === "scroll_target" && !args.selector) {
+    return { x: innerWidth / 2, y: innerHeight / 2, viewportWidth: innerWidth, viewportHeight: innerHeight };
+  }
   const matches = locate(args.selector);
   if (matches.length !== 1) throw new Error("需要唯一元素，请重新读取页面。");
   const element = matches[0];
@@ -271,6 +277,7 @@ export async function pageOperation(operation, args, backendElement) {
     if (!Array.isArray(values) || values.length === 0 || (!element.multiple && values.length > 1)) throw new Error("下拉选项值无效。");
     const options = [...element.options];
     if (values.some((value) => typeof value !== "string" || !options.some((option) => option.value === value))) throw new Error("找不到指定下拉选项。");
+    if (options.some((option) => values.includes(option.value) && option.matches(":disabled"))) throw new Error("指定下拉选项不可操作。");
   }
   if (operation === "set_checked") {
     if (!(element instanceof HTMLInputElement) || !["checkbox", "radio"].includes(element.type)) throw new Error("目标不是复选框或单选框。");

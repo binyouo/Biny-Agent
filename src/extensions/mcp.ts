@@ -373,18 +373,19 @@ export class McpToolHost {
     if (expectedLocalIdentity !== undefined && managed.local?.identity !== expectedLocalIdentity) throw new Error("Local MCP endpoint was replaced; prepare a new tool call.");
     if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
     signal?.throwIfAborted();
-    if (expectedDefinition !== undefined) {
-      const definition = managed.tools.find(tool => tool.name === toolName);
-      if (!definition || mcpMetadataSignature({ definition, config: managed.config, instructions: managed.status.instructions }) !== expectedDefinition) {
-        throw new Error(`MCP tool ${serverName}/${toolName} definition changed; discover and prepare a new tool call.`);
-      }
-    }
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
     try {
-      onDispatched?.();
-      const result = await this.requestWithCredentials(managed, (options) =>
-        client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, options), signal);
+      const result = await this.requestWithCredentials(managed, (options) => {
+        if (expectedDefinition !== undefined) {
+          const definition = managed.tools.find(tool => tool.name === toolName);
+          if (!definition || mcpMetadataSignature({ definition, config: managed.config, instructions: managed.status.instructions }) !== expectedDefinition) {
+            throw new Error(`MCP tool ${serverName}/${toolName} definition changed; discover and prepare a new tool call.`);
+          }
+        }
+        onDispatched?.();
+        return client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, options);
+      }, signal);
       return rawResult ? result : normalizeMcpResult(result);
     } catch (error) {
       if (signal?.aborted || !isConnectionError(error)) throw error;
@@ -462,7 +463,8 @@ export class McpToolHost {
       uri,
       contents: result.contents.map((content) => {
         if ("text" in content && typeof content.text === "string") {
-          return { uri: content.uri, mimeType: content.mimeType, text: truncateUtf8(content.text, maxResourceTextBytes) };
+          const text = truncateUtf8(content.text, maxResourceTextBytes);
+          return { uri: content.uri, mimeType: content.mimeType, text, ...(text !== content.text ? { truncated: true } : {}) };
         }
         const bytes = "blob" in content && typeof content.blob === "string" ? Math.floor(content.blob.length * 3 / 4) : 0;
         return { uri: content.uri, mimeType: content.mimeType, bytes, note: "binary content omitted" };
@@ -1387,7 +1389,8 @@ function normalizeMcpResult(result: unknown): unknown {
       if (part.type === "resource_link") return { type: "resource_link", uri: part.uri, name: part.name, description: part.description };
       if (part.type === "resource" && isRecord(part.resource)) {
         const text = typeof part.resource.text === "string" ? truncateUtf8(part.resource.text, maxResourceTextBytes) : undefined;
-        return { type: "resource", uri: part.resource.uri, mimeType: part.resource.mimeType, text };
+        const truncated = text !== undefined && (part.resource.truncated === true || text !== part.resource.text);
+        return { type: "resource", uri: part.resource.uri, mimeType: part.resource.mimeType, text, ...(truncated ? { truncated: true } : {}) };
       }
       return { type: typeof part.type === "string" ? part.type : "unknown" };
     });
@@ -1407,7 +1410,8 @@ function normalizeMcpEnvelope(result: unknown): unknown {
       }
       if (part.type === "resource" && isRecord(part.resource)) {
         if (typeof part.resource.text === "string") {
-          return { ...part, resource: { ...part.resource, text: truncateUtf8(part.resource.text, maxResourceTextBytes) } };
+          const text = truncateUtf8(part.resource.text, maxResourceTextBytes);
+          return { ...part, resource: { ...part.resource, text, ...(text !== part.resource.text ? { truncated: true } : {}) } };
         }
         const blob = typeof part.resource.blob === "string" ? part.resource.blob : "";
         return { type: "resource", resource: { uri: part.resource.uri, mimeType: part.resource.mimeType, bytes: Math.floor(blob.length * 3 / 4), note: "binary content omitted" } };

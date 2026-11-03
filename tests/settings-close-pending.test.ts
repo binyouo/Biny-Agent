@@ -37,6 +37,7 @@ async function fixture(withProject: boolean) {
     confirm: (message: string) => { confirmations.push(message); return false; },
     matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
     biny: {
+      quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }),
       settingsSnapshot: async () => base, activitySettings: async () => ({ activity: base.activity }),
       previewAppearance: async () => {}, updateSettingsDraftState: async () => {}, releaseSettingsCredentials: async () => {},
       saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
@@ -66,7 +67,7 @@ async function fixture(withProject: boolean) {
     const [open, setOpen] = React.useState(true);
     const props = {
       open, version: "test", projects: [], modelSetupRequired: false, sessionRunning: false,
-      targetTab: withProject ? "聊天" : "用户界面",
+      targetTab: withProject ? "聊天" : "通用",
       workspace: withProject ? { project: { id: "project", name: "Project" }, models: [], connections: [] } : undefined,
       themePreference: "system", fontPreference: { family: "system", size: 14 },
       onThemePreference() {}, onFontPreference() {}, onSettingsCommitted() {},

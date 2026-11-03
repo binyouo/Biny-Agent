@@ -109,8 +109,8 @@ export function DateReferenceDetailDialog({ projectId, uri, onClose, onSource }:
               onClick={() => { try { const source = parseTemporalSourceUri(item.sourceUri); onSource(source.sessionId, source.messageId); } catch { setError("来源已不可用。"); } }}
               type="button"><strong>{item.title} · {item.state}</strong><span>{item.quote}</span></button>) : <p>尚无已索引工作事实。</p>}
             {detail.hasMore.facts ? <p>仅显示前 50 条。</p> : null}
-            {sessions.map((sessionId) => <button disabled={Boolean(indexBusy)} key={sessionId} onClick={() => void indexOriginal(sessionId)}
-              type="button">{indexBusy === sessionId ? "正在索引…" : `索引会话 ${sessionId} 的原文`}</button>)}
+            {sessions.map((sessionId) => <button aria-busy={indexBusy === sessionId} disabled={Boolean(indexBusy)} key={sessionId} onClick={() => void indexOriginal(sessionId)}
+              type="button">{`索引会话 ${sessionId} 的原文`}</button>)}
             {indexBusy ? <button onClick={() => { if (indexRequest.current) void window.biny.referenceCancelIndex(indexRequest.current); }} type="button">取消索引</button> : null}
             {indexStatus ? <p>{indexStatus}</p> : null}{indexError ? <p role="alert">索引失败：{indexError}</p> : null}</section>
           <section className="date-reference-group"><h3>一次性任务</h3><p>{detail.coverage.scheduled}</p>
@@ -120,7 +120,7 @@ export function DateReferenceDetailDialog({ projectId, uri, onClose, onSource }:
             {detail.runs.length ? detail.runs.map((item) => <p key={`${item.kind}:${item.id}`}>{item.kind} · {item.occurredAt} · {item.status}</p>) : <p>此范围没有运行记录。</p>}
             {detail.hasMore.runs ? <p>仅显示前 100 条。</p> : null}</section>
           <section className="date-reference-group"><h3>本机日历</h3><p>只在点击后读取，不保存到记忆。</p>
-            <button disabled={calendarBusy} onClick={() => void readCalendar()} type="button">{calendarBusy ? "正在读取…" : calendar ? "重新读取日历" : "读取本机日历"}</button>
+            <button aria-busy={calendarBusy} disabled={calendarBusy} onClick={() => void readCalendar()} type="button">{calendar ? "重新读取日历" : "读取本机日历"}</button>
             {calendarError ? <p role="alert">日历读取失败：{calendarError}</p> : null}
             {calendar && (calendar.events.length ? calendar.events.map((item, index) => <p key={`${item.identifier ?? item.startDate}:${index}`}>{item.title} · {item.startDate}–{item.endDate}</p>) : <p>此范围没有日历事件。</p>)}
             {calendar?.hasMore ? <p>仅显示部分日历事件。</p> : null}</section>

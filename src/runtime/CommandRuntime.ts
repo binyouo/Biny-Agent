@@ -13,7 +13,7 @@ import type { AgentModel } from "../agent/core/types.js";
 import type { AgentTurnOutcome, AgentPermissionRequest, AgentPermissionResult } from "../agent/types.js";
 import { ModelManager } from "../llm/ModelManager.js";
 import type { ToolModelSelectionState } from "../llm/toolModelRequest.js";
-import { resolveToolModel, resolveToolModelCandidates } from "../llm/toolModel.js";
+import { resolveToolModel, resolveToolModelAlias, resolveToolModelCandidates } from "../llm/toolModel.js";
 import { runSkillExtraction } from "../agent/skillExtraction.js";
 import { preselectCapabilities } from "../agent/capabilityPreselection.js";
 import { SessionRecorder, type SessionEvent } from "../session/recorder.js";
@@ -107,7 +107,7 @@ export interface CommandRuntime {
   taskRuns: DurableTaskRunStore;
   automationStore: AutomationStore;
   heartbeat: HeartbeatScheduler;
-  resolveToolModelForRun?(): Promise<AgentModel | undefined>;
+  resolveToolModelForRun?(signal?: AbortSignal): Promise<ModelManager | undefined>;
   graphs: GoalGraphStore;
   sessionGoals: SessionGoalStore;
   capabilities: CapabilityStore;
@@ -591,7 +591,7 @@ async function initializeCommandRuntime(
       maxConcurrentSubagents: config.extensions.subagent.maxConcurrentSubagents,
       maxPendingSubagents: config.extensions.subagent.maxPendingSubagents,
       timeoutMs: config.extensions.subagent.timeoutMs,
-      onSnapshot: (snapshot) => {
+      onSnapshot: (snapshot, output) => {
         if (snapshot.status === "queued" && !workerGoalBindings.has(snapshot.taskId)) {
           const binding = durableSubagentBindings.get(snapshot.taskId);
           const admittedTask = taskRuns.get(binding?.taskRunId ?? snapshot.taskId);
@@ -602,7 +602,7 @@ async function initializeCommandRuntime(
             communication: admittedTask?.sessionId === recorder.sessionId });
         }
         taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId)
-          ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId });
+          ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId }, output);
         taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
         if (snapshot.status !== "queued" && snapshot.status !== "running") workerGoalBindings.delete(snapshot.taskId);
       },
@@ -784,6 +784,12 @@ async function initializeCommandRuntime(
   if (!agent) throw new Error("Failed to initialize Biny agent runtime.");
 
   const heartbeatNotificationDeduper = new HeartbeatNotificationDeduper();
+  const runModelManager = async (currentConfig: AgentConfig, alias: string, signal?: AbortSignal): Promise<ModelManager> => {
+    signal?.throwIfAborted();
+    const manager = await ModelManager.create(workspaceRoot, { ...structuredClone(currentConfig), defaultModel: alias }, configStore, ai);
+    signal?.throwIfAborted();
+    return manager;
+  };
   let ownerNotificationSink: ((notification: string) => Promise<void>) | undefined;
   let heartbeatAgent: Promise<AgentSession> | undefined;
   const initializeHeartbeatAgent = async (model: AgentModel): Promise<AgentSession> => {
@@ -856,10 +862,10 @@ async function initializeCommandRuntime(
       const heartbeatPrompt = taskReview ? `${prompt}\n\n${taskReview}` : prompt;
       const diary = /(?:DAILY DIARY TIME|MISSED DIARY CATCH-UP)/u.test(heartbeatPrompt);
       const currentConfig = await configStore.load(workspaceRoot);
-      const model = (!diary ? resolveToolModel(currentConfig, providerCredentials) : undefined)
-        ?? createModelSettings(currentConfig, currentConfig.defaultModel, undefined, providerCredentials).model;
+      const alias = (!diary ? resolveToolModelAlias(currentConfig) : undefined) ?? currentConfig.defaultModel;
+      const model = await runModelManager(currentConfig, alias, signal);
       signal.throwIfAborted();
-      const session = await (heartbeatAgent ??= initializeHeartbeatAgent(model).catch((error: unknown) => {
+      const session = await (heartbeatAgent ??= initializeHeartbeatAgent(model.getModel()).catch((error: unknown) => {
         heartbeatAgent = undefined;
         throw error;
       }));
@@ -874,8 +880,8 @@ async function initializeCommandRuntime(
       });
       let outcome = await runWithModel(model);
       if (!diary && outcome.status === "failed" && outcome.steps === 0) {
-        const primaryModel = createModelSettings(currentConfig, currentConfig.defaultModel, undefined, providerCredentials).model;
-        if (model.provider !== primaryModel.provider || model.modelId !== primaryModel.modelId) {
+        const primaryModel = await runModelManager(currentConfig, currentConfig.defaultModel, signal);
+        if (model.getModel().provider !== primaryModel.getModel().provider || model.getModel().modelId !== primaryModel.getModel().modelId) {
           outcome = await runWithModel(primaryModel);
         }
       }
@@ -1013,7 +1019,7 @@ async function initializeCommandRuntime(
       });
       return { task: current, completion: Promise.resolve({ status: "blocked", reason }) };
     }
-    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.latestEvent(taskRunId))) {
+    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.latestEvent(taskRunId, { excludeMessageReceipts: true }))) {
       const reason = "This queued TaskRun has no persisted retry or verification-repair admission; replaying its Worker is unsafe.";
       current = taskRuns.transition(taskRunId, "blocked", {
         attemptId: current.attempts.at(-1)?.attemptId,
@@ -1153,7 +1159,7 @@ async function initializeCommandRuntime(
     if (existingAdmission) return await existingAdmission.promise;
 
     const latest = task.attempts.at(-1);
-    const latestEvent = taskRuns.latestEvent(taskRunId);
+    const latestEvent = taskRuns.latestEvent(taskRunId, { excludeMessageReceipts: true });
     const persistedVerification = task.status === "verifying"
       && latest?.status === "verifying"
       && latest.artifacts !== undefined;
@@ -1428,7 +1434,11 @@ async function initializeCommandRuntime(
     persistenceRoot,
     config,
     agent,
-    resolveToolModelForRun: async () => resolveToolModel(await configStore.load(workspaceRoot), providerCredentials),
+    resolveToolModelForRun: async (signal) => {
+      const currentConfig = await configStore.load(workspaceRoot);
+      const alias = resolveToolModelAlias(currentConfig);
+      return alias ? await runModelManager(currentConfig, alias, signal) : undefined;
+    },
     managedProcesses,
     checkpoints,
     mcp: mcpHost,

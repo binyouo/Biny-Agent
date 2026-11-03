@@ -234,7 +234,7 @@ export class AutomationStore {
     if (automation.status === "expired" || (expiry !== undefined && expiry <= Date.parse(now))) {
       throw new Error(`Automation ${automationId} has expired.`);
     }
-    if (automation.status === "completed" && automation.maxFires !== undefined && automation.fireCount >= automation.maxFires) {
+    if (automation.maxFires !== undefined && automation.fireCount >= automation.maxFires) {
       throw new Error(`Automation ${automationId} reached its maximum fire count.`);
     }
     const fireId = randomUUID();

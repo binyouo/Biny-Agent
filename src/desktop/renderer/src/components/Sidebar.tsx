@@ -847,8 +847,8 @@ function CollapsibleSessionList({ limit, rootPage, canLoadRoots, onLoadRoots, ..
       <SessionList {...props} sessions={visibleSessions} />
       {(expanded || !shouldCollapse) && canLoadRoots ? <>
         {rootPage?.error ? <div className="biny-sidebar-empty-row" role="alert">{rootPage.error}</div> : null}
-        <button className="biny-sidebar-session-expand" disabled={rootPage?.loading} onClick={onLoadRoots} type="button">
-          {rootPage?.loading ? "加载中…" : "加载更早会话"}
+        <button aria-busy={rootPage?.loading} className="biny-sidebar-session-expand" disabled={rootPage?.loading} onClick={onLoadRoots} type="button">
+          加载更早会话
         </button>
       </> : null}
       {shouldCollapse ? (

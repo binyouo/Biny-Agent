@@ -58,8 +58,9 @@ test("automatic workers choose executable Claude before native, persist that cho
     assert.equal(nativeCalls, 3);
     config.permission.denyPaths = [".env"];
     await writeFile(definition, "---\nname: coder\ndescription: Code worker\nruntime: auto\n---\nDo the task.");
-    await assert.rejects(run("restricted"), /cannot enforce/);
-    assert.equal(nativeCalls, 3, "automatic selection cannot bypass permission restrictions");
+    await writeFile(executable, `#!${process.execPath}\nprocess.stdin.resume(); process.stdin.on('end', () => console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'claude result'})));\n`, { mode: 0o755 });
+    assert.equal(await run("restricted"), "claude result");
+    assert.equal(nativeCalls, 3, "automatic selection retains the Claude runtime");
   } finally {
     if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
     await rm(root, { recursive: true, force: true });

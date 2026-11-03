@@ -37,13 +37,16 @@ async function stop(child: ChildProcess): Promise<void> {
   await exited;
 }
 
-async function waitForRetirement(retirement: Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([retirement, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("owner did not retire after its last client exited")), 4_000);
-    })]);
-  } finally { if (timer) clearTimeout(timer); }
+async function waitForRetirement(retirement: Promise<void>, advance: (ms: number) => void): Promise<void> {
+  let retired = false;
+  void retirement.then(() => { retired = true; });
+  const deadline = Date.now() + 4_000;
+  while (!retired && Date.now() < deadline) {
+    // 子进程退出和 owner 任务完成不代表 HTTP lease/请求已经收尾；让真实 I/O 与假时钟交替推进。
+    await new Promise<void>(resolve => setImmediate(resolve));
+    advance(200);
+  }
+  assert.equal(retired, true, "owner did not retire after its last client exited");
 }
 
 test("the shared memory owner retires only after its last client exits", { timeout: 20_000 }, async (t) => {
@@ -65,9 +68,7 @@ test("the shared memory owner retires only after its last client exits", { timeo
     advance(600);
     assert.equal(retired, false, "a second live client must retain the owner");
     await stop(children[1]!);
-    advance(200);
-    advance(200);
-    await waitForRetirement(retirement.promise);
+    await waitForRetirement(retirement.promise, advance);
     assert.equal(retired, true);
   } finally {
     await Promise.all(children.map(stop));
@@ -114,9 +115,7 @@ await new AgentMemoryClient(process.env.BINY_AGENT_DIR, process.env.BINY_AGENT_D
     const deadline = Date.now() + 4_000;
     while (owner.hasPendingWork && Date.now() < deadline) await new Promise(resolve => setImmediate(resolve));
     assert.equal(owner.hasPendingWork, false);
-    advance(200);
-    advance(200);
-    await waitForRetirement(retirement.promise);
+    await waitForRetirement(retirement.promise, advance);
   } finally {
     release.resolve();
     if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await once(child, "exit"); }

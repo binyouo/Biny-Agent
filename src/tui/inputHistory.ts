@@ -31,9 +31,17 @@ export async function loadInputHistory(workspaceRoot: string): Promise<string[]>
     return content
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { input?: string })
-      .map((item) => item.input)
-      .filter((input): input is string => typeof input === "string" && input.trim().length > 0)
+      .flatMap((line): string[] => {
+        // A damaged record must not hide healthy history before or after it.
+        try {
+          const item: unknown = JSON.parse(line);
+          if (typeof item !== "object" || item === null || Array.isArray(item)) return [];
+          const input = (item as { input?: unknown }).input;
+          return typeof input === "string" && input.trim().length > 0 ? [input] : [];
+        } catch {
+          return [];
+        }
+      })
       .slice(-maxHistoryItems);
   } finally {
     await handle?.close();
@@ -51,7 +59,8 @@ export async function appendInputHistory(workspaceRoot: string, input: string): 
   try {
     await handle.chmod(0o600);
     await assertHistoryBinding(location, handle);
-    await handle.writeFile(`${JSON.stringify({ createdAt: new Date().toISOString(), input: value })}\n`, "utf8");
+    // Delimit an unterminated tail without rewriting or discarding existing bytes.
+    await handle.writeFile(`\n${JSON.stringify({ createdAt: new Date().toISOString(), input: value })}\n`, "utf8");
     await assertHistoryBinding(location, handle);
   } finally {
     await handle.close();

@@ -99,19 +99,18 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "Token 节省" | "导入" | "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "隐私脱敏" | "关于";
+export type SettingsTab = "Token 节省" | "导入" | "通用" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "隐私脱敏" | "关于";
 
 /**
  * 侧栏按日常偏好、能力扩展、系统工具排序，不插分组标题。
  *
- * 「快速对话」「工具模型」不是独立页面 —— 它们是通用页里的卡片。
+ * 外观与字体、工具模型和快速对话集中在通用页。
  */
 const settingsNav: Array<{ tab: SettingsTab }> = [
   { tab: "通用" },
   { tab: "模型" },
   { tab: "聊天" },
   { tab: "Token 节省" },
-  { tab: "用户界面" },
   { tab: "配色" },
   { tab: "记忆" },
   { tab: "技能" },
@@ -132,8 +131,7 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   "Token 节省": { description: "查看命令压缩与脚本处理减少的上下文。", keywords: "RTK PTC run_script token 统计 节省 用量 沙箱" },
   导入: { description: "导入其他应用的模型设置、MCP 配置和会话。", keywords: "import 导入 同步 Claude Codex ChatGPT 会话 历史 模型 MCP" },
   配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
-  通用: { description: "工具模型、视觉模型、Coding Agent 与快速对话。", keywords: "视觉模型 vision Coding Agent 子代理 subagent runtime Codex Claude Code ACP 工具模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
-  用户界面: { description: "主题、界面密度与字体。", keywords: "外观 界面 主题 浅色 深色 跟随系统 密度 紧凑 舒适 宽松 字体 字号 行高 阅读" },
+  通用: { description: "外观、字体、工具模型、视觉模型、Coding Agent 与快速对话。", keywords: "用户界面 外观 主题 浅色 深色 跟随系统 字体 字号 阅读 视觉模型 vision Coding Agent 子代理 subagent runtime Codex Claude Code ACP 工具模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
   聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline 安全 权限 工具审批 确认 自动 批准 工具权限" },
   模型: { description: "管理模型连接、登录凭据和可用模型。", keywords: "供应商 服务商 API Key 密钥 base URL 登录 默认模型" },
   技能: { description: "管理可用技能、项目启用范围与自动技能提取。", keywords: "skill 导入 安装 版本 启用 自动技能提取 工具调用 阈值" },
@@ -402,7 +400,7 @@ function SettingsOverlayContent({
         <main className={`settings-content${extensionSettings ? " is-extension-settings" : ""}`}>
           <header className="settings-titlebar">
             <div>
-              <h2 ref={titleRef} tabIndex={-1}>{settingsTabLabels[activeTab] ?? activeTab}</h2>
+              <h2 ref={titleRef} data-autofocus tabIndex={-1}>{settingsTabLabels[activeTab] ?? activeTab}</h2>
             </div>
             <button aria-label="关闭设置" className="icon-button settings-close-button" onClick={requestCancel} title="关闭设置 · Esc" type="button">
               <Icon name="close" size={16} />
@@ -438,14 +436,14 @@ function SettingsOverlayContent({
               }
             }}
           /> : null}
-          {activeTab === "用户界面" ? <SettingsAppearance
-            disabled={(settingsDraft.saveState === "saving" && !settingsDraft.modelSelectionSaving) || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
-            theme={settingsDraft.draft?.themePreference ?? themePreference}
-            onThemeChange={settingsDraft.setThemePreference}
-            font={settingsDraft.draft?.fontPreference ?? fontPreference}
-            onFontChange={settingsDraft.setFontPreference}
-          /> : null}
           {activeTab === "通用" ? <div className="settings-preferences settings-general">
+            <SettingsAppearance
+              disabled={(settingsDraft.saveState === "saving" && !settingsDraft.modelSelectionSaving) || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
+              theme={settingsDraft.draft?.themePreference ?? themePreference}
+              onThemeChange={settingsDraft.setThemePreference}
+              font={settingsDraft.draft?.fontPreference ?? fontPreference}
+              onFontChange={settingsDraft.setFontPreference}
+            />
             <SettingsToolModel onTest={onTestModelConfiguration} onNotify={_onNotify} />
             <SettingsVisionModel onNotify={_onNotify} />
             <SettingsSubagent busy={runtimeBusy} onOpenProviders={() => { void selectTab("模型"); }} />

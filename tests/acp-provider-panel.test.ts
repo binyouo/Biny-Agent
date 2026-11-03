@@ -55,14 +55,14 @@ test("preset connection probes once before saving; failures and duplicate invoca
 });
 
 for (const id of ["claude-code-acp", "codex-acp"]) {
-  test(`${id} preset needs no technical fields before connecting; previous ACP tests only covered the backend`, () => {
+  test(`${id} preset shows installation and launch fields directly while keeping its ready-to-connect defaults`, () => {
     const catalog = providerCatalog.find((item) => item.id === id)!;
     const dom = new JSDOM(renderToStaticMarkup(React.createElement(AcpProviderPanel, { catalog, onTest: unavailable, onSave: unavailable })));
     try {
       const document = dom.window.document;
-      const advanced = document.querySelector("details.acp-advanced");
-      assert.ok(advanced, "preset launch fields belong in advanced settings");
-      assert.equal(advanced.hasAttribute("open"), false);
+      const advanced = document.querySelector("section.acp-advanced");
+      assert.ok(advanced, "preset launch fields are a static settings section");
+      assert.equal(document.querySelector("details, summary"), null, "installation and launch fields need no expansion");
       assert.match(advanced.textContent!, /启动命令/u);
       advanced.remove();
       assert.doesNotMatch(document.body.textContent!, /JSON|认证方式 ID|连接名称|MCP 服务名/u);
@@ -78,7 +78,8 @@ test("custom ACP exposes its startup fields and cannot inherit another Agent's l
   const catalog = providerCatalog.find((item) => item.id === "custom-acp")!;
   const dom = new JSDOM(renderToStaticMarkup(React.createElement(AcpProviderPanel, { catalog, onTest: unavailable, onSave: unavailable })));
   try {
-    assert.ok(dom.window.document.querySelector("details.acp-advanced[open]"));
+    assert.ok(dom.window.document.querySelector("section.acp-advanced"));
+    assert.equal(dom.window.document.querySelector("details, summary"), null);
     assert.equal(dom.window.document.querySelector(".acp-setup"), null);
     assert.ok(dom.window.document.querySelector('button.settings-primary-button[disabled]'));
   } finally { dom.window.close(); }

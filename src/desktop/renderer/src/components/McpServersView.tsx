@@ -577,7 +577,7 @@ const McpMarketInstallDialog = memo(function McpMarketInstallDialog({ entry, ini
           {installation.parameters.length ? <div className="biny-mcp-install-parameters"><span>可选参数</span>{installation.parameters.map((parameter) => <label key={parameter.key}><strong>{parameter.name}{parameter.required ? " *" : ""}</strong><input className="settings-field" onChange={(event) => setValues((current) => ({ ...current, [parameter.key]: event.target.value }))} placeholder={parameter.placeholder} required={parameter.required} value={values[parameter.key] ?? ""} /></label>)}</div> : null}
           {validationError ? <p className="biny-mcp-install-validation"><Icon name="warning" size={15} />{validationError}</p> : null}
         </div>
-        <footer className="biny-mcp-install-footer"><button className="settings-action settings-secondary-button biny-mcp-secondary-button" onClick={onClose} type="button">取消</button><button className="settings-action settings-primary-button biny-mcp-primary-button" disabled={saving} type="submit"><Icon name="download" size={16} />{saving ? "安装中…" : "安装"}</button></footer>
+        <footer className="biny-mcp-install-footer"><button className="settings-action settings-secondary-button biny-mcp-secondary-button" onClick={onClose} type="button">取消</button><button aria-busy={saving} className="settings-action settings-primary-button biny-mcp-primary-button" disabled={saving} type="submit"><Icon name="download" size={16} />安装</button></footer>
       </form>
     </SettingsDetailLayer>
   );
@@ -600,7 +600,7 @@ const McpServerDialog = memo(function McpServerDialog({ draft, editing, saving, 
           <McpInput label="请求超时（毫秒）" onChange={(value) => setValue("timeoutMs", value)} placeholder="默认 60000" value={draft.timeoutMs} />
           {testResult ? <div className={`biny-mcp-test-result is-${testResult.success ? "success" : "error"}`}><Icon name={testResult.success ? "check" : "warning"} size={15} /><div><strong>{testResult.success ? "连接测试成功" : "连接测试失败"}</strong><span>{testResult.message ?? testResult.error}</span>{testResult.success ? <small>工具 {testResult.toolNames.length} · 提示 {testResult.promptNames.length} · 资源 {testResult.hasResources ? "有" : "无"}</small> : null}</div></div> : null}
         </div>
-        <footer className="biny-mcp-dialog-footer"><button className="settings-action settings-secondary-button biny-mcp-secondary-button" onClick={onClose} type="button">取消</button><button className="settings-action settings-secondary-button biny-mcp-secondary-button" disabled={saving} onClick={onTest} type="button"><Icon name="network" size={15} />测试连接</button><button className="settings-action settings-primary-button biny-mcp-primary-button" disabled={saving} type="submit"><Icon name={editing ? "check" : "add"} size={15} />{saving ? "保存中…" : editing ? "保存" : "添加"}</button></footer>
+        <footer className="biny-mcp-dialog-footer"><button className="settings-action settings-secondary-button biny-mcp-secondary-button" onClick={onClose} type="button">取消</button><button className="settings-action settings-secondary-button biny-mcp-secondary-button" disabled={saving} onClick={onTest} type="button"><Icon name="network" size={15} />测试连接</button><button aria-busy={saving} className="settings-action settings-primary-button biny-mcp-primary-button" disabled={saving} type="submit"><Icon name={editing ? "check" : "add"} size={15} />{editing ? "保存" : "添加"}</button></footer>
       </form>
     </SettingsDetailLayer>
   );
@@ -619,7 +619,7 @@ const McpSecretFields = memo(function McpSecretFields({ label, location, rows, o
 });
 
 const McpDeleteDialog = memo(function McpDeleteDialog({ busy, name, onCancel, onConfirm }: { busy: boolean; name: string; onCancel(): void; onConfirm(): void }): React.JSX.Element {
-  return <SettingsDetailLayer onClose={onCancel}><section aria-label="确认删除 MCP 服务器" aria-modal="true" className="biny-mcp-confirm-dialog" role="alertdialog"><span className="biny-mcp-confirm-icon"><Icon name="warning" size={21} /></span><h2>删除 MCP 服务器？</h2><p>“{name}”的配置和凭据引用将被移除，此操作无法撤销。</p><div className="biny-mcp-dialog-actions"><button className="settings-action settings-secondary-button biny-mcp-secondary-button" disabled={busy} onClick={onCancel} type="button">取消</button><button className="settings-action settings-danger-button biny-mcp-danger-button" disabled={busy} onClick={onConfirm} type="button">{busy ? "删除中…" : "删除"}</button></div></section></SettingsDetailLayer>;
+  return <SettingsDetailLayer onClose={onCancel}><section aria-label="确认删除 MCP 服务器" aria-modal="true" className="biny-mcp-confirm-dialog" role="alertdialog"><span className="biny-mcp-confirm-icon"><Icon name="warning" size={21} /></span><h2>删除 MCP 服务器？</h2><p>“{name}”的配置和凭据引用将被移除，此操作无法撤销。</p><div className="biny-mcp-dialog-actions"><button className="settings-action settings-secondary-button biny-mcp-secondary-button" disabled={busy} onClick={onCancel} type="button">取消</button><button aria-busy={busy} className="settings-action settings-danger-button biny-mcp-danger-button" disabled={busy} onClick={onConfirm} type="button">删除</button></div></section></SettingsDetailLayer>;
 });
 
 function McpEmpty({ icon, title, detail }: { icon: "refresh" | "search" | "server"; title: string; detail: string }): React.JSX.Element {
