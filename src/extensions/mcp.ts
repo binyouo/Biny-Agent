@@ -463,7 +463,8 @@ export class McpToolHost {
       uri,
       contents: result.contents.map((content) => {
         if ("text" in content && typeof content.text === "string") {
-          return { uri: content.uri, mimeType: content.mimeType, text: truncateUtf8(content.text, maxResourceTextBytes) };
+          const text = truncateUtf8(content.text, maxResourceTextBytes);
+          return { uri: content.uri, mimeType: content.mimeType, text, ...(text !== content.text ? { truncated: true } : {}) };
         }
         const bytes = "blob" in content && typeof content.blob === "string" ? Math.floor(content.blob.length * 3 / 4) : 0;
         return { uri: content.uri, mimeType: content.mimeType, bytes, note: "binary content omitted" };
@@ -1388,7 +1389,8 @@ function normalizeMcpResult(result: unknown): unknown {
       if (part.type === "resource_link") return { type: "resource_link", uri: part.uri, name: part.name, description: part.description };
       if (part.type === "resource" && isRecord(part.resource)) {
         const text = typeof part.resource.text === "string" ? truncateUtf8(part.resource.text, maxResourceTextBytes) : undefined;
-        return { type: "resource", uri: part.resource.uri, mimeType: part.resource.mimeType, text };
+        const truncated = text !== undefined && (part.resource.truncated === true || text !== part.resource.text);
+        return { type: "resource", uri: part.resource.uri, mimeType: part.resource.mimeType, text, ...(truncated ? { truncated: true } : {}) };
       }
       return { type: typeof part.type === "string" ? part.type : "unknown" };
     });
@@ -1408,7 +1410,8 @@ function normalizeMcpEnvelope(result: unknown): unknown {
       }
       if (part.type === "resource" && isRecord(part.resource)) {
         if (typeof part.resource.text === "string") {
-          return { ...part, resource: { ...part.resource, text: truncateUtf8(part.resource.text, maxResourceTextBytes) } };
+          const text = truncateUtf8(part.resource.text, maxResourceTextBytes);
+          return { ...part, resource: { ...part.resource, text, ...(text !== part.resource.text ? { truncated: true } : {}) } };
         }
         const blob = typeof part.resource.blob === "string" ? part.resource.blob : "";
         return { type: "resource", resource: { uri: part.resource.uri, mimeType: part.resource.mimeType, bytes: Math.floor(blob.length * 3 / 4), note: "binary content omitted" } };

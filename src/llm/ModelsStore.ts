@@ -128,12 +128,19 @@ const modelSchema = z.object({
   }).optional()
 });
 
+const maxStoredEtagLength = 1_024;
+
+function cacheableEtag(etag: string | undefined): string | undefined {
+  // Validators are opaque: omit oversized metadata rather than changing its identity.
+  return etag !== undefined && etag.length <= maxStoredEtagLength ? etag : undefined;
+}
+
 const entrySchema = z.object({
   models: z.array(modelSchema),
   sourceKey: z.string().min(1).optional(),
   checkedAt: z.number().int().nonnegative().optional(),
   lastModified: z.number().int().nonnegative().optional(),
-  etag: z.string().max(1_024).optional()
+  etag: z.string().transform(cacheableEtag).optional()
 });
 
 const fileSchema = z.object({
@@ -267,7 +274,7 @@ function sanitizeEntry(entry: ModelsStoreEntry): ModelsStoreEntry {
     sourceKey: entry.sourceKey,
     checkedAt: entry.checkedAt,
     lastModified: entry.lastModified,
-    etag: entry.etag
+    etag: cacheableEtag(entry.etag)
   };
 }
 

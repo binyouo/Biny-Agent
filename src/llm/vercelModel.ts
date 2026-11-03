@@ -11,6 +11,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import type { ModelApiBackend, ModelCompatibility, ProviderConfig } from "../config/schema.js";
 import { createPrivacyFetch, type PrivacyFetchContext } from "../privacy/privacyFetch.js";
+import { withChatToolImages } from "./chatToolImages.js";
 
 export interface VercelModelInput {
   providerAlias: string;
@@ -19,6 +20,7 @@ export interface VercelModelInput {
   api: ModelApiBackend;
   modelId: string;
   supportsReasoning: boolean;
+  supportsVision?: boolean;
   compatibility?: ModelCompatibility;
   baseUrl: string;
   apiKey: string | undefined;
@@ -78,7 +80,7 @@ export function createVercelLanguageModel(input: VercelModelInput): LanguageMode
       fetch: fetcher,
       name: input.providerAlias
     });
-    return input.api === "responses" ? provider.responses(input.modelId) : provider.chat(input.modelId);
+    return input.api === "responses" ? provider.responses(input.modelId) : withChatToolImages(provider.chat(input.modelId), input.supportsVision);
   }
 
   const provider = createOpenAICompatible({
@@ -100,5 +102,5 @@ export function createVercelLanguageModel(input: VercelModelInput): LanguageMode
       };
     }
   });
-  return provider(input.modelId);
+  return withChatToolImages(provider(input.modelId), input.supportsVision);
 }
