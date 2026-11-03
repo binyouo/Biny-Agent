@@ -54,7 +54,7 @@ const cases: Scenario[] = [
   { name: 'native success retains focused copy button', api: 'native', ok: true },
   { name: 'native success does not resurrect initiating button after focus moves', api: 'native', move: 'outside', ok: true },
   { name: 'empty input creates no fallback or focus change', api: 'absent', text: '', ok: false },
-  ...(['absent', 'reject'] as const).flatMap(api => (['true', 'false', 'throw'] as const).map(sink => ({ name: `${api} fallback ${sink} restores copy focus without changing cleanup behavior`, api, sink, ok: sink === 'true' }))),
+  ...(['absent', 'reject'] as const).flatMap(api => (['true', 'false', 'throw'] as const).map(sink => ({ name: `${api} fallback ${sink} restores copy focus and removes its temporary node`, api, sink, ok: sink === 'true' }))),
   ...(['true', 'false', 'throw'] as const).map(sink => ({ name: `delayed rejection snapshots current outside focus at fallback entry (${sink})`, api: 'reject' as const, sink, move: 'outside' as const, ok: sink === 'true' })),
   { name: 'fallback preserves newer synchronous sink focus ownership', api: 'absent', sink: 'true', during: 'focus-outside', ok: true },
   { name: 'throwing sink preserves newer synchronous sink focus ownership', api: 'absent', sink: 'throw', during: 'focus-outside', ok: false },
@@ -136,9 +136,9 @@ function runCase(spec: Scenario) {
   check('feedback and pending ownership',()=>assert.deepEqual({copied:result.copied,failed:result.failed,pending:result.pending,timers:result.timers}, {copied:spec.ok,failed:!spec.ok,pending:false,timers:spec.ok?1:0}));
   check('native exact bytes',()=>assert.deepEqual(result.modern, text && spec.api!=='absent' ? [expectedText] : []));
   check('fallback exact bytes',()=>assert.deepEqual(result.fallback,didFallback?[expectedText]:[]));
-  const reachesRemoval = didFallback && spec.sink !== 'throw';
+  const reachesRemoval = didFallback;
   const removalSucceeds = reachesRemoval && !spec.cleanupThrows;
-  check('original temporary lifecycle preserved',()=>assert.deepEqual({appended:result.appended,removed:result.removed,live:result.liveTemporary},{appended:didFallback?1:0,removed:removalSucceeds?1:0,live:didFallback&&!removalSucceeds}));
+  check('temporary lifecycle is cleaned up',()=>assert.deepEqual({appended:result.appended,removed:result.removed,live:result.liveTemporary},{appended:didFallback?1:0,removed:removalSucceeds?1:0,live:didFallback&&!removalSucceeds}));
   check('cleanup attempted once',()=>assert.equal(result.removeAttempts,reachesRemoval?1:0));
   if(spec.focusThrows)check('restoration attempted before tolerating focus error',()=>assert.equal(result.focusCalls.filter(call=>call.id==='copy').length,1));
   // Cleanup-error case is an unchanged error/leftover-node CONTROL, not a new focus policy.
