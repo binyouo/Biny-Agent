@@ -243,6 +243,7 @@ test("Biny bundle remains archival, including inactive versions and the selectio
   }>(declarations("src/session/transfer.ts", ["exportSessionBundle", "sessionExportBaseName"]), {
     BINY_BUNDLE_FORMAT: "biny-session-bundle", BINY_BUNDLE_VERSION: 2,
     readStoredSessionEvents: async () => ({ events }),
+    readSessionCatalogRecord: async () => undefined,
     resolveSessionFile: async () => "fixture.jsonl",
     sessionIdFromFile: () => "fixture",
     collectBundleAttachments: async () => ({ attachments: [], skipped: [] }),
