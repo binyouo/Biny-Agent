@@ -142,12 +142,14 @@ test('active, today, limits, descriptions and OCR stay unchanged', async () => {
   assert.equal(result.sessions, 1);
   assert.equal(result.analyzed, 1);
   assert.deepEqual(store.ocrCalls, [{ id: 'age-3', limit: 4 }]);
+  const started = new Date(now.getTime() - 3 * minute);
+  const localTime = `${String(started.getHours()).padStart(2, '0')}:${String(started.getMinutes()).padStart(2, '0')}`;
   assert.equal(result.markdown, [
     '# Recent activity digest', '',
     '**Active session** (active) — Editor, started 7 min ago, 2 events / 3 snapshots.', '',
     '**Today**: 10 min active across 2 sessions. Top apps: Example (10m).', '',
     '**Recent sessions (last 180 min):**',
-    '- `age-3` — 11:57 (2m) **Title 3**',
+    `- \`age-3\` — ${localTime} (2m) **Title 3**`,
     '  -  detail text ',
     '  - OCR:  first frame ',
     `  - OCR: ${'x'.repeat(200)}…`,
