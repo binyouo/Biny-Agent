@@ -2,38 +2,39 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
-import ts from "typescript";
-import { Command, InvalidArgumentError } from "commander";
-import { defaultManagedSkillRoot, parseManagedSkillMetadata } from "../src/extensions/managedSkillSources.js";
+import { test, type TestContext } from "node:test";
+import { Command } from "commander";
+import { registerSkillCommands } from "../src/cli/commands/skills.js";
 import { withGlobalConfigWriteLock } from "../src/config/versioned.js";
 
-// Run the actual registration and create action without loading unrelated install/rollback CLI dependencies.
-const source = await fs.readFile(new URL("../src/cli/commands/skills.ts", import.meta.url), "utf8");
-const ast = ts.createSourceFile("skills.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const names = new Set(["registerSkillCommands", "skillCreateCommand", "assertSkillDirectoryName", "parsePositiveInteger", "parseNonNegativeInteger", "readStdin"]);
-const selected = ast.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name !== undefined && names.has(node.name.text));
-assert.equal(selected.length, names.size);
-const compiled = ts.transpileModule(selected.map(node => node.getText(ast)).join("\n"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }
-}).outputText;
-const output: string[] = [];
-const exports = {} as { registerSkillCommands(program: Command, root: string): void };
-new Function("exports", "fs", "path", "InvalidArgumentError", "defaultManagedSkillRoot", "parseManagedSkillMetadata", "withGlobalConfigWriteLock", "console", compiled)(
-  exports, fs, path, InvalidArgumentError, defaultManagedSkillRoot, parseManagedSkillMetadata, withGlobalConfigWriteLock,
-  { log: (value: unknown) => output.push(String(value)), error: (value: unknown) => output.push(String(value)) }
-);
+function observeRootInspection(context: TestContext, root: string): () => Promise<void> {
+  const inspected = gate(), lstat = fs.lstat;
+  context.mock.method(fs, "lstat", async (...args: Parameters<typeof fs.lstat>) => {
+    const result = await lstat(...args);
+    if (String(args[0]) === root) inspected.resolve();
+    return result;
+  });
+  return async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([inspected.promise, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Managed-root lock was never requested.")), 10_000);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
+  };
+}
+
 const document = (name: string, body: string) => `---\nname: ${name}\ndescription: Synthetic report workflow.\n---\n\n${body}\n`;
 function gate() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 async function fixture(action: (f: { root: string; managed: string; source: string; target: string; run(name?: string): Promise<void> }) => Promise<void>) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-cli-create-lock-"));
   const old = process.env.BINY_AGENT_DIR, exitCode = process.exitCode;
   const managed = path.join(root, "state", "skills"), source = path.join(root, "input.md"), target = path.join(managed, "weekly-report");
-  process.env.BINY_AGENT_DIR = path.join(root, "state"); process.exitCode = undefined; output.length = 0;
+  process.env.BINY_AGENT_DIR = path.join(root, "state"); process.exitCode = undefined;
   try {
     await fs.writeFile(source, document("weekly-report", "CLI_SOURCE"));
     await action({ root, managed, source, target, run: async (name = "weekly-report") => {
-      const program = new Command(); exports.registerSkillCommands(program, root);
+      const program = new Command(); registerSkillCommands(program, root);
       await program.parseAsync(["skill", "create", name, "--file", source], { from: "user" });
     } });
   } finally {
@@ -42,7 +43,7 @@ async function fixture(action: (f: { root: string; managed: string; source: stri
   }
 }
 
-test("CLI create waits for a managed-root publisher and preserves its completed document", async () => fixture(async f => {
+test("CLI create waits for a managed-root publisher and preserves its completed document", async t => fixture(async f => {
   const acquired = gate(), release = gate();
   const owner = withGlobalConfigWriteLock(f.managed, async () => {
     acquired.resolve(); await release.promise;
@@ -51,8 +52,9 @@ test("CLI create waits for a managed-root publisher and preserves its completed 
   await acquired.promise;
   let pending: Promise<void> | undefined;
   try {
+    const inspected = observeRootInspection(t, await fs.realpath(f.managed));
     pending = f.run();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await Promise.race([inspected(), pending.then(() => { assert.fail("CLI completed before the managed-root publisher released its lock."); })]);
     await assert.rejects(fs.stat(f.target), { code: "ENOENT" });
     release.resolve(); await owner; await pending;
     assert.equal(process.exitCode, 1);
@@ -70,12 +72,13 @@ test("CLI holds the shared lock from empty reservation through successful public
   const cli = f.run(); let writer: Promise<void> | undefined; let entered = false;
   try {
     await reserved.promise; assert.deepEqual(await fs.readdir(f.target), []);
+    const inspected = observeRootInspection(t, await fs.realpath(f.managed));
     writer = withGlobalConfigWriteLock(f.managed, async () => {
       entered = true;
       assert.equal(await fs.readFile(path.join(f.target, "SKILL.md"), "utf8"), document("weekly-report", "CLI_SOURCE"));
     });
     void writer.catch(() => undefined);
-    await new Promise(resolve => setTimeout(resolve, 50)); assert.equal(entered, false);
+    await inspected(); assert.equal(entered, false);
     release.resolve(); await cli; await writer;
     assert.equal(process.exitCode, undefined); assert.ok(entered);
   } finally { release.resolve(); await Promise.allSettled([cli, ...(writer ? [writer] : [])]); }
@@ -121,11 +124,12 @@ test("failed file publication holds the root through cleanup and releases it for
   const cli = f.run(); let writer: Promise<void> | undefined; let entered = false;
   try {
     await cleaning.promise;
+    const inspected = observeRootInspection(t, await fs.realpath(f.managed));
     writer = withGlobalConfigWriteLock(f.managed, async () => {
       entered = true; await assert.rejects(fs.stat(f.target), { code: "ENOENT" });
     });
     void writer.catch(() => undefined);
-    await new Promise(resolve => setTimeout(resolve, 50)); assert.equal(entered, false);
+    await inspected(); assert.equal(entered, false);
     release.resolve(); await cli; await writer;
     assert.equal(process.exitCode, 1); assert.ok(entered);
     assert.equal(await fs.readFile(f.source, "utf8"), document("weekly-report", "CLI_SOURCE"));
