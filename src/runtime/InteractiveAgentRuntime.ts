@@ -1,3 +1,4 @@
+import { hasNativeMediaContent } from "../attachments/input.js";
 import { createRunDeadlineSignal } from "./runDeadline.js";
 import { validateRunOptions, parseRunVerification, withRunTaskGuidance, resolveRunDeadlineBudget, runVerificationApproval, closureStopReason, type RunCommandOptions, type RunCommandResult } from "./oneShot.js";
 import type { ToolOptimization } from "../session/toolOptimization.js";
@@ -496,7 +497,7 @@ export class InteractiveAgentRuntime {
     if (this.state.kind === "runs" || this.activeRun) {
       throw new Error("Cannot submit a prompt while the runtime is busy.");
     }
-    if (!input.trim() && !emptyTurn && !continuation) throw new Error("Agent prompt cannot be empty.");
+    if (!input.trim() && !hasNativeMediaContent(attachments) && !emptyTurn && !continuation) throw new Error("Agent prompt cannot be empty.");
     // 可选扩展不阻塞用户消息入账。这里同步刷新当前 MCP 工具快照；Skill 扫描可在本轮
     // 已被接收后继续完成，后续 turn 再看到更新后的能力目录。
     this.commandRuntime.refreshExtensionTools?.();

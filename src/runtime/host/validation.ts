@@ -1,3 +1,4 @@
+import { hasNativeMediaContent } from "../../attachments/input.js";
 /**
  * Runtime Host 请求输入与错误的纯解析层。
  *
@@ -26,6 +27,14 @@ export function asRecord(value: unknown): Record<string, unknown> {
 
 export function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Runtime Host field ${name} must be a non-empty string.`);
+  return value;
+}
+
+/** Keep generic string validation strict; only native media can stand alone. */
+export function readPromptInput(value: unknown, attachments: AgentAttachment[]): string {
+  if (typeof value !== "string" || (!value.trim() && !hasNativeMediaContent(attachments))) {
+    throw new Error("Runtime Host field input must be a non-empty string.");
+  }
   return value;
 }
 

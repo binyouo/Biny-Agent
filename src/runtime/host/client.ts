@@ -1,3 +1,4 @@
+import { hasNativeMediaContent } from "../../attachments/input.js";
 import type { MaskRecord, MaskingOverview } from "../../privacy/record.js";
 import type { ForkedSession } from "../../session/fork.js";
 import type { RunCommandOptions, RunCommandResult } from "../oneShot.js";
@@ -327,7 +328,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     modelRoute?: "tool",
     fastMode?: boolean
   ): SubmittedAgentRun {
-    if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
+    if (!input.trim() && !hasNativeMediaContent(attachments)) throw new Error("Agent prompt cannot be empty.");
     const ids = normalizeRequestIds(requestIds);
     const completion = this.createCompletion(ids.runId);
     void this.submitRunForSession(sessionId, input, attachments, ids, promptContext, capabilitySelection, fastMode, modelRoute)
@@ -365,7 +366,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     fastMode?: boolean,
     modelRoute?: "tool"
   ): Promise<HostOperationResult<{ runId: string; messageId: string }>> {
-    if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
+    if (!input.trim() && !hasNativeMediaContent(attachments)) throw new Error("Agent prompt cannot be empty.");
     const ids = normalizeRequestIds(requestIds);
     const socket = this.socket;
     const hostEpoch = this.hostEpoch;
