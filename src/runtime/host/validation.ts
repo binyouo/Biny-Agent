@@ -395,4 +395,3 @@ export function readRecoveryStopReason(value: unknown): AgentRunOutcome["stopRea
   ) return value;
   return "provider_error";
 }
-
