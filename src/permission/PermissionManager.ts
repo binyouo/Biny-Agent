@@ -159,8 +159,13 @@ export class PermissionManager {
       return { decision: "allow", reason: `Allowed by project tool policy: ${request.toolName}` };
     }
 
-    if (request.targetPath && matchingPathRule(request.targetPath, this.policy.allowPaths)) {
+    if (pathGrantCoversRequest(request, (target) => Boolean(matchingPathRule(target, this.policy.allowPaths)))) {
       return { decision: "allow", reason: `Allowed by project path policy: ${request.targetPath}` };
+    }
+
+    if (request.secondaryTargetPath && pathGrantCoversRequest(request, (target) =>
+      this.sessionAllowedPaths.has(normalizeRulePath(target)) || Boolean(matchingPathRule(target, this.policy.allowPaths)))) {
+      return { decision: "allow", reason: "Allowed by current session and project path permissions." };
     }
 
     if (request.actionType === "read" && request.riskLevel === "low") {
@@ -262,7 +267,8 @@ function permissionScopeForResult(
 ): PermissionGrantScope | undefined {
   if (result.action === "allow_once") return "once";
   if (result.action === "allow_always") return permissionScopeForAlways(request);
-  return result.scope;
+  // A remembered move authorizes this exact call, not independent authority over either endpoint.
+  return result.scope === "path" && request.secondaryTargetPath ? "command" : result.scope;
 }
 
 function isAllowedBySession(
@@ -276,7 +282,12 @@ function isAllowedBySession(
   if (commands.has(requestKey(request))) return true;
   if (actions.has(actionKey(request))) return true;
   // 会话里的具体文件授权是一次用户选择，必须精确匹配；只有项目配置规则才支持 basename/目录模式。
-  return request.targetPath ? paths.has(normalizeRulePath(request.targetPath)) : false;
+  return pathGrantCoversRequest(request, (target) => paths.has(normalizeRulePath(target)));
+}
+
+function pathGrantCoversRequest(request: PermissionRequestContext, allows: (target: string) => boolean): boolean {
+  return Boolean(request.targetPath && allows(request.targetPath)
+    && (!request.secondaryTargetPath || allows(request.secondaryTargetPath)));
 }
 
 function requestKey(request: PermissionRequestContext): string {
@@ -288,6 +299,7 @@ function requestKey(request: PermissionRequestContext): string {
     request.actionType,
     request.command ?? "",
     request.targetPath ? normalizeRulePath(request.targetPath) : "",
+    request.secondaryTargetPath ? normalizeRulePath(request.secondaryTargetPath) : "",
     request.changeSummary ?? "",
     request.diffPreview ?? ""
   ]);

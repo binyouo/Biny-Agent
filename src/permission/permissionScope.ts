@@ -6,7 +6,7 @@
 import type { PermissionGrantScope, PermissionRequestContext } from "./PermissionManager.js";
 
 export function permissionScopeForAlways(
-  request: Pick<PermissionRequestContext, "command" | "targetPath">
+  request: Pick<PermissionRequestContext, "command" | "targetPath" | "secondaryTargetPath">
 ): Exclude<PermissionGrantScope, "once"> {
-  return request.command ? "command" : request.targetPath ? "path" : "tool";
+  return request.command || request.secondaryTargetPath ? "command" : request.targetPath ? "path" : "tool";
 }
