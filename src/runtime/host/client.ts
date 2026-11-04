@@ -2042,4 +2042,3 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.socketWriter.send(frame);
   }
 }
-
