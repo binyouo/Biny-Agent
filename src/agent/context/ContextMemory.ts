@@ -2157,4 +2157,3 @@ function prunedToolResultMessage(message: ToolMessage): ToolMessage {
     content: [{ type: "text", text: replacement }]
   };
 }
-
