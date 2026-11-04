@@ -1584,4 +1584,3 @@ function readGoalTokenBudget(value: unknown): number | undefined {
 }
 
 export interface RuntimeHostExecutionOptions { workspaceRoot?: string; sessionRuntimeCacheTarget?: number; resourceRegistry?: RuntimeHostResourceRegistry; }
-
