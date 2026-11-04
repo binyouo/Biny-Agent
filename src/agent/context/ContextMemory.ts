@@ -1,3 +1,4 @@
+import { hasNativeMediaContent } from "../../attachments/input.js";
 import { attachmentMessageParts } from "../../attachments/store.js";
 import { estimateContextBreakdown, estimateMessageTokens, estimateTokens, messageTokenCost, type ContextTokenInput } from "./tokenUsage.js";
 import type { AgentContext, AgentMessage, AgentModel, AgentTool, AgentToolResultMessage, AgentUsage, AgentUserMessage, ModelRequestContext, ModelRequestObserver } from "../core/types.js";
@@ -1818,18 +1819,18 @@ function assembleContext(
   const components: ContextComponentUsage[] = [];
   // reserveTokens 是下一次 provider 输出前的运行时安全余量，不应该在 prompt 组装时重新花掉。
   const usableTokens = Math.max(1, maxTokens - reserveTokens);
-  const task = input.trim() || "(empty task)";
+  const task = input.trim() || (hasNativeMediaContent(attachments) ? "" : "(empty task)");
   const taskBudget = Math.max(1, Math.min(estimateTokens(task), Math.floor(usableTokens * 0.35)));
   const taskContent = truncateTextToTokens(task, taskBudget);
   const fullUserContent = attachments.length
     ? [
-      { type: "text" as const, text: task },
+      ...(task ? [{ type: "text" as const, text: task }] : []),
       ...attachmentMessageParts(attachments)
     ]
     : task;
   const userContent = attachments.length
     ? [
-      { type: "text" as const, text: taskContent },
+      ...(taskContent ? [{ type: "text" as const, text: taskContent }] : []),
       ...attachmentMessageParts(attachments)
     ]
     : taskContent;
@@ -2156,3 +2157,4 @@ function prunedToolResultMessage(message: ToolMessage): ToolMessage {
     content: [{ type: "text", text: replacement }]
   };
 }
+
