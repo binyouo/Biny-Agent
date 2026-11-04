@@ -70,7 +70,9 @@ const blockedNetworks = ([
   ["192.168.0.0", 16, "ipv4", "a private network address"],
   ["169.254.0.0", 16, "ipv4", "a link-local address (cloud instance metadata lives here)"],
   ["100.64.0.0", 10, "ipv4", "a carrier-grade NAT address"],
-  ["192.0.0.0", 16, "ipv4", "a reserved address"],
+  // Only these special-purpose /24s are reserved; the wider 192.0.0.0/16 includes public hosting.
+  ["192.0.0.0", 24, "ipv4", "a reserved address"],
+  ["192.0.2.0", 24, "ipv4", "a reserved address"],
   ["224.0.0.0", 3, "ipv4", "a multicast or reserved address"],
   ["::", 128, "ipv6", "an unspecified address"],
   ["::1", 128, "ipv6", "a loopback address"],
