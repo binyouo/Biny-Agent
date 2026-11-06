@@ -542,8 +542,8 @@ export interface AutomationSchedulerOptions {
   getRuntime: () => InteractiveRuntimeHandle;
   /** 重建 runtime 后数据库连接会替换；scheduler 必须取当前 authority projection。 */
   getStore: () => AutomationStore;
-  /** 为某个 fire 取得专属 session runtime；不传目标时创建新的自动化 session。 */
-  createFreshRuntime: (sessionId?: string) => Promise<InteractiveRuntimeHandle>;
+  /** 为 fire 取得专属 runtime，并保留至 retainedUntil 完成；不传目标时创建新会话。 */
+  createFreshRuntime: (sessionId: string | undefined, retainedUntil: Promise<void>) => Promise<InteractiveRuntimeHandle>;
   onRuntimeReplaced?: (runtime: InteractiveRuntimeHandle) => void;
   canStartRun?: () => boolean;
   tickMs?: number;
@@ -636,12 +636,14 @@ export class AutomationScheduler {
       return;
     }
     let didSubmit = false;
+    let releaseRuntime!: () => void;
+    const retainedUntil = new Promise<void>((resolve) => { releaseRuntime = resolve; });
     try {
       let target = current;
       if (usesDedicatedRuntime) {
         // 目标 session 由模板决定；没有目标的非 heartbeat fire 使用独立的新 session，
         // 绝不能复用当前 UI session。heartbeat 沿用 primary，避免每次心跳都创建新会话。
-        target = await this.options.createFreshRuntime(targetSessionId);
+        target = await this.options.createFreshRuntime(targetSessionId, retainedUntil);
         this.options.onRuntimeReplaced?.(target);
       }
       if (target.getSnapshot().state.kind !== "idle") {
@@ -686,6 +688,8 @@ export class AutomationScheduler {
         return;
       }
       currentStore.failFire(claimed.fireId, error instanceof Error ? error.message : String(error));
+    } finally {
+      releaseRuntime();
     }
   }
 
