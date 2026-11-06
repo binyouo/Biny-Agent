@@ -228,16 +228,24 @@ export class RuntimeHostExecution {
       onGraphChange: () => this.host.publishSnapshot(),
       getRuntime: () => this.runtime,
       getCommands: () => this.commands,
-      createFreshRuntime: async (sessionId) => {
-          if (sessionId !== undefined) {
-            const existing = this.registry.get(sessionId);
-            if (existing) {
-              if (runtimeIsBusy(existing.runtime.getSnapshot())) throw new AutomationTargetBusyError(sessionId);
-              return existing.runtime;
+      createFreshRuntime: async (sessionId, retainedUntil) => {
+          const retainedSessionId = sessionId ?? randomUUID();
+          const release = this.registry.retainSession(retainedSessionId);
+          void retainedUntil.then(release, release);
+          try {
+            if (sessionId !== undefined) {
+              const existing = this.registry.get(sessionId);
+              if (existing) {
+                if (runtimeIsBusy(existing.runtime.getSnapshot())) throw new AutomationTargetBusyError(sessionId);
+                return existing.runtime;
+              }
+              return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).runtime;
             }
-            return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).runtime;
+            return (await this.registry.createFresh({ sessionId: retainedSessionId, isolation: "shared", resourceRegistry: this.resourceRegistry })).runtime;
+          } catch (error) {
+            release();
+            throw error;
           }
-          return (await this.registry.createFresh({ isolation: "shared", resourceRegistry: this.resourceRegistry })).runtime;
         },
       resolveSessionRuntime: async (sessionId) => {
           const existing = this.registry.get(sessionId);
