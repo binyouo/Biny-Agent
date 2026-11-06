@@ -26,7 +26,7 @@ export interface RuntimeHostBusinessCompositionOptions {
   onActivity?(): void;
   getRuntime(): InteractiveRuntimeHandle;
   getCommands(): CommandRuntime;
-  createFreshRuntime: (sessionId?: string) => Promise<InteractiveRuntimeHandle>;
+  createFreshRuntime: (sessionId: string | undefined, retainedUntil: Promise<void>) => Promise<InteractiveRuntimeHandle>;
   resolveSessionRuntime: (sessionId: string) => Promise<InteractiveRuntimeHandle>;
   resolveSessionCommands: (sessionId: string) => Promise<CommandRuntime>;
   sessionExists?: (sessionId: string) => Promise<boolean>;
