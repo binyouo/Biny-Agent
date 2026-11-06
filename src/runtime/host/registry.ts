@@ -34,6 +34,7 @@ export class SessionRuntimeRegistry {
   private readonly initializations = new Map<string, Promise<ManagedSessionRuntime>>();
   /** 将正在创建的会话计入缓存需求，提前尝试回收空闲实例；不作为准入上限。 */
   private readonly reservations = new Set<string>();
+  private readonly retainedSessions = new Map<string, number>();
   private readonly sessionRuntimeCacheTarget: number;
   private readonly primaryEntry: ManagedSessionRuntime;
   private closed = false;
@@ -100,6 +101,20 @@ export class SessionRuntimeRegistry {
     const sessionId = factoryOptions?.sessionId ?? randomUUID();
     if (this.entries.has(sessionId)) return this.entries.get(sessionId)!;
     return await this.ensure(sessionId, { ...factoryOptions, sessionId, fresh: true });
+  }
+
+  /** 临时保留准备中的会话，防止异步受理窗口被自动 LRU 驱逐；不阻止显式关闭。 */
+  retainSession(sessionId: string): () => void {
+    if (this.closed) throw new Error("Runtime Host session registry is closed.");
+    this.retainedSessions.set(sessionId, (this.retainedSessions.get(sessionId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.retainedSessions.get(sessionId) ?? 0) - 1;
+      if (remaining > 0) this.retainedSessions.set(sessionId, remaining);
+      else this.retainedSessions.delete(sessionId);
+    };
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -210,6 +225,7 @@ export class SessionRuntimeRegistry {
       // 工厂返回的晚到实例由 create 关闭；它确认清理前不能释放 owner。
       await Promise.allSettled([...this.initializations.values()]);
       this.entries.clear();
+      this.retainedSessions.clear();
       const failures = [...results.filter(result => result.status === "rejected").map(result => result.reason), ...this.cleanupFailures];
       if (failures.length) throw new AggregateError(failures, "Session Runtime cleanup failed.");
     })();
@@ -220,7 +236,7 @@ export class SessionRuntimeRegistry {
   async evictIdle(requiredFreeSlots = 1): Promise<string[]> {
     const candidates = this.list()
       .filter((entry) => {
-        if (entry.primary) return false;
+        if (entry.primary || this.retainedSessions.has(entry.sessionId)) return false;
         const snapshot = entry.runtime.getSnapshot();
         // 暂停后待发消息仍只在内存中；自动回收不能丢掉用户保留的队列。
         return !runtimeIsBusy(snapshot) && !snapshot.queuedMessages?.length
@@ -231,7 +247,7 @@ export class SessionRuntimeRegistry {
     for (const entry of candidates) {
       if (evicted.length >= Math.max(0, requiredFreeSlots)) break;
       // 关闭上一个实例期间可能有新请求进入；重新确认候选仍空闲且没有新的使用者。
-      if (this.entries.get(entry.sessionId) !== entry) continue;
+      if (this.entries.get(entry.sessionId) !== entry || this.retainedSessions.has(entry.sessionId)) continue;
       const snapshot = entry.runtime.getSnapshot();
       if (runtimeIsBusy(snapshot) || snapshot.queuedMessages?.length
         || !(this.options.canEvict?.(entry) ?? true)) continue;
