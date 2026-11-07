@@ -37,6 +37,9 @@ test("window editor preserves private pixels, history and export through view an
   dom.window.HTMLCanvasElement.prototype.getContext = function () {
     const operations: Draw[] = []; draws.set(this, operations);
     return { fillStyle:'', strokeStyle:'', lineWidth:1, save() {}, restore() {}, beginPath() {}, clip() {}, setLineDash() {}, strokeRect() {},
+      canvas: { width: this.width, height: this.height },
+      getImageData: (_x:number, _y:number, width:number, height:number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4).fill(120) }),
+      putImageData: (...args:unknown[]) => operations.push({ kind:'putImageData', args }),
       createLinearGradient: () => ({ addColorStop() {} }),
       drawImage: (...args:unknown[]) => operations.push({ kind:'image', args:args.slice(1) }),
       fillRect(x:number,y:number,w:number,h:number) { operations.push({ kind:'rect', color:String(this.fillStyle), args:[x,y,w,h] }); },
@@ -75,13 +78,13 @@ test("window editor preserves private pixels, history and export through view an
     await drag(264,264,364,324);
     await act(async () => button('复制').click());
     let exported = JSON.parse(copied) as { width:number; height:number; draws:Draw[] };
-    assert.ok(exported.draws.some(item => item.kind === 'rect' && item.color === '#202329'), 'privacy covers the original title pixels');
+    assert.ok(exported.draws.some(item => item.kind === 'putImageData' && (item.args as number[])[1] === 84 && (item.args as number[])[2] === 94), 'privacy blurs the original title pixels');
     assert.deepEqual(exported.draws.at(-1), { kind:'rect', color:'#252525', args:[264,264,100,60] }, 'manual masking is applied last');
     await act(async () => document.querySelector<HTMLInputElement>('[aria-label="会话标题"]')!.click());
     await act(async () => button('复制').click());
     exported = JSON.parse(copied);
     assert.equal(captures, 1, 'privacy changes never recapture or discard edits');
-    assert.equal(exported.draws.some(item => item.color === '#202329'), false);
+    assert.equal(exported.draws.some(item => item.kind === 'putImageData'), false);
     assert.deepEqual(exported.draws.at(-1), { kind:'rect', color:'#252525', args:[264,264,100,60] });
     await act(async () => button('裁剪').click());
     await drag(164,164,464,464);

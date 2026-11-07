@@ -27,17 +27,17 @@ function replaceSpans(text: string, spans: Span[], put: (kind: string, value: st
   return { text: out + text.slice(last), hits, segments };
 }
 
-export function maskText(text: string, settings: RedactionSettings, store: RedactionStore = defaultStore): MaskTextResult {
+export function maskText(text: string, settings: RedactionSettings, store: RedactionStore = defaultStore, field?: string): MaskTextResult {
   if (!redactionWanted(settings)) return { text, hits: [], segments: [] };
-  return replaceSpans(text, [...findRuleHits(text), ...store.find(text)], (kind, value) => store.register(kind, value));
+  return replaceSpans(text, [...findRuleHits(text, field), ...store.find(text, field)], (kind, value) => store.register(kind, value));
 }
 
 /** 历史内容复用首次发送时的替换位置；字段语义不同的同文不能共享决定。 */
-export function maskSentText(text: string, context: string, store: RedactionStore, discover: () => MaskTextResult): MaskTextResult {
-  const prior = store.sentSpans(text, context);
+export function maskSentText(text: string, context: string, store: RedactionStore, discover: () => MaskTextResult, route = ""): MaskTextResult {
+  const prior = store.sentSpans(text, context, route);
   if (prior) return replaceSpans(text, prior, (kind, value) => store.register(kind, value));
   const result = discover();
-  store.rememberSent(text, context, result.segments.map(({ start, end, kind }) => ({ start, end, kind })));
+  store.rememberSent(text, context, result.segments.map(({ start, end, kind }) => ({ start, end, kind })), route);
   return result;
 }
 
