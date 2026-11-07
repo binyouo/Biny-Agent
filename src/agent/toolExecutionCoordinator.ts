@@ -1187,7 +1187,8 @@ export class ToolExecutionCoordinator {
           && typeof wrapper.durationMs === "number" && Number.isFinite(wrapper.durationMs)
           && (wrapper.hooks === undefined || Array.isArray(wrapper.hooks)) ? wrapper.result : "";
       const name = /^# Skill: ([a-z0-9]+(?:-[a-z0-9]+)*)\n\n\*\*Skill Directory:\*\* `/u.exec(body)?.[1];
-      if (name && name.length <= 64 && body.endsWith("Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory.")) {
+      if (name && name.length <= 64 && (body.endsWith("Follow the instructions above for your response.")
+        || body.endsWith("Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory."))) {
         loadedSkill = name;
       }
     }
