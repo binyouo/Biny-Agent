@@ -24,11 +24,12 @@ export function ActivityRuntimeProvider({ active, children }: { active: boolean;
     runtimeRef.current = next;
     setRuntime(next);
   }, []);
-  const refresh = useCallback(async (): Promise<ActivityRuntimeSnapshot> => {
-    const next = await window.biny.activitySnapshot();
+  const readRuntime = useCallback(async (forceRefresh: boolean): Promise<ActivityRuntimeSnapshot> => {
+    const next = await window.biny.activitySnapshot(forceRefresh);
     updateRuntime(next);
     return next;
   }, [updateRuntime]);
+  const refresh = useCallback(async () => await readRuntime(true), [readRuntime]);
   const refreshPermissions = useCallback(async (): Promise<ActivityPermissionStatus> => {
     // 系统读取失败时清掉旧授权显示；旧快照不能证明当前仍已授权。
     const request = ++permissionRequest.current;
@@ -51,13 +52,13 @@ export function ActivityRuntimeProvider({ active, children }: { active: boolean;
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
-    if (runtimeRef.current === undefined) void refresh().catch(() => undefined);
+    if (runtimeRef.current === undefined) void readRuntime(false).catch(() => undefined);
     void refreshPermissions().catch(() => undefined);
     const unsubscribe = window.biny.onActivityEvent((next) => {
       if (!cancelled) updateRuntime(next);
     });
     const interval = window.setInterval(() => {
-      void refresh().catch(() => undefined);
+      void readRuntime(false).catch(() => undefined);
       void refreshPermissions().catch(() => undefined);
     }, 5_000);
     return () => {
@@ -65,7 +66,7 @@ export function ActivityRuntimeProvider({ active, children }: { active: boolean;
       window.clearInterval(interval);
       unsubscribe();
     };
-  }, [active, refresh, refreshPermissions, updateRuntime]);
+  }, [active, readRuntime, refreshPermissions, updateRuntime]);
 
   const value = useMemo(() => ({ runtime, permissions, permissionError, refresh, refreshPermissions, updateRuntime }), [permissions, permissionError, refresh, refreshPermissions, runtime, updateRuntime]);
   return <ActivityRuntimeContext.Provider value={value}>{children}</ActivityRuntimeContext.Provider>;

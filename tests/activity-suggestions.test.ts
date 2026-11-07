@@ -65,6 +65,9 @@ async function testActivitySuggestionsAreGroundedAndCached(): Promise<void> {
       }
     });
     const cache = createInMemoryActivitySuggestionCache();
+    cache.set(["test", "suggestion-model", "builtin-llama.cpp", "local", store.activityRevision()].join("\u0000"), [
+      "Add crossfadeSeconds range validation tests"
+    ]);
     const deps = {
       store,
       model,
@@ -72,8 +75,8 @@ async function testActivitySuggestionsAreGroundedAndCached(): Promise<void> {
       cache
     };
     const first = await generateActivitySuggestions(deps);
+    assert.equal(first.cached, false, "中文生成规则不能复用旧英文建议缓存");
     assert.equal(first.suggestions.length, 4);
-    assert.equal(first.cached, false);
     assert.equal(calls, 1);
     assert.match(prompt, /biny/u);
     assert.match(prompt, /jieba/u);
@@ -116,7 +119,8 @@ async function testActivitySuggestionsUseExternalModel(): Promise<void> {
       sessionId,
       analyzedAt: "2026-08-31T10:00:00.000Z",
       analyzerModel: "analyzer",
-      title: "继续处理项目", summary: "有内容",
+      project: "mygo-cloudmusic",
+      title: "Add crossfadeSeconds range validation tests", summary: "Range validation tests for the music client",
       topics: [],
       prs: [],
       issues: [],
@@ -134,12 +138,14 @@ async function testActivitySuggestionsUseExternalModel(): Promise<void> {
       inputHash: "external-suggestions-test"
     });
     let calls = 0;
+    let prompt = "";
     const model: AgentModel = testModel({
       provider: "external",
       modelId: "cloud",
       runtime: "provider",
-      stream: async () => {
+      stream: async (context) => {
         calls += 1;
+        prompt = JSON.stringify(context.messages);
         return (async function* (): AsyncGenerator<ModelStreamEvent> {
           yield { type: "text-delta", text: '["继续处理项目", "回顾近期决定", "检查当前进展", "整理下一步"]' };
           yield { type: "finish", reason: "stop" };
@@ -154,6 +160,10 @@ async function testActivitySuggestionsUseExternalModel(): Promise<void> {
     assert.deepEqual(result.suggestions, ["继续处理项目", "回顾近期决定", "检查当前进展", "整理下一步"]);
     assert.equal(result.reason, undefined);
     assert.equal(calls, 1);
+    assert.match(prompt, /简体中文/u, "英文活动也须明确要求中文建议");
+    assert.doesNotMatch(prompt, /using the same language as the activity/u);
+    assert.match(prompt, /mygo-cloudmusic/u);
+    assert.match(prompt, /crossfadeSeconds/u);
   });
 }
 

@@ -216,12 +216,14 @@ export interface ActivityAnalysisCommit {
   url?: string;
 }
 
+export type ActivityAnalysisPerson = string | { handle: string; name?: string };
+
 /** entities 分组；顶层兼容字段仍保留，便于旧报告和语义索引继续工作。 */
 export interface ActivityAnalysisEntityDetails {
   prs: ActivityAnalysisReference[];
   issues: ActivityAnalysisReference[];
   commits: ActivityAnalysisCommit[];
-  people: string[];
+  people: ActivityAnalysisPerson[];
   identifiers: string[];
   repos: string[];
   versions: string[];
@@ -1597,7 +1599,7 @@ export class ActivityStore {
     }));
     if (sessions.length === 0) return sessions;
     const byId = new Map(sessions.map((session) => [session.id, session]));
-    // 先按每个 session 的全部事件截到 200 条，再挑焦点/浏览访问；过滤后截断会把第 201 条访问误算进日报。
+    // 浏览证据限于每个 session 的前 200 条事件；时长分配必须保留完整焦点切换。
     for (let offset = 0; offset < sessions.length; offset += 400) {
       const ids = sessions.slice(offset, offset + 400).map((session) => session.id);
       const placeholders = ids.map(() => "?").join(", ");
@@ -1609,7 +1611,7 @@ export class ActivityStore {
           FROM ${activityEventProjection}
           WHERE session_id IN (${placeholders})
         )
-        WHERE event_number <= 200 AND event_type IN ('app_focus', 'browser_visit')
+        WHERE event_type = 'app_focus' OR (event_number <= 200 AND event_type = 'browser_visit')
         ORDER BY occurred_at ASC
       `).all(...ids) as Array<Record<string, unknown>>;
       for (const event of events) {
@@ -2097,14 +2099,15 @@ export class ActivityStore {
    * 按 hot/warm/cold 策略维护截图文件。降级和容量淘汰都限制单轮处理量，避免新图
    * 写入时被一轮大清理阻塞；超过 cold 保留期时删除 snapshot 行，让 OCR 按外键级联删除。
    */
-  async rotateSnapshots(maxStorageMb: number, now = new Date(), recompress?: ActivitySnapshotCompressor): Promise<void> {
+  async rotateSnapshots(maxStorageMb: number, now = new Date(), recompress?: ActivitySnapshotCompressor, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
     const database = this.requireDatabase();
     const root = this.requireRoot();
     // macOS 的 /var 等祖先可能是系统目录别名；仅拒绝 Activity 根目录以下的路径绕行。
     const canonicalRoot = await realpath(root);
     // 编码只产出内存 Buffer，不创建锁外 staging 文件。这样清空/孤儿清理不必
     // 追踪在途编码；短提交锁内才创建并立即发布临时文件。
-    const isCurrentStore = (): boolean => this.database === database && this.root === root;
+    const isCurrentStore = (): boolean => !signal?.aborted && this.database === database && this.root === root;
     const processTier = async (
       tier: ActivitySnapshotStorageTier,
       nextTier: ActivitySnapshotStorageTier,
@@ -2150,6 +2153,7 @@ export class ActivityStore {
           }
           return { ...row, absolutePath, canonicalPath, identity, generation: this.clearRevision() };
         });
+        if (!isCurrentStore()) return;
         if (!candidate || !recompress) continue;
         let encoded: Awaited<ReturnType<ActivitySnapshotCompressor>> | undefined;
         try {

@@ -46,12 +46,16 @@ biny activity report today --force
 
 The command is safe to run unconditionally: it will return `# <date> 打工日记 … 今天没有可分析的活动记录。` if nothing has been recorded yet, and you should relay that as-is.
 
+For a multi-day request, resolve the requested local dates and request each day's report separately. The report command accepts one day, not `week` or a date range. Preserve dates when presenting the returned reports. For a seven-day statistical summary, use `biny activity summary weekly <endDate> --narrative`; it covers that end date and the preceding six days and is not a merged thematic work journal.
+
+Reports use saved session analyses, not raw OCR or a new analysis sweep. Pending-analysis notices describe missing coverage; do not hide them or equate a historical date with completed analysis. Changed sources rebuild the report on the next request; `--force` bypasses caching without analyzing sessions.
+
 ## Output rules
 
 1. **Paste the markdown verbatim** as your reply. The report already has a title, section headings, PR links, @mentions, versions, and decisions — don't strip or reflow them.
 2. **Do not add a summary at the top.** The report's opening paragraph is the summary.
 3. **Do not narrate time.** The report intentionally de-emphasizes "at 10:03 you did X" — that's the pattern the user called out as useless. If they want a minute-by-minute view, they'll ask and you run `biny activity digest` instead.
-4. **Match the user's language.** The report detects Chinese/Japanese/English from the underlying OCR. Don't translate it.
+4. **Keep the returned report's language.** Narrative generation follows the saved activity skeleton. Do not claim that the report reads raw OCR or translate the returned report.
 5. If the user asks a follow-up like "tell me more about the tokenspeed part", drill down with `biny activity sessions` + `biny activity show <id>` — not by re-running the report.
 
 ## Failure modes
