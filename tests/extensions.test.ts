@@ -30,6 +30,7 @@ async function main(): Promise<void> {
   try {
     testEmptySkillReport();
     await testSkillsAndPlugins(workspaceRoot);
+    await testPluginSettingsContext(workspaceRoot);
     await testGlobalSkillSymlinkRoots();
     await testExtensionPathBoundary(workspaceRoot);
     await testMcpStdioTool(workspaceRoot);
@@ -339,6 +340,37 @@ async function testSkillsAndPlugins(workspaceRoot: string): Promise<void> {
   }
 }
 
+async function testPluginSettingsContext(workspaceRoot: string): Promise<void> {
+  const config = configSchema.parse(defaultConfig);
+  await writeFile(path.join(workspaceRoot, "a-settings-probe.mjs"), `export default function register(context) {
+  const bag = (globalThis.__binySettingsProbe ??= []);
+  bag.push(context.settings);
+  try { context.settings.injected = true; } catch (error) { bag.push(error instanceof Error ? error.name : "thrown"); }
+};\n`, "utf8");
+  await writeFile(path.join(workspaceRoot, "b-plain-probe.mjs"), `export default function register(context) {
+  const bag = (globalThis.__binySettingsProbe ??= []);
+  bag.push(context.settings);
+};\n`, "utf8");
+  const bag: unknown[] = [];
+  (globalThis as Record<string, unknown>).__binySettingsProbe = bag;
+  try {
+    const target = { path: "a-settings-probe.mjs", settings: { mode: "safe", retries: 3 } };
+    await loadPlugins(workspaceRoot, [target, "b-plain-probe.mjs"], config, new ToolRegistry());
+    assert.deepEqual(bag[0], { mode: "safe", retries: 3 }, "PluginLoadTarget 的 settings 透传给 context");
+    assert.equal(bag[1], "TypeError", "context.settings 必须冻结");
+    assert.deepEqual(bag[2], {}, "字符串路径没有声明，拿到空设置对象");
+    assert.ok(Object.isFrozen(bag[0]));
+    assert.deepEqual(target.settings, { mode: "safe", retries: 3 });
+    assert.equal(Object.isFrozen(target.settings), false, "传入的共享对象不被冻结或改写");
+    bag.length = 0;
+    await loadPlugins(workspaceRoot, [target], config, new ToolRegistry());
+    assert.deepEqual(bag[0], { mode: "safe", retries: 3 });
+    assert.ok(bag[0] !== target.settings, "每次加载发放新副本，上一次尝试注入不会残留");
+  } finally {
+    delete (globalThis as Record<string, unknown>).__binySettingsProbe;
+  }
+}
+
 async function testProgressiveSkills(workspaceRoot: string): Promise<void> {
   const globalRoot = await mkdtemp(path.join(os.tmpdir(), "biny-global-skills-"));
   try {
@@ -405,10 +437,11 @@ async function testProgressiveSkills(workspaceRoot: string): Promise<void> {
     if ("isError" in execution) throw new Error(execution.errorMessage);
     assert.equal(execution.approvalRule, "Skill:test-runner");
     const result = await execution.execute({ toolCallId: "test" }) as string;
-    // 返回体对齐 Agent Skills 模板：目录绝对路径是引用文件的定位基准。
+    // 目录用于定位脚本，文本资源由专用工具按相对路径读取。
     assert.match(result, /^# Skill: test-runner/u);
     assert.ok(result.includes(`**Skill Directory:** \`${path.dirname(projectSkill.filePath)}\``), "返回体必须带技能目录绝对路径");
-    assert.match(result, /MUST read them using absolute paths based on the skill directory above/u);
+    assert.match(result, /read_skill_resource/u);
+    assert.ok(result.includes('skill: "test-runner"'));
     assert.match(result, /Compatibility notes \(not automatically verified\): Requires pnpm/);
     assert.match(result, /Declared tools \(normal permissions still apply\): Read Bash/);
     assert.match(result, /Always run pnpm test/);

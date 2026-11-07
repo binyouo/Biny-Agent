@@ -33,10 +33,13 @@ import {
   readPluginRegistryCache,
   readProjectPluginManifest,
   setGlobalPluginEnabled,
+  setGlobalPluginSettings,
   setProjectPluginEnabled,
+  setProjectPluginSettings,
   uninstallGlobalPlugin,
   uninstallProjectPlugin,
   writePluginRegistryCache,
+  type ManagedPlugin
 } from "../../../extensions/pluginRegistry.js";
 import { getSharedProxyAwareFetch } from "../../../network/proxyFetch.js";
 import type {
@@ -228,6 +231,16 @@ export class DesktopSkillService {
     return await this.requireManagedPluginSummary(projectId, pluginId, "project");
   }
 
+  async setPluginSettings(projectId: string, pluginId: string, settings: unknown, scope: "project" | "global" = "project"): Promise<DesktopPluginSummary> {
+    const project = this.requireProject(projectId);
+    if (scope === "global") {
+      await setGlobalPluginSettings(pluginId, settings);
+      return await this.requireManagedPluginSummary(projectId, pluginId, "global");
+    }
+    await setProjectPluginSettings(project.path, pluginId, settings);
+    return await this.requireManagedPluginSummary(projectId, pluginId, "project");
+  }
+
   async uninstallPlugin(projectId: string, pluginId: string, scope: "project" | "global" = "project"): Promise<void> {
     if (scope === "global") {
       await uninstallGlobalPlugin(pluginId);
@@ -408,7 +421,21 @@ export class DesktopSkillService {
       description: plugin.description,
       enabled: plugin.enabled,
       managed: true,
+      ...this.managedPluginFields(plugin),
       error
+    };
+  }
+
+  private managedPluginFields(plugin: ManagedPlugin): Pick<DesktopPluginSummary, "pluginId" | "entry" | "source" | "installedAt" | "author" | "homepage" | "configuration" | "settings"> {
+    return {
+      pluginId: plugin.id,
+      entry: plugin.entry,
+      source: plugin.source,
+      installedAt: plugin.installedAt,
+      author: plugin.author,
+      homepage: plugin.homepage,
+      configuration: plugin.configuration,
+      settings: plugin.settings
     };
   }
 
@@ -420,15 +447,10 @@ export class DesktopSkillService {
       return await this.globalPluginSummary(plugin);
     }
     const project = this.requireProject(projectId);
-    const result = await this.listProjectPlugins(project.id, project.name, project.path);
-    const entry = result.plugins.find((plugin) => plugin.managed && plugin.path.endsWith(`/${pluginId}`));
-    if (!entry) {
-      const manifest = await readProjectPluginManifest(project.path);
-      const plugin = manifest.plugins.find((candidate) => candidate.id === pluginId);
-      if (!plugin) throw new Error(`Plugin 不存在：${pluginId}`);
-      return await this.managedPluginSummary(project.id, project.name, project.path, plugin);
-    }
-    return entry;
+    const manifest = await readProjectPluginManifest(project.path);
+    const plugin = manifest.plugins.find((candidate) => candidate.id === pluginId);
+    if (!plugin) throw new Error(`Plugin 不存在：${pluginId}`);
+    return await this.managedPluginSummary(project.id, project.name, project.path, plugin);
   }
 
   private async globalPluginSummary(plugin: Awaited<ReturnType<typeof readGlobalPluginManifest>>["plugins"][number]): Promise<DesktopPluginSummary> {
@@ -457,6 +479,7 @@ export class DesktopSkillService {
       description: plugin.description,
       enabled: plugin.enabled,
       managed: true,
+      ...this.managedPluginFields(plugin),
       error
     };
   }

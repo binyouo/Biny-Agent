@@ -6,7 +6,7 @@ const threadLimitBytes = 8 * 1024 * 1024;
 const requestTimeoutMs = 5_000;
 
 export default function register(context) {
-  const serverName = resolveServerName(context.config, process.env.BINY_NOWLEDGE_MEM_SERVER);
+  const serverName = resolveServerName(context.config, context.settings?.serverName?.trim() || process.env.BINY_NOWLEDGE_MEM_SERVER);
   if (!serverName) return;
 
   context.registerTurnLifecycle({
