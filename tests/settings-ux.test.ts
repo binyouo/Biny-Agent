@@ -12,8 +12,8 @@ import { defaultConfig } from "../src/config/schema.js";
 import { loadConfigFile, saveConfigFile } from "../src/config/loader.js";
 import { DesktopConfigStore } from "../src/desktop/electron/main/DesktopConfigStore.js";
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
-import type { AppearanceSnapshot } from "../src/appearance/types.js";
-import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot, DesktopSkillCatalogEntry, DesktopSkillCatalogSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopAppearanceSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot, DesktopSkillCatalogEntry, DesktopSkillCatalogSnapshot, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 import type { ApplicationImportSnapshot } from "../src/imports/types.js";
 
 function snapshot(): DesktopSettingsSnapshot {
@@ -78,7 +78,7 @@ async function harness(api: Record<string, unknown> = {}) {
       element.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
     });
   };
-  const overlay = async (extra: Record<string, unknown> = {}, appearance?: AppearanceSnapshot) => {
+  const overlay = async (extra: Record<string, unknown> = {}, appearance?: DesktopAppearanceSnapshot) => {
     const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
     const props = { open: true, version: "test", projects: [], workspace: { project: { id: "project", name: "Project" }, models: [], connections: [] },
       themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
@@ -111,6 +111,26 @@ test("打开和重开设置时聚焦页面标题，搜索仍可手动使用", as
     await h.overlay({ open: false });
     await h.overlay();
     assert.ok(document.activeElement === title, "重开时焦点应回到页面标题");
+  } finally { await h.close(); }
+});
+
+test("设置导航搜索不重新读取内容区模型，跳转仍更新页面与焦点", async () => {
+  let modelReads = 0;
+  const models: DesktopWorkspaceSnapshot["models"] = [];
+  const workspace = { project: { id: "project", name: "Project" }, connections: [],
+    get models() { modelReads++; return models; } };
+  const h = await harness();
+  try {
+    await h.overlay({ targetTab: "关于", workspace });
+    modelReads = 0;
+    for (const query of ["工", "工具", "工具审批"]) await h.input('[aria-label="搜索设置"]', query);
+    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "关于");
+    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /聊天偏好/u);
+    assert.equal(modelReads, 0, "输入导航关键词不应使内容区重新读取模型目录");
+    await h.click('[aria-label="设置搜索结果"] button');
+    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好");
+    assert.equal(document.activeElement, document.querySelector('.settings-titlebar h2'));
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索设置"]')?.value, "");
   } finally { await h.close(); }
 });
 
@@ -217,11 +237,12 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     await h.overlay({ targetTab: "通用" });
     await h.click('input[value="dark"]');
     const navLabels = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].map(button => button.textContent);
-    assert.deepEqual(navLabels.slice(0, 7), ["通用", "模型供应商", "聊天偏好", "Token 节省", "配色", "记忆", "技能"], "日常偏好应先于扩展与系统工具，旧覆盖只检查入口存在");
+    assert.deepEqual(navLabels.slice(0, 6), ["通用", "模型供应商", "聊天偏好", "Token 节省", "记忆", "技能"], "日常偏好应先于扩展与系统工具，旧覆盖只检查入口存在");
     assert.ok(!navLabels.includes("快速对话"), "快速对话不再是独立页面，已并入通用");
     assert.ok(!navLabels.includes("工具模型"), "工具模型不再是独立页面，已并入通用");
     const general = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].find(button => button.textContent === "通用");
-    await h.click('[data-settings-tab="配色"]');
+    assert.equal(document.querySelector('[data-settings-tab="配色"]'), null);
+    await h.click('[data-settings-tab="聊天"]');
     assert.ok(general); general.focus();
     await h.React.act(() => general.click());
     assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "通用");
@@ -841,7 +862,7 @@ test("工具与视觉模型分别保存，独立编辑不被禁用，窄回执�
     function Probe() { current = useSettingsDraft(); return null; }
     await h.render(h.React.createElement(SettingsDraftProvider, { active: true, projectId: "project", sessionRunning: false,
       onCommitted() {}, onFontPreview() { previews += 1; }, onThemePreview() { previews += 1; },
-      onAppearancePreview() { previews += 1; }, onNotify() {}, children: h.React.createElement(h.React.Fragment, null,
+      onNotify() {}, children: h.React.createElement(h.React.Fragment, null,
         h.React.createElement(Probe), h.React.createElement(SettingsToolModel, { onTest: async () => ({ ok: true, message: "ok" }), onNotify() {} }),
         h.React.createElement(SettingsVisionModel, { onNotify() {} }), h.React.createElement(SettingsSubagent, { onOpenProviders() {} })) }));
     const before = current.snapshot!;
@@ -1306,64 +1327,27 @@ test("设置模型选择跳过不可用项，Escape 先收起选择再退出详�
   } finally { host.remove(); await h.close(); }
 });
 
-test("删除自定义主题先确认，取消或保存失败均不丢失主题", async () => {
+test("配色入口和搜索项已移除，旧页面目标返回通用并保留明暗选择", async () => {
   const h = await harness();
   try {
-    const { SettingsThemes } = await import("../src/desktop/renderer/src/components/settings/SettingsThemes.js");
-    const { BUILTIN_PALETTES, DEFAULT_APPEARANCE, cloneAppearanceTheme } = await import("../src/appearance/index.js");
-    const custom = cloneAppearanceTheme(BUILTIN_PALETTES.nord, "test-theme", "测试配色");
-    const preference = { ...structuredClone(DEFAULT_APPEARANCE), darkTheme: "custom:test-theme", customThemes: [custom] };
-    const before = structuredClone(preference);
-    const writes: typeof preference[] = [];
-    let failSave = false;
-    await h.render(h.React.createElement(SettingsThemes, { preference, onChange(next) {
-      if (failSave) throw new Error("主题偏好暂时不可写");
-      writes.push(next as typeof preference);
-      return Promise.resolve(true);
-    } }));
-    await h.click('[aria-label="删除 测试配色"]');
-    assert.deepEqual(writes, []);
-    assert.ok(document.querySelector('dialog[aria-label="删除主题"]')?.textContent?.includes("测试配色"));
-    await h.click('dialog[aria-label="删除主题"] [aria-label="取消删除主题"]');
-    assert.deepEqual(writes, []);
-    assert.deepEqual(preference, before);
-    await h.click('[aria-label="删除 测试配色"]');
-    failSave = true;
-    await h.click('dialog[aria-label="删除主题"] [aria-label="确认删除主题"]');
-    assert.deepEqual(writes, []);
-    assert.match(document.querySelector('dialog[aria-label="删除主题"] [role="alert"]')?.textContent ?? "", /暂时不可写/u);
-    failSave = false;
-    await h.click('dialog[aria-label="删除主题"] [aria-label="确认删除主题"]');
-    assert.equal(writes.length, 1);
-    assert.deepEqual(writes[0]?.customThemes, []);
-    assert.equal(writes[0]?.darkTheme, null);
-    assert.equal(writes[0]?.lightTheme, preference.lightTheme);
-    assert.deepEqual(preference, before);
+    await h.overlay({ targetTab: "配色" });
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "通用");
+    assert.equal(document.querySelector('[data-settings-tab="配色"]'), null);
+    assert.equal(document.querySelector(".settings-theme-page"), null);
+    assert.deepEqual([...document.querySelectorAll<HTMLInputElement>('#appearance-theme input')].map(input => input.value), ["system", "light", "dark"]);
+    await h.input('[aria-label="搜索设置"]', "配色");
+    assert.equal(document.querySelector('[aria-label="设置搜索结果"] button'), null);
+    await h.input('[aria-label="搜索设置"]', "主题");
+    assert.equal(document.querySelector('[aria-label="设置搜索结果"] button')?.textContent?.includes("通用"), true);
   } finally { await h.close(); }
 });
 
-test("窗口拖影选项只在选中对应结构皮肤时出现", async () => {
+test("深浅色切换保留当前分页、未保存修改和内容节点", async () => {
   const h = await harness();
   try {
-    const { SettingsThemes } = await import("../src/desktop/renderer/src/components/settings/SettingsThemes.js");
-    const { DEFAULT_APPEARANCE } = await import("../src/appearance/index.js");
-    const preference = structuredClone(DEFAULT_APPEARANCE);
-    await h.render(h.React.createElement(SettingsThemes, { preference, onChange: async () => true }));
-    assert.equal(document.querySelector('[role="switch"][aria-label="Windows 98 窗口拖影"]') === null, true);
-    await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "win98" }, onChange: async () => true }));
-    assert.equal(document.querySelector<HTMLInputElement>('[role="switch"][aria-label="Windows 98 窗口拖影"]')?.checked, true);
-    await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "winxp", win98Trail: false }, onChange: async () => true }));
-    assert.equal(document.querySelector('[role="switch"][aria-label="Windows 98 窗口拖影"]') === null, true);
-  } finally { await h.close(); }
-});
-
-test("打开设置时切换结构皮肤保留当前分页、未保存修改和内容节点", async () => {
-  const h = await harness();
-  try {
-    const { DEFAULT_APPEARANCE } = await import("../src/appearance/index.js");
     const noop = () => {};
-    const props = { onNotify: noop, onThemePreference: noop, onFontPreference: noop, onAppearancePreference: noop, onSettingsCommitted: noop, onClose: noop };
-    const initial: AppearanceSnapshot = { themePreference: "dark", appearancePreference: structuredClone(DEFAULT_APPEARANCE), fontPreference: { family: "system", size: 14 } };
+    const props = { onNotify: noop, onThemePreference: noop, onFontPreference: noop, onSettingsCommitted: noop, onClose: noop };
+    const initial: DesktopAppearanceSnapshot = { themePreference: "dark", fontPreference: { family: "system", size: 14 } };
     await h.overlay(props, initial);
     await h.click('[data-settings-tab="聊天"]');
     const streaming = document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]');
@@ -1377,20 +1361,16 @@ test("打开设置时切换结构皮肤保留当前分页、未保存修改和�
     assert.equal(typeof unsaved, "boolean");
     assert.notEqual(unsaved, original);
     assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
-    for (const skin of ["win98", "winxp", "longhorn", "longhorn-dark"]) {
-      const appearancePreference = { ...structuredClone(DEFAULT_APPEARANCE), lightTheme: skin === "longhorn-dark" ? null : skin, darkTheme: skin === "longhorn-dark" ? skin : null };
-      await h.overlay(props, { ...initial, themePreference: skin === "longhorn-dark" ? "dark" : "light", appearancePreference });
-      assert.equal(document.documentElement.dataset.appearanceSkin, skin);
-      assert.equal(document.querySelector(".settings-modal")?.classList.contains("is-retro-settings"), true, skin);
-      assert.ok(document.querySelector(".settings-content") === content, `${skin}: 切换皮肤不应重挂载设置内容`);
-      assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好", skin);
-      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, unsaved, skin);
+    for (const mode of ["light", "dark"] as const) {
+      await h.overlay(props, { ...initial, themePreference: mode });
+      assert.equal(document.documentElement.dataset.theme, mode);
+      assert.ok(document.querySelector(".settings-content") === content, `${mode}: 切换明暗不应重挂载设置内容`);
+      assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好", mode);
+      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, unsaved, mode);
       assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
     }
     await h.overlay(props, initial);
-    assert.equal(document.documentElement.dataset.appearanceSkin, "default");
-    assert.equal(document.querySelector(".settings-modal")?.classList.contains("is-retro-settings"), false);
-    assert.ok(document.querySelector(".settings-content") === content, "恢复皮肤不应重挂载设置内容");
+    assert.ok(document.querySelector(".settings-content") === content, "切换明暗不应重挂载设置内容");
     assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好");
     assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, unsaved);
   } finally { await h.close(); }
@@ -1774,6 +1754,54 @@ test("通用设置按工具模型、视觉模型、Coding Agent 顺序显示模�
     assert.deepEqual(cards, ["tool-model", "vision-model", "subagent"]);
   } finally { await h.close(); }
 });
+
+test("关闭握手只同步实际变化的布尔状态，保留无效草稿、保存中与关闭状态", async () => {
+  const initial = snapshot();
+  const committed = Promise.withResolvers<DesktopSettingsSnapshot>();
+  const projections: Array<{ dirty: boolean; canSave: boolean; open: boolean }> = [];
+  const h = await harness({ settingsSnapshot: async () => initial,
+    updateSettingsDraftState: async (value: typeof projections[number]) => { projections.push(value); },
+    saveSettings: async () => ({ status: "committed", journalId: "projection", appliedFields: ["subagent"], snapshot: await committed.promise })
+  });
+  try {
+    const { SettingsDraftProvider } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftProvider.js");
+    const { useSettingsDraft } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    let context: ReturnType<typeof useSettingsDraft>;
+    function Probe() { context = useSettingsDraft(); return null; }
+    const props = { projectId: "project", sessionRunning: false,
+      onCommitted() {}, onFontPreview() {}, onNotify() {}, onThemePreview() {}, children: h.React.createElement(Probe) };
+    await h.render(h.React.createElement(SettingsDraftProvider, { ...props, active: true }));
+    projections.length = 0;
+    await h.React.act(async () => context!.setThemePreference("dark"));
+    assert.deepEqual(projections, [{ dirty: true, canSave: true, open: true }], "首次编辑只发送一次实际状态");
+    await h.React.act(async () => context!.setFontPreference({ ...initial.fontPreference, size: 15 }));
+    assert.equal(context!.dirtyCount, 2);
+    await h.React.act(async () => context!.setThemePreference(initial.themePreference));
+    assert.equal(context!.dirtyCount, 1);
+    assert.equal(projections.length, 1, "待保存字段数量变化不重复同步相同状态");
+    await h.React.act(async () => context!.setFontPreference(initial.fontPreference));
+    assert.deepEqual(projections.slice(1), [{ dirty: false, canSave: false, open: true }]);
+    await h.React.act(async () => context!.setSubagent({ enabled: true, runtime: "codex" }));
+    await h.React.act(async () => context!.setSubagent({ enabled: true, runtime: "codex", model: "configured-model" }));
+    let saving: ReturnType<typeof context.saveAll> | undefined;
+    await h.React.act(async () => { saving = context!.saveAll(); });
+    assert.deepEqual(projections.slice(2), [
+      { dirty: true, canSave: false, open: true },
+      { dirty: true, canSave: true, open: true },
+      { dirty: true, canSave: false, open: true }
+    ], "无效、可保存与保存中的状态变化不能被去重掉");
+    await h.React.act(async () => {
+      committed.resolve({ ...initial, configRevision: "config:2", subagent: { enabled: true, runtime: "codex", model: "configured-model" } });
+      await saving;
+    });
+    await h.render(h.React.createElement(SettingsDraftProvider, { ...props, active: false }));
+    assert.deepEqual(projections.slice(5), [
+      { dirty: false, canSave: false, open: true },
+      { dirty: false, canSave: false, open: false }
+    ]);
+  } finally { committed.resolve(initial); await h.close(); }
+});
+
 test("保存响应保留等待期间修改的聊天草稿，再次保存使用新的修订号", async () => {
   const initial = snapshot();
   const originalStreaming = initial.chatParams.response?.streaming ?? true;

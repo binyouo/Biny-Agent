@@ -10,8 +10,6 @@ import path from "node:path";
 import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH } from "../../sidebarSizing.js";
 import { clampStoredFilePanelWidth, DEFAULT_FILE_PANEL_WIDTH } from "../../filePanelSizing.js";
 import { DEFAULT_FONT_PREFERENCE, normalizeFontPreference } from "../../fontPreference.js";
-import { DEFAULT_APPEARANCE, appearancePreferenceSchema, normalizeAppearancePreference } from "../../../appearance/preferences.js";
-import type { AppearancePreference } from "../../../appearance/types.js";
 import type { DesktopActiveView, DesktopFontPreference, DesktopProject, DesktopQuickChatSettings, DesktopThemePreference } from "../../protocol.js";
 
 export interface DesktopWindowBounds {
@@ -31,7 +29,6 @@ interface PersistedDesktopState {
   filePanelWidth: number;
   themePreference: DesktopThemePreference;
   fontPreference: DesktopFontPreference;
-  appearancePreference: AppearancePreference;
   quickChat: DesktopQuickChatSettings;
   quickChatBounds?: DesktopWindowBounds;
   /** 只覆盖设置页偏好字段，供统一设置保存执行进程内 CAS。 */
@@ -56,7 +53,6 @@ const defaultState: PersistedDesktopState = {
   filePanelWidth: DEFAULT_FILE_PANEL_WIDTH,
   themePreference: "system",
   fontPreference: { ...DEFAULT_FONT_PREFERENCE },
-  appearancePreference: structuredClone(DEFAULT_APPEARANCE),
   quickChat: { ...DEFAULT_QUICKCHAT_SETTINGS },
   quickChatBounds: undefined,
   preferenceRevision: 0,
@@ -88,7 +84,6 @@ export class DesktopStateStore {
         filePanelWidth: typeof raw.filePanelWidth === "number" ? clampStoredFilePanelWidth(raw.filePanelWidth) : DEFAULT_FILE_PANEL_WIDTH,
         themePreference: validThemePreference(raw.themePreference) ? raw.themePreference : "system",
         fontPreference: normalizeFontPreference(raw.fontPreference),
-        appearancePreference: normalizeAppearancePreference(raw.appearancePreference),
         quickChat: normalizeQuickChatSettings(raw.quickChat),
         quickChatBounds: validWindowBounds(raw.quickChatBounds) ? raw.quickChatBounds : undefined,
         preferenceRevision: validPreferenceRevision(raw.preferenceRevision) ? raw.preferenceRevision : 0,
@@ -261,14 +256,6 @@ export class DesktopStateStore {
     return { ...this.state.fontPreference };
   }
 
-  appearancePreference(): AppearancePreference {
-    return structuredClone(this.state.appearancePreference);
-  }
-
-  async setAppearancePreference(preference: AppearancePreference): Promise<void> {
-    await this.queueSettingsPreferences({ appearancePreference: preference });
-  }
-
   async setFontPreference(font: DesktopFontPreference): Promise<void> {
     await this.queueSettingsPreferences({ fontPreference: font });
   }
@@ -297,7 +284,6 @@ export class DesktopStateStore {
       revision: this.state.preferenceRevision,
       themePreference: this.state.themePreference,
       fontPreference: { ...this.state.fontPreference },
-      appearancePreference: this.appearancePreference()
     };
   }
 
@@ -325,19 +311,14 @@ export class DesktopStateStore {
       const fontPreference = capturedPatch.fontPreference === undefined
         ? previous.fontPreference
         : normalizeFontPreference(capturedPatch.fontPreference);
-      const appearancePreference = capturedPatch.appearancePreference === undefined
-        ? previous.appearancePreference
-        : appearancePreferenceSchema.parse(capturedPatch.appearancePreference) as AppearancePreference;
-      if (themePreference === previous.themePreference && sameFont(fontPreference, previous.fontPreference)
-        && JSON.stringify(appearancePreference) === JSON.stringify(previous.appearancePreference)) {
+      if (themePreference === previous.themePreference && sameFont(fontPreference, previous.fontPreference)) {
         return previous;
       }
       const preferenceRevision = previous.revision + 1;
-      await this.writeSnapshot({ ...snapshot, themePreference, fontPreference, appearancePreference, preferenceRevision });
+      await this.writeSnapshot({ ...snapshot, themePreference, fontPreference, preferenceRevision });
       // Only commit our fields: ordinary mutations may have arrived during the I/O.
       this.state.themePreference = themePreference;
       this.state.fontPreference = { ...fontPreference };
-      this.state.appearancePreference = structuredClone(appearancePreference);
       this.state.preferenceRevision = preferenceRevision;
       return this.settingsPreferences();
     });
@@ -351,7 +332,6 @@ export class DesktopStateStore {
     return await this.applySettingsPreferences({
       themePreference: snapshot.themePreference,
       fontPreference: snapshot.fontPreference,
-      appearancePreference: normalizeAppearancePreference(snapshot.appearancePreference)
     }, expectedRevision);
   }
 
@@ -395,13 +375,11 @@ export interface DesktopPreferenceSnapshot {
   revision: number;
   themePreference: DesktopThemePreference;
   fontPreference: DesktopFontPreference;
-  appearancePreference: AppearancePreference;
 }
 
 export interface DesktopPreferencePatch {
   themePreference?: DesktopThemePreference;
   fontPreference?: DesktopFontPreference;
-  appearancePreference?: AppearancePreference;
 }
 
 export class DesktopPreferenceRevisionConflictError extends Error {

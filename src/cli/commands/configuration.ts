@@ -50,5 +50,5 @@ export function registerConfigurationCommands(program: Command, wrap: (action: (
 }
 
 function desktopPreferencePath(key: string): boolean {
-  return ["themePreference", "appearancePreference", "fontPreference"].includes(key.split(".")[0]!);
+  return ["themePreference", "fontPreference"].includes(key.split(".")[0]!);
 }

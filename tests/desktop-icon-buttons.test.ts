@@ -27,29 +27,6 @@ async function loadStyles(dom: JSDOM): Promise<void> {
   }
 }
 
-test("切换皮肤不会恢复当前项目的选中底色、阴影或描边", async () => {
-  const dom = new JSDOM('<div class="biny-sidebar-card"><button class="biny-project-row">项目</button><button class="biny-project-row is-active">当前项目</button></div>');
-  try {
-    await loadStyles(dom);
-    for (const file of ["retro.css", "retro-layout.css"]) {
-      const style = dom.window.document.createElement("style");
-      style.textContent = await readFile(new URL(`styles/${file}`, renderer), "utf8");
-      dom.window.document.head.append(style);
-    }
-    for (const skin of ["win98", "winxp", "longhorn", "longhorn-dark"]) {
-      dom.window.document.documentElement.setAttribute("data-appearance-skin", skin);
-      const rows = dom.window.document.querySelectorAll("button");
-      const plain = dom.window.getComputedStyle(rows[0]!);
-      const selected = dom.window.getComputedStyle(rows[1]!);
-      for (const property of ["background", "background-image", "box-shadow", "outline"]) {
-        assert.equal(selected.getPropertyValue(property), plain.getPropertyValue(property), `${skin}: ${property}`);
-      }
-    }
-  } finally {
-    dom.window.close();
-  }
-});
-
 test("消息操作的普通、菜单展开和复制成功状态保持等宽高圆形，防止局部圆角覆盖", async () => {
   const dom = new JSDOM('<main class="biny-root"><div class="biny-chat-scroll"><button class="user-message-action">复制</button><button class="user-message-action" aria-expanded="true">更多</button><button class="assistant-action is-copied">已复制</button></div></main>');
   try {

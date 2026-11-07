@@ -5,8 +5,6 @@
  * 预览，Activity 则通过独立 CAS 通道即时落盘，其余设置仍由 saveAll 进入主进程事务。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { normalizeAppearancePreference } from "../../../../../appearance/preferences.js";
-import type { AppearancePreference } from "../../../../../appearance/types.js";
 import type { ModelProfile } from "../../../../../config/schema.js";
 import type {
   DesktopActivitySettingsInput,
@@ -84,7 +82,6 @@ export function SettingsDraftProvider({
   children,
   onCommitted,
   onFontPreview,
-  onAppearancePreview,
   onNotify,
   onThemePreview,
   projectId,
@@ -94,9 +91,8 @@ export function SettingsDraftProvider({
   active: boolean;
   loadSnapshot?: boolean;
   children: React.ReactNode;
-  onCommitted(snapshot: DesktopSettingsSnapshot, scope?: "models" | "preferences" | "settings", appliedFields?: string[]): void;
+  onCommitted(snapshot: DesktopSettingsSnapshot, scope?: "models" | "model-config" | "preferences" | "settings", appliedFields?: string[]): void;
   onFontPreview(value: DesktopFontPreference): void;
-  onAppearancePreview?(value: AppearancePreference): void;
   onNotify(message: string): void;
   onThemePreview(value: DesktopThemePreference): void;
   projectId?: string;
@@ -168,13 +164,12 @@ export function SettingsDraftProvider({
     setSaveState(next.pendingRecovery ? "recovery_required" : "clean");
   }, []);
 
-  const { themePreference: draftTheme, fontPreference: draftFont, appearancePreference: draftAppearance } = draft ?? {};
+  const { themePreference: draftTheme, fontPreference: draftFont } = draft ?? {};
   useEffect(() => {
-    if (!active || !draftTheme || !draftFont || !draftAppearance) return;
+    if (!active || !draftTheme || !draftFont) return;
     onThemePreview(draftTheme);
     onFontPreview(draftFont);
-    onAppearancePreview?.(draftAppearance);
-  }, [active, draftTheme, draftFont, draftAppearance, onAppearancePreview, onFontPreview, onThemePreview]);
+  }, [active, draftTheme, draftFont, onFontPreview, onThemePreview]);
 
   useEffect(() => {
     if (!active || !loadSnapshot) return;
@@ -265,15 +260,6 @@ export function SettingsDraftProvider({
     }
     setDraft((current) => current ? { ...current, fontPreference: value } : current);
   }, [onFontPreview, projectId, saveGlobalPreference]);
-
-  const setAppearancePreference = useCallback(async (value: AppearancePreference): Promise<boolean> => {
-    if (!projectId) {
-      return saveGlobalPreference(async () => onAppearancePreview?.(await window.biny.setAppearancePreference(value)));
-    }
-    setDraft((current) => current ? { ...current, appearancePreference: value } : current);
-    return true;
-  }, [onAppearancePreview, projectId, saveGlobalPreference]);
-
 
   const updateActivityImmediately = useCallback((patch: DesktopActivitySettingsPatch): Promise<void> => {
     const operation = activityUpdateTailRef.current.then(async () => {
@@ -423,8 +409,11 @@ export function SettingsDraftProvider({
     await window.biny.releaseSettingsCredentials([handle]);
   }, []);
 
-  const dirtyCount = snapshot && draft ? countDirtyFields(snapshot, draft) : 0;
-  const nonPreferenceDirtyCount = snapshot && draft ? countNonPreferenceDirtyFields(snapshot, draft) : 0;
+  const { dirtyCount, nonPreferenceDirtyCount } = useMemo(() => {
+    if (!snapshot || !draft) return { dirtyCount: 0, nonPreferenceDirtyCount: 0 };
+    const nonPreferenceDirtyCount = countNonPreferenceDirtyFields(snapshot, draft);
+    return { dirtyCount: countPreferenceDirtyFields(snapshot, draft) + nonPreferenceDirtyCount, nonPreferenceDirtyCount };
+  }, [snapshot, draft]);
   // 主题和字体只影响 DesktopStateStore，不会改变运行中的 Agent 配置。
   const preferencesOnly = dirtyCount > 0 && nonPreferenceDirtyCount === 0;
   const invalid = draft ? !validDraft(draft) : false;
@@ -442,13 +431,14 @@ export function SettingsDraftProvider({
     && saveState !== "rolling_back"
     && saveState !== "recovery_required";
 
+  const dirty = dirtyCount > 0 || pendingModelEdits || saveState === "saving";
   useLayoutEffect(() => {
     void window.biny.updateSettingsDraftState({
-      dirty: dirtyCount > 0 || pendingModelEdits || saveState === "saving",
+      dirty,
       canSave,
       open: active
     }).catch(() => undefined);
-  }, [active, canSave, dirtyCount, pendingModelEdits, saveState]);
+  }, [active, canSave, dirty]);
 
   useEffect(() => {
     if (saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required") return;
@@ -474,10 +464,9 @@ export function SettingsDraftProvider({
       adoptSnapshot(snapshot);
       onThemePreview(snapshot.themePreference);
       onFontPreview(snapshot.fontPreference);
-      onAppearancePreview?.(normalizeAppearancePreference(snapshot.appearancePreference));
     }
     await window.biny.updateSettingsDraftState({ dirty: false, canSave: false, open: active }).catch(() => undefined);
-  }, [active, adoptSnapshot, onAppearancePreview, onFontPreview, onThemePreview, releaseAllCredentials, snapshot]);
+  }, [active, adoptSnapshot, onFontPreview, onThemePreview, releaseAllCredentials, snapshot]);
 
   // 即时保存只携带本次增量；依赖模型偏好的更新在队列内根据最新快照计算。
   const modelsSaveTailRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -545,7 +534,7 @@ export function SettingsDraftProvider({
             modelProfiles: structuredClone(nextSnapshot.models.modelProfiles ?? {})
           }
         } : current);
-        onCommitted(nextSnapshot, modelSelectionOnly ? "models" : undefined);
+        onCommitted(nextSnapshot, modelSelectionOnly ? "models" : "model-config");
       } else if (result.status === "rolled_back") {
         const nextSnapshot = result.snapshot ?? { ...(snapshotRef.current ?? snapshotNow), ...(result.settings ?? result.preferences) };
         setSnapshot(nextSnapshot);
@@ -608,7 +597,6 @@ export function SettingsDraftProvider({
         // 但不能丢掉草稿本身，用户仍可修正冲突后再次保存。
         onThemePreview(nextSnapshot.themePreference);
         onFontPreview(nextSnapshot.fontPreference);
-        onAppearancePreview?.(normalizeAppearancePreference(nextSnapshot.appearancePreference));
         setSaveState("dirty");
         const message = result.message ?? (result.conflicts?.length ? "设置已在其他位置更改，请检查冲突后重试" : "保存失败，已恢复原设置");
         setSaveError(message);
@@ -630,7 +618,7 @@ export function SettingsDraftProvider({
       if (watchdog !== undefined) clearTimeout(watchdog);
       if (manualSaveRequestRef.current === manualSaveRequest) setManualSaving(false);
     }
-  }, [adoptSnapshot, dirtyCount, draft, invalid, onAppearancePreview, onCommitted, onFontPreview, onNotify, onThemePreview, runtimeBlocked, saveState, snapshot]);
+  }, [adoptSnapshot, dirtyCount, draft, invalid, onCommitted, onFontPreview, onNotify, onThemePreview, runtimeBlocked, saveState, snapshot]);
 
   const value = useMemo<SettingsDraftContextValue>(() => ({
     snapshot,
@@ -652,7 +640,6 @@ export function SettingsDraftProvider({
     reportModelEditState,
     setThemePreference,
     setFontPreference,
-    setAppearancePreference,
     updateActivityImmediately,
     setIdentity,
     setMemory,
@@ -705,7 +692,6 @@ export function SettingsDraftProvider({
     setCompaction,
     setModelProfile,
     setFontPreference,
-    setAppearancePreference,
     setMemory,
     setPermission,
     updateActivityImmediately,
@@ -726,7 +712,6 @@ function draftFromSnapshot(snapshot: DesktopSettingsSnapshot): DesktopSettingsDr
   return {
     themePreference: snapshot.themePreference,
     fontPreference: { ...snapshot.fontPreference },
-    appearancePreference: normalizeAppearancePreference(snapshot.appearancePreference),
     activity: activityInputFromSnapshot(snapshot.activity),
     identity: structuredClone(snapshot.identity),
     memory: structuredClone(snapshot.memory),
@@ -767,12 +752,11 @@ function webSearchInput(value: DesktopWebSearchSettings): DesktopWebSearchSettin
   };
 }
 
-function countDirtyFields(snapshot: DesktopSettingsSnapshot, draft: DesktopSettingsDraft): number {
+function countPreferenceDirtyFields(snapshot: DesktopSettingsSnapshot, draft: DesktopSettingsDraft): number {
   let count = 0;
   if (draft.themePreference !== snapshot.themePreference) count += 1;
   if (!sameJson(draft.fontPreference, snapshot.fontPreference)) count += 1;
-  if (!sameJson(draft.appearancePreference, normalizeAppearancePreference(snapshot.appearancePreference))) count += 1;
-  return count + countNonPreferenceDirtyFields(snapshot, draft);
+  return count;
 }
 
 function countNonPreferenceDirtyFields(snapshot: DesktopSettingsSnapshot, draft: DesktopSettingsDraft): number {
@@ -830,7 +814,6 @@ function saveInput(snapshot: DesktopSettingsSnapshot, draft: DesktopSettingsDraf
     expectedConfigRevision: snapshot.configRevision,
     themePreference: draft.themePreference === snapshot.themePreference ? undefined : draft.themePreference,
     fontPreference: sameJson(draft.fontPreference, snapshot.fontPreference) ? undefined : draft.fontPreference,
-    appearancePreference: sameJson(draft.appearancePreference, normalizeAppearancePreference(snapshot.appearancePreference)) ? undefined : draft.appearancePreference,
     activity: sameJson(draft.activity, activityInputFromSnapshot(snapshot.activity)) ? undefined : draft.activity,
     identity: sameJson(draft.identity, snapshot.identity) ? undefined : draft.identity,
     memory: sameJson(draft.memory, snapshot.memory) ? undefined : draft.memory,

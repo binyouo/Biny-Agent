@@ -36,7 +36,7 @@
 .markdown-infographic-actions button:hover { color: var(--biny-text); background: var(--biny-surface-soft); }
 .markdown-infographic-actions button:disabled { opacity: .5; cursor: not-allowed; }
 .markdown-infographic-actions button:focus-visible,
-.markdown-infographic-body:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.markdown-infographic-body:focus-visible { outline: 1px solid var(--biny-focus); outline-offset: 0px; }
 .markdown-infographic-divider { width: 1px; height: var(--markdown-infographic-unit); margin: 0 calc(var(--markdown-infographic-unit) * .25); background: var(--biny-border); }
 .markdown-infographic-body { display: flex; justify-content: center; width: 100%; overflow: auto; min-width: 0; }
 .markdown-infographic-body > .markdown-code-block { width: 100%; margin: 0; }
