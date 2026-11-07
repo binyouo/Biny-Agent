@@ -5,9 +5,8 @@ import { openAiCodexCatalogModels } from "../src/ai/codexModels.js";
 import { parseModelCatalog } from "../src/ai/modelCatalog.js";
 import { lookupModelMetadata } from "../src/ai/modelMetadata.js";
 import { createRetryFetch } from "../src/ai/retry.js";
-import { configSchema, defaultConfig } from "../src/config/schema.js";
+import { configSchema, defaultConfig, type ModelAliasConfig } from "../src/config/schema.js";
 import { ModelRegistry } from "../src/llm/ModelRegistry.js";
-import { ModelRuntime } from "../src/llm/ModelRuntime.js";
 import { ModelRuntime } from "../src/llm/ModelRuntime.js";
 import { ProviderRegistry } from "../src/llm/ProviderRuntime.js";
 import { thinkingSelectionForModel } from "../src/llm/modelThinking.js";
@@ -78,6 +77,62 @@ const reasoningBudget = modelContextBudget(model, undefined, "small", { reasonin
 assert.equal(reasoningBudget.maxInputTokens, 15_564);
 assert.equal(reasoningBudget.reasoningReserveTokens, 3_072);
 
+const fallbackBudgetCases: {
+  name: string;
+  model: ModelAliasConfig;
+  configuredMaxInputTokens?: number;
+  contextWindow: number;
+  effectiveContextWindow: number;
+  maxInputTokens: number;
+  fallback: boolean;
+}[] = [
+  {
+    name: "仅声明输入上限时不反推更大的窗口",
+    model: { provider: "relay", model: "opaque", maxInputTokens: 64_000 },
+    contextWindow: 64_000, effectiveContextWindow: 60_800, maxInputTokens: 60_800, fallback: true
+  },
+  {
+    name: "limits 输入硬上限同样作为未知窗口的预算基准",
+    model: { provider: "relay", model: "opaque", limits: { maxInputTokens: 48_000 } },
+    contextWindow: 48_000, effectiveContextWindow: 45_600, maxInputTokens: 45_600, fallback: true
+  },
+  {
+    name: "没有容量和输入限制时保留32K保守预算",
+    model: { provider: "relay", model: "opaque" },
+    contextWindow: 32_768, effectiveContextWindow: 31_129, maxInputTokens: 31_129, fallback: true
+  },
+  {
+    name: "仅用户输入预算不能变成更大的模型窗口",
+    model: { provider: "relay", model: "opaque" }, configuredMaxInputTokens: 64_000,
+    contextWindow: 64_000, effectiveContextWindow: 60_800, maxInputTokens: 60_800, fallback: true
+  },
+  {
+    name: "用户上限独立限制已知输入预算",
+    model: { provider: "relay", model: "opaque", maxInputTokens: 128_000 }, configuredMaxInputTokens: 32_000,
+    contextWindow: 128_000, effectiveContextWindow: 121_600, maxInputTokens: 32_000, fallback: true
+  },
+  {
+    name: "真实窗口声明优先且保留输入硬上限",
+    model: { provider: "relay", model: "opaque", contextWindow: 1_000_000, maxInputTokens: 128_000 }, configuredMaxInputTokens: 32_000,
+    contextWindow: 1_000_000, effectiveContextWindow: 950_000, maxInputTokens: 32_000, fallback: false
+  },
+  {
+    name: "极小服务商输入硬上限不能被默认预算下限放大",
+    model: { provider: "relay", model: "opaque", maxInputTokens: 1_024 },
+    contextWindow: 1_024, effectiveContextWindow: 1_024, maxInputTokens: 1_024, fallback: true
+  }
+];
+for (const fixture of fallbackBudgetCases) {
+  const actual = modelContextBudget(fixture.model, fixture.configuredMaxInputTokens);
+  assert.deepEqual({
+    contextWindow: actual.contextWindow, effectiveContextWindow: actual.effectiveContextWindow,
+    maxInputTokens: actual.maxInputTokens, fallback: actual.contextWindowIsFallback
+  }, {
+    contextWindow: fixture.contextWindow, effectiveContextWindow: fixture.effectiveContextWindow,
+    maxInputTokens: fixture.maxInputTokens, fallback: fixture.fallback
+  }, fixture.name);
+}
+
 const deepseekUnknownAliasConfig = configSchema.parse({
   ...defaultConfig,
   defaultModel: "flash-alias",
@@ -137,9 +192,9 @@ assert.deepEqual(customReasoningRuntime.forModel("custom-deepseek").model.thinki
 });
 assert.deepEqual(customReasoningRuntime.forModel("custom-kimi").model.reasoning?.efforts, ["low", "high", "max"]);
 const customFallbackBudget = modelContextBudget(customReasoningRuntime.forModel("custom-deepseek").model, 64_000, "custom-deepseek");
-assert.equal(customFallbackBudget.contextWindow, 67_369);
-assert.equal(customFallbackBudget.effectiveContextWindow, 64_000);
-assert.equal(customFallbackBudget.maxInputTokens, 64_000);
+assert.equal(customFallbackBudget.contextWindow, 64_000);
+assert.equal(customFallbackBudget.effectiveContextWindow, 60_800);
+assert.equal(customFallbackBudget.maxInputTokens, 60_800);
 assert.equal(customFallbackBudget.contextWindowIsFallback, true);
 
 const profiledGatewayConfig = configSchema.parse({

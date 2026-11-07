@@ -7,8 +7,8 @@ const config = configSchema.parse({
   ...defaultConfig,
   defaultModel: "chat",
   providers: {
-    test: { type: "openai", apiKey: "test-key", baseUrl: "https://api.example.test/v1" },
-    missing: { type: "openai", requiresApiKey: true, apiKeyEnv: "BINY_TOOL_MODEL_TEST_MISSING_KEY", baseUrl: "https://api.example.test/v1" }
+    test: { type: "openai-compatible", apiKey: "test-key", baseUrl: "https://api.example.test/v1" },
+    missing: { type: "openai-compatible", requiresApiKey: true, apiKeyEnv: "BINY_TOOL_MODEL_TEST_MISSING_KEY", baseUrl: "https://api.example.test/v1" }
   },
   models: {
     unavailable: { provider: "missing", model: "unavailable", pricing: { inputPerMillionTokens: 0, outputPerMillionTokens: 0 } },
@@ -45,6 +45,46 @@ assert.equal(resolveMemoryModelAlias(dedicatedMemory), "chat");
 assert.equal(resolveMemoryModelAlias(dedicatedMemory, "rewriteModel"), "chat");
 assert.equal(resolveMemoryModelAlias({ ...dedicatedMemory, context: { ...dedicatedMemory.context, memory: { ...dedicatedMemory.context.memory, extractModel: "unknown" } } }, "extractModel"), "unknown");
 assert.equal(resolveMemoryModelAlias({ ...config, toolModel: "unavailable" }), undefined, "全局选择失效不能偷偷使用聊天模型");
+
+// provider 类型候选表探测：首选型号不要求在 models 里已配置别名。
+const probed = configSchema.parse({
+  ...config,
+  providers: {
+    live: { type: "openai", apiKey: "test-key", baseUrl: "https://api.example.test/v1" },
+    dead: { type: "openai", requiresApiKey: true, apiKeyEnv: "BINY_TOOL_MODEL_TEST_MISSING_KEY", baseUrl: "https://api.example.test/v1" }
+  },
+  models: {
+    chat: { provider: "live", model: "chat-test" },
+    gone: { provider: "dead", model: "gone-test" }
+  }
+});
+assert.equal(resolveToolModelAlias(probed), "live/gpt-4o-mini", "自动探测 provider 类型的首选型号，不要求已配置别名");
+assert.deepEqual(resolveToolModelCandidates(probed).map((candidate) => candidate.model.modelId),
+  ["gpt-4o-mini", "gpt-4o-mini-2024-07-18", "gpt-4o", "gpt-4o-2024-11-20", "chat-test"],
+  "探测候选按型号偏好排列，已配置别名追加在后");
+assert.equal(resolveToolModel(probed)?.modelId, "gpt-4o-mini", "动态引用可直接构建可执行模型");
+const deduped = configSchema.parse({ ...probed, models: { mini: { provider: "live", model: "gpt-4o-mini" }, chat: probed.models.chat! } });
+assert.deepEqual(resolveToolModelCandidates(deduped).map((candidate) => candidate.model.modelId),
+  ["gpt-4o-mini", "gpt-4o-mini-2024-07-18", "gpt-4o", "gpt-4o-2024-11-20", "chat-test"],
+  "已配置别名与探测命中同一型号时不重复候选");
+assert.equal(resolveToolModelAlias({ ...probed, providers: { dead: probed.providers.dead! } }), undefined,
+  "供应商未配置凭据时不探测也不回落到其别名");
+assert.equal(resolveToolModelAlias({ ...probed, toolModel: "chat" }), "chat", "显式选择覆盖自动探测");
+assert.equal(resolveToolModel({ ...probed, toolModel: "gone" }), undefined, "显式选择失效供应商不静默改用探测候选");
+const multiType = configSchema.parse({
+  ...config,
+  providers: {
+    gem: { type: "gemini", apiKey: "test-key" },
+    ant: { type: "anthropic", apiKey: "test-key" },
+    oai: { type: "openai", apiKey: "test-key" }
+  },
+  models: { chat: { provider: "gem", model: "chat-test" } }
+});
+assert.equal(resolveToolModelAlias(multiType), "oai/gpt-4o-mini", "provider 类型顺序 openai>anthropic>gemini，与声明顺序无关");
+assert.deepEqual(resolveToolModelCandidates(multiType).map((candidate) => candidate.model.modelId).slice(0, 5),
+  ["gpt-4o-mini", "gpt-4o-mini-2024-07-18", "gpt-4o", "gpt-4o-2024-11-20", "claude-haiku-4-5-20251001"],
+  "各 provider 候选按类型顺序串联");
+
 const preferred = configSchema.parse({
   ...config,
   defaultModel: "mini",
@@ -60,10 +100,10 @@ const preferred = configSchema.parse({
     mini: { provider: "test", model: "gpt-4o-mini", pricing: { inputPerMillionTokens: 10, outputPerMillionTokens: 10 } }
   }
 });
-assert.equal(resolveToolModelAlias(preferred), "mini", "Provider 与预设型号优先级不随价格改变");
-assert.deepEqual(resolveToolModelCandidates(preferred).map((candidate) => candidate.model.modelId), ["gpt-4o-mini", "gpt-4o", "claude-haiku-4-5-20251001", "gemini-2.5-flash"], "候选链沿用单模型选择的稳定顺序");
+assert.equal(resolveToolModelAlias(preferred), "anthropic/claude-haiku-4-5-20251001", "test 是 openai-compatible 不探测，anthropic 探测候选最先命中");
 assert.equal(resolveToolModelAlias({ ...preferred, toolModel: "flash" }), "flash", "用户显式选择仍优先");
-assert.equal(resolveToolModelAlias({ ...preferred, models: { flash: preferred.models.flash!, haiku: preferred.models.haiku! } }), "haiku");
+assert.equal(resolveToolModelAlias({ ...preferred, models: { flash: preferred.models.flash!, haiku: preferred.models.haiku! } }), "anthropic/claude-haiku-4-5-20251001",
+  "探测不依赖 models 里是否已配置首选型号");
 assert.equal(resolveToolModelAlias({ ...config, models: { chat: config.models.chat!, cheap: config.models.cheap! } }), "chat", "未列入偏好的型号保持配置顺序，不按价格排序");
 
 const preferredAfterUnlisted = configSchema.parse({
@@ -75,13 +115,11 @@ const preferredAfterUnlisted = configSchema.parse({
     flash: preferred.models.flash!
   }
 });
-assert.equal(resolveToolModelAlias(preferredAfterUnlisted), "haiku", "未列入辅助型号的 OpenAI 模型不能抢占 Anthropic 预设型号");
-assert.equal(resolveToolModelAlias({ ...preferredAfterUnlisted, models: {
-  large: { ...preferred.models.large!, model: "gpt-4.1" },
-  flash: preferred.models.flash!
-} }), "flash", "OpenAI 未命中预设型号时，Google 预设型号仍优先于普通模型");
+assert.equal(resolveToolModelAlias(preferredAfterUnlisted), "anthropic/claude-haiku-4-5-20251001", "未列入辅助型号的 OpenAI 模型不能抢占预设型号");
+const unlistedIds = resolveToolModelCandidates(preferredAfterUnlisted).map((candidate) => candidate.model.modelId);
+assert.ok(unlistedIds.indexOf("claude-haiku-4-5-20251001") < unlistedIds.indexOf("gpt-4.1"), "探测候选排在未列入偏好的已配置型号之前");
 assert.equal(resolveToolModelAlias({ ...preferredAfterUnlisted, toolModel: "large" }), "large", "显式选择普通模型覆盖自动优先级");
-assert.equal(resolveToolModelAlias({ ...preferredAfterUnlisted, defaultModel: "flash" }), "haiku", "聊天默认模型不改变后台自动选择");
+assert.equal(resolveToolModelAlias({ ...preferredAfterUnlisted, defaultModel: "flash" }), "anthropic/claude-haiku-4-5-20251001", "聊天默认模型不改变后台自动选择");
 
 const fallback = configSchema.parse({
   ...config,
@@ -95,18 +133,18 @@ const fallback = configSchema.parse({
   },
   defaultModel: "router"
 });
-assert.equal(resolveToolModelAlias(fallback), "router", "没有预设型号时保留现有供应商优先级兜底");
+assert.equal(resolveToolModelAlias(fallback), "deepseek/deepseek-chat", "deepseek 探测命中预设型号优先于无候选表的供应商");
 assert.equal(resolveToolModelAlias({ ...fallback, providers: {
   ...fallback.providers,
-  openrouter: { type: "openrouter", requiresApiKey: true, apiKeyEnv: "BINY_TOOL_MODEL_TEST_MISSING_KEY" }
-} }), "deepseek", "兜底跳过缺少凭据的供应商");
+  deepseek: { type: "deepseek", requiresApiKey: true, apiKeyEnv: "BINY_TOOL_MODEL_TEST_MISSING_KEY" }
+} }), "router", "探测跳过缺少凭据的供应商后回到配置兜底");
 
 const connections = configSchema.parse({
   ...config,
   providers: {
-    first: { type: "openai", baseUrl: "https://api.example.test/v1/", apiKey: "credential-a", headers: { "X-Account-Id": "account-a" } },
-    same: { type: "openai", baseUrl: "https://api.example.test/v1", apiKey: "credential-a", headers: { "x-account-id": "account-a" } },
-    other: { type: "openai", baseUrl: "https://api.example.test/v1", apiKey: "credential-b", headers: { "X-Account-Id": "account-a" } }
+    first: { type: "openai-compatible", baseUrl: "https://api.example.test/v1/", apiKey: "credential-a", headers: { "X-Account-Id": "account-a" } },
+    same: { type: "openai-compatible", baseUrl: "https://api.example.test/v1", apiKey: "credential-a", headers: { "x-account-id": "account-a" } },
+    other: { type: "openai-compatible", baseUrl: "https://api.example.test/v1", apiKey: "credential-b", headers: { "X-Account-Id": "account-a" } }
   },
   models: {
     first: { provider: "first", model: "first" },
@@ -127,8 +165,8 @@ assert.equal(JSON.stringify(domains).includes("credential-"), false, "连接身�
 const overriddenCredentials = configSchema.parse({
   ...connections,
   providers: {
-    first: { type: "openai", baseUrl: "https://api.example.test/v1", apiKey: "unused-a", headers: { Authorization: "Bearer active-credential" } },
-    second: { type: "openai", baseUrl: "https://api.example.test/v1", apiKey: "unused-b", headers: { Authorization: "Bearer active-credential" } }
+    first: { type: "openai-compatible", baseUrl: "https://api.example.test/v1", apiKey: "unused-a", headers: { Authorization: "Bearer active-credential" } },
+    second: { type: "openai-compatible", baseUrl: "https://api.example.test/v1", apiKey: "unused-b", headers: { Authorization: "Bearer active-credential" } }
   },
   models: { first: { provider: "first", model: "first" }, second: { provider: "second", model: "second" } }
 });
@@ -147,7 +185,8 @@ for (const provider of [
   { type: "openai" },
   { type: "anthropic" },
   { type: "gemini", apiBackend: "google_generative_ai" }
-]) {
+] as const) {
+  const preferredCount = provider.type === "anthropic" ? 3 : 4;
   const endpointPaths = configSchema.parse({
     ...connections,
     providers: {
@@ -163,8 +202,8 @@ for (const provider of [
     defaultModel: "plain"
   });
   const endpointDomains = resolveToolModelCandidates(endpointPaths).map((candidate) => candidate.failureDomain);
-  assert.equal(endpointDomains[0], endpointDomains[1], `${provider.type} SDK 只去掉一个末尾斜线`);
-  assert.notEqual(endpointDomains[0], endpointDomains[2], `${provider.type} 实际请求路径不同不能合并失败域`);
+  assert.equal(endpointDomains[0], endpointDomains[preferredCount], `${provider.type} SDK 只去掉一个末尾斜线`);
+  assert.notEqual(endpointDomains[0], endpointDomains[preferredCount * 2], `${provider.type} 实际请求路径不同不能合并失败域`);
 }
 const officialAnthropicPaths = configSchema.parse({
   ...connections,
@@ -176,5 +215,5 @@ const officialAnthropicPaths = configSchema.parse({
   defaultModel: "plain"
 });
 const officialAnthropicDomains = resolveToolModelCandidates(officialAnthropicPaths).map((candidate) => candidate.failureDomain);
-assert.equal(officialAnthropicDomains[0], officialAnthropicDomains[1], "SDK 将官方根端点映射到 v1 后是同一连接");
+assert.equal(officialAnthropicDomains[0], officialAnthropicDomains[3], "SDK 将官方根端点映射到 v1 后是同一连接");
 console.log("tool model tests passed");

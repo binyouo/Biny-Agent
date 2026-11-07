@@ -72,6 +72,41 @@ test("saving a vision selection reads only its Provider catalog", async context 
   } finally { await h.close(); }
 });
 
+test("model management receipts carry the confirmed default model and clear hidden selections without a workspace reload", async context => {
+  const h = await createFixture();
+  try {
+    const transaction = new DesktopSettingsTransaction(h.state, h.manager);
+    const base = await transaction.snapshot(h.project.id);
+    assert.equal(base.models.selectedModel?.modelAlias, "chat");
+    const workspaceReads = context.mock.method(h.manager, "workspaceSnapshot", () => {
+      throw new Error("Model management must not read workspace sessions");
+    });
+    const updated = await transaction.save(h.project.id, {
+      expectedPreferenceRevision: base.preferenceRevision,
+      expectedConfigRevision: base.configRevision,
+      models: { upserts: [], removeAliases: [], modelProfiles: {
+        "chat-provider": { chat: { contextWindow: 96_000 } }
+      } }
+    });
+    assert.ok(updated.status === "committed" && updated.snapshot);
+    assert.equal(updated.snapshot.models.selectedModel?.modelAlias, "chat");
+    assert.equal(updated.snapshot.models.selectedModel?.contextWindow, 96_000);
+    assert.equal(updated.snapshot.models.selectedModel?.contextWindowIsFallback, false);
+    const hidden = await transaction.save(h.project.id, {
+      expectedPreferenceRevision: updated.snapshot.preferenceRevision,
+      expectedConfigRevision: updated.snapshot.configRevision,
+      models: { upserts: [], removeAliases: [], modelProfiles: {
+        "chat-provider": { chat: { contextWindow: 96_000, showInPicker: false } }
+      } }
+    });
+    assert.ok(hidden.status === "committed" && hidden.snapshot);
+    assert.equal(hidden.snapshot.models.defaultModel, "chat");
+    assert.equal(hidden.snapshot.models.selectedModel, undefined);
+    assert.equal(hidden.snapshot.models.configured.find(model => model.alias === "chat")?.showInPicker, false);
+    assert.equal(workspaceReads.mock.callCount(), 0);
+  } finally { await h.close(); }
+});
+
 test("model choices leave resident runtimes intact while shared execution settings still refresh them", async context => {
   const h = await createFixture();
   try {
@@ -103,6 +138,53 @@ test("model choices leave resident runtimes intact while shared execution settin
     h.manager.settingsCommitted(shared);
     await internals.idleRuntimeRebuildTail;
     assert.equal(restarts.mock.callCount(), 1, "shared execution settings retain their real Runtime refresh");
+  } finally { await h.close(); }
+});
+
+test("model visibility transactions preserve resident runtimes while capacity and capability edits still rebuild", async context => {
+  const h = await createFixture();
+  try {
+    await h.manager.setPermissionMode(h.project.id, "read-only");
+    const internals = h.manager as unknown as {
+      runtimes: Map<string, { runtime: {
+        restartRuntime(sessionId?: string): Promise<unknown>;
+        refreshModel(): Promise<unknown>;
+        listModels(): Promise<Array<{ alias: string; showInPicker?: boolean }>>;
+      } }>;
+      idleRuntimeRebuildTail: Promise<void>;
+    };
+    const resident = internals.runtimes.get(h.project.id)!;
+    const restarts = context.mock.method(resident.runtime, "restartRuntime", resident.runtime.restartRuntime.bind(resident.runtime));
+    const transaction = new DesktopSettingsTransaction(h.state, h.manager);
+    let snapshot = await transaction.snapshot(h.project.id);
+    for (const showInPicker of [false, true, undefined]) {
+      const result = await transaction.save(h.project.id, {
+        expectedPreferenceRevision: snapshot.preferenceRevision,
+        expectedConfigRevision: snapshot.configRevision,
+        models: { upserts: [], removeAliases: [], modelProfiles: {
+          "chat-provider": { chat: { showInPicker } }
+        } }
+      });
+      assert.ok(result.status === "committed" && result.snapshot);
+      snapshot = result.snapshot;
+      await internals.idleRuntimeRebuildTail;
+      assert.equal(restarts.mock.callCount(), 0, "Model visibility must not rebuild resident projects");
+      assert.equal(snapshot.models.configured.find(model => model.alias === "chat")?.showInPicker, showInPicker ?? true);
+      await resident.runtime.refreshModel();
+      assert.equal((await resident.runtime.listModels()).find(model => model.alias === "chat")?.showInPicker, showInPicker ?? true,
+        "The TUI model-menu refresh path adopts visibility without restarting the Host");
+    }
+    for (const profile of [{ contextWindow: 96_000 }, { contextWindow: 96_000, capabilities: { vision: true } }]) {
+      const result = await transaction.save(h.project.id, {
+        expectedPreferenceRevision: snapshot.preferenceRevision,
+        expectedConfigRevision: snapshot.configRevision,
+        models: { upserts: [], removeAliases: [], modelProfiles: { "chat-provider": { chat: profile } } }
+      });
+      assert.ok(result.status === "committed" && result.snapshot);
+      snapshot = result.snapshot;
+      await internals.idleRuntimeRebuildTail;
+    }
+    assert.equal(restarts.mock.callCount(), 2, "Both execution metadata edits retain the existing rebuild path");
   } finally { await h.close(); }
 });
 

@@ -103,6 +103,7 @@ const modelSchema = z.object({
     systemPromptReserveTokens: z.number().int().nonnegative().optional(),
     protocolSafetyMarginTokens: z.number().int().nonnegative().optional()
   }).optional(),
+  embedding: z.boolean().optional(),
   capabilities: z.object({
     tools: z.boolean().optional(),
     parallelToolCalls: z.boolean().optional(),

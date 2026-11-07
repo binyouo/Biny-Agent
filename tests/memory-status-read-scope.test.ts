@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -7,6 +7,56 @@ import { DatabaseSync } from "node:sqlite";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { MemoryMaintenance } from "../src/agent/context/MemoryMaintenance.js";
 import type { MemorySleepRun } from "../src/agent/context/memoryTypes.js";
+import { MemoryEmbeddingService } from "../src/agent/context/MemoryEmbeddingService.js";
+import { LocalEmbeddingManager } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
+
+for (const state of ["populated", "missing", "corrupt"] as const) {
+  test(`embedding status counts active facts without reading bodies (${state})`, async context => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "biny-embedding-status-scope-"));
+    const storage = new MemoryStorage(root, { agentDir: root });
+    const local = new LocalEmbeddingManager(path.join(root, "models", "embeddings"));
+    const databasePath = path.join(root, "agent.sqlite");
+    const service = new MemoryEmbeddingService({
+      localMemory: { listMemoryEntries: options => storage.listEntries(options), getOverview: options => storage.getOverview(options) },
+      localManager: local,
+      getVectorIndex: () => { throw new Error("Status must not create a vector index"); },
+      getReadOnlyVectorIndex: () => undefined,
+      getActiveModel: () => undefined,
+      getProviderModels: () => [],
+      getRuntime: async () => { throw new Error("Status must not load a model"); }
+    });
+    try {
+      if (state === "populated") {
+        await storage.writeEntry({ content: "Active fact one" });
+        await storage.writeEntry({ content: "Active fact two" });
+        const archived = await storage.writeEntry({ content: "Archived fact" });
+        assert.ok(archived.entry);
+        await storage.archiveEntries([archived.entry.id], "manual");
+      } else if (state === "corrupt") await writeFile(databasePath, "not a SQLite database");
+      const selects: string[] = [];
+      const prepare = DatabaseSync.prototype.prepare;
+      context.mock.method(DatabaseSync.prototype, "prepare", function (this: DatabaseSync, sql: string) {
+        if (/\bFROM memories\b/iu.test(sql)) selects.push(sql);
+        return prepare.call(this, sql);
+      });
+      if (state === "corrupt") {
+        await assert.rejects(service.status(), /database/iu);
+        assert.equal(await readFile(databasePath, "utf8"), "not a SQLite database");
+      } else {
+        const status = await service.status();
+        assert.equal(status.totalEntries, state === "populated" ? 2 : 0);
+        assert.equal(status.indexedEntries, 0);
+        assert.equal(status.pendingEntries, state === "populated" ? 2 : 0);
+        assert.equal(selects.filter(sql => /SELECT \*/iu.test(sql)).length, 0, "status must not materialize fact bodies");
+        assert.equal(selects.filter(sql => /COUNT\(\*\)/iu.test(sql)).length, state === "populated" ? 1 : 0);
+        if (state === "missing") await assert.rejects(access(databasePath), { code: "ENOENT" });
+      }
+    } finally {
+      service.close(); storage.close(); await local.close(); context.mock.restoreAll();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("status reads bound history in SQL while explicit history retains all runs", async context => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-status-scope-"));

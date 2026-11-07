@@ -100,9 +100,9 @@ export class MemoryEmbeddingService {
   }
 
   async status(): Promise<MemoryEmbeddingRuntimeStatus> {
-    const [localModels, entries] = await Promise.all([
+    const [localModels, overview] = await Promise.all([
       this.options.localManager.list(),
-      this.options.localMemory.listMemoryEntries()
+      this.options.localMemory.getOverview()
     ]);
     const models = [
       ...localModels.map(({ descriptor, installed }) => ({ ...descriptor, installed })),
@@ -131,9 +131,9 @@ export class MemoryEmbeddingService {
         models,
         localModels,
         index: {},
-        totalEntries: entries.entries.length,
+        totalEntries: overview.entryCount,
         indexedEntries: 0,
-        pendingEntries: entries.entries.length,
+        pendingEntries: overview.entryCount,
         needsRebuild: this.options.getNeedsRebuild?.() === true,
         operation: cloneOperation(this.operation),
         degradedReason: `向量索引不可用：${errorMessage(error)}`
@@ -144,12 +144,12 @@ export class MemoryEmbeddingService {
     const activeMatches = descriptor !== undefined
       && index.active?.modelFingerprint === descriptor.fingerprint;
     const storedIndexedEntries = index.active?.vectorCount ?? 0;
-    const indexedEntries = activeMatches ? Math.min(storedIndexedEntries, entries.entries.length) : 0;
+    const indexedEntries = activeMatches ? Math.min(storedIndexedEntries, overview.entryCount) : 0;
     const pendingEntries = descriptor === undefined
-      ? entries.entries.length
+      ? overview.entryCount
       : !indexAvailable
-        ? entries.entries.length
-        : Math.max(entries.entries.length - indexedEntries, 0);
+        ? overview.entryCount
+        : Math.max(overview.entryCount - indexedEntries, 0);
     // needsRebuild 除了读配置标志，还要反映真实状态：索引是用旧模型/旧维度建的，
     // 而配置已经换到新模型。没有这条，自动召回会一直 fail-closed 却没有任何提示。
     const needsRebuild = this.options.getNeedsRebuild?.() === true
@@ -159,7 +159,7 @@ export class MemoryEmbeddingService {
       models,
       localModels,
       index,
-      totalEntries: entries.entries.length,
+      totalEntries: overview.entryCount,
       indexedEntries,
       pendingEntries,
       needsRebuild,
@@ -170,7 +170,7 @@ export class MemoryEmbeddingService {
         index,
         indexedEntries,
         pendingEntries,
-        entries.entries.length,
+        overview.entryCount,
         needsRebuild
       )
     };
