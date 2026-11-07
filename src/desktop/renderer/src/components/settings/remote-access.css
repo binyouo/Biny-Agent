@@ -1,0 +1,42 @@
+/* 卡内标题：图标对齐首行，说明文字跟在节名下（沿用全局 h3 + p 副标题样式）。 */
+.remote-access-heading { display: flex; align-items: flex-start; gap: 10px; }
+.remote-access-heading > svg { flex: none; margin-top: 2px; color: var(--text-secondary); }
+.remote-access-heading-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.remote-access-heading-copy > h3 { margin: 0; color: var(--text); font-size: calc(15px * var(--font-scale, 1)); font-weight: 550; }
+
+/* 字段行：标签在左、控件右对齐，与设置页其余行内字段一致。 */
+.remote-access-form { display: flex; min-width: 0; flex-direction: column; gap: calc(10px * var(--font-scale, 1)); }
+.remote-access-field { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; color: var(--text); font-size: calc(13px * var(--font-scale, 1)); }
+.remote-access-field > span:first-child { flex: 1 1 120px; min-width: 0; }
+.remote-access-field > :is(input, select) { flex: 0 1 300px; width: min(300px, 100%); min-width: 0; }
+
+/* 状态与主操作放在分隔线后的页脚同行。 */
+.remote-access-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; margin-top: 2px; padding-top: var(--st-card-gap); border-top: 1px solid var(--border-subtle); }
+.remote-access-state { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
+.remote-access-state > span { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--text-tertiary); }
+.remote-access-state:is(.is-connecting, .is-reconnecting) > span { background: var(--amber); }
+.remote-access-state.is-connected { color: var(--green-text); }
+.remote-access-state.is-connected > span { background: var(--green); }
+.remote-access-state.is-error { color: var(--red-text); }
+.remote-access-state.is-error > span { background: var(--red); }
+.remote-access-settings [role="alert"] { margin: 0; color: var(--red-text); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5; }
+
+/* 端到端加密是协议的固定属性，展示为说明行而不是开关。 */
+.remote-access-e2e { display: flex; align-items: flex-start; gap: 10px; margin-top: 2px; padding-top: var(--st-card-gap); border-top: 1px solid var(--border-subtle); }
+.remote-access-e2e > svg { flex: none; margin-top: 1px; color: var(--text-secondary); }
+.remote-access-e2e-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+.remote-access-e2e-copy > strong { font-size: calc(13px * var(--font-scale, 1)); font-weight: 500; }
+.remote-access-e2e-copy > small { color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5; }
+.remote-access-e2e-state { display: inline-flex; flex: none; align-items: center; gap: 5px; padding-top: 2px; color: var(--green-text); font-size: calc(12px * var(--font-scale, 1)); white-space: nowrap; }
+
+/* 已连接设备：无设备时提示扫码，有设备时显示在线数。 */
+.remote-access-phones { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: var(--st-radius); }
+.remote-access-phones > svg { flex: none; color: var(--text-tertiary); }
+.remote-access-phones > p { margin: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); }
+.remote-access-phones > p.is-online { display: flex; align-items: center; gap: 8px; color: var(--green-text); }
+.remote-access-phones > p.is-online > span { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--green); }
+
+/* 配对二维码居中白框；链接以可整体选中的码块展示，操作跟随其后。 */
+.remote-access-qr { display: grid; place-items: center; align-self: center; flex-shrink: 0; width: 232px; height: 232px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: var(--st-button-radius); background: white; color: black; }
+.remote-access-link-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--st-control-gap); }
+.remote-access-link-row > code { flex: 1 1 200px; min-width: 0; padding: 7px 10px; border-radius: var(--st-button-radius); color: var(--text-secondary); background: var(--surface-soft); font-size: calc(12px * var(--font-scale, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all; }

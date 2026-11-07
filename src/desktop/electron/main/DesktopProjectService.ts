@@ -935,6 +935,16 @@ export class DesktopProjectService {
     return await this.storage.ensureProjectData(project);
   }
 
+  /** 手机远程访问可选项目清单；workspaceRoot 为会话持久化根，列会话不需要启动 Host。 */
+  async remoteWorkspaces(): Promise<{ id: string; name: string; path: string; workspaceRoot: string }[]> {
+    const entries = await Promise.all(this.state.projects()
+      .filter(project => !project.missing)
+      .map(async project => await directoryExists(project.path)
+        ? { id: project.id, name: project.name, path: project.path, workspaceRoot: await this.dataRoot(project) }
+        : undefined));
+    return entries.filter((entry): entry is { id: string; name: string; path: string; workspaceRoot: string } => entry !== undefined);
+  }
+
   /** Global (non-project) persistence root under desktop userData. */
   async globalDataRoot(): Promise<string> {
     return await this.storage.ensureGlobalData();
