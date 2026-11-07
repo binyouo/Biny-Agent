@@ -1732,7 +1732,8 @@ async function testDesktopToolModelSelection(): Promise<void> {
       models: { upserts: [], removeAliases: ["test-model"] }
     });
     assert.equal(removed.models.toolModel, undefined, "删除工具模型时移除悬空引用");
-    assert.equal(removed.models.resolvedToolModel, "alt-model");
+    // 自动解析优先探测 provider 偏好的动态型号引用，其次才是已配置别名。
+    assert.equal(removed.models.resolvedToolModel, "active/gpt-4o-mini");
   } finally {
     await agents?.closeAll();
     await rm(workspaceRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

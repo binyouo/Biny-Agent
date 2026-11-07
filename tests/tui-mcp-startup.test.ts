@@ -90,6 +90,10 @@ await test("default Computer Use keeps observations isolated between Agent sessi
     images: [{ mimeType: "image/png", dataBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" }] }));
   context.mock.method(NativeProcessDriver.prototype, "actRaw", async () => { inputs += 1; return { data: { effect: "completed" }, images: [] }; });
   context.mock.method(NativeProcessDriver.prototype, "capturePreview", async () => ({ data: {}, images: [] }));
+  context.mock.method(NativeProcessDriver.prototype, "daemonCommand", async (cmd: string) => {
+    assert.equal(cmd, "app_identity");
+    return { data: { pid: 121, bundleId: "test.app", name: "Fixture", running: true }, images: [] };
+  });
   try {
     await writeFile(path.join(root, "config.json"), JSON.stringify(defaultConfig));
     const { attachNativeComputerMcp } = await import("../src/computer/desktopMcp.js");

@@ -21,6 +21,11 @@ async function harness() {
         ...buildToolOptimizationOverview([], new Date("2026-01-01T00:00:00.000Z")), incompleteSessions: 0
       }),
       bootstrap: async () => ({ projects: [], sidebarSessions: [] }), onApplicationImportsChanged: () => () => {},
+      remoteAccessStatus: async () => ({ state: "disabled" as const, connections: 0 }),
+      remoteAccessStart: async () => ({ state: "disabled" as const, connections: 0 }),
+      remoteAccessStop: async () => ({ state: "disabled" as const, connections: 0 }),
+      remoteAccessRegenerate: async () => ({ state: "disabled" as const, connections: 0 }),
+      onRemoteAccessChanged: () => () => {},
       onActivityEvent: () => () => {}, activitySnapshot: async () => { throw new Error("offline"); }, activityPermissions: async () => { throw new Error("offline"); } } });
   dom.window.HTMLElement.prototype.scrollTo = () => {};
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -181,7 +186,7 @@ test("设置页面直接导航，通用保留外观和字体并移除配色管�
     assert.ok(document.querySelector('#appearance-font-family'), '通用页可直接修改字体');
     assert.ok(document.querySelector('#appearance-font-size'), '通用页可直接修改字号');
     assert.equal(document.querySelector('[data-settings-tab="用户界面"]'), null, '合并后不再提供独立的用户界面入口');
-    const pages = [["通用", "通用"], ["模型", "模型供应商"], ["聊天", "聊天偏好"], ["Token 节省", "Token 节省"], ["记忆", "记忆"], ["技能", "技能"], ["MCP 服务器", "MCP 服务器"], ["插件", "插件"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["Appshots", "Appshots"], ["Computer Use", "Computer Use"], ["隐私脱敏", "隐私脱敏"], ["Computer History", "Computer History"], ["导入", "导入"], ["关于", "关于"]];
+    const pages = [["通用", "通用"], ["模型", "模型供应商"], ["聊天", "聊天偏好"], ["Token 节省", "Token 节省"], ["记忆", "记忆"], ["技能", "技能"], ["MCP 服务器", "MCP 服务器"], ["插件", "插件"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["远程访问", "远程访问"], ["Appshots", "Appshots"], ["Computer Use", "Computer Use"], ["隐私脱敏", "隐私脱敏"], ["Computer History", "Computer History"], ["导入", "导入"], ["关于", "关于"]];
     assert.deepEqual([...document.querySelectorAll('.settings-nav-list button')].map(node => node.textContent), pages.map(page => page[1]));
     assert.equal(document.querySelectorAll('.settings-nav-group').length, 0);
     assert.equal(document.querySelectorAll('.settings-titlebar p, .settings-save-hint').length, 0);
