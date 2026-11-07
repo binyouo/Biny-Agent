@@ -21,6 +21,7 @@ test("the event bridge delivers background text and structural events without an
   Object.assign(dom.window, { biny: { onAgentEvent(listener: typeof subscriber) { subscriber = listener; return () => { unsubscribed = true; }; } } });
   dom.window.requestAnimationFrame = () => { throw new Error("background animation frames are unavailable"); };
   const documentRef = { current: { session: { id: "session" }, events: [], liveEvents: [] } as unknown as DesktopSessionDocument };
+  const readSessionCatalog = async () => () => {};
   const noop = () => {};
   const setDocument = (update: SetStateAction<DesktopSessionDocument | undefined>): void => {
     const next = typeof update === "function" ? update(documentRef.current) : update;
@@ -29,7 +30,7 @@ test("the event bridge delivers background text and structural events without an
   function Bridge(): null {
     useDesktopEventBridge({
       activeProjectIdRef: { current: "project" }, selectedSessionIdRef: { current: "session" }, documentRef,
-      setDocument, mergeProjectSnapshot: noop, onError(error) { throw error; }, setContextBudget: noop,
+      setDocument, readSessionCatalog, onError(error) { throw error; }, setContextBudget: noop,
       setRecipeNotices: noop, setSkillExtraction: noop, setWriterConflict: noop, setSidebarSessions: noop,
       setWorkspace: noop, onGenerationStarted: noop, onGenerationError: noop
     });

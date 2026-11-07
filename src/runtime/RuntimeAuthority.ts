@@ -1175,7 +1175,11 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
           + "Check the session JSONL against a verified backup; the saved event was not overwritten.");
       }
       if (current.eventSeq === undefined && input.eventSeq !== undefined) {
-        this.database.prepare("UPDATE runtime_events SET event_seq = ? WHERE event_id = ?").run(input.eventSeq, eventId);
+        try {
+          this.database.prepare("UPDATE runtime_events SET event_seq = ? WHERE event_id = ?").run(input.eventSeq, eventId);
+        } catch (error) {
+          this.rethrowEventSequenceConflict(error, input, eventId);
+        }
         return { ...current, eventSeq: input.eventSeq };
       }
       return current;
@@ -1195,25 +1199,43 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
       payload: input.payload,
       createdAt: input.createdAt ?? new Date().toISOString()
     };
-    this.database.prepare(`
-      INSERT INTO runtime_events (
-        event_id, workspace_id, session_id, invocation_id, run_id, turn_id,
-        event_seq, sequence, event_type, payload_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      event.eventId,
-      event.workspaceId,
-      event.sessionId,
-      event.invocationId,
-      event.runId,
-      event.turnId,
-      event.eventSeq ?? null,
-      event.sequence,
-      event.eventType,
-      json(event.payload),
-      event.createdAt
-    );
+    try {
+      this.database.prepare(`
+        INSERT INTO runtime_events (
+          event_id, workspace_id, session_id, invocation_id, run_id, turn_id,
+          event_seq, sequence, event_type, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        event.eventId,
+        event.workspaceId,
+        event.sessionId,
+        event.invocationId,
+        event.runId,
+        event.turnId,
+        event.eventSeq ?? null,
+        event.sequence,
+        event.eventType,
+        json(event.payload),
+        event.createdAt
+      );
+    } catch (error) {
+      this.rethrowEventSequenceConflict(error, input, eventId);
+    }
     return event;
+  }
+
+  private rethrowEventSequenceConflict(error: unknown, input: RuntimeEventAppendInput, eventId: string): never {
+    if (input.eventSeq !== undefined && error instanceof Error && "errcode" in error && error.errcode === 2067) {
+      const existing = this.database.prepare(`
+        SELECT event_id FROM runtime_events WHERE workspace_id = ? AND session_id = ? AND event_seq = ?
+      `).get(this.workspaceId, input.sessionId, input.eventSeq) as { event_id: string } | undefined;
+      if (existing && existing.event_id !== eventId) {
+        throw new Error(`Runtime event sequence ${String(input.eventSeq)} is already bound to another fact. `
+          + `Session: ${input.sessionId}. Saved event: ${existing.event_id}. Incoming event: ${eventId}. `
+          + "Check the session JSONL against a verified backup; the saved event was not overwritten.");
+      }
+    }
+    throw error;
   }
 
   private readRun(runId: string): RuntimeRunRecord | undefined {

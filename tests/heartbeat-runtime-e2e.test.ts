@@ -108,7 +108,7 @@ try {
   assert.equal(await readFile(path.join(workspace, "note.md"), "utf8"), "已完成本地检查。");
   assert.ok(models.includes("tool-model"), "ordinary heartbeat checks use the tool model");
   assert.deepEqual(notifications, [], "HEARTBEAT_OK must stay silent even when the model adds a notification block");
-  const heartbeatFile = files.find(file => file.endsWith("/heartbeat.jsonl"));
+  const heartbeatFile = files.find(file => /^heartbeat-.+\.jsonl$/u.test(path.basename(file)));
   assert.ok(heartbeatFile, "heartbeat uses its own persisted session");
   const heartbeatEvents = await readSessionEvents(heartbeatFile);
   assertRequestModel(heartbeatEvents, "tool", "tool-model", 1_000_000, 2_468);
@@ -133,7 +133,7 @@ try {
   assertRequestModel(await readSessionEvents(heartbeatFile), "main", "main-model", 1_048_576, 2_468);
   assert.equal(config.defaultModel, "main", "background runs must not save their temporary model selection");
   const laterFiles = await listAllSessionFiles();
-  assert.ok(laterFiles.some(file => file.endsWith("/heartbeat.jsonl")), "later heartbeat turns stay in the dedicated session");
+  assert.ok(laterFiles.includes(heartbeatFile), "later heartbeat turns stay in the dedicated session");
   const interactive = new InteractiveAgentRuntime(runtime);
   const contextUpdates: Extract<AgentHostEvent, { type: "context.updated" }>[] = [];
   const unsubscribe = interactive.subscribe(update => {

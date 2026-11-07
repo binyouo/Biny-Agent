@@ -21,8 +21,6 @@ import { FluidHoverHighlight } from "./FluidHoverHighlight.js";
 import { Icon, type IconName } from "./Icon.js";
 import { SessionDeleteButton } from "./SessionDeleteButton.js";
 import { WorkingIndicator } from "./WorkingIndicator.js";
-import { useAppearance } from "../appearanceContext.js";
-import { RetroFolderIcon } from "./WindowChrome.js";
 
 const PROJECT_SESSION_COLLAPSE_LIMIT = 5;
 const DIALOGUE_SESSION_COLLAPSE_LIMIT = 10;
@@ -852,7 +850,7 @@ function CollapsibleSessionList({ limit, rootPage, canLoadRoots, onLoadRoots, ..
         </button>
       </> : null}
       {shouldCollapse ? (
-        <button className="biny-sidebar-session-expand" onClick={() => setExpanded((current) => !current)} type="button">
+        <button aria-expanded={expanded} className="biny-sidebar-session-expand" onClick={() => setExpanded((current) => !current)} type="button">
           {expanded ? "收起" : "显示更多"}
         </button>
       ) : null}
@@ -861,14 +859,6 @@ function CollapsibleSessionList({ limit, rootPage, canLoadRoots, onLoadRoots, ..
 }
 
 function SessionList({ actions, flat = false, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren }: SessionListProps): React.JSX.Element {
-  const byParent = new Map<string | undefined, DesktopSessionSummary[]>();
-  const ids = new Set(sessions.map((session) => session.id));
-  for (const session of sessions) {
-    const parent = !flat && session.parentSessionId && ids.has(session.parentSessionId) ? session.parentSessionId : undefined;
-    const siblings = byParent.get(parent) ?? [];
-    siblings.push(session);
-    byParent.set(parent, siblings);
-  }
   // Fluid Functionalism 悬停：列表容器是指针作用域和定位上下文，行背景由
   // FluidHoverHighlight 统一绘制；注册索引即可见行的渲染顺序。
   // 收起的子会话树仍保持挂载（保住高度退场动画），inert 行对命中测试隐藏。
@@ -876,51 +866,62 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
   const hover = useFluidHover(listRef, {
     isItemDisabled: (element) => element.closest("[inert]") !== null
   });
-  // 子会话仍通过折叠容器表达从属关系，但标题列保持统一，避免同一列表中
-  // 仅因父子关系让可用宽度忽长忽短。
-  let rowIndex = 0;
-  const renderNode = (session: DesktopSessionSummary, ancestors: Set<string>): React.JSX.Element[] => {
-    if (ancestors.has(session.id)) return [];
-    const nextAncestors = new Set(ancestors).add(session.id);
-    const expandable = !flat && Boolean(session.hasChildren);
-    const expanded = expandable && expandedSessionIds.has(sessionKey(session));
-    const loading = expandable && loadingSessionIds.has(sessionKey(session));
-    // 子树常驻挂在 Collapse 里，收起是收放高度而不是卸载；未懒加载过的父节点
-    // 没有子行，首次展开时 Collapse 已在（open 从一开始就过渡），内容随数据到位撑开。
-    const children = (byParent.get(session.id) ?? []).flatMap((child) => renderNode(child, nextAncestors));
-    const nextCursor = sessionNextCursors.get(sessionKey(session));
-    return [
-      <SessionTreeRow
-        actions={actions}
-        expandable={expandable}
-        expanded={expanded}
-        index={rowIndex++}
-        key={`${session.projectId}:${session.id}`}
-        loading={loading}
-        onContextMenu={onSessionContextMenu}
-        onSelect={onSelectSession}
-        onToggle={onToggleSession}
-        projectId={projectId}
-        registerItem={hover.registerItem}
-        selected={session.id === selectedSessionId}
-        session={session}
-      />,
-      ...(expandable ? [
-        <Collapse className="biny-sidebar-session-children" key={`${session.projectId}:${session.id}:tree`} open={expanded}>
-          {children}
-          {nextCursor ? (
-            <button className="biny-sidebar-session-expand" onClick={() => onLoadMoreSessionChildren(session)} type="button">
-              显示更多
-            </button>
-          ) : null}
-        </Collapse>
-      ] : [])
-    ];
-  };
+  const rows = useMemo(() => {
+    const byParent = new Map<string | undefined, DesktopSessionSummary[]>();
+    const ids = new Set(sessions.map((session) => session.id));
+    for (const session of sessions) {
+      const parent = !flat && session.parentSessionId && ids.has(session.parentSessionId) ? session.parentSessionId : undefined;
+      const siblings = byParent.get(parent) ?? [];
+      siblings.push(session);
+      byParent.set(parent, siblings);
+    }
+    // 子会话仍通过折叠容器表达从属关系，但标题列保持统一，避免同一列表中
+    // 仅因父子关系让可用宽度忽长忽短。
+    let rowIndex = 0;
+    const renderNode = (session: DesktopSessionSummary, ancestors: Set<string>): React.JSX.Element[] => {
+      if (ancestors.has(session.id)) return [];
+      const nextAncestors = new Set(ancestors).add(session.id);
+      const expandable = !flat && Boolean(session.hasChildren);
+      const expanded = expandable && expandedSessionIds.has(sessionKey(session));
+      const loading = expandable && loadingSessionIds.has(sessionKey(session));
+      // 子树常驻挂在 Collapse 里，收起是收放高度而不是卸载；未懒加载过的父节点
+      // 没有子行，首次展开时 Collapse 已在（open 从一开始就过渡），内容随数据到位撑开。
+      const children = (byParent.get(session.id) ?? []).flatMap((child) => renderNode(child, nextAncestors));
+      const nextCursor = sessionNextCursors.get(sessionKey(session));
+      return [
+        <SessionTreeRow
+          actions={actions}
+          expandable={expandable}
+          expanded={expanded}
+          index={rowIndex++}
+          key={`${session.projectId}:${session.id}`}
+          loading={loading}
+          onContextMenu={onSessionContextMenu}
+          onSelect={onSelectSession}
+          onToggle={onToggleSession}
+          projectId={projectId}
+          registerItem={hover.registerItem}
+          selected={session.id === selectedSessionId}
+          session={session}
+        />,
+        ...(expandable ? [
+          <Collapse className="biny-sidebar-session-children" key={`${session.projectId}:${session.id}:tree`} open={expanded}>
+            {children}
+            {nextCursor ? (
+              <button className="biny-sidebar-session-expand" onClick={() => onLoadMoreSessionChildren(session)} type="button">
+                显示更多
+              </button>
+            ) : null}
+          </Collapse>
+        ] : [])
+      ];
+    };
+    return (byParent.get(undefined) ?? []).flatMap((session) => renderNode(session, new Set()));
+  }, [actions, flat, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren, hover.registerItem]);
   return (
     <div ref={listRef} className={`biny-sidebar-session-list${projectId ? " is-indented" : ""}`} {...hover.handlers}>
       <FluidHoverHighlight hover={hover} className="has-row-radius" />
-      {(byParent.get(undefined) ?? []).flatMap((session) => renderNode(session, new Set()))}
+      {rows}
     </div>
   );
 }
@@ -1048,7 +1049,6 @@ const ProjectRow = memo(function ProjectRow({
   onDragCancel(): void;
 }): React.JSX.Element {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
-  const appearance = useAppearance();
   const suppressClickRef = useRef(false);
   return (
     <div
@@ -1086,7 +1086,7 @@ const ProjectRow = memo(function ProjectRow({
         tabIndex={0}
       >
         {project.iconDataUrl ? <img alt="" className="biny-project-row-icon" src={project.iconDataUrl} />
-          : appearance.skin !== "default" ? <RetroFolderIcon /> : <Icon name={sessionsExpanded ? "folder-open" : "folder"} size={16} />}
+          : <Icon name={sessionsExpanded ? "folder-open" : "folder"} size={16} />}
         <span className="biny-project-row-label">{project.name}</span>
         {project.missing ? <span className="biny-project-status is-failed" title="路径不可用" /> : null}
       </div>

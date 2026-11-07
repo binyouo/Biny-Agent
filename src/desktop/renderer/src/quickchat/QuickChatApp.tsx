@@ -16,7 +16,6 @@ import type {
 } from "../../../protocol.js";
 import { AppearanceProvider } from "../AppearanceProvider.js";
 import { useDesktopAppearance } from "../useDesktopAppearance.js";
-import { WindowChrome } from "../components/WindowChrome.js";
 import { Icon } from "../components/Icon.js";
 import { MarkdownContent } from "../components/MarkdownContent.js";
 import { ModelPickerMenu } from "../components/composer/ModelPickerMenu.js";
@@ -395,8 +394,7 @@ export function QuickChatApp(): React.JSX.Element {
   }, [busy]);
 
   return (
-    <AppearanceProvider snapshot={appearance.snapshot} onError={setError}><div className="quickchat-root">
-      <WindowChrome title="Biny · 快速对话" />
+    <AppearanceProvider snapshot={appearance.snapshot}><div className="quickchat-root">
       <header className="quickchat-titlebar">
         <div className="quickchat-title" aria-label="Quick Chat">
           <span className="quickchat-title-mark"><Icon name="spark" size={14} /></span>

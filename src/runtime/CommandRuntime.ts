@@ -68,7 +68,7 @@ import { SessionGoalStore } from "./SessionGoalStore.js";
 import { recordSessionGoalRequestUsage } from "./sessionGoalUsage.js";
 import { CapabilityStore } from "./CapabilityStore.js";
 import { RuntimeHostResourceScope, type RuntimeHostResourceRegistry, type RuntimeResourceSnapshot, type RuntimeResourceReadiness } from "./host/resources.js";
-import { listEnabledGlobalPluginPaths, listEnabledProjectPluginPaths } from "../extensions/pluginRegistry.js";
+import { listEnabledGlobalPlugins, listEnabledProjectPlugins } from "../extensions/pluginRegistry.js";
 import { globalPluginRoot } from "../config/paths.js";
 import { heartbeatTaskReviewPrompt, HeartbeatNotificationDeduper, HeartbeatScheduler, isHeartbeatQuietOutput, type HeartbeatTaskReviewItem } from "../agent/context/heartbeat.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../tools/browser.js";
@@ -659,25 +659,26 @@ async function initializeCommandRuntime(
   toolRegistry.registerHostReadQuery(createSkillResourceTool(currentSkillBundle), "read_skill_resource");
   refreshExtensionTools();
   const pluginsPerfStartedAt = perfNow();
-  const managedPluginPaths = await listEnabledProjectPluginPaths(workspaceRoot).catch((error: unknown) => {
+  const managedPlugins = await listEnabledProjectPlugins(workspaceRoot).catch((error: unknown) => {
     loadedPlugins.push(`managed plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
     return [];
   });
-  for (const pluginPath of [...config.extensions.plugins, ...managedPluginPaths]) {
+  for (const plugin of [...config.extensions.plugins, ...managedPlugins]) {
+    const label = typeof plugin === "string" ? plugin : plugin.path;
     try {
       loadedPlugins.push(...await loadPlugins(
-        workspaceRoot, [pluginPath], config, toolRegistry, ai, pluginLifecycle
+        workspaceRoot, [plugin], config, toolRegistry, ai, pluginLifecycle
       ));
     } catch (error) {
       // 单个 Plugin 失败只影响它自己；主 Runtime、其它 Plugin 和内置工具仍可用。
-      loadedPlugins.push(`${pluginPath} (failed: ${error instanceof Error ? error.message : String(error)})`);
+      loadedPlugins.push(`${label} (failed: ${error instanceof Error ? error.message : String(error)})`);
     }
   }
-  const managedGlobalPluginPaths = await listEnabledGlobalPluginPaths().catch((error: unknown) => {
+  const managedGlobalPlugins = await listEnabledGlobalPlugins().catch((error: unknown) => {
     loadedPlugins.push(`global managed plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
     return [];
   });
-  const globalPluginPaths = [...config.extensions.globalPlugins, ...managedGlobalPluginPaths];
+  const globalPluginPaths = [...config.extensions.globalPlugins, ...managedGlobalPlugins];
   if (globalPluginPaths.length) {
     try {
       loadedPlugins.push(...await loadPluginsFromRoot(
@@ -786,14 +787,20 @@ async function initializeCommandRuntime(
   const heartbeatNotificationDeduper = new HeartbeatNotificationDeduper();
   const runModelManager = async (currentConfig: AgentConfig, alias: string, signal?: AbortSignal): Promise<ModelManager> => {
     signal?.throwIfAborted();
-    const manager = await ModelManager.create(workspaceRoot, { ...structuredClone(currentConfig), defaultModel: alias }, configStore, ai);
+    const cloned = structuredClone(currentConfig);
+    if (!cloned.models[alias]) {
+      // 自动探测返回 `provider/model-id` 动态引用；合成等价条目让 ModelManager 按别名解析。
+      const slash = alias.indexOf("/");
+      if (slash > 0) cloned.models[alias] = { provider: alias.slice(0, slash), model: alias.slice(slash + 1) };
+    }
+    const manager = await ModelManager.create(workspaceRoot, { ...cloned, defaultModel: alias }, configStore, ai);
     signal?.throwIfAborted();
     return manager;
   };
   let ownerNotificationSink: ((notification: string) => Promise<void>) | undefined;
   let heartbeatAgent: Promise<AgentSession> | undefined;
   const initializeHeartbeatAgent = async (model: AgentModel): Promise<AgentSession> => {
-    const heartbeatRecorder = new SessionRecorder(persistenceRoot, "heartbeat", undefined, runtimeAuthority.asSink());
+    const heartbeatRecorder = new SessionRecorder(persistenceRoot, `heartbeat-${randomUUID()}`, undefined, runtimeAuthority.asSink());
     const heartbeatCommunication = new TaskCommunication(taskRuns, heartbeatRecorder.sessionId);
     cleanup.heartbeatCommunication = () => heartbeatCommunication.close();
     let session: AgentSession | undefined;

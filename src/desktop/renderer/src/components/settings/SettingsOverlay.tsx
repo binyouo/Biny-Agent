@@ -11,8 +11,9 @@ import { SettingsAppshots } from "./SettingsAppshots.js";
 import { SettingsWebSearch } from "./SettingsWebSearch.js";
 import { SettingsPrivacy } from "./SettingsPrivacy.js";
 import { SettingsBrowser } from "./SettingsBrowser.js";
+import { SettingsRemoteAccess } from "./SettingsRemoteAccess.js";
 import { SettingsComputerUse } from "./SettingsComputerUse.js";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Dialog } from "@astryxdesign/core/Dialog";
 import type { LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
 import type { MemorySleepRun } from "../../../../../agent/context/memoryTypes.js";
@@ -27,9 +28,6 @@ import { SettingsToolModel } from "./SettingsToolModel.js";
 import { stagedModelChoices } from "./providerModelProjection.js";
 import { SettingsAbout } from "./SettingsAbout.js";
 import { SettingsAppearance } from "./SettingsAppearance.js";
-import { SettingsThemes } from "./SettingsThemes.js";
-import { DEFAULT_APPEARANCE } from "../../../../../appearance/preferences.js";
-import type { AppearancePreference } from "../../../../../appearance/types.js";
 import { ActivityRuntimeProvider } from "./ActivityRuntimeContext.js";
 import { SettingsChatPage } from "./SettingsChatPage.js";
 import { SettingsActivity } from "./SettingsActivity.js";
@@ -42,7 +40,6 @@ import { SettingsMemory } from "./SettingsMemory.js";
 import { SettingsQuickChat } from "./SettingsQuickChat.js";
 import { SettingsPageFooter } from "./SettingsPageFooter.js";
 import { SettingsExtensionsView } from "./SettingsExtensionsView.js";
-import { useAppearance } from "../../appearanceContext.js";
 
 interface SettingsOverlayProps {
   open: boolean;
@@ -55,9 +52,7 @@ interface SettingsOverlayProps {
   onThemePreference(theme: DesktopThemePreference): void;
   fontPreference: DesktopFontPreference;
   onFontPreference(font: DesktopFontPreference): void;
-  appearancePreference?: AppearancePreference;
-  onAppearancePreference?(preference: AppearancePreference): void;
-  onSettingsCommitted(snapshot: DesktopSettingsSnapshot, scope?: "models" | "preferences" | "settings", appliedFields?: string[]): void;
+  onSettingsCommitted(snapshot: DesktopSettingsSnapshot, scope?: "models" | "model-config" | "preferences" | "settings", appliedFields?: string[]): void;
   onCapabilitiesChanged?(scope: "skills" | "tools" | "all", projectId?: string): void;
   onNotify(message: string): void;
   closeRequest?: DesktopSettingsCloseRequest;
@@ -99,7 +94,7 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "Token 节省" | "导入" | "通用" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "隐私脱敏" | "关于";
+export type SettingsTab = "Token 节省" | "导入" | "通用" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "远程访问" | "Computer Use" | "Appshots" | "隐私脱敏" | "关于";
 
 /**
  * 侧栏按日常偏好、能力扩展、系统工具排序，不插分组标题。
@@ -111,13 +106,13 @@ const settingsNav: Array<{ tab: SettingsTab }> = [
   { tab: "模型" },
   { tab: "聊天" },
   { tab: "Token 节省" },
-  { tab: "配色" },
   { tab: "记忆" },
   { tab: "技能" },
   { tab: "MCP 服务器" },
   { tab: "插件" },
   { tab: "网络搜索" },
   { tab: "浏览器" },
+  { tab: "远程访问" },
   { tab: "Appshots" },
   { tab: "Computer Use" },
   { tab: "隐私脱敏" },
@@ -130,7 +125,6 @@ const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模�
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
   "Token 节省": { description: "查看命令压缩与脚本处理减少的上下文。", keywords: "RTK PTC run_script token 统计 节省 用量 沙箱" },
   导入: { description: "导入其他应用的模型设置、MCP 配置和会话。", keywords: "import 导入 同步 Claude Codex ChatGPT 会话 历史 模型 MCP" },
-  配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
   通用: { description: "外观、字体、工具模型、视觉模型、Coding Agent 与快速对话。", keywords: "用户界面 外观 主题 浅色 深色 跟随系统 字体 字号 阅读 视觉模型 vision Coding Agent 子代理 subagent runtime Codex Claude Code ACP 工具模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
   聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline 安全 权限 工具审批 确认 自动 批准 工具权限" },
   模型: { description: "管理模型连接、登录凭据和可用模型。", keywords: "供应商 服务商 API Key 密钥 base URL 登录 默认模型" },
@@ -139,6 +133,7 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   插件: { description: "安装和管理扩展能力。", keywords: "plugin 市场 安装 启停 卸载" },
   网络搜索: { description: "设置搜索来源与网页访问方式。", keywords: "搜索引擎 联网 Cookie 登录 结果 超时" },
   浏览器: { description: "连接日常浏览器，管理扩展配对。", keywords: "Chrome 扩展 安装 配对 重新生成 撤销 连接" },
+  远程访问: { description: "开启手机连接，生成配对二维码。", keywords: "手机 iOS 扫码 二维码 配对 连接 中继 远程" },
   隐私脱敏: { description: "发送给模型厂商前遮掉密钥和个人信息。", keywords: "脱敏 隐私 masking 密钥 API Key 个人信息 邮箱 手机号 身份证 银行卡 占位符" },
   Appshots: { description: "把应用截图与上下文放入聊天草稿。", keywords: "appshots 应用截图 双击 修饰键 Command Option Shift 快捷键 聊天 附件 辅助功能 权限" },
   "Computer Use": { description: "管理本机桌面控制、权限与实时预览。", keywords: "computer use 桌面 操控 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
@@ -178,7 +173,6 @@ function SettingsOverlayScope(props: SettingsOverlayProps): React.JSX.Element {
       loadSnapshot={settingsPageNeedsSnapshot(navigation.tab)}
       onCommitted={props.onSettingsCommitted}
       onFontPreview={props.onFontPreference}
-      onAppearancePreview={props.onAppearancePreference}
       onNotify={props.onNotify}
       onThemePreview={props.onThemePreference}
       projectId={props.workspace?.project.id}
@@ -201,7 +195,6 @@ function SettingsOverlayContent({
   targetTab,
   themePreference,
   fontPreference,
-  appearancePreference,
   onNotify: _onNotify,
   onClose,
   onCapabilitiesChanged,
@@ -240,7 +233,6 @@ function SettingsOverlayContent({
   closeRequest,
   onResolveCloseRequest
 }: SettingsOverlayProps & { tab: SettingsTab; setTab(tab: SettingsTab): void }): React.JSX.Element | null {
-  const appearance = useAppearance();
   const settingsDraft = useSettingsDraft();
   const settingsDraftRef = useRef(settingsDraft);
   useLayoutEffect(() => { settingsDraftRef.current = settingsDraft; });
@@ -251,17 +243,12 @@ function SettingsOverlayContent({
   // 所以和记忆页一样做成"首次进入挂载、之后常驻靠 hidden 切换"。
   const [extensionsVisited, setExtensionsVisited] = useState<{ skills: boolean; plugins: boolean }>({ skills: false, plugins: false });
   const [message, setMessage] = useState<string>();
-  const [search, setSearch] = useState("");
   const [closeGuardOpen, setCloseGuardOpen] = useState(false);
   const [detailHost, setDetailHost] = useState<HTMLElement | null>(null);
   const activeTab = normalizeSettingsTab(tab);
   const activeTabRef = useRef<SettingsTab>(activeTab);
   const scrollRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const searchQuery = search.trim().toLocaleLowerCase();
-  const searchResults = settingsRouteEntries
-    .filter(({ value }) => `${value} ${settingsTabLabels[value] ?? ""} ${settingsPages[value].description} ${settingsPages[value].keywords}`.toLocaleLowerCase().includes(searchQuery));
   const notifyForTab = (sourceTab: SettingsTab, nextMessage: string | undefined): void => {
     if (activeTabRef.current === sourceTab) setMessage(nextMessage);
   };
@@ -291,7 +278,6 @@ function SettingsOverlayContent({
     if (!open) return;
     setMessage(undefined);
     if (targetTab) {
-      setSearch("");
       const nextTab = normalizeSettingsTab(targetTab);
       activeTabRef.current = nextTab;
       setTab(nextTab);
@@ -299,12 +285,13 @@ function SettingsOverlayContent({
       markVisited(nextTab);
     }
   }, [markVisited, open, targetTab, setTab]);
-  const settingsModels = stagedModelChoices(
-    settingsDraft.snapshot?.models.configured ?? workspace?.models ?? [],
-    settingsDraft.draft?.models.upserts ?? [],
-    settingsDraft.draft?.models.removeAliases ?? [],
-    settingsDraft.draft?.models.modelProfiles ?? settingsDraft.snapshot?.models.modelProfiles ?? {}
-  );
+  const savedModels = settingsDraft.snapshot?.models.configured ?? workspace?.models;
+  const modelUpserts = settingsDraft.draft?.models.upserts;
+  const removedModelAliases = settingsDraft.draft?.models.removeAliases;
+  const modelProfiles = settingsDraft.draft?.models.modelProfiles ?? settingsDraft.snapshot?.models.modelProfiles;
+  const settingsModels = useMemo(() => stagedModelChoices(
+    savedModels ?? [], modelUpserts ?? [], removedModelAliases ?? [], modelProfiles ?? {}
+  ), [savedModels, modelUpserts, removedModelAliases, modelProfiles]);
   const defaultModelAlias = settingsDraft.draft?.models.defaultModel?.alias
     ?? settingsDraft.snapshot?.models.defaultModel;
   const selectTab = async (nextTab: SettingsTab): Promise<void> => {
@@ -349,7 +336,6 @@ function SettingsOverlayContent({
   // 只有"从没读到过快照且这次也失败了"才拦整页；单纯在刷新不该把已经能用的界面遮起来。
   const loadBlocked = Boolean((workspace && settingsPageNeedsSnapshot(activeTab) || activeTab === "Computer History") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
   const openSearchResult = async (nextTab: SettingsTab): Promise<void> => {
-    setSearch("");
     await selectTab(nextTab);
     titleRef.current?.focus();
   };
@@ -366,36 +352,13 @@ function SettingsOverlayContent({
         maxHeight="calc(100dvh - 48px)"
       >
       <SettingsDetailHostContext.Provider value={open ? detailHost : null}>
-      <section className={`settings-modal${extensionSettings ? " is-extension-settings" : ""}${appearance.skin !== "default" ? " is-retro-settings" : ""}`} ref={setDetailHost}>
+      <section className={`settings-modal${extensionSettings ? " is-extension-settings" : ""}`} ref={setDetailHost}>
         <aside className="settings-tabs">
           <div className="settings-sidebar-strip">
             <strong>设置</strong>
           </div>
-          <div className="settings-search">
-            <Icon name="search" size={15} />
-            <input className="settings-field" aria-label="搜索设置" placeholder="搜索设置" ref={searchRef} type="search" value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing) return;
-                if (event.key === "Escape" && search) { event.preventDefault(); event.stopPropagation(); setSearch(""); }
-                if (event.key === "Enter" && searchQuery && searchResults[0]) { event.preventDefault(); openSearchResult(searchResults[0].value); }
-              }} />
-            {search ? <button aria-label="清除设置搜索" onClick={() => { setSearch(""); searchRef.current?.focus(); }} type="button"><Icon name="close" size={13} /></button> : null}
-          </div>
-          {searchQuery ? <nav aria-label="设置搜索结果" className="settings-search-results">
-            <p className="settings-search-count" role="status">{searchResults.length ? `${searchResults.length} 个相关页面` : "没有找到相关设置"}</p>
-            {searchResults.map(({ value }) => <button key={value} onClick={() => openSearchResult(value)} type="button">
-              <strong>{settingsTabLabels[value] ?? value}</strong>
-            </button>)}
-            {!searchResults.length ? <p className="settings-search-empty">试试“字体”“模型”或“流式”。</p> : null}
-          </nav> :
-          <nav aria-label="设置分类" className="settings-nav-list">
-            {settingsNav.map(page => <button key={page.tab} aria-current={activeTab === page.tab ? "page" : undefined} data-settings-tab={page.tab}
-              className={activeTab === page.tab ? "is-selected" : ""} onClick={() => selectTab(page.tab)} title={page.tab} type="button">
-              <span aria-hidden="true" className="settings-nav-icon"><SettingsNavIcon page={page.tab} /></span>
-              <span className="settings-nav-label">{settingsTabLabels[page.tab] ?? page.tab}</span>
-            </button>)}
-          </nav>}
+          <SettingsNavigation activeTab={activeTab} open={open} targetTab={targetTab}
+            onSelectTab={selectTab} onSearchResult={openSearchResult} />
         </aside>
         <main className={`settings-content${extensionSettings ? " is-extension-settings" : ""}`}>
           <header className="settings-titlebar">
@@ -449,17 +412,13 @@ function SettingsOverlayContent({
             <SettingsSubagent busy={runtimeBusy} onOpenProviders={() => { void selectTab("模型"); }} />
             <SettingsQuickChat />
           </div> : null}
-          {activeTab === "配色" ? <SettingsThemes
-            preference={settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE}
-            onChange={settingsDraft.setAppearancePreference}
-            disabled={(settingsDraft.saveState === "saving" && !settingsDraft.modelSelectionSaving) || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
-          /> : null}
           {activeTab === "Computer History" ? <SettingsActivity /> : null}
           {activeTab === "Token 节省" ? <SettingsToolOptimization /> : null}
           {activeTab === "聊天" ? <SettingsChatPage /> : null}
           {memoryVisited ? <SettingsMemory key={workspace?.project.id}
             models={settingsModels}
             embeddingModels={settingsDraft.snapshot?.models.embeddingModels ?? []}
+            onFetchModelCatalog={onFetchModelCatalog}
             hidden={!open || activeTab !== "记忆"}
             workspaceAvailable={workspace !== undefined}
             onLoadStats={onLoadMemoryStats}
@@ -490,6 +449,7 @@ function SettingsOverlayContent({
           {extensionsVisited.plugins ? <div className="settings-extension-page" hidden={activeTab !== "插件"}><SettingsExtensionsView active={open && activeTab === "插件"} kind="plugins" onCapabilitiesChanged={onCapabilitiesChanged} onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
           {activeTab === "关于" ? <SettingsAbout version={version} /> : null}
           {activeTab === "浏览器" ? <SettingsBrowser active={open} /> : null}
+          {activeTab === "远程访问" ? <SettingsRemoteAccess active={open} /> : null}
           {activeTab === "Computer Use" ? <SettingsComputerUse active={open} /> : null}
           {activeTab === "Appshots" ? <SettingsAppshots /> : null}
           {activeTab === "隐私脱敏" ? <SettingsPrivacy /> : null}
@@ -537,4 +497,52 @@ function SettingsOverlayContent({
       </Dialog>
     </ActivityRuntimeProvider>
   );
+}
+
+function SettingsNavigation({ activeTab, open, targetTab, onSelectTab, onSearchResult }: {
+  activeTab: SettingsTab;
+  open: boolean;
+  targetTab?: SettingsTab;
+  onSelectTab(tab: SettingsTab): Promise<void>;
+  onSearchResult(tab: SettingsTab): Promise<void>;
+}): React.JSX.Element {
+  const [search, setSearch] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const searchQuery = search.trim().toLocaleLowerCase();
+  const searchResults = settingsRouteEntries
+    .filter(({ value }) => `${value} ${settingsTabLabels[value] ?? ""} ${settingsPages[value].description} ${settingsPages[value].keywords}`.toLocaleLowerCase().includes(searchQuery));
+  useLayoutEffect(() => {
+    if (open && targetTab) setSearch("");
+  }, [open, targetTab]);
+  const selectSearchResult = async (nextTab: SettingsTab): Promise<void> => {
+    setSearch("");
+    await onSearchResult(nextTab);
+  };
+  return <>
+    <div className="settings-search">
+      <Icon name="search" size={15} />
+      <input className="settings-field" aria-label="搜索设置" placeholder="搜索设置" ref={searchRef} type="search" value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Escape" && search) { event.preventDefault(); event.stopPropagation(); setSearch(""); }
+          if (event.key === "Enter" && searchQuery && searchResults[0]) { event.preventDefault(); selectSearchResult(searchResults[0].value); }
+        }} />
+      {search ? <button aria-label="清除设置搜索" onClick={() => { setSearch(""); searchRef.current?.focus(); }} type="button"><Icon name="close" size={13} /></button> : null}
+    </div>
+    {searchQuery ? <nav aria-label="设置搜索结果" className="settings-search-results">
+      <p className="settings-search-count" role="status">{searchResults.length ? `${searchResults.length} 个相关页面` : "没有找到相关设置"}</p>
+      {searchResults.map(({ value }) => <button key={value} onClick={() => selectSearchResult(value)} type="button">
+        <strong>{settingsTabLabels[value] ?? value}</strong>
+      </button>)}
+      {!searchResults.length ? <p className="settings-search-empty">试试“字体”“模型”或“流式”。</p> : null}
+    </nav> :
+    <nav aria-label="设置分类" className="settings-nav-list">
+      {settingsNav.map(page => <button key={page.tab} aria-current={activeTab === page.tab ? "page" : undefined} data-settings-tab={page.tab}
+        className={activeTab === page.tab ? "is-selected" : ""} onClick={() => onSelectTab(page.tab)} title={page.tab} type="button">
+        <span aria-hidden="true" className="settings-nav-icon"><SettingsNavIcon page={page.tab} /></span>
+        <span className="settings-nav-label">{settingsTabLabels[page.tab] ?? page.tab}</span>
+      </button>)}
+    </nav>}
+  </>;
 }

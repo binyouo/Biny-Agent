@@ -1,3 +1,4 @@
+import type { RemoteAccess } from "../../../remote/access.js";
 import { findRtk } from "../../../tools/shell/rtk.js";
 import type { DesktopApplicationImports } from "./DesktopApplicationImports.js";
 /**
@@ -29,6 +30,7 @@ import type { DesktopThreadBriefService } from "./DesktopThreadBriefService.js";
 import { agentCapabilitySelectionSchema } from "../../../agent/capabilitySelection.js";
 import { userInputResponseSchema } from "../../../runtime/userInput.js";
 import { runtimeCommandOperation } from "../../../runtime/commands.js";
+import { pluginSettingsSchema } from "../../../extensions/pluginSettings.js";
 import {
   chatPersonalizationSchema,
   configRevisionSchema,
@@ -54,7 +56,6 @@ import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopSkillService } from "./DesktopSkillService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import type { AppearancePreviewCoordinator } from "../../appearanceCoordinator.js";
-import { appearancePreferenceSchema } from "../../../appearance/preferences.js";
 import { DesktopSettingsTransaction } from "./DesktopSettingsTransaction.js";
 import { DesktopTerminalManager } from "./DesktopTerminalManager.js";
 import type { DesktopPreviewService } from "./DesktopPreviewService.js";
@@ -80,6 +81,7 @@ import { TemporalMemoryIndex } from "../../../session/temporalMemory.js";
 import { resolveSessionFile } from "../../../session/store.js";
 
 interface IpcContext {
+  remoteAccess: RemoteAccess;
   applicationImports: DesktopApplicationImports;
   appearance: AppearancePreviewCoordinator;
   threadBriefs: DesktopThreadBriefService;
@@ -787,6 +789,23 @@ export function registerDesktopIpc(context: IpcContext): void {
     assertBrowserSender(event);
     return context.browser.relayStatus();
   });
+  handle(desktopIpc.remoteAccessStatus, event => {
+    assertBrowserSender(event);
+    return context.remoteAccess.status();
+  });
+  handleRecoveryGated(desktopIpc.remoteAccessStart, (event, input: unknown) => {
+    assertBrowserSender(event);
+    const parsed = z.object({ relay: z.string().trim().min(1).max(2048), registrationKey: z.string().trim().min(1).max(8192).optional() }).strict().parse(input);
+    return context.remoteAccess.start(parsed);
+  });
+  handle(desktopIpc.remoteAccessStop, async event => {
+    assertBrowserSender(event);
+    return await context.remoteAccess.stop();
+  });
+  handle(desktopIpc.remoteAccessRegenerate, async event => {
+    assertBrowserSender(event);
+    return await context.remoteAccess.regenerate();
+  });
   handle(desktopIpc.browserRelayInstall, async (event) => {
     assertBrowserSender(event);
     const extensionPath = await prepareBrowserExtension();
@@ -1033,7 +1052,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  handle(desktopIpc.activitySnapshot, async () => context.activity.snapshot());
+  handle(desktopIpc.activitySnapshot, async (_event, forceRefresh: unknown) => context.activity.snapshot(z.boolean().optional().default(true).parse(forceRefresh)));
   handle(desktopIpc.maskingOverview, async (_event, projectId: unknown) => await context.agents.maskingOverview(idSchema.parse(projectId)));
   handle(desktopIpc.maskingDetail, async (_event, projectId: unknown, id: unknown) => await context.agents.maskingDetail(idSchema.parse(projectId), idSchema.parse(id)));
   handle(desktopIpc.maskingClear, async (_event, projectId: unknown) => await context.agents.clearMaskRecords(idSchema.parse(projectId)));
@@ -1100,10 +1119,8 @@ export function registerDesktopIpc(context: IpcContext): void {
     }
     const snapshot = result.snapshot ?? result.preferences ?? result.settings;
     if (snapshot && (parsedInput.themePreference !== undefined || parsedInput.fontPreference !== undefined
-      || parsedInput.appearancePreference !== undefined
       || snapshot.themePreference !== previousPreferences.themePreference
-      || !isDeepStrictEqual(snapshot.fontPreference, previousPreferences.fontPreference)
-      || !isDeepStrictEqual(snapshot.appearancePreference, previousPreferences.appearancePreference))) {
+      || !isDeepStrictEqual(snapshot.fontPreference, previousPreferences.fontPreference))) {
       const preference = snapshot.themePreference;
       applyNativeThemePreference(preference);
       const window = context.getWindow();
@@ -1357,6 +1374,13 @@ export function registerDesktopIpc(context: IpcContext): void {
     else context.agents.assertProjectSettingsIdle(targetProjectId, "任务运行期间不能切换 Plugin。");
     return await context.skills.setPluginEnabled(targetProjectId, idSchema.parse(pluginId), z.boolean().parse(enabled), targetScope);
   });
+  handleRecoveryGated(desktopIpc.pluginSetSettings, async (_event, projectId: unknown, pluginId: unknown, settings: unknown, scope: unknown) => {
+    const targetProjectId = idSchema.parse(projectId);
+    const targetScope = pluginScopeSchema.parse(scope);
+    if (targetScope === "global") context.agents.assertNoRunningTasks("任务运行期间不能修改 Plugin 设置。");
+    else context.agents.assertProjectSettingsIdle(targetProjectId, "任务运行期间不能修改 Plugin 设置。");
+    return await context.skills.setPluginSettings(targetProjectId, idSchema.parse(pluginId), pluginSettingsSchema.parse(settings), targetScope);
+  });
   handleRecoveryGated(desktopIpc.pluginUninstall, async (_event, projectId: unknown, pluginId: unknown, scope: unknown) => {
     const targetProjectId = idSchema.parse(projectId);
     const targetScope = pluginScopeSchema.parse(scope);
@@ -1469,34 +1493,15 @@ export function registerDesktopIpc(context: IpcContext): void {
     return preference;
   });
 
-  handleRecoveryGated(desktopIpc.setAppearancePreference, async (_event, value: unknown) => {
-    const preference = appearancePreferenceSchema.parse(value);
-    await context.state.setAppearancePreference(preference as ReturnType<DesktopStateStore["appearancePreference"]>);
-    context.appearance.committed();
-    return preference;
-  });
-
   const appearanceOwners = new Set<number>();
   handle(desktopIpc.previewAppearance, async (event, value: unknown) => {
-    const parsed = z.object({ themePreference: themePreferenceSchema, fontPreference: fontPreferenceSchema, appearancePreference: appearancePreferenceSchema }).strict().nullable().parse(value);
+    const parsed = z.object({ themePreference: themePreferenceSchema, fontPreference: fontPreferenceSchema }).strict().nullable().parse(value);
     const owner = event.sender.id;
     if (parsed && !appearanceOwners.has(owner)) {
       appearanceOwners.add(owner);
       event.sender.once("destroyed", () => { appearanceOwners.delete(owner); context.appearance.release(owner); });
     }
     context.appearance.preview(owner, parsed as Parameters<AppearancePreviewCoordinator["preview"]>[1]);
-  });
-
-  handle(desktopIpc.windowAction, async (event, value: unknown) => {
-    const action = z.enum(["minimize", "maximize", "close"]).parse(value);
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window || window.isDestroyed()) return;
-    if (action === "minimize") window.minimize();
-    else if (action === "maximize") {
-      if (process.platform === "darwin") window.setFullScreen(!window.isFullScreen());
-      else if (window.isMaximized()) window.unmaximize();
-      else window.maximize();
-    } else window.close();
   });
 
   // —— QuickChat 悬浮窗：显隐切换、前台上下文、点击穿透和偏好 ——

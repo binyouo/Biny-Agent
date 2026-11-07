@@ -282,7 +282,6 @@ export const Composer = memo(function Composer({
   const modelSwitchPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const modelSwitchRequestRef = useRef(0);
   const submitFlightRef = useRef(false);
-  const [preparing, setPreparing] = useState(false);
   const addingFiles = useRef(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const defaultToolSelection = capabilityDefaults.tools;
@@ -374,8 +373,7 @@ export const Composer = memo(function Composer({
       submitFlightRef.current = true;
       setBusy(true);
       try {
-        setPreparing(true);
-        try { await onPrepare?.(); } finally { if (mounted.current) setPreparing(false); }
+        await onPrepare?.();
         if (!mounted.current || isSubmissionCurrent?.() === false || editingMessageRef.current !== editingMessage) return;
         clearHistory();
         setDraft({ value: "", tokens: [] });
@@ -414,10 +412,8 @@ export const Composer = memo(function Composer({
       const [slashName] = value.split(/\s+/, 1);
       const slashCommand = DESKTOP_SLASH_COMMANDS.find((command) => command.name === slashName);
       if (sessionWriterConflict) return;
-      setPreparing(true);
       try { await onPrepare?.(); }
       catch (error) { if (mounted.current) onSubmitError(errorMessage(error)); return; }
-      finally { if (mounted.current) setPreparing(false); }
       if (!mounted.current || isSubmissionCurrent?.() === false) return;
       if (!resume && slashCommand && (value === slashCommand.name || slashCommand.acceptsArgs)) {
         await runSlash(value, suggestion === undefined);
@@ -704,7 +700,6 @@ export const Composer = memo(function Composer({
             />
           </div>
         ) : null}
-        {preparing && <div role="status" className="composer-preparing">正在准备运行环境…</div>}
         <PromptInput
           inputRef={inputRef}
           projectId={draftProjectId}
@@ -863,7 +858,7 @@ export const Composer = memo(function Composer({
               <>
                 <span
                   aria-describedby={contextUsageTooltip.describedBy}
-                  aria-label={`上下文已使用 ${usage.percent}%`}
+                  aria-label={usage.contextWindowIsFallback ? `模型容量未知，保守预算已使用 ${usage.percent}%` : `上下文已使用 ${usage.percent}%`}
                   className="context-usage"
                   ref={contextUsageTooltip.ref}
                   role="status"
@@ -873,13 +868,13 @@ export const Composer = memo(function Composer({
                     <circle className="context-usage-ring-track" cx="10" cy="10" r="7.5" />
                     <circle className="context-usage-ring-fill" cx="10" cy="10" r="7.5" pathLength="100" strokeDasharray={`${usage.fillPercent} 100`} />
                   </svg>
-                  <span>{usage.percent}%</span>
+                  <span>{usage.contextWindowIsFallback ? "≈ " : ""}{usage.percent}%</span>
                 </span>
                 {contextUsageTooltip.renderTooltip(
                   <span className="context-usage-tip">
                     <span className="context-usage-tip-heading">
-                      <strong>上下文容量</strong>
-                      <span>{usage.estimated ? "≈ " : ""}{usage.compactUsed} / {usage.compactMax} <span>({usage.percent}%)</span></span>
+                      <strong>{usage.contextWindowIsFallback ? "上下文容量未知" : "上下文容量"}</strong>
+                      <span title={usage.contextWindowIsFallback ? `最近请求输入 ${usage.used} / 保守预算 ${usage.max} tokens` : `最近请求输入 ${usage.used} / ${usage.max} tokens`}>{usage.estimated ? "≈ " : ""}{usage.compactUsed} / {usage.compactMax} <span>({usage.percent}%)</span></span>
                     </span>
                     <span className="context-usage-bar" aria-label={`已用 ${usage.used} / ${usage.max} tokens`}>
                       {usage.categories.length ? usage.categories.map((category) => (
@@ -895,8 +890,8 @@ export const Composer = memo(function Composer({
                       ))}
                     </span>
                     <span className="context-usage-note">
-                      {usage.categories.length ? "分类占总容量，按发送内容估算" : "发送消息后更新上下文组成"}
-                      {usage.contextWindowIsFallback ? " · 容量为估算值" : ""}
+                      {usage.categories.length ? "最近请求输入；分类按发送内容估算" : "发送消息后更新上下文组成"}
+                      {usage.contextWindowIsFallback ? " · 按保守预算估算" : ""}
                     </span>
                     <span className="context-usage-row context-usage-cache"><span>平均缓存命中率</span><strong>{usage.cacheHitRate}</strong></span>
                   </span>

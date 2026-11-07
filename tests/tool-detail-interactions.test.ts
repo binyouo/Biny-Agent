@@ -17,14 +17,15 @@ const tool: TimelineTool = {
   command: { command: "pwd", stdout: Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"), stderr: "", exitCode: 0 }
 };
 
-test("工具摘要默认收起，命令详情使用紧凑命令行并保留完整输出", () => {
+test("工具摘要默认收起，命令详情分区展示参数和结果并保留完整输出", () => {
   const dom = new JSDOM(renderToStaticMarkup(React.createElement(ToolCallCard, { ...callbacks, tool })));
   try { assert.equal(dom.window.document.querySelector(".chat-tool-row")?.getAttribute("aria-expanded"), "false"); }
   finally { dom.window.close(); }
   const html = renderToStaticMarkup(React.createElement(ToolActivityDetail, { ...callbacks, tool }));
-  assert.match(html, /\$ /);
+  assert.match(html, /aria-label="参数 command"/);
+  assert.match(html, /command-result-summary/);
   assert.match(html, /line 29/);
-  assert.doesNotMatch(html, /markdown-code-block|command-log-expand|tool-section-label/);
+  assert.doesNotMatch(html, /markdown-code-block|command-log-expand|chat-command-input/);
 });
 
 test("收起工具或整个活动段时不生成隐藏的详情和日志", () => {
@@ -100,6 +101,83 @@ test("实时命令日志随会话投影的连续输出刷新", async () => {
     assert.equal(await render(), "first\nsecond");
     liveEvents.push({ ...base, type: "tool.progress", toolCallId: "command", tool: "Bash", update: { kind: "stderr", text: "last error" } });
     assert.equal(await render(), "first\nsecond\nlast error");
+    const repeated = "x".repeat(16_384);
+    liveEvents.splice(2, liveEvents.length - 2, { ...base, type: "tool.progress", toolCallId: "command", tool: "Bash", update: { kind: "stdout", text: repeated } });
+    assert.equal(await render(), repeated);
+    liveEvents.push({ ...base, type: "tool.progress", toolCallId: "command", tool: "Bash", update: { kind: "stdout", text: "x" } });
+    assert.equal(await render(), `…\n${repeated}`, "unchanged tail text still updates the first truncation marker");
+    assert.ok(document.querySelector('button[aria-label="复制完整输出"]'));
+  } finally {
+    await React.act(() => root.unmount());
+    dom.window.close();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});
+
+test("实时长日志仅在点击复制时读取完整片段，失败后仍可复制，历史结果保留完整复制", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "https://localhost/" });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const writes: string[] = [];
+  Object.defineProperty(dom.window.navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { writes.push(text); } } });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root")!);
+  const projector = createSessionTimelineProjector();
+  const base = { sessionId: "copy", runId: "run", timestamp: "2026-11-03T00:00:00Z" };
+  const events: SessionEvent[] = [];
+  let reads = 0;
+  const stdout = "stdout start😀" + "o".repeat(20_000) + "\n";
+  const stderr = "stderr start" + "e".repeat(20_000) + " stderr end";
+  const liveEvents: AgentHostEvent[] = [
+    { ...base, type: "message.user", messageId: "message", content: "运行任务" },
+    { ...base, type: "tool.started", toolCallId: "command", tool: "Bash", args: { command: "task" }, display: { kind: "command", command: "task" } },
+    { ...base, type: "tool.progress", toolCallId: "command", tool: "Bash", update: { kind: "stdout", get text() { reads++; return stdout; } } },
+    { ...base, type: "tool.progress", toolCallId: "command", tool: "Bash", update: { kind: "stderr", get text() { reads++; return stderr; } } }
+  ];
+  const project = () => projector.update({ sessionId: base.sessionId, events, liveEvents })[0]!.tools[0]!;
+  const render = async (current: TimelineTool) => {
+    reads = 0;
+    await React.act(() => root.render(React.createElement(ToolActivityDetail, { ...callbacks, tool: current })));
+    assert.equal(reads, 0, "rendering the preview must not reread complete output chunks");
+    assert.ok((document.querySelector('.chat-command-result pre')?.textContent?.length ?? 0) <= 33_000);
+  };
+  const copy = async () => {
+    const button = document.querySelector<HTMLButtonElement>('button[aria-label="复制完整输出"]');
+    assert.ok(button);
+    await React.act(() => button.click());
+  };
+  try {
+    const running = project();
+    assert.ok(running.command!.stdout.length <= 16_384, "full live output belongs to the existing chunks, not display state");
+    await render(running);
+    await copy();
+    assert.ok(reads > 0, "the click lazily reads retained chunks");
+    assert.deepEqual(writes, [stdout + stderr], "stdout ending in a newline joins stderr without another newline");
+
+    liveEvents.push(
+      { ...base, type: "tool.progress", toolCallId: "command", tool: "Bash", update: { kind: "stdout", text: "last" } },
+      { ...base, type: "tool.failed", toolCallId: "command", tool: "Bash", error: "failed without a result" }
+    );
+    await render(project());
+    await copy();
+    assert.deepEqual(writes, [stdout + stderr, stdout + "last\n" + stderr]);
+    assert.match(document.body.textContent ?? "", /failed without a result/u);
+
+    // 历史工具没有实时片段，完整结果仍是复制来源。
+    const history = projector.update({ sessionId: "history", liveEvents: [], events: [
+      { type: "user_message", content: "历史命令" },
+      { type: "tool_call", toolCallId: "historical", tool: "Bash", args: { command: "task" } },
+      { type: "tool_result", toolCallId: "historical", tool: "Bash", result: { stdout: "history " + stdout, stderr, exitCode: 0 } }
+    ] });
+    await render(history[0]!.tools[0]!);
+    await copy();
+    assert.equal(writes[2], "history " + stdout + stderr);
+    assert.equal(reads, 0, "historical copies must not consult the prior live tool");
   } finally {
     await React.act(() => root.unmount());
     dom.window.close();
@@ -180,7 +258,7 @@ test("通用工具参数与结果可独立复制，长代码提供可访问的�
   assert.match(codeHtml, /aria-expanded="false"/);
 });
 
-for (const [status, expected] of [["waiting", "等待确认"], ["cancelled", "已停止"], ["unknown", "执行状态未知"], ["denied", "执行失败"]] as const) {
+for (const [status, expected] of [["waiting", "等待中"], ["cancelled", "已取消"], ["unknown", "结果未知"], ["denied", "已拒绝"]] as const) {
   test(`命令 ${status} 不误报已完成`, () => {
     const html = renderToStaticMarkup(React.createElement(ToolActivityDetail, { ...callbacks, tool: {
       ...tool, status, command: { command: "task", stdout: "", stderr: "" }

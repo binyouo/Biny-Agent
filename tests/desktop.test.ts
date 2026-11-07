@@ -3930,7 +3930,7 @@ function testDesktopUsagePresentation(): void {
   const context = formatContextUsage({ usedTokens: 109_000, contextWindow: 1_000_000, source: "provider" });
   assert.equal(context?.percent, 10.9);
   assert.equal(context?.max, "1,000,000");
-  assert.equal(context?.compactUsed, "10.9万");
+  assert.equal(context?.compactUsed, "109K");
   assert.equal(context?.estimated, false);
 
 }

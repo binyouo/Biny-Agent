@@ -21,6 +21,10 @@ export function SettingsNavIcon({ page, size = 17 }: { page: SettingsTab; size?:
 
 function pathFor(page: SettingsTab): React.JSX.Element {
   switch (page) {
+    case "远程访问": return <>
+      <rect {...S} x="6" y="2.5" width="12" height="19" rx="3" fill="currentColor" fillOpacity="0.1" />
+      <path {...S} d="M10 6h4M11 18h2" />
+    </>;
     // 通用：圆角卡片叠一枚齿轮 —— 「这里是所有默认值的入口」。
     case "通用": return <>
       <rect {...S} height="15" rx="4" width="15" x="4.5" y="4.5" fill="currentColor" fillOpacity="0.1" />
@@ -45,13 +49,6 @@ function pathFor(page: SettingsTab): React.JSX.Element {
       <path {...S} d="M6 15.5 10 11l3 3 5-6" />
       <path {...S} d="M15.5 8H18v2.5" />
       <circle {...F} cx="6" cy="15.5" r="1.3" />
-    </>;
-    // 配色：调色盘 + 三个色点。
-    case "配色": return <>
-      <path {...S} d="M12 3.8a8.2 8.2 0 1 0 0 16.4c1.5 0 2.2-.9 2.2-1.9 0-.9-.6-1.5-.6-2.4 0-1 .8-1.7 1.9-1.7h2.3a2.4 2.4 0 0 0 2.4-2.4C20.2 7.4 16.5 3.8 12 3.8Z" fill="currentColor" fillOpacity="0.1" />
-      <circle {...F} cx="8" cy="10" r="1.3" />
-      <circle {...F} cx="12" cy="7.8" r="1.3" />
-      <circle {...F} cx="16" cy="10" r="1.3" />
     </>;
     // 记忆：大脑双半球的简化版 —— 软底 + 中线 + 记忆点。
     case "记忆": return <>

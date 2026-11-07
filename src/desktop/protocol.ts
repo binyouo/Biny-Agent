@@ -1,3 +1,4 @@
+import type { RemoteAccessInput, RemoteAccessStatus } from "../remote/access.js";
 import type { MaskRecord, MaskRecordSummary, MaskingOverview } from "../privacy/record.js";
 import type { MaskSegment } from "../privacy/engine.js";
 import type { ToolOptimizationOverview } from "../session/toolOptimizationOverview.js";
@@ -19,8 +20,8 @@ export interface DesktopApplicationImportsChanged {
  * 通道名统一用 `desktop:<领域>:<动作>` 的形式，便于排查。
  */
 import type { DesktopThreadBriefRequest, DesktopThreadBriefSnapshot } from "./threadBriefProtocol.js";
-import type { AppearancePreference, AppearanceSnapshot } from "../appearance/types.js";
 import type { planStatus } from "../extensions/plan.js";
+import type { PluginConfiguration, PluginSettings } from "../extensions/pluginSettings.js";
 import type { TodoItem } from "../session/todoStore.js";
 import type { AcpConfig } from "../config/schema.js";
 import type { AcpSessionInfo } from "../acp/client.js";
@@ -171,6 +172,11 @@ export const desktopIpc = {
   browserInspect: "desktop:browser:inspect",
   browserCapture: "desktop:browser:capture",
   browserRelayStatus: "desktop:browser:relay-status",
+  remoteAccessStatus: "desktop:remote:status",
+  remoteAccessStart: "desktop:remote:start",
+  remoteAccessStop: "desktop:remote:stop",
+  remoteAccessRegenerate: "desktop:remote:regenerate",
+  remoteAccessChanged: "desktop:remote:changed",
   browserRelayInstall: "desktop:browser:relay-install",
   browserRelayOpenChrome: "desktop:browser:relay-open-chrome",
   browserRelaySetup: "desktop:browser:relay-setup",
@@ -274,10 +280,8 @@ export const desktopIpc = {
   setFilePanelWidth: "desktop:ui:file-panel-width",
   setThemePreference: "desktop:ui:theme",
   setFontPreference: "desktop:ui:font",
-  setAppearancePreference: "desktop:ui:appearance",
   previewAppearance: "desktop:ui:appearance-preview",
   appearanceChanged: "desktop:ui:appearance-changed",
-  windowAction: "desktop:window:action",
   quickChatToggle: "desktop:quickchat:toggle",
   quickChatHide: "desktop:quickchat:hide",
   quickChatClose: "desktop:quickchat:close",
@@ -315,6 +319,7 @@ export const desktopIpc = {
   pluginRegistryRefresh: "desktop:plugin:registry-refresh",
   pluginInstall: "desktop:plugin:install",
   pluginSetEnabled: "desktop:plugin:set-enabled",
+  pluginSetSettings: "desktop:plugin:set-settings",
   pluginUninstall: "desktop:plugin:uninstall",
   pluginOpenDirectory: "desktop:plugin:open-directory",
   mcpSnapshot: "desktop:mcp:snapshot",
@@ -333,8 +338,10 @@ export const desktopIpc = {
 } as const;
 
 export type DesktopThemePreference = "system" | "light" | "dark";
-export type DesktopAppearancePreference = AppearancePreference;
-export type DesktopAppearanceSnapshot = AppearanceSnapshot;
+export interface DesktopAppearanceSnapshot {
+  themePreference: DesktopThemePreference;
+  fontPreference: DesktopFontPreference;
+}
 export type DesktopSystemSettingsPane = "screen-recording" | "accessibility";
 export type DesktopActiveView = "chat" | "runtime";
 
@@ -669,7 +676,6 @@ export interface DesktopBootstrap {
   filePanelWidth: number;
   themePreference: DesktopThemePreference;
   fontPreference: DesktopFontPreference;
-  appearancePreference?: DesktopAppearancePreference;
 }
 
 /** 发送提示或排队运行中消息后的回执。 */
@@ -817,6 +823,16 @@ export interface DesktopPluginSummary {
   description?: string;
   enabled?: boolean;
   managed?: boolean;
+  /** 受管清单里的插件 id；仅受管 Plugin 有值，用于启停、卸载与设置 IPC。 */
+  pluginId?: string;
+  entry?: string;
+  source?: { repository: string; path: string; branch: string };
+  installedAt?: string;
+  author?: string;
+  homepage?: string;
+  configuration?: PluginConfiguration;
+  /** 清单里已存的设置值，不包含声明默认值。 */
+  settings?: PluginSettings;
   error?: string;
 }
 
@@ -1048,6 +1064,7 @@ export interface DesktopModelConnection {
   providerAlias: string;
   providerType: ModelProvider;
   enabled?: boolean;
+  supportsEmbedding?: boolean;
   /** 自定义服务商的用户命名；内置目录服务商缺省，列表标签回退到端点主机名。 */
   displayName?: string;
   /** 用户为该服务商挑的品牌图标 id；没覆盖过则缺省，渲染层按目录回退。 */
@@ -1341,6 +1358,7 @@ export interface DesktopSubagentSettings {
 export interface DesktopSettingsModelsSnapshot {
   configured: ModelChoice[];
   connections: DesktopModelConnection[];
+  selectedModel?: ModelRuntimeInfo;
   /** 已验证的本地目录缓存；设置页首屏直接使用，不因打开详情自动访问服务商网络。 */
   catalogs?: Record<string, ModelCatalogEntry[]>;
   /** 脱敏的独立 embedding 目录；不含 provider headers 或凭据。 */
@@ -1392,7 +1410,6 @@ export interface DesktopSettingsSnapshot {
   configRevision: string;
   themePreference: DesktopThemePreference;
   fontPreference: DesktopFontPreference;
-  appearancePreference?: DesktopAppearancePreference;
   activity: ActivitySettings;
   identity: DesktopIdentitySettings;
   memory: DesktopMemorySettings;
@@ -1465,7 +1482,6 @@ export interface DesktopSettingsSaveInput {
   expectedConfigRevision: string;
   themePreference?: DesktopThemePreference;
   fontPreference?: DesktopFontPreference;
-  appearancePreference?: DesktopAppearancePreference;
   /** 外发策略不属于 renderer 可写入的输入；主进程会保留当前策略并仅更新采集参数。 */
   activity?: ActivitySettingsInput;
   identity?: DesktopIdentitySettings;
@@ -1505,7 +1521,7 @@ export interface DesktopSettingsModelSelectionReceipt {
 }
 
 export type DesktopSettingsPreferencesReceipt = Pick<DesktopSettingsSnapshot,
-  "projectId" | "hasRunningTasks" | "preferenceRevision" | "themePreference" | "fontPreference" | "appearancePreference" | "pendingRecovery">;
+  "projectId" | "hasRunningTasks" | "preferenceRevision" | "themePreference" | "fontPreference" | "pendingRecovery">;
 
 /** 非模型配置回执保留真实版本，不重新投影无关的 Provider 目录。 */
 export type DesktopSettingsNonModelReceipt = Omit<DesktopSettingsSnapshot, "models">;
@@ -1735,6 +1751,11 @@ export interface DesktopToolOptimizationStats extends ToolOptimizationOverview {
 }
 
 export interface DesktopApi {
+  remoteAccessStatus(): Promise<RemoteAccessStatus>;
+  remoteAccessStart(input: RemoteAccessInput): Promise<RemoteAccessStatus>;
+  remoteAccessStop(): Promise<RemoteAccessStatus>;
+  remoteAccessRegenerate(): Promise<RemoteAccessStatus>;
+  onRemoteAccessChanged(listener: () => void): () => void;
   rtkStatus(): Promise<{ path?: string; version?: string; reason?: string }>;
   toolOptimizationDetail(projectId: string, sessionId: string, toolCallId: string): Promise<{ events: SessionEvent[] }>;
   toolOptimizationStats(days: 1 | 7 | 30 | "all", projectId?: string, sessionId?: string, refresh?: boolean): Promise<DesktopToolOptimizationStats>;
@@ -1878,7 +1899,7 @@ export interface DesktopApi {
   saveIdentityDocument(projectId: string, document: DesktopIdentityDocumentKind, content: string, expectedRevision: number, reason?: string): Promise<DesktopIdentityOverview>;
   settingsSnapshot(projectId: string, sessionId?: string): Promise<DesktopSettingsSnapshot>;
   saveSettings(projectId: string, input: DesktopSettingsSaveInput): Promise<DesktopSettingsSaveResult>;
-  activitySnapshot(): Promise<ActivityRuntimeSnapshot>;
+  activitySnapshot(forceRefresh?: boolean): Promise<ActivityRuntimeSnapshot>;
   /** 最近的脱敏摘要；原文对照通过详情接口按需读取。 */
   maskingOverview(projectId: string): Promise<DesktopMaskingOverview>;
   maskingDetail(projectId: string, id: string): Promise<DesktopMaskRecord | undefined>;
@@ -1936,10 +1957,8 @@ export interface DesktopApi {
   setFilePanelWidth(width: number): Promise<void>;
   setThemePreference(theme: DesktopThemePreference): Promise<DesktopThemePreference>;
   setFontPreference(font: DesktopFontPreference): Promise<DesktopFontPreference>;
-  setAppearancePreference(preference: DesktopAppearancePreference): Promise<DesktopAppearancePreference>;
   previewAppearance(snapshot: DesktopAppearanceSnapshot | null): Promise<void>;
   onAppearanceChanged(callback: (snapshot: DesktopAppearanceSnapshot) => void): () => void;
-  windowAction(action: "minimize" | "maximize" | "close"): Promise<void>;
   /** QuickChat 悬浮窗的显隐切换；由设置页或调试入口触发，正常交互走全局快捷键。 */
   toggleQuickChat(): Promise<void>;
   hideQuickChat(): Promise<void>;
@@ -1978,6 +1997,7 @@ export interface DesktopApi {
   refreshPluginRegistry(projectId: string): Promise<DesktopPluginRegistrySnapshot>;
   installPlugin(projectId: string, pluginId: string, scope?: "project" | "global"): Promise<DesktopPluginSummary>;
   setPluginEnabled(projectId: string, pluginId: string, enabled: boolean, scope?: "project" | "global"): Promise<DesktopPluginSummary>;
+  setPluginSettings(projectId: string, pluginId: string, settings: PluginSettings, scope?: "project" | "global"): Promise<DesktopPluginSummary>;
   uninstallPlugin(projectId: string, pluginId: string, scope?: "project" | "global"): Promise<void>;
   openPluginDirectory(projectId: string, scope?: "project" | "global"): Promise<void>;
   mcpSnapshot(projectId?: string): Promise<DesktopMcpSnapshot>;

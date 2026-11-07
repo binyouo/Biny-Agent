@@ -2,8 +2,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
+import type { TimelineTool } from "../src/desktop/renderer/src/sessionTimeline.js";
+import type { SkillActivity } from "../src/desktop/renderer/src/skillActivity.js";
 
-test("侧栏开合与宽度变化不重复遍历文件内容，窗口缩放仍约束右栏", async (context) => {
+test("侧栏与工具栏点击复用未变化的文件和工具内容，窗口缩放仍约束右栏", async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
   const imports = registerHooks({ load(url, context, next) {
     if (url.includes("/@xterm/xterm/")) return { format: "module", source: "export class Terminal {}", shortCircuit: true };
@@ -36,8 +38,14 @@ test("侧栏开合与宽度变化不重复遍历文件内容，窗口缩放仍�
   let previewMetadataReads = 0;
   let directoryRevision = 0;
   let fileRevision = 0;
+  let toolNameReads = 0;
+  const toolArgumentReads = Array<number>(60).fill(0);
+  const tools: TimelineTool[] = Array.from({ length: 60 }, (_, index) => ({
+    id: `read-${index}`, get tool() { toolNameReads++; return "Read"; }, status: "success", updates: [],
+    args: { get path() { toolArgumentReads[index]++; return `read-${index}.ts`; } }
+  }));
   const snapshot = () => ({ fileNameReads, previewMetadataReads });
-  const options = { changes: [], tools: [], filePanelResizing: false, filePanelWidth: 600, sidebarFlowWidth: 260,
+  const options = { changes: [], tools, skills: [] as SkillActivity[], filePanelResizing: false, filePanelWidth: 600, sidebarFlowWidth: 260,
     projectId: "p", source: "p:s", onFilePanelResizeEnd() {}, onFilePanelResizeStart() {}, onFilePanelWidthChange() {},
     onListDirectory: async () => ({ path: ".", entries: Array.from({ length: 400 }, (_, index) => {
       const name = `file-${index}${directoryRevision ? "-updated" : ""}.ts`;
@@ -50,7 +58,7 @@ test("侧栏开合与宽度变化不重复遍历文件内容，窗口缩放仍�
     React.useLayoutEffect(() => { commits++; });
     return React.createElement("div", { className: "biny-app-shell" },
       React.createElement("div", { className: "biny-sidebar-block" }),
-      React.createElement(React.Profiler, { id: "files", onRender: () => { fileCommits++; } }, inspector.dock));
+      React.createElement(React.Profiler, { id: "files", onRender: () => { fileCommits++; } }, inspector.dock), inspector.rail);
   }
   const root = createRoot(document.getElementById("root")!);
   const render = async (): Promise<void> => { await React.act(() => root.render(React.createElement(Harness))); };
@@ -137,6 +145,35 @@ test("侧栏开合与宽度变化不重复遍历文件内容，窗口缩放仍�
     assert.ok(previewMetadataReads > readsAfterToggle.previewMetadataReads, "刷新仍需显示新的文件内容");
     assert.equal(document.querySelector('[role="treeitem"][aria-selected="true"]')?.textContent?.includes("file-1-updated.ts"), true);
     assert.match(document.querySelector(".file-preview-code")!.textContent!, /revision = 1/u);
+
+    await React.act(() => document.querySelector<HTMLButtonElement>('.biny-inspector-rail [aria-label="工具"]')!.click());
+    assert.equal(document.querySelectorAll('.tool-run-list > [data-tool-call-id]').length, 60);
+    const firstToolCard = document.querySelector('[data-tool-call-id="read-0"]');
+    toolArgumentReads.fill(0);
+    await React.act(() => document.querySelector<HTMLButtonElement>('[aria-label="切换会话时保持工具栏展开"]')!.click());
+    await React.act(() => document.querySelector<HTMLButtonElement>('[role="tab"][aria-label="文件"]')!.click());
+    await React.act(() => document.querySelector<HTMLButtonElement>('[aria-label="收起工作区工具"]')!.click());
+    options.sidebarFlowWidth = 0;
+    await render();
+    console.log(JSON.stringify({ workload: "pin, tab switch, close and sidebar layout changes with 60 tool cards", toolArgumentReads: toolArgumentReads.reduce((sum, reads) => sum + reads, 0) }));
+    assert.equal(toolArgumentReads.reduce((sum, reads) => sum + reads, 0), 0, "无关点击与面板关闭不应重新序列化已访问工具列表的参数");
+    assert.equal(document.querySelector('[data-tool-call-id="read-0"]'), firstToolCard);
+
+    toolNameReads = 0;
+    options.skills = [{ name: "review", status: "loaded" }];
+    await render();
+    assert.equal(toolNameReads, 0, "技能状态更新不应重新遍历未变化的工具树");
+    assert.equal(document.querySelector('[data-skill-name="review"] small')?.textContent, "已加载");
+
+    options.tools = [{ ...tools[0]!, args: { path: "replacement.ts" }, status: "failed", error: "Read failed" }, ...tools.slice(1)];
+    toolArgumentReads.fill(0);
+    await render();
+    assert.deepEqual(toolArgumentReads.slice(1), Array<number>(59).fill(0), "单项工具更新不应重新序列化其余59项参数");
+    await React.act(() => document.querySelector<HTMLButtonElement>('.biny-inspector-rail [aria-label="工具"]')!.click());
+    assert.equal(document.querySelector('[data-tool-call-id="read-0"]'), firstToolCard);
+    assert.equal(firstToolCard?.querySelector('.tool-run-input')?.textContent, '{"path":"replacement.ts"}');
+    assert.equal(firstToolCard?.querySelector('.tool-execution-status')?.textContent, "失败");
+    assert.equal(firstToolCard?.querySelector('[role="alert"]')?.textContent, "Read failed");
   } finally {
     await React.act(() => root.unmount());
     assert.equal(observers.size, 0);

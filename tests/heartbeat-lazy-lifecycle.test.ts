@@ -17,6 +17,7 @@ for (const mode of ["initialization failure", "close during initialization", "un
     let pending: Promise<boolean> | undefined;
     let closing: Promise<void> | undefined;
     let attempts = 0;
+    const heartbeatSessionIds: string[] = [];
     let closedHeartbeats = 0;
     let requests = 0;
     const started = Promise.withResolvers<void>();
@@ -24,8 +25,9 @@ for (const mode of ["initialization failure", "close during initialization", "un
     const initialize = AgentSession.prototype.initialize;
     const close = AgentSession.prototype.close;
     context.mock.method(AgentSession.prototype, "initialize", async function (this: AgentSession) {
-      if (this.getSessionRecorder().sessionId !== "heartbeat") return await initialize.call(this);
+      if (!this.getSessionRecorder().sessionId.startsWith("heartbeat-")) return await initialize.call(this);
       attempts++;
+      heartbeatSessionIds.push(this.getSessionRecorder().sessionId);
       await initialize.call(this);
       started.resolve();
       if (mode === "initialization failure" && attempts === 1) throw new Error("heartbeat initialization failed");
@@ -33,7 +35,7 @@ for (const mode of ["initialization failure", "close during initialization", "un
     });
     context.mock.method(AgentSession.prototype, "close", async function (this: AgentSession) {
       await close.call(this);
-      if (this.getSessionRecorder().sessionId === "heartbeat") closedHeartbeats++;
+      if (this.getSessionRecorder().sessionId.startsWith("heartbeat-")) closedHeartbeats++;
     });
     context.mock.method(globalThis, "fetch", async () => {
       requests++;
@@ -60,6 +62,7 @@ for (const mode of ["initialization failure", "close during initialization", "un
         assert.equal(requests, 0);
         assert.equal(await runtime.heartbeat.triggerNow(), true, runtime.heartbeat.status().lastError);
         assert.equal(attempts, 2);
+        assert.notEqual(heartbeatSessionIds[0], heartbeatSessionIds[1], "retrying initialization gets a new session identity");
         assert.equal(requests, 1);
       } else if (mode === "close during initialization") {
         pending = runtime.heartbeat.triggerNow();

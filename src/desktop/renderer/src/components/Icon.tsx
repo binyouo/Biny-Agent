@@ -91,9 +91,11 @@ export type IconName =
   | "panel-right"
   | "pin"
   | "person"
+  | "phone"
   | "plug"
   | "power"
   | "puzzle"
+  | "qr"
   | "quote"
   | "pull-request"
   | "refresh"
@@ -169,17 +171,10 @@ function pathFor(name: IconName): React.JSX.Element {
     case "memory":
     case "memory-off": return (
       <>
-        <g {...common} opacity={name === "memory-off" ? 0.65 : 1}>
-          <path d="M10 3.5a2.5 2.5 0 0 0-2.5 2.6A3.5 3.5 0 0 0 4.4 12a3.5 3.5 0 0 0 2.8 5.8A2.7 2.7 0 0 0 12 19.5v-14a2 2 0 0 0-2-2Z" fill="currentColor" fillOpacity="0.08" />
-          <path d="M14 3.5a2.5 2.5 0 0 1 2.5 2.6 3.5 3.5 0 0 1 3.1 5.9 3.5 3.5 0 0 1-2.8 5.8 2.7 2.7 0 0 1-4.8 1.7v-14a2 2 0 0 1 2-2Z" fill="currentColor" fillOpacity="0.16" />
-        </g>
-        {name === "memory" ? (
-          <g color="var(--memory-icon-detail, currentColor)">
-            <path {...common} d="M7.5 9.5v1A2.5 2.5 0 0 0 10 13h2m4.5 1.5v-1A2.5 2.5 0 0 0 14 11h-2" />
-            <circle cx="7.5" cy="8.5" fill="currentColor" r="1.25" />
-            <circle cx="16.5" cy="15.5" fill="currentColor" r="1.25" />
-          </g>
-        ) : <path {...common} d="m4 4 16 16" />}
+        {/* 两瓣脑轮廓加中缝；关闭态叠加一条加粗斜线，不再用脑内填充、连接点和小圆点区分开关。 */}
+        <path {...common} d="M9.7 4.2a2.6 2.6 0 0 0-2.3 2.5 3.4 3.4 0 0 0-2.9 3.4c0 .6.15 1.1.4 1.6a3.4 3.4 0 0 0 .5 5.4 2.7 2.7 0 0 0 5.1 1.1v-14" />
+        <path {...common} d="M14.3 4.2a2.6 2.6 0 0 1 2.3 2.5 3.4 3.4 0 0 1 2.9 3.4c0 .6-.15 1.1-.4 1.6a3.4 3.4 0 0 1-.5 5.4 2.7 2.7 0 0 1-5.1 1.1v-14" />
+        {name === "memory-off" ? <path {...common} strokeWidth={2} d="m5 5 14 14" /> : null}
       </>
     );
     case "brain-spark": return <><g {...common} transform="translate(-1 3) scale(0.85)"><path d="M12 4.5C14.5 3.3 17 4.4 17.2 7C19.6 7.4 20.8 10.2 19.5 12.1C20.9 14 20 16.8 17.4 17C17 19.2 14.2 20.4 12 19.3C9.8 20.4 7 19.2 6.6 17C4 16.8 3.1 14 4.5 12.1C3.2 10.2 4.4 7.4 6.8 7C7 4.4 9.5 3.3 12 4.5ZM12 4.5V19.3M12 12c1.6 0 2.8-.9 3.2-2.4M12 12c-1.6 0-2.8-.9-3.2-2.4" /></g><path {...common} d="M18.5 2c.4 2.1 1.4 3.1 3.5 3.5-2.1.4-3.1 1.4-3.5 3.5-.4-2.1-1.4-3.1-3.5-3.5 2.1-.4 3.1-1.4 3.5-3.5Z" /></>;
@@ -256,9 +251,11 @@ function pathFor(name: IconName): React.JSX.Element {
     // 16px 小尺寸下仍清晰；置顶态用 is-active 强调色区分。
     case "pin": return <path d="M12.864 3.26a3.01 3.01 0 0 1 4.576-.378l3.678 3.678a3.01 3.01 0 0 1-.378 4.576l-4.261 3.044c-.315.225-.479.55-.479.82v2.5c0 1.407-.96 2.451-2.024 2.91-1.071.462-2.497.437-3.52-.586l-2.433-2.433-4.316 4.316a1 1 0 1 1-1.414-1.414l4.316-4.316-2.433-2.434c-1.023-1.022-1.048-2.447-.586-3.519C4.049 8.959 5.093 8 6.5 8H9c.27 0 .595-.164.82-.479z" fill="currentColor" />;
     case "person": return <><circle {...common} cx="12" cy="8" r="5" /><path {...common} d="M20 21a8 8 0 0 0-16 0" /></>;
+    case "phone": return <><rect {...common} height="20" rx="2" width="14" x="5" y="2" /><path {...common} d="M12 18h.01" /></>;
     case "plug": return <><path {...common} d="M12 22v-5" /><path {...common} d="M15 8V2" /><path {...common} d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z" /><path {...common} d="M9 8V2" /></>;
     case "power": return <><path {...common} d="M12 2v10" /><path {...common} d="M18.4 6.6a9 9 0 1 1-12.8 0" /></>;
     case "puzzle": return <path {...common} d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z" />;
+    case "qr": return <><rect {...common} height="5" rx="1" width="5" x="3" y="3" /><rect {...common} height="5" rx="1" width="5" x="16" y="3" /><rect {...common} height="5" rx="1" width="5" x="3" y="16" /><path {...common} d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1M21 12v.01M12 21v-1" /></>;
     case "quote": return <><path {...common} d="M3 11h6v7H2v-5c0-4.2 1.8-6.5 5.5-7.5M15 11h6v7h-7v-5c0-4.2 1.8-6.5 5.5-7.5" /></>;
     case "pull-request": return <><circle {...common} cx="7" cy="5" r="2" /><circle {...common} cx="7" cy="19" r="2" /><circle {...common} cx="17" cy="19" r="2" /><path {...common} d="M7 7v10M14 5h1a2 2 0 0 1 2 2v10M14 2l-3 3 3 3" /></>;
     case "refresh": return <><path {...common} d="M21 12a9 9 0 1 1-2.636-6.364L21 8" /><path {...common} d="M21 3v5h-5" /></>;
