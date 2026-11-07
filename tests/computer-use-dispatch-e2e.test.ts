@@ -23,11 +23,17 @@ import { attachDesktopComputerMcp } from "../src/computer/desktopMcp.js";
 import { LocalComputerMcpPolicy } from "../src/computer/mcpPolicy.js";
 import { ComputerAuditStore } from "../src/computer/auditStore.js";
 import { ToolOutcomeUnknownError } from "../src/tools/types.js";
+import { CapabilityStore } from "../src/runtime/CapabilityStore.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
+import { readSessionEvents } from "../src/session/events.js";
+import { replaySessionEvents } from "../src/session/replay.js";
+import { resolveContinuationPlan } from "../src/session/recoveryPlan.js";
 import { createComputerUseMcpServer } from "../src/computer/mcpServer.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-// 只替换系统窗口边界；工具、Desktop 控制面、审批、driver 和进程通信均用真实装配。
+// 验证工具、Desktop、审批、driver 与进程协议装配；Electron 和原生 helper 是外部替身，
+// 此处通过不能证明真实 macOS 的窗口选择、权限、输入投递或业务效果。
 const previewWindows: WindowFixture[] = [];
 let previewUserData = "";
 class WindowFixture extends EventEmitter {
@@ -98,6 +104,28 @@ test("受控命令行与外部 MCP 共用连续动作和等待链路，原有直
     assert.equal(result.isError, false);
     assert.equal((result.content as { type: string }[]).some(part => part.type === "image"), true);
   } finally { await client.close(); await server.close(); }
+});
+
+test("target authorization never scans application history during observation and input", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  const observed = await f.invoke("ComputerObserve", target);
+  await f.invoke("ComputerAction", { ...target, captureId: observed.capture_id, action: "click", x: 1, y: 2 });
+  const entries = await f.entries();
+  assert.equal(entries.filter(entry => entry.cmd === "list_apps").length, 0,
+    "authorization needs one live process identity, not a recent-app or window listing");
+  assert.ok(entries.filter(entry => entry.cmd === "app_identity" && entry.args.pid === target.pid).length >= 2);
+});
+
+test("launch approval accepts a known bundle with multiple running processes without choosing an observation target", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, [
+    { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
+    { pid: 43, name: "Fixture", bundleId: "test.fixture", running: true }
+  ]);
+  const launched = await f.invoke("ComputerLaunch", { bundleId: "test.fixture" });
+  assert.equal(launched.pid, 42);
+  const entries = await f.entries();
+  assert.equal(entries.filter(entry => entry.cmd === "list_apps").length, 0);
+  assert.equal(entries.filter(entry => entry.cmd === "launch_app").length, 1);
 });
 
 test("按文字匹配选区使用独立参数且不发送替换内容，原有位置选区测试无法防止误写正文", { timeout: 8_000 }, async t => {
@@ -251,7 +279,7 @@ test("仅截图观察取得新凭据且不保留旧控件，原有完整观察�
 async function fixture(t: TestContext, apps: Record<string, unknown>[] = [
   { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
   { name: "Recently Used", bundleId: "test.recent", running: false, lastUsed: "2026-10-07T00:00:00Z" }
-], options: { actionEffect?: "confirmed" | "unverified"; autoInputMethod?: "physical" | "unicode"; partialScroll?: boolean; menuKeyboard?: boolean; emptyTree?: boolean; semanticElement?: boolean; observationElement?: Record<string, unknown>; observationPid?: number; observationWindowId?: number; holdActionReply?: boolean; nativeRefusal?: boolean; rejectDelivery?: boolean; nativeError?: string; failPostObservation?: boolean; failObservationAt?: number; screenshotFailure?: "capture" | "missing-file" | "oversized"; observationWarning?: string; observationWarnings?: (string | null)[]; observationTitles?: string[]; observationRefs?: string[]; previewCursor?: { x: number; y: number; remainingMs: number }; launchWindows?: { window_id: number; onscreen?: boolean }[]; launchWindowSequence?: { window_id: number; onscreen?: boolean }[][]; windowBundleSequence?: string[]; projectId?: string } = {}) {
+], options: { actionEffect?: "confirmed" | "unverified"; readbackEffect?: "confirmed" | "unverifiable"; autoInputMethod?: "physical" | "unicode"; partialScroll?: boolean; menuKeyboard?: boolean; emptyTree?: boolean; semanticElement?: boolean; observationElement?: Record<string, unknown>; observationPid?: number; observationWindowId?: number; holdActionReply?: boolean; nativeRefusal?: boolean; rejectDelivery?: boolean; nativeError?: string; nativeInputNotDispatched?: boolean | string; failPostObservation?: boolean; failObservationAt?: number; screenshotFailure?: "capture" | "missing-file" | "oversized"; observationWarning?: string; observationWarnings?: (string | null)[]; observationTitles?: string[]; observationRefs?: string[]; previewCursor?: { x: number; y: number; remainingMs: number }; launchWindows?: { window_id: number; onscreen?: boolean }[]; launchWindowSequence?: { window_id: number; onscreen?: boolean }[][]; windowBundleSequence?: string[]; projectId?: string } = {}) {
   const firstWindow = previewWindows.length;
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-dispatch-"));
   previewUserData = directory;
@@ -294,7 +322,14 @@ const server = net.createServer(socket => {
         const bundleId = args.pid && bundleSequence ? bundleSequence[Math.min(readIndex, bundleSequence.length - 1)] : undefined;
         data = { apps: args.pid && windows ? apps.map(app => ({ ...app, bundleId: bundleId || app.bundleId, windows })) : apps };
       }
-      else if (cmd === 'app_identity') data = { bundleId: args.bundle, name: 'Fixture', running: false };
+      else if (cmd === 'app_identity') {
+        const matches = apps.filter(app => app.running && (args.pid !== undefined ? app.pid === args.pid : app.bundleId === args.bundle));
+        if (args.pid !== undefined && matches.length !== 1) {
+          socket.write(JSON.stringify({ id, ok: false, error: { message: 'computer_app_identity_unavailable' } }) + '\\n'); continue;
+        }
+        data = matches[0] ? { ...matches[0] } : { bundleId: args.bundle, name: 'Fixture', running: false };
+        if (matches.length > 1) delete data.pid;
+      }
       else if (cmd === 'launch_app') { apps = [{ pid: 42, bundleId: args.bundle, name: 'Fixture', running: true }]; data = { pid: 42, activated: false }; }
       else if (cmd === 'pip_open') data = { state: 'open', window_id: args.window_id };
       else if (cmd === 'get_app_state') {
@@ -314,16 +349,23 @@ const server = net.createServer(socket => {
         fs.writeFileSync(args.out, Buffer.from([255, 216, 255, 217]));
         data = { path: args.out, width: 100, height: 80, windowId: args.window_id || 900, cursor: ${JSON.stringify(options.previewCursor ?? null)} || undefined };
       } else if (['click', 'scroll', 'type_text', 'press_key', 'perform_secondary_action', 'set_value', 'select_text'].includes(cmd)) {
-        if (${JSON.stringify(options.rejectDelivery ?? false)} && args.delivery !== undefined) { socket.write(JSON.stringify({ id, ok: false, error: { message: 'input_delivery_unsupported: 输入始终后台投递，不接受 delivery 参数' } }) + '\\n'); continue; }
+        if (${JSON.stringify(options.rejectDelivery ?? false)} && args.delivery !== undefined) { socket.write(JSON.stringify({ id, ok: false, error: { message: 'input_delivery_unsupported: 输入始终后台投递，不接受 delivery 参数', inputNotDispatched: true } }) + '\\n'); continue; }
         if ((cmd === 'scroll' && !args.ref && (args.x === undefined || args.y === undefined)) || (args.ref && args.ref !== ref)) {
-          socket.write(JSON.stringify({ id, ok: false, error: { message: 'element_ref_not_observed' } }) + '\\n'); continue;
+          socket.write(JSON.stringify({ id, ok: false, error: { message: 'element_ref_not_observed', inputNotDispatched: true } }) + '\\n'); continue;
         }
-        if (${JSON.stringify(options.nativeRefusal ?? false)}) { socket.write(JSON.stringify({ id, ok: false, error: { code: 'ax_not_granted' } }) + '\\n'); continue; }
-        if (${JSON.stringify(options.nativeError ?? null)}) { socket.write(JSON.stringify({ id, ok: false, error: { code: ${JSON.stringify(options.nativeError ?? null)} } }) + '\\n'); continue; }
+        if (${JSON.stringify(options.nativeRefusal ?? false)}) { socket.write(JSON.stringify({ id, ok: false, error: { code: 'ax_not_granted', inputNotDispatched: true } }) + '\\n'); continue; }
+        if (${JSON.stringify(options.nativeError ?? null)}) {
+          if (${JSON.stringify(options.nativeInputNotDispatched === false)}) fs.writeFileSync(path.join(directory, 'action.json'), JSON.stringify({ cmd, args }));
+          socket.write(JSON.stringify({ id, ok: false, error: ${JSON.stringify({ code: options.nativeError, inputNotDispatched: options.nativeInputNotDispatched })} }) + '\\n'); continue;
+        }
         fs.writeFileSync(path.join(directory, 'action.json'), JSON.stringify({ cmd, args }));
         if (${JSON.stringify(options.holdActionReply ?? false)}) continue;
         data = ${JSON.stringify(options.actionEffect === "unverified" ? { clicked: "e1", route: "physical", verification_note: "sent, but could not confirm it landed" } : { clicked: "e1", route: "ax" })};
         if (cmd === 'type_text' && ${JSON.stringify(options.autoInputMethod ?? null)}) data = { typed: args.text.length, inputMethod: ${JSON.stringify(options.autoInputMethod ?? null)} };
+        if (${JSON.stringify(options.readbackEffect ?? null)}) {
+          data.effect = ${JSON.stringify(options.readbackEffect ?? null)};
+          if (data.effect === 'unverifiable') data.verification_note = 'The target attribute did not confirm the accepted write. Observe before deciding what remains.';
+        }
         if (cmd === 'press_key' && ${JSON.stringify(options.menuKeyboard ?? false)}) data = { pressed: args.key, route: 'ax', via: 'menu_ax_press' };
         if (cmd === 'scroll' && ${JSON.stringify(options.partialScroll ?? false)}) data = { scrolled: args.direction, route: 'ax-page', unit: 'pages', outcome: 'partial', completedPages: 1, warning: 'observe before continuing' };
         else if (cmd === 'scroll' && data.route === 'ax') data = { scrolled: args.direction, route: 'ax-page', unit: 'pages' };
@@ -1529,6 +1571,31 @@ for (const route of ["standalone", "desktop-mcp"] as const) test(`running app wi
   } finally { await client.close(); await server.close(); await policy.close(); }
 });
 
+for (const route of ["standalone", "desktop-mcp"] as const) for (const scenario of ["hidden", "minimized", "explicit"] as const) test(`window discovery respects availability without retargeting explicit windows: ${route}, ${scenario}`, { timeout: 12_000 }, async t => {
+  const windows = [
+    { window_id: 900, focused: true, onscreen: scenario === "minimized", minimized: scenario === "minimized" },
+    { window_id: 901, focused: false, onscreen: true, minimized: false }
+  ];
+  const selected = scenario === "explicit" ? 900 : 901;
+  const f = await fixture(t, undefined, { launchWindows: windows, observationWindowId: selected });
+  f.service.controller.setPreview(false);
+  const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => route === "desktop-mcp" ? f.endpoint : undefined);
+  const server = createComputerUseMcpServer(f.driver, policy);
+  const client = new Client({ name: "window-availability", version: "1" });
+  const [left, right] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([client.connect(left), server.connect(right)]);
+    const args: Record<string, unknown> = { pid: 42 };
+    if (scenario === "explicit") args.window_id = 900;
+    const result = await client.callTool({ name: "get_app_state", arguments: args });
+    assert.notEqual(result.isError, true, JSON.stringify(result.content));
+    const observations = (await f.entries()).filter(entry => entry.cmd === "get_app_state");
+    assert.equal(observations.length, 1);
+    assert.equal(observations[0]!.args.window_id, selected);
+    assert.equal((await f.entries()).some(entry => entry.cmd === "launch_app"), false);
+  } finally { await client.close(); await server.close(); await policy.close(); }
+});
+
 for (const route of ["standalone", "desktop-mcp"] as const) test(`window discovery rejects pid reuse by another app: ${route}`, { timeout: 12_000 }, async t => {
   const f = await fixture(t, undefined, { launchWindowSequence: [[], [{ window_id: 900 }]], windowBundleSequence: ["test.fixture", "test.other"] });
   f.service.controller.setPreview(false);
@@ -1733,7 +1800,7 @@ test("recently used apps without PID do not block observation, mirrors or extern
 });
 
 for (const scenario of [
-  { name: "running application missing PID", apps: [{ name: "Fixture", bundleId: "test.fixture", running: true }], error: /Running applications require a PID/ },
+  { name: "running application missing PID", apps: [{ name: "Fixture", bundleId: "test.fixture", running: true }], error: /computer_app_identity_unavailable/ },
   { name: "non-running application cannot supply target identity", apps: [{ ...target, name: "Fixture", bundleId: "test.fixture", running: false }], error: /computer_app_identity_unavailable/ },
   { name: "ambiguous running PID cannot select an arbitrary identity", apps: [
     { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
@@ -1756,7 +1823,7 @@ test("mixed app listings still enforce strict approval before capture or mirror 
   await assert.rejects(f.invoke("ComputerObserve", target), /computer_app_approval_required/);
   await assert.rejects(f.invoke("ComputerMirror", { operation: "open", ...target }), /computer_app_approval_required/);
   await assert.rejects(f.externalActivity(), /computer_app_approval_required/);
-  assert.equal((await f.entries()).every(entry => entry.cmd === "list_apps"), true);
+  assert.equal((await f.entries()).every(entry => entry.cmd === "app_identity"), true);
   const pending = (await f.store.load()).computer.apps;
   assert.deepEqual(pending.map(app => app.bundleId), ["test.fixture"]);
   assert.equal(pending[0]?.approvedAt, undefined);
@@ -1827,10 +1894,10 @@ test("native preview cursor reaches the current Desktop surface after an action"
   const observed = await f.invoke("ComputerObserve", target);
   await f.invoke("ComputerAction", { ...target, action: "click", x: 20, y: 40, captureId: observed.capture_id });
   const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline && !f.windows().some(window => window.paints.some(script => script.includes('point={"x":0.25,"y":0.5}')))) {
+  while (Date.now() < deadline && !f.windows().some(window => window.paints.some(script => script.includes('binyPaintCursor({"x":0.25,"y":0.5},')))) {
     await new Promise<void>(resolve => setImmediate(resolve));
   }
-  assert.ok(f.windows().some(window => window.paints.some(script => script.includes('point={"x":0.25,"y":0.5}'))));
+  assert.ok(f.windows().some(window => window.paints.some(script => script.includes('binyPaintCursor({"x":0.25,"y":0.5},'))));
   assert.ok(f.windows()[0]!.paints.some(script => script.includes('"label":"Fixture"')), "the computer source uses the authorized application name");
   const request = (await f.entries()).find(entry => entry.cmd === "shot_display")!;
   assert.equal(request.args.pid, 42); assert.equal(request.args.window_id, 900);
@@ -1898,8 +1965,179 @@ test("后台输入兼容不接受 delivery 字段的原生服务，并取得动�
   assert.equal(JSON.parse(await readFile(path.join(f.directory, "action.json"), "utf8")).cmd, "click");
 });
 
+for (const [action, code, marker, refused] of [
+  ["click", "background_window_unavailable: exact window-local delivery is required; input was not dispatched", true, true],
+  ["click", "background_window_unavailable: exact window-local delivery is required; input was not dispatched", false, false],
+  ["click", "background_window_unavailable: exact window-local delivery is required; input was not dispatched", undefined, false],
+  ["click", "background_window_unavailable: exact window-local delivery is required; input was not dispatched", "true", false],
+  ["click", "click_action_unsupported", false, false],
+  ["press_key", "keyboard_event_creation_failed", false, false],
+  ["type_text", "background_keyboard_target_not_focused", true, true],
+  ["type_text", "background_keyboard_target_not_focused", false, false]
+] as const) test(`native dispatch evidence reaches capability and recovery: ${action}, ${String(marker)}, ${code}`, { timeout: 12_000 }, async t => {
+  const f = await fixture(t, undefined, { nativeError: code, nativeInputNotDispatched: marker });
+  await ensureAgentDirs(f.directory);
+  const authority = await RuntimeEventAuthority.open(f.directory, { reconcileSessions: false });
+  const capabilities = await CapabilityStore.open(f.directory, authority);
+  const recorder = new SessionRecorder(f.directory, "fixture-session", undefined, authority.asSink());
+  recorder.setRuntimeContext({ runId: "run", turnId: "turn" });
+  const config = await f.store.load();
+  config.permission.mode = "full-access";
+  config.permission.denyPaths = [];
+  const registry = new ToolRegistry();
+  for (const tool of f.mcp.createTools()) registry.registerMcpTool(tool);
+  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: f.directory, config, recorder, toolRegistry: registry, capabilities, runId: "run", turnId: "turn" }, new PermissionManager(config.permission), () => undefined);
+  try {
+    const observed = await f.invoke("ComputerObserve", target);
+    const args: Record<string, unknown> = { ...target, captureId: observed.capture_id, action, elementToken: "e1" };
+    if (action === "type_text") args.text = "abc";
+    if (action === "press_key") args.key = "Return";
+    const tool = coordinator.createAgentTools().find(tool => tool.name === "ComputerAction")!;
+    const result = await tool.execute("input", args);
+    assert.equal(result.isError, true);
+    assert.equal((await f.entries()).filter(entry => entry.cmd === action).length, 1, JSON.stringify(result));
+    await coordinator.waitForIdle();
+    await recorder.flush();
+    const events = await readSessionEvents(recorder.filePath);
+    const recorded = events.findLast(event => event.type === "tool_result" && event.toolCallId === "input");
+    assert.ok(recorded?.type === "tool_result");
+    assert.equal(recorded.executionStatus, refused ? "failed" : "unknown");
+    assert.ok(recorded.operationId);
+    const invocation = capabilities.findHostToolInvocation({ tool: "ComputerAction", sessionId: recorder.sessionId, turnId: "turn", toolCallId: "input", operationId: recorded.operationId, request: args });
+    assert.ok(invocation);
+    assert.equal(invocation.status, refused ? "result" : "unknown");
+    const replay = replaySessionEvents(events, { sessionId: recorder.sessionId });
+    const plan = resolveContinuationPlan({ sessionId: recorder.sessionId, turnId: "turn", prompt: "input", messages: [{ role: "user", content: "input" }], completedSteps: 0, updatedAt: new Date().toISOString() }, replay, 10);
+    assert.equal(plan.action, refused ? "continue" : "block");
+    if (refused) {
+      assert.doesNotThrow(() => coordinator.assertCanContinue());
+      assert.equal(f.service.controller.status().state, "ready");
+      const observe = coordinator.createAgentTools().find(tool => tool.name === "ComputerObserve")!;
+      assert.equal((await observe.execute("observe-after-refusal", target)).isError, false);
+    } else assert.throws(() => coordinator.assertCanContinue(), /unknown side effect/u);
+    assert.equal((await f.entries()).filter(entry => entry.cmd === action).length, 1, "classification must not replay input");
+    if (marker === false) assert.equal(JSON.parse(await readFile(path.join(f.directory, "action.json"), "utf8")).cmd, action);
+    else await assert.rejects(stat(path.join(f.directory, "action.json")), { code: "ENOENT" });
+  } finally {
+    await coordinator.waitForIdle();
+    await recorder.close();
+    capabilities.close();
+    authority.close();
+  }
+});
+
+for (const route of ["standalone", "desktop-mcp"] as const) for (const refused of [true, false]) test(`external MCP preserves dispatch uncertainty through capability and recovery: ${route}, refused=${refused}`, { timeout: 12_000 }, async t => {
+  const f = await fixture(t, undefined, { nativeError: "background_window_unavailable: input was not dispatched", nativeInputNotDispatched: refused });
+  const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => route === "desktop-mcp" ? f.endpoint : undefined);
+  const server = createComputerUseMcpServer(f.driver, policy);
+  const host = new McpToolHost();
+  await host.attachLocalServer("computer-use", "native", undefined, async () => {
+    const [client, transport] = InMemoryTransport.createLinkedPair();
+    await server.connect(transport);
+    return { transport: client, close: async () => { await server.close(); } };
+  });
+  await ensureAgentDirs(f.directory);
+  const authority = await RuntimeEventAuthority.open(f.directory, { reconcileSessions: false });
+  const capabilities = await CapabilityStore.open(f.directory, authority);
+  const recorder = new SessionRecorder(f.directory, "external-dispatch-evidence", undefined, authority.asSink());
+  recorder.setRuntimeContext({ runId: "run", turnId: "turn" });
+  const config = await f.store.load(); config.permission.mode = "full-access"; config.permission.denyPaths = [];
+  const registry = new ToolRegistry();
+  for (const tool of host.createTools()) registry.registerMcpTool(tool);
+  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: f.directory, config, recorder, toolRegistry: registry, capabilities, runId: "run", turnId: "turn" }, new PermissionManager(config.permission), () => undefined);
+  try {
+    const observed = await host.callServerTool("computer-use", "get_app_state", { pid: 42, window_id: 900 }, undefined, true) as { isError?: boolean };
+    assert.notEqual(observed.isError, true);
+    const registered = host.createTools().find(tool => tool.mcpIdentity?.toolName === "click")!;
+    const action = coordinator.createAgentTools().find(tool => tool.name === registered.name)!;
+    assert.equal((await action.execute("input", { pid: 42, window_id: 900, ref: "e1" })).isError, true);
+    await coordinator.waitForIdle(); await recorder.flush();
+    const events = await readSessionEvents(recorder.filePath);
+    const recorded = events.findLast(event => event.type === "tool_result" && event.toolCallId === "input");
+    assert.ok(recorded?.type === "tool_result");
+    assert.equal(recorded.executionStatus, refused ? "failed" : "unknown");
+    const replay = replaySessionEvents(events, { sessionId: recorder.sessionId });
+    const plan = resolveContinuationPlan({ sessionId: recorder.sessionId, turnId: "turn", prompt: "input", messages: [{ role: "user", content: "input" }], completedSteps: 0, updatedAt: new Date().toISOString() }, replay, 10);
+    assert.equal(plan.action, refused ? "continue" : "block");
+    if (refused) assert.doesNotThrow(() => coordinator.assertCanContinue());
+    else assert.throws(() => coordinator.assertCanContinue(), /unknown side effect/u);
+    assert.equal((await f.entries()).filter(entry => entry.cmd === "click").length, 1);
+    if (refused) await assert.rejects(stat(path.join(f.directory, "action.json")), { code: "ENOENT" });
+    else assert.equal(JSON.parse(await readFile(path.join(f.directory, "action.json"), "utf8")).cmd, "click");
+  } finally {
+    await coordinator.waitForIdle(); await recorder.close(); capabilities.close(); authority.close();
+    await host.close();
+  }
+});
+
+for (const refused of [true, false]) test(`controlled CLI preserves native dispatch evidence: refused=${refused}`, { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { nativeError: "background_window_unavailable: input was not dispatched", nativeInputNotDispatched: refused });
+  const endpointPath = computerDesktopEndpoint();
+  await mkdir(path.dirname(endpointPath), { recursive: true });
+  await writeFile(endpointPath, JSON.stringify(f.endpoint), { mode: 0o600 });
+  t.after(() => rm(endpointPath, { force: true }));
+  const output: string[] = [];
+  t.mock.method(console, "log", (value: string) => output.push(value));
+  const run = async (method: string, args: Record<string, unknown>) => {
+    const program = new Command().exitOverride(); registerComputerCommands(program);
+    await program.parseAsync(["node", "biny", "computer", method, JSON.stringify(args), "--session", "dispatch-evidence", "--json"]);
+  };
+  await run("observe", target);
+  const captureId = JSON.parse(output.at(-1)!).data.capture_id;
+  await assert.rejects(run("action", { ...target, captureId, action: "click", elementToken: "e1" }), (error: unknown) => error instanceof Error && (error instanceof ToolOutcomeUnknownError) !== refused);
+  assert.equal(f.service.controller.status().state, refused ? "ready" : "unknown");
+  if (refused) {
+    assert.equal(JSON.parse(output.at(-1)!).data.status, "refused");
+    await run("observe", target);
+    assert.equal(JSON.parse(output.at(-1)!).images.length, 1);
+  }
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "click").length, 1);
+});
+
+test("native requests rejected before socket dispatch release their budget and remain refused", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  await f.driver.observeRaw({ pid: 42, window_id: 900 });
+  for (let index = 0; index < 40; index++) {
+    const result = await f.driver.actRaw("click", { ref: "e1", value: 1n }, 42);
+    assert.equal(result.data.effect, "refused");
+    assert.match(String(result.errorCode), /BigInt/u);
+  }
+  const cancelled = new AbortController(); cancelled.abort();
+  const result = await f.driver.actRaw("click", { ref: "e1" }, 42, cancelled.signal);
+  assert.equal(result.data.effect, "refused");
+  const listing = await f.driver.list("budget-after-failures", 42);
+  assert.equal(Array.isArray(listing.data.apps), true);
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "click").length, 0);
+});
+
+test("a missing native helper refuses input before starting an external request", { timeout: 8_000 }, async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-missing-helper-"));
+  const driver = new NativeProcessDriver(() => undefined, { binaryPath: path.join(directory, "missing-native"), socketDir: directory });
+  t.after(async () => { await driver.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const result = await driver.actRaw("click", { x: 1, y: 2 }, 42);
+  assert.equal(result.data.effect, "refused");
+  assert.match(String(result.errorCode), /ENOENT|driver_sdk_missing_or_crashed/u);
+});
+
+for (const action of ["set_value", "select_text", "type_text"] as const) for (const evidence of [undefined, "unverifiable", "confirmed"] as const) test(`AX attribute writes require readback evidence: ${action}, ${String(evidence)}`, { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { readbackEffect: evidence });
+  const observed = await f.invoke("ComputerObserve", target);
+  const args: Record<string, unknown> = { ...target, captureId: observed.capture_id, elementToken: "e1", action };
+  if (action === "set_value") args.value = "desired";
+  if (action === "select_text") { args.location = 2; args.length = 3; }
+  if (action === "type_text") { args.text = "desired"; args.inputMethod = "ax"; }
+  const reply = await f.invoke("ComputerAction", args);
+  assert.equal(reply.status, evidence === "confirmed" ? "completed" : "unverified");
+  assert.equal(reply.doNotRepeat, true);
+  assert.equal(reply.verificationRequired, true);
+  assert.equal(reply.imageReturned, true);
+  assert.equal(f.service.controller.status().state, "ready");
+  assert.equal((await f.entries()).filter(entry => entry.cmd === action).length, 1, "an accepted but unverified write cannot be replayed");
+  assert.ok((await f.invoke("ComputerObserve", target)).capture_id);
+});
+
 for (const [action, code] of [["click", "input_delivery_unsupported"], ["click", "click_action_unsupported"], ["click", "click_action_unavailable"], ["perform_secondary_action", "secondary_action_unsupported"], ["set_value", "element_value_unsupported"], ["select_text", "selection_unsupported"], ["type_text", "text_input_ax_unsupported"], ["type_text", "text_input_target_not_focused"], ["press_key", "background_keyboard_target_not_focused"], ["press_key", "menu_shortcut_unsupported"], ["press_key", "keyboard_event_creation_failed"], ["scroll", "scroll_event_creation_failed"], ["scroll", "scroll_target_unavailable"], ["scroll", "element_ref_not_observed"]] as const) test(`明确不支持的原生动作报告未执行: ${code}`, { timeout: 8_000 }, async t => {
-  const f = await fixture(t, undefined, { nativeError: code });
+  const f = await fixture(t, undefined, { nativeError: code, nativeInputNotDispatched: true });
   const observed = await f.invoke("ComputerObserve", target);
   const result = await f.invoke("ComputerAction", { ...target, action, elementToken: "e1", captureId: observed.capture_id,
     secondaryAction: action === "perform_secondary_action" ? "AXPress" : undefined, value: action === "set_value" ? "abc" : undefined,
@@ -1936,7 +2174,7 @@ for (const route of ["builtin", "standalone", "desktop-mcp"] as const) test(`aut
 });
 
 for (const route of ["standalone", "desktop-mcp"] as const) test(`unfocused automatic text fallback is a pre-dispatch refusal: ${route}`, { timeout: 12_000 }, async t => {
-  const f = await fixture(t, undefined, { nativeError: "text_input_target_not_focused" });
+  const f = await fixture(t, undefined, { nativeError: "text_input_target_not_focused", nativeInputNotDispatched: true });
   const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => route === "desktop-mcp" ? f.endpoint : undefined);
   const server = createComputerUseMcpServer(f.driver, policy);
   const client = new Client({ name: "auto-text-focus-refusal", version: "1" });
@@ -1956,7 +2194,7 @@ for (const route of ["standalone", "desktop-mcp"] as const) test(`unfocused auto
 });
 
 for (const route of ["standalone", "desktop-mcp"] as const) for (const code of ["scroll_target_unavailable", "element_ref_not_observed"] as const) test(`scroll target rejection stays pre-dispatch: ${route}, ${code}`, { timeout: 12_000 }, async t => {
-  const f = await fixture(t, undefined, { nativeError: code });
+  const f = await fixture(t, undefined, { nativeError: code, nativeInputNotDispatched: true });
   const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => route === "desktop-mcp" ? f.endpoint : undefined);
   const server = createComputerUseMcpServer(f.driver, policy);
   const client = new Client({ name: "scroll-target-refusal", version: "1" });

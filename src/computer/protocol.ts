@@ -132,7 +132,11 @@ export interface ComputerDiagnostics {
   audit: ComputerAuditEntry[]; error?: string;
   actionLimits?: ComputerActionLimit[];
 }
-export interface ComputerPreview { image: ComputerImage; target: WindowTarget; capturedAt: number; cursor?: { x: number; y: number; expiresAt: number } }
+export interface ComputerPreview { image: ComputerImage; target: WindowTarget; capturedAt: number; cursor?: {
+  x: number; y: number; expiresAt: number;
+  eventId?: number; action?: "click" | "drag" | "type" | "scroll"; symbol?: string;
+  image?: ComputerImage; hotspot?: { x: number; y: number };
+} }
 export type ComputerControl = "pause" | "resume" | "takeover" | "stop";
 export interface ComputerDesktopApi {
   onNavigate?(listener: (target: { sessionId?: string; projectId?: string; revealBrowser?: boolean }) => void): () => void;
