@@ -119,16 +119,20 @@ function toolModelAliases(config: AgentConfig): string[] {
     const modelIndex = Object.hasOwn(toolModelPreferences, type) ? toolModelPreferences[type]!.indexOf(model) : -1;
     return [modelIndex < 0 ? 1 : 0, providerIndex < 0 ? providerOrder.length : providerIndex, modelIndex < 0 ? Number.MAX_SAFE_INTEGER : modelIndex];
   };
-  // 已配置 alias 排在动态探测之后，同一 provider/model 对去重；配置顺序保持稳定。
+  // 已配置 alias 排在动态探测之后，同一 provider/model 对去重。
   const candidates = Object.keys(config.models).flatMap((alias) => {
     const model = registry.resolve(alias);
     return model && config.providers[model.providerAlias]?.type !== "acp" && registry.isAvailable(model) ? [model] : [];
   });
   const configured = candidates.filter((candidate) => !dynamicSet.has(`${candidate.providerAlias}/${candidate.model.model}`));
+  const defaultAlias = registry.resolve(config.defaultModel)?.alias;
   configured.sort((left, right) => {
     const a = priority(left.providerAlias, left.model.model);
     const b = priority(right.providerAlias, right.model.model);
-    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+    // 没有辅助型号偏好时，当前默认模型优先于遗留配置；显式工具选择在上方已返回。
+    return a[0] - b[0]
+      || (a[0] === 1 ? Number(right.alias === defaultAlias) - Number(left.alias === defaultAlias) : 0)
+      || a[1] - b[1] || a[2] - b[2];
   });
   return [...dynamic, ...configured.map((candidate) => candidate.alias)];
 }

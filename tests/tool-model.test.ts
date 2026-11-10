@@ -18,27 +18,27 @@ const config = configSchema.parse({
   }
 });
 
-assert.equal(resolveToolModelAlias(config), "cheap", "无偏好型号时保持可用模型的配置顺序");
-assert.deepEqual(resolveToolModelCandidates(config).map((candidate) => candidate.model.modelId), ["cheap-test", "chat-test", "unknown-test"], "自动模式保留有序的所有可用候选");
+assert.equal(resolveToolModelAlias(config), "chat", "无偏好型号时优先当前默认模型，不让旧配置顺序抢占");
+assert.deepEqual(resolveToolModelCandidates(config).map((candidate) => candidate.model.modelId), ["chat-test", "cheap-test", "unknown-test"], "自动模式保留有序的所有可用候选");
 assert.deepEqual(resolveToolModelCandidates({ ...config, toolModel: "chat" }).map((candidate) => candidate.model.modelId), ["chat-test"], "显式选择只保留指定候选");
 assert.deepEqual(resolveToolModelCandidates({ ...config, toolModel: "unavailable" }), []);
 assert.deepEqual(resolveToolModelCandidates({ ...config, toolModel: "missing-model" }), []);
-assert.equal(resolveToolModel(config)?.modelId, "cheap-test");
-assert.equal(resolveToolModelAlias({ ...config, defaultModel: "unknown" }), "cheap", "聊天模型切换不影响后台选择");
+assert.equal(resolveToolModel(config)?.modelId, "chat-test");
+assert.equal(resolveToolModelAlias({ ...config, defaultModel: "unknown" }), "unknown", "无预设辅助型号时自动选择跟随当前默认模型");
 assert.equal(resolveToolModelAlias({ ...config, toolModel: "chat" }), "chat", "显式选择优先");
 assert.equal(resolveToolModelAlias({ ...config, toolModel: "test/chat-test" }), "chat");
 assert.equal(resolveToolModel({ ...config, toolModel: "missing-model" }), undefined, "未知配置不能静默改用其他模型");
 assert.equal(resolveToolModel({ ...config, toolModel: "unavailable" }), undefined, "缺失凭据时不切换模型");
 assert.equal(resolveToolModelAlias({ ...config, models: { unavailable: config.models.unavailable! } }), undefined);
 const unpriced = { ...config, models: { unknown: config.models.unknown!, chat: { ...config.models.chat!, pricing: undefined } } };
-assert.equal(resolveToolModelAlias(unpriced), "unknown");
+assert.equal(resolveToolModelAlias(unpriced), "chat");
 assert.equal(resolveToolModelAlias({ ...unpriced, defaultModel: "unknown" }), "unknown", "无价格时按稳定配置顺序选择");
 assert.equal(configSchema.parse({ ...config, toolModel: "cheap" }).toolModel, "cheap");
 assert.equal(configSchema.safeParse({ ...config, toolModel: " " }).success, false);
 const removed = configSchema.parse({ ...config, activity: { ...config.activity, analysisModel: "chat" } });
 assert.equal("analysisModel" in removed.activity, false, "废弃的活动专用模型不再参与配置或选择");
-assert.equal(resolveToolModelAlias(removed), "cheap");
-assert.equal(resolveMemoryModelAlias(config), "cheap", "记忆留空继承自动工具模型，不跟随聊天模型");
+assert.equal(resolveToolModelAlias(removed), "chat");
+assert.equal(resolveMemoryModelAlias(config), "chat", "记忆留空继承自动工具模型");
 assert.equal(resolveMemoryModelAlias({ ...config, toolModel: "unknown" }), "unknown");
 const dedicatedMemory = { ...config, context: { ...config.context, memory: { ...config.context.memory, memoryModel: "chat" } } };
 assert.equal(resolveMemoryModelAlias(dedicatedMemory), "chat");
@@ -217,3 +217,12 @@ const officialAnthropicPaths = configSchema.parse({
 const officialAnthropicDomains = resolveToolModelCandidates(officialAnthropicPaths).map((candidate) => candidate.failureDomain);
 assert.equal(officialAnthropicDomains[0], officialAnthropicDomains[3], "SDK 将官方根端点映射到 v1 后是同一连接");
 console.log("tool model tests passed");
+
+const legacyFirst = configSchema.parse({ ...config, models: {
+  obsolete: { provider: "test", model: "workbuddy-ai/deepseek-v4.1-flash" },
+  chat: { provider: "test", model: "auto/deepseek-v4.1-flash" }
+} });
+assert.equal(resolveToolModelAlias(legacyFirst), "chat");
+assert.equal(resolveToolModelAlias({ ...legacyFirst, defaultModel: "test/auto/deepseek-v4.1-flash" }), "chat", "动态默认引用解析为同一个已配置别名");
+assert.equal(resolveToolModelAlias({ ...legacyFirst, toolModel: "obsolete" }), "obsolete", "显式选择仍保留用户指定型号");
+assert.equal(resolveToolModelAlias({ ...legacyFirst, defaultModel: "missing" }), "obsolete", "默认型号无效时仍使用可用配置");

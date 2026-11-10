@@ -38,7 +38,7 @@ async function testAutomaticToolModelFallback(hasHealthyCandidate: boolean): Pro
       }
       return;
     }
-    if (body.model === "exhausted-aux") {
+    if (body.model === "exhausted-aux" || body.model === "chat-model") {
       auxiliaryRequests.push(String(body.model));
       response.writeHead(402, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { code: "insufficient_balance", message: "Insufficient Balance" } }));
@@ -88,7 +88,7 @@ async function testAutomaticToolModelFallback(hasHealthyCandidate: boolean): Pro
       emotionAnalysis: false
     });
     assert.equal(outcome.status, hasHealthyCandidate ? "completed" : "blocked", JSON.stringify(outcome));
-    assert.deepEqual(auxiliaryRequests, hasHealthyCandidate ? ["exhausted-aux", "healthy-aux"] : ["exhausted-aux"]);
+    assert.deepEqual(auxiliaryRequests, hasHealthyCandidate ? ["chat-model", "healthy-aux"] : ["chat-model"]);
     assert.equal(mainRequests.length, hasHealthyCandidate ? 3 : 1, "candidate exhaustion must stop before another main-model request");
     await runtime.close();
     runtime = undefined;
@@ -98,7 +98,7 @@ async function testAutomaticToolModelFallback(hasHealthyCandidate: boolean): Pro
     const searchResult = searchResults[0];
     assert.ok(searchResult && searchResult.type === "tool_result");
     const result = searchResult.result as ToolSearchResult;
-    const exhaustedAttempt = { provider: "openai-compatible", providerAlias: "exhausted", modelId: "exhausted-aux", status: "failed" };
+    const exhaustedAttempt = { provider: "openai-compatible", providerAlias: "exhausted", modelId: "chat-model", status: "failed" };
     const healthyModel = { provider: "openai-compatible", providerAlias: "healthy", modelId: "healthy-aux" };
     assert.deepEqual(result.modelAttempts, hasHealthyCandidate ? [exhaustedAttempt, { ...healthyModel, status: "completed" }] : [exhaustedAttempt], "candidate attempts must remain durable without replaying discovery");
     assert.deepEqual(result.model, hasHealthyCandidate ? healthyModel : undefined, "persisted discovery must identify the model that actually succeeded");
