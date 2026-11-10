@@ -43,7 +43,7 @@ import { deleteSessionArtifacts } from "../../../session/cleanup.js";
 import { rebaseForkedSessionEvents } from "../../../session/fork.js";
 import { createSessionId, type SessionTurnStatus } from "../../../session/recorder.js";
 import { RuntimeEventAuthority, type RuntimeRunRecord } from "../../../runtime/RuntimeAuthority.js";
-import { createSessionFile, ensureAgentDirs } from "../../../session/store.js";
+import { createSessionFile, ensureAgentDirs, isHeartbeatSessionId } from "../../../session/store.js";
 import { TurnStore } from "../../../session/turnStore.js";
 import { replaySessionEvents } from "../../../session/replay.js";
 import { pausedTurnAvailable, resolveContinuationPlan } from "../../../session/recoveryPlan.js";
@@ -547,6 +547,7 @@ export class DesktopProjectService {
     // 每个并行 runtime 绑定的草稿/新会话都可能还没进 catalog，逐个补合成条目。
     for (const snapshot of runtimes) {
       const runtimeInfo = snapshot.info;
+      if (isHeartbeatSessionId(runtimeInfo.sessionId)) continue;
       const runtimeEvents = liveEvents.get(runtimeInfo.sessionId);
       if (!runtimeEvents?.some((event) => event.type === "message.user") || sessions.some((session) => session.id === runtimeInfo.sessionId)) continue;
       const runtimeLatestRun = latestRunBySession.get(runtimeInfo.sessionId);

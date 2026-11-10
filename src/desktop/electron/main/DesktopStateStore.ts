@@ -6,6 +6,7 @@
  * 起不来。写入串行化，避免高频改动（拖动侧栏等）互相覆盖。
  */
 import { promises as fs } from "node:fs";
+import { isHeartbeatSessionId } from "../../../session/store.js";
 import path from "node:path";
 import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH } from "../../sidebarSizing.js";
 import { clampStoredFilePanelWidth, DEFAULT_FILE_PANEL_WIDTH } from "../../filePanelSizing.js";
@@ -217,7 +218,8 @@ export class DesktopStateStore {
   }
 
   selectedSessionId(projectId: string): string | undefined {
-    return this.state.selectedSessionIds[projectId];
+    const id = this.state.selectedSessionIds[projectId];
+    return id && !isHeartbeatSessionId(id) ? id : undefined;
   }
 
   async setSelectedSession(projectId: string, sessionId: string | undefined): Promise<void> {

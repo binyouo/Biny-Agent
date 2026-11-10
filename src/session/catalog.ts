@@ -275,7 +275,7 @@ export async function deleteSessionCatalogRecord(workspaceRoot: string, sessionI
  * catalog 缺失或损坏时只丢 lineage，不影响历史列表和恢复。
  */
 export async function listSessionCatalog(workspaceRoot: string): Promise<SessionCatalogItem[]> {
-  const summaries = await listSessionSummaries(workspaceRoot);
+  const summaries = await listSessionSummaries(workspaceRoot, false);
   if (!summaries.length) return [];
   const directory = await readCatalogDirectory(workspaceRoot);
   const items = new Array<SessionCatalogItem>(summaries.length);

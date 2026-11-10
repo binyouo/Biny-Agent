@@ -21,6 +21,7 @@ let runtime: CommandRuntime | undefined;
 let failure = true;
 let failToolOnly = false;
 let written = false;
+let toolCalls = 0;
 let quietHeartbeat = true;
 const prompts: string[] = [];
 const models: string[] = [];
@@ -39,7 +40,7 @@ const provider = createServer((req, res) => { void (async () => {
     content: quietHeartbeat
       ? "HEARTBEAT_OK\n<biny_notification>HEARTBEAT_OK</biny_notification>"
       : "需要主人决定是否继续。\n<biny_notification>有一项任务等待主人决定</biny_notification>"
-  } : { tool_calls: [{ index: 0, id: "write-note", type: "function", function: { name: "Write", arguments: JSON.stringify({ path: "note.md", content: "已完成本地检查。" }) } }] };
+  } : { tool_calls: [{ index: 0, id: `write-note-${++toolCalls}`, type: "function", function: { name: "Write", arguments: JSON.stringify({ path: "note.md", content: "已完成本地检查。" }) } }] };
   const finish = auxiliary || written ? "stop" : "tool_calls";
   if (!auxiliary) written = true;
   res.writeHead(200, { "content-type": "text/event-stream" });
@@ -158,6 +159,22 @@ try {
   unsubscribe();
   await interactive.close();
   runtime = undefined;
+  await writeFile(path.join(process.env.BINY_AGENT_DIR!, "HEARTBEAT.md"), "Check quietly.");
+  const beforeRestart = await readSessionEvents(heartbeatFile);
+  config.toolModel = undefined;
+  config.models = { obsolete: { provider: "test", model: "workbuddy-ai/deepseek-v4.1-flash" }, ...config.models };
+  runtime = await createCommandRuntime(workspace, { configStore: { load: async () => config, save: async () => undefined } });
+  const restartStart = agentModels.length;
+  const restartPromptStart = prompts.length;
+  assert.equal(await runtime.heartbeat.triggerNow(), true, runtime.heartbeat.status().lastError);
+  assert.ok(prompts.slice(restartPromptStart).some(prompt => prompt.includes("需要主人决定是否继续")), "the next request restores earlier heartbeat conversation context");
+  const restartedFiles = (await listAllSessionFiles()).filter(file => /^heartbeat-.+\.jsonl$/u.test(path.basename(file)));
+  assert.deepEqual(restartedFiles, [heartbeatFile], "rebuilding a Runtime reuses the same durable heartbeat session");
+  const afterRestart = await readSessionEvents(heartbeatFile);
+  assert.deepEqual(afterRestart.slice(0, beforeRestart.length), beforeRestart, "reuse preserves the original event log");
+  assert.ok(afterRestart.length > beforeRestart.length);
+  assert.equal(agentModels[restartStart], "main-model", "automatic selection does not pick the first obsolete configured model");
+  assertRequestModel(afterRestart, "main", "main-model", 1_048_576);
 } finally {
   await runtime?.close();
   provider.closeAllConnections();

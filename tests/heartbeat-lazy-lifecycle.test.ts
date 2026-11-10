@@ -62,7 +62,7 @@ for (const mode of ["initialization failure", "close during initialization", "un
         assert.equal(requests, 0);
         assert.equal(await runtime.heartbeat.triggerNow(), true, runtime.heartbeat.status().lastError);
         assert.equal(attempts, 2);
-        assert.notEqual(heartbeatSessionIds[0], heartbeatSessionIds[1], "retrying initialization gets a new session identity");
+        assert.notEqual(heartbeatSessionIds[0], heartbeatSessionIds[1], "failed initialization removes its empty draft, so retry gets a fresh identity");
         assert.equal(requests, 1);
       } else if (mode === "close during initialization") {
         pending = runtime.heartbeat.triggerNow();

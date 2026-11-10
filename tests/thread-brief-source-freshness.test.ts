@@ -5,8 +5,9 @@ import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { isHeartbeatSessionId } from "../src/session/store.js";
 
-// Fixed source-text reads only; no product imports or product I/O is executed.
+// Fixed source-text reads and the pure session identity predicate; product I/O remains inert.
 const paths = {
   desktop: "src/desktop/electron/main/DesktopThreadBriefService.ts",
   engine: "src/session/threadBriefService.ts",
@@ -39,7 +40,7 @@ const calls = new Set([
   "this.options.state.projects", "this.options.state.projects().find", "this.options.state.projects().some",
   "this.options.projects.dataRoot", "resolveSessionFile", "resolveSessionFile(root, sessionId).catch",
   "resolveSessionFile(root, thread.sessionId).catch", "resolveSessionFile(source.projectPath, thread.sessionId).catch",
-  "sessionIdFromFile", "readSessionCatalogRecord", "stat", "readSessionEvents", "readSessionSummary",
+  "isHeartbeatSessionId", "sessionIdFromFile", "readSessionCatalogRecord", "stat", "readSessionEvents", "readSessionSummary",
   "Promise.all", "(await stat(file)).birthtime.toISOString", "summary.firstUserMessage.slice",
   "/^(?:⏰ Cron:|💓 Heartbeat)/u.test", "this.sources.set", "this.sources.get", "this.isVisibleThread",
   "stillRegistered", "briefSource", "sessionMessageTree", "activeSessionMessageIds",
@@ -140,7 +141,7 @@ function fixture() {
   let config: Config = { enabled: true, autoTodo: true, projectSuggestions: false, minUserTurns: 1, minNewChars: 0 };
   const rows = new Map<string, Row>();
   const prototypes = runInNewContext(stripTypeScriptTypes(extracted, { mode: "strip" }), {
-    createHash, AbortController, redactSecrets: (text: string) => text, publicUserMessage: (text: string) => text,
+    createHash, isHeartbeatSessionId, AbortController, redactSecrets: (text: string) => text, publicUserMessage: (text: string) => text,
     briefSchema: { safeParse: (data: object) => ({ success: true, data }) }, threadBriefPrompt: "fixture",
     resolveSessionFile: async (_root: string, id: string) => { if (!exists) throw new Error("missing"); return "/fixture/" + id + ".jsonl"; },
     sessionIdFromFile: (file: string) => file.slice("/fixture/".length, -".jsonl".length),
