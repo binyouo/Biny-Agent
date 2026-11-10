@@ -77,6 +77,14 @@ if (shard) {
     suites = groups[shard.index - 1]?.files ?? [];
   }
 }
+// 继承的宿主凭据会让内置 provider 的 apiKeyEnv 命中真实 API；测试必须注入自己的替身。
+const CREDENTIAL_ENV = /(?:^|_)(?:API_)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)$/iu;
+function testEnv(agentDir) {
+  const env = { ...process.env, BINY_AGENT_DIR: agentDir };
+  for (const name of Object.keys(env)) if (CREDENTIAL_ENV.test(name)) delete env[name];
+  return env;
+}
+
 if (list) {
   console.log(JSON.stringify(suites));
 } else {
@@ -93,7 +101,7 @@ if (list) {
           // 用绝对 loader URL，测试派生的 CLI 即使切到临时工作区也能继承 execArgv。
           const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), path.join("tests", suite)], {
             cwd: root,
-            env: { ...process.env, BINY_AGENT_DIR: agentDir },
+            env: testEnv(agentDir),
             stdio: "inherit"
           });
           child.once("error", reject);

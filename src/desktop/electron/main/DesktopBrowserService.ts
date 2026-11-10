@@ -59,6 +59,8 @@ const homeUrl = "https://www.google.com";
 /** 一次登录会连续触发大量 cookie 变化，攒一下再落盘。 */
 const syncDebounceMs = 800;
 
+class BrowserInputNotDispatchedError extends Error {}
+
 const browserActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("new"), url: z.string().url().refine(isHttpUrl).optional(), environmentId: z.string().min(1).max(64).optional() }).strict(),
   z.object({ type: z.literal("navigate"), tabId: z.string().min(1).max(240), url: z.string().url().refine(isHttpUrl) }).strict(),
@@ -332,6 +334,8 @@ export class DesktopBrowserService {
       this.hideEmbeddedBrowser();
       if (targetPartition === browserPartition) this.attachCookieListener();
       const view = new WebContentsView({ webPreferences: { partition: targetPartition, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+      // 未打开面板时也需要有效视口，否则 DOM 可读而命中检查始终失败。
+      view.setBounds({ x: 0, y: 0, width: 1180, height: 820 });
       view.setVisible(false); host.contentView.addChildView(view);
       const id = randomUUID();
       const tab: EmbeddedTab = { view, navigation: 0, inspection: 0, state: {
@@ -503,8 +507,12 @@ export class DesktopBrowserService {
     const y = Math.max(0, Math.min(available.height, Math.round(bounds.y * scale)));
     const width = Math.max(0, Math.min(available.width - x, Math.round(bounds.width * scale)));
     const height = Math.max(0, Math.min(available.height - y, Math.round(bounds.height * scale)));
+    if (width === 0 || height === 0) {
+      if (this.shownBrowser?.projectId === projectId && this.shownBrowser.tabId === tabId) this.hideEmbeddedBrowser();
+      return;
+    }
     if (this.shownBrowser?.tabId !== tabId) this.hideEmbeddedBrowser();
-    tab.view.setBounds({ x, y, width, height }); tab.view.setVisible(width > 0 && height > 0);
+    tab.view.setBounds({ x, y, width, height }); tab.view.setVisible(true);
     this.shownBrowser = { projectId, tabId };
   }
 
@@ -832,7 +840,7 @@ export class DesktopBrowserService {
       } finally { socket.off("close", abort); }
       if (!socket.destroyed) socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
     } catch (error) {
-      if (!socket.destroyed) socket.write(`${JSON.stringify({ id, ok: false, error: error instanceof Error ? error.message : String(error), outcomeUnknown: error instanceof ToolOutcomeUnknownError })}\n`);
+      if (!socket.destroyed) socket.write(`${JSON.stringify({ id, ok: false, error: error instanceof Error ? error.message : String(error), outcomeUnknown: error instanceof ToolOutcomeUnknownError, inputNotDispatched: error instanceof BrowserInputNotDispatchedError || undefined })}\n`);
     }
   }
 
@@ -1456,7 +1464,15 @@ export class DesktopBrowserService {
   }
 
   private async pageOperation(operation: string, args: Record<string, unknown>, signal?: AbortSignal, contents?: WebContents, onAction?: BrowserActionTarget): Promise<unknown> {
-    return await this.evaluate(`(${browserPageOperation.toString()})(${JSON.stringify(operation)},${JSON.stringify(args)})`, signal, contents, onAction);
+    try {
+      return await this.evaluate(`(${browserPageOperation.toString()})(${JSON.stringify(operation)},${JSON.stringify(args)})`, signal, contents, onAction);
+    } catch (error) {
+      // 这些步骤只定位、检查或准备焦点；真正输入由后续 Input 命令派发。
+      if (["reveal", "wait", "click", "fill", "type", "press", "locator_target", "dom_target"].includes(operation)) {
+        throw new BrowserInputNotDispatchedError(error instanceof Error ? error.message : String(error), { cause: error });
+      }
+      throw error;
+    }
   }
 
   private watchDomSnapshotNavigation(contents: WebContents): void {

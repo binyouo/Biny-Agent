@@ -21,5 +21,5 @@
 .file-media-feedback > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .file-media-feedback button { padding: 6px 10px; border: 1px solid var(--biny-border); border-radius: 6px; font: inherit; color: var(--biny-text); background: var(--biny-surface-elevated); cursor: pointer; }
 .file-media-preview button:disabled, .file-media-preview input:disabled { cursor: not-allowed; opacity: .5; }
-.file-media-preview :is(button,input):focus-visible { outline: 2px solid var(--biny-accent); outline-offset: 2px; }
+.file-media-preview :is(button,input):focus-visible { outline: 1px solid var(--biny-accent); outline-offset: 0px; }
 @media (prefers-reduced-motion: reduce) { .file-media-preview * { animation: none !important; transition: none !important; } }

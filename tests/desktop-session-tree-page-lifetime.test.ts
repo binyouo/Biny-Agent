@@ -85,13 +85,13 @@ async function appModule() {
     Sidebar: "(props) => { window.__sidebar = props; return window.__realSidebar ? createElement(RealSidebar, props) : createElement('pre', null, JSON.stringify(props.sessions)); }",
     Tooltip: "({children}) => children", Collapse: "({children, open, ...props}) => open ? createElement('div', props, children) : null",
     useFluidHover: "() => ({registerItem: noop, handlers: {}})",
-    useClosingPresence: "(open) => ({present: open, phase: 'open'})", useAppearance: "() => ({})",
+    useClosingPresence: "(open) => ({present: open, phase: 'open'})",
     useDesktopAppearance: "() => appearance",
     useSidebarLayout: "() => sidebarLayout",
     useCompactionCommand: "() => compaction",
     useDesktopSettingsActions: "() => ({})",
     useWorkspaceInspector: "() => ({})",
-    useSessionTimeline: "() => []",
+    useSessionTimeline: "(document) => { window.__sessionDocument = document; return []; }",
     collectSessionChanges: "() => []",
     DEFAULT_FILE_PANEL_WIDTH: "320", DEFAULT_SIDEBAR_WIDTH: "240"
   };
@@ -187,6 +187,7 @@ async function fixture(context: TestContext, realSidebar = false, deferBootstrap
     await act(async () => snapshots.at(-1)!.resolve(snapshot));
   };
   return { props, pages, snapshots, mutations, bootstraps, initialBootstrap, load, resolvePage, refresh, unmount, opens, selections, sends, document: dom.window.document,
+    sessionDocument: () => (dom.window as unknown as { __sessionDocument?: import("../src/desktop/protocol.js").DesktopSessionDocument }).__sessionDocument,
     composer: () => (dom.window as unknown as { __composer: { onSend(text: string, attachments: []): Promise<void> } }).__composer,
     search: () => (dom.window as unknown as { __search: { onProject(projectId: string): void } }).__search,
     buttons: () => Array.from(dom.window.document.querySelectorAll("button")),
@@ -194,11 +195,124 @@ async function fixture(context: TestContext, realSidebar = false, deferBootstrap
     send: async (envelope: DesktopAgentEventEnvelope) => { await act(async () => { subscriber!(envelope); context.mock.timers.tick(16); }); } };
 }
 
+test("terminal catalog reconciliation retains loaded descendants and publishes durable selected history", async (context) => {
+  const view = await fixture(context);
+  const childPage = view.load();
+  await view.resolvePage();
+  await childPage;
+  await act(async () => view.props().onSelectSession("project", "parent"));
+  await act(async () => view.opens[0]!.result.resolve({ session: session("parent"), events: [], liveEvents: [] }));
+  await view.send({ projectId: "project", event: { type: "run.completed", sessionId: "parent", runId: "run", timestamp } } as DesktopAgentEventEnvelope);
+  await act(async () => context.mock.timers.tick(260));
+  assert.equal(view.snapshots.length, 0, "completion must not reload workspace models, Git, or runtime projections");
+  const read = view.pages[1]!;
+  assert.equal(read.parentSessionId, undefined);
+  assert.deepEqual(new Set(read.sessionIds), new Set(["parent", "child"]));
+  const updated = { ...session("parent"), title: "Finished task" };
+  await act(async () => read.result.resolve({ projectId: "project", revision: "completed", sessions: [updated], supplementalSessions: [session("child", "project", "parent")] }));
+  assert.equal(view.opens.length, 2);
+  const persisted = { session: updated, events: [], liveEvents: [] };
+  await view.send({ projectId: "project", event: { type: "session.title", sessionId: "parent", runId: "run", timestamp, title: "Renamed task" } } as DesktopAgentEventEnvelope);
+  await act(async () => context.mock.timers.tick(260));
+  await act(async () => view.pages[2]!.result.resolve({ projectId: "project", revision: "renamed", sessions: [{ ...updated, title: "Renamed task" }], supplementalSessions: [session("child", "project", "parent")] }));
+  assert.equal(view.opens.length, 2, "title-only updates must not reopen history");
+  assert.equal(view.props().sessions.find(row => row.id === "parent")?.title, "Renamed task");
+  await view.send({ projectId: "project", event: { type: "run.completed", sessionId: "child", runId: "background", timestamp } } as DesktopAgentEventEnvelope);
+  await act(async () => context.mock.timers.tick(260));
+  await act(async () => view.pages[3]!.result.resolve({ projectId: "project", revision: "background", sessions: [{ ...updated, title: "Renamed task" }], supplementalSessions: [session("child", "project", "parent")] }));
+  await act(async () => view.opens[1]!.result.resolve(persisted));
+  assert.equal(view.sessionDocument(), persisted, "title and background catalog metadata must not invalidate a pending selected history read");
+  assert.equal(view.props().sessions.find(row => row.id === "child")?.parentSessionId, "parent");
+  assert.equal(view.props().sessions.find(row => row.id === "parent")?.title, "Renamed task", "durable history must not undo newer catalog metadata");
+  assert.equal(view.opens.length, 2);
+  assert.equal(view.snapshots.length, 0);
+});
+
+for (const eventType of ["run.completed", "session.title"] as const) {
+  test(`${eventType} catalog cannot remove a child loaded after its read began`, async context => {
+    const view = await fixture(context);
+    await view.send({ projectId: "project", event: { type: eventType, sessionId: "parent", runId: "run", timestamp, title: "Parent" } } as DesktopAgentEventEnvelope);
+    await act(async () => context.mock.timers.tick(260));
+    const stale = view.pages[0]!;
+    const childPage = view.load();
+    const freshChild = session("newly-loaded-child", "project", "parent");
+    await view.resolvePage(1, [freshChild]);
+    await childPage;
+    assert.ok(view.props().sessions.some(row => row.id === freshChild.id));
+    assert.equal(stale.sessionIds?.includes(freshChild.id), false);
+    await act(async () => stale.result.resolve({ projectId: "project", revision: "stale", sessions: [session("parent")] }));
+    assert.ok(view.props().sessions.some(row => row.id === freshChild.id), "a response sampled for the old scope cannot erase the newly loaded page");
+    await act(async () => context.mock.timers.tick(260));
+    assert.deepEqual(new Set(view.pages[2]!.sessionIds), new Set(["parent", "child", freshChild.id]));
+    await act(async () => view.pages[2]!.result.resolve({ projectId: "project", revision: "fresh", sessions: [session("parent")], supplementalSessions: [freshChild] }));
+    assert.ok(view.props().sessions.some(row => row.id === freshChild.id));
+    assert.equal(view.snapshots.length, 0);
+  });
+}
+
+for (const responseOrder of ["issued", "reversed"] as const) {
+test(`coalesced stale catalog reads retain every unloaded background target in ${responseOrder} order`, async context => {
+  const view = await fixture(context);
+  for (const sessionId of ["background-a", "background-b"]) {
+    await view.send({ projectId: "project", event: { type: "run.completed", sessionId, runId: sessionId, timestamp } } as DesktopAgentEventEnvelope);
+    await act(async () => context.mock.timers.tick(260));
+  }
+  const childPage = view.load();
+  const freshChild = session("newly-loaded-child", "project", "parent");
+  await view.resolvePage(2, [freshChild]);
+  await childPage;
+  await act(async () => {
+    const reads = view.pages.slice(0, 2);
+    if (responseOrder === "reversed") reads.reverse();
+    for (const read of reads) read.result.resolve({ projectId: "project", revision: "old", sessions: [session("parent")] });
+  });
+  await act(async () => context.mock.timers.tick(260));
+  assert.equal(view.pages.length, 4, "the two stale reads share one new catalog request");
+  assert.deepEqual(new Set(view.pages[3]!.sessionIds), new Set(["parent", "child", freshChild.id, "background-a", "background-b"]));
+  await act(async () => view.pages[3]!.result.resolve({ projectId: "project", revision: "fresh", sessions: [session("parent")], supplementalSessions: [freshChild, session("background-a", "project", "parent"), session("background-b", "project", "parent")] }));
+  assert.ok(view.props().sessions.some(row => row.id === freshChild.id));
+});
+}
+
+test("a deletion reconciliation retains a later child page and verifies its expanded scope", async context => {
+  const view = await fixture(context);
+  view.props().onSessionAction(session("child", "project", "parent"), "delete");
+  await act(async () => view.mutations[0]!.resolve(workspace()));
+  const stale = view.pages[0]!;
+  const childPage = view.load();
+  const freshChild = session("remaining-child", "project", "parent");
+  await view.resolvePage(1, [freshChild]);
+  await childPage;
+  await act(async () => stale.result.resolve({ projectId: "project", revision: "deleted", sessions: [session("parent")] }));
+  assert.ok(view.props().sessions.some(row => row.id === freshChild.id));
+  assert.equal(view.props().sessions.some(row => row.id === "child"), false);
+  await act(async () => context.mock.timers.tick(260));
+  assert.deepEqual(new Set(view.pages[2]!.sessionIds), new Set(["parent", freshChild.id]));
+  await act(async () => view.pages[2]!.result.resolve({ projectId: "project", revision: "fresh", sessions: [session("parent")], supplementalSessions: [freshChild] }));
+  assert.ok(view.props().sessions.some(row => row.id === freshChild.id));
+});
+
+test("a catalog response cannot resurrect a removed project or schedule work after unmount", async context => {
+  const view = await fixture(context);
+  await view.send({ projectId: "project", event: { type: "run.completed", sessionId: "parent", runId: "run", timestamp } } as DesktopAgentEventEnvelope);
+  await act(async () => context.mock.timers.tick(260));
+  view.props().onRemoveProject("project");
+  await act(async () => view.bootstraps[0]!.resolve(bootstrap(workspace("other-project"))));
+  await act(async () => view.pages[0]!.result.resolve({ projectId: "project", revision: "removed", sessions: [session("parent")] }));
+  assert.equal(view.props().sessions.some(row => row.projectId === "project"), false);
+  await view.unmount();
+  await act(async () => context.mock.timers.tick(260));
+  assert.equal(view.pages.length, 1);
+});
+
 test("production App rejects a child page sampled before a successful deletion", async (context) => {
   const view = await fixture(context);
   const pending = view.load();
   view.props().onSessionAction(session("child", "project", "parent"), "delete");
   await act(async () => view.mutations[0]!.resolve(workspace("project", [session("parent")])));
+  assert.equal(view.snapshots.length, 0, "deletion reconciles only the session catalog");
+  assert.deepEqual(view.pages[1]!.sessionIds, ["parent"]);
+  await act(async () => view.pages[1]!.result.resolve({ projectId: "project", revision: "deleted", sessions: [session("parent")] }));
   await view.resolvePage();
   assert.equal(view.props().sessions.some((entry) => entry.id === "child"), false);
   assert.ok((await pending).error instanceof Error);
@@ -318,6 +432,18 @@ test("real Sidebar retries stale first and next pages without stuck loading or o
   await view.resolvePage(3, [session("fresh-child", "project", "parent")]);
   assert.ok(view.props().sessions.some((entry) => entry.id === "fresh-child"));
   assert.equal(more(), undefined);
+});
+
+test("root-level 显示更多 expands the collapsed session list and reports aria state", async (context) => {
+  const roots = Array.from({ length: 7 }, (_, index) => session(`root-${String(index)}`));
+  const view = await fixture(context, true);
+  await view.refresh(workspace("project", roots));
+  const more = () => view.buttons().find((button) => button.textContent === "显示更多" && !button.closest(".biny-sidebar-session-children"))!;
+  assert.equal(more().getAttribute("aria-expanded"), "false");
+  await view.click(more());
+  const less = view.buttons().find((button) => button.textContent === "收起");
+  assert.ok(less);
+  assert.equal(less.getAttribute("aria-expanded"), "true");
 });
 
 function catalog(count: number): SessionCatalogItem[] {

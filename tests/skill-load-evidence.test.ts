@@ -181,9 +181,12 @@ test("archive envelopes do not promote ordinary resources, mismatches or foreign
   }
 });
 
-test("canonical Skill bodies survive ordinary, hook and failed archive envelopes", async () => {
+for (const [version, footer] of [
+  ["current", "Follow the instructions above for your response."],
+  ["legacy", "Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory."]
+]) test(`canonical Skill bodies survive ordinary, hook and failed archive envelopes: ${version}`, async () => {
   const body = "# Skill: image-gen\n\n**Skill Directory:** `/controlled/image-gen`\n\n" + "Instruction.\n".repeat(4000)
-    + "Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory.";
+    + footer;
   for (const fail of [false, true]) {
     const outlineResult = persistence(fail);
     for (const result of [body, { result: body, durationMs: 1 }, { result: body, durationMs: -1, hooks: [] }]) {

@@ -306,6 +306,50 @@ print("accessibility action contracts passed")
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("AX accepted writes are confirmed only by matching target values and UTF-16 selection ranges", { skip: process.platform !== "darwin" }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-ax-readback-"));
+  try {
+    const source = path.join(directory, "main.swift"), binary = path.join(directory, "readback-test");
+    await writeFile(source, `import ApplicationServices
+import Foundation
+func range(_ location: Int, _ length: Int) -> AXValue {
+    var value = CFRange(location: location, length: length)
+    return AXValueCreate(.cfRange, &value)!
+}
+let ignored = accessibilityAttributeWriteEvidence(expected: "desired" as CFString, actual: "web-initial" as CFString)
+let actualRange = range(1, 2), differentRange = range(2, 1)
+let effects = [
+    ignored["effect"] as! String,
+    accessibilityAttributeWriteEvidence(expected: "desired" as CFString, actual: "desired" as CFString)["effect"] as! String,
+    accessibilityAttributeWriteEvidence(expected: "desired" as CFString, actual: nil)["effect"] as! String,
+    accessibilityAttributeWriteEvidence(expected: nil, actual: "desired" as CFString)["effect"] as! String,
+    accessibilityAttributeWriteEvidence(expected: NSNumber(value: 0.75), actual: NSNumber(value: 0.75))["effect"] as! String,
+    accessibilityAttributeWriteEvidence(expected: NSNumber(value: 0.75), actual: NSNumber(value: 0.5))["effect"] as! String,
+    accessibilityAttributeWriteEvidence(expected: actualRange, actual: range(1, 2))["effect"] as! String,
+    accessibilityAttributeWriteEvidence(expected: actualRange, actual: differentRange)["effect"] as! String
+]
+let observations: [Bool] = [
+    accessibilityTextRange(actualRange) == NSRange(location: 1, length: 2),
+    accessibilityTextRange("invalid" as CFString) == nil,
+    accessibilityTextAfterInsertion("A😀B", range: NSRange(location: 1, length: 2), text: "中") == "A中B",
+    accessibilityTextAfterInsertion("A😀B", range: NSRange(location: 4, length: 0), text: "X") == "A😀BX",
+    accessibilityTextAfterInsertion(nil, range: NSRange(location: 0, length: 0), text: "X") == nil,
+    accessibilityTextAfterInsertion("abc", range: nil, text: "X") == nil,
+    accessibilityTextAfterInsertion("abc", range: NSRange(location: 2, length: 2), text: "X") == nil,
+    accessibilityTextAfterInsertion("abc", range: NSRange(location: 1, length: Int.max), text: "X") == nil,
+    ignored["verification_note"] is String,
+    ignored["value"] == nil && ignored["expected"] == nil
+]
+let data = try JSONSerialization.data(withJSONObject: ["effects": effects, "observations": observations])
+print(String(decoding: data, as: UTF8.self))
+`);
+    execFileSync("xcrun", ["swiftc", "-swift-version", "5", "native/computer-use/AccessibilityAction.swift", source, "-o", binary], { timeout: 30_000 });
+    const result = JSON.parse(execFileSync(binary, { encoding: "utf8", timeout: 5_000 }));
+    assert.deepEqual(result.effects, ["unverifiable", "confirmed", "unverifiable", "unverifiable", "confirmed", "unverifiable", "confirmed", "unverifiable"]);
+    assert.deepEqual(result.observations, [true, true, true, true, true, true, true, true, true, true]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("observation differences include removed controls and semantic state without crossing sessions", { skip: process.platform !== "darwin" }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-observation-diff-"));
   try {
@@ -436,6 +480,7 @@ test("scrolling targets the observed control without requiring a focused window"
     const source = path.join(directory, "main.swift");
     await writeFile(source, `import Foundation
 import CoreGraphics
+import AppKit
 var focusReads = 0
 let direct = scrollAreaForTarget(reference: "control", focusedWindow: { focusReads += 1; return nil }, ancestor: { $0 == "control" ? "area" : nil }, findArea: { _ in "other" })
 precondition(direct == "area" && focusReads == 0)
@@ -457,15 +502,25 @@ precondition(valid == "control")
 do { let _: String? = try scrollReference("stale", lookup: { _ in nil }); fatalError("stale ref accepted") }
 catch { precondition(error.localizedDescription.hasPrefix("element_ref_not_observed")) }
 let target = CGPoint(x: 120, y: 240)
-let event = try scrollWheelEvent(pid: 42, windowID: 99, point: target, vertical: -3, horizontal: 0) { vertical, horizontal in
+let event = try scrollWheelEvent(pid: 42, windowID: 99, point: target, vertical: -3, horizontal: 0, naturalScrolling: false) { vertical, horizontal in
     let value = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: vertical, wheel2: horizontal, wheel3: 0)!
     value.location = CGPoint(x: -100, y: -100)
     return value
 }
 precondition(event.location == target)
 precondition(event.getIntegerValueField(.eventTargetUnixProcessID) == 42)
-let horizontal = try scrollWheelEvent(pid: 42, windowID: 99, point: target, vertical: 0, horizontal: 4)
+precondition(NSEvent(cgEvent: event)?.windowNumber == 99, "AppKit must route scroll input to the observed window, not window zero")
+let horizontal = try scrollWheelEvent(pid: 42, windowID: 99, point: target, vertical: 0, horizontal: 4, naturalScrolling: false)
 precondition(horizontal.getIntegerValueField(.scrollWheelEventDeltaAxis1) == 0 && horizontal.getIntegerValueField(.scrollWheelEventDeltaAxis2) == 4)
+precondition(NSEvent(cgEvent: horizontal)?.windowNumber == 99)
+for (natural, vertical, horizontal, expectedVertical, expectedHorizontal): (Bool, Int32, Int32, Int64, Int64) in [
+    (false, -3, 0, -3, 0), (false, 3, 0, 3, 0), (false, 0, -4, 0, -4), (false, 0, 4, 0, 4),
+    (true, -3, 0, 3, 0), (true, 3, 0, -3, 0), (true, 0, -4, 0, 4), (true, 0, 4, 0, -4)
+] {
+    let packet = try scrollWheelEvent(pid: 42, windowID: 99, point: target, vertical: vertical, horizontal: horizontal, naturalScrolling: natural)
+    precondition(packet.getIntegerValueField(.scrollWheelEventDeltaAxis1) == expectedVertical)
+    precondition(packet.getIntegerValueField(.scrollWheelEventDeltaAxis2) == expectedHorizontal)
+}
 var created = false
 do { _ = try scrollWheelEvent(pid: 42, windowID: 99, point: nil, vertical: 1, horizontal: 0) { _, _ in created = true; return nil }; fatalError("missing point accepted") }
 catch { precondition(error.localizedDescription.hasPrefix("scroll_target_unavailable") && !created) }
@@ -476,6 +531,54 @@ print("scroll targets passed")
     const executable = path.join(directory, "test");
     execFileSync("xcrun", ["swiftc", "-swift-version", "5", "native/computer-use/AccessibilityAction.swift", "native/computer-use/PhysicalInput.swift", "native/computer-use/ScrollPages.swift", "native/computer-use/ScrollRouting.swift", source, "-o", executable], { timeout: 30_000 });
     assert.match(execFileSync(executable, { encoding: "utf8", timeout: 5_000 }), /scroll targets passed/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("semantic scroll directions survive actual window-server delivery to an isolated process", {
+  skip: process.platform !== "darwin" || process.env.BINY_TEST_COMPUTER_UI !== "1",
+  timeout: 30_000
+}, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-scroll-delivery-"));
+  try {
+    const source = path.join(directory, "main.swift");
+    await writeFile(source, `import Foundation
+import AppKit
+import CoreGraphics
+let app = NSApplication.shared
+app.setActivationPolicy(.prohibited)
+app.finishLaunching()
+// 只向自身进程发送窗口局部滚轮，不创建可见窗口或使用全局 HID。
+let directions: [(String, Int32, Int32, Double, Double)] = [
+    ("down", -3, 0, -1, 0), ("up", 3, 0, 1, 0),
+    ("right", 0, -3, 0, -1), ("left", 0, 3, 0, 1)
+]
+for (index, item) in directions.enumerated() {
+    let window = 900 + index
+    let event = try scrollWheelEvent(pid: getpid(), windowID: window, point: CGPoint(x: 100, y: 100), vertical: item.1, horizontal: item.2)
+    event.postToPid(getpid())
+    let deadline = Date(timeIntervalSinceNow: 3)
+    var quietDeadline = deadline
+    var deliveries = 0
+    while Date() < deadline {
+        guard let delivered = app.nextEvent(matching: .scrollWheel, until: min(deadline, quietDeadline), inMode: .default, dequeue: true) else {
+            if deliveries > 0 && Date() >= quietDeadline { break }
+            continue
+        }
+        guard delivered.windowNumber == window,
+              delivered.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) else { continue }
+        quietDeadline = Date(timeIntervalSinceNow: 0.12)
+        if abs(delivered.scrollingDeltaX) + abs(delivered.scrollingDeltaY) == 0 { continue }
+        deliveries += 1
+        precondition(item.3 == 0 || delivered.scrollingDeltaY * item.3 > 0, "semantic vertical scroll direction reversed during window-server delivery")
+        precondition(item.4 == 0 || delivered.scrollingDeltaX * item.4 > 0, "semantic horizontal scroll direction reversed during window-server delivery")
+    }
+    precondition(deliveries > 0, "window-local scroll was not delivered to the isolated receiver")
+}
+print("delivered scroll directions passed")
+`);
+    const executable = path.join(directory, "test");
+    execFileSync("xcrun", ["swiftc", "-swift-version", "5", "native/computer-use/PhysicalInput.swift", "native/computer-use/ScrollRouting.swift", source, "-o", executable], { timeout: 30_000 });
+    assert.match(execFileSync(executable, { encoding: "utf8", timeout: 10_000 }), /delivered scroll directions passed/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -665,6 +768,15 @@ actor Gate {
     precondition(windowNumberForApp(12, windows: [window]) == 42)
     precondition(windowScreenBounds(pid: 12, windowID: 42, windows: [window])?["x"] == 300)
     precondition(windowScreenBounds(pid: 12, windowID: 43, windows: [window]) == nil)
+    var floating = window
+    floating[kCGWindowNumber as String] = NSNumber(value: 45)
+    floating[kCGWindowLayer as String] = NSNumber(value: 27)
+    floating[kCGWindowBounds as String] = ["X": NSNumber(value: -720), "Y": NSNumber(value: 180), "Width": NSNumber(value: 528), "Height": NSNumber(value: 240)] as NSDictionary
+    precondition(windowScreenBounds(pid: 12, windowID: 45, windows: [floating]) == ["x": -720, "y": 180, "w": 528, "h": 240], "exact floating windows require their real screen origin")
+    precondition(windowScreenBounds(pid: 13, windowID: 45, windows: [floating]) == nil, "a window from another process must never supply input geometry")
+    precondition(windowScreenBounds(pid: 12, windows: [floating, window])?["x"] == 300, "implicit geometry still chooses an ordinary window")
+    precondition(windowScreenBounds(pid: 12, windows: [floating]) == nil)
+    precondition(windowNumberForApp(12, windows: [floating, window]) == 42)
     let keys: [String: PhysicalStroke] = ["a": PhysicalStroke(keyCode: 0, flags: []), "A": PhysicalStroke(keyCode: 0, flags: .maskShift)]
     var created: [Bool] = []
     let pair = try keyboardEventPair { down -> String? in created.append(down); return down ? "down" : "up" }
@@ -695,6 +807,17 @@ actor Gate {
     await timerStarted.wait(); await workStarted.wait(); await timeout.release()
     let result = await operation.value
     precondition((result["screenshot_error"] as? String)?.hasPrefix("capture_timeout") == true && result["path"] == nil)
+    let noTimeout = Gate(), unexpectedCapture = Gate()
+    for _ in 0..<10 {
+      let busy = await captureObservation(timeout: 3, wait: { _ in await noTimeout.wait() }, describeError: { $0.localizedDescription }) {
+        await unexpectedCapture.release(); return ["path": "must-not-capture.jpg"]
+      }
+      precondition((busy["screenshot_error"] as? String)?.hasPrefix("capture_busy") == true,
+        "deadline returned while native work still runs; another capture must not start")
+    }
+    let startedUnexpectedCapture = await unexpectedCapture.released
+    precondition(!startedUnexpectedCapture, "busy requests started native capture work")
+    await noTimeout.release()
     await work.release()
     // 等待真实异步工作完成后的文件清理；条件轮询上限两秒，不用固定等待判成功。
     let cleanupDeadline = Date().addingTimeInterval(2)
@@ -711,6 +834,8 @@ actor Gate {
       throw NSError(domain: "capture", code: 1, userInfo: [NSLocalizedDescriptionKey: "screen_recording_not_granted"])
     }
     precondition(denied["screenshot_error"] as? String == "screen_recording_not_granted")
+    let afterFailure = await captureObservation(timeout: 3, wait: { _ in await never.wait() }, describeError: { $0.localizedDescription }) { ["path": "after-failure.jpg"] }
+    precondition(afterFailure["path"] as? String == "after-failure.jpg", "a failed capture retained its admission")
     await never.release()
     print("native contracts passed")
   }
@@ -729,19 +854,27 @@ test("background mouse packets name the exact window for clicks and drags withou
     await writeFile(source, `
 import Foundation
 import CoreGraphics
+import AppKit
 let left = BackgroundInput.dragTypes(button: .left)
 precondition(left.0 == .leftMouseDown && left.1 == .leftMouseDragged && left.2 == .leftMouseUp)
 let right = BackgroundInput.dragTypes(button: .right)
 precondition(right.0 == .rightMouseDown && right.1 == .rightMouseDragged && right.2 == .rightMouseUp)
 let middle = BackgroundInput.dragTypes(button: .center)
 precondition(middle.0 == .otherMouseDown && middle.1 == .otherMouseDragged && middle.2 == .otherMouseUp)
-for type: CGEventType in [.leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown, .rightMouseUp] {
-    let event = try BackgroundInput.mouseEvent(pid: 123, windowID: 456, type: type, point: CGPoint(x: 315, y: 245), button: .left, clickState: 2)
+for (type, button): (CGEventType, CGMouseButton) in [
+    (.leftMouseDown, .left), (.leftMouseUp, .left), (.leftMouseDragged, .left),
+    (.rightMouseDown, .right), (.rightMouseUp, .right), (.rightMouseDragged, .right),
+    (.otherMouseDown, .center), (.otherMouseUp, .center), (.otherMouseDragged, .center)
+] {
+    let event = try BackgroundInput.mouseEvent(pid: 123, windowID: 456, type: type, point: CGPoint(x: 315, y: 245), button: button, clickState: 2)
     precondition(event.getIntegerValueField(.mouseEventWindowUnderMousePointer) == 456, "packet omitted exact window ID")
     precondition(event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent) == 456)
     precondition(event.getIntegerValueField(.eventTargetUnixProcessID) == 123)
     precondition(event.getIntegerValueField(.mouseEventClickState) == 2)
+    precondition(event.getIntegerValueField(.mouseEventButtonNumber) == Int64(button.rawValue))
     precondition(event.location == CGPoint(x: 315, y: 245))
+    precondition(NSEvent(cgEvent: event)?.windowNumber == 456, "AppKit must receive the exact target window, not window zero")
+    precondition(NSEvent(cgEvent: event)?.type.rawValue == UInt(type.rawValue))
 }
 print("background packets passed")
 let focusGuard = BackgroundFocusGuard()

@@ -136,12 +136,11 @@ for (const mode of ["collapsed", "expanded", "peek"]) {
   });
 }
 
-test("结构皮肤切回普通皮肤后恢复卡片边界，主区不增加额外底板", () => {
+test("默认侧栏保持卡片边界，主区不增加额外底板", () => {
   const renderer = new URL("../src/desktop/renderer/src/", import.meta.url);
   const layers = readFileSync(new URL("styles/layers.css", renderer), "utf8");
   const sources = [...layers.matchAll(/@import "(\.\.?\/[^"]+\.css)"/gu)]
     .map(entry => readFileSync(new URL(entry[1]!, new URL("styles/layers.css", renderer)), "utf8"));
-  sources.push(...["retro", "retro-layout"].map(name => readFileSync(new URL(`styles/${name}.css`, renderer), "utf8")));
   const dom = new JSDOM('<div class="desktop-root biny-root"><div class="biny-app-shell"><main class="biny-content-shell"><header class="biny-chat-toolbar"></header></main><aside class="biny-sidebar"><div class="biny-sidebar-card"></div></aside><div class="biny-sidebar-topbar biny-sidebar-topbar-floating"><div class="biny-sidebar-topbar-hit-layer"><button class="biny-chrome-button"></button></div></div></div></div>');
   try {
     for (const source of sources) {
@@ -149,27 +148,13 @@ test("结构皮肤切回普通皮肤后恢复卡片边界，主区不增加额�
       style.textContent = source;
       dom.window.document.head.append(style);
     }
-    const root = dom.window.document.documentElement;
     const computed = (selector: string): CSSStyleDeclaration => dom.window.getComputedStyle(dom.window.document.querySelector(selector)!);
-    for (const skin of ["win98", "winxp", "longhorn", "longhorn-dark"]) {
-      root.dataset.appearanceSkin = skin;
-      assert.equal(computed(".biny-sidebar-card").borderRadius, "0px", skin);
-      assert.equal(computed(".biny-sidebar").padding, "0px", skin);
-      const topbar = computed(".biny-sidebar-topbar-floating");
-      const actions = computed(".biny-sidebar-topbar-hit-layer");
-      const availableHeight = Number.parseFloat(topbar.height) - Number.parseFloat(topbar.paddingTop)
-        - Number.parseFloat(topbar.paddingBottom) - Number.parseFloat(actions.paddingTop) - Number.parseFloat(actions.paddingBottom);
-      assert.ok(availableHeight >= 32, `${skin} 的紧凑顶栏也必须容纳完整按钮`);
-      assert.equal(topbar.minHeight, topbar.height, skin);
-      assert.equal(computed(".biny-chat-toolbar").height, topbar.height, skin);
-      root.dataset.appearanceSkin = "default";
-      assert.equal(computed(".biny-sidebar-card").borderRadius, "16px", skin);
-      assert.equal(computed(".biny-sidebar-card").marginInline, "10px", skin);
-      assert.equal(computed(".biny-sidebar").padding, "10px 0px", skin);
-      assert.equal(computed(".biny-content-shell").margin, "0px", skin);
-      assert.equal(computed(".biny-content-shell").borderRadius, "0px", skin);
-      assert.equal(computed(".biny-root").getPropertyValue("--biny-backplate"), "var(--surface)", skin);
-    }
+    assert.equal(computed(".biny-sidebar-card").borderRadius, "16px");
+    assert.equal(computed(".biny-sidebar-card").marginInline, "10px");
+    assert.equal(computed(".biny-sidebar").padding, "10px 0px");
+    assert.equal(computed(".biny-content-shell").margin, "0px");
+    assert.equal(computed(".biny-content-shell").borderRadius, "0px");
+    assert.equal(computed(".biny-root").getPropertyValue("--biny-backplate"), "var(--surface)");
   } finally { dom.window.close(); }
 });
 

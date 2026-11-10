@@ -8,6 +8,7 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { BrowserEnvironmentStore, browserPartitionForEnvironment } from "../src/desktop/browserEnvironments.js";
 import { requestBrowser, type BrowserAutomationEndpoint } from "../src/tools/browser.js";
+import { ToolOutcomeUnknownError } from "../src/tools/types.js";
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -48,6 +49,8 @@ class NavigationContents extends EventEmitter {
   keyEvents: Array<{ type: unknown; key: unknown }> = [];
   debuggerGate?: DebuggerGate;
   evaluationError?: string;
+  evaluationErrorAt?: string;
+  inputError?: string;
   captureError?: string;
   captures = 0;
   constructor(readonly partition: string) {
@@ -78,15 +81,18 @@ class NavigationContents extends EventEmitter {
         gate.entered.resolve(this);
         await gate.release.promise;
       }
-      if (method.startsWith("Input.")) return {};
-      if (this.evaluationError) return { exceptionDetails: { text: this.evaluationError } };
+      if (method.startsWith("Input.")) {
+        if (this.inputError) throw new Error(this.inputError);
+        return {};
+      }
       const expression = params.expression as string;
       const operation = pageOperationName(expression);
+      if (this.evaluationError && (!this.evaluationErrorAt || this.evaluationErrorAt === operation)) return { exceptionDetails: { text: this.evaluationError } };
       const value = operation === "read" || expression === "({ url: location.href, title: document.title })"
         ? { url: this.url, title: this.title }
         : operation === "wait" ? true
           : operation === "click" ? { x: 10, y: 20 }
-            : true;
+            : operation === "locator_target" ? { selector: "#field" } : true;
       return { result: { value } };
     }
   });
@@ -134,12 +140,14 @@ class NavigationContents extends EventEmitter {
 class NavigationView {
   static instances: NavigationView[] = [];
   webContents: NavigationContents;
+  bounds = { x: 0, y: 0, width: 0, height: 0 };
+  visible = true;
   constructor(options: WindowOptions) {
     this.webContents = new NavigationContents(options.webPreferences.partition);
     NavigationView.instances.push(this);
   }
-  setVisible(): void {}
-  setBounds(): void {}
+  setVisible(visible: boolean): void { this.visible = visible; }
+  setBounds(bounds: typeof this.bounds): void { this.bounds = { ...bounds }; }
 }
 class NavigationWindow extends EventEmitter {
   static instances: NavigationWindow[] = [];
@@ -483,6 +491,51 @@ async function assertPreview(source: PreviewSource, owner: NavigationContents, p
 }
 
 async function previewAttributionTests(t: TestContext, Service: BrowserServiceClass): Promise<void> {
+  await t.test("hidden tabs retain a usable viewport before the browser panel opens", () => withPreviewBrowser(Service, async f => {
+    const tab = f.addTab("project-a", "default", "hidden");
+    const view = NavigationView.instances.at(-1)!;
+    assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1180, height: 820 });
+    assert.equal(view.visible, false);
+    f.browser.showEmbeddedBrowser(tab.projectId, tab.id, { x: 10, y: 20, width: 600, height: 400 });
+    assert.deepEqual(view.bounds, { x: 10, y: 20, width: 600, height: 400 });
+    assert.equal(view.visible, true);
+    f.browser.showEmbeddedBrowser(tab.projectId, tab.id, { x: 10, y: 20, width: 0, height: 0 });
+    assert.equal(view.visible, false);
+    assert.deepEqual(view.bounds, { x: 10, y: 20, width: 600, height: 400 }, "hiding must preserve the last usable viewport");
+    f.browser.showEmbeddedBrowser(tab.projectId, tab.id, { x: 0, y: 0, width: 500, height: 300 });
+    assert.equal(view.visible, true);
+    assert.deepEqual(view.bounds, { x: 0, y: 0, width: 500, height: 300 });
+  }));
+
+  for (const [method, operation, args] of [
+    ["fill", "fill", { selector: "#field", value: "example text" }],
+    ["click", "click", { selector: "#field" }],
+    ["press", "press", { selector: "#field", key: "Enter" }],
+    ["locator_action", "type", { steps: [{ m: "locator", selector: "#field" }], action: { m: "type", value: "example text" } }]
+  ] as const) await t.test(`${method}: occlusion before input is a known refusal`, () => withPreviewBrowser(Service, async f => {
+    f.a.contents.evaluationError = "Uncaught (in promise) Error: 元素被遮挡。";
+    f.a.contents.evaluationErrorAt = operation;
+    await assert.rejects(f.request(method, args), (error: unknown) => error instanceof Error && !(error instanceof ToolOutcomeUnknownError) && /元素被遮挡/u.test(error.message));
+    assert.deepEqual(f.a.contents.inputEvents, []);
+    assert.deepEqual(f.a.contents.keyEvents, []);
+    assert.equal(f.sources.length, 0);
+  }));
+
+  for (const stage of ["input", "verification"] as const) await t.test(`fill: failure during ${stage} stays unknown`, () => withPreviewBrowser(Service, async f => {
+    if (stage === "input") f.a.contents.inputError = "fixture input response lost";
+    else {
+      const sendCommand = f.a.contents.debugger.sendCommand;
+      f.a.contents.debugger.sendCommand = async (method, args) => {
+        const result = await sendCommand(method, args);
+        if (method === "Input.insertText") f.a.contents.evaluationError = "fixture verification failed";
+        return result;
+      };
+    }
+    await assert.rejects(f.request("fill", { selector: "#field", value: "example text" }), (error: unknown) => error instanceof ToolOutcomeUnknownError);
+    assert.deepEqual(f.a.contents.inputEvents, ["Input.insertText"], "uncertain input must never be replayed");
+    assert.equal(f.sources.length, 0);
+  }));
+
   type Method = "navigate" | "click" | "fill" | "press";
   type Stage = "load" | "evaluate" | "keyUp";
   interface Scenario {

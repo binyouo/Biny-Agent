@@ -351,14 +351,10 @@ export function modelContextBudget(
   const capabilities = modelCapabilities(model);
   const maxOutputTokens = model.maxOutputTokens;
   const modelLimits = model.limits;
+  const providerInputLimit = model.maxInputTokens ?? modelLimits?.maxInputTokens;
   const contextWindowIsFallback = model.contextWindow === undefined;
-  // 网关常常只返回 max input。把它按 95% 有效窗口反推原始窗口，既能容纳已声明的
-  // 输入上限，又不会把模型 ID 启发式误当成官方上下文元数据；两者都缺失时保持 32K
-  // 的保守下限。
-  const contextWindow = model.contextWindow ?? Math.max(
-    defaultModelContextWindow,
-    Math.ceil((model.maxInputTokens ?? configuredMaxInputTokens ?? 0) * 100 / defaultEffectiveContextWindowPercent)
-  );
+  // 输入上限不能证明完整模型窗口；只将它作为未知窗口的预算基准，不反推额外容量。
+  const contextWindow = model.contextWindow ?? providerInputLimit ?? configuredMaxInputTokens ?? defaultModelContextWindow;
   const outputReserveTokens = Math.min(
     maxOutputTokens ?? defaultModelOutputTokens,
     Math.max(2_048, Math.floor(contextWindow * 0.25))
@@ -377,9 +373,9 @@ export function modelContextBudget(
     ?? defaultSystemPromptReserveTokens;
   const protocolSafetyMarginTokens = modelLimits?.protocolSafetyMarginTokens ?? defaultProtocolSafetyMarginTokens;
   const effectiveContextWindowPercent = defaultEffectiveContextWindowPercent;
-  const effectiveContextWindow = Math.max(
-    minimumUsableInputTokens,
-    Math.floor((contextWindow * effectiveContextWindowPercent) / 100)
+  const effectiveContextWindow = Math.min(
+    contextWindow,
+    Math.max(minimumUsableInputTokens, Math.floor((contextWindow * effectiveContextWindowPercent) / 100))
   );
   const contextReserveTokens = Math.max(0, contextWindow - effectiveContextWindow);
   const autoCompactTokenLimit = Math.max(
@@ -391,7 +387,6 @@ export function modelContextBudget(
   );
   // maxInputTokens 是 provider 的硬上限与用户额外上限叠加后的可发输入预算；它不再
   // 直接等于「模型窗口减去一组固定 reserve」。
-  const providerInputLimit = model.maxInputTokens ?? modelLimits?.maxInputTokens;
   const cappedInputTokens = Math.min(
     effectiveContextWindow,
     providerInputLimit ?? Number.MAX_SAFE_INTEGER,

@@ -362,7 +362,7 @@ export function createSkillTool(source: SkillBundleSource, refresh?: (force?: bo
   };
 }
 
-/** Skill 工具结果模板：技能目录绝对路径是第三层资源（read_skill_resource/Read）的定位基准。 */
+/** Skill 资源通过专用工具按技能目录内的相对路径读取。 */
 function renderSkillInstructions(
   skill: SkillDefinition,
   body: string,
@@ -376,7 +376,7 @@ function renderSkillInstructions(
   ].filter((line): line is string => line !== undefined);
   const resourceLines = resources.length
     ? [
-        "Resources in this skill directory (resolve them to absolute paths under the directory above):",
+        "Resources in this skill directory (pass these relative paths to read_skill_resource):",
         ...resources.map((resource) => `- ${resource.path} (${resource.kind})`)
       ]
     : [];
@@ -385,7 +385,7 @@ function renderSkillInstructions(
     "",
     `**Skill Directory:** \`${directory}\``,
     "",
-    `> **IMPORTANT:** When this skill references any files (templates, scripts, references, assets), you MUST read them using absolute paths based on the skill directory above. For example, "references/guide.md" means \`${path.join(directory, "references", "guide.md")}\`.`,
+    `> Read referenced text files with \`read_skill_resource\`: pass \`skill: ${JSON.stringify(skill.name)}\` and \`path\` relative to this skill directory (for example, \`references/guide.md\`). Skill resources may be outside the workspace; do not pass their absolute paths to \`Read\`. For script execution, use absolute paths under Skill Directory with the normal execution tools and permissions.`,
     "",
     "---",
     "",
@@ -396,7 +396,7 @@ function renderSkillInstructions(
     "---",
     ...resourceLines,
     ...(resourceLines.length ? [""] : []),
-    "Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory."
+    "Follow the instructions above for your response."
   ].join("\n");
 }
 

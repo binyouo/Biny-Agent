@@ -118,14 +118,14 @@ test("图表展示、交互和流式安全边界", async (t) => {
       } finally { flushSync(() => previewRoot.unmount()); host.remove(); previewRendering = undefined; }
     });
     newBlock();
-    await t.test("同明暗模式下更换主题仍重新绘制实际色值", async () => {
+    await t.test("同明暗模式下样式变化仍重新绘制实际色值", async () => {
       harness.beautiful = source => { beautifulCalls++; return makeSvg(`${palette["--text"]} ${source}`); };
       render("graph TD; theme");
       await waitFor(() => document.querySelector(".markdown-mermaid text")?.textContent === "#1c1c21 graph TD; theme");
       const svg = document.querySelector(".markdown-mermaid svg");
       const before = beautifulCalls;
       palette["--text"] = "#262641";
-      document.documentElement.dataset.base46Theme = "next-light";
+      document.documentElement.style.setProperty("--app-font-size", "16");
       await waitFor(() => document.querySelector(".markdown-mermaid text")?.textContent === "#262641 graph TD; theme");
       assert.ok(beautifulCalls > before);
       assert.equal(document.querySelector(".markdown-mermaid svg"), svg, "主题重绘保留图表根节点");
@@ -145,7 +145,7 @@ test("图表展示、交互和流式安全边界", async (t) => {
         const svg = host.querySelector(".markdown-mermaid svg");
         flushSync(() => host.querySelector<HTMLButtonElement>('[aria-label="放大图表"]')!.click());
         palette["--text"] = "#eeeeff";
-        document.documentElement.dataset.base46Theme = "preview-dark";
+        document.documentElement.dataset.theme = "dark";
         await waitFor(() => host.querySelector(".markdown-mermaid text")?.textContent === "#eeeeff graph TD; snapshot");
         assert.equal(host.querySelector(".markdown-mermaid svg"), svg);
         assert.equal(host.querySelector(".markdown-diagram-scale")?.textContent, "125%");

@@ -132,7 +132,7 @@ import { defaultModelContextWindow } from "../ai/capabilities.js";
 import { modelCapabilities, modelContextBudget } from "../ai/capabilities.js";
 import { createProviderCredentialPersistence } from "../llm/modelFactory.js";
 import { resolveEditingMode } from "../tools/file/editingMode.js";
-import { resolveMemoryModelAlias, resolveToolModelAlias, type MemoryModelField } from "../llm/toolModel.js";
+import { resolveMemoryModelAlias, resolveToolModelAlias, resolveToolModelReference, type MemoryModelField } from "../llm/toolModel.js";
 import { generateSessionTitle } from "../session/title.js";
 import type { ModelSettings } from "../llm/modelFactory.js";
 import { isModelContextOverflowError } from "../llm/modelErrors.js";
@@ -442,6 +442,8 @@ export class AgentSession {
   private nextSessionMessageIndex = 0;
   /** 新 root turn 开始时替换；同一 turn 的所有 model step 固定使用这份快照。 */
   private activeConfig: AgentConfig;
+  /** 手动压缩独占期间的摘要配置，不改写对话回合或其它功能的 activeConfig。 */
+  private manualCompactionConfig?: AgentConfig;
   private activeModelOverride?: ModelManager;
   private activePersonalization: ResolvedChatPersonalization;
   constructor(private readonly options: AgentSessionOptions) {
@@ -485,8 +487,10 @@ export class AgentSession {
         return model;
       }
       const registry = new ProviderRegistry(this.activeConfig, [], undefined, undefined, undefined, providerCredentials);
-      const model = registry.createModelSettings(alias).model;
-      this.auxiliaryUsageModels.set(model, this.usageModelInfo(alias, this.activeConfig, model, registry.forModel(alias).model));
+      const resolved = resolveToolModelReference(registry, this.activeConfig, alias);
+      if (!resolved) throw new Error(`Unknown model alias: ${alias}`);
+      const model = resolved.provider.createModelSettings(this.activeConfig, resolved.model).model;
+      this.auxiliaryUsageModels.set(model, this.usageModelInfo(alias, this.activeConfig, model, resolved.model));
       return model;
     };
     this.toolModel = () => {
@@ -564,7 +568,7 @@ export class AgentSession {
         return result.text;
       }
     });
-    // 压缩摘要可切换到更便宜的模型。与 memoryModel 一样读取 root-turn 快照；解析失败只
+    // 压缩摘要读取 root-turn 快照或本次手动压缩的独立快照；解析失败只
     // 打 warning 并回退当前对话模型。模型和容量来自同一配置快照，避免 endpoint 更新后复用旧模型。
     const summaryModels = new Map<string, { model: AgentModel; usage: UsageModelInfo }>();
     const currentSummaryModel = (): AgentModel => {
@@ -574,21 +578,22 @@ export class AgentSession {
     };
     const summaryBudgets = new WeakMap<AgentModel, ReturnType<typeof modelContextBudget>>();
     const resolveSummaryModel = (): AgentModel => {
-      const alias = this.activeConfig.context.compaction.summaryModel;
+      const config = this.manualCompactionConfig ?? this.activeConfig;
+      const alias = config.context.compaction.summaryModel;
       if (!alias) return currentSummaryModel();
-      const cacheKey = createHash("sha256").update(JSON.stringify([alias, this.activeConfig.providers, this.activeConfig.models, this.activeConfig.context.maxInputTokens])).digest("hex");
+      const cacheKey = createHash("sha256").update(JSON.stringify([alias, config.providers, config.models, config.context.maxInputTokens])).digest("hex");
       const cached = summaryModels.get(cacheKey);
       if (cached) {
         this.auxiliaryUsageModels.set(cached.model, cached.usage);
         return cached.model;
       }
       try {
-        const registry = new ProviderRegistry(this.activeConfig);
+        const registry = new ProviderRegistry(config);
         const created = registry.createModelSettings(alias).model;
         const resolved = registry.forModel(alias).model;
-        const usage = this.usageModelInfo(alias, this.activeConfig, created, resolved);
+        const usage = this.usageModelInfo(alias, config, created, resolved);
         this.auxiliaryUsageModels.set(created, usage);
-        summaryBudgets.set(created, modelContextBudget(resolved, this.activeConfig.context.maxInputTokens, alias, { reasoning: "off", toolSchemaTokens: 0 }));
+        summaryBudgets.set(created, modelContextBudget(resolved, config.context.maxInputTokens, alias, { reasoning: "off", toolSchemaTokens: 0 }));
         summaryModels.clear();
         summaryModels.set(cacheKey, { model: created, usage });
         return created;
@@ -603,9 +608,12 @@ export class AgentSession {
         resolveSummaryModel,
         getUsageModelInfo: (model) => this.auxiliaryUsageModels.get(model),
         resolveSummaryBudget: (model) => summaryBudgets.get(model),
-        configurationIdentity: () => createHash("sha256").update(JSON.stringify([
-          this.activeConfig.providers, this.activeConfig.models, this.activeConfig.thinking, this.activeConfig.chat.maxOutputTokens
-        ])).digest("hex"),
+        configurationIdentity: () => {
+          const config = this.manualCompactionConfig ?? this.activeConfig;
+          return createHash("sha256").update(JSON.stringify([
+            config.providers, config.models, config.thinking, config.chat.maxOutputTokens
+          ])).digest("hex");
+        },
         onFailure: async () => {
           await this.recorder.recordAndFlush({ type: "assistant_message", content: "", contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.snapshot() });
         }
@@ -970,16 +978,25 @@ export class AgentSession {
           turnId: runtime?.turnId,
           operation: "memory"
         },
-        onUpdated: async () => {
+        onAnalyzed: async (_state, updated) => {
           if (!messageId) return;
           recorder.recordWithRuntimeContext({
             type: "message_metadata",
             messageId,
             metadata: {
               emotionAnalyzed: true,
-              emotionUpdated: true,
-              emotionUpdatedAt: new Date().toISOString()
+              emotionUpdated: updated,
+              ...(updated ? { emotionUpdatedAt: new Date().toISOString() } : {})
             }
+          }, runtime);
+          await recorder.flush();
+        },
+        onFailed: async (reason) => {
+          if (!messageId) return;
+          recorder.recordWithRuntimeContext({
+            type: "message_metadata",
+            messageId,
+            metadata: { emotionAnalyzed: false, emotionError: reason }
           }, runtime);
           await recorder.flush();
         }
@@ -2176,7 +2193,13 @@ export class AgentSession {
         return;
       }
     }
-    if (ordinaryRootMessage) this.emotionAnalysisScheduler.cancel();
+    // 用户消息一落地就防抖调度情绪分析，不等回合完成：回复生成期间的后续模型
+    // 请求能通过 refreshRuntimeTurnContext 读到刚写入的状态，失败回合同样覆盖。
+    if (ordinaryRootMessage && runOptions.emotionAnalysis !== false) {
+      this.emotionAnalysisScheduler.schedule(this.recorder.sessionId, userMessageReference?.id ?? runOptions.messageId);
+    } else if (ordinaryRootMessage) {
+      this.emotionAnalysisScheduler.cancel();
+    }
     await recordRootFatigue();
     if (abortSignal.aborted) {
       recordUserMessage();
@@ -2512,7 +2535,7 @@ export class AgentSession {
         this.runSessionGoalId = undefined;
       }
     }
-    } finally { this.activeModelOverride = undefined; release(); }
+    } finally { this.activeModelOverride?.cancelCatalogRefresh(); this.activeModelOverride = undefined; release(); }
   }
 
   private async *runExternalAcp(input: string, options: AgentRunOptions, providerAlias: string, model: string): AsyncGenerator<AgentSessionEvent> {
@@ -2606,10 +2629,6 @@ export class AgentSession {
       messageQueues,
       personalization: turnPersonalization
     } = args;
-    const autoAnalyzeForTurn = !runOptions.continueFrom?.length
-      && runOptions.retryOfMessageId === undefined
-      && runOptions.recordSessionUserMessage !== false
-      && runOptions.emotionAnalysis !== false;
     // Notice ownership follows this turn's recorder, not the runtime's initial session.
     const taskNotificationSessionId = this.recorder.sessionId;
     let noticeCharacters = 0;
@@ -3491,9 +3510,6 @@ export class AgentSession {
       }
       if (outcome.status === "completed") {
         if (runOptions.retryOrigin || runOptions.retryOfMessageId !== undefined) this.retryScopedView = false;
-        if (autoAnalyzeForTurn) {
-          this.emotionAnalysisScheduler.schedule(this.recorder.sessionId, finalAssistantReference?.id);
-        }
         // 记忆整理是完成回合后的旁路；不等待模型请求，也不让它改变当前回合终态。
         void this.flushSessionSearchIndex().catch(() => undefined);
         if (turnPersonalization.contributeMemories || finalAssistantReference?.id !== undefined) {
@@ -4028,6 +4044,10 @@ export class AgentSession {
     const release = this.beginOperation("conversation compaction");
     const usageBeforeCompaction = this.usageRecords.length;
     try {
+      signal?.throwIfAborted();
+      this.manualCompactionConfig = this.options.configStore
+        ? await this.options.configStore.load(this.options.workspaceRoot)
+        : this.options.config;
       const result = await this.contextMemory.compact(hint, signal);
       if (result.compacted) await this.persistContextCheckpoint(result, "manual", this.contextMessageReferences);
       return this.contextMemory.formatCompaction(result);
@@ -4040,7 +4060,7 @@ export class AgentSession {
           this.recorder.record({ type: "assistant_message", content: "", usage: compactionUsage.length ? sumSessionUsage(compactionUsage) : undefined, contextState: this.contextMemory.snapshot() });
           await this.recorder.flush();
         }
-      } finally { release(); }
+      } finally { this.manualCompactionConfig = undefined; release(); }
     }
   }
 
@@ -4504,9 +4524,12 @@ export class AgentSession {
   }
 
   async close(): Promise<void> {
+    this.activeModelOverride?.cancelCatalogRefresh();
     this.recipeSuggestionsClosed = true;
+    // 先同步封死调度器，再进入任何 await；晚到的调度不得在关闭后创建新分析。
     const recipeClose = this.drainRecipeSuggestions();
     const emotionClose = this.emotionAnalysisScheduler.close();
+    await this.options.modelManager?.close();
     await this.closeActivityContext();
     await this.acpClient?.close();
     await this.sessionSearchIndex.close();

@@ -24,11 +24,20 @@ const nativeAppsSchema = z.object({ apps: z.array(z.object({
   running: z.boolean(),
   bundleId: z.string().min(1).max(256).optional()
 }).passthrough().refine(app => !app.running || app.pid !== undefined, { path: ["pid"], message: "Running applications require a PID" })) }).passthrough();
-const previewDataSchema = z.object({ cursor: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), remainingMs: z.number().min(0).max(8000) }).optional() }).passthrough();
+const nativeIdentitySchema = z.object({ pid: windowTargetSchema.shape.pid, running: z.literal(true),
+  bundleId: z.string().min(1).max(256), name: z.string().min(1).max(256) });
+const previewDataSchema = z.object({ cursor: z.object({
+  x: z.number().min(0).max(1), y: z.number().min(0).max(1), remainingMs: z.number().min(0).max(8000),
+  eventId: z.number().int().nonnegative().optional(), action: z.enum(["click", "drag", "type", "scroll"]).optional(),
+  symbol: z.string().max(64).optional(), image: computerImageSchema.optional(),
+  hotspot: z.object({ x: z.number().min(0).max(26), y: z.number().min(0).max(26) }).optional()
+}).optional() }).passthrough();
 const previewWindowsSchema = z.array(z.object({ window_id: z.number().int().min(0).max(4294967295), onscreen: z.boolean().optional(), minimized: z.boolean().optional() }).passthrough()).optional();
 function previewCursor(data: unknown, now: number): ComputerPreview["cursor"] {
   const cursor = previewDataSchema.parse(data).cursor;
-  return cursor ? { x: cursor.x, y: cursor.y, expiresAt: now + cursor.remainingMs } : undefined;
+  if (!cursor) return undefined;
+  const { remainingMs, ...point } = cursor;
+  return { ...point, expiresAt: now + remainingMs };
 }
 
 function runOcr(imagePath: string, workerPath: string): Promise<string> {
@@ -74,16 +83,18 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
   const returnToChat = (sessionId?: string, projectId?: string, revealBrowser?: boolean): void => { const window = getWindow(); if (!window || window.isDestroyed()) return; if (window.isMinimized()) window.restore(); window.show(); window.focus(); window.webContents.send(computerIpc.navigate, { sessionId, projectId, revealBrowser }); };
   const preview = new ComputerPreviewWindow(control => { void controlComputer(control).catch(() => undefined); }, () => controller.dismissPreview(), getWindow);
   const driver = createDriver(() => controller.crashed());
+  async function readIdentity(pid: number, signal: AbortSignal) {
+    const reply = await driver.daemonCommand("app_identity", { pid }, signal);
+    if (reply.errorCode) throw new Error(reply.errorCode);
+    const parsed = nativeIdentitySchema.safeParse(reply.data);
+    if (!parsed.success || parsed.data.pid !== pid) throw new Error("computer_app_identity_unavailable: 无法确认目标应用身份，不截图或输入。");
+    return parsed.data;
+  }
   const approvals = new ComputerAppApprovals(configStore);
   let approvalWrites = Promise.resolve();
-  const controller = new ComputerUseController(driver, { enabled: config.computer.enabled, previewEnabled: config.computer.previewEnabled, actionLogging: config.computer.actionLogging, auditStore, authorize: async (session, target, signal) => {
+  const controller = new ComputerUseController(driver, { enabled: config.computer.enabled, previewEnabled: config.computer.previewEnabled, actionLogging: config.computer.actionLogging, auditStore, authorize: async (_session, target, signal) => {
     await approvalWrites; signal.throwIfAborted();
-    const reply = await driver.list(session, undefined, signal);
-    if (reply.errorCode) throw new Error(reply.errorCode);
-    const apps = nativeAppsSchema.parse(reply.data).apps;
-    const matches = apps.filter(app => app.pid === target.pid && app.running);
-    const app = matches.length === 1 ? matches[0] : undefined;
-    if (!app?.bundleId) throw new Error("computer_app_identity_unavailable: 无法确认目标应用身份，不截图或输入。");
+    const app = await readIdentity(target.pid, signal);
     signal.throwIfAborted();
     await approvals.authorize({ bundleId: app.bundleId, appName: app.name });
     signal.throwIfAborted();
@@ -109,7 +120,8 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     setSource(id, { label: `窗口 ${windowId}`, sessionId, projectId: sessionId ? sessionProjects.get(sessionId)?.projectId : undefined, lastUsed: Date.now(), capture: async () => {
       const reply = await driver.daemonCommand("pip_frame", { window_id: Number(windowId), request_id: requestId });
       const data = z.object({ state: z.string(), pid: z.number(), last_frame_age_ms: z.number().nullable(), image: computerImageSchema.optional(), error: z.string().optional() }).passthrough().parse(reply.data);
-      return { waiting: data.state === "armed", diagnostic: data.error, frame: data.image ? { image: data.image, target: { pid: data.pid, windowId }, capturedAt: Date.now() - (data.last_frame_age_ms ?? 0) } : undefined };
+      const now = Date.now();
+      return { waiting: data.state === "armed", diagnostic: data.error, frame: data.image ? { image: data.image, target: { pid: data.pid, windowId }, cursor: previewCursor(data, now), capturedAt: now - (data.last_frame_age_ms ?? 0) } : undefined };
     } });
     if (preview.isRetiring(id)) presentSource(id);
   },
@@ -118,6 +130,7 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
   setPreviewVisible: (visible, completing) => { if (closed) return; computerShown = visible; if (visible) presentComputer(); else if (completing) preview.retire("computer"); else preview.remove("computer"); },
   refreshPreview: async (target, signal, launched) => {
     if (closed) throw new Error("Computer use service is closed");
+    if (preview.activeItem() !== "computer") return undefined;
     let launchedName: string | undefined;
     if (!target && launched) {
       const listed = await driver.list("launch-preview", launched.pid, signal);
@@ -373,10 +386,8 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
       if (isDismissed(id)) return { data: { visible: false }, images: [] };
       const current = await configStore.load();
       if (!externalPreviewCurrent() || !current.computer.enabled || !current.computer.previewEnabled) return { data: { visible: false }, images: [] };
-      const apps = nativeAppsSchema.parse((await driver.list("external-preview", target.pid, signal)).data).apps;
+      const identity = await readIdentity(target.pid, signal);
       if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
-      const matches = apps.filter(app => app.pid === target.pid && app.running);
-      const identity = matches.length === 1 ? matches[0] : undefined; if (!identity?.bundleId) throw new Error("computer_app_identity_unavailable");
       await approvals.authorize({ bundleId: identity.bundleId, appName: identity.name }); signal.throwIfAborted();
       if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
       if (isDismissed(id)) return { data: { visible: false }, images: [] };

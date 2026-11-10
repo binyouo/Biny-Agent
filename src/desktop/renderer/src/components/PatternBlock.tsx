@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useAppearance } from "../appearanceContext.js";
+import { useThemeMode } from "../appearanceContext.js";
 import { useHighlightedCode } from "../useHighlightedCode.js";
 import { readPatternPlayerStatus, type PatternPlayerStatus } from "../patternPlayer.js";
 import { CopyButton } from "./CopyButton.js";
@@ -8,7 +8,7 @@ const players = new Set<() => void>();
 
 export function PatternBlock({ code, isStreaming = false }: { code: string; isStreaming?: boolean }): React.JSX.Element {
   const highlighted = useHighlightedCode(code, "javascript", undefined, isStreaming);
-  const { mode, variables } = useAppearance();
+  const mode = useThemeMode();
   const frame = useRef<HTMLIFrameElement>(null);
   const playerWindow = useRef<Window | null>(null);
   const initialized = useRef(false);
@@ -16,8 +16,8 @@ export function PatternBlock({ code, isStreaming = false }: { code: string; isSt
   const [document, setDocument] = useState<string>();
   const [status, setStatus] = useState<PatternPlayerStatus>({ kind: "pattern-state", token, state: "ready" });
   const currentCode = useRef(code);
-  const theme = useRef({ mode, variables });
-  useEffect(() => { currentCode.current = code; theme.current = { mode, variables }; }, [code, mode, variables]);
+  const theme = useRef({ mode });
+  useEffect(() => { currentCode.current = code; theme.current = { mode }; }, [code, mode]);
   const sendCode = useCallback((): void => {
     const target = frame.current?.contentWindow;
     if (!target) return;
@@ -54,7 +54,7 @@ export function PatternBlock({ code, isStreaming = false }: { code: string; isSt
   useEffect(() => {
     frame.current?.contentWindow?.postMessage({ kind: "pattern-control", token, action: "stop" }, "*");
     sendCode();
-  }, [code, mode, variables, token, sendCode]);
+  }, [code, mode, token, sendCode]);
   return <section className="markdown-pattern" data-state={status.state} aria-label="音乐片段">
     <header className="markdown-pattern-header"><span className="markdown-pattern-title"><span className="markdown-pattern-dot" />音乐片段</span>
       <CopyButton value={code} label="复制音乐代码" size={12} /></header>

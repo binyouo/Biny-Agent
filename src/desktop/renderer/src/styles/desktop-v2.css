@@ -49,7 +49,7 @@ select {
 }
 
 :where(button, a[href], input, textarea, select, summary, [tabindex]):focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 1px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -171,8 +171,8 @@ select option:disabled {
 .assistant-action:focus-visible,
 .message-menu-item:focus-visible,
 [role="separator"]:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+  outline: 1px solid var(--color-accent);
+  outline-offset: 0px;
 }
 
 .desktop-root,
@@ -450,7 +450,7 @@ select option:disabled {
 .codex-session-trigger:focus-visible,
 .codex-show-more:focus-visible {
   border-radius: var(--desktop-control-radius);
-  outline: 2px solid var(--color-accent);
+  outline: 1px solid var(--color-accent);
   outline-offset: -2px;
 }
 
@@ -955,7 +955,7 @@ select option:disabled {
   background: var(--surface-hover);
 }
 
-.model-picker-entry:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface-hover); }
+.model-picker-entry:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; background: var(--surface-hover); }
 
 .model-picker-entry[data-fluid-hover-active] {
   color: var(--text);
@@ -1218,7 +1218,11 @@ select option:disabled {
 .desktop-dialog-content .astryx-text-input:focus-within {
   border-color: var(--border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--field-focus-ring);
+  box-shadow: inset 0 0 0 1px var(--field-focus-ring);
+}
+
+.desktop-dialog-content .astryx-text-input input:focus-visible {
+  outline: none;
 }
 
 .desktop-dialog-form {
@@ -1418,8 +1422,8 @@ select option:disabled {
 
 .desktop-settings-dialog .settings-nav-list button:focus-visible,
 .desktop-settings-dialog .settings-close-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 1px solid var(--accent);
+  outline-offset: 0px;
 }
 
 /* 侧栏图标容器只提供位宽；图形语义在新 SettingsNavIcon（duotone 软底 + 细节）里。 */
@@ -1511,8 +1515,8 @@ select option:disabled {
 }
 
 .settings-titlebar h2:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline: 1px solid var(--accent);
+  outline-offset: 0px;
   border-radius: 4px;
 }
 
@@ -1637,7 +1641,7 @@ select option:disabled {
 .settings-page-footer button:focus-visible,
 .settings-confirm-actions button:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 3px var(--st-ring);
+  box-shadow: none;
 }
 
 .settings-page-footer button:disabled,
@@ -1765,9 +1769,10 @@ select option:disabled {
   line-height: 1.5;
 }
 
-/* 输入与下拉共用控件高度和细边界，焦点以边框表示。 */
+/* 输入与下拉共用控件高度和细边界，焦点以边框表示；.activity-number-input
+   内的裸输入由容器统一负责视觉，不参与本条。 */
 .desktop-settings-dialog .settings-modal .settings-sections input[type="text"],
-.desktop-settings-dialog .settings-modal .settings-sections input[type="number"],
+.desktop-settings-dialog .settings-modal .settings-sections input[type="number"]:not(.activity-number-input input),
 .desktop-settings-dialog .settings-modal .settings-sections input[type="search"],
 .desktop-settings-dialog .settings-modal .settings-sections input[type="password"],
 .desktop-settings-dialog .settings-modal .settings-sections input:not([type]),
@@ -1785,7 +1790,7 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-sections input[type="text"]:focus-visible,
-.desktop-settings-dialog .settings-modal .settings-sections input[type="number"]:focus-visible,
+.desktop-settings-dialog .settings-modal .settings-sections input[type="number"]:not(.activity-number-input input):focus-visible,
 .desktop-settings-dialog .settings-modal .settings-sections input[type="search"]:focus-visible,
 .desktop-settings-dialog .settings-modal .settings-sections input[type="password"]:focus-visible,
 .desktop-settings-dialog .settings-modal .settings-sections input:not([type]):focus-visible,
@@ -1793,7 +1798,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-sections select:focus-visible {
   border-color: var(--st-field-border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--st-field-ring);
+  box-shadow: inset 0 0 0 1px var(--st-field-ring);
 }
 
 /* 统一布尔开关行：左侧标题与说明、右侧滑动开关。 */
@@ -2273,8 +2278,8 @@ select option:disabled {
 .activity-icon-button:focus-visible,
 .activity-secondary-button:focus-visible,
 .activity-danger-button:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
-  outline-offset: 2px;
+  outline: 1px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: 0px;
 }
 
 .activity-permission-list {
@@ -2389,29 +2394,35 @@ select option:disabled {
   font-weight: 550;
 }
 
-.activity-field > input,
+.activity-field > input:not(.settings-field),
 .activity-field > textarea,
 .activity-number-input {
   width: 100%;
   min-height: 38px;
-  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border: 1px solid var(--st-field-border, var(--border-subtle));
   border-radius: 9px;
   outline: 0;
   color: var(--text);
-  background: var(--surface-soft);
+  background: var(--st-field-bg, var(--surface));
   font-size: calc(12px * var(--font-scale));
 }
 
-.activity-field > input,
+.activity-field > input:not(.settings-field),
 .activity-field > textarea {
   padding: 7px 9px;
 }
 
-.activity-field > input:focus-visible,
+.activity-field > input:not(.settings-field):hover:not(:disabled),
+.activity-field > textarea:hover:not(:disabled),
+.activity-number-input:has(input:hover:not(:disabled)) {
+  border-color: var(--st-field-border-hover, var(--border));
+}
+
+.activity-field > input:not(.settings-field):focus-visible,
 .activity-field > textarea:focus-visible,
 .activity-number-input:has(input:focus-visible) {
-  border-color: color-mix(in srgb, var(--border) 75%, transparent);
-  box-shadow: 0 0 0 2px var(--field-focus-ring);
+  border-color: var(--st-field-border, var(--border-subtle));
+  box-shadow: inset 0 0 0 1px var(--st-field-ring, var(--field-focus-ring));
 }
 
 .activity-number-input {
@@ -2423,7 +2434,8 @@ select option:disabled {
 .activity-number-input input {
   width: 100%;
   min-width: 0;
-  height: 36px;
+  height: 100%;
+  min-height: 0;
   padding: 0 9px;
   border: 0;
   outline: 0;
@@ -2444,6 +2456,7 @@ select option:disabled {
   color: var(--text-tertiary);
   font-size: calc(10px * var(--font-scale));
   font-style: normal;
+  background: transparent;
 }
 
 /* 设置行（.setting-row）内的数字输入：固定宽度靠右。必须与上一条同层声明，
@@ -2554,7 +2567,7 @@ select option:disabled {
 .message-selection-reference { position: fixed; z-index: 2200; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; color: var(--text); background: var(--color-background-popover); box-shadow: 0 3px 12px var(--shadow-soft); white-space: nowrap; cursor: pointer; }
 .message-selection-reference:hover { background: var(--surface-hover); }
 .message-selection-reference:disabled { cursor: wait; opacity: .8; }
-.message-selection-reference:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.message-selection-reference:focus-visible { outline: 1px solid var(--text); outline-offset: 0px; }
 .markdown-reference-invalid { color: var(--text-secondary); }
 .reference-detail-content { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity-memory-entries { display: flex; flex-direction: column; gap: 8px; }
@@ -2609,7 +2622,7 @@ select option:disabled {
 .activity-memory-disclosure[aria-expanded="true"] > .activity-memory-disclosure-chevron,
 .activity-memory-run-details[open] > summary > .activity-memory-disclosure-chevron { transform: rotate(180deg); }
 .activity-memory-disclosure:hover { color: var(--text); }
-.activity-memory-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.activity-memory-disclosure:focus-visible { outline: 1px solid var(--accent); outline-offset: 0px; }
 .activity-memory-archive-list[hidden] { display: none; }
 .activity-memory-sleep-preview,
 .activity-memory-embedding-progress,
@@ -2662,7 +2675,7 @@ select option:disabled {
 
 /* —— 内容区单行输入与下拉：统一控件高度与圆角 —— */
 .desktop-settings-dialog .settings-modal .settings-sections input[type="text"],
-.desktop-settings-dialog .settings-modal .settings-sections input[type="number"],
+.desktop-settings-dialog .settings-modal .settings-sections input[type="number"]:not(.activity-number-input input),
 .desktop-settings-dialog .settings-modal .settings-sections input[type="search"],
 .desktop-settings-dialog .settings-modal .settings-sections input[type="password"],
 .desktop-settings-dialog .settings-modal .settings-sections input:not([type]) {
@@ -2675,12 +2688,9 @@ select option:disabled {
   min-height: 0;
 }
 
-/* 包装器内的裸输入不吃外层控件的边框与内边距。all:unset 抹平 .settings-sections
-   input[type="number"] 的通用边框/背景/焦点环（含焦点态），再显式声明所需属性；
-   否则多条同权重规则散落在后文，焦点环和边框会从容器内层漏出来形成双层框。 */
-.desktop-settings-dialog .settings-modal .settings-sections .activity-number-input > input,
-.desktop-settings-dialog .settings-modal .settings-sections .activity-number-input > input:focus-visible {
-  all: unset;
+/* 包装器内的裸输入不吃外层控件的边框与内边距：输入框自身不挂 settings-field，
+   视觉归一层由 .activity-number-input 提供（含 hover、focus 的边框/焦点环）。 */
+.desktop-settings-dialog .settings-modal .settings-sections .activity-number-input > input {
   box-sizing: border-box;
   display: block;
   flex: 1 1 auto;
@@ -2688,6 +2698,8 @@ select option:disabled {
   min-width: 0;
   height: 100%;
   padding: 0 9px;
+  border: 0;
+  outline: 0;
   color: var(--text);
   background: transparent;
   font: inherit;
@@ -2699,6 +2711,7 @@ select option:disabled {
 }
 
 /* —— 对话框与面板输入（模型连接、记忆编辑、详情层） —— */
+/* 外层无背景的连接/详情输入：与同页字段共用 token，不让 input 透明落在卡片上。 */
 .desktop-settings-dialog .settings-modal .connection-field > input,
 .desktop-settings-dialog .settings-modal .secret-input-row input,
 .desktop-settings-dialog .settings-modal .settings-confirm-panel input,
@@ -2707,12 +2720,20 @@ select option:disabled {
   height: var(--st-control-h);
   min-height: 0;
   padding: 0 var(--st-control-px);
-  border: 1px solid var(--border);
+  border: 1px solid var(--st-field-border);
   border-radius: var(--st-button-radius);
-  background: transparent;
-  box-shadow: 0 1px 2px var(--shadow);
+  background: var(--st-field-bg);
+  box-shadow: none;
   font-size: calc(0.875 * var(--st-rem));
   transition: color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease);
+}
+
+.desktop-settings-dialog .settings-modal .connection-field > input:hover:not(:disabled),
+.desktop-settings-dialog .settings-modal .secret-input-row input:hover:not(:disabled),
+.desktop-settings-dialog .settings-modal .settings-confirm-panel input:hover:not(:disabled),
+.desktop-settings-dialog .settings-modal .web-browser-url-row input:hover:not(:disabled),
+.desktop-settings-dialog .settings-modal .provider-row-item > input:hover:not(:disabled) {
+  border-color: var(--st-field-border-hover);
 }
 
 .desktop-settings-dialog .settings-modal .connection-field > input:focus,
@@ -2721,19 +2742,19 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .web-browser-url-row input:focus,
 .desktop-settings-dialog .settings-modal .provider-row-item > input:focus,
 .desktop-settings-dialog .settings-modal .connection-select:focus {
-  border-color: var(--border);
+  border-color: var(--st-field-border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--field-focus-ring);
+  box-shadow: inset 0 0 0 1px var(--st-field-ring);
 }
 
 .desktop-settings-dialog .settings-modal .connection-select {
   height: var(--st-control-h);
   min-height: 0;
   padding-inline: var(--st-control-px);
-  border: 1px solid var(--border);
+  border: 1px solid var(--st-field-border);
   border-radius: var(--st-button-radius);
-  background: transparent;
-  box-shadow: 0 1px 2px var(--shadow);
+  background: var(--st-field-bg);
+  box-shadow: none;
   transition: color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease);
 }
 
@@ -2886,7 +2907,7 @@ select option:disabled {
 }
 
 /* 活动页字段控件高度归一。 */
-.desktop-settings-dialog .settings-modal .activity-field > input,
+.desktop-settings-dialog .settings-modal .activity-field > input:not(.settings-field),
 .desktop-settings-dialog .settings-modal .activity-field > textarea,
 .desktop-settings-dialog .settings-modal .activity-number-input {
   min-height: var(--st-control-h);
@@ -2944,7 +2965,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger:focus-visible {
   border-color: var(--st-field-border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--st-field-ring);
+  box-shadow: inset 0 0 0 1px var(--st-field-ring);
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker.is-disabled {
@@ -3297,7 +3318,7 @@ select option:disabled {
   gap: 7px;
   margin: 8px 8px 4px;
   padding: 0 10px;
-  border: 1px solid var(--st-field-border);
+  border: 1px solid transparent;
   border-radius: 8px;
   color: var(--text-tertiary);
   background: var(--st-field-bg);
@@ -3537,7 +3558,7 @@ select option:disabled {
 .provider-row-item > input:focus {
   border-color: var(--border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--field-focus-ring);
+  box-shadow: inset 0 0 0 1px var(--field-focus-ring);
 }
 
 .provider-row-value { color: var(--text-secondary); font-size: calc(0.8125 * var(--st-rem)); }
@@ -3579,7 +3600,7 @@ select option:disabled {
 .secret-input-row input:focus {
   border-color: var(--border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--field-focus-ring);
+  box-shadow: inset 0 0 0 1px var(--field-focus-ring);
 }
 
 /* 测试结果独立成行：成功带时长，失败直接给原因；长错误整体折行不撑破面板。 */
@@ -3824,7 +3845,7 @@ select option:disabled {
   align-items: center;
   gap: 7px;
   padding: 0 10px;
-  border: 1px solid var(--st-field-border);
+  border: 1px solid transparent;
   border-radius: var(--st-button-radius);
   color: var(--text-tertiary);
   background: var(--st-field-bg);
@@ -3992,19 +4013,19 @@ select option:disabled {
   flex: 1;
   height: 30px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--st-field-border);
   border-radius: 8px;
   color: var(--text);
-  background: var(--surface-soft);
+  background: var(--st-field-bg);
   font-size: calc(0.75 * var(--st-rem));
 }
 
 .provider-manual-row input:first-of-type { flex: 1.4; }
 
 .provider-manual-row input:focus {
-  border-color: var(--border);
+  border-color: var(--st-field-border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--field-focus-ring);
+  box-shadow: inset 0 0 0 1px var(--st-field-ring);
 }
 
 /* 危险区。 */
@@ -4142,9 +4163,9 @@ select option:disabled {
 .provider-dialog select:focus-visible {
   border-color: var(--border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--field-focus-ring);
+  box-shadow: inset 0 0 0 1px var(--field-focus-ring);
 }
-.provider-dialog summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.provider-dialog summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 0px; }
 .provider-dialog .model-profile-thinking-fields > label { grid-template-columns: calc(4 * var(--st-rem)) minmax(0, 1fr); font-size: calc(0.75 * var(--st-rem)); }
 
 /* JSON 编辑器：等宽、不可拉伸，语法错误行内提示。 */
@@ -4163,7 +4184,7 @@ select option:disabled {
 .provider-json-editor:focus {
   border-color: var(--border);
   outline: none;
-  box-shadow: 0 0 0 2px var(--field-focus-ring);
+  box-shadow: inset 0 0 0 1px var(--field-focus-ring);
 }
 
 .provider-json-error { margin: 0; color: var(--red-text); font-size: calc(0.75 * var(--st-rem)); }
@@ -4211,8 +4232,8 @@ select option:disabled {
 .biny-session-goal-actions button { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: none; color: var(--text-secondary); padding: 4px; cursor: pointer; }
 .biny-session-goal-actions button svg { width: calc(15px * var(--font-scale, 1)); height: calc(15px * var(--font-scale, 1)); }
 .biny-session-goal-actions button:hover:not(:disabled) { background: var(--surface-soft); color: var(--text); }
-.biny-session-goal button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.biny-session-goal-editor:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--field-focus-ring); }
+.biny-session-goal button:focus-visible { outline: 1px solid var(--accent); outline-offset: 0px; }
+.biny-session-goal-editor:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--field-focus-ring); }
 .biny-session-goal-actions button:disabled, .biny-session-goal-editor:disabled { opacity: .5; cursor: default; }
 .biny-session-goal-details { margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .biny-session-goal-objective { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; margin: 0 0 10px; }
@@ -4251,7 +4272,7 @@ select option:disabled {
 .biny-todo-progress-heading::-webkit-details-marker { display: none; }
 .biny-todo-progress-heading > svg { flex: none; transform: rotate(-90deg); }
 .biny-todo-progress[open] .biny-todo-progress-heading > svg { transform: none; }
-.biny-todo-progress-heading:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.biny-todo-progress-heading:focus-visible { outline: 1px solid var(--accent); outline-offset: -3px; }
 .biny-todo-progress-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .biny-todo-progress-count { flex: none; color: var(--green-text); font-weight: 550; }
 .biny-todo-progress-list { display: grid; gap: calc(var(--todo-unit) * .625); max-height: min(30vh, 280px); overflow: auto; margin: 0; padding: 0 var(--todo-unit) calc(var(--todo-unit) * .75); list-style: none; }
@@ -4270,7 +4291,7 @@ select option:disabled {
 .biny-plan-card svg { width: var(--plan-unit); height: var(--plan-unit); flex-shrink: 0; }
 .biny-plan-heading { all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; width: 100%; padding: calc(var(--plan-unit) * .75) var(--plan-unit); cursor: pointer; transition: background-color 150ms cubic-bezier(.4, 0, .2, 1); }
 .biny-plan-heading:hover { background: color-mix(in srgb, var(--plan-muted) 50%, transparent); }
-.biny-plan-heading:focus-visible { outline: 2px solid var(--plan-primary); outline-offset: -2px; }
+.biny-plan-heading:focus-visible { outline: 1px solid var(--plan-primary); outline-offset: -2px; }
 .biny-plan-heading-main { display: flex; align-items: center; gap: calc(var(--plan-unit) * .625); min-width: 0; }
 .biny-plan-heading-main > svg, .biny-plan-chevron, .biny-plan-progress { color: var(--plan-muted-text); }
 .biny-plan-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
@@ -4336,7 +4357,7 @@ select option:disabled {
   gap: var(--st-control-gap);
   white-space: nowrap;
 }
-.desktop-settings-dialog .settings-modal .web-search-settings .web-search-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.desktop-settings-dialog .settings-modal .web-search-settings .web-search-action:focus-visible { outline: 1px solid var(--accent); outline-offset: 0px; }
 
 /* 设置页的同类操作共享反馈；导航、分段选择和开关维持各自的控件形态。 */
 .desktop-settings-dialog :is(.settings-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-page-footer .settings-save-button, .settings-confirm-actions button:last-child) {
@@ -4353,8 +4374,8 @@ select option:disabled {
   box-shadow: none;
 }
 .desktop-settings-dialog :is(.settings-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-secondary-button, .activity-secondary-button, .web-search-action, .settings-page-footer button, .settings-confirm-actions button):focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 1px solid var(--accent);
+  outline-offset: 0px;
 }
 .desktop-settings-dialog .settings-modal :is(.settings-secondary-button, .activity-secondary-button, .biny-mcp-secondary-button, .biny-mcp-clipboard-button, .settings-plugin-action) {
   border-color: var(--st-action-border);

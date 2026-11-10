@@ -5,10 +5,12 @@ import { toolCallTree } from "../../toolCallTree.js";
 import { skillActivityLabels, type SkillActivity } from "../../skillActivity.js";
 import { ToolExecutionStatus } from "../chat/ToolExecutionStatus.js";
 
-export function WorkspaceToolsPanel({ tools, skills = [] }: { tools: TimelineTool[]; skills?: readonly SkillActivity[] }): React.JSX.Element {
-  const newest = toolCallTree(tools).reverse();
-  const active = (tool: TimelineTool): boolean => tool.status === "running" || tool.status === "waiting";
-  const calls = [...newest.filter(active), ...newest.filter(tool => !active(tool))];
+export const WorkspaceToolsPanel = React.memo(function WorkspaceToolsPanel({ tools, skills = [] }: { tools: TimelineTool[]; skills?: readonly SkillActivity[] }): React.JSX.Element {
+  const calls = React.useMemo(() => {
+    const newest = toolCallTree(tools).reverse();
+    const active = (tool: TimelineTool): boolean => tool.status === "running" || tool.status === "waiting";
+    return [...newest.filter(active), ...newest.filter(tool => !active(tool))];
+  }, [tools]);
   return <section className="inspector-utility-panel inspector-tools-panel">
     <header className="inspector-utility-heading"><h2>工具运行</h2><p>技能加载与工具调用的状态、错误与耗时。</p></header>
     <div className="inspector-result-scroll">
@@ -17,9 +19,9 @@ export function WorkspaceToolsPanel({ tools, skills = [] }: { tools: TimelineToo
       : <ol className="tool-run-list" aria-label="工具运行记录">{calls.map(tool => <ToolRun key={tool.id} tool={tool} />)}</ol>}
     </div>
   </section>;
-}
+});
 
-function ToolRun({ tool }: { tool: TimelineTool }): React.JSX.Element {
+const ToolRun = React.memo(function ToolRun({ tool }: { tool: TimelineTool }): React.JSX.Element {
   const input = typeof tool.args === "string" ? tool.args : JSON.stringify(tool.args);
   const timestamp = tool.timestamp && Number.isFinite(Date.parse(tool.timestamp)) ? tool.timestamp : undefined;
   return <li className="tool-run-card" data-tool-call-id={tool.id}>
@@ -38,4 +40,4 @@ function ToolRun({ tool }: { tool: TimelineTool }): React.JSX.Element {
     {tool.error ? <div className="tool-run-error" role="alert">{tool.error}</div> : null}
     {tool.children?.length ? <ol className="tool-run-children" aria-label="内部工具调用">{tool.children.map(child => <ToolRun key={child.id} tool={child} />)}</ol> : null}
   </li>;
-}
+});

@@ -19,6 +19,7 @@ import type {
   ActivityAnalysisCommit,
   ActivityAnalysisReference,
   ActivityAnalysisEntityDetails,
+  ActivityAnalysisPerson,
   ActivityAnalysisReportRow,
   ActivityEventSummary,
   ActivityPendingAnalysisSession,
@@ -205,7 +206,7 @@ export interface ActivityReportResult {
 }
 
 // 仅进程内传递原骨架所有权，不改变 CLI JSON、REST 或 Desktop IPC 的结果字段。
-const reportCacheGenerations = new WeakMap<ActivityReportResult, string>();
+const reportCacheGenerations = new WeakMap<ActivityReportResult, { generation?: string; sourceHash?: string }>();
 
 export interface ActivityReportStats {
   sessionCount: number;
@@ -400,7 +401,7 @@ export async function analyzeActivitySession(
     topics: parsed.topics,
     prs: entityDetails.prs,
     issues: entityDetails.issues,
-    people: entityDetails.people,
+    people: normalizePeople(entityDetails.people),
     versions: entityDetails.versions,
     decisions: entityDetails.decisions,
     entities: genericEntities,
@@ -515,11 +516,15 @@ export async function buildActivityReport(
   deps.signal?.throwIfAborted();
   const now = deps.now?.() ?? new Date();
   const range = resolveActivityReportRange(date, now);
+  const remaining = deps.store.listSessionsPendingAnalysisForDateRange(range.startIso, range.endIso, 200);
+  const source = deps.store.listReportSourceForDateRange(range.startIso, range.endIso);
+  const sourceHash = createHash("sha256").update(JSON.stringify([source, remaining.length])).digest("hex");
   // 明确请求骨架时仍渲染结构化分析，避免复用此前缓存的叙事正文。
   if (!options.force && !options.skeletonOnly) {
     const cached = deps.store.getSummary("daily", range.label)?.stats;
     const generatedAt = cached?.reportGeneratedAt;
     if (typeof cached?.report === "string" && typeof generatedAt === "number" && cached.reportStats && cached.reportState
+      && cached.reportState.sourceHash === sourceHash
       && (range.label !== formatLocalDate(now) || now.getTime() - generatedAt <= 600_000)) {
       const state = cached.reportState;
       return {
@@ -539,11 +544,9 @@ export async function buildActivityReport(
     }
   }
   deps.signal?.throwIfAborted();
-  const remaining = deps.store.listSessionsPendingAnalysisForDateRange(range.startIso, range.endIso, 200);
   const blocked = remaining.length > 0;
   const pendingModel = remaining.length;
   const message = blocked ? `还有 ${String(remaining.length)} 个已结束会话尚未完成分析。` : undefined;
-  const source = deps.store.listReportSourceForDateRange(range.startIso, range.endIso);
   const { markdown, stats } = renderActivityReport(source, range.label);
   const result: ActivityReportResult = {
     date: range.label,
@@ -557,13 +560,14 @@ export async function buildActivityReport(
     message,
     stats
   };
+  reportCacheGenerations.set(result, { sourceHash });
   persistActivityReport(deps.store, result, now);
   return result;
 }
 
 /** 失败退回原骨架前只核对所有权，不刷新缓存、时间戳或 generation。 */
 export function isActivityReportCurrent(store: ActivityStore, source: ActivityReportResult): boolean {
-  const expectedGeneration = reportCacheGenerations.get(source);
+  const expectedGeneration = reportCacheGenerations.get(source)?.generation;
   return expectedGeneration !== undefined
     && store.getSummary("daily", source.date)?.stats.reportState?.generation === expectedGeneration;
 }
@@ -575,16 +579,18 @@ export function persistActivityReport(
   now = new Date(),
   source?: ActivityReportResult
 ): boolean {
-  const expectedGeneration = source === undefined ? undefined : reportCacheGenerations.get(source);
+  const expectedGeneration = source === undefined ? undefined : reportCacheGenerations.get(source)?.generation;
   // 有持久化目标的叙事只能提交当前进程实际生成的原骨架，不能猜测旧缓存的所有权。
   if (source !== undefined && expectedGeneration === undefined) return false;
   const generation = randomUUID();
+  const sourceHash = reportCacheGenerations.get(source ?? result)?.sourceHash;
   const committed = store.writeDailyReportCache(result.date, {
     report: result.markdown,
     reportGeneratedAt: now.getTime(),
     reportStats: result.stats,
     reportState: {
       generation,
+      sourceHash,
       sessionCount: result.sessionCount,
       pendingModel: result.pendingModel,
       blocked: result.blocked,
@@ -592,7 +598,7 @@ export function persistActivityReport(
       narrativeModel: result.narrativeModel
     }
   }, () => buildActivitySummary(store, "daily", result.date, now), expectedGeneration);
-  if (committed) reportCacheGenerations.set(result, generation);
+  if (committed) reportCacheGenerations.set(result, { generation, sourceHash });
   return committed;
 }
 
@@ -820,7 +826,7 @@ function normalizeEntityGroup(value: Record<string, unknown>): ActivityAnalysisE
     prs: normalizeReferences(value.prs, 20),
     issues: normalizeReferences(value.issues, 20),
     commits: normalizeCommits(value.commits, 20),
-    people: normalizePeople(normalizePeopleValues(value.people, 20)),
+    people: normalizePeopleValues(value.people, 20),
     identifiers: normalizeStrings(value.identifiers, 30, 120),
     repos: normalizeStrings(value.repos, 10, 120),
     versions: normalizeStrings(value.versions, 10, 40),
@@ -1078,7 +1084,7 @@ function normalizeEntityDetails(output: AnalysisOutput): ActivityAnalysisEntityD
     prs,
     issues,
     commits,
-    people: normalizePeople(people),
+    people,
     identifiers: output.identifiers.length ? output.identifiers : grouped?.identifiers ?? [],
     repos: output.repos.length ? output.repos : grouped?.repos ?? [],
     versions: output.versions.length ? output.versions : grouped?.versions ?? [],
@@ -1121,7 +1127,7 @@ interface ReportEntities {
   prs: ActivityAnalysisReference[];
   issues: ActivityAnalysisReference[];
   commits: ActivityAnalysisCommit[];
-  people: string[];
+  people: Array<{ handle: string; name?: string }>;
   identifiers: string[];
   repos: string[];
   versions: string[];
@@ -1152,13 +1158,19 @@ function mergeReportEntities(target: ReportEntities, row: ActivityAnalysisReport
   };
   mergeRefs(target.prs, details?.prs ?? row.prs);
   mergeRefs(target.issues, details?.issues ?? row.issues);
+  for (const value of details?.people ?? row.people) {
+    const person = reportPerson(value);
+    const existing = target.people.find((item) => item.handle.toLowerCase() === person.handle.toLowerCase());
+    if (!existing) target.people.push(person);
+    else if (!existing.name) existing.name = person.name;
+  }
   const commits = details?.commits ?? row.commits ?? [];
   for (const item of commits) {
     if (!target.commits.some((current) => `${current.repo ?? ""}#${current.ref ?? current.hash ?? current.label ?? ""}`
       === `${item.repo ?? ""}#${item.ref ?? item.hash ?? item.label ?? ""}`)) target.commits.push(item);
   }
   for (const [name, values] of [
-    ["people", details?.people ?? row.people], ["identifiers", details?.identifiers ?? row.identifiers ?? []],
+    ["identifiers", details?.identifiers ?? row.identifiers ?? []],
     ["repos", details?.repos ?? row.repos ?? []], ["versions", details?.versions ?? row.versions],
     ["decisions", details?.decisions ?? row.decisions]
   ] as const) {
@@ -1180,7 +1192,7 @@ function reportTokens(session: ActivityReportSourceSession): Set<string> {
   for (const repo of details?.repos ?? row.repos ?? []) tokens.add(`repo:${repo.toLowerCase()}`);
   for (const id of details?.identifiers ?? row.identifiers ?? []) tokens.add(`id:${id.toLowerCase()}`);
   for (const pr of details?.prs ?? row.prs) if (pr.repo) tokens.add(`repo:${pr.repo.toLowerCase()}`);
-  for (const person of details?.people ?? row.people) tokens.add(`person:${person.toLowerCase()}`);
+  for (const person of details?.people ?? row.people) tokens.add(`person:${reportPerson(person).handle.toLowerCase()}`);
   for (const url of session.browserUrls) {
     try {
       const host = new URL(url).host.replace(/^www\./u, "");
@@ -1197,7 +1209,7 @@ function clusterTokens(cluster: ReportCluster): Set<string> {
   for (const repo of cluster.entities.repos) tokens.add(`repo:${repo.toLowerCase()}`);
   for (const id of cluster.entities.identifiers) tokens.add(`id:${id.toLowerCase()}`);
   for (const pr of cluster.entities.prs) if (pr.repo) tokens.add(`repo:${pr.repo.toLowerCase()}`);
-  for (const person of cluster.entities.people) tokens.add(`person:${person.toLowerCase()}`);
+  for (const person of cluster.entities.people) tokens.add(`person:${person.handle.toLowerCase()}`);
   for (const session of cluster.sessions) {
     for (const token of reportTokens(session)) if (token.startsWith("host:")) tokens.add(token);
   }
@@ -1292,11 +1304,18 @@ function renderReportEntities(entities: ReportEntities): string {
   if (entities.prs.length) lines.push(`- **PRs**: ${entities.prs.map(link).join("、")}`);
   if (entities.issues.length) lines.push(`- **Issues**: ${entities.issues.map(link).join("、")}`);
   if (entities.commits.length) lines.push(`- **Commits**: ${entities.commits.map(link).join("、")}`);
-  if (entities.people.length) lines.push(`- **人**: ${entities.people.join("、")}`);
+  if (entities.people.length) lines.push(`- **人**: ${entities.people.map(({ handle, name }) => name && name !== handle ? `${name} (${handle})` : handle).join("、")}`);
   if (entities.versions.length) lines.push(`- **版本**: ${entities.versions.map((value) => `\`${value}\``).join("、")}`);
   if (entities.identifiers.length) lines.push(`- **关键标识**: ${entities.identifiers.slice(0, 12).map((value) => `\`${value}\``).join("、")}`);
   if (entities.decisions.length) lines.push(`- **决定/产出**:\n  - ${entities.decisions.join("\n  - ")}`);
   return lines.join("\n");
+}
+
+function reportPerson(value: ActivityAnalysisPerson): { handle: string; name?: string } {
+  if (typeof value !== "string") return { ...value };
+  // 旧分析把结构化人物保存成 handle (name)，读取时恢复其身份以避免重复聚合。
+  const legacy = /^(\S+) \(([^()]+)\)$/u.exec(value);
+  return legacy ? { handle: legacy[1]!, name: legacy[2] } : { handle: value };
 }
 
 function formatLocalDate(date: Date): string {

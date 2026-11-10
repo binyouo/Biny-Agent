@@ -5,7 +5,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-const legacy = `() => [...new Map(turns.flatMap((turn) => skillActivities(turn.skills, turn.capabilitySelection?.skills, turn.tools, skillLabels)).map((skill) => [skill.name, skill])).values()]`;
+const legacy = `() => [...new Map(turns.flatMap((turn) => skillActivities(turn.skills, undefined, [], skillLabels)).map((skill) => [skill.name, skill])).values()]`;
 const compact = (value: string): string => value.replace(/\s+/gu, "");
 function checkCalls(node: ts.Node, file: ts.SourceFile, calls: readonly string[], constructors: readonly string[]): void {
   const visit = (part: ts.Node): void => {
@@ -35,8 +35,8 @@ function selectMemo(source: string): string {
   assert.ok(callback && ts.isArrowFunction(callback) && callback.parameters.length === 0);
   assert.equal(compact(dependencies?.getText(file) ?? ""), "[turns,skillLabels]");
   checkCalls(callback, file, ["skillActivities", "loaded.add", "turns.flatMap",
-    "turns.flatMap((turn) => skillActivities(turn.skills, turn.capabilitySelection?.skills, turn.tools, skillLabels)).map",
-    "new Map(turns.flatMap((turn) => skillActivities(turn.skills, turn.capabilitySelection?.skills, turn.tools, skillLabels)).map((skill) => [skill.name, skill])).values"], ["Map", "Set"]);
+    "turns.flatMap((turn) => skillActivities(turn.skills, undefined, [], skillLabels)).map",
+    "new Map(turns.flatMap((turn) => skillActivities(turn.skills, undefined, [], skillLabels)).map((skill) => [skill.name, skill])).values"], ["Map", "Set"]);
   return callback.getText(file);
 }
 const memo = selectMemo(readFileSync("src/desktop/renderer/src/App.tsx", "utf8"));
@@ -46,7 +46,7 @@ assert.equal(functions.length, 1);
 const formatter = functions[0];
 assert.ok(formatter);
 checkCalls(formatter, skillFile, ["labels?.get", "/^[a-f\\d]{32}$/iu.test", "value.includes", "value.slice", "value.lastIndexOf",
-  '(value.includes(":") ? value.slice(value.lastIndexOf(":") + 1) : value).trim', "nameFor", "activities.set", "activities.values"], ["Map"]);
+  '(value.includes(":") ? value.slice(value.lastIndexOf(":") + 1) : value).trim', "nameFor", "activities.set", "activities.values", "activities.has", "Array.isArray"], ["Map"]);
 const formatterSource = formatter.getText(skillFile).replace(/^export /u, "");
 interface Turn { skills: string[]; capabilitySelection?: { skills: string[] }; tools: Array<{ status: string }> }
 interface Observation { result: Array<{ name: string; status: string }>; formatterCalls: number; maps: number; labelGets: number }

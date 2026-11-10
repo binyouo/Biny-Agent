@@ -23,7 +23,6 @@ import {
   type SessionCatalogRecord
 } from "../../../session/catalog.js";
 import { normalizeFontPreference } from "../../fontPreference.js";
-import { normalizeAppearancePreference } from "../../../appearance/preferences.js";
 import type {
   DesktopSettingsConflict,
   DesktopSettingsChatSnapshot,
@@ -266,7 +265,6 @@ export class DesktopSettingsTransaction {
           await this.state.applySettingsPreferences({
             themePreference: input.themePreference,
             fontPreference: input.fontPreference,
-            appearancePreference: input.appearancePreference
           }, preferences.revision);
           preferencesCommitted = true;
           journal.segments.preferences.state = "committed";
@@ -306,7 +304,6 @@ export class DesktopSettingsTransaction {
           preferenceRevision: savedPreferences.revision,
           themePreference: savedPreferences.themePreference,
           fontPreference: savedPreferences.fontPreference,
-          appearancePreference: savedPreferences.appearancePreference,
           configRevision: modelSelection?.configRevision ?? ""
         });
         try {
@@ -743,7 +740,6 @@ export class DesktopSettingsTransaction {
       preferenceRevision: preferences.revision,
       themePreference: preferences.themePreference,
       fontPreference: preferences.fontPreference,
-      appearancePreference: preferences.appearancePreference,
       pendingRecovery
     };
   }
@@ -789,7 +785,6 @@ export class DesktopSettingsTransaction {
       configRevision: config.revision,
       themePreference: preferences.themePreference,
       fontPreference: preferences.fontPreference,
-      appearancePreference: preferences.appearancePreference,
       activity: structuredClone(config.activity),
       identity: structuredClone(config.identity),
       memory: config.memory,
@@ -957,8 +952,7 @@ function createJournal(
   const fontPreference = input.fontPreference === undefined
     ? preferences.fontPreference
     : normalizeFontPreference(input.fontPreference);
-  const appearancePreference = input.appearancePreference ?? preferences.appearancePreference;
-  const preferencesIncluded = input.themePreference !== undefined || input.fontPreference !== undefined || input.appearancePreference !== undefined;
+  const preferencesIncluded = input.themePreference !== undefined || input.fontPreference !== undefined;
   const configIncluded = input.activity !== undefined
     || input.identity !== undefined
     || input.memory !== undefined
@@ -984,11 +978,9 @@ function createJournal(
         before: preferences,
         after: {
           revision: preferences.revision + (preferencesIncluded
-            && (themePreference !== preferences.themePreference || !sameFont(fontPreference, preferences.fontPreference)
-              || JSON.stringify(appearancePreference) !== JSON.stringify(preferences.appearancePreference)) ? 1 : 0),
+            && (themePreference !== preferences.themePreference || !sameFont(fontPreference, preferences.fontPreference)) ? 1 : 0),
           themePreference,
           fontPreference,
-          appearancePreference
         },
         rollback: undefined
       },
@@ -1195,13 +1187,12 @@ function parseRecoveryChatRecord(value: SessionCatalogRecord): SessionCatalogRec
 function assertCommittedSnapshot(
   journal: DesktopSettingsJournal,
   snapshot: Pick<DesktopSettingsSnapshot, "preferenceRevision" | "themePreference" | "fontPreference"
-    | "appearancePreference" | "configRevision" | "chat">
+    | "configRevision" | "chat">
 ): void {
   if (journal.segments.preferences.included && !samePreferences({
     revision: snapshot.preferenceRevision,
     themePreference: snapshot.themePreference,
     fontPreference: snapshot.fontPreference,
-    appearancePreference: normalizeAppearancePreference(snapshot.appearancePreference)
   }, journal.segments.preferences.after)) {
     throw new Error("Desktop 偏好提交后的复读校验失败。");
   }
@@ -1280,7 +1271,6 @@ function listAppliedFields(input: DesktopSettingsSaveInput): string[] {
   const fields: string[] = [];
   if (input.themePreference !== undefined) fields.push("themePreference");
   if (input.fontPreference !== undefined) fields.push("fontPreference");
-  if (input.appearancePreference !== undefined) fields.push("appearancePreference");
   if (input.activity !== undefined) fields.push("activity");
   if (input.identity !== undefined) fields.push("identity");
   if (input.memory !== undefined) fields.push("memory");
@@ -1300,7 +1290,7 @@ function listAppliedFields(input: DesktopSettingsSaveInput): string[] {
 
 function isPreferencesOnly(input: DesktopSettingsSaveInput): boolean {
   const fields = listAppliedFields(input);
-  return fields.length > 0 && fields.every(field => field === "themePreference" || field === "fontPreference" || field === "appearancePreference");
+  return fields.length > 0 && fields.every(field => field === "themePreference" || field === "fontPreference");
 }
 
 function isAuxiliaryModelSelection(input: DesktopSettingsSaveInput): boolean {
@@ -1318,8 +1308,7 @@ function samePreferences(left: DesktopPreferenceSnapshot, right: DesktopPreferen
 }
 
 function samePreferenceValues(left: DesktopPreferenceSnapshot, right: DesktopPreferenceSnapshot): boolean {
-  return left.themePreference === right.themePreference && sameFont(left.fontPreference, right.fontPreference)
-    && JSON.stringify(normalizeAppearancePreference(left.appearancePreference)) === JSON.stringify(normalizeAppearancePreference(right.appearancePreference));
+  return left.themePreference === right.themePreference && sameFont(left.fontPreference, right.fontPreference);
 }
 
 function sameFont(

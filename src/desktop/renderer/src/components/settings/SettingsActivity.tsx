@@ -435,7 +435,7 @@ function ActivityNumberField({ disabled = false, hint, id, label, max, min, onCo
   return (
     <label className="activity-field" htmlFor={id}>
       <span>{label}</span>
-      <div className="activity-number-input"><input className="settings-field" aria-describedby={hint ? `${id}-hint` : undefined} autoComplete="off" disabled={disabled} id={id} inputMode="numeric" max={max} min={min} name={id} onBlur={commit} onChange={(event) => { editRef.current = { dirty: true, revision: editRef.current.revision + 1 }; setText(event.target.value); }} onKeyDown={(event) => { if (event.key === "Enter") commit(); }} step={step} type="number" value={text} />{unit ? <em>{unit}</em> : null}</div>
+      <div className="activity-number-input"><input aria-describedby={hint ? `${id}-hint` : undefined} autoComplete="off" disabled={disabled} id={id} inputMode="numeric" max={max} min={min} name={id} onBlur={commit} onChange={(event) => { editRef.current = { dirty: true, revision: editRef.current.revision + 1 }; setText(event.target.value); }} onKeyDown={(event) => { if (event.key === "Enter") commit(); }} step={step} type="number" value={text} />{unit ? <em>{unit}</em> : null}</div>
       {hint ? <small id={`${id}-hint`}>{hint}</small> : null}
     </label>
   );

@@ -52,6 +52,7 @@ async function fixture(context: TestContext, deferSession = false) {
       return deferSession ? await new Promise<DesktopSessionDocument>((resolve) => { reads.push(resolve); }) : refreshed;
     }
   } });
+  const readSessionCatalog = async () => () => {};
   const noop = (): void => undefined;
   const onError = (error: unknown): void => { errors.push(error); };
   const onCompactionFailed = (error: string, cancelled: boolean): void => { failures.push({ error, cancelled }); };
@@ -66,7 +67,7 @@ async function fixture(context: TestContext, deferSession = false) {
     useEffect(() => { documentRef.current = document; }, [document]);
     useDesktopEventBridge({
       activeProjectIdRef, selectedSessionIdRef: selected, documentRef,
-      setDocument, mergeProjectSnapshot: noop, onError, setContextBudget,
+      setDocument, readSessionCatalog, onError, setContextBudget,
       setRecipeNotices: noop, setSkillExtraction: noop, setWriterConflict, setSidebarSessions: noop,
       setWorkspace: noop, onGenerationStarted: noop, onGenerationError: noop, onCompactionFailed
     });

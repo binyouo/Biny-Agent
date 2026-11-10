@@ -14,6 +14,12 @@ import { sameSessionFingerprint } from "./parseCache.js";
 import { readBoundedSessionHandle } from "./limits.js";
 
 const sessionMetadataConcurrency = 8;
+
+/** 心跳使用保留身份，不按消息正文或标题隐藏聊天。 */
+export function isHeartbeatSessionId(sessionId: string): boolean {
+  return /^heartbeat-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(sessionId);
+}
+
 const managedStateDirectories = ["attachments", "logs", "runs", "processes", "tool-results", "todos", "turns", "evals"] as const;
 
 interface PathIdentity {
@@ -315,7 +321,8 @@ async function resolveSessionFileAt(location: SessionStorageLocation, session: s
 
 async function latestSessionFile(location: SessionStorageLocation): Promise<string> {
   // latest 基于修改时间而不是文件名，能覆盖恢复后继续追加的旧 session。
-  const sessions = await listSessionFileEntries(location);
+  const sessions = (await listSessionFileEntries(location))
+    .filter(session => !isHeartbeatSessionId(sessionIdFromFile(session.fileName)));
   if (!sessions.length) throw new Error("No sessions found for the current project.");
   const stats: Array<{ fileName: string; filePath: string; mtimeMs: number } | undefined> = new Array(sessions.length);
   let nextIndex = 0;

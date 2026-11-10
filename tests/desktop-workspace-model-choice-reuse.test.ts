@@ -9,7 +9,7 @@ import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentMa
 import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProjectService.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
-import { ModelRuntime } from "../src/llm/ModelRuntime.js";
+import { ModelRegistry } from "../src/llm/ModelRegistry.js";
 import { InMemoryModelsStore, modelCatalogCacheKey } from "../src/llm/ModelsStore.js";
 
 // Normal CI only. The local source-isolated runner does not import this file.
@@ -49,8 +49,8 @@ async function fixture(context: TestContext, config: AgentConfig) {
   await state.load(); await data.initialize(); await configStore.save(config);
   const project = await projects.createProject(root);
   let enumerations = 0;
-  const original = ModelRuntime.prototype.listModels;
-  context.mock.method(ModelRuntime.prototype, "listModels", function (this: ModelRuntime) {
+  const original = ModelRegistry.prototype.listModels;
+  context.mock.method(ModelRegistry.prototype, "listModels", function (this: ModelRegistry) {
     enumerations += 1;
     return original.call(this);
   });

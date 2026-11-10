@@ -359,11 +359,11 @@ test("Desktop CLI shares project, session, preference, preview and terminal owne
     assert.equal(JSON.parse((await run(root, ["model", "list", "--json"])).stdout).models[0].alias, "fixture");
     await rm(path.join(process.env.BINY_AGENT_DIR!, "credentials.enc"));
 
-    await run(workspace, ["config", "set", "appearancePreference.darkTheme", "tokyonight", "--json"]);
-    assert.equal(state.appearancePreference().darkTheme, "tokyonight");
+    await run(workspace, ["config", "set", "themePreference", "dark", "--json"]);
+    assert.equal(state.themePreference(), "dark");
     assert.equal(publications, 1);
-    const preference = await run(workspace, ["config", "get", "appearancePreference.darkTheme", "--json"]);
-    assert.equal(JSON.parse(preference.stdout), "tokyonight");
+    const preference = await run(workspace, ["config", "get", "themePreference", "--json"]);
+    assert.equal(JSON.parse(preference.stdout), "dark");
 
     await createSessionFile(workspace, "cli-session", Buffer.from('{"type":"user_message","content":"CLI fixture","time":"2026-01-01T00:00:00.000Z"}\n'));
     await projects.listSessions(projects.requireProject(project.id), undefined, new Map());

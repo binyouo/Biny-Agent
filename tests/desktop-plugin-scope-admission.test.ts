@@ -60,11 +60,18 @@ test("Plugin IPC gates project writes by their own initializing or busy Host and
     assert.ok(a && b);
     manager = new DesktopAgentManager(state, projects, store, () => {});
     const plugin = { id: "inert-plugin", name: "Inert", version: "1", category: "Tools", description: "Synthetic scope test", repository: "https://github.com/example/inert", path: "plugin", entry: "index.mjs" };
+    const packageJson = JSON.stringify({ configuration: { properties: { serverName: { type: "string", default: "" } } } });
     const fetcher: typeof fetch = async input => {
       const url = String(input);
       if (url === BINY_PLUGIN_REGISTRY_URL) return new Response(JSON.stringify({ format: 1, plugins: [plugin] }));
-      if (url.includes("api.github.com") && url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: [{ path: "plugin/index.mjs", type: "blob", size: 39 }] }));
+      if (url.includes("api.github.com") && url.includes("/git/trees/")) {
+        return new Response(JSON.stringify({ tree: [
+          { path: "plugin/index.mjs", type: "blob", size: 39 },
+          { path: "plugin/biny-plugin.json", type: "blob", size: packageJson.length }
+        ] }));
+      }
       if (url.includes("raw.githubusercontent.com") && url.endsWith("/plugin/index.mjs")) return new Response("export default function register() {}\n");
+      if (url.includes("raw.githubusercontent.com") && url.endsWith("/plugin/biny-plugin.json")) return new Response(packageJson);
       throw new Error(`Unexpected plugin network request: ${url}`);
     };
     const skills = new DesktopSkillService(state, store, fetcher);
@@ -83,8 +90,10 @@ test("Plugin IPC gates project writes by their own initializing or busy Host and
       applicationImports: { withRuntimeAdmission: async (execute: () => Promise<unknown>) => await execute() }
     } as unknown as Parameters<typeof registerDesktopIpc>[0]);
     const invoke = async (channel: string, projectId: string, scope: "project" | "global") => await handlers.get(channel)!({}, projectId, plugin.id,
-      ...(channel === desktopIpc.pluginSetEnabled ? [true, scope] : [scope]));
-    const channels = [desktopIpc.pluginInstall, desktopIpc.pluginSetEnabled, desktopIpc.pluginUninstall];
+      ...(channel === desktopIpc.pluginSetEnabled ? [true, scope]
+        : channel === desktopIpc.pluginSetSettings ? [{ serverName: "fixture-mem" }, scope]
+        : [scope]));
+    const channels = [desktopIpc.pluginInstall, desktopIpc.pluginSetEnabled, desktopIpc.pluginSetSettings, desktopIpc.pluginUninstall];
     const rejectTargetAndGlobal = async () => {
       for (const channel of channels) {
         await assert.rejects(invoke(channel, b.id, "project"), /任务运行期间/u);
@@ -100,6 +109,10 @@ test("Plugin IPC gates project writes by their own initializing or busy Host and
       assert.equal(enabled.enabled, true);
       const manifest = scope === "project" ? await readProjectPluginManifest(a.path) : await readGlobalPluginManifest();
       assert.equal(manifest.plugins[0]?.enabled, true);
+      const configured = await invoke(desktopIpc.pluginSetSettings, a.id, scope) as DesktopPluginSummary;
+      assert.deepEqual(configured.settings, { serverName: "fixture-mem" });
+      const manifestWithSettings = scope === "project" ? await readProjectPluginManifest(a.path) : await readGlobalPluginManifest();
+      assert.deepEqual(manifestWithSettings.plugins[0]?.settings, { serverName: "fixture-mem" });
       await invoke(desktopIpc.pluginUninstall, a.id, scope);
       assert.deepEqual((scope === "project" ? await readProjectPluginManifest(a.path) : await readGlobalPluginManifest()).plugins, []);
     };

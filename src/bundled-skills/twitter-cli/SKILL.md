@@ -13,7 +13,7 @@ Project: https://github.com/jackwener/twitter-cli. Check the installed command's
 
 ## Runtime
 
-Use `scripts/twitter` for every invocation. Resolve its absolute path from this skill's listed resources and substitute that path for `scripts/twitter` in the commands below; commands run from the current workspace.
+Resolve the absolute path of the listed `scripts/twitter` Skill resource into `TWITTER_CLI`. Invoke it with `bash "$TWITTER_CLI"`; the packaged script need not be executable. Set this path in each Bash invocation and keep the current working directory in the user's workspace.
 
 - It prefers a locally installed `twitter` (only if it is this CLI).
 - If missing, it falls back to `uvx --from twitter-cli twitter`.
@@ -22,12 +22,12 @@ Use `scripts/twitter` for every invocation. Resolve its absolute path from this 
 Examples:
 
 ```bash
-scripts/twitter --help
-scripts/twitter status --yaml
-scripts/twitter search "Claude Code" --max 20 --yaml
+bash "$TWITTER_CLI" --help
+bash "$TWITTER_CLI" status --yaml
+bash "$TWITTER_CLI" search "Claude Code" --max 20 --yaml
 ```
 
-For heavy or repeated usage, install once:
+The wrapper may download dependencies through uv on first use. Install or upgrade persistently only when the user requests that change:
 
 ```bash
 uv tool install twitter-cli
@@ -53,7 +53,7 @@ X has no anonymous search, so this CLI uses the user's own logged-in browser ses
 Check before longer workflows:
 
 ```bash
-scripts/twitter status --yaml
+bash "$TWITTER_CLI" status --yaml
 ```
 
 Notes:
@@ -63,11 +63,11 @@ Notes:
 - Pick a browser or profile explicitly when needed:
 
 ```bash
-TWITTER_BROWSER=chrome scripts/twitter status --yaml
-TWITTER_CHROME_PROFILE="Profile 2" scripts/twitter status --yaml
+TWITTER_BROWSER=chrome bash "$TWITTER_CLI" status --yaml
+TWITTER_CHROME_PROFILE="Profile 2" bash "$TWITTER_CLI" status --yaml
 ```
 
-- Proxy: `scripts/twitter` sets `TWITTER_PROXY` automatically when unset, from `HTTPS_PROXY` / `ALL_PROXY` / `HTTP_PROXY`, else from the enabled macOS system proxy (`scutil --proxy`, HTTPS then SOCKS). If x.com is still unreachable (DNS timeout, connection reset), ask the user for their proxy and pass it explicitly: `TWITTER_PROXY=http://127.0.0.1:7890 scripts/twitter ...` (or `socks5://...`).
+- Proxy: `bash "$TWITTER_CLI"` sets `TWITTER_PROXY` automatically when unset, from `HTTPS_PROXY` / `ALL_PROXY` / `HTTP_PROXY`, else from the enabled macOS system proxy (`scutil --proxy`, HTTPS then SOCKS). If x.com is still unreachable (DNS timeout, connection reset), ask the user for their proxy and pass it explicitly: `TWITTER_PROXY=http://127.0.0.1:7890 bash "$TWITTER_CLI" ...` (or `socks5://...`).
 
 Common recovery paths:
 
@@ -80,12 +80,12 @@ Common recovery paths:
 ### Search
 
 ```bash
-scripts/twitter search "AI agent" --max 30 --yaml
-scripts/twitter search "AI agent" -t latest --max 50 --yaml       # top | latest | photos | videos
-scripts/twitter search "python" --from elonmusk --lang en --since 2026-01-01 --yaml
-scripts/twitter search "rust" --has links --min-likes 100 --yaml
-scripts/twitter search --from bbc --exclude retweets --exclude replies --yaml
-scripts/twitter search "机器学习" --until 2026-06-30 --min-retweets 20 --yaml
+bash "$TWITTER_CLI" search "AI agent" --max 30 --yaml
+bash "$TWITTER_CLI" search "AI agent" -t latest --max 50 --yaml       # top | latest | photos | videos
+bash "$TWITTER_CLI" search "python" --from elonmusk --lang en --since 2026-01-01 --yaml
+bash "$TWITTER_CLI" search "rust" --has links --min-likes 100 --yaml
+bash "$TWITTER_CLI" search --from bbc --exclude retweets --exclude replies --yaml
+bash "$TWITTER_CLI" search "机器学习" --until 2026-06-30 --min-retweets 20 --yaml
 ```
 
 `--has`: `links | images | videos | media` (repeatable). `--exclude`: `retweets | replies | links` (repeatable).
@@ -93,33 +93,33 @@ scripts/twitter search "机器学习" --until 2026-06-30 --min-retweets 20 --yam
 ### Read
 
 ```bash
-scripts/twitter tweet https://x.com/user/status/1234567890 --max 20 --yaml   # tweet + replies
-scripts/twitter show 2 --yaml                 # item #2 from the last feed/search output
-scripts/twitter article 1234567890 --markdown # X Article as Markdown
-scripts/twitter user elonmusk --yaml
-scripts/twitter user-posts elonmusk --max 20 --yaml
-scripts/twitter followers elonmusk --max 50 --yaml
-scripts/twitter following elonmusk --max 50 --yaml
-scripts/twitter feed -t following --max 30 --yaml   # for-you | following
-scripts/twitter bookmarks --max 30 --yaml
-scripts/twitter list 1539453138322673664 --yaml
+bash "$TWITTER_CLI" tweet https://x.com/user/status/1234567890 --max 20 --yaml   # tweet + replies
+bash "$TWITTER_CLI" show 2 --yaml                 # item #2 from the last feed/search output
+bash "$TWITTER_CLI" article 1234567890 --markdown # X Article as Markdown
+bash "$TWITTER_CLI" user elonmusk --yaml
+bash "$TWITTER_CLI" user-posts elonmusk --max 20 --yaml
+bash "$TWITTER_CLI" followers elonmusk --max 50 --yaml
+bash "$TWITTER_CLI" following elonmusk --max 50 --yaml
+bash "$TWITTER_CLI" feed -t following --max 30 --yaml   # for-you | following
+bash "$TWITTER_CLI" bookmarks --max 30 --yaml
+bash "$TWITTER_CLI" list 1539453138322673664 --yaml
 ```
 
 ### Write (only on explicit request)
 
 ```bash
-scripts/twitter post "Hello" --yaml
-scripts/twitter post "Gallery" -i a.png -i b.jpg
-scripts/twitter reply 1234567890 "Nice!"
-scripts/twitter quote 1234567890 "Look"
-scripts/twitter like 1234567890
-scripts/twitter retweet 1234567890
-scripts/twitter bookmark 1234567890
-scripts/twitter follow somehandle
-scripts/twitter delete 1234567890
+bash "$TWITTER_CLI" post "Hello" --yaml
+bash "$TWITTER_CLI" post "Gallery" -i a.png -i b.jpg
+bash "$TWITTER_CLI" reply 1234567890 "Nice!"
+bash "$TWITTER_CLI" quote 1234567890 "Look"
+bash "$TWITTER_CLI" like 1234567890
+bash "$TWITTER_CLI" retweet 1234567890
+bash "$TWITTER_CLI" bookmark 1234567890
+bash "$TWITTER_CLI" follow somehandle
+bash "$TWITTER_CLI" delete 1234567890
 ```
 
-Newlines in post text: use `printf`, e.g. `scripts/twitter post "$(printf 'line one\n\nline two')"`.
+Newlines in post text: use `printf`, e.g. `bash "$TWITTER_CLI" post "$(printf 'line one\n\nline two')"`.
 
 ## Structured Output
 
@@ -148,9 +148,9 @@ Error codes: `not_authenticated`, `not_found`, `invalid_input`, `rate_limited`, 
 Search, then drill into the interesting tweets:
 
 ```bash
-scripts/twitter search "Biny app" -t latest --max 20 --json |
+bash "$TWITTER_CLI" search "Biny app" -t latest --max 20 --json |
   jq -r '.data[] | "\(.id)\t\(.author.screenName)\t\(.text[0:80])"'
-scripts/twitter tweet <id> --max 30 --yaml
+bash "$TWITTER_CLI" tweet <id> --max 30 --yaml
 ```
 
 When summarizing results, cite each tweet with its `https://x.com/<screenName>/status/<id>` link.

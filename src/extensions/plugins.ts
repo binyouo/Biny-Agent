@@ -8,10 +8,19 @@ import type { ModelCatalogEntry, ProviderDefinition } from "../ai/types.js";
 import { AiRegistry } from "../llm/AiRegistry.js";
 import type { CredentialRefreshHandler } from "../llm/AiRegistry.js";
 import { PluginLifecycleRegistry, type PluginTurnLifecycle } from "./pluginLifecycle.js";
+import type { PluginSettings } from "./pluginSettings.js";
+
+/** 受管 Plugin 的加载目标：入口路径加上清单里声明并解析好的设置值。 */
+export interface PluginLoadTarget {
+  path: string;
+  settings: Readonly<PluginSettings>;
+}
 
 export interface BinyPluginContext {
   workspaceRoot: string;
   config: AgentConfig;
+  /** 受管 Plugin 拿到 biny-plugin.json 声明值与默认值的合并结果；其他来源拿到空对象。 */
+  settings: Readonly<PluginSettings>;
   registerTool(tool: Tool): void;
   registerProvider(definition: ProviderDefinition, models?: readonly ModelCatalogEntry[]): void;
   registerModels(providerType: string, models: readonly ModelCatalogEntry[]): void;
@@ -27,7 +36,7 @@ interface BinyPluginModule {
 
 export async function loadPlugins(
   workspaceRoot: string,
-  configuredPaths: string[],
+  configuredPaths: ReadonlyArray<string | PluginLoadTarget>,
   config: AgentConfig,
   registry: ToolRegistry,
   ai: AiRegistry = new AiRegistry(),
@@ -40,7 +49,7 @@ export async function loadPlugins(
 export async function loadPluginsFromRoot(
   workspaceRoot: string,
   pluginRoot: string,
-  configuredPaths: string[],
+  configuredPaths: ReadonlyArray<string | PluginLoadTarget>,
   config: AgentConfig,
   registry: ToolRegistry,
   ai: AiRegistry = new AiRegistry(),
@@ -57,9 +66,15 @@ export async function loadPluginsFromRoot(
   const files: string[] = [];
   const seen = new Set<string>();
   const collection = { files, seen, visited: 0 };
-  for (const configuredPath of configuredPaths) {
+  const targetSettings = new Map<string, Readonly<PluginSettings>>();
+  for (const configured of configuredPaths) {
+    const configuredPath = typeof configured === "string" ? configured : configured.path;
+    const collected = files.length;
     const target = await resolvePluginPath(canonicalPluginRoot, configuredPath);
     if (target) await collectPluginFiles(canonicalPluginRoot, target, collection);
+    if (typeof configured !== "string") {
+      for (const file of files.slice(collected)) targetSettings.set(file, configured.settings);
+    }
   }
 
   const loaded: string[] = [];
@@ -69,6 +84,8 @@ export async function loadPluginsFromRoot(
     const context: BinyPluginContext = {
       workspaceRoot: canonicalWorkspace,
       config: pluginConfig,
+      // 每个插件文件拿一份新的冻结副本，插件改动不了清单里的存储值或其他插件的副本。
+      settings: Object.freeze({ ...(targetSettings.get(filePath) ?? {}) }),
       registerTool: (tool) => registry.registerPluginTool(tool),
       registerProvider: (definition, models) => ai.registerProvider(definition, models),
       registerModels: (providerType, models) => ai.registerModels(providerType, models),

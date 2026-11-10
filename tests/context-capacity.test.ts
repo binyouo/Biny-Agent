@@ -4,6 +4,18 @@ import test from "node:test";
 import type { DesktopSessionDocument } from "../src/desktop/protocol.js";
 import { formatContextUsage, resolveContextCapacity, resolveSessionContextUsage } from "../src/desktop/renderer/src/usagePresentation.js";
 
+for (const [contextWindow, label, max, percent] of [
+  [1_000_000, "1M", "1,000,000", 52.4], [1_048_576, "1M", "1,048,576", 50],
+  [1_500_000, "1.5M", "1,500,000", 35], [262_144, "262.1K", "262,144", 200]
+] as const) {
+  test(`容量 ${contextWindow} 使用 K/M 简写，比例与精确数值保留原始窗口`, () => {
+    const display = formatContextUsage({ usedTokens: 524_288, contextWindow, source: "provider" });
+    assert.equal(display?.compactMax, label);
+    assert.equal(display?.max, max);
+    assert.equal(display?.percent, percent);
+  });
+}
+
 test("历史 32K fallback 使用当前 1M 容量，保留已用 token", () => {
   const historical = { contextWindow: 32_768, contextWindowIsFallback: true };
   const model = { contextWindow: 1_000_000, contextWindowIsFallback: false };
@@ -149,4 +161,87 @@ test("当前会话已换模型时沿用旧输入估算，不将旧 provider 用�
 test("切换会话期间旧文档不能为新会话提供容量或用量", () => {
   const usage = resolveSessionContextUsage({ sessionId: "new-session", document: historicalHeartbeat(), models: [currentModel] });
   assert.equal(usage, undefined);
+});
+
+test("旧模型身份无法恢复时，不能将其 provider 用量归给当前新模型", () => {
+  const usage = resolveSessionContextUsage({ sessionId: "heartbeat", document: historicalHeartbeat(), models: [],
+    runtimeInfo: { sessionId: "heartbeat", modelAlias: "new-model", contextWindow: 64_000, contextWindowIsFallback: false }
+  });
+  assert.equal(usage?.usedTokens, 14_000);
+  assert.equal(usage?.source, "estimated");
+  assert.equal(usage?.contextWindow, 64_000);
+});
+
+test("仅有历史 usage 时保留实测来源，但不能借给另一个模型", () => {
+  const document = historicalHeartbeat();
+  const event = document.events[0];
+  assert.ok(event?.type === "assistant_message" && event.usage);
+  event.contextState = undefined;
+  event.usage.inputTokens = 34_931;
+  const original = resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] });
+  assert.equal(original?.usedTokens, 34_931);
+  assert.equal(original?.source, "provider");
+  assert.equal(formatContextUsage(original)?.estimated, false);
+  const switched = resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel],
+    runtimeInfo: { sessionId: "heartbeat", modelAlias: "other", contextWindow: 64_000, contextWindowIsFallback: false }
+  });
+  assert.equal(switched, undefined, "没有新模型估算时保持未知，不能用零冒充空上下文");
+});
+
+test("最新模型缺少 input usage 时，不使用更早另一模型的输入量", () => {
+  const document = historicalHeartbeat();
+  const previous = document.events[0];
+  assert.ok(previous?.type === "assistant_message" && previous.usage);
+  previous.contextState = undefined;
+  previous.usage.inputTokens = 34_931;
+  document.events.push({ type: "assistant_message", content: "New model reply", usage: {
+    operation: "agent", modelAlias: "new-model", provider: "openai-compatible", model: "different-model"
+  } });
+  const newModel = { ...currentModel, alias: "new-model", model: "different-model", contextWindow: 64_000 };
+  assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel, newModel],
+    runtimeInfo: { sessionId: "heartbeat", modelAlias: newModel.alias, contextWindow: 64_000, contextWindowIsFallback: false }
+  }), undefined);
+});
+
+test("全新会话没有任何用量采样时仍展示容量和零输入", () => {
+  const document = historicalHeartbeat();
+  document.events = [];
+  const usage = resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel],
+    runtimeInfo: { sessionId: "heartbeat", modelAlias: currentModel.alias, contextWindow: 1_048_576, contextWindowIsFallback: false }
+  });
+  assert.equal(usage?.usedTokens, 0);
+  assert.equal(usage?.contextWindow, 1_048_576);
+});
+
+for (const tokensAfter of [2_000, undefined]) {
+  test(`checkpoint 已落盘但后续预算未写入时，不重用压缩前实测：${tokensAfter ?? "未知"}`, () => {
+    const document = historicalHeartbeat();
+    document.events.push({ type: "context_checkpoint", reason: "manual", summary: "Summary", firstKeptMessageIndex: 2,
+      tokensBefore: 34_931, tokensAfter, compactedMessages: 2, createdAt: "2026-11-02T00:00:00Z"
+    });
+    const usage = resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] });
+    if (tokensAfter === undefined) assert.equal(usage, undefined);
+    else {
+      assert.equal(usage?.usedTokens, 2_000);
+      assert.equal(usage?.source, "estimated");
+      assert.equal(usage?.breakdown, undefined);
+    }
+    const budget = { maxTokens: 900_000, usedTokens: 12_000, contextWindow: 1_048_576, contextWindowIsFallback: false,
+      modelAlias: currentModel.alias, source: "provider" as const, omitted: [], autoCompacted: false };
+    document.events.push({ type: "assistant_message", content: "New reply", contextState: { compactedMessages: 2, budget } });
+    assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 12_000);
+  });
+}
+
+
+test("未知容量不生成窗口占比，输入分类以实际输入总量为分母", () => {
+  const display = formatContextUsage({
+    usedTokens: 48_538, contextWindow: 32_768, contextWindowIsFallback: true, source: "provider",
+    breakdown: { messages: 3, mcpTools: 0, systemTools: 1, skills: 0, systemPrompt: 0, other: 0 }
+  });
+  assert.equal(display?.percent, undefined);
+  assert.equal(display?.fillPercent, undefined);
+  assert.equal(display?.compactUsed, "48.5K");
+  assert.deepEqual(display?.categories.map(category => category.percent), ["75.0", "0.0", "25.0", "0.0", "0.0", "0.0"]);
+  assert.deepEqual(display?.categories.map(category => category.width), [75, 0, 25, 0, 0, 0]);
 });

@@ -12,7 +12,7 @@ func selectObservationWindow(_ requested: Any?, windows: () throws -> [[String: 
     }
     let candidates = try windows().filter { entry in
         guard let id = entry["window_id"] as? Int else { return false }
-        return id > 0 && id <= Int(UInt32.max)
+        return id > 0 && id <= Int(UInt32.max) && entry["onscreen"] as? Bool != false && entry["minimized"] as? Bool != true
     }
     let focused = candidates.filter { $0["focused"] as? Bool == true }
     if focused.count == 1, let id = focused[0]["window_id"] as? Int { return id }
@@ -43,9 +43,9 @@ func mergeApplicationWindows(pid: Int, axEntries: [[String: Any]]?, screenWindow
         throw NSError(domain: "windows", code: 65, userInfo: [NSLocalizedDescriptionKey: "window_list_unavailable: neither accessibility nor system window information could be read"])
     }
     var screens: [[String: Any]] = []
+    var fallbackWindows = Set<Int>()
     for window in screenWindows ?? [] {
         guard let owner = window[kCGWindowOwnerPID as String] as? Int, owner == pid,
-              (window[kCGWindowLayer as String] as? Int ?? 0) == 0,
               let number = window[kCGWindowNumber as String] as? Int, number > 0,
               let boundsRaw = window[kCGWindowBounds as String] as? [String: Any] else { continue }
         let boundsW = (boundsRaw["Width"] as? NSNumber)?.doubleValue ?? 0
@@ -53,6 +53,9 @@ func mergeApplicationWindows(pid: Int, axEntries: [[String: Any]]?, screenWindow
         let width = boundsW, height = boundsH
         // 阴影和辅助小窗不是可观察目标，混进来只会让模型挑错。
         if width < 40 || height < 40 { continue }
+        if (window[kCGWindowLayer as String] as? Int ?? 0) == 0 || window[kCGWindowIsOnscreen as String] as? Bool == true {
+            fallbackWindows.insert(number)
+        }
         var entry: [String: Any] = [
             "window_id": number,
             "title": window[kCGWindowName as String] as? String ?? "",
@@ -62,7 +65,8 @@ func mergeApplicationWindows(pid: Int, axEntries: [[String: Any]]?, screenWindow
                 "w": width, "h": height
             ] as [String: Double],
         ]
-        if let onscreen = window[kCGWindowIsOnscreen as String] as? Bool { entry["onscreen"] = onscreen }
+        // optionAll 对隐藏窗口省略该键；读取成功时不能把它当成未知状态。
+        entry["onscreen"] = window[kCGWindowIsOnscreen as String] as? Bool ?? false
         screens.append(entry)
     }
     let byID = Dictionary(screens.compactMap { entry in
@@ -77,12 +81,14 @@ func mergeApplicationWindows(pid: Int, axEntries: [[String: Any]]?, screenWindow
                 if (entry["title"] as? String ?? "").isEmpty { entry["title"] = screen["title"] }
                 entry["frame"] = screen["frame"]
                 entry["onscreen"] = screen["onscreen"]
+            } else if screenWindows != nil {
+                entry["onscreen"] = false
             }
         }
         out.append(entry)
     }
     for entry in screens {
-        if let id = entry["window_id"] as? Int, represented.insert(id).inserted { out.append(entry) }
+        if let id = entry["window_id"] as? Int, fallbackWindows.contains(id), represented.insert(id).inserted { out.append(entry) }
     }
     return out
 }

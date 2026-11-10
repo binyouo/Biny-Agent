@@ -62,6 +62,12 @@ async function fixture(t: TestContext, desktop = false, nativeDaemon = false) {
     images: [{ mimeType: "image/png" as const, dataBase64: "iVBORw0KGgo=" }] });
   // Only native OS calls are substituted; runtime, resources, MCP and policy are real.
   if (!nativeDaemon) {
+    t.mock.method(NativeProcessDriver.prototype, "daemonCommand", async (command: string, args: Record<string, unknown> = {}) => {
+      assert.equal(command, "app_identity");
+      assert.equal(args.pid, app.pid);
+      if (args.bundle !== undefined) assert.equal(args.bundle, app.bundleId);
+      return { data: { pid: app.pid, bundleId: app.bundleId, name: app.name, running: true }, images: [] };
+    });
     t.mock.method(NativeProcessDriver.prototype, "list", async () => ({ data: { apps: [app] }, images: [] }));
     t.mock.method(NativeProcessDriver.prototype, "observeRaw", async () => observation());
     t.mock.method(NativeProcessDriver.prototype, "actRaw", async () => { inputs++; return { data: { effect: "completed" }, images: [] }; });

@@ -2,10 +2,9 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { autoUpdate, computePosition, flip, offset, shift } from "@floating-ui/dom";
-import { executionToolLabel } from "../../sessionTimeline.js";
 import type { TimelineTool } from "../../sessionTimeline.js";
 import type { CapabilitySelectionValue } from "../../../../../agent/capabilitySelection.js";
-import { skillActivities, skillActivityLabels } from "../../skillActivity.js";
+import { skillActivities } from "../../skillActivity.js";
 import { Icon } from "../Icon.js";
 
 const memoryRecallDetails: Record<string, string> = {
@@ -48,8 +47,8 @@ export function MessageContextMenu({ tools, skills, selectedSkills, skillCalls =
   return <div onPointerEnter={keepOpen} onPointerLeave={closeSoon} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
     <button className="message-menu-item" role="menuitem" aria-haspopup="true" aria-expanded={open} aria-controls={open ? id : undefined} ref={anchor} type="button" onFocus={keepOpen} onClick={keepOpen} onKeyDown={(event) => { if (event.key === "ArrowRight") { event.preventDefault(); setOpen(true); } if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); } }}><Icon name="sliders" size={14} /><span>上下文</span><small>{toolNames.length} 个工具{activities.length ? ` · ${activities.length} 个技能` : ""}</small></button>
     {open ? createPortal(<div id={id} onPointerEnter={keepOpen} onPointerLeave={closeSoon} className="message-context-submenu" ref={panel} role="region" aria-label="本轮上下文" style={{ visibility: "hidden" }}>
-      <section><h4>{toolNames.length} 个工具</h4>{toolNames.map((name) => <p key={name}>{executionToolLabel(name)}</p>)}{!toolNames.length ? <p>未调用工具</p> : null}</section>
-      {activities.length ? <section><h4>{activities.length} 个技能</h4>{activities.map((skill) => <p className="skill-activity-row" data-skill-name={skill.name} key={skill.name} title={skill.error ?? descriptions?.get(skill.name)}><span>{skill.name}</span><small>{skillActivityLabels[skill.status]}</small></p>)}</section> : null}
+      <section><h4>{toolNames.length} 个工具</h4>{toolNames.map((name) => <p key={name}>{name}</p>)}{!toolNames.length ? <p>未调用工具</p> : null}</section>
+      {activities.length ? <section><h4>{activities.length} 个技能</h4>{activities.map((skill) => <p className="skill-activity-row" data-skill-name={skill.name} key={skill.name} title={descriptions?.get(skill.name)}>{skill.name}</p>)}</section> : null}
       {memoryRecallDegraded ? <section><h4>记忆召回</h4><p>{memoryRecallDetails[memoryRecallDegraded] ?? `未执行：${memoryRecallDegraded}`}</p></section> : null}
     </div>, document.body) : null}
   </div>;

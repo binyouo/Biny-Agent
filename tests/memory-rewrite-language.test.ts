@@ -29,6 +29,9 @@ try {
   config.context.memory.generateMemories = false;
   config.context.memory.queryRewrite = true;
   config.context.memory.maxRecalled = 1;
+  // 改写与召回只走注入的 fixture 模型；清空默认目录，避免宿主环境里的真实凭据接管辅助模型选择。
+  config.providers = {};
+  config.models = {};
   let rewritePrompt = "";
   const modelRequests: string[] = [];
   const model: AgentModel = testModel({

@@ -20,7 +20,7 @@ import {
   readBoundedSessionHandle
 } from "./limits.js";
 import { cachedSessionEvents, lookupSessionEvents, previousSessionParse, sameSessionFingerprint, sessionFileFingerprint, type SessionFileFingerprint } from "./parseCache.js";
-import { listSessionFiles, readSessionFileOrCached } from "./store.js";
+import { isHeartbeatSessionId, listSessionFiles, readSessionFileOrCached, sessionIdFromFile } from "./store.js";
 import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
 import { publicAssistantMessage, publicUserMessage } from "./publicMessage.js";
@@ -610,8 +610,9 @@ export async function repairSessionTailForAppend(filePath: string): Promise<void
   }
 }
 
-export async function listSessionSummaries(workspaceRoot: string): Promise<SessionSummary[]> {
-  const fileNames = await listSessionFiles(workspaceRoot);
+export async function listSessionSummaries(workspaceRoot: string, includeHeartbeat = true): Promise<SessionSummary[]> {
+  const fileNames = (await listSessionFiles(workspaceRoot))
+    .filter(fileName => includeHeartbeat || !isHeartbeatSessionId(sessionIdFromFile(fileName)));
   // Bound reads so a large history does not create an unbounded file-descriptor
   // burst. A corrupt JSONL file is isolated from the rest of the session list.
   const summaries: Array<SessionSummary | undefined> = new Array(fileNames.length);

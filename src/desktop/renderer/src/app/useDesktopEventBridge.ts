@@ -42,7 +42,8 @@ interface DesktopEventBridgeOptions {
   selectedSessionIdRef: { current: string | undefined };
   /** 当前会话文档；判断 pending 缓冲是否已被 openSession 的主进程桶覆盖时读取。 */
   documentRef: RefObject<DesktopSessionDocument | undefined>;
-  mergeProjectSnapshot(snapshot: DesktopWorkspaceSnapshot): void;
+  /** 过期结果不能直接发布，但其目标会话仍须合入后续读取。 */
+  readSessionCatalog(projectId: string, sessionIds: string[]): Promise<(allowPublish: boolean) => void>;
   onError(error: unknown): void;
   setContextBudget: Dispatch<SetStateAction<ContextBudgetStatus | undefined>>;
   setDocument: Dispatch<SetStateAction<DesktopSessionDocument | undefined>>;
@@ -66,7 +67,7 @@ export function useDesktopEventBridge({
   activeProjectIdRef,
   selectedSessionIdRef,
   documentRef,
-  mergeProjectSnapshot,
+  readSessionCatalog,
   onError,
   setContextBudget,
   setDocument,
@@ -94,47 +95,58 @@ export function useDesktopEventBridge({
   useEffect(() => {
     let active = true;
     let documentRefreshGeneration = 0;
-    const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const refreshTimers = new Map<string, {
+      timer: ReturnType<typeof setTimeout>;
+      sessionIds: Set<string>;
+      documentSessionIds: Set<string>;
+    }>();
     const projectRefreshOrder = new Map<string, { issued: number; applied: number }>();
 
-    const scheduleRefresh = (projectId: string, sessionId: string): void => {
-      const scope = JSON.stringify([projectId, sessionId]);
-      const existing = refreshTimers.get(scope);
-      if (existing) clearTimeout(existing);
+    const scheduleRefresh = (projectId: string, sessionId: string, refreshDocument = true): void => {
+      const existing = refreshTimers.get(projectId);
+      if (existing) clearTimeout(existing.timer);
+      const sessionIds = existing?.sessionIds ?? new Set<string>();
+      const documentSessionIds = existing?.documentSessionIds ?? new Set<string>();
+      sessionIds.add(sessionId);
+      if (refreshDocument) documentSessionIds.add(sessionId);
       const timer = setTimeout(() => {
-        refreshTimers.delete(scope);
+        refreshTimers.delete(projectId);
         const epoch = projectRefreshEpochs.current.get(projectId) ?? 0;
         const order = projectRefreshOrder.get(projectId) ?? { issued: 0, applied: 0 };
         projectRefreshOrder.set(projectId, order);
         const request = ++order.issued;
-        void window.biny.refreshProject(projectId).then(async (snapshot) => {
+        void readSessionCatalog(projectId, [...sessionIds]).then(async (publishCatalog) => {
           if (!active) return;
-          // A confirmed metadata change supplies a newer complete snapshot. Re-read after the
+          // A confirmed metadata change supplies newer session metadata. Re-read after the
           // existing debounce instead of combining its metadata with this older read.
           if ((projectRefreshEpochs.current.get(projectId) ?? 0) !== epoch) {
-            scheduleRefresh(projectId, sessionId);
+            for (const id of sessionIds) scheduleRefresh(projectId, id, documentSessionIds.has(id));
             return;
           }
           // Different sessions share a project catalog. An older request may still
           // refresh the selected document, but cannot replace a newer applied catalog.
           // Failed newer requests do not prevent an older successful read publishing.
-          if (request > order.applied) {
+          const selectedSessionId = selectedSessionIdRef.current;
+          const refreshSelectedDocument = activeProjectIdRef.current === projectId && selectedSessionId !== undefined
+            && documentSessionIds.has(selectedSessionId);
+          const allowPublish = request > order.applied;
+          if (allowPublish) {
             order.applied = request;
-            mergeProjectSnapshot(snapshot);
           }
-          if (activeProjectIdRef.current === projectId && selectedSessionIdRef.current === sessionId) {
+          publishCatalog(allowPublish);
+          if (refreshSelectedDocument && selectedSessionId) {
             const generation = ++documentRefreshGeneration;
             const requestedDocument = documentRef.current;
-            const refreshedDocument = await window.biny.openSession(projectId, sessionId);
+            const refreshedDocument = await window.biny.openSession(projectId, selectedSessionId);
             // 同一会话也可能已经收到新流式内容、切换消息版本或重新打开，旧回读不能覆盖它。
             const isCurrent = (): boolean => active && documentRefreshGeneration === generation
               && activeProjectIdRef.current === projectId
-              && selectedSessionIdRef.current === sessionId && documentRef.current === requestedDocument;
+              && selectedSessionIdRef.current === selectedSessionId && documentRef.current === requestedDocument;
             if (isCurrent()) setPendingRefresh({ document: refreshedDocument, isCurrent });
           }
         }).catch((error: unknown) => { if (active) onError(error); });
       }, 260);
-      refreshTimers.set(scope, timer);
+      refreshTimers.set(projectId, { timer, sessionIds, documentSessionIds });
     };
 
     const flushSelectedEvents = (projectBatch: DesktopAgentEventEnvelope[]): void => {
@@ -147,7 +159,9 @@ export function useDesktopEventBridge({
       // 主进程桶是超集）则整体作废，避免同一批事件被折叠两次。
       for (const envelope of projectBatch) {
         const event = envelope.event;
-        if (event === undefined) continue;
+        // Titles belong to the catalog; changing history identity here would
+        // cancel a pending terminal read even though no conversation content changed.
+        if (event === undefined || event.type === "session.title") continue;
         if (currentSessionId !== undefined && event.sessionId === currentSessionId
           && doc?.session.id === currentSessionId) currentEvents.push(event);
         else if (event.sessionId !== undefined) pendingEvents.current.hold(event.sessionId, envelope);
@@ -245,14 +259,12 @@ export function useDesktopEventBridge({
 
       if (batch.some(({ event }) => event && isTerminalRunEvent(event))) invalidateToolOptimizationStats(window.biny);
 
-      const completedSessions = new Map<string, { projectId: string; sessionId: string }>();
       for (const envelope of batch) {
         const event = envelope.event;
         if (event && (isTerminalRunEvent(event) || event.type === "session.title" || event.type === "compact.completed" || event.type === "compact.failed")) {
-          completedSessions.set(JSON.stringify([envelope.projectId, event.sessionId]), { projectId: envelope.projectId, sessionId: event.sessionId });
+          scheduleRefresh(envelope.projectId, event.sessionId, event.type !== "session.title");
         }
       }
-      for (const { projectId, sessionId } of completedSessions.values()) scheduleRefresh(projectId, sessionId);
     };
 
     const batcher = createDesktopEventBatcher(flushEvents);
@@ -262,10 +274,10 @@ export function useDesktopEventBridge({
       replaySelectedEvents.current = undefined;
       unsubscribe();
       batcher.dispose();
-      for (const timer of refreshTimers.values()) clearTimeout(timer);
+      for (const { timer } of refreshTimers.values()) clearTimeout(timer);
       refreshTimers.clear();
     };
-  }, [activeProjectIdRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, onGenerationError, onGenerationStarted, onCompactionStarted, onCompactionFailed, onRuntimeProjectionChanged]);
+  }, [activeProjectIdRef, documentRef, readSessionCatalog, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, onGenerationError, onGenerationStarted, onCompactionStarted, onCompactionFailed, onRuntimeProjectionChanged]);
 
   // 首发回执可能晚于整轮事件；文档就绪就回放，不依赖下一条 Host 通知。
   useEffect(() => { replaySelectedEvents.current?.(); });

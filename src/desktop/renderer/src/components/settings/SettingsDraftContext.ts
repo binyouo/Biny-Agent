@@ -1,6 +1,5 @@
 /** 设置草稿 Provider 与各分页共享的纯上下文契约。 */
 import { createContext, useContext } from "react";
-import type { AppearancePreference } from "../../../../../appearance/types.js";
 import type { ThinkingSelection } from "../../../../../llm/ModelManager.js";
 import type { ModelProfile } from "../../../../../config/schema.js";
 import type {
@@ -38,7 +37,6 @@ export interface SettingsModelDraft {
 export interface DesktopSettingsDraft {
   themePreference: DesktopThemePreference;
   fontPreference: DesktopFontPreference;
-  appearancePreference: AppearancePreference;
   activity: DesktopActivitySettingsInput;
   identity: DesktopIdentitySettings;
   memory: DesktopMemorySettings;
@@ -79,7 +77,6 @@ export interface SettingsDraftContextValue {
   reportModelEditState?(pending: boolean): void;
   setThemePreference(value: DesktopThemePreference): void;
   setFontPreference(value: DesktopFontPreference): void;
-  setAppearancePreference(value: AppearancePreference): Promise<boolean>;
   updateActivityImmediately(patch: DesktopActivitySettingsPatch): Promise<void>;
   setIdentity(value: DesktopIdentitySettings): void;
   setMemory(value: DesktopMemorySettings): void;

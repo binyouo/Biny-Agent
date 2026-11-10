@@ -16,7 +16,7 @@
 .markdown-image-frame .markdown-image.is-local { max-height: 60vh; width: auto; }
 .markdown-image.is-previewable { cursor: pointer; transition: opacity 150ms ease; }
 .markdown-image.is-previewable:hover { opacity: .9; }
-.markdown-image.is-previewable:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 3px; }
+.markdown-image.is-previewable:focus-visible { outline: 1px solid var(--biny-focus); outline-offset: 0px; }
 .markdown-image-frame.is-error { padding-right: 0; }
 .markdown-image-error { display: inline-flex; align-items: center; gap: calc(var(--image-unit) * .25); border-radius: calc(var(--image-unit) * .625 - 2px); padding: calc(var(--image-unit) * .25) calc(var(--image-unit) * .5); color: var(--biny-danger); background: color-mix(in srgb, var(--biny-danger) 10%, transparent); font-size: calc(var(--image-unit) * .875); }
 .markdown-image-error button { text-decoration: underline; cursor: pointer; }
@@ -40,7 +40,7 @@
 .markdown-image-lightbox-controls button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border-radius: 6px; color: var(--image-preview-text); background: none; cursor: pointer; }
 .markdown-image-lightbox-controls button:hover:not(:disabled),
 .markdown-image-lightbox-controls button:focus-visible { outline: none; color: var(--image-preview-text-strong); background: var(--image-preview-hover); }
-.markdown-image-lightbox-controls button:focus-visible { box-shadow: 0 0 0 2px var(--image-preview-focus); }
+.markdown-image-lightbox-controls button:focus-visible { box-shadow: inset 0 0 0 1px var(--image-preview-focus); }
 .markdown-image-lightbox-viewport { display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; overflow: hidden; padding: 16px; touch-action: none; cursor: grab; }
 .markdown-image-lightbox-viewport.is-dragging { cursor: grabbing; }
 .markdown-image-lightbox-viewport > img { display: block; max-width: calc(100% - 120px); max-height: 100%; border-radius: 8px; object-fit: contain; user-select: none; }

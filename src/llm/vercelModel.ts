@@ -32,23 +32,28 @@ export interface VercelModelInput {
 }
 
 export function createVercelLanguageModel(input: VercelModelInput): LanguageModelV4 {
+  const protocol = input.api === "anthropic_messages" || input.providerType === "anthropic" || input.providerType === "claude-subscription" ? "anthropic"
+    : input.api === "google_generative_ai" || input.providerType === "google-native" ? "gemini"
+      : input.api === "responses" ? "responses" : "chat";
   // 只对模型推理请求套脱敏；目录、额度、嵌入等请求不经过这里。
   const privacyFetcher = input.privacy
     ? createPrivacyFetch(input.fetcher, {
       settings: input.privacy.settings,
       provider: input.providerAlias,
-      model: input.modelId
+      model: input.modelId,
+      protocol,
+      providerType: input.providerType,
+      baseUrl: input.baseUrl
     })
     : input.fetcher;
   const configuredUserAgent = Object.keys(input.headers).some((name) => name.toLowerCase() === "user-agent");
   const fetcher: typeof globalThis.fetch = configuredUserAgent ? privacyFetcher : (url, init) => {
     const headers = new Headers(init?.headers ?? (url instanceof Request ? url.headers : undefined));
-    const operation = headers.get("x-biny-operation");
-    const client = operation && operation !== "agent" ? "biny-auxiliary" : "biny";
-    headers.set("user-agent", `${client} ${headers.get("user-agent") ?? ""}`.trim());
+    // 辅助与主请求统一 UA：网关按 UA 归并 agent，拆出独立身份会让无状态小请求被单独评分。
+    headers.set("user-agent", `biny ${headers.get("user-agent") ?? ""}`.trim());
     return privacyFetcher(url, { ...init, headers });
   };
-  if (input.api === "anthropic_messages" || input.providerType === "anthropic" || input.providerType === "claude-subscription") {
+  if (protocol === "anthropic") {
     const provider = createAnthropic({
       baseURL: input.baseUrl,
       apiKey: input.authMode === "oauth-bearer" ? undefined : input.apiKey,
@@ -60,7 +65,7 @@ export function createVercelLanguageModel(input: VercelModelInput): LanguageMode
     return provider(input.modelId);
   }
 
-  if (input.api === "google_generative_ai" || input.providerType === "google-native") {
+  if (protocol === "gemini") {
     const provider = createGoogleGenerativeAI({
       baseURL: input.baseUrl,
       apiKey: input.apiKey,

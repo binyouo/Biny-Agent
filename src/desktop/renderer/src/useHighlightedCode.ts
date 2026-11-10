@@ -8,15 +8,12 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { escapeHtml, highlightFencedCode, highlightWorkspaceFile, languageForFence, languageForPath, type HighlightedCode } from "./syntaxHighlight.js";
-import { useAppearance } from "./appearanceContext.js";
-import type { ThemePalette } from "../../../appearance/types.js";
 
 /** 代码持续变化期间的高亮去抖间隔；打字机流式场景下等于「停顿才上色」。 */
 const HIGHLIGHT_DEBOUNCE_MS = 300;
 
 export function useHighlightedCode(code: string, language?: string, filePath?: string, isStreaming?: boolean): HighlightedCode {
-  const { palette } = useAppearance();
-  const [state, setState] = useState<{ code: string; language?: string; filePath?: string; palette?: ThemePalette; highlighted: HighlightedCode } | undefined>();
+  const [state, setState] = useState<{ code: string; language?: string; filePath?: string; highlighted: HighlightedCode } | undefined>();
   const lastRequest = useRef(0);
 
   useEffect(() => {
@@ -24,11 +21,11 @@ export function useHighlightedCode(code: string, language?: string, filePath?: s
     const run = (): void => {
       lastRequest.current = Date.now();
       const request = filePath
-        ? highlightWorkspaceFile(filePath, code, palette)
-        : highlightFencedCode(code, language, palette);
+        ? highlightWorkspaceFile(filePath, code)
+        : highlightFencedCode(code, language);
       request
         .then((highlighted) => {
-          if (active) setState({ code, language, filePath, palette, highlighted });
+          if (active) setState({ code, language, filePath, highlighted });
         })
         .catch(() => {});
     };
@@ -40,11 +37,11 @@ export function useHighlightedCode(code: string, language?: string, filePath?: s
       active = false;
       window.clearTimeout(timer);
     };
-  }, [code, language, filePath, palette, isStreaming]);
+  }, [code, language, filePath, isStreaming]);
 
-  if (state && state.code === code && state.language === language && state.filePath === filePath && state.palette === palette) return state.highlighted;
+  if (state && state.code === code && state.language === language && state.filePath === filePath) return state.highlighted;
   // 只复用内容完全一致的行：正在增长或被替换的行必须显示当前转义文本。
-  if (isStreaming && state && state.language === language && state.filePath === filePath && state.palette === palette) {
+  if (isStreaming && state && state.language === language && state.filePath === filePath) {
     const previous = state.code.split("\n");
     const current = code.split("\n");
     const colored = state.highlighted.html.split("\n");

@@ -89,10 +89,17 @@ export function createSessionTreePageLifetime() {
   };
   return {
     observe,
+    loadedSessionIds(projectId: string): string[] { return [...(parents.get(projectId)?.keys() ?? [])]; },
     /** Removal/recreation revokes this owner; ordinary catalog replacement does not. */
     captureCatalogProject(projectId: string): () => boolean {
       const project = catalogProjects.get(projectId);
       return () => project !== undefined && catalogProjects.get(projectId) === project;
+    },
+    /** 新分页或已接纳的元数据会使先前采样的目录范围失效。 */
+    captureCatalogPublication(projectId: string): () => boolean {
+      const project = catalogProjects.get(projectId);
+      const publication = project?.publication;
+      return () => project !== undefined && catalogProjects.get(projectId) === project && project.publication === publication;
     },
     /** Successful metadata writes demand a fresh catalog; the mutation response is not adopted. */
     refreshCatalog(

@@ -39,6 +39,7 @@ ARCHITECTURE.local.md
 !/docs/ACTIVITY.md
 !/docs/AUTOMATION.md
 !/docs/EVALUATION.md
+!/docs/REMOTE.md
 # 随 Biny 发布的内置 Skill 是源码资源，不属于本地文档。
 !/src/bundled-skills/
 !/src/bundled-skills/**/

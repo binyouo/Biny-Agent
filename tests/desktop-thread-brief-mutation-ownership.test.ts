@@ -4,6 +4,7 @@ import vm from "node:vm";
 import test from "node:test";
 import ts from "typescript";
 import { z } from "zod";
+import { isHeartbeatSessionId } from "../src/session/store.js";
 
 // Execute the actual service with inert persistence, filesystem visibility,
 // project creation and native-dialog boundaries. No Electron, SQLite or model.
@@ -53,7 +54,7 @@ function fixture() {
         store.putSuggestion({ ...store.suggestion(id), name: "Rewritten" });
       }
     } };
-    if (id.endsWith("/store.js")) return { resolveSessionFile: async () => "/inert/s.jsonl", sessionIdFromFile: () => "s" };
+    if (id.endsWith("/store.js")) return { isHeartbeatSessionId, resolveSessionFile: async () => "/inert/s.jsonl", sessionIdFromFile: () => "s" };
     // Unused imported helpers cannot silently execute native operations.
     return new Proxy({}, { get: (_target, name) => { throw Error(`Unexpected dependency: ${id}.${String(name)}`); } });
   } });

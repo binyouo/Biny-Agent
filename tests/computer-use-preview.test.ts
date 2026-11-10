@@ -28,6 +28,62 @@ class FixtureWindow extends EventEmitter implements PreviewWindow {
 }
 const status = { state: "ready", preview: true, lastOutcome: "not-dispatched" } as const;
 const frame = { image: { mimeType: "image/png", dataBase64: "aGVsbG8=" }, target: { pid: 42, windowId: "900" }, capturedAt: 0 } as const;
+test("frame age updates send small status messages, and a reopened window receives its pixels again", t => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 1_000 });
+  const windows: FixtureWindow[] = [];
+  const surface = new ComputerPreviewSurface(() => { const window = new FixtureWindow(); windows.push(window); return window; }, "fixture", () => undefined, () => undefined, new CaptureSchedule());
+  const largeFrame = { ...frame, image: { ...frame.image, dataBase64: "A".repeat(1_000_000) }, capturedAt: 1_000 };
+  try {
+    surface.present({ id: "computer", label: "电脑", frame: largeFrame, status });
+    const window = windows[0]!;
+    const initialBytes = window.paints.reduce((total, paint) => total + Buffer.byteLength(paint), 0);
+    window.paints.length = 0;
+    t.mock.timers.tick(10_000);
+    const refreshBytes = window.paints.reduce((total, paint) => total + Buffer.byteLength(paint), 0);
+    assert.ok(initialBytes >= 1_000_000);
+    assert.ok(refreshBytes < 50_000, `ten status refreshes should not retransmit a megabyte frame: ${refreshBytes} bytes`);
+    assert.ok(window.paints.some(paint => paint.includes("画面已停留 10 秒")));
+    surface.close();
+    surface.present({ id: "computer", label: "电脑", frame: largeFrame, status });
+    assert.ok(windows[1]!.paints.some(paint => paint.includes(largeFrame.image.dataBase64)));
+  } finally { surface.close(); t.mock.timers.reset(); }
+});
+
+test("a failed image delivery is sent again on the next update without replaying an older image", async () => {
+  const window = new FixtureWindow();
+  const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule());
+  const execute = window.webContents.executeJavaScript;
+  let reject!: (error: Error) => void;
+  let fail = true;
+  window.webContents.executeJavaScript = async script => {
+    await execute(script);
+    if (fail && script.includes(frame.image.dataBase64)) {
+      fail = false;
+      return await new Promise<void>((_resolve, no) => { reject = no; });
+    }
+  };
+  try {
+    surface.present({ id: "computer", label: "电脑", frame, status });
+    await Promise.resolve();
+    reject(new Error("paint failed"));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    window.paints.length = 0;
+    surface.present({ id: "computer", label: "电脑", frame, status });
+    assert.equal(window.paints.filter(paint => paint.includes(frame.image.dataBase64)).length, 1);
+    const nextFrame = { ...frame, image: { ...frame.image, dataBase64: "bmV4dA==" } };
+    surface.present({ id: "computer", label: "电脑", frame: nextFrame, status });
+    fail = true;
+    surface.present({ id: "computer", label: "电脑", frame, status });
+    await Promise.resolve();
+    surface.present({ id: "computer", label: "电脑", frame: nextFrame, status });
+    reject(new Error("older paint failed"));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    window.paints.length = 0;
+    surface.present({ id: "computer", label: "电脑", frame: nextFrame, status });
+    assert.ok(window.paints.every(paint => !paint.includes("bmV4dA==") && !paint.includes(frame.image.dataBase64)));
+  } finally { surface.close(); }
+});
+
 test("refreshing preview pixels never re-presents an existing floating window", () => {
   const window = new FixtureWindow();
   const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule());
@@ -39,7 +95,7 @@ test("refreshing preview pixels never re-presents an existing floating window", 
     surface.present({ id: "browser:tab", label: "浏览器", frame, status });
     surface.select("browser:tab");
     assert.equal(window.presentations, 1, "frame-only tests did not catch repeated showInactive raising the preview on each refresh");
-    assert.match(window.paints.at(-2)!, /aGVsbG8=/);
+    assert.equal(window.paints.filter(paint => paint.includes("aGVsbG8=")).length, 1, "unchanged pixels are sent once while source and status updates continue");
   } finally { surface.close(); }
 });
 test("preview closed event releases privacy hold; reopen drops old paint and retains new hold", async () => {
@@ -144,7 +200,7 @@ test("browser and window frames share one surface and close independently", asyn
   surface.present({ id: "computer", label: "Notes", frame, status, onClose: () => { closed++; } });
   surface.present({ id: "browser", label: "Browser", frame: { ...frame, image: { mimeType: "image/png", dataBase64: "YnJvd3Nlcg==" } }, status });
   assert.equal(windows.length, 1); surface.select("browser"); assert.equal(surface.activeItem(), "browser");
-  assert.match(windows[0]!.paints.slice(-2).join("\n"), /YnJvd3Nlcg==/);
+  assert.equal(windows[0]!.paints.filter(paint => paint.includes("YnJvd3Nlcg==")).length, 1);
   surface.remove("computer"); assert.equal(windows[0]!.isDestroyed(), false); assert.equal(closed, 0);
   surface.remove("browser"); assert.equal(windows[0]!.isDestroyed(), true);
 });
@@ -178,18 +234,6 @@ test("a fit failure reports the error without discarding the frame or repeating 
     assert.deepEqual(errors, ["Error: fit_failed"]);
     assert.match(window.paints.join("\n"), /aGVsbG8=/);
   } finally { surface.close(); }
-});
-
-test("an expired cursor disappears from a frozen frame without another capture", t => {
-  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 1_000 });
-  const window = new FixtureWindow();
-  const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule());
-  try {
-    surface.present({ id: "computer", label: "电脑", status, frame: { ...frame, capturedAt: 1_000, cursor: { x: 0.25, y: 0.5, expiresAt: 2_000 } } });
-    assert.ok(window.paints.some(paint => paint.includes('point={"x":0.25,"y":0.5}')));
-    t.mock.timers.tick(1_000);
-    assert.ok(window.paints.some(paint => paint.includes("point=null")));
-  } finally { surface.close(); t.mock.timers.reset(); }
 });
 
 test("a new source can replace a finishing source at the preview limit", t => {

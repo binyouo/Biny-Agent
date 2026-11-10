@@ -8,7 +8,7 @@ import { SettingsNavIcon } from "../src/desktop/renderer/src/components/settings
 import type { SettingsTab } from "../src/desktop/renderer/src/components/settings/SettingsOverlay.js";
 
 test("every settings navigation item has a distinct, accessible icon", async () => {
-  const tabs: SettingsTab[] = ["通用", "模型", "聊天", "Token 节省", "配色", "记忆", "技能", "MCP 服务器", "插件", "网络搜索", "浏览器", "Appshots", "Computer Use", "隐私脱敏", "Computer History", "导入", "关于"];
+  const tabs: SettingsTab[] = ["通用", "模型", "聊天", "Token 节省", "记忆", "技能", "MCP 服务器", "插件", "网络搜索", "浏览器", "远程访问", "Appshots", "Computer Use", "隐私脱敏", "Computer History", "导入", "关于"];
   const overlay = await readFile(new URL("../src/desktop/renderer/src/components/settings/SettingsOverlay.tsx", import.meta.url), "utf8");
   const nav = [...overlay.matchAll(/\{ tab: "([^"]+)" \}/gu)].map(match => match[1]);
   assert.deepEqual(nav, tabs, "all settings pages must have a navigation icon");

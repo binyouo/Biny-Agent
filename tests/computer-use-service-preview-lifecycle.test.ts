@@ -103,6 +103,12 @@ async function fixture(t: TestContext, overrides: Partial<DriverFixture> = {}, m
     diagnostics: async () => ({ data: {}, images: [] }),
     ...overrides
   };
+  const command = driver.daemonCommand;
+  driver.daemonCommand = async (cmd, args, signal) => {
+    if (cmd !== "app_identity" || args?.pid === undefined) return await command(cmd, args, signal);
+    const listed = await driver.list("identity", Number(args.pid), signal);
+    return { data: (listed.data.apps as Record<string, unknown>[])[0] ?? {}, images: [] };
+  };
   let handler: Parameters<DesktopBrowserService["attachComputerUse"]>[0] | undefined;
   let listener: Parameters<DesktopBrowserService["attachPreviewActivity"]>[0];
   const browser: Pick<DesktopBrowserService, "attachComputerUse" | "attachPreviewActivity"> = {
@@ -181,6 +187,21 @@ test("returning from an embedded browser preview requests its project browser, b
   present({ id: "relay:chrome:1", label: "Chrome", sessionId: "session-b", capture: async () => image });
   f.windows()[0]!.webContents.emit("will-navigate", { preventDefault() {} }, "biny-computer:return");
   assert.deepEqual(f.navigation.at(-1)?.target, { projectId: undefined, sessionId: "session-b", revealBrowser: undefined });
+});
+
+test("computer pixel refresh pauses while another preview is selected and resumes on return", async t => {
+  let captures = 0;
+  const f = await fixture(t, { capturePreview: async () => { captures++; return { data: {}, images: [image] }; } }, true);
+  await f.service.controller.observe("session", target);
+  f.service.controller.noteActivity();
+  t.mock.timers.tick(1334); await flush();
+  assert.equal(captures, 1);
+  f.listener()!({ id: "browser:page", label: "Page", capture: async () => image });
+  t.mock.timers.tick(334); await flush();
+  assert.equal(captures, 1, "hidden computer pixels must not be captured");
+  f.windows()[0]!.webContents.emit("will-navigate", { preventDefault() {} }, "biny-computer:select:computer");
+  t.mock.timers.tick(334); await flush();
+  assert.equal(captures, 2, "returning to the computer source resumes pixel refresh");
 });
 
 test("a stuck preview source does not block another source or repeat its own capture", async t => {
@@ -364,7 +385,7 @@ test("external preview publishes the cursor returned with its captured window", 
   const f = await fixture(t, { capturePreview: async () => ({ data: { cursor: { x: 0.25, y: 0.5, remainingMs: 8_000 } }, images: [image] }) });
   await f.invoke("computer_external_activity", target);
   t.mock.timers.tick(334); await flush();
-  assert.ok(f.windows()[0]!.paints.some(paint => paint.includes('point={"x":0.25,"y":0.5}')));
+  assert.ok(f.windows()[0]!.paints.some(paint => paint.includes('binyPaintCursor({"x":0.25,"y":0.5},')));
 });
 test("controller preview publishes the cursor returned with the current observation", async t => {
   const captures: unknown[] = [];
@@ -373,7 +394,7 @@ test("controller preview publishes the cursor returned with the current observat
   f.service.controller.noteActivity();
   t.mock.timers.tick(334); await flush();
   assert.deepEqual(captures, [target]);
-  assert.ok(f.windows()[0]!.paints.some(paint => paint.includes('point={"x":0.75,"y":0.25}')));
+  assert.ok(f.windows()[0]!.paints.some(paint => paint.includes('binyPaintCursor({"x":0.75,"y":0.25},')));
 });
 test("closing computer preview suppresses automatic reopening for that session without stopping input", async t => {
   const f = await fixture(t);
@@ -858,4 +879,16 @@ test("revocation completion removes an external source admitted while its write 
     t.mock.timers.tick(334); await flush();
     assert.equal(f.calls.some(value => value.startsWith("capturePreview:")), false);
   } finally { revokeWrite.finish.resolve(); await revoked; }
+});
+
+test("window mirror frames carry the native pointer and action feedback to the selected preview", async t => {
+  const pointer = { x: 0.25, y: 0.5, remainingMs: 8000, eventId: 7, action: "click", image };
+  const f = await fixture(t, {
+    daemonCommand: async () => ({ data: { state: "open", pid: 42, last_frame_age_ms: 0, image, cursor: pointer }, images: [] })
+  });
+  await f.invoke("computer_mirror", { ...target, session: "mirror-owner", operation: "open" });
+  t.mock.timers.tick(334); await flush();
+  const paints = f.windows().flatMap(window => window.paints);
+  assert.ok(paints.some(script => script.includes('binyPaintCursor({"x":0.25,"y":0.5},')), "mirror pointer coordinates must reach the actual paint script");
+  assert.ok(paints.some(script => script.includes('"eventId":7') && script.includes('"action":"click"')), "mirror feedback must retain its event identity so frame refreshes cannot replay the click pulse");
 });

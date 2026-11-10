@@ -32,21 +32,22 @@ assert.ok(invalidate && ts.isArrowFunction(invalidate));
 const allowedCalls = new Set([
   "projectRefreshEpochs.current.set", "projectRefreshEpochs.current.get", "createSessionEventBuffer", "JSON.stringify",
   "refreshTimers.get", "clearTimeout", "setTimeout", "refreshTimers.delete", "refreshTimers.set", "refreshTimers.values", "refreshTimers.clear",
-  "projectRefreshOrder.get", "projectRefreshOrder.set", "window.biny.refreshProject", "window.biny.openSession",
-  "scheduleRefresh", "mergeProjectSnapshot", "isCurrent", "setPendingRefresh", "onError",
+  "projectRefreshOrder.get", "projectRefreshOrder.set", "readSessionCatalog", "window.biny.openSession",
+  "scheduleRefresh", "publishCatalog", "isCurrent", "setPendingRefresh", "onError",
+  "sessionIds.add", "documentSessionIds.add", "documentSessionIds.has",
   "setSidebarSessions", "applyUpdatesToSidebarSessions", "batch.filter", "batch.some", "invalidateToolOptimizationStats", "projectBatch.some", "isTerminalRunEvent",
   "onRuntimeProjectionChanged", "setWorkspace", "applyUpdatesToWorkspace",
   "currentEvents.push", "pendingEvents.current.hold", "pendingEvents.current.take", "flushSelectedEvents",
   "currentEvents.unshift", "currentEvents.filter", "setRecipeNotices", "current.map", "recipeNotices.filter", "seen.has",
   "setSkillExtraction", "currentEvents.some", "liveTimelineEvents", "setDocument", "appendLiveTimelineEvents", "hasContextStatus",
   "contextEvents.at", "setContextBudget", "onGenerationStarted", "onGenerationError", "event.error.trim", "event.reason.trim",
-  "onCompactionStarted", "onCompactionFailed", "completedSessions.set", "completedSessions.values", "createDesktopEventBatcher",
+  "onCompactionStarted", "onCompactionFailed", "completedSessions.set", "completedSessions.get", "completedSessions.values", "createDesktopEventBatcher",
   "window.biny.onAgentEvent", "unsubscribe", "batcher.dispose", "pendingRefresh.isCurrent", "setWriterConflict"
 ]);
 // Normalize only argument lists, never method names or chain structure. These are
 // the exact reviewed chains; arbitrary methods on an allowed call's result fail.
 const allowedChains = new Set([
-  "window.biny.refreshProject().then", "window.biny.refreshProject().then().catch",
+  "readSessionCatalog().then", "readSessionCatalog().then().catch",
   "onRuntimeProjectionChanged?.().catch", "pendingEvents.current.take().map",
   "pendingEvents.current.take().map().filter", "recipeNotices.filter().map"
 ]);
@@ -97,7 +98,8 @@ function fixture() {
     invalidateToolOptimizationStats, activeProjectIdRef, selectedSessionIdRef, documentRef, projectRefreshEpochs: { current: new Map<string, number>() }, pendingRefresh: undefined,
     setTimeout(callback: () => void, delay: number) { assert.equal(delay, 260); const id = ++timerId; timers.set(id, { at: now + delay, callback }); return id; },
     clearTimeout(id: number) { timers.delete(id); },
-    mergeProjectSnapshot(value: Snapshot) { merges.push(value); }, onError(error: unknown) { errors.push(error); },
+    readSessionCatalog(projectId: string) { const gate = deferred<Snapshot>(); projectReads.push({ projectId, gate }); return gate.promise.then(value => (allowPublish: boolean) => { if (allowPublish) merges.push(value); }); },
+    onError(error: unknown) { errors.push(error); },
     setPendingRefresh(value: unknown) { sandbox.pendingRefresh = value; },
     setDocument(value: Document) { documentRef.current = value; }, setWriterConflict(value: unknown) { conflicts.push(value); },
     setSidebarSessions: noop, setWorkspace: noop, setContextBudget: noop, setRecipeNotices: noop, setSkillExtraction: noop,
@@ -109,7 +111,7 @@ function fixture() {
     createDesktopEventBatcher: (flush: (batch: Envelope[]) => void) => ({ push: (event: Envelope) => { if (!disposed) flush([event]); }, dispose: () => { disposed = true; } }),
     window: { biny: {
       onAgentEvent(callback: (event: Envelope) => void) { listener = callback; return () => { listener = undefined; unsubscribed = true; }; },
-      refreshProject(projectId: string) { const gate = deferred<Snapshot>(); projectReads.push({ projectId, gate }); return gate.promise; },
+
       openSession(projectId: string, sessionId: string) { const gate = deferred<Document>(); documentReads.push({ projectId, sessionId, gate }); return gate.promise; }
     } }
   };

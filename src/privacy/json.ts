@@ -13,7 +13,8 @@ const SIGNATURE_KEYS = ["signature", "thoughtSignature", "thought_signature", "e
 type Transform = (value: string, path: string[], key: string) => string;
 
 /** 只替换字符串 token；其余字节（包括空白、数字精度与字段顺序）保留。 */
-export function walkJsonValues(source: string, transform: Transform, observe?: (value: string, path: string[], stringValue: boolean) => void): string | undefined {
+export function walkJsonValues(source: string, transform: Transform, observe?: (value: string, path: string[], stringValue: boolean) => void,
+  locate?: (path: string[], start: number, end: number) => void): string | undefined {
   try { JSON.parse(source); } catch { return undefined; }
   let index = 0, last = 0, out = "";
   const ws = (): void => { while (/\s/u.test(source[index] ?? "") && index < source.length) index++; };
@@ -27,6 +28,7 @@ export function walkJsonValues(source: string, transform: Transform, observe?: (
   };
   const visit = (path: string[], key: string): void => {
     ws();
+    const valueStart = index;
     if (source[index] === "{") {
       index++; ws();
       if (source[index] === "}") observe?.("{}", path, false);
@@ -63,6 +65,7 @@ export function walkJsonValues(source: string, transform: Transform, observe?: (
       while (index < source.length && !",]} \t\r\n".includes(source[index]!)) index++;
       observe?.(source.slice(start, index), path, false);
     }
+    locate?.(path, valueStart, index);
   };
   visit([], "");
   return out + source.slice(last);
@@ -92,11 +95,11 @@ function contextAt(root: unknown, path: string[]): { args: boolean; signed: bool
 export interface MaskJsonSegment { path: string; original: string; masked: string; segments: MaskSegment[]; role?: string; truncated?: boolean }
 export interface MaskJsonResult { text: string; hits: MaskHit[]; segments: MaskJsonSegment[] }
 
-export function maskJson(source: string, settings: RedactionSettings, store: RedactionStore = defaultStore): MaskJsonResult {
-  return store.withRequest(() => maskRequestJson(source, settings, store));
+export function maskJson(source: string, settings: RedactionSettings, store: RedactionStore = defaultStore, route = ""): MaskJsonResult {
+  return store.withRequest(() => maskRequestJson(source, settings, store, route));
 }
 
-function maskRequestJson(source: string, settings: RedactionSettings, store: RedactionStore): MaskJsonResult {
+function maskRequestJson(source: string, settings: RedactionSettings, store: RedactionStore, route: string): MaskJsonResult {
   let root: unknown;
   try { root = JSON.parse(source); } catch {
     const result = maskText(source, settings, store);
@@ -111,30 +114,32 @@ function maskRequestJson(source: string, settings: RedactionSettings, store: Red
     if (!context.args && (KEPT_KEYS.has(key) || /(?:^ids?$|_ids?$|Ids?$)/u.test(key))) return value;
     // 工具参数中的键属于工具领域，不能套用 Provider 的 name/id 等保留规则。
     if (key === "arguments") {
-      const nested = walkJsonValues(value, (text, nestedPath) => apply(text, [...path, ...nestedPath]));
+      const nested = walkJsonValues(value, (text, nestedPath) => apply(text, [...path, ...nestedPath], true));
       if (nested === undefined) {
         // Structured tool data can legitimately name a plain string "arguments".
         // Preserve existing JSON-string masking and reject malformed protocol arguments.
-        if (context.structuredToolData) return apply(value, path);
+        if (context.structuredToolData) return apply(value, path, true);
         throw new Error("Privacy cannot mask malformed tool arguments.");
       }
       return nested;
     }
-    return apply(value, path);
+    return apply(value, path, context.structuredToolData);
   };
-  const apply = (value: string, path: string[]): string => {
+  const apply = (value: string, path: string[], structured = false): string => {
     if (value.startsWith("data:")) return value;
     const key = path.at(-1) ?? "";
     const sensitive = /^(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|密码|密碼|密钥|金鑰|パスワード)$/iu.test(key);
     const kind = sensitive ? /password|passwd|密码|密碼|パスワード/iu.test(key) ? "PASSWORD" : "SECRET" : "text";
+    const name = structured ? path.filter(part => !/^\d+$/u.test(part)).at(-1) : undefined;
+    const field = name && !["text", "content", "output", "description", "summary", "prompt"].includes(name) ? name : undefined;
     const detect = (): MaskTextResult => {
-      if (sensitive && settings.enabled && value.length >= 3 && !/^(?:\$|%|\{|<|\[|\*|data:)/u.test(value)) {
+      if (sensitive && settings.enabled && value.length >= (kind === "PASSWORD" ? 1 : 3) && !/^(?:\$|%|\{|<|\[|\*|data:)/u.test(value)) {
         const tag = store.register(kind, value);
         return { text: tag, hits: [{ kind, placeholder: tag, length: [...value].length }], segments: [{ kind, original: value, masked: tag, start: 0, end: value.length }] };
       }
-      return maskText(value, settings, store);
+      return maskText(value, settings, store, field);
     };
-    const result = discovering || !settings.enabled ? detect() : maskSentText(value, kind, store, detect);
+    const result = discovering || !settings.enabled ? detect() : maskSentText(value, field ? `${kind}:${field}` : kind, store, detect, route);
     hits.push(...result.hits);
     segments.push({ path: path.join("."), original: value, masked: result.text, segments: result.segments });
     return result.text;

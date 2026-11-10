@@ -18,7 +18,10 @@ const prompt = [
   "Every action, result, PR, person, version, link, identifier, and decision must be supported by the skeleton.",
   "A screen observation is not proof that work shipped or a decision was made. State uncertainty plainly.",
   "Do not add greetings, metadata, or invented connective facts. Preserve all Markdown links and code spans.",
-  "Keep minor or vague activity short."
+  "Use a terse, concrete voice. Merge redundant bullets and add connective prose only when supported.",
+  "Drop Timeline / 时间线 bullets unless they add information the theme summary loses.",
+  "Order themes by importance: PRs, issues and decisions first; keep Misc / 其他零碎 last.",
+  "Aim for about 500-900 words for a normal day. Keep minor or vague activity short; do not pad."
 ].join("\n");
 
 export async function narrateActivityReport(

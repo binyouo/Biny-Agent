@@ -16,9 +16,9 @@ const recentMessageLimit = 10;
 const recentMessageMaxChars = 150;
 const autoEmotionResultSchema = z.object({
   mood: z.string().trim().min(1).max(40),
-  valence: z.number().int(),
+  valence: z.number(),
   reason: z.string().trim().max(200)
-}).strict();
+});
 const autoEmotionSystemPrompt = [
   "You analyze chat conversation sentiment FROM BINY'S PERSPECTIVE. Biny is an AI participant in this chat. Based on the recent messages, determine how Biny should feel right now.",
   "Return exactly one JSON object with exactly these three fields: mood, valence, and reason. Do not include Markdown or other text.",
@@ -39,6 +39,8 @@ export interface EmotionAnalysisMessage {
   text: string;
 }
 
+export type EmotionAnalysisFailure = "invalid_json" | "invalid_shape";
+
 export interface AnalyzeContextEmotionOptions {
   sessionId: string;
   storage: EmotionStorage;
@@ -50,6 +52,10 @@ export interface AnalyzeContextEmotionOptions {
   getUsageModelInfo?: UsageModelInfoResolver;
   onRequestMetrics?: (metrics: ModelRequestMetrics) => void | Promise<void>;
   requestContext?: ModelRequestContext;
+  /** 分析产出有效结果即触发；updated 区分是否实际写入了新的 context 快照。 */
+  onAnalyzed?: (state: EmotionState, updated: boolean) => void | Promise<void>;
+  /** 模型给出了输出但无法解析或结构不符时触发；请求本身的错误仍向上传播。 */
+  onFailed?: (reason: EmotionAnalysisFailure) => void | Promise<void>;
   onUpdated?: (state: EmotionState) => void | Promise<void>;
 }
 
@@ -82,15 +88,30 @@ export async function analyzeContextEmotion(options: AnalyzeContextEmotionOption
   if (result.usage) await options.onUsage?.(result.usage, usageModel);
   options.signal?.throwIfAborted();
 
+  // 小模型常带代码围栏或前后缀文字：剥围栏后取首个 { 到末位 } 的片段再解析。
+  const unfenced = result.text.trim().replace(/^```[a-zA-Z]*\s*/u, "");
+  const cleaned = unfenced.replace(/\s*```$/u, "");
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
   let parsed: unknown;
-  try { parsed = JSON.parse(result.text.trim()) as unknown; }
-  catch { return undefined; }
+  try { parsed = JSON.parse(start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned); }
+  catch {
+    await options.onFailed?.("invalid_json");
+    return undefined;
+  }
+  const record = parsed as { valence?: unknown } | null;
+  if (record !== null && typeof record === "object" && typeof record.valence === "string") {
+    record.valence = Number(record.valence);
+  }
   const validated = autoEmotionResultSchema.safeParse(parsed);
-  if (!validated.success) return undefined;
+  if (!validated.success) {
+    await options.onFailed?.("invalid_shape");
+    return undefined;
+  }
   const now = options.now ?? (() => new Date());
   const nextState: EmotionState = {
     mood: validated.data.mood,
-    valence: Math.min(10, Math.max(0, validated.data.valence)),
+    valence: Math.min(10, Math.max(0, Math.round(validated.data.valence))),
     energy: (await options.storage.readBase())?.energy ?? DEFAULT_EMOTION_STATE.energy,
     updatedAt: now().toISOString(),
     trigger: validated.data.reason || undefined
@@ -100,9 +121,13 @@ export async function analyzeContextEmotion(options: AnalyzeContextEmotionOption
     previous?.mood === nextState.mood
     && previous.valence === nextState.valence
     && previous.trigger === nextState.trigger
-  ) return undefined;
+  ) {
+    await options.onAnalyzed?.(nextState, false);
+    return undefined;
+  }
 
   await options.storage.writeContext(options.sessionId, nextState, options.signal);
+  await options.onAnalyzed?.(nextState, true);
   await options.onUpdated?.(nextState);
   return nextState;
 }

@@ -246,7 +246,7 @@ function applyUpdatesToProjectSessions(
   return changed ? sessions.sort(sessionSort) : currentSessions;
 }
 
-export function lastReportedInputTokens(document?: DesktopSessionDocument): number | undefined {
+export function lastReportedInputTokens(document?: Pick<DesktopSessionDocument, "events">): number | undefined {
   if (!document) return undefined;
   let latest: number | undefined;
   for (const event of document.events) {
