@@ -1013,6 +1013,7 @@ export class DesktopBrowserService {
         : active?.state.environmentId ? this.browserEnvironments.get(active.state.environmentId) : this.browserEnvironments.get("default");
       if (!environment) throw new Error("指定的浏览器环境不存在。");
       await this.prepareBrowserEnvironment(environment.id);
+      signal?.throwIfAborted();
       let contents: WebContents;
       if (projectId && this.desktopWindow && !this.desktopWindow.isDestroyed()) {
         const sessionId = typeof args.sessionId === "string" ? args.sessionId : undefined;
