@@ -43,7 +43,7 @@ test("shared provider requests keep stable session IDs and distinguish primary a
   for (const headers of primary) assert.match(headers.get("user-agent") ?? "", /^biny(?:\s|$)/u);
   const auxiliary = f.requests.find(headers => headers.get("x-biny-operation") === "memory");
   assert.equal(auxiliary?.get("x-session-id"), "session-a");
-  assert.match(auxiliary?.get("user-agent") ?? "", /^biny-auxiliary(?:\s|$)/u);
+  assert.match(auxiliary?.get("user-agent") ?? "", /^biny(?:\s|$)/u, "辅助请求不再向网关暴露独立 agent 身份");
   for (const headers of f.requests) assert.equal(headers.get("authorization"), "Bearer fixture-key");
 });
 

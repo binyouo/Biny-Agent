@@ -207,7 +207,7 @@ function useAudioSpectrum(media: React.RefObject<HTMLMediaElement | null>, canva
     const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
     const update = () => setReducedMotion(preference.matches);
     const theme = new MutationObserver(() => setThemeRevision(value => value + 1));
-    theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-base46-theme"] });
+    theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
     preference.addEventListener("change", update);
     return () => { theme.disconnect(); preference.removeEventListener("change", update); };
   }, [canvas]);

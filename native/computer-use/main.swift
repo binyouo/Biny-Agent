@@ -21,17 +21,6 @@ let driverVersion = "native-1"
 /// 这是有意的估算（且回执会说明），不是测量值。
 let linesPerPage: Double = 20
 let startedAt = Date()
-let replyLock = NSRecursiveLock()
-@discardableResult func reply(_ connection: NativeConnection, _ value: [String: Any]) -> Bool {
-    replyLock.lock(); defer { replyLock.unlock() }
-    guard var data = try? JSONSerialization.data(withJSONObject: value) else { return false }
-    data.append(10)
-    let sent = connection.send(data)
-    if !sent, let body = value["data"] as? [String: Any], let screenshot = body["screenshot"] as? String {
-        try? FileManager.default.removeItem(atPath: screenshot)
-    }
-    return sent
-}
 
 // MARK: - 权限检查
 // MARK: - Appshot：全局热键抓当前应用
@@ -263,93 +252,7 @@ let knownNeteaseRoutes = ["dailyRecommend", "historyRecommend", "historyPlaylist
 /// **穿透点击**（ignoresMouseEvents）· **不抢焦点**（canBecomeKey=false，只用
 /// orderFrontRegardless）· **不进 Dock**（daemon 本身是 LSUIElement）。
 /// 指示器窗口永不成为 key/main —— 它只是浮在最上面的一层画。
-final class LensWindow: NSWindow {
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}
-
-final class LensOverlay {
-    private var window: NSWindow?
-    private var cursorLayer: CAShapeLayer?
-    private var badgeLayer: CALayer?
-    private var hideTimer: Timer?
-    private let size: CGFloat = 44
-    private let fadeIn: TimeInterval = 0.12
-    private let linger: TimeInterval = 1.1
-
-    private func ensureWindow() -> NSWindow {
-        if let window { return window }
-        let window = LensWindow(
-            contentRect: NSScreen.main?.frame ?? .zero,
-            styleMask: [.borderless], backing: .buffered, defer: false
-        )
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        // 穿透：鼠标事件原样落到下面的应用，指示器本身绝不能吃掉点击。
-        window.ignoresMouseEvents = true
-        window.level = .screenSaver
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        let content = NSView(frame: window.contentRect(forFrameRect: window.frame))
-        content.wantsLayer = true
-        let cursor = CAShapeLayer()
-        cursor.opacity = 0
-        let badge = CALayer()
-        badge.opacity = 0
-        content.layer?.addSublayer(cursor)
-        content.layer?.addSublayer(badge)
-        window.contentView = content
-        self.window = window
-        self.cursorLayer = cursor
-        self.badgeLayer = badge
-        return window
-    }
-
-    /// 在屏幕坐标处显示一次动作指示。`symbol` 是这次动作的角标（滚动/输入），空则只显示落点。
-    func show(at point: CGPoint, symbol: String?) {
-        let window = ensureWindow()
-        guard let cursor = cursorLayer, let badge = badgeLayer, let root = window.contentView?.layer else { return }
-        hideTimer?.invalidate()
-
-        // 屏幕坐标原点在左下，图层坐标原点在左上 —— 这里必须翻一次，否则指示器会跑到对侧。
-        let flippedY = (NSScreen.main?.frame.height ?? 0) - point.y
-        let ring = CGRect(x: point.x - size / 2, y: flippedY - size / 2, width: size, height: size)
-        cursor.path = CGPath(ellipseIn: ring, transform: nil)
-        cursor.fillColor = NSColor.systemBlue.withAlphaComponent(0.18).cgColor
-        cursor.strokeColor = NSColor.systemBlue.withAlphaComponent(0.95).cgColor
-        cursor.lineWidth = 2.5
-        cursor.opacity = 1
-
-        if let symbol, let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) {
-            let badgeSize = CGSize(width: 30, height: 22)
-            badge.contents = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-            badge.contentsGravity = .resizeAspect
-            badge.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.92).cgColor
-            badge.cornerRadius = 6
-            badge.frame = CGRect(x: ring.maxX - 2, y: ring.minY - badgeSize.height + 6, width: badgeSize.width, height: badgeSize.height)
-            badge.opacity = 1
-        } else {
-            badge.opacity = 0
-        }
-
-        window.orderFrontRegardless()
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0; fade.toValue = 1; fade.duration = fadeIn
-        cursor.add(fade, forKey: "in")
-        root.opacity = 1
-
-        hideTimer = Timer.scheduledTimer(withTimeInterval: linger, repeats: false) { [weak self] _ in self?.hide() }
-    }
-
-    func hide() {
-        hideTimer?.invalidate(); hideTimer = nil
-        cursorLayer?.opacity = 0
-        badgeLayer?.opacity = 0
-        window?.orderOut(nil)
-    }
-}
-
-let lensOverlay = LensOverlay()
+let lensOverlay = MainActor.assumeIsolated { LensOverlay() }
 var lensEnabled = true
 /// 上一次动作用的是哪种指示器结局：shown / suppressed / disabled / none。
 var lastIndicatorOutcome = "none"
@@ -361,20 +264,27 @@ let actionCursor = ActionCursor()
 ///
 /// 命令处理跑在全局队列线程上，而 AppKit 只能主线程碰 —— 必须派过去。
 /// `show_cursor=false` 表示这一次不要指示器（`--no-cursor`）。
-func noteActionPoint(_ args: [String: Any], _ point: CGPoint?, symbol: String?) {
+func noteActionPoint(_ args: [String: Any], _ point: CGPoint?, symbol: String?, action: ActionCursor.Action = .click) {
     // 让"这一次显示了没有"变成**可读的量**：否则 `--no-cursor` 只能靠肉眼验，
     // 而肉眼验不了 —— 指示器是全屏透明的，看不见不等于没显示。
     lastIndicatorOutcome = !lensEnabled ? "disabled" : ((args["show_cursor"] as? Bool ?? true) ? "shown" : "suppressed")
-    guard args["show_cursor"] as? Bool ?? true else { return }
     let observation = NativeObservationContext.current
     let pid = (args["pid"] as? Int) ?? observation.map { Int($0.pid) }
     let windowID = (args["window_id"] as? Int) ?? observation?.windowID
     let owner = (args["client_id"] as? String) ?? observation?.owner ?? "direct-cli"
+    guard lensEnabled, args["show_cursor"] as? Bool ?? true else {
+        actionCursor.clear(pid: pid, windowID: windowID)
+        DispatchQueue.main.async { lensOverlay.hide(); windowMirrors.hideIndicators() }
+        return
+    }
     let target: CGPoint?
-    if let pid, let windowID, windowID > 0 { target = actionCursor.mark(pid: pid, windowID: windowID, owner: owner, point: point) }
+    if let pid, let windowID, windowID > 0 { target = actionCursor.mark(pid: pid, windowID: windowID, owner: owner, point: point, action: action, symbol: symbol) }
     else { target = point }
-    guard lensEnabled, let target else { return }
-    DispatchQueue.main.async { lensOverlay.show(at: target, symbol: symbol) }
+    guard let target else { return }
+    DispatchQueue.main.async {
+        lensOverlay.show(at: target, action: action, symbol: symbol, pid: pid, windowID: windowID)
+        if let pid, let windowID { windowMirrors.updateIndicator(pid: pid, windowID: windowID) }
+    }
 }
 
 /// 这一次动作的落点：给了像素就用像素，给了元素就用元素框中心，都没有就返回 nil
@@ -577,13 +487,19 @@ private let setWindowLocationFn: (@convention(c) (CGEvent, CGPoint) -> Void)? = 
     return unsafeBitCast(symbol, to: (@convention(c) (CGEvent, CGPoint) -> Void).self)
 }()
 
-func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1, windowID: Int? = nil) throws {
+func prepareMouseEvent(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1, windowID: Int? = nil) throws -> CGEvent {
     guard let windowID, let setLocation = setWindowLocationFn,
           let origin = windowScreenBounds(pid: Int(pid), windowID: windowID) else {
         throw NSError(domain: "input", code: 64, userInfo: [NSLocalizedDescriptionKey: "background_window_unavailable: exact window-local delivery is required; input was not dispatched"])
     }
     let event = try BackgroundInput.mouseEvent(pid: pid, windowID: windowID, type: type, point: point, button: button, clickState: clickState)
     setLocation(event, CGPoint(x: point.x - (origin["x"] ?? 0), y: point.y - (origin["y"] ?? 0)))
+    return event
+}
+
+func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1, windowID: Int? = nil) throws {
+    let event = try prepareMouseEvent(pid, type, point, button, clickState: clickState, windowID: windowID)
+    try NativeInputDispatch.beginInput()
     event.postToPid(pid)
 }
 
@@ -596,6 +512,7 @@ func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags, global: Bool
     if let windowID { try validateActiveInputTarget(pid, windowID, foreground: global) }
     let (down, up) = try keyboardEventPair { CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: $0) }
     down.flags = flags; up.flags = flags
+    try NativeInputDispatch.beginInput()
     if global { down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap) }
     else { down.postToPid(pid); up.postToPid(pid) }
 }
@@ -608,6 +525,7 @@ func postUnicode(_ pid: pid_t, _ text: String, windowID: Int? = nil) throws {
             down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
             up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
         }
+        try NativeInputDispatch.beginInput()
         down.postToPid(pid); up.postToPid(pid)
     }
 }
@@ -711,8 +629,11 @@ func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
     let up: CGEventType = button == .right ? .rightMouseUp : button == .center ? .otherMouseUp : .leftMouseUp
     let total = max(1, clicks)
     for index in 1...total {
-        try postMouse(pid, down, point, button, clickState: Int64(index), windowID: windowID)
-        try postMouse(pid, up, point, button, clickState: Int64(index), windowID: windowID)
+        let press = try prepareMouseEvent(pid, down, point, button, clickState: Int64(index), windowID: windowID)
+        let release = try prepareMouseEvent(pid, up, point, button, clickState: Int64(index), windowID: windowID)
+        try NativeInputDispatch.beginInput()
+        press.postToPid(pid)
+        release.postToPid(pid)
         if index < total { usleep(60_000) }
     }
 }
@@ -796,16 +717,30 @@ func screenPoint(_ pid: pid_t, _ x: Double, _ y: Double, screenSpace: Bool) -> C
     return CGPoint(x: sx, y: sy)
 }
 
+func validateCoordinateObservation(_ snapshot: ComputerObservation<AXUIElement>, args: [String: Any]) throws {
+    guard args["x"] != nil || args["x1"] != nil else { return }
+    guard let frame = windowScreenBounds(pid: Int(snapshot.pid), windowID: snapshot.windowID) else {
+        throw NSError(domain: "observation", code: 65, userInfo: [NSLocalizedDescriptionKey: "observation_window_unavailable: 目标窗口当前不在屏幕上，未派发输入；请重新观察"])
+    }
+    guard ["x", "y", "w", "h"].allSatisfy({ key in
+        guard let before = snapshot.geometry[key], let current = frame[key] else { return false }
+        return abs(before - current) < 1
+    }) else {
+        throw NSError(domain: "observation", code: 65, userInfo: [NSLocalizedDescriptionKey: "observation_geometry_changed: 窗口位置或尺寸已变化，未派发输入；请重新观察"])
+    }
+}
+
 /// 拖拽：AX 没有拖这个动作，只能合成鼠标序列（按下 → 若干拖动点 → 抬起）。
 func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint, button: CGMouseButton = .left, windowID: Int? = nil) throws {
     let (down, dragged, up) = BackgroundInput.dragTypes(button: button)
+    let release = try prepareMouseEvent(pid, up, to, button, windowID: windowID)
     try postMouse(pid, down, from, button, windowID: windowID)
+    defer { release.postToPid(pid) }
     let steps = 8
     for step in 1...steps {
         let progress = Double(step) / Double(steps)
         try postMouse(pid, dragged, CGPoint(x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress), button, windowID: windowID)
     }
-    try postMouse(pid, up, to, button, windowID: windowID)
 }
 
 /// 目标应用是否处在能接收键盘输入的状态。
@@ -987,7 +922,7 @@ func axScroll(_ pid: pid_t, direction: String, notches: Int, pages: Double? = ni
         default: pageAction = "AXScrollRightByPage"
         }
         let candidates = scrollPageCandidates(reference: refArea, area: area, children: children, includeChild: matchesAxis, same: { CFEqual($0, $1) })
-        switch performPageScroll(pages: Int(pages), candidates: candidates, perform: { accessibilityActionResult(AXUIElementPerformAction($0, pageAction as CFString)) }) {
+        switch try performPageScroll(pages: Int(pages), candidates: candidates, perform: { accessibilityActionResult(try NativeInputDispatch.action(AXUIElementPerformAction($0, pageAction as CFString))) }) {
         case .complete(let completed):
             return ["scrolled": direction, "route": "ax-page", "unit": "pages", "completedPages": completed]
         case .partial(let completed):
@@ -1014,7 +949,7 @@ func axScroll(_ pid: pid_t, direction: String, notches: Int, pages: Double? = ni
         }
         let step = fraction * (forward ? 1 : -1)
         let target = min(1.0, max(0.0, current + step))
-        switch accessibilityAttributeResult(AXUIElementSetAttributeValue(bar, kAXValueAttribute as CFString, target as CFTypeRef)) {
+        switch accessibilityAttributeResult(try NativeInputDispatch.attribute(AXUIElementSetAttributeValue(bar, kAXValueAttribute as CFString, target as CFTypeRef))) {
         case .success: break
         case .unsupported: continue
         case .unknown(let code):
@@ -1099,7 +1034,7 @@ func performBackgroundMenuShortcut(_ pid: pid_t, windowID: Int, keyCode: CGKeyCo
             shortcuts.append(MenuShortcut(element: element, keyCode: code, modifiers: modifiers, enabled: true))
         }
         return pending.isEmpty ? shortcuts : nil
-    }, perform: { AXUIElementPerformAction($0, kAXPressAction as CFString) })
+    }, perform: { try NativeInputDispatch.action(AXUIElementPerformAction($0, kAXPressAction as CFString)) })
 }
 
 /// 焦点护栏警告：护栏武装不起来时，动作可能真的会把用户的焦点带走。
@@ -1125,11 +1060,16 @@ func describeCaptureFailure(_ error: Error) -> String {
     if described.domain == "capture" && described.code == 64 {
         return "capture_missing_output: 内部调用没给输出路径（不该发生，报出来）。"
     }
-    if described.localizedDescription.contains("屏幕录制") || described.localizedDescription.contains("screen") {
-        return "screen_recording_not_granted: \(described.localizedDescription)"
+    if described.localizedDescription.hasPrefix("screen_recording_not_granted:") {
+        return described.localizedDescription
+    }
+    if described.domain == SCStreamErrorDomain && described.code == SCStreamError.Code.userDeclined.rawValue {
+        return screenRecordingMissing().localizedDescription
+    }
+    if described.localizedDescription.hasPrefix("capture_window_not_found") {
+        return "capture_window_not_found: 指定窗口不在当前可捕获列表中，可能已隐藏、最小化或关闭；请重新列出窗口并检查 onscreen、minimized 状态。"
     }
     return "capture_failed: \(described.localizedDescription)（domain=\(described.domain) code=\(described.code)）。"
-        + "若反复出现，先在「系统设置 → 隐私与安全性 → 屏幕录制」里确认「Biny Computer Use」是开着的 —— 权限每次新构建都会重置。"
 }
 
 func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
@@ -1183,7 +1123,9 @@ func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
         if let capturedWindow { result["windowId"] = capturedWindow }
         return result
     }
-    guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else { throw NSError(domain: "capture", code: 1) }
+    guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
+        throw NSError(domain: "capture", code: 65, userInfo: [NSLocalizedDescriptionKey: "capture_display_unavailable: 当前没有可捕获显示器；请先解锁当前桌面并确认显示器可用。"])
+    }
     let width = min(display.width, max(1, parameters["max_width"] as? Int ?? 1280))
     config.width = width
     config.height = max(1, Int((Double(display.height) * Double(width) / Double(display.width)).rounded()))
@@ -1270,13 +1212,23 @@ DispatchQueue.global().async {
                     let line = Data(buffer.prefix(upTo: newline))
                     buffer.removeSubrange(...newline)
                     guard let request = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
+                    if request["cmd"] as? String == "cancel" {
+                        if let args = request["args"] as? [String: Any], let requestID = args["request_id"] as? String { connection.cancelInput(requestID: requestID) }
+                        continue
+                    }
                     activityLock.lock(); lastRequestAt = Date(); activityLock.unlock()
+                    let inputCommands = ["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text", "type", "press"]
+                    let isInput = inputCommands.contains(request["cmd"] as? String ?? "")
+                    let requestID = request["id"] as? String ?? UUID().uuidString
+                    let dispatch = isInput ? NativeInputDispatch() : nil
+                    if let dispatch, !connection.registerInput(requestID: requestID, state: dispatch) { return }
                     Task {
+                        defer { if let dispatch { connection.completeInput(requestID: requestID, state: dispatch) } }
                         let id = request["id"] ?? NSNull()
+                        await NativeInputDispatch.$current.withValue(dispatch) {
                         do {
+                            try NativeInputDispatch.checkCancellation()
                             let args = request["args"] as? [String: Any] ?? [:]
-                            let command = request["cmd"] as? String ?? ""
-                            let isInput = ["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text", "type", "press"].contains(command)
                             if isInput && args["delivery"] != nil { throw NSError(domain: "input", code: 64, userInfo: [NSLocalizedDescriptionKey: "input_delivery_unsupported: 输入始终后台投递，不接受 delivery 参数"]) }
                             var snapshot: ComputerObservation<AXUIElement>?
                             if isInput, let owner = args["client_id"] as? String {
@@ -1285,6 +1237,7 @@ DispatchQueue.global().async {
                                 }
                                 snapshot = try observations.take(id: captureID, owner: owner, pid: pid_t(pid), windowID: windowID)
                             } else if isInput { snapshot = observations.direct(pid: (args["pid"] as? Int).map { pid_t($0) }) }
+                            if let snapshot { try validateCoordinateObservation(snapshot, args: args) }
                             await NativeObservationContext.$current.withValue(snapshot) {
                         var guardedPID: pid_t?
                         defer {
@@ -1298,7 +1251,7 @@ DispatchQueue.global().async {
                         do {
                             let cmd = request["cmd"] as? String ?? ""
                             let args = request["args"] as? [String: Any] ?? [:]
-                            if ["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"].contains(cmd) {
+                            if isInput {
                                 let targetPID = try resolvePid(args)
                                 try await backgroundFocusGuard.arm()
                                 backgroundFocusGuard.block(targetPID)
@@ -1322,9 +1275,13 @@ DispatchQueue.global().async {
                                 var shot = try await captureRequestedScreenshot(args, timeout: 3, resolveTarget: { Int(try resolvePid($0)) }, describeError: describeCaptureFailure, capture: screenshot)
                                 if let pid = args["pid"] as? Int, let windowID = args["window_id"] as? Int,
                                    let frame = shot["screenFrame"] as? [String: Double],
-                                   let x = frame["x"], let y = frame["y"], let width = frame["w"], let height = frame["h"],
-                                   let cursor = actionCursor.normalized(pid: pid, windowID: windowID, frame: CGRect(x: x, y: y, width: width, height: height)) {
-                                    shot["cursor"] = cursor
+                                   let x = frame["x"], let y = frame["y"], let width = frame["w"], let height = frame["h"] {
+                                    let appearance = await MainActor.run { (ActionIndicatorView.cursorPayload, ActionIndicatorView.hotspot) }
+                                    if var cursor = actionCursor.snapshot(pid: pid, windowID: windowID, frame: CGRect(x: x, y: y, width: width, height: height))?.payload {
+                                        cursor["image"] = appearance.0
+                                        cursor["hotspot"] = ["x": appearance.1.x, "y": appearance.1.y]
+                                        shot["cursor"] = cursor
+                                    }
                                 }
                                 reply(connection, ["id": id, "ok": true, "data": shot])
                             case "grant":
@@ -1335,15 +1292,34 @@ DispatchQueue.global().async {
                                 let granted = AXIsProcessTrustedWithOptions(options)
                                 reply(connection, ["id": id, "ok": true, "data": ["accessibility": granted ? "granted" : "denied", "prompted": !granted] as [String: Any]])
                             case "app_identity":
-                                guard let bundleId = args["bundle"] as? String,
-                                      let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId),
+                                if let pid = args["pid"] as? Int {
+                                    guard pid > 0, pid <= Int(Int32.max),
+                                          let app = NSRunningApplication(processIdentifier: pid_t(pid)), !app.isTerminated,
+                                          let bundleId = app.bundleIdentifier, !bundleId.isEmpty,
+                                          args["bundle"] == nil || args["bundle"] as? String == bundleId else {
+                                        throw NSError(domain: "identity", code: 66, userInfo: [NSLocalizedDescriptionKey: "computer_app_identity_unavailable"])
+                                    }
+                                    reply(connection, ["id": id, "ok": true, "data": ["pid": pid, "bundleId": bundleId,
+                                        "name": app.localizedName ?? bundleId, "running": true] as [String: Any]])
+                                    return
+                                }
+                                guard let bundleId = args["bundle"] as? String else {
+                                    throw NSError(domain: "identity", code: 66, userInfo: [NSLocalizedDescriptionKey: "computer_app_identity_unavailable"])
+                                }
+                                let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).filter { !$0.isTerminated }
+                                if let app = running.first {
+                                    var identity: [String: Any] = ["bundleId": bundleId, "name": app.localizedName ?? bundleId, "running": true]
+                                    if running.count == 1 { identity["pid"] = Int(app.processIdentifier) }
+                                    reply(connection, ["id": id, "ok": true, "data": identity])
+                                    return
+                                }
+                                guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId),
                                       let bundle = Bundle(url: url), bundle.bundleIdentifier == bundleId else {
                                     throw NSError(domain: "identity", code: 66, userInfo: [NSLocalizedDescriptionKey: "computer_app_identity_unavailable"])
                                 }
-                                let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first
                                 let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
                                     ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? url.deletingPathExtension().lastPathComponent
-                                reply(connection, ["id": id, "ok": true, "data": ["bundleId": bundleId, "name": name, "running": running != nil] as [String: Any]])
+                                reply(connection, ["id": id, "ok": true, "data": ["bundleId": bundleId, "name": name, "running": false] as [String: Any]])
                             case "launch_app":
                                 // 后台拉起：绝不 activate，不抢用户焦点。
                                 guard let bundle = args["bundle"] as? String else {
@@ -1588,7 +1564,7 @@ DispatchQueue.global().async {
                                 case "off", "false", "0": lensEnabled = false
                                 default: lensEnabled.toggle()
                                 }
-                                if !lensEnabled { DispatchQueue.main.async { lensOverlay.hide() } }
+                                if !lensEnabled { actionCursor.clear(); DispatchQueue.main.async { lensOverlay.hide(); windowMirrors.hideIndicators() } }
                                 reply(connection, ["id": id, "ok": true, "data": ["enabled": lensEnabled, "lastIndicator": lastIndicatorOutcome] as [String: Any]])
                             case "status":
                                 // 「helper 包 + 守护进程状态」：调用方最想先知道的两件事是
@@ -1666,7 +1642,7 @@ DispatchQueue.global().async {
                                 let observedWindow = selectedWindow
                                 var geometry: [String: Double] = [:]
                                 if let f = shot["screenFrame"] as? [String: Double], let sw = shot["width"] as? Int, sw > 0 {
-                                    geometry = ["scale": Double(sw) / max(1, f["w"] ?? 1), "x": f["x"] ?? 0, "y": f["y"] ?? 0]
+                                    geometry = ["scale": Double(sw) / max(1, f["w"] ?? 1), "x": f["x"] ?? 0, "y": f["y"] ?? 0, "w": f["w"] ?? 0, "h": f["h"] ?? 0]
                                 }
                                 if args["client_id"] == nil || (screenshotError == nil && !geometry.isEmpty && observedWindow > 0) {
                                     let owner = args["client_id"] as? String ?? "direct-cli"
@@ -1751,17 +1727,17 @@ DispatchQueue.global().async {
                                     func physicalAtElement() async throws -> Bool {
                                         guard let frame = axFrame(element) else { return false }
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
-                                        noteActionPoint(args, point, symbol: nil)
                                         try await withFocusGuard(pid_t(pid)) {
                                             try postClick(pid_t(pid), point, button: refButton, clicks: refClicks, windowID: args["window_id"] as? Int)
                                         }
+                                        noteActionPoint(args, point, symbol: nil)
                                         return true
                                     }
 
                                     let route = try await performElementClick(strategy: strategy, requiresPhysical: axCannotExpress,
                                         physical: physicalAtElement, accessibility: {
-                                            performAccessibilityActions([kAXPressAction as String, kAXPickAction as String, kAXConfirmAction as String]) {
-                                                AXUIElementPerformAction(element, $0 as CFString)
+                                            try performAccessibilityActions([kAXPressAction as String, kAXPickAction as String, kAXConfirmAction as String]) {
+                                                try NativeInputDispatch.action(AXUIElementPerformAction(element, $0 as CFString))
                                             }
                                         })
                                     var data: [String: Any] = ["clicked": ref, "route": route]
@@ -1783,10 +1759,10 @@ DispatchQueue.global().async {
                                     let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
                                     let pixelButton = mouseButton(args["button"] as? String)
                                     let pixelClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
-                                    noteActionPoint(args, point, symbol: nil)
                                     try await withFocusGuard(pid) {
                                         try postClick(pid, point, button: pixelButton, clicks: pixelClicks, windowID: args["window_id"] as? Int)
                                     }
+                                    noteActionPoint(args, point, symbol: nil)
                                     reply(connection, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))", "clicks": pixelClicks] as [String: Any]] as [String: Any])
                                 } else {
                                     // ⚠️ 「一个坐标都没给」和「只给了一半」是两种坏法，下一步也不同
@@ -1825,7 +1801,7 @@ DispatchQueue.global().async {
                                 let from = screenPoint(pid, x1, y1, screenSpace: screenSpace)
                                 let to = screenPoint(pid, x2, y2, screenSpace: screenSpace)
                                 try await withFocusGuard(pid) { try postDrag(pid, from: from, to: to, button: mouseButton(args["button"] as? String), windowID: args["window_id"] as? Int) }
-                                noteActionPoint(args, to, symbol: nil)
+                                noteActionPoint(args, to, symbol: nil, action: .drag)
                                 reply(connection, ["id": id, "ok": true, "data": ["dragged": "@\(Int(x1)),\(Int(y1))→@\(Int(x2)),\(Int(y2))"] as [String: Any]] as [String: Any])
                             case "perform_secondary_action":
                                 // 右键 / 打开上下文菜单：优先走 AX 的 ShowMenu，退化成合成右键。
@@ -1837,7 +1813,7 @@ DispatchQueue.global().async {
                                             "element_ref_not_observed: ref \(ref) 不在 pid \(Int(pid)) 的最近一次观察里，先 snap 一次"])
                                     }
                                     let requested = args["secondary_action"] as? String ?? (kAXShowMenuAction as String)
-                                    let status = accessibilityActionResult(AXUIElementPerformAction(element, requested as CFString))
+                                    let status = accessibilityActionResult(try NativeInputDispatch.action(AXUIElementPerformAction(element, requested as CFString)))
                                     if requested != (kAXShowMenuAction as String) {
                                         if case .unknown(let code) = status {
                                             throw NSError(domain: "action", code: 65, userInfo: [NSLocalizedDescriptionKey:
@@ -1861,7 +1837,7 @@ DispatchQueue.global().async {
                                         if status != .success, let frame = axFrame(element) {
                                             let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
                                             try await withFocusGuard(pid) {
-                                                try postMouse(pid, .rightMouseDown, point, .right, windowID: args["window_id"] as? Int); try postMouse(pid, .rightMouseUp, point, .right, windowID: args["window_id"] as? Int)
+                                                try postClick(pid, point, button: .right, clicks: 1, windowID: args["window_id"] as? Int)
                                             }
                                         }
                                         noteActionPoint(args, actionPoint(args, element: element), symbol: nil)
@@ -1873,7 +1849,7 @@ DispatchQueue.global().async {
                                     }
                                     let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
                                     try await withFocusGuard(pid) {
-                                        try postMouse(pid, .rightMouseDown, point, .right, windowID: args["window_id"] as? Int); try postMouse(pid, .rightMouseUp, point, .right, windowID: args["window_id"] as? Int)
+                                        try postClick(pid, point, button: .right, clicks: 1, windowID: args["window_id"] as? Int)
                                     }
                                     noteActionPoint(args, point, symbol: nil)
                                     reply(connection, ["id": id, "ok": true, "data": ["menu": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
@@ -1900,17 +1876,23 @@ DispatchQueue.global().async {
                                 }
                                 let mode = args["mode"] as? String ?? ((args["append"] as? Bool ?? false) ? "append" : "replace")
                                 if mode == "insert" {
-                                    let insertStatus = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+                                    let expected = accessibilityTextAfterInsertion(axCopy(element, kAXValueAttribute as String) as? String,
+                                        range: accessibilityTextRange(axCopy(element, kAXSelectedTextRangeAttribute as String)), text: text)
+                                    let insertStatus = try NativeInputDispatch.attribute(AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef))
                                     try requireAccessibilityAttributeWrite(insertStatus, unsupported: "text_input_ax_unsupported", unknown: "text_input_outcome_unknown")
-                                    reply(connection, ["id": id, "ok": true, "data": ["inserted": text.count, "mode": "insert", "route": "ax"] as [String: Any]])
+                                    var data: [String: Any] = ["inserted": text.count, "mode": "insert", "route": "ax"]
+                                    data.merge(accessibilityAttributeWriteEvidence(expected: expected.map { $0 as CFTypeRef }, actual: axCopy(element, kAXValueAttribute as String))) { _, new in new }
+                                    reply(connection, ["id": id, "ok": true, "data": data])
                                     return
                                 }
                                 let append = mode == "append"
                                 let current = append ? axCopy(element, kAXValueAttribute as String) as? String : nil
                                 let next = try accessibilityTextValue(current, text: text, append: append)
-                                let typeStatus = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, next as CFTypeRef)
+                                let typeStatus = try NativeInputDispatch.attribute(AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, next as CFTypeRef))
                                 try requireAccessibilityAttributeWrite(typeStatus, unsupported: "element_value_unsupported", unknown: "value_action_outcome_unknown")
-                                reply(connection, ["id": id, "ok": true, "data": ["typed": next.count, "appended": append, "route": "ax"] as [String: Any]])
+                                var data: [String: Any] = ["typed": next.count, "appended": append, "route": "ax"]
+                                data.merge(accessibilityAttributeWriteEvidence(expected: next as CFTypeRef, actual: axCopy(element, kAXValueAttribute as String))) { _, new in new }
+                                reply(connection, ["id": id, "ok": true, "data": data])
                             case "press":
                                 // 在元素上触发 AX 动作 —— 同样不需要焦点。
                                 guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let key = args["key"] as? String else {
@@ -1933,7 +1915,7 @@ DispatchQueue.global().async {
                                 guard let action = actions[key] else {
                                     throw NSError(domain: "press", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_press_key: 只支持 \(actions.keys.sorted().joined(separator: "/"))"])
                                 }
-                                let pressStatus = AXUIElementPerformAction(element, action as CFString)
+                                let pressStatus = try NativeInputDispatch.action(AXUIElementPerformAction(element, action as CFString))
                                 switch accessibilityActionResult(pressStatus) {
                                 case .success: break
                                 case .unsupported:
@@ -1950,10 +1932,12 @@ DispatchQueue.global().async {
                                 guard let element = observedElements(pid_t(pid))[ref] else {
                                     throw NSError(domain: "value", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
-                                let status = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFTypeRef)
+                                let status = try NativeInputDispatch.attribute(AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFTypeRef))
                                 try requireAccessibilityAttributeWrite(status, unsupported: "element_value_unsupported", unknown: "value_action_outcome_unknown")
-                                noteActionPoint(args, actionPoint(args, element: element), symbol: nil)
-                                reply(connection, ["id": id, "ok": true, "data": ["ref": ref, "value": "\(value)"] as [String: Any]] as [String: Any])
+                                var data = accessibilityAttributeWriteEvidence(expected: value as CFTypeRef, actual: axCopy(element, kAXValueAttribute as String))
+                                data["ref"] = ref
+                                noteActionPoint(args, actionPoint(args, element: element), symbol: "keyboard", action: .type)
+                                reply(connection, ["id": id, "ok": true, "data": data])
                             case "select_text":
                                 // 选中一段文字，或在没有 text 时把光标放到 range 起点。
                                 guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int else {
@@ -1975,24 +1959,32 @@ DispatchQueue.global().async {
                                     }
                                     var range = CFRange(location: selected.location, length: selected.length)
                                     guard let axRange = AXValueCreate(.cfRange, &range) else { throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "selection_range_invalid"]) }
-                                    try requireAccessibilityAttributeWrite(AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange), unsupported: "selection_unsupported", unknown: "selection_outcome_unknown")
-                                    noteActionPoint(args, actionPoint(args, element: element), symbol: nil)
-                                    reply(connection, ["id": id, "ok": true, "data": ["location": selected.location, "length": selected.length, "matched": true] as [String: Any]])
+                                    try requireAccessibilityAttributeWrite(NativeInputDispatch.attribute(AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)), unsupported: "selection_unsupported", unknown: "selection_outcome_unknown")
+                                    var data: [String: Any] = ["location": selected.location, "length": selected.length, "matched": true]
+                                    data.merge(accessibilityAttributeWriteEvidence(expected: axRange, actual: axCopy(element, kAXSelectedTextRangeAttribute as String))) { _, new in new }
+                                    noteActionPoint(args, actionPoint(args, element: element), symbol: "keyboard", action: .type)
+                                    reply(connection, ["id": id, "ok": true, "data": data])
                                 } else if let text = args["text"] as? String {
-                                    let status = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+                                    let expected = accessibilityTextAfterInsertion(axCopy(element, kAXValueAttribute as String) as? String,
+                                        range: accessibilityTextRange(axCopy(element, kAXSelectedTextRangeAttribute as String)), text: text)
+                                    let status = try NativeInputDispatch.attribute(AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef))
                                     try requireAccessibilityAttributeWrite(status, unsupported: "selection_unsupported", unknown: "selection_outcome_unknown")
-                                    noteActionPoint(args, actionPoint(args, element: element), symbol: nil)
-                                    reply(connection, ["id": id, "ok": true, "data": ["selected": text] as [String: Any]] as [String: Any])
+                                    var data = accessibilityAttributeWriteEvidence(expected: expected.map { $0 as CFTypeRef }, actual: axCopy(element, kAXValueAttribute as String))
+                                    data["ref"] = ref
+                                    noteActionPoint(args, actionPoint(args, element: element), symbol: "keyboard", action: .type)
+                                    reply(connection, ["id": id, "ok": true, "data": data])
                                 } else if let location = args["location"] as? Int {
                                     let length = args["length"] as? Int ?? 0
                                     var range = CFRange(location: location, length: length)
                                     guard let axRange = AXValueCreate(.cfRange, &range) else {
                                         throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "selection_range_invalid"])
                                     }
-                                    let status = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
+                                    let status = try NativeInputDispatch.attribute(AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange))
                                     try requireAccessibilityAttributeWrite(status, unsupported: "selection_unsupported", unknown: "selection_outcome_unknown")
-                                    noteActionPoint(args, actionPoint(args, element: element), symbol: nil)
-                                    reply(connection, ["id": id, "ok": true, "data": ["cursor": location] as [String: Any]] as [String: Any])
+                                    var data = accessibilityAttributeWriteEvidence(expected: axRange, actual: axCopy(element, kAXSelectedTextRangeAttribute as String))
+                                    data["cursor"] = location
+                                    noteActionPoint(args, actionPoint(args, element: element), symbol: "keyboard", action: .type)
+                                    reply(connection, ["id": id, "ok": true, "data": data])
                                 } else {
                                     throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "select_text requires text or location"])
                                 }
@@ -2007,6 +1999,7 @@ DispatchQueue.global().async {
                                 var plannedStrokes: [PhysicalStroke]?
                                 var automaticTarget: AXUIElement?
                                 var insertedByAutomaticAX = false
+                                var writeEvidence: [String: Any]?
                                 if method == "auto" {
                                     if let ref = args["ref"] as? String {
                                         guard let element = observedElements(pid)[ref] else {
@@ -2018,7 +2011,11 @@ DispatchQueue.global().async {
                                         var writable = DarwinBoolean(false)
                                         return AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &writable) == .success && writable.boolValue
                                     }, write: { element in
-                                        AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+                                        let expected = accessibilityTextAfterInsertion(axCopy(element, kAXValueAttribute as String) as? String,
+                                            range: accessibilityTextRange(axCopy(element, kAXSelectedTextRangeAttribute as String)), text: text)
+                                        let status = try NativeInputDispatch.attribute(AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef))
+                                        if status == .success { writeEvidence = accessibilityAttributeWriteEvidence(expected: expected.map { $0 as CFTypeRef }, actual: axCopy(element, kAXValueAttribute as String)) }
+                                        return status
                                     })
                                     if !insertedByAutomaticAX { plannedStrokes = try? await MainActor.run { try PhysicalInput.currentLayoutPlan(text) } }
                                     method = PhysicalInput.autoRoute(axWritable: insertedByAutomaticAX, physicalAvailable: plannedStrokes != nil)
@@ -2040,8 +2037,11 @@ DispatchQueue.global().async {
                                         throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                             "element_ref_not_observed: ref \(ref) 不在 pid \(Int(pid)) 的最近一次观察里，先 snap 一次"])
                                     }
-                                    let writeStatus = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+                                    let expected = accessibilityTextAfterInsertion(axCopy(element, kAXValueAttribute as String) as? String,
+                                        range: accessibilityTextRange(axCopy(element, kAXSelectedTextRangeAttribute as String)), text: text)
+                                    let writeStatus = try NativeInputDispatch.attribute(AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef))
                                     try requireAccessibilityAttributeWrite(writeStatus, unsupported: "text_input_ax_unsupported", unknown: "text_input_outcome_unknown")
+                                    writeEvidence = accessibilityAttributeWriteEvidence(expected: expected.map { $0 as CFTypeRef }, actual: axCopy(element, kAXValueAttribute as String))
                                 case "physical":
                                     let strokes: [PhysicalStroke]
                                     if let plannedStrokes { strokes = plannedStrokes }
@@ -2057,8 +2057,9 @@ DispatchQueue.global().async {
                                         "unknown_input_method: \"\(method)\"。可用：auto | physical | unicode | ax"])
                                 }
                                 let typedElement: AXUIElement? = (args["ref"] as? String).flatMap { observedElements(pid)[$0] }
-                                noteActionPoint(args, actionPoint([:], element: typedElement), symbol: "keyboard")
+                                noteActionPoint(args, actionPoint([:], element: typedElement), symbol: "keyboard", action: .type)
                                 var typed: [String: Any] = ["typed": text.count, "inputMethod": method]
+                                if let writeEvidence { typed.merge(writeEvidence) { _, new in new } }
                                 if method != "ax", let warning = keyDeliveryWarning(pid) {
                                     typed["warning"] = warning
                                     // 参照在这里还单独给一个 `verification_note`：
@@ -2082,7 +2083,7 @@ DispatchQueue.global().async {
                                     }
                                     if !viaMenu { try postKey(pid, keyCode: keyCode, flags: flags, global: global, windowID: args["window_id"] as? Int) }
                                 }
-                                noteActionPoint(args, nil, symbol: "keyboard")
+                                noteActionPoint(args, nil, symbol: "keyboard", action: .type)
                                 var pressed: [String: Any] = ["pressed": combo, "global": global]
                                 if viaMenu { pressed["via"] = "menu_ax_press"; pressed["route"] = "ax" }
                                 else if let warning = keyDeliveryWarning(pid) { pressed["warning"] = warning }
@@ -2098,7 +2099,7 @@ DispatchQueue.global().async {
                                 let direction = args["direction"] as? String ?? "down"
                                 let amount = args["amount"] as? Int ?? 3
                                 let route = args["x"] != nil ? "wheel" : (args["route"] as? String ?? "auto")
-                                // 滚轮要的是自然滚动转换后的方向；AX 写滚动条位置，用语义方向。
+                                // 滚轮与 AX 都接收语义方向；滚轮包在投递前抵消系统的自然滚动反转。
                                 let wheelDirection = args["wheel_direction"] as? String ?? direction
                                 // 先试 AX —— 原生滚动区只有这一条路能走通；不行再退回滚轮，
                                 // 那才是网页内容（不暴露 AXScrollBar）唯一可用的路由。
@@ -2115,13 +2116,18 @@ DispatchQueue.global().async {
                                         CGPoint(x: $0["x"]! + $0["w"]! / 2, y: $0["y"]! + $0["h"]! / 2)
                                     }
                                 }
-                                noteActionPoint(args, scrollPoint, symbol: "scroll")
+                                noteActionPoint(args, scrollPoint, symbol: "arrow." + direction, action: .scroll)
                                 let pagesArg = (args["pages"] as? Double) ?? (args["pages"] as? Int).map(Double.init)
                                 // 参照的 scroll 是 `scroll <ref> <up|down|…>` —— 目标由 **ref** 指定，
                                 // 而不是只给 pid、让守护进程自己猜哪个滚动区。给了 ref 就按 ref 走。
                                 var data = route == "wheel" ? nil : try await withFocusGuard(pid) { try axScroll(pid, direction: direction, notches: amount, pages: pagesArg, refArea: refArea) }
                                 if data == nil && route != "ax" {
                                     try await withFocusGuard(pid) {
+                                        let windowID = (args["window_id"] as? Int) ?? NativeObservationContext.current?.windowID
+                                        guard let windowID, let setLocation = setWindowLocationFn,
+                                              let origin = windowScreenBounds(pid: Int(pid), windowID: windowID) else {
+                                            throw NSError(domain: "scroll", code: 64, userInfo: [NSLocalizedDescriptionKey: "scroll_target_unavailable: exact target window is unavailable; observe again"])
+                                        }
                                         // 滚轮只认行数。给了 pages 就换算 —— 但**网页内容量不出页有多大**
                                         // （内容高度不暴露），所以这是估算，回执里如实标出来。
                                         let notches = pagesArg.map { max(1, Int(($0 * linesPerPage).rounded())) } ?? amount
@@ -2131,9 +2137,11 @@ DispatchQueue.global().async {
                                             default: return Int32(-notches)
                                             }
                                         }()
-                                        let event = try scrollWheelEvent(pid: pid, windowID: args["window_id"] as? Int, point: scrollPoint,
+                                        let event = try scrollWheelEvent(pid: pid, windowID: windowID, point: scrollPoint,
                                             vertical: (wheelDirection == "up" || wheelDirection == "down") ? wheelSign : 0,
                                             horizontal: (wheelDirection == "left" || wheelDirection == "right") ? wheelSign : 0)
+                                        setLocation(event, CGPoint(x: event.location.x - (origin["x"] ?? 0), y: event.location.y - (origin["y"] ?? 0)))
+                                        try NativeInputDispatch.beginInput()
                                         event.postToPid(pid)
                                     }
                                     data = ["scrolled": direction, "route": "wheel", "unit": pagesArg == nil ? "notches" : "pages(estimated as \(max(1, Int(((pagesArg ?? 1) * linesPerPage).rounded()))) notches)"]
@@ -2153,6 +2161,7 @@ DispatchQueue.global().async {
                             }
                         } catch {
                             reply(connection, ["id": id, "ok": false, "error": ["code": error.localizedDescription]])
+                        }
                         }
                     }
                 }

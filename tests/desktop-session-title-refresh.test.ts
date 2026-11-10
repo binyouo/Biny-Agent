@@ -1,7 +1,6 @@
 import { testModel } from "./helpers/model.js";
 /** Real App metadata DOM and manager snapshots; only presentation and transport boundaries are isolated. */
 import assert from "node:assert/strict";
-import { promises as fs } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -63,7 +62,6 @@ async function appModule() {
     Collapse: "({children, open, ...props}) => open ? createElement('div', props, children) : null",
     useFluidHover: "() => ({registerItem: noop, handlers: {}})",
     useClosingPresence: "(open) => ({present: open, phase: 'open'})",
-    useAppearance: "() => ({})",
     useDesktopAppearance: "() => appearance",
     useSidebarLayout: "() => sidebarLayout",
     useCompactionCommand: "() => compaction",
@@ -233,8 +231,10 @@ async function fixture(context: TestContext) {
     sidebarSessions: [...initial.sessions, ...otherInitial.sessions], workspace: initial,
     selectedSessionId: sessionId, activeView: "chat"
   } as DesktopBootstrap;
-  const refreshes: Array<{ projectId: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
-  const catalogRefreshes: Array<{ projectId: string; result: Promise<DesktopSessionTreePage> }> = [];
+  const fullWorkspaceReads: Array<{ projectId: string; result: Promise<DesktopWorkspaceSnapshot> }> = [];
+  const refreshes: Array<{ projectId: string; result: Promise<DesktopSessionTreePage> }> = [];
+  const catalogRefreshes: Array<{ projectId: string; scope: "event" | "metadata" | "navigation"; result: Promise<DesktopSessionTreePage> }> = [];
+  let readScope: "event" | "metadata" | "navigation" = "navigation";
   const renames: Array<{ projectId: string; sessionId: string; title: string; expectedRevision?: string; result: Promise<DesktopSessionMetadataReceipt> }> = [];
   const pins: Array<{ projectId: string; sessionId: string; pinned: boolean; expectedRevision?: string; result: Promise<DesktopSessionMetadataReceipt> }> = [];
   const opens: Promise<DesktopSessionDocument>[] = [];
@@ -249,13 +249,21 @@ async function fixture(context: TestContext) {
     bootstrap: async () => bootstrap,
     refreshProject(projectId: string) {
       const result = manager.workspaceSnapshot(projectId, true);
-      refreshes.push({ projectId, result });
+      fullWorkspaceReads.push({ projectId, result });
       void result.catch(noop);
       return result;
     },
     listSessionTreePage(projectId: string, options: DesktopSessionTreePageOptions) {
-      const result = manager.listSessionTreePage(projectId, options);
-      catalogRefreshes.push({ projectId, result });
+      const scope = readScope;
+      const gate = scope === "event" ? armed : undefined;
+      if (gate) armed = undefined;
+      // Delay only IPC delivery after the real manager has sampled the catalog.
+      const result = manager.listSessionTreePage(projectId, options).then(async page => {
+        if (gate) { gate.entered.resolve(); await gate.release.promise; }
+        return page;
+      });
+      catalogRefreshes.push({ projectId, scope, result });
+      if (scope === "event") refreshes.push({ projectId, result });
       void result.catch(noop);
       return result;
     },
@@ -306,24 +314,15 @@ async function fixture(context: TestContext) {
   let mounted = true;
   const unmount = async () => { if (mounted) { await React.act(() => root.unmount()); mounted = false; } };
   cleanup.push(unmount);
-  const realReadFile = fs.readFile;
-  const readSpy = context.mock.method(fs, "readFile", (async (...args: Parameters<typeof fs.readFile>) => {
-    const bytes = await realReadFile(...args);
-    if (args[0] === modelsStore.filePath && armed) {
-      const gate = armed;
-      armed = undefined;
-      gate.entered.resolve();
-      await gate.release.promise;
-    }
-    return bytes;
-  }) as typeof fs.readFile);
-  cleanup.push(() => { readSpy.mock.restore(); });
   cleanup.push(async () => {
     try { await unmount(); }
     finally {
       for (const gate of gates) gate.release.resolve();
-      await Promise.allSettled([...refreshes.map(call => call.result), ...renames.map(call => call.result), ...pins.map(call => call.result), ...opens, ...metadataWrites, ...projectWrites, ...catalogRefreshes.map(call => call.result)]);
+      await Promise.allSettled([...fullWorkspaceReads.map(call => call.result), ...renames.map(call => call.result), ...pins.map(call => call.result), ...opens, ...metadataWrites, ...projectWrites, ...catalogRefreshes.map(call => call.result)]);
     }
+  });
+  cleanup.push(() => {
+    assert.equal(fullWorkspaceReads.length, 0, "title and metadata reconciliation never reads a complete workspace");
   });
   await React.act(async () => { root.render(React.createElement(compiled.App)); });
   await React.act(async () => { await Promise.all(opens); });
@@ -335,7 +334,11 @@ async function fixture(context: TestContext) {
   };
   assert.equal(summary().metadataRevision, original.metadataRevision);
   assert.equal(summary().title, "Generated title");
-  const tick = async (ms: number) => { await React.act(async () => { context.mock.timers.tick(ms); }); };
+  const tick = async (ms: number, scope: typeof readScope = "event") => {
+    readScope = scope;
+    try { await React.act(async () => { context.mock.timers.tick(ms); }); }
+    finally { readScope = "navigation"; }
+  };
   const arm = (): ReadGate => {
     assert.equal(armed, undefined);
     const gate = { entered: deferred<void>(), release: deferred<void>() };
@@ -379,14 +382,14 @@ async function fixture(context: TestContext) {
   const savePinned = async (pinned: boolean, targetId = sessionId) => {
     assert.notEqual(Boolean(summary(targetId).pinned), pinned, "the menu action must change the current pin state");
     const before = pins.length;
-    const workspaceReads = refreshes.length;
+    const workspaceReads = fullWorkspaceReads.length;
     await selectSessionAction(pinned ? "置顶" : "取消置顶", targetId);
     assert.equal(pins.length, before + 1, "the DOM action must reach the real pin API exactly once");
     const request = pins[before]!;
     await React.act(async () => { await request.result.catch(noop); });
-    await tick(260);
-    await React.act(async () => { await Promise.allSettled(catalogRefreshes.map(read => read.result)); });
-    assert.equal(refreshes.length, workspaceReads, "metadata changes do not reload the workspace");
+    await tick(260, "metadata");
+    await React.act(async () => { await Promise.allSettled(catalogRefreshes.filter(read => read.scope === "metadata").map(read => read.result)); });
+    assert.equal(fullWorkspaceReads.length, workspaceReads, "metadata changes do not reload the workspace");
     return request;
   };
   const enterTitle = async (title: string) => {
@@ -407,21 +410,21 @@ async function fixture(context: TestContext) {
   };
   const rename = async (title: string, targetId = sessionId) => {
     const before = renames.length;
-    const workspaceReads = refreshes.length;
+    const workspaceReads = fullWorkspaceReads.length;
     await openRename(targetId);
     await enterTitle(title);
     await submit();
     assert.equal(renames.length, before + 1, "DOM submission must reach the real rename API exactly once");
     const request = renames[before]!;
     await React.act(async () => { await request.result.catch(noop); });
-    await tick(260);
-    await React.act(async () => { await Promise.allSettled(catalogRefreshes.map(read => read.result)); });
-    assert.equal(refreshes.length, workspaceReads, "metadata changes do not reload the workspace");
+    await tick(260, "metadata");
+    await React.act(async () => { await Promise.allSettled(catalogRefreshes.filter(read => read.scope === "metadata").map(read => read.result)); });
+    assert.equal(fullWorkspaceReads.length, workspaceReads, "metadata changes do not reload the workspace");
     return request;
   };
   return {
     project, otherProject, dataRoot, otherRoot, sessionId, removableId, otherId, original,
-    refreshes, catalogRefreshes, renames, pins, opens, metadataWrites, projectWrites, probe, summary,
+    refreshes, catalogRefreshes, fullWorkspaceReads, renames, pins, opens, metadataWrites, projectWrites, probe, summary,
     composer: () => (dom.window as unknown as { __metadataComposer: { fastMode: boolean; memoryState: string; memoryToggleDisabled: boolean; onChangeFastMode(value: boolean): void; onToggleMemory(): Promise<void> } }).__metadataComposer,
     act: React.act, tick, arm, event, settleRefresh, openRename, enterTitle, submit, rename, savePinned, unmount,
     document: dom.window.document,
@@ -683,7 +686,7 @@ test("project pin and rename merge the changed project field without refreshing 
   assert.equal(view.catalogRefreshes.length, 0);
 });
 
-test("a delayed event workspace read cannot replace a confirmed project pin receipt", { timeout: 30_000 }, async context => {
+test("a delayed event catalog read cannot replace a confirmed project pin receipt", { timeout: 30_000 }, async context => {
   const view = await fixture(context);
   const gate = view.arm();
   await view.event();
@@ -692,7 +695,7 @@ test("a delayed event workspace read cannot replace a confirmed project pin rece
     view.probe().onProjectPinned(view.project.id, true);
     await Promise.all(view.projectWrites);
   });
-  assert.equal(view.refreshes.length, 1, "Pinning does not start an additional workspace read");
+  assert.equal(view.refreshes.length, 1, "Pinning does not start an additional event catalog read");
   assert.equal(view.probe().projects.find(project => project.id === view.project.id)?.pinned, true);
   gate.release.resolve();
   await view.settleRefresh(0);

@@ -11,12 +11,13 @@ import { LocalEmbeddingManager } from "../../llm/embedding/LocalEmbeddingRuntime
 import { selectMemoryEmbeddingModel } from "../../llm/embedding/selectMemoryModel.js";
 import type { EmbeddingModelRuntime, EmbeddingModelRef, LocalEmbeddingModelId } from "../../llm/embedding/types.js";
 import { ProviderRegistry } from "../../llm/ProviderRuntime.js";
-import { resolveMemoryModelAlias } from "../../llm/toolModel.js";
+import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../../llm/ModelsStore.js";
+import { resolveMemoryModelAlias, resolveToolModelReference } from "../../llm/toolModel.js";
 import { createProviderCredentialPersistence } from "../../llm/modelFactory.js";
 
 /** 一个 Agent 数据根的维护与模型资源 owner；请求配置快照不跨异步调用共享。 */
 export class AgentMemoryOwner {
-  private readonly context = new AsyncLocalStorage<AgentConfig>();
+  private readonly context = new AsyncLocalStorage<{ config: AgentConfig; providers: ProviderRegistry }>();
   private readonly local: LocalEmbeddingManager;
   private readonly memory: MemoryStorage;
   private readonly maintenance: MemoryMaintenance;
@@ -34,14 +35,16 @@ export class AgentMemoryOwner {
 
   get hasPendingWork(): boolean { return this.pending.size > 0 || this.ticking; }
 
-  constructor(private readonly root: string, private readonly store: AgentConfigStore, local?: LocalEmbeddingManager) {
+  constructor(private readonly root: string, private readonly store: AgentConfigStore, local?: LocalEmbeddingManager,
+    private readonly modelsStore: ModelsStore = new FileModelsStore()) {
     this.local = local ?? new LocalEmbeddingManager(path.join(root, "models", "embeddings"));
     const model = () => {
       const config = this.config();
       const alias = resolveMemoryModelAlias(config);
       if (!alias) throw new Error("没有可用的记忆工具模型，请在设置中配置工具模型。");
-      return new ProviderRegistry(config, [], undefined, undefined, undefined,
-        createProviderCredentialPersistence(store, root)).createModelSettings(alias).model;
+      const resolved = resolveToolModelReference(this.providers(), config, alias);
+      if (!resolved) throw new Error(`Unknown model alias: ${alias}`);
+      return resolved.provider.createModelSettings(config, resolved.model).model;
     };
     this.memory = new MemoryStorage(root, { agentDir: root });
     this.maintenance = new MemoryMaintenance(this.memory, model);
@@ -55,7 +58,7 @@ export class AgentMemoryOwner {
       getReadOnlyVectorIndex: () => MemoryVectorIndex.openReadOnly(root),
       getActiveModel: () => this.selectedModel(),
       getConfiguredModel: () => this.config().context.memory.embeddingModel,
-      getProviderModels: () => new ProviderRegistry(this.config()).listEmbeddingModels(),
+      getProviderModels: () => this.providers().listEmbeddingModels(),
       getNeedsRebuild: () => this.config().needsEmbeddingRebuild,
       getRuntime: () => this.runtime()
     });
@@ -69,6 +72,7 @@ export class AgentMemoryOwner {
       if (action === "sleep.cancel") return this.maintenance.cancelMaintenance();
       if (action === "embedding.cancel-rebuild") return this.embeddings.cancelRebuild();
       if (action === "embedding.cancel-download") return this.embeddings.cancelDownload(localModel(payload.model));
+      if (action === "sleep.status") return this.dispatch(action, payload, requestSignal);
       const config = await this.store.load(this.root);
       const maintenance = ["sleep.run", "sleep.preview", "embedding.rebuild", "embedding.download", "embedding.remove", "maintain"].includes(action);
       if (maintenance && this.maintenanceAction) {
@@ -76,7 +80,16 @@ export class AgentMemoryOwner {
         throw new Error(`全局记忆维护 ${this.maintenanceAction} 正在进行。`);
       }
       if (maintenance) this.maintenanceAction = action;
-      try { return await this.context.run(config, () => this.dispatch(action, payload, requestSignal)); }
+      try {
+        const selected = config.context.memory.embeddingModel;
+        const providerIds = Object.keys(config.providers).filter(alias => action === "embedding.status"
+          || selected?.kind === "auto" || selected?.kind === "provider" && selected.provider === alias);
+        const catalogs = providerIds.length
+          ? await restoreProviderCatalogs(providerIds, this.modelsStore, config.providers) : [];
+        const providers = new ProviderRegistry(config, catalogs, undefined, this.modelsStore, undefined,
+          createProviderCredentialPersistence(this.store, this.root));
+        return await this.context.run({ config, providers }, () => this.dispatch(action, payload, requestSignal));
+      }
       finally { if (maintenance) this.maintenanceAction = undefined; }
     })();
     this.pending.add(task);
@@ -120,14 +133,20 @@ export class AgentMemoryOwner {
   }
 
   private config(): AgentConfig {
-    const config = this.context.getStore();
-    if (!config) throw new Error("Memory operation requires a configuration snapshot.");
-    return config;
+    const context = this.context.getStore();
+    if (!context) throw new Error("Memory operation requires a configuration snapshot.");
+    return context.config;
+  }
+
+  private providers(): ProviderRegistry {
+    const context = this.context.getStore();
+    if (!context) throw new Error("Memory operation requires a configuration snapshot.");
+    return context.providers;
   }
 
   private selectedModel(): EmbeddingModelRef | undefined {
     return selectMemoryEmbeddingModel(this.config().context.memory.embeddingModel,
-      new ProviderRegistry(this.config()).listEmbeddingModels());
+      this.providers().listEmbeddingModels());
   }
 
   private async runtime(localReadyOnly = false): Promise<EmbeddingModelRuntime | undefined> {
@@ -136,7 +155,7 @@ export class AgentMemoryOwner {
     const selected = this.selectedModel();
     if (!selected || selected.kind === "auto") return undefined;
     if (selected.kind === "local") return this.local.createRuntime(selected.model);
-    return new ProviderRegistry(this.config()).createEmbeddingRuntime(selected);
+    return this.providers().createEmbeddingRuntime(selected);
   }
 
   private async dispatch(action: string, payload: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {

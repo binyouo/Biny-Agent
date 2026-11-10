@@ -23,23 +23,8 @@ export function captureRegion(rect: CaptureRect, viewport: { width: number; heig
 
 /** 预览和导出共用的像素遮盖；不依赖截图时的 DOM 样式或合成器帧。 */
 export function drawCapturePrivacy(ctx: Pick<CanvasRenderingContext2D, "fillStyle" | "fillRect" | "beginPath" | "roundRect" | "fill" | "getImageData" | "putImageData" | "canvas">, regions: readonly CapturePrivacyRegion[], offsetX = 0, offsetY = 0): void {
-  const titles = regions.filter(function (region) { return region.kind === "title"; });
-  const others = regions.filter(function (region) { return region.kind !== "title"; });
-  // 标题行高随截屏时各行的布局上下浮动，逐块保留会把差异画出来；按中位数归一。
-  const heights = titles.map(function (region) { return region.height; }).sort(function (a, b) { return a - b; });
-  const lineHeight = heights[Math.floor(heights.length / 2)] || 1;
-  for (const region of titles) {
-    const height = Math.min(lineHeight * 1.2, Math.max(lineHeight * .8, region.height));
-    const x = offsetX + region.x;
-    const y = offsetY + region.y + (region.height - height) / 2;
-    ctx.fillStyle = "#202329";
-    ctx.fillRect(Math.floor(x), Math.floor(y), Math.ceil(region.width) + 1, Math.ceil(height) + 1);
-    const barHeight = Math.max(3, height * .3);
-    ctx.fillStyle = "#737780";
-    ctx.beginPath(); ctx.roundRect(x, y + (height - barHeight) / 2, Math.min(region.width, height * 6), barHeight, barHeight / 2); ctx.fill();
-  }
-  // 邮箱区域使用像素模糊；像素不可读时直接遮盖。
-  for (const region of others) {
+  // 全部走像素模糊：标题与账号一致，底色取像素本身，只留下"一段文字"的形状。
+  for (const region of regions) {
     const x = offsetX + region.x;
     const y = offsetY + region.y;
     const w = Math.ceil(region.width) + 1;

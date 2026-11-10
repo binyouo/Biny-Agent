@@ -4,6 +4,8 @@ import { defaultEmbeddingModelRef, embeddingModelRefKey, localEmbeddingModelIds,
 import { selectMemoryEmbeddingModel } from "../../../../../llm/embedding/selectMemoryModel.js";
 import type {
   DesktopEmbeddingModelDescriptor,
+  DesktopModelCatalogResult,
+  DesktopModelConnection,
   DesktopMemoryArchivePage,
   DesktopMemoryArchiveMutationResult,
   DesktopMemoryEntriesPage,
@@ -32,6 +34,7 @@ import { modelPickerGroups, type SettingsModelPickerGroup } from "./settingsMode
 interface SettingsMemoryProps {
   models: ModelChoice[];
   embeddingModels: DesktopEmbeddingModelDescriptor[];
+  onFetchModelCatalog?(providerAlias: string): Promise<DesktopModelCatalogResult>;
   hidden?: boolean;
   workspaceAvailable: boolean;
   sessionRunning: boolean;
@@ -66,7 +69,8 @@ function rangeProgress(value: number, min: number, max: number): React.CSSProper
   return { "--range-progress": `${Math.min(100, Math.max(0, percent))}%` } as React.CSSProperties;
 }
 
-function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[], automaticKey?: string): SettingsModelPickerGroup[] {
+function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[], automaticKey?: string,
+  connections: readonly DesktopModelConnection[] = []): SettingsModelPickerGroup[] {
   const groups = new Map<string, SettingsModelPickerGroup>();
   for (const model of models) {
     const local = model.source === "local";
@@ -78,7 +82,7 @@ function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[
     const groupKey = `${providerType}:${providerAlias}:${model.endpoint ?? ""}`;
     const group = groups.get(groupKey) ?? {
       key: groupKey,
-      label: local ? "本地模型" : catalog?.label ?? providerAlias,
+      label: local ? "本地模型" : connections.find(connection => connection.providerAlias === providerAlias)?.displayName ?? catalog?.label ?? providerAlias,
       iconTone: local ? "local" : catalog?.iconTone ?? providerType,
       iconId: resolveProviderIconId(undefined, catalog?.id),
       options: []
@@ -89,6 +93,7 @@ function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[
     group.options.push({
       value: modelKey === automaticKey ? "auto" : modelKey,
       label: model.displayName,
+      searchText: `${providerAlias} ${model.ref.model}`,
       trailing: modelKey === automaticKey ? "自动" : local
         ? [sizeLabel, model.installed === false ? "未下载" : undefined].filter(Boolean).join(" · ")
         : model.available === false ? "未配置" : undefined,
@@ -102,6 +107,7 @@ function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[
 export function SettingsMemory({
   models,
   embeddingModels,
+  onFetchModelCatalog,
   hidden,
   workspaceAvailable,
   sessionRunning,
@@ -176,6 +182,11 @@ export function SettingsMemory({
   const [embeddingStatus, setEmbeddingStatus] = useState<DesktopMemoryEmbeddingStatus>();
   const [embeddingWorking, setEmbeddingWorking] = useState<"download" | "rebuild">();
   const [embeddingError, setEmbeddingError] = useState<string>();
+  const [embeddingCatalogError, setEmbeddingCatalogError] = useState<string>();
+  const [loadingEmbeddingModels, setLoadingEmbeddingModels] = useState(false);
+  const embeddingCatalogRequests = useRef(new Map<string, Promise<void>>());
+  const embeddingCatalogRequest = useRef(0);
+  useEffect(() => () => { embeddingCatalogRequest.current += 1; }, [hidden, snapshot?.configRevision]);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveLoaded, setArchiveLoaded] = useState(false);
   const [archiveLoading, setArchiveLoading] = useState(false);
@@ -203,6 +214,38 @@ export function SettingsMemory({
       setEmbeddingError(errorMessage(cause));
     }
   }, [onLoadEmbeddingStatus, workspaceAvailable]);
+
+  const loadEmbeddingModels = async (): Promise<void> => {
+    if (!onFetchModelCatalog || !snapshot || !workspaceAvailable) return;
+    const connections = snapshot.models.connections.filter(connection => connection.enabled !== false
+      && connection.supportsEmbedding && (!connection.requiresApiKey || connection.hasCredential));
+    const request = ++embeddingCatalogRequest.current;
+    setEmbeddingCatalogError(undefined);
+    if (!connections.length) { setLoadingEmbeddingModels(false); return; }
+    setLoadingEmbeddingModels(true);
+    const results = await Promise.allSettled(connections.map(connection => {
+      const key = JSON.stringify([snapshot.configRevision, connection.providerAlias, connection.providerType, connection.baseUrl, connection.hasCredential]);
+      let pending = embeddingCatalogRequests.current.get(key);
+      if (!pending) {
+        pending = onFetchModelCatalog(connection.providerAlias).then(() => undefined);
+        embeddingCatalogRequests.current.set(key, pending);
+        void pending.catch(() => { embeddingCatalogRequests.current.delete(key); });
+      }
+      return pending;
+    }));
+    try {
+      const status = await onLoadEmbeddingStatus();
+      if (request !== embeddingCatalogRequest.current || !visibleRef.current) return;
+      setEmbeddingStatus(status);
+      const failures = results.flatMap((result, index) => result.status === "rejected"
+        ? [`${connections[index]!.displayName ?? connections[index]!.providerAlias}：${errorMessage(result.reason)}`] : []);
+      setEmbeddingCatalogError(failures.length ? failures.join("；") : undefined);
+    } catch (cause) {
+      if (request === embeddingCatalogRequest.current && visibleRef.current) setEmbeddingCatalogError(errorMessage(cause));
+    } finally {
+      if (request === embeddingCatalogRequest.current) setLoadingEmbeddingModels(false);
+    }
+  };
 
   /**
    * 重新读取当前页。省略页码时沿用当前所在页：增删改一条记忆后把用户丢回第一页会丢掉
@@ -664,7 +707,7 @@ export function SettingsMemory({
   const selectedEmbeddingModel = policy.embeddingModel ?? defaultEmbeddingModelRef;
   const selectedEmbeddingKey = embeddingModelRefKey(selectedEmbeddingModel);
   // 热重载前的旧进程可能仍返回已移除的模型；按当前协议过滤本地选项。
-  const availableEmbeddingModels = (embeddingStatus?.models.length ? embeddingStatus.models : embeddingModels)
+  const availableEmbeddingModels = (embeddingStatus?.models ?? embeddingModels)
     .filter((model) => model.source !== "local" || (model.ref.kind === "local" && localEmbeddingModelIds.includes(model.ref.model)));
   const automaticEmbeddingModel = (snapshot?.memory.embeddingModel ?? defaultEmbeddingModelRef).kind === "auto"
     ? embeddingStatus?.activeModel ?? selectMemoryEmbeddingModel({ kind: "auto" }, availableEmbeddingModels)
@@ -691,7 +734,8 @@ export function SettingsMemory({
     && embeddingModelRefKey(snapshot.memory.embeddingModel) !== selectedEmbeddingKey;
   const canRebuild = !modelDraftChanged && dirtyCount === 0 && selectedInstalled;
   const embeddingGroups = embeddingPickerGroups(availableEmbeddingModels,
-    selectedEmbeddingModel.kind === "auto" && automaticEmbeddingModel ? embeddingModelRefKey(automaticEmbeddingModel) : undefined);
+    selectedEmbeddingModel.kind === "auto" && automaticEmbeddingModel ? embeddingModelRefKey(automaticEmbeddingModel) : undefined,
+    snapshot?.models.connections);
   if (!embeddingGroups.some((group) => group.options.some((option) => option.value === "auto"))) {
     embeddingGroups.push({ key: "auto", label: "服务商", iconTone: "local", options: [{
       value: "auto", label: "自动选择可用服务商", trailing: automaticEmbeddingModel ? undefined : "暂无可用模型"
@@ -876,6 +920,7 @@ export function SettingsMemory({
             <SettingsModelPicker
               ariaLabel="选择嵌入模型"
               groups={embeddingGroups}
+              onOpen={() => { void loadEmbeddingModels(); }}
               selectionHint={selectedEmbeddingModel.kind === "auto" ? selectedEmbeddingDescriptor ? "自动" : "暂无可用模型" : undefined}
               onChange={(value) => {
                 if (!value) return;
@@ -887,6 +932,8 @@ export function SettingsMemory({
               placeholder="选择嵌入模型"
               value={selectedEmbeddingKey}
             />
+            {loadingEmbeddingModels ? <small role="status">正在读取服务商模型…</small> : null}
+            {embeddingCatalogError ? <div role="alert" className="activity-memory-embedding-error">{embeddingCatalogError}</div> : null}
             {embeddingStatus?.needsRebuild ? <div aria-live="polite" className="activity-memory-embedding-error" role="alert">
               <span>{embeddingStatus.degradedReason ?? "嵌入索引与当前模型不匹配，自动记忆召回已暂停。"}</span>
               <button className="settings-action settings-text-action text-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">立即重建</button>

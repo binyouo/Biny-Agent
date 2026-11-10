@@ -182,7 +182,7 @@ function testEmotionPromptAndSystemPrompt(): void {
   assert.match(emotionPrompt, /YOUR DEFAULT PERSONALITY IS NOT NEUTRAL/u);
   assert.match(emotionPrompt, /biny emotion set-context/u);
   assert.match(emotionPrompt, /emotional gravity/u);
-  assert.match(emotionPrompt, /Emotional energy is your subjective feeling and is independent of fatigue/u);
+  assert.doesNotMatch(emotionPrompt, /Emotional energy tracks your fatigue state/u, "能量同步指令只留在疲劳块，情绪块不重复");
   assert.match(emotionPrompt, /EXPIRY: Base emotion decays over 6 hours/u);
   assert.match(emotionPrompt, /FATIGUE & SLEEP STATE: 😪 TIRED/u);
   assert.doesNotMatch(emotionPrompt, /SLEEPING/u);
@@ -199,8 +199,8 @@ function testEmotionPromptAndSystemPrompt(): void {
   const awakePrompt = renderEmotionPrompt({ ...blended, fatigue: 0 });
   assert.match(awakePrompt, /FATIGUE SYSTEM: You have a fatigue\/sleep system/u);
   assert.match(awakePrompt, /biny rest/u);
-  assert.doesNotMatch(awakePrompt, /emotion energy should match your fatigue/u);
-  assert.doesNotMatch(awakePrompt, /Keep them in sync/u);
+  assert.match(awakePrompt, /emotion energy should match your fatigue/u);
+  assert.match(awakePrompt, /Keep them in sync/u);
   assert.doesNotMatch(emotionPrompt, /biny rest/u);
   assert.doesNotMatch(emotionPrompt, /the emotion tool/u);
   assert.doesNotMatch(emotionPrompt, /cannot grant/u);
@@ -340,7 +340,12 @@ async function testEmotionAnalysis(): Promise<void> {
       ['{"mood":"excited","valence":12,"reason":"完成任务"}', "excited", 10, "完成任务"],
       ['{"mood":"angry","valence":-2,"reason":"不愉快"}', "angry", 0, "不愉快"],
       ['{"mood":"amused","valence":7,"reason":"有趣"}', "amused", 7, "有趣"],
-      ['{"mood":"content","valence":6,"reason":"第一段 | 第二段"}', "content", 6, "第一段 | 第二段"]
+      ['{"mood":"content","valence":6,"reason":"第一段 | 第二段"}', "content", 6, "第一段 | 第二段"],
+      ['```json\n{"mood":"grateful","valence":9,"reason":"围栏输出"}\n```', "grateful", 9, "围栏输出"],
+      ['说明文字\n{"mood":"proud","valence":8,"reason":"JSON 前有其他文字"}', "proud", 8, "JSON 前有其他文字"],
+      ['{"mood":"bored","valence":"4","reason":"字符串数字"}', "bored", 4, "字符串数字"],
+      ['{"mood":"calm","valence":7.6,"reason":"小数取整"}', "calm", 8, "小数取整"],
+      ['{"mood":"tired","valence":3,"reason":"多余字段","confidence":0.9}', "tired", 3, "多余字段"]
     ] as const) {
       output = response;
       const next = await analyzeContextEmotion({
@@ -356,24 +361,26 @@ async function testEmotionAnalysis(): Promise<void> {
       assert.equal(persisted?.trigger, reason);
     }
     const previous = await storage.readContext("session-one");
-    for (const response of [
-      "",
-      "not structured",
-      "happy|8|旧管道格式",
-      '{"mood":"happy","valence":"8","reason":"valence 必须是数字"}',
-      '{"mood":"happy","valence":8}',
-      '{"mood":"happy","valence":8,"reason":"ok","extra":true}',
-      '说明文字\n{"mood":"happy","valence":8,"reason":"JSON 前有其他文字"}'
-    ]) {
+    for (const [response, failure] of [
+      ["", "invalid_json"],
+      ["not structured", "invalid_json"],
+      ["happy|8|旧管道格式", "invalid_json"],
+      ['{"mood":"happy","valence":8}', "invalid_shape"],
+      ['{"mood":"happy","valence":"abc","reason":"非数字"}', "invalid_shape"],
+      ['{"mood":"happy"}', "invalid_shape"],
+      ["[]", "invalid_shape"]
+    ] as const) {
       output = response;
-      let notified = false;
+      let notified = false, failed: string | undefined;
       assert.equal(await analyzeContextEmotion({
         sessionId: "session-one", storage, getModel: () => model,
         getMessages: async () => messages, now: () => current,
-        onUpdated: () => { notified = true; }
+        onUpdated: () => { notified = true; },
+        onFailed: (reason) => { failed = reason; }
       }), undefined, "invalid emotion output must not update the context");
       assert.deepEqual(await storage.readContext("session-one"), previous);
       assert.equal(notified, false);
+      assert.equal(failed, failure, response || "(empty)");
     }
   } finally {
     scheduler.cancel();
@@ -402,7 +409,7 @@ async function testAgentSessionAutoAnalysis(): Promise<void> {
   const config = configSchema.parse({
     ...defaultConfig,
     defaultModel: "emotion-auto-test",
-    providers: { test: { type: "openai", apiKey: "test-key", baseUrl: "https://example.test/v1" } },
+    providers: { test: { type: "openai-compatible", apiKey: "test-key", baseUrl: "https://example.test/v1" } },
     models: { "emotion-auto-test": { provider: "test", model: "emotion-auto-test" } },
     activity: { ...defaultConfig.activity, enabled: false },
     context: {
@@ -464,7 +471,7 @@ async function testAgentSessionFatigue(): Promise<void> {
   const config = configSchema.parse({
     ...defaultConfig,
     defaultModel: "emotion-test",
-    providers: { test: { type: "openai", apiKey: "test-key", baseUrl: "https://example.test/v1" } },
+    providers: { test: { type: "openai-compatible", apiKey: "test-key", baseUrl: "https://example.test/v1" } },
     models: { "emotion-test": { provider: "test", model: "emotion-test" } },
     activity: { ...defaultConfig.activity, enabled: false },
     context: {

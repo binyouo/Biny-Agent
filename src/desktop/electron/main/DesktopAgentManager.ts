@@ -2706,6 +2706,24 @@ export class DesktopAgentManager {
     return managed;
   }
 
+  async attachRemoteClient(projectId: string): Promise<{ workspaceRoot: string; client: RuntimeHostClient }> {
+    const lifetime = this.runtimeLifetime(projectId);
+    await this.ensureRuntime(projectId);
+    const project = this.projects.requireProject(projectId);
+    const workspaceRoot = await this.projects.dataRoot(project);
+    const configPath = this.configStore.configPath?.();
+    const client = await connectRuntimeHost(workspaceRoot, {
+      configDir: configPath === undefined ? globalConfigDir() : path.dirname(configPath),
+      clientId: `remote-${randomUUID()}`, surface: "desktop", keepAlive: true
+    });
+    if (!client) throw new Error("项目运行时不可用。");
+    try {
+      await client.waitForReady();
+      if (!this.isRuntimeLifetimeCurrent(projectId, lifetime)) throw new Error("项目已关闭，请重新开启远程访问。");
+      return { workspaceRoot, client };
+    } catch (error) { await client.close(); throw error; }
+  }
+
   private runtimeLifetime(projectId: string): symbol {
     let lifetime = this.runtimeLifetimes.get(projectId);
     if (lifetime === undefined) {
@@ -3015,7 +3033,8 @@ export class DesktopAgentManager {
     const config = (await this.requireVersionedConfig().loadVersioned!(workspaceRoot)).config;
     const localManager = new LocalEmbeddingManager(path.join(globalAgentDir(), "models", "embeddings"));
     const storage = new MemoryStorage(workspaceRoot);
-    const providerModels = describeEmbeddingModels(config).filter(descriptor => descriptor.source === "provider");
+    const catalogs = await restoreProviderCatalogs(Object.keys(config.providers), this.modelsStore, config.providers);
+    const providerModels = describeEmbeddingModels(config, catalogs).filter(descriptor => descriptor.source === "provider");
     const service = new MemoryEmbeddingService({
       localMemory: {
         listMemoryEntries: options => storage.listEntries(options),
@@ -3249,14 +3268,17 @@ function describeSettingsNonModelConfigSnapshot(
 }
 
 function describeSettingsModels(config: AgentConfig, catalogs: readonly [string, ModelCatalogEntry[]][]): DesktopSettingsModelsSnapshot {
+  const configured = listConfiguredModelChoices(config, catalogs);
   return {
-    configured: listConfiguredModelChoices(config, catalogs),
+    configured,
     connections: describeModelConnections(config),
+    selectedModel: filterPickerModelChoices(configured).some(model => model.alias === config.defaultModel)
+      ? modelRuntimeInfo(config, catalogs) : undefined,
     catalogs: Object.fromEntries(catalogs.map(([providerAlias, models]) => [
       providerAlias,
       structuredClone(models)
     ])),
-    embeddingModels: describeEmbeddingModels(config),
+    embeddingModels: describeEmbeddingModels(config, catalogs),
     defaultModel: config.defaultModel,
     toolModel: config.toolModel,
     visionModel: config.visionModel,
@@ -3270,11 +3292,12 @@ function describeSettingsModels(config: AgentConfig, catalogs: readonly [string,
   };
 }
 
-function describeEmbeddingModels(config: AgentConfig): DesktopEmbeddingModelDescriptor[] {
+function describeEmbeddingModels(config: AgentConfig, catalogs: readonly [string, ModelCatalogEntry[]][] = []): DesktopEmbeddingModelDescriptor[] {
   return [
     ...listLocalEmbeddingModels(),
     ...Object.entries(config.providers).flatMap(([providerAlias, provider]) => (
-      listProviderEmbeddingModels(providerAlias, provider, providerDefinition(provider.type))
+      listProviderEmbeddingModels(providerAlias, provider, providerDefinition(provider.type),
+        catalogs.find(([alias]) => alias === providerAlias)?.[1])
     ))
   ].map(describeDesktopEmbeddingModel);
 }
@@ -3327,6 +3350,7 @@ function describeModelConnections(config: AgentConfig): DesktopModelConnection[]
       providerType: provider.type,
       acp: provider.acp,
       enabled: provider.enabled ?? true,
+      supportsEmbedding: profile.embedding !== undefined,
       displayName: provider.displayName,
       icon: provider.icon,
       protocol: provider.protocol,

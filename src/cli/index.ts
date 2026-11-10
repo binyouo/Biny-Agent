@@ -22,10 +22,10 @@ import { registerComputerCommands } from "./commands/computer.js";
 import { registerCuCommands } from "./commands/cu.js";
 import { registerBrowserCommands } from "./commands/browser.js";
 import { registerInAppBrowserCommands } from "./commands/iab.js";
+import { registerRemoteCommands } from "./commands/remote.js";
 import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
   referenceTokenCommand, referenceContextCommand, referenceOpenCommand } from "./commands/references.js";
 import { registerFatigueCommands } from "./commands/fatigue.js";
-import { registerThemeCommands } from "./commands/theme.js";
 import { registerUserInputCommands } from "./commands/userInput.js";
 import { registerPersonaCommands } from "./commands/persona.js";
 import { registerSoulCommands } from "./commands/soul.js";
@@ -153,7 +153,7 @@ registerComputerCommands(program);
 registerCuCommands(program);
 registerBrowserCommands(program);
 registerInAppBrowserCommands(program);
-registerThemeCommands(program);
+registerRemoteCommands(program, workspaceRoot, wrap);
 
 program.command("acp").description("Inspect external ACP Agents").command("check")
   .argument("<provider>", "configured ACP provider alias").option("--json", "print JSON")

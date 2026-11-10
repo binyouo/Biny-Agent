@@ -12,6 +12,7 @@ import { computerActionPayload, computerObservationOptions, computerSequenceSche
 import { legacyActionPayload, legacyActionShape, legacyAutoLaunch, legacyComputerTarget, legacyObservationOptions } from "./input.js";
 import { toNativeActionArgs, toNativeObservationArgs } from "./nativeArgs.js";
 import { registerSkyComputerTools, type SkyDispatchOptions } from "./skyMcp.js";
+import { ToolOutcomeUnknownError } from "../tools/types.js";
 
 const appSchema = legacyComputerTarget;
 type InternalToolCallback<Shape extends z.ZodRawShape> = (args: Parameters<ToolCallback<Shape>>[0], extra: Parameters<ToolCallback<Shape>>[1], options?: SkyDispatchOptions) => ReturnType<ToolCallback<Shape>>;
@@ -50,6 +51,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
   };
   const fail = (error: unknown) => ({
     isError: true,
+    structuredContent: error instanceof ToolOutcomeUnknownError ? { outcomeUnknown: true, message: error.message } : undefined,
     content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }]
   });
   const canonical = new Map<string, { schema: z.ZodObject<z.ZodRawShape>; run: InternalToolCallback<z.ZodRawShape> }>();

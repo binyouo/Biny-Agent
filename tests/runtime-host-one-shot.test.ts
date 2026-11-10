@@ -31,11 +31,13 @@ test("one-shot Host runs isolate overrides, persist one terminal and support ver
   config.computer.enabled = false; config.checkpoints.enabled = false;
   const store = createFileConfigStore(root, { globalDir: root });
   await store.save(config, root);
-  const models: string[] = [];
+  const primaryModels: string[] = [];
   let pendingRequest: ReturnType<typeof Promise.withResolvers<void>> | undefined;
   t.mock.method(globalThis, "fetch", async (_input, init) => {
-    models.push(JSON.parse(String(init?.body)).model);
-    if (pendingRequest) {
+    // 辅助请求可以复用主模型，按请求用途验证主回合次数与取消边界。
+    const primary = new Headers(init?.headers).get("x-biny-operation") === "agent";
+    if (primary) primaryModels.push(JSON.parse(String(init?.body)).model);
+    if (primary && pendingRequest) {
       pendingRequest.resolve();
       const signal = init?.signal;
       assert.ok(signal);
@@ -57,7 +59,7 @@ test("one-shot Host runs isolate overrides, persist one terminal and support ver
     const result = await client.executeRun(sessionId, "finish", [], options, "one-shot");
     assert.equal(result.status, "completed"); assert.equal(result.output, "finished");
     assert.equal(result.modelAlias, "alternate"); assert.equal(result.verificationStatus, "not_run");
-    assert.equal(models.filter(model => model === "alternate").length, 1);
+    assert.deepEqual(primaryModels, ["alternate"]);
     assert.equal((await store.load(root)).defaultModel, "normal");
     assert.equal((await store.load(root)).permission.mode, config.permission.mode);
     assert.equal(client.getSnapshot("primary").info.modelAlias, "normal");

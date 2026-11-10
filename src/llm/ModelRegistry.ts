@@ -132,7 +132,7 @@ export class ModelRegistry {
     return this.listModels().filter((choice) => choice.available);
   }
 
-  /** Embedding 目录独立于聊天模型 picker，只包含 provider 显式声明的 wire/model。 */
+  /** Embedding 候选复用模型目录，但传输协议必须由 Provider 明确声明。 */
   listEmbeddingModels(): EmbeddingModelDescriptor[] {
     return this.providers.listEmbeddingModels();
   }

@@ -22,7 +22,7 @@ import {
   type ActivityAnalyzerDeps,
   type ActivityReportResult
 } from "../../../activity/analyzer.js";
-import { refreshActivitySummaryWithNarrative } from "../../../activity/summary.js";
+import { buildActivitySummary, refreshActivitySummaryWithNarrative } from "../../../activity/summary.js";
 import { narrateActivityReport } from "../../../activity/reportNarrative.js";
 import { resolveToolModel } from "../../../llm/toolModel.js";
 import { generateActivitySuggestions, type ActivitySuggestionsResult } from "../../../activity/suggestions.js";
@@ -193,6 +193,7 @@ export class ActivityRecorderService {
   private sessionIdleEpoch = 0;
   private snapshotRotationInitialTimer?: ReturnType<typeof setTimeout>;
   private snapshotRotationTimer?: ReturnType<typeof setInterval>;
+  private snapshotRotation?: { controller: AbortController; task: Promise<void> };
   private settings?: ActivitySettings;
   /** REST 调整仅属于当前采集宿主；文件配置变化与 Desktop 设置操作重新取得权威。 */
   private persistedActivitySettings?: ActivitySettings;
@@ -325,11 +326,12 @@ export class ActivityRecorderService {
     this.analysisScheduler.stop();
     this.embeddingScheduler.stop();
     this.analysisAbort.abort();
+    this.snapshotRotation?.controller.abort();
   }
 
-  snapshot(): ActivityRuntimeSnapshot {
-    // IPC 按需读取（设置页打开/刷新、清空后回显）：低频且用户可见，强制绕过 TTL 取最新值。
-    return structuredClone(this.createSnapshot(true));
+  snapshot(forceRefresh = true): ActivityRuntimeSnapshot {
+    // 周期读取复用统计缓存，运行态仍即时投影；用户显式刷新绕过统计 TTL。
+    return structuredClone(this.createSnapshot(forceRefresh));
   }
 
   async retryFailedAnalysis(): Promise<{ queued: number; snapshot: ActivityRuntimeSnapshot }> {
@@ -494,8 +496,8 @@ export class ActivityRecorderService {
     const saved = await saveVersioned(next, current.revision);
     // 保存可以正常完成，但 stop 之前发起的调用已失去运行时所有权。
     if (stopEpoch === this.stopEpoch) {
-      // 保存成功即撤销旧配置下的在途任务，不等待采集写队列完成才生效。
-      this.analysisAbort.abort();
+      // 容量上限只影响下一轮清理；其他设置保存后立即撤销旧配置下的在途任务。
+      if (!this.onlyStorageLimitChanged(saved.config.activity)) this.analysisAbort.abort();
       await this.enqueue(async () => {
         if (stopEpoch !== this.stopEpoch) return;
         this.persistedActivitySettings = saved.config.activity;
@@ -674,7 +676,17 @@ export class ActivityRecorderService {
     return this.snapshot();
   }
 
+  private onlyStorageLimitChanged(next: ActivitySettings): boolean {
+    return this.settings !== undefined && this.settings.maxStorageMb !== next.maxStorageMb
+      && isDeepStrictEqual({ ...this.settings, maxStorageMb: next.maxStorageMb }, next);
+  }
+
   private async applySettings(nextSettings: ActivitySettings): Promise<void> {
+    if (!this.analysisAbort.signal.aborted && this.onlyStorageLimitChanged(nextSettings)
+      && this.recordingRevision !== undefined && this.recordingRevision === this.store.clearRevision()) {
+      this.settings = nextSettings;
+      return;
+    }
     // 相同配置也可能已由 refresh/settings save 撤销旧任务，必须完成新一代重启。
     if (!this.analysisAbort.signal.aborted && isDeepStrictEqual(this.settings, nextSettings)
       && this.child && this.state === "running" && this.recordingRevision === this.store.clearRevision()) return;
@@ -687,12 +699,14 @@ export class ActivityRecorderService {
     this.settings = nextSettings;
     // 库可能被重开到新目录，closeOpenSessions 也会改写 session；旧缓存一律作废。
     this.invalidateStoreSnapshot();
+    // 完整初始化成功前不保留旧库的代次，避免容量更新误入尚无连接的快路径。
+    this.recordingRevision = undefined;
     try {
       await this.store.open(nextSettings.outputDirectory, this.agentDir);
       await this.store.reconcileSnapshotFiles();
-      this.recordingRevision = this.store.clearRevision();
       // 启动采集器时先关闭上次异常退出留下的 open session。
       this.store.closeOpenSessions(new Date().toISOString());
+      this.recordingRevision = this.store.clearRevision();
     } catch (error) {
       this.analysisScheduler.stop();
       this.embeddingScheduler.stop();
@@ -733,7 +747,7 @@ export class ActivityRecorderService {
       return;
     }
     this.captureEngine.restart();
-    this.scheduleSnapshotRotation(settings.maxStorageMb);
+    this.scheduleSnapshotRotation();
     this.startCaptureTimers(settings);
     this.setState("error", `${reason}；截图等待独立验证屏幕权限和前台应用。`);
   }
@@ -783,11 +797,14 @@ export class ActivityRecorderService {
     // 启动输入进程本身不能制造一个空 session。
     this.send({ type: "start", settings });
     this.setState("running");
-    this.scheduleSnapshotRotation(settings.maxStorageMb);
+    this.scheduleSnapshotRotation();
     this.startCaptureTimers(settings);
   }
 
   private async stopInternal(): Promise<void> {
+    const rotation = this.snapshotRotation;
+    rotation?.controller.abort();
+    this.clearSnapshotRotationTimer();
     this.captureEpoch++;
     this.browserPollAbort.abort();
     this.browserPollRequest = undefined;
@@ -808,7 +825,6 @@ export class ActivityRecorderService {
     this.captureEngine?.resetBaseline();
     if (this.pendingKey) { await this.persistEvent(this.pendingKey); this.pendingKey = undefined; }
     this.clearSessionIdleTimer();
-    this.clearSnapshotRotationTimer();
     this.clearDailySummaryTimer();
     const child = this.child;
     this.state = "stopped";
@@ -843,6 +859,8 @@ export class ActivityRecorderService {
       await this.drainBufferedInputMessages();
     } finally {
       this.inputMonitorStopping = false;
+      // 编码可能无法中途取消；即使输入清理失败，也须收齐编码再重开存储或返回。
+      await rotation?.task;
     }
     this.output?.close();
     this.output = undefined;
@@ -1351,30 +1369,33 @@ export class ActivityRecorderService {
     return this.lastInputAt !== undefined && Date.now() - this.lastInputAt < 6_000;
   }
 
-  private scheduleSnapshotRotation(maxStorageMb: number): void {
+  private scheduleSnapshotRotation(): void {
     this.clearSnapshotRotationTimer();
     this.snapshotRotationInitialTimer = setTimeout(() => {
       this.snapshotRotationInitialTimer = undefined;
-      this.runSnapshotRotation(maxStorageMb);
+      this.runSnapshotRotation();
     }, 60_000);
     this.snapshotRotationInitialTimer.unref?.();
     this.snapshotRotationTimer = setInterval(() => {
-      this.runSnapshotRotation(maxStorageMb);
+      this.runSnapshotRotation();
     }, 30 * 60 * 1_000);
     this.snapshotRotationTimer.unref?.();
   }
 
-  private runSnapshotRotation(maxStorageMb: number): void {
-    void this.enqueue(async () => {
-      try {
-        await this.store.rotateSnapshots(maxStorageMb, new Date(), this.recompressSnapshot);
-        // 轮转删除会改变 storageBytes/fallbackCaptures；反正最多 30 分钟一次，直接作废缓存。
-        this.invalidateStoreSnapshot();
-      } catch (error) {
+  private runSnapshotRotation(): void {
+    if (this.snapshotRotation || !this.settings?.enabled || this.state === "stopped") return;
+    const controller = new AbortController();
+    // 文件发布由 store 的短锁保护；整轮压缩不占用输入、搜索和设置共用的操作队列。
+    const task = this.store.rotateSnapshots(this.settings.maxStorageMb, new Date(), this.recompressSnapshot, controller.signal)
+      .then(() => { this.invalidateStoreSnapshot(); })
+      .catch((error: unknown) => {
         // 轮转失败不应中断实时采集；保留原档位供下一次检查重试。
         console.warn("[ActivityRecorder] snapshot rotation failed:", safeError(error));
-      }
-    });
+      })
+      .finally(() => {
+        if (this.snapshotRotation?.controller === controller) this.snapshotRotation = undefined;
+      });
+    this.snapshotRotation = { controller, task };
   }
 
   private clearSnapshotRotationTimer(): void {
@@ -1426,7 +1447,11 @@ export class ActivityRecorderService {
         try {
           const existing = store.getSummary("daily", dateKey);
           // 确定性 fallback 也有正文；只有模型叙事成功才停止昨日自动重试。
-          if (existing && !existing.isPartial && existing.summary && existing.model) return;
+          if (existing && !existing.isPartial && existing.summary && existing.model) {
+            // 开放会话的估算时长随时钟增长；用上次生成时刻比较，只有来源变化才重跑模型。
+            const latest = buildActivitySummary(store, "daily", dateKey, new Date(existing.generatedAt));
+            if (Object.entries(latest.stats).every(([key, value]) => isDeepStrictEqual(existing.stats[key as keyof typeof latest.stats], value))) return;
+          }
           // 自动日结只维护 SQLite 摘要；工作日报的文件导出由显式请求触发。
           await refreshActivitySummaryWithNarrative(store, "daily", dateKey, {
             model: resolveToolModel(config),
@@ -1495,10 +1520,10 @@ export class ActivityRecorderService {
 
   private storeSnapshot(force = false): ReturnType<ActivityStore["snapshot"]> {
     const cached = this.storeSnapshotCache;
-    if (!force && cached && Date.now() - cached.at < STORE_SNAPSHOT_TTL_MS) return cached.data;
+    if (!force && cached && this.now() - cached.at < STORE_SNAPSHOT_TTL_MS) return cached.data;
     try {
       const data = this.store.snapshot();
-      this.storeSnapshotCache = { at: Date.now(), data };
+      this.storeSnapshotCache = { at: this.now(), data };
       return data;
     } catch {
       // 查询失败时退回上一个快照，避免状态广播因为瞬时错误清零。

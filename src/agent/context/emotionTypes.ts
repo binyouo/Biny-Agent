@@ -84,8 +84,8 @@ function decayState(
   const currentTime = now.getTime();
   if (!state.updatedAt || !Number.isFinite(updatedAt) || !Number.isFinite(currentTime)) return normalizeState(state);
   const age = currentTime - updatedAt;
-  if (age <= 0) return normalizeState(state);
-  if (age > decayMs) {
+  // 未来时间戳视为损坏快照，与过期同样回到 resting，而不是永久冻结在当前值。
+  if (age <= 0 || age > decayMs) {
     return {
       ...normalizeState(state),
       mood: DEFAULT_EMOTION_STATE.mood,

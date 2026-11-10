@@ -128,11 +128,11 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   }
 
   listEmbeddingModels(): EmbeddingModelDescriptor[] {
-    return listProviderEmbeddingModels(this.id, this.config, this.definition);
+    return listProviderEmbeddingModels(this.id, this.config, this.definition, this.mergedCatalog());
   }
 
   createEmbeddingRuntime(modelId: string): EmbeddingModelRuntime {
-    return new ProviderEmbeddingRuntime(this.id, this.config, this.definition, modelId, { fetcher: this.fetcher });
+    return new ProviderEmbeddingRuntime(this.id, this.config, this.definition, modelId, { fetcher: this.fetcher, catalog: this.mergedCatalog() });
   }
 
   restoreModels(models: readonly ModelCatalogEntry[]): void {
@@ -785,6 +785,7 @@ function metadataToModel(provider: string, providerType: string, modelId: string
 function liveCatalogMetadata(entry: ModelCatalogEntry, provider: string): ModelCatalogEntry {
   return {
     id: entry.id,
+    embedding: entry.embedding,
     displayName: entry.displayName,
     provider,
     description: entry.description,
@@ -810,6 +811,7 @@ function mergeCatalogMetadata(base: ModelCatalogEntry, overlay: ModelCatalogEntr
   return {
     ...overlay,
     ...base,
+    embedding: base.embedding ?? overlay.embedding,
     displayName: base.displayName || overlay.displayName,
     description: base.description ?? overlay.description,
     contextWindow: base.contextWindow ?? overlay.contextWindow,

@@ -25,7 +25,6 @@ test("appearance preview and owner close preserve transparent window backgrounds
           import { app, BrowserWindow, ipcMain, nativeTheme } from "electron";
           import { sendToDesktopWindow, syncDesktopWindowAppearance } from "./src/desktop/electron/main/window.js";
           import { AppearancePreviewCoordinator } from "./src/desktop/appearanceCoordinator.js";
-          import { DEFAULT_APPEARANCE } from "./src/appearance/preferences.js";
           process.on("uncaughtException", error => { console.error(error); app.exit(1); });
           app.setPath("userData", ${JSON.stringify(path.join(root, "user-data"))});
           app.on("window-all-closed", () => {});
@@ -48,7 +47,7 @@ test("appearance preview and owner close preserve transparent window backgrounds
             stage("loading-survivor");
             await survivor.loadURL("about:blank");
             stage("checking-appearance-preview");
-            const saved = { themePreference: "system", appearancePreference: DEFAULT_APPEARANCE, fontPreference: { family: "system", size: 14 } };
+            const saved = { themePreference: "system", fontPreference: { family: "system", size: 14 } };
             const coordinator = new AppearancePreviewCoordinator({
               read: () => saved,
               publish: snapshot => {

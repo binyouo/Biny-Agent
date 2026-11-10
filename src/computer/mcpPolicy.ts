@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { legacyActionPayload, legacyAutoLaunch, legacyObservationOptions } from "./input.js";
 import { externalElements, renderElementTree, type ElementLike } from "./elementTree.js";
 import type { DriverReply } from "./controller.js";
@@ -14,6 +15,7 @@ import { ComputerAuditStore } from "./auditStore.js";
 import type { NativeProcessDriver } from "./nativeDriver.js";
 import type { ComputerAction, WindowTarget } from "./protocol.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { ToolOutcomeUnknownError } from "../tools/types.js";
 
 export interface ComputerMcpPolicy {
   close?(): Promise<void>;
@@ -29,10 +31,10 @@ async function waitForWindow(pid: number, bundle: string, list: (signal: AbortSi
       const reply = initial ?? await list(waiting);
       initial = undefined;
       waiting.throwIfAborted();
-      const apps = Array.isArray(reply.data.apps) ? reply.data.apps as { pid?: number; bundleId?: string; running?: boolean; windows?: { window_id: number; focused?: boolean }[] }[] : [];
+      const apps = Array.isArray(reply.data.apps) ? reply.data.apps as { pid?: number; bundleId?: string; running?: boolean; windows?: { window_id: number; focused?: boolean; onscreen?: boolean; minimized?: boolean }[] }[] : [];
       const matches = apps.filter(app => app.pid === pid && app.running);
       if (matches.length > 1 || (matches[0] && matches[0].bundleId !== bundle)) throw new Error("computer_app_identity_unavailable: 应用身份不匹配");
-      const windows = matches[0]?.windows?.filter(window => Number.isSafeInteger(window.window_id) && window.window_id > 0) ?? [];
+      const windows = matches[0]?.windows?.filter(window => Number.isSafeInteger(window.window_id) && window.window_id > 0 && window.onscreen !== false && window.minimized !== true) ?? [];
       const focused = windows.filter(window => window.focused === true);
       if (focused.length === 1) return focused[0]!.window_id;
       if (windows.length > 1) throw new Error("computer_window_selection_required: 请列出并指定准确窗口");
@@ -88,20 +90,15 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     }
     const config = await this.store.load(); if (!config.computer.enabled) throw new Error("computer_disabled: 请先在设置中启用桌面控制");
     if (tool === "list_apps") return await operation();
-    const listing = (await this.driver.list("mcp-policy", undefined)).data.apps;
-    const apps = Array.isArray(listing) ? listing as { pid?: number; bundleId?: string; name?: string; running?: boolean }[] : [];
-    const bundleMatches = typeof args.bundle === "string" ? apps.filter(app => app.bundleId === args.bundle && app.running) : [];
-    if (args.pid === undefined && bundleMatches.length > 1) throw new Error("computer_app_identity_unavailable: 请指定准确进程");
-    const pid = typeof args.pid === "number" ? args.pid : typeof args.bundle === "string" ? bundleMatches[0]?.pid : this.last?.pid;
-    const matches = apps.filter(app => pid ? app.pid === pid && app.running : app.bundleId === args.bundle);
-    if (pid && matches.length > 1) throw new Error("computer_app_identity_unavailable: 进程身份不唯一");
-    let identity = matches.length === 1 ? matches[0] : undefined;
-    if (!identity && args.pid === undefined && typeof args.bundle === "string") {
-      const reply = await this.driver.daemonCommand("app_identity", { bundle: args.bundle });
-      const candidate = reply.data;
-      if (candidate.bundleId === args.bundle && typeof candidate.name === "string") identity = { bundleId: args.bundle, name: candidate.name, running: candidate.running === true };
-    }
-    if (!identity?.bundleId || !identity.name || (args.bundle !== undefined && args.bundle !== identity.bundleId)) throw new Error("computer_app_identity_unavailable");
+    const requestedPid = typeof args.pid === "number" ? args.pid : typeof args.bundle === "string" ? undefined : this.last?.pid;
+    const reply = await this.driver.daemonCommand("app_identity", { pid: requestedPid, bundle: args.bundle }, signal);
+    if (reply.errorCode) throw new Error(reply.errorCode);
+    const identity = z.object({ pid: z.number().int().positive().max(2147483647).optional(),
+      bundleId: z.string().min(1).max(256), name: z.string().min(1).max(256), running: z.boolean()
+    }).parse(reply.data);
+    if ((identity.running && identity.pid === undefined) || (requestedPid !== undefined && (identity.pid !== requestedPid || !identity.running))
+      || (args.bundle !== undefined && identity.bundleId !== args.bundle)) throw new Error("computer_app_identity_unavailable");
+    const pid = identity.pid;
     await this.approvals.authorize({ bundleId: identity.bundleId, appName: identity.name });
     if (tool === "get_app_state") this.last = undefined;
     const shouldLaunch = tool === "get_app_state" && args.pid === undefined && identity.running === false && legacyAutoLaunch(args) !== false;
@@ -134,8 +131,10 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
     const at = Date.now(); let result: CallToolResult;
     try { result = await operation(); }
     catch (error) {
-      if (inputs.has(tool) && config.computer.actionLogging && this.last) { try { this.audit.append({ at, action: tool as ComputerAction["action"], target: this.last, outcome: "unknown", durationMs: Date.now() - at, bundleId: identity.bundleId, errorCode: error instanceof Error ? error.message : String(error) }); } catch { throw new AggregateError([error], "computer_outcome_unknown: input may have been dispatched and its log could not be saved; do not repeat"); } }
+      const last = this.last;
       if (inputs.has(tool)) this.last = undefined;
+      if (inputs.has(tool) && config.computer.actionLogging && last) { try { this.audit.append({ at, action: tool as ComputerAction["action"], target: last, outcome: "unknown", durationMs: Date.now() - at, bundleId: identity.bundleId, errorCode: error instanceof Error ? error.message : String(error) }); } catch { throw new ToolOutcomeUnknownError("interrupted", "computer_outcome_unknown: input may have been dispatched and its log could not be saved; do not repeat"); } }
+      if (inputs.has(tool) && !(error instanceof ToolOutcomeUnknownError)) throw new ToolOutcomeUnknownError("interrupted", error instanceof Error ? error.message : String(error));
       throw error;
     }
     const text = result.content.find(part => part.type === "text");
@@ -147,9 +146,12 @@ export class LocalComputerMcpPolicy implements ComputerMcpPolicy {
       this.observedAt = Date.now(); this.observedApp = identity.bundleId;
     }
     if (inputs.has(tool) && this.last) {
-      const outcome = ["unverifiable", "unverified"].includes(String(result.structuredContent?.effect)) ? "unverified" : result.isError ? /timeout|disconnect|aborted|unknown/i.test(text?.type === "text" ? text.text : "") ? "unknown" : "refused" : /verification_note|warning/.test(text?.type === "text" ? text.text : "") ? "unverified" : "completed";
+      const effect = result.structuredContent?.effect;
+      const outcome = effect === "refused" ? "refused" : result.isError ? "unknown"
+        : effect === "confirmed" ? "completed" : "unverified";
       if (config.computer.actionLogging) { try { this.audit.append({ at, action: tool as ComputerAction["action"], target: this.last, outcome, durationMs: Date.now() - at, bundleId: identity.bundleId, errorCode: result.isError && text?.type === "text" ? text.text : undefined }); } catch { result.content.push({ type: "text", text: "The input was already dispatched, but the action log could not be saved. Do not repeat it." }); } }
       if (outcome !== "refused") { try { await this.notify(this.last); } catch { result.content.push({ type: "text", text: "Desktop preview notification failed. The input was already dispatched; do not repeat it." }); } }
+      if (outcome === "unknown") result.structuredContent = { ...result.structuredContent, outcomeUnknown: true, message: text?.type === "text" ? text.text : "Computer input outcome is unknown." };
     }
     if (inputs.has(tool)) this.last = undefined;
     return result;

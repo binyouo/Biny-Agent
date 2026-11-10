@@ -36,7 +36,7 @@ import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.j
 import { RuntimeHostResourceRegistry } from "./resources.js";
 import { createRuntimeHostBusinessComposition, type RuntimeHostBusinessComposition } from "./scheduling.js";
 import type { HostRegistration, RuntimeHostFactory, RuntimeHostFactoryOptions } from "./types.js";
-import { asRecord, optionalSafeInteger, optionalString, publicError, publicErrorCode, publicErrorData, readAttachments, readAutomationCreateInput, readCapabilityOwnerType, readCapabilitySelection, readFastMode, readLocalEmbeddingModel, readModelRoute, readOptionalRunStatus, readOptionalTaskStatus, readPermissionMode, readPermissionResult, readPromptContext, readRequestIds, readRuntimeIsolation, readStringArray, readSurface, readTaskRetrySafety, readThinking, requiredInteger, requiredString } from "./validation.js";
+import { asRecord, optionalSafeInteger, optionalString, publicError, publicErrorCode, publicErrorData, readAttachments, readAutomationCreateInput, readCapabilityOwnerType, readCapabilitySelection, readFastMode, readLocalEmbeddingModel, readModelRoute, readOptionalRunStatus, readOptionalTaskStatus, readPermissionMode, readPermissionResult, readPromptContext, readPromptInput, readRequestIds, readRuntimeIsolation, readStringArray, readSurface, readTaskRetrySafety, readThinking, requiredInteger, requiredString } from "./validation.js";
 import { WorktreeDirtyError, WorktreeManager } from "./worktree.js";
 import { runReflection, type ReflectionResult } from "../reflectionOperation.js";
 import { approveTaskRun, recoverTaskRuns } from "../taskOperations.js";
@@ -650,9 +650,11 @@ export class RuntimeHostExecution {
           await this.host.ensureSessionWriter(connection, runtime);
           this.host.assertRequestAdmission(connection, admissionOperation);
           const ids = readRequestIds(payload);
+          const attachments = readAttachments(payload.attachments);
+          const input = readPromptInput(payload.input, attachments);
           const submitted = runtime.submitPrompt(
-            requiredString(payload.input, "input"),
-            readAttachments(payload.attachments),
+            input,
+            attachments,
             ids,
             readPromptContext(payload.promptContext),
             readCapabilitySelection(payload.capabilitySelection),
@@ -672,8 +674,8 @@ export class RuntimeHostExecution {
         await this.host.ensureSessionWriter(connection, runtime);
         this.host.assertRequestAdmission(connection, admissionOperation);
         const ids = readRequestIds(payload);
-        const input = requiredString(payload.input, "input");
         const attachments = readAttachments(payload.attachments);
+        const input = readPromptInput(payload.input, attachments);
         const delivery = payload.delivery === "steer" ? "steer" : "queue";
         const queued = delivery === "steer"
           ? runtime.steer(input, attachments, ids)
@@ -686,8 +688,8 @@ export class RuntimeHostExecution {
           await this.host.ensureSessionWriter(connection, runtime);
           this.host.assertRequestAdmission(connection, admissionOperation);
           const ids = readRequestIds(payload);
-          const input = requiredString(payload.input, "input");
           const attachments = readAttachments(payload.attachments);
+          const input = readPromptInput(payload.input, attachments);
           const delivery = payload.delivery === "steer" ? "steer" : "queue";
           return delivery === "steer"
             ? runtime.steer(input, attachments, ids)

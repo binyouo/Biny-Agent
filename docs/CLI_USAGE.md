@@ -36,10 +36,11 @@ biny session compact --help
 | `config`、`provider`、`model` | 使用共享全局配置存储；配置目录有 Desktop 加密凭据时通过正在运行的 Desktop 读取和保存。 |
 | `user`、`agent` | 直接使用本地用户资料和具名子代理定义，无需启动模型。 |
 | `project`、会话元数据管理与复制、`preview`、`terminal` | 需要正在运行的 Desktop，操作它管理的同一份状态。 |
-| `config get/set themePreference/appearancePreference/fontPreference` | 需要 Desktop，通过现有偏好存储保存并刷新外观。 |
+| `config get/set themePreference/fontPreference` | 需要 Desktop，通过现有偏好存储保存并刷新外观。 |
 | `session create/usage/compact`、`tool list/call` | 连接当前工作区已有的 Host；创建以外的操作需要指定会话，不为查询或调用启动新 Host。 |
 | `session messages/search`、`usage` | 读取本地持久记录，无需启动 Host 或模型。 |
 | `iab` | 需要 Desktop 的内置浏览器。 |
+| `remote run` | 在当前项目启动前台加密连接，输出供原生移动端使用的配对链接。见[手机远程访问](REMOTE.md)。 |
 
 其他命令的启动方式和限制见对应专题。`BINY_AGENT_DIR` 可同时重定向配置和运行数据；访问同一份数据的 Desktop、Host 与 CLI 必须使用相同值。
 
@@ -81,16 +82,13 @@ biny provider remove example --json
 
 配置保存成功表示持久化已完成。已运行的功能按各自生命周期读取配置；Heartbeat 的开关和节奏在创建 Runtime 时读取，修改后需要重新启动相应 Host 才应用，不会因一次 `config set` 自动重启运行中的任务。
 
-主题沿用同一配置入口，不增加一套重复的主题设置命令：
+Desktop 仅使用内置浅色、深色主题，明暗偏好沿用配置入口：
 
 ```bash
-biny theme list --json
-biny config get appearancePreference --json
-biny config set appearancePreference.darkTheme tokyonight --json
 biny config set themePreference system --json
 ```
 
-`theme show <id>` 查看某个主题的颜色；`theme validate/import` 校验或转换主题文件。它们与当前主题选择的读取、保存分别承担不同操作。
+可将 `themePreference` 设为 `system`、`light` 或 `dark`。字体通过 `fontPreference` 管理。
 
 ## 会话、用量与工具
 

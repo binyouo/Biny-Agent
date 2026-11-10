@@ -1,6 +1,55 @@
 import type { ComputerPreview, ComputerStatus } from "./protocol.js";
 import { desktopCaptureSchedule, type CaptureSchedule } from "./captureSchedule.js";
 
+const cursorRendererScript = `window.binyPaintCursor=(point,feedback,src,sourceId)=>{
+const image=document.getElementById('frame'),cursor=document.getElementById('agent-cursor'),arrow=document.getElementById('agent-cursor-image');
+const stopTravel=()=>arrow.getAnimations?.().filter(animation=>animation.id==='agent-travel').forEach(animation=>animation.cancel());
+const position=()=>{
+  cursor.hidden=!point||feedback.expiresAt<=Date.now()||!image.complete||!image.naturalWidth||!image.naturalHeight;
+  if(cursor.hidden){
+    stopTravel();
+    if(cursor.dataset.sourceId!==sourceId||Number(cursor.dataset.expiresAt??0)<=Date.now()){delete cursor.dataset.left;delete cursor.dataset.top;}
+    return;
+  }
+  const scale=Math.min(image.clientWidth/image.naturalWidth,image.clientHeight/image.naturalHeight),width=image.naturalWidth*scale,height=image.naturalHeight*scale;
+  const left=(image.clientWidth-width)/2+point.x*width,top=point.y*height;
+  const sameSource=cursor.dataset.sourceId===sourceId,previousLeft=Number(cursor.dataset.left),previousTop=Number(cursor.dataset.top);
+  const hasPrevious=sameSource&&Number(cursor.dataset.expiresAt??0)>Date.now()&&cursor.dataset.left!==undefined&&cursor.dataset.top!==undefined;
+  const eventKey=sourceId+':'+(feedback.eventId??''),newEvent=cursor.dataset.eventKey!==eventKey;
+  if(!sameSource)stopTravel();
+  cursor.style.left=left+'px';cursor.style.top=top+'px';cursor.dataset.shape=feedback.image?'arrow':'point';
+  const hotspot=feedback.image?(feedback.hotspot??{x:0,y:0}):{x:11,y:11};
+  cursor.style.marginLeft=-hotspot.x+'px';cursor.style.marginTop=-hotspot.y+'px';
+  cursor.style.setProperty('--hotspot-x',hotspot.x+'px');cursor.style.setProperty('--hotspot-y',hotspot.y+'px');
+  if(feedback.image){const pointerSrc='data:'+feedback.image.mimeType+';base64,'+feedback.image.dataBase64;if(arrow.getAttribute('src')!==pointerSrc)arrow.src=pointerSrc;}else{arrow.removeAttribute('src');stopTravel();}
+  const icon=({'keyboard':'⌨','arrow.up':'↑','arrow.down':'↓','arrow.left':'←','arrow.right':'→'})[feedback.symbol]??'';
+  document.getElementById('agent-cursor-badge').textContent=feedback.image?'Biny'+(icon?' '+icon:''):'';
+  const reduced=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  if(reduced)stopTravel();
+  if(newEvent){
+    const pulse=document.getElementById('agent-cursor-pulse');pulse.classList.remove('pulse');
+    if(feedback.action==='click'){void pulse.offsetWidth;pulse.classList.add('pulse');}
+    if(feedback.image&&hasPrevious&&!reduced&&arrow.animate){
+      const current=new DOMMatrix(getComputedStyle(arrow).transform),dx=previousLeft-left+current.m41,dy=previousTop-top+current.m42,distance=Math.hypot(dx,dy);
+      stopTravel();
+      if(distance>1){
+        const hops=Math.max(1,Math.min(4,Math.ceil(distance/70))),frames=[];
+        for(let index=0;index<=hops*16;index++){
+          const hop=Math.min(hops-1,Math.floor(index/16)),phase=(index-hop*16)/16,progress=(hop+phase*phase*(3-2*phase))/hops;
+          const air=phase>.08&&phase<.92,lift=Math.min(10,Math.max(4,distance/hops*.12))*Math.sin(Math.PI*Math.max(0,Math.min(1,(phase-.08)/.84)));
+          const squash=phase<.08?phase/.08:Math.max(0,(1-phase)/.08),sx=air?.94:1+.16*squash,sy=air?1.08:1-.2*squash;
+          frames.push({transform:'translate('+dx*(1-progress)+'px,'+(dy*(1-progress)-lift)+'px) scale('+sx+','+sy+')',clipPath:air?'inset(0 0 5.5px 0)':'inset(0)',offset:index/(hops*16)});
+        }
+        const travel=arrow.animate(frames,{duration:Math.max(180,Math.min(650,distance/650*1000))});travel.id='agent-travel';
+      }
+    }
+  }
+  cursor.dataset.eventKey=eventKey;cursor.dataset.sourceId=sourceId;cursor.dataset.left=String(left);cursor.dataset.top=String(top);cursor.dataset.expiresAt=String(feedback.expiresAt);
+};
+image.onload=()=>{image.dataset.loaded='true';position();};window.onresize=position;
+if(src!==undefined&&image.getAttribute('src')!==src){cursor.hidden=true;if(!src)image.dataset.loaded='false';image.src=src;}else{if(src==='')image.dataset.loaded='false';position();}
+};`;
+
 export interface PreviewWindow {
   isDestroyed(): boolean;
   showInactive(): void;
@@ -77,6 +126,8 @@ export class ComputerPreviewSurface {
   }
 
   private window?: PreviewWindow;
+  private cursorWindow?: PreviewWindow;
+  private submittedImage?: { image: ComputerPreview["image"] | undefined };
   private revision = 0;
   private lastBounds?: { x: number; y: number; width: number; height: number };
   private releaseCaptureHold?: () => void;
@@ -91,6 +142,7 @@ export class ComputerPreviewSurface {
     if (this.options.layout) this.lastBounds = this.options.layout.load() ?? this.lastBounds;
     const window = this.createWindow();
     this.window = window;
+    this.submittedImage = undefined;
     if (this.lastBounds) window.setBounds(this.lastBounds);
     // Keep Activity paused for the whole surface lifetime, including frozen frames and paint races.
     // Destroying the surface is the only synchronous proof that none of its pixels can be recorded.
@@ -104,7 +156,7 @@ export class ComputerPreviewSurface {
       if (command === "remove") { const item = this.selected && this.items.get(this.selected); if (item) { this.retire(item.id); item.onClose?.(true); } return; }
       if (url === `biny-computer:${command}` && (command === "pause" || command === "takeover" || command === "stop")) this.onControl(command);
     });
-    window.once("closed", () => { this.revision++; if (this.window === window) { this.window = undefined; this.fittedTarget = undefined; for (const timer of this.retiring.values()) clearTimeout(timer); this.retiring.clear(); if (this.ageTimer) clearInterval(this.ageTimer); this.ageTimer = undefined; this.releaseCaptureHold?.(); this.releaseCaptureHold = undefined; if (!this.closing) { for (const item of this.items.values()) item.onClose?.(); this.items.clear(); this.selected = undefined; this.onClose(); } } });
+    window.once("closed", () => { this.revision++; if (this.window === window) { this.window = undefined; this.cursorWindow = undefined; this.submittedImage = undefined; this.fittedTarget = undefined; for (const timer of this.retiring.values()) clearTimeout(timer); this.retiring.clear(); if (this.ageTimer) clearInterval(this.ageTimer); this.ageTimer = undefined; this.releaseCaptureHold?.(); this.releaseCaptureHold = undefined; if (!this.closing) { for (const item of this.items.values()) item.onClose?.(); this.items.clear(); this.selected = undefined; this.onClose(); } } });
     window.once("ready-to-show", () => { if (this.window === window && !window.isDestroyed()) window.showInactive(); });
     for (const event of ["moved", "resized"] as const) window.on(event, () => { try { this.rememberBounds(); } catch (error) { this.options.onError?.(error); } });
     this.ageTimer ??= setInterval(() => { if (this.items.size) this.paintSelection(); }, 1000);
@@ -122,9 +174,26 @@ export class ComputerPreviewSurface {
       const stale = frame ? Date.now() - frame.capturedAt >= 2_000 : false;
       const attention = !browser && (status.state !== "ready" || ["refused", "unverified", "unknown"].includes(status.lastOutcome));
       const text = browser ? `浏览器画面${status.diagnostic ? ` · ${status.diagnostic}` : ""}${frame ? ` · ${Math.max(0, Math.floor((Date.now() - frame.capturedAt) / 1000))} 秒前更新` : " · 正在建立预览"}` : `${states[status.state]} · ${outcomes[status.lastOutcome]}${status.diagnostic ? ` · ${status.diagnostic}` : ""}${frame ? ` · PID ${frame.target.pid} / ${frame.target.windowId} · ${Math.max(0, Math.floor((Date.now() - frame.capturedAt) / 1000)) >= 2 ? `画面已停留 ${Math.max(0, Math.floor((Date.now() - frame.capturedAt) / 1000))} 秒` : "实时画面"}` : " · 正在等待观察目标"}`;
-      const src = frame ? `data:${frame.image.mimeType};base64,${frame.image.dataBase64}` : "";
+      const imageChanged = !this.submittedImage
+        || this.submittedImage.image?.mimeType !== frame?.image.mimeType
+        || this.submittedImage.image?.dataBase64 !== frame?.image.dataBase64;
+      const submission = imageChanged ? { image: frame?.image } : this.submittedImage;
+      this.submittedImage = submission;
+      const src = imageChanged ? frame ? `data:${frame.image.mimeType};base64,${frame.image.dataBase64}` : "" : undefined;
+      const initializeCursor = this.cursorWindow !== window;
+      this.cursorWindow = window;
       const point = frame?.cursor && frame.cursor.expiresAt > Date.now() ? { x: frame.cursor.x, y: frame.cursor.y } : null;
-      void window.webContents.executeJavaScript(`(()=>{document.getElementById('stage').dataset.completing=${JSON.stringify(Boolean(this.selected && this.retiring.has(this.selected)))};document.querySelectorAll('[data-control]').forEach(button=>button.hidden=${Boolean(browser)}); const status=document.getElementById('status'); status.textContent=${JSON.stringify(text)}; status.dataset.alert=${JSON.stringify(Boolean(status.diagnostic || stale || attention))}; const image=document.getElementById('frame'), cursor=document.getElementById('agent-cursor'), point=${JSON.stringify(point)}, src=${JSON.stringify(src)}; const position=()=>{cursor.hidden=!point||!image.complete||!image.naturalWidth||!image.naturalHeight;if(cursor.hidden)return;const scale=Math.min(image.clientWidth/image.naturalWidth,image.clientHeight/image.naturalHeight),width=image.naturalWidth*scale,height=image.naturalHeight*scale;cursor.style.left=((image.clientWidth-width)/2+point.x*width)+'px';cursor.style.top=(point.y*height)+'px'};image.onload=()=>{image.dataset.loaded='true';position()};window.onresize=position;if(image.getAttribute('src')!==src){cursor.hidden=true;if(!src)image.dataset.loaded='false';image.src=src}else{if(!src)image.dataset.loaded='false';position()} const empty=document.getElementById('empty'); if(empty) empty.hidden=${Boolean(frame)};})()`).catch(() => undefined);
+      void window.webContents.executeJavaScript(`(()=>{
+        document.getElementById('stage').dataset.completing=${JSON.stringify(Boolean(this.selected && this.retiring.has(this.selected)))};
+        document.querySelectorAll('[data-control]').forEach(button=>button.hidden=${Boolean(browser)});
+        const status=document.getElementById('status');status.textContent=${JSON.stringify(text)};status.dataset.alert=${JSON.stringify(Boolean(status.diagnostic || stale || attention))};
+        ${initializeCursor ? cursorRendererScript : ""}
+        window.binyPaintCursor(${JSON.stringify(point)},${JSON.stringify(point ? frame?.cursor : undefined)},${JSON.stringify(src)},${JSON.stringify(this.selected ?? '')});
+        const empty=document.getElementById('empty');if(empty)empty.hidden=${Boolean(frame)};
+      })()`).catch(() => {
+        if (initializeCursor && this.cursorWindow === window) this.cursorWindow = undefined;
+        if (imageChanged && this.submittedImage === submission) this.submittedImage = undefined;
+      });
     };
     if (window.webContents.isLoading()) window.webContents.once("did-finish-load", paint); else paint();
   }
@@ -149,7 +218,7 @@ export class ComputerPreviewSurface {
     this.revision++; this.closing = true;
     try { this.window?.destroy(); } finally { this.closing = false; }
     for (const timer of this.retiring.values()) clearTimeout(timer); this.retiring.clear();
-    this.window = undefined; this.fittedTarget = undefined; this.releaseCaptureHold?.(); this.releaseCaptureHold = undefined;
+    this.window = undefined; this.cursorWindow = undefined; this.submittedImage = undefined; this.fittedTarget = undefined; this.releaseCaptureHold?.(); this.releaseCaptureHold = undefined;
     if (this.ageTimer) clearInterval(this.ageTimer); this.ageTimer = undefined;
   }
 }

@@ -33,9 +33,36 @@ func requireAccessibilityAttributeWrite(_ status: AXError, unsupported: String, 
     }
 }
 
-func automaticAccessibilityTextInsert<Element>(target: Element?, writable: (Element) -> Bool, write: (Element) -> AXError) throws -> Bool {
+func accessibilityTextRange(_ value: CFTypeRef?) -> NSRange? {
+    guard let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+    let raw = unsafeBitCast(value, to: AXValue.self)
+    var range = CFRange(location: 0, length: 0)
+    guard AXValueGetType(raw) == .cfRange, AXValueGetValue(raw, .cfRange, &range), range.location >= 0, range.length >= 0 else { return nil }
+    return NSRange(location: range.location, length: range.length)
+}
+
+func accessibilityTextAfterInsertion(_ current: String?, range: NSRange?, text: String) -> String? {
+    guard let current, let range, range.location >= 0, range.length >= 0 else { return nil }
+    let source = current as NSString
+    guard range.location <= source.length, range.length <= source.length - range.location else { return nil }
+    return source.replacingCharacters(in: range, with: text)
+}
+
+func accessibilityAttributeWriteEvidence(expected: CFTypeRef?, actual: CFTypeRef?) -> [String: Any] {
+    let matches: Bool
+    if let expected, let actual {
+        if CFGetTypeID(expected) == AXValueGetTypeID() || CFGetTypeID(actual) == AXValueGetTypeID() {
+            let range = accessibilityTextRange(expected)
+            matches = range != nil && range == accessibilityTextRange(actual)
+        } else { matches = CFEqual(expected, actual) }
+    } else { matches = false }
+    if matches { return ["effect": "confirmed"] }
+    return ["effect": "unverifiable", "verification_note": "AX accepted the write, but the target attribute did not confirm it. Observe the result; do not repeat automatically."]
+}
+
+func automaticAccessibilityTextInsert<Element>(target: Element?, writable: (Element) -> Bool, write: (Element) throws -> AXError) throws -> Bool {
     guard let target, writable(target) else { return false }
-    let status = write(target)
+    let status = try write(target)
     switch accessibilityAttributeResult(status) {
     case .success: return true
     case .unsupported: return false
@@ -61,9 +88,9 @@ func accessibilityTextValue(_ current: String?, text: String, append: Bool) thro
     return current + text
 }
 
-func performAccessibilityActions(_ actions: [String], perform: (String) -> AXError) -> AccessibilityActionResult {
+func performAccessibilityActions(_ actions: [String], perform: (String) throws -> AXError) rethrows -> AccessibilityActionResult {
     for action in actions {
-        switch accessibilityActionResult(perform(action)) {
+        switch accessibilityActionResult(try perform(action)) {
         case .success: return .success
         case .unsupported: continue
         case .unknown(let code): return .unknown(code)
@@ -74,7 +101,7 @@ func performAccessibilityActions(_ actions: [String], perform: (String) -> AXErr
 
 func performElementClick(strategy: String, requiresPhysical: Bool,
                          physical: () async throws -> Bool,
-                         accessibility: () -> AccessibilityActionResult) async throws -> String {
+                         accessibility: () throws -> AccessibilityActionResult) async throws -> String {
     if strategy == "ax" && requiresPhysical {
         throw NSError(domain: "click", code: 65, userInfo: [NSLocalizedDescriptionKey: "ax_cannot_express_this_click: AX 只有单次左键动作，双击或其它按键请用 strategy=physical"])
     }
@@ -85,7 +112,7 @@ func performElementClick(strategy: String, requiresPhysical: Bool,
             throw NSError(domain: "click", code: 66, userInfo: [NSLocalizedDescriptionKey: "element_has_no_frame: 元素没有坐标，做不了物理点击"])
         }
     }
-    switch accessibility() {
+    switch try accessibility() {
     case .success: return "ax"
     case .unsupported:
         if strategy == "ax" {

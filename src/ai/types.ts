@@ -114,6 +114,8 @@ export interface ModelCatalogEntry {
   id: string;
   displayName: string;
   provider: string;
+  /** 目录明确声明的嵌入用途；不赋予连接新的传输协议。 */
+  embedding?: boolean;
   description?: string;
   /** 是否出现在普通模型选择器；未声明时由共享可见性策略决定。 */
   showInPicker?: boolean;

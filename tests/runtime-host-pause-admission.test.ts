@@ -86,11 +86,17 @@ const selected = [...operations, ...goals, "permission"].map((operation) => {
 const methods = ["assertRequestAdmission", "executeAdmission", "ensureSessionWriter", "claimSessionWriter", "registerSessionWriter", "ownsSessionWriter"];
 const validationSource = readFileSync(new URL("../src/runtime/host/validation.ts", import.meta.url), "utf8");
 const validationParsed = ts.createSourceFile("validation.ts", validationSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const validationHelpers = ["readModelRoute", "readFastMode"].map((name) => {
-  const matches = validationParsed.statements.filter((node): node is ts.FunctionDeclaration =>
+const mediaInputSource = readFileSync(new URL("../src/attachments/input.ts", import.meta.url), "utf8");
+const mediaInputParsed = ts.createSourceFile("input.ts", mediaInputSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const validationHelpers = [
+  ...["asRecord", "optionalString", "readAttachments", "readPromptInput", "readModelRoute", "readFastMode"]
+    .map((name) => ({ name, ast: validationParsed })),
+  { name: "hasNativeMediaContent", ast: mediaInputParsed }
+].map(({ name, ast }) => {
+  const matches = ast.statements.filter((node): node is ts.FunctionDeclaration =>
     ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.equal(matches.length, 1, `Expected actual validation helper ${name}`);
-  return matches[0]!.getText(validationParsed).replace(/^export /u, "");
+  return matches[0]!.getText(ast).replace(/^export /u, "");
 }).join("\n");
 const isolated = stripTypeScriptTypes(`(() => { ${validationHelpers}\nclass PauseAdmissionHarness {
 ${methods.map((name) => method(name).getText(parsed)).join("\n")}
@@ -112,6 +118,25 @@ test("actual optional model-route and fast-mode parsers retain validation", () =
   for (const value of [null, false, "other", 1, {}]) assert.throws(() => helpers.readModelRoute(value), /modelRoute must be tool/u);
   for (const value of [undefined, true, false]) assert.equal(helpers.readFastMode(value), value);
   for (const value of [null, "true", 1, {}]) assert.throws(() => helpers.readFastMode(value), /fastMode must be a boolean/u);
+});
+
+test("actual prompt and attachment parsers preserve native-media validation", () => {
+  const helpers = runInNewContext(stripTypeScriptTypes(`${validationHelpers}\n({ readPromptInput, readAttachments });`, { mode: "strip" })) as {
+    readPromptInput(value: unknown, attachments: unknown[]): string;
+    readAttachments(value: unknown): unknown[];
+  };
+  const media = helpers.readAttachments([{ name: "screen.png", mimeType: "image/png", data: "aW1hZ2U=" }]);
+  for (const value of ["", "  ", "hello"]) assert.equal(helpers.readPromptInput(value, media), value);
+  assert.equal(helpers.readPromptInput("hello", []), "hello");
+  for (const value of [undefined, null, 42, {}]) assert.throws(() => helpers.readPromptInput(value, media), /input must be a non-empty string/u);
+  for (const attachments of [[], [{ name: "screen.png", mimeType: "image/png", data: "" }],
+    [{ name: "screen.png", mimeType: "image/png", data: " \n " }],
+    [{ name: "document.txt", mimeType: "text/plain", data: "", path: "@attachments/document.txt" }]]) {
+    assert.throws(() => helpers.readPromptInput("", helpers.readAttachments(attachments)), /input must be a non-empty string/u);
+  }
+  for (const value of [null, {}, [null], [{ name: "screen.png", mimeType: "image/png" }]]) {
+    assert.throws(() => helpers.readAttachments(value), /attachments must be an array|attachment is invalid/u);
+  }
 });
 
 type RecordValue = Record<string, unknown>;
@@ -163,7 +188,7 @@ const extract = (overrides: Record<string, unknown> = {}) => runInNewContext(iso
   requiredString: (value: unknown) => { assert.equal(typeof value, "string"); return value; },
   optionalSafeInteger: (value: unknown) => Number.isSafeInteger(value) ? value : undefined,
   readRequestIds: (payload: RecordValue) => ({ runId: payload.runId, messageId: payload.messageId }),
-  readAttachments: () => [], readPromptContext: () => undefined, readCapabilitySelection: () => undefined, readModelRoute: () => undefined, readFastMode: () => undefined,
+  readPromptContext: () => undefined, readCapabilitySelection: () => undefined, readModelRoute: () => undefined, readFastMode: () => undefined,
   readPermissionResult: (value: unknown) => value,
   readGoalTokenBudget: () => undefined, readGoalExpected: () => undefined,
   publicError: (error: unknown) => String(record(error).message ?? error),
@@ -222,13 +247,31 @@ function fixture(overrides: Record<string, unknown> = {}) {
 }
 test("extracted admission uses lexical validators instead of ambient stubs", async () => {
   const forbidden = () => { assert.fail("ambient validator must not run"); };
-  const f = fixture({ readModelRoute: forbidden, readFastMode: forbidden });
+  const f = fixture({ readModelRoute: forbidden, readFastMode: forbidden, readPromptInput: forbidden,
+    readAttachments: forbidden, hasNativeMediaContent: forbidden, asRecord: forbidden, optionalString: forbidden });
   const result = await f.request("run.submit", f.connection, { modelRoute: "tool", fastMode: false });
   assert.notEqual(record(result).accepted, false);
   assert.equal(f.counts.mutations, 1);
   await expectRejected(f.request("run.submit", f.connection, { modelRoute: "other" }), "run.submit", /modelRoute must be tool/u);
   await expectRejected(f.request("run.submit", f.connection, { fastMode: "true" }), "run.submit", /fastMode must be a boolean/u);
   assert.equal(f.counts.mutations, 1, "invalid options must not mutate the runtime");
+});
+
+test("extracted media admission uses actual lexical prompt and attachment parsers", async () => {
+  const forbidden = () => { assert.fail("ambient validator must not run"); };
+  for (const operation of ["run.submit", "queue", "run.queue"]) {
+    const f = fixture({ readPromptInput: forbidden, readAttachments: forbidden, hasNativeMediaContent: forbidden,
+      asRecord: forbidden, optionalString: forbidden });
+    if (operation.includes("queue")) f.controls.kind = "runs";
+    const result = await f.request(operation, f.connection, {
+      input: "", attachments: [{ name: "screen.png", mimeType: "image/png", data: "aW1hZ2U=" }]
+    });
+    assert.notEqual(record(result).accepted, false, JSON.stringify(result));
+    assert.equal(f.counts.mutations, 1);
+    await expectRejected(f.request(operation, f.connection, { input: "", attachments: [] }), operation, /input must be a non-empty string/u);
+    await expectRejected(f.request(operation, f.connection, { input: "", attachments: [null] }), operation, /attachment is invalid/u);
+    assert.equal(f.counts.mutations, 1, "invalid input must not mutate the runtime");
+  }
 });
 
 const pauseError = /exiting and cannot start new work/u;

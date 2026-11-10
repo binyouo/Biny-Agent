@@ -11,6 +11,8 @@ allowed-tools:
 
 Discover, install, and manage skills to extend Biny's capabilities.
 
+Check the currently available tools and skills first. Use an installed skill directly when it fits; use `biny skill list --query <keywords> --json` to inspect other local skills before searching remotely. A task failure is not by itself evidence that another skill is needed.
+
 ## Search for Skills
 
 ```bash
@@ -33,6 +35,8 @@ biny skill install "<exact GitHub tree URL from discovery>" --json
 Use the actual repository, branch, and full directory returned by search. A bare `owner/repository` works only when discovery finds one Skill. If multiple skills or duplicate names exist, select the exact directory with its GitHub tree URL; do not guess a short directory or repository name.
 
 After installation, inspect the returned status and run `biny skill check <installed-name>` for declared dependencies. Installation does not prove that external tools or accounts are ready.
+
+Load the installed skill through `Skill` before using its instructions. A newly installed skill can be loaded in the same turn: activation refreshes the catalog and rescans when the requested skill is missing. Dependencies, accounts, or extra permissions may still be unavailable.
 
 ## List Installed Skills
 
@@ -91,5 +95,5 @@ EOF
 
 - Skills installed through `biny skill install` are stored in Biny's managed skill directory (default `~/.config/biny/skills/`; `BINY_AGENT_DIR` can redirect it). They are not symlinked from `~/.agents/skills/`.
 - Project-local skills can live in `.biny/skills/` or `.agents/skills/` within any project directory (`.biny/skills/` wins on a name clash)
-- After installing a skill, it's available in the next conversation turn
-- **Don't give up on the first failure** — search for skills, install them, and try again
+- Install or update a selected skill within the user's authorized scope; a capability search does not authorize unrelated configuration or account changes.
+- Diagnose the actual missing capability or error before installing anything or retrying an operation that may already have had effects.

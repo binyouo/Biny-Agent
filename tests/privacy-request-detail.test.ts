@@ -20,7 +20,7 @@ test("request detail includes unchanged protocol fields and actual wire model", 
   assert.equal(fields.stream?.original, "true");
   assert.equal(fields.tools?.original, "[]");
   assert.equal(fields.metadata?.original, "{}");
-  assert.equal(record.requestBytes, Buffer.byteLength(body));
+  assert.equal(record.requestBytes, Buffer.byteLength(sent.replace(/\{\{API_KEY_[a-z2-7]{8}\}\}/u, key)));
   assert.equal(record.uniqueValues, 1);
   assert.ok(!sent.includes(key));
   assert.ok(!JSON.stringify(maskingOverview()).includes(key));

@@ -1,19 +1,19 @@
 ---
 name: skill-search
-description: Search and install new skills to extend your capabilities. Use when you encounter a task beyond your current skills.
+description: "Find and install skills when the user asks for new capabilities or a task requires a capability missing from the available tools and installed skills."
 allowed-tools:
   - Bash
 ---
 
 # Skill Search
 
-When you encounter a task you can't handle with your current skills, search for and install new ones.
+Use existing tools and installed skills when they can complete the request. Search for an additional skill only when the user asks or a required capability is actually missing; a failed request alone does not establish that a skill is missing.
 
 ## Search Priority
 
 Always search in this order:
 
-1. **Check <available_skills> first** — skills are already auto-selected and listed in your system prompt. If a matching skill exists there, just use the Skill tool directly. Do NOT search for skills you already have.
+1. **Check available tools and <available_skills> first** — use an existing tool when it can complete the task. Skills listed in the prompt can be loaded through Skill directly; do not remotely search for something already available.
 
 2. **Local second** — if nothing in <available_skills> fits, check all installed skills:
    ```bash

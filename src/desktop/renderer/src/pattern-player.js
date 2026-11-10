@@ -100,11 +100,6 @@
       if (Number.isFinite(theme.fontScale) && theme.fontScale >= .5 && theme.fontScale <= 3) document.documentElement.style.setProperty("--font-scale", String(theme.fontScale));
       if (typeof theme.fontFamily === "string" && theme.fontFamily.length < 1000) document.documentElement.style.setProperty("--font-sans", theme.fontFamily);
       if (typeof theme.fontMono === "string" && theme.fontMono.length < 1000) document.documentElement.style.setProperty("--font-mono", theme.fontMono);
-      if (theme.variables && typeof theme.variables === "object") {
-        for (const [key, value] of Object.entries(theme.variables)) {
-          if (/^--[a-z][a-z0-9-]{0,80}$/.test(key) && typeof value === "string" && value.length < 300) document.documentElement.style.setProperty(key, value);
-        }
-      }
     }
     publish("ready"); draw();
   });

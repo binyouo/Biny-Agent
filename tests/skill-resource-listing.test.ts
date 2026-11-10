@@ -45,6 +45,9 @@ try {
       assert.ok(selected.includes(`"${name}": Test resource discovery`));
       assert.doesNotMatch(selected, /Follow the bundled resources/u);
       assert.match(invoked as string, /Follow the bundled resources/u);
+      assert.match(invoked as string, /read_skill_resource/u);
+      assert.ok((invoked as string).includes(`skill: ${JSON.stringify(name)}`));
+      assert.doesNotMatch(invoked as string, /MUST read them using absolute paths|Remember to use absolute paths|resolve them to absolute paths/u);
       for (const [relative, kind, content] of resources) {
         assert.ok((invoked as string).includes(`- ${path.normalize(relative)} (${kind})`), `Skill must list ${name}/${relative}`);
         assert.ok(!(invoked as string).includes(content), "Listing a resource must not eagerly read its contents");

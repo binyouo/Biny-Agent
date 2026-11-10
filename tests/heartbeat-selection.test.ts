@@ -75,7 +75,7 @@ for (const mode of ["unchanged", "draft", "resume", "return-original", "goal-ret
     assert.ok(match, content);
     const records = JSON.parse(match[1]!) as Array<{ label: string; details?: string[] }>;
     const files = await listAllSessionFiles();
-    const heartbeatFile = files.find(file => file.endsWith("/heartbeat.jsonl"));
+    const heartbeatFile = files.find(file => /^heartbeat-.+\.jsonl$/u.test(path.basename(file)));
     assert.ok(heartbeatFile, "heartbeat execution remains in its separate session");
     const events = await readSessionEvents(heartbeatFile);
     assert.ok(events.some(event => event.type === "user_message" && event.metadata?.source === "heartbeat"));

@@ -6,8 +6,8 @@ import path from "node:path";
 import {
   installGlobalPluginFromRepository,
   installPluginFromRepository,
-  listEnabledGlobalPluginPaths,
-  listEnabledProjectPluginPaths,
+  listEnabledGlobalPlugins,
+  listEnabledProjectPlugins,
   parsePluginRegistry,
   readGlobalPluginManifest,
   readProjectPluginManifest,
@@ -103,17 +103,18 @@ async function main(): Promise<void> {
     await assert.rejects(fs.stat(path.join(workspaceRoot, ".biny", "plugins", "demo-plugin", "..", "evil.mjs")));
 
     // 4. 启用后进入加载路径；损坏插件被跳过
-    assert.deepEqual(await listEnabledProjectPluginPaths(workspaceRoot), []);
+    assert.deepEqual(await listEnabledProjectPlugins(workspaceRoot), []);
     await setProjectPluginEnabled(workspaceRoot, "demo-plugin", true);
-    const enabledPaths = await listEnabledProjectPluginPaths(workspaceRoot);
+    const enabledPaths = await listEnabledProjectPlugins(workspaceRoot);
     assert.equal(enabledPaths.length, 1);
-    assert.equal(enabledPaths[0], ".biny/plugins/demo-plugin/index.mjs");
+    assert.equal(enabledPaths[0]?.path, ".biny/plugins/demo-plugin/index.mjs");
+    assert.deepEqual(enabledPaths[0]?.settings, {});
     const manifest = await readProjectPluginManifest(workspaceRoot);
     await writeProjectPluginManifest(workspaceRoot, {
       format: 1,
       plugins: [...manifest.plugins, { ...manifest.plugins[0]!, id: "broken-plugin", directory: "broken-plugin", enabled: true }]
     });
-    assert.deepEqual(await listEnabledProjectPluginPaths(workspaceRoot), enabledPaths);
+    assert.deepEqual(await listEnabledProjectPlugins(workspaceRoot), enabledPaths);
 
     // 5. tree 里的路径穿越条目被过滤（目录前缀拼不上）/ assertSafeRelativePath 双重兜底
     const traversalRepo: MockRepo = {
@@ -200,12 +201,15 @@ async function main(): Promise<void> {
       assert.equal(path.dirname(globalPluginRoot()), globalRoot);
       assert.equal(await readFile(path.join(globalPluginRoot(), "global-demo", "index.mjs"), "utf8"), "export default function register() {}\n");
       await setGlobalPluginEnabled("global-demo", true);
-      assert.deepEqual(await listEnabledGlobalPluginPaths(), [await fs.realpath(path.join(globalPluginRoot(), "global-demo", "index.mjs"))]);
+      assert.deepEqual(
+        (await listEnabledGlobalPlugins()).map((target) => target.path),
+        [await fs.realpath(path.join(globalPluginRoot(), "global-demo", "index.mjs"))]
+      );
       assert.equal((await readGlobalPluginManifest()).plugins[0]?.enabled, true);
       const loadedGlobal = await loadPluginsFromRoot(
         workspaceRoot,
         globalPluginRoot(),
-        await listEnabledGlobalPluginPaths(),
+        await listEnabledGlobalPlugins(),
         configSchema.parse(defaultConfig),
         new ToolRegistry()
       );

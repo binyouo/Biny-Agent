@@ -10,23 +10,20 @@
  * 未转义的文件内容直接交出去。
  */
 import { bundledLanguages } from "shiki/langs";
-import { bundledThemes } from "shiki/themes";
-import type { BundledLanguage, Highlighter, ThemeRegistration } from "shiki";
-import { createSyntaxTheme } from "../../../appearance/palette.js";
-import type { ThemePalette } from "../../../appearance/types.js";
+import type { BundledLanguage, HighlighterCore, ThemeRegistration } from "shiki";
 
 /** 双主题输出 `--shiki-light` / `--shiki-dark` 变量，由全局 CSS 按 data-theme 取值。 */
 const LIGHT_THEME = "one-light";
 const DARK_THEME = "one-dark-pro";
 
-let highlighterPromise: Promise<Highlighter> | undefined;
+let highlighterPromise: Promise<HighlighterCore> | undefined;
 const languageLoads = new Map<string, Promise<void>>();
 
-function getHighlighter(): Promise<Highlighter> {
+function getHighlighter(): Promise<HighlighterCore> {
   // 首屏不编译未使用的语法；没有代码块的页面无需加载高亮引擎。
-  highlighterPromise ??= import("shiki").then(({ createHighlighter, createJavaScriptRegexEngine }) => createHighlighter({
-    themes: [LIGHT_THEME, DARK_THEME].map(name => async () => {
-      const registration: ThemeRegistration = (await bundledThemes[name as typeof LIGHT_THEME | typeof DARK_THEME]()).default;
+  highlighterPromise ??= Promise.all([import("shiki/core"), import("shiki/engine/javascript")]).then(([{ createHighlighterCore }, { createJavaScriptRegexEngine }]) => createHighlighterCore({
+    themes: [() => import("shiki/themes/one-light.mjs"), () => import("shiki/themes/one-dark-pro.mjs")].map(load => async () => {
+      const registration: ThemeRegistration = (await load()).default;
       const foreground = registration.colors?.["editor.foreground"] ?? registration.fg;
       return {
         ...registration,
@@ -102,16 +99,16 @@ const languageByFence: Record<string, string> = {
   svg: "xml"
 };
 
-export function highlightWorkspaceFile(filePath: string, content: string, palette?: ThemePalette): Promise<HighlightedCode> {
-  return highlight(content, languageForPath(filePath), palette);
+export function highlightWorkspaceFile(filePath: string, content: string): Promise<HighlightedCode> {
+  return highlight(content, languageForPath(filePath));
 }
 
 /** 高亮 Markdown 围栏代码块；`fence` 是 ``` 后面那段语言标注。 */
-export function highlightFencedCode(content: string, fence?: string, palette?: ThemePalette): Promise<HighlightedCode> {
-  return highlight(content, languageForFence(fence), palette);
+export function highlightFencedCode(content: string, fence?: string): Promise<HighlightedCode> {
+  return highlight(content, languageForFence(fence));
 }
 
-async function highlight(content: string, language?: string, palette?: ThemePalette): Promise<HighlightedCode> {
+async function highlight(content: string, language?: string): Promise<HighlightedCode> {
   if (!language || content.length > highlightLimit || !(language in bundledLanguages)) {
     return { html: escapeHtml(content), language };
   }
@@ -123,23 +120,14 @@ async function highlight(content: string, language?: string, palette?: ThemePale
       // 未预载的语言按需加载；打包器会把它和 shiki 的语法注册表拆成独立 chunk
       let pending = languageLoads.get(lang);
       if (!pending) {
-        pending = highlighter.loadLanguage(lang).finally(() => { languageLoads.delete(lang); });
+        pending = highlighter.loadLanguage(bundledLanguages[lang]).finally(() => { languageLoads.delete(lang); });
         languageLoads.set(lang, pending);
       }
       await pending;
     }
-    let themeName: string | undefined;
-    if (palette) {
-      const registration = createSyntaxTheme(palette);
-      const encoded = JSON.stringify(registration);
-      let hash = 2166136261;
-      for (const character of encoded) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-      themeName = `${registration.name}-${(hash >>> 0).toString(16)}`;
-      if (!highlighter.getLoadedThemes().includes(themeName)) await highlighter.loadTheme({ ...registration, name: themeName });
-    }
     const html = highlighter.codeToHtml(content, {
       lang,
-      themes: { light: themeName ?? LIGHT_THEME, dark: themeName ?? DARK_THEME },
+      themes: { light: LIGHT_THEME, dark: DARK_THEME },
       defaultColor: false
     });
     return { html: stripPreWrapper(html), language };
@@ -167,6 +155,13 @@ export function languageForPath(filePath: string): string | undefined {
   if (name === "dockerfile" || name.endsWith(".dockerfile")) return "docker";
   const extension = name.split(".").at(-1);
   return extension ? languageByExtension[extension] : undefined;
+}
+
+/** 字符串整体是合法 JSON 对象或数组时按 JSON 高亮；超过高亮上限的文本不着色，也不必解析。 */
+export function textLanguage(text: string): "json" | "text" {
+  const trimmed = text.trim();
+  if (trimmed.length > highlightLimit || !((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]")))) return "text";
+  try { JSON.parse(trimmed); return "json"; } catch { return "text"; }
 }
 
 /** 无高亮时也必须转义：返回值会以 innerHTML 的方式渲染。 */

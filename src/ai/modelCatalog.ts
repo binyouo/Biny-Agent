@@ -269,6 +269,7 @@ export function parseModelCatalog(
     if (reasoningSummary !== undefined) capabilities.reasoningSummary = reasoningSummary;
     const entry: ModelCatalogEntry = {
       id,
+      embedding: firstBoolean(sources, ["embedding", "supports_embedding", "supportsEmbedding"]),
       displayName: firstString(sources, ["display_name", "displayName", "name"]) ?? (slug ? formatCodexModelName(id) : id),
       provider,
       contextWindow,

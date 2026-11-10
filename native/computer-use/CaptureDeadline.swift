@@ -1,6 +1,18 @@
 import Foundation
 import Darwin
 
+private final class CaptureAdmission {
+    private let lock = NSLock()
+    private var active = false
+    func acquire() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !active else { return false }
+        active = true; return true
+    }
+    func release() { lock.lock(); active = false; lock.unlock() }
+}
+private let captureAdmission = CaptureAdmission()
+
 func withDeadline(_ timeout: Double, fallback: [String: Any], discard: @escaping ([String: Any]) -> Void = { _ in }, wait: @escaping (Double) async -> Void = { seconds in
     try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
 }, work: @escaping () async -> [String: Any]) async -> [String: Any] {
@@ -20,9 +32,12 @@ func withDeadline(_ timeout: Double, fallback: [String: Any], discard: @escaping
 func captureObservation(timeout: Double, wait: @escaping (Double) async -> Void = { seconds in
     try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
 }, describeError: @escaping (Error) -> String, capture: @escaping () async throws -> [String: Any]) async -> [String: Any] {
-    await withDeadline(timeout, fallback: ["screenshot_error": "capture_timeout: screenshot did not complete before the deadline"], discard: { result in
+    guard captureAdmission.acquire() else { return ["screenshot_error": "capture_busy: previous screenshot is still running"] }
+    return await withDeadline(timeout, fallback: ["screenshot_error": "capture_timeout: screenshot did not complete before the deadline"], discard: { result in
         if let path = result["path"] as? String { try? FileManager.default.removeItem(atPath: path) }
     }, wait: wait) {
+        // 截止时间只结束等待，资源要到实际采集退出后才能让给下一次截图。
+        defer { captureAdmission.release() }
         do {
             let result = try await capture()
             guard result["path"] != nil else { return ["screenshot_error": "capture_empty: screenshot did not return an image"] }

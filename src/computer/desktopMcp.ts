@@ -120,8 +120,6 @@ export function attachDesktopComputerMcp(host: McpToolHost, endpoint: BrowserAut
       }, { "biny/session-id": context.sessionId, "biny/endpoint-id": identity,
         "biny/computer-lease-id": context.computerMcpLeaseId }, identity);
       const structured = (result as { structuredContent?: unknown }).structuredContent;
-      const uncertain = z.object({ outcomeUnknown: z.literal(true), message: z.string() }).safeParse(structured);
-      if (uncertain.success) throw new ToolOutcomeUnknownError("interrupted", uncertain.data.message);
       return replySchema.parse(structured);
     } catch (error) {
       if (mutation && dispatched && context.signal?.aborted) throw new ToolOutcomeUnknownError("cancelled", "Desktop MCP input was cancelled after dispatch. Do not repeat without observation.");

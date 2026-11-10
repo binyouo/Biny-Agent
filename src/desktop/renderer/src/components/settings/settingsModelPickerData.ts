@@ -6,6 +6,7 @@ export interface SettingsModelPickerOption {
   value: string;
   label: string;
   secondary?: string;
+  searchText?: string;
   trailing?: string;
   disabled?: boolean;
 }

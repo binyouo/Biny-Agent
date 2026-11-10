@@ -85,7 +85,7 @@ export function SettingsActivityApplications({ excluded, onChange }: {
     {pickerOpen ? <SettingsDetailLayer onClose={closePicker}>
       <section aria-labelledby="activity-application-picker-title" aria-modal="true" className="settings-confirm-panel activity-application-picker" role="dialog">
         <div className="activity-application-picker-heading"><h3 id="activity-application-picker-title">添加不记录的应用</h3><button aria-label="关闭应用列表" className="settings-action settings-secondary-button ghost-button" disabled={saving} onClick={closePicker} type="button"><Icon name="close" size={14} /></button></div>
-        <input className="settings-field" aria-label="搜索应用" autoComplete="off" data-settings-detail-autofocus placeholder="搜索应用名称" onChange={event => setQuery(event.target.value)} type="search" value={query} />
+        <input aria-label="搜索应用" autoComplete="off" data-settings-detail-autofocus placeholder="搜索应用名称" onChange={event => setQuery(event.target.value)} type="search" value={query} />
         {catalogFeedback}
         {saveFeedback}
         <ul aria-label="可选应用" className="activity-application-list activity-application-choices">

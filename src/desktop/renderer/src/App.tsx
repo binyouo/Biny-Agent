@@ -46,7 +46,6 @@ import { DEFAULT_FILE_PANEL_WIDTH } from "../../filePanelSizing.js";
 import { DEFAULT_SIDEBAR_WIDTH } from "../../sidebarSizing.js";
 import { AppearanceProvider } from "./AppearanceProvider.js";
 import { useDesktopAppearance } from "./useDesktopAppearance.js";
-import { normalizeAppearancePreference } from "../../../appearance/preferences.js";
 import {
   createNavigationState,
   pushNavigation,
@@ -69,6 +68,7 @@ import {
   syntheticSession
 } from "./app/desktopState.js";
 import { createSessionTreePageLifetime, type LoadedSessionTreePage } from "./app/sessionTreePageLifetime.js";
+import { applyRuntimeControlReceipt, readRuntimeControlReceipt, taskCancellationNeedsGraphRefresh } from "./app/runtimeControlProjection.js";
 import { useSessionRootPages } from "./app/useSessionRootPages.js";
 import { useDesktopEventBridge } from "./app/useDesktopEventBridge.js";
 import { useCompactionCommand } from "./app/useCompactionCommand.js";
@@ -157,8 +157,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [chatResponse, setChatResponse] = useState<ChatResponseSettings>();
   const [appearanceError, setAppearanceError] = useState<string>();
   const appearance = useDesktopAppearance(setAppearanceError);
-  const { themePreference, fontPreference, appearancePreference } = appearance.snapshot;
-  const { changeThemePreference, changeFontPreference, changeAppearancePreference, bootstrap: bootstrapAppearance, adopt: adoptAppearance } = appearance;
+  const { themePreference, fontPreference } = appearance.snapshot;
+  const { changeThemePreference, changeFontPreference, bootstrap: bootstrapAppearance, adopt: adoptAppearance } = appearance;
   const [focusToken, setFocusToken] = useState(0);
   const [composerDrafts] = useState(() => new Map<string, ComposerDraftState>());
   const [composerDraft, setComposerDraft] = useState<string>();
@@ -384,17 +384,48 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (projectRef.current === snapshot.project.id) setWorkspace(snapshot);
   }, [adoptSessionRootPage, loadedRootIds, sessionTreePages]);
 
+  const mergeSessionCatalog = useCallback((page: DesktopSessionTreePage): void => {
+    if (page.revisionChanged) throw new Error("会话列表已更新，请重新加载重试。");
+    const sessions = [...new Map([...page.sessions, ...(page.pinnedSessions ?? []), ...(page.supplementalSessions ?? [])]
+      .map(session => [session.id, session])).values()];
+    sessionTreePages.replaceProject(page.projectId, sessions);
+    adoptSessionRootPage({ project: { id: page.projectId }, sessions, sessionPage: page });
+    setSidebarSessions(current => replaceProjectSessionRoots(current, page.projectId, page.sessions, sessions, loadedRootIds(page.projectId)));
+    setWorkspace(current => current?.project.id === page.projectId ? { ...current, sessions, sessionPage: page } : current);
+  }, [adoptSessionRootPage, loadedRootIds, sessionTreePages]);
+
+  const readSessionCatalog = useCallback(async (projectId: string, sessionIds: string[]): Promise<(allowPublish?: boolean) => void> => {
+    const ownsProject = sessionTreePages.captureCatalogProject(projectId);
+    const isCurrent = sessionTreePages.captureCatalogPublication(projectId);
+    const read = (ids: string[]): Promise<DesktopSessionTreePage> => window.biny.listSessionTreePage(projectId, {
+      limit: 32, includeArchived: true, includePinnedSessions: true,
+      sessionIds: ids
+    });
+    const page = await read([...new Set([...sessionTreePages.loadedSessionIds(projectId), ...sessionIds])]);
+    // 子页可能在 IPC 完成后的回调之间扩大读取范围；必须在实际发布时校验。
+    return (allowPublish = true) => {
+      if (!ownsProject()) return;
+      if (!allowPublish || !isCurrent()) {
+        for (const sessionId of sessionIds.length ? sessionIds : [undefined]) {
+          sessionTreePages.refreshCatalog(projectId, read, mergeSessionCatalog, error => setWarning(errorMessage(error)), sessionId);
+        }
+        return;
+      }
+      mergeSessionCatalog(page);
+    };
+  }, [mergeSessionCatalog, sessionTreePages]);
+
   const threadBriefState = useThreadBrief();
   const briefProjectIds = threadBriefState?.snapshot?.projects.map((project) => project.projectId).sort().join("\0") ?? "";
   useEffect(() => {
     let cancelled = false;
     for (const projectId of briefProjectIds.split("\0").filter(Boolean)) {
-      void window.biny.refreshProject(projectId).then((snapshot) => {
-        if (!cancelled) mergeProjectSnapshot(snapshot);
+      void readSessionCatalog(projectId, []).then((publish) => {
+        if (!cancelled) publish();
       }).catch(() => undefined);
     }
     return () => { cancelled = true; };
-  }, [briefProjectIds, mergeProjectSnapshot]);
+  }, [briefProjectIds, readSessionCatalog]);
 
   const loadProjectBranches = useCallback(async (projectId: string): Promise<void> => {
     // A late branch-operation receipt must not start a read for an old target or
@@ -456,9 +487,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = projectRef.current;
     if (!projectId) throw new Error("当前没有打开的项目。");
     const navigationRequest = loadRequestRef.current;
+    const projectionRequestAtStart = runtimeProjectionRequest.current;
     const goalRequestIsCurrent = (): boolean => projectRef.current === projectId && selectedRef.current === payload.sessionId && loadRequestRef.current === navigationRequest;
+    let result: unknown;
     try {
-      await window.biny.runtimeMutation(projectId, operation, payload);
+      result = await window.biny.runtimeMutation(projectId, operation, payload);
     } catch (error) {
       if (operation.startsWith("session.goal.") && goalRequestIsCurrent()) {
         try { await refreshPlans(); }
@@ -466,11 +499,25 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       }
       throw error;
     }
+    if (operation === "task.cancel" || operation === "graph.pause" || operation === "graph.resume") {
+      if (projectRef.current !== projectId || loadRequestRef.current !== navigationRequest) return;
+      const receipt = readRuntimeControlReceipt(operation, payload, result);
+      const refreshRequested = runtimeProjectionRequest.current !== projectionRequestAtStart;
+      // 在途全量读取不能覆盖窄回执；操作期间新增的刷新需求合并补读一次。
+      runtimeProjectionRequest.current += 1;
+      setWorkspace((current) => {
+        if (current?.project.id !== projectId || projectRef.current !== projectId || loadRequestRef.current !== navigationRequest) return current;
+        const runtimeProjection = applyRuntimeControlReceipt(current.runtimeProjection, receipt);
+        return runtimeProjection === current.runtimeProjection ? current : { ...current, runtimeProjection };
+      });
+      if (refreshRequested || operation === "task.cancel" && taskCancellationNeedsGraphRefresh(workspace?.runtimeProjection, payload.taskRunId)) await refreshRuntimeProjection();
+      return;
+    }
     if (operation.startsWith("session.goal.")) {
       if (goalRequestIsCurrent()) await refreshPlans();
     } else if (operation.startsWith("plan.")) await refreshPlans();
     else await refreshRuntimeProjection();
-  }, [refreshRuntimeProjection, refreshPlans]);
+  }, [refreshRuntimeProjection, refreshPlans, workspace?.runtimeProjection]);
 
   const reportRuntimeError = useCallback((error: unknown): void => {
     setWarning(errorMessage(error));
@@ -767,7 +814,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     activeProjectIdRef: projectRef,
     selectedSessionIdRef: selectedRef,
     documentRef,
-    mergeProjectSnapshot,
+    readSessionCatalog,
     onError: reportEventError,
     setContextBudget,
     setDocument,
@@ -976,21 +1023,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     });
   }, [invalidateProjectRefresh, sessionTreePages]);
 
-  const mergeSessionCatalog = useCallback((page: DesktopSessionTreePage): void => {
-    if (page.revisionChanged) throw new Error("会话列表已更新，请重新加载重试。");
-    const sessions = [...new Map([...page.sessions, ...(page.pinnedSessions ?? []), ...(page.supplementalSessions ?? [])]
-      .map(session => [session.id, session])).values()];
-    sessionTreePages.replaceProject(page.projectId, sessions);
-    adoptSessionRootPage({ project: { id: page.projectId }, sessions, sessionPage: page });
-    setSidebarSessions(current => replaceProjectSessionRoots(current, page.projectId, page.sessions, sessions, loadedRootIds(page.projectId)));
-    setWorkspace(current => current?.project.id === page.projectId ? { ...current, sessions, sessionPage: page } : current);
-    setDocument(current => {
-      if (current?.session.projectId !== page.projectId) return current;
-      const session = sessions.find(candidate => candidate.id === current.session.id);
-      return session ? { ...current, session } : current;
-    });
-  }, [adoptSessionRootPage, loadedRootIds, sessionTreePages]);
-
   useEffect(() => {
     let active = true;
     let documentGeneration = 0;
@@ -1093,9 +1125,11 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (result.cancelled) return result;
     const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
     for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
+      const retainedIds = sessionTreePages.loadedSessionIds(projectId).filter(id => !deleted.has(`${projectId}\0${id}`));
       sessionTreePages.replaceProject(projectId, []);
       invalidateSessionRootPage(projectId);
-      void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
+      invalidateProjectRefresh(projectId);
+      void readSessionCatalog(projectId, retainedIds).then(publish => publish()).catch(error => setWarning(errorMessage(error)));
     }
     setSidebarSessions(current => current.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)));
     setWorkspace(current => current ? { ...current, sessions: current.sessions.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)) } : current);
@@ -1105,7 +1139,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       return `${title}：${failure.error}`;
     }).join("\n"));
     return result;
-  }, [commitNavigation, invalidateSessionRootPage, mergeProjectSnapshot, sessionTreePages]);
+  }, [commitNavigation, invalidateProjectRefresh, invalidateSessionRootPage, readSessionCatalog, sessionTreePages]);
 
   const runSessionAction = useCallback(async (session: DesktopSessionSummary, action: DesktopSessionMenuAction): Promise<void> => {
     try {
@@ -1525,10 +1559,24 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     setWarning(files.length ? "当前消息的文件变更没有安全快照，暂不自动回滚" : "当前消息没有可回滚的文件");
   }, []);
 
-  const settingsCommitted = useCallback((snapshot: DesktopSettingsSnapshot, scope?: "models" | "preferences" | "settings", appliedFields?: string[]): void => {
+  const settingsCommitted = useCallback((snapshot: DesktopSettingsSnapshot, scope?: "models" | "model-config" | "preferences" | "settings", appliedFields?: string[]): void => {
     // 工具和视觉模型已由设置回执更新；不刷新不相关的侧栏会话树。
     if (scope === "models") return;
-    adoptAppearance({ themePreference: snapshot.themePreference, fontPreference: snapshot.fontPreference, appearancePreference: normalizeAppearancePreference(snapshot.appearancePreference) });
+    if (scope === "model-config") {
+      invalidateProjectRefresh(snapshot.projectId);
+      setWorkspace(current => {
+        if (current?.project.id !== snapshot.projectId) return current;
+        const selectedModel = snapshot.models.selectedModel;
+        const pickerModels = snapshot.models.configured
+          .filter(model => model.source === "configured" && model.available && model.showInPicker !== false)
+          .sort((left, right) => Number(right.alias === selectedModel?.modelAlias) - Number(left.alias === selectedModel?.modelAlias))
+          .map(model => model.alias === selectedModel?.modelAlias ? { ...model, defaultThinking: selectedModel.thinking } : model);
+        return { ...current, models: snapshot.models.configured, pickerModels, selectedModel,
+          connections: snapshot.models.connections, requiresModelConfiguration: pickerModels.length === 0 };
+      });
+      return;
+    }
+    adoptAppearance({ themePreference: snapshot.themePreference, fontPreference: snapshot.fontPreference });
     if (scope === "preferences") return;
     if (snapshot.projectId === projectRef.current) setChatResponse(snapshot.chatParams.response);
     if (scope === "settings") {
@@ -1542,7 +1590,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     void window.biny.refreshProject(snapshot.projectId)
       .then(mergeProjectSnapshot)
       .catch((error: unknown) => setWarning(errorMessage(error)));
-  }, [adoptAppearance, mergeProjectSnapshot, refreshComposerCatalog]);
+  }, [adoptAppearance, invalidateProjectRefresh, mergeProjectSnapshot, refreshComposerCatalog]);
 
   const mergeProjectMetadata = useCallback((project: DesktopProject, field: "name" | "pinned"): void => {
     invalidateProjectRefresh(project.id);
@@ -1711,6 +1759,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const turns = useSessionTimeline(document);
   // 「变更」视图数据：从时间线收集 Agent 改过的文件；轮次引用稳定时 useMemo 不重算。
   const sessionChanges = useMemo(() => collectSessionChanges(turns), [turns]);
+  const sessionTools = useMemo(() => turns.flatMap((turn) => turn.tools), [turns]);
   const sessionSkills = useMemo(() => {
     // Only confirmed loads contribute; normalize each distinct loaded reference once.
     const loaded = new Set<string>();
@@ -1722,7 +1771,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const inspector = useWorkspaceInspector({
     changes: sessionChanges,
     sidebarFlowWidth: sidebarLayout.flowWidth,
-    tools: turns.flatMap((turn) => turn.tools),
+    tools: sessionTools,
     skills: sessionSkills,
     filePanelResizing,
     filePanelWidth,
@@ -2242,8 +2291,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   );
 
   return (
-    <AppearanceProvider snapshot={appearance.snapshot} onError={setAppearanceError}><ChatResponseContext value={chatResponse}><RenderingPreviewContext value={inspector.previewRendering}><DesktopShell
-      windowTitle={sessionSummary?.title ?? workspace?.project.name ?? "Biny"}
+    <AppearanceProvider snapshot={appearance.snapshot}><ChatResponseContext value={chatResponse}><RenderingPreviewContext value={inspector.previewRendering}><DesktopShell
       starting={starting}
       overlays={(
         <>
@@ -2308,8 +2356,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
             targetTab={settingsTargetTab}
             themePreference={themePreference}
             fontPreference={fontPreference}
-            appearancePreference={appearancePreference}
-            onAppearancePreference={changeAppearancePreference}
             version={version}
             workspace={workspace}
           />

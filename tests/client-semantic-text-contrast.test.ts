@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BUILTIN_PALETTES } from "../src/appearance/catalog.js";
-import { DEFAULT_APPEARANCE } from "../src/appearance/preferences.js";
-import { resolveAppearance } from "../src/appearance/resolve.js";
-import { appearanceVariables } from "../src/desktop/renderer/src/appearance.js";
 
 const renderer = new URL("../src/desktop/renderer/src/", import.meta.url);
 const read = (path: string): string => readFileSync(new URL(path, renderer), "utf8");
@@ -128,16 +124,5 @@ test("readable semantic text tokens retain fixed status colors, backgrounds and 
     assert.equal(declaration(selector, "background"), `var(--biny-${alias}-bg)`);
     assert.equal(declaration(`${selector} strong`, "color"), `var(--${family}-text-small)`);
     assert.equal(resolve(`var(--${family}-text-small)`, "dark"), resolve(`var(--${family}-text)`, "dark"));
-  }
-});
-
-test("small semantic title tokens retain CSS fallbacks across built-in theme projections", () => {
-  for (const [id, palette] of Object.entries(BUILTIN_PALETTES)) {
-    const preference = { ...DEFAULT_APPEARANCE, [`${palette.type}Theme`]: id };
-    const variables = appearanceVariables(resolveAppearance(preference, palette.type, palette.type === "dark"));
-    for (const token of ["--green-text-small", "--red-text-small"]) {
-      assert.equal(variables[token], undefined, `${id}: theme must not override ${token}`);
-      assert.ok(tokens.has(token), `CSS fallback for ${token}`);
-    }
   }
 });
