@@ -232,3 +232,16 @@ for (const tokensAfter of [2_000, undefined]) {
     assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 12_000);
   });
 }
+
+
+test("未知容量不生成窗口占比，输入分类以实际输入总量为分母", () => {
+  const display = formatContextUsage({
+    usedTokens: 48_538, contextWindow: 32_768, contextWindowIsFallback: true, source: "provider",
+    breakdown: { messages: 3, mcpTools: 0, systemTools: 1, skills: 0, systemPrompt: 0, other: 0 }
+  });
+  assert.equal(display?.percent, undefined);
+  assert.equal(display?.fillPercent, undefined);
+  assert.equal(display?.compactUsed, "48.5K");
+  assert.deepEqual(display?.categories.map(category => category.percent), ["75.0", "0.0", "25.0", "0.0", "0.0", "0.0"]);
+  assert.deepEqual(display?.categories.map(category => category.width), [75, 0, 25, 0, 0, 0]);
+});

@@ -93,8 +93,11 @@ export function formatTokenCount(tokens: number): string {
 export function formatContextUsage(usage?: ContextUsage) {
   if (!usage || !Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0 || !Number.isFinite(usage.usedTokens)) return undefined;
   const usedTokens = Math.max(0, usage.usedTokens);
-  const usedTenths = Math.round((usedTokens / usage.contextWindow) * 1_000);
-  const percent = usedTenths / 10;
+  const capacityKnown = usage.contextWindowIsFallback !== true;
+  const denominator = capacityKnown ? usage.contextWindow : usedTokens;
+  const usedTenths = denominator ? Math.round((usedTokens / denominator) * 1_000) : 0;
+  const percent = capacityKnown ? usedTenths / 10 : undefined;
+  const fillPercent = denominator ? Math.min(100, usedTokens / denominator * 100) : 0;
   const categories = [
     ["messages", "消息"], ["mcpTools", "MCP 工具"], ["systemTools", "系统工具"],
     ["skills", "技能"], ["systemPrompt", "系统提示词"], ["other", "其他"]
@@ -104,8 +107,8 @@ export function formatContextUsage(usage?: ContextUsage) {
     return Number.isFinite(value) ? Math.max(0, value) : 0;
   });
   const estimatedTotal = counts.reduce((total, count) => total + count, 0);
-  // 分类与总用量共用完整窗口分母；最大余数法使显示值合计等于总用量百分比。
-  const shares = counts.map((count) => estimatedTotal ? count / estimatedTotal * usedTokens / usage.contextWindow * 1_000 : 0);
+  // 容量未知时只展示输入构成，不能把运行预算当作模型容量。
+  const shares = counts.map((count) => estimatedTotal && denominator ? count / estimatedTotal * usedTokens / denominator * 1_000 : 0);
   const tenths = shares.map(Math.floor);
   const remainders = shares.map((share, index) => ({ index, remainder: share - (tenths[index] ?? 0) }))
     .sort((left, right) => right.remainder - left.remainder);
@@ -114,7 +117,7 @@ export function formatContextUsage(usage?: ContextUsage) {
   const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
   return {
     percent,
-    fillPercent: Math.min(100, usedTokens / usage.contextWindow * 100),
+    fillPercent: capacityKnown ? fillPercent : undefined,
     used: usedTokens.toLocaleString("zh-CN"),
     max: usage.contextWindow.toLocaleString("zh-CN"),
     compactUsed: compact.format(usedTokens),
@@ -124,7 +127,7 @@ export function formatContextUsage(usage?: ContextUsage) {
     categories: estimatedTotal && usedTokens ? categories.map(([id, label], index) => ({
       id, label,
       percent: ((tenths[index] ?? 0) / 10).toFixed(1),
-      width: (counts[index] ?? 0) / estimatedTotal * Math.min(100, usedTokens / usage.contextWindow * 100)
+      width: (counts[index] ?? 0) / estimatedTotal * fillPercent
     })) : [],
     cacheHitRate: usage.cacheHitRate === undefined || !Number.isFinite(usage.cacheHitRate)
       ? "未提供"

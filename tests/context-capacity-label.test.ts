@@ -7,7 +7,7 @@ const imports = registerHooks({ load(url, context, next) {
   return next(url, context);
 } });
 
-test("未知模型容量显式展示保守预算，已声明容量仍展示真实比例", async () => {
+test("未知模型容量只展示输入量，已声明容量仍展示真实比例", async () => {
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "https://desktop.local" });
   Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", { value: () => null });
@@ -37,9 +37,9 @@ test("未知模型容量显式展示保守预算，已声明容量仍展示真�
     onSaveAttachment: async () => { throw new Error("unused"); }, onWarning: () => {}, onSubmitError: () => {}
   };
   try {
-    for (const fallback of [true, false]) {
+    for (const [fallback, usedTokens, expectedTokens] of [[true, 12_050, "12.1K"], [true, 48_538, "48.5K"], [true, 0, "0"], [false, 12_050, "12.1K"]] as const) {
       await React.act(() => root.render(React.createElement(Composer, { ...props, contextUsage: {
-        usedTokens: 12_050, contextWindow: fallback ? 32_768 : 1_048_576,
+        usedTokens, contextWindow: fallback ? 32_768 : 1_048_576,
         contextWindowIsFallback: fallback, source: "provider"
       } })));
       const status = document.querySelector<HTMLElement>('[role="status"].context-usage')!;
@@ -47,10 +47,11 @@ test("未知模型容量显式展示保守预算，已声明容量仍展示真�
       const tooltip = document.querySelector<HTMLElement>(".context-usage-tip")!;
       assert.ok(tooltip, "真实 Composer 渲染上下文说明");
       if (fallback) {
-        assert.equal(status.textContent, "≈ 36.8%");
-        assert.equal(status.getAttribute("aria-label"), "模型容量未知，保守预算已使用 36.8%");
+        assert.equal(status.textContent, `${expectedTokens} tokens`);
+        assert.equal(status.getAttribute("aria-label"), `模型容量未知，最近请求输入 ${usedTokens.toLocaleString("zh-CN")} tokens`);
         assert.equal(tooltip.querySelector("strong")?.textContent, "上下文容量未知");
-        assert.match(tooltip.textContent ?? "", /按保守预算估算/u);
+        assert.doesNotMatch(tooltip.textContent ?? "", /32.8K|保守预算|148.1%|36.8%/u);
+        assert.equal(status.querySelector(".context-usage-ring"), null);
       } else {
         assert.equal(status.textContent, "1.1%");
         assert.equal(status.getAttribute("aria-label"), "上下文已使用 1.1%");
