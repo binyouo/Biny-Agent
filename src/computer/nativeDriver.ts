@@ -14,6 +14,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import type { ComputerDriver, DriverReply } from "./controller.js";
 import type { ComputerMirrorRequest, ComputerAction, WindowObserve } from "./protocol.js";
+import { ToolOutcomeUnknownError } from "../tools/types.js";
 
 const maxIpcBytes = 2 * 1024 * 1024;
 const maxPending = 32;
@@ -43,7 +44,9 @@ const idleTimeoutMs = 900_000;
 // 与 protocol.ts 的 maxComputerImageBytes 保持一致。
 const maxImageBytes = 1_048_576;
 
-class NativeCommandError extends Error {}
+class NativeCommandError extends Error {
+  constructor(message: string, readonly inputNotDispatched?: boolean) { super(message); }
+}
 
 interface PendingJob {
   captureId?: string;
@@ -133,10 +136,12 @@ export class NativeProcessDriver implements ComputerDriver {
   private readonly socketPath: string;
   private readonly binaryPath: string;
   private readonly idleTimeout: number;
+  private readonly requestTimeout: number;
 
   constructor(private readonly onExit: () => void, options: NativeDriverOptions = {}) {
     this.binaryPath = options.binaryPath ?? NativeProcessDriver.resolveBinary();
     this.idleTimeout = options.idleTimeoutMs ?? idleTimeoutMs;
+    this.requestTimeout = options.requestTimeoutMs ?? requestTimeoutMs;
     this.socketPath = path.join(
       options.socketDir ?? path.join(os.homedir(), "Library", "Application Support", "alma"),
       `biny-computer-use-${socketKeyFor(this.binaryPath)}.sock`
@@ -308,7 +313,7 @@ export class NativeProcessDriver implements ComputerDriver {
   private readonly eventListeners = new Set<(event: string, data: unknown) => void>();
   onNativeEvent(listener: (event: string, data: unknown) => void): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }
   private onReply(line: string): void {
-    let parsed: { id?: string | number; ok?: boolean; data?: unknown; error?: { code?: string; message?: string }; event?: string };
+    let parsed: { id?: string | number; ok?: boolean; data?: unknown; error?: { code?: string; message?: string; inputNotDispatched?: unknown }; event?: string };
     try { parsed = JSON.parse(line); } catch { return; }
     if (typeof parsed.event === "string") { for (const listener of this.eventListeners) listener(parsed.event, parsed.data); return; }
     const id = parsed.id === undefined || parsed.id === null ? undefined : String(parsed.id);
@@ -323,7 +328,8 @@ export class NativeProcessDriver implements ComputerDriver {
     clearTimeout(job.timer);
     job.cleanup();
     if (parsed.ok === false) {
-      job.reject(new NativeCommandError(parsed.error?.code ?? parsed.error?.message ?? "native_action_failed"));
+      const inputNotDispatched = parsed.error?.inputNotDispatched;
+      job.reject(new NativeCommandError(parsed.error?.code ?? parsed.error?.message ?? "native_action_failed", typeof inputNotDispatched === "boolean" ? inputNotDispatched : undefined));
       return;
     }
     job.resolve(this.shape(parsed.data, job.captureId));
@@ -386,28 +392,42 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   private async call(cmd: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<DriverReply> {
-    this.assertLive();
-    await this.ensureHost();
-    const host = this.host;
-    if (!host) throw new Error("driver_sdk_missing_or_crashed: no host");
-    if (this.pending.size >= maxPending) throw new Error("driver_busy: IPC request budget reached");
-    const id = crypto.randomUUID();
-    const captureId = cmd === "get_app_state" ? crypto.randomUUID() : undefined;
-    if (captureId) args = { ...args, capture_id: captureId };
-    signal?.throwIfAborted();
-    return await new Promise<DriverReply>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        cleanup();
-        reject(new Error("driver_request_timeout; outcome may be unknown"));
-      }, screenshotCommands.has(cmd) ? screenshotTimeoutMs : requestTimeoutMs);
-      const onAbort = () => { this.pending.delete(id); clearTimeout(timer); cleanup(); reject(new Error("driver_request_aborted")); };
-      const cleanup = () => signal?.removeEventListener("abort", onAbort);
-      signal?.addEventListener("abort", onAbort, { once: true });
-      this.pending.set(id, { resolve, reject, timer, cleanup, captureId });
-      host.lastActivityAt = performance.now();
-      host.socket.write(`${JSON.stringify({ id, cmd, args })}\n`);
-    });
+    let dispatched = false;
+    try {
+      this.assertLive();
+      await this.ensureHost();
+      const host = this.host;
+      if (!host) throw new Error("driver_sdk_missing_or_crashed: no host");
+      if (this.pending.size >= maxPending) throw new Error("driver_busy: IPC request budget reached");
+      const id = crypto.randomUUID();
+      const captureId = cmd === "get_app_state" ? crypto.randomUUID() : undefined;
+      if (captureId) args = { ...args, capture_id: captureId };
+      signal?.throwIfAborted();
+      const frame = `${JSON.stringify({ id, cmd, args })}\n`;
+      return await new Promise<DriverReply>((resolve, reject) => {
+        const cancelNative = (): void => {
+          if (!dispatched || host.closed || !host.socket.writable) return;
+          try { host.socket.write(`${JSON.stringify({ cmd: "cancel", args: { request_id: id } })}\n`); }
+          catch { host.socket.destroy(); }
+        };
+        const timer = setTimeout(() => {
+          this.pending.delete(id);
+          cleanup();
+          cancelNative();
+          reject(new Error("driver_request_timeout; outcome may be unknown"));
+        }, screenshotCommands.has(cmd) ? screenshotTimeoutMs : this.requestTimeout);
+        const onAbort = () => { this.pending.delete(id); clearTimeout(timer); cleanup(); cancelNative(); reject(new Error("driver_request_aborted")); };
+        const cleanup = () => signal?.removeEventListener("abort", onAbort);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        this.pending.set(id, { resolve, reject, timer, cleanup, captureId });
+        host.lastActivityAt = performance.now();
+        dispatched = true;
+        host.socket.write(frame);
+      });
+    } catch (error) {
+      if (!dispatched && !(error instanceof NativeCommandError)) throw new NativeCommandError(error instanceof Error ? error.message : String(error), true);
+      throw error;
+    }
   }
 
   private async ensureHost(): Promise<void> {
@@ -557,8 +577,8 @@ export class NativeProcessDriver implements ComputerDriver {
 
   diagnostics(): Promise<DriverReply> { return this.call("doctor", {}); }
   /** 用户显式调用的命令行和系统诊断入口，不替代模型工具的控制器审批。 */
-  daemonCommand(cmd: string, args: Record<string, unknown> = {}): Promise<DriverReply> {
-    return this.call(cmd, args);
+  daemonCommand(cmd: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<DriverReply> {
+    return this.call(cmd, args, signal);
   }
 
   mirror(operation: ComputerMirrorRequest["operation"], args: Record<string, unknown>): Promise<DriverReply> {
@@ -580,17 +600,16 @@ export class NativeProcessDriver implements ComputerDriver {
     try {
       const reply = await this.call(command, args, signal);
       const data = reply.data;
-      // 无障碍接口成功只证明操作已被接受；业务结果仍由动作后的观察确认。
-      const accepted = data.route === "ax" || data.route === "ax-page" || data.inputMethod === "ax" || ["set_value", "select_text"].includes(command);
+      // AX 属性写入只有原生回读证据才能确认；接口接受或命令名称不足以证明值已改变。
+      const attributeWrite = ["type", "type_text", "set_value", "select_text"].includes(command);
+      const accepted = !attributeWrite && (data.route === "ax" || data.route === "ax-page");
       return { ...reply, data: { ...data, effect: data.effect ?? (accepted && !data.warning && !data.verification_note ? "confirmed" : "unverifiable") } };
     } catch (error) {
-      // 只将确定发生在派发前的原生拒绝降为普通失败，部分输入与传输失败保持未知。
-      if (error instanceof NativeCommandError && (/^(input_delivery_unsupported|ax_not_granted|focus_guard_unavailable|element_ref_not_observed|element_action_unsupported|element_value_unsupported|selection_(unsupported|range_invalid)|text_input_(ax_unsupported|target_not_focused)|click_action_(unsupported|unavailable)|secondary_action_unsupported|ax_cannot_express_this_click|element_has_no_(frame|context_menu)|strategy_ax_needs_ref|observation_[a-z_]+|text_match_(invalid|not_found|ambiguous|unavailable|changed)|input_method_(requires_ref|unmappable_character|layout_required|layout_unavailable)|unknown_key|unknown_input_method)(:|$)/.test(error.message)
-        || command === "press_key" && /^(background_keyboard_target_not_focused|menu_shortcut_unsupported|keyboard_event_creation_failed)(:|$)/.test(error.message)
-        || command === "scroll" && /^scroll_(event_creation_failed|target_unavailable)(:|$)/.test(error.message))) {
+      // 同一错误可发生在多字符或多事件输入中途，只信任本次原生请求的派发证据。
+      if (error instanceof NativeCommandError && error.inputNotDispatched === true) {
         return { data: { effect: "refused", code: error.message }, images: [], errorCode: error.message };
       }
-      throw error;
+      throw new ToolOutcomeUnknownError(error instanceof NativeCommandError ? "interrupted" : "transport_error", error instanceof Error ? error.message : String(error));
     }
   }
 

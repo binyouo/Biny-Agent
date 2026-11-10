@@ -126,6 +126,15 @@ async function fixture(t: TestContext) {
     skillCatalog: async () => ({ skills: [], warnings: [] }), skillSettings: async () => ({ activations: [] }), toolCatalog: async () => [],
     listProjectBranches: async () => [], recipeSuggestions: async () => [], planProjection: async () => ({ plans: [], activePlan: undefined }),
     activitySuggestions: async () => [],
+    listSessionTreePage: async (projectId: string, options?: { parentSessionId?: string; sessionIds?: string[] }) => {
+      const roots = [session("a"), session("b")].filter(entry => entry.projectId === projectId);
+      if (options?.sessionIds?.length) {
+        const wanted = new Set(options.sessionIds);
+        return { projectId, revision: "fixture", sessions: [], supplementalSessions: roots.filter(entry => wanted.has(entry.id)) };
+      }
+      if (options?.parentSessionId) return { projectId, parentSessionId: options.parentSessionId, revision: "fixture", sessions: [] };
+      return { projectId, revision: "fixture", sessions: roots };
+    },
     setSidebarWidth: async () => {}, setFilePanelWidth: async () => {}
   };
   for (const name of ["onAppearanceChanged", "onApplicationImportsChanged", "onAgentEvent", "onSessionHandoff", "onMenuAction",

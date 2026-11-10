@@ -1,5 +1,5 @@
 import { autoUpdate, computePosition, flip, offset, shift, size } from "@floating-ui/dom";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDropdownPresence } from "../../useDropdownPresence.js";
 import { Icon } from "../Icon.js";
@@ -14,6 +14,7 @@ export function SettingsModelPicker({
   inheritDetail,
   inheritLabel,
   onChange,
+  onOpen,
   placeholder,
   resolvedValue,
   selectionHint,
@@ -26,6 +27,7 @@ export function SettingsModelPicker({
   inheritDetail?: string;
   inheritLabel?: string;
   onChange(value: string | undefined): void;
+  onOpen?(): void;
   placeholder: string;
   resolvedValue?: string;
   selectionHint?: string;
@@ -48,11 +50,10 @@ export function SettingsModelPicker({
   const triggerLabel = selected?.label ?? value ?? inheritDetail;
   const triggerHint = selectionHint ?? (value === undefined && inheritDetail ? inheritLabel : undefined);
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const visibleGroups = groups.map(group => ({
+  const visibleGroups = useMemo(() => !normalizedQuery ? groups.filter(group => group.options.length > 0) : groups.map(group => ({
     ...group,
-    options: group.options.filter(option => !normalizedQuery
-      || `${group.label} ${option.label} ${option.secondary ?? ""} ${option.trailing ?? ""}`.toLocaleLowerCase().includes(normalizedQuery))
-  })).filter(group => group.options.length > 0);
+    options: group.options.filter(option => `${group.label} ${option.label} ${option.value} ${option.secondary ?? ""} ${option.trailing ?? ""} ${option.searchText ?? ""}`.toLocaleLowerCase().includes(normalizedQuery))
+  })).filter(group => group.options.length > 0), [groups, normalizedQuery]);
 
   const close = (): void => { setOpen(false); };
   const choose = (next: string | undefined): void => {
@@ -164,7 +165,7 @@ export function SettingsModelPicker({
         onClick={event => {
           event.preventDefault();
           if (!disabled) {
-            if (!expanded) setQuery("");
+            if (!expanded) { setQuery(""); onOpen?.(); }
             setOpen(!expanded);
           }
         }}

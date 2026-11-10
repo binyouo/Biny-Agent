@@ -138,7 +138,7 @@ async function fixture(t: TestContext, options: { recovery?: boolean; settings?:
       subagent: { enabled: false, runtime: "builtin" }, externalSubagentBlockers: [], permission: defaultConfig.permission,
       webSearch: defaultConfig.web.search, redaction: defaultConfig.redaction,
       models: { configured: models, connections: [], embeddingModels: [], defaultModel: "alpha", thinking: "high",
-        modelProfiles: {}, toolModel: "alpha", resolvedToolModel: "alpha" },
+        selectedModel: info("alpha"), modelProfiles: {}, toolModel: "alpha", resolvedToolModel: "alpha" },
       skills: { projectId: "a", projectKey: "a", globalDefaults: {}, projectOverrides: {}, activations: [] }
     }),
     saveSettings: async (_projectId: string, input: DesktopSettingsSaveInput) => {
@@ -146,6 +146,12 @@ async function fixture(t: TestContext, options: { recovery?: boolean; settings?:
       const snapshot = await (api.settingsSnapshot as () => Promise<DesktopSettingsSnapshot>)();
       snapshot.models.toolModel = input.models?.toolModel?.alias;
       snapshot.models.resolvedToolModel = snapshot.models.toolModel ?? "alpha";
+      if (input.models?.modelProfiles) {
+        snapshot.models.modelProfiles = input.models.modelProfiles;
+        snapshot.models.configured = snapshot.models.configured.map(model => ({ ...model,
+          showInPicker: input.models!.modelProfiles?.[model.provider]?.[model.model]?.showInPicker ?? model.showInPicker }));
+        if (snapshot.models.configured.find(model => model.alias === "alpha")?.showInPicker === false) snapshot.models.selectedModel = undefined;
+      }
       return { status: "committed", snapshot };
     },
     updateSettingsDraftState: async () => {}, releaseSettingsCredentials: async () => {},
@@ -250,6 +256,27 @@ test("辅助模型保存不刷新项目或替换侧栏会话", async t => {
   assert.equal(h.refreshes.length, 0);
   assert.deepEqual([...document.querySelectorAll('.biny-sidebar-session-entry')].map(node => node.textContent), titles);
   assert.ok([...document.querySelectorAll('.biny-sidebar-session-entry')].every((node, index) => node === before[index]));
+});
+
+for (const alias of ["beta", "alpha"]) test(`模型目录勾选 ${alias} 只更新确认的模型结果，不重新加载工作区`, async t => {
+  const h = await fixture(t, { settings: true });
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  const before = [...h.document.querySelectorAll('.biny-sidebar-session-entry')];
+  await h.emit("onMenuAction", "settings");
+  await h.click('[data-settings-tab="模型"]');
+  await h.click(`.provider-model-row button[aria-label="停用 ${alias}"]`);
+  assert.equal(h.settingsWrites.length, 1);
+  assert.equal(h.settingsWrites[0]?.models?.modelProfiles?.inert?.[alias]?.showInPicker, false);
+  assert.equal(h.refreshes.length, 0, "The confirmed model snapshot is sufficient; no sessions or full project reload");
+  assert.equal(h.document.querySelector(`.provider-model-row button[aria-label="启用 ${alias}"]`)?.getAttribute("aria-checked"), "false");
+  assert.ok([...h.document.querySelectorAll('.biny-sidebar-session-entry')].every((node, index) => node === before[index]));
+  await h.click('[aria-label="关闭设置"]');
+  assert.match(h.document.querySelector('.biny-model-pill[data-composer-menu="model"]')?.textContent ?? "", alias === "alpha" ? /beta/u : /alpha/u);
+  await h.click('.biny-model-pill[data-composer-menu="model"]');
+  await h.click('.model-picker-entry[data-section="model"]');
+  const choices = [...h.document.querySelectorAll('.model-picker-submenu-option')].map(node => node.textContent);
+  assert.equal(choices.includes(alias), false);
+  assert.equal(choices.includes("gamma"), true);
 });
 
 type ActionKind = "send" | "slash" | "resume";

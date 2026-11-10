@@ -44,11 +44,13 @@ private final class MirrorStreamSink: NSObject, SCStreamOutput, SCStreamDelegate
     var observer: AXObserver?
     var observedWindow: AXUIElement?
     var lastImage: CGImage?
+    var sourceFrame = CGRect.zero
     var requestID: String?
     var external = false
     var layoutKey = ""
     var onClose: (() -> Void)?
     let imageView = NSImageView()
+    let indicator = ActionIndicatorView(frame: .zero)
     let label = NSTextField(labelWithString: "正在等待画面")
     init(_ session: MirrorSessions.Session) { self.session = session }
     func windowWillClose(_ notification: Notification) { onClose?() }
@@ -88,6 +90,7 @@ private final class MirrorStreamSink: NSObject, SCStreamOutput, SCStreamDelegate
         if let requested = args["pid"] as? Int, requested != Int(owner.processID) { throw failure("pip_window_identity_changed") }
         let session = try sessions.begin(windowID: windowID, pid: Int(owner.processID), armed: armed)
         let mirror = WindowMirror(session)
+        mirror.sourceFrame = window.frame
         mirror.requestID = requestID
         mirror.external = args["external"] as? Bool ?? false
         mirror.layoutKey = "biny-pip-" + SHA256.hash(data: Data((owner.bundleIdentifier + ":" + (window.title ?? "")).utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
@@ -99,6 +102,7 @@ private final class MirrorStreamSink: NSObject, SCStreamOutput, SCStreamDelegate
             if let image {
                 mirror.lastImage = image; self.sessions.frame(session)
                 mirror.imageView.image = NSImage(cgImage: image, size: .zero)
+                self.updateIndicator(pid: session.pid, windowID: session.windowID)
             }
             self.updateLabel(mirror)
         }
@@ -143,6 +147,7 @@ private final class MirrorStreamSink: NSObject, SCStreamOutput, SCStreamDelegate
             mirror.startup?.cancel(); mirror.onClose = nil
             if let observer = mirror.observer { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) }
             mirror.observer = nil; mirror.sink.receive = nil
+            mirror.indicator.hide()
             mirror.panel?.delegate = nil; mirror.panel?.close()
             if let stream = mirror.stream { Task { try? await stream.stopCapture() } }
         }
@@ -159,10 +164,35 @@ private final class MirrorStreamSink: NSObject, SCStreamOutput, SCStreamDelegate
             let representation = NSBitmapImageRep(cgImage: image)
             if let bytes = representation.representation(using: .jpeg, properties: [.compressionFactor: 0.45]), bytes.count <= 1048576 {
                 data["image"] = ["mimeType": "image/jpeg", "dataBase64": bytes.base64EncodedString()]
+                if var cursor = cursorSnapshot(mirror)?.payload {
+                    cursor["image"] = ActionIndicatorView.cursorPayload
+                    cursor["hotspot"] = ["x": ActionIndicatorView.hotspot.x, "y": ActionIndicatorView.hotspot.y]
+                    data["cursor"] = cursor
+                }
             } else { data["error"] = "pip_frame_budget_exceeded" }
         }
         return data
     }
+
+    private func cursorSnapshot(_ mirror: WindowMirror) -> ActionCursor.Snapshot? {
+        let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(mirror.session.windowID)) as? [[String: Any]]
+        if let frame = windowScreenBounds(pid: mirror.session.pid, windowID: mirror.session.windowID, windows: windows),
+           let x = frame["x"], let y = frame["y"], let width = frame["w"], let height = frame["h"] {
+            mirror.sourceFrame = CGRect(x: x, y: y, width: width, height: height)
+        }
+        return actionCursor.snapshot(pid: mirror.session.pid, windowID: mirror.session.windowID, frame: mirror.sourceFrame)
+    }
+
+    func updateIndicator(pid: Int, windowID: Int) {
+        guard let mirror = mirrors[windowID], mirror.session.pid == pid, !mirror.external else { return }
+        guard mirror.panel?.isVisible == true, let image = mirror.lastImage,
+              let cursor = cursorSnapshot(mirror),
+              let point = ActionCursorGeometry.imagePoint(cursor.point, image: CGSize(width: image.width, height: image.height), bounds: mirror.imageView.bounds) else { mirror.indicator.hide(); return }
+        mirror.indicator.frame = mirror.imageView.bounds
+        mirror.indicator.show(at: point, action: cursor.action, symbol: cursor.symbol, eventID: cursor.eventID, duration: cursor.remainingMs / 1000)
+    }
+
+    func hideIndicators() { for mirror in mirrors.values { mirror.indicator.hide() } }
 
     private func present(_ mirror: WindowMirror) throws {
         guard sessions.contains(mirror.session) else { return }
@@ -179,6 +209,8 @@ private final class MirrorStreamSink: NSObject, SCStreamOutput, SCStreamDelegate
             panel.contentView = content
             mirror.imageView.imageScaling = .scaleProportionallyUpOrDown
             mirror.imageView.image = mirror.lastImage.map { NSImage(cgImage: $0, size: .zero) }
+            mirror.indicator.autoresizingMask = [.width, .height]
+            mirror.imageView.addSubview(mirror.indicator)
             mirror.label.textColor = .secondaryLabelColor; mirror.label.font = .systemFont(ofSize: 11)
             for view in [mirror.imageView, mirror.label] { view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view) }
             NSLayoutConstraint.activate([
@@ -196,6 +228,7 @@ private final class MirrorStreamSink: NSObject, SCStreamOutput, SCStreamDelegate
         if mirror.panel?.isVisible != true { try publishPrivacy(active: true) }
         sessions.present(mirror.session); updateLabel(mirror)
         mirror.panel?.orderFrontRegardless()
+        updateIndicator(pid: mirror.session.pid, windowID: mirror.session.windowID)
     }
     private func updateLabel(_ mirror: WindowMirror) {
         guard let state = sessions.state(windowID: mirror.session.windowID) else { return }

@@ -58,6 +58,8 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
       if (system.includes("tool search assistant")) result = { text: '{"tools":["Task","Bash","TaskStatus"]}' };
       else if (system.includes("选择需要的工具") || system.includes("选择需要的技能")) result = { text: '{"tools":[],"skillIds":[]}' };
       else if (system.includes("为这段对话生成简短、具体的标题")) result = { text: "Independent inspection" };
+      // 情绪分析是用户消息落地后的防抖旁路请求，不属于父会话回合，不计入 parentRequests。
+      else if (system.includes("chat conversation sentiment")) result = { text: '{"mood":"neutral","valence":5,"reason":"fixture"}' };
       else if (system.includes("focused, bounded worker inside Biny")) {
         const messages = JSON.stringify(body.messages);
         if (messages.includes("Additional bounded task:")) {

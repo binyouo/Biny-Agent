@@ -238,6 +238,9 @@ async function testSessionModelPropagation(): Promise<void> {
   config.context.memory.enabled = true;
   config.context.memory.useMemories = true;
   config.context.memory.generateMemories = false;
+  // 改写只走注入的 fixture 模型；清空默认目录，避免宿主环境里的真实凭据接管辅助模型选择。
+  config.providers = {};
+  config.models = {};
   const recorder = new SessionRecorder(workspace);
   const agent = new AgentSession({ workspaceRoot: workspace, config, model, recorder,
     toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission) });

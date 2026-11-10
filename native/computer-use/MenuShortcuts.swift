@@ -27,10 +27,10 @@ func matchingMenuShortcut<Element>(_ shortcuts: [MenuShortcut<Element>], keyCode
 }
 
 func performMenuShortcut<Element>(keyCode: CGKeyCode, flags: CGEventFlags, targetValid: () -> Bool,
-    discover: () -> [MenuShortcut<Element>]?, perform: (Element) -> AXError) throws -> Bool {
+    discover: () -> [MenuShortcut<Element>]?, perform: (Element) throws -> AXError) throws -> Bool {
     guard targetValid(), let shortcuts = discover(),
           let shortcut = matchingMenuShortcut(shortcuts, keyCode: keyCode, flags: flags), targetValid() else { return false }
-    switch accessibilityActionResult(perform(shortcut)) {
+    switch accessibilityActionResult(try perform(shortcut)) {
     case .success: return true
     case .unsupported: throw NSError(domain: "key", code: 65, userInfo: [NSLocalizedDescriptionKey: "menu_shortcut_unsupported: menu action was not performed"])
     case .unknown(let code): throw NSError(domain: "key", code: 65, userInfo: [NSLocalizedDescriptionKey: "menu_shortcut_outcome_unknown: menu action outcome unknown (\(code)); do not retry"])

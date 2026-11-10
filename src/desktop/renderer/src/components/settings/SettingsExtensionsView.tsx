@@ -15,11 +15,16 @@ import type {
   DesktopSkillFilePreview,
   DesktopSkillImportCandidate
 } from "../../../../protocol.js";
+import type { PluginSettings, PluginSettingValue } from "../../../../../extensions/pluginSettings.js";
 import { errorMessage } from "../../app/desktopApi.js";
 import { Icon } from "../Icon.js";
+import { NativeSelect } from "../NativeSelect.js";
 import { SkillImportDialog } from "../SkillImportDialog.js";
 import { SkillVersionControls } from "../SkillVersionControls.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
+import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
+import { SettingsSwitch } from "./SettingsSwitch.js";
+import { comparePluginVersions, pluginUpdateVersion } from "./pluginUpdates.js";
 
 type SettingsExtensionKind = "plugins" | "skills";
 type PluginTab = "installed" | "market";
@@ -76,12 +81,16 @@ function SettingsExtensionsContent({ active = true, kind, onError, onCapabilitie
   const [contentLoadingId, setContentLoadingId] = useState<string>();
   const [pluginTab, setPluginTab] = useState<PluginTab>("installed");
   const [pluginScope, setPluginScope] = useState<PluginScope>("global");
-  const [busyPluginId, setBusyPluginId] = useState<string>();
+  const [busyPlugins, setBusyPlugins] = useState<ReadonlySet<string>>(() => new Set());
+  const [pendingPluginToggles, setPendingPluginToggles] = useState<ReadonlySet<string>>(() => new Set());
+  const [configTarget, setConfigTarget] = useState<DesktopPluginSummary>();
+  const [uninstallTarget, setUninstallTarget] = useState<DesktopPluginSummary>();
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importing, setImporting] = useState(false);
 
   const mounted = useRef(false);
   const loadGeneration = useRef(0);
+  const pluginToggleGeneration = useRef(0);
   const contentGeneration = useRef(0);
   const expandedSkillIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -162,29 +171,21 @@ function SettingsExtensionsContent({ active = true, kind, onError, onCapabilitie
   useEffect(() => {
     if (!active) return;
     void load(true);
-    return () => { loadGeneration.current += 1; contentGeneration.current += 1; registryGeneration.current += 1; };
+    return () => { loadGeneration.current += 1; contentGeneration.current += 1; registryGeneration.current += 1; pluginToggleGeneration.current += 1; };
   }, [active, load]);
+  const hasManagedPlugins = snapshot.plugins.some((plugin) => plugin.managed);
+  const needRegistry = pluginTab === "market" || hasManagedPlugins;
   useEffect(() => {
-    if (!active || kind !== "plugins" || pluginTab !== "market") return;
+    if (!active || kind !== "plugins" || !needRegistry) return;
     if (!registryLoaded.current) void loadRegistry();
     return () => { registryGeneration.current += 1; };
-  }, [active, kind, loadRegistry, pluginTab]);
+  }, [active, kind, needRegistry, loadRegistry]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleSkills = useMemo(() => snapshot.skills.filter((skill) => {
     if (!normalizedQuery) return true;
     return `${skill.name} ${skill.description} ${skill.absolutePath}`.toLocaleLowerCase().includes(normalizedQuery);
   }), [normalizedQuery, snapshot.skills]);
-  const visiblePlugins = useMemo(() => snapshot.plugins.filter((plugin) => {
-    const matchesCategory = category === "全部" || plugin.category === category;
-    const matchesQuery = !normalizedQuery || `${plugin.name} ${plugin.path} ${plugin.projectName} ${plugin.description ?? ""}`.toLocaleLowerCase().includes(normalizedQuery);
-    return matchesCategory && matchesQuery;
-  }), [category, normalizedQuery, snapshot.plugins]);
-  const visibleMarket = useMemo(() => registry.plugins.filter((plugin) => {
-    const matchesCategory = category === "全部" || plugin.category === category;
-    const matchesQuery = !normalizedQuery || `${plugin.name} ${plugin.description} ${plugin.details}`.toLocaleLowerCase().includes(normalizedQuery);
-    return matchesCategory && matchesQuery;
-  }), [category, normalizedQuery, registry.plugins]);
 
   const toggleSkill = useCallback((skill: DesktopSkillCatalogEntry): void => {
     const current = settingsDraft.draft?.skills;
@@ -228,52 +229,102 @@ function SettingsExtensionsContent({ active = true, kind, onError, onCapabilitie
   }, [expandedSkillId, readSkillContent, skillContent]);
 
 
-  const installPlugin = useCallback(async (plugin: DesktopPluginMarketEntry, scope: PluginScope): Promise<void> => {
+  const changeBusyPlugin = useCallback((key: string, busy: boolean): void => {
+    setBusyPlugins(current => {
+      const next = new Set(current);
+      if (busy) next.add(key); else next.delete(key);
+      return next;
+    });
+  }, []);
+
+  const installPlugin = useCallback(async (pluginId: string, scope: PluginScope): Promise<void> => {
     if (!projectId) return;
-    setBusyPluginId(plugin.id);
+    const key = `${scope}:${pluginId}`;
+    changeBusyPlugin(key, true);
     try {
-      await window.biny.installPlugin(projectId, plugin.id, scope);
+      await window.biny.installPlugin(projectId, pluginId, scope);
       onCapabilitiesChanged?.("all", scope === "project" ? projectId : undefined);
       await load();
     } catch (error) {
       reportError(error);
     } finally {
-      if (mounted.current) setBusyPluginId(undefined);
+      if (mounted.current) changeBusyPlugin(key, false);
     }
-  }, [load, onCapabilitiesChanged, projectId, reportError]);
+  }, [changeBusyPlugin, load, onCapabilitiesChanged, projectId, reportError]);
+
+  const applyPluginReceipt = useCallback((plugin: DesktopPluginSummary, updated: DesktopPluginSummary): void => {
+    if (!mounted.current) return;
+    // 同一项目的隐藏页仍持有提交结果；提交前的目录读取不能覆盖它。
+    loadGeneration.current += 1;
+    setLoading(false);
+    setSnapshot(current => mounted.current
+      ? { ...current, plugins: current.plugins.map(entry => entry.scope === plugin.scope && entry.id === plugin.id ? updated : entry) }
+      : current);
+  }, []);
 
   const setPluginEnabled = useCallback(async (plugin: DesktopPluginSummary): Promise<void> => {
-    if (!projectId || !plugin.managed) return;
-    const pluginId = plugin.path.split("/").at(-1);
-    if (!pluginId) return;
-    setBusyPluginId(pluginId);
+    if (!projectId || !plugin.managed || plugin.pluginId === undefined) return;
+    const key = `${plugin.scope}:${plugin.id}`;
+    const generation = pluginToggleGeneration.current;
+    const isCurrent = (): boolean => mounted.current && generation === pluginToggleGeneration.current;
+    setPendingPluginToggles(current => new Set(current).add(key));
     try {
-      await window.biny.setPluginEnabled(projectId, pluginId, plugin.enabled !== true, plugin.scope);
+      const updated = await window.biny.setPluginEnabled(projectId, plugin.pluginId, plugin.enabled !== true, plugin.scope);
       onCapabilitiesChanged?.("all", plugin.scope === "project" ? projectId : undefined);
-      await load();
+      applyPluginReceipt(plugin, updated);
     } catch (error) {
-      reportError(error);
+      if (isCurrent()) reportError(error);
     } finally {
-      if (mounted.current) setBusyPluginId(undefined);
+      if (mounted.current) setPendingPluginToggles(current => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    }
+  }, [applyPluginReceipt, onCapabilitiesChanged, projectId, reportError]);
+
+  const updateAllPlugins = useCallback(async (plugins: readonly DesktopPluginSummary[]): Promise<void> => {
+    if (!projectId) return;
+    const keys = plugins.map(plugin => `${plugin.scope}:${plugin.pluginId}`);
+    setBusyPlugins(current => new Set([...current, ...keys]));
+    try {
+      for (const plugin of plugins) {
+        if (!mounted.current) break;
+        if (plugin.pluginId === undefined) continue;
+        try {
+          await window.biny.installPlugin(projectId, plugin.pluginId, plugin.scope);
+          onCapabilitiesChanged?.("all", plugin.scope === "project" ? projectId : undefined);
+        } catch (error) {
+          reportError(error);
+        }
+      }
+      await load();
+    } finally {
+      if (mounted.current) setBusyPlugins(current => new Set([...current].filter(key => !keys.includes(key))));
     }
   }, [load, onCapabilitiesChanged, projectId, reportError]);
 
   const uninstallPlugin = useCallback(async (plugin: DesktopPluginSummary): Promise<void> => {
-    if (!projectId || !plugin.managed) return;
-    const pluginId = plugin.path.split("/").at(-1);
-    if (!pluginId) return;
-    if (!window.confirm(`卸载插件“${plugin.name}”？\n\n此操作无法撤销。`)) return;
-    setBusyPluginId(pluginId);
+    if (!projectId || !plugin.managed || plugin.pluginId === undefined) return;
+    const key = `${plugin.scope}:${plugin.pluginId}`;
+    changeBusyPlugin(key, true);
     try {
-      await window.biny.uninstallPlugin(projectId, pluginId, plugin.scope);
+      await window.biny.uninstallPlugin(projectId, plugin.pluginId, plugin.scope);
       onCapabilitiesChanged?.("all", plugin.scope === "project" ? projectId : undefined);
       await load();
     } catch (error) {
       reportError(error);
     } finally {
-      if (mounted.current) setBusyPluginId(undefined);
+      if (mounted.current) changeBusyPlugin(key, false);
     }
-  }, [load, onCapabilitiesChanged, projectId, reportError]);
+  }, [changeBusyPlugin, load, onCapabilitiesChanged, projectId, reportError]);
+
+  const savePluginSettings = useCallback(async (plugin: DesktopPluginSummary, values: PluginSettings): Promise<void> => {
+    if (!projectId || plugin.pluginId === undefined) return;
+    const updated = await window.biny.setPluginSettings(projectId, plugin.pluginId, values, plugin.scope);
+    onCapabilitiesChanged?.("all", plugin.scope === "project" ? projectId : undefined);
+    applyPluginReceipt(plugin, updated);
+  }, [applyPluginReceipt, onCapabilitiesChanged, projectId]);
 
   const importExisting = useCallback(async (skillIds: string[]): Promise<void> => {
     if (!projectId) return;
@@ -331,26 +382,49 @@ function SettingsExtensionsContent({ active = true, kind, onError, onCapabilitie
         projectOverrides={settingsDraft.draft?.skills.projectOverrides ?? {}}
         unmanagedSkills={snapshot.unmanagedSkills}
       /> : <PluginsSettingsContent
+        busyPlugins={busyPlugins}
         category={category}
         loading={pluginTab === "market" ? registryLoading : loading}
-        busyPluginId={busyPluginId}
+        pendingPluginToggles={pendingPluginToggles}
         onCategory={setCategory}
-        onInstall={(plugin, scope) => void installPlugin(plugin, scope)}
+        onConfigure={setConfigTarget}
+        onError={reportError}
+        onInstall={(plugin, scope) => void installPlugin(plugin.id, scope)}
         onPluginTab={setPluginTab}
         onQuery={setQuery}
-        onRefresh={() => { if (pluginTab === "market") void loadRegistry(true); else void load(); }}
+        onRefresh={() => {
+          if (pluginTab === "market") { void loadRegistry(true); return; }
+          void load();
+          if (hasManagedPlugins) void loadRegistry(true);
+        }}
         onSetEnabled={(plugin) => void setPluginEnabled(plugin)}
-        onUninstall={(plugin) => void uninstallPlugin(plugin)}
-        onOpenDirectory={() => { void window.biny.openPluginDirectory(projectId, pluginScope).catch(reportError); }}
+        onUninstall={setUninstallTarget}
+        onUpdate={(plugin) => { if (plugin.pluginId !== undefined) void installPlugin(plugin.pluginId, plugin.scope); }}
+        onUpdateAll={(plugins) => void updateAllPlugins(plugins)}
+        onOpenDirectory={(scope) => { void window.biny.openPluginDirectory(projectId, scope).catch(reportError); }}
         onScope={setPluginScope}
         pluginScope={pluginScope}
         pluginTab={pluginTab}
-        plugins={visiblePlugins}
-        market={visibleMarket}
+        plugins={snapshot.plugins}
         query={query}
         registry={registry}
       />}
       {importDialogOpen && kind === "skills" ? <SkillImportDialog candidates={snapshot.unmanagedSkills} importing={importing} onClose={() => setImportDialogOpen(false)} onImport={(skillIds) => void importExisting(skillIds)} /> : null}
+      {kind === "plugins" && configTarget ? <PluginSettingsDialog
+        onClose={() => setConfigTarget(undefined)}
+        onSave={async (values) => await savePluginSettings(configTarget, values)}
+        plugin={configTarget}
+      /> : null}
+      {kind === "plugins" && uninstallTarget ? <SettingsDetailLayer onClose={() => setUninstallTarget(undefined)}>
+        <section aria-describedby="plugin-uninstall-description" aria-labelledby="plugin-uninstall-title" aria-modal="true" className="settings-confirm-panel" role="alertdialog">
+          <h3 id="plugin-uninstall-title">卸载插件？</h3>
+          <p id="plugin-uninstall-description">“{uninstallTarget.name}”的文件和设置将被移除，此操作无法撤销。</p>
+          <div className="settings-confirm-actions">
+            <button className="settings-action settings-secondary-button ghost-button" onClick={() => setUninstallTarget(undefined)} type="button">取消</button>
+            <button className="settings-action settings-danger-button settings-plugin-danger-button" onClick={() => { const target = uninstallTarget; setUninstallTarget(undefined); void uninstallPlugin(target); }} type="button">卸载</button>
+          </div>
+        </section>
+      </SettingsDetailLayer> : null}
     </div>
   );
 }
@@ -513,19 +587,23 @@ const SkillSettingsCard = memo(function SkillSettingsCard({ onError, onVersionCh
 });
 
 interface PluginsSettingsContentProps {
-  busyPluginId?: string;
+  busyPlugins: ReadonlySet<string>;
+  pendingPluginToggles: ReadonlySet<string>;
   category: string;
   loading: boolean;
-  market: DesktopPluginMarketEntry[];
   onCategory(category: string): void;
+  onConfigure(plugin: DesktopPluginSummary): void;
+  onError(error: unknown): void;
   onInstall(plugin: DesktopPluginMarketEntry, scope: PluginScope): void;
-  onOpenDirectory(): void;
+  onOpenDirectory(scope: PluginScope): void;
   onScope(scope: PluginScope): void;
   onPluginTab(tab: PluginTab): void;
   onQuery(query: string): void;
   onRefresh(): void;
   onSetEnabled(plugin: DesktopPluginSummary): void;
   onUninstall(plugin: DesktopPluginSummary): void;
+  onUpdate(plugin: DesktopPluginSummary): void;
+  onUpdateAll(plugins: DesktopPluginSummary[]): void;
   pluginTab: PluginTab;
   plugins: DesktopPluginSummary[];
   pluginScope: PluginScope;
@@ -533,41 +611,209 @@ interface PluginsSettingsContentProps {
   registry: DesktopPluginRegistrySnapshot;
 }
 
-const PluginsSettingsContent = memo(function PluginsSettingsContent({ busyPluginId, category, loading, market, onCategory, onInstall, onOpenDirectory, onPluginTab, onQuery, onRefresh, onScope, onSetEnabled, onUninstall, pluginScope, pluginTab, plugins, query, registry }: PluginsSettingsContentProps): React.JSX.Element {
-  const categories = ["全部", ...new Set(registry.plugins.map((plugin) => plugin.category))];
+const PluginsSettingsContent = memo(function PluginsSettingsContent({ busyPlugins, pendingPluginToggles, category, loading, onCategory, onConfigure, onError, onInstall, onOpenDirectory, onPluginTab, onQuery, onRefresh, onScope, onSetEnabled, onUninstall, onUpdate, onUpdateAll, pluginScope, pluginTab, plugins, query, registry }: PluginsSettingsContentProps): React.JSX.Element {
+  const categories = useMemo(() => {
+    const seen = new Set<string>();
+    const options: string[] = [];
+    for (const item of [...plugins.map((plugin) => plugin.managed ? plugin.category : undefined), ...registry.plugins.map((plugin) => plugin.category)]) {
+      if (!item || seen.has(item)) continue;
+      seen.add(item);
+      options.push(item);
+    }
+    return options;
+  }, [plugins, registry.plugins]);
+  const updates = useMemo(() => new Map(plugins.flatMap((plugin) => {
+    const latest = pluginUpdateVersion(plugin, registry.plugins);
+    return latest === undefined ? [] : [[`${plugin.scope}:${plugin.id}`, latest] as const];
+  })), [plugins, registry.plugins]);
+  const updatable = useMemo(() => plugins.filter((plugin) => updates.has(`${plugin.scope}:${plugin.id}`)), [plugins, updates]);
+  const selectedCategory = categories.length >= 2 && categories.includes(category) ? category : "全部";
+  const installed = useMemo(() => plugins.filter((plugin) => selectedCategory === "全部" || plugin.category === selectedCategory), [plugins, selectedCategory]);
+  const market = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    return registry.plugins.filter(plugin => (selectedCategory === "全部" || plugin.category === selectedCategory)
+      && (!normalizedQuery || `${plugin.name} ${plugin.description} ${plugin.details}`.toLocaleLowerCase().includes(normalizedQuery)));
+  }, [query, registry.plugins, selectedCategory]);
   return <>
     <div className="settings-plugin-toolbar">
       <div className="settings-choice-tabs settings-plugin-tabs" role="tablist" aria-label="插件列表">
-        <button aria-selected={pluginTab === "installed"} className={pluginTab === "installed" ? "is-active" : ""} onClick={() => onPluginTab("installed")} role="tab" type="button"><Icon name="cube" size={18} />已安装</button>
+        <button aria-selected={pluginTab === "installed"} className={pluginTab === "installed" ? "is-active" : ""} onClick={() => onPluginTab("installed")} role="tab" type="button"><Icon name="cube" size={18} />已安装{plugins.length > 0 ? <span className="settings-plugin-tab-count">{plugins.length}</span> : null}</button>
         <button aria-selected={pluginTab === "market"} className={pluginTab === "market" ? "is-active" : ""} onClick={() => onPluginTab("market")} role="tab" type="button"><Icon name="site" size={18} />应用市场</button>
       </div>
+      {updatable.length > 0 ? <button className="settings-action settings-secondary-button settings-plugin-action" disabled={busyPlugins.size > 0} onClick={() => onUpdateAll(updatable)} type="button"><Icon name="arrow-up" size={16} />全部更新 ({updatable.length})</button> : null}
       <button className="settings-action settings-secondary-button settings-plugin-action" onClick={onRefresh} type="button"><Icon name="refresh" size={18} />刷新</button>
-      <button className="settings-action settings-secondary-button settings-plugin-action" onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={18} />打开文件夹</button>
+      <details className="settings-plugin-directory-menu">
+        <summary className="settings-action settings-secondary-button settings-plugin-action"><Icon name="folder-open" size={18} />打开文件夹</summary>
+        <div>{([ ["global", "全局文件夹"], ["project", "项目文件夹"] ] as const).map(([scope, label]) => <button key={scope} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onOpenDirectory(scope); }} type="button">{label}</button>)}</div>
+      </details>
     </div>
-    <div className="settings-plugin-filters">
+    {categories.length >= 2 ? <div className="settings-choice-tabs settings-plugin-categories" role="tablist" aria-label="插件分类">
+      {["全部", ...categories].map((item) => <button aria-selected={selectedCategory === item} className={selectedCategory === item ? "is-active" : ""} key={item} onClick={() => onCategory(item)} role="tab" type="button">{item}</button>)}
+    </div> : null}
+    {pluginTab === "market" ? <div className="settings-plugin-filters">
+      <span className="settings-plugin-scope-label">安装位置</span>
       <div className="settings-choice-tabs settings-plugin-tabs settings-plugin-scope-tabs" role="tablist" aria-label="插件安装范围">
         <button aria-selected={pluginScope === "global"} className={pluginScope === "global" ? "is-active" : ""} onClick={() => onScope("global")} role="tab" type="button">全局</button>
         <button aria-selected={pluginScope === "project"} className={pluginScope === "project" ? "is-active" : ""} onClick={() => onScope("project")} role="tab" type="button">当前项目</button>
       </div>
-      <div className="settings-choice-tabs settings-plugin-categories" role="tablist" aria-label="插件分类">
-        {categories.map((item) => <button aria-selected={category === item} className={category === item ? "is-active" : ""} key={item} onClick={() => onCategory(item)} role="tab" type="button">{item}</button>)}
-      </div>
-    </div>
-    <label className="settings-search-field settings-extension-search settings-plugin-search"><Icon name="search" size={18} /><input className="settings-field" aria-label="搜索插件" onChange={(event) => onQuery(event.target.value)} placeholder="搜索插件…" value={query} />{query ? <button aria-label="清空搜索" onClick={() => onQuery("")} type="button"><Icon name="close" size={14} /></button> : null}</label>
-    {registry.loadingError ? <div className="settings-extension-notice is-warning">应用市场刷新失败：{registry.loadingError}{registry.stale ? "，当前显示上次缓存。" : "，当前没有可用缓存。"}</div> : null}
-    <div className="settings-extension-notice">Plugin 无沙箱隔离，只安装你信任的来源。</div>
-    {pluginTab === "market" ? <section className="settings-extension-scroll" aria-label="Plugin 应用市场">{loading && !market.length ? <ExtensionSettingsLoading /> : !market.length ? <ExtensionSettingsEmpty icon="puzzle" title="没有匹配的 Plugin" detail="刷新市场或换一个搜索词。" /> : market.map((plugin) => <PluginMarketCard busy={busyPluginId === plugin.id} key={plugin.id} onInstall={(candidate) => onInstall(candidate, pluginScope)} plugin={plugin} />)}</section> : <section className="settings-plugin-list" aria-label="已安装 Plugin">{loading && !plugins.length ? <ExtensionSettingsLoading /> : !plugins.length ? <ExtensionSettingsEmpty icon="puzzle" title="还没有安装 Plugin" detail="从官方应用市场安装后，默认保持关闭。" /> : plugins.map((plugin) => <PluginSettingsCard busy={busyPluginId === plugin.path.split("/").at(-1)} key={`${plugin.scope}:${plugin.id}`} onSetEnabled={onSetEnabled} onUninstall={onUninstall} plugin={plugin} />)}</section>}
+    </div> : null}
+    {pluginTab === "market" ? <label className="settings-search-field settings-extension-search settings-plugin-search"><Icon name="search" size={18} /><input className="settings-field" aria-label="搜索插件" onChange={(event) => onQuery(event.target.value)} placeholder="搜索插件…" value={query} />{query ? <button aria-label="清空搜索" onClick={() => onQuery("")} type="button"><Icon name="close" size={14} /></button> : null}</label> : null}
+    {pluginTab === "market" && registry.loadingError ? <div className="settings-extension-notice is-warning">应用市场刷新失败：{registry.loadingError}{registry.stale ? "，当前显示上次缓存。" : "，当前没有可用缓存。"}</div> : null}
+    {pluginTab === "market" ? <p className="settings-plugin-trust">安装后需在“已安装”中启用。插件在 Biny 进程中运行，无沙箱隔离，请只安装信任的插件。</p> : null}
+    {pluginTab === "market" ? <section className="settings-extension-scroll" aria-label="Plugin 应用市场">{loading && !market.length ? <ExtensionSettingsLoading /> : !market.length ? <ExtensionSettingsEmpty icon="puzzle" title="没有匹配的插件" detail="刷新市场或换一个搜索词。" /> : market.map((plugin) => <PluginMarketCard busy={busyPlugins.has(`${pluginScope}:${plugin.id}`)} installed={plugins.find((entry) => entry.managed && entry.scope === pluginScope && entry.pluginId === plugin.id)} key={plugin.id} onError={onError} onInstall={(candidate) => onInstall(candidate, pluginScope)} plugin={plugin} />)}</section> : <div className="settings-plugin-list" aria-label="已安装 Plugin">{loading && !plugins.length ? <ExtensionSettingsLoading /> : !plugins.length ? <div className="settings-plugin-empty"><ExtensionSettingsEmpty icon="puzzle" title="还没有安装插件" detail="从应用市场安装后，可在这里启用。" /><button className="settings-action settings-secondary-button" onClick={() => onPluginTab("market")} type="button">浏览应用市场</button></div> : !installed.length ? <div className="settings-plugin-empty"><ExtensionSettingsEmpty icon="puzzle" title="该分类下没有插件" detail="换一个分类查看。" /></div> : ([ ["global", "全局插件", "globe"], ["project", "项目插件", "folder"] ] as const).map(([scope, label, icon]) => {
+      const group = installed.filter((plugin) => plugin.scope === scope);
+      return group.length ? <section className="settings-plugin-group" key={scope}><div className="settings-extension-group-title"><Icon name={icon} size={17} /><h3>{label}</h3><span>{group.length}</span></div>{group.map((plugin) => <PluginSettingsCard busy={(plugin.pluginId !== undefined && busyPlugins.has(`${plugin.scope}:${plugin.pluginId}`)) || pendingPluginToggles.has(`${plugin.scope}:${plugin.id}`)} key={`${plugin.scope}:${plugin.id}`} latestVersion={updates.get(`${plugin.scope}:${plugin.id}`)} onConfigure={onConfigure} onError={onError} onSetEnabled={onSetEnabled} onUninstall={onUninstall} onUpdate={onUpdate} plugin={plugin} />)}</section> : null;
+    })}</div>}
   </>;
 });
 
-const PluginMarketCard = memo(function PluginMarketCard({ busy, onInstall, plugin }: { busy: boolean; onInstall(plugin: DesktopPluginMarketEntry): void; plugin: DesktopPluginMarketEntry }): React.JSX.Element {
-  return <article className="settings-plugin-card"><span className="settings-plugin-card-icon"><Icon name="puzzle" size={23} /></span><div className="settings-plugin-card-main"><h3><span className="settings-plugin-card-name">{plugin.name}</span>{plugin.featured ? <span className="settings-plugin-featured">精选</span> : null}</h3><p>{plugin.category} · v{plugin.version}{plugin.author ? ` · ${plugin.author.name}` : ""}</p><span className="settings-plugin-description">{plugin.description}</span>{plugin.tags.length ? <p className="settings-plugin-tags">{plugin.tags.map((tag) => `#${tag}`).join(" ")}</p> : null}</div><button aria-busy={busy} className="settings-action settings-primary-button settings-plugin-install-button" disabled={busy} onClick={() => onInstall(plugin)} type="button">安装</button></article>;
+const PluginMarketCard = memo(function PluginMarketCard({ busy, installed, onError, onInstall, plugin }: { busy: boolean; installed?: DesktopPluginSummary; onError(error: unknown): void; onInstall(plugin: DesktopPluginMarketEntry): void; plugin: DesktopPluginMarketEntry }): React.JSX.Element {
+  const updateAvailable = installed !== undefined && installed.version !== undefined && comparePluginVersions(plugin.version, installed.version) > 0;
+  const open = (url: string): void => { void window.biny.openExternal(url).catch(onError); };
+  const meta: string[] = [];
+  if (plugin.author) meta.push(`作者 ${plugin.author.name}`);
+  for (const tag of plugin.tags.slice(0, 3)) meta.push(`#${tag}`);
+  return <article className="settings-plugin-card">
+    <div className="settings-plugin-card-main">
+      <h3>
+        <span className="settings-plugin-card-name">{plugin.name}</span>
+        <span className="settings-plugin-badge">v{plugin.version}</span>
+        {plugin.category ? <span className="settings-plugin-badge is-category">{plugin.category}</span> : null}
+        {plugin.featured ? <span className="settings-plugin-badge is-featured">精选</span> : null}
+      </h3>
+      {plugin.description ? <p className="settings-plugin-description">{plugin.description}</p> : null}
+      {plugin.details ? <p className="settings-plugin-card-details">{plugin.details}</p> : null}
+      {meta.length ? <p className="settings-plugin-card-meta">{meta.join(" · ")}</p> : null}
+    </div>
+    <div className="settings-plugin-card-side">
+      {!installed ? <button aria-busy={busy} className="settings-action settings-primary-button settings-plugin-install-button" disabled={busy} onClick={() => onInstall(plugin)} type="button"><Icon name="download" size={15} />安装</button>
+        : updateAvailable ? <button aria-busy={busy} className="settings-action settings-primary-button settings-plugin-install-button" disabled={busy} onClick={() => onInstall(plugin)} type="button"><Icon name="arrow-up" size={15} />更新到 v{plugin.version}</button>
+        : <>
+          <span className="settings-plugin-badge is-installed"><Icon name="check" size={11} />已安装</span>
+          <button className="settings-action settings-secondary-button settings-plugin-install-button" disabled={busy} onClick={() => onInstall(plugin)} type="button">重新安装</button>
+        </>}
+    </div>
+    <div className="settings-plugin-card-footer">
+      <button className="settings-action settings-text-action settings-plugin-link" onClick={() => open(`${plugin.repository}/tree/${plugin.branch ?? "main"}/${plugin.path}`)} type="button"><Icon name="external" size={14} />查看源码</button>
+      {plugin.homepage ? <button className="settings-action settings-text-action settings-plugin-link" onClick={() => open(plugin.homepage!)} type="button"><Icon name="globe" size={14} />主页</button> : null}
+    </div>
+  </article>;
 });
 
-const PluginSettingsCard = memo(function PluginSettingsCard({ busy, onSetEnabled, onUninstall, plugin }: { busy: boolean; onSetEnabled(plugin: DesktopPluginSummary): void; onUninstall(plugin: DesktopPluginSummary): void; plugin: DesktopPluginSummary }): React.JSX.Element {
-  const scopeLabel = plugin.scope === "global" ? "全局" : plugin.projectName ?? "当前项目";
-  return <article className="settings-plugin-card"><span className="settings-plugin-card-icon"><Icon name="puzzle" size={23} /></span><div className="settings-plugin-card-main"><h3><span className="settings-plugin-card-name">{plugin.name}</span></h3><p>{scopeLabel}{plugin.version ? ` · v${plugin.version}` : ""}</p><code aria-label="安装位置">{plugin.path}</code><span className={`settings-plugin-status is-${plugin.status}`}>{plugin.status === "disabled" ? "已安装但未启用" : plugin.status === "missing" ? "路径不可用" : plugin.status === "failed" ? "加载失败" : `${plugin.moduleCount} 个模块`}</span>{plugin.error ? <span className="settings-plugin-description">{plugin.error}</span> : null}</div>{plugin.managed ? <><button aria-checked={plugin.enabled === true} aria-label={`${plugin.enabled === true ? "停用" : "启用"}插件 ${plugin.name}`} className={`settings-switch settings-extension-switch${plugin.enabled === true ? " is-on" : ""}`} disabled={busy} onClick={() => onSetEnabled(plugin)} role="switch" type="button" /><button className="settings-action settings-danger-button settings-plugin-danger-button" disabled={busy} onClick={() => onUninstall(plugin)} type="button">卸载</button></> : null}</article>;
+const PluginSettingsCard = memo(function PluginSettingsCard({ busy, latestVersion, onConfigure, onError, onSetEnabled, onUninstall, onUpdate, plugin }: { busy: boolean; latestVersion?: string; onConfigure(plugin: DesktopPluginSummary): void; onError(error: unknown): void; onSetEnabled(plugin: DesktopPluginSummary): void; onUninstall(plugin: DesktopPluginSummary): void; onUpdate(plugin: DesktopPluginSummary): void; plugin: DesktopPluginSummary }): React.JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const status = plugin.status === "missing" || plugin.status === "failed" ? plugin.status : undefined;
+  const source = plugin.source;
+  const homepage = plugin.homepage;
+  const open = (url: string): void => { void window.biny.openExternal(url).catch(onError); };
+  const meta: string[] = [];
+  if (plugin.author) meta.push(`作者 ${plugin.author}`);
+  if (!plugin.managed) meta.push("配置管理");
+  return <article className="settings-plugin-card">
+    <div className="settings-plugin-card-main">
+      <h3>
+        <span className="settings-plugin-card-name">{plugin.name}</span>
+        {plugin.version ? <span className="settings-plugin-badge">v{plugin.version}</span> : null}
+        {latestVersion ? <span className="settings-plugin-badge is-update" title={`可更新到 v${latestVersion}`}><Icon name="arrow-up" size={10} />v{latestVersion}</span> : null}
+        {plugin.category ? <span className="settings-plugin-badge is-category">{plugin.category}</span> : null}
+        {status ? <span className="settings-plugin-badge is-danger">{status === "missing" ? "路径不可用" : "加载失败"}</span> : null}
+      </h3>
+      {plugin.description ? <p className="settings-plugin-description">{plugin.description}</p> : null}
+      {meta.length ? <p className="settings-plugin-card-meta">{meta.join(" · ")}</p> : null}
+      {plugin.error ? <p className="settings-plugin-card-error"><Icon name="warning" size={13} />{plugin.error}</p> : null}
+      <div className="settings-plugin-card-actions">
+        <span className="settings-plugin-card-actions-start">
+          <button aria-expanded={expanded} className="settings-action settings-text-action settings-plugin-link" disabled={busy} onClick={() => setExpanded(current => !current)} type="button"><Icon className={expanded ? "is-rotated" : ""} name="chevron" size={15} />{expanded ? "收起详情" : "查看详情"}</button>
+          {plugin.configuration ? <button className="settings-action settings-text-action settings-plugin-link" disabled={busy} onClick={() => onConfigure(plugin)} type="button"><Icon name="sliders" size={15} />配置</button> : null}
+        </span>
+        <span className="settings-plugin-card-actions-end">
+          <Icon name={plugin.scope === "global" ? "globe" : "folder"} size={13} />
+          <code className="settings-plugin-path" title={plugin.path}>{plugin.path}</code>
+          {latestVersion ? <button className="settings-action settings-text-action settings-plugin-link is-primary" disabled={busy} onClick={() => onUpdate(plugin)} type="button"><Icon name="arrow-up" size={14} />更新</button> : null}
+          {plugin.managed ? <button aria-label={`卸载插件 ${plugin.name}`} className="settings-action settings-text-action settings-plugin-icon-button" disabled={busy} onClick={() => onUninstall(plugin)} title="卸载" type="button"><Icon name="trash" size={15} /></button> : null}
+        </span>
+      </div>
+      {expanded ? <dl className="settings-plugin-detail-list">
+        <div><dt>ID</dt><dd>{plugin.pluginId ?? plugin.path}</dd></div>
+        {plugin.entry ? <div><dt>入口</dt><dd>{plugin.entry}</dd></div> : null}
+        {source ? <div><dt>来源</dt><dd><button className="settings-action settings-text-action settings-plugin-link" onClick={() => open(`${source.repository}/tree/${source.branch}/${source.path}`)} type="button">{`${source.repository}/tree/${source.branch}/${source.path}`}</button></dd></div> : null}
+        {homepage ? <div><dt>主页</dt><dd><button className="settings-action settings-text-action settings-plugin-link" onClick={() => open(homepage)} type="button">{homepage}</button></dd></div> : null}
+        {plugin.installedAt ? <div><dt>安装时间</dt><dd>{new Date(plugin.installedAt).toLocaleString("zh-CN")}</dd></div> : null}
+      </dl> : null}
+    </div>
+    {plugin.managed ? <button aria-checked={plugin.enabled === true} aria-label={`${plugin.enabled === true ? "停用" : "启用"}插件 ${plugin.name}`} className={`settings-switch settings-extension-switch${plugin.enabled === true ? " is-on" : ""}`} disabled={busy} onClick={() => onSetEnabled(plugin)} role="switch" type="button" /> : null}
+  </article>;
 });
+
+function PluginSettingsDialog({ onClose, onSave, plugin }: {
+  onClose(): void;
+  onSave(values: PluginSettings): Promise<void>;
+  plugin: DesktopPluginSummary;
+}): React.JSX.Element | null {
+  const configuration = plugin.configuration;
+  const [values, setValues] = useState<Record<string, PluginSettingValue | undefined>>(() => ({ ...(plugin.settings ?? {}) }));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  if (!configuration) return null;
+  const setValue = (key: string, value: PluginSettingValue | undefined): void => {
+    setValues(current => ({ ...current, [key]: value }));
+  };
+  const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    setSaving(true);
+    setError(undefined);
+    try {
+      const settings: PluginSettings = {};
+      for (const [key, value] of Object.entries(values)) {
+        if (value !== undefined) settings[key] = value;
+      }
+      await onSave(settings);
+      onClose();
+    } catch (failure) {
+      // 保存失败在对话框内联展示，不走全局通知。
+      setError(errorMessage(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <SettingsDetailLayer onClose={() => { if (!saving) onClose(); }}>
+    <form aria-labelledby="plugin-config-title" aria-modal="true" className="model-dialog settings-plugin-config-dialog" onSubmit={(event) => void submit(event)} role="dialog">
+      <header><h3 id="plugin-config-title"><Icon name="sliders" size={17} />{configuration.title ?? plugin.name}</h3><button aria-label="关闭" disabled={saving} onClick={onClose} type="button"><Icon name="close" size={16} /></button></header>
+      <div className="settings-plugin-config-body">
+        <p>保存后，插件下次加载时使用新设置。</p>
+        {Object.entries(configuration.properties).map(([key, property]) => {
+          const label = property.title ?? key;
+          const detail = property.description;
+          const current = Object.hasOwn(values, key) ? values[key] : property.default;
+          if (property.type === "boolean") {
+            return <SettingsSwitch checked={current === true} detail={detail} disabled={saving} key={key} label={label} onChange={(value) => setValue(key, value)} />;
+          }
+          if (property.type === "string" && property.enum !== undefined) {
+            return <label className="settings-plugin-config-field" key={key}><span><strong>{label}</strong>{detail ? <small>{detail}</small> : null}</span>
+              <NativeSelect className="settings-field" disabled={saving} onChange={(event) => setValue(key, event.target.value || undefined)} value={typeof current === "string" ? current : ""}>
+                <option value="">未设置{property.default !== undefined ? `（默认：${property.default}）` : ""}</option>
+                {property.enum.map((option) => <option key={option} value={option}>{option}</option>)}
+              </NativeSelect>
+            </label>;
+          }
+          if (property.type === "string") {
+            return <label className="settings-plugin-config-field" key={key}><span><strong>{label}</strong>{detail ? <small>{detail}</small> : null}</span>
+              <input className="settings-field" disabled={saving} onChange={(event) => setValue(key, event.target.value)} type="text" value={typeof current === "string" ? current : ""} />
+            </label>;
+          }
+          return <label className="settings-plugin-config-field" key={key}><span><strong>{label}</strong>{detail ? <small>{detail}</small> : null}</span>
+            <input className="settings-field" disabled={saving} max={property.maximum} min={property.minimum} onChange={(event) => setValue(key, event.target.value === "" ? undefined : Number(event.target.value))} step="any" type="number" value={typeof current === "number" ? current : ""} />
+          </label>;
+        })}
+        {error ? <p role="alert">{error}</p> : null}
+      </div>
+      <footer>
+        <button className="settings-action settings-secondary-button ghost-button" disabled={saving} onClick={onClose} type="button">取消</button>
+        <button aria-busy={saving} className="settings-action settings-primary-button" disabled={saving} type="submit">保存</button>
+      </footer>
+    </form>
+  </SettingsDetailLayer>;
+}
 
 function activationFor(skill: DesktopSkillCatalogEntry, globalDefaults: Record<string, boolean>, projectOverrides: Record<string, boolean>): DesktopSkillActivation {
   const globalValue = globalDefaults[skill.ref];

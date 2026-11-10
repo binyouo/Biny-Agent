@@ -111,7 +111,7 @@ test("已保存密钥只显示打码输入，不展示存储说明或删除入�
 });
 
 /** Real component ownership only: no SettingsDraftProvider, App, or native IPC. */
-async function loginFixture(t: TestContext) {
+async function loginFixture(t: TestContext, modelCount?: number) {
   const restore: Array<() => void> = [];
   const forbidden: string[] = [];
   const canceled: Array<[DesktopModelLoginProvider, string]> = [];
@@ -121,6 +121,7 @@ async function loginFixture(t: TestContext) {
   const saves: Parameters<SettingsDraftContextValue["saveModels"]>[0][] = [];
   const start = deferred<DesktopModelLoginStartResult>();
   const completion = deferred<DesktopStagedModelLoginResult>();
+  const modelSave = deferred<undefined>();
   const request: DesktopModelLoginStartResult = { authRequestId: "inert-request", stateHint: "inert", method: "browser-callback" };
   const result: DesktopStagedModelLoginResult = { handle: "inert-handle", kind: "oauth-login", provider: "openai-codex",
     expiresAt: "2099-01-01T00:00:00.000Z", models: [{ id: "inert-model", displayName: "Inert model", supportsThinking: false }] };
@@ -134,6 +135,7 @@ async function loginFixture(t: TestContext) {
   };
   t.after(async () => {
     const errors: unknown[] = [];
+    try { await act(async () => modelSave.resolve(undefined)); } catch (error) { errors.push(error); }
     try { if (resources.root) await act(() => resources.root!.unmount()); } catch (error) { errors.push(error); }
     try { await act(async () => { start.resolve(request); completion.resolve(result); await Promise.all([start.promise, completion.promise]); }); }
     catch (error) { errors.push(error); }
@@ -168,14 +170,14 @@ async function loginFixture(t: TestContext) {
   const context: SettingsDraftContextValue = {
     loading: false, revalidating: false, dirtyCount: 0, preferencesOnly: false, invalid: false, saveState: "clean",
     retryLoad: unavailable, setThemePreference: unavailable, setFontPreference: unavailable,
-    setAppearancePreference: unavailable, updateActivityImmediately: unavailable,
+    updateActivityImmediately: unavailable,
     setIdentity: unavailable, setMemory: unavailable, setCompaction: unavailable, setChatParams: unavailable,
     setSubagent: unavailable, setPermission: unavailable, setWebSearch: unavailable, setChat: unavailable,
     setSkills: unavailable, upsertModel: unavailable, removeModel: unavailable, setModelProfile: unavailable,
     stageCredential: unavailable, discard: unavailable, saveAll: unavailable,
     addOauthCredentialHandle(handle) { added.push(handle); },
     async releaseCredential(handle) { released.push(handle); },
-    async saveModels(input) { saves.push(input); return undefined; }
+    async saveModels(input) { saves.push(input); return modelCount === undefined ? undefined : await modelSave.promise; }
   };
   const props: ProviderSettingsProps = {
     active: true, loading: false, models: [], connections: [], catalogs: {},
@@ -184,6 +186,19 @@ async function loginFixture(t: TestContext) {
     onCompleteLogin(provider, id) { completed.push([provider, id]); return completion.promise; },
     async onCancelLogin(provider, id) { canceled.push([provider, id]); }
   };
+  if (modelCount !== undefined) {
+    context.draft = { models: { upserts: [], removeAliases: [], oauthCredentialHandles: [], modelProfiles: {} } } as SettingsDraftContextValue["draft"];
+    props.connections = [{ providerAlias: "relay", providerType: "openai-compatible", baseUrl: "https://relay.invalid/v1",
+      enabled: true, requiresApiKey: false, hasCredential: false }];
+    props.models = Array.from({ length: modelCount }, (_, index) => ({
+      alias: `model-${index}`, displayName: `Model ${index}`, provider: "relay", providerType: "openai-compatible",
+      model: `model-${index}`, modelKey: `relay/model-${index}`, available: true, source: "configured",
+      capabilities: { tools: true, parallelToolCalls: false, reasoning: true, reasoningStream: true, reasoningSummary: false, vision: true, audio: false, streaming: true },
+      supportsTools: true, contextWindow: 128_000, contextWindowIsFallback: false,
+      efforts: ["high"], defaultThinking: "high", thinkingLevelMap: { high: "high" }
+    }));
+  }
+  const registrations = t.mock.method(document, "addEventListener", document.addEventListener.bind(document));
   const root = resources.root = createRoot(document.getElementById("root")!);
   const render = async (visible: boolean): Promise<void> => {
     await act(() => root.render(React.createElement(SettingsDraftContext.Provider, { value: context },
@@ -193,16 +208,38 @@ async function loginFixture(t: TestContext) {
     assert.ok(button); assert.equal(button.disabled, false);
     await act(async () => { button.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); });
   };
+  const started = performance.now();
   await render(true);
-  await click([...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(button => button.querySelector("strong")?.textContent === "OpenAI Codex"));
-  await click(document.querySelector<HTMLButtonElement>(".login-subscription-card .settings-primary-button") ?? undefined);
-  assert.match(document.querySelector(".login-status")?.textContent ?? "", /正在打开/u);
+  const mountMs = performance.now() - started;
+  if (modelCount === undefined) {
+    await click([...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(button => button.querySelector("strong")?.textContent === "OpenAI Codex"));
+    await click(document.querySelector<HTMLButtonElement>(".login-subscription-card .settings-primary-button") ?? undefined);
+    assert.match(document.querySelector(".login-status")?.textContent ?? "", /正在打开/u);
+  }
   return { canceled, completed, added, released, saves, request, result, document,
+    mountMs,
+    keydownRegistrations: () => registrations.mock.calls.filter(call => call.arguments[0] === "keydown").length,
+    beginToggle: () => click(document.querySelector<HTMLButtonElement>(".provider-model-row .model-toggle") ?? undefined),
+    async finishToggle() { await act(async () => modelSave.resolve(undefined)); },
     remove: () => render(false),
     async finishStart() { await act(async () => { start.resolve(request); await start.promise; }); },
     async finishCompletion() { await act(async () => { completion.resolve(result); await completion.promise; }); }
   };
 }
+
+test("large model catalogs keep keyboard subscriptions bounded while saving updates every switch", async t => {
+  const h = await loginFixture(t, 1_000);
+  assert.equal(h.document.querySelectorAll(".provider-model-row").length, 1_000);
+  const keydowns = h.keydownRegistrations();
+  const started = performance.now();
+  await h.beginToggle();
+  assert.ok([...h.document.querySelectorAll<HTMLButtonElement>(".provider-model-row .model-toggle")].every(button => button.disabled));
+  await h.finishToggle();
+  assert.ok([...h.document.querySelectorAll<HTMLButtonElement>(".provider-model-row .model-toggle")].every(button => !button.disabled));
+  t.diagnostic(`1000 models: mount=${h.mountMs.toFixed(0)}ms, saving round-trip=${(performance.now() - started).toFixed(0)}ms, keydown listeners=${keydowns}`);
+  assert.ok(keydowns <= 64, `Model metadata must not install keyboard listeners per row: ${keydowns}`);
+  assert.equal(h.document.querySelector('.provider-model-cap[title="支持图片输入"]')?.getAttribute("aria-label"), "支持图片输入");
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

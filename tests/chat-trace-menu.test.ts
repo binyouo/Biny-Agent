@@ -20,7 +20,7 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
   const root = createRoot(document.getElementById("root")!);
   try {
     await React.act(async () => root.render(React.createElement(MessageContextMenu, {
-      tools: ["Bash", "Bash", "Skill"], skills: ["references"], selectedSkills: ["review-id", "references"],
+      tools: ["run_script", "Read", "run_script", "mcp_example_query", "Skill"], skills: ["references"], selectedSkills: ["review-id", "references"],
       skillLabels: new Map([["review-id", "review"]]),
       skillCalls: [{ id: "failed", tool: "Skill", args: { skill: "broken" }, result: "Unknown skill: broken", status: "failed", updates: [] }],
       memoryRecallDegraded: "no_vector_index"
@@ -30,10 +30,10 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
     assert.equal(button.getAttribute("aria-expanded"), "true");
     const panel = document.querySelector('[aria-label="本轮上下文"]')!;
     assert.equal(panel.parentElement, document.body, "浮层脱离菜单动画的 transform 包含块");
-    assert.equal(panel.querySelector("section h4")!.textContent, "1 个工具");
-    assert.deepEqual([...panel.querySelectorAll("section:first-child p")].map(item => item.textContent), ["执行命令"]);
-    assert.match(button.textContent!, /1 个技能/u);
-    assert.deepEqual([...panel.querySelectorAll('[data-skill-name]')].map(item => item.textContent), ["references已加载"]);
+    assert.equal(panel.querySelector("section h4")!.textContent, "3 个工具");
+    assert.deepEqual([...panel.querySelectorAll("section:first-child p")].map(item => item.textContent), ["run_script", "Read", "mcp_example_query"]);
+    assert.match(button.textContent!, /2 个技能/u);
+    assert.deepEqual([...panel.querySelectorAll('[data-skill-name]')].map(item => item.textContent), ["references", "review"]);
     assert.equal(panel.querySelector('[data-skill-name="broken"]'), null);
     assert.doesNotMatch(panel.textContent!, /技能调用/u);
     assert.match(panel.textContent!, /记忆召回/u);
@@ -42,12 +42,20 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
     assert.doesNotMatch(panel.textContent!, /no_vector_index/u);
     await React.act(async () => button.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     assert.equal(document.querySelector('[aria-label="本轮上下文"]'), null);
-    await React.act(async () => root.render(React.createElement(MessageContextMenu, { tools: ["Bash"], skills: [], selectedSkills: ["image-gen", "codemode-tool-calling"] })));
+    const defaultSkillId = "fcc7c5a36299f12211c81432f7833094";
+    const defaultSkillLabels = new Map([[defaultSkillId, "image-gen"]]);
+    await React.act(async () => root.render(React.createElement(MessageContextMenu, {
+      tools: ["Bash"], skills: [], selectedSkills: [defaultSkillId, "codemode-tool-calling"], skillLabels: defaultSkillLabels
+    })));
     await React.act(async () => document.querySelector<HTMLButtonElement>("button")!.click());
-    assert.doesNotMatch(document.querySelector("button")!.textContent!, /个技能/u);
+    assert.match(document.querySelector("button")!.textContent!, /2 个技能/u);
     const emptyPanel = document.querySelector('[aria-label="本轮上下文"]')!;
-    assert.equal(emptyPanel.querySelectorAll("section").length, 1);
-    assert.equal(emptyPanel.querySelector("[data-skill-name]"), null);
+    assert.equal(emptyPanel.querySelectorAll("section").length, 2);
+    assert.deepEqual([...emptyPanel.querySelectorAll("[data-skill-name]")].map(item => item.textContent), ["image-gen", "codemode-tool-calling"]);
+    await React.act(async () => root.render(React.createElement(MessageContextMenu, {
+      tools: ["Skill"], skills: ["image-gen"], selectedSkills: [defaultSkillId, "codemode-tool-calling"], skillLabels: defaultSkillLabels
+    })));
+    assert.deepEqual([...document.querySelectorAll('[data-skill-name]')].map(item => item.textContent), ["image-gen", "codemode-tool-calling"]);
     const dialogHook = registerHooks({
       resolve(specifier, context, next) { return specifier === "@astryxdesign/core/Dialog" ? { url: "trace-test:dialog", shortCircuit: true } : next(specifier, context); },
       load(url, context, next) { return url === "trace-test:dialog" ? { format: "module", source: "export function Dialog(p){return globalThis.React.createElement('div',{role:'dialog'},p.children)};export function DialogHeader(p){return globalThis.React.createElement('h2',null,p.title)}", shortCircuit: true } : next(url, context); }

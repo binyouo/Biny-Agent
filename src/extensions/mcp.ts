@@ -386,6 +386,9 @@ export class McpToolHost {
         onDispatched?.();
         return client.callTool({ name: toolName, arguments: args, _meta: managed.local ? metadata : undefined }, undefined, options);
       }, signal);
+      if (serverName === "computer-use" && isRecord(result) && isRecord(result.structuredContent) && result.structuredContent.outcomeUnknown === true) {
+        throw new ToolOutcomeUnknownError("interrupted", typeof result.structuredContent.message === "string" ? result.structuredContent.message : "Computer input outcome is unknown.");
+      }
       return rawResult ? result : normalizeMcpResult(result);
     } catch (error) {
       if (signal?.aborted || !isConnectionError(error)) throw error;
@@ -541,9 +544,10 @@ export class McpToolHost {
   async describeServer(serverName: string): Promise<McpServerDetails> {
     const managed = this.requireServer(serverName);
     if (!managed.client || !managed.status.connected) await this.reconnect(managed);
+    const resources = await this.listServerResources(serverName);
     return {
       status: { ...managed.status, toolNames: [...managed.status.toolNames], promptNames: [...managed.status.promptNames] },
-      resources: await this.listServerResources(serverName)
+      resources
     };
   }
 

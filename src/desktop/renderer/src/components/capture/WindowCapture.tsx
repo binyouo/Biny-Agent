@@ -86,6 +86,8 @@ export function WindowCapture() {
   useEffect(() => window.biny.onMenuAction(action => { if (action === "capture-window" && !dialog.current?.open) void take(scope); }), [scope, take]);
   useEffect(() => { if (open && !dialog.current?.open) dialog.current?.showModal(); if (!open) dialog.current?.close(); }, [open]);
   useEffect(() => () => { version.current++; backgroundVersion.current++; }, []);
+  const hasTitles = privacyRegions.some(region => region.kind === "title");
+  const hasAccounts = privacyRegions.some(region => region.kind === "account");
   const activePrivacy = privacyRegions.filter(region => region.kind === "title" ? maskTitles : maskAccounts);
   const composition = { crop: crop!, regions: regions ?? [], padding, background: background.value, backgroundImage: background.image, shadow, privacyRegions: activePrivacy };
   useEffect(() => {
@@ -210,8 +212,10 @@ export function WindowCapture() {
           <SettingsSwitch checked={shadow} disabled={busy} label="阴影" onChange={setShadow} />
         </fieldset>
         <fieldset className="capture-display"><legend>隐私</legend>
-          <SettingsSwitch checked={maskTitles} disabled={busy || !privacyRegions.some(region => region.kind === "title")} label="会话标题" detail="侧栏与顶部标题打码" onChange={setMaskTitles} />
-          <SettingsSwitch checked={maskAccounts} disabled={busy || !privacyRegions.some(region => region.kind === "account")} label="账号" detail="邮箱地址模糊" onChange={setMaskAccounts} />
+          {!hasTitles && !hasAccounts ? <p className="capture-empty">画面中没有可遮盖的隐私内容</p> : <>
+            {hasTitles ? <SettingsSwitch checked={maskTitles} disabled={busy} label="会话标题" detail="侧栏与顶部标题模糊" onChange={setMaskTitles} /> : null}
+            {hasAccounts ? <SettingsSwitch checked={maskAccounts} disabled={busy} label="账号" detail="邮箱与账号名模糊" onChange={setMaskAccounts} /> : null}
+          </>}
         </fieldset>
       </aside>
     </div>

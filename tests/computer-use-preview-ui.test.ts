@@ -8,7 +8,7 @@ import { ComputerPreviewSurface, type PreviewWindow } from "../src/computer/prev
 import { CaptureSchedule } from "../src/computer/captureSchedule.js";
 
 test("preview prioritizes the frame and switches, returns, closes, and controls the selected source", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: Date.now() });
   const hooks = registerHooks({ load(url, context, next) {
     return /\/electron\/index\.js$/.test(url) ? { format: "module", shortCircuit: true,
       source: "export const app = {}; export class BrowserWindow {} export const screen = {}; export const nativeImage = {};" } : next(url, context);
@@ -19,15 +19,17 @@ test("preview prioritizes the frame and switches, returns, closes, and controls 
     const { previewHtml } = await import("../src/desktop/electron/main/ComputerPreviewWindow.js");
     dom = new JSDOM(previewHtml, { runScripts: "outside-only", url: "https://preview.invalid" });
     const document = dom.window.document;
+    dom.window.Date.now = () => Date.now();
     assert.ok(document.querySelector("#stage #frame"));
     const image = document.querySelector<HTMLImageElement>("#frame")!;
     let width = 380, height = 250, naturalWidth = 800, naturalHeight = 400, complete = false;
     Object.defineProperties(image, { naturalWidth: { get: () => naturalWidth }, naturalHeight: { get: () => naturalHeight }, clientWidth: { get: () => width }, clientHeight: { get: () => height }, complete: { get: () => complete } });
     assert.equal(document.querySelector<HTMLElement>("#items")!.hidden, true);
     let closed = false;
+    const scripts: string[] = [];
     const webContents = Object.assign(new EventEmitter(), {
       setWindowOpenHandler: () => undefined, isLoading: () => false,
-      executeJavaScript: async (script: string) => runInContext(script, dom!.getInternalVMContext())
+      executeJavaScript: async (script: string) => { scripts.push(script); return runInContext(script, dom!.getInternalVMContext()); }
     });
     const window = Object.assign(new EventEmitter(), {
       webContents, isDestroyed: () => closed, showInactive: () => undefined,
@@ -50,10 +52,32 @@ test("preview prioritizes the frame and switches, returns, closes, and controls 
     assert.equal(image.dataset.loaded, "true");
     assert.equal(cursor.hidden, false);
     assert.equal(cursor.style.left, "95px"); assert.equal(cursor.style.top, "95px");
+    const pointerImage = { mimeType: "image/png", dataBase64: "aGVsbG8=" } as const;
+    const arrowFrame = { ...frame, cursor: { ...frame.cursor, image: pointerImage, hotspot: { x: 2, y: 3 }, action: "click", eventId: 7 } } as const;
+    surface.present({ id: "computer", label: "电脑", status, frame: arrowFrame });
+    assert.equal(cursor.dataset.shape, "arrow");
+    assert.equal(cursor.style.marginLeft, "-2px"); assert.equal(cursor.style.marginTop, "-3px");
+    assert.equal(document.querySelector<HTMLImageElement>("#agent-cursor-image")!.src, "data:image/png;base64,aGVsbG8=");
+    const pulse = document.querySelector<HTMLElement>("#agent-cursor-pulse")!;
+    assert.equal(pulse.classList.contains("pulse"), true);
+    pulse.classList.remove("pulse");
+    surface.present({ id: "computer", label: "电脑", status, frame: arrowFrame });
+    assert.equal(pulse.classList.contains("pulse"), false, "repainting a mirror frame must not replay an old click");
+    surface.present({ id: "computer", label: "电脑", status, frame: { ...arrowFrame, cursor: { ...arrowFrame.cursor, action: "scroll", eventId: 8, symbol: "arrow.down" } } });
+    assert.equal(document.querySelector<HTMLElement>("#agent-cursor-badge")!.textContent, "Biny ↓");
+    surface.present({ id: "computer", label: "电脑", status, frame });
+    assert.equal(cursor.dataset.shape, "point");
+    assert.equal(document.querySelector<HTMLImageElement>("#agent-cursor-image")!.getAttribute("src"), null);
+    assert.equal(document.querySelector<HTMLElement>("#agent-cursor-badge")!.textContent, "");
     width = 300; height = 300; dom.window.dispatchEvent(new dom.window.Event("resize"));
     assert.equal(cursor.style.left, "75px"); assert.equal(cursor.style.top, "75px");
     naturalWidth = 400; naturalHeight = 800; image.dispatchEvent(new dom.window.Event("load"));
     assert.equal(cursor.style.left, "112.5px"); assert.equal(cursor.style.top, "150px");
+    scripts.length = 0;
+    surface.present({ id: "computer", label: "电脑", status: { ...status, state: "paused" }, frame: { ...frame, image: { ...frame.image } } });
+    assert.match(document.querySelector<HTMLElement>("#status")!.textContent!, /已暂停/);
+    assert.equal(image.getAttribute("src"), "data:image/png;base64,aGVsbG8=");
+    assert.ok(scripts.every(script => !script.includes("aGVsbG8=")), "status-only updates must reuse displayed pixels without transferring the image again");
     surface.present({ id: "computer", label: "电脑", status });
     assert.equal(image.dataset.loaded, "false", "clearing the frame resets the first-frame transition");
     assert.equal(document.querySelector<HTMLElement>("#empty")!.hidden, false);
@@ -97,6 +121,8 @@ test("preview prioritizes the frame and switches, returns, closes, and controls 
     navigate("biny-computer:select:computer");
     assert.equal(surface.activeItem(), "computer");
     assert.equal(cursor.hidden, false);
+    t.mock.timers.tick(8_001);
+    assert.equal(cursor.hidden, true, "an expired pointer disappears from the displayed frozen frame without another capture");
     surface.present({ id: "computer", label: "电脑", status, frame: { ...frame, cursor: { ...frame.cursor, expiresAt: Date.now() - 1 } }, onReturn: () => returns.push("computer"), onClose: () => removed.push("computer") });
     assert.equal(cursor.hidden, true);
     assert.ok([...document.querySelectorAll<HTMLElement>("[data-control]")].every(element => !element.hidden));

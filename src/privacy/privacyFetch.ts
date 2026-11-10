@@ -7,8 +7,9 @@ import { RedactionStore } from "./store.js";
 import { restorePlaceholders } from "./placeholders.js";
 import { globalConfigDir } from "../config/paths.js";
 import { redactionWanted, type RedactionSettings } from "./settings.js";
+import { withPlaceholderNote, type PlaceholderNoteContext } from "./placeholderNote.js";
 
-export interface PrivacyFetchContext { settings: RedactionSettings; provider: string; model: string }
+export interface PrivacyFetchContext extends PlaceholderNoteContext { settings: RedactionSettings; provider: string; model: string; baseUrl?: string }
 const stores = new Map<string, RedactionStore>();
 const MAX_BODY = 16_000_000;
 
@@ -55,20 +56,23 @@ export function createPrivacyFetch(baseFetch: typeof globalThis.fetch, context: 
     try { request = JSON.parse(body); } catch { throw new Error("Privacy cannot mask malformed request JSON."); }
     const store = sessionStore(sessionId);
     const values = store.snapshot();
-    const result = maskJson(body, context.settings, store);
+    const requestUrl = input instanceof Request ? input.url : String(input);
+    // 只隔离历史替换决定；同一会话继续共享已知值及回复还原映射。
+    const route = JSON.stringify([context.provider, context.protocol ?? "chat", (context.baseUrl ?? requestUrl).replace(/\/+$/u, "")]);
+    const result = maskJson(body, context.settings, store, route);
     // 捕获所属会话已知值与本次发送值；后续请求、容量淘汰均不改变正在返回的回复。
     for (const group of result.segments) for (const segment of group.segments) values.set(segment.masked, segment.original);
     const restore = (text: string, json = false): string => restorePlaceholders(text, values, json);
     const kinds = [...new Set([...values.keys()].map(tag => tag.slice(2, tag.lastIndexOf("_"))))];
+    const noted = withPlaceholderNote(body, result, values, context);
     // 无论是否命中敏感内容都记录一次请求，便于在设置里观测实际发出去的内容；未命中的计数为 0。
     recordMask({ provider: context.provider, model: typeof request?.model === "string" ? request.model : context.model,
       sessionId, operation: headers.get("x-biny-operation") ?? "agent", segments: result.segments,
-      preview: requestPreview(body, result), requestBytes: Buffer.byteLength(body, "utf8") });
+      preview: requestPreview(noted.source, noted.result), requestBytes: Buffer.byteLength(noted.source, "utf8") });
     headers.delete("content-length");
     signal?.throwIfAborted();
-    const response = await baseFetch(input, { ...init, headers, body: result.text });
+    const response = await baseFetch(input, { ...init, headers, body: noted.result.text });
     if (!response.body || values.size === 0) return response;
-    const requestUrl = input instanceof Request ? input.url : String(input);
     const inferredSse = request?.stream === true || requestUrl.includes(":streamGenerateContent");
     const contentType = response.headers.get("content-type") ?? (inferredSse ? "text/event-stream" : "application/json");
     if (!contentType.includes("json") && !contentType.includes("event-stream")) return response;

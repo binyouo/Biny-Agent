@@ -11,19 +11,23 @@ import {
 import { effectiveThinkingSelection, modelCapabilities, modelContextBudget, modelReasoningConfig, modelThinkingLevelMap } from "../ai/capabilities.js";
 import type { ModelCatalogEntry } from "../ai/types.js";
 import {
+  ModelRegistry,
   hasUsableModelConfiguration as hasUsableRegisteredModel,
   type ModelChoice
 } from "./ModelRegistry.js";
 import type { AgentModel } from "../agent/core/types.js";
 import { ModelRuntime } from "./ModelRuntime.js";
-import type { ModelSettings, ProviderCredentialPersistence } from "./ProviderRuntime.js";
+import { ProviderRegistry, type ModelSettings, type ProviderCredentialPersistence } from "./ProviderRuntime.js";
 import { createProviderCredentialPersistence } from "./modelFactory.js";
 import { AiRegistry } from "./AiRegistry.js";
-import { FileModelsStore, modelCatalogCacheKey, restoreProviderCatalogs, type ModelsStore } from "./ModelsStore.js";
+import { FileModelsStore, modelCatalogCacheKey, readProviderCatalog, restoreProviderCatalogs, type ModelsStore } from "./ModelsStore.js";
 import type { ThinkingSelection } from "./modelThinking.js";
 
 export { modelThinkingSelections, type ThinkingSelection } from "./modelThinking.js";
 export type { ModelChoice } from "./ModelRegistry.js";
+
+const catalogRefreshIntervalMs = 60 * 60 * 1_000;
+const catalogRefreshTimeoutMs = 15_000;
 
 export interface ModelRuntimeInfo {
   modelAlias: string;
@@ -48,6 +52,9 @@ export class ModelManager {
   private runtime: ModelRuntime;
   private observedConfigRevision: number | undefined;
   private readonly providerCredentials: ProviderCredentialPersistence;
+  private catalogFreshness?: { sourceKey: string; checkedAt: number; attemptedAt?: number };
+  private catalogRefresh?: { providerAlias: string; controller: AbortController; task: Promise<void> };
+  private closed = false;
 
   constructor(
     private readonly workspaceRoot: string,
@@ -71,7 +78,9 @@ export class ModelManager {
     modelsStore: ModelsStore = new FileModelsStore()
   ): Promise<ModelManager> {
     const catalogs = await restoreProviderCatalogs(Object.keys(config.providers), modelsStore, config.providers);
-    return new ModelManager(workspaceRoot, config, configStore, ai, modelsStore, catalogs);
+    const manager = new ModelManager(workspaceRoot, config, configStore, ai, modelsStore, catalogs);
+    await manager.adoptStoredCatalog();
+    return manager;
   }
 
   listModels(): ModelChoice[] {
@@ -114,11 +123,12 @@ export class ModelManager {
    * 只校验当前 Provider 并在 OAuth 临近过期时续期，不切换回合的模型选择。
    */
   async preparePrompt(signal?: AbortSignal, reloadConfig = true): Promise<void> {
+    if (this.closed) throw new Error("Model manager is closed.");
     signal?.throwIfAborted();
     const revision = this.configStore.revision?.();
     if (reloadConfig && revision !== undefined && revision !== this.observedConfigRevision) {
       await this.refreshFromDisk();
-    }
+    } else if (reloadConfig) await this.adoptStoredCatalog(signal);
 
     const providerAlias = resolveModelConfig(this.config).providerAlias;
     const provider = this.config.providers[providerAlias];
@@ -153,6 +163,77 @@ export class ModelManager {
 
     this.runtime.validate();
     await this.recoverContextMetadata(signal);
+    this.refreshStaleCatalog();
+  }
+
+  private async adoptStoredCatalog(signal?: AbortSignal): Promise<void> {
+    if (!this.modelsStore) return;
+    const previousRuntime = this.runtime;
+    const resolved = this.runtime.resolve(this.config.defaultModel);
+    const provider = this.config.providers[resolved.providerAlias]!;
+    if (resolved.model.baseUrl !== undefined
+      && resolved.model.baseUrl.replace(/\/+$/u, "") !== provider.baseUrl?.replace(/\/+$/u, "")) return;
+    const sourceKey = modelCatalogCacheKey(resolved.providerAlias, provider);
+    const cached = await readProviderCatalog(resolved.providerAlias, provider, this.modelsStore);
+    signal?.throwIfAborted();
+    if (this.closed || this.runtime !== previousRuntime) return;
+    if (!cached?.models.length) return;
+    const previous = this.catalogFreshness?.sourceKey === sourceKey ? this.catalogFreshness : undefined;
+    if (this.getContextBudget().contextWindowIsFallback || (cached.checkedAt ?? 0) > (previous?.checkedAt ?? 0)) {
+      if (previous && this.catalogRefresh?.providerAlias === resolved.providerAlias) this.cancelCatalogRefresh();
+      const runtime = new ModelRuntime(this.config, [
+        ...this.runtime.catalogsSnapshot().filter(([alias]) => alias !== resolved.providerAlias),
+        [resolved.providerAlias, cached.models]
+      ], this.ai, this.modelsStore, undefined, this.providerCredentials);
+      const settings = runtime.createModelSettings();
+      this.runtime = runtime;
+      this.activeSettings = settings;
+    }
+    this.catalogFreshness = {
+      sourceKey, checkedAt: Math.max(previous?.checkedAt ?? 0, cached.checkedAt ?? 0), attemptedAt: previous?.attemptedAt
+    };
+  }
+
+  private refreshStaleCatalog(): void {
+    const freshness = this.catalogFreshness;
+    const resolved = this.runtime.resolve(this.config.defaultModel);
+    const provider = this.config.providers[resolved.providerAlias]!;
+    const now = Date.now();
+    if (this.closed || !this.modelsStore || !freshness || this.catalogRefresh
+      || (resolved.model.baseUrl !== undefined && resolved.model.baseUrl.replace(/\/+$/u, "") !== provider.baseUrl?.replace(/\/+$/u, ""))
+      || freshness.sourceKey !== modelCatalogCacheKey(resolved.providerAlias, provider)
+      || now - Math.max(freshness.checkedAt, freshness.attemptedAt ?? 0) < catalogRefreshIntervalMs) return;
+    freshness.attemptedAt = now;
+    const controller = new AbortController();
+    // 独立 Runtime 只更新目录缓存；正在执行的回合继续使用已准入的 settings 和预算。
+    const config = structuredClone(this.config);
+    config.providers = { [resolved.providerAlias]: config.providers[resolved.providerAlias]! };
+    config.models = { [resolved.alias]: config.models[resolved.alias]! };
+    const runtime = new ModelRuntime(config, [], this.ai, this.modelsStore);
+    const timer = setTimeout(() => controller.abort(new Error("Model catalog refresh timed out.")), catalogRefreshTimeoutMs);
+    timer.unref();
+    let onAbort!: () => void;
+    const aborted = new Promise<void>((resolve) => { onAbort = resolve; });
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    const task = Promise.race([runtime.refreshModels(resolved.providerAlias, controller.signal).then(() => {}), aborted])
+      // 已有目录仍可用；失败保留缓存，并按相同间隔限制下一次后台尝试。
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(timer);
+        controller.signal.removeEventListener("abort", onAbort);
+        if (this.catalogRefresh?.controller === controller) this.catalogRefresh = undefined;
+      });
+    this.catalogRefresh = { providerAlias: resolved.providerAlias, controller, task };
+  }
+
+  cancelCatalogRefresh(): void {
+    this.catalogRefresh?.controller.abort();
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.cancelCatalogRefresh();
+    await this.catalogRefresh?.task;
   }
 
   private async recoverContextMetadata(signal?: AbortSignal): Promise<void> {
@@ -187,7 +268,16 @@ export class ModelManager {
   }
 
   async refreshModelCatalog(providerAlias = resolveModelConfig(this.config).providerAlias): Promise<ModelCatalogEntry[]> {
-    return await this.runtime.refreshModels(providerAlias);
+    const refreshing = this.catalogRefresh;
+    if (refreshing?.providerAlias === providerAlias) {
+      this.cancelCatalogRefresh();
+      await refreshing.task;
+    }
+    await this.adoptStoredCatalog();
+    const models = await this.runtime.refreshModels(providerAlias);
+    this.activeSettings = this.runtime.createModelSettings();
+    await this.adoptStoredCatalog();
+    return models;
   }
 
   async switchModel(alias: string, thinking?: ThinkingSelection): Promise<ModelRuntimeInfo> {
@@ -200,7 +290,12 @@ export class ModelManager {
 
   async refreshFromDisk(): Promise<ModelRuntimeInfo> {
     const nextConfig = await this.configStore.load(this.workspaceRoot);
+    const refreshing = this.catalogRefresh;
+    if (refreshing && JSON.stringify(this.config.providers[refreshing.providerAlias]) !== JSON.stringify(nextConfig.providers[refreshing.providerAlias])) {
+      this.cancelCatalogRefresh();
+    }
     await this.applyConfig(nextConfig);
+    await this.adoptStoredCatalog();
     return this.getInfo();
   }
 
@@ -314,7 +409,8 @@ export function listConfiguredModelChoices(
 ): ModelChoice[] {
   // 设置页需要展示所有已保存的模型，即使凭据暂时缺失或 provider 当前不可用。
   // “是否可用”只影响模型选择器和发送任务，不应让用户看不到自己的配置。
-  return listModelChoices(config, catalogs).filter((model) => model.source === "configured");
+  // 目录仍为已配置模型补齐元数据，但不把未配置候选登记为展示条目。
+  return new ModelRegistry(config, new ProviderRegistry(config, catalogs)).listModels();
 }
 
 export function hasUsableModelConfiguration(config: AgentConfig, alias = config.defaultModel): boolean {

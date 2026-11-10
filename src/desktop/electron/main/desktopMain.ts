@@ -1,4 +1,5 @@
 import { createWindowCaptureService } from "./windowCapture.js";
+import { RemoteAccess } from "../../../remote/access.js";
 import { promises as fs } from "node:fs";
 import { computerDesktopEndpoint } from "../../../computer/desktopActivity.js";
 import { ApplicationImportService } from "../../../imports/service.js";
@@ -18,7 +19,6 @@ import { formatActivityReportResult } from "../../../activity/analyzer.js";
 import { startActivityHttpEndpoint } from "../../../activity/httpEndpoint.js";
 import { createActivityMemoryPipeline } from "../../../activity/memoryPipeline.js";
 import type { ActivityServiceState } from "../../../activity/types.js";
-import { resolveAppearance } from "../../../appearance/resolve.js";
 import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
 import { LocalEmbeddingManager } from "../../../llm/embedding/LocalEmbeddingRuntime.js";
 import { permissionPresentation } from "../../../permission/presentation.js";
@@ -56,7 +56,6 @@ import { QuickChatContextService } from "./QuickChatContextService.js";
 import { createQuickChatWindow, type QuickChatWindowController } from "./quickChatWindow.js";
 import { StaticPreviewServer } from "./StaticPreviewServer.js";
 import { createDesktopWindow, sendToDesktopWindow, syncDesktopWindowAppearance, type WindowCloseDecision } from "./window.js";
-import { attachWindowTrail } from "./windowTrail.js";
 
 app.setAboutPanelOptions({
   applicationName: "Biny",
@@ -149,7 +148,7 @@ async function startDesktopApplication(): Promise<void> {
     quickChatWindow?.send(channel, payload);
   };
   const appearance = new AppearancePreviewCoordinator({
-    read: () => ({ themePreference: state.themePreference(), appearancePreference: state.appearancePreference(), fontPreference: state.fontPreference() }),
+    read: () => ({ themePreference: state.themePreference(), fontPreference: state.fontPreference() }),
     publish: (snapshot) => {
       syncDesktopWindowAppearance(mainWindow, snapshot);
       broadcastToWindows(desktopIpc.appearanceChanged, snapshot);
@@ -277,6 +276,12 @@ async function startDesktopApplication(): Promise<void> {
   const staticPreview = new StaticPreviewServer();
   const preview = new DesktopPreviewService(projects, terminals, staticPreview);
   const windowCapture = createWindowCaptureService(() => mainWindow);
+  const remoteAccess = new RemoteAccess({
+    list: () => projects.remoteWorkspaces(),
+    attach: projectId => agents.attachRemoteClient(projectId)
+  }, () => {
+    sendToDesktopWindow(mainWindow, desktopIpc.remoteAccessChanged, undefined);
+  });
   const desktopCommands = new DesktopCommandService({ state, projects, agents, terminals, preview, appearance, configStore, browser }, windowCapture.exportFile);
   browser.attachDesktopCommands(async args => await desktopCommands.execute(args));
   await activity.initialize();
@@ -345,7 +350,6 @@ async function startDesktopApplication(): Promise<void> {
       themePreference: appearance.snapshot().themePreference,
       chatResponse: (await configStore.load()).chat.response,
       fontPreference: appearance.snapshot().fontPreference,
-      appearancePreference: appearance.snapshot().appearancePreference
     };
   };
 
@@ -375,8 +379,6 @@ async function startDesktopApplication(): Promise<void> {
     settingsClose.reset();
     importDraftOpen = false;
     mainWindow = createDesktopWindow(state, decideWindowClose, () => appearance.snapshot());
-    const trailWindow = mainWindow;
-    attachWindowTrail(trailWindow, () => { const snapshot = appearance.snapshot(); return resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors).win98Trail; });
     appearance.refresh();
     browser.attachDesktopWindow(mainWindow);
     mainWindow.webContents.on("did-fail-load", (_event, _code, _description, _url, isMainFrame) => {
@@ -427,6 +429,7 @@ async function startDesktopApplication(): Promise<void> {
   });
 
   registerDesktopIpc({
+    remoteAccess,
     preview,
     applicationImports,
     appearance,
@@ -570,6 +573,7 @@ async function startDesktopApplication(): Promise<void> {
         activityTray = undefined;
         quickChatWindow?.destroy();
         const cleanupResult = await waitForDesktopQuitCleanup(async () => {
+          await remoteAccess.stop();
           await applicationImports.close();
           await threadBriefs.close();
           await fs.unlink(computerDesktopEndpoint()).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });

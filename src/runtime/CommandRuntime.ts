@@ -59,7 +59,8 @@ import { RuntimeEventAuthority } from "./RuntimeAuthority.js";
 import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "./TaskRunStore.js";
 import { evaluateTaskRetry } from "./TaskRetryPolicy.js";
 import { readWorkerAttemptCheckpoint, runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
-import { isSessionWriterConflictError } from "./SessionLease.js";
+import { isSessionWriterConflictError, SessionLeaseStore } from "./SessionLease.js";
+import { resolveHeartbeatSessionId } from "./heartbeatSession.js";
 import { readWorkerSessionCheckpoint } from "./WorkerSession.js";
 import { WorktreeManager } from "./host/worktree.js";
 import { AutomationStore } from "./AutomationScheduler.js";
@@ -68,7 +69,7 @@ import { SessionGoalStore } from "./SessionGoalStore.js";
 import { recordSessionGoalRequestUsage } from "./sessionGoalUsage.js";
 import { CapabilityStore } from "./CapabilityStore.js";
 import { RuntimeHostResourceScope, type RuntimeHostResourceRegistry, type RuntimeResourceSnapshot, type RuntimeResourceReadiness } from "./host/resources.js";
-import { listEnabledGlobalPluginPaths, listEnabledProjectPluginPaths } from "../extensions/pluginRegistry.js";
+import { listEnabledGlobalPlugins, listEnabledProjectPlugins } from "../extensions/pluginRegistry.js";
 import { globalPluginRoot } from "../config/paths.js";
 import { heartbeatTaskReviewPrompt, HeartbeatNotificationDeduper, HeartbeatScheduler, isHeartbeatQuietOutput, type HeartbeatTaskReviewItem } from "../agent/context/heartbeat.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../tools/browser.js";
@@ -226,7 +227,7 @@ export interface CommandRuntimeOptions {
 }
 
 type CommandRuntimeStartupCleanup = Partial<Record<
-  "background" | "subagents" | "heartbeatAgent" | "heartbeatCommunication" | "agent" | "processes" | "recorder" | "resources"
+  "background" | "subagents" | "heartbeatAgent" | "agent" | "processes" | "recorder" | "resources"
   | "automation" | "graphs" | "sessionGoals" | "capabilities" | "communication" | "taskRuns" | "authority",
   () => unknown
 >>;
@@ -238,7 +239,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   } catch (error) {
     // Stop producers first; all borrowed views must close before their authority.
     // Read each slot when reached: a successful Agent close owns the recorder.
-    for (const owner of ["background", "subagents", "heartbeatAgent", "heartbeatCommunication", "agent", "processes", "recorder", "resources",
+    for (const owner of ["background", "subagents", "heartbeatAgent", "agent", "processes", "recorder", "resources",
       "automation", "graphs", "sessionGoals", "capabilities", "communication", "taskRuns", "authority"] as const) {
       try { await cleanup[owner]?.(); }
       catch { /* Cleanup must neither mask the startup error nor skip another owner. */ }
@@ -659,25 +660,26 @@ async function initializeCommandRuntime(
   toolRegistry.registerHostReadQuery(createSkillResourceTool(currentSkillBundle), "read_skill_resource");
   refreshExtensionTools();
   const pluginsPerfStartedAt = perfNow();
-  const managedPluginPaths = await listEnabledProjectPluginPaths(workspaceRoot).catch((error: unknown) => {
+  const managedPlugins = await listEnabledProjectPlugins(workspaceRoot).catch((error: unknown) => {
     loadedPlugins.push(`managed plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
     return [];
   });
-  for (const pluginPath of [...config.extensions.plugins, ...managedPluginPaths]) {
+  for (const plugin of [...config.extensions.plugins, ...managedPlugins]) {
+    const label = typeof plugin === "string" ? plugin : plugin.path;
     try {
       loadedPlugins.push(...await loadPlugins(
-        workspaceRoot, [pluginPath], config, toolRegistry, ai, pluginLifecycle
+        workspaceRoot, [plugin], config, toolRegistry, ai, pluginLifecycle
       ));
     } catch (error) {
       // 单个 Plugin 失败只影响它自己；主 Runtime、其它 Plugin 和内置工具仍可用。
-      loadedPlugins.push(`${pluginPath} (failed: ${error instanceof Error ? error.message : String(error)})`);
+      loadedPlugins.push(`${label} (failed: ${error instanceof Error ? error.message : String(error)})`);
     }
   }
-  const managedGlobalPluginPaths = await listEnabledGlobalPluginPaths().catch((error: unknown) => {
+  const managedGlobalPlugins = await listEnabledGlobalPlugins().catch((error: unknown) => {
     loadedPlugins.push(`global managed plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
     return [];
   });
-  const globalPluginPaths = [...config.extensions.globalPlugins, ...managedGlobalPluginPaths];
+  const globalPluginPaths = [...config.extensions.globalPlugins, ...managedGlobalPlugins];
   if (globalPluginPaths.length) {
     try {
       loadedPlugins.push(...await loadPluginsFromRoot(
@@ -786,26 +788,32 @@ async function initializeCommandRuntime(
   const heartbeatNotificationDeduper = new HeartbeatNotificationDeduper();
   const runModelManager = async (currentConfig: AgentConfig, alias: string, signal?: AbortSignal): Promise<ModelManager> => {
     signal?.throwIfAborted();
-    const manager = await ModelManager.create(workspaceRoot, { ...structuredClone(currentConfig), defaultModel: alias }, configStore, ai);
-    signal?.throwIfAborted();
+    const cloned = structuredClone(currentConfig);
+    if (!cloned.models[alias]) {
+      // 自动探测返回 `provider/model-id` 动态引用；合成等价条目让 ModelManager 按别名解析。
+      const slash = alias.indexOf("/");
+      if (slash > 0) cloned.models[alias] = { provider: alias.slice(0, slash), model: alias.slice(slash + 1) };
+    }
+    const manager = await ModelManager.create(workspaceRoot, { ...cloned, defaultModel: alias }, configStore, ai);
+    try { signal?.throwIfAborted(); }
+    catch (error) { await manager.close(); throw error; }
     return manager;
   };
   let ownerNotificationSink: ((notification: string) => Promise<void>) | undefined;
-  let heartbeatAgent: Promise<AgentSession> | undefined;
-  const initializeHeartbeatAgent = async (model: AgentModel): Promise<AgentSession> => {
-    const heartbeatRecorder = new SessionRecorder(persistenceRoot, "heartbeat", undefined, runtimeAuthority.asSink());
+  let heartbeatRun: Promise<void> | undefined;
+  const initializeHeartbeatAgent = async (model: AgentModel, heartbeatConfig: AgentConfig, sessionId: string): Promise<{ session: AgentSession; communication: TaskCommunication }> => {
+    const heartbeatRecorder = new SessionRecorder(persistenceRoot, sessionId, undefined, runtimeAuthority.asSink());
     const heartbeatCommunication = new TaskCommunication(taskRuns, heartbeatRecorder.sessionId);
-    cleanup.heartbeatCommunication = () => heartbeatCommunication.close();
     let session: AgentSession | undefined;
     try {
       session = new AgentSession({
         workspaceRoot,
         persistenceRoot,
         configStore,
-        config,
+        config: heartbeatConfig,
         model,
         toolRegistry,
-        permissionManager,
+        permissionManager: new PermissionManager({ ...heartbeatConfig.permission, source: "heartbeat config" }),
         recorder: heartbeatRecorder,
         skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
         subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
@@ -823,7 +831,7 @@ async function initializeCommandRuntime(
           return { pending: result.pending, timedOut: result.timedOut };
         },
         mcpPrompt: () => mcpHost.instructionsPrompt(),
-        todoStore: todos,
+        todoStore: new TodoStore(persistenceRoot, sessionId),
         sessionGoals,
         taskCommunication: heartbeatCommunication,
         createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
@@ -833,7 +841,8 @@ async function initializeCommandRuntime(
         pluginLifecycle
       });
       await session.initialize();
-      return session;
+      if (!heartbeatRecorder.isUnrecordedDraft()) await session.resume(sessionId);
+      return { session, communication: heartbeatCommunication };
     } catch (error) {
       try {
         if (session) await session.close();
@@ -845,8 +854,7 @@ async function initializeCommandRuntime(
     }
   };
   cleanup.heartbeatAgent = async () => {
-    const session = await heartbeatAgent?.catch(() => undefined);
-    await session?.close();
+    await heartbeatRun?.catch(() => undefined);
   };
   const heartbeat = new HeartbeatScheduler({
     configDir: undefined,
@@ -858,43 +866,65 @@ async function initializeCommandRuntime(
       timezone: config.heartbeat.timezone
     },
     run: async (prompt, signal) => {
-      const taskReview = await buildHeartbeatTaskReview(persistenceRoot, agent.getSessionRecorder().sessionId, sessionGoals, graphs, taskRuns);
-      const heartbeatPrompt = taskReview ? `${prompt}\n\n${taskReview}` : prompt;
-      const diary = /(?:DAILY DIARY TIME|MISSED DIARY CATCH-UP)/u.test(heartbeatPrompt);
-      const currentConfig = await configStore.load(workspaceRoot);
-      const alias = (!diary ? resolveToolModelAlias(currentConfig) : undefined) ?? currentConfig.defaultModel;
-      const model = await runModelManager(currentConfig, alias, signal);
-      signal.throwIfAborted();
-      const session = await (heartbeatAgent ??= initializeHeartbeatAgent(model.getModel()).catch((error: unknown) => {
-        heartbeatAgent = undefined;
-        throw error;
-      }));
-      signal.throwIfAborted();
-      const runWithModel = async (selectedModel: typeof model) => await session.runTask(heartbeatPrompt, {
-        abortSignal: signal,
-        runId: randomUUID(),
-        turnId: randomUUID(),
-        emotionAnalysis: false,
-        source: "heartbeat",
-        modelOverride: selectedModel
-      });
-      let outcome = await runWithModel(model);
-      if (!diary && outcome.status === "failed" && outcome.steps === 0) {
-        const primaryModel = await runModelManager(currentConfig, currentConfig.defaultModel, signal);
-        if (model.getModel().provider !== primaryModel.getModel().provider || model.getModel().modelId !== primaryModel.getModel().modelId) {
-          outcome = await runWithModel(primaryModel);
-        }
-      }
-      if (outcome.status !== "completed") throw new Error(outcome.error ?? "Heartbeat did not complete.");
-      const heartbeatNotification = isHeartbeatQuietOutput(outcome.output) ? undefined : outcome.notification;
-      if (heartbeatNotification && heartbeatNotificationDeduper.shouldSend(heartbeatNotification)) {
+      const run = (async () => {
+        const leases = await SessionLeaseStore.open(persistenceRoot);
+        let active: Awaited<ReturnType<typeof initializeHeartbeatAgent>> | undefined;
+        const models: ModelManager[] = [];
         try {
-          if (ownerNotificationSink) await ownerNotificationSink(heartbeatNotification);
-          else if (!await sendTelegramOwnerNotification(heartbeatNotification)) throw new Error("Telegram owner notification is not configured.");
-          heartbeatNotificationDeduper.recordDelivered(heartbeatNotification);
+          signal.throwIfAborted();
+          leases.acquire("heartbeat-background");
+          const sessionId = await resolveHeartbeatSessionId(persistenceRoot);
+          leases.acquire(sessionId);
+          const taskReview = await buildHeartbeatTaskReview(persistenceRoot, agent.getSessionRecorder().sessionId, sessionGoals, graphs, taskRuns);
+          const heartbeatPrompt = taskReview ? `${prompt}\n\n${taskReview}` : prompt;
+          const diary = /(?:DAILY DIARY TIME|MISSED DIARY CATCH-UP)/u.test(heartbeatPrompt);
+          const currentConfig = await configStore.load(workspaceRoot);
+          const alias = (!diary ? resolveToolModelAlias(currentConfig) : undefined) ?? currentConfig.defaultModel;
+          const model = await runModelManager(currentConfig, alias, signal);
+          models.push(model);
+          signal.throwIfAborted();
+          active = await initializeHeartbeatAgent(model.getModel(), currentConfig, sessionId);
+          const { session } = active;
+          signal.throwIfAborted();
+          const runWithModel = async (selectedModel: typeof model) => await session.runTask(heartbeatPrompt, {
+            abortSignal: signal,
+            runId: randomUUID(),
+            turnId: randomUUID(),
+            emotionAnalysis: false,
+            source: "heartbeat",
+            modelOverride: selectedModel
+          });
+          let outcome = await runWithModel(model);
+          if (!diary && outcome.status === "failed" && outcome.steps === 0) {
+            const primaryModel = await runModelManager(currentConfig, currentConfig.defaultModel, signal);
+            models.push(primaryModel);
+            if (model.getModel().provider !== primaryModel.getModel().provider || model.getModel().modelId !== primaryModel.getModel().modelId) {
+              outcome = await runWithModel(primaryModel);
+            }
+          }
+          if (outcome.status !== "completed") throw new Error(outcome.error ?? "Heartbeat did not complete.");
+          const heartbeatNotification = isHeartbeatQuietOutput(outcome.output) ? undefined : outcome.notification;
+          if (heartbeatNotification && heartbeatNotificationDeduper.shouldSend(heartbeatNotification)) {
+            try {
+              if (ownerNotificationSink) await ownerNotificationSink(heartbeatNotification);
+              else if (!await sendTelegramOwnerNotification(heartbeatNotification)) throw new Error("Telegram owner notification is not configured.");
+              heartbeatNotificationDeduper.recordDelivered(heartbeatNotification);
+            }
+            catch (error) { console.warn(`[biny] Telegram heartbeat notification failed: ${redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 500)}`); }
+          }
+        } finally {
+          try {
+            await active?.session.close();
+          } finally {
+            active?.communication.close();
+            try { await Promise.all(models.map(model => model.close())); }
+            finally { leases.close(); }
+          }
         }
-        catch (error) { console.warn(`[biny] Telegram heartbeat notification failed: ${redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 500)}`); }
-      }
+      })();
+      heartbeatRun = run;
+      try { await run; }
+      finally { if (heartbeatRun === run) heartbeatRun = undefined; }
     }
   });
   const backgroundOwner = {
@@ -1650,7 +1680,6 @@ async function initializeCommandRuntime(
         // child scheduler. Keep their recorder and stores open until they settle.
         await Promise.allSettled([...durableTaskPromises.values()]);
         await cleanup.heartbeatAgent?.();
-        await cleanup.heartbeatCommunication?.();
         await agent.close();
       } finally {
         try {

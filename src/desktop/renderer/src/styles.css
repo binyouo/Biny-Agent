@@ -193,7 +193,7 @@ button:disabled { opacity: 0.42; }
 .copy-button:hover { background: var(--surface-hover); }
 .context-usage { display: inline-flex; height: 30px; align-items: center; gap: 4px; padding: 0 6px; border-radius: 8px; color: var(--text-tertiary); font-size: calc(10.5px * var(--font-scale)); font-variant-numeric: tabular-nums; cursor: default; }
 .context-usage:hover, .context-usage:focus-visible { color: var(--text-secondary); }
-.context-usage:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.context-usage:focus-visible { outline: 1px solid var(--accent); outline-offset: 0px; }
 /* Tooltip 负责悬停、键盘与窗口避让；分类色阶跟随主题强调色。 */
 .context-usage-ring { width: 17px; height: 17px; flex: 0 0 auto; fill: none; stroke-width: 2.5; transform: rotate(-90deg); }
 .context-usage-ring-track { stroke: var(--border-strong); }
@@ -280,7 +280,7 @@ button:disabled { opacity: 0.42; }
 .radio { width: 14px; height: 14px; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: 50%; }
 .radio.is-selected { border: 4px solid var(--accent); }
 .font-select,
-.font-size-input {
+.font-size-input:not(.settings-field) {
   height: 36px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -293,7 +293,7 @@ button:disabled { opacity: 0.42; }
 }
 .font-select { width: 100%; }
 .font-select:focus,
-.font-size-input:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.font-size-input:not(.settings-field):focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .font-size-row { display: flex; align-items: center; gap: 8px; }
 .font-size-input { width: 88px; }
 .font-size-unit { color: var(--text-secondary); font-size: calc(12px * var(--font-scale)); }
@@ -549,7 +549,7 @@ button:disabled { opacity: 0.42; }
   background: var(--surface-soft);
   font-size: calc(12.5px * var(--font-scale));
 }
-.connection-select {
+.connection-select:not(.settings-field) {
   width: 100%;
   height: 36px;
   border: 1px solid var(--border);
@@ -560,8 +560,8 @@ button:disabled { opacity: 0.42; }
   background: var(--surface-soft);
   font-size: calc(12.5px * var(--font-scale));
 }
-.connection-select:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-.connection-select:disabled { opacity: 0.6; }
+.connection-select:not(.settings-field):focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.connection-select:not(.settings-field):disabled { opacity: 0.6; }
 .connection-field > input:focus,
 .secret-input-row input:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .settings-inline-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }

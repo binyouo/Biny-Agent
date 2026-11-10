@@ -14,7 +14,7 @@ export const skillActivityLabels: Record<SkillActivity["status"], string> = {
 
 export function skillActivities(
   loaded: readonly string[],
-  _selection: CapabilitySelectionValue | undefined,
+  selection: CapabilitySelectionValue | undefined,
   _tools: readonly TimelineTool[],
   labels?: ReadonlyMap<string, string>
 ): SkillActivity[] {
@@ -28,6 +28,12 @@ export function skillActivities(
   for (const value of loaded) {
     const name = nameFor(value);
     if (name) activities.set(name, { name, status: "loaded" });
+  }
+  if (Array.isArray(selection)) {
+    for (const value of selection) {
+      const name = nameFor(value);
+      if (name && !activities.has(name)) activities.set(name, { name, status: "selected" });
+    }
   }
   return [...activities.values()];
 }

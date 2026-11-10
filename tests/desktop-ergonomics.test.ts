@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
 import { buildToolOptimizationOverview } from "../src/session/toolOptimizationOverview.js";
-import type { DesktopToolOptimizationStats } from "../src/desktop/protocol.js";
+import type { DesktopSessionSummary, DesktopToolOptimizationStats } from "../src/desktop/protocol.js";
 
 async function harness() {
   const imports = registerHooks({ load(url, context, next) {
@@ -21,6 +21,11 @@ async function harness() {
         ...buildToolOptimizationOverview([], new Date("2026-01-01T00:00:00.000Z")), incompleteSessions: 0
       }),
       bootstrap: async () => ({ projects: [], sidebarSessions: [] }), onApplicationImportsChanged: () => () => {},
+      remoteAccessStatus: async () => ({ state: "disabled" as const, connections: 0 }),
+      remoteAccessStart: async () => ({ state: "disabled" as const, connections: 0 }),
+      remoteAccessStop: async () => ({ state: "disabled" as const, connections: 0 }),
+      remoteAccessRegenerate: async () => ({ state: "disabled" as const, connections: 0 }),
+      onRemoteAccessChanged: () => () => {},
       onActivityEvent: () => () => {}, activitySnapshot: async () => { throw new Error("offline"); }, activityPermissions: async () => { throw new Error("offline"); } } });
   dom.window.HTMLElement.prototype.scrollTo = () => {};
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -170,7 +175,7 @@ test("聊天草稿在切项目、切会话和取消历史编辑后保留，默�
   } finally { await h.close(); }
 });
 
-test("设置页面直接导航，通用合并外观和字体且配色可直接进入", async () => {
+test("设置页面直接导航，通用保留外观和字体并移除配色管理", async () => {
   const h = await harness();
   try {
     const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
@@ -181,7 +186,7 @@ test("设置页面直接导航，通用合并外观和字体且配色可直接�
     assert.ok(document.querySelector('#appearance-font-family'), '通用页可直接修改字体');
     assert.ok(document.querySelector('#appearance-font-size'), '通用页可直接修改字号');
     assert.equal(document.querySelector('[data-settings-tab="用户界面"]'), null, '合并后不再提供独立的用户界面入口');
-    const pages = [["通用", "通用"], ["模型", "模型供应商"], ["聊天", "聊天偏好"], ["Token 节省", "Token 节省"], ["配色", "配色"], ["记忆", "记忆"], ["技能", "技能"], ["MCP 服务器", "MCP 服务器"], ["插件", "插件"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["Appshots", "Appshots"], ["Computer Use", "Computer Use"], ["隐私脱敏", "隐私脱敏"], ["Computer History", "Computer History"], ["导入", "导入"], ["关于", "关于"]];
+    const pages = [["通用", "通用"], ["模型", "模型供应商"], ["聊天", "聊天偏好"], ["Token 节省", "Token 节省"], ["记忆", "记忆"], ["技能", "技能"], ["MCP 服务器", "MCP 服务器"], ["插件", "插件"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["远程访问", "远程访问"], ["Appshots", "Appshots"], ["Computer Use", "Computer Use"], ["隐私脱敏", "隐私脱敏"], ["Computer History", "Computer History"], ["导入", "导入"], ["关于", "关于"]];
     assert.deepEqual([...document.querySelectorAll('.settings-nav-list button')].map(node => node.textContent), pages.map(page => page[1]));
     assert.equal(document.querySelectorAll('.settings-nav-group').length, 0);
     assert.equal(document.querySelectorAll('.settings-titlebar p, .settings-save-hint').length, 0);
@@ -196,15 +201,14 @@ test("设置页面直接导航，通用合并外观和字体且配色可直接�
       if (route === "Token 节省") assert.ok(document.querySelector('.tool-optimization-page'), "统计页面应正常加载");
     }
     await h.render(h.React.createElement(SettingsOverlay, { ...props, targetTab: "配色" } as unknown as React.ComponentProps<typeof SettingsOverlay>));
-    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "配色");
+    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "通用");
     const search = document.querySelector<HTMLInputElement>('[aria-label="搜索设置"]')!;
     await h.React.act(async () => {
       Object.getOwnPropertyDescriptor(h.dom.window.HTMLInputElement.prototype, "value")!.set!.call(search, "Longhorn");
       search.dispatchEvent(new h.dom.window.Event("input", { bubbles: true }));
     });
-    assert.equal(document.querySelector('[aria-label="设置搜索结果"] strong')?.textContent, "配色");
-    await h.click('[aria-label="设置搜索结果"] button');
-    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "配色");
+    assert.equal(document.querySelector('[aria-label="设置搜索结果"] button'), null);
+    assert.equal(document.querySelector('[data-settings-tab="配色"]'), null);
   } finally { await h.close(); }
 });
 
@@ -242,6 +246,93 @@ test("项目排序只提供有区别的手动排序与最近打开", async () =>
     await h.click('[aria-label="项目排序"]');
     assert.deepEqual([...document.querySelectorAll('[aria-label="项目排序菜单"] [role="menuitemradio"]')].map(node => node.textContent), ["最近打开", "手动排序"]);
   } finally { await h.close(); }
+});
+
+test("侧栏跨行悬停复用会话内容，选择、更新、展开与删除仍响应", async () => {
+  const h = await harness();
+  const originalFrame = h.dom.window.requestAnimationFrame.bind(h.dom.window);
+  const originalCancelFrame = h.dom.window.cancelAnimationFrame.bind(h.dom.window);
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  let frameTime = 0;
+  h.dom.window.requestAnimationFrame = callback => { frames.set(++frameId, callback); return frameId; };
+  h.dom.window.cancelAnimationFrame = id => { frames.delete(id); };
+  Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: h.dom.window.requestAnimationFrame });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: h.dom.window.cancelAnimationFrame });
+  const frame = async () => { await h.React.act(async () => {
+    const pending = [...frames.values()]; frames.clear();
+    pending.forEach(callback => callback(frameTime += 16));
+  }); };
+  Object.defineProperties(h.dom.window.HTMLElement.prototype, {
+    offsetWidth: { configurable: true, get() { return 260; } },
+    offsetHeight: { configurable: true, get() { return this.classList.contains("biny-sidebar-session-list") ? this.querySelectorAll(".biny-sidebar-session-tree-row").length * 30 : 30; } },
+    offsetTop: { configurable: true, get() {
+      const rows = this.closest(".biny-sidebar-session-list")?.querySelectorAll(".biny-sidebar-session-tree-row");
+      return rows ? [...rows].indexOf(this) * 30 : 0;
+    } }
+  });
+  h.dom.window.HTMLElement.prototype.getBoundingClientRect = function () { return new h.dom.window.DOMRect(0, 0, 260, this.offsetHeight); };
+  let timestampReads = 0;
+  const sessions: DesktopSessionSummary[] = Array.from({ length: 80 }, (_, index) => ({
+    id: `session-${index}`, projectId: "project", fileName: `session-${index}.jsonl`, title: `会话 ${index}`,
+    firstUserMessage: "", lastAssistantMessage: "", eventCount: 2, createdAt: "2026-10-01T00:00:00Z",
+    get updatedAt() { timestampReads++; return "2026-11-01T00:00:00Z"; }, pinned: false, status: "completed"
+  }));
+  const selected: string[] = [];
+  const deleted: string[] = [];
+  const loaded: string[] = [];
+  try {
+    const { Sidebar } = await import("../src/desktop/renderer/src/components/Sidebar.js");
+    const props = { projects: [], sessions, layout: { mode: "expanded", contentWidth: 260 },
+      peekDrawerHandlers: {}, peekTriggerHandlers: {}, resizeHandlers: {},
+      onSelectSession: (_projectId: string, sessionId: string) => { selected.push(sessionId); },
+      onLoadSessionChildren: async (_projectId: string, sessionId: string) => {
+        loaded.push(sessionId); return { projectId: "project", parentSessionId: sessionId, revision: "1", sessions: [] };
+      },
+      onDeleteSessions: async (rows: DesktopSessionSummary[], _confirm: boolean, onStarted: () => void) => {
+        deleted.push(...rows.map(row => row.id)); onStarted();
+        return { cancelled: false, deleted: rows.map(row => ({ projectId: row.projectId, sessionId: row.id })), failures: [] };
+      }
+    } as unknown as React.ComponentProps<typeof Sidebar>;
+    await h.render(h.React.createElement(Sidebar, props));
+    await h.click(".biny-sidebar-session-expand");
+    await frame();
+    await frame();
+    assert.equal(document.querySelectorAll(".biny-sidebar-session-tree-row").length, 80);
+    const list = document.querySelector<HTMLElement>(".biny-sidebar-session-list")!;
+    timestampReads = 0;
+    for (const index of [0, 10, 20, 30, 40, 50, 60, 70]) {
+      await h.React.act(async () => list.dispatchEvent(new h.dom.window.MouseEvent("mousemove", { bubbles: true, clientX: 40, clientY: index * 30 + 15 })));
+      await frame();
+      assert.equal(list.getAttribute("data-fluid-hover-active-index"), String(index));
+    }
+    assert.equal(timestampReads, 0, "仅移动高亮不应重新读取或格式化 80 行会话时间");
+    await h.React.act(async () => document.querySelectorAll<HTMLButtonElement>(".biny-sidebar-session-item")[10]!.click());
+    assert.deepEqual(selected, ["session-10"]);
+    const updatedSessions = sessions.map((session, index) => index === 0 ? { ...session, title: "更新后的会话", hasChildren: true } : session);
+    updatedSessions.push({ ...sessions[1]!, id: "child", title: "子会话", parentSessionId: "session-0" });
+    await h.render(h.React.createElement(Sidebar, { ...props, sessions: updatedSessions, selectedSessionId: "session-10" }));
+    assert.equal(document.querySelector('[aria-current="page"]')?.textContent?.includes("会话 10"), true);
+    assert.equal(document.querySelectorAll(".biny-sidebar-session-title")[0]?.textContent, "更新后的会话");
+    await h.click('[aria-label="展开子会话"]');
+    assert.deepEqual(loaded, ["session-0"]);
+    assert.equal(document.querySelector(".biny-sidebar-session-children")?.getAttribute("aria-hidden"), "false");
+    await h.click('[aria-label="收起子会话"]');
+    assert.equal(document.querySelector(".biny-sidebar-session-children")?.getAttribute("aria-hidden"), "true");
+    await h.click('[aria-label="删除 更新后的会话"]');
+    await h.click('[aria-label="确认删除 更新后的会话"]');
+    assert.deepEqual(deleted, ["session-0"]);
+    await h.render(h.React.createElement(Sidebar, { ...props, sessions: updatedSessions.filter(session => !deleted.includes(session.id)), selectedSessionId: "session-10" }));
+    assert.equal(Boolean(document.querySelector('[aria-label="删除 更新后的会话"]')), false);
+  } finally {
+    await h.React.act(async () => document.querySelector(".biny-sidebar-session-list")?.dispatchEvent(new h.dom.window.MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })));
+    frames.clear();
+    h.dom.window.requestAnimationFrame = originalFrame;
+    h.dom.window.cancelAnimationFrame = originalCancelFrame;
+    Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: originalFrame });
+    Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: originalCancelFrame });
+    await h.close();
+  }
 });
 
 test("侧栏菜单支持方向键和首尾导航，Escape 还原触发按钮；原排序用例只覆盖鼠标选择", async () => {

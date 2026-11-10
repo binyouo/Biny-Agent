@@ -9,8 +9,6 @@ import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import { useEffect, useState } from "react";
 import type { SidebarLayoutSnapshot } from "../../../sidebarLayout.js";
 import type { DesktopThemePreference } from "../../../protocol.js";
-import { useAppearance } from "../appearanceContext.js";
-import { RetroStatusBar, WindowChrome } from "./WindowChrome.js";
 
 interface DesktopShellProps {
   children: React.ReactNode;
@@ -26,7 +24,6 @@ interface DesktopShellProps {
   sidebarLayout: SidebarLayoutSnapshot;
   starting?: boolean;
   theme: DesktopThemePreference;
-  windowTitle?: string;
 }
 
 /**
@@ -45,8 +42,7 @@ function SidebarPinSpacer({ active }: { active: boolean }): React.JSX.Element {
   );
 }
 
-export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sideNav, sidebarLayout, starting = false, theme, windowTitle }: DesktopShellProps): React.JSX.Element {
-  const appearance = useAppearance();
+export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sideNav, sidebarLayout, starting = false, theme }: DesktopShellProps): React.JSX.Element {
   const [revealed, setRevealed] = useState(!starting);
   useEffect(() => {
     if (revealed) return;
@@ -66,7 +62,7 @@ export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sid
     "--biny-inspector-flow-width": `${rightSidebar?.open ? rightSidebar.width : 0}px`
   } as React.CSSProperties;
   return (
-    <Theme mode={appearance.themeId ? appearance.mode : theme} theme={neutralTheme}>
+    <Theme mode={theme} theme={neutralTheme}>
       <div
         className="desktop-root biny-root"
         data-startup={revealed ? undefined : starting ? "loading" : "revealing"}
@@ -82,7 +78,6 @@ export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sid
           if (event.target.matches(".biny-chat-composer, .biny-content-shell")) setRevealed(true);
         }}
       >
-        <WindowChrome title={windowTitle} />
         <div className="biny-app-shell" inert={starting}>
           <main className="biny-content-shell" aria-busy={starting} inert={rightSidebar?.focused} aria-hidden={rightSidebar?.focused}>{children}</main>
           <div className="biny-sidebar-block">
@@ -91,7 +86,6 @@ export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sid
           </div>
           {rightPanel}
         </div>
-        <RetroStatusBar />
         {overlays}
       </div>
     </Theme>

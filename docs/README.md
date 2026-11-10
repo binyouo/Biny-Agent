@@ -15,6 +15,7 @@
 | [工具与权限](PERMISSIONS.md) | 选择权限模式，理解文件、命令与应用授权的范围。 |
 | [MCP、Skills 与插件](EXTENSIONS.md) | 接入外部能力，安装和维护扩展。 |
 | [浏览器](BROWSER.md) | 内置页面与 Chrome Relay 的执行链路、目标身份和连接方式。 |
+| [手机远程访问](REMOTE.md) | 桌面端开启自托管中继连接，生成原生移动端配对二维码与链接。 |
 | [Computer Use](COMPUTER_USE.md) | 原生观察与输入、应用授权、窗口镜像与外部 MCP。 |
 | [活动记录与 Appshots](ACTIVITY.md) | 桌面采集、OCR、后台分析、工作日记与窗口附件的流转。 |
 | [目标与自动化](AUTOMATION.md) | 会话目标、任务尝试、依赖图和持久定时触发如何驱动运行。 |

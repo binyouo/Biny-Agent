@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { placeholderTag } from "./crypto.js";
 import { restorePlaceholders } from "./placeholders.js";
+import { phoneContextAllows } from "./phoneContext.js";
 
 export interface KnownHit { start: number; end: number; kind: string; placeholder: string }
 type SentSpan = Pick<KnownHit, "start" | "end" | "kind">;
@@ -58,11 +59,11 @@ export class RedactionStore {
     try { return run(); } finally { this.retained = undefined; }
   }
 
-  find(text: string): KnownHit[] {
+  find(text: string, field?: string): KnownHit[] {
     const hits: KnownHit[] = [];
     for (let i = 0; i + 4 <= text.length; i++) {
       const entry = this.known.get(text.slice(i, i + 4))?.find((candidate) => text.startsWith(candidate.value, i)
-        && standsAlone(candidate.kind, text, i, i + candidate.value.length));
+        && standsAlone(candidate.kind, text, i, i + candidate.value.length, field));
       if (!entry) continue;
       hits.push({ start: i, end: i + entry.value.length, kind: entry.kind, placeholder: entry.placeholder });
       i += entry.value.length - 1;
@@ -72,14 +73,14 @@ export class RedactionStore {
 
   snapshot(): Map<string, string> { return new Map([...this.values].map(([tag, entry]) => [tag, entry.value])); }
   restore(text: string): string { return restorePlaceholders(text, this.snapshot()); }
-  sentSpans(text: string, context: string): SentSpan[] | undefined {
-    const key = this.sentKey(text, context), spans = this.sent.get(key);
+  sentSpans(text: string, context: string, route = ""): SentSpan[] | undefined {
+    const key = this.sentKey(text, context, route), spans = this.sent.get(key);
     if (spans) { this.sent.delete(key); this.sent.set(key, spans); }
     return spans;
   }
-  rememberSent(text: string, context: string, spans: SentSpan[]): void {
+  rememberSent(text: string, context: string, spans: SentSpan[], route = ""): void {
     if (spans.length > this.limits.sentSpans) return;
-    const key = this.sentKey(text, context);
+    const key = this.sentKey(text, context, route);
     this.sentSize -= this.sent.get(key)?.length ?? 0;
     this.sent.delete(key);
     this.sent.set(key, spans);
@@ -90,15 +91,15 @@ export class RedactionStore {
       this.sentSize -= old.length;
     }
   }
-  private sentKey(text: string, context: string): string { return createHash("sha256").update(context).update("\0").update(text).digest("hex"); }
+  private sentKey(text: string, context: string, route: string): string { return createHash("sha256").update(JSON.stringify([route, context])).update("\0").update(text).digest("hex"); }
   get count(): number { return this.values.size; }
   clear(): void { this.values.clear(); this.known.clear(); this.sent.clear(); this.size = 0; this.sentSize = 0; }
 }
 
-function standsAlone(kind: string, text: string, start: number, end: number): boolean {
+function standsAlone(kind: string, text: string, start: number, end: number, field?: string): boolean {
   const adjacent = `${text[start - 1] ?? ""}${text[end] ?? ""}`;
-  if (kind === "PHONE" || kind === "BANK_CARD") return !/\d/u.test(adjacent);
-  if (kind === "ID_CARD") return !/[A-Za-z0-9]/u.test(adjacent);
+  if (kind === "PHONE") return phoneContextAllows(text, start, end, field, true);
+  if (kind === "BANK_CARD" || kind === "ID_CARD") return !/[A-Za-z0-9]/u.test(adjacent);
   return true;
 }
 

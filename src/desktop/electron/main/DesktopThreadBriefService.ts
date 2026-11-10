@@ -8,7 +8,7 @@ import { readSessionEvents, readSessionSummary } from "../../../session/events.j
 import { listSessionCatalog, readSessionCatalogRecord } from "../../../session/catalog.js";
 import { activeSessionMessageIds, sessionMessageTree } from "../../../session/messageTree.js";
 import { publicUserMessage } from "../../../session/publicMessage.js";
-import { resolveSessionFile, sessionIdFromFile } from "../../../session/store.js";
+import { isHeartbeatSessionId, resolveSessionFile, sessionIdFromFile } from "../../../session/store.js";
 import type { SessionEvent } from "../../../session/recorder.js";
 import { ThreadBriefService, type BriefThread } from "../../../session/threadBriefService.js";
 import { ThreadBriefStore, threadBriefSettingsSchema } from "../../../session/threadBriefStore.js";
@@ -186,6 +186,7 @@ export class DesktopThreadBriefService {
   }
 
   private async isVisibleThread(thread: BriefThreadReference): Promise<boolean> {
+    if (isHeartbeatSessionId(thread.sessionId)) return false;
     const project = this.options.state.projects().find((entry) => entry.id === thread.projectId && !entry.missing);
     if (!project) return false;
     const root = await this.options.projects.dataRoot(project);
@@ -220,6 +221,7 @@ export class DesktopThreadBriefService {
   }
 
   private async readThread(sessionId: string, minimumCreatedAt?: string): Promise<BriefThread | undefined> {
+    if (isHeartbeatSessionId(sessionId)) return undefined;
     for (const project of this.options.state.projects()) {
       if (project.missing) continue;
       const root = await this.options.projects.dataRoot(project);

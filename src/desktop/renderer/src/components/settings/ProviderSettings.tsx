@@ -1266,7 +1266,7 @@ function LoginProviderPanel({
           <div className="login-code-panel">
             <p>在 {authorizationHost} 完成登录后，会跳转到控制台显示一段授权码（含 <code>#</code> 分隔符），把它粘贴到下面：</p>
             <small>提示：你的 state 以 <code>{loginRequest?.stateHint}</code> 开头。</small>
-            <textarea className="settings-field"
+            <textarea
               autoFocus
               onChange={(event) => onAuthorizationCode(event.target.value)}
               placeholder="粘贴授权码（格式：xxx#yyy）"
@@ -1421,7 +1421,7 @@ function ConnectedProviderPanel({
     <div className="provider-connection-fields">
       <div className="provider-row-item">
           <label className="provider-row-label" htmlFor={`${fieldPrefix}-base-url`}>服务地址</label>
-          <input className="settings-field"
+          <input
             id={`${fieldPrefix}-base-url`}
             onBlur={onBaseUrlBlur}
             onChange={(event) => onBaseUrlChange(event.target.value)}
@@ -1538,7 +1538,7 @@ function ConnectedProviderPanel({
               ) : null}
             </div>
             <div className="secret-input-row">
-              <input className="settings-field"
+              <input
                 autoComplete="off"
                 id={`${fieldPrefix}-api-key`}
                 disabled={keyLoading}
@@ -1696,7 +1696,7 @@ function TestConnectionButton({
           <FluidHoverHighlight hover={testMenuHover} className="has-row-radius" />
           <div className="provider-test-search">
             <Icon name="search" size={12} />
-            <input className="settings-field"
+            <input
               autoFocus
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeMenu(); } }}
@@ -1823,29 +1823,27 @@ function ModelsSection({
                 </div>
               </div>
               <div className="provider-model-actions">
-                <Tooltip delay={150} content={choice ? "模型选项" : "启用模型后可调整选项"}>
+                <button
+                  aria-label={choice ? `${model.displayName} 模型选项` : "启用模型后可调整模型选项"}
+                  title={choice ? "模型选项" : "启用模型后可调整选项"}
+                  className="icon-button"
+                  disabled={!choice || saving}
+                  onClick={() => { if (choice) onOpenModelOptions(choice); }}
+                  type="button"
+                >
+                  <Icon name="sliders" size={13} />
+                </button>
+                {model.isManual && choice ? (
                   <button
-                    aria-label={choice ? `${model.displayName} 模型选项` : "启用模型后可调整模型选项"}
+                    aria-label={`删除手动模型 ${model.displayName}`}
+                    title="删除手动模型"
                     className="icon-button"
-                    disabled={!choice || saving}
-                    onClick={() => { if (choice) onOpenModelOptions(choice); }}
+                    disabled={saving}
+                    onClick={() => void onRemoveModel(choice)}
                     type="button"
                   >
-                    <Icon name="sliders" size={13} />
+                    <Icon name="trash" size={13} />
                   </button>
-                </Tooltip>
-                {model.isManual && choice ? (
-                  <Tooltip delay={150} content="删除手动模型">
-                    <button
-                      aria-label={`删除手动模型 ${model.displayName}`}
-                      className="icon-button"
-                      disabled={saving}
-                      onClick={() => void onRemoveModel(choice)}
-                      type="button"
-                    >
-                      <Icon name="trash" size={13} />
-                    </button>
-                  </Tooltip>
                 ) : null}
                 <button
                   aria-checked={enabled}
@@ -1878,7 +1876,7 @@ function ModelsSection({
         {models.length > 0 ? <button className="settings-action settings-text-action settings-link" type="button" disabled={fetchingCatalog || saving} aria-busy={saving} onClick={() => void onToggleMany(models, !allVisibleEnabled)}><span className="button-state-label"><span aria-hidden={allVisibleEnabled}>全选{query.trim() ? "搜索结果" : ""}</span><span aria-hidden={!allVisibleEnabled}>取消全选{query.trim() ? "搜索结果" : ""}</span></span></button> : null}
       </div>
       {manualOpen ? <div className="provider-manual-row">
-        <input className="settings-field"
+        <input
           id={manualInputId}
           ref={manualInputRef}
           disabled={adding || saving}
@@ -1888,7 +1886,7 @@ function ModelsSection({
           placeholder="模型 ID（例如 gpt-4o）"
           value={manualModelId}
         />
-        <input className="settings-field"
+        <input
           disabled={adding || saving}
           aria-label="手动添加模型显示名称"
           onChange={(event) => setManualDisplayName(event.target.value)}
@@ -1914,24 +1912,16 @@ function ModelRowBadges({ model }: { model: CatalogModel }): React.JSX.Element {
   return (
     <>
       {model.supportsVision ? (
-        <Tooltip delay={150} content="支持图片输入" key="vision">
-          <span className="provider-model-cap"><Icon name="eye" size={11} /></span>
-        </Tooltip>
+        <span className="provider-model-cap" role="img" title="支持图片输入" aria-label="支持图片输入"><Icon name="eye" size={11} /></span>
       ) : null}
       {model.supportsTools !== false ? (
-        <Tooltip delay={150} content="支持工具调用" key="tools">
-          <span className="provider-model-cap"><Icon name="wrench" size={11} /></span>
-        </Tooltip>
+        <span className="provider-model-cap" role="img" title="支持工具调用" aria-label="支持工具调用"><Icon name="wrench" size={11} /></span>
       ) : null}
       {model.supportsThinking ? (
-        <Tooltip delay={150} content="支持扩展思考/推理" key="thinking">
-          <span className="provider-model-cap"><Icon name="brain-spark" size={11} /></span>
-        </Tooltip>
+        <span className="provider-model-cap" role="img" title="支持扩展思考/推理" aria-label="支持扩展思考/推理"><Icon name="brain-spark" size={11} /></span>
       ) : null}
       {context ? (
-        <Tooltip delay={150} content={`${context.tokens.toLocaleString("zh-CN")} token 上下文窗口`} key="context">
-          <span className="provider-model-ctx">{context.label}</span>
-        </Tooltip>
+        <span className="provider-model-ctx" title={`${context.tokens.toLocaleString("zh-CN")} token 上下文窗口`}>{context.label}</span>
       ) : null}
     </>
   );
@@ -1986,7 +1976,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
           <div className="provider-rows">
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-name">名称</label>
-              <input className="settings-field"
+              <input
                 autoFocus
                 disabled={creating}
                 id="custom-provider-create-name"
@@ -2002,7 +1992,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
             </div>
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-url">服务地址</label>
-              <input className="settings-field"
+              <input
                 disabled={creating}
                 id="custom-provider-create-url"
                 onChange={(event) => setBaseUrl(event.target.value)}
@@ -2016,7 +2006,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-key">API Key（可选）</label>
               <div className="secret-input-row">
-                <input className="settings-field"
+                <input
                   autoComplete="off"
                   disabled={creating}
                   id="custom-provider-create-key"

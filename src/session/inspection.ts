@@ -11,18 +11,20 @@ function messageText(message: AgentMessage): string {
   return typeof message.content === "string" ? message.content : message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
 }
 
-export async function readSessionMessages(workspaceRoot: string, session: string, options: { offset: number; limit: number; full?: boolean }) {
+export async function readSessionMessages(workspaceRoot: string, session: string, options: { offset: number; limit: number; full?: boolean; fromEnd?: boolean }) {
   const events = await readSessionEvents(await resolveSessionFile(workspaceRoot, session));
   const replay = replaySessionEvents(events, { includeCompactedMessages: true });
-  const messages = replay.messages.slice(options.offset, options.offset + options.limit).map((message, offset) => ({
-    id: replay.messageReferences[options.offset + offset]!.id,
-    index: options.offset + offset,
+  const start = options.fromEnd ? Math.max(0, replay.messages.length - options.limit) : options.offset;
+  const messages = replay.messages.slice(start, start + options.limit).map((message, offset) => ({
+    id: replay.messageReferences[start + offset]!.id,
+    index: start + offset,
     role: message.role,
     content: options.full ? redactSecrets(messageText(message)) : redactSecrets(messageText(message)).slice(0, 80),
     parts: options.full ? message.content : undefined
   }));
-  return redactSensitiveValue({ sessionId: session, total: replay.messages.length, offset: options.offset, messages,
-    nextOffset: options.offset + messages.length < replay.messages.length ? options.offset + messages.length : null });
+  const page = { sessionId: session, total: replay.messages.length, offset: start, messages,
+    nextOffset: start + messages.length < replay.messages.length ? start + messages.length : null };
+  return redactSensitiveValue(page) as typeof page;
 }
 
 export async function searchSessions(workspaceRoot: string, query: string, options: SessionCatalogQuery = {}) {

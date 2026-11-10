@@ -4,7 +4,7 @@ import { registerHooks } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import type { AppearanceSnapshot } from "../src/appearance/types.js";
+import type { DesktopAppearanceSnapshot } from "../src/desktop/protocol.js";
 import { AppearancePreviewCoordinator } from "../src/desktop/appearanceCoordinator.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { desktopIpc, type DesktopSettingsSaveInput, type DesktopSettingsSaveResult, type DesktopSettingsSnapshot } from "../src/desktop/protocol.js";
@@ -16,7 +16,7 @@ test("settings save refreshes appearance only for its own preferences or changed
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
   const nativeChanges: string[] = [];
   const backgrounds: string[] = [];
-  const published: AppearanceSnapshot[] = [];
+  const published: DesktopAppearanceSnapshot[] = [];
   const appearance = new AppearancePreviewCoordinator({
     read: () => state.settingsPreferences(),
     publish: snapshot => { published.push(snapshot); }
@@ -26,7 +26,7 @@ test("settings save refreshes appearance only for its own preferences or changed
   const preferences = () => {
     const saved = state.settingsPreferences();
     return { projectId: "project", hasRunningTasks: false, preferenceRevision: saved.revision,
-      themePreference: saved.themePreference, fontPreference: saved.fontPreference, appearancePreference: saved.appearancePreference };
+      themePreference: saved.themePreference, fontPreference: saved.fontPreference };
   };
   const committed = (appliedFields: string[]): DesktopSettingsSaveResult => ({
     status: "committed", journalId: "fixture", appliedFields, snapshot: snapshot()

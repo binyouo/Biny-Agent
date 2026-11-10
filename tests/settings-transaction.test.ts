@@ -23,7 +23,6 @@ import {
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { runtimeMutationStartsWork } from "../src/desktop/electron/main/settingsRuntimeGate.js";
-import { DEFAULT_APPEARANCE } from "../src/appearance/preferences.js";
 
 type FailurePoint =
   | "prepare_config"
@@ -333,7 +332,7 @@ class FailPreferenceRollbackEvidenceTransaction extends DesktopSettingsTransacti
 }
 
 await testCommitAndJournalRedaction();
-await testAppearanceTransaction();
+await testThemeAndFontTransaction();
 await testActivitySettingsUseConfigCas();
 await testChatParamsOnlySaveCommits();
 await testPermissionOnlySaveCommits();
@@ -356,24 +355,24 @@ testSettingsSaveInputBoundsModelBatch();
 testRuntimeMutationRecoveryClassification();
 console.log("settings transaction tests passed");
 
-async function testAppearanceTransaction(): Promise<void> {
+async function testThemeAndFontTransaction(): Promise<void> {
   await withFixture(async ({ root, state, agents }) => {
     const transaction = new DesktopSettingsTransaction(state, agents);
     const initial = await transaction.snapshot("project");
-    const appearancePreference = { ...DEFAULT_APPEARANCE, lightTheme: "win98", darkTheme: "longhorn-dark" };
-    const result = await transaction.save("project", { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, appearancePreference, themePreference: "light" });
+    const fontPreference = { family: "PingFang SC", size: 18 };
+    const result = await transaction.save("project", { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, fontPreference, themePreference: "light" });
     assert.equal(result.status, "committed", JSON.stringify(result));
     assert.equal(result.snapshot, undefined);
-    assert.deepEqual(result.preferences?.appearancePreference, appearancePreference);
-    assert.ok(result.appliedFields.includes("appearancePreference"));
+    assert.deepEqual(result.preferences?.fontPreference, fontPreference);
+    assert.ok(result.appliedFields.includes("fontPreference"));
     const reloaded = new DesktopStateStore(path.join(root, "desktop-state.json"));
     await reloaded.load();
-    assert.deepEqual(reloaded.appearancePreference(), appearancePreference);
+    assert.deepEqual(reloaded.fontPreference(), fontPreference);
     assert.equal(agents.configRevision, initial.configRevision);
-    const conflict = await transaction.save("project", { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, appearancePreference: { ...appearancePreference, lightTheme: "winxp" } });
+    const conflict = await transaction.save("project", { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, fontPreference: { ...fontPreference, size: 20 } });
     assert.equal(conflict.status, "rolled_back");
     assert.equal(conflict.conflicts?.[0]?.segment, "preferences");
-    assert.deepEqual(state.appearancePreference(), appearancePreference);
+    assert.deepEqual(state.fontPreference(), fontPreference);
   });
 }
 
@@ -641,7 +640,6 @@ async function testSegmentFailureCompensation(): Promise<void> {
         expectedPreferenceRevision: initial.preferenceRevision,
         expectedConfigRevision: initial.configRevision,
         themePreference: "dark",
-        appearancePreference: { ...DEFAULT_APPEARANCE, darkTheme: "longhorn-dark", lightTheme: "winxp" },
         memory: {
           ...initial.memory,
           useMemories: !initial.memory.useMemories
@@ -650,7 +648,6 @@ async function testSegmentFailureCompensation(): Promise<void> {
       });
       assert.equal(result.status, "rolled_back", failure);
       assert.equal(state.themePreference(), "system", failure);
-      assert.deepEqual(state.appearancePreference(), DEFAULT_APPEARANCE, failure);
       assert.equal(agents.configRevision, "config:0", failure);
       assert.equal(agents.chatRevision, "missing", failure);
       await assert.rejects(fs.access(state.settingsTransactionJournalPath()), { code: "ENOENT" });
@@ -822,6 +819,10 @@ async function testCrashAfterConfigBeforeChatIsCompensatedOnRestart(): Promise<v
     assert.equal(journal.segments.config.state, "committed");
     assert.equal(journal.segments.chatMetadata.state, "pending");
     assert.ok(journal.recoveryPayload, "cross-segment transactions retain a recovery payload");
+    // 旧日志可携带已废弃的配色字段，恢复仍只比较和补偿明暗与字体。
+    Object.assign(journal.segments.preferences.before, { appearancePreference: { lightTheme: "win98" } });
+    Object.assign(journal.segments.preferences.after, { appearancePreference: { darkTheme: "longhorn-dark" } });
+    await fs.writeFile(state.settingsTransactionJournalPath(), `${JSON.stringify(journal)}\n`, "utf8");
     const payloadPath = path.join(root, journal.recoveryPayload.fileName);
     const payload = await fs.readFile(payloadPath, "utf8");
     assert.equal(payload.includes(credentialSecret), false, "recovery payload must redact credential plaintext");

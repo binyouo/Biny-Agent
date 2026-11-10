@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
 import type { SessionEvent } from "../src/session/events.js";
 import { appendLiveTimelineEvents, createSessionTimelineProjector } from "../src/desktop/renderer/src/sessionTimeline.js";
+import { commandOutputPreview } from "../src/desktop/renderer/src/commandOutput.js";
 
 const base = { sessionId: "session", runId: "run", timestamp: "2026-10-22T00:00:00.000Z" };
 const user: AgentHostEvent = { ...base, type: "message.user", messageId: "user", content: "Inspect the project" };
@@ -87,4 +88,30 @@ test("published active steps and tool output stay immutable as later deltas arri
   assert.deepEqual(started, savedStarted);
   liveEvents.push({ ...base, type: "run.completed", durationMs: 100 });
   assert.equal(project().status, "completed");
+});
+
+test("live command projection keeps bounded stream tails without discarding original chunks or changing published snapshots", () => {
+  const projector = createSessionTimelineProjector();
+  const events: SessionEvent[] = [];
+  let liveEvents: AgentHostEvent[] = [user, { ...base, type: "tool.started", tool: "Bash", toolCallId: "shell", args: {}, display: { kind: "command", command: "synthetic" } }];
+  const project = () => projector.update({ sessionId: base.sessionId, events, liveEvents })[0]!.tools[0]!;
+  const chunks = ["前😀", "中".repeat(16_383), "\nlast stdout\n"];
+  for (const text of chunks.slice(0, 2)) {
+    liveEvents = appendLiveTimelineEvents(liveEvents, [{ ...base, type: "tool.progress", tool: "Bash", toolCallId: "shell", update: { kind: "stdout", text } }]);
+    project();
+  }
+  const first = project();
+  const saved = structuredClone(first);
+  assert.ok(first.command!.stdout.length <= 16_384, "live display state must not retain the growing full stdout");
+  assert.deepEqual(commandOutputPreview(first.command!), { text: `…\n${"中".repeat(16_383)}`, truncated: true });
+  liveEvents = appendLiveTimelineEvents(liveEvents, [
+    { ...base, type: "tool.progress", tool: "Bash", toolCallId: "shell", update: { kind: "stderr", text: "error start" + "e".repeat(32_768) } },
+    { ...base, type: "tool.progress", tool: "Bash", toolCallId: "shell", update: { kind: "stdout", text: chunks[2]! } }
+  ]);
+  const next = project();
+  assert.ok(next.command!.stdout.length <= 16_384);
+  assert.equal(next.command!.stderr.length, 16_384);
+  assert.ok(next.command!.stdout.endsWith("\nlast stdout\n"));
+  assert.deepEqual(next.updates.map(update => update.text), [chunks[0], chunks[1], "error start" + "e".repeat(32_768), chunks[2]]);
+  assert.deepEqual(first, saved, "later output cannot rewrite published text, markers or chunks");
 });

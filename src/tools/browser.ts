@@ -37,6 +37,8 @@ interface BrowserAutomationResponse {
   ok: boolean;
   result?: unknown;
   error?: string;
+  inputNotDispatched?: boolean;
+  outcomeUnknown?: boolean;
 }
 
 export interface BrowserDomSnapshot {
@@ -395,7 +397,7 @@ function createBrowserTabFloatTool(endpoint: BrowserAutomationEndpoint): Tool<{ 
 function createBrowserNavigateTool(endpoint: BrowserAutomationEndpoint): Tool<BrowserNavigateArgs> {
   return {
     name: "BrowserOpen",
-    description: "Navigate the visible Biny browser to an HTTP or HTTPS URL and return its current page state.",
+    description: "Open or navigate an HTTP or HTTPS page in Biny's browser and return its current page state. For an unfamiliar application name without a URL or explicit web context, discover native apps with ComputerList before choosing a website. Preserve the requested application.",
     promptSnippet: "Navigate the visible browser to a web page",
     promptGuidelines: [
       "Use BrowserOpen before BrowserReadDom when the target page is not already open",
@@ -824,13 +826,13 @@ export async function requestBrowser(
       || method === "clipboard" && args.action === "write";
     const timer = setTimeout(() => finish(new Error("Browser automation timed out."), undefined, "timeout"), method === "web_read" && typeof args.timeoutMs === "number" ? args.timeoutMs + 5_000 : requestTimeoutMs);
     const abort = (): void => finish(new Error("Browser action cancelled."), undefined, "cancelled");
-    const finish = (error?: Error, value?: unknown, reason: ToolOutcomeUnknownReason = "transport_error"): void => {
+    const finish = (error?: Error, value?: unknown, reason: ToolOutcomeUnknownReason = "transport_error", inputNotDispatched = false): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       socket.destroy();
-      if (error) reject(dispatched && mutation ? new ToolOutcomeUnknownError(reason, error.message) : error);
+      if (error) reject(dispatched && mutation && !inputNotDispatched ? new ToolOutcomeUnknownError(reason, error.message) : error);
       else resolve(value);
     };
     signal?.addEventListener("abort", abort, { once: true });
@@ -848,7 +850,11 @@ export async function requestBrowser(
       try {
         const response = JSON.parse(line) as BrowserAutomationResponse;
         if (response.id !== id) throw new Error("Browser automation response id mismatch.");
-        if (!response.ok) throw new Error(response.error ?? "Browser automation failed.");
+        if (typeof response.ok !== "boolean") throw new Error("Invalid browser automation response.");
+        if (!response.ok) {
+          finish(new Error(response.error ?? "Browser automation failed."), undefined, "transport_error", response.inputNotDispatched === true && response.outcomeUnknown !== true);
+          return;
+        }
         // 浏览器返回值会进入模型上下文；只对返回结果做结构化脱敏，不能改写
         // BrowserType 发送给网页的真实值。
         finish(undefined, redactSensitiveValue(response.result));

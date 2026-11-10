@@ -1,7 +1,7 @@
 import React from "react";
 import { ToolCodeBlock } from "./ToolCodeBlock.js";
 
-const codeFields = /^(code|script|source|content|sql|query|patch|diff|body|html|css|svg|markdown|md|template|prompt)$/iu;
+const codeFields = /^(code|script|source|command|content|sql|query|patch|diff|body|html|css|svg|markdown|md|template|prompt)$/iu;
 
 export function ToolParameters({ args, toolName }: { args: unknown; toolName?: string }): React.JSX.Element | null {
   if (args === undefined) return null;
@@ -33,6 +33,7 @@ export function ToolParameters({ args, toolName }: { args: unknown; toolName?: s
 function parameterLanguage(name: string, hint?: string): string {
   switch (name.toLowerCase()) {
     case "code": case "script": case "source": return hint ?? "typescript";
+    case "command": return "bash";
     case "sql": case "query": return "sql";
     case "patch": case "diff": return "diff";
     case "html": return "html";

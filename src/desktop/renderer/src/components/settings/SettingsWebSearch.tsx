@@ -83,7 +83,7 @@ export function SettingsWebSearch({ onOpenBrowser, onExportCookies, onImportCook
       <div className="settings-section-body">
         <p>登录后，网页抓取可使用该网站的登录状态。</p>
         <form className="web-browser-url-row" onSubmit={(event) => { event.preventDefault(); open(browserUrl.trim()); }}>
-          <input className="settings-field" aria-label="网站地址" autoCapitalize="none" autoComplete="off" type="url" required value={browserUrl} onChange={(event) => setBrowserUrl(event.target.value)} placeholder="https://" />
+          <input aria-label="网站地址" autoCapitalize="none" autoComplete="off" type="url" required value={browserUrl} onChange={(event) => setBrowserUrl(event.target.value)} placeholder="https://" />
           <button className="settings-action settings-secondary-button web-search-action" disabled={disabled} type="submit">打开浏览器</button>
         </form>
       </div>

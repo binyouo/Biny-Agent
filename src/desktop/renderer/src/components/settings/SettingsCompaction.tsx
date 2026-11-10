@@ -45,7 +45,7 @@ export function OptionalNumberField({
   return (
     <label className="setting-row" htmlFor={id}>
       <span><strong>{label}</strong>{hint ? <small>{hint}</small> : null}</span>
-      <div className="activity-number-input"><input className="settings-field" id={id} inputMode="numeric" max={max} min={min} onBlur={commit} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") commit(); }} placeholder="自动" type="number" value={text} />{unit ? <em>{unit}</em> : null}</div>
+      <div className="activity-number-input"><input id={id} inputMode="numeric" max={max} min={min} onBlur={commit} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") commit(); }} placeholder="自动" type="number" value={text} />{unit ? <em>{unit}</em> : null}</div>
     </label>
   );
 }

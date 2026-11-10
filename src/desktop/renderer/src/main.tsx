@@ -7,7 +7,6 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ThreadBriefProvider } from "./threadBrief/ThreadBriefProvider.js";
 import { App } from "./App.js";
-import { loadSkinStyles } from "./appearanceStyles.js";
 import "./styles/layers.css";
 // KaTeX 公式样式在入口引入：组件里引 CSS 会让 node 侧的 SSR 测试挂掉（tsx 不认 .css）。
 import "katex/dist/katex.min.css";
@@ -18,10 +17,8 @@ document.documentElement.dataset.platform = navigator.userAgent.includes("Mac OS
 const root = document.getElementById("root");
 if (!root) throw new Error("Biny renderer root is missing.");
 
-const mount = (): void => { createRoot(root).render(
+createRoot(root).render(
   <StrictMode>
     <ThreadBriefProvider><App /></ThreadBriefProvider>
   </StrictMode>
-); };
-if (document.documentElement.dataset.appearanceSkin && document.documentElement.dataset.appearanceSkin !== "default") void loadSkinStyles().then(mount).catch((error: unknown) => { console.warn("Theme stylesheet failed to load", error); mount(); });
-else mount();
+);

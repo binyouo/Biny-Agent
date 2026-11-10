@@ -30,7 +30,7 @@ test("macOS 窗口从创建到切换主题保持透明底，避免填满渲染�
   } });
   try {
     const { createDesktopWindow } = await import("../src/desktop/electron/main/window.js");
-    const state = { themePreference: () => "light", appearancePreference: () => undefined, fontPreference: () => ({ family: "system", size: 14 }), windowBounds: () => undefined };
+    const state = { themePreference: () => "light", fontPreference: () => ({ family: "system", size: 14 }), windowBounds: () => undefined };
     const window = createDesktopWindow(state as unknown as DesktopStateStore, async () => "cancel");
     assert.equal((options.webPreferences as { preload: string }).preload, path.join("/biny-app", "out/preload/index.cjs"));
     if (!process.env.ELECTRON_RENDERER_URL) assert.equal(loadedFile, path.join("/biny-app", "out/renderer/index.html"));

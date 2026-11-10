@@ -14,6 +14,7 @@ import { createProxyAwareFetch } from "../network/proxyFetch.js";
 export class ModelRuntime {
   private readonly providers: ProviderRegistry;
   private readonly models: ModelRegistry;
+  private readonly registeredCatalogs = new Set<string>();
 
   constructor(
     private readonly config: AgentConfig,
@@ -25,19 +26,27 @@ export class ModelRuntime {
   ) {
     this.providers = new ProviderRegistry(config, catalogs, ai, modelsStore, fetcher, credentials);
     this.models = new ModelRegistry(config, this.providers);
-    for (const [providerAlias] of Object.entries(config.providers)) {
-      this.models.registerCatalog(providerAlias, this.providers.require(providerAlias).getModels());
+    // 先固定目录顺序，候选在实际列出或解析动态引用时登记；切换已配置模型只需目标元数据。
+    for (const providerAlias of Object.keys(config.providers)) {
+      this.models.registerCatalog(providerAlias, []);
     }
   }
 
   listModels(): ModelChoice[] {
+    for (const providerAlias of Object.keys(this.config.providers)) this.registerCatalog(providerAlias);
     return this.models.listModels();
   }
 
   resolve(reference: string, options: { requireAvailable?: boolean } = {}): RegisteredModel {
     const normalized = reference.trim();
     if (!normalized) throw new Error("Model reference cannot be empty.");
-    const resolved = this.models.resolve(normalized);
+    let resolved = this.models.resolve(normalized);
+    if (resolved?.source !== "configured") {
+      for (const providerAlias of Object.keys(this.config.providers)) {
+        if (normalized.startsWith(`${providerAlias}/`)) this.registerCatalog(providerAlias);
+      }
+      resolved = this.models.resolve(normalized);
+    }
     if (!resolved) throw new Error(`Unknown model "${normalized}". Use a configured alias or provider/model-id.`);
     if (options.requireAvailable && !this.models.isAvailable(resolved)) {
       throw new Error(`Model "${normalized}" is not available: configure its endpoint and credentials first.`);
@@ -56,6 +65,7 @@ export class ModelRuntime {
   async refreshModels(providerAlias: string, signal?: AbortSignal, force = false): Promise<ModelCatalogEntry[]> {
     const entries = await this.providers.refreshModels(providerAlias, signal, force);
     this.models.registerCatalog(providerAlias, entries);
+    this.registeredCatalogs.add(providerAlias);
     return entries;
   }
 
@@ -66,5 +76,11 @@ export class ModelRuntime {
 
   catalogsSnapshot(): Array<[string, ModelCatalogEntry[]]> {
     return this.providers.catalogsSnapshot();
+  }
+
+  private registerCatalog(providerAlias: string): void {
+    if (this.registeredCatalogs.has(providerAlias)) return;
+    this.models.registerCatalog(providerAlias, this.providers.require(providerAlias).getModels());
+    this.registeredCatalogs.add(providerAlias);
   }
 }

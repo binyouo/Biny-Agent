@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
-import { transformSync } from "esbuild";
 import { darkTheme, lightTheme } from "../src/tui/theme/palettes.js";
 import { Theme } from "../src/tui/theme/theme.js";
 
@@ -15,29 +14,6 @@ const styles = [...layers.matchAll(/@import "(\.\.?\/[^"]+\.css)"/gu)].map((entr
 }));
 const desktop = styles.map((entry) => entry.source).join("\n");
 const quickchat = read("quickchat/quickchat.css");
-
-function skinRuleSelectors(source: string): string[] {
-  // Let the existing CSS parser distinguish real comments from string/URL
-  // literals before finding rule boundaries. Keep global at-rules for validation.
-  const { code, warnings } = transformSync(source, { loader: "css", legalComments: "none", logLevel: "silent" });
-  assert.deepEqual(warnings, [], "skin CSS must parse without warnings");
-  // Skin attribute values are emitted as bare identifiers. Other literals and
-  // escapes must not supply fake braces or a fake skin selector to the check.
-  const structural = code.replace(/\burl\((?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^)\\"'])*\)|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\\[\s\S]/giu, "");
-  // Inspect outer blocks too: a nested block or custom-property value must not
-  // hide an unscoped parent. Grouping headers do not select any elements.
-  return [...structural.matchAll(/([^{}]+)\{/gu)].map(rule => rule[1]!.trim())
-    .filter(selector => !/^@(?:layer|media|supports|container|scope)\b[^;]*$/u.test(selector));
-}
-
-function assertSkinSelectors(source: string, file = "fixture"): void {
-  const selectors = skinRuleSelectors(source);
-  assert.ok(selectors.length > 0, file);
-  for (const selector of selectors) {
-    // esbuild normalizes the quoted skin attribute values to unquoted values.
-    assert.match(selector, /^:root[^{}]*\[data-appearance-skin=(?:win98|winxp|longhorn|longhorn-dark)\]/u, file);
-  }
-}
 
 function declaration(source: string, selector: string, property: string): string | undefined {
   let value: string | undefined;
@@ -177,46 +153,49 @@ test("quick chat uses the same message surfaces and primary-button foreground", 
   assert.match(read("App.tsx"), /QuickChatApp/u);
 });
 
-test("field focus rings share the theme accent and remain translucent", () => {
-  assert.equal(declaration(theme, ":root", "--field-focus-ring"), "color-mix(in srgb, var(--accent) 40%, transparent)");
+test("field focus rings stay neutral in light mode and use a faint accent in dark mode", () => {
+  assert.equal(declaration(theme, ":root", "--field-focus-ring"), "light-dark(color-mix(in srgb, var(--border-strong) 40%, transparent), color-mix(in srgb, var(--accent) 10%, transparent))");
   assert.equal(declaration(desktop, ".desktop-settings-dialog", "--st-field-ring"), "var(--field-focus-ring)");
   for (const selector of [
     ".biny-workspace-context-create > input:focus",
     ".biny-queued-message-row > textarea:focus",
     ".biny-mcp-search:focus-within",
-    ".biny-mcp-field input:focus",
-    ".biny-mcp-field textarea:focus",
-    ".biny-mcp-install-fields > select:focus",
-    ".biny-mcp-install-parameters input:focus",
+    ".biny-mcp-field input:not(.settings-field):focus",
+    ".biny-mcp-field textarea:not(.settings-field):focus",
+    ".biny-mcp-install-fields > select:not(.settings-field):focus",
+    ".biny-mcp-install-parameters input:not(.settings-field):focus",
     ".settings-extension-search:focus-within",
     ".inspector-file-filter:focus-within",
-    ".provider-manual-row input:focus",
     ".provider-json-editor:focus",
     ".permission-confirmation input:focus-visible"
-  ]) assert.equal(declaration(desktop, selector, "box-shadow"), "0 0 0 2px var(--field-focus-ring)", selector);
+  ]) assert.equal(declaration(desktop, selector, "box-shadow"), "inset 0 0 0 1px var(--field-focus-ring)", selector);
 });
 
-test("search, preference and dialog fields use attached rings without offset outlines", () => {
-  for (const [selector, token] of [
-    [".settings-search:focus-within", "--st-field-ring"],
-    ['.settings-preferences :is(select, input[type="number"]):focus-visible', "--st-field-ring"],
-    [".provider-dialog input:focus-visible", "--field-focus-ring"],
-    [".provider-dialog select:focus-visible", "--field-focus-ring"],
-    [".inspector-browser-address:focus-within", "--field-focus-ring"],
-    [".desktop-dialog-content .astryx-text-input:focus-within", "--field-focus-ring"]
+test("search, preference and dialog fields use inset rings without offset outlines", () => {
+  for (const [selector, token, width] of [
+    [".settings-search:focus-within", "--st-field-ring", 2],
+    [".settings-search-field:focus-within", "--st-field-ring", 2],
+    [".settings-field:focus-visible", "--st-field-ring", 1],
+    [".provider-manual-row input:focus", "--st-field-ring", 1],
+    ['.settings-preferences :is(select, input[type="number"]):focus-visible', "--st-field-ring", 1],
+    [".provider-dialog input:focus-visible", "--field-focus-ring", 1],
+    [".provider-dialog select:focus-visible", "--field-focus-ring", 1],
+    [".inspector-browser-address:focus-within", "--field-focus-ring", 1],
+    [".desktop-dialog-content .astryx-text-input:focus-within", "--field-focus-ring", 1]
   ] as const) {
-    assert.equal(declaration(desktop, selector, "box-shadow"), `0 0 0 2px var(${token})`, selector);
+    assert.equal(declaration(desktop, selector, "box-shadow"), `inset 0 0 0 ${width}px var(${token})`, selector);
     const outline = declaration(desktop, selector, "outline");
     assert.ok(outline === undefined || outline === "none" || outline === "0", `${selector}: ${outline}`);
   }
-  assert.equal(declaration(quickchat, ".quickchat-input:focus", "box-shadow"), "0 0 0 2px var(--field-focus-ring)");
+  assert.equal(declaration(quickchat, ".quickchat-input:focus", "box-shadow"), "inset 0 0 0 1px var(--field-focus-ring)");
   assert.equal(declaration(quickchat, ".quickchat-input", "border"), "1px solid var(--quickchat-border)");
+  assert.equal(declaration(desktop, ".desktop-dialog-content .astryx-text-input input:focus-visible", "outline"), "none");
 });
 
 test("Appshot shortcut select keeps its neutral border with a translucent keyboard focus ring", () => {
   assert.equal(declaration(desktop, ".appshot-settings .appshot-select select", "border"), "1px solid var(--border-subtle)");
   assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "border-color"), undefined);
-  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "box-shadow"), "0 0 0 2px var(--field-focus-ring)");
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "box-shadow"), "inset 0 0 0 1px var(--field-focus-ring)");
   assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "outline"), "none");
 });
 
@@ -245,81 +224,35 @@ test("client chat input retains its neutral border when the textarea receives fo
 
 test("field focus retains editor elevation and keeps picker rings attached", () => {
   assert.equal(declaration(desktop, ".user-message-editor", "box-shadow"), "var(--biny-shadow)");
-  assert.equal(declaration(desktop, ".user-message-editor:focus-within", "box-shadow"), "0 0 0 2px var(--field-focus-ring), var(--biny-shadow)");
+  assert.equal(declaration(desktop, ".user-message-editor:focus-within", "box-shadow"), "inset 0 0 0 1px var(--field-focus-ring), var(--biny-shadow)");
   const picker = ".desktop-settings-dialog .settings-modal .settings-model-picker-trigger:focus-visible";
-  assert.equal(declaration(desktop, picker, "box-shadow"), "0 0 0 2px var(--st-field-ring)");
+  assert.equal(declaration(desktop, picker, "box-shadow"), "inset 0 0 0 1px var(--st-field-ring)");
   assert.equal(declaration(desktop, picker, "outline"), "none");
 });
 
 test("action controls retain explicit keyboard focus indicators", () => {
   for (const [selector, expected] of [
-    [".biny-composer-action:focus-visible", "2px solid var(--biny-focus)"],
-    [".settings-search button:focus-visible", "2px solid var(--st-field-ring)"],
-    [".provider-dialog summary:focus-visible", "2px solid var(--accent)"]
-  ] as const) assert.equal(declaration(desktop, selector, "outline"), expected, selector);
+    [".biny-composer-action:focus-visible", "1px solid var(--biny-focus)"],
+    [".settings-search button:focus-visible", "1px solid var(--st-field-ring)"],
+    [".provider-dialog summary:focus-visible", "1px solid var(--accent)"],
+    [".settings-action:focus-visible", "1px solid var(--accent)"],
+    [".settings-switch:focus-visible", "1px solid var(--accent)"]
+  ] as const) {
+    assert.equal(declaration(desktop, selector, "outline"), expected, selector);
+    assert.ok(Number.parseFloat(declaration(desktop, selector, "outline-offset") ?? "0") <= 0, selector);
+  }
+  for (const selector of [".settings-page-footer button:focus-visible", ".settings-confirm-actions button:focus-visible"]) {
+    assert.equal(declaration(desktop, selector, "box-shadow"), "none", selector);
+  }
 });
 
 test("all product styles use the shared palette rather than local literals or missing aliases", () => {
-  const productStyles = readdirSync(new URL("styles/", renderer)).filter((name) => name.endsWith(".css") && !["theme.css", "retro.css"].includes(name))
+  const productStyles = readdirSync(new URL("styles/", renderer)).filter((name) => name.endsWith(".css") && name !== "theme.css")
     .map((name) => ({ name, source: read(`styles/${name}`) }));
   for (const entry of [...productStyles, { name: "legacy", source: read("styles.css") }, { name: "quickchat", source: quickchat }]) {
     assert.doesNotMatch(entry.source, /#[\da-f]{3,8}\b|\brgba?\(|\bhsla?\(/iu, entry.name);
     assert.doesNotMatch(entry.source, /var\(--(?:foreground|muted-foreground|text-primary|yellow|biny-backdrop)\b/u, entry.name);
   }
-});
-
-test("optional desktop skin palettes remain scoped to their explicit skin selectors", () => {
-  for (const file of ["styles/retro.css", "styles/retro-layout.css"]) {
-    assertSkinSelectors(read(file), file);
-  }
-});
-
-test("skin rule scanning ignores commented CSS examples without hiding live selectors", () => {
-  const scoped = ":root[data-appearance-skin=win98] .settings-tabs";
-  assert.deepEqual(skinRuleSelectors(`
-    /* Example: .win98-tab { flex-grow: 1 } */
-    ${scoped} { /* .documented { } */ color: var(--text); }
-    /* ${scoped} */ .unscoped { color: var(--text); }
-    /* .another-example { } */
-  `), [scoped, ".unscoped"]);
-  assert.deepEqual(skinRuleSelectors(`/* ${scoped} { color: var(--text); } */`), []);
-  assert.deepEqual(skinRuleSelectors(`${scoped} {} .unscoped {}`), [scoped, ".unscoped"]);
-});
-
-test("skin rule scanning preserves comment delimiters inside quoted CSS values", () => {
-  const scoped = ":root[data-appearance-skin=winxp] .settings-tabs";
-  for (const quote of ['"', "'"]) {
-    assert.deepEqual(skinRuleSelectors(`
-      ${scoped} { content: ${quote}/*${quote}; }
-      .unscoped { content: ${quote}*/${quote}; }
-    `), [scoped, ".unscoped"]);
-  }
-});
-
-test("skin rule scanning preserves URL literals and traverses nested layers", () => {
-  const scoped = ":root[data-appearance-skin=winxp] .settings-tabs";
-  assert.deepEqual(skinRuleSelectors(`
-    ${scoped} { background: url(/*); }
-    .unscoped { background: url(*/); }
-  `), [scoped, ".unscoped"]);
-  assert.deepEqual(skinRuleSelectors(`@layer theme { ${scoped} {} @media (min-width: 1px) { .unscoped {} } }`), [scoped, ".unscoped"]);
-  assert.throws(() => skinRuleSelectors("}"), /skin CSS must/u);
-  for (const globalRule of [
-    '@font-face { font-family: "test"; src: url(test.woff); }',
-    '@property --test { syntax: "<color>"; inherits: false; initial-value: blue; }',
-    '@keyframes pulse { from { opacity: 0; } to { opacity: 1; } }'
-  ]) assert.throws(() => assertSkinSelectors(`${scoped} {} ${globalRule}`));
-  assert.throws(() => assertSkinSelectors("/* .comment { color: red; } */"));
-  assert.throws(() => assertSkinSelectors(`${scoped} {} .unscoped { color: red; }`));
-  for (const literal of [":root[data-appearance-skin=win98]", "}:root[data-appearance-skin=win98]"]) {
-    assert.throws(() => assertSkinSelectors(`.unscoped[data-example='${literal}'] { color: red; }`));
-    assert.throws(() => assertSkinSelectors(`.unscoped { content: '${literal}'; }`));
-    assert.throws(() => assertSkinSelectors(`.unscoped { background: url(${literal}); }`));
-  }
-  for (const value of ["foo(:root[data-appearance-skin=win98]{color:red})", "{:root[data-appearance-skin=win98]{color:red}}"])
-    assert.throws(() => assertSkinSelectors(`.unscoped { --example: ${value}; color: blue; }`));
-  for (const statement of ["@unknown foo(:root[data-appearance-skin=win98]);", "@layer theme;"])
-    assert.throws(() => assertSkinSelectors(`${scoped} {} ${statement} .unscoped { color: blue; }`));
 });
 
 test("readable text, status labels and primary controls retain sufficient contrast in both modes", () => {
@@ -352,7 +285,7 @@ test("terminal UI palettes share the neutral surfaces and emphasis family", () =
 
 test("project creation uses the shared field ring and primary foreground", () => {
   assert.equal(declaration(desktop, ".biny-project-create-dialog input", "border"), "1px solid var(--biny-border)");
-  assert.equal(declaration(desktop, ".biny-project-create-dialog input:focus-visible", "box-shadow"), "0 0 0 2px var(--field-focus-ring)");
+  assert.equal(declaration(desktop, ".biny-project-create-dialog input:focus-visible", "box-shadow"), "inset 0 0 0 1px var(--field-focus-ring)");
   assert.equal(declaration(desktop, ".biny-project-create-dialog footer button.is-primary", "color"), "var(--accent-foreground)");
   assert.doesNotMatch(read("styles/biny.css"), /--biny-on-accent/u);
 });

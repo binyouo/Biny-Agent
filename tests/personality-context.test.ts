@@ -102,8 +102,9 @@ test("fatigue instructions retain recovery commands, separate emotional energy a
   for (const command of ["biny sleep", "biny wake", "biny rest", "biny fatigue", "biny emotion set-base"]) {
     assert.ok(awake.includes(command), `awake guidance must expose ${command}`);
   }
-  assert.match(awake, /Emotional energy is your subjective feeling and is independent of fatigue/u);
-  assert.doesNotMatch(awake, /Keep them in sync|emotion energy should match your fatigue/u);
+  assert.match(awake, /emotion energy should match your fatigue/u);
+  assert.match(awake, /Keep them in sync/u);
+  assert.doesNotMatch(awake, /Emotional energy is your subjective feeling and is independent of fatigue/u);
   const sleepy = renderEmotionPrompt({ ...state, fatigue: 55 });
   assert.match(sleepy, /Simple conversation is fine but you're clearly low energy/u);
   assert.doesNotMatch(sleepy, /SLEEPING/u);
