@@ -21,13 +21,19 @@ let ax: [[String: Any]] = [
     ["window_id": 43, "index": 1, "title": "Minimized", "focused": false, "minimized": true],
     ["window_id": 44, "index": 2, "title": "Last", "focused": false, "minimized": false]
 ]
+var hidden = screen(46)
+hidden.removeValue(forKey: kCGWindowIsOnscreen as String)
 let results: [String: Any] = try [
     "reordered": mergeApplicationWindows(pid: 12, axEntries: ax, screenWindows: [screen(44), screen(42)]),
     "minimized": mergeApplicationWindows(pid: 12, axEntries: ax, screenWindows: [screen(43, onscreen: false), screen(44), screen(42)]),
     "unknown": mergeApplicationWindows(pid: 12, axEntries: [["window_id": 0, "title": "Unknown AX", "index": 0]], screenWindows: [screen(50, title: "Custom UI")]),
     "filtered": mergeApplicationWindows(pid: 12, axEntries: [], screenWindows: [screen(1, pid: 99), screen(2, layer: 3), screen(3, width: 2), screen(0), screen(50, title: "Custom UI", onscreen: false)]),
     "fallback": mergeApplicationWindows(pid: 12, axEntries: [["window_id": 42, "title": "", "index": 0]], screenWindows: [screen(42, title: "Screen title")]),
-    "unavailable": mergeApplicationWindows(pid: 12, axEntries: ax, screenWindows: nil)
+    "unavailable": mergeApplicationWindows(pid: 12, axEntries: ax, screenWindows: nil),
+    "floating": mergeApplicationWindows(pid: 12, axEntries: [["window_id": 45, "title": "Mini player", "index": 0]], screenWindows: [screen(45, layer: 27)]),
+    "floatingWithoutAXID": mergeApplicationWindows(pid: 12, axEntries: [["window_id": 0, "title": "Unknown AX", "index": 0]], screenWindows: [screen(45, title: "Floating panel", layer: 27)]),
+    "hidden": mergeApplicationWindows(pid: 12, axEntries: [["window_id": 46, "title": "Hidden", "index": 0]], screenWindows: [hidden]),
+    "wrongOwner": mergeApplicationWindows(pid: 12, axEntries: [["window_id": 45, "title": "AX identity", "index": 0]], screenWindows: [screen(45, pid: 99, title: "Wrong process", layer: 27)])
 ]
 let data = try JSONSerialization.data(withJSONObject: results, options: [.sortedKeys])
 print(String(data: data, encoding: .utf8)!)
@@ -38,12 +44,16 @@ print(String(data: data, encoding: .utf8)!)
     const first = { window_id: 42, index: 0, title: "First", focused: true, minimized: false };
     const minimized = { window_id: 43, index: 1, title: "Minimized", focused: false, minimized: true };
     const last = { window_id: 44, index: 2, title: "Last", focused: false, minimized: false };
-    assert.deepEqual(result.reordered, [{ ...first, frame, onscreen: true }, minimized, { ...last, frame, onscreen: true }], "screen ordering must not replace AX identity or drop minimized windows");
+    assert.deepEqual(result.reordered, [{ ...first, frame, onscreen: true }, { ...minimized, onscreen: false }, { ...last, frame, onscreen: true }], "screen ordering must not replace AX identity or drop minimized windows; missing CG windows are not on screen");
     assert.deepEqual(result.minimized, [{ ...first, frame, onscreen: true }, { ...minimized, frame, onscreen: false }, { ...last, frame, onscreen: true }]);
     assert.deepEqual(result.unknown, [{ window_id: 0, title: "Unknown AX", index: 0 }, { window_id: 50, title: "Custom UI", frame, onscreen: true }], "an unknown AX identity must not borrow a title, window ID or state from a positional match");
-    assert.deepEqual(result.filtered, [{ window_id: 50, title: "Custom UI", frame, onscreen: false }]);
+    assert.deepEqual(result.filtered, [{ window_id: 2, title: "", frame, onscreen: true }, { window_id: 50, title: "Custom UI", frame, onscreen: false }], "valid visible floating windows are candidates alongside ordinary windows; other processes and tiny auxiliary windows stay excluded");
     assert.deepEqual(result.fallback, [{ window_id: 42, index: 0, title: "Screen title", frame, onscreen: true }]);
     assert.deepEqual(result.unavailable, [first, minimized, last]);
+    assert.deepEqual(result.floating, [{ window_id: 45, title: "Mini player", index: 0, frame, onscreen: true }], "an exact AX floating window must retain its actual CG frame and visibility");
+    assert.deepEqual(result.floatingWithoutAXID, [{ window_id: 0, title: "Unknown AX", index: 0 }, { window_id: 45, title: "Floating panel", frame, onscreen: true }], "visible floating windows must remain discoverable when AX cannot provide a window ID");
+    assert.deepEqual(result.hidden, [{ window_id: 46, title: "Hidden", index: 0, frame, onscreen: false }], "CG omits its onscreen key for hidden windows");
+    assert.deepEqual(result.wrongOwner, [{ window_id: 45, title: "AX identity", index: 0, onscreen: false }]);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -63,6 +73,9 @@ let results: [String: Any] = [
     "ambiguous": selection(nil, [["window_id": 42], ["window_id": 43]]),
     "conflictingFocus": selection(nil, [["window_id": 42, "focused": true], ["window_id": 43, "focused": true]]),
     "empty": selection(nil, []),
+    "visibleAfterHidden": selection(nil, [["window_id": 42, "focused": true, "onscreen": false], ["window_id": 43, "onscreen": true]]),
+    "visibleAfterMinimized": selection(nil, [["window_id": 42, "focused": true, "minimized": true], ["window_id": 43, "onscreen": true]]),
+    "allHidden": selection(nil, [["window_id": 42, "focused": true, "onscreen": false], ["window_id": 43, "minimized": true]]),
     "invalid": [NSNull(), 0, -1, 4294967296, 1.5, "42", NSNumber(value: true)].map { selection($0, [["window_id": 42]]) },
     "explicit": try selectObservationWindow(44, windows: { fatalError("an explicit target must not be replaced by another window") })
 ]
@@ -74,6 +87,9 @@ print(String(data: try JSONSerialization.data(withJSONObject: results), encoding
     assert.equal(result.single, "42");
     assert.equal(result.unknownIdentity, "43");
     assert.equal(result.explicit, 44);
+    assert.equal(result.visibleAfterHidden, "43");
+    assert.equal(result.visibleAfterMinimized, "43");
+    assert.match(result.allHidden, /^computer_window_not_ready:/u);
     for (const name of ["ambiguous", "conflictingFocus"]) assert.match(result[name], /^computer_window_selection_required:/u);
     assert.match(result.empty, /^computer_window_not_ready:/u);
     for (const error of result.invalid) assert.match(error, /^capture_target_invalid:/u);

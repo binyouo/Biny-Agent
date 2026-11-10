@@ -1,5 +1,6 @@
 import type { SessionEvent } from "../../../session/recorder.js";
 import type { TimelineTool, TimelineTurn } from "./sessionTimeline.js";
+import { resolvedCapabilitySelectionSchema, type CapabilitySelectionValue } from "../../../agent/capabilitySelection.js";
 
 type SkillLoadCall = Pick<TimelineTool, "tool" | "args" | "result" | "status" | "executionStatus">;
 
@@ -12,7 +13,8 @@ export function loadedSkillNames(value: unknown): string[] {
   return [...new Set(value.filter((item): item is string => typeof item === "string").map(item => item.trim()).filter(Boolean))];
 }
 
-const skillFooter = "Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory.";
+const skillFooter = "Follow the instructions above for your response.";
+const legacySkillFooter = "Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory.";
 
 function canonicalName(value: unknown): string | undefined {
   return typeof value === "string" && value.length <= 64 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value) ? value : undefined;
@@ -30,7 +32,7 @@ function skillBody(value: unknown): string | undefined {
 }
 
 function canonicalBodyName(body: string | undefined): string | undefined {
-  if (!body?.trimEnd().endsWith(skillFooter)) return undefined;
+  if (!body || !(body.trimEnd().endsWith(skillFooter) || body.trimEnd().endsWith(legacySkillFooter))) return undefined;
   const match = /^# Skill: ([^\r\n]+)\r?\n\r?\n\*\*Skill Directory:\*\* `[^`\r\n]+`/u.exec(body);
   return canonicalName(match?.[1]);
 }
@@ -97,9 +99,9 @@ export function confirmedLoadedSkill(call: SkillLoadCall): string | undefined {
   return canonicalBodyName(body);
 }
 
-interface SkillMetadataEvidence { runId?: string; names: string[] }
+interface SkillMetadataEvidence { runId?: string; names: string[]; selection?: CapabilitySelectionValue }
 
-/** Project only loaded-skill facts by answer run; leave general metadata and tool history untouched. */
+/** Scope selected and loaded skills to the displayed answer run; leave tool history untouched. */
 export function scopeHistoricalLoadedSkills(events: readonly SessionEvent[], turns: TimelineTurn[]): TimelineTurn[] {
   const users = new Set(turns.flatMap(turn => turn.userMessageId ? [turn.userMessageId] : []));
   const userRuns = new Map<string, string>();
@@ -107,10 +109,11 @@ export function scopeHistoricalLoadedSkills(events: readonly SessionEvent[], tur
   const answerRuns = new Map<string, string>();
   const versions = new Map<string, Set<string>>();
   const metadata = new Map<string, SkillMetadataEvidence[]>();
-  const addMetadata = (messageId: string, runId: string | undefined, value: unknown): void => {
-    if (!Array.isArray(value)) return;
+  const addMetadata = (messageId: string, runId: string | undefined, value: Record<string, unknown> | undefined): void => {
+    const selection = resolvedCapabilitySelectionSchema.safeParse(value?.capabilitySelection);
+    if (!Array.isArray(value?.loadedSkills) && !selection.success) return;
     const entries = metadata.get(messageId) ?? [];
-    entries.push({ runId, names: loadedSkillNames(value) });
+    entries.push({ runId, names: loadedSkillNames(value?.loadedSkills), selection: selection.success ? selection.data.skills : undefined });
     metadata.set(messageId, entries);
   };
   for (const event of events) {
@@ -118,9 +121,9 @@ export function scopeHistoricalLoadedSkills(events: readonly SessionEvent[], tur
       if (seenUsers.has(event.messageId)) continue;
       seenUsers.add(event.messageId);
       if (event.runtime?.runId) userRuns.set(event.messageId, event.runtime.runId);
-      addMetadata(event.messageId, event.runtime?.runId, event.metadata?.loadedSkills);
+      addMetadata(event.messageId, event.runtime?.runId, event.metadata);
     } else if (event.type === "message_metadata" && seenUsers.has(event.messageId)) {
-      addMetadata(event.messageId, event.runtime?.runId, event.metadata.loadedSkills);
+      addMetadata(event.messageId, event.runtime?.runId, event.metadata);
     } else if ((event.type === "assistant_message" && !event.auditOnly || event.type === "agent_message" && event.message.role === "assistant") && event.messageId) {
       if (event.runtime?.runId) answerRuns.set(event.messageId, event.runtime.runId);
       // An assistant tool-call step is not another answer version. Its parent can also be the user.
@@ -151,12 +154,15 @@ export function scopeHistoricalLoadedSkills(events: readonly SessionEvent[], tur
     const belongs = (sourceRun: string | undefined): boolean => sourceRun !== undefined
       ? runId !== undefined && sourceRun === runId
       : !ambiguous;
-    const names = evidence.filter(item => belongs(item.runId)).flatMap(item => item.names);
+    const scoped = evidence.filter(item => belongs(item.runId));
+    const names = scoped.flatMap(item => item.names);
+    const selection = scoped.findLast(item => item.selection !== undefined)?.selection;
     for (const tool of turn.tools) {
       if (!belongs(tool.runId)) continue;
       const name = confirmedLoadedSkill(tool);
       if (name) names.push(name);
     }
-    return { ...turn, skills: [...new Set(names)] };
+    return { ...turn, skills: [...new Set(names)], capabilitySelection: turn.capabilitySelection
+      ? { ...turn.capabilitySelection, skills: selection ?? [] } : undefined };
   });
 }

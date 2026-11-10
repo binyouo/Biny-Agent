@@ -138,6 +138,15 @@ const api: DesktopApi = {
   browserInspect: async (projectId, tabId, enabled) => await ipcRenderer.invoke(desktopIpc.browserInspect, projectId, tabId, enabled),
   browserCapture: async (projectId, tabId, selection) => await ipcRenderer.invoke(desktopIpc.browserCapture, projectId, tabId, selection),
   browserRelayStatus: async () => await ipcRenderer.invoke(desktopIpc.browserRelayStatus),
+  remoteAccessStatus: async () => await ipcRenderer.invoke(desktopIpc.remoteAccessStatus),
+  remoteAccessStart: async input => await ipcRenderer.invoke(desktopIpc.remoteAccessStart, input),
+  remoteAccessStop: async () => await ipcRenderer.invoke(desktopIpc.remoteAccessStop),
+  remoteAccessRegenerate: async () => await ipcRenderer.invoke(desktopIpc.remoteAccessRegenerate),
+  onRemoteAccessChanged(listener) {
+    const handler = (): void => listener();
+    ipcRenderer.on(desktopIpc.remoteAccessChanged, handler);
+    return () => ipcRenderer.removeListener(desktopIpc.remoteAccessChanged, handler);
+  },
   browserRelayInstall: async () => await ipcRenderer.invoke(desktopIpc.browserRelayInstall),
   browserRelayOpenChrome: async () => await ipcRenderer.invoke(desktopIpc.browserRelayOpenChrome),
   browserRelaySetup: async (regenerate) => await ipcRenderer.invoke(desktopIpc.browserRelaySetup, regenerate),
@@ -190,7 +199,7 @@ const api: DesktopApi = {
   ),
   settingsSnapshot: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.settingsSnapshot, projectId, sessionId),
   saveSettings: async (projectId, input) => await ipcRenderer.invoke(desktopIpc.saveSettings, projectId, input),
-  activitySnapshot: async () => await ipcRenderer.invoke(desktopIpc.activitySnapshot),
+  activitySnapshot: async (forceRefresh) => await ipcRenderer.invoke(desktopIpc.activitySnapshot, forceRefresh),
   maskingOverview: async (projectId) => await ipcRenderer.invoke(desktopIpc.maskingOverview, projectId),
   maskingDetail: async (projectId, id) => await ipcRenderer.invoke(desktopIpc.maskingDetail, projectId, id),
   maskingClear: async (projectId) => await ipcRenderer.invoke(desktopIpc.maskingClear, projectId),
@@ -269,6 +278,7 @@ const api: DesktopApi = {
   refreshPluginRegistry: async (projectId) => await ipcRenderer.invoke(desktopIpc.pluginRegistryRefresh, projectId),
   installPlugin: async (projectId, pluginId, scope) => await ipcRenderer.invoke(desktopIpc.pluginInstall, projectId, pluginId, scope),
   setPluginEnabled: async (projectId, pluginId, enabled, scope) => await ipcRenderer.invoke(desktopIpc.pluginSetEnabled, projectId, pluginId, enabled, scope),
+  setPluginSettings: async (projectId, pluginId, settings, scope) => await ipcRenderer.invoke(desktopIpc.pluginSetSettings, projectId, pluginId, settings, scope),
   uninstallPlugin: async (projectId, pluginId, scope) => await ipcRenderer.invoke(desktopIpc.pluginUninstall, projectId, pluginId, scope),
   openPluginDirectory: async (projectId, scope) => await ipcRenderer.invoke(desktopIpc.pluginOpenDirectory, projectId, scope),
   mcpSnapshot: async (projectId) => await ipcRenderer.invoke(desktopIpc.mcpSnapshot, projectId),
@@ -307,14 +317,12 @@ const api: DesktopApi = {
   setFilePanelWidth: async (width) => await ipcRenderer.invoke(desktopIpc.setFilePanelWidth, width),
   setThemePreference: async (theme) => await ipcRenderer.invoke(desktopIpc.setThemePreference, theme),
   setFontPreference: async (font) => await ipcRenderer.invoke(desktopIpc.setFontPreference, font),
-  setAppearancePreference: async (preference) => await ipcRenderer.invoke(desktopIpc.setAppearancePreference, preference),
   previewAppearance: async (snapshot) => await ipcRenderer.invoke(desktopIpc.previewAppearance, snapshot),
   onAppearanceChanged: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof callback>[0]): void => callback(snapshot);
     ipcRenderer.on(desktopIpc.appearanceChanged, listener);
     return () => ipcRenderer.off(desktopIpc.appearanceChanged, listener);
   },
-  windowAction: async (action) => await ipcRenderer.invoke(desktopIpc.windowAction, action),
   toggleQuickChat: async () => await ipcRenderer.invoke(desktopIpc.quickChatToggle),
   hideQuickChat: async () => await ipcRenderer.invoke(desktopIpc.quickChatHide),
   closeQuickChat: async () => await ipcRenderer.invoke(desktopIpc.quickChatClose),

@@ -4,8 +4,7 @@ import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { buildSync } from "esbuild";
-import { DEFAULT_APPEARANCE } from "../src/appearance/preferences.js";
-import type { AppearanceSnapshot } from "../src/appearance/types.js";
+import type { DesktopAppearanceSnapshot } from "../src/desktop/protocol.js";
 import { AppearancePreviewCoordinator } from "../src/desktop/appearanceCoordinator.js";
 
 function windowBoundary(title: string, destroyed = false) {
@@ -28,20 +27,20 @@ for (const platform of ["darwin", "linux", "win32"] as const) {
     const destroyed = windowBoundary("Biny Quick Chat", true);
     let systemDark = false;
     const nativeTheme = {
-      themeSource: "system" as AppearanceSnapshot["themePreference"],
+      themeSource: "system" as DesktopAppearanceSnapshot["themePreference"],
       get shouldUseDarkColors() { return this.themeSource === "dark" || (this.themeSource === "system" && systemDark); }
     };
     const entry = new URL("../src/desktop/electron/main/window.ts", import.meta.url);
     const compiled = buildSync({ entryPoints: [fileURLToPath(entry)], bundle: true, platform: "node", format: "cjs",
       packages: "external", write: false,
       define: { "process.platform": JSON.stringify(platform), "import.meta.url": JSON.stringify(entry.href) } }).outputFiles[0]!.text;
-    const module = { exports: {} as { syncDesktopWindowAppearance(window: typeof main | undefined, snapshot: AppearanceSnapshot): void } };
+    const module = { exports: {} as { syncDesktopWindowAppearance(window: typeof main | undefined, snapshot: DesktopAppearanceSnapshot): void } };
     const require = createRequire(import.meta.url);
     runInNewContext(compiled, { module, exports: module.exports, URL, process, setTimeout, clearTimeout,
       require: (name: string) => name === "electron"
         ? { nativeTheme, BrowserWindow: { getAllWindows: () => [main, quick, unrelated, destroyed] } }
         : require(name) });
-    let saved: AppearanceSnapshot = { themePreference: "light", appearancePreference: structuredClone(DEFAULT_APPEARANCE),
+    let saved: DesktopAppearanceSnapshot = { themePreference: "light",
       fontPreference: { family: "system", size: 14 } };
     let activeMain: typeof main | undefined = main;
     const coordinator = new AppearancePreviewCoordinator({ read: () => saved,
@@ -68,12 +67,10 @@ for (const platform of ["darwin", "linux", "win32"] as const) {
     saved = { ...saved, themePreference: "system" };
     coordinator.committed();
     expectBackground("#1a1a1a");
-    coordinator.preview(7, { ...saved, themePreference: "light", appearancePreference: { ...DEFAULT_APPEARANCE, lightTheme: "win98" } });
-    expectBackground("#c0c0c0");
-    if (platform === "darwin") assert.equal(main.buttons.at(-1), false);
+    coordinator.preview(7, { ...saved, themePreference: "light" });
+    expectBackground("#f5f5f5");
     coordinator.release(7);
-    if (platform === "darwin") assert.equal(main.buttons.at(-1), true);
-    else assert.deepEqual(main.buttons, []);
+    assert.deepEqual(main.buttons, [], "theme changes do not alter native window controls");
     const mainUpdates = main.backgrounds.length;
     activeMain = undefined;
     coordinator.refresh();

@@ -52,10 +52,12 @@ const storageNames = ["baseFileName", "contextDirectoryName"].map((name) => {
 });
 const calls = new Set([
   "options.getModel", "options.getUsageModelInfo", "normalizeMessages", "options.getMessages", "generateNativeText",
-  "result.text.trim", "JSON.parse", "autoEmotionResultSchema.safeParse",
+  "result.text.trim", "result.text.trim().replace", "unfenced.replace", "cleaned.indexOf", "cleaned.lastIndexOf", "cleaned.slice",
+  "JSON.parse", "autoEmotionResultSchema.safeParse", "options.onFailed", "options.onFailed?.", "Math.round",
   "messages.map", "options.onUsage", "options.signal?.throwIfAborted",
   "options.storage.readBase",
-  "now().toISOString", "now", "options.storage.readContext", "options.storage.writeContext", "options.onUpdated",
+  "now().toISOString", "now", "options.storage.readContext", "options.storage.writeContext", "options.onUpdated", "options.onUpdated?.",
+  "options.onAnalyzed", "options.onAnalyzed?.",
   "Array.from", "Array.from(message.text).slice", "Array.from(message.text).slice(0, recentMessageMaxChars).join",
   "message.text.trim", "value.replace",
   "Math.min", "Math.max",

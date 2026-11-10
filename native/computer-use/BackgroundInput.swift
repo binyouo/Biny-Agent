@@ -2,6 +2,8 @@ import AppKit
 import CoreGraphics
 
 enum BackgroundInput {
+    private static let eventNumberLock = NSLock()
+    private static var eventNumber = 0
     static func dragTypes(button: CGMouseButton) -> (CGEventType, CGEventType, CGEventType) {
         switch button {
         case .right: return (.rightMouseDown, .rightMouseDragged, .rightMouseUp)
@@ -11,9 +13,20 @@ enum BackgroundInput {
     }
 
     static func mouseEvent(pid: pid_t, windowID: Int, type: CGEventType, point: CGPoint, button: CGMouseButton, clickState: Int64) throws -> CGEvent {
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else {
+        eventNumberLock.lock()
+        eventNumber = (eventNumber + 1) & 0x7fffffff
+        let number = eventNumber
+        eventNumberLock.unlock()
+        // AppKit 还需要事件自身的窗口号；仅设置窗口下方提示字段会得到 windowNumber=0。
+        guard let nativeType = NSEvent.EventType(rawValue: UInt(type.rawValue)),
+              let native = NSEvent.mouseEvent(with: nativeType, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: windowID, context: nil,
+                eventNumber: number, clickCount: Int(clickState), pressure: 1),
+              let event = native.cgEvent else {
             throw NSError(domain: "input", code: 64, userInfo: [NSLocalizedDescriptionKey: "input_event_unavailable"])
         }
+        event.location = point
+        event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
         event.setIntegerValueField(.mouseEventClickState, value: clickState)
         event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(windowID))
         event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(windowID))

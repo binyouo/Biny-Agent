@@ -82,7 +82,7 @@
   border: 1px solid;
   border-color: color-mix(in srgb, var(--biny-border) 60%, transparent);
   border-radius: calc(var(--markdown-code-unit) * .625 + 4px);
-  background: var(--code);
+  background: var(--biny-surface-soft);
   color: var(--biny-text);
   overflow: hidden;
 }
@@ -109,7 +109,7 @@
 .markdown-download { display: inline-flex; align-items: center; justify-content: center; padding: 5px; border: 0; border-radius: 4px; background: transparent; color: var(--biny-text-secondary); cursor: pointer; }
 .markdown-download:disabled { opacity: .5; cursor: wait; }
 .markdown-action-menu summary:hover, .markdown-action-menu button:hover, .markdown-download:hover { background: var(--biny-surface-hover); color: var(--biny-text); }
-.markdown-action-menu summary:focus-visible, .markdown-download:focus-visible, .markdown-table:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.markdown-action-menu summary:focus-visible, .markdown-download:focus-visible, .markdown-table:focus-visible { outline: 1px solid var(--biny-focus); outline-offset: 0px; }
 .markdown-resource-error { color: var(--biny-danger); font-size: 12px; }
 .markdown-body :is(video, audio) { display: block; max-width: 100%; margin-block: .75em; }
 .markdown-body video { max-height: 60vh; border-radius: 6px; }

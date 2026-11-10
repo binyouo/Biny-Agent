@@ -77,6 +77,7 @@ export async function generateActivitySuggestions(
 
   const cache = deps.cache ?? defaultSuggestionCache;
   const cacheKey = [
+    "zh-CN",
     model.provider,
     model.modelId,
     model.runtime ?? "",
@@ -115,7 +116,7 @@ function buildSuggestionPrompt(
 ): string {
   const lines = [
     "Generate 4 or 5 short, actionable suggestions for a new chat.",
-    "Write each suggestion as a first-person request the user could send next, using the same language as the activity.",
+    "每条建议都用简体中文写成用户可以直接发送的请求，即使活动素材使用英文；项目名、文件名、代码标识和其他必要技术名称保留原文。",
     "Ground every suggestion in the activity below: use real project names, files, PRs, or topics when present.",
     "Cover distinct useful next steps rather than paraphrasing the same request.",
     "Do not invent facts, do not mention that you are reading activity, and do not give generic productivity advice.",

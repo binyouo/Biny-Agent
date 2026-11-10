@@ -1,17 +1,19 @@
 /** 后台文本任务共用的工具模型：显式选择优先，否则从已配置且可用的模型中自动选择。 */
 import type { AgentModel } from "../agent/core/types.js";
-import type { AgentConfig } from "../config/schema.js";
+import type { AgentConfig, ModelAliasConfig } from "../config/schema.js";
 import { createHash } from "node:crypto";
 import { ModelRegistry } from "./ModelRegistry.js";
-import { ProviderRegistry, type ProviderCredentialPersistence } from "./ProviderRuntime.js";
+import { ProviderRegistry, type ProviderCredentialPersistence, type ProviderRuntime } from "./ProviderRuntime.js";
 import { resolveProviderRequestRoute } from "./providerRequest.js";
 import { openAiCodexHeaders } from "./subscriptionAuth.js";
 
-// 稳定的辅助模型偏好；只匹配用户已配置的型号，不创建别名，也不探测远端目录。
+// 稳定的辅助型号偏好：provider 类型决定探测顺序与候选型号，不读远端目录。
 const toolModelPreferences: Record<string, readonly string[]> = {
   openai: ["gpt-4o-mini", "gpt-4o-mini-2024-07-18", "gpt-4o", "gpt-4o-2024-11-20"],
   anthropic: ["claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022", "claude-3-haiku-20240307"],
   gemini: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-1.5-flash"],
+  "claude-subscription": ["claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022"],
+  deepseek: ["deepseek-chat"],
   openrouter: [],
   custom: [],
   plugin: []
@@ -25,11 +27,29 @@ export interface ToolModelCandidate {
   failureDomain: string;
 }
 
+export interface ToolModelReference {
+  provider: ProviderRuntime;
+  model: ModelAliasConfig;
+}
+
+/** 候选 ref 是已配置别名或 `provider/model-id` 动态引用；后者不要求 models 里有对应条目。 */
+export function resolveToolModelReference(registry: ProviderRegistry, config: AgentConfig, ref: string): ToolModelReference | undefined {
+  if (config.models[ref]) return registry.forModel(ref);
+  const slash = ref.indexOf("/");
+  if (slash <= 0) return undefined;
+  const providerAlias = ref.slice(0, slash);
+  const provider = registry.get(providerAlias);
+  if (!provider) return undefined;
+  return { provider, model: provider.resolveModel({ provider: providerAlias, model: ref.slice(slash + 1) }) };
+}
+
 export function resolveToolModelCandidates(config: AgentConfig, credentials?: ProviderCredentialPersistence): readonly ToolModelCandidate[] {
   const providers = new ProviderRegistry(config, [], undefined, undefined, undefined, credentials);
-  return toolModelAliases(config).flatMap((alias) => {
+  return toolModelAliases(config).flatMap((ref) => {
     try {
-      const { provider, model } = providers.forModel(alias);
+      const resolved = resolveToolModelReference(providers, config, ref);
+      if (!resolved) return [];
+      const { provider, model } = resolved;
       const apiKey = provider.config.apiKey
         ?? process.env[provider.config.apiKeyEnv ?? provider.definition.apiKeyEnv ?? ""];
       const { apiBackend } = resolveProviderRequestRoute(model, provider.config, provider.definition);
@@ -50,7 +70,7 @@ export function resolveToolModelCandidates(config: AgentConfig, credentials?: Pr
         oauthRefreshToken: provider.config.authMode === "oauth-bearer" ? provider.config.oauth?.refreshToken : undefined,
         headers: [...headers].filter(([name]) => !transportHeaders.has(name)).sort(([left], [right]) => left.localeCompare(right))
       })).digest("hex");
-      return [{ model: providers.createModelSettings(alias).model, failureDomain }];
+      return [{ model: provider.createModelSettings(config, model).model, failureDomain }];
     } catch {
       // 配置失效不产生可执行候选；显式选择只有这一项，不会越过用户指定的连接。
       return [];
@@ -71,36 +91,59 @@ export function resolveToolModelAlias(config: AgentConfig): string | undefined {
 }
 
 function toolModelAliases(config: AgentConfig): string[] {
-  const registry = new ModelRegistry(config);
+  const providers = new ProviderRegistry(config);
+  const registry = new ModelRegistry(config, providers);
   if (config.toolModel) {
     const selected = registry.resolve(config.toolModel);
     return selected?.source === "configured" && config.providers[selected.providerAlias]?.type !== "acp" && registry.isAvailable(selected) ? [selected.alias] : [];
   }
   const providerOrder = Object.keys(toolModelPreferences);
+  const typeIndex = (provider: string): number => {
+    const index = providerOrder.indexOf(config.providers[provider]?.type ?? "custom");
+    return index < 0 ? providerOrder.length : index;
+  };
+  // 先按 provider 类型探测首选型号：`provider/model-id` 动态引用不要求 models 里有别名。
+  const providerAliases = Object.keys(config.providers).sort((left, right) => typeIndex(left) - typeIndex(right));
+  const dynamic = providerAliases.flatMap((providerAlias) => {
+    const type = config.providers[providerAlias]?.type ?? "custom";
+    if (type === "acp") return [];
+    const provider = providers.get(providerAlias);
+    return (toolModelPreferences[type] ?? [])
+      .filter((modelId) => provider?.isConfigured({ provider: providerAlias, model: modelId }) ?? false)
+      .map((modelId) => `${providerAlias}/${modelId}`);
+  });
+  const dynamicSet = new Set(dynamic);
   const priority = (provider: string, model: string): [number, number, number] => {
     const type = config.providers[provider]?.type ?? "custom";
     const providerIndex = providerOrder.indexOf(type);
     const modelIndex = Object.hasOwn(toolModelPreferences, type) ? toolModelPreferences[type]!.indexOf(model) : -1;
     return [modelIndex < 0 ? 1 : 0, providerIndex < 0 ? providerOrder.length : providerIndex, modelIndex < 0 ? Number.MAX_SAFE_INTEGER : modelIndex];
   };
-  // 先选参考偏好的辅助型号；未命中时保留原有 Provider 优先级和配置顺序。
-  // 价格元数据变化不应悄悄切换后台模型。
+  // 已配置 alias 排在动态探测之后，同一 provider/model 对去重。
   const candidates = Object.keys(config.models).flatMap((alias) => {
     const model = registry.resolve(alias);
     return model && config.providers[model.providerAlias]?.type !== "acp" && registry.isAvailable(model) ? [model] : [];
-  }).sort((left, right) => {
+  });
+  const configured = candidates.filter((candidate) => !dynamicSet.has(`${candidate.providerAlias}/${candidate.model.model}`));
+  const defaultAlias = registry.resolve(config.defaultModel)?.alias;
+  configured.sort((left, right) => {
     const a = priority(left.providerAlias, left.model.model);
     const b = priority(right.providerAlias, right.model.model);
-    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+    // 没有辅助型号偏好时，当前默认模型优先于遗留配置；显式工具选择在上方已返回。
+    return a[0] - b[0]
+      || (a[0] === 1 ? Number(right.alias === defaultAlias) - Number(left.alias === defaultAlias) : 0)
+      || a[1] - b[1] || a[2] - b[2];
   });
-  return candidates.map((candidate) => candidate.alias);
+  return [...dynamic, ...configured.map((candidate) => candidate.alias)];
 }
 
 export function resolveToolModel(config: AgentConfig, credentials?: ProviderCredentialPersistence): AgentModel | undefined {
-  const alias = resolveToolModelAlias(config);
-  if (!alias) return undefined;
+  const ref = resolveToolModelAlias(config);
+  if (!ref) return undefined;
   try {
-    return new ProviderRegistry(config, [], undefined, undefined, undefined, credentials).createModelSettings(alias).model;
+    const registry = new ProviderRegistry(config, [], undefined, undefined, undefined, credentials);
+    const resolved = resolveToolModelReference(registry, config, ref);
+    return resolved ? resolved.provider.createModelSettings(config, resolved.model).model : undefined;
   } catch {
     // 显式模型失效时不偷偷切换；配置修正后，下一轮后台任务重新解析。
     return undefined;

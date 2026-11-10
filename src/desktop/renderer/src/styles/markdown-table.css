@@ -63,7 +63,7 @@
 .markdown-table-trigger:disabled,
 .markdown-table-menu button:disabled { opacity: .5; cursor: not-allowed; }
 .markdown-table-trigger:focus-visible,
-.markdown-table-menu button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.markdown-table-menu button:focus-visible { outline: 1px solid var(--biny-focus); outline-offset: 0px; }
 .markdown-table-menu {
   position: absolute;
   top: 100%;

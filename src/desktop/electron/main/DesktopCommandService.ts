@@ -8,7 +8,6 @@ import type { DesktopStateStore } from "./DesktopStateStore.js";
 import type { DesktopTerminalManager } from "./DesktopTerminalManager.js";
 import type { DesktopPreviewService } from "./DesktopPreviewService.js";
 import { configRevisionSchema, fontPreferenceSchema, idSchema, themePreferenceSchema } from "./settingsSaveInputSchema.js";
-import { appearancePreferenceSchema } from "../../../appearance/preferences.js";
 import { executeConfigurationCommand } from "../../../config/commands.js";
 import type { AgentConfigStore } from "../../../config/store.js";
 import type { DesktopBrowserService } from "./DesktopBrowserService.js";
@@ -25,7 +24,7 @@ interface DesktopCommandServices {
   browser: DesktopBrowserService;
 }
 
-const preferencesSchema = z.object({ themePreference: themePreferenceSchema, fontPreference: fontPreferenceSchema, appearancePreference: appearancePreferenceSchema }).strict();
+const preferencesSchema = z.object({ themePreference: themePreferenceSchema, fontPreference: fontPreferenceSchema }).strict();
 const nameSchema = z.string().trim().min(1).max(240);
 
 export class DesktopCommandService {
@@ -62,7 +61,7 @@ export class DesktopCommandService {
     if (action === "preferences.get" || action === "preferences.set") {
       const key = z.string().parse(args.path);
       const previous = state.settingsPreferences();
-      const current = { themePreference: previous.themePreference, fontPreference: previous.fontPreference, appearancePreference: previous.appearancePreference };
+      const current = { themePreference: previous.themePreference, fontPreference: previous.fontPreference };
       if (action === "preferences.get") return readSetting(current, key);
       const next = preferencesSchema.parse(writeSetting(current, key, args.value));
       readSetting(next, key);

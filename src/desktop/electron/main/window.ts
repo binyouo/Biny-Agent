@@ -1,3 +1,4 @@
+import type { DesktopAppearanceSnapshot } from "../../protocol.js";
 /**
  * 主窗口创建。
  *
@@ -11,8 +12,6 @@ import path from "node:path";
 import { app, BrowserWindow, nativeTheme, screen } from "electron";
 import type { DesktopThemePreference } from "../../protocol.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
-import { resolveAppearance } from "../../../appearance/resolve.js";
-import type { AppearanceSnapshot } from "../../../appearance/types.js";
 
 export type WindowCloseDecision = "close" | "cancel";
 
@@ -21,15 +20,13 @@ export function sendToDesktopWindow(window: BrowserWindow | undefined, channel: 
   window.webContents.send(channel, payload);
 }
 
-export function syncDesktopWindowAppearance(mainWindow: BrowserWindow | undefined, snapshot: AppearanceSnapshot): void {
+export function syncDesktopWindowAppearance(mainWindow: BrowserWindow | undefined, snapshot: DesktopAppearanceSnapshot): void {
   if (nativeTheme.themeSource !== snapshot.themePreference) nativeTheme.themeSource = snapshot.themePreference;
-  const resolved = resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors);
-  const background = resolved.variables["--background"] ?? (resolved.mode === "dark" ? "#1a1a1a" : "#f5f5f5");
+  const background = themeBackgroundColor(snapshot.themePreference);
   for (const window of BrowserWindow.getAllWindows()) {
     if (window.isDestroyed() || (window !== mainWindow && window.getTitle() !== "Biny Quick Chat")) continue;
     // 外观预览和恢复也须保留透明底，不能重新填满自绘圆角外的区域。
     window.setBackgroundColor(process.platform === "darwin" ? "#00000000" : background);
-    if (process.platform === "darwin" && window === mainWindow) window.setWindowButtonVisibility(resolved.skin === "default");
   }
 }
 
@@ -42,11 +39,10 @@ function themeBackgroundColor(preference: DesktopThemePreference = "system"): st
 export function createDesktopWindow(
   state: DesktopStateStore,
   decideClose: () => Promise<WindowCloseDecision>,
-  getAppearance: () => AppearanceSnapshot = () => ({ themePreference: state.themePreference(), appearancePreference: state.appearancePreference(), fontPreference: state.fontPreference() })
+  getAppearance: () => DesktopAppearanceSnapshot = () => ({ themePreference: state.themePreference(), fontPreference: state.fontPreference() })
 ): BrowserWindow {
   const preference = state.themePreference();
   nativeTheme.themeSource = preference;
-  const appearance = resolveAppearance(state.appearancePreference(), preference, nativeTheme.shouldUseDarkColors);
   const savedBounds = visibleBounds(state.windowBounds());
   // macOS 从创建起使用透明底，由渲染层绘制圆角与主题底板。
   const window = new BrowserWindow({
@@ -58,8 +54,7 @@ export function createDesktopWindow(
     minHeight: 600,
     show: false,
     transparent: process.platform === "darwin",
-    backgroundColor: process.platform === "darwin" ? "#00000000" : appearance.variables["--background"] ?? themeBackgroundColor(preference),
-    roundedCorners: appearance.skin !== "win98",
+    backgroundColor: process.platform === "darwin" ? "#00000000" : themeBackgroundColor(preference),
     title: "Biny",
     titleBarStyle: "hidden",
     // macOS 不使用系统 vibrancy，窗口底色固定跟随主题；局部浮层仍由渲染层 CSS 自己处理。
@@ -80,8 +75,7 @@ export function createDesktopWindow(
   const syncBackgroundColor = (): void => {
     if (window.isDestroyed()) return;
     const snapshot = getAppearance();
-    const current = resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors);
-    window.setBackgroundColor(process.platform === "darwin" ? "#00000000" : current.variables["--background"] ?? themeBackgroundColor(snapshot.themePreference));
+    window.setBackgroundColor(process.platform === "darwin" ? "#00000000" : themeBackgroundColor(snapshot.themePreference));
   };
   nativeTheme.on("updated", syncBackgroundColor);
   window.once("ready-to-show", () => {

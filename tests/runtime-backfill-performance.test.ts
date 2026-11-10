@@ -100,6 +100,63 @@ test("rewritten message parent reports session, event and field without exposing
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("recreated session sequence reports both event identities without changing facts or the watermark", async () => {
+  const { root, file } = await workspace();
+  const original = { type: "user_message", content: "private original request",
+    runtime: { eventId: "original-sequence-owner", eventSeq: 1 } };
+  const replacement = { type: "user_message", content: "private replacement request",
+    runtime: { eventId: "replacement-sequence-owner", eventSeq: 1 } };
+  try {
+    await writeFile(file, `${JSON.stringify(original)}\n`);
+    (await open(root)).close();
+    const previous = watermark(root);
+    await writeFile(file, `${JSON.stringify(replacement)}\n`);
+    await assert.rejects(open(root), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /Runtime event sequence 1 is already bound to another fact/u);
+      assert.match(error.message, /Session: backfill-test/u);
+      assert.match(error.message, /Saved event: original-sequence-owner/u);
+      assert.match(error.message, /Incoming event: replacement-sequence-owner/u);
+      assert.doesNotMatch(error.message, /private original request|private replacement request/u);
+      return true;
+    });
+    assert.deepEqual(watermark(root), previous);
+    const saved = await RuntimeEventAuthority.openReadOnly(root);
+    try {
+      assert.ok(saved);
+      const events = saved.readEvents({ sessionId: "backfill-test" }).events;
+      assert.equal(events.length, 1);
+      assert.deepEqual(events[0]?.payload, original);
+      assert.equal(events[0]?.eventSeq, 1);
+    } finally { saved?.close(); }
+    assert.equal(await readFile(file, "utf8"), `${JSON.stringify(replacement)}\n`, "failed reconciliation preserves the source for diagnosis");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("enriching an existing event with an occupied sequence reports the conflict and keeps both events", async () => {
+  const { root } = await workspace();
+  const authority = await open(root);
+  try {
+    const base = { sessionId: "backfill-test", runId: "run", turnId: "turn", eventType: "session.error",
+      payload: { type: "error", message: "private error detail" } };
+    authority.appendEvent({ ...base, eventId: "numbered-event", eventSeq: 1 });
+    const legacy = { ...base, eventId: "unsequenced-event" };
+    authority.appendEvent(legacy);
+    const before = authority.readEvents({ sessionId: "backfill-test" }).events;
+    assert.throws(() => authority.appendEvent({ ...legacy, eventSeq: 1 }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /Runtime event sequence 1 is already bound to another fact/u);
+      assert.match(error.message, /Session: backfill-test/u);
+      assert.match(error.message, /Saved event: numbered-event/u);
+      assert.match(error.message, /Incoming event: unsequenced-event/u);
+      assert.doesNotMatch(error.message, /private error detail/u);
+      return true;
+    });
+    assert.deepEqual(authority.readEvents({ sessionId: "backfill-test" }).events, before);
+    assert.equal(before[1]?.eventSeq, undefined, "the legacy event remains unnumbered");
+  } finally { authority.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 
 
 test("same-size rewrite with restored mtime still checks the old projection", async () => {

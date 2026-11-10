@@ -274,19 +274,13 @@ export class DesktopMcpService {
 
   async reconnect(projectId: string, name: string): Promise<DesktopMcpServerSummary> {
     const status = await this.agents.mcpReconnect(projectId, normalizeServerName(name));
-    const snapshot = await this.snapshot(projectId);
-    const summary = snapshot.servers.find((server) => server.name === status.name);
-    if (!summary) throw new Error(`MCP 服务器状态不存在：${status.name}`);
-    return summary;
+    return await this.describeRuntimeServer(projectId, status);
   }
 
   async details(projectId: string, name: string): Promise<DesktopMcpServerDetails> {
     const status = await this.agents.mcpDetails(projectId, normalizeServerName(name));
-    const snapshot = await this.snapshot(projectId);
-    const summary = snapshot.servers.find((server) => server.name === status.status.name);
-    if (!summary) throw new Error(`MCP 服务器状态不存在：${status.status.name}`);
     return {
-      server: summary,
+      server: await this.describeRuntimeServer(projectId, status.status),
       resources: status.resources
         .filter((resource) => typeof resource.uri === "string")
         .map((resource) => ({
@@ -296,6 +290,15 @@ export class DesktopMcpService {
           mimeType: optionalText(resource.mimeType)
         }))
     };
+  }
+
+  private async describeRuntimeServer(projectId: string, status: McpServerStatus): Promise<DesktopMcpServerSummary> {
+    const stored = await this.loadVersioned(this.workspaceRoot(projectId));
+    const servers = stored.config.extensions.mcp;
+    const config = Object.hasOwn(servers, status.name) ? servers[status.name] : undefined;
+    if (config) return describeServer(status.name, config, [status]);
+    if (status.name === desktopComputerMcpName) return describeBuiltinComputerServer([status]);
+    throw new Error(`MCP 服务器状态不存在：${status.name}`);
   }
 
   private async savedSnapshot(projectId: string | undefined, servers: string[], force = false): Promise<DesktopMcpSnapshot> {

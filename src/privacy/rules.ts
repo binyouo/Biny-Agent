@@ -1,3 +1,5 @@
+import { phoneContextAllows } from "./phoneContext.js";
+
 export interface RuleHit {
   start: number;
   end: number;
@@ -14,7 +16,7 @@ interface Rule {
   /** 额外的语义校验。 */
   ok?: (value: string) => boolean;
   /** 按上下文判断（如 IP 前是 version/build 就不算）。 */
-  at?: (text: string, start: number) => boolean;
+  at?: (text: string, start: number, end: number, field?: string) => boolean;
 }
 
 const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -25,7 +27,7 @@ const MONTHS = String.raw`(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-
 const SEP = String.raw`["']?[ \t]*(?:[:#=：][ \t]*)?`;
 
 /** 字段名里表示「这是密钥」的名字。 */
-const SECRET_FIELD = String.raw`(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)`;
+const SECRET_FIELD = String.raw`(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)`;
 const QUOTE = String.raw`(?:\\?["'])?`;
 const SECRET_CH = String.raw`[A-Za-z0-9_\-./+=~!@#%^&*]`;
 
@@ -38,6 +40,31 @@ function notAVariable(value: string): boolean {
 function secretValue(value: string): boolean {
   if (!notAVariable(value)) return false;
   return /[0-9]/u.test(value) && /[A-Za-z]/u.test(value);
+}
+
+/** 显式密码标签不猜测强度；排除可辨识的变量引用、类型声明和占位符。 */
+function passwordHits(text: string): RuleHit[] {
+  const labels = /(?<![A-Za-z0-9_.-])(?:[A-Za-z_][A-Za-z0-9_.-]*[_.-])?(?:password|passwd)["']?[ \t]*([:=：])[ \t]*/giu;
+  const hits: RuleHit[] = [];
+  for (const label of text.matchAll(labels)) {
+    let start = label.index + label[0].length;
+    const quote = /["'`]/u.test(text[start] ?? "") ? text[start] : undefined;
+    if (quote) start++;
+    let end = start;
+    while (end < text.length) {
+      const char = text[end]!;
+      if (quote ? char === quote || /[\r\n]/u.test(char) : /[\s"'`<>{},;，；。()[\]]/u.test(char)) break;
+      end += quote && char === "\\" && end + 1 < text.length ? 2 : 1;
+    }
+    const value = text.slice(start, end);
+    if (!notAVariable(value)) continue;
+    if (!quote && (/[([]/u.test(text[end] ?? "")
+      || /^(?:process\.env|os\.environ|env|config|settings|secrets)(?:\.|\[|$)/u.test(value)
+      || /^(?:null|undefined|None|true|false)$/u.test(value)
+      || label[1] !== "=" && /^(?:string|str|number|boolean|bool)$/u.test(value))) continue;
+    hits.push({ start, end, kind: "PASSWORD" });
+  }
+  return hits;
 }
 
 const FILE_EXT = new Set([
@@ -250,8 +277,8 @@ const RULES: readonly Rule[] = [
     bound: ALNUM,
     ok: chineseId
   },
-  { kind: "PHONE", re: /(?:\+?86[- ]?)?1[3-9]\d{9}/gu, bound: DIGITS },
-  { kind: "BANK_CARD", re: /[3-6]\d{3}(?:[ -]?\d{4}){2,3}(?:[ -]?\d{1,3})?/gu, bound: DIGITS, ok: luhn },
+  { kind: "PHONE", re: /(?:\+?86[- ]?)?1[3-9]\d{9}/gu, at: phoneContextAllows },
+  { kind: "BANK_CARD", re: /[3-6]\d{3}(?:[ -]?\d{4}){2,3}(?:[ -]?\d{1,3})?/gu, bound: ALNUM, ok: luhn },
 
   { kind: "SSN", re: /\d{3}-\d{2}-\d{4}/gu, bound: `${ALNUM}-`, ok: ssnOk },
   {
@@ -305,7 +332,7 @@ const RULES: readonly Rule[] = [
 ];
 
 /** 遍历所有规则，收集命中；bound、ok、at 在同一处判定。 */
-export function findRuleHits(text: string): RuleHit[] {
+export function findRuleHits(text: string, field?: string): RuleHit[] {
   const hits: RuleHit[] = [];
   for (const rule of RULES) {
     rule.re.lastIndex = 0;
@@ -321,9 +348,9 @@ export function findRuleHits(text: string): RuleHit[] {
         continue;
       }
       if (rule.ok && !rule.ok(value)) continue;
-      if (rule.at && !rule.at(text, start)) continue;
+      if (rule.at && !rule.at(text, start, end, field)) continue;
       hits.push({ start, end, kind: rule.kind });
     }
   }
-  return hits;
+  return [...hits, ...passwordHits(text)];
 }

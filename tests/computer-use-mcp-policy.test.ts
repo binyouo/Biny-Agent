@@ -18,7 +18,11 @@ test("external MCP uses persistent application approval, refuses disabled contro
   const store = createFileConfigStore(root, { globalDir: root });
   const journal = new ComputerAuditStore(path.join(root, "actions.sqlite")); let dispatched = 0, notices = 0;
   const driver = new NativeProcessDriver(() => undefined);
-  driver.list = async () => ({ data: { apps: [{ pid: 12, bundleId: "test.notes", name: "Notes", running: true }] }, images: [] });
+  driver.list = async () => assert.fail("authorization must not list applications");
+  driver.daemonCommand = async (cmd, args) => {
+    assert.equal(cmd, "app_identity"); assert.equal(args?.pid, 12);
+    return { data: { pid: 12, bundleId: "test.notes", name: "Notes", running: true }, images: [] };
+  };
   driver.observeRaw = async () => ({ data: { pid: 12, window_id: 42, bundleId: "test.notes", elements: [] }, images: [{ mimeType: "image/jpeg", dataBase64: "/9j/2Q==" }] });
   driver.actRaw = async (_cmd, args, pid) => { dispatched++; assert.equal(pid, 12); assert.equal(args.window_id, 42); return { data: { typed: 1 }, images: [] }; };
   driver.capturePreview = async () => ({ data: {}, images: [] });
@@ -61,7 +65,11 @@ test("input target comes from the structured observation rather than its display
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-observation-target-"));
   const store = createFileConfigStore(root, { globalDir: root });
   const driver = new NativeProcessDriver(() => undefined);
-  driver.list = async () => ({ data: { apps: [{ pid: 12, bundleId: "test.notes", name: "Notes", running: true }] }, images: [] });
+  driver.list = async () => assert.fail("authorization must not list applications");
+  driver.daemonCommand = async (cmd, args) => {
+    assert.equal(cmd, "app_identity"); assert.equal(args?.pid, 12);
+    return { data: { pid: 12, bundleId: "test.notes", name: "Notes", running: true }, images: [] };
+  };
   const policy = new LocalComputerMcpPolicy(driver, store, new ComputerAuditStore(), async () => undefined, async () => undefined);
   let dispatched = 0;
   try {

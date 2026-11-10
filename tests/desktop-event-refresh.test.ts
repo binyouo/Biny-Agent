@@ -4,7 +4,7 @@ import { act, createElement, useEffect, useState, type Dispatch, type SetStateAc
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
-import type { DesktopAgentEventEnvelope, DesktopSessionDocument, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopAgentEventEnvelope, DesktopSessionDocument, DesktopSessionTreePage } from "../src/desktop/protocol.js";
 import { syntheticSession } from "../src/desktop/renderer/src/app/desktopState.js";
 import { useDesktopEventBridge } from "../src/desktop/renderer/src/app/useDesktopEventBridge.js";
 import { SkillExtractionCard } from "../src/desktop/renderer/src/components/SkillExtractionCard.js";
@@ -30,26 +30,31 @@ async function fixture(context: TestContext, deferProject = false) {
   const activeProjectIdRef = { current: "project" as string | undefined };
   const selectedSessionIdRef = { current: "session" as string | undefined };
   const reads: ReturnType<typeof deferred<DesktopSessionDocument>>[] = [];
-  const projectReads: ReturnType<typeof deferred<DesktopWorkspaceSnapshot>>[] = [];
+  const projectReads: ReturnType<typeof deferred<DesktopSessionTreePage>>[] = [];
   const errors: unknown[] = [];
-  const merges: DesktopWorkspaceSnapshot[] = [];
+  const merges: DesktopSessionTreePage[] = [];
   const conflicts: unknown[] = [];
   const projectionRefreshes: Array<string | undefined> = [];
+  const fullWorkspaceReads: string[] = [];
   const noop = () => {};
   const onError = (error: unknown) => { errors.push(error); };
-  const mergeProjectSnapshot = (snapshot: DesktopWorkspaceSnapshot) => { merges.push(snapshot); };
+  const mergeSessionCatalog = (snapshot: DesktopSessionTreePage) => { merges.push(snapshot); };
   const setWriterConflict = (conflict: unknown) => { conflicts.push(conflict); };
   const onRuntimeProjectionChanged = async () => { projectionRefreshes.push(selectedSessionIdRef.current); };
   let subscriber: ((envelope: DesktopAgentEventEnvelope) => void) | undefined;
-  const snapshot = { project: { id: "project" }, sessions: [initial.session] } as DesktopWorkspaceSnapshot;
+  const snapshot: DesktopSessionTreePage = { projectId: "project", revision: "catalog", sessions: [initial.session] };
+  const catalogReads: string[][] = [];
+  const readSessionCatalog = async (_projectId: string, sessionIds: string[]): Promise<(allowPublish: boolean) => void> => {
+    catalogReads.push(sessionIds);
+    if (!deferProject) return allowPublish => { if (allowPublish) mergeSessionCatalog(snapshot); };
+    const pending = deferred<DesktopSessionTreePage>();
+    projectReads.push(pending);
+    const next = await pending.promise;
+    return allowPublish => { if (allowPublish) mergeSessionCatalog(next); };
+  };
   Object.assign(dom.window, { biny: {
     onAgentEvent(listener: typeof subscriber) { subscriber = listener; return () => { subscriber = undefined; }; },
-    refreshProject: async () => {
-      if (!deferProject) return snapshot;
-      const pending = deferred<DesktopWorkspaceSnapshot>();
-      projectReads.push(pending);
-      return await pending.promise;
-    },
+    refreshProject: async (projectId: string) => { fullWorkspaceReads.push(projectId); throw new Error("Unexpected full workspace read"); },
     openSession() { const pending = deferred<DesktopSessionDocument>(); reads.push(pending); return pending.promise; }
   } });
   let replaceDocument!: Dispatch<SetStateAction<DesktopSessionDocument | undefined>>;
@@ -59,7 +64,7 @@ async function fixture(context: TestContext, deferProject = false) {
     replaceDocument = setDocument;
     useEffect(() => { documentRef.current = document; }, [document]);
     useDesktopEventBridge({
-      activeProjectIdRef, selectedSessionIdRef, documentRef, setDocument, mergeProjectSnapshot, onError,
+      activeProjectIdRef, selectedSessionIdRef, documentRef, setDocument, readSessionCatalog, onError,
       onRuntimeProjectionChanged,
       setContextBudget: noop, setRecipeNotices: noop, setSkillExtraction, setWriterConflict,
       setSidebarSessions: noop, setWorkspace: noop, onGenerationStarted: noop, onGenerationError: noop
@@ -86,12 +91,36 @@ async function fixture(context: TestContext, deferProject = false) {
     await tick(16);
     await tick(260);
   };
-  return { base, initial, documentRef, selectedSessionIdRef, reads, projectReads, snapshot, errors, merges, conflicts, projectionRefreshes, send, tick, startRefresh, unmount,
+  return { base, initial, documentRef, selectedSessionIdRef, reads, projectReads, snapshot, errors, merges, conflicts, projectionRefreshes, fullWorkspaceReads, catalogReads, send, tick, startRefresh, unmount,
     sendSnapshot: (sessionId: string) => subscriber?.({ projectId: "project", snapshot: { info: { sessionId } } } as DesktopAgentEventEnvelope),
     queueDocument: (document: DesktopSessionDocument) => replaceDocument(document),
     replaceDocument: async (document: DesktopSessionDocument) => { await act(() => replaceDocument(document)); },
     text: () => dom.window.document.getElementById("root")!.textContent };
 }
+
+test("terminal reconciliation does not load complete workspaces", async context => {
+  const view = await fixture(context);
+  await view.startRefresh();
+  assert.deepEqual(view.fullWorkspaceReads, [], "session completion must not read providers, Git, worktrees or unrelated runtime tables");
+  assert.equal(view.reads.length, 1, "the selected conversation still reconciles its durable history");
+});
+
+test("one project's completion burst shares a catalog read, and title-only updates do not reread history", async context => {
+  const view = await fixture(context);
+  view.send({ ...view.base, type: "run.completed", durationMs: 1 });
+  view.send({ ...view.base, sessionId: "background", type: "run.completed", durationMs: 1 });
+  await view.tick(16);
+  view.send({ ...view.base, type: "session.title", title: "new title" });
+  await view.tick(16);
+  await view.tick(260);
+  assert.deepEqual(view.catalogReads, [["session", "background"]]);
+  assert.equal(view.reads.length, 1, "a title update must not cancel an already requested history reconciliation");
+  view.send({ ...view.base, type: "session.title", title: "newer title" });
+  await view.tick(16);
+  await view.tick(260);
+  assert.equal(view.catalogReads.length, 2);
+  assert.equal(view.reads.length, 1, "renaming only changes catalog metadata");
+});
 
 test("普通分析和跳过不打扰聊天，实际失败仍有提示", async (context) => {
   const view = await fixture(context);

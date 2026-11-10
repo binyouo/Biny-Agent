@@ -30,9 +30,15 @@ test("window capture scopes pixels, hides private titles, restores the surface, 
   browser.HTMLCanvasElement.prototype.getContext = function () {
     opaqueMask = false;
     return { fillStyle: '', drawImage() {}, beginPath() {}, roundRect() {}, fill() {},
+      canvas: { width: 1280, height: 1000 },
+      getImageData: (_x: number, _y: number, width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4).fill(120) }),
       fillRect(x: number, y: number, width: number, height: number) {
         assert.equal(String(this.fillStyle), '#202329');
         assert.deepEqual([x, y, width, height], [40, 80, 201, 41]);
+        opaqueMask = true;
+      },
+      putImageData(_data: unknown, x: number, y: number) {
+        assert.deepEqual([x, y], [40, 80]);
         opaqueMask = true;
       }
     } as unknown as CanvasRenderingContext2D;

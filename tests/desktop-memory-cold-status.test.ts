@@ -2,6 +2,7 @@ import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, readFile, } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,48 @@ import type { AgentModel } from "../src/agent/core/types.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { FileModelsStore } from "../src/llm/ModelsStore.js";
+
+test("cold settings and embedding status expose discovered provider models without starting a runtime", { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-cold-embedding-models-"));
+  const previous = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = root;
+  let agents: DesktopAgentManager | undefined;
+  try {
+    const userData = new DesktopUserDataStore(root); await userData.initialize();
+    const state = new DesktopStateStore(path.join(root, "desktop.json")); await state.load();
+    const configStore = createFileConfigStore(root, { globalDir: root });
+    const config = structuredClone(defaultConfig);
+    config.providers = { gateway: { type: "openai-compatible", baseUrl: "https://vectors.example.test/v1", requiresApiKey: false } };
+    config.models = { chat: { provider: "gateway", model: "chat-001" } };
+    config.defaultModel = "chat";
+    config.context.memory.embeddingModel = { kind: "provider", provider: "gateway", model: "BAAI/bge-m3" };
+    await configStore.save(config);
+    const models = new FileModelsStore(path.join(root, "catalog.json"));
+    const projects = new DesktopProjectService(state, userData, configStore);
+    const project = await projects.createProject(root);
+    const requests: string[] = [];
+    agents = new DesktopAgentManager(state, projects, configStore, () => undefined, undefined, models, async input => {
+      requests.push(String(input));
+      return Response.json({ data: [{ id: "BAAI/bge-m3" }] });
+    });
+    assert.deepEqual((await agents.memoryEmbeddingStatus(project.id)).models.filter(model => model.source === "provider"), []);
+    assert.deepEqual(requests, [], "reading status must not fetch a remote catalog");
+    await agents.fetchModelCatalog(project.id, "gateway");
+    assert.deepEqual(requests, ["https://vectors.example.test/v1/models"]);
+    const snapshot = await agents.settingsConfigSnapshot(project.id);
+    assert.equal(snapshot.models.connections[0]?.supportsEmbedding, true);
+    const expected = { kind: "provider", provider: "gateway", model: "BAAI/bge-m3" };
+    assert.deepEqual(snapshot.models.embeddingModels.filter(model => model.source === "provider").map(model => model.ref), [expected]);
+    const status = await agents.memoryEmbeddingStatus(project.id);
+    assert.deepEqual(status.activeModel, expected);
+    assert.deepEqual(status.models.filter(model => model.source === "provider").map(model => model.ref), [expected]);
+  } finally {
+    await agents?.closeAll();
+    if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("cold chat memory toggle persists without model credentials or Runtime; status-only reads did not cover writes", { timeout: 15_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-cold-chat-memory-"));
@@ -102,7 +145,7 @@ test("cold chat memory toggle persists without model credentials or Runtime; sta
   }
 });
 
-for (const query of ["index", "sleep"] as const) test(`cold memory ${query} reads persisted state without launching a runtime`, { timeout: 15_000 }, async () => {
+for (const query of ["index", "sleep"] as const) test(`cold memory ${query} reads persisted state without launching a runtime`, { timeout: 15_000 }, async context => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-cold-memory-"));
   const previous = process.env.BINY_AGENT_DIR;
   const previousEntry = process.env.BINY_RUNTIME_HOST_ENTRY;
@@ -135,12 +178,25 @@ for (const query of ["index", "sleep"] as const) test(`cold memory ${query} read
     } finally { index.close(); }
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     if (query === "index") {
+      const archived = await storage.writeEntry({ content: "Archived local fact", source: "manual" });
+      assert.ok(archived.entry);
+      await storage.archiveEntries([archived.entry.id], "manual");
+      let bodyQueries = 0;
+      let countQueries = 0;
+      const prepare = DatabaseSync.prototype.prepare;
+      context.mock.method(DatabaseSync.prototype, "prepare", function (this: DatabaseSync, sql: string) {
+        if (/SELECT \* FROM memories\b/iu.test(sql)) bodyQueries++;
+        if (/SELECT COUNT\(\*\).*FROM memories\b/iu.test(sql)) countQueries++;
+        return prepare.call(this, sql);
+      });
       const status = await agents.memoryEmbeddingStatus(project.id);
       assert.equal(status.totalEntries, 1);
       assert.equal(status.indexedEntries, 1, "existing vectors must not be reported as pending in a cold project");
       assert.equal(status.pendingEntries, 0);
       await storage.writeEntry({ content: "Another fact without a vector", source: "manual", importance: 3 });
       assert.equal((await agents.memoryEmbeddingStatus(project.id)).pendingEntries, 1);
+      assert.equal(bodyQueries, 0, "repeated cold status reads must not load fact bodies");
+      assert.equal(countQueries, 2, "each status reads the current active count");
     } else {
       assert.deepEqual(await agents.memorySleepStatus(project.id), await storage.readMaintenanceStatus());
       assert.deepEqual(await agents.memorySleepRuns(project.id), []);
@@ -148,6 +204,7 @@ for (const query of ["index", "sleep"] as const) test(`cold memory ${query} read
   } finally {
     await agents?.closeAll();
     storage?.close();
+    context.mock.restoreAll();
     if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
     if (previousEntry === undefined) delete process.env.BINY_RUNTIME_HOST_ENTRY; else process.env.BINY_RUNTIME_HOST_ENTRY = previousEntry;
     await rm(root, { recursive: true, force: true });

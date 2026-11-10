@@ -1,5 +1,5 @@
 /* 布局基准：14px 根字号；放在 Dialog 上，让关闭确认层也继承相同的控件参数。 */
-.desktop-settings-dialog, .theme-editor, .theme-delete-dialog {
+.desktop-settings-dialog {
   --st-rem: calc(14px * var(--font-scale, 1));
   --st-content-inset: calc(16px * var(--font-scale, 1));
   --st-card-padding: calc(20px * var(--font-scale, 1));
@@ -20,12 +20,11 @@
   /* 文字操作用控件圆角；胶囊形只留给分段控件轨道、开关和滑块这类天生圆形的控件。 */
   --st-action-radius: var(--st-button-radius);
   /* 主操作用正文墨色实底，次要操作用前景色淡填充；强调色只留给焦点、链接与状态。
-     全部从 --text 派生，自定义配色无需额外声明按钮色。 */
+     全部从 --text 派生，跟随明暗主题。 */
   --st-primary: var(--text);
   --st-on-primary: var(--surface-raised);
   --st-primary-hover: color-mix(in srgb, var(--text) 84%, var(--surface-raised));
   --st-primary-active: color-mix(in srgb, var(--text) 72%, var(--surface-raised));
-  --st-ring: color-mix(in srgb, var(--accent) 25%, transparent);
   --st-ring-weak: color-mix(in srgb, var(--accent) 22%, transparent);
   --st-field-ring: var(--field-focus-ring);
   --st-action-border: transparent;
@@ -74,7 +73,7 @@
   transition: background-color .15s ease, color .15s ease;
 }
 .settings-action:hover:not(:disabled) { background: var(--st-action-bg-hover); filter: none; }
-.settings-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-action:focus-visible { outline: 1px solid var(--accent); outline-offset: 0px; }
 .settings-action:is(.settings-primary-button, .settings-save-button) { color: var(--st-on-primary); background: var(--st-primary); }
 .settings-action:is(.settings-primary-button, .settings-save-button):hover:not(:disabled) { background: var(--st-primary-hover); }
 .settings-action.settings-text-action { color: var(--text-secondary); background: transparent; padding-inline: 6px; }
@@ -101,24 +100,30 @@
   line-height: 1.4;
 }
 .settings-field:hover:not(:disabled) { border-color: var(--st-field-border-hover); }
-.settings-field:focus-visible { border-color: var(--st-field-border); outline: none; box-shadow: 0 0 0 2px var(--st-field-ring); }
+.settings-field:focus-visible { border-color: var(--st-field-border); outline: none; box-shadow: inset 0 0 0 1px var(--st-field-ring); }
 .settings-field:disabled { opacity: .5; cursor: default; }
 .settings-field::placeholder { color: var(--text-tertiary); }
 textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize: vertical; }
-.settings-search-field {
+.settings-search-field,
+.settings-search {
   display: flex;
-  min-height: var(--st-control-h);
-  height: auto;
+  min-height: max(24px, calc(24px * var(--font-scale, 1)));
+  height: max(24px, calc(24px * var(--font-scale, 1)));
   align-items: center;
-  gap: 8px;
-  padding: 0 var(--st-control-px);
-  border: 1px solid var(--st-field-border);
-  border-radius: var(--st-button-radius);
+  gap: 6px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: calc(12px * var(--font-scale, 1));
   color: var(--text-tertiary);
-  background: var(--st-field-bg);
+  background: color-mix(in srgb, var(--surface-soft) 70%, transparent);
   box-shadow: none;
 }
-.settings-search-field:focus-within { border-color: var(--st-field-border); box-shadow: 0 0 0 2px var(--st-field-ring); }
+.settings-search-field:hover,
+.settings-search:hover { background: color-mix(in srgb, var(--surface-soft) 85%, transparent); }
+.settings-search-field:focus-within,
+.settings-search:focus-within { box-shadow: inset 0 0 0 2px var(--st-field-ring); }
+.settings-search-field > svg,
+.settings-search > svg { width: 13px; height: 13px; flex: none; }
 .settings-model-picker-search:focus-within { color: var(--text-secondary); }
 .settings-search-field > .settings-field,
 .settings-model-picker-search > .settings-field,
@@ -126,14 +131,16 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   flex: 1;
   min-height: 0;
   height: auto;
-  padding: var(--st-control-py) 0;
+  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
   outline: none;
 }
-.settings-search > .settings-field { padding: 0; }
+.settings-search-field > .settings-field,
+.settings-search > .settings-field { font-size: calc(12px * var(--font-scale, 1)); line-height: 1.4; }
+.settings-model-picker-search > .settings-field { padding: var(--st-control-py) 0; }
 
 /* 原生复选框与 button 开关共用同一轨道，不再分别维护滑块子节点。 */
 .settings-switch {
@@ -172,11 +179,11 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
 .settings-switch:is(:checked, [aria-checked="true"]) { background: var(--st-primary); }
 .settings-switch:is(:checked, [aria-checked="true"])::before { background: var(--st-on-primary); transform: translateX(calc(14px * var(--font-scale, 1))); }
 .settings-switch:hover:not(:disabled) { filter: brightness(.9); }
-.settings-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.settings-switch:focus-visible { outline: 1px solid var(--accent); outline-offset: 0px; }
 .settings-switch:disabled { opacity: .5; cursor: default; }
 
 /* 滑块：已完成段与圆点同用正文墨色；圆点靠 2px 卡片底色描边从轨道上分离。
-   两者都从 --text / --st-card 派生，换配色后不需要额外声明，也不会被调色板的灰线染成灰球。 */
+   两者都从 --text / --st-card 派生，跟随明暗主题。 */
 .settings-range {
   width: 100%;
   height: 22px;
@@ -194,7 +201,7 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
 .settings-range::-moz-range-track { height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--text) 14%, transparent); }
 .settings-range::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--st-primary); }
 .settings-range::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 50%; background: var(--st-primary); box-shadow: 0 0 0 2px var(--st-card), 0 1px 3px var(--shadow-soft); }
-.settings-range:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-range:focus-visible { outline: 1px solid var(--accent); outline-offset: 0px; }
 
 .settings-segmented, .settings-choice-tabs {
   display: inline-flex;
@@ -225,8 +232,8 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   line-height: 1.35;
 }
 .settings-segmented input:checked + span,
-.settings-choice-tabs > button:is(.is-active, [aria-pressed="true"]) { color: var(--text); background: var(--st-card); border-color: var(--border-subtle); box-shadow: 0 1px 2px var(--shadow); }
-.settings-choice-tabs > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.settings-choice-tabs > button:is(.is-active, [aria-pressed="true"]) { color: var(--text); background: var(--st-card); border-color: transparent; box-shadow: none; }
+.settings-choice-tabs > button:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 .settings-choice-tabs > button:hover { color: var(--text); }
 .settings-choice-tabs > button > svg { width: 14px; height: 14px; }
 
@@ -246,7 +253,7 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
 .settings-preferences > * { margin-block: 0; }
 
 /* 标题位于分组外；同一组内容只保留一个表面。 */
-.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section, .theme-mode-section) {
+.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section) {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -275,7 +282,7 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.5;
 }
-.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section, .theme-mode-section) > h3,
+.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section) > h3,
 .settings-preference-heading > h3,
 .settings-section > :is(header, .section-heading-row, .activity-section-heading, .activity-section-title, .activity-memory-heading-row, .browser-connection-heading, .cu-approvals-heading) h3 {
   margin: 0;
@@ -284,7 +291,7 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
   font-weight: 600;
   line-height: 1.5;
 }
-.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section, .theme-mode-section) > h3 { padding-inline: 2px; }
+.desktop-settings-dialog .settings-modal :is(.settings-section, .settings-preference-section) > h3 { padding-inline: 2px; }
 .settings-preference-heading {
   display: flex;
   align-items: center;
@@ -305,9 +312,6 @@ textarea.settings-field { min-height: calc(88px * var(--font-scale, 1)); resize:
 .settings-section-body > .settings-model-picker { align-self: flex-start; max-width: 100%; }
 .settings-section-body > .settings-button-row { margin: 0; }
 .settings-section-body > .web-search-options-grid { margin: 0; }
-.theme-mode-section + .theme-mode-section { margin-top: var(--st-stack-gap); }
-.theme-card[aria-pressed="true"] { border-color: var(--text-secondary); background: var(--st-card); box-shadow: 0 0 0 1px var(--text-secondary); }
-.theme-card-check { color: var(--st-on-primary); background: var(--st-primary); }
 .appshot-settings .appshot-select { display: inline-flex; align-items: center; gap: 8px; min-width: calc(132px * var(--font-scale, 1)); }
 .appshot-settings .appshot-select select { width: 100%; }
 .appshot-settings .appshot-spin { position: static; flex: none; transform: none; color: var(--text-tertiary); animation: settings-control-spin 1s linear infinite; }

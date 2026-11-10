@@ -1,0 +1,13 @@
+{
+  "configuration": {
+    "title": "Nowledge Mem",
+    "properties": {
+      "serverName": {
+        "type": "string",
+        "title": "MCP 服务名称",
+        "description": "使用的 Nowledge Mem MCP 服务配置名。留空时读取 BINY_NOWLEDGE_MEM_SERVER，仍为空则自动识别名称含 nowledge-mem 或本机 14242 端口的服务。",
+        "default": ""
+      }
+    }
+  }
+}

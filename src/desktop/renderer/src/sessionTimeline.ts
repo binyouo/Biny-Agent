@@ -1,4 +1,5 @@
 import { confirmedLoadedSkill, scopeHistoricalLoadedSkills } from "./loadedSkills.js";
+import { appendCommandOutput } from "./commandOutput.js";
 import type { ToolOptimization } from "../../../session/toolOptimization.js";
 import { toolDisplayName } from "../../../tools/presentation.js";
 /**
@@ -53,6 +54,9 @@ export interface TimelineCommand {
   cwd?: string;
   stdout: string;
   stderr: string;
+  /** 实时展示仅保留末尾；完整内容仍在所属工具的 updates 中。 */
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
   exitCode?: number;
 }
 
@@ -1011,8 +1015,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       const tool = toolFor(event, event.tool);
       tool.updates.push(event.update);
       if (tool.command && event.update.text) {
-        if (event.update.kind === "stdout") tool.command.stdout += event.update.text;
-        if (event.update.kind === "stderr") tool.command.stderr += event.update.text;
+        if (event.update.kind === "stdout" || event.update.kind === "stderr") appendCommandOutput(tool.command, event.update.kind, event.update.text);
       }
     } else if (event.type === "tool.change_committed") {
       applyCommittedChange(toolFor(event, event.tool), event.change, event.operationId);

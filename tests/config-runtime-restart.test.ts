@@ -18,12 +18,59 @@ test("服务商图标更换、移除不重启 Runtime，真实连接变更仍重
   assert.equal(configChangeRequiresRuntimeRestart(before, after), true, "同一供应商的真实请求端点变化仍须生效");
 });
 
+test("模型可见性新增、切换与清除保留配置版本，但不重建 Runtime", () => {
+  const before = structuredClone(defaultConfig) as AgentConfig;
+  const alias = Object.keys(before.providers)[0]!;
+  delete before.providers[alias]!.modelProfiles;
+  for (const profile of [{ showInPicker: false }, { showInPicker: true }, {}, { showInPicker: undefined }]) {
+    const after = structuredClone(before);
+    after.providers[alias]!.modelProfiles = { model: profile };
+    assert.notEqual(configDocumentRevision(before), configDocumentRevision(after));
+    assert.equal(configChangeRequiresRuntimeRestart(before, after), false);
+    assert.deepEqual(after.providers[alias]!.modelProfiles, { model: profile }, "投影不能改写持久配置");
+    assert.equal(configChangeRequiresRuntimeRestart(after, before), false, "清除可见性覆盖也不重建");
+  }
+  const empty = structuredClone(before);
+  empty.providers[alias]!.modelProfiles = {};
+  assert.equal(configChangeRequiresRuntimeRestart(before, empty), false);
+
+  const configured = structuredClone(before);
+  configured.providers[alias]!.modelProfiles = { model: { contextWindow: 96_000, capabilities: { vision: true } } };
+  const hidden = structuredClone(configured);
+  hidden.providers[alias]!.modelProfiles!.model!.showInPicker = false;
+  assert.equal(configChangeRequiresRuntimeRestart(configured, hidden), false);
+  hidden.providers[alias]!.modelProfiles!.model!.contextWindow = 128_000;
+  assert.equal(configChangeRequiresRuntimeRestart(configured, hidden), true, "容量覆盖仍参与执行配置比较");
+  hidden.providers[alias]!.modelProfiles!.model!.contextWindow = 96_000;
+  hidden.providers[alias]!.modelProfiles!.model!.capabilities = { vision: false };
+  assert.equal(configChangeRequiresRuntimeRestart(configured, hidden), true, "能力覆盖仍参与执行配置比较");
+  const credentialChanged = structuredClone(configured);
+  credentialChanged.credentialRevisions = { provider: "new-credential-version" };
+  assert.equal(configChangeRequiresRuntimeRestart(configured, credentialChanged), true, "凭据版本变化仍要求刷新");
+});
+
 function withChange(mutate: (config: AgentConfig) => void): [AgentConfig, AgentConfig] {
   const before = structuredClone(defaultConfig) as AgentConfig;
   const after = structuredClone(defaultConfig) as AgentConfig;
   mutate(after);
   return [before, after];
 }
+
+test("摘要模型选择按操作读取，不重建 Runtime；压缩策略仍须重建", () => {
+  const [before, after] = withChange(config => { config.context.compaction.summaryModel = "summary-new"; });
+  assert.notEqual(configDocumentRevision(before), configDocumentRevision(after));
+  assert.equal(configChangeRequiresRuntimeRestart(before, after), false);
+  assert.equal(configChangeRequiresRuntimeRestart(after, before), false, "清除选择同样按下一次操作生效");
+  assert.equal(after.context.compaction.summaryModel, "summary-new", "比较不修改真实配置");
+  for (const change of [
+    { enabled: !before.context.compaction.enabled }, { triggerPercent: 0.7 }, { reserveTokens: 1234 },
+    { keepRecentMessages: 3 }, { keepRecentTokens: 1234 }, { maxSummaryTokens: 1234 }
+  ]) {
+    const policy = structuredClone(before);
+    Object.assign(policy.context.compaction, change);
+    assert.equal(configChangeRequiresRuntimeRestart(before, policy), true, JSON.stringify(change));
+  }
+});
 
 test("记忆策略变更仍要求刷新驻留 Runtime", () => {
   // 别想当然：AgentSession 确实是每轮现读 activeConfig，但桌面端只有**当前项目**

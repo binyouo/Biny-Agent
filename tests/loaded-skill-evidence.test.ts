@@ -16,8 +16,11 @@ function context(loadedSkills: string[]): ContextStatus {
 }
 
 
-test("confirmed loads require successful body evidence, not selection or missing legacy result", () => {
-  for (const result of [body, { result: body, durationMs: 3 }, { result: body, hooks: [] }, { result: body, durationMs: 3, hooks: [] }]) {
+for (const [version, templateBody] of [
+  ["legacy", body],
+  ["current", body.replace(" Remember to use absolute paths when accessing files in the skill directory.", "")]
+]) test(`confirmed loads require successful body evidence, not selection or missing legacy result: ${version}`, () => {
+  for (const result of [templateBody, { result: templateBody, durationMs: 3 }, { result: templateBody, hooks: [] }, { result: templateBody, durationMs: 3, hooks: [] }]) {
     assert.equal(confirmedLoadedSkill({ ...call, result }), "image-gen");
     assert.equal(confirmedLoadedSkill({ ...call, result, executionStatus: undefined }), "image-gen");
   }
@@ -76,6 +79,23 @@ test("loaded metadata and successful calls belong only to the selected answer ru
   }
   const noSecondLoad = versions().filter(event => event.type !== "message_metadata" || event.runtime?.runId !== "second");
   assert.deepEqual(buildSessionTimeline(noSecondLoad, [])[0]?.skills, []);
+});
+
+test("selected skill metadata follows the displayed answer run, including retries with no selection", () => {
+  const selectedVersions = versions().map(event => event.type === "message_metadata"
+    ? { ...event, metadata: { ...event.metadata, capabilitySelection: { tools: ["Read"], skills: [event.runtime?.runId === "first" ? "image-gen" : "review"] } } }
+    : event);
+  for (const [messageId, expected] of [["a1", ["image-gen"]], ["a2", ["review"]]] as const) {
+    const events: SessionEvent[] = [...selectedVersions, { type: "message_version_selected", messageId, slotId: "user" }];
+    const projected = createSessionTimelineProjector().update({ sessionId: "session", events, liveEvents: [] });
+    for (const turns of [buildSessionTimeline(events, []), projected]) {
+      assert.deepEqual(turns[0]?.capabilitySelection?.skills, expected);
+    }
+  }
+  const noRetrySelection = selectedVersions.filter(event => event.type !== "message_metadata" || event.runtime?.runId !== "second");
+  assert.deepEqual(buildSessionTimeline(noRetrySelection, [])[0]?.capabilitySelection?.skills, []);
+  const runless = selectedVersions.map(event => ({ ...event, runtime: undefined }));
+  assert.deepEqual(buildSessionTimeline(runless, [])[0]?.capabilitySelection?.skills, []);
 });
 
 test("unambiguous old evidence survives but ambiguous runless version metadata does not", () => {

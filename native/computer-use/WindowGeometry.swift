@@ -46,7 +46,7 @@ func windowScreenBounds(pid: Int, windowID: Int? = nil, windows: [[String: Any]]
         if let windowID, window[kCGWindowNumber as String] as? Int != windowID { continue }
         guard let owner = window[kCGWindowOwnerPID as String] as? Int, owner == pid,
               let bounds = window[kCGWindowBounds as String] as? [String: Any],
-              (window[kCGWindowLayer as String] as? Int ?? 0) == 0 else { continue }
+              windowID != nil || (window[kCGWindowLayer as String] as? Int ?? 0) == 0 else { continue }
         return ["x": (bounds["X"] as? NSNumber)?.doubleValue ?? 0, "y": (bounds["Y"] as? NSNumber)?.doubleValue ?? 0, "w": (bounds["Width"] as? NSNumber)?.doubleValue ?? 0, "h": (bounds["Height"] as? NSNumber)?.doubleValue ?? 0]
     }
     return nil

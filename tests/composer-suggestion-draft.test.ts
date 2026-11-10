@@ -227,7 +227,7 @@ test("chat model icon follows its provider connection when changed or cleared wi
   } finally { await h.close(); }
 });
 
-test("preparation retains the original draft and attachments, blocks duplicate submit, then sends once", { timeout: 10_000 }, async () => {
+test("preparation stays silent, retains the original draft and attachments, blocks duplicate submit, then sends once", { timeout: 10_000 }, async () => {
   const h = await fixture();
   const preparing = deferred();
   let prepares = 0;
@@ -237,7 +237,7 @@ test("preparation retains the original draft and attachments, blocks duplicate s
     assert.deepEqual(h.draft.getSnapshot().draft, h.original.draft);
     assert.deepEqual(h.draft.getSnapshot().attachments, h.original.attachments);
     assert.equal(h.sends.length, 0);
-    assert.match(document.body.textContent ?? "", /正在准备运行环境/);
+    assert.doesNotMatch(document.body.textContent ?? "", /正在准备.*环境/);
     await h.React.act(async () => { h.input().onSubmit(); });
     assert.equal(prepares, 1);
     await h.React.act(async () => { preparing.resolve(); await preparing.promise; });

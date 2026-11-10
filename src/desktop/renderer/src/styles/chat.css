@@ -114,7 +114,7 @@
 }
 
 .biny-chat-scroll .chat-row-header:focus-visible {
-  outline: 2px solid var(--biny-focus);
+  outline: 1px solid var(--biny-focus);
   outline-offset: -2px;
 }
 
@@ -412,7 +412,7 @@ button.chat-think-chip:hover {
 }
 
 button.chat-think-chip:focus-visible {
-  outline: 2px solid var(--biny-control-active);
+  outline: 1px solid var(--biny-control-active);
   outline-offset: -2px;
 }
 
@@ -522,8 +522,7 @@ button.chat-think-chip:focus-visible {
 .chat-tool-row.is-open .chat-tool-row-chevron { transform: rotate(180deg); }
 .chat-tool-row-detail { min-width: 0; padding: 16px; }
 .chat-tool-row:focus-visible,
-.chat-command-input pre:focus-visible,
-.chat-command-result pre:focus-visible { outline: 2px solid var(--biny-control-active); outline-offset: -2px; }
+.chat-command-result pre:focus-visible { outline: 1px solid var(--biny-control-active); outline-offset: -2px; }
 
 /* ============ 结果落定入场（指标/技能指示器出现时的一次轻沉降） ============ */
 
@@ -637,7 +636,7 @@ button.chat-think-chip:focus-visible {
   cursor: pointer;
 }
 .chat-compaction-status > button:hover { background: var(--biny-surface-hover); }
-.chat-compaction-status > button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: -2px; }
+.chat-compaction-status > button:focus-visible { outline: 1px solid var(--biny-focus); outline-offset: -2px; }
 .chat-compaction-status > button.chat-compaction-retry {
   width: auto;
   padding-inline: 8px;
@@ -690,6 +689,8 @@ button.chat-think-chip:focus-visible {
   text-transform: uppercase;
   color: var(--biny-text-tertiary);
 }
+
+.tool-section-label[data-error] { color: var(--biny-danger); }
 
 .tool-section-meta {
   margin-left: 6px;
@@ -758,7 +759,7 @@ button.chat-think-chip:focus-visible {
 
 .biny-chat-scroll .copy-button:focus-visible {
   opacity: 1;
-  outline: 2px solid var(--biny-focus);
+  outline: 1px solid var(--biny-focus);
   outline-offset: -2px;
 }
 
@@ -806,48 +807,24 @@ button.chat-think-chip:focus-visible {
   flex: none;
 }
 
-/* 活动详情共用低对比面板；命令输出可独立滚动，摘要行始终可见。 */
-.chat-command {
-  min-width: 0;
-  margin-block: 4px;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--biny-border) 65%, transparent);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--biny-surface-soft) 35%, transparent);
-  font-family: var(--font-mono);
-  font-size: calc(12px * var(--font-scale, 1));
-}
-.chat-command-input,
-.chat-command-result { position: relative; min-width: 0; }
-.chat-command pre {
+/* 命令参数与结果独立展示，长输出保留自然折行与内部滚动。 */
+.chat-command { min-width: 0; }
+.chat-command-result.tool-code-block > pre {
   margin: 0;
-  padding: 8px 40px 8px 12px;
-  font: inherit;
-  line-height: 1.6;
+  padding: 12px 36px 12px 14px;
+  font: calc(12px * var(--font-scale, 1))/1.6 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.chat-command-input { color: var(--biny-text-secondary); }
-.chat-command-result {
-  border-top: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
-  color: var(--biny-text-tertiary);
-}
-.chat-command-input pre,
-.chat-command-result pre {
   max-height: 288px;
   overflow: auto;
   scrollbar-width: thin;
   overscroll-behavior: contain;
 }
-.chat-command .copy-button { position: absolute; top: 6px; right: 6px; min-width: 24px; min-height: 24px; }
-.biny-chat-scroll .chat-command:hover .copy-button,
-.biny-chat-scroll .chat-command:focus-within .copy-button { opacity: 1; }
 .chat-command-status {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-top: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
+  margin: 0;
   font-family: var(--font-sans);
   font-size: calc(11px * var(--font-scale, 1));
   color: var(--biny-text-tertiary);
@@ -855,6 +832,7 @@ button.chat-think-chip:focus-visible {
   overflow-wrap: anywhere;
 }
 .chat-command-status.is-error { color: var(--biny-danger); }
+.command-exit-code { color: var(--biny-danger); font-variant-numeric: tabular-nums; }
 
 .biny-chat-scroll .expand-output {
   align-self: flex-start;
@@ -982,7 +960,7 @@ button.chat-think-chip:focus-visible {
 }
 .is-critical .permission-confirmation input { border-color: color-mix(in srgb, var(--permission-danger) 35%, transparent); }
 .permission-confirmation input::placeholder { color: color-mix(in srgb, var(--permission-muted-foreground) 70%, transparent); }
-.permission-confirmation input:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--field-focus-ring); }
+.permission-confirmation input:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--field-focus-ring); }
 .permission-reason { margin: 8px 0 0; color: var(--permission-muted-foreground); font-size: calc(.75 * var(--permission-unit)); }
 .permission-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: calc(.5 * var(--permission-unit)); margin-top: calc(.625 * var(--permission-unit)); }
 .biny-chat-scroll .permission-actions button {
@@ -1011,7 +989,7 @@ button.chat-think-chip:focus-visible {
 .biny-chat-scroll .permission-actions .is-session:hover:not(:disabled),
 .biny-chat-scroll .permission-actions .is-reason-active:hover:not(:disabled) { background: color-mix(in srgb, var(--permission-primary) 20%, transparent); }
 .biny-chat-scroll .permission-actions button:disabled { opacity: .5; pointer-events: none; }
-.permission-actions button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.permission-actions button:focus-visible { outline: 1px solid var(--biny-focus); outline-offset: 0px; }
 .permission-card.is-resolved {
   align-items: center;
   gap: calc(.375 * var(--permission-unit));
@@ -1784,24 +1762,25 @@ button.chat-think-chip:focus-visible {
 /* ============ 工具参数与脚本结果 ============ */
 
 .tool-parameters { display: grid; gap: 12px; min-width: 0; margin-bottom: 20px; }
-.tool-parameter-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; }
+.tool-parameter-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; }
 .tool-parameter { display: contents; }
 .tool-parameter.is-block { display: grid; gap: 6px; min-width: 0; }
-.tool-parameter-name { color: color-mix(in srgb, var(--biny-text-tertiary) 70%, transparent); font: calc(12px * var(--font-scale, 1))/1.6 var(--font-mono); overflow-wrap: anywhere; }
-.tool-parameter-value { min-width: 0; margin: 0; color: var(--biny-text); font: calc(12px * var(--font-scale, 1))/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-parameter-name { color: color-mix(in srgb, var(--biny-text-tertiary) 70%, transparent); font: calc(12px * var(--font-scale, 1))/1.5 var(--font-mono); overflow-wrap: anywhere; }
+.tool-parameter-value { min-width: 0; margin: 0; color: var(--biny-text); font: calc(12px * var(--font-scale, 1))/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-code-block { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--biny-border); border-radius: 6px; background: color-mix(in srgb, var(--biny-surface-soft) 40%, transparent); }
 .tool-code-block.is-parameter { border-style: dashed; border-color: color-mix(in srgb, var(--biny-border) 60%, transparent); }
-.tool-code-block > pre { margin: 0; padding: 12px 36px 12px 14px; max-height: 60vh; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; white-space: pre; overflow-wrap: normal; font: calc(12px * var(--font-scale, 1))/1.65 var(--font-mono); }
+.tool-code-block.is-error { border-color: color-mix(in srgb, var(--biny-danger) 35%, transparent); }
+.tool-code-block.is-error > pre { color: var(--biny-danger); }
+.tool-code-block > pre { margin: 0; padding: 12px 36px 12px 14px; max-height: 60vh; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; white-space: pre; overflow-wrap: normal; font: calc(12px * var(--font-scale, 1))/1.5 var(--font-mono); }
 .tool-code-block > .copy-button { position: absolute; z-index: 1; top: 6px; right: 6px; }
 .biny-chat-scroll .tool-code-block:hover > .copy-button,
 .biny-chat-scroll .tool-code-block:focus-within > .copy-button { opacity: 1; }
-.tool-code-block > pre:focus-visible { outline: 2px solid var(--biny-control-active); outline-offset: -2px; }
+.tool-code-block > pre:focus-visible { outline: 1px solid var(--biny-control-active); outline-offset: -2px; }
 .tool-parameters-empty, .script-output-empty { margin: 0; color: var(--biny-text-tertiary); font-size: calc(12px * var(--font-scale, 1)); }
-.script-tool-details, .script-result { min-width: 0; }
-.script-result { display: grid; gap: 8px; }
-.script-result-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--biny-text-tertiary); font-size: calc(12px * var(--font-scale, 1)); }
-.script-result-summary .tool-section-label { margin: 0; }
-.script-token-increase { color: var(--biny-danger); }
+.script-tool-details, .script-result, .command-result { min-width: 0; }
+.script-result, .command-result { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.script-result-summary, .command-result-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--biny-text-tertiary); font-size: calc(12px * var(--font-scale, 1)); }
+.script-result-summary .tool-section-label, .command-result-summary .tool-section-label { margin: 0; }
 .tool-execution-status { display: inline-flex; align-items: center; gap: 4px; flex: none; border-radius: 999px; padding: 2px 8px; color: var(--biny-text-tertiary); background: var(--biny-surface-soft); font-size: calc(11px * var(--font-scale, 1)); }
 .tool-execution-status[data-status="success"] { color: var(--biny-success); background: color-mix(in srgb, var(--biny-success) 10%, transparent); }
 .tool-execution-status[data-status="failed"], .tool-execution-status[data-status="denied"] { color: var(--biny-danger); background: color-mix(in srgb, var(--biny-danger) 10%, transparent); }
@@ -1815,15 +1794,16 @@ button.chat-think-chip:focus-visible {
 .script-child-call + .script-child-call { border-top: 1px solid var(--biny-border); }
 .script-child-call > button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 12px; border: 0; background: transparent; color: var(--biny-text-tertiary); font: calc(11px * var(--font-scale, 1))/1.5 var(--font-mono); text-align: left; cursor: pointer; }
 .script-child-call > button:hover { background: var(--biny-surface-hover); }
-.script-child-name { min-width: 0; overflow-wrap: anywhere; color: var(--biny-text); }
+.script-child-name { flex: 0 0 auto; min-width: 0; max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--biny-text); }
+.script-child-duration { flex: none; white-space: nowrap; }
 .script-child-chevron { display: inline-flex; margin-left: auto; flex: none; transform: rotate(-90deg); }
 .script-child-call > button[aria-expanded="true"] .script-child-chevron { transform: rotate(0); }
-.script-child-error-preview { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--biny-danger); }
-.script-child-detail { display: grid; gap: 6px; padding: 0 12px 8px; }
+.script-child-error-preview { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--biny-danger); }
+.script-child-detail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 0 12px 8px; }
 .script-child-detail h5 { margin: 0 0 4px; font-size: calc(10px * var(--font-scale, 1)); font-weight: 500; color: var(--biny-text-tertiary); }
 .script-child-detail .tool-code-block > pre { max-height: 192px; padding: 8px 36px 8px 10px; }
 .script-output-error { color: var(--biny-danger); }
-.script-calls-toggle:focus-visible, .script-child-call > button:focus-visible { outline: 2px solid var(--biny-control-active); outline-offset: -2px; }
+.script-calls-toggle:focus-visible, .script-child-call > button:focus-visible { outline: 1px solid var(--biny-control-active); outline-offset: -2px; }
 
 /* ============ 工具展开体：IN/OUT 与负载 ============ */
 
@@ -1877,7 +1857,7 @@ button.chat-think-chip:focus-visible {
 .biny-chat-scroll .chat-io-card:focus-within .copy-button { opacity: 1; }
 .chat-io-text:focus-visible,
 .chat-codeview-body:focus-visible,
-.diff-code:focus-visible { outline: 2px solid var(--biny-control-active); outline-offset: -2px; }
+.diff-code:focus-visible { outline: 1px solid var(--biny-control-active); outline-offset: -2px; }
 .chat-io-text,
 .chat-codeview-body,
 .diff-code { overscroll-behavior: contain; }
@@ -2198,7 +2178,7 @@ button.chat-think-chip:focus-visible {
 }
 
 .user-message-editor:focus-within {
-  box-shadow: 0 0 0 2px var(--field-focus-ring), var(--biny-shadow);
+  box-shadow: inset 0 0 0 1px var(--field-focus-ring), var(--biny-shadow);
 }
 
 .biny-chat-scroll .user-message-editor textarea {
@@ -2520,7 +2500,7 @@ button.chat-think-chip:focus-visible {
 }
 
 .message-menu .message-menu-item:focus-visible {
-  outline: 2px solid var(--biny-accent);
+  outline: 1px solid var(--biny-accent);
   outline-offset: -2px;
   background: var(--biny-surface-hover);
   color: var(--biny-text);
@@ -2837,7 +2817,7 @@ button.chat-think-chip:focus-visible {
 .markdown-link-address { padding: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 .markdown-link-actions button { min-height: 30px; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .markdown-link-actions button:hover { background: var(--surface-hover); }
-.markdown-link-actions button:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.markdown-link-actions button:focus-visible { outline: 1px solid var(--text); outline-offset: -2px; }
 .markdown-link-actions.is-context-menu { width: min(248px, calc(100vw - 16px)); gap: 1px; padding: 5px; }
 .markdown-link-actions.is-context-menu button { min-height: 32px; padding: 6px 9px; }
 .markdown-link-menu-heading { padding: 6px 9px 4px; color: var(--text-secondary); font-size: 11px; }
@@ -2867,7 +2847,7 @@ button.chat-think-chip:focus-visible {
 .user-input-actions button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--biny-border); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
 .user-input-actions button[type=submit] { background: var(--biny-accent); color: var(--accent-foreground); }
 .user-input-actions button:disabled { opacity: .45; cursor: default; }
-.user-input-card :focus-visible { outline: 2px solid var(--biny-accent); outline-offset: -2px; }
+.user-input-card :focus-visible { outline: 1px solid var(--biny-accent); outline-offset: -2px; }
 .user-input-error { color: var(--biny-danger); overflow-wrap: anywhere; }
 /* 子代理正文只在卡片内读取和展示，保持父会话的滚动与消息归属。 */
 [data-agent-color="teal"] { --subagent-color: var(--agent-teal); }
@@ -2903,7 +2883,7 @@ button.chat-think-chip:focus-visible {
 .subagent-card-empty { margin: 4px 0; color: var(--biny-text-tertiary); font-size: 13px; }
 .subagent-card-latest { position: absolute; right: 16px; bottom: 12px; display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 4px 10px; border: 1px solid var(--biny-border); border-radius: 16px; background: var(--biny-surface); color: var(--biny-text-secondary); font-size: 12px; cursor: pointer; box-shadow: 0 2px 6px var(--shadow); }
 .subagent-card-latest:hover { background: var(--biny-surface-hover); }
-.subagent-card :is(summary, button, select):focus-visible { outline: 2px solid var(--biny-accent); outline-offset: -2px; }
+.subagent-card :is(summary, button, select):focus-visible { outline: 1px solid var(--biny-accent); outline-offset: -2px; }
 .subagent-card > .tool-permission { margin: 10px 14px; }
 .subagent-messages { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--biny-border-subtle); font-size: 12px; }
 .subagent-messages summary { color: var(--biny-text-secondary); cursor: pointer; }

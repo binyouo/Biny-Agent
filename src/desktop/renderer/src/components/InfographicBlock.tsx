@@ -159,7 +159,7 @@ function useInfographicTheme(): InfographicTheme {
     const update = () => setTheme(readInfographicTheme());
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const observer = new MutationObserver(update);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-base46-theme", "style", "class"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style", "class"] });
     media.addEventListener("change", update);
     return () => { observer.disconnect(); media.removeEventListener("change", update); };
   }, []);

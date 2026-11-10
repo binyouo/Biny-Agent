@@ -119,7 +119,6 @@ test("an older failed theme cannot roll back a newer successful theme publicatio
       assert.equal(state.themePreference(), "light");
       assert.ok(state.settingsPreferences().revision > before.revision);
       assert.deepEqual(state.settingsPreferences().fontPreference, before.fontPreference);
-      assert.deepEqual(state.settingsPreferences().appearancePreference, before.appearancePreference);
       assert.deepEqual(state.windowBounds(), changedBounds);
       const restored = new DesktopStateStore(statePath);
       await restored.load();
@@ -201,7 +200,6 @@ test("concurrent convenience setters preserve both successfully published prefer
       assert.equal(state.themePreference(), "dark");
       assert.deepEqual(state.fontPreference(), font);
       assert.equal(state.settingsPreferences().revision, before.revision + 2);
-      assert.deepEqual(state.appearancePreference(), before.appearancePreference);
       const restored = new DesktopStateStore(statePath);
       await restored.load();
       assert.deepEqual(restored.settingsPreferences(), state.settingsPreferences());
@@ -227,7 +225,6 @@ test("a successful font patch does not commit an earlier failed theme patch", as
       assert.equal(state.themePreference(), before.themePreference,
         "a later font-only patch must not adopt a failed theme change as its baseline");
       assert.deepEqual(state.fontPreference(), font);
-      assert.deepEqual(state.appearancePreference(), before.appearancePreference);
       const restored = new DesktopStateStore(statePath);
       await restored.load();
       assert.equal(restored.themePreference(), before.themePreference);
@@ -342,7 +339,6 @@ test("a successful theme publication excludes a later failed window-bounds save"
       assert.equal(state.themePreference(), "dark");
       assert.equal(state.settingsPreferences().revision, before.revision + 1);
       assert.deepEqual(state.fontPreference(), before.fontPreference);
-      assert.deepEqual(state.appearancePreference(), before.appearancePreference);
       // Ordinary setters retain their existing eager in-memory semantics.
       assert.deepEqual(state.windowBounds(), changedBounds);
       const restored = new DesktopStateStore(statePath);

@@ -24,7 +24,7 @@ export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
       resolveExecution: args => execution(call, "mirror", computerMirrorSchema.parse(args), true)
     },
     {
-      name: "ComputerList", description: "List native apps, or exact windows of a pid. Requires user-enabled desktop control in Biny settings. Browser tasks should prefer Browser/ChromeRelay tools.", risk: "read", capability: "computer.list",
+      name: "ComputerList", description: "Discover native macOS apps, or exact windows of a pid. Use first for an unfamiliar application name when no URL or explicit web context was specified; do not substitute another service. Requires user-enabled desktop control in Biny settings. Explicit webpage tasks should prefer Browser/ChromeRelay tools.", risk: "read", capability: "computer.list",
       parameters: zodToolInput(computerListSchema).parameters, schema: computerListSchema,
       resolveExecution: args => execution(call, "list", computerListSchema.parse(args), false)
     },

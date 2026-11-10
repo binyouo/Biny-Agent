@@ -1,18 +1,18 @@
-import type { AppearanceSnapshot } from "../appearance/types.js";
+import type { DesktopAppearanceSnapshot } from "./protocol.js";
 
 export class AppearancePreviewCoordinator {
-  private active?: { owner: number; snapshot: AppearanceSnapshot };
+  private active?: { owner: number; snapshot: DesktopAppearanceSnapshot };
 
   constructor(private readonly options: {
-    read(): AppearanceSnapshot;
-    publish(snapshot: AppearanceSnapshot): void;
+    read(): DesktopAppearanceSnapshot;
+    publish(snapshot: DesktopAppearanceSnapshot): void;
   }) {}
 
-  snapshot(): AppearanceSnapshot {
+  snapshot(): DesktopAppearanceSnapshot {
     return structuredClone(this.active?.snapshot ?? this.options.read());
   }
 
-  preview(owner: number, snapshot: AppearanceSnapshot | null): void {
+  preview(owner: number, snapshot: DesktopAppearanceSnapshot | null): void {
     if (snapshot === null) {
       this.release(owner);
       return;

@@ -7,7 +7,8 @@
 import type {
   ProviderDefinition,
   ProviderEmbeddingDefinition,
-  ProviderEmbeddingModelDefinition
+  ProviderEmbeddingModelDefinition,
+  ModelCatalogEntry
 } from "../../ai/types.js";
 import { createRetryFetch } from "../../ai/retry.js";
 import type { ProviderConfig } from "../../config/schema.js";
@@ -28,6 +29,7 @@ const maxEmbeddingBatchSize = 256;
 export interface ProviderEmbeddingRuntimeOptions {
   fetcher?: typeof globalThis.fetch;
   env?: NodeJS.ProcessEnv;
+  catalog?: readonly ModelCatalogEntry[];
 }
 
 export class ProviderEmbeddingRuntime implements EmbeddingModelRuntime {
@@ -49,7 +51,7 @@ export class ProviderEmbeddingRuntime implements EmbeddingModelRuntime {
     const baseUrl = config.baseUrl ?? definition.baseUrl;
     if (!baseUrl) throw new Error(`No embedding endpoint configured for provider ${providerAlias}.`);
     validateEndpoint(baseUrl, providerAlias);
-    const declared = embeddingModels(config, embedding).find((model) => model.id === modelId);
+    const declared = embeddingModels(config, embedding, options.catalog).find((model) => model.id === modelId);
     if (!declared) {
       throw new Error(`Embedding model ${modelId} is not explicitly declared for provider ${providerAlias}.`);
     }
@@ -164,10 +166,11 @@ export class ProviderEmbeddingRuntime implements EmbeddingModelRuntime {
 export function listProviderEmbeddingModels(
   providerAlias: string,
   config: ProviderConfig,
-  definition: ProviderDefinition
+  definition: ProviderDefinition,
+  catalog: readonly ModelCatalogEntry[] = []
 ): EmbeddingModelDescriptor[] {
   if (!definition.embedding) return [];
-  return embeddingModels(config, definition.embedding).map((model) => providerDescriptor(
+  return embeddingModels(config, definition.embedding, catalog).map((model) => providerDescriptor(
     providerAlias,
     config,
     definition,
@@ -178,9 +181,21 @@ export function listProviderEmbeddingModels(
 
 function embeddingModels(
   config: ProviderConfig,
-  definition: ProviderEmbeddingDefinition
+  definition: ProviderEmbeddingDefinition,
+  catalog: readonly ModelCatalogEntry[] = []
 ): ProviderEmbeddingModelDefinition[] {
   const models = new Map(definition.models.map((model) => [model.id, { ...model }]));
+  for (const model of catalog) {
+    // 名称只用于缺少用途声明时发现候选；wire 仍必须由连接的 Provider 定义提供。
+    if (model.embedding === false) {
+      models.delete(model.id);
+    } else if (model.embedding === true || /embed|bge-|e5-|gte-|instructor|minilm/iu.test(model.id)) {
+      const baseline = models.get(model.id);
+      models.set(model.id, { id: model.id, displayName: model.displayName,
+        dimensions: baseline?.dimensions, recommendedThreshold: baseline?.recommendedThreshold ?? 0.3,
+        description: model.description ?? baseline?.description });
+    }
+  }
   for (const configured of config.embeddingModels ?? []) {
     const baseline = models.get(configured.id);
     models.set(configured.id, {

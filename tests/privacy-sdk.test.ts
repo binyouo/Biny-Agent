@@ -17,7 +17,7 @@ for (const enabled of [true, false]) test(`ProviderRegistry wires privacy throug
   const registry = new ProviderRegistry(config, [], undefined, undefined, async (_url, init) => {
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer fixture-auth");
     const body = String(init?.body); bodies.push(body);
-    const text = (JSON.parse(body).messages as Array<{ content: string }>).at(-1)!.content;
+    const text = (JSON.parse(body).messages as Array<{ content: string }>).at(-1)!.content.split("\n\n")[0]!;
     const frames = [text.slice(0, 6), text.slice(6)].map((content) => ({ choices: [{ index: 0, delta: { content }, finish_reason: null }] }));
     return new Response(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("") + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
   });
@@ -45,7 +45,7 @@ test("a compacted SDK conversation delivers the restored credential to a local t
     assert.equal(new Headers(init?.headers).get("x-session-id"), "privacy-sdk-compacted");
     const frames = [];
     if (++calls === 1) {
-      tag = JSON.parse(body).messages[0].content.slice("password=".length);
+      tag = JSON.parse(body).messages[0].content.split("\n\n")[0].slice("password=".length);
       assert.match(tag, /^\{\{/u);
       frames.push({ choices: [{ index: 0, delta: { content: "ready" }, finish_reason: "stop" }] });
     } else {

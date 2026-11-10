@@ -78,7 +78,8 @@ function stableJson(value: unknown): string {
  * 所以把 `context` 排除出去，会让别的项目静默保留旧的记忆/压缩策略。
  *
  * 同理，任何"某个 Runtime 里被热更新、但别的 Runtime 没有"的字段都必须留在这里。
- * 往清单外挪字段之前，先确认**所有**驻留 Runtime 都能拿到新值。
+ * 往清单外挪字段之前，先确认**所有**驻留 Runtime 都能拿到新值。压缩摘要模型选择
+ * 在新 root turn 与手动压缩入口读取，下面仅排除这一字段；其它压缩策略仍在构造时固定。
  */
 const RESTART_RELEVANT_CONFIG_FIELDS: readonly string[] = [
   "format",
@@ -109,8 +110,16 @@ export function restartRelevantConfig(config: AgentConfig, skillProjectKey?: str
   for (const key of Object.keys(projection)) {
     if (!RESTART_RELEVANT_CONFIG_FIELDS.includes(key)) delete projection[key];
   }
-  // 图标由 Desktop 展示快照读取，不改变 Provider 请求或 Agent 执行。
-  for (const provider of Object.values(projection.providers as AgentConfig["providers"])) delete provider.icon;
+  delete (projection.context as AgentConfig["context"]).compaction.summaryModel;
+  // 图标和选择器可见性由客户端展示快照读取，不改变 Provider 请求或 Agent 执行。
+  for (const provider of Object.values(projection.providers as AgentConfig["providers"])) {
+    delete provider.icon;
+    for (const [model, profile] of Object.entries(provider.modelProfiles ?? {})) {
+      delete profile.showInPicker;
+      if (Object.values(profile).every(value => value === undefined)) delete provider.modelProfiles![model];
+    }
+    if (provider.modelProfiles && Object.keys(provider.modelProfiles).length === 0) delete provider.modelProfiles;
+  }
   if (skillProjectKey !== undefined) {
     const extensions = projection.extensions as AgentConfig["extensions"];
     extensions.skillProjectOverrides = { [skillProjectKey]: extensions.skillProjectOverrides[skillProjectKey] ?? {} };

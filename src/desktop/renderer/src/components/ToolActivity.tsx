@@ -16,7 +16,10 @@ import { CopyButton } from "./CopyButton.js";
 import { Icon } from "./Icon.js";
 import { CodeView } from "./chat/CodeView.js";
 import { IoCard } from "./chat/IoCard.js";
+import { textLanguage } from "../syntaxHighlight.js";
+import { ToolCodeBlock } from "./chat/ToolCodeBlock.js";
 import { ToolParameters } from "./chat/ToolParameters.js";
+import { ToolExecutionStatus } from "./chat/ToolExecutionStatus.js";
 import { toolResultImages } from "../toolImagePresentation.js";
 import { commandOutputPreview, commandOutputText } from "../commandOutput.js";
 import { classifyDiffLines } from "../../../../utils/diffLines.js";
@@ -42,7 +45,7 @@ export const ToolActivityDetail = memo(function ToolActivityDetail({ projectId, 
       {tool.optimization && !script ? <p className="tool-optimization-note">{tool.optimization.kind === "ptc" ? "脚本筛选与聚合" : "RTK 命令输出压缩"} · ≈{tool.optimization.beforeTokens.toLocaleString()} → ≈{tool.optimization.afterTokens.toLocaleString()} tokens。工具结果估算，不代表账单节省。</p> : null}
       {!script && !command ? <ToolParameters args={tool.args} toolName={tool.tool} /> : null}
       {script ? <ScriptToolDetails tool={tool} /> : null}
-      {command ? <CommandLog command={command} error={errorText} status={tool.permission && !tool.permission.resolved ? "waiting" : tool.status} running={tool.status === "running" && (!tool.permission || tool.permission.resolved)} /> : null}
+      {command ? <CommandLog tool={tool} command={command} error={errorText} status={tool.permission && !tool.permission.resolved ? "waiting" : tool.status} /> : null}
       {typeof commandMetadata?.executedCommand === "string" ? <details><summary>实际执行命令</summary><IoCard input={commandMetadata.executedCommand} output={null} /></details> : null}
       {typeof commandMetadata?.optimizationWarning === "string" ? <p className="tool-optimization-note">{commandMetadata.optimizationWarning}</p> : null}
       {tool.optimization?.kind === "rtk" ? <p className="tool-optimization-note">当前记录保存压缩后的输出；原始命令输出未保留。</p> : null}
@@ -221,14 +224,15 @@ function resolvedPermissionLabel(action: PermissionAction | undefined, approved:
   return approved ? "已允许" : "已拒绝";
 }
 
-/** 活动行已经提供标题；详情只保留命令、原始输出和一次状态反馈。 */
-function CommandLog({ command, error, status, running }: { command: TimelineCommand; error?: string; status: TimelineTool["status"]; running: boolean }): React.JSX.Element {
+/** 参数与结果分区，流式输出继续使用有界预览与按需完整复制。 */
+function CommandLog({ tool, command, error, status }: { tool: TimelineTool; command: TimelineCommand; error?: string; status: TimelineTool["status"] }): React.JSX.Element {
   const scrollRef = useRef<HTMLPreElement>(null);
   const followOutput = useRef(true);
-  const { stdout, stderr } = command;
-  const { text: output, truncated } = useMemo(() => commandOutputPreview({ stdout, stderr }), [stdout, stderr]);
-  const failed = status === "failed" || status === "denied" || (command.exitCode !== undefined && command.exitCode !== 0);
-  const statusText = status === "waiting" ? "等待确认" : status === "cancelled" || status === "aborted" ? "已停止" : status === "skipped" ? "已跳过" : status === "unknown" ? "执行状态未知" : failed ? command.exitCode !== undefined ? `退出码 ${String(command.exitCode)}` : "执行失败" : output ? "已完成" : "已完成，无输出";
+  const { stdout, stderr, stdoutTruncated, stderrTruncated } = command;
+  const { text: output, truncated } = useMemo(() => commandOutputPreview({ stdout, stderr, stdoutTruncated, stderrTruncated }), [stdout, stderr, stdoutTruncated, stderrTruncated]);
+  const nonzeroExit = command.exitCode !== undefined && command.exitCode !== 0;
+  const resultStatus = status === "success" && nonzeroExit ? "failed" : status;
+  const running = status === "running";
   useEffect(() => {
     const element = scrollRef.current;
     if (running && element && followOutput.current) element.scrollTop = element.scrollHeight;
@@ -236,22 +240,24 @@ function CommandLog({ command, error, status, running }: { command: TimelineComm
 
   return (
     <div className="chat-command">
-      {command.command ? <div className="chat-command-input">
-        <pre aria-label="执行命令" tabIndex={0}><span aria-hidden="true">$ </span>{command.command}</pre>
-        <CopyButton label="复制命令" value={command.command} />
-      </div> : null}
-      {output ? <div className="chat-command-result">
-        <pre aria-label="命令输出" tabIndex={0} ref={scrollRef} onScroll={(event) => {
-          const element = event.currentTarget;
-          followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
-        }}>{output}</pre>
-        <CopyButton label={truncated ? "复制完整输出" : "复制输出"} value={output} resolveValue={() => commandOutputText(command)} />
-      </div> : null}
-      {truncated ? <div className="chat-command-status">仅显示末尾输出，可复制全文</div> : null}
-      <div className={`chat-command-status${failed || error ? " is-error" : ""}`}>
-        {running ? <><span aria-hidden="true" className="chat-tool-run-dot" />{output ? "运行中" : "等待输出…"}</>
-          : error ? error : statusText}
-      </div>
+      <ToolParameters args={tool.args ?? { command: command.command }} toolName={tool.tool} />
+      <section className="command-result" aria-label="命令结果">
+        <div className="command-result-summary">
+          <h4 className="tool-section-label">结果</h4>
+          <ToolExecutionStatus status={resultStatus} />
+          {nonzeroExit ? <span className="command-exit-code">退出码 {command.exitCode}</span> : null}
+        </div>
+        {output ? <div className="chat-command-result tool-code-block">
+          <pre aria-label="命令输出" tabIndex={0} ref={scrollRef} onScroll={(event) => {
+            const element = event.currentTarget;
+            followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+          }}>{output}</pre>
+          <CopyButton label={truncated ? "复制完整输出" : "复制输出"} value={output} resolveValue={() => commandOutputText(command, tool.updates)} preserveTrailingNewline />
+        </div> : null}
+        {truncated ? <div className="chat-command-status">仅显示末尾输出，可复制全文</div> : null}
+        {error ? <div className="chat-command-status is-error" role="alert">{error}</div> : null}
+        {!output && !error ? <p className="script-output-empty">{resultStatus === "success" ? "已完成，无输出" : running ? "等待输出…" : "暂无输出"}</p> : null}
+      </section>
     </div>
   );
 }
@@ -363,12 +369,13 @@ function ToolPayload({ tool, onPreviewFile }: { tool: TimelineTool; onPreviewFil
   const images = toolResultImages(tool.result);
   const output = (images ? images.caption : toolResultText(tool.result)) ?? (progress || undefined);
   if (output === undefined) return <></>;
+  const failed = tool.status === "failed" || tool.status === "denied" || tool.status === "unknown" || tool.status === "cancelled";
+  const language = images || tool.result === undefined ? "text" : typeof tool.result === "string" ? textLanguage(output) : "json";
   return (
-    <IoCard
-      input={null}
-      output={output}
-      outputError={tool.status === "failed" || tool.status === "denied" || tool.status === "unknown" || tool.status === "cancelled"}
-    />
+    <section className="tool-section">
+      <h4 className="tool-section-label" data-error={failed || undefined}>{failed ? "错误" : "结果"}</h4>
+      <ToolCodeBlock text={output} language={language} label="工具结果" copyLabel="复制结果" error={failed} />
+    </section>
   );
 }
 

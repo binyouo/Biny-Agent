@@ -16,7 +16,7 @@ test("privacy fetch masks the outbound body and restores the inbound JSON", asyn
   let seenBody = "";
   const baseFetch: typeof globalThis.fetch = async (_input, init) => {
     seenBody = String(init?.body ?? "");
-    const incoming = { choices: [{ message: { content: `ack ${JSON.parse(seenBody).messages[0].content}` } }] };
+    const incoming = { choices: [{ message: { content: `ack ${JSON.parse(seenBody).messages[0].content.split("\n\n")[0]}` } }] };
     return new Response(JSON.stringify(incoming), { status: 200, headers: { "content-type": "application/json" } });
   };
   const fetch = createPrivacyFetch(baseFetch, { settings: on(), provider: "test", model: "m1" });

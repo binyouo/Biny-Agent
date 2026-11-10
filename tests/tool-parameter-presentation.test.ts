@@ -19,6 +19,27 @@ function render(tool: TimelineTool): JSDOM {
   return new JSDOM(renderToStaticMarkup(React.createElement(ToolActivityDetail, { ...callbacks, tool })));
 }
 
+async function renderInteractive(tool: TimelineTool, fn: (document: Document) => Promise<void>): Promise<void> {
+  const dom = new JSDOM('<div id="root"></div>', { url: "https://localhost/" });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root")!);
+  try {
+    await React.act(() => root.render(React.createElement(ToolActivityDetail, { ...callbacks, tool })));
+    await fn(document);
+  } finally {
+    await React.act(() => root.unmount());
+    dom.window.close();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+}
+
 test("脚本展开后同时呈现逐项参数、内部调用摘要和最终输出", () => {
   const dom = render(script);
   try {
@@ -79,7 +100,7 @@ test("脚本子调用按需展开，复制代码保留实际文本", async () =>
     const child = document.querySelector(".script-child-call") as HTMLElement;
     await React.act(() => (child.querySelector("button") as HTMLButtonElement).click());
     assert.match(child.textContent ?? "", /private source/);
-    assert.equal(child.querySelector('[aria-label="调用参数"]')?.textContent, '{\n  "path": "package.json"\n}');
+    assert.equal(child.querySelector('[aria-label="调用参数"]')?.textContent, '{"path":"package.json"}');
     assert.match(child.textContent ?? "", /2ms/);
     assert.match(child.textContent ?? "", /ARGS.*RESULT/s);
     assert.equal(child.querySelector(".tool-details"), null);
@@ -97,6 +118,86 @@ test("脚本子调用按需展开，复制代码保留实际文本", async () =>
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
     }
+  }
+});
+
+for (const [stdout, language] of [
+  ['{"ok":true,"items":[1,2]}', "json"],
+  ["[1, 2]", "json"],
+  ["{not json}", "text"],
+  ["项目：biny", "text"]
+] as const) {
+  test(`脚本 stdout 按内容选择高亮语言：${language}`, () => {
+    const dom = render({ ...script, result: { ok: true, stdout, childCalls: [] } });
+    try {
+      const block = [...dom.window.document.querySelectorAll(".tool-code-block")]
+        .find(node => node.querySelector('[aria-label="工具结果"]')?.textContent === stdout);
+      assert.ok(block);
+      assert.equal(block.getAttribute("data-language"), language);
+    } finally { dom.window.close(); }
+  });
+}
+
+test("脚本子调用长参数保持缩进展开", async () => {
+  const tool: TimelineTool = {
+    ...script,
+    result: { ok: true, childCalls: [{ tool: "Read" }] },
+    children: [{ ...script.children![0]!, args: { path: "package.json", content: "x".repeat(130) } }]
+  };
+  await renderInteractive(tool, async (document) => {
+    await React.act(() => (document.querySelector(".script-calls-toggle") as HTMLButtonElement).click());
+    const child = document.querySelector(".script-child-call") as HTMLElement;
+    await React.act(() => (child.querySelector("button") as HTMLButtonElement).click());
+    assert.equal(child.querySelector('[aria-label="调用参数"]')?.textContent, '{\n  "path": "package.json",\n  "content": "' + "x".repeat(130) + '"\n}');
+  });
+});
+
+test("多个脚本子调用分别展开与收起，失败不改变其他调用和父脚本状态", async () => {
+  const children: TimelineTool[] = [
+    { id: "read-1", tool: "Read", status: "success", args: { path: "README.md" }, result: { content: "readme content" }, updates: [], durationMs: 2 },
+    { id: "read-2", tool: "Read", status: "failed", args: { path: "missing.txt" }, result: { error: "ENOENT: no such file" }, error: "ENOENT: no such file", updates: [], durationMs: 3 },
+    { id: "read-3", tool: "Read", status: "success", args: { path: "menu.csv" }, result: { content: "menu content" }, updates: [], durationMs: 4 }
+  ];
+  await renderInteractive({ ...script, children, result: { ok: true, value: "done", childCalls: children.map(child => ({ tool: child.tool, toolCallId: child.id })) } }, async document => {
+    const toggle = document.querySelector<HTMLButtonElement>(".script-calls-toggle")!;
+    assert.equal(toggle.textContent, "3 tool calls");
+    assert.equal(document.querySelector(".script-child-call"), null);
+    await React.act(() => toggle.click());
+    const rows = [...document.querySelectorAll<HTMLElement>(".script-child-call")];
+    assert.deepEqual(rows.map(row => row.dataset.toolCallId), ["read-1", "read-2", "read-3"]);
+    assert.deepEqual(rows.map(row => row.querySelector(".tool-execution-status")?.getAttribute("data-status")), ["success", "failed", "success"]);
+    const error = rows[1]!.querySelector(".script-child-error-preview")!;
+    assert.equal(error.getAttribute("title"), "ENOENT: no such file");
+    for (const row of rows) assert.equal(row.querySelector(".script-child-name")?.getAttribute("title"), "Read");
+    await React.act(() => rows[0]!.querySelector<HTMLButtonElement>("button")!.click());
+    await React.act(() => rows[1]!.querySelector<HTMLButtonElement>("button")!.click());
+    assert.equal(rows[0]!.querySelector('[aria-label="调用结果"]')?.textContent, '{"content":"readme content"}');
+    assert.equal(rows[1]!.querySelector('[role="alert"]')?.textContent, "ENOENT: no such file");
+    assert.equal(rows[2]!.querySelector(".script-child-detail"), null);
+    const secondButton = rows[1]!.querySelector<HTMLButtonElement>("button")!;
+    await React.act(() => secondButton.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    assert.equal(secondButton.getAttribute("aria-expanded"), "false");
+    assert.equal(document.activeElement, secondButton);
+    assert.equal(rows[0]!.querySelector("button")?.getAttribute("aria-expanded"), "true");
+    assert.equal(document.querySelector(".script-result-summary .tool-execution-status")?.getAttribute("data-status"), "success");
+  });
+});
+
+test("通用工具结果分区按内容着色、失败标错误", () => {
+  for (const [result, status, label, language, failed] of [
+    [{ total: 3 }, "success", "结果", "json", false],
+    ["done", "success", "结果", "text", false],
+    [{ total: 3 }, "failed", "错误", "json", true]
+  ] as const) {
+    const dom = render({ id: "generic-result", tool: "mcp__github__search_issues", args: {}, result, status, updates: [] });
+    try {
+      const section = dom.window.document.querySelector(".tool-section");
+      assert.equal(section?.querySelector(".tool-section-label")?.textContent, label);
+      assert.equal(section?.querySelector(".tool-section-label")?.getAttribute("data-error") !== null, failed);
+      const block = section?.querySelector(".tool-code-block");
+      assert.equal(block?.getAttribute("data-language"), language);
+      assert.equal(block?.classList.contains("is-error"), failed);
+    } finally { dom.window.close(); }
   }
 });
 

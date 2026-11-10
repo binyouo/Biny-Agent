@@ -247,6 +247,18 @@ done
       assert.deepEqual(verifier.getSummary("daily", yesterdayKey), completed, "成功生成叙事后不重复请求模型");
       assert.equal(narrativeCalls, 1);
       assert.equal(notes, 0);
+      const lateStart = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 10).toISOString();
+      const lateEnd = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 11).toISOString();
+      const late = verifier.startSession(lateStart);
+      verifier.endSession(late, lateEnd);
+      verifier.recordAnalysis({ sessionId: late, analyzedAt: lateEnd, analyzerModel: "test", title: "补录工作成果",
+        summary: "补录工作成果", topics: [], prs: [], issues: [], people: [], versions: [], decisions: [], entities: [],
+        highlights: [], worthMemory: false, worthKnowledge: false, isMeeting: false, storageTier: "standard",
+        confidence: 1, sourceEventCount: 0, inputHash: "late-summary-source" });
+      timers.advance(15 * 60 * 1_000);
+      await waitFor(() => verifier.getSummary("daily", yesterdayKey)?.stats.analyzedCount === 1);
+      assert.equal(narrativeCalls, 2, "已生成的昨日摘要在补录分析后自动刷新");
+      assert.equal(notes, 0, "自动刷新仍只更新活动库");
     } finally {
       await verifier.close();
     }

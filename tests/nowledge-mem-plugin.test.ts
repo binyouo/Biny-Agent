@@ -67,6 +67,18 @@ async function main(): Promise<void> {
             url: "http://127.0.0.1:14242/mcp",
             transportProtocol: "streamable-http",
             enabled: true
+          },
+          "custom-mem": {
+            type: "http",
+            url: "https://mem.example.com/custom/mcp",
+            transportProtocol: "streamable-http",
+            enabled: true
+          },
+          "env-mem": {
+            type: "http",
+            url: "https://mem.example.com/env/mcp",
+            transportProtocol: "streamable-http",
+            enabled: true
           }
         }
       },
@@ -188,6 +200,37 @@ async function main(): Promise<void> {
       "the plugin must leave Nowledge Mem agent identity at the user's configured default");
     assert.equal("host_agent_id" in contextCall.args, false,
       "the plugin must not invent a host agent identity without a stable Biny identity contract");
+
+    // biny-plugin.json 声明的 serverName 设置优先于环境变量与自动识别；空值回退到原解析。
+    const selectServer = async (settings: Record<string, string>, envName: string | undefined): Promise<string | undefined> => {
+      const previous = process.env.BINY_NOWLEDGE_MEM_SERVER;
+      if (envName === undefined) delete process.env.BINY_NOWLEDGE_MEM_SERVER;
+      else process.env.BINY_NOWLEDGE_MEM_SERVER = envName;
+      try {
+        const selection = new PluginLifecycleRegistry();
+        const seen: string[] = [];
+        await loadPlugins(
+          workspaceRoot, [{ path: "plugins/nowledge-mem", settings }], config, new ToolRegistry(), new AiRegistry(), selection
+        );
+        if (!selection.hasBeforeTurn) return undefined;
+        await selection.beforeTurn({
+          workspaceRoot, sessionId: "settings-selection", userMessage: "hi", useMemories: true, contributeMemories: false
+        }, async (server) => { seen.push(server); return { content: [] }; });
+        return seen[0];
+      } finally {
+        if (previous === undefined) delete process.env.BINY_NOWLEDGE_MEM_SERVER;
+        else process.env.BINY_NOWLEDGE_MEM_SERVER = previous;
+      }
+    };
+    assert.equal(await selectServer({ serverName: "custom-mem" }, "env-mem"), "custom-mem",
+      "a non-empty setting wins over the environment variable and auto-detection");
+    assert.equal(await selectServer({ serverName: "" }, "env-mem"), "env-mem",
+      "an empty setting falls back to the environment variable");
+    assert.equal(await selectServer({}, "env-mem"), "env-mem");
+    assert.equal(await selectServer({ serverName: "missing-mem" }, undefined), undefined,
+      "a setting naming no configured server disables the plugin instead of guessing");
+    assert.equal(await selectServer({}, undefined), "nowledge-mem",
+      "without a setting or environment variable the existing auto-detection still applies");
     const persisted = await readFile(recorder.filePath, "utf8");
     const events = persisted.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type?: string; content?: string });
     assert.equal(events.some((event) => event.type === "user_message" && event.content?.includes("Working note:")), false,

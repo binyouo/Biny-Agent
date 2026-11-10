@@ -30,14 +30,15 @@ const calls = new Set([
   "pickerModels.some", "modelRuntimeInfo", "pickerModels.sort", "Number", "this.readRuntimeProjection",
   "runtime?.getSnapshot", "Object.fromEntries", "this.runtimeSnapshots(projectId).map", "this.state.selectedSessionId",
   "describeModelConnections", "this.runtimeErrors.get", "listModelChoices", "new ModelRuntime(config, catalogs).listModels", "models.filter",
-  "listModelChoices(config, catalogs).filter"
+  "listModelChoices(config, catalogs).filter", "new ModelRegistry(config, new ProviderRegistry(config, catalogs)).listModels"
 ]);
+const inertRuntimeNames = new Set(["ModelRuntime", "ModelRegistry", "ProviderRegistry"]);
 for (const [nodes, source] of [[[method], desktop], [helpers, manager]] as const) {
   for (const node of nodes) {
     const inspect = (child: ts.Node): void => {
       assert.ok(!ts.isImportDeclaration(child));
       if (ts.isCallExpression(child)) assert.ok(calls.has(child.expression.getText(source)), `unreviewed call: ${child.expression.getText(source)}`);
-      if (ts.isNewExpression(child)) assert.equal(child.expression.getText(source), "ModelRuntime", "only inert Runtime may be constructed");
+      if (ts.isNewExpression(child)) assert.ok(inertRuntimeNames.has(child.expression.getText(source)), "only inert Runtime boundaries may be constructed");
       ts.forEachChild(child, inspect);
     };
     inspect(node);
@@ -107,9 +108,24 @@ function fixture(initial: Configuration | undefined, resident = false) {
       return this.selected.choices.map(item => ({ ...item }));
     }
   }
+  class InertProviderRegistry {
+    constructor(_config: unknown, actualCatalogs: unknown) {
+      assert.equal(actualCatalogs, catalogs);
+    }
+  }
+  class InertModelRegistry {
+    constructor(private readonly selected: Configuration, _providers: unknown) {
+      construction += 1;
+    }
+    listModels(): Choice[] {
+      enumeration += 1;
+      // 设置页只登记已配置模型；目录元数据经 ProviderRegistry 注入，不产生 catalog 候选。
+      return this.selected.choices.filter(item => item.source === "configured").map(item => ({ ...item }));
+    }
+  }
   class InertHostClient {}
   const api = runInNewContext(compiled.outputText, {
-    ModelRuntime: InertModelRuntime, RuntimeHostClient: InertHostClient,
+    ModelRuntime: InertModelRuntime, ModelRegistry: InertModelRegistry, ProviderRegistry: InertProviderRegistry, RuntimeHostClient: InertHostClient,
     restoreProviderCatalogs: async (aliases: string[], store: unknown, providers: unknown) => {
       restores += 1; assert.deepEqual(plain(aliases), ["fixture"]); assert.equal(store, modelsStore);
       assert.equal(providers, current?.providers); return catalogs;
