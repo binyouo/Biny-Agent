@@ -85,7 +85,7 @@ async function testAutomaticOutputBudgetReachesEveryProviderRequest(): Promise<v
   }
 }
 
-async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" | "limit" | "length" | "notification" | "reasoning-only"): Promise<void> {
+async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" | "limit" | "length" | "notification" | "notification-only" | "unknown-tool" | "reasoning-only"): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-natural-completion-"));
   await ensureAgentDirs(workspaceRoot);
   const registry = new ToolRegistry();
@@ -108,11 +108,13 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
       assert.equal(context.tools.some((tool) => tool.name === "attempt_completion"), false);
       assert.ok(requests <= 3, "natural completion must not inject continuation prompts");
       if (requests > 1 && !(scenario === "length" && requests === 2)) {
-        if (scenario !== "reasoning-only") assert.equal(context.messages.at(-1)?.role, "toolResult");
+        if (scenario !== "reasoning-only" && scenario !== "notification-only") assert.equal(context.messages.at(-1)?.role, "toolResult");
       }
       if (scenario === "length" && requests === 2) assert.equal(context.messages.at(-1)?.role, "user");
       const response: ModelStreamEvent[] = [];
-      if ((scenario === "write" || scenario === "limit") && requests === 1) {
+      if (scenario === "unknown-tool" && requests === 1) {
+        response.push({ type: "tool-call", id: "unknown-notification", name: "biny_notification", arguments: {} });
+      } else if ((scenario === "write" || scenario === "limit") && requests === 1) {
         response.push({ type: "tool-call", id: "write", name: "Write", arguments: { path: "result.txt", content: "written" } });
       } else if (scenario === "reasoning-only" && requests === 1) {
         response.push(
@@ -120,7 +122,9 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
           { type: "reasoning-delta", id: "reasoning-1", text: "Long internal reasoning without a user-facing answer." },
           { type: "reasoning-end", id: "reasoning-1" }
         );
-      } else if (scenario === "reasoning-only") {
+      } else if (scenario === "notification-only" && requests === 1) {
+        response.push({ type: "text-delta", text: "<biny_notification>Summary only</biny_notification>" });
+      } else if (scenario === "reasoning-only" || scenario === "notification-only") {
         response.push({ type: "text-delta", text: "Recovered answer." });
       } else if (scenario === "length" && requests <= 2) {
         response.push({ type: "tool-call", id: `length-write-${String(requests)}`, name: "Write", arguments: { path: "result.txt", content: "written" } });
@@ -162,8 +166,8 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
       if (event.type === "done") outcome = event.outcome;
     }
     assert.ok(outcome);
-    assert.equal(requests, scenario === "recovery" ? 3 : scenario === "write" ? 2 : 1);
-    assert.equal(outcome.status, scenario === "limit" || scenario === "length" || scenario === "reasoning-only" ? "incomplete" : "completed");
+    assert.equal(requests, scenario === "recovery" ? 3 : scenario === "write" || scenario === "unknown-tool" ? 2 : 1);
+    assert.equal(outcome.status, scenario === "limit" || scenario === "length" || scenario === "reasoning-only" || scenario === "notification-only" ? "incomplete" : "completed");
     if (scenario === "notification") {
       assert.equal(outcome.notification, "修复了登录崩溃，测试通过。");
       assert.equal(outcome.output.includes("<biny_notification>"), false, "通知块不能进入对外输出");
@@ -174,12 +178,13 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
       assert.equal(streamedAssistant.includes("<"), false, "通知标签的分片不能进入流式界面事件");
       assert.equal(streamedAssistant.includes("修复了登录崩溃"), false, "通知正文不能进入流式界面事件");
     }
-    if (scenario !== "notification" && scenario !== "answer") assert.equal(outcome.notification, undefined);
+    if (scenario !== "notification" && scenario !== "notification-only" && scenario !== "answer") assert.equal(outcome.notification, undefined);
     if (scenario === "limit" || scenario === "length") {
       assert.equal(outcome.stopReason, scenario === "limit" ? "hard_step_limit" : "model_length");
       assert.equal(outcome.resumable, true);
     }
-    if (scenario === "reasoning-only") {
+    if (scenario === "reasoning-only" || scenario === "notification-only") {
+      if (scenario === "notification-only") assert.equal(outcome.notification, "Summary only");
       assert.equal(outcome.stopReason, "provider_error");
       assert.equal(outcome.resumable, true);
       assert.match(outcome.error ?? "", /没有输出可展示的正文/u);
@@ -604,7 +609,7 @@ async function testUnattributedCancellationDoesNotWriteInterruptionMarker(): Pro
   }
 }
 
-for (const scenario of ["answer", "write", "recovery", "limit", "length", "notification", "reasoning-only"] as const) await testNaturalCompletion(scenario);
+for (const scenario of ["answer", "write", "recovery", "limit", "length", "notification", "notification-only", "unknown-tool", "reasoning-only"] as const) await testNaturalCompletion(scenario);
 await testOutputLimitDiagnosticsUseTheFinalRequest();
 await testAutomaticOutputBudgetReachesEveryProviderRequest();
 await testRepeatedActionCanContinue();

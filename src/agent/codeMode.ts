@@ -7,7 +7,7 @@ import type { AgentTool, AgentToolResult } from "./core/types.js";
 /** Names are a VM surface bound; host registration provenance is checked separately. */
 export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep",
   "TaskStatus", "ProcessStatus", "read_skill_resource", "Write", "Edit", "apply_patch", "Bash", "KillShell",
-  "WebSearch", "WebFetch", "BrowserReadDom", "BrowserListEnvironments", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
+  "WebSearch", "WebFetch", "BrowserRead", "BrowserReadDom", "BrowserListEnvironments", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
   "WidgetReadme", "read_checkpoint_evidence"]);
 
 export const codeModePolicy = Object.freeze({

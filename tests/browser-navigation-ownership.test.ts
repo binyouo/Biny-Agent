@@ -6,8 +6,9 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
+import { JSDOM } from "jsdom";
 import { BrowserEnvironmentStore, browserPartitionForEnvironment } from "../src/desktop/browserEnvironments.js";
-import { requestBrowser, type BrowserAutomationEndpoint } from "../src/tools/browser.js";
+import { createBrowserTools, requestBrowser, type BrowserAutomationEndpoint, type BrowserDomSnapshot } from "../src/tools/browser.js";
 import { ToolOutcomeUnknownError } from "../src/tools/types.js";
 
 function deferred<T = void>() {
@@ -491,6 +492,84 @@ async function assertPreview(source: PreviewSource, owner: NavigationContents, p
 }
 
 async function previewAttributionTests(t: TestContext, Service: BrowserServiceClass): Promise<void> {
+  await t.test("BrowserOpen reads a parsed document before dom-ready and keeps observation ownership", () => withPreviewBrowser(Service, async f => {
+    const dom = new JSDOM('<title>Docs</title><body></body>', { url: navigationUrl, runScripts: "outside-only" });
+    const { window } = dom;
+    Object.assign(window, { CSS: { escape: (value: string) => value } });
+    Object.defineProperty(window.HTMLElement.prototype, "innerText", { get() { return this.textContent; } });
+    Object.defineProperty(window.HTMLElement.prototype, "getBoundingClientRect", { value: () => ({ x: 0, y: 0, width: 100, height: 20 }) });
+    const originalSend = f.a.contents.debugger.sendCommand;
+    let reads = 0;
+    f.a.contents.debugger.sendCommand = async (method, params) => {
+      if (method !== "Runtime.evaluate") return originalSend(method, params);
+      const value: unknown = await window.eval(String(params.expression));
+      if (pageOperationName(String(params.expression)) === "read" && ++reads === 1) window.document.body.innerHTML = '<main><h1>Command documentation</h1><a id="cli" href="/reference/cli">CLI</a></main>';
+      return { result: { value } };
+    };
+    const gate = f.gate();
+    try {
+      const tool = createBrowserTools({ ...f.endpoint, projectId: f.a.projectId }).find(tool => tool.name === "BrowserOpen")!;
+      const plan = await tool.resolveExecution(tool.schema.parse({ url: navigationUrl }), { workspaceRoot: process.cwd(), ignore: [] });
+      if ("isError" in plan) assert.fail("valid navigation must execute");
+      const pending = plan.execute({ toolCallId: "open", operationId: "open", signal: AbortSignal.timeout(3_000) });
+      await gate.entered.promise;
+      f.select(f.b);
+      const result = await pending as BrowserDomSnapshot;
+      assert.equal(result.url, navigationUrl);
+      assert.equal(result.title, "Docs");
+      assert.equal(result.text, "Command documentationCLI");
+      assert.equal(result.truncated, false);
+      assert.equal(result.interactive[0]?.ref, "e1");
+      assert.equal("selector" in result.interactive[0]!, false);
+      assert.ok(result.snapshotId);
+      assert.equal(result.interactive[0]?.href, "https://example.invalid/reference/cli");
+      assert.equal(f.a.contents.navigations.filter(url => url === navigationUrl).length, 1);
+      assert.equal(f.b.contents.evaluations.length, 0);
+      assert.equal(reads, 2);
+      f.select(f.a);
+      Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", { value() {} });
+      Object.defineProperty(window.document, "elementFromPoint", { value: () => window.document.getElementById("cli") });
+      const fresh = await f.request("read_dom", { compact: true, maxCharacters: 1000 }) as BrowserDomSnapshot;
+      assert.equal(fresh.interactive[0]?.ref, "e1");
+      assert.equal("selector" in fresh.interactive[0]!, false);
+      const action = { ref: "e1", action: { m: "click" } };
+      await assert.rejects(f.request("dom_action", { ...action, snapshotId: result.snapshotId }), /引用已失效/u);
+      assert.equal(f.a.contents.inputEvents.length, 0);
+      await f.request("dom_action", { ...action, snapshotId: fresh.snapshotId });
+      assert.equal(f.a.contents.inputEvents.length, 2, "short references dispatch one press and release on the observed page");
+      await assert.rejects(f.request("dom_action", { ...action, snapshotId: fresh.snapshotId }), /引用已失效/u);
+      assert.equal(f.a.contents.inputEvents.length, 2, "consumed references cannot replay an action");
+    } finally { gate.release.resolve(); window.close(); }
+  }));
+  await t.test("completed navigation survives observation failure and permits a fresh read", () => withPreviewBrowser(Service, async f => {
+    f.a.contents.evaluationError = "observation unavailable";
+    f.a.contents.evaluationErrorAt = "read";
+    const result = await f.request("navigate", { url: navigationUrl, readDom: true, projectId: f.a.projectId });
+    assert.deepEqual(result, { url: navigationUrl, title: f.a.contents.title, observationError: "observation unavailable" });
+    assert.equal(f.a.contents.navigations.filter(url => url === navigationUrl).length, 1);
+    f.a.contents.evaluationError = undefined;
+    assert.deepEqual(await f.request("read_dom", { projectId: f.a.projectId }), { url: navigationUrl, title: f.a.contents.title });
+  }));
+  await t.test("cancelling first-content observation releases the queue without repeating navigation", () => withPreviewBrowser(Service, async f => {
+    const observed = deferred();
+    const controller = new AbortController();
+    let reads = 0;
+    f.a.contents.debugger.sendCommand = async (_method, params) => {
+      if (params.expression === "document.readyState") return { result: { value: "interactive" } };
+      reads++;
+      observed.resolve();
+      return { result: { value: { url: navigationUrl, title: "Empty page", text: "", interactive: [], truncated: false } } };
+    };
+    const pending = requestBrowser({ ...f.endpoint, projectId: f.a.projectId }, "navigate", { url: navigationUrl, readDom: true }, controller.signal);
+    const rejected = assert.rejects(pending, ToolOutcomeUnknownError);
+    await observed.promise;
+    controller.abort();
+    await rejected;
+    // The following request completes only after the cancelled observation releases the service queue.
+    await f.request("status", {});
+    assert.equal(reads, 1);
+    assert.equal(f.a.contents.navigations.filter(url => url === navigationUrl).length, 1);
+  }));
   await t.test("hidden tabs retain a usable viewport before the browser panel opens", () => withPreviewBrowser(Service, async f => {
     const tab = f.addTab("project-a", "default", "hidden");
     const view = NavigationView.instances.at(-1)!;

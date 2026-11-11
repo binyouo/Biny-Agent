@@ -3418,7 +3418,6 @@ export class AgentSession {
                 lastAssistant?.stopReason,
                 completedStepsBeforeRun + observedSteps,
                 usageRecord,
-                notification !== undefined,
                 this.activeConfig.chat.maxOutputTokens ?? activeModelSettings.maxOutputTokens,
                 lastAssistant?.usage
               )),
@@ -4871,7 +4870,6 @@ function nativeTurnOutcome(
   finishReason: string | undefined,
   steps: number,
   usage?: SessionUsage,
-  hasNotification = false,
   maxOutputTokens?: number,
   lastStepUsage?: AgentUsage
 ): AgentTurnOutcome {
@@ -4928,7 +4926,7 @@ function nativeTurnOutcome(
   if (finishReason === undefined) {
     return { status: "failed", stopReason: "missing_terminal_event", steps, output, usage, error: "Agent Loop ended without a model terminal event." };
   }
-  if (finishReason === "stop" && !output.trim() && !hasNotification) {
+  if (finishReason === "stop" && !output.trim()) {
     return {
       status: "incomplete",
       stopReason: "provider_error",

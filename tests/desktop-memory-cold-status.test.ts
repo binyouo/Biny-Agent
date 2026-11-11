@@ -15,7 +15,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { LocalEmbeddingManager } from "../src/llm/embedding/index.js";
-import { readSessionCatalogRecord, sessionCatalogRecordRevision } from "../src/session/catalog.js";
+import { readSessionCatalogRecord, refreshSessionIndex, sessionCatalogRecordRevision } from "../src/session/catalog.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel } from "../src/agent/core/types.js";
@@ -71,6 +71,7 @@ test("cold chat memory toggle persists without model credentials or Runtime; sta
   process.env.BINY_AGENT_DIR = root;
   let agents: DesktopAgentManager | undefined;
   let conversation: AgentSession | undefined;
+  let dataRoot: string | undefined;
   try {
     const userData = new DesktopUserDataStore(root); await userData.initialize();
     const state = new DesktopStateStore(path.join(root, "desktop.json")); await state.load();
@@ -85,7 +86,7 @@ test("cold chat memory toggle persists without model credentials or Runtime; sta
     const initialConfig = await configStore.load();
     const projects = new DesktopProjectService(state, userData, configStore);
     const project = await projects.createProject(root);
-    const dataRoot = await projects.dataRoot(project);
+    dataRoot = await projects.dataRoot(project);
     const recorder = new SessionRecorder(dataRoot, "cold-chat-memory");
     recorder.record({ type: "user_message", content: "Keep this conversation intact" });
     await recorder.close();
@@ -140,6 +141,8 @@ test("cold chat memory toggle persists without model credentials or Runtime; sta
   } finally {
     await conversation?.close();
     await agents?.closeAll();
+    // 元数据写入会后台刷新索引，删除测试目录前等待其发布完成。
+    if (dataRoot) await refreshSessionIndex(dataRoot);
     if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }

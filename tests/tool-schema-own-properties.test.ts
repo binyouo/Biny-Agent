@@ -232,7 +232,8 @@ for (const key of ["constructor", "toString", "hasOwnProperty"]) {
       assert.deepEqual(fixture.executions, []);
       assert.equal(run.requests, 1);
       assert.equal(run.events.some(event => event.type === "tool_execution_start"), false);
-      assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
+      assert.equal(run.events.some(event => event.type === "error" && event.fatal), false);
+      assert.equal(run.events.find(event => event.type === "turn_end")?.toolResults[0]?.isError, true);
     } finally { await fixture.close(); }
   });
 
@@ -244,7 +245,8 @@ for (const key of ["constructor", "toString", "hasOwnProperty"]) {
       assert.deepEqual(invalid.permissionIds, []);
       assert.deepEqual(invalid.executions, []);
       assert.equal(run.requests, 1);
-      assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
+      assert.equal(run.events.some(event => event.type === "error" && event.fatal), false);
+      assert.equal(run.events.find(event => event.type === "turn_end")?.toolResults[0]?.isError, true);
     } finally { await invalid.close(); }
   });
 
@@ -302,6 +304,7 @@ test("SDK's independent forbidden __proto__ parsing boundary stays rejected befo
     assert.deepEqual(fixture.permissionIds, []);
     assert.deepEqual(fixture.executions, []);
     assert.equal(run.requests, 1);
-    assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
+    assert.equal(run.events.some(event => event.type === "error" && event.fatal), false);
+    assert.equal(run.events.find(event => event.type === "turn_end")?.toolResults[0]?.isError, true);
   } finally { await fixture.close(); }
 });

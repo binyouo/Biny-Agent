@@ -89,6 +89,15 @@ function fixture(calls: Call[], options: { transport?: Transport; noArguments?: 
   return { executions, events, done, requests: () => requests };
 }
 
+function assertRejectedWithinBudget(run: ReturnType<typeof fixture>): void {
+  assert.equal(run.requests(), 2, "known pre-execution failures allow correction within the existing step budget");
+  assert.deepEqual(run.executions, [], "invalid calls never dispatch side effects");
+  assert.equal(run.events.some(event => event.type === "error" && event.fatal), false);
+  assert.equal(run.events.some(event => event.type === "tool_execution_start"), false);
+  assert.ok(run.events.some(event => event.type === "error" && event.reason === "step_limit"),
+    "repeating invalid calls must exhaust the step budget instead of looping indefinitely");
+}
+
 for (const transport of ["direct", "compatible"] as const) {
   for (const [label, input] of [
     ["empty required arguments", ""],
@@ -103,9 +112,7 @@ for (const transport of ["direct", "compatible"] as const) {
       const run = fixture([{ id: "invalid", input: input! }], { transport });
       await run.done;
       assert.deepEqual(run.executions, []);
-      assert.equal(run.requests(), 1, "invalid input must stop rather than request the same call again");
-      assert.equal(run.events.filter(event => event.type === "tool_execution_start").length, 0);
-      assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
+      assertRejectedWithinBudget(run);
     });
   }
 
@@ -114,8 +121,11 @@ for (const transport of ["direct", "compatible"] as const) {
       const run = fixture([{ id: "invalid-name", name, input: input! }], { transport });
       await run.done;
       assert.deepEqual(run.executions, []);
-      assert.equal(run.requests(), 1);
-      assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
+      if (name === "Unavailable") assertRejectedWithinBudget(run);
+      else {
+        assert.equal(run.requests(), 1);
+        assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
+      }
     });
   }
 
@@ -339,7 +349,7 @@ for (const [label, input] of [
       const run = fixture([{ id: "collision", input: JSON.stringify(input) }], { transport, parameters: closedParameters });
       await run.done;
       assert.deepEqual(run.executions, []);
-      assert.equal(run.requests(), 1);
+      assertRejectedWithinBudget(run);
     });
   }
 }
@@ -356,7 +366,7 @@ for (const transport of ["direct", "compatible"] as const) {
     const run = fixture([{ id: "nested-invalid", input: JSON.stringify({ ...openInput, nested: { label: [], scope: "keep" } }) }], { transport, parameters });
     await run.done;
     assert.deepEqual(run.executions, []);
-    assert.equal(run.requests(), 1);
+    assertRejectedWithinBudget(run);
   });
 }
 
@@ -374,7 +384,7 @@ for (const shape of [
       const run = fixture([{ id: "complex", input: '{"path":"fixture","count":"2","scope":"only-here"}' }], { transport, parameters });
       await run.done;
       assert.deepEqual(run.executions, []);
-      assert.equal(run.requests(), 1);
+      assertRejectedWithinBudget(run);
     });
   }
 }
@@ -393,7 +403,7 @@ for (const [label, properties, input] of [
       const run = fixture([{ id: "ambiguous-schema", input: JSON.stringify(input) }], { transport, parameters });
       await run.done;
       assert.deepEqual(run.executions, []);
-      assert.equal(run.requests(), 1);
+      assertRejectedWithinBudget(run);
     });
   }
 }
@@ -432,9 +442,7 @@ for (const transport of ["direct", "compatible"] as const) {
       const run = fixture([{ id: "anyof-invalid", input: JSON.stringify(input) }], { transport, parameters: anyOfSiblingParameters });
       await run.done;
       assert.deepEqual(run.executions, []);
-      assert.equal(run.requests(), 1);
-      assert.equal(run.events.some(event => event.type === "tool_execution_start"), false);
-      assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
+      assertRejectedWithinBudget(run);
     });
   }
   test(`${transport}: valid anyOf sibling arguments execute once unchanged`, async () => {
