@@ -106,3 +106,167 @@ await test("discovered local tool proxies reject replacement endpoints with the 
     assert.equal(replacement.state.calls, 1);
   } finally { await host.close(); }
 });
+
+await test("failed local attachment retries the same identity", async () => {
+  const host = new McpToolHost();
+  const endpoint = localEndpoint();
+  let attempts = 0;
+  const open = async () => { if (++attempts === 1) throw new Error("temporary startup failure"); return endpoint.open(); };
+  try {
+    await assert.rejects(host.attachLocalServer("local", "stable", undefined, open), /temporary startup failure/);
+    await host.attachLocalServer("local", "stable", undefined, open);
+    assert.equal(attempts, 2);
+    assert.equal(host.listServers()[0]?.connected, true);
+  } finally { await host.close(); }
+});
+
+await test("status notification reentry shares unfinished local attachment", { timeout: 5_000 }, async () => {
+  const host = new McpToolHost();
+  const endpoint = localEndpoint(true);
+  let reentered: Promise<void> | undefined;
+  let settled = false;
+  const unsubscribe = host.subscribe(() => {
+    if (reentered || !host.listServers().length) return;
+    reentered = host.attachLocalServer("local", "stable", [], endpoint.open);
+    void reentered.then(() => { settled = true; }, () => { settled = true; });
+  });
+  const attaching = host.attachLocalServer("local", "stable", [], endpoint.open);
+  try {
+    await endpoint.initializing;
+    assert.equal(settled, false, "a notification cannot advertise completion before the handshake");
+    endpoint.finishInitialize();
+    await Promise.all([attaching, reentered]);
+    assert.equal(endpoint.state.starts, 1);
+  } finally {
+    unsubscribe();
+    await host.close();
+    await attaching.catch(() => undefined);
+  }
+});
+
+await test("detaching during local open prevents a late connection from publishing", { timeout: 5_000 }, async () => {
+  const host = new McpToolHost();
+  const endpoint = localEndpoint();
+  let entered!: () => void;
+  let release!: () => void;
+  const opened = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let closes = 0;
+  const attaching = host.attachLocalServer("local", "stable", undefined, async () => {
+    entered(); await gate;
+    return { ...(await endpoint.open()), close: async () => { closes++; } };
+  });
+  const result = attaching.then(() => "connected", () => "rejected");
+  try {
+    await opened;
+    const detaching = host.detachLocalServer("local");
+    release();
+    await detaching;
+    assert.equal(await result, "rejected");
+    assert.equal(endpoint.state.starts, 0, "invalidated local opening must not start an SDK client");
+    assert.equal(closes, 1, "late connection resources must be released exactly once");
+    assert.deepEqual(host.listServers(), []);
+  } finally { release(); await result; await host.close(); }
+});
+
+await test("a failing status observer cannot abandon a local connection", async () => {
+  const host = new McpToolHost();
+  const endpoint = localEndpoint();
+  let notifications = 0;
+  const unsubscribe = host.subscribe(() => { throw new Error("observer failure"); });
+  host.subscribe(() => { notifications++; });
+  try {
+    await host.attachLocalServer("local", "stable", [], endpoint.open);
+    assert.equal(host.listServers()[0]?.connected, true);
+    assert.ok(notifications > 0);
+  } finally { unsubscribe(); await host.close(); }
+});
+
+await test("host close drains a local opening before reporting cleanup complete", { timeout: 5_000 }, async () => {
+  const host = new McpToolHost();
+  const endpoint = localEndpoint();
+  let entered!: () => void, release!: () => void;
+  const opened = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let released = false, closed = false;
+  const attaching = host.attachLocalServer("local", "stable", [], async () => {
+    entered(); await gate;
+    return { ...(await endpoint.open()), close: async () => { released = true; } };
+  });
+  const rejected = assert.rejects(attaching);
+  let closing: Promise<void> | undefined;
+  try {
+    await opened;
+    closing = host.close().then(() => { closed = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(closed, false, "close must retain ownership of the unfinished opening");
+    release();
+    await closing;
+    await rejected;
+    assert.equal(released, true);
+    assert.equal(endpoint.state.starts, 0);
+  } finally { release(); await rejected; await closing; await host.close(); }
+});
+
+await test("repeated detach and host close share pending local cleanup", { timeout: 5_000 }, async () => {
+  const host = new McpToolHost();
+  const endpoint = localEndpoint();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const cleaning = new Promise<void>(resolve => { entered = resolve; });
+  let closes = 0;
+  await host.attachLocalServer("local", "stable", [], async () => ({
+    ...(await endpoint.open()), close: async () => { closes++; entered(); await gate; }
+  }));
+  const first = host.detachLocalServer("local");
+  let secondDone = false;
+  let hostDone = false;
+  try {
+    await cleaning;
+    const second = host.detachLocalServer("local").then(() => { secondDone = true; });
+    const closed = host.close().then(() => { hostDone = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(secondDone, false, "another detach must join the existing cleanup");
+    assert.equal(hostDone, false, "host shutdown must drain removed local endpoints too");
+    release();
+    await Promise.all([first, second, closed]);
+    assert.equal(closes, 1);
+  } finally { release(); await first; await host.close(); }
+});
+
+for (const recovery of ["detach", "shutdown"] as const) {
+  await test(`failed local cleanup retains its resource owner for ${recovery}`, async () => {
+    const host = new McpToolHost();
+    const endpoint = localEndpoint();
+    let closes = 0;
+    await host.attachLocalServer("local", "stable", [], async () => ({
+      ...(await endpoint.open()), close: async () => { if (++closes === 1) throw new Error("cleanup failed once"); }
+    }));
+    try {
+      await assert.rejects(host.detachLocalServer("local"), /cleanup failed once/);
+      if (recovery === "detach") await host.detachLocalServer("local");
+      else await host.close();
+      assert.equal(closes, 2, "failed cleanup must remain available for retry");
+      assert.deepEqual(host.listServers(), []);
+    } finally { await host.close(); }
+  });
+}
+
+await test("detaching a replacement waiting for old cleanup invalidates that replacement", { timeout: 5_000 }, async () => {
+  const host = new McpToolHost();
+  const original = localEndpoint();
+  const replacement = localEndpoint();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await host.attachLocalServer("local", "old", [], async () => ({ ...(await original.open()), close: () => gate }));
+  const replacing = host.attachLocalServer("local", "new", [], replacement.open);
+  const rejected = assert.rejects(replacing, /configuration changed|detached/);
+  const detaching = host.detachLocalServer("local");
+  try {
+    release();
+    await Promise.all([rejected, detaching]);
+    assert.equal(replacement.state.starts, 0);
+    assert.deepEqual(host.listServers(), []);
+  } finally { release(); await replacing.catch(() => undefined); await detaching; await host.close(); }
+});

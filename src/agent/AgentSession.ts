@@ -2887,24 +2887,30 @@ export class AgentSession {
       const reference = messageReferences[index];
       if (reference) referenceByMessage.set(message, reference);
     }
-    let pendingRetryReply: AgentAssistantMessage | undefined;
-    let retryCommitStarted = false;
+    const retryReply: { state:
+      | { phase: "empty" }
+      | { phase: "buffered"; message: AgentAssistantMessage }
+      | { phase: "committing"; message: AgentAssistantMessage }
+      | { phase: "committed" }
+    } = { state: { phase: "empty" } };
+    const retryCommitOwnsTerminal = (): boolean => retryReply.state.phase === "committing" || retryReply.state.phase === "committed";
     let currentStepContext = loopContext;
     const flushIntermediateRetryReply = async (): Promise<void> => {
-      if (!runOptions.retryOrigin || !pendingRetryReply) return;
+      if (!runOptions.retryOrigin || retryReply.state.phase !== "buffered") return;
+      const message = retryReply.state.message;
       const checkpoint = await this.turnStore.load();
       const events = await readSessionEvents(this.recorder.filePath);
       if (!checkpoint || !isDeepStrictEqual(checkpoint.retryOrigin, runOptions.retryOrigin)
         || !isDeepStrictEqual(checkpoint.retryWindow, runOptions.retryWindow)
         || resolveRetryScope(events, runOptions.retryOrigin, checkpoint).status !== "active") throw new Error("Retry window changed before queued delivery.");
       assertRetryWindow(events, runOptions.retryOrigin, runOptions.retryWindow);
-      const reference = this.recordCanonicalMessage({ type: "agent_message", message: pendingRetryReply,
+      const reference = this.recordCanonicalMessage({ type: "agent_message", message,
         parentMessageId: retryCursor, slotId: runOptions.retrySlotId, replyToMessageId: runOptions.replyToMessageId,
         retryOfMessageId: runOptions.retryOfMessageId });
-      referenceByMessage.set(pendingRetryReply, reference);
+      referenceByMessage.set(message, reference);
       retryCursor = reference.id;
       this.recorder.record({ type: "message_version_selected", messageId: reference.id!, slotId: reference.slotId! });
-      pendingRetryReply = undefined;
+      retryReply.state = { phase: "empty" };
     };
     const deliveryHooks = { beforeDelivery: flushIntermediateRetryReply,
       onDelivered: (reference: SessionMessageReference): void => { if (runOptions.retryOrigin) retryCursor = reference.id; } };
@@ -2918,7 +2924,8 @@ export class AgentSession {
       return delivered;
     };
     const commitTerminalRetryReply = async (outcome: AgentTurnOutcome, history: AgentMessage[], recordAudit: () => void | Promise<void>): Promise<void> => {
-      if (!pendingRetryReply || !runOptions.retryOrigin || !runOptions.retryWindow || !retryCursor) return;
+      if (retryReply.state.phase !== "buffered" || !runOptions.retryOrigin || !runOptions.retryWindow || !retryCursor) return;
+      const message = retryReply.state.message;
       await this.recorder.flush();
       const highWater = this.recorder.runtimeHighWater();
       if (!highWater) throw new Error("Retry reply has no precommit witness.");
@@ -2926,8 +2933,9 @@ export class AgentSession {
         ? { status: outcome.status, stopReason: outcome.stopReason, summary: outcome.error ?? `${outcome.status} (${outcome.stopReason})`,
           blockedReason: outcome.blockedReason, requiredAction: outcome.requiredAction } : undefined;
       const phase: RetryCommit = { version: 1, replyMessageId: runOptions.retryWindow.replyMessageId, runId: runOptions.runId!,
-        parentMessageId: retryCursor, runtimeHighWater: highWater, message: pendingRetryReply, outcome };
-      retryCommitStarted = true;
+        parentMessageId: retryCursor, runtimeHighWater: highWater, message, outcome };
+      // 从检查点写入开始由提交恢复接管终态，失败不能回到普通运行收尾。
+      retryReply.state = { phase: "committing", message };
       await this.turnStore.save(input, systemPrompt, history, terminal ? 0 : outcome.steps, coordinator.getToolDiscoverySnapshot(),
         terminal, runOptions.previousTerminals, highWater, runOptions.turnId, runOptions.retryOrigin, runOptions.retryWindow, phase);
       const source = await readSessionEventsForBackfill(this.recorder.filePath, 0);
@@ -2939,14 +2947,14 @@ export class AgentSession {
       if (!recorded) throw new Error("Committed retry reply has no durable canonical identity.");
       const reference = this.referenceForRecordedMessage(recorded);
       finalAssistantReference = reference;
-      referenceByMessage.set(pendingRetryReply, reference);
+      referenceByMessage.set(message, reference);
       retryCursor = reference.id;
       this.contextMessageReferences = history.map((message, index) => referenceByMessage.get(message) ?? this.contextMessageReferences[index]);
       // Canonical identity exists before its rich audit, and the audit precedes
       // terminal. Re-enter the same checkpoint-validated barrier to finish it.
       await recordAudit();
       await this.recorder.commitRetryReply({ ...commit, stage: "terminal" });
-      pendingRetryReply = undefined;
+      retryReply.state = { phase: "committed" };
     };
     const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
     const lastUserMessageReference = lastUserMessage === undefined ? undefined : referenceByMessage.get(lastUserMessage);
@@ -3050,7 +3058,7 @@ export class AgentSession {
             ? foregroundRequest.promptShape : undefined;
           const finalMessage = !message.content.some((part) => part.type === "toolCall");
           currentStepContext = context;
-          if (runOptions.retryOrigin && finalMessage) pendingRetryReply = message;
+          if (runOptions.retryOrigin && finalMessage) retryReply.state = { phase: "buffered", message };
           if (message.stopReason !== "error" && message.stopReason !== "aborted") {
             const extractedNotification = extractNotificationBlock(message);
             if (finalMessage && extractedNotification) notification = extractedNotification;
@@ -3392,15 +3400,15 @@ export class AgentSession {
         usage: usageRecord,
         relatedUsage: this.takeRelatedUsage(),
         contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.snapshot(),
-        messageId: finalAssistantReference?.id ?? (pendingRetryReply ? runOptions.retryWindow?.replyMessageId : undefined),
-        parentMessageId: finalAssistantReference?.parentId ?? (pendingRetryReply ? retryCursor : undefined),
-        slotId: finalAssistantReference?.slotId ?? (pendingRetryReply ? runOptions.retrySlotId : undefined),
+        messageId: finalAssistantReference?.id ?? ("message" in retryReply.state ? runOptions.retryWindow?.replyMessageId : undefined),
+        parentMessageId: finalAssistantReference?.parentId ?? ("message" in retryReply.state ? retryCursor : undefined),
+        slotId: finalAssistantReference?.slotId ?? ("message" in retryReply.state ? runOptions.retrySlotId : undefined),
         replyToMessageId: runOptions.replyToMessageId ?? lastUserMessageReference?.id,
         retryOfMessageId: runOptions.retryOfMessageId
       };
         // A recorder can append the audit before throwing; never settle its usage twice.
         usageAuditStarted = true;
-        if (runOptions.retryOrigin && retryCommitStarted) return this.recorder.recordAndFlush(audit).then(() => undefined);
+        if (runOptions.retryOrigin && retryCommitOwnsTerminal()) return this.recorder.recordAndFlush(audit).then(() => undefined);
         this.recorder.record(audit);
       };
       let outcome = {
@@ -3430,7 +3438,7 @@ export class AgentSession {
         if (reference) referenceByMessage.set(message, reference);
         return reference;
       });
-      if (!retryCommitStarted) recordAssistantAudit();
+      if (!retryCommitOwnsTerminal()) recordAssistantAudit();
       if (outcome.status === "completed" && runPluginLifecycle && pluginToolSelectionAllowsCalls && pluginLifecycle?.hasAfterTurn) {
         await this.recorder.flush();
         let pluginMessages: PluginTurnMessage[] | undefined;
@@ -3472,7 +3480,7 @@ export class AgentSession {
       if (content && (outcome.status === "completed" || outcome.status === "incomplete" || outcome.status === "blocked")) {
         yield { type: "assistant.completed", content, notification };
       }
-      if (!retryCommitStarted && (outcome.status === "blocked" || outcome.status === "incomplete" && outcome.resumable === true)) {
+      if (!retryCommitOwnsTerminal() && (outcome.status === "blocked" || outcome.status === "incomplete" && outcome.resumable === true)) {
         try {
           await this.recorder.flush();
           await this.turnStore.save(
@@ -3580,7 +3588,7 @@ export class AgentSession {
       }
       yield doneEvent(outcome);
     } catch (error) {
-      if (retryCommitStarted) throw error;
+      if (retryCommitOwnsTerminal()) throw error;
       yield* pendingEvents.drain();
       const message = errorMessage(error);
       await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {

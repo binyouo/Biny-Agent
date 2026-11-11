@@ -277,3 +277,40 @@ test("session.list keeps its cursorless wire contract", async (context) => {
     assert.equal(client.getSnapshot().revision, 2);
   } finally { await client.close(); }
 });
+
+for (const terminal of ["closed", "retired"] as const) {
+  test(`late subscription cannot reopen a ${terminal} client`, { timeout: 5_000 }, async context => {
+    let subscriptionId!: string;
+    let markSubscribed!: () => void;
+    const subscribed = new Promise<void>(resolve => { markSubscribed = resolve; });
+    let connections = 0;
+    const socket = new MemorySocket(frame => {
+      assert.ok(frame.kind === "hello" || frame.kind === "request");
+      if (frame.kind === "hello") return [{ kind: "response", requestId: frame.requestId, ok: true,
+        result: { hostEpoch: "epoch-a", sequence: 0, capabilities: ["host.idle-retirement"] } }];
+      assert.equal(frame.operation, "subscribe");
+      subscriptionId = frame.requestId;
+      markSubscribed();
+      return [];
+    });
+    context.mock.method(net, "createConnection", () => {
+      connections++;
+      queueMicrotask(() => socket.emit("connect"));
+      return socket as unknown as net.Socket;
+    });
+    const client = await RuntimeHostClient.connect({ registration });
+    try {
+      const readiness = assert.rejects(client.waitForReady(), /closed|retired|changed/u);
+      await subscribed;
+      if (terminal === "closed") await client.close();
+      else socket.emit("data", encodeHostFrame({ kind: "retired", hostEpoch: "epoch-a", reason: "idle" }));
+      socket.emit("data", encodeHostFrame({ kind: "response", requestId: subscriptionId, ok: true,
+        result: { hostEpoch: "epoch-a", sequence: 1, snapshot: snapshot("primary", 1), sessions: [], capabilities: [] } }));
+      await readiness;
+      assert.equal(client.isRetired, terminal === "retired");
+      await assert.rejects(client.waitForReady(), new RegExp(terminal, "u"));
+      await assert.rejects(client.retryConnection(), new RegExp(terminal, "u"));
+      assert.equal(connections, 1, "terminal clients must not create replacement transports");
+    } finally { await client.close(); }
+  });
+}

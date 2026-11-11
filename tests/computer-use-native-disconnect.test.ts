@@ -5,7 +5,7 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
 
-async function fixture(t: TestContext, delayStop = false, selfIdle?: "normal" | "crash" | "disconnect") {
+async function fixture(t: TestContext, delayStop = false, selfIdle?: "normal" | "crash" | "disconnect", holdStart = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bcu-"));
   const binary = path.join(directory, "helper.cjs");
   await writeFile(binary, `#!/usr/bin/env node
@@ -57,10 +57,12 @@ process.on('SIGTERM', () => {
   const timer = setInterval(() => { if (fs.existsSync(path.join(dir, 'release-stop'))) { clearInterval(timer); process.exit(0); } }, 10);
 });
 try { fs.unlinkSync(socketPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-server.listen(socketPath, () => console.log('ready'));
+if (${JSON.stringify(holdStart)}) {
+  const timer = setInterval(() => { if (fs.existsSync(path.join(dir, 'release-start'))) { clearInterval(timer); server.listen(socketPath, () => console.log('ready')); } }, 10);
+} else server.listen(socketPath, () => console.log('ready'));
 `, { mode: 0o700 });
   const drivers: NativeProcessDriver[] = [];
-  t.after(async () => { await writeFile(path.join(directory, "release-stop"), ""); await writeFile(path.join(directory, "release-reply"), ""); for (const driver of drivers) await driver.dispose(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { await writeFile(path.join(directory, "release-start"), ""); await writeFile(path.join(directory, "release-stop"), ""); await writeFile(path.join(directory, "release-reply"), ""); for (const driver of drivers) await driver.dispose(); await rm(directory, { recursive: true, force: true }); });
   return {
     directory,
     requests: async (): Promise<{ id?: string; cmd: string; args: Record<string, unknown>; connection: number }[]> => (await readFile(path.join(directory, "requests.jsonl"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)),
@@ -206,4 +208,44 @@ test("input cancelled before native dispatch sends neither input nor cancel fram
   const reply = await driver.actRaw("type_text", { text: "abc" }, 42, abort.signal);
   assert.equal(reply.data.effect, "refused");
   assert.equal((await f.requests()).some(request => ["type_text", "cancel"].includes(request.cmd)), false);
+});
+
+for (const action of ["stop", "dispose"] as const) {
+  test(`${action} during native startup drains the owned child`, { timeout: 10_000 }, async t => {
+    const f = await fixture(t, false, undefined, true);
+    const driver = f.driver(() => {});
+    const starting = driver.start().then(() => "started", () => "cancelled");
+    let pid: number | undefined;
+    try {
+      await waitFor(async () => { pid = Number(await readFile(path.join(f.directory, "pid"), "utf8").catch(() => "")); return Boolean(pid); });
+      await driver[action]();
+      let alive = true;
+      try { process.kill(pid!, 0); } catch { alive = false; }
+      assert.equal(alive, false, "stop must include a child that has not announced ready yet");
+      assert.equal(await starting, "cancelled");
+    } finally {
+      await writeFile(path.join(f.directory, "release-start"), "");
+      await starting;
+      await driver.dispose();
+    }
+  });
+}
+
+test("detach invalidates native startup before it can spawn", { timeout: 5_000 }, async t => {
+  const f = await fixture(t);
+  const driver = f.driver(() => {});
+  const starting = driver.start();
+  const cancelled = assert.rejects(starting, /detached|disposed/);
+  driver.detach();
+  await cancelled;
+  assert.equal(await readFile(path.join(f.directory, "pid"), "utf8").then(() => true, () => false), false);
+});
+
+test("forced native shutdown resolves only after the child exits", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, true);
+  const driver = f.driver(() => {});
+  await driver.start();
+  const pid = Number(await readFile(path.join(f.directory, "pid"), "utf8"));
+  await driver.stop();
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "sending SIGKILL alone does not prove the helper has exited");
 });

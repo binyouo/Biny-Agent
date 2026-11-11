@@ -1379,8 +1379,7 @@ export class ToolExecutionCoordinator {
   ): Promise<ToolExecutionOutcome> {
     const startedAt = Date.now();
     let executionPromise: Promise<unknown> | undefined;
-    let externalExecutionPromise: Promise<unknown> | undefined;
-    let externalExecutionSettled = true;
+    let externalExecution: { promise: Promise<unknown>; state: "running" | "settled" } | undefined;
     let executionStarted = false;
     let latestExecutionState: ToolExecutionState = "running";
     let committedChange: CommittedFileChange | undefined;
@@ -1433,11 +1432,11 @@ export class ToolExecutionCoordinator {
         } catch (error) {
           pending = Promise.reject(error);
         }
-        externalExecutionPromise = pending;
-        externalExecutionSettled = false;
+        const attempt: NonNullable<typeof externalExecution> = { promise: pending, state: "running" };
+        externalExecution = attempt;
         void pending.then(
-          () => { externalExecutionSettled = true; },
-          () => { externalExecutionSettled = true; }
+          () => { attempt.state = "settled"; },
+          () => { attempt.state = "settled"; }
         );
         return pending;
       };
@@ -1480,8 +1479,8 @@ export class ToolExecutionCoordinator {
       };
     } catch (error) {
       if (error instanceof CapabilityInvocationCancelledError) {
-        if (externalExecutionPromise && !externalExecutionSettled) {
-          this.context.quarantineExternalTool?.(call.name, call.id, externalExecutionPromise);
+        if (externalExecution?.state === "running") {
+          this.context.quarantineExternalTool?.(call.name, call.id, externalExecution.promise);
         }
         const message = formatToolError(call.name, error);
         reportExecutionState("cancelled", message);
@@ -1493,8 +1492,8 @@ export class ToolExecutionCoordinator {
         };
       }
       if (error instanceof CapabilityOutcomeUnknownError || error instanceof ToolOutcomeUnknownError) {
-        if (externalExecutionPromise && !externalExecutionSettled) {
-          this.context.quarantineExternalTool?.(call.name, call.id, externalExecutionPromise);
+        if (externalExecution?.state === "running") {
+          this.context.quarantineExternalTool?.(call.name, call.id, externalExecution.promise);
         }
         const message = formatToolError(call.name, error);
         // Queued resource users can start as soon as this outcome is returned.
@@ -1513,7 +1512,7 @@ export class ToolExecutionCoordinator {
         };
       }
       if (error instanceof ExternalToolQuarantineError && executionPromise) {
-        this.context.quarantineExternalTool?.(call.name, call.id, externalExecutionPromise ?? executionPromise);
+        this.context.quarantineExternalTool?.(call.name, call.id, externalExecution?.promise ?? executionPromise);
         const message = `Tool ${call.name} was aborted, but its external ${source} execution did not settle within ${String(externalToolAbortDrainMs)}ms. This agent session is quarantined until that execution settles, so later operations cannot overlap its possible side effects.`;
         reportExecutionState("unknown", message);
         return {

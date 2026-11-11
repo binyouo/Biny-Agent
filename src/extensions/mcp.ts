@@ -142,6 +142,10 @@ export class McpToolHost {
   private registry?: ToolRegistry;
   private workspaceRoot = "";
   private closing = false;
+  private closePromise?: Promise<void>;
+  private readonly configurationChanges = new Map<string, Promise<void>>();
+  private readonly localClosures = new Map<string, Promise<void>>();
+  private readonly retiredLocalServers = new Set<ManagedMcpServer>();
   private readonly listeners = new Set<() => void>();
   private readonly genericTools = new Map<string, { signature: string; tools: Tool[] }>();
 
@@ -151,7 +155,9 @@ export class McpToolHost {
     if (this.closing) throw new Error("MCP host is closing.");
     const previous = this.servers.get(name);
     if (previous && !previous.local) throw new Error(`MCP server name is reserved by a configured server: ${name}`);
-    if (previous?.local?.identity === identity && previous.status.enabled) return previous.connecting ?? Promise.resolve();
+    if (previous?.local?.identity === identity && previous.status.enabled) {
+      return previous.connecting ?? (previous.status.connected ? Promise.resolve() : this.reconnect(previous));
+    }
     const closed = this.detachLocalServer(name);
     const config: McpServerConfig = { enabled: true, args: [], stderr: "ignore", exposure: "direct", description: "Built-in Computer Use" };
     const managed: ManagedMcpServer = {
@@ -160,7 +166,6 @@ export class McpToolHost {
       local: { identity, tools, open }
     };
     this.servers.set(name, managed);
-    this.emitChange();
     const pending = closed.then(() => this.startServer(managed)).catch((error: unknown) => {
       managed.status.connecting = false;
       managed.status.lastError = errorText(error);
@@ -168,29 +173,44 @@ export class McpToolHost {
       throw error;
     });
     managed.connecting = pending;
+    this.emitChange();
     void pending.finally(() => { if (managed.connecting === pending) managed.connecting = undefined; }).catch(() => undefined);
     return pending;
   }
 
-  async detachLocalServer(name: string): Promise<void> {
-    const managed = this.servers.get(name);
-    if (!managed?.local) return;
+  detachLocalServer(name: string): Promise<void> {
+    const pending = this.localClosures.get(name);
+    const current = this.servers.get(name);
+    if (!current && pending) return pending;
+    const managed = current ?? [...this.retiredLocalServers].find(server => server.name === name);
+    if (!managed?.local) return Promise.resolve();
     managed.status.enabled = false;
     managed.status.connected = false;
     managed.status.connecting = false;
     managed.local.tools = [];
-    this.emitChange();
-    try {
-      try { await managed.client?.close(); }
-      finally { await managed.closeTransport?.(); }
-      if (this.servers.get(name) === managed) this.servers.delete(name);
-    } catch (error) {
-      managed.status.lastError = `Local MCP cleanup failed: ${errorText(error)}`;
-      throw error;
-    } finally { this.emitChange(); }
+    this.servers.delete(name);
+    this.retiredLocalServers.add(managed);
+    managed.startupController?.abort(new Error(`Local MCP server was detached: ${name}`));
+    for (const toolName of managed.status.toolNames) this.registry?.unregister(toolName);
+    const closing = Promise.resolve().then(async () => {
+      this.emitChange();
+      try {
+        await managed.connecting?.catch(() => undefined);
+        try { await managed.client?.close(); }
+        finally { await managed.closeTransport?.(); }
+        this.retiredLocalServers.delete(managed);
+      } catch (error) {
+        managed.status.lastError = `Local MCP cleanup failed: ${errorText(error)}`;
+        throw error;
+      } finally { this.emitChange(); }
+    });
+    this.localClosures.set(name, closing);
+    void closing.finally(() => { if (this.localClosures.get(name) === closing) this.localClosures.delete(name); }).catch(() => undefined);
+    return closing;
   }
 
   async connectConfiguredServers(workspaceRoot: string, config: AgentConfig, registry?: ToolRegistry): Promise<void> {
+    if (this.closing) throw new Error("MCP host is closing.");
     this.registry = registry;
     this.workspaceRoot = workspaceRoot;
     const pending: Promise<void>[] = [];
@@ -225,48 +245,58 @@ export class McpToolHost {
   /** 已保存的配置只替换指定连接；旧连接的迟到通知不能发布到新目录。 */
   async configureServers(workspaceRoot: string, config: AgentConfig, names: readonly string[], force = false): Promise<void> {
     if (this.closing) throw new Error("MCP host is closing.");
-    const failures: unknown[] = [];
-    for (const name of new Set(names)) {
-      const previous = this.servers.get(name);
+    const changes = [...new Set(names)].map(name => {
       const next = config.extensions.mcp[name];
-      if (previous?.local) throw new Error(`MCP server name is reserved: ${name}`);
-      if (!force && isDeepStrictEqual(previous?.rawConfig, next)) continue;
-      try {
-        if (previous) {
-          this.servers.delete(name);
-          previous.status.enabled = false;
-          previous.status.connected = false;
-          previous.status.connecting = false;
-          previous.status.catalogCached = false;
-          previous.startupController?.abort(new Error(`MCP server configuration changed: ${name}`));
-          const client = previous.client;
-          previous.client = undefined;
-          for (const toolName of previous.status.toolNames) this.registry?.unregister(toolName);
-          this.emitChange();
-          try { await client?.close(); }
-          catch (error) { previous.client = client; throw error; }
-          finally {
-            await previous.connecting?.catch(() => undefined);
-            await previous.closeTransport?.();
-          }
-        }
-        if (!next) continue;
-        await this.connectConfiguredServers(workspaceRoot, {
-          ...config, extensions: { ...config.extensions, mcp: { [name]: next } }
-        }, this.registry);
-        const status = this.servers.get(name)?.status;
-        if (next.enabled && !status?.connected) throw new Error(status?.lastError ?? `MCP server connection failed: ${name}`);
-      } catch (error) {
-        const message = redactMcpError(error, [previous?.config, next].filter((server): server is McpServerConfig => server !== undefined));
-        if (previous && !this.servers.has(name)) {
-          previous.status.lastError = message;
-          this.servers.set(name, previous);
-        }
-        failures.push(new Error(message));
-      }
-    }
+      const requested = { ...config, extensions: { ...config.extensions, mcp: next ? { [name]: structuredClone(next) } : {} } };
+      const change = (this.configurationChanges.get(name) ?? Promise.resolve()).catch(() => undefined)
+        .then(() => this.applyServerConfiguration(workspaceRoot, requested, name, force));
+      this.configurationChanges.set(name, change);
+      void change.finally(() => { if (this.configurationChanges.get(name) === change) this.configurationChanges.delete(name); }).catch(() => undefined);
+      return change;
+    });
+    const results = await Promise.allSettled(changes);
     this.emitChange();
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
     if (failures.length) throw new AggregateError(failures, failures.map(errorText).join("; "));
+  }
+
+  private async applyServerConfiguration(workspaceRoot: string, config: AgentConfig, name: string, force: boolean): Promise<void> {
+    if (this.closing) throw new Error("MCP host is closing.");
+    const previous = this.servers.get(name);
+    const next = config.extensions.mcp[name];
+    if (previous?.local) throw new Error(`MCP server name is reserved: ${name}`);
+    if (!force && isDeepStrictEqual(previous?.rawConfig, next)) return;
+    try {
+      if (previous) {
+        this.servers.delete(name);
+        previous.status.enabled = false;
+        previous.status.connected = false;
+        previous.status.connecting = false;
+        previous.status.catalogCached = false;
+        previous.startupController?.abort(new Error(`MCP server configuration changed: ${name}`));
+        const client = previous.client;
+        previous.client = undefined;
+        for (const toolName of previous.status.toolNames) this.registry?.unregister(toolName);
+        this.emitChange();
+        try { await client?.close(); }
+        catch (error) { previous.client = client; throw error; }
+        finally {
+          await previous.connecting?.catch(() => undefined);
+          await previous.closeTransport?.();
+        }
+      }
+      if (!next) return;
+      await this.connectConfiguredServers(workspaceRoot, config, this.registry);
+      const status = this.servers.get(name)?.status;
+      if (next.enabled && !status?.connected) throw new Error(status?.lastError ?? `MCP server connection failed: ${name}`);
+    } catch (error) {
+      const message = redactMcpError(error, [previous?.config, next].filter((server): server is McpServerConfig => server !== undefined));
+      if (previous && !this.servers.has(name)) {
+        previous.status.lastError = message;
+        this.servers.set(name, previous);
+      }
+      throw new Error(message);
+    }
   }
 
   /** 为不同 session 创建指向同一 MCP 连接的工具代理。 */
@@ -551,31 +581,38 @@ export class McpToolHost {
     };
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closing = true;
-    const clients = [...new Set([
-      ...this.openingClients,
-      ...this.closingClients,
-      ...[...this.servers.values()].map((server) => server.client).filter((client): client is Client => Boolean(client))
-    ])];
-    await Promise.all(clients.map(async (client) => {
-      try {
-        await client.close();
-      } catch {
-        // Closing an already exited MCP process is best effort.
+    this.closePromise = Promise.resolve().then(async () => {
+      for (const server of this.servers.values()) server.startupController?.abort(new Error("MCP host is closing."));
+      const openings = [...this.servers.values()].map(server => server.connecting);
+      const clients = [...new Set([
+        ...this.openingClients,
+        ...this.closingClients,
+        ...[...this.servers.values(), ...this.retiredLocalServers].map((server) => server.client).filter((client): client is Client => Boolean(client))
+      ])];
+      await Promise.all(clients.map(async (client) => {
+        try {
+          await client.close();
+        } catch {
+          // Closing an already exited MCP process is best effort.
+        }
+      }));
+      await Promise.allSettled([...openings, ...this.configurationChanges.values(), ...this.localClosures.values()]);
+      await Promise.all([...this.servers.values(), ...this.retiredLocalServers].map(async server => {
+        try { await server.closeTransport?.(); this.retiredLocalServers.delete(server); }
+        catch (error) { server.status.lastError = `Local MCP cleanup failed: ${errorText(error)}`; }
+      }));
+      for (const server of this.servers.values()) {
+        server.client = undefined;
+        server.status.connected = false;
+        server.status.connecting = false;
+        server.status.catalogCached = false;
       }
-    }));
-    await Promise.all([...this.servers.values()].map(async server => {
-      try { await server.closeTransport?.(); }
-      catch (error) { server.status.lastError = `Local MCP cleanup failed: ${errorText(error)}`; }
-    }));
-    for (const server of this.servers.values()) {
-      server.client = undefined;
-      server.status.connected = false;
-      server.status.connecting = false;
-      server.status.catalogCached = false;
-    }
-    this.emitChange();
+      this.emitChange();
+    });
+    return this.closePromise;
   }
 
   private requireServer(serverName: string): ManagedMcpServer {
@@ -631,12 +668,11 @@ export class McpToolHost {
       return;
     }
     managed.status.connecting = true;
-    this.emitChange();
-    const attempt = (async () => {
-      const previous = managed.client;
-      managed.client = undefined;
-      // 旧 client 一旦摘除就不再处于连接态；若后续 startServer 失败，状态不会滞留「已连接」。
-      managed.status.connected = false;
+    const previous = managed.client;
+    managed.client = undefined;
+    // 同步摘除旧连接，已排队的通知不能在清理开始前继续刷新目录。
+    managed.status.connected = false;
+    const attempt = Promise.resolve().then(async () => {
       if (previous) {
         try {
           await previous.close();
@@ -649,8 +685,9 @@ export class McpToolHost {
       if (this.closing) throw new Error(`MCP host is closing; cannot reconnect ${managed.name}.`);
       if (this.servers.get(managed.name) !== managed || !managed.status.enabled) throw new Error(`MCP server configuration changed: ${managed.name}`);
       await this.startServer(managed);
-    })();
+    });
     managed.connecting = attempt;
+    this.emitChange();
     try {
       await attempt;
     } catch (error) {
@@ -666,7 +703,6 @@ export class McpToolHost {
   private async startServer(managed: ManagedMcpServer): Promise<void> {
     if (this.closing || this.servers.get(managed.name) !== managed || !managed.status.enabled) throw new Error(`MCP server configuration changed: ${managed.name}`);
     managed.status.connecting = true;
-    this.emitChange();
     const controller = new AbortController();
     managed.startupController = controller;
     const timeoutMs = managed.rawConfig.startupTimeoutMs ?? defaultStartupTimeoutMs;
@@ -674,6 +710,9 @@ export class McpToolHost {
     let openedClient: Client | undefined;
     let invalidateCatalog = managed.catalogKey ? this.catalogCache.captureInvalidation(managed.catalogKey) : undefined;
     try {
+      this.emitChange();
+      controller.signal.throwIfAborted();
+      if (this.closing || this.servers.get(managed.name) !== managed || !managed.status.enabled) throw new Error(`MCP server configuration changed: ${managed.name}`);
       // 每次连接都从原始配置展开：启动时变量缺失后重连会重新验证，环境变更也能生效。
       managed.config = managed.local ? managed.rawConfig : expandServerConfig(managed.rawConfig);
       const missingCredentials = (["env", "headers"] as const).flatMap(location =>
@@ -744,7 +783,9 @@ export class McpToolHost {
     } catch (error) {
       if (!this.closing) invalidateCatalog?.();
       managed.status.catalogCached = false;
-      for (const name of managed.status.toolNames) this.registry?.unregister(name);
+      if (this.servers.get(managed.name) === managed) {
+        for (const name of managed.status.toolNames) this.registry?.unregister(name);
+      }
       managed.status.toolNames = [];
       managed.tools = [];
       managed.status.instructions = undefined;
@@ -842,7 +883,9 @@ export class McpToolHost {
   }
 
   private emitChange(): void {
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) {
+      try { listener(); } catch { /* 观察者故障不能中断连接及资源清理。 */ }
+    }
   }
 
   private async listPromptNames(managed: ManagedMcpServer, client: Client, signal?: AbortSignal): Promise<string[]> {
@@ -875,9 +918,17 @@ export class McpToolHost {
     if (managed.local) {
       if (this.closing || this.servers.get(managed.name) !== managed) throw new Error(`Local MCP server was detached: ${managed.name}`);
       const connection = await managed.local.open();
-      managed.closeTransport = connection.close;
-      try { return await this.tryConnect(managed, connection.transport, signal); }
-      catch (error) { await connection.close(); throw error; }
+      let closing: Promise<void> | undefined;
+      const close = (): Promise<void> => {
+        closing ??= Promise.resolve().then(() => connection.close()).catch(error => { closing = undefined; throw error; });
+        return closing;
+      };
+      managed.closeTransport = close;
+      try {
+        signal.throwIfAborted();
+        if (this.closing || this.servers.get(managed.name) !== managed || !managed.status.enabled) throw new Error(`Local MCP server was detached: ${managed.name}`);
+        return await this.tryConnect(managed, connection.transport, signal);
+      } catch (error) { await close(); throw error; }
     }
     const serverConfig = managed.config;
     if (managed.transport === "http") {

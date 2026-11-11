@@ -102,3 +102,29 @@ for (const recovery of ["retry", "shutdown"] as const) {
     } finally { await host.close(); }
   });
 }
+
+test("concurrent updates to one server retain the latest configuration", { timeout: 5_000 }, async context => {
+  let entered!: () => void;
+  let release!: () => void;
+  const closing = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let held = false;
+  transportFixture(context, async () => { if (!held) { held = true; entered(); await gate; } });
+  const host = new McpToolHost();
+  const pending: Promise<unknown>[] = [];
+  try {
+    await host.connectConfiguredServers(os.tmpdir(), configuration("https://configure-fixture.invalid/v1"));
+    pending.push(host.configureServers(os.tmpdir(), configuration("https://configure-fixture.invalid/v2"), ["target"]));
+    await closing;
+    pending.push(host.configureServers(os.tmpdir(), configuration("https://configure-fixture.invalid/v3"), ["target"]));
+    // A separate server must remain independently configurable while target drains.
+    const other = configuration("https://configure-fixture.invalid/other");
+    other.extensions.mcp.other = other.extensions.mcp.target!;
+    delete other.extensions.mcp.target;
+    await host.configureServers(os.tmpdir(), other, ["other"]);
+    assert.equal(host.listServers().find(server => server.name === "other")?.connected, true);
+    release();
+    await Promise.all(pending);
+    assert.equal(host.listServers().find(server => server.name === "target")?.command, "https://configure-fixture.invalid/v3");
+  } finally { release(); await Promise.allSettled(pending); await host.close(); }
+});

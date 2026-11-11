@@ -13,7 +13,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, lifecycle?: { capture(): void; close(): void }) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const gates = new Map<string, ReturnType<typeof deferred<void>>>();
   const calls: { input: string; options: Parameters<AgentSession["prompt"]>[1] }[] = [];
@@ -43,9 +43,10 @@ function fixture(t: TestContext) {
     recordError: (error: unknown) => { errors.push(error); if (recordingError) throw new Error("inert recorder failure"); }
   } satisfies Pick<AgentSession, "getInfo" | "getPermissionMode" | "prompt" | "contextStatus" | "recordError">;
   const commands = {
-    agent, refreshSkills: async () => {}, setSubagentParentRunId: () => {}, close: async () => {},
+    agent, refreshSkills: async () => {}, setSubagentParentRunId: () => {}, close: async () => { lifecycle?.close(); },
+    captureRunResourceSnapshot: () => { lifecycle?.capture(); },
     setUserInputRun: (run?: { sessionId: string; runId: string }) => { userInputRuns.push(run); }
-  } satisfies Pick<CommandRuntime, "refreshSkills" | "setSubagentParentRunId" | "close" | "setUserInputRun"> & { agent: typeof agent };
+  } satisfies Pick<CommandRuntime, "refreshSkills" | "setSubagentParentRunId" | "close" | "setUserInputRun" | "captureRunResourceSnapshot"> & { agent: typeof agent };
   // Deliberate structural boundary: no real AgentSession or durable/runtime services are constructed.
   const runtime = new InteractiveAgentRuntime(commands as unknown as CommandRuntime);
   const hold = (input: string) => { const gate = deferred<void>(); gates.set(input, gate); return gate; };
@@ -56,6 +57,55 @@ function fixture(t: TestContext) {
 }
 
 type Fixture = ReturnType<typeof fixture>;
+
+test("synchronous close during run admission drains the admitted writer", { timeout: 5_000 }, async t => {
+  let closing: Promise<void> | undefined;
+  let resourcesClosed = false;
+  const f = fixture(t, {
+    capture: () => { closing = f.runtime.close(); },
+    close: () => { resourcesClosed = true; }
+  });
+  const writer = f.hold("first");
+  const run = f.runtime.submitPrompt("first");
+  try {
+    await nextTurn();
+    assert.equal(resourcesClosed, false, "admission must own completion before callbacks can close the runtime");
+    assert.throws(() => f.runtime.submitPrompt("second"), /closed/u);
+  } finally {
+    writer.resolve();
+    await run.completion;
+    await closing;
+  }
+  assert.equal(resourcesClosed, true);
+});
+for (const mode of ["exclusive", "background"] as const) {
+  test(`synchronous close during ${mode} admission drains its writer`, { timeout: 5_000 }, async t => {
+    let resourcesClosed = false;
+    let closing: Promise<void> | undefined;
+    let executionSignal: AbortSignal | undefined;
+    const f = fixture(t, { capture: () => {}, close: () => { resourcesClosed = true; } });
+    const gate = deferred<void>();
+    const unsubscribe = f.runtime.subscribe(({ snapshot }) => {
+      if (snapshot.state.kind === "maintenance") closing = f.runtime.close();
+    });
+    const execute = (signal: AbortSignal) => { executionSignal = signal; return gate.promise; };
+    const completion = mode === "exclusive"
+      ? f.runtime.runExclusiveOperation("compact", execute)
+      : f.runtime.startBackgroundOperation("compact", signal => ({ completion: execute(signal) })).completion;
+    try {
+      await nextTurn();
+      assert.equal(resourcesClosed, false, "maintenance admission must own completion before publishing state");
+      assert.equal(executionSignal?.aborted, true, "close must reach the admitted operation's cancellation controller");
+    } finally {
+      unsubscribe();
+      gate.resolve();
+      await completion;
+      await closing;
+    }
+    assert.equal(resourcesClosed, true);
+  });
+}
+
 async function queueAfterRun(f: Fixture) {
   const gate = f.hold("first");
   const run = f.runtime.submitPrompt("first", [], { allowUserInput: true }, undefined, { tools: ["PlanStatus"], skills: "none" });

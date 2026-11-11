@@ -15,11 +15,11 @@ const sessionId = "media-only";
 interface CapturedInput { input: string; attachments: AgentAttachment[] }
 interface FixtureRuntime {
   state: { kind: string; operation?: string };
-  activeRun: { runId: string; sessionId: string } | undefined;
+  activeExecution: { run: { runId: string; sessionId: string }; controller: AbortController; completion: Promise<unknown> } | undefined;
   queuedMessages: CapturedInput[];
-  activeRunCompletion?: Promise<unknown>;
   getSnapshot(): unknown;
   submitPrompt: InteractiveAgentRuntime["submitPrompt"];
+  waitForIdle: InteractiveAgentRuntime["waitForIdle"];
   startQueuedMessageRun(previous: { runId: string; sessionId: string }): void;
 }
 interface FixtureApp {
@@ -38,7 +38,7 @@ function fixture(busy = false) {
   const requests: string[] = [];
   const runtime = Object.assign(Object.create(InteractiveAgentRuntime.prototype) as object, {
     state: busy ? { kind: "runs" } : { kind: "idle" },
-    activeRun: busy ? { runId: "previous", sessionId } : undefined,
+    activeExecution: busy ? { run: { runId: "previous", sessionId }, controller: new AbortController(), completion: Promise.resolve() } : undefined,
     queuedMessages: [], closed: false, revision: 0,
     commandRuntime: {
       agent: {
@@ -140,8 +140,8 @@ for (const operation of ["run.submit", "run.queue", "queue"]) {
 
 test("queued drain keeps the established media default prompt", async () => {
   const f = fixture(true); await f.app.submit("", [image]); assert.deepEqual(f.errors, []);
-  const previous = f.runtime.activeRun!; f.runtime.activeRun = undefined; f.runtime.state = { kind: "idle" };
-  f.runtime.startQueuedMessageRun(previous); await f.runtime.activeRunCompletion;
+  const previous = f.runtime.activeExecution!.run; f.runtime.activeExecution = undefined; f.runtime.state = { kind: "idle" };
+  f.runtime.startQueuedMessageRun(previous); await f.runtime.waitForIdle();
   assert.equal(f.submitted[0]?.input, "请分析这些附件。");
   assert.equal(f.submitted[0]?.attachments[0]?.data, image.data);
 });

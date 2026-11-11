@@ -149,6 +149,10 @@ export interface ActivityRecorderServiceOptions {
   onAnalyzed?: ActivityAnalyzerDeps["onAnalyzed"];
 }
 
+type ActivityCaptureOperation =
+  | { kind: "frame"; epoch: number }
+  | { kind: "ocr"; captureId: string; signal: AbortSignal; clearRevision: string };
+
 export class ActivityRecorderService {
   private readonly captureTimerScheduler: {setInterval:typeof setInterval;clearInterval:typeof clearInterval};
   private readonly sessionIdleTimers: {setTimeout:typeof setTimeout;clearTimeout:typeof clearTimeout};
@@ -171,7 +175,7 @@ export class ActivityRecorderService {
   private typingTimer?: ReturnType<typeof setTimeout>;
   private pendingKey?: InputEventMessage;
   private pendingTrigger?: string;
-  private captureInFlight = false;
+  private captureOperation: ActivityCaptureOperation | undefined;
   private frameCount = 0;
   private captureEpoch = 0;
   private foregroundBundle?: string;
@@ -1068,12 +1072,24 @@ export class ActivityRecorderService {
 
   private async capture(trigger: string): Promise<void> {
     const settings = this.settings;
-    if (!settings?.enabled || !this.captureEngine || this.captureTimers.length === 0 || this.captureInFlight || this.screenLocked || (this.child && !this.screenRecordingGranted)
+    if (!settings?.enabled || !this.captureEngine || this.captureTimers.length === 0 || this.captureOperation || this.screenLocked || (this.child && !this.screenRecordingGranted)
       || this.state === "stopped" || this.state === "paused" || this.state === "unavailable") return;
-    if (this.child && this.foregroundBundle && settings.sensitiveApplications.includes(this.foregroundBundle)) return;
-    const epoch = this.captureEpoch;
-    this.captureInFlight = true;
+    let operation: ActivityCaptureOperation = { kind: "frame", epoch: this.captureEpoch };
+    const epoch = operation.epoch;
+    this.captureOperation = operation;
     try {
+      if (trigger === "appshot") {
+        let bundle: string | undefined;
+        try { bundle = await this.readFrontmostBundle(); }
+        catch {
+          if (epoch === this.captureEpoch) this.setState("error", "手动截图无法确认当前应用");
+          return;
+        }
+        if (epoch !== this.captureEpoch || !bundle || settings.sensitiveApplications.includes(bundle)) return;
+        if (this.foregroundBundle !== bundle) { this.currentApplication = bundle; this.foregroundTitle = undefined; }
+        this.foregroundBundle = bundle;
+      }
+      if (this.child && this.foregroundBundle && settings.sensitiveApplications.includes(this.foregroundBundle)) return;
       // 每帧固定自己的库代际：删除前的 OCR 失效，之后的新截图无需等待输入进程恢复。
       const revision = this.store.clearRevision();
       const independentBundle = this.child ? undefined : await this.verifiedIndependentBundle(epoch, settings);
@@ -1105,37 +1121,31 @@ export class ActivityRecorderService {
       if (settings.ocrEnabled && this.frameCount >= settings.ocrEveryNFrames) {
         const snapshotId = this.pendingOcrCaptures.get(captureId);
         const file = snapshotId ? this.store.getSnapshotPath(snapshotId) : undefined;
-        const signal = this.analysisAbort.signal;
         if (file && this.nativeClient) {
+          const recognition = { kind: "ocr" as const, captureId, signal: this.analysisAbort.signal, clearRevision: revision };
+          operation = recognition;
+          this.captureOperation = recognition;
           try {
-            const ocrText = await this.nativeClient.recognize(file, settings.ocrLanguages, signal);
+            const ocrText = await this.nativeClient.recognize(file, settings.ocrLanguages, recognition.signal);
             this.frameCount = 0;
             // 已落盘帧的 OCR 不受前台切换影响；暂停、重启和清空仍取消旧结果。
-            if (!signal.aborted) await this.enqueue(async () => {
-              if (!signal.aborted && revision === this.store.clearRevision()) await this.persistOcr({type:"ocr",captureId,ocrText});
+            if (!recognition.signal.aborted) await this.enqueue(async () => {
+              if (!recognition.signal.aborted && recognition.clearRevision === this.store.clearRevision()) await this.persistOcr({type:"ocr",captureId:recognition.captureId,ocrText});
             });
           } catch (error) {
             // OCR 程序暂缺时尚未完成这一轮识别；下张已保存帧应立即重试。
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.frameCount = 0;
-            if (!signal.aborted) this.error = "Activity OCR 识别失败";
+            if (!recognition.signal.aborted) this.error = "Activity OCR 识别失败";
           }
         }
       }
       this.pendingOcrCaptures.delete(captureId);
     } catch (error) {
       if (epoch === this.captureEpoch) this.error = safeError(error);
-    } finally { this.captureInFlight = false; }
+    } finally { if (this.captureOperation === operation) this.captureOperation = undefined; }
   }
 
   async captureAppshot(): Promise<void> {
-    if (!this.settings?.enabled || this.screenLocked || !this.captureTimers.length || this.captureInFlight) return;
-    const epoch = this.captureEpoch;
-    let bundle: string | undefined;
-    try { bundle = await this.readFrontmostBundle(); }
-    catch { this.setState("error", "手动截图无法确认当前应用"); return; }
-    if (epoch !== this.captureEpoch || !bundle || this.settings.sensitiveApplications.includes(bundle)) return;
-    if (this.foregroundBundle !== bundle) { this.currentApplication = bundle; this.foregroundTitle = undefined; }
-    this.foregroundBundle = bundle;
     await this.capture("appshot");
   }
 

@@ -134,3 +134,16 @@ async function testRunningSweepIsNotReentered(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   scheduler.stop();
 }
+
+// A run may synchronously change settings and restart its scheduler.
+{
+  const timers = new FakeTimers();
+  let restarted = false;
+  const scheduler = new ActivityAnalysisScheduler({ timers, initialDelayMs: 100, sweepIntervalMs: 10,
+    run: () => { if (!restarted) { restarted = true; scheduler.stop(); scheduler.start(); } } });
+  scheduler.start();
+  await timers.advance(10);
+  assert.equal(timers.pendingCount(), 2, "旧周期回调不能在重启后再创建一条周期链");
+  scheduler.stop();
+  assert.equal(timers.pendingCount(), 0, "停止必须清理所有轮次的计时器");
+}

@@ -154,13 +154,22 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private consumedHostEpoch: string | undefined;
   private hostEpoch: string | undefined;
   private capabilities: readonly string[] = [];
-  private closed = false;
-  private retired = false;
+  private connectionState:
+    | { kind: "unsynchronized" }
+    | { kind: "synchronized"; socket: net.Socket }
+    | { kind: "retired" }
+    | { kind: "closed" } = { kind: "unsynchronized" };
+
+  private get closed(): boolean { return this.connectionState.kind === "closed"; }
+  private get retired(): boolean { return this.connectionState.kind === "retired"; }
+  private isSynchronized(): boolean {
+    return this.connectionState.kind === "synchronized"
+      && this.connectionState.socket === this.socket && !this.connectionState.socket.destroyed;
+  }
   private lastError: Error | undefined;
   private connectionRecoveryError: RuntimeHostSpawnCircuitOpenError | undefined;
   private connectionRetryPromise: Promise<void> | undefined;
   private connectionRecoveryAttempt: object | undefined;
-  private synchronizedSocket: net.Socket | undefined;
   private reconnectInProgress = false;
   private ownerRestartPromise: Promise<void> | undefined;
   private browserAutomationConfigured = false;
@@ -206,7 +215,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (this.initializationError) throw this.initializationError;
     if (this.closed) throw new Error("Runtime Host client is closed.");
     if (this.retired) throw new Error("Runtime Host retired after becoming idle.");
-    if (this.socket && this.synchronizedSocket === this.socket && !this.socket.destroyed) return;
+    if (this.isSynchronized()) return;
     const ready = this.executionReadyPromise ??= this.synchronizeExecution().finally(() => { this.executionReadyPromise = undefined; });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -258,7 +267,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private async synchronizeExecution(): Promise<void> {
     if (this.connectionReadyPromise) {
       await this.connectionReadyPromise;
-      if (this.socket && !this.socket.destroyed && this.synchronizedSocket === this.socket) return;
+      if (this.isSynchronized()) return;
     }
     if (!this.socket || this.socket.destroyed) {
       await this.retryConnection();
@@ -278,7 +287,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, this.focusedSessionId === result.snapshot.info.sessionId);
     this.applySessionSummaries(result.sessions, result.sequence);
     this.acknowledgeEvents(result.sequence, result.hostEpoch);
-    this.synchronizedSocket = socket;
+    this.connectionState = { kind: "synchronized", socket };
     runtimeHostSpawnCircuitFor(this.options.registration.endpoint).recordSuccess();
   }
 
@@ -1065,7 +1074,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   async close(): Promise<void> {
     if (this.closed) return;
-    this.closed = true;
+    this.connectionState = { kind: "closed" };
     for (const waiter of this.readinessWaiters) waiter(new Error("Runtime Host client is closed."));
     this.connectionRecoveryAttempt = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -1299,7 +1308,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (this.closed) throw new Error("Runtime Host client is closed.");
     if (this.retired) throw new Error("Runtime Host retired after becoming idle. Connect again before starting new work.");
     if (this.connectionRetryPromise) return await this.connectionRetryPromise;
-    if (!this.connectionRecoveryError && this.socket && !this.socket.destroyed && this.synchronizedSocket === this.socket) return;
+    if (!this.connectionRecoveryError && this.isSynchronized()) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     const retry = (async () => {
@@ -1307,7 +1316,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       if (this.closed) throw new Error("Runtime Host client is closed.");
       if (this.retired) throw new Error("Runtime Host retired after becoming idle. Connect again before starting new work.");
       if (this.connectionRecoveryError) throw this.connectionRecoveryError;
-      if (!this.socket || this.socket.destroyed || this.synchronizedSocket !== this.socket) {
+      if (!this.isSynchronized()) {
         throw new Error("Runtime Host connection was lost before recovery finished.");
       }
     })();
@@ -1396,7 +1405,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         for (const waiter of this.readinessWaiters) waiter(this.initializationError ?? error);
         this.decoder = new RuntimeHostFrameDecoder();
         this.socket = undefined;
-        if (this.synchronizedSocket === socket) this.synchronizedSocket = undefined;
+        if (!this.closed && !this.retired) this.connectionState = { kind: "unsynchronized" };
         if (this.socketWriter === writer) this.socketWriter = undefined;
         this.readyPromise = undefined;
         this.noteConnectionDropped();
@@ -1500,7 +1509,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       const currentConnection = (): boolean => !this.closed && !this.retired
         && this.connectionRecoveryAttempt === attempt && socket !== undefined && !socket.destroyed
         && this.socket === socket && this.hostEpoch === hostEpoch;
-      if (!currentConnection()) return;
+      if (!socket || !currentConnection()) return;
       let result: { hostEpoch: string; snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number; replayed: boolean; capabilities: string[] };
       try {
         const status = await this.requestRaw<RuntimeHostStatus>("host.subscribe", {}, this.handshakeTimeoutMs);
@@ -1537,7 +1546,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.acknowledgeEvents(result.sequence, result.hostEpoch);
       // A hello is not recovery: only a current subscribed, synchronized connection
       // admits new local observations. Already rejected observations stay settled.
-      this.synchronizedSocket = socket;
+      this.connectionState = { kind: "synchronized", socket };
       runtimeHostSpawnCircuitFor(this.options.registration.endpoint).recordSuccess();
       this.connectionRecoveryError = undefined;
       this.connectionRecoveryAttempt = undefined;
@@ -1552,7 +1561,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private stopConnectionRecovery(error: RuntimeHostSpawnCircuitOpenError): void {
-    if (this.closed || this.retired || this.connectionRecoveryError || (this.socket !== undefined && !this.socket.destroyed && this.synchronizedSocket === this.socket)) return;
+    if (this.closed || this.retired || this.connectionRecoveryError || this.isSynchronized()) return;
     this.connectionRecoveryAttempt = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
@@ -1715,8 +1724,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       return;
     }
     if (isRetiredFrame(frame)) {
-      if (frame.hostEpoch !== this.hostEpoch || !this.capabilities.includes("host.idle-retirement")) return;
-      this.retired = true;
+      if (this.closed || this.retired || frame.hostEpoch !== this.hostEpoch || !this.capabilities.includes("host.idle-retirement")) return;
+      this.connectionState = { kind: "retired" };
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
       // 正常回收不是连接故障；已发出的请求仍由 disconnect 明确失败，绝不重放。
@@ -1810,7 +1819,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       // 单次读取只等执行域可用；历史同步仍由 observer 和需要 revision 的写操作负责。
       return this.waitForLifecycleReady(60_000).then(() => this.requestRaw<T>(operation, payload, timeoutMs, onDispatch));
     }
-    if (this.lifecycle === "ready" && this.socket && !this.socket.destroyed && this.synchronizedSocket === this.socket) return this.requestRaw(operation, payload, timeoutMs, onDispatch);
+    if (this.lifecycle === "ready" && this.isSynchronized()) return this.requestRaw(operation, payload, timeoutMs, onDispatch);
     return this.waitForReady().then(() => this.requestRaw<T>(operation, payload, timeoutMs, onDispatch));
   }
 

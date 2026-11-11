@@ -124,7 +124,7 @@ function toCapture(data: Record<string, unknown>, windowId: number, captureId?: 
 export class NativeProcessDriver implements ComputerDriver {
   private host?: Host;
   private readonly pending = new Map<string, PendingJob>();
-  private starting?: Promise<void>;
+  private starting?: { controller: AbortController; completion: Promise<void> };
   private stopping?: Promise<void>;
   private enabled = false;
   private disposed = false;
@@ -177,7 +177,12 @@ export class NativeProcessDriver implements ComputerDriver {
 
   private armIdle(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => { void this.stopHost(); }, this.idleTimeout);
+    this.idleTimer = setTimeout(() => {
+      const host = this.host;
+      void this.stopHost(host).catch(() => {
+        if (this.host === host && this.enabled) { this.enabled = false; this.onExit(); }
+      });
+    }, this.idleTimeout);
   }
 
   private spawnHost(): Host {
@@ -247,19 +252,35 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   /** 等 daemon 打出 "ready" 后连上 socket；这是唯一的连接入口。 */
-  private connectAfterReady(host: Host): Promise<void> {
+  private connectAfterReady(host: Host, signal: AbortSignal): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { clearInterval(poll); reject(new Error("driver_sdk_missing_or_crashed: daemon did not become ready")); }, 8_000);
-      let connected = false;
+      let settled = false;
+      let connecting = false;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer); clearInterval(poll);
+        signal.removeEventListener("abort", aborted);
+        host.child?.off("error", failed); host.child?.off("exit", exited);
+        host.socket.off("error", failed); host.socket.off("connect", connected);
+        if (error) reject(error); else resolve();
+      };
+      const failed = (error: Error): void => finish(error);
+      const exited = (code: number | null): void => finish(new Error(`driver_sdk_missing_or_crashed: daemon exited ${String(code)}`));
+      const aborted = (): void => finish(signal.reason);
+      const connected = (): void => { host.connected = true; finish(); };
       const connectNow = (): void => {
-        if (host.closed || connected) return;
-        connected = true;
-        host.socket.once("connect", () => { host.connected = true; clearTimeout(timer); clearInterval(poll); resolve(); });
+        if (host.closed || connecting || settled) return;
+        connecting = true;
+        host.socket.once("connect", connected);
         host.socket.connect(this.socketPath);
       };
+      const timer = setTimeout(() => finish(new Error("driver_sdk_missing_or_crashed: daemon did not become ready")), 8_000);
       const poll = setInterval(() => { if (host.stdout.includes("ready")) connectNow(); }, 20);
-      host.child?.once("error", error => { clearInterval(poll); clearTimeout(timer); reject(error); });
-      host.child?.once("exit", code => { clearInterval(poll); clearTimeout(timer); reject(new Error(`driver_sdk_missing_or_crashed: daemon exited ${String(code)}`)); });
+      host.child?.once("error", failed); host.child?.once("exit", exited);
+      host.socket.once("error", failed);
+      signal.addEventListener("abort", aborted, { once: true });
+      if (signal.aborted) aborted();
     });
   }
 
@@ -431,22 +452,39 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   private async ensureHost(): Promise<void> {
+    if (this.stopping) await this.stopping;
+    this.assertLive();
     if (this.host && !this.host.closed) return;
     if (!this.starting) {
-      this.starting = (async () => {
-        if (this.host?.closed) await this.stopHost();
-        // 已有一个 daemon 在听就采用它：ref 表、坐标映射、空闲计时都在那个进程里，
-        // 每个调用方各起一个会把它们全部切碎。
-        const adopted = await this.adoptExisting();
-        if (adopted) { this.host = adopted; this.armIdle(); return; }
-        const host = this.spawnHost();
-        await this.connectAfterReady(host);
-        if (this.host !== undefined) throw new Error("driver_sdk_missing_or_crashed: host retired during startup");
-        this.host = host;
-        this.armIdle();
-      })().finally(() => { this.starting = undefined; });
+      const controller = new AbortController();
+      const completion = Promise.resolve().then(async () => {
+        let candidate: Host | undefined;
+        try {
+          controller.signal.throwIfAborted();
+          if (this.host?.closed) await this.stopHost();
+          candidate = await this.adoptExisting();
+          controller.signal.throwIfAborted();
+          if (!candidate) {
+            candidate = this.spawnHost();
+            await this.connectAfterReady(candidate, controller.signal);
+          }
+          controller.signal.throwIfAborted();
+          this.assertLive();
+          this.host = candidate;
+          this.armIdle();
+        } catch (error) {
+          if (candidate) {
+            if (controller.signal.reason?.message === "driver_detached") this.detachHost(candidate);
+            else await this.stopHost(candidate);
+          }
+          throw error;
+        }
+      });
+      const attempt = { controller, completion };
+      this.starting = attempt;
+      void completion.finally(() => { if (this.starting === attempt) this.starting = undefined; }).catch(() => undefined);
     }
-    await this.starting;
+    await this.starting.completion;
   }
 
   async start(): Promise<void> {
@@ -465,10 +503,14 @@ export class NativeProcessDriver implements ComputerDriver {
    */
   detach(): void {
     this.disposed = true;
+    this.starting?.controller.abort(new Error("driver_detached"));
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = undefined; }
     const host = this.host;
     this.host = undefined;
-    if (!host) return;
+    if (host) this.detachHost(host);
+  }
+
+  private detachHost(host: Host): void {
     this.failHost(host, "driver_detached");
     host.child?.unref();
     host.child?.stdout?.destroy();
@@ -476,27 +518,49 @@ export class NativeProcessDriver implements ComputerDriver {
     host.socket.destroy();
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
     this.enabled = false;
-    await this.stopHost();
+    const starting = this.starting;
+    starting?.controller.abort(new Error("driver_stopped"));
+    const stopping = Promise.resolve().then(async () => {
+      await starting?.completion.catch(() => undefined);
+      await this.stopHost();
+    }).finally(() => { if (this.stopping === stopping) this.stopping = undefined; });
+    this.stopping = stopping;
+    return stopping;
   }
 
-  private async stopHost(): Promise<void> {
+  private async stopHost(host = this.host): Promise<void> {
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = undefined; }
-    const host = this.host;
     if (!host) return;
-    this.host = undefined;
+    if (this.host === host) this.host = undefined;
+    host.socket.destroy();
     if (!host.closed) this.failHost(host, "driver_stopped");
-    await new Promise<void>(resolve => {
-      // 采用来的 daemon 不是我们的子进程：不杀它（别的调用方可能正用着，而且它自己会在
-      // 空闲后退出），但**连接必须断开** —— 漏掉这句 socket 会一直挂在事件循环上，
-      // 进程跑完用例也退不出去。上一版正是漏在这里。
-      if (!host.child) { host.socket.destroy(); resolve(); return; }
-      if (host.child.exitCode !== null || host.child.signalCode !== null) { resolve(); return; }
-      const timer = setTimeout(() => { try { host.child?.kill("SIGKILL"); } catch { /* noop */ } resolve(); }, shutdownTimeoutMs);
-      host.child.once("exit", () => { clearTimeout(timer); resolve(); });
-      try { host.child.kill("SIGTERM"); } catch { clearTimeout(timer); resolve(); }
-    });
+    const child = host.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const finish = (error?: Error): void => {
+          clearTimeout(force); clearTimeout(deadline);
+          child.off("exit", exited);
+          if (error) reject(error); else resolve();
+        };
+        const exited = (): void => finish();
+        const kill = (signal: NodeJS.Signals): void => {
+          try { child.kill(signal); }
+          catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+        };
+        const force = setTimeout(() => kill("SIGKILL"), shutdownTimeoutMs);
+        const deadline = setTimeout(() => finish(new Error("driver_shutdown_timeout: daemon did not exit")), shutdownTimeoutMs * 2);
+        child.once("exit", exited);
+        kill("SIGTERM");
+      });
+    } catch (error) {
+      // 清理失败仍保留归属，后续停止可重试；不能把仍存活的进程当作已释放。
+      if (!this.host) this.host = host;
+      throw error;
+    }
   }
 
   dispose(): Promise<void> {

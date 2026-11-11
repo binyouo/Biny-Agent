@@ -15,6 +15,7 @@ let frontmost: string | undefined = "test.editor.app";
 let permission = true;
 let foregroundFails = false;
 let frontmostReads = 0;
+let holdFrontmost: (() => Promise<string | undefined>) | undefined;
 let holdDesktop: (() => Promise<void>) | undefined;
 const settings = {
   ...defaultActivitySettings,
@@ -29,6 +30,7 @@ const service = new ActivityRecorderService({
   configStore: { load: async () => ({ ...defaultConfig, activity: settings }) } as AgentConfigStore,
   readFrontmostBundle: async () => {
     frontmostReads++;
+    if (holdFrontmost) return holdFrontmost();
     if (foregroundFails) throw new Error("frontmost lookup failed");
     return frontmost;
   },
@@ -113,7 +115,24 @@ try {
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(snapshots(), 2, "帧采集期间切入敏感应用必须丢弃晚到的截图");
 
+  frontmost = "test.editor.app";
+  let queryEntered!: () => void;
+  const queryStarted = new Promise<void>(resolve => { queryEntered = resolve; });
+  let rejectQuery!: (error: Error) => void;
+  const pendingQuery = new Promise<string | undefined>((_resolve, reject) => { rejectQuery = reject; });
+  holdFrontmost = () => { queryEntered(); return pendingQuery; };
+  const appshot = service.captureAppshot();
+  await queryStarted;
+  const readsDuringQuery = frontmostReads;
+  const duplicateAppshot = service.captureAppshot();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(frontmostReads, readsDuringQuery, "手动截图的前台查询应共享采集准入，不能并发查询");
   await service.stop();
+  const stopped = service.snapshot();
+  rejectQuery(new Error("late frontmost lookup failure"));
+  await Promise.all([appshot, duplicateAppshot]);
+  assert.equal(service.snapshot().state, stopped.state, "旧手动截图的失败不能把已停止采集改回 error");
+  assert.equal(service.snapshot().error, stopped.error);
   heartbeat();
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(snapshots(), 2);

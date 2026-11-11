@@ -193,15 +193,12 @@ export class InteractiveAgentRuntime {
   private revision = 0;
   private readonly tools = new Map<string, ActiveTool>();
   private pendingPermission: PendingPermission | undefined;
-  private activeRun: AgentRun | undefined;
-  private activeRunController: AbortController | undefined;
-  private activeRunCompletion: Promise<AgentRunOutcome> | undefined;
+  private activeExecution: { run: AgentRun; controller: AbortController; completion: Promise<AgentRunOutcome> } | undefined;
   /** 待发送消息只属于当前 Runtime；退出应用或重建 Runtime 后不恢复。 */
   private queuedMessages: RuntimeQueuedMessage[] = [];
   private queuedMessageStartCompletion: Promise<void> | undefined;
   private sendQueuedMessagesWithoutDelay = false;
-  private abortController: AbortController | undefined;
-  private activeOperationCompletion: Promise<void> | undefined;
+  private activeOperation: { controller?: AbortController; completion: Promise<void> } | undefined;
   private closePromise: Promise<void> | undefined;
   private commandRuntimeClosePromise: Promise<void> | undefined;
   private oneShot: { runId: string; controller: AbortController } | undefined;
@@ -309,7 +306,7 @@ export class InteractiveAgentRuntime {
     requestIds?: RuntimeRequestIds
   ): Promise<QueuedAgentMessage> {
     if (this.closed) throw new Error("Agent runtime is closed.");
-    const run = this.activeRun;
+    const run = this.activeExecution?.run;
     if (!run || this.state.kind !== "runs") throw new Error("There is no active run to receive a queued message.");
     if (!input.trim() && !attachments.length) throw new Error("Queued message cannot be empty.");
     const messageId = requestIds?.messageId ?? randomUUID();
@@ -371,8 +368,8 @@ export class InteractiveAgentRuntime {
 
   async sendQueuedRunMessagesNow(): Promise<void> {
     if (!this.queuedMessages.length) return;
-    const run = this.activeRun;
-    const completion = this.activeRunCompletion;
+    const run = this.activeExecution?.run;
+    const completion = this.activeExecution?.completion;
     this.sendQueuedMessagesWithoutDelay = true;
     if (!run || !completion || !this.cancelRun(run.runId, "replaced")) {
       this.sendQueuedMessagesWithoutDelay = false;
@@ -406,7 +403,7 @@ export class InteractiveAgentRuntime {
       try {
         // 保留调度所有权，维护结束后继续等待当时最新的维护任务，而不是丢掉队列唤醒。
         while (this.queuedMessageStartCompletion === completion && !this.closed && this.queuedMessages.length) {
-          const operation = this.activeOperationCompletion;
+          const operation = this.activeOperation?.completion;
           if (!operation) break;
           await operation;
         }
@@ -465,7 +462,7 @@ export class InteractiveAgentRuntime {
 
   /** 只启动持久化断点恢复，返回句柄让 Desktop/TUI 保持流式事件通道。 */
   async startInterruptedTurn(requestIds?: RuntimeRequestIds, mode: "exact" | "newTurn" = "exact"): Promise<SubmittedAgentRun | undefined> {
-    if (this.state.kind !== "idle" || this.activeRun) {
+    if (this.state.kind !== "idle" || this.activeExecution) {
       throw new Error("Cannot continue an interrupted turn while the runtime is busy.");
     }
     const interrupted = await this.commandRuntime.agent.interruptedTurn();
@@ -494,7 +491,7 @@ export class InteractiveAgentRuntime {
     if (this.state.kind === "maintenance") {
       throw new Error(`Cannot submit a prompt while ${publicOperationName(this.state.operation)} is running.`);
     }
-    if (this.state.kind === "runs" || this.activeRun) {
+    if (this.state.kind === "runs" || this.activeExecution) {
       throw new Error("Cannot submit a prompt while the runtime is busy.");
     }
     if (!input.trim() && !hasNativeMediaContent(attachments) && !emptyTurn && !continuation) throw new Error("Agent prompt cannot be empty.");
@@ -568,8 +565,15 @@ export class InteractiveAgentRuntime {
     }
     // 新回合已受理，旧回合的延迟队列调度不再有权启动消息（包括新回合暂停后）。
     this.queuedMessageStartCompletion = undefined;
-    this.activeRun = run;
-    this.activeRunController = controller;
+    // 在任何同步通知前绑定完成等待；取消只改变 signal，实际结算才释放执行所有权。
+    let resolveCompletion!: (outcome: AgentRunOutcome) => void;
+    let rejectCompletion!: (error: unknown) => void;
+    const completion = new Promise<AgentRunOutcome>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    const active = { run, controller, completion };
+    this.activeExecution = active;
     // admission 同步发布运行状态，确保后续消息入队、取消和同会话互斥都能看到这个 run。
     this.state = { kind: "runs", activeRun: {
       sessionId, runId, messageId, input, status: run.status,
@@ -584,7 +588,7 @@ export class InteractiveAgentRuntime {
       // Admission 已持久化；快照准备失败也必须经终态路径收敛，不能留下 active runtime。
       execution = Promise.reject(error);
     }
-    const completion: Promise<AgentRunOutcome> = execution
+    void execution
       .catch(async (error: unknown) => {
         try {
           return await this.failUncaughtRun(run, error);
@@ -594,31 +598,26 @@ export class InteractiveAgentRuntime {
       })
       .finally(() => {
         this.commandRuntime.releaseRunResourceSnapshot?.(runId);
-        if (this.activeRun === run) {
-          this.activeRun = undefined;
-          if (this.activeRunController === controller) this.activeRunController = undefined;
-          if (this.activeRunCompletion === completion) this.activeRunCompletion = undefined;
-        }
+        if (this.activeExecution === active) this.activeExecution = undefined;
         // 关闭暂停不能被队列收尾重新启动；等用户明确继续后再调度。
         if (cancellationReason(controller.signal) !== "paused") this.scheduleQueuedMessageRun(run);
         this.releaseSessionLeaseIfIdle();
-      });
-    this.activeRunCompletion = completion;
+      }).then(resolveCompletion, rejectCompletion);
     return { runId, messageId, completion };
   }
 
   cancelCurrentRun(reason: AgentTurnCancellationReason): void {
-    if (this.activeRun) this.cancelRun(this.activeRun.runId, reason);
-    else if (this.state.kind === "maintenance") this.abortController?.abort();
+    if (this.activeExecution) this.cancelRun(this.activeExecution.run.runId, reason);
+    else if (this.state.kind === "maintenance") this.activeOperation?.controller?.abort();
   }
 
   async waitForIdle(): Promise<void> {
     try {
-      while (this.activeRun || this.state.kind === "maintenance" || this.queuedMessageStartCompletion) {
-        if (this.activeRunCompletion) {
-          await this.activeRunCompletion;
-        } else if (this.activeOperationCompletion) {
-          await this.activeOperationCompletion;
+      while (this.activeExecution || this.state.kind === "maintenance" || this.queuedMessageStartCompletion) {
+        if (this.activeExecution) {
+          await this.activeExecution.completion;
+        } else if (this.activeOperation) {
+          await this.activeOperation.completion;
         } else if (this.queuedMessageStartCompletion) {
           await this.queuedMessageStartCompletion;
         } else {
@@ -635,12 +634,12 @@ export class InteractiveAgentRuntime {
       this.oneShot.controller.abort(new AgentTurnCancellationError(reason));
       return true;
     }
-    if (this.activeRun?.runId === runId) {
+    if (this.activeExecution?.run?.runId === runId) {
       const cancellation = new AgentTurnCancellationError(reason);
-      this.commandRuntime.subagents?.cancelParent(this.activeRun.runId, cancellation.message);
+      this.commandRuntime.subagents?.cancelParent(this.activeExecution.run.runId, cancellation.message);
       this.pendingPermission?.resolve({ approved: false, action: "deny", scope: "once", message: cancellation.message, confirmation: undefined });
       this.pendingPermission = undefined;
-      this.activeRunController?.abort(cancellation);
+      this.activeExecution?.controller?.abort(cancellation);
       return true;
     }
     return false;
@@ -678,7 +677,7 @@ export class InteractiveAgentRuntime {
       throw new Error("Cannot switch sessions while queued messages are pending.");
     }
     if (this.sessionWriterClaim?.sessionId === sessionId) return;
-    if (this.state.kind !== "idle" || this.activeRun) {
+    if (this.state.kind !== "idle" || this.activeExecution) {
       // 当前运行已经持有同一 session 的执行 lease，可以把它升级成长期 claim；
       // 切到另一条 session 则必须等当前运行结束，避免关闭正在写入的 lease。
       if (this.sessionLease?.sessionId === sessionId) {
@@ -703,7 +702,7 @@ export class InteractiveAgentRuntime {
     if (!claim || (session !== undefined && claim.sessionId !== session)) return;
     this.sessionWriterClaim = undefined;
     // 运行中的执行 lease 仍需继续保护当前 turn；只解除长期 claim 引用。
-    if (this.sessionLease === claim && (this.state.kind !== "idle" || this.activeRun)) return;
+    if (this.sessionLease === claim && (this.state.kind !== "idle" || this.activeExecution)) return;
     if (this.sessionLease === claim) this.sessionLease = undefined;
     claim.close();
   }
@@ -711,7 +710,7 @@ export class InteractiveAgentRuntime {
   async resumeSession(session: string): Promise<ResumedAgentSession> {
     const filePath = await resolveSessionFile(this.commandRuntime.persistenceRoot, session);
     const sessionId = sessionIdFromFile(filePath);
-    if (this.state.kind !== "idle" || this.activeRun) {
+    if (this.state.kind !== "idle" || this.activeExecution) {
       throw new Error("Cannot start resume while the runtime is busy.");
     }
     if (this.queuedMessages.length > 0 && sessionId !== this.getInfo().sessionId) {
@@ -736,7 +735,7 @@ export class InteractiveAgentRuntime {
    */
   async startDraft(): Promise<AgentSessionInfo> {
     if (this.closed) throw new Error("Agent runtime is closed.");
-    if (this.state.kind !== "idle" || this.activeRun) {
+    if (this.state.kind !== "idle" || this.activeExecution) {
       throw new Error("Cannot start a new session while the runtime is busy.");
     }
     await this.runMaintenanceOperation("draft", async () => await this.commandRuntime.agent.startNewSession());
@@ -776,31 +775,14 @@ export class InteractiveAgentRuntime {
     operation: RuntimeOperation,
     start: (signal: AbortSignal) => T
   ): T {
-    if (this.closed) throw new Error("Agent runtime is closed.");
-    if (this.state.kind !== "idle" || this.activeRun) {
-      throw new Error(`Cannot start ${publicOperationName(operation)} while the runtime is busy.`);
-    }
-    const leaseState = this.acquireSessionLease(this.getInfo().sessionId);
     const controller = new AbortController();
-    this.abortController = controller;
-    this.setState({ kind: "maintenance", operation });
+    const release = this.beginMaintenanceOperation(operation, controller);
     try {
       const submitted = start(controller.signal);
-      const completion = submitted.completion.then(() => undefined, () => undefined);
-      this.activeOperationCompletion = completion;
-      const release = (): void => {
-        if (this.activeOperationCompletion !== completion) return;
-        this.activeOperationCompletion = undefined;
-        if (this.abortController === controller) this.abortController = undefined;
-        this.setState({ kind: "idle" });
-        this.releaseSessionLeaseIfIdle();
-      };
       void submitted.completion.then(release, release);
       return submitted;
     } catch (error) {
-      if (this.abortController === controller) this.abortController = undefined;
-      this.setState({ kind: "idle" });
-      this.releaseSessionLease(leaseState);
+      release();
       throw error;
     }
   }
@@ -929,11 +911,11 @@ export class InteractiveAgentRuntime {
   }
 
   async requestUserInput(input: unknown, scope?: string): Promise<unknown> {
-    const run = this.activeRun;
+    const run = this.activeExecution?.run;
     if (!scope) throw new Error("Asking requires the current foreground model command context.");
     if (!run) throw new Error("Session command context expired or belongs to another run.");
-    return await this.commandRuntime.sessionCommand("AskUserQuestion", input, scope, undefined, this.activeRunController?.signal, event => {
-      if (this.activeRun === run) this.handleAgentEvent(run, event);
+    return await this.commandRuntime.sessionCommand("AskUserQuestion", input, scope, undefined, this.activeExecution?.controller?.signal, event => {
+      if (this.activeExecution?.run === run) this.handleAgentEvent(run, event);
     });
   }
 
@@ -943,8 +925,8 @@ export class InteractiveAgentRuntime {
     this.cancelCurrentRun("cancelled");
     this.closePromise = (async () => {
       const activeWriters = Promise.all([
-        this.activeRunCompletion,
-        this.activeOperationCompletion
+        this.activeExecution?.completion,
+        this.activeOperation?.completion
       ]).then(() => undefined, () => undefined);
       if (await settlesWithin(activeWriters, this.shutdownDrainMs)) {
         this.resourceChangeUnsubscribe?.();
@@ -990,28 +972,40 @@ export class InteractiveAgentRuntime {
     operationAbortController?: AbortController,
     sessionId = this.getInfo().sessionId
   ): Promise<T> {
+    const release = this.beginMaintenanceOperation(operation, operationAbortController, sessionId);
+    try {
+      return await Promise.resolve().then(execute);
+    } finally {
+      release();
+    }
+  }
+
+  private beginMaintenanceOperation(operation: RuntimeOperation, controller?: AbortController, sessionId = this.getInfo().sessionId): () => void {
     if (this.closed) throw new Error("Agent runtime is closed.");
-    if (this.state.kind !== "idle" || this.activeRun) {
+    if (this.state.kind !== "idle" || this.activeExecution || this.activeOperation) {
       throw new Error(`Cannot start ${publicOperationName(operation)} while the runtime is busy.`);
     }
     const leaseState = this.acquireSessionLease(sessionId);
-    this.setState({ kind: "maintenance", operation });
-    if (operationAbortController) this.abortController = operationAbortController;
-    const execution = Promise.resolve().then(execute);
-    const completion = execution.then(() => undefined, () => undefined);
-    this.activeOperationCompletion = completion;
-    try {
-      return await execution;
-    } finally {
-      if (operationAbortController && this.abortController === operationAbortController) {
-        this.abortController = undefined;
-      }
-      if (this.activeOperationCompletion === completion) {
-        this.activeOperationCompletion = undefined;
+    let complete!: () => void;
+    const completion = new Promise<void>(resolve => { complete = resolve; });
+    const active = { controller, completion };
+    this.activeOperation = active;
+    const release = (): void => {
+      if (this.activeOperation !== active) return;
+      try {
+        this.activeOperation = undefined;
+        // 空闲通知可能同步接纳下一项操作，先释放本项的租约。
+        this.releaseSessionLease(leaseState);
         this.setState({ kind: "idle" });
-      }
-      this.releaseSessionLease(leaseState);
+      } finally { complete(); }
+    };
+    try {
+      this.setState({ kind: "maintenance", operation });
+    } catch (error) {
+      release();
+      throw error;
     }
+    return release;
   }
 
   private acquireSessionLease(sessionId: string): SessionLeaseState {

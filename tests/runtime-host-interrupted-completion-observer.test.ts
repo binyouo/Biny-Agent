@@ -12,9 +12,9 @@ const validationSource = readFileSync(path.join(root, "src/runtime/host/validati
 const parsed = ts.createSourceFile("client.ts", clientSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const client = parsed.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "RuntimeHostClient");
 assert.ok(client);
-const methodNames = ["startInterruptedTurnForSession", "createCompletion", "rejectCompletion", "rejectCompletions", "recoverCompletions", "activeRunId", "close"];
+const methodNames = ["closed", "retired", "startInterruptedTurnForSession", "createCompletion", "rejectCompletion", "rejectCompletions", "recoverCompletions", "activeRunId", "close"];
 const methods = methodNames.map((name) => {
-  const method = client.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
+  const method = client.members.find((node): node is ts.MethodDeclaration | ts.GetAccessorDeclaration => (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node)) && ts.isIdentifier(node.name) && node.name.text === name);
   assert.ok(method, `Missing reviewed method ${name}`);
   return method.getText(parsed);
 });
@@ -53,8 +53,7 @@ interface Fixture {
   completions: Map<string, Pending>;
   pending: Map<string, { reject(error: Error): void }>;
   idleWaiters: Set<() => void>;
-  closed: boolean;
-  retired: boolean;
+  connectionState: { kind: string };
   socket: { destroyed: boolean };
   hostEpoch: string;
   focusedSessionId: string;
@@ -102,7 +101,7 @@ function fixture(scenario: Scenario) {
   let reconnects = 0;
   const requests: Array<{ operation: string; payload: unknown }> = [];
   const state: Fixture = {
-    options: { surface: "desktop" }, readinessWaiters: new Set(), completions: new Map(), pending: new Map(), idleWaiters: new Set(), ownerNotificationListeners: new Set(), closed: false, retired: false,
+    options: { surface: "desktop" }, readinessWaiters: new Set(), completions: new Map(), pending: new Map(), idleWaiters: new Set(), ownerNotificationListeners: new Set(), connectionState: { kind: "unsynchronized" },
     socket: { destroyed: false }, hostEpoch: "epoch", focusedSessionId: "session-a",
     ownerNotificationsSubscribed: false,
     snapshots: new Map([["session-a", { state: scenario === "active" ? { kind: "runs", activeRun: { runId: ids.runId } } : { kind: "idle" } }]]),
@@ -127,6 +126,7 @@ function fixture(scenario: Scenario) {
     refreshRuntimeSnapshot: async (_session, assertCurrent) => { assertCurrent(state.socket); },
     disconnectSocket: async () => { state.socket.destroyed = true; }, reportError: (error) => { throw error; }
   };
+  Object.setPrototypeOf(state, extracted);
   return { state, failure, requests, completion: () => completion, reconnects: () => reconnects,
     start: () => extracted.startInterruptedTurnForSession.call(state, "session-a", ids, "newTurn") };
 }

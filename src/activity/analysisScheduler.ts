@@ -43,6 +43,7 @@ export class ActivityAnalysisScheduler {
   private sweepTimer?: ActivityAnalysisTimerHandle;
   private running = false;
   private stopped = true;
+  private generation = 0;
 
   constructor(options: ActivityAnalysisSchedulerOptions) {
     this.run = options.run;
@@ -56,32 +57,36 @@ export class ActivityAnalysisScheduler {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    const generation = ++this.generation;
     this.initialTimer = this.timers.setTimeout(() => {
+      if (generation !== this.generation) return;
       this.initialTimer = undefined;
-      this.trigger();
+      this.trigger(generation);
     }, Math.max(0, this.initialDelayMs));
-    this.scheduleSweep();
+    this.scheduleSweep(generation);
   }
 
   /** 停止并清理所有尚未触发的定时器；在途调用不强行取消，由上层 AbortSignal 负责中止。 */
   stop(): void {
     this.stopped = true;
+    this.generation++;
     this.clearInitial();
     this.clearSweep();
   }
 
-  private scheduleSweep(): void {
-    if (this.stopped || !Number.isFinite(this.sweepIntervalMs) || this.sweepIntervalMs <= 0) return;
+  private scheduleSweep(generation: number): void {
+    if (generation !== this.generation || this.stopped || !Number.isFinite(this.sweepIntervalMs) || this.sweepIntervalMs <= 0) return;
     this.sweepTimer = this.timers.setTimeout(() => {
+      if (generation !== this.generation) return;
       this.sweepTimer = undefined;
-      this.trigger();
+      this.trigger(generation);
       // 周期器从启动时刻固定节奏，不因某一轮模型调用耗时而漂移。
-      this.scheduleSweep();
+      this.scheduleSweep(generation);
     }, this.sweepIntervalMs);
   }
 
-  private trigger(): void {
-    if (this.stopped || this.running || this.isUserActive?.()) return;
+  private trigger(generation: number): void {
+    if (this.stopped || this.running || this.isUserActive?.() || generation !== this.generation) return;
     this.running = true;
     let result: void | Promise<void>;
     try {

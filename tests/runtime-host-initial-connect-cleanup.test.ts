@@ -11,11 +11,11 @@ const source = readFileSync(process.env.BINY_INITIAL_CONNECT_BASELINE_CLIENT ?? 
 const parsed = ts.createSourceFile("client.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const declaration = parsed.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "RuntimeHostClient");
 assert.ok(declaration);
-const methodNames = ["open", "openSocket", "close", "disconnectSocket", "request", "send", "readClientData", "handleClientFrame",
+const methodNames = ["closed", "retired", "isSynchronized", "open", "openSocket", "close", "disconnectSocket", "request", "send", "readClientData", "handleClientFrame",
   "requestRaw", "applyHostStatus", "waitForReady", "waitForLifecycleReady", "synchronizeExecution", "retryConnection",
   "noteConnectionEstablished", "noteConnectionDropped", "scheduleReconnect", "reconnect", "performReconnect", "rejectPendingRequests", "rejectCompletions", "reportError"];
 const methods = methodNames.map((name) => {
-  const method = declaration.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
+  const method = declaration.members.find((node): node is ts.MethodDeclaration | ts.GetAccessorDeclaration => (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node)) && ts.isIdentifier(node.name) && node.name.text === name);
   assert.ok(method, `Missing reviewed method ${name}`);
   return method.getText(parsed);
 });
@@ -205,7 +205,7 @@ function fixture(scenario: Scenario, synchronousClose = false) {
     options: { registration, surface: "desktop", keepAlive: true }, persistenceRoot: "/inert", clientId: "fixture",
     ownerNotificationsSubscribed: false,
     readinessWaiters: new Set(), lifecycle: "initializing",
-    closed: false, retired: false, reconnectInProgress: false, reconnectAttempts: 0,
+    connectionState: { kind: "unsynchronized" }, reconnectInProgress: false, reconnectAttempts: 0,
     handshakeTimeoutMs: 10_000, environmentTakeoverHandshake: false,
     pending: new Map<string, Pending>(), completions: new Map<string, Pending>(), idleWaiters: new Set<() => void>(),
     capabilities: [], consumedSequence: 0, browserAutomationConfigured: false, ownerNotificationListeners: new Set(),
