@@ -39,6 +39,8 @@ export interface AgentUserMessage {
   content: string | Array<AgentTextContent | AgentImageContent | AgentAudioContent>;
   /** 仅宿主注入瞬态上下文时保存原文；清理和遥测不能靠用户可输入的文本标记识别来源。 */
   originalContent?: AgentUserMessage["content"];
+  /** 这一轮实际用于表达的心境，随消息恢复，不替代用户原文。 */
+  emotionSnapshot?: string;
   /** 原始消息发送时间及当时记录的时区；独立于本轮当前时间和正文中的事件时间。 */
   sentAt?: string;
   sentAtTimeZone?: string;

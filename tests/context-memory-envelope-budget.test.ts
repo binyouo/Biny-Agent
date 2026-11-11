@@ -183,3 +183,16 @@ test("empty-turn continuation does not inject recalled facts or a new user messa
   assert.equal(memory.getBudget().components!.some((component) => component.id === "stable memory"), false);
   assert.equal((await memory.status()).memoryInjectedCount, 0);
 });
+
+
+test("current emotion stays complete when long history consumes the remaining context budget", async () => {
+  const emotion = "<!-- biny-emotion:start -->\n<biny_emotion>\nCurrent state:\n- Base mood: thoughtful\n- trigger: CURRENT_MOOD_CAUSE\n</biny_emotion>\n<!-- biny-emotion:end -->";
+  const longHistory: AgentMessage[] = Array.from({ length: 12 }, (_, index) => ({
+    role: "user" as const, content: `Past exchange ${index}: ${"earlier conversation ".repeat(100)}`
+  }));
+  const memory = fixture(1600, [], 80, longHistory);
+  const prepared = await memory.prepareTurn(input, { systemPrompt: "system", turnContext: `${emotion}\n${turnContext}` });
+  assert.ok(JSON.stringify(prepared.messages.at(-1)?.content).includes("CURRENT_MOOD_CAUSE"));
+  assert.ok(JSON.stringify(prepared.messages.at(-1)?.content).includes("biny-emotion:end"));
+  assertFits(memory, prepared);
+});

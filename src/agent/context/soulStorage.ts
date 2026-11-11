@@ -16,8 +16,6 @@ const soulFileName = "SOUL.md";
 const lockDirectoryName = ".soul.lock";
 const lockTimeoutMs = 5_000;
 const staleLockMs = 120_000;
-export const maxSoulChars = 32_000;
-export const maxSoulTraitChars = 500;
 export const maxSoulTraits = 15;
 
 export interface SoulStorageOptions {
@@ -167,9 +165,6 @@ export class SoulStorage {
 function validateSoulContent(content: string): string {
   const normalized = normalizeSoulContent(content);
   if (!normalized) throw new Error("Soul content cannot be empty.");
-  if (normalized.length > maxSoulChars) {
-    throw new Error("Soul content cannot exceed " + String(maxSoulChars) + " characters.");
-  }
   return normalized;
 }
 
@@ -253,7 +248,6 @@ function traitDescription(line: string): string | undefined {
 function validateTrait(description: string): string {
   const trait = normalizeTrait(description);
   if (!trait) throw new Error("Soul trait cannot be empty.");
-  if (trait.length > maxSoulTraitChars) throw new Error("Soul trait cannot exceed " + String(maxSoulTraitChars) + " characters.");
   return trait;
 }
 

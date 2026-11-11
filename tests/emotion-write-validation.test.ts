@@ -15,9 +15,6 @@ async function fixture(run: (storage: EmotionStorage, root: string) => Promise<v
 }
 
 for (const [name, patch] of [
-  ["overlong mood", { mood: "x".repeat(33) }],
-  ["overlong Unicode mood", { mood: "😀".repeat(33) }],
-  ["overlong trigger", { trigger: "x".repeat(201) }],
   ["empty mood", { mood: "   " }],
   ["invalid valence", { valence: 11 }],
   ["invalid energy", { energy: Number.NaN }],
@@ -34,21 +31,8 @@ for (const [name, patch] of [
   }));
 }
 
-for (const patch of [{ mood: "x".repeat(33) }, { trigger: "😀".repeat(201) }]) {
-  test(`context rejects oversized ${"mood" in patch ? "mood" : "trigger"} without losing previous state`, async () => fixture(async (storage) => {
-    await storage.writeContext("session-one", valid);
-    const before = await storage.readContext("session-one");
-    const file = path.join(storage.directory, "context/session-one.md");
-    const bytes = await readFile(file, "utf8");
-    await assert.rejects(storage.writeContext("session-one", { ...valid, ...patch }), /Invalid emotion state/u);
-    assert.deepEqual(await storage.readContext("session-one"), before);
-    assert.equal(await readFile(file, "utf8"), bytes);
-    assert.deepEqual(await readdir(path.dirname(file)), ["session-one.md"]);
-  }));
-}
-
-test("valid Unicode boundary values retain trimming and context energy omission", async () => fixture(async (storage, root) => {
-  const state = { ...valid, mood: `  ${"😀".repeat(32)}  `, trigger: `  ${"😀".repeat(200)}  ` };
+test("long emotion descriptions retain trimming and context energy omission", async () => fixture(async (storage, root) => {
+  const state = { ...valid, mood: `  ${"😀".repeat(80)}  `, trigger: `  ${"😀".repeat(1200)}  ` };
   await storage.writeBase(state);
   await storage.writeContext("session-one", { ...state, energy: 2 });
   const expected = { ...state, mood: state.mood.trim(), trigger: state.trigger.trim() };
@@ -58,24 +42,25 @@ test("valid Unicode boundary values retain trimming and context energy omission"
 }));
 
 test("an invalid initial write does not create an unreadable base file", async () => fixture(async (storage) => {
-  await assert.rejects(storage.writeBase({ ...valid, trigger: "x".repeat(201) }), /Invalid emotion state/u);
+  await assert.rejects(storage.writeBase({ ...valid, valence: Number.NaN }), /Invalid emotion state/u);
   assert.equal(await storage.readBase(), undefined);
   assert.deepEqual((await readdir(storage.directory)).filter(name => name.endsWith(".md") || name.endsWith(".tmp")), []);
 }));
 
 for (const scope of ["base", "context"] as const) {
-  test(`actual CLI ${scope} command rejects unreadable output and retains the previous snapshot`, async () => fixture(async (storage, root) => {
+  test(`actual CLI ${scope} command preserves long mood descriptions`, async () => fixture(async (storage, root) => {
     const previous = process.env.BINY_AGENT_DIR;
     process.env.BINY_AGENT_DIR = root;
     try {
       await storage.writeBase(valid);
       await storage.writeContext("cli-session", valid);
-      const before = scope === "base" ? await storage.readBase() : await storage.readContext("cli-session");
       const command = scope === "base"
         ? () => emotionSetBaseCommand("content", "7", "8", ["x".repeat(201)])
         : () => emotionSetContextCommand("cli-session", "x".repeat(33), "8", ["reason"]);
-      await assert.rejects(command(), /Invalid emotion state/u);
-      assert.deepEqual(scope === "base" ? await storage.readBase() : await storage.readContext("cli-session"), before);
+      await command();
+      const saved = scope === "base" ? await storage.readBase() : await storage.readContext("cli-session");
+      assert.equal(saved?.trigger, scope === "base" ? "x".repeat(201) : "reason");
+      assert.equal(saved?.mood, scope === "base" ? "content" : "x".repeat(33));
     } finally {
       if (previous === undefined) delete process.env.BINY_AGENT_DIR;
       else process.env.BINY_AGENT_DIR = previous;

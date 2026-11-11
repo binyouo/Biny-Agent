@@ -92,7 +92,7 @@ export class EmotionStorage {
     const document = renderEmotionDocument(state, includeEnergy);
     // Never replace a readable snapshot with a document our own reader rejects.
     if (!parseEmotionDocument(document, DEFAULT_EMOTION_STATE.energy, includeEnergy)) {
-      throw new Error("Invalid emotion state: mood must contain 1–32 characters, trigger at most 200 characters, and numeric/time fields must be valid.");
+      throw new Error("Invalid emotion state: mood must be nonempty and numeric/time fields must be valid.");
     }
     const directory = path.dirname(filePath);
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -138,7 +138,6 @@ function parseEmotionDocument(content: string, fallbackEnergy: number, requireEn
     const separator = line.indexOf(":");
     if (separator <= 0) return undefined;
     const key = line.slice(0, separator).trim();
-    if (!(key === "mood" || key === "valence" || key === "energy" || key === "updated")) return undefined;
     fields[key] = line.slice(separator + 1).trim();
   }
 
@@ -148,7 +147,6 @@ function parseEmotionDocument(content: string, fallbackEnergy: number, requireEn
   const updatedAt = fields.updated;
   if (
     !mood
-    || Array.from(mood).length > 32
     || !Number.isFinite(valence)
     || (requireEnergy && fields.energy === undefined)
     || !Number.isFinite(energy)
@@ -161,7 +159,6 @@ function parseEmotionDocument(content: string, fallbackEnergy: number, requireEn
   ) return undefined;
 
   const trigger = match[2]?.trim() || undefined;
-  if (trigger !== undefined && Array.from(trigger).length > 200) return undefined;
   return { mood, valence, energy, updatedAt, trigger };
 }
 

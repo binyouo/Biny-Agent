@@ -8,6 +8,7 @@
  * 恢复出来的历史会直接发回模型，所以宁可丢弃可疑内容（如缺签名的思考块），也不能拼出
  * 服务端会拒绝的消息序列。
  */
+import { sessionMessageMetadataForIds } from "./messageTree.js";
 import path from "node:path";
 import { withMessageSentAt } from "../agent/modelMessages.js";
 import { resolveRetryScope, retryProjectionEvents, type RetryOrigin } from "./retryOrigin.js";
@@ -896,6 +897,8 @@ function projectSessionConversation(
   } = {},
   sourceEvents: readonly SessionEvent[] = events
 ): SessionConversationProjection {
+  const emotionMetadata = sessionMessageMetadataForIds(events,
+    new Set(events.flatMap(event => event.type === "user_message" && event.messageId ? [event.messageId] : [])));
   const uncoveredCalls = new Set(uncoveredCanonicalToolCalls(events, sourceEvents));
   if (options.ownedRetryTurnId) for (const event of events) {
     if (event.type === "tool_call" && !event.auditOnly && event.importSource === undefined
@@ -994,7 +997,10 @@ function projectSessionConversation(
       flushPendingCalls();
       appendRecoveredResultsForOpenCalls();
       resetPendingCalls();
-      appendMessage(withMessageSentAt({ role: "user", content: event.content }, event), event.messageId, event.parentMessageId, event.slotId);
+      const snapshot = event.messageId ? emotionMetadata.get(event.messageId)?.emotionSnapshot : undefined;
+      const userMessage = withMessageSentAt({ role: "user", content: event.content }, event);
+      appendMessage(typeof snapshot === "string" ? { ...userMessage, emotionSnapshot: snapshot } : userMessage,
+        event.messageId, event.parentMessageId, event.slotId);
       canonicalTurn = false;
       projectedTailCallIds.clear();
       continue;

@@ -62,6 +62,13 @@ async function main(): Promise<void> {
     assert.match(pruned.content, /- \[2026-10-18\] A new interest\n- \[2026-10-18\] A second explicit change/u);
     assert.equal((await storage.appendTrait("A new interest")).content, pruned.content);
 
+    const longSoul = "# Soul\n\n" + "喜欢自然地把事情说清楚。".repeat(4000);
+    await storage.set(longSoul);
+    assert.equal((await storage.read()).content, longSoul);
+    const longTrait = "把这次经历记下来，".repeat(100);
+    await storage.appendTrait(longTrait);
+    assert.ok((await storage.read()).content.includes(longTrait));
+
     const reset = await runSoulCommand(storage, ["delete"]);
     assert.match(reset, /Soul override removed/u);
     assert.equal((await storage.read()).source, "builtin");

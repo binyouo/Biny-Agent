@@ -241,7 +241,10 @@ for (const targetRole of ["assistant", "user"] as const) {
     assertFreshContext(f.text());
     const users = f.requests.at(-1)!.messages.filter(message => message.role === "user");
     assert.equal(users.length, 2);
-    assert.equal(userText(users[0]!), `[Message sent-at: 2026-10-07T15:59:59.000Z; original timezone: Asia/Shanghai; message time is not event/due/completion time.]\n\n${input}`, "earlier input gains only its original send-time anchor");
+    assert.ok(userText(users[0]!).startsWith("[Message sent-at: 2026-10-07T15:59:59.000Z; original timezone: Asia/Shanghai; message time is not event/due/completion time.]\n\n"));
+    assert.match(userText(users[0]!), /<biny_emotion_history>[\s\S]*cheerful[\s\S]*<\/biny_emotion_history>/u);
+    assert.ok(userText(users[0]!).endsWith(input));
+    assert.equal(userText(users[0]!).split(input).length - 1, 1, "historical mood does not duplicate user input");
     assert.match(userText(users[1]!), /^\[Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai;/u, "retry keeps the source message's send time");
     assert.ok(userText(users[1]!).endsWith(input));
     assert.equal(users[1]?.originalContent, undefined, "internal source metadata is not sent to the provider");

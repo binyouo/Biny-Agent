@@ -20,7 +20,7 @@ import { canonicalToolSchemaHash, type PromptEpochReason } from "../../llm/promp
 import type { MemoryRecallReport } from "./memoryTypes.js";
 import type { SemanticMemoryRetriever } from "./SemanticMemoryRetriever.js";
 import type { PromptBundle } from "../prompts.js";
-import { stripTransientTurnContext } from "../prompts.js";
+import { retainEmotionHistory } from "./emotionHistory.js";
 import { checkpointClaims } from "../../session/checkpointClaims.js";
 import { anchoredRequestTokens, requestFingerprints } from "./requestAnchor.js";
 import type { SessionUsageAnchor, SessionCompactionFailure } from "../../session/metadata.js";
@@ -31,7 +31,7 @@ const piReserveTokens = 16_384;
 const piKeepRecentTokens = 20_000;
 const defaultSummaryTokens = 4_096;
 const turnContextEndMarker = "<!-- biny-turn-context:end -->";
-const compactionPromptVersion = 4;
+const compactionPromptVersion = 5;
 
 class CompactionSummaryError extends Error {
   constructor(readonly kind: SessionCompactionFailure["kind"]) {
@@ -773,7 +773,7 @@ export class ContextMemory {
       // 截断与契约错误共用一次修复机会；预留最长修复指令，保持材料和可引用来源不变。
       const promptOverhead = Math.max(...Object.values(repairPrompts).map(estimateTokens)) + estimateTokens(buildCompactionDataPrompt("", previousSummary, previousSources.text, hint)) + 8;
       if (outputTokens <= 0 || inputLimit <= promptOverhead) throw new CompactionSummaryError("input_budget");
-      const compactedMessages = stripTransientTurnContext(plan.compacted);
+      const compactedMessages = retainEmotionHistory(plan.compacted);
       const transcript = boundedCompactionTranscript(compactedMessages, inputLimit - promptOverhead);
       if (!transcript.catalog.size) throw new CompactionSummaryError("input_budget");
       const prompt = buildCompactionDataPrompt(transcript.text, previousSummary, previousSources.text, hint);
@@ -1046,6 +1046,7 @@ function buildCompactionSystemPrompt(hasPreviousSummary: boolean, splitTurn: boo
     "## All User Messages\n- (every non-tool-result user message in order; keep the user's own wording for requirements and feedback, do not paraphrase away specifics)",
     "## Next Steps\n1. ...",
     "## Critical Context\n- ...",
+    "In Critical Context, preserve meaningful emotional shifts and their causes from the recorded emotion history, alongside the conversation facts.",
     "Every non-placeholder list item must end with `<!-- evidence:source-id[,source-id...] -->`. Use only source IDs shown in the supplied source records. Placeholder items such as `(none recorded)` and `(unknown)` need no citation.",
     "Citations describe provenance, not authority. Prefer tool-result sources for verified outcomes; assistant text alone must not be cited as proof that work completed.",
     "Keep only grounded facts. Preserve exact paths, identifiers, command results, errors, verification state and unfinished work. Never include credentials or raw large outputs.",
@@ -1093,7 +1094,11 @@ function formatMessageForSummary(message: AgentMessage, index: number): string {
       ...calls
     ].filter(Boolean).join("\n");
   }
-  return `[source ${messageSource} kind=message role=user] ${truncateTextToTokens(messageText(projectMessageSentAt(message)), 700)}`;
+  const userMessage = message.originalContent === undefined ? message : { ...message, content: message.originalContent };
+  return [
+    `[source ${messageSource} kind=message role=user] ${truncateTextToTokens(messageText(projectMessageSentAt(userMessage)), 700)}`,
+    message.emotionSnapshot ? `Biny's emotional state during this exchange:\n${message.emotionSnapshot}` : ""
+  ].filter(Boolean).join("\n");
 }
 
 /** 摘要请求自身也必须有界；同时保留最早目标与最近进展，避免只截头或只截尾。 */
@@ -1846,7 +1851,12 @@ function assembleContext(
   });
   const dateTokens = dateContext ? estimateTokens(dateContext) + 4 : 0;
   if (dateContext) components.push({ id: "local date", requestedTokens: dateTokens, usedTokens: dateTokens, disposition: "included" });
-  let remaining = Math.max(0, usableTokens - usedTaskTokens - dateTokens);
+  const emotionContext = includeInput
+    ? turnContext.match(/<!-- biny-emotion:start -->[\s\S]*?<!-- biny-emotion:end -->/u)?.[0] ?? "" : "";
+  const auxiliaryContext = emotionContext ? turnContext.replace(emotionContext, "").trim() : turnContext;
+  const emotionTokens = emotionContext ? estimateTokens(emotionContext) + 4 : 0;
+  if (emotionContext) components.push({ id: "emotion", requestedTokens: emotionTokens, usedTokens: emotionTokens, disposition: "included" });
+  let remaining = Math.max(0, usableTokens - usedTaskTokens - dateTokens - emotionTokens);
   const checkpointTokens = checkpointMessage === undefined ? 0 : estimateMessageTokens([checkpointMessage]);
   let usedCheckpointTokens = 0;
   if (checkpointMessage !== undefined) {
@@ -1939,27 +1949,31 @@ function assembleContext(
 
   // 每轮上下文必须先于 recalled memory，且不能挤掉用户原文；超长的日报/Activity
   // 只在本轮截断，不写回 history。这样模型能看到交错的动态顺序，历史仍保持干净。
-  let includedTurnContext = "";
-  if (includeInput && turnContext) {
-    const requestedTurnContextTokens = estimateTokens(turnContext) + 4;
+  let includedTurnContext = emotionContext;
+  if (includeInput && auxiliaryContext) {
+    const requestedTurnContextTokens = estimateTokens(auxiliaryContext) + 4;
     const contextCap = Math.max(1, Math.floor(usableTokens * 0.2));
     const available = Math.min(Math.max(0, remaining - 4), contextCap);
     const closeMarkerBudget = estimateTokens(turnContextEndMarker) + 4;
     if (available > closeMarkerBudget) {
       const selected = requestedTurnContextTokens <= available
-        ? turnContext
-        : truncateTextToTokens(turnContext, available - closeMarkerBudget);
-      includedTurnContext = selected.includes(turnContextEndMarker)
+        ? auxiliaryContext
+        : truncateTextToTokens(auxiliaryContext, available - closeMarkerBudget);
+      const includedAuxiliaryContext = selected.includes(turnContextEndMarker)
         ? selected
         : `${selected.trimEnd()}\n\n${turnContextEndMarker}`;
-      const usedTokens = estimateTokens(includedTurnContext) + 4;
+      const usedTokens = estimateTokens(includedAuxiliaryContext) + 4;
       components.push({
         id: "turn context",
         requestedTokens: requestedTurnContextTokens,
         usedTokens,
-        disposition: includedTurnContext === turnContext ? "included" : "trimmed"
+        disposition: includedAuxiliaryContext === auxiliaryContext ? "included" : "trimmed"
       });
-      if (includedTurnContext !== turnContext) omitted.push("turn context (trimmed)");
+      if (includedAuxiliaryContext !== auxiliaryContext) omitted.push("turn context (trimmed)");
+      const emotionPosition = includedAuxiliaryContext.includes("<biny_turn_context>") ? "<biny_turn_context>" : turnContextEndMarker;
+      includedTurnContext = emotionContext
+        ? includedAuxiliaryContext.replace(emotionPosition, `${emotionContext}\n\n${emotionPosition}`)
+        : includedAuxiliaryContext;
       remaining -= usedTokens;
     } else {
       omitted.push("turn context");

@@ -1122,7 +1122,7 @@ async function testCheckpointPersistenceFailureStopsSession(): Promise<void> {
       config.context.memory.generateMemories = false;
       const recorder = new FaultRecorder(workspaceRoot, `fault-${phase}-${mode}`);
       config.context.maxInputTokens = 8_000;
-      config.context.compaction.keepRecentTokens = 100;
+      config.context.compaction.keepRecentTokens = 1000; // 手动场景让整段含心境的短历史进入 checkpoint。
       const provider = new ContextTestModel();
       // 自动压缩场景不能回报虚构的零 input usage，否则有效锚点会正确抑制估算触发。
       provider.reportUsage = mode !== "automatic";
@@ -1731,7 +1731,8 @@ async function testFailedCurrentSessionResumeKeepsRecorderUsable(): Promise<void
     assert.equal((await agent.runTask("continue in a healthy session")).output, "ok");
     await agent.close();
     const fallbackEvents = await readSessionEvents(fallbackSession.sessionFile);
-    assert.deepEqual(fallbackEvents.map((event) => event.type), ["user_message", "message_metadata", "model_request", "agent_message", "assistant_message", "turn_status", "message_metadata"]);
+    assert.deepEqual(fallbackEvents.map((event) => event.type), ["user_message", "message_metadata", "message_metadata", "model_request", "agent_message", "assistant_message", "turn_status", "message_metadata"]);
+    assert.ok(fallbackEvents.some(event => event.type === "message_metadata" && typeof event.metadata.emotionSnapshot === "string"));
     const request = fallbackEvents.find((event) => event.type === "model_request");
     assert.ok(request?.type === "model_request", "the fallback session must preserve local injected model request metrics");
     assert.equal(request.metrics.provider, "context-test");

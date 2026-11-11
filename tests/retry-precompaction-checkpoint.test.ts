@@ -51,7 +51,7 @@ for (const snapshot of [false, true]) {
     const requestsBeforeReopen = f.state.requests.length;
     const reopened = await f.reopen(snapshot);
     assert.equal(f.state.requests.length, requestsBeforeReopen, "reopening cannot reconstruct a summary with another model call");
-    assert.deepEqual(reopened.messages, replay.messages);
+    assertRestoredConversation(reopened.messages, replay.messages);
     assert.equal(reopened.contextCheckpoint?.firstKeptMessageId, seeded.retainedUserId);
     assert.equal((await f.send("AFTER_REOPEN")).status, "completed");
     const request = f.state.requests.at(-1)!;
@@ -110,7 +110,7 @@ test("editing the retained retry boundary preserves the valid shared-ancestor ch
   assert.deepEqual(edited.contextCheckpoint, before.contextCheckpoint);
   assert.equal((await f.events()).filter(event => event.type === "context_checkpoint").length, 1);
   const reopened = await f.reopen(false);
-  assert.deepEqual(reopened.messages, edited.messages);
+  assertRestoredConversation(reopened.messages, edited.messages);
   assert.deepEqual(reopened.contextCheckpoint, edited.contextCheckpoint);
   assertCanonicalPrefixUnchanged(seeded.canonicalEvents, await f.events());
 });
@@ -152,7 +152,7 @@ test("editing with preparation compaction anchors before the replacement user", 
   assert.equal(occurrences(request, earlyRaw), 0);
   f.config.context.maxInputTokens = roomy;
   const reopened = await f.reopen(false);
-  assert.deepEqual(reopened.messages, replay.messages);
+  assertRestoredConversation(reopened.messages, replay.messages);
   assert.deepEqual(reopened.contextCheckpoint, replay.contextCheckpoint);
   assertCanonicalPrefixUnchanged(seeded.canonicalEvents, await f.events());
 });
@@ -190,7 +190,7 @@ test("cancellation after retry preparation keeps the shared checkpoint and origi
   assertCanonicalPrefixUnchanged(seeded.canonicalEvents, await f.events());
   f.config.context.maxInputTokens = roomy;
   const reopened = await f.reopen(false);
-  assert.deepEqual(reopened.messages, selected.messages);
+  assertRestoredConversation(reopened.messages, selected.messages);
   assert.deepEqual(reopened.contextCheckpoint, selected.contextCheckpoint);
   assert.equal((await f.send("AFTER_CANCELLED_RETRY")).status, "completed");
   const request = f.state.requests.at(-1)!;
@@ -338,6 +338,28 @@ async function fixture(t: TestContext) {
     }
   };
   return f;
+}
+
+function assertRestoredConversation(actual: AgentMessage[], canonical: AgentMessage[]): void {
+  assert.equal(actual.length, canonical.length);
+  for (const [index, expected] of canonical.entries()) {
+    const restored = actual[index]!;
+    if (expected.role !== "user" || !expected.emotionSnapshot) {
+      assert.deepEqual(restored, expected);
+      continue;
+    }
+    assert.equal(restored.role, "user");
+    if (restored.role !== "user") assert.fail("restored message must retain its role");
+    assert.equal(typeof expected.content, "string");
+    assert.equal(typeof restored.content, "string");
+    assert.equal(restored.originalContent, expected.content, "the original user text remains intact");
+    assert.ok(String(restored.content).startsWith("<biny_emotion_history>\n"));
+    assert.ok(String(restored.content).includes(expected.emotionSnapshot), "the persisted mood survives checkpoint recovery");
+    assert.ok(String(restored.content).endsWith(`</biny_emotion_history>\n\n${String(expected.content)}`));
+    const { originalContent, ...message } = restored;
+    assert.deepEqual({ ...message, content: originalContent }, expected,
+      "emotion projection must not change message identity, timestamps or canonical facts");
+  }
 }
 
 function occurrences(messages: readonly AgentMessage[], marker: string): number {

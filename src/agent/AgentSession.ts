@@ -78,7 +78,6 @@ import {
   refreshRuntimeSystemPrompt,
   refreshSessionGoalPrompt,
   messagesForTelemetry,
-  stripTransientTurnContext,
   systemPromptForTelemetry
 } from "./prompts.js";
 import { perfNow, recordPerfPhase } from "../observability/perfTiming.js";
@@ -105,6 +104,7 @@ import { SoulStorage } from "./context/soulStorage.js";
 import { readSecurityPolicy } from "./context/securityPolicy.js";
 import { EmotionStorage } from "./context/emotionStorage.js";
 import { renderEmotionPrompt } from "./context/emotionPrompt.js";
+import { retainEmotionHistory, withEmotionHistory } from "./context/emotionHistory.js";
 import {
   analyzeContextEmotion,
   EmotionAnalysisScheduler,
@@ -2857,6 +2857,20 @@ export class AgentSession {
       if (this.activeConfig.agent.toolExecutionMode !== "code_mode") return directTools;
       return [...directTools, coordinator.createCodeModeTool(editing)];
     };
+    const referenceByMessage = new WeakMap<AgentMessage, SessionMessageReference>();
+    for (const [index, message] of messages.entries()) {
+      const reference = messageReferences[index];
+      if (reference) referenceByMessage.set(message, reference);
+    }
+    const savedEmotionSnapshots = new Map<string, string>();
+    const refreshEmotion = async (currentMessages: AgentMessage[]): Promise<void> => {
+      const message = refreshRuntimeTurnContext(currentMessages, await this.currentEmotionPrompt());
+      const messageId = message && referenceByMessage.get(message)?.id;
+      const snapshot = message?.emotionSnapshot;
+      if (!messageId || !snapshot || savedEmotionSnapshots.get(messageId) === snapshot) return;
+      await this.recorder.recordAndFlush({ type: "message_metadata", messageId, metadata: { emotionSnapshot: snapshot } });
+      savedEmotionSnapshots.set(messageId, snapshot);
+    };
     let loopContext: AgentContext;
     try {
       const initialTools = editingTools(activeModelSettings);
@@ -2864,7 +2878,7 @@ export class AgentSession {
         systemPrompt,
         initialTools
       );
-      refreshRuntimeTurnContext(messages, await this.currentEmotionPrompt());
+      await refreshEmotion(messages);
       loopContext = { systemPrompt, messages: [...messages], tools: initialTools };
       // schema 在首轮 provider 请求与任何 tool.started 之前统一规范化并校验。
       this.contextMemory.recordToolSchema(loopContext.tools);
@@ -2883,11 +2897,6 @@ export class AgentSession {
     let finalAssistantReference: SessionMessageReference | undefined;
     let newMessages: AgentMessage[] = [];
     let finalContextMessages: AgentMessage[] = [...messages];
-    const referenceByMessage = new WeakMap<AgentMessage, SessionMessageReference>();
-    for (const [index, message] of messages.entries()) {
-      const reference = messageReferences[index];
-      if (reference) referenceByMessage.set(message, reference);
-    }
     const retryReply: { state:
       | { phase: "empty" }
       | { phase: "buffered"; message: AgentAssistantMessage }
@@ -3105,6 +3114,10 @@ export class AgentSession {
             }
           }
           await this.recorder.flush();
+          if (runOptions.emotionAnalysis !== false && args.selectionMessageId && stepAssistantContent.trim()
+            && !(runOptions.retryOrigin && finalMessage)) {
+            this.emotionAnalysisScheduler.schedule(this.recorder.sessionId, args.selectionMessageId);
+          }
           observedSteps += 1;
           lastStepReasoningOutput = stepReasoningOutput;
           lastAssistant = message;
@@ -3172,7 +3185,7 @@ export class AgentSession {
             const prompt = context.systemPrompt?.replace(/<!-- biny-todos:start -->[\s\S]*?<!-- biny-todos:end -->/gu, "").trim();
             context.systemPrompt = [prompt, this.options.todoStore.promptSection()].filter(Boolean).join("\n\n") || undefined;
           }
-          refreshRuntimeTurnContext(context.messages, await this.currentEmotionPrompt());
+          await refreshEmotion(context.messages);
           this.contextMemory.recordToolSchema(tools);
           context.tools = [...tools];
           activeRequestContext = context;
@@ -3374,7 +3387,7 @@ export class AgentSession {
           ...(currentUserMessage ? [referenceByMessage.get(currentUserMessage)] : []),
           ...newMessages.map((message) => referenceByMessage.get(message))
         ];
-      this.contextMemory.replaceHistory(stripTransientTurnContext(finalMessages));
+      this.contextMemory.replaceHistory(retainEmotionHistory(finalMessages));
       this.contextMessageReferences = finalReferences;
       const usageRecord = stepUsageRecords.length ? sumSessionUsage(stepUsageRecords) : undefined;
       const content = lastAssistant ? agentMessageText(lastAssistant) : "";
@@ -4333,7 +4346,7 @@ export class AgentSession {
     messages: AgentMessage[],
     references: Array<SessionMessageReference | undefined>
   ): Promise<void> {
-    const history = stripTransientTurnContext(messages);
+    const history = retainEmotionHistory(messages);
     const historyReferences = [...references];
     if (outcome.stopReason === "interrupted" || outcome.stopReason === "paused") {
       const content = outcome.stopReason === "paused" ? pausedTurnMarker : interruptedTurnMarker;
@@ -4789,7 +4802,9 @@ export class AgentSession {
         ]
       });
     }
-    return hydrated;
+    // 已组装的续跑消息保留本轮资料；仅为原始回放消息补上历史心境。
+    return hydrated.map(message => message.role === "user" && message.emotionSnapshot && message.originalContent === undefined
+      ? withEmotionHistory(message, message.emotionSnapshot) : message);
   }
 
 }

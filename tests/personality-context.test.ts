@@ -109,3 +109,72 @@ test("fatigue instructions retain recovery commands, separate emotional energy a
   assert.match(sleepy, /Simple conversation is fine but you're clearly low energy/u);
   assert.doesNotMatch(sleepy, /SLEEPING/u);
 });
+
+
+test("conversation retains each turn's mood through later turns and session resume", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-emotion-history-"));
+  const previous = process.env[BINY_AGENT_DIR_ENV];
+  process.env[BINY_AGENT_DIR_ENV] = path.join(root, "state");
+  let agent: AgentSession | undefined;
+  try {
+    await ensureAgentDirs(root);
+    const config = structuredClone(defaultConfig);
+    config.context.memory.useMemories = false;
+    config.context.memory.generateMemories = false;
+    config.activity.enabled = false;
+    config.checkpoints.enabled = false;
+    const requests: ModelStreamContext[] = [];
+    let compactionInput = "";
+    const moodSummary = "先因调试无果感到挫折，随后因找到原因而释然。";
+    const model: AgentModel = testModel({ provider: "test", modelId: "mood-history", async stream(context) {
+      requests.push(structuredClone({ ...context, tools: [] }));
+      const compacting = context.systemPrompt?.includes("durable context checkpoint") === true;
+      if (compacting) compactionInput = JSON.stringify(context.messages);
+      const summary = ["## Goal", "- 继续讨论。 <!-- evidence:m0 -->", "## Constraints & Preferences", "- (none recorded)",
+        "## Progress", "### Done", "- (none recorded)", "### In Progress", "- (none recorded)", "### Blocked", "- (none recorded)",
+        "## Key Decisions", "- (none recorded)", "## Errors & Fixes", "- (none recorded)", "## All User Messages",
+        "- 还没弄好。 <!-- evidence:m0 -->", "- 找到原因了。 <!-- evidence:m2 -->", "- 回想一下刚才。 <!-- evidence:m4 -->",
+        "## Next Steps", "- (none recorded)", "## Critical Context", `- ${moodSummary} <!-- evidence:m0,m2 -->`].join("\n");
+      return (async function* () {
+        yield { type: "text-delta" as const, text: compacting ? summary : "继续。" };
+        yield { type: "finish" as const, reason: "stop" as const };
+      })();
+    } });
+    const create = () => new AgentSession({ workspaceRoot: root, config, model,
+      recorder: new SessionRecorder(root, "mood-history"), toolRegistry: new ToolRegistry(),
+      permissionManager: new PermissionManager(config.permission) });
+    agent = create();
+    await agent.initialize();
+    const emotions = new EmotionStorage();
+    await emotions.writeBase({ mood: "frustrated", energy: 4, valence: 3, updatedAt: new Date().toISOString(), trigger: "FIRST_CAUSE：连续调试没有结果" });
+    const firstOutcome = await agent.runTask("还没弄好。", { emotionAnalysis: false });
+    assert.equal(firstOutcome.status, "completed", JSON.stringify(firstOutcome));
+    await emotions.writeBase({ mood: "relieved", energy: 7, valence: 8, updatedAt: new Date().toISOString(), trigger: "SECOND_CAUSE：终于找到原因" });
+    await agent.runTask("找到原因了。", { emotionAnalysis: false });
+    const second = requests.at(-1)!;
+    const users = second.messages.filter(message => message.role === "user");
+    assert.match(JSON.stringify(users[0]?.content), /FIRST_CAUSE/u);
+    assert.doesNotMatch(JSON.stringify(users[0]?.content), /SECOND_CAUSE/u);
+    assert.match(JSON.stringify(users.at(-1)?.content), /SECOND_CAUSE/u);
+    await agent.close();
+    agent = create();
+    await agent.initialize();
+    await agent.resume("mood-history");
+    await agent.runTask("回想一下刚才。", { emotionAnalysis: false });
+    const restored = requests.at(-1)!.messages.filter(message => message.role === "user");
+    assert.match(JSON.stringify(restored[0]?.content), /FIRST_CAUSE/u);
+    assert.match(JSON.stringify(restored[1]?.content), /SECOND_CAUSE/u);
+    assert.doesNotMatch(JSON.stringify(restored[0]?.content), /biny emotion set-base/u, "historical mood is context, without repeating command instructions");
+    await agent.compactConversation();
+    assert.match(compactionInput, /FIRST_CAUSE/u);
+    assert.match(compactionInput, /SECOND_CAUSE/u);
+    assert.match(compactionInput, /还没弄好。/u);
+    assert.doesNotMatch(compactionInput, /biny emotion set-base/u);
+    await agent.runTask("继续聊。", { emotionAnalysis: false });
+    assert.ok(JSON.stringify(requests.at(-1)!.messages).includes(moodSummary), "the compacted mood history reaches the next model request");
+  } finally {
+    await agent?.close();
+    if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV]; else process.env[BINY_AGENT_DIR_ENV] = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});

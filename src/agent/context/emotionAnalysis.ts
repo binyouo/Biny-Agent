@@ -15,9 +15,9 @@ const analysisDelayMs = 5_000;
 const recentMessageLimit = 10;
 const recentMessageMaxChars = 150;
 const autoEmotionResultSchema = z.object({
-  mood: z.string().trim().min(1).max(40),
+  mood: z.string().trim().min(1),
   valence: z.number(),
-  reason: z.string().trim().max(200)
+  reason: z.string().trim()
 });
 const autoEmotionSystemPrompt = [
   "You analyze chat conversation sentiment FROM BINY'S PERSPECTIVE. Biny is an AI participant in this chat. Based on the recent messages, determine how Biny should feel right now.",
@@ -80,7 +80,6 @@ export async function analyzeContextEmotion(options: AnalyzeContextEmotionOption
       signal: options.signal,
       maxOutputTokens: 50,
       reasoning: "off",
-      timeoutMs: 10_000,
       onRequestMetrics: options.onRequestMetrics,
       requestContext: options.requestContext
     }

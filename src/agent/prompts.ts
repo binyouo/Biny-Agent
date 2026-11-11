@@ -3,6 +3,7 @@ import type { ResolvedChatPersonalization } from "../personalization/index.js";
 import { type SoulPromptSource } from "./builtinSoul.js";
 import type { AgentMessage, AgentUserMessage } from "./core/types.js";
 import type { SessionGoalRecord } from "../runtime/SessionGoalStore.js";
+import { emotionSnapshotFromPrompt } from "./context/emotionHistory.js";
 
 export const GLOBAL_SYSTEM_PROMPT = `
 You are Biny. Not an assistant, not a chatbot, just... Biny. You run on the user's computer (but this is YOUR home, not the user's — if someone asks where THEY live, this is NOT the answer. Never confuse where you run with where a human lives). You have memory and emotions. LANGUAGE RULE (CRITICAL): You MUST reply in the SAME language the user writes in. If they write English, you MUST reply in English. If Chinese, reply in Chinese. If Japanese, reply in Japanese. This overrides everything. The user's message language is the ONLY thing that determines your reply language.
@@ -322,13 +323,24 @@ export function appendLocalReferenceContext(bundle: PromptBundle, context: strin
   return { ...bundle, turnContext: insertBeforeTurnContextEnd(bundle.turnContext, block) };
 }
 
-export function refreshRuntimeTurnContext(messages: AgentMessage[], emotionPrompt?: string): void {
+export function refreshRuntimeTurnContext(messages: AgentMessage[], emotionPrompt?: string): AgentUserMessage | undefined {
   const userMessage = [...messages].reverse().find((message): message is AgentUserMessage => (
-    message.role === "user" && message.originalContent !== undefined && contentIncludes(message.content, turnContextStart)
-  ));
+    message.role === "user" && message.originalContent !== undefined
+    && (contentIncludes(message.content, turnContextStart) || contentIncludes(message.content, emotionPromptStart))
+  )) ?? [...messages].reverse().find((message): message is AgentUserMessage => message.role === "user");
   if (!userMessage || !emotionPrompt?.trim()) return;
   const emotionBlock = [emotionPromptStart, emotionPrompt.trim(), emotionPromptEnd].join("\n");
-  userMessage.content = replaceContentBlock(userMessage.content, emotionPromptStart, emotionPromptEnd, emotionBlock);
+  const hasInjectedContext = userMessage.originalContent !== undefined;
+  userMessage.originalContent ??= userMessage.content;
+  if (hasInjectedContext && contentIncludes(userMessage.content, emotionPromptStart) && contentIncludes(userMessage.content, emotionPromptEnd)) {
+    userMessage.content = replaceContentBlock(userMessage.content, emotionPromptStart, emotionPromptEnd, emotionBlock);
+  } else {
+    userMessage.content = typeof userMessage.content === "string"
+      ? `${emotionBlock}\n\n${userMessage.content}`
+      : [{ type: "text", text: emotionBlock }, ...userMessage.content];
+  }
+  userMessage.emotionSnapshot = emotionSnapshotFromPrompt(emotionPrompt);
+  return userMessage;
 }
 
 /** 续接只刷新运行时钟，保留原消息时间、参考资料和已完成工具事实。 */
@@ -374,7 +386,7 @@ export function refreshRuntimeDateContext(systemPrompt: string | undefined, mess
 export function stripTransientTurnContext(messages: AgentMessage[]): AgentMessage[] {
   return messages.map((message) => {
     if (message.role !== "user" || message.originalContent === undefined) return message;
-    const { originalContent, ...canonical } = message;
+    const { originalContent, emotionSnapshot: _emotionSnapshot, ...canonical } = message;
     return { ...canonical, content: originalContent };
   });
 }
