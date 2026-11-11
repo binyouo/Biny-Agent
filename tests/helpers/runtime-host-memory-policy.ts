@@ -9,7 +9,6 @@ export function createRuntimeHostMemoryPolicy(): MemoryPolicy {
     useMemories: false,
     generateMemories: false,
     extractModel: undefined,
-    excludeExternalContext: true,
     maxRecalled: 3
   });
 }

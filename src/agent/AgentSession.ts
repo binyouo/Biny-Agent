@@ -97,6 +97,7 @@ import {
   type ChatDiaryRefreshResult
 } from "./context/chatDiary.js";
 import { LocalMemory, redactSecrets } from "./context/LocalMemory.js";
+import { recentMemoryConversation } from "./context/memoryExtraction.js";
 import { IdentityStorage } from "./context/identityStorage.js";
 import { runSoulCommand as executeSoulCommand } from "./context/soulCommands.js";
 import { renderSoulPrompt } from "./builtinSoul.js";
@@ -3524,12 +3525,10 @@ export class AgentSession {
           const memoryRuntime = memoryRecorder.runtimeContextSnapshot();
           const memoryMessageId = finalAssistantReference?.id;
           const contributeMemories = turnPersonalization.contributeMemories;
-          const excludeExternalContext = turnPersonalization.excludeExternalContext;
-          const markMemoryHandled = async (changes: { created: Array<{ id: string; content: string }>; updated?: Array<{ id: string; content: string }>; deleted: Array<{ id: string; content: string }> }): Promise<void> => {
+          const markMemoryHandled = async (changes: { created: Array<{ id: string; content: string }>; deleted: Array<{ id: string; content: string }> }): Promise<void> => {
             if (!memoryMessageId) return;
             const metadata: Record<string, unknown> = { memoryExtracted: true, memoryExtractedAt: new Date().toISOString() };
             if (changes.created.length) metadata.createdMemories = changes.created.map((entry) => ({ id: entry.id, content: entry.content, type: "created" }));
-            if (changes.updated?.length) metadata.updatedMemories = changes.updated.map((entry) => ({ id: entry.id, content: entry.content, type: "updated" }));
             if (changes.deleted.length) metadata.deletedMemories = changes.deleted.map((entry) => ({ id: entry.id, content: entry.content, type: "deleted" }));
             memoryRecorder.recordWithRuntimeContext({
               type: "message_metadata",
@@ -3545,9 +3544,8 @@ export class AgentSession {
               await markMemoryHandled({ created: [], deleted: [] });
               return;
             }
-            const originAnchors = finalMessages
-              .slice(-4)
-              .filter((message) => message.role === "user" || message.role === "assistant")
+            const extractionMessages = recentMemoryConversation(finalMessages);
+            const originAnchors = extractionMessages
               .flatMap((message) => {
                 if (message.role !== "user") return [];
                 const messageId = referenceByMessage.get(message)?.id;
@@ -3558,13 +3556,11 @@ export class AgentSession {
               });
             // 自动抽取依赖后续语义写入；先确认 embedding 可用，避免无意义地发送对话给抽取模型。
             const embeddingAvailable = await this.getEmbeddingRuntime().then(Boolean, () => false);
-            const changes = embeddingAvailable ? await this.localMemory.summarizeAndStoreMemories(finalMessages, {
+            const changes = embeddingAvailable ? await this.localMemory.summarizeAndStoreMemories(extractionMessages, {
               sessionId: memoryRecorder.sessionId,
               turnId: runOptions.turnId!,
               messageId: memoryMessageId,
               runId: runOptions.runId!,
-              externalContext: Boolean(runOptions.attachments?.length) || this.usedExternalContext(finalMessages),
-              excludeExternalContext,
               originAnchors
             }) : { created: [], deleted: [] };
             await markMemoryHandled(changes);
@@ -3927,19 +3923,6 @@ export class AgentSession {
     model?: ModelUsageIdentity
   ): void {
     this.recordModelUsage(usage, operation, model);
-  }
-
-  private usedExternalContext(messages: readonly AgentMessage[]): boolean {
-    const externalTools = new Set(
-      this.options.toolRegistry.listEntries()
-        .filter((entry) => entry.source === "mcp" || entry.source === "plugin" || entry.source === "subagent")
-        .map((entry) => entry.tool.name)
-    );
-    externalTools.add("WebSearch");
-    externalTools.add("WebFetch");
-    return messages.some((message) => message.role === "assistant" && message.content.some(
-      (part) => part.type === "toolCall" && externalTools.has(part.name)
-    ));
   }
 
   /** 回合终态后的旁路检测；它读取 canonical session，不增加模型请求或改变回合结果。 */

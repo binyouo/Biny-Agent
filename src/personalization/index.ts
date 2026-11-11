@@ -29,8 +29,6 @@ const rawMemoryPolicySchema = z.object({
   // 缺省使用本地 E5；远端模型必须显式选择 Provider 或 auto。
   embeddingModel: embeddingModelRefSchema.optional(),
   similarityThreshold: z.number().min(0).max(1).default(0.1),
-  // 外部网页、MCP/Plugin 与子代理结果默认不进入自动记忆候选。
-  excludeExternalContext: z.boolean().default(true),
   // 自动注入条数上限（概览之外的条目召回）。
   maxRecalled: z.number().int().min(1).max(20).default(5),
   sleepEnabled: z.boolean().default(true),
@@ -45,7 +43,13 @@ const rawMemoryPolicySchema = z.object({
 
 type MemoryPolicyOutput = Omit<z.infer<typeof rawMemoryPolicySchema>, "enabled"> & { enabled: boolean };
 
-export const memoryPolicySchema = rawMemoryPolicySchema.transform((policy): MemoryPolicyOutput => ({
+export const memoryPolicySchema = z.preprocess(value => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  // 存量配置中的旧排除开关已停用，读取时丢弃，后续保存不再携带。
+  const policy = { ...(value as Record<string, unknown>) };
+  delete policy.excludeExternalContext;
+  return policy;
+}, rawMemoryPolicySchema).transform((policy): MemoryPolicyOutput => ({
   ...policy,
   // 缺少总开关的旧配置按两个自动开关的 OR 推导；显式关闭总开关时由迁移结果保留关闭语义。
   enabled: policy.enabled ?? (policy.useMemories || policy.generateMemories),
@@ -61,7 +65,6 @@ export const memoryPolicySchema = rawMemoryPolicySchema.transform((policy): Memo
   extractModel: undefined,
   embeddingModel: { ...defaultEmbeddingModelRef },
   similarityThreshold: 0.1,
-  excludeExternalContext: true,
   maxRecalled: 5,
   sleepEnabled: true,
   sleepTime: "03:00",
@@ -116,7 +119,6 @@ export interface ResolvedChatPersonalization {
   extractModel?: string;
   embeddingModel?: EmbeddingModelRef;
   similarityThreshold: number;
-  excludeExternalContext: boolean;
   maxRecalled: number;
   sleepEnabled: boolean;
   sleepTime: string;
@@ -157,7 +159,6 @@ export function resolveChatPersonalization(
     extractModel: parsedMemory.extractModel,
     embeddingModel: parsedMemory.embeddingModel,
     similarityThreshold: parsedMemory.similarityThreshold,
-    excludeExternalContext: parsedMemory.excludeExternalContext,
     maxRecalled: parsedMemory.maxRecalled,
     sleepEnabled: parsedMemory.sleepEnabled,
     sleepTime: parsedMemory.sleepTime,

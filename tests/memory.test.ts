@@ -20,7 +20,7 @@ import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { sleepMergePrompt } from "../src/agent/context/sleepMergePrompt.js";
-import { memoryExtractionPrompt, memoryReconciliationPrompt, memoryTimeAnchorInstruction, temporaryMemoryCleanupPrompt, parseMemoryOperations } from "../src/agent/context/memoryExtraction.js";
+import { memoryExtractionPrompt, memoryTimeAnchorInstruction, temporaryMemoryCleanupPrompt, parseMemoryOperations } from "../src/agent/context/memoryExtraction.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import type { LocalEmbeddingManager } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
 import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
   await testStaleSleepOwnerCannotCommitAfterTakeover();
   await testSleepSynthesisArchivesCluster();
   await testSleepIgnoresUnrequestedSynthesisExpiry();
-  await testSleepSynthesisFailureKeepsSources();
+  await testSleepSynthesisFailureArchivesSources();
   await testSleepInvalidDeleteIsSafe();
   await testSleepRunRecord();
   await testSleepArchiveFailureStopsLaterStages();
@@ -467,7 +467,7 @@ async function testExplicitDuplicateWritesRemainDistinct(): Promise<void> {
 async function testAutomaticNonDuplicateKeepsDistinctSourceTimes(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     const candidates: MemoryEntry[] = [];
-    const model = jsonMemoryModel(() => JSON.stringify({ operation: "ADD" }));
+    const model = jsonMemoryModel(() => JSON.stringify({ isDuplicate: false }));
     const memory = new LocalMemory(workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined,
       async () => candidates);
     try {
@@ -489,8 +489,8 @@ async function testAutomaticNonDuplicateKeepsDistinctSourceTimes(): Promise<void
 
 async function testAutomaticSemanticDedup(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
-    let response: Record<string, unknown> = { operation: "ADD" };
-    const model = jsonMemoryModel((prompt) => prompt.startsWith("Reconcile proposed memory:")
+    let response: Record<string, unknown> = { isDuplicate: false };
+    const model = jsonMemoryModel((prompt) => prompt.includes("New memory to add:")
       ? `Result: ${JSON.stringify(response)}`
       : "{}");
     const seed = new LocalMemory(workspaceRoot, unusedModel);
@@ -498,7 +498,7 @@ async function testAutomaticSemanticDedup(): Promise<void> {
       "The release workflow requires running the complete test suite before publishing the package."
     ));
     assert.ok(first.entry);
-    response = { operation: "NONE", id: first.entry.id };
+    response = { isDuplicate: true, duplicateOf: 1 };
     const memory = new LocalMemory(
       workspaceRoot,
       () => model,
@@ -516,12 +516,12 @@ async function testAutomaticSemanticDedup(): Promise<void> {
     assert.equal(result.entry?.id, first.entry.id);
     assert.equal((await memory.getOverview()).entryCount, 1);
     for (const id of [undefined, 0, -1, 1.5, 99, "unknown", null]) {
-      response = { operation: "NONE", id };
+      response = { isDuplicate: true, duplicateOf: id };
       const skipped = await memory.writeAutoEntry(projectEntry(
         "A paraphrased release rule repeats the existing verification requirements."
       ));
       assert.equal(skipped.written, false);
-      assert.equal(skipped.deferred, true);
+      assert.equal(skipped.deferred, undefined);
       assert.equal(skipped.entry, undefined);
       assert.equal(skipped.path, undefined);
       assert.equal((await memory.getOverview()).entryCount, 1);
@@ -539,7 +539,7 @@ async function testAutomaticSemanticSearchRecordsScopedCandidateAccess(): Promis
     const ownSecond = (await seed.writeEntry({ content: "User A checks release notes before publishing.", userId: "user-a" })).entry!;
     const memory = new LocalMemory(
       workspaceRoot,
-      () => jsonMemoryModel(() => JSON.stringify({ operation: "ADD" })),
+      () => jsonMemoryModel(() => JSON.stringify({ isDuplicate: false })),
       undefined, 3, undefined, undefined, undefined,
       async () => [own, other, ownSecond]
     );
@@ -586,7 +586,7 @@ async function testAutomaticSemanticDedupRespectsUserId(): Promise<void> {
     const other = await seed.writeEntry({ content: "User A has a long-term preference for compact release summaries.", userId: "user-a" });
     assert.ok(other.entry);
     const scopes: Array<string | null | undefined> = [];
-    const model = jsonMemoryModel(() => JSON.stringify({ operation: "NONE", id: other.entry!.id }));
+    const model = jsonMemoryModel(() => JSON.stringify({ isDuplicate: true, duplicateOf: 1 }));
     const memory = new LocalMemory(workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined,
       async (_query, options) => { scopes.push(options.userId); return [other.entry!]; });
     try {
@@ -606,7 +606,7 @@ async function testAutomaticSemanticDedupRespectsUserId(): Promise<void> {
   });
 }
 
-/** 模型判断失败不能当作新增许可；取消与必需语义缺失也不能写入。 */
+/** 重复判断失败继续新增；取消与必需语义缺失不能写入。 */
 async function testAutomaticDedupFailureContract(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     const seed = new LocalMemory(workspaceRoot, unusedModel);
@@ -633,30 +633,30 @@ async function testAutomaticDedupFailureContract(): Promise<void> {
       const malformed = await memory.writeAutoEntry(projectEntry(
         "The release checklist also requires reviewing the package manifest."
       ), { requireSemantic: true });
-      assert.equal(malformed.written, false);
-      assert.equal(malformed.deferred, true);
-      assert.equal((await memory.getOverview()).entryCount, 1);
+      assert.equal(malformed.written, true);
+      assert.equal(malformed.deferred, undefined);
+      assert.equal((await memory.getOverview()).entryCount, 2);
 
       response = "throw";
       const disconnected = await memory.writeAutoEntry(projectEntry(
         "The release checklist additionally requires reviewing the license file."
       ), { requireSemantic: true });
-      assert.equal(disconnected.written, false);
-      assert.equal(disconnected.deferred, true);
-      assert.equal((await memory.getOverview()).entryCount, 1);
+      assert.equal(disconnected.written, true);
+      assert.equal(disconnected.deferred, undefined);
+      assert.equal((await memory.getOverview()).entryCount, 3);
 
       response = "abort";
       await assert.rejects(memory.writeAutoEntry(projectEntry(
         "A cancelled release note must never be saved as a memory."
       ), { requireSemantic: true, signal: controller.signal }));
-      assert.equal((await memory.getOverview()).entryCount, 1);
+      assert.equal((await memory.getOverview()).entryCount, 3);
 
       const deferred = await unavailable.writeAutoEntry(projectEntry(
         "A missing semantic runtime defers this automatic memory candidate."
       ), { requireSemantic: true });
       assert.equal(deferred.written, false);
       assert.equal(deferred.deferred, true);
-      assert.equal((await memory.getOverview()).entryCount, 1);
+      assert.equal((await memory.getOverview()).entryCount, 3);
     } finally {
       unavailable.close();
       memory.close();
@@ -705,8 +705,6 @@ async function testSemanticDeleteAndTemporaryCleanup(): Promise<void> {
       sessionId: "semantic-delete-session",
       turnId: "semantic-delete-turn",
       runId: "semantic-delete-run",
-      externalContext: false,
-      excludeExternalContext: false,
       now: new Date("2026-08-21T00:00:00.000Z")
     });
     assert.deepEqual(result.deleted, [
@@ -746,14 +744,14 @@ async function testExtractionDeletesOnlyOwnUserId(): Promise<void> {
       await memory.summarizeAndStoreMemories([
         { role: "user", content: "Forget the old release rule; the temporary release note is no longer relevant." },
         { role: "assistant", content: "I will update the remembered release context." }
-      ], { sessionId: "scope-delete", turnId: "turn", runId: "run", externalContext: false, excludeExternalContext: false });
+      ], { sessionId: "scope-delete", turnId: "turn", runId: "run", });
       const remaining = (await memory.listMemoryEntries()).entries;
       assert.deepEqual(new Set(remaining.map((entry) => entry.id)), new Set([foreignPermanent.entry.id, foreignTemporary.entry.id]));
       assert.deepEqual(scopes, [null, null], "自动删除候选也须在 top-K 前限定默认 userId");
       await memory.summarizeAndStoreMemories([
         { role: "user", content: "Forget my old release rule and temporary release note." },
         { role: "assistant", content: "I will update your release context." }
-      ], { sessionId: "scope-delete-a", turnId: "turn-a", runId: "run-a", userId: "user-a", externalContext: false, excludeExternalContext: false });
+      ], { sessionId: "scope-delete-a", turnId: "turn-a", runId: "run-a", userId: "user-a", });
       assert.equal((await memory.listMemoryEntries()).total, 0);
       assert.deepEqual(scopes, [null, null, "user-a", "user-a"], "显式 userId 也须贯穿语义删除与临时清理");
     } finally {
@@ -804,7 +802,7 @@ async function testSemanticDeleteResponseProtocol(): Promise<void> {
     const runDelete = () => memory.summarizeAndStoreMemories([
       { role: "user", content: "Forget the old release rule." },
       { role: "assistant", content: "I will remove it." }
-    ], { sessionId: "delete-session", turnId: "delete-turn", runId: "delete-run", externalContext: false, excludeExternalContext: false });
+    ], { sessionId: "delete-session", turnId: "delete-turn", runId: "delete-run", });
     assert.deepEqual((await runDelete()).deleted, []);
     assert.equal(searches, 0);
     description = "  forget the release rule  ";
@@ -843,7 +841,7 @@ async function testTemporaryCleanupRequiresExactCandidateIds(): Promise<void> {
     const runCleanup = () => memory.summarizeAndStoreMemories([
       { role: "user", content: "The project has finished." },
       { role: "assistant", content: "The deadline is no longer relevant." }
-    ], { sessionId: "cleanup-session", turnId: "cleanup-turn", runId: "cleanup-run", externalContext: false, excludeExternalContext: false, now });
+    ], { sessionId: "cleanup-session", turnId: "cleanup-turn", runId: "cleanup-run", now });
     for (const response of ["[1]", JSON.stringify([` ${candidate.id} `]), '["unknown-id"]', `["${candidate.id}"`, `[] followed by ["${candidate.id}"]`]) {
       cleanupResponse = response;
       assert.deepEqual((await runCleanup()).deleted, [], response);
@@ -854,7 +852,7 @@ async function testTemporaryCleanupRequiresExactCandidateIds(): Promise<void> {
     assert.equal((await memory.getOverview()).entryCount, 0);
     const created = new Date(candidate.createdAt);
     const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${date.toLocaleTimeString()}`;
-    assert.equal(prompts.at(-1), `Current date and time: ${localDate(now)}\n\nCurrent conversation context:\nuser: The project has finished.\n\nassistant: The deadline is no longer relevant.\n\nCurrent conversation source: original message time/timezone unknown\n\nTemporary memories related to this conversation:\n- id: "${candidate.id}", created: "${localDate(created)}", content: "${candidate.content}" [Memory saved-at: ${candidate.createdAt}; original message time/timezone unknown; saved-at is NOT event/due/completion time.]`);
+    assert.equal(prompts.at(-1), `Current date and time: ${localDate(now)}\n\nCurrent conversation context:\nuser: The project has finished.\n\nassistant: The deadline is no longer relevant.\n\nTemporary memories related to this conversation:\n- id: "${candidate.id}", created: "${localDate(created)}", content: "${candidate.content}"`);
     memory.close();
   });
 }
@@ -882,10 +880,10 @@ async function testTemporaryCleanupFailureKeepsMemories(): Promise<void> {
     const runCleanup = () => memory.summarizeAndStoreMemories([
       { role: "user", content: "The project is finished." },
       { role: "assistant", content: "The deadline has passed." }
-    ], { sessionId: "failure-session", turnId: "failure-turn", runId: "failure-run", externalContext: false, excludeExternalContext: false, signal: controller.signal });
+    ], { sessionId: "failure-session", turnId: "failure-turn", runId: "failure-run", signal: controller.signal });
     for (const scenario of ["empty", "permanent", "embedding-error", "model-error"] as const) {
       mode = scenario;
-      assert.deepEqual(await runCleanup(), { created: [], updated: [], deleted: [] });
+      assert.deepEqual(await runCleanup(), { created: [], deleted: [] });
       assert.equal((await memory.getOverview()).entryCount, 2);
     }
     assert.equal(cleanupCalls, 1);
@@ -928,7 +926,7 @@ async function testAutomaticCleanupFailureKeepsCompletedWrites(): Promise<void> 
         { role: "assistant" as const, content: "I will remember that preference." }
       ];
       const options = { sessionId: "cleanup-failure-session", turnId: "turn", runId: "run",
-        externalContext: false, excludeExternalContext: false };
+        };
       const result = await memory.summarizeAndStoreMemories(messages, options);
       assert.equal(searches.some((query) => query.startsWith("user:")), true, "cleanup must search the current conversation");
       assert.equal(result.created.length, 1);
@@ -973,11 +971,9 @@ async function testSummarizationUsesToolModelAndRequiresCompleteTurn(): Promise<
         sessionId: "tool-model-session",
         turnId: "tool-model-incomplete",
         runId: "tool-model-run-1",
-        externalContext: false,
-        excludeExternalContext: false
-      }
+        }
     );
-    assert.deepEqual(incomplete, { created: [], updated: [], deleted: [] });
+    assert.deepEqual(incomplete, { created: [], deleted: [] });
     assert.equal(toolCalls, 0);
 
     const complete = await memory.summarizeAndStoreMemories(
@@ -990,8 +986,6 @@ async function testSummarizationUsesToolModelAndRequiresCompleteTurn(): Promise<
         turnId: "tool-model-complete",
         messageId: "M_2",
         runId: "tool-model-run-2",
-        externalContext: false,
-        excludeExternalContext: false,
         onMemoryWritten: async () => { throw new Error("downstream projection unavailable"); }
       }
     );
@@ -1027,11 +1021,11 @@ async function testExtractionUsesOnlyConversationText(): Promise<void> {
         { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{ type: "text", text: "tool result must not become memory" }] },
         { role: "user", content: "  final question  " },
         { role: "assistant", content: [{ type: "text", text: "final answer" }] }
-      ], { sessionId: "text-session", turnId: "text-turn", runId: "text-run", externalContext: false, excludeExternalContext: false });
+      ], { sessionId: "text-session", turnId: "text-turn", runId: "text-run", });
       assert.equal(prompts.length, 1);
       assert.equal(prompts[0], "Extract memories from this conversation:\n\n"
-        + "assistant: visible first\nvisible second\n\nuser:   final question  \n\nassistant: final answer",
-        "先按完整消息流取最后四条，再排除工具正文；较早的用户文本不应被补入窗口");
+        + `user: ${longText}\n\nassistant: visible first\nvisible second\n\nuser:   final question  \n\nassistant: final answer`,
+        "工具往返不占对话窗口；最近两轮用户文本和可见助手文本均保留");
     } finally {
       memory.close();
     }
@@ -1087,13 +1081,11 @@ async function testExtractionPreservesOriginalMessageTime(): Promise<void> {
         { role: "assistant", content: "I will remember the deadline." }
       ], {
         sessionId: "time-session", turnId: "time-turn", runId: "time-run", messageId: "source_1",
-        originAnchors: anchors, externalContext: false, excludeExternalContext: false
-      });
+        originAnchors: anchors, });
       assert.equal(result.created.length, 1);
       const entry = (await memory.listMemoryEntries()).entries[0]!;
       assert.deepEqual(entry.originAnchors, [{ messageId: "source_1", sentAt: "2026-09-20T02:30:00.000Z", timeZone: "unknown" }]);
-      assert.ok(prompts[0]?.includes("2026-09-20T02:30:00.000Z"));
-      assert.ok(prompts[0]?.includes("timeZone: unknown"));
+      assert.equal(prompts[0], "Extract memories from this conversation:\n\nuser: Next month I plan to ship a release.\n\nassistant: I will remember the deadline.");
       assert.ok(memoryTimeAnchorInstruction.includes("memory creation/access/update time"));
       await memory.updateEntry(entry.id, { tags: ["deadline"] });
       assert.deepEqual((await memory.listMemoryEntries()).entries[0]?.originAnchors, entry.originAnchors);
@@ -1127,9 +1119,7 @@ async function testAutomaticSummarySkipsWithoutSemanticEmbedding(): Promise<void
       sessionId: "semantic-gate-session",
       turnId: "semantic-gate-turn",
       runId: "semantic-gate-run",
-      externalContext: false,
-      excludeExternalContext: false
-    });
+      });
     assert.deepEqual(result.created, []);
     assert.equal((await memory.getOverview()).entryCount, 0);
     memory.close();
@@ -1142,8 +1132,8 @@ async function testDirectExtractionWritesFlatEntries(): Promise<void> {
     const semanticCandidates: MemoryEntry[] = [];
     const memory = new LocalMemory(
       workspaceRoot,
-      () => jsonMemoryModel((prompt) => prompt.startsWith("Reconcile proposed memory:")
-        ? JSON.stringify({ operation: "NONE", id: semanticCandidates[0]?.id })
+      () => jsonMemoryModel((prompt) => prompt.includes("New memory to add:")
+        ? JSON.stringify({ isDuplicate: true, duplicateOf: 1 })
         : JSON.stringify([
           { operation: "add", content: "Completed root turn established a durable release workflow for this workspace.", durability: "permanent" },
           { operation: "add", content: "The user prefers durable summaries to remain concise and directly actionable.", durability: "permanent" }
@@ -1164,8 +1154,6 @@ async function testDirectExtractionWritesFlatEntries(): Promise<void> {
         sessionId: "session-1",
         turnId: "turn-1",
         runId: "run-1",
-        externalContext: false,
-        excludeExternalContext: true,
         now: new Date("2026-08-10T00:00:00.000Z")
       }
     );
@@ -1188,26 +1176,12 @@ async function testDirectExtractionWritesFlatEntries(): Promise<void> {
         sessionId: "session-1",
         turnId: "turn-2",
         runId: "run-2",
-        externalContext: false,
-        excludeExternalContext: true,
         now: new Date("2026-08-10T00:00:00.000Z")
       }
     );
     assert.deepEqual(duplicate.created, []);
     assert.equal((await memory.getOverview()).entryCount, 2);
 
-    // 配置为排除外部上下文时，完成回合不会调用模型，也不会写入事实库。
-    const excluded = await memory.summarizeAndStoreMemories(
-      [{ role: "user", content: "This came from an external attachment." }],
-      {
-        sessionId: "session-2",
-        turnId: "turn-3",
-        runId: "run-3",
-        externalContext: true,
-        excludeExternalContext: true
-      }
-    );
-    assert.deepEqual(excluded, { created: [], updated: [], deleted: [] });
     memory.close();
   });
 }
@@ -2536,7 +2510,7 @@ async function testSleepIgnoresUnrequestedSynthesisExpiry(): Promise<void> {
   });
 }
 
-async function testSleepSynthesisFailureKeepsSources(): Promise<void> {
+async function testSleepSynthesisFailureArchivesSources(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     let ids: string[] = [];
     const model = jsonMemoryModel(() => JSON.stringify({
@@ -2566,15 +2540,15 @@ async function testSleepSynthesisFailureKeepsSources(): Promise<void> {
       });
       assert.equal(result.failed, 0);
       assert.equal(result.written, 0);
-      assert.equal(result.processed, 0);
-      assert.deepEqual(new Set((await memory.listMemoryEntries()).entries.map((entry) => entry.id)), new Set(ids));
+      assert.equal(result.processed, 2);
+      assert.equal((await memory.listMemoryEntries()).total, 0);
       const archived = await memory.listArchivedEntries();
-      assert.equal(archived.entries.length, 0);
-      // 合成失败仍须留下审计计数，来源条目继续参加正常召回。
+      assert.deepEqual(new Set(archived.entries.map((entry) => entry.originalId)), new Set(ids));
+      // 合成失败独立计数，明确删除的来源仍可从归档恢复。
       const lastRun = memoryMaintenance.maintenanceStatus().lastRun;
       assert.equal(lastRun?.synthesisFailed, 1, "一条合成提议失败必须被计数");
-      assert.equal(lastRun?.archivedLlm, 0);
-      assert.equal(lastRun?.llm, 0);
+      assert.equal(lastRun?.archivedLlm, 2);
+      assert.equal(lastRun?.llm, 2);
     } finally {
       memoryMaintenanceStorage.close();
       memory.close();
@@ -3135,14 +3109,14 @@ function jsonMemoryModel(response: (prompt: string) => string, prompts: string[]
         assert.equal(options?.maxOutputTokens, undefined);
       }
       if (prompt.startsWith("Extract memories from this conversation:")) {
-        assert.equal(context.systemPrompt, memoryExtractionPrompt + "\n\n" + memoryTimeAnchorInstruction);
+        assert.equal(context.systemPrompt, memoryExtractionPrompt);
         assert.equal(context.messages.length, 1);
         assert.equal(context.messages[0]?.role, "user");
         assert.equal(options?.maxOutputTokens, undefined);
         assert.equal(prompt.includes("Existing memories:"), false);
       }
       if (prompt.startsWith("Current date and time:")) {
-        assert.equal(context.systemPrompt, temporaryMemoryCleanupPrompt + "\n\n" + memoryTimeAnchorInstruction);
+        assert.equal(context.systemPrompt, temporaryMemoryCleanupPrompt);
         assert.equal(context.messages.length, 1);
         assert.equal(context.messages[0]?.role, "user");
         assert.equal(options?.maxOutputTokens, undefined);
@@ -3153,8 +3127,8 @@ function jsonMemoryModel(response: (prompt: string) => string, prompts: string[]
         assert.equal(context.messages[0]?.role, "user");
         assert.equal(options?.maxOutputTokens, undefined);
       }
-      if (prompt.startsWith("Reconcile proposed memory:")) {
-        assert.equal(context.systemPrompt, memoryReconciliationPrompt + "\n\n" + memoryTimeAnchorInstruction);
+      if (prompt.includes("New memory to add:")) {
+        assert.equal(context.systemPrompt, undefined);
         assert.equal(context.messages.length, 1);
         assert.equal(options?.maxOutputTokens, undefined);
       }

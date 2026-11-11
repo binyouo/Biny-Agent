@@ -7,6 +7,7 @@ import { Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { mock, test } from "node:test";
+import { z } from "zod";
 import type { AgentSession as AgentSessionType } from "../src/agent/AgentSession.js";
 import type { AgentMessage, AgentModel, AgentUserMessage } from "../src/agent/core/types.js";
 import type { LocalMemory as LocalMemoryType } from "../src/agent/context/LocalMemory.js";
@@ -39,109 +40,130 @@ try {
   const { ToolRegistry } = await import("../src/tools/registry.js");
   const { LocalEmbeddingManager } = await import("../src/llm/embedding/LocalEmbeddingRuntime.js");
 
-  await test("a completed real session extracts its user text without file-memory or diary references", { timeout: 15_000 }, async (t) => {
-    const root = path.join(suiteRoot, "session");
-    const agentDir = path.join(root, "agent");
-    const workspace = path.join(root, "workspace");
-    process.env.BINY_AGENT_DIR = agentDir;
-    t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-19T12:00:00.000Z") });
-    let agent: AgentSessionType | undefined;
-    let recorder: InstanceType<typeof SessionRecorder> | undefined;
-    let pendingRun: Promise<unknown> | undefined;
-    let closePromise: Promise<void> | undefined;
-    const bodyFinished = deferredVoid();
-    const close = (): Promise<void> => closePromise ??= (async () => {
-      await Promise.allSettled(pendingRun ? [pendingRun] : []);
-      if (agent) await agent.close(); else await recorder?.close();
-    })();
-    // A timeout must not cache an empty close while async setup is still creating owners.
-    const cleanup = async (): Promise<void> => { await bodyFinished.promise; await close(); };
-    t.after(cleanup);
-    try {
-      t.signal.throwIfAborted();
-      await mkdir(workspace, { recursive: true });
-      t.signal.throwIfAborted();
-      await ensureAgentDirs(workspace);
-      t.signal.throwIfAborted();
-      await new FileMemoryStorage({ configDir: agentDir }).writeLongTerm("# MEMORY.md\n\nLONG_REFERENCE_ONLY_7461");
-      t.signal.throwIfAborted();
-      await upsertDailyMemorySection("2026-10-19", "聊天摘要", "TODAY_REFERENCE_ONLY_7461", { configDir: agentDir });
-      t.signal.throwIfAborted();
-      await upsertDailyMemorySection("2026-10-18", "聊天摘要", "YESTERDAY_REFERENCE_ONLY_7461", { configDir: agentDir });
-      t.signal.throwIfAborted();
-      const config = structuredClone(defaultConfig);
-      config.models = { [config.defaultModel]: config.models[config.defaultModel]! };
-      config.toolModel = config.defaultModel;
-      config.providers.deepseek = { ...config.providers.deepseek!, apiKey: "fixture-key", apiKeyEnv: undefined };
-      config.providers.deepseek = { ...config.providers.deepseek!, apiKeyEnv: "BINY_CANONICAL_SOURCE_UNCONFIGURED_KEY" };
-      config.agent.toolExecutionMode = "direct";
-      config.context.maxInputTokens = 1_000_000;
-      config.context.compaction.enabled = false;
-      config.context.identity.enabled = false;
-      config.context.memory.enabled = true;
-      config.context.memory.useMemories = false;
-      config.context.memory.generateMemories = true;
-      config.context.memory.excludeExternalContext = true;
-      config.context.memory.queryRewrite = false;
-      config.context.memory.embeddingModel = { kind: "local", model: "multilingual-e5-small" };
-      config.activity.enabled = false;
-      config.chat.skillExtraction.enabled = false;
-      const requests: Array<{ operation?: string; text: string; messages: AgentMessage[] }> = [];
-      const input = "Tell me a brief joke.";
-      const answer = "A short, ordinary answer.";
-      const model: AgentModel = testModel({
-        provider: "memory-source-fixture", modelId: "memory-source-fixture",
-        async stream(context, options) {
-          const text = messageTexts(context.messages);
-          requests.push({ operation: options?.requestContext?.operation, text, messages: structuredClone(context.messages) });
-          const output = options?.requestContext?.operation === "agent" ? answer : '["NO_MEMORY"]';
-          return (async function* () {
-            options?.signal?.throwIfAborted();
-            yield { type: "text-delta" as const, text: output };
-            yield { type: "finish" as const, reason: "stop" as const };
-          })();
+  for (const externalTool of [false, true]) {
+    await test(`a completed real session ${externalTool ? "using WebSearch" : "without tools"} extracts canonical dialogue`, { timeout: 15_000 }, async (t) => {
+      const root = path.join(suiteRoot, externalTool ? "session-web" : "session");
+      const agentDir = path.join(root, "agent");
+      const workspace = path.join(root, "workspace");
+      process.env.BINY_AGENT_DIR = agentDir;
+      t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-19T12:00:00.000Z") });
+      let agent: AgentSessionType | undefined;
+      let recorder: InstanceType<typeof SessionRecorder> | undefined;
+      let pendingRun: Promise<unknown> | undefined;
+      let closePromise: Promise<void> | undefined;
+      const bodyFinished = deferredVoid();
+      const close = (): Promise<void> => closePromise ??= (async () => {
+        await Promise.allSettled(pendingRun ? [pendingRun] : []);
+        if (agent) await agent.close(); else await recorder?.close();
+      })();
+      // A timeout must not cache an empty close while async setup is still creating owners.
+      const cleanup = async (): Promise<void> => { await bodyFinished.promise; await close(); };
+      t.after(cleanup);
+      try {
+        t.signal.throwIfAborted();
+        await mkdir(workspace, { recursive: true });
+        t.signal.throwIfAborted();
+        await ensureAgentDirs(workspace);
+        t.signal.throwIfAborted();
+        await new FileMemoryStorage({ configDir: agentDir }).writeLongTerm("# MEMORY.md\n\nLONG_REFERENCE_ONLY_7461");
+        t.signal.throwIfAborted();
+        await upsertDailyMemorySection("2026-10-19", "聊天摘要", "TODAY_REFERENCE_ONLY_7461", { configDir: agentDir });
+        t.signal.throwIfAborted();
+        await upsertDailyMemorySection("2026-10-18", "聊天摘要", "YESTERDAY_REFERENCE_ONLY_7461", { configDir: agentDir });
+        t.signal.throwIfAborted();
+        const config = structuredClone(defaultConfig);
+        config.models = { [config.defaultModel]: config.models[config.defaultModel]! };
+        config.toolModel = config.defaultModel;
+        config.providers.deepseek = { ...config.providers.deepseek!, apiKey: "fixture-key", apiKeyEnv: undefined };
+        config.providers.deepseek = { ...config.providers.deepseek!, apiKeyEnv: "BINY_CANONICAL_SOURCE_UNCONFIGURED_KEY" };
+        config.agent.toolExecutionMode = "direct";
+        config.context.maxInputTokens = 1_000_000;
+        config.context.compaction.enabled = false;
+        config.context.identity.enabled = false;
+        config.context.memory.enabled = true;
+        config.context.memory.useMemories = false;
+        config.context.memory.generateMemories = true;
+        config.context.memory.queryRewrite = false;
+        config.context.memory.embeddingModel = { kind: "local", model: "multilingual-e5-small" };
+        config.activity.enabled = false;
+        config.chat.skillExtraction.enabled = false;
+        const requests: Array<{ operation?: string; text: string; messages: AgentMessage[] }> = [];
+        const input = "Tell me a brief joke.";
+        const answer = "A short, ordinary answer.";
+        const model: AgentModel = testModel({
+          provider: "memory-source-fixture", modelId: "memory-source-fixture",
+          async stream(context, options) {
+            const text = messageTexts(context.messages);
+            requests.push({ operation: options?.requestContext?.operation, text, messages: structuredClone(context.messages) });
+            const agentRequest = options?.requestContext?.operation === "agent";
+            const callTool = externalTool && agentRequest && !context.messages.some((message) => message.role === "toolResult");
+            const output = agentRequest ? answer : '["NO_MEMORY"]';
+            return (async function* () {
+              options?.signal?.throwIfAborted();
+              if (callTool) {
+                yield { type: "tool-call" as const, id: "search", name: "WebSearch", arguments: {} };
+                yield { type: "finish" as const, reason: "tool-calls" as const };
+                return;
+              }
+              yield { type: "text-delta" as const, text: output };
+              yield { type: "finish" as const, reason: "stop" as const };
+            })();
+          }
+        });
+        // Substitute only the model-loading boundary. Both AgentSession availability
+        // and the real MemoryEmbeddingService cleanup lookup use this same runtime.
+        let embedCalls = 0;
+        const runtime = availableEmbedding(() => { embedCalls += 1; });
+        const runtimeFactory = t.mock.method(AgentMemoryClient.prototype, "embeddingRuntime", async () => runtime);
+        t.mock.method(AgentMemoryClient.prototype, "findSimilarInScope", async () => []);
+        t.mock.method(LocalEmbeddingManager.prototype, "createRuntime", async () => runtime);
+        recorder = new SessionRecorder(workspace, "canonical-source-session");
+        const toolRegistry = new ToolRegistry();
+        let toolExecutions = 0;
+        if (externalTool) toolRegistry.register({
+          name: "WebSearch", description: "Return an isolated search fixture.",
+          parameters: { type: "object", properties: {}, additionalProperties: false }, schema: z.object({}),
+          resolveExecution: () => ({ approvalRule: "test:search", retrySafety: "safe", execute: async () => {
+            toolExecutions += 1;
+            return { text: "EXTERNAL_SEARCH_ONLY_7461" };
+          } })
+        });
+        config.permission.mode = "full-access";
+        agent = new AgentSession({ workspaceRoot: workspace, config, model, recorder,
+          toolRegistry, permissionManager: new PermissionManager({ ...config.permission, source: "test" }) });
+        await agent.initialize();
+        t.signal.throwIfAborted();
+        const task = agent.runTask(input, { emotionAnalysis: false, abortSignal: t.signal });
+        pendingRun = task;
+        const outcome = await task;
+        t.signal.throwIfAborted();
+        assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+        await close();
+        const foreground = requests.filter((request) => request.operation === "agent");
+        const extraction = requests.filter((request) => request.text.startsWith("Extract memories from this conversation:"));
+        assert.equal(foreground.length, externalTool ? 2 : 1);
+        assert.equal(toolExecutions, externalTool ? 1 : 0);
+        assert.equal(extraction.length, 1, "the real completed-turn path must request actual LocalMemory extraction");
+        assert.equal(runtimeFactory.mock.callCount(), 1, "the session resolves the global embedding runtime");
+        assert.equal(embedCalls, 0, "an empty fact store does not need embedding inference");
+        for (const sentinel of ["LONG_REFERENCE_ONLY_7461", "TODAY_REFERENCE_ONLY_7461", "YESTERDAY_REFERENCE_ONLY_7461"]) {
+          assert.ok(foreground[0]!.text.includes(sentinel), `foreground injection must contain ${sentinel}`);
         }
-      });
-      // Substitute only the model-loading boundary. Both AgentSession availability
-      // and the real MemoryEmbeddingService cleanup lookup use this same runtime.
-      let embedCalls = 0;
-      const runtime = availableEmbedding(() => { embedCalls += 1; });
-      const runtimeFactory = t.mock.method(AgentMemoryClient.prototype, "embeddingRuntime", async () => runtime);
-      t.mock.method(AgentMemoryClient.prototype, "findSimilarInScope", async () => []);
-      t.mock.method(LocalEmbeddingManager.prototype, "createRuntime", async () => runtime);
-      recorder = new SessionRecorder(workspace, "canonical-source-session");
-      agent = new AgentSession({ workspaceRoot: workspace, config, model, recorder,
-        toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }) });
-      await agent.initialize();
-      t.signal.throwIfAborted();
-      const task = agent.runTask(input, { emotionAnalysis: false, abortSignal: t.signal });
-      pendingRun = task;
-      const outcome = await task;
-      t.signal.throwIfAborted();
-      assert.equal(outcome.status, "completed", JSON.stringify(outcome));
-      await close();
-      const foreground = requests.filter((request) => request.operation === "agent");
-      const extraction = requests.filter((request) => request.text.startsWith("Extract memories from this conversation:"));
-      assert.equal(foreground.length, 1);
-      assert.equal(extraction.length, 1, "the real completed-turn path must request actual LocalMemory extraction");
-      assert.equal(runtimeFactory.mock.callCount(), 1, "the session resolves the global embedding runtime");
-      assert.equal(embedCalls, 0, "an empty fact store does not need embedding inference");
-      for (const sentinel of ["LONG_REFERENCE_ONLY_7461", "TODAY_REFERENCE_ONLY_7461", "YESTERDAY_REFERENCE_ONLY_7461"]) {
-        assert.ok(foreground[0]!.text.includes(sentinel), `foreground injection must contain ${sentinel}`);
-      }
-      const user = foreground[0]!.messages.find((message) => message.role === "user");
-      assert.ok(user?.role === "user" && typeof user.content === "string" && user.content.endsWith(input));
-      const events = await readSessionEvents(recorder.filePath);
-      const source = events.find((event) => event.type === "user_message" && !event.auditOnly);
-      assert.ok(source?.type === "user_message" && source.messageId && source.time);
-      assert.equal(source.content, input);
-      const expected = `Extract memories from this conversation:\n\nuser: ${input}\n\nassistant: ${answer}`
-        + `\n\nOriginal user message source anchors:\n- messageId: ${source.messageId}; sentAt: ${source.time}; timeZone: ${String(source.metadata?.sentAtTimeZone ?? "unknown")}`;
-      assert.equal(extraction[0]!.text, expected,
-        "host references must not be presented as the current user's conversation to the extraction model");
-      assert.doesNotMatch(JSON.stringify(events), /LONG_REFERENCE_ONLY_7461|TODAY_REFERENCE_ONLY_7461|YESTERDAY_REFERENCE_ONLY_7461/u);
-    } finally { bodyFinished.resolve(); await cleanup(); }
-  });
+        const user = foreground[0]!.messages.find((message) => message.role === "user");
+        assert.ok(user?.role === "user" && typeof user.content === "string" && user.content.endsWith(input));
+        const events = await readSessionEvents(recorder.filePath);
+        const source = events.find((event) => event.type === "user_message" && !event.auditOnly);
+        assert.ok(source?.type === "user_message" && source.messageId && source.time);
+        assert.equal(source.content, input);
+        const expected = `Extract memories from this conversation:\n\nuser: ${input}\n\nassistant: ${answer}`;
+        assert.equal(extraction[0]!.text, expected,
+          "host references and external tool outputs must not become conversational extraction text");
+        assert.doesNotMatch(extraction[0]!.text, /EXTERNAL_SEARCH_ONLY_7461/u);
+        assert.doesNotMatch(JSON.stringify(events), /LONG_REFERENCE_ONLY_7461|TODAY_REFERENCE_ONLY_7461|YESTERDAY_REFERENCE_ONLY_7461/u);
+      } finally { bodyFinished.resolve(); await cleanup(); }
+    });
+
+  }
 
   const injected = "<!-- biny-turn-context:start -->\nHOST_REFERENCE_ONLY_9852\n<!-- biny-turn-context:end -->";
   const genuineMarker = "My literal markers remain user text:\n"
@@ -208,7 +230,7 @@ try {
         t.signal.throwIfAborted();
         const operation = memory.summarizeAndStoreMemories(messages, {
           sessionId: "direct-session", turnId: "direct-turn", runId: "direct-run",
-          externalContext: false, excludeExternalContext: false, signal: t.signal,
+          signal: t.signal,
           now: new Date("2026-10-19T12:00:00.000Z")
         });
         pending = operation;
@@ -229,7 +251,7 @@ try {
         messages.forEach((message, position) => assert.strictEqual(message, messageIdentities[position], "message identity preserves WeakMap provenance"));
         assert.strictEqual(item.user.content, contentIdentity);
         assert.strictEqual(item.user.originalContent, originalIdentity);
-        assert.deepEqual(changes, { created: [], updated: [], deleted: [] });
+        assert.deepEqual(changes, { created: [], deleted: [] });
         assert.equal((await memory.getEntry(temporary.id))?.content, temporary.content);
       } finally { bodyFinished.resolve(); await cleanup(); }
     });

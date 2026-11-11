@@ -983,7 +983,7 @@ export function SettingsMemory({
               {lastRun ? <div className="activity-memory-last-run">
                 <strong>上次：{lastRun.status}（{lastRun.trigger}）</strong>
                 <span>{formatDate(lastRun.startedAt)}</span>
-                <small>检查 {lastRun.examined} 条 · 归档 {lastRun.exact} 条完全重复、{lastRun.expired} 条过期、{lastRun.similarity} 条近似、{lastRun.llm} 条 LLM 合并{lastRun.synthesisFailed > 0 ? ` · ⚠ ${lastRun.synthesisFailed} 条合成失败（来源保留，可继续召回）` : ""}</small>
+                <small>检查 {lastRun.examined} 条 · 归档 {lastRun.exact} 条完全重复、{lastRun.expired} 条过期、{lastRun.similarity} 条近似、{lastRun.llm} 条 LLM 合并{lastRun.synthesisFailed > 0 ? ` · ⚠ ${lastRun.synthesisFailed} 条合成失败` : ""}</small>
                 {lastRun.inputTokens > 0 || lastRun.outputTokens > 0 ? <small>输入 {lastRun.inputTokens} tokens · 输出 {lastRun.outputTokens} tokens</small> : null}
                 {lastRun.error ? <div role="alert">整理失败：{lastRun.error}{lastRun.status === "failed" ? <button className="settings-action settings-text-action text-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void runSleep(); }} type="button">重试整理</button> : null}</div> : null}
               </div> : null}

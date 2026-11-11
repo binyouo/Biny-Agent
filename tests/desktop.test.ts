@@ -3078,14 +3078,14 @@ async function testDesktopMemorySharedStore(): Promise<void> {
 
     const policy = await whenIdle(() => agents.saveMemorySettings(project.id, {
       expectedRevision: updated.configRevision,
-      settings: { ...updated.settings, enabled: true, useMemories: true, generateMemories: true, excludeExternalContext: false }
+      settings: { ...updated.settings, enabled: true, useMemories: true, generateMemories: true, maxRecalled: 7 }
     }));
-    assert.equal(policy.settings.excludeExternalContext, false);
+    assert.equal(policy.settings.maxRecalled, 7);
     assert.notEqual(policy.configRevision, updated.configRevision);
     await assert.rejects(
       whenIdle(() => agents.saveMemorySettings(project.id, {
         expectedRevision: updated.configRevision,
-        settings: { ...policy.settings, excludeExternalContext: true }
+        settings: { ...policy.settings, maxRecalled: 8 }
       })),
       /Global config revision conflict/u
     );

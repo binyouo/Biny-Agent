@@ -29,7 +29,7 @@ const model: AgentModel = testModel({
   provider: "test",
   modelId: "activity-test",
   stream: async () => (async function* () {
-    yield { type: "text-delta" as const, text: JSON.stringify({ operation: "ADD" }) };
+    yield { type: "text-delta" as const, text: JSON.stringify({ isDuplicate: false }) };
     yield { type: "finish" as const, reason: "stop" as const };
   })()
 });

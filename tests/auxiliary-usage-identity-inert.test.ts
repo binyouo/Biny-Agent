@@ -108,7 +108,7 @@ const declarations: Array<{ source: ts.SourceFile; node: ts.Node }> = [
   { source: session, node: fn(session, "modelIdentifier") },
   ...["createModelForConfig", "createModelSettings"].map(name => ({ source: factory, node: fn(factory, name) })),
   { source: native, node: fn(native, "reportVercelMetrics") },
-  { source: extraction, node: fn(extraction, "parseMemoryOperations") },
+  ...["parseMemoryOperations", "recentMemoryConversation"].map(name => ({ source: extraction, node: fn(extraction, name) })),
   { source: replay, node: fn(replay, "sessionUsage") }
 ];
 const allowedCalls = new Set([
@@ -138,12 +138,12 @@ const allowedCalls = new Set([
   "this.currentModel", "this.currentModelManager", "this.currentModelManager()?.getModel", "this.currentModelManager()?.getInfo",
   "this.currentModelManager()?.listModels", "this.currentModelManager()?.listModels().find",
   "this.usageRecords.push", "this.unpersistedRelatedUsage.push", "this.unpersistedRelatedUsage.splice", "summarizeUsage",
-  "options.signal?.throwIfAborted", "messages.slice", "messages.slice(-4).filter", "normalizeMemoryOriginAnchors", "this.getToolModel",
-  "this.getUsageModelInfo", "this.getUsageModelInfo?.", "generateNativeText", "formatMemoryExtractionMessages", "originAnchors.map", "originAnchors.map((anchor) =>\n            `- messageId: ${anchor.messageId}; sentAt: ${anchor.sentAt}; timeZone: ${anchor.timeZone}`\n          ).join",
+  "options.signal?.throwIfAborted", "messages.slice", "recentMemoryConversation", "conversation.at", "conversation.push", "conversation.reverse", "normalizeMemoryOriginAnchors", "this.getToolModel",
+  "this.getUsageModelInfo", "this.getUsageModelInfo?.", "generateNativeText", "formatMemoryExtractionMessages",
   "this.getModelRequestContext", "this.onUsage", "parseMemoryOperations", "operations.filter", "proposal.content.trim", "sanitizeMemoryEntryInput",
-  "this.writeAutoEntry", "retainedIds.add", "(result.updated ? updated : created).push", "options.onMemoryWritten", "options.onMemoryWritten?.",
+  "this.writeAutoEntry", "created.push", "options.onMemoryWritten", "options.onMemoryWritten?.",
   "deleted.push", "this.deleteMemoryByDescription", "this.cleanupTemporaryMemories", "this.findSimilarEntries", "signal?.throwIfAborted",
-  "candidates?.filter", "scoped.map", "this.recordRecallUsage", "this.findSemanticMemoryEntries", "retainedIds.has", "date.getFullYear", "date.getMonth",
+  "candidates?.filter", "scoped.map", "this.recordRecallUsage", "this.findSemanticMemoryEntries", "date.getFullYear", "date.getMonth",
   "date.getDate", "date.toLocaleTimeString", "temporary.map", "JSON.stringify", "formatDate", "new Date(entry.createdAt)",
   "response.text.match", "JSON.parse", "Array.isArray", "temporary.find", "this.deleteEntryById", "registry.resolve", "registry.isAvailable",
   "providerOrder.indexOf", "Object.hasOwn", "toolModelPreferences[type]!.indexOf", "Object.keys", "Object.keys(config.models).flatMap",
@@ -317,7 +317,7 @@ function fixture(options: { alias?: string; sameId?: boolean; unpriced?: boolean
     switchChat() { currentAlias = "memory"; },
     extract: () => agent.localMemory.summarizeAndStoreMemories([
       { role: "user", content: "A synthetic message." }, { role: "assistant", content: [{ type: "text", text: "Done." }] }
-    ], { sessionId: "session-a", turnId: "turn-a", runId: "run-a", externalContext: false, excludeExternalContext: false })
+    ], { sessionId: "session-a", turnId: "turn-a", runId: "run-a" })
   };
 }
 function assertBill(f: ReturnType<typeof fixture>, alias: string, cost: number | undefined, operation = "memory") {

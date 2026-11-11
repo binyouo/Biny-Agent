@@ -627,7 +627,7 @@ export class MemoryMaintenance {
     sleepUsage?: MemoryTokenUsage,
     archivedBy = "sleep"
   ): Promise<{ written: number; archived: number; archivedIds: string[]; synthesisFailed: number }> {
-    // 合成失败要留下审计计数，但不能让来源退出正常召回。
+    // 单条合成失败独立计数，来源按模型明确给出的 delete 列表归档。
     let synthesisFailed = 0;
     const parsed = await this.sleepMergeEntriesWithModel(entries, options.signal, sleepUsage);
     const sourceIds = new Set(entries.map((entry) => entry.id));
@@ -672,10 +672,7 @@ export class MemoryMaintenance {
         synthesisFailed += 1;
         continue;
       }
-      if (!saveEmbedding) {
-        synthesisFailed += 1;
-        continue;
-      }
+      if (!saveEmbedding) return { written, archived: 0, archivedIds: [], synthesisFailed };
       try {
         const result = await this.storage.writeEntry(input, { signal: options.signal, now, sleepOwnerToken: this.maintenanceOwnerToken, expectedEntries: entries });
         if (result.entry) {
@@ -685,7 +682,7 @@ export class MemoryMaintenance {
             indexedSyntheses.push(result.entry);
           } catch {
             options.signal?.throwIfAborted();
-            // 事实已落库不代表能被召回；索引失败时保留全部来源，等待重建。
+            // 事实已落库不代表能被召回；标记重建，来源仍按显式删除决定归档。
             synthesisFailed += 1;
             notifySleepIndexRebuild(derivedIndex);
           }
@@ -703,7 +700,7 @@ export class MemoryMaintenance {
     const survivor = archiveIds.length < entries.length
       ? selectSleepSurvivor(entries.filter((entry) => !archiveIds.includes(entry.id))).id
       : undefined;
-    const archivedResult = archiveIds.length === 0 || synthesisFailed > 0
+    const archivedResult = archiveIds.length === 0
       ? { entries: [], archived: 0, revision: (await this.storage.getOverview({ signal: options.signal })).storeRevision }
       : await this.archiveForSleep(archiveIds, "llm_merge", options, indexedSyntheses[0]?.id ?? survivor,
         now, archivedBy, [...entries, ...indexedSyntheses]);

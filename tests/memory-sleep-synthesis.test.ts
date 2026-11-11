@@ -16,8 +16,8 @@ import { AGENT_DATABASE_FILE, BINY_AGENT_DIR_ENV } from "../src/config/paths.js"
 import { LocalEmbeddingManager } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
 
-for (const fault of ["none", "vector-write", "stale-vector", "invalid-synthesis", "oversized-synthesis", "oversized-cluster"] as const) {
-  await test(`Sleep retains retrievable sources until synthesis is indexed: ${fault}`, async () => {
+for (const fault of ["none", "unavailable-runtime", "vector-write", "stale-vector", "invalid-synthesis", "oversized-synthesis", "oversized-cluster"] as const) {
+  await test(`Sleep persists source archives and synthesis outcomes: ${fault}`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-sleep-synthesis-"));
     const previous = process.env[BINY_AGENT_DIR_ENV];
     process.env[BINY_AGENT_DIR_ENV] = root;
@@ -74,7 +74,7 @@ for (const fault of ["none", "vector-write", "stale-vector", "invalid-synthesis"
       }
       await memoryMaintenance.runMemoryMaintenance({}, {
         findSimilarPairs: (entries, threshold, signal) => embedding.findSimilarPairs(entries, threshold, signal),
-        prepareSynthesis: (content, signal) => embedding.prepareSynthesis(content, signal)
+        prepareSynthesis: (content, signal) => fault === "unavailable-runtime" ? Promise.resolve(undefined) : embedding.prepareSynthesis(content, signal)
       });
       const retrievedIds = embedding.vectorIndex().search([1, 0], {
         modelFingerprint: "sleep-test", minimumSimilarity: 0.1, limit: 100
@@ -93,12 +93,23 @@ for (const fault of ["none", "vector-write", "stale-vector", "invalid-synthesis"
           assert.equal(archives.length, 2);
           assert.ok(archives.every((entry) => entry.mergedInto === facts[0]!.id));
           assert.equal(run.synthesisFailed, 0);
+        } else if (fault === "vector-write" || fault === "stale-vector") {
+          assert.deepEqual(retrievedIds, [], "failed synthesis indexing cannot expose stale source vectors");
+          assert.deepEqual(new Set(archives.map((entry) => entry.originalId)), new Set(sourceIds));
+          assert.equal(run.synthesisFailed, 1);
+          assert.equal(run.archivedLlm, 2);
+          const facts = (await reopened.listMemoryEntries()).entries;
+          assert.equal(facts.length, 1);
+          assert.equal(facts[0]?.content, merged, "the committed synthesis remains recoverable for index rebuilding");
+          const restored = await reopened.archiveEntry(archives[0]!.id, false);
+          assert.ok(restored.entry);
+          assert.equal(restored.entry?.content, archives[0]!.content);
         } else {
-          assert.ok(sourceIds.every((id) => retrievedIds.includes(id)), "both source facts must remain retrievable");
+          assert.ok(sourceIds.every((id) => retrievedIds.includes(id)), "skipped plans leave source facts retrievable");
           assert.equal(archives.length, 0);
-          assert.equal(run.synthesisFailed, fault === "vector-write" || fault === "stale-vector" ? 1 : 0);
+          assert.equal(run.synthesisFailed, 0);
           assert.equal(run.archivedLlm, 0);
-          if (fault === "invalid-synthesis" || fault === "oversized-synthesis") {
+          if (fault === "invalid-synthesis" || fault === "oversized-synthesis" || fault === "unavailable-runtime") {
             assert.equal((await reopened.listMemoryEntries()).total, 2, "invalid plans are skipped as a whole");
           }
           if (fault === "oversized-cluster") {

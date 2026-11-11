@@ -8,6 +8,9 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { AgentModel } from "../src/agent/core/types.js";
+import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import type { MemoryDeleteResult, MemoryEntry } from "../src/agent/context/memoryTypes.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
@@ -39,14 +42,14 @@ await test("CLI deleting an updated archive preserves the active fact and its cu
   } finally { await f.close(); }
 });
 
-await test("deleting an older updated archive leaves later automatic reconciliation available", async () => {
+await test("deleting an older updated archive leaves the current fact and automatic duplicate checks intact", async () => {
   const f = await fixture();
   try {
     const { current, history } = await seedUpdated(f);
     const latestContent = "The user now prefers Rust and keeps using pnpm.";
-    f.respond = () => JSON.stringify({ operation: "UPDATE", id: current.id, content: latestContent, durability: "permanent" });
-    const later = await f.memory.writeAutoEntry({ content: latestContent }, { requireSemantic: true });
-    assert.equal(later.updated, true);
+    await saveHistoricalVersion(f, current.id);
+    const later = await f.memory.updateEntry(current.id, { content: latestContent });
+    assert.ok(later.entry);
     assert.equal((await f.memory.listArchivedEntries()).total, 2);
     const passages = f.passageCalls;
     await f.memory.deleteEntryById(history.id);
@@ -54,7 +57,7 @@ await test("deleting an older updated archive leaves later automatic reconciliat
     const remaining = (await f.memory.listArchivedEntries()).entries;
     assert.equal(remaining.length, 1);
     assert.equal(remaining[0]?.content, currentFact);
-    f.respond = () => JSON.stringify({ operation: "NONE", id: current.id });
+    f.respond = () => JSON.stringify({ isDuplicate: true, duplicateOf: 1 });
     const retained = await f.memory.writeAutoEntry({ content: latestContent }, { requireSemantic: true });
     assert.equal(retained.deferred, undefined,
       "removing history cannot create an indexing gap that defers otherwise valid automatic contributions");
@@ -116,9 +119,8 @@ async function seedUpdated(f: Awaited<ReturnType<typeof fixture>>): Promise<{
 }> {
   const old = (await f.memory.writeEntry({ content: oldFact, source: "manual" })).entry!;
   const unrelated = (await f.memory.writeEntry({ content: unrelatedFact, source: "manual" })).entry!;
-  f.respond = () => JSON.stringify({ operation: "UPDATE", id: old.id, content: currentFact, durability: "permanent" });
-  const updated = await f.memory.writeAutoEntry({ content: currentFact }, { requireSemantic: true });
-  assert.equal(updated.updated, true);
+  await saveHistoricalVersion(f, old.id);
+  const updated = await f.memory.updateEntry(old.id, { content: currentFact });
   assert.ok(updated.entry);
   const history = (await f.memory.listArchivedEntries()).entries[0];
   assert.ok(history);
@@ -240,7 +242,7 @@ async function fixture() {
     assert.equal((await localMemory.listArchivedEntries()).total, 0, "each case starts with an empty isolated archive");
     const connected = client;
     return Object.assign(state, {
-      memory: localMemory, embedding: service, close,
+      memory: localMemory, embedding: service, databasePath: path.join(agentDir, AGENT_DATABASE_FILE), close,
       vectorIds: () => new Set(service.vectorIndex().listActiveEmbeddings({ modelFingerprint: "archive-delete" }).map((entry) => entry.entryId)),
       recallIds: async () => (await search.retrieve("backend preference", [], { limit: 5, rewriteQuery: false })).matches.map(({ entry }) => entry.id),
       shutdownAndReopen: async (id: string) => {
@@ -282,4 +284,18 @@ async function fixture() {
     await close();
     throw error;
   }
+}
+
+/** 构造存量 updated 归档；当前自动写入不再生成这种历史行。 */
+async function saveHistoricalVersion(f: Awaited<ReturnType<typeof fixture>>, id: string): Promise<void> {
+  const database = new DatabaseSync(f.databasePath);
+  try {
+    database.prepare(`INSERT INTO memory_archive
+      (id, original_id, content, metadata, thread_id, message_id, user_id,
+       original_created_at, original_updated_at, revision, access_count, last_accessed_at,
+       archived_at, archived_reason, archived_by, merged_into)
+      SELECT ?, id, content, metadata, thread_id, message_id, user_id,
+       created_at, updated_at, revision, access_count, last_accessed_at, ?, 'updated', 'auto', id
+      FROM memories WHERE id = ?`).run(randomUUID(), new Date().toISOString(), id);
+  } finally { database.close(); }
 }

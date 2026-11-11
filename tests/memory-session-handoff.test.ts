@@ -100,7 +100,7 @@ async function fixture(t: TestContext) {
     context: { ...defaultConfig.context,
       compaction: { ...defaultConfig.context.compaction, enabled: false },
       memory: { ...defaultConfig.context.memory, enabled: true, useMemories: false,
-        generateMemories: true, queryRewrite: false, excludeExternalContext: false, embeddingModel: undefined } }
+        generateMemories: true, queryRewrite: false, embeddingModel: undefined } }
   });
   const recorder = new SessionRecorder(root);
   recorders.push(recorder);

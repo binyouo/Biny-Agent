@@ -193,7 +193,6 @@ const contextSchema = z.object({
     extractModel: undefined,
     embeddingModel: { kind: "local", model: "multilingual-e5-small" },
     similarityThreshold: 0.1,
-    excludeExternalContext: true,
     maxRecalled: 5
   }
 });
@@ -977,7 +976,6 @@ export const defaultConfig: AgentConfig = {
       extractModel: undefined,
       embeddingModel: { kind: "local", model: "multilingual-e5-small" },
       similarityThreshold: 0.1,
-      excludeExternalContext: true,
       maxRecalled: 5,
       sleepEnabled: true,
       sleepTime: "03:00",

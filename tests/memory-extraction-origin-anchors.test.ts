@@ -131,7 +131,6 @@ async function withFixture(t: TestContext, body: (fixture: Fixture) => Promise<v
     config.context.memory.enabled = true;
     config.context.memory.useMemories = false;
     config.context.memory.generateMemories = true;
-    config.context.memory.excludeExternalContext = false;
     const model: AgentModel = testModel({
       provider: "origin-anchor-fixture",
       modelId: "origin-anchor-fixture",
@@ -176,7 +175,7 @@ async function withFixture(t: TestContext, body: (fixture: Fixture) => Promise<v
       };
       captures.set(options.turnId, extraction);
       waiting.get(options.turnId)?.resolve(extraction);
-      return { created: [], updated: [], deleted: [] };
+      return { created: [], deleted: [] };
     };
     setupFinished.resolve(undefined);
     await body({

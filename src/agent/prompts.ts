@@ -534,7 +534,7 @@ function parentThreadPromptBlock(parentThreadPrompt: string | undefined): string
 function memoryPrompt(personalization: ResolvedChatPersonalization): string {
   return [
     personalizationPromptStart,
-    `<biny_personalization useMemories="${String(personalization.useMemories)}" contributeMemories="${String(personalization.contributeMemories)}" excludeExternalContext="${String(personalization.excludeExternalContext)}" maxRecalled="${String(personalization.maxRecalled)}" />`,
+    `<biny_personalization useMemories="${String(personalization.useMemories)}" contributeMemories="${String(personalization.contributeMemories)}" maxRecalled="${String(personalization.maxRecalled)}" />`,
     personalizationPromptEnd
   ].join("\n\n");
 }

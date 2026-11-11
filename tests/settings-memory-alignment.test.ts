@@ -94,7 +94,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
       "记忆使用与内容管理先于统计和维护；旧覆盖只检查索引状态");
     assert.ok(button);
     assert.equal(button.disabled, false, "归档仍有事实时清空全部必须可执行");
-    assert.match(document.body.textContent ?? "", /合成失败.*来源保留/u);
+    assert.match(document.body.textContent ?? "", /合成失败/u);
     assert.doesNotMatch(document.body.textContent ?? "", /合成失败（已进归档/u);
     const advancedDisclosure = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("相似度与 LLM 合并参数"));
     const archiveDisclosure = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("归档记忆"));

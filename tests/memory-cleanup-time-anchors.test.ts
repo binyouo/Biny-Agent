@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
-import { memoryTimeAnchorInstruction, temporaryMemoryCleanupPrompt } from "../src/agent/context/memoryExtraction.js";
+import { temporaryMemoryCleanupPrompt } from "../src/agent/context/memoryExtraction.js";
 import type { MemoryEntry, MemoryOriginAnchor, MemorySimilarSearchOptions } from "../src/agent/context/memoryTypes.js";
 import type { AgentMessage, AgentModel } from "../src/agent/core/types.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
@@ -19,76 +19,29 @@ const conversation: AgentMessage[] = [
 ];
 const conversationText = "user: Can we review the project plan tomorrow?\n\nassistant: We can review the plan.";
 
-await test("cleanup receives stored and current source times separately from memory saved-at", async () => {
-  const f = await fixture();
-  try {
-    const storedAnchor = { messageId: "old-source", sentAt: "2026-09-20T10:30:00+08:00", timeZone: "Asia/Shanghai" };
-    const currentAnchor = { messageId: "current-source", sentAt: "2026-10-16T17:00:00-04:00", timeZone: "America/New_York" };
-    const entry = (await f.memory.writeEntry({ content: fact, durability: "temporary", originAnchors: [storedAnchor] }, { now: savedAt })).entry!;
-    f.candidates.push(entry);
-    const result = await f.summarize({ originAnchors: [currentAnchor, currentAnchor] });
-    const request = onlyCleanupRequest(f);
-    assert.ok(request.prompt.includes(JSON.stringify(entry.originAnchors)), "cleanup must receive the stored source anchors");
-    assert.ok(request.prompt.includes('Current conversation source: source-message anchors: [{"messageId":"current-source","sentAt":"2026-10-16T21:00:00.000Z","timeZone":"America/New_York"}]'),
-      "cleanup must receive normalized, deduplicated current-conversation anchors");
-    assert.match(request.prompt, /Memory saved-at: 2026-10-15T12:00:00\.000Z/u);
-    assert.match(request.prompt, /saved-at is NOT event\/due\/completion time/u);
-    assert.equal(request.systemPrompt, temporaryMemoryCleanupPrompt + "\n\n" + memoryTimeAnchorInstruction);
-    assert.deepEqual(result, { created: [], updated: [], deleted: [] });
-    const current = (await f.memory.getEntry(entry.id))!;
-    assert.equal(current.content, entry.content);
-    assert.equal(current.revision, entry.revision);
-    assert.equal(current.createdAt, entry.createdAt);
-    assert.deepEqual(current.originAnchors, entry.originAnchors);
-    assert.equal(current.accessCount, entry.accessCount + 1, "semantic candidate access remains a legitimate side effect");
-  } finally { await f.close(); }
-});
-
-await test("cleanup preserves unknown source timezones instead of borrowing the save timezone", async () => {
-  const f = await fixture();
-  try {
-    const entry = (await f.memory.writeEntry({
-      content: fact, durability: "temporary",
-      originAnchors: [{ messageId: "unknown-zone", sentAt: "2026-09-20T02:30:00.000Z", timeZone: "unknown" }]
-    }, { now: savedAt })).entry!;
-    f.candidates.push(entry);
-    const result = await f.summarize({ originAnchors: [
-      { messageId: "invalid-zone", sentAt: "2026-10-16T12:00:00+02:00", timeZone: "Invalid/Timezone" }
-    ] });
-    const request = onlyCleanupRequest(f);
-    assert.ok(request.prompt.includes('source-message anchors: [{"messageId":"unknown-zone","sentAt":"2026-09-20T02:30:00.000Z","timeZone":"unknown"}]'));
-    assert.ok(request.prompt.includes('Current conversation source: source-message anchors: [{"messageId":"invalid-zone","sentAt":"2026-10-16T10:00:00.000Z","timeZone":"unknown"}]'));
-    assert.doesNotMatch(request.prompt, /Invalid\/Timezone/u);
-    assert.match(request.prompt, /Memory saved-at: 2026-10-15T12:00:00\.000Z/u);
-    assert.equal(request.systemPrompt, temporaryMemoryCleanupPrompt + "\n\n" + memoryTimeAnchorInstruction);
-    assert.deepEqual(result.deleted, []);
-    const current = (await f.memory.getEntry(entry.id))!;
-    assert.equal(current.content, entry.content);
-    assert.equal(current.revision, entry.revision);
-    assert.deepEqual(current.originAnchors, entry.originAnchors);
-  } finally { await f.close(); }
-});
-
-await test("cleanup labels missing candidate and conversation source times as unknown", async () => {
-  const f = await fixture();
-  try {
-    const entry = (await f.memory.writeEntry({ content: fact, durability: "temporary" }, { now: savedAt })).entry!;
-    f.candidates.push(entry);
-    const result = await f.summarize();
-    const request = onlyCleanupRequest(f);
-    assert.equal(request.prompt.match(/original message time\/timezone unknown/gu)?.length, 2,
-      "missing candidate and current-conversation sources must both remain explicitly unknown");
-    assert.match(request.prompt, /Current conversation source: original message time\/timezone unknown/u);
-    assert.match(request.prompt, /Memory saved-at: 2026-10-15T12:00:00\.000Z/u);
-    assert.doesNotMatch(request.prompt, /source-message anchors:/u);
-    assert.equal(request.systemPrompt, temporaryMemoryCleanupPrompt + "\n\n" + memoryTimeAnchorInstruction);
-    assert.deepEqual(result.deleted, []);
-    const current = (await f.memory.getEntry(entry.id))!;
-    assert.equal(current.content, entry.content);
-    assert.equal(current.revision, entry.revision);
-    assert.equal(current.originAnchors, undefined);
-  } finally { await f.close(); }
-});
+for (const originAnchors of [undefined, [
+  { messageId: "source", sentAt: "2026-09-20T10:30:00+08:00", timeZone: "Asia/Shanghai" }
+]]) {
+  await test(`temporary cleanup uses conversation text and saved-at without expanding ${originAnchors ? "known" : "unknown"} source metadata`, async () => {
+    const f = await fixture();
+    try {
+      const entry = (await f.memory.writeEntry({ content: fact, durability: "temporary", originAnchors }, { now: savedAt })).entry!;
+      f.candidates.push(entry);
+      const result = await f.summarize({ originAnchors });
+      const request = onlyCleanupRequest(f);
+      assert.ok(request.prompt.includes(`Current conversation context:\n${conversationText}`));
+      assert.ok(request.prompt.includes(`- id: "${entry.id}", created: "`));
+      assert.ok(request.prompt.includes(`content: "${fact}"`));
+      assert.doesNotMatch(request.prompt, /source-message anchors:|Current conversation source:|Memory saved-at:/u);
+      assert.equal(request.systemPrompt, temporaryMemoryCleanupPrompt);
+      assert.deepEqual(result.deleted, []);
+      const current = (await f.memory.getEntry(entry.id))!;
+      assert.equal(current.content, entry.content);
+      assert.equal(current.revision, entry.revision);
+      assert.deepEqual(current.originAnchors, entry.originAnchors);
+    } finally { await f.close(); }
+  });
+}
 
 await test("cleanup preserves its original semantic query, user scope and candidate access counts", async () => {
   const f = await fixture();
@@ -113,7 +66,7 @@ await test("cleanup preserves its original semantic query, user scope and candid
     assert.equal((await f.memory.getEntry(foreign.id))?.accessCount, foreign.accessCount);
     assert.equal((await f.memory.getEntry(permanent.id))?.accessCount, permanent.accessCount + 1,
       "scope-filtered semantic hits are counted before the temporary-only model filter");
-    assert.deepEqual(result, { created: [], updated: [], deleted: [] });
+    assert.deepEqual(result, { created: [], deleted: [] });
   } finally { await f.close(); }
 });
 
@@ -148,26 +101,26 @@ await test("cleanup cannot delete a candidate edited while its model decision is
   }
 });
 
-await test("cleanup excludes a temporary fact retained by this extraction batch", async () => {
+await test("cleanup also considers a temporary fact confirmed as a duplicate in this batch", async () => {
   const f = await fixture();
   try {
     const entry = (await f.memory.writeEntry({ content: fact, durability: "temporary" })).entry!;
     f.candidates.push(entry);
     f.state.extractionResponse = JSON.stringify([{ operation: "add", content: fact, durability: "temporary" }]);
-    f.state.reconciliationResponse = JSON.stringify({ operation: "NONE", id: entry.id });
+    f.state.reconciliationResponse = JSON.stringify({ isDuplicate: true, duplicateOf: 1 });
     const result = await f.summarize();
     assert.equal(f.requests.filter(({ prompt }) => prompt.startsWith("Extract memories from this conversation:")).length, 1);
-    assert.equal(f.requests.filter(({ prompt }) => prompt.startsWith("Reconcile proposed memory:")).length, 1);
-    assert.equal(f.requests.filter(({ prompt }) => prompt.startsWith("Current date and time:")).length, 0);
+    assert.equal(f.requests.filter(({ prompt }) => prompt.includes("New memory to add:")).length, 1);
+    assert.equal(f.requests.filter(({ prompt }) => prompt.startsWith("Current date and time:")).length, 1);
     assert.equal(f.searches.length, 2, "candidate search remains in place even when the model filter retains the only fact");
     assert.equal(f.searches[1]?.query, conversationText);
     assert.equal((await f.memory.getEntry(entry.id))?.content, fact);
     assert.equal((await f.memory.getEntry(entry.id))?.revision, entry.revision);
-    assert.deepEqual(result, { created: [], updated: [], deleted: [] });
+    assert.deepEqual(result, { created: [], deleted: [] });
   } finally { await f.close(); }
 });
 
-await test("a deferred addition still suppresses cleanup of a temporary candidate", async () => {
+await test("a failed duplicate judgment does not suppress adding or temporary cleanup", async () => {
   const f = await fixture();
   try {
     const entry = (await f.memory.writeEntry({ content: fact, durability: "temporary" })).entry!;
@@ -176,12 +129,14 @@ await test("a deferred addition still suppresses cleanup of a temporary candidat
     f.state.reconciliationResponse = "{invalid";
     const result = await f.summarize();
     assert.equal(f.requests.filter(({ prompt }) => prompt.startsWith("Extract memories from this conversation:")).length, 1);
-    assert.equal(f.requests.filter(({ prompt }) => prompt.startsWith("Reconcile proposed memory:")).length, 1);
-    assert.equal(f.requests.filter(({ prompt }) => prompt.startsWith("Current date and time:")).length, 0);
-    assert.equal(f.searches.length, 1, "deferred reconciliation must not launch cleanup search");
+    assert.equal(f.requests.filter(({ prompt }) => prompt.includes("New memory to add:")).length, 1);
+    assert.equal(f.requests.filter(({ prompt }) => prompt.startsWith("Current date and time:")).length, 1);
+    assert.equal(f.searches.length, 2, "cleanup remains independent of duplicate-check failure");
     assert.equal((await f.memory.getEntry(entry.id))?.content, fact);
     assert.equal((await f.memory.getEntry(entry.id))?.revision, entry.revision);
-    assert.deepEqual(result, { created: [], updated: [], deleted: [] });
+    assert.equal(result.created.length, 1);
+    assert.equal(result.created[0]?.content, "The ongoing project review has a revised plan.");
+    assert.deepEqual(result.deleted, []);
   } finally { await f.close(); }
 });
 
@@ -203,7 +158,7 @@ async function fixture() {
     cleanupResponse: () => string | Promise<string>;
   } = {
     extractionResponse: '["NO_MEMORY"]',
-    reconciliationResponse: JSON.stringify({ operation: "ADD" }),
+    reconciliationResponse: JSON.stringify({ isDuplicate: false }),
     cleanupResponse: () => "[]"
   };
   const model: AgentModel = testModel({
@@ -212,7 +167,7 @@ async function fixture() {
       const prompt = context.messages.map((message) => typeof message.content === "string" ? message.content : "").join("\n");
       requests.push({ prompt, systemPrompt: context.systemPrompt });
       const text = prompt.startsWith("Extract memories from this conversation:") ? state.extractionResponse
-        : prompt.startsWith("Reconcile proposed memory:") ? state.reconciliationResponse
+        : prompt.includes("New memory to add:") ? state.reconciliationResponse
           : await state.cleanupResponse();
       return (async function* () {
         options?.signal?.throwIfAborted();
@@ -228,7 +183,7 @@ async function fixture() {
     summarize: async (options: { originAnchors?: MemoryOriginAnchor[]; userId?: string } = {}) =>
       await memory.summarizeAndStoreMemories(conversation, {
         sessionId: "cleanup-session", turnId: "cleanup-turn", runId: "cleanup-run",
-        externalContext: false, excludeExternalContext: false, now, ...options
+        now, ...options
       }),
     close: async () => {
       memory.close();

@@ -344,7 +344,7 @@ export class MemoryStorage {
     });
   }
 
-  async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions & { archivePrevious?: boolean } = {}): Promise<MemoryWriteResult> {
+  async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
       assertSleepOwner(database, options.sleepOwnerToken);
@@ -383,19 +383,6 @@ export class MemoryStorage {
       }
       entry.accessCount = existing.accessCount;
       entry.lastAccessedAt = existing.lastAccessedAt;
-      if (options.archivePrevious && existing.archivedAt === undefined) {
-        // 旧正文与新版本在同一事务提交；归档失败不能留下无法追溯的覆盖。
-        insertArchivedMemory(database, {
-          ...existing,
-          id: randomUUID(),
-          originalId: existing.id,
-          archivedAt: entry.updatedAt,
-          archivedReason: "updated",
-          archivedBy: options.archivedBy ?? "auto",
-          mergedInto: existing.id,
-          revision: entry.revision
-        });
-      }
       if (existing.archivedAt === undefined) updateActiveMemory(database, entry);
       else updateArchivedMemory(database, entry);
       setRevision(database, revision + 1);

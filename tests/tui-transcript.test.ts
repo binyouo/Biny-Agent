@@ -343,7 +343,6 @@ function testPersonalizationSelectors(): void {
       contributeMemories: true,
       generateMemories: true,
       extractModel: undefined,
-      excludeExternalContext: true,
       maxRecalled: 3
     },
     override

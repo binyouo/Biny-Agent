@@ -18,6 +18,12 @@ test("the Host memory fixture is canonical with maintenance enabled and conversa
   assert.equal(memory.generateMemories, false);
   assert.equal(resolved.contributeMemories, false);
   assert.equal(memory.extractModel, undefined);
-  assert.equal(memory.excludeExternalContext, true);
+  assert.equal("excludeExternalContext" in memory, false);
   assert.equal(memory.maxRecalled, 3);
+});
+
+test("stored memory settings discard the retired external-context exclusion flag", () => {
+  const policy = memoryPolicySchema.parse({ ...createRuntimeHostMemoryPolicy(), excludeExternalContext: true });
+  assert.equal("excludeExternalContext" in policy, false);
+  assert.equal(policy.enabled, true);
 });

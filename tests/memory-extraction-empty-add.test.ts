@@ -20,79 +20,54 @@ const forget = { operation: "delete", content: "the previous backend preference"
 const valid = { operation: "add", content: replacement, durability: "permanent" } as const;
 
 for (const [label, content] of [["empty", ""], ["whitespace", " \t\n "]] as const) {
-  await test(`${label} replacement ADD cannot permanently delete the original fact`, async () => {
+  await test(`${label} ADD does not suppress explicit forgetting or temporary cleanup`, async () => {
     const f = await fixture();
     try {
       f.operations = [forget, { operation: "add", content, durability: "permanent" }];
       const changes = await f.extract();
-      const active = await f.readActive();
-      assert.ok(active.entries.some((entry) => entry.id === f.old.id && entry.content === oldFact),
-        "an unusable replacement must keep the original persisted fact");
-      assert.ok(active.entries.some((entry) => entry.id === f.temporary.id));
-      assert.deepEqual(changes, { created: [], updated: [], deleted: [] });
-      assert.deepEqual(f.requests, ["extract"], "failed ADD must gate deletion and temporary-cleanup models");
-      assert.equal((await f.memory.listArchivedEntries()).total, 0);
+      assert.equal((await f.readActive()).total, 0);
+      assert.deepEqual(changes.created, []);
+      assert.deepEqual(new Set(changes.deleted.map((entry) => entry.id)), new Set([f.old.id, f.temporary.id]));
+      assert.deepEqual(f.requests, ["extract", "delete", "cleanup"]);
     } finally { await f.close(); }
   });
 }
 
-await test("a blank ADD also protects temporary facts when no explicit DELETE is present", async () => {
+await test("a blank ADD does not suppress cleanup when no explicit DELETE is present", async () => {
   const f = await fixture();
   try {
     f.operations = [{ operation: "add", content: " \n\t ", durability: "temporary" }];
     const changes = await f.extract();
-    assert.ok((await f.readActive()).entries.some((entry) => entry.id === f.temporary.id),
-      "temporary cleanup cannot delete a fact after replacement validation failed");
-    assert.deepEqual(changes, { created: [], updated: [], deleted: [] });
-    assert.deepEqual(f.requests, ["extract"]);
+    assert.deepEqual((await f.readActive()).entries.map((entry) => entry.id), [f.old.id]);
+    assert.deepEqual(changes.deleted, [{ id: f.temporary.id, content: temporaryFact }]);
+    assert.deepEqual(f.requests, ["extract", "cleanup"]);
   } finally { await f.close(); }
 });
 
 for (const blankFirst of [false, true]) {
-  await test(`valid ADD still commits with a ${blankFirst ? "preceding" : "following"} blank ADD, while deletions stay gated`, async () => {
+  await test(`a ${blankFirst ? "preceding" : "following"} blank ADD leaves other operations independent`, async () => {
     const f = await fixture();
     try {
       const blank: MemoryOperation = { operation: "add", content: " \t ", durability: "permanent" };
       f.operations = [forget, ...(blankFirst ? [blank, valid] : [valid, blank])];
       const changes = await f.extract();
       const active = (await f.readActive()).entries;
-      assert.ok(active.some((entry) => entry.id === f.old.id), "the invalid member must keep the deletion source");
-      assert.ok(active.some((entry) => entry.id === f.temporary.id), "the invalid member must gate temporary cleanup");
       assert.equal(changes.created.length, 1);
       assert.equal(changes.created[0]?.content, replacement);
-      assert.ok(active.some((entry) => entry.id === changes.created[0]?.id && entry.content === replacement));
-      assert.deepEqual(changes.updated, []);
-      assert.deepEqual(changes.deleted, []);
-      assert.deepEqual(f.requests, ["extract", "reconcile"]);
-      assert.equal(active.length, 3);
+      assert.deepEqual(active.map((entry) => entry.id), [changes.created[0]!.id]);
+      assert.deepEqual(new Set(changes.deleted.map((entry) => entry.id)), new Set([f.old.id, f.temporary.id]));
+      assert.deepEqual(f.requests, ["extract", "delete", "dedup", "cleanup"]);
     } finally { await f.close(); }
   });
 }
 
-await test("a valid replacement ADD preserves the existing deletion and cleanup behavior", async () => {
-  const f = await fixture();
-  try {
-    f.operations = [forget, valid];
-    const changes = await f.extract();
-    const active = (await f.readActive()).entries;
-    assert.equal(changes.created.length, 1);
-    assert.equal(changes.created[0]?.content, replacement);
-    assert.deepEqual(active.map((entry) => entry.id), [changes.created[0]!.id]);
-    assert.equal(active[0]?.content, replacement);
-    assert.deepEqual(new Set(changes.deleted.map((entry) => entry.id)), new Set([f.old.id, f.temporary.id]));
-    assert.deepEqual(changes.updated, []);
-    assert.deepEqual(f.requests, ["extract", "reconcile", "delete", "cleanup"]);
-  } finally { await f.close(); }
-});
-
-await test("DELETE-only extraction remains able to forget a fact and clean temporary context", async () => {
+await test("DELETE-only extraction forgets the selected fact and cleans temporary context", async () => {
   const f = await fixture();
   try {
     f.operations = [forget];
     const changes = await f.extract();
     assert.equal((await f.readActive()).total, 0);
     assert.deepEqual(changes.created, []);
-    assert.deepEqual(changes.updated, []);
     assert.deepEqual(new Set(changes.deleted.map((entry) => entry.id)), new Set([f.old.id, f.temporary.id]));
     assert.deepEqual(f.requests, ["extract", "delete", "cleanup"]);
   } finally { await f.close(); }
@@ -112,9 +87,9 @@ async function fixture() {
       if (prompt.startsWith("Extract memories from this conversation:")) {
         state.requests.push("extract");
         text = JSON.stringify(state.operations);
-      } else if (prompt.startsWith("Reconcile proposed memory:")) {
-        state.requests.push("reconcile");
-        text = JSON.stringify({ operation: "ADD" });
+      } else if (prompt.includes("New memory to add:")) {
+        state.requests.push("dedup");
+        text = JSON.stringify({ isDuplicate: false });
       } else if (prompt.startsWith("The user wants to delete memories about:")) {
         state.requests.push("delete");
         const candidate = prompt.split("\n").find((line) => /^\d+\./u.test(line) && line.endsWith(oldFact));
@@ -182,7 +157,7 @@ async function fixture() {
         { role: "user", content: "My backend preference changed from Go to Rust, and the previous migration is finished." },
         { role: "assistant", content: "Understood." }
       ], { sessionId: "empty-add-session", turnId: "turn", runId: "run",
-        externalContext: false, excludeExternalContext: true }),
+        }),
       readActive: async () => {
         const reader = new MemoryStorage(root, { agentDir: root });
         try { return await reader.listEntries(); } finally { reader.close(); }

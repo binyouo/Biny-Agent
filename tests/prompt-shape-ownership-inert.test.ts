@@ -13,6 +13,7 @@ const root = process.env.BINY_PROMPT_USAGE_SOURCE_ROOT ?? path.resolve(import.me
 const parse = (file: string) => ts.createSourceFile(file, readFileSync(path.join(root, file), "utf8"), ts.ScriptTarget.Latest, true);
 const session = parse("src/agent/AgentSession.ts");
 const memory = parse("src/agent/context/LocalMemory.ts");
+const memoryExtraction = parse("src/agent/context/memoryExtraction.ts");
 const native = parse("src/llm/nativeJson.ts");
 const adapter = parse("src/agent/core/vercelModelAdapter.ts");
 const loop = parse("src/agent/core/vercelAgentLoop.ts");
@@ -89,6 +90,7 @@ const pure = [
   ...["isRecord", "providerMetadata", "stringify", "errorMessage"].map(name => text(utils, fn(utils, name))),
   ...["normalizeToolParameters", "normalizeSchemaNode"].map(name => text(schema, fn(schema, name))),
   text(native, fn(native, "reportVercelMetrics")), text(session, fn(session, "modelIdentifier")),
+  text(memoryExtraction, fn(memoryExtraction, "recentMemoryConversation")),
   text(memory, fn(memory, "formatMemoryExtractionMessages"))
 ].join("\n");
 const code = `${pure}

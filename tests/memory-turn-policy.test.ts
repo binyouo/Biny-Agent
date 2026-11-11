@@ -26,7 +26,6 @@ try {
   const config = structuredClone(defaultConfig);
   config.context.memory.enabled = true;
   config.context.memory.generateMemories = true;
-  config.context.memory.excludeExternalContext = false;
   const model: AgentModel = testModel({
     provider: "memory-turn-policy-test",
     modelId: "memory-turn-policy-test",
@@ -53,14 +52,14 @@ try {
     await embeddingGate;
     return {} as Awaited<ReturnType<AgentSession["getEmbeddingRuntime"]>>;
   };
-  const observedPolicies: boolean[] = [];
+  const observedTurns: string[] = [];
   agent.getLocalMemory().summarizeAndStoreMemories = async (_messages, options) => {
-    observedPolicies.push(options.excludeExternalContext);
-    return { created: [], updated: [], deleted: [] };
+    observedTurns.push(options.turnId);
+    return { created: [], deleted: [] };
   };
 
   // Given: 回合 A 的自动记忆任务等待 embedding；When: 回合 B 刷新聊天策略；
-  // Then: A 的提取仍使用 A 完成时的外部上下文门禁。
+  // Then: A 的提取仍使用 A 完成时的贡献记忆开关。
   const first = await agent.runTask("Remember the first completed turn and its original policy.");
   assert.equal(first.status, "completed", JSON.stringify(first));
   let deadline!: ReturnType<typeof setTimeout>;
@@ -74,13 +73,12 @@ try {
   } finally {
     clearTimeout(deadline);
   }
-  config.context.memory.excludeExternalContext = true;
   config.context.memory.generateMemories = false;
   await agent.runTask("A later turn changes the active policy.");
   releaseEmbedding();
   await agent.close();
   agent = undefined;
-  assert.deepEqual(observedPolicies, [false]);
+  assert.equal(observedTurns.length, 1, "only the completed turn that enabled contribution is extracted");
 } finally {
   releaseEmbedding?.();
   await agent?.close();

@@ -55,7 +55,7 @@ async function fixture() {
   const originalFetch = globalThis.fetch;
   const entered = deferred();
   const release = deferred();
-  const calls = { conversation: 0, extraction: 0, reconciliation: 0 };
+  const calls = { conversation: 0, extraction: 0, duplicateCheck: 0 };
   const transportFailures: unknown[] = [];
   const resources: { local?: InteractiveAgentHost; host?: RuntimeHostServer; memoryOwner?: Awaited<ReturnType<typeof serveMemoryOwner>> } = {};
   const close = async () => {
@@ -95,13 +95,13 @@ async function fixture() {
           calls.extraction += 1;
           return textResponse(JSON.stringify([{ operation: "add", content: fact, durability: "permanent" }]));
         }
-        assert.ok(prompt.includes("Reconcile proposed memory:"), "only the real extraction/reconciliation requests are expected");
-        calls.reconciliation += 1;
+        assert.ok(prompt.includes("New memory to add:"), "only the real extraction and duplicate-check requests are expected");
+        calls.duplicateCheck += 1;
         entered.resolve();
         // This is a normal second auxiliary request, still within its own 30-second timeout.
         await bounded(release.promise);
         init?.signal?.throwIfAborted();
-        return textResponse(JSON.stringify({ operation: "ADD" }));
+        return textResponse(JSON.stringify({ isDuplicate: false }));
       } catch (error) { transportFailures.push(error); throw error; }
     };
     const config = configSchema.parse({
@@ -163,7 +163,7 @@ async function completedTurn(f: Awaited<ReturnType<typeof fixture>>) {
   assert.equal((await bounded(submitted.completion)).status, "completed");
   await bounded(f.entered.promise);
   assert.equal(f.local.runtime.getSnapshot().state.kind, "idle");
-  assert.deepEqual(f.calls, { conversation: 1, extraction: 1, reconciliation: 1 });
+  assert.deepEqual(f.calls, { conversation: 1, extraction: 1, duplicateCheck: 1 });
   assert.deepEqual(f.transportFailures, []);
   assert.equal((await f.memory.listMemoryEntries()).entries.some((entry) => entry.content === fact), false);
   const events = await readSessionEvents(f.local.commands.agent.getInfo().sessionFile);
@@ -188,7 +188,7 @@ async function assertPersisted(root: string, sessionFile: string, messageId: str
   } finally { reopened.close(); }
 }
 
-test("a completed turn retains the Host while its memory reconciliation is pending", { timeout: 15_000 }, async () => {
+test("a completed turn retains the Host while its memory duplicate check is pending", { timeout: 15_000 }, async () => {
   const f = await fixture();
   try {
     const submitted = await completedTurn(f);
