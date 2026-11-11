@@ -5,6 +5,8 @@
  * 请求与工具续环交给 AI SDK；所有 API 模型使用同一协议。
  */
 import {
+  InvalidToolInputError,
+  NoSuchToolError,
   stepCountIs,
   streamText,
   wrapLanguageModel,
@@ -13,6 +15,7 @@ import {
 } from "ai";
 import {
   APICallError,
+  TypeValidationError,
   type LanguageModelV4CallOptions,
 } from "@ai-sdk/provider";
 import { LocalPromptProjectionCache, type PromptShapeDiagnostic } from "../../llm/promptCache.js";
@@ -394,10 +397,12 @@ function completeStep(state: VercelLoopState, step: StepResult<ToolSet>): Vercel
   const record: VercelStepRecord = { requestId: step.callId, message, toolResults, messages, hadToolCalls: step.toolCalls.length > 0 };
   state.lastStep = record;
   updateStepReasoningMetadata(state, record);
-  const invalidToolCall = step.toolCalls.find((call) => call.invalid);
+  const invalidToolCall = step.toolCalls.find((call) => call.invalid
+    && !InvalidToolInputError.isInstance(call.error)
+    && !NoSuchToolError.isInstance(call.error));
   const truncatedToolCall = step.finishReason === "length" && step.toolCalls.length > 0;
   const unavailableToolCall = step.toolCalls.find((call) => !call.toolName.trim()
-    || !state.tools.some((candidate) => candidate.name === call.toolName));
+    || (!state.tools.some((candidate) => candidate.name === call.toolName) && !NoSuchToolError.isInstance(call.error)));
   if (invalidToolCall || truncatedToolCall) {
     // AI SDK 只在 stop/tool-calls 时执行客户端工具，length 下即使参数通过 schema 也不会执行；
     // 这里负责停止 Biny 续环并保留 length，让上层将任务标记为可恢复的 model_length。
@@ -712,7 +717,15 @@ function toolResultMessage(
       timestamp: Date.now()
     };
   }
-  const output = step.toolResults.find((candidate) => candidate.toolCallId === toolCallId)?.output;
+  const call = step.toolCalls.find((candidate) => candidate.toolCallId === toolCallId);
+  let output = step.toolResults.find((candidate) => candidate.toolCallId === toolCallId)?.output;
+  if (call?.invalid && InvalidToolInputError.isInstance(call.error)) {
+    // SDK 包装错误会重复完整输入；原始校验原因已经包含错误字段和约束。
+    const cause = TypeValidationError.isInstance(call.error.cause) ? call.error.cause.cause : call.error.cause;
+    output = `Tool was not executed. Correct the arguments and try again. ${errorMessage(cause)}`;
+  } else if (call?.invalid && NoSuchToolError.isInstance(call.error)) {
+    output = `Tool ${toolName} is unavailable and was not executed. Use a tool from the current tool definitions, or answer directly if the task is complete.`;
+  }
   return {
     role: "toolResult",
     toolCallId,

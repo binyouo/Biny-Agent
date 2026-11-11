@@ -29,6 +29,8 @@ async function main(): Promise<void> {
   await testStepPersistenceFailureStopsTheLoop();
   await testRemovedToolNameIsRejected();
   await testUnknownToolCallStopsWithoutRetry();
+  await testInvalidArgumentsCanBeCorrected();
+  await testInvalidArgumentsRespectStepLimitAndCompletedTools();
   await testTruncatedInvalidToolCallPreservesLength();
   await testTruncatedValidToolCallDoesNotExecute();
   await testDirectProviderTruncatedValidToolCallDoesNotExecute();
@@ -180,6 +182,74 @@ async function testUnknownToolCallStopsWithoutRetry(): Promise<void> {
   const failure = received.find((event): event is Extract<AgentEvent, { type: "error" }> => event.type === "error");
   assert.equal(failure?.fatal, true);
   assert.match(failure?.error ?? "", /missing a function name/iu);
+}
+
+async function testInvalidArgumentsCanBeCorrected(): Promise<void> {
+  let requests = 0;
+  const executions: unknown[] = [];
+  const persisted: AgentMessage[][] = [];
+  const tool: AgentTool = {
+    name: "Read", description: "Read a file",
+    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
+    execute: async (_id, args) => { executions.push(args); return { content: [{ type: "text", text: "file contents" }] }; }
+  };
+  const model = testModel({
+    provider: "test", modelId: "test",
+    stream: async (context) => {
+      requests++;
+      if (requests === 2) {
+        const result = context.messages.at(-1);
+        assert.equal(result?.role, "toolResult");
+        if (result?.role !== "toolResult") assert.fail("missing validation result");
+        assert.equal(result.isError, true);
+        assert.match(JSON.stringify(result.content), /path/u);
+        assert.match(JSON.stringify(result.content), /not executed/iu);
+        assert.equal(executions.length, 0, "invalid input never reaches execution");
+      }
+      return events(requests < 3 ? [
+        { type: "tool-call", id: `read-${requests}`, name: "Read", arguments: requests === 1 ? {} : { path: "README.md" } },
+        { type: "finish", reason: "tool-calls" }
+      ] : [{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }]);
+    }
+  });
+  const received: AgentEvent[] = [];
+  for await (const event of agentLoop([{ role: "user", content: "read" }], { messages: [], tools: [] }, {
+    model, tools: [tool], maxSteps: 3,
+    persistStep: async ({ newMessages }) => { persisted.push([...newMessages]); }
+  })) received.push(event);
+  assert.equal(requests, 3, "validation errors allow model correction in the same run");
+  assert.deepEqual(executions, [{ path: "README.md" }]);
+  assert.equal(received.some(event => event.type === "error"), false);
+  assert.equal(persisted[0]?.at(-1)?.role, "toolResult");
+  assert.equal(received.filter(event => event.type === "tool_execution_start").length, 1);
+}
+
+async function testInvalidArgumentsRespectStepLimitAndCompletedTools(): Promise<void> {
+  let requests = 0;
+  let executions = 0;
+  const tool: AgentTool = {
+    name: "Read", description: "Read a file",
+    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    execute: async () => { executions++; return { content: [{ type: "text", text: "contents" }] }; }
+  };
+  const model = testModel({
+    provider: "test", modelId: "test",
+    stream: async () => {
+      requests++;
+      return events([
+        ...(requests === 1 ? [{ type: "tool-call" as const, id: "valid", name: "Read", arguments: { path: "README.md" } }] : []),
+        { type: "tool-call", id: `invalid-${requests}`, name: "Read", arguments: {} },
+        { type: "finish", reason: "tool-calls" }
+      ]);
+    }
+  });
+  const received: AgentEvent[] = [];
+  for await (const event of agentLoop([{ role: "user", content: "read" }], { messages: [], tools: [] }, {
+    model, tools: [tool], maxSteps: 2
+  })) received.push(event);
+  assert.equal(requests, 2);
+  assert.equal(executions, 1, "a completed sibling call is never replayed to correct an invalid call");
+  assert.ok(received.some(event => event.type === "error" && event.reason === "step_limit"));
 }
 
 async function testTruncatedInvalidToolCallPreservesLength(): Promise<void> {
@@ -336,8 +406,15 @@ async function testRemovedToolNameIsRejected(): Promise<void> {
   const model: AgentModel = testModel({
     provider: "legacy-tool-test",
     modelId: "legacy-tool-model",
-    stream: async () => {
+    stream: async (context) => {
       requests += 1;
+      if (requests === 2) {
+        const result = context.messages.at(-1);
+        assert.equal(result?.role, "toolResult");
+        if (result?.role !== "toolResult") assert.fail("missing unavailable-tool result");
+        assert.equal(result.isError, true);
+        assert.match(JSON.stringify(result.content), /not executed/iu);
+      }
       return requests === 1
         ? events([
           { type: "tool-call", id: "legacy-write", name: "write_file", arguments: {} },
@@ -353,9 +430,9 @@ async function testRemovedToolNameIsRejected(): Promise<void> {
     maxSteps: 2
   })) received.push(event);
 
-  assert.equal(requests, 1);
+  assert.equal(requests, 2, "a rejected name may be corrected without resurrecting an alias");
   assert.equal(received.some((event) => event.type === "tool_execution_start"), false);
-  assert.equal(received.some((event) => event.type === "error"), true);
+  assert.equal(received.some((event) => event.type === "error"), false);
 }
 
 async function testModelStreamWithoutFinishFails(): Promise<void> {
