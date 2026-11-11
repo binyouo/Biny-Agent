@@ -29,11 +29,14 @@ test("CJK dependency setup has its own budget below the Renderer job budget", ()
   assert.equal(renderer["timeout-minutes"], 15);
   assert.equal(fonts["timeout-minutes"], 3);
   assert.ok(Number(fonts["timeout-minutes"]) < Number(renderer["timeout-minutes"]));
-  assert.deepEqual(fonts, {
-    name: "Install CJK screenshot fonts",
-    "timeout-minutes": 3,
-    run: "sudo apt-get update && sudo apt-get install -y fonts-noto-cjk",
-  });
+  assert.equal(fonts["continue-on-error"], undefined);
+  assert.equal(typeof fonts.run, "string");
+  const install = fonts.run as string;
+  assert.match(install, /curl --fail --location --max-time 120/u);
+  assert.match(install, /https:\/\/raw\.githubusercontent\.com\/notofonts\/noto-cjk\/[a-f0-9]{40}\/Sans\/OTF\/SimplifiedChinese\/NotoSansCJKsc-Regular\.otf/u);
+  assert.ok(install.includes('--output "$HOME/.local/share/fonts/NotoSansCJKsc-Regular.otf"'));
+  assert.ok(install.includes('fc-cache -f "$HOME/.local/share/fonts"'));
+  assert.doesNotMatch(install, /apt-get|continue-on-error|\|\|\s*true/u);
 });
 
 test("font budgeting preserves real rendering and native keyboard validation", () => {
