@@ -1,73 +1,25 @@
-/** Actual complete service methods with inert external boundaries; no product import or page-script execution. */
+/** Exercise the real browser service with isolated Electron and DNS boundaries. */
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { readFileSync } from "node:fs";
-import { stripTypeScriptTypes } from "node:module";
-import path from "node:path";
-import { test } from "node:test";
-import vm from "node:vm";
-import ts from "typescript";
+import { registerHooks } from "node:module";
+import { test, type TestContext } from "node:test";
 
-const sourceRoot = process.env.BINY_WEB_READ_SOURCE_ROOT ?? process.cwd();
-const sourcePath = path.join(sourceRoot, "src/desktop/electron/main/DesktopBrowserService.ts");
-const source = readFileSync(sourcePath, "utf8");
-const parsed = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const methodNames = ["requireBrowserEnvironment", "prepareBrowserEnvironment", "applyBrowserEnvironmentProxy", "readWebPage", "guardWebPartition"];
-const helperNames = ["readString", "readNumber"];
-const classes = parsed.statements.filter(ts.isClassDeclaration).filter(node => node.name?.text === "DesktopBrowserService");
-assert.equal(classes.length, 1);
-const service = classes[0]; assert.ok(service);
-const methods = service.members.filter(ts.isMethodDeclaration).filter(node => ts.isIdentifier(node.name) && methodNames.includes(node.name.text));
-assert.deepEqual(methods.map(node => node.name.getText(parsed)), methodNames);
-const helpers = parsed.statements.filter(ts.isFunctionDeclaration).filter(node => node.name && helperNames.includes(node.name.text));
-assert.deepEqual(helpers.map(node => node.name?.text), helperNames);
-
-// Receiver-specific paths preserve call receivers while ignoring arguments and TS non-null syntax.
-function callPath(node: ts.Expression): string {
-  if (ts.isIdentifier(node)) return node.text;
-  if (node.kind === ts.SyntaxKind.ThisKeyword) return "this";
-  if (ts.isPropertyAccessExpression(node)) return `${callPath(node.expression)}.${node.name.text}`;
-  if (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node)) return callPath(node.expression);
-  if (ts.isCallExpression(node)) return `${callPath(node.expression)}()`;
-  throw new Error(`Unreviewed expression: ${node.getText(parsed)}`);
-}
-const allowedCalls = new Set([
-  "this.browserEnvironments.get", "this.deletingBrowserEnvironments.has", "this.requireBrowserEnvironment",
-  "this.proxyReady.get", "this.applyBrowserEnvironmentProxy", "this.proxyReady.set", "pending.catch", "this.proxyReady.delete",
-  "session.fromPartition", "browserPartitionForEnvironment", "environmentSession.setProxy", "environmentSession.closeAllConnections",
-  "readString", "readNumber", "Math.min", "controller.abort", "signal.addEventListener", "abort", "setTimeout",
-  "reject", "controller.signal.addEventListener", "Promise.race", "assertFetchableUrl", "controller.signal.throwIfAborted",
-  "this.prepareBrowserEnvironment", "this.guardWebPartition", "this.browserAction", "this.embeddedProjects.get",
-  "this.embeddedProjects.get().tabs.get", "this.emitBrowserState", "page.on", "event.preventDefault", "page.once",
-  "this.guardedPages.delete", "page.setWindowOpenHandler", "this.guardedPages.set", "page.loadURL", "page.executeJavaScript",
-  "JSON.stringify", "delay", "work", "clearTimeout", "signal.removeEventListener", "contents.isDestroyed", "contents.stop",
-  "window.isDestroyed", "window.destroy", "this.embeddedProjects.get().tabs.has", "this.guardedPartitions.has",
-  "this.guardedPartitions.add", "session.fromPartition().webRequest.onBeforeRequest", "this.guardedPages.get", "callback",
-  "assertFetchableUrl().then", "policy.reject", "value.trim", "Number.isSafeInteger", "String", "Boolean"
-]);
-const allowedConstructors = new Set(["Error", "URL", "AbortController", "Promise", "BrowserWindow"]);
-const calls = new Set<string>(), constructors = new Set<string>();
-function audit(node: ts.Node): void {
-  assert.ok(!ts.isImportDeclaration(node) && node.kind !== ts.SyntaxKind.ImportKeyword, "no imports in source closure");
-  if (ts.isNewExpression(node)) {
-    const name = callPath(node.expression); assert.ok(allowedConstructors.has(name), `Unreviewed constructor: ${name}`); constructors.add(name);
-  }
-  if (ts.isCallExpression(node)) {
-    // These two literal regular expressions are the only non-property receivers.
-    if (ts.isPropertyAccessExpression(node.expression) && ts.isRegularExpressionLiteral(node.expression.expression)) {
-      assert.equal(node.expression.name.text, "test");
-      assert.ok(["/^https?:/i", "/^(https?:|data:|blob:)/i"].includes(node.expression.expression.text));
-    } else {
-      const name = callPath(node.expression); assert.ok(allowedCalls.has(name), `Unreviewed call: ${name}`); calls.add(name);
-    }
-  }
-  ts.forEachChild(node, audit);
-}
-for (const node of [...methods, ...helpers]) audit(node);
-assert.deepEqual([...calls].sort(), [...allowedCalls].sort(), "reviewed call inventory remains exact");
-assert.deepEqual([...constructors].sort(), [...allowedConstructors].sort());
-const closure = `class Subject {\n${methods.map(node => node.getText(parsed)).join("\n")}\n}\n${helpers.map(node => node.getText(parsed)).join("\n")}\nglobalThis.__Subject = Subject;`;
-const executable = stripTypeScriptTypes(closure, { mode: "strip" });
+const electronBoundary: { createWindow(options: unknown): object; fromPartition(partition: string): unknown } = {
+  createWindow() { throw new Error("No active browser fixture"); },
+  fromPartition() { throw new Error("No active session fixture"); }
+};
+Object.assign(globalThis, { __binyWebReadElectron: {
+  BrowserWindow: class { constructor(options: unknown) { return electronBoundary.createWindow(options); } },
+  WebContentsView: class { constructor() { throw new Error("Hidden reads must not create embedded views"); } },
+  clipboard: {}, session: { fromPartition: (partition: string) => electronBoundary.fromPartition(partition) }
+} });
+const hooks = registerHooks({ load(url, context, next) {
+  return /\/electron\/index\.js$/u.test(url)
+    ? { format: "module", shortCircuit: true, source: "export const { BrowserWindow, WebContentsView, clipboard, session } = globalThis.__binyWebReadElectron;" }
+    : next(url, context);
+} });
+const { DesktopBrowserService } = await import("../src/desktop/electron/main/DesktopBrowserService.js");
+hooks.deregister();
 
 const workId = "11111111-1111-4111-8111-111111111111";
 const target = "https://example.invalid/read";
@@ -76,16 +28,10 @@ type Phase = "setProxy" | "closeAllConnections";
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
 interface Environment { id: string; name: string; proxy: { mode: string } }
 interface Subject {
-  browserEnvironments: { get(key: string): Environment | undefined };
-  deletingBrowserEnvironments: Set<string>;
   proxyReady: Map<string, Promise<void>>;
-  guardedPartitions: Set<string>;
   guardedPages: Map<number, unknown>;
-  embeddedProjects: Map<string, never>;
-  shownBrowser: undefined;
-  resolveWebHostname: undefined;
-  browserAction(): never;
-  emitBrowserState(): never;
+  browserAction(): unknown;
+  emitBrowserState(): void;
   readWebPage(args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 function deferred() {
@@ -94,14 +40,14 @@ function deferred() {
   return { promise, release };
 }
 interface Options { phase?: Phase; failAt?: Phase; cached?: boolean; initialPolicyGate?: boolean }
-function fixture(options: Options = {}) {
+function fixture(t: TestContext, options: Options = {}) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clearTimer = t.mock.method(globalThis, "clearTimeout");
   const gate = deferred(), reached = deferred(), policyGate = deferred(), policyReached = deferred();
   const failure = new Error("inert preparation failed");
   const controller = new AbortController();
-  const counts = { allocations: 0, loads: 0, evaluations: 0, stops: 0, destroys: 0, registrations: 0, visibleCalls: 0, policies: 0 };
+  const counts = { allocations: 0, loads: 0, evaluations: 0, stops: 0, destroys: 0, registrations: 0, policies: 0 };
   const phases: Phase[] = [], scripts: string[] = [], loads: string[] = [];
-  const timers = new Map<number, () => void>();
-  let sequence = 0;
   const sessionObject = {
     async setProxy(config: { mode: string; proxyRules?: string; proxyBypassRules?: string }): Promise<void> {
       assert.deepEqual(Object.keys(config).sort(), ["mode", "proxyBypassRules", "proxyRules"]);
@@ -150,56 +96,42 @@ function fixture(options: Options = {}) {
     isDestroyed(): boolean { return this.destroyed; }
     destroy(): void { if (this.destroyed) return; this.destroyed = true; counts.destroys++; this.webContents.destroy(); }
   }
-  const context = vm.createContext({
-    URL, AbortController, Error, BrowserWindow: Window,
-    browserPartition: "persist:biny-browser", xiaohongshuPartition: "persist:biny-xiaohongshu",
-    browserPartitionForEnvironment(id: string): string {
-      if (id === "default") return "persist:biny-browser";
-      assert.equal(id, workId); return workPartition;
-    },
-    session: { fromPartition(partition: string) {
-      assert.ok([workPartition, "persist:biny-browser"].includes(partition)); return sessionObject;
-    } },
-    async assertFetchableUrl(url: URL, policy: { allowPrivateNetwork: boolean; resolveHostname: unknown }): Promise<void> {
-      assert.equal(url.href, target); assert.equal(policy.allowPrivateNetwork, false); assert.equal(policy.resolveHostname, undefined);
+  electronBoundary.createWindow = config => new Window(config as ConstructorParameters<typeof Window>[0]);
+  electronBoundary.fromPartition = partition => {
+    assert.ok([workPartition, "persist:biny-browser"].includes(partition));
+    return sessionObject;
+  };
+  const environments = { get(key: string) { return key === "default" ? defaults : key === workId || key === "Work" ? custom : undefined; } };
+  const browser = new DesktopBrowserService(async () => { throw new Error("Hidden reads must not touch cookie files"); }, undefined,
+    async hostname => {
+      assert.equal(hostname, "example.invalid");
       counts.policies++;
       if (options.initialPolicyGate && counts.policies === 1) { policyReached.release(); await policyGate.promise; }
-    },
-    setTimeout(callback: () => void, milliseconds: number): number { assert.equal(milliseconds, 1000); const id = ++sequence; timers.set(id, callback); return id; },
-    clearTimeout(id: number): void { timers.delete(id); },
-    delay(): never { throw new Error("Ready-only fixture must not poll or run a delay"); }
-  }, { codeGeneration: { strings: false, wasm: false } });
-  new vm.Script(executable, { filename: "web-read-source-closure.js" }).runInContext(context, { timeout: 1000 });
-  const Constructor = (context as unknown as { __Subject: new () => Subject }).__Subject;
-  const subject = new Constructor();
-  Object.assign(subject, {
-    browserEnvironments: { get(key: string) { return key === "default" ? defaults : key === workId || key === "Work" ? custom : undefined; } },
-    deletingBrowserEnvironments: new Set<string>(), proxyReady: new Map<string, Promise<void>>(),
-    guardedPartitions: new Set<string>(), guardedPages: new Map<number, unknown>(), embeddedProjects: new Map<string, never>(),
-    shownBrowser: undefined, resolveWebHostname: undefined,
-    browserAction(): never { counts.visibleCalls++; throw new Error("Visible branch is outside dynamic fixture scope"); },
-    emitBrowserState(): never { counts.visibleCalls++; throw new Error("Visible branch is outside dynamic fixture scope"); }
-  });
+      return ["93.184.216.34"];
+    }, environments as ConstructorParameters<typeof DesktopBrowserService>[3]);
+  const subject = browser as unknown as Subject;
+  const visibleAction = t.mock.method(subject, "browserAction");
+  const visibleState = t.mock.method(subject, "emitBrowserState");
   if (options.cached) subject.proxyReady.set(workId, Promise.resolve());
   let operation: Promise<Outcome> | undefined;
   function start(environment: string | undefined = "Work"): Promise<Outcome> {
     assert.equal(operation, undefined);
-    operation = subject.readWebPage({ url: target, timeoutMs: 1000, ...(environment === undefined ? {} : { environment }) }, controller.signal)
+    operation = subject.readWebPage({ url: target, timeoutMs: 1000, environment }, controller.signal)
       .then((value): Outcome => ({ ok: true, value }), (error: unknown): Outcome => ({ ok: false, error }));
     return operation;
   }
   function timeout(): void {
-    assert.equal(timers.size, 1);
-    const callback = timers.values().next().value; assert.ok(callback); callback();
+    t.mock.timers.tick(1000);
   }
   async function cleanup(): Promise<void> {
     gate.release(); policyGate.release();
     if (operation) await operation;
-    assert.equal(timers.size, 0, "read timer cleared");
+    assert.equal(clearTimer.mock.calls.length, 1, "read timer cleared");
     assert.equal(getEventListeners(controller.signal, "abort").length, 0, "caller forwarding listener removed");
     assert.equal(subject.guardedPages.size, 0, "no retained hidden guard");
     assert.ok(windows.every(window => window.destroyed && window.webContents.destroyed), "allocated hidden owners destroyed");
-    assert.equal(counts.visibleCalls, 0);
+    assert.equal(visibleAction.mock.calls.length, 0);
+    assert.equal(visibleState.mock.calls.length, 0);
   }
   return { start, timeout, cleanup, controller, reached: reached.promise, release: gate.release, policyReached: policyReached.promise,
     releasePolicy: policyGate.release, counts, phases, failure, scripts, loads, subject };
@@ -218,8 +150,8 @@ function expectSuccess(outcome: Outcome): void {
 const testOptions = { timeout: 5000 };
 for (const phase of ["setProxy", "closeAllConnections"] as const) {
   for (const interruption of ["caller abort", "timeout callback"] as const) {
-    test(`${phase}: ${interruption} prevents late hidden allocation and navigation`, testOptions, async () => {
-      const f = fixture({ phase });
+    test(`${phase}: ${interruption} prevents late hidden allocation and navigation`, testOptions, async t => {
+      const f = fixture(t, { phase });
       try {
         const result = f.start(); await f.reached;
         assert.deepEqual(f.phases, phase === "setProxy" ? ["setProxy"] : ["setProxy", "closeAllConnections"]);
@@ -231,8 +163,8 @@ for (const phase of ["setProxy", "closeAllConnections"] as const) {
       } finally { await f.cleanup(); }
     });
   }
-  test(`${phase}: normal finite preparation still reads and destroys its hidden owner`, testOptions, async () => {
-    const f = fixture({ phase });
+  test(`${phase}: normal finite preparation still reads and destroys its hidden owner`, testOptions, async t => {
+    const f = fixture(t, { phase });
     try {
       const result = f.start(); await f.reached; f.release(); expectSuccess(await result);
       assert.deepEqual(f.phases, ["setProxy", "closeAllConnections"]);
@@ -241,8 +173,8 @@ for (const phase of ["setProxy", "closeAllConnections"] as const) {
       assert.equal(f.counts.stops, 1); assert.equal(f.counts.destroys, 1); assert.equal(f.counts.registrations, 1);
     } finally { await f.cleanup(); }
   });
-  test(`${phase}: preparation failure preserves the original error without allocating`, testOptions, async () => {
-    const f = fixture({ phase, failAt: phase });
+  test(`${phase}: preparation failure preserves the original error without allocating`, testOptions, async t => {
+    const f = fixture(t, { phase, failAt: phase });
     try {
       const result = f.start(); await f.reached; f.release(); const outcome = await result;
       assert.equal(outcome.ok, false); if (!outcome.ok) assert.equal(outcome.error, f.failure);
@@ -252,23 +184,23 @@ for (const phase of ["setProxy", "closeAllConnections"] as const) {
   });
 }
 for (const selection of ["cached custom", "default"] as const) {
-  test(`${selection}: successful read does not prepare a proxy`, testOptions, async () => {
-    const f = fixture({ cached: selection === "cached custom" });
+  test(`${selection}: successful read does not prepare a proxy`, testOptions, async t => {
+    const f = fixture(t, { cached: selection === "cached custom" });
     try {
       expectSuccess(await f.start(selection === "default" ? "default" : "Work"));
       assert.deepEqual(f.phases, []); assert.equal(f.counts.allocations, 1); assert.deepEqual(f.loads, [target]);
     } finally { await f.cleanup(); }
   });
 }
-test("pre-aborted caller retains existing no-page behavior", testOptions, async () => {
-  const f = fixture();
+test("pre-aborted caller retains existing no-page behavior", testOptions, async t => {
+  const f = fixture(t);
   try {
     f.controller.abort(); expectRejected(await f.start(), /已取消/);
     assert.deepEqual(f.phases, []); assert.equal(f.counts.allocations, 0); assert.equal(f.counts.loads, 0);
   } finally { await f.cleanup(); }
 });
-test("abort during initial policy wait retains existing no-preparation behavior", testOptions, async () => {
-  const f = fixture({ initialPolicyGate: true });
+test("abort during initial policy wait retains existing no-preparation behavior", testOptions, async t => {
+  const f = fixture(t, { initialPolicyGate: true });
   try {
     const result = f.start(); await f.policyReached; f.controller.abort();
     expectRejected(await result, /已取消/); f.releasePolicy();
